@@ -14,7 +14,7 @@ const BOT_TOKEN  = process.env.TELEGRAM_BOT_TOKEN;
 const CHAT_ID    = process.env.TELEGRAM_CHAT_ID;
 const ENC_SECRET = process.env.ENCRYPTION_SECRET || 'ghostmint_change_me_32chars_min!!';
 const DASH_PASS  = process.env.DASHBOARD_PASSWORD || 'ghostmint123';
-const DATA_FILE  = path.join(__dirname, 'data.json');
+const DATA_FILE  = process.env.DATA_FILE || path.join(__dirname, 'data.json');
 
 const CHAINS = {
   ethereum: { name:'Ethereum', rpc: process.env.ETH_RPC     || 'https://ethereum.publicnode.com', sym:'ETH',  ex:'https://etherscan.io/tx/' },
@@ -24,11 +24,28 @@ const CHAINS = {
 };
 
 // ── Data ──────────────────────────────────────────────────
-function loadDB() {
-  try { return JSON.parse(fs.readFileSync(DATA_FILE,'utf8')); }
-  catch { return { wallets:[], tasks:[], activity:[], pnl:[] }; }
+const DEFAULT_DB = { wallets:[], tasks:[], activity:[], pnl:[], copymint:[] };
+
+function normalizeDB(data) {
+  return {
+    ...DEFAULT_DB,
+    ...(data && typeof data === 'object' ? data : {}),
+    wallets:  Array.isArray(data?.wallets)  ? data.wallets  : [],
+    tasks:    Array.isArray(data?.tasks)    ? data.tasks    : [],
+    activity: Array.isArray(data?.activity) ? data.activity : [],
+    pnl:      Array.isArray(data?.pnl)      ? data.pnl      : [],
+    copymint: Array.isArray(data?.copymint) ? data.copymint : [],
+  };
 }
-function saveDB() { fs.writeFileSync(DATA_FILE, JSON.stringify(DB, null, 2)); }
+
+function loadDB() {
+  try { return normalizeDB(JSON.parse(fs.readFileSync(DATA_FILE,'utf8'))); }
+  catch { return normalizeDB(); }
+}
+function saveDB() {
+  fs.mkdirSync(path.dirname(DATA_FILE), { recursive:true });
+  fs.writeFileSync(DATA_FILE, JSON.stringify(DB, null, 2));
+}
 let DB = loadDB();
 
 // ── Crypto ────────────────────────────────────────────────
