@@ -15,6 +15,15 @@ const CHAT_ID    = process.env.TELEGRAM_CHAT_ID;
 const ENC_SECRET = process.env.ENCRYPTION_SECRET || 'ghostmint_change_me_32chars_min!!';
 const DASH_PASS  = process.env.DASHBOARD_PASSWORD || 'ghostmint123';
 const DATA_FILE  = path.join(__dirname, 'data.json');
+const DEFAULT_DB = { wallets:[], tasks:[], activity:[], pnl:[], copymint:[] };
+
+if (ENC_SECRET === 'ghostmint_change_me_32chars_min!!') {
+  logStartupWarning('ENCRYPTION_SECRET is using the development fallback. Set it before production use.');
+}
+
+if (DASH_PASS === 'ghostmint123') {
+  logStartupWarning('DASHBOARD_PASSWORD is using the development fallback. Set it before production use.');
+}
 
 const CHAINS = {
   ethereum: { name:'Ethereum', rpc: process.env.ETH_RPC     || 'https://ethereum.publicnode.com', sym:'ETH',  ex:'https://etherscan.io/tx/' },
@@ -24,9 +33,16 @@ const CHAINS = {
 };
 
 // ── Data ──────────────────────────────────────────────────
+function logStartupWarning(message) {
+  console.warn(`[${new Date().toISOString()}] ⚠️  ${message}`);
+}
+
 function loadDB() {
-  try { return JSON.parse(fs.readFileSync(DATA_FILE,'utf8')); }
-  catch { return { wallets:[], tasks:[], activity:[], pnl:[] }; }
+  try {
+    return { ...DEFAULT_DB, ...JSON.parse(fs.readFileSync(DATA_FILE,'utf8')) };
+  } catch {
+    return { ...DEFAULT_DB };
+  }
 }
 function saveDB() { fs.writeFileSync(DATA_FILE, JSON.stringify(DB, null, 2)); }
 let DB = loadDB();
@@ -306,7 +322,6 @@ function stopWatcher(id) {
 }
 
 // Restore active watchers on boot
-if (!DB.copymint) DB.copymint = [];
 DB.copymint.filter(w => w.active).forEach(startWatcher);
 log(`Restored ${DB.copymint.filter(w=>w.active).length} copy mint watchers`);
 
@@ -519,8 +534,12 @@ app.delete('/api/copymint/:id', auth, (req,res) => {
   res.json({ ok:true });
 });
 
-app.get('/health', (req,res) => res.json({ status:'ok', uptime:Math.floor(process.uptime()), tasks:DB.tasks.filter(t=>t.status==='waiting').length }));
-app.get('*', (req,res) => res.sendFile(path.join(__dirname,'public','index.html')));
+app.get('/health', (req,res) => res.json({ status:'ok', uptime:Math.floor(process.uptime()), wallets:DB.wallets.length, tasks:DB.tasks.filter(t=>t.status==='waiting').length, watchers:DB.copymint.filter(w=>w.active).length }));
+app.get('*', (req,res) => {
+  const indexPath = path.join(__dirname,'public','index.html');
+  if (fs.existsSync(indexPath)) return res.sendFile(indexPath);
+  res.status(404).json({ error:'Dashboard assets not found' });
+});
 
 // ── Start ─────────────────────────────────────────────────
 app.listen(PORT, () => {
