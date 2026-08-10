@@ -25,8 +25,11 @@ const CHAINS = {
 
 // ── Data ──────────────────────────────────────────────────
 function loadDB() {
-  try { return JSON.parse(fs.readFileSync(DATA_FILE,'utf8')); }
-  catch { return { wallets:[], tasks:[], activity:[], pnl:[] }; }
+  try {
+    const d = JSON.parse(fs.readFileSync(DATA_FILE,'utf8'));
+    return { wallets:[], tasks:[], activity:[], pnl:[], snipers:[], ...d };
+  }
+  catch { return { wallets:[], tasks:[], activity:[], pnl:[], snipers:[] }; }
 }
 function saveDB() { fs.writeFileSync(DATA_FILE, JSON.stringify(DB, null, 2)); }
 let DB = loadDB();
@@ -69,6 +72,110 @@ async function executeMint({ wallet, contractAddr, fnName='mint', qty=1, priceET
   return tx.hash;
 }
 
+// ── Wallet Sniper / Copy-Mint Engine ─────────────────────────
+// Watches a target wallet block-by-block and, when it sees the
+// target call a contract (typically a mint), replicates that exact
+// call — same contract, same calldata — from one of your own
+// wallets. Detection happens once the target's tx is confirmed in
+// a block, so this is a best-effort copier riding public RPCs, not
+// a mempool front-runner.
+const sniperProviders = {};  // chain -> ethers provider, only live while a sniper is active on it
+const sniperSeenTx     = {}; // sniperId -> Set of already-handled tx hashes (capped)
+
+function markSeen(sniperId, hash) {
+  if (!sniperSeenTx[sniperId]) sniperSeenTx[sniperId] = new Set();
+  const set = sniperSeenTx[sniperId];
+  set.add(hash);
+  if (set.size > 500) set.delete(set.values().next().value);
+}
+const alreadySeen = (sniperId, hash) => sniperSeenTx[sniperId]?.has(hash);
+
+const activeSnipersForChain = chain => DB.snipers.filter(s => s.active && s.chain === chain);
+
+function ensureChainWatcher(chain) {
+  if (sniperProviders[chain] || !CHAINS[chain]) return;
+  const provider = new ethers.JsonRpcProvider(CHAINS[chain].rpc);
+  provider.pollingInterval = 2500;
+  sniperProviders[chain] = provider;
+  provider.on('block', bn => onBlock(chain, bn).catch(e => log(`Sniper block err (${chain}): ${e.message}`)));
+  log(`🎯 Sniper watcher started on ${CHAINS[chain].name}`);
+}
+
+function teardownChainWatcherIfIdle(chain) {
+  if (activeSnipersForChain(chain).length) return;
+  const provider = sniperProviders[chain];
+  if (!provider) return;
+  provider.removeAllListeners();
+  provider.destroy?.();
+  delete sniperProviders[chain];
+  log(`🎯 Sniper watcher stopped on ${chain} (no active targets)`);
+}
+
+async function onBlock(chain, blockNumber) {
+  const snipers = activeSnipersForChain(chain);
+  if (!snipers.length) return;
+  const provider = sniperProviders[chain];
+  const block = await provider.getBlock(blockNumber, true);
+  if (!block?.prefetchedTransactions) return;
+  for (const tx of block.prefetchedTransactions) {
+    if (!tx.to || !tx.data || tx.data === '0x') continue; // skip plain transfers / contract creations
+    for (const sniper of snipers) {
+      if (tx.from.toLowerCase() !== sniper.targetAddress.toLowerCase()) continue;
+      if (alreadySeen(sniper.id, tx.hash)) continue;
+      markSeen(sniper.id, tx.hash);
+      fireSnipe(sniper, tx, chain).catch(e => log(`Snipe fire error: ${e.message}`));
+    }
+  }
+}
+
+async function fireSnipe(sniper, targetTx, chain) {
+  const chainCfg = CHAINS[chain];
+  const wallet   = DB.wallets.find(w => w.label === sniper.walletLabel);
+  if (!wallet) { tg(`❌ *Sniper "${sniper.label}" failed*\nFiring wallet "${sniper.walletLabel}" not found.`); return; }
+
+  let value = targetTx.value ?? 0n;
+  if (sniper.valueMode === 'fixed') value = ethers.parseEther(String(sniper.fixedValueETH || 0));
+  if (sniper.maxValueETH != null) {
+    const cap = ethers.parseEther(String(sniper.maxValueETH));
+    if (value > cap) {
+      logActivity('fail', `Sniper skipped (value ${ethers.formatEther(value)} ETH > cap)`, wallet.label, null, chainCfg);
+      tg(`⚠️ *Sniper "${sniper.label}" skipped*\nTarget tx wants ${ethers.formatEther(value)} ETH, over your ${sniper.maxValueETH} ETH cap.`);
+      return;
+    }
+  }
+
+  tg(`🎯 *Target minting detected!*\nSniper: *${sniper.label}*\nTarget: \`${sniper.targetAddress.slice(0,8)}...\`\nCopying with wallet *${wallet.label}*...`);
+
+  try {
+    const pk       = decryptPK(wallet.encryptedKey);
+    const provider = sniperProviders[chain] || new ethers.JsonRpcProvider(chainCfg.rpc);
+    const signer   = new ethers.Wallet(pk, provider);
+    const overrides = { to: targetTx.to, data: targetTx.data, value };
+
+    const boostBp = BigInt(100 + (sniper.gasBoostPercent ?? 20)); // e.g. 120 = +20%
+    if (targetTx.maxFeePerGas) {
+      overrides.maxFeePerGas         = (targetTx.maxFeePerGas * boostBp) / 100n;
+      overrides.maxPriorityFeePerGas = ((targetTx.maxPriorityFeePerGas || targetTx.maxFeePerGas) * boostBp) / 100n;
+    } else if (targetTx.gasPrice) {
+      overrides.gasPrice = (targetTx.gasPrice * boostBp) / 100n;
+    }
+
+    const tx = await signer.sendTransaction(overrides);
+    log(`Sniper tx sent: ${tx.hash}`);
+    await tx.wait();
+    wallet.minted = (wallet.minted || 0) + 1;
+    sniper.hits = (sniper.hits || 0) + 1;
+    sniper.lastFiredAt = Date.now();
+    saveDB();
+    logActivity('success', `Sniper copy-mint (${sniper.label})`, wallet.label, tx.hash, chainCfg);
+    tg(`✅ *Snipe successful!*\nSniper: *${sniper.label}*\nWallet: *${wallet.label}*\n[View tx](${chainCfg.ex}${tx.hash})`);
+  } catch (e) {
+    sniper.fails = (sniper.fails || 0) + 1; saveDB();
+    logActivity('fail', `Sniper copy-mint failed (${sniper.label})`, wallet.label, null, chainCfg);
+    tg(`❌ *Snipe failed*\nSniper: *${sniper.label}*\nError: ${(e.reason || e.message || 'Unknown').slice(0,150)}`);
+  }
+}
+
 // ── Telegram ──────────────────────────────────────────────
 let bot = null;
 function tg(msg) {
@@ -80,7 +187,15 @@ if (BOT_TOKEN) {
   log('Telegram bot started');
 
   bot.onText(/\/start|\/help/, () => {
-    tg(`👻 *GhostMint Bot*\n\n*Commands:*\n/wallets — list wallets\n/tasks — scheduled tasks\n/activity — recent mints\n/gas — live gas prices\n/stats — overview\n/canceltask <id> — cancel task\n/removewallet <label> — remove wallet\n/mintnow <label> <contract> <qty> <price> <chain> — instant mint`);
+    tg(`👻 *GhostMint Bot*\n\n*Commands:*\n/wallets — list wallets\n/tasks — scheduled tasks\n/snipers — copy-mint watchers\n/activity — recent mints\n/gas — live gas prices\n/stats — overview\n/canceltask <id> — cancel task\n/removewallet <label> — remove wallet\n/mintnow <label> <contract> <qty> <price> <chain> — instant mint`);
+  });
+
+  bot.onText(/\/snipers/, () => {
+    if (!DB.snipers.length) return tg('No snipers configured. Add one via the web dashboard → Sniper tab.');
+    const list = DB.snipers.map(s =>
+      `${s.active?'🟢':'⚪'} *${s.label}*\nTarget: \`${s.targetAddress.slice(0,10)}...\`\nChain: ${CHAINS[s.chain]?.name||s.chain} · Wallet: ${s.walletLabel}\nHits: ${s.hits||0} · Fails: ${s.fails||0}`
+    ).join('\n\n');
+    tg(`🎯 *Snipers (${DB.snipers.length})*\n\n${list}`);
   });
 
   bot.onText(/\/wallets/, () => {
@@ -208,134 +323,9 @@ async function fireTask(task) {
 DB.tasks.filter(t => t.status==='waiting' && t.mintTime>Date.now()).forEach(scheduleTask);
 log(`Restored ${DB.tasks.filter(t=>t.status==='waiting').length} pending tasks`);
 
-// ── Copy Mint / Wallet Watcher ────────────────────────────────────────
-const watcherProviders = {};
-const activeWatchers   = {};
-
-function startWatcher(watcher) {
-  if (activeWatchers[watcher.id]) return; // already running
-  const chain = CHAINS[watcher.chain] || CHAINS.ethereum;
-  try {
-    // Use WebSocket-compatible provider via polling fallback
-    const provider = new ethers.JsonRpcProvider(chain.rpc);
-    log(`Starting watcher for ${watcher.targetAddress} on ${chain.name}`);
-
-    // Poll every 12 seconds for new transactions from target wallet
-    const interval = setInterval(async () => {
-      try {
-        const block = await provider.getBlockNumber();
-        const txList = await provider.getLogs({
-          fromBlock: block - 1,
-          toBlock: 'latest',
-        });
-
-        // Get latest block transactions
-        const fullBlock = await provider.getBlock(block, true);
-        if (!fullBlock || !fullBlock.transactions) return;
-
-        for (const tx of fullBlock.transactions) {
-          if (!tx || !tx.from) continue;
-          if (tx.from.toLowerCase() !== watcher.targetAddress.toLowerCase()) continue;
-          if (!tx.to) continue; // contract creation, skip
-          if (watcher.lastTxHash && watcher.lastTxHash === tx.hash) continue;
-
-          // Check if this looks like a mint (has value or matches known mint fn signatures)
-          const isMint = tx.data && (
-            tx.data.startsWith('0x1249c58b') || // mint()
-            tx.data.startsWith('0xa0712d68') || // mint(uint256)
-            tx.data.startsWith('0x40d097c3') || // safeMint
-            tx.data.startsWith('0x6a627842') || // mint(address)
-            tx.data.startsWith('0x84bb1e42') || // mint(address,uint256)
-            tx.data.length > 10                  // any contract call
-          );
-
-          if (!isMint) continue;
-
-          log(`Copy mint triggered! Target ${watcher.targetAddress} minted at ${tx.to}`);
-          watcher.lastTxHash = tx.hash;
-          DB.copymint = DB.copymint || [];
-          saveDB();
-
-          tg(`👁 *Copy Mint Detected!*\nTarget: \`${watcher.targetAddress.slice(0,10)}...\`\nContract: \`${tx.to.slice(0,10)}...\`\nFiring your wallet now...`);
-
-          // Fire mint from all linked wallets
-          const linkedWallets = watcher.walletLabels.map(l => DB.wallets.find(w => w.label === l)).filter(Boolean);
-          for (const wallet of linkedWallets) {
-            try {
-              // Mirror the exact transaction
-              const pk       = decryptPK(wallet.encryptedKey);
-              const signer   = new ethers.Wallet(pk, provider);
-              const mirrorTx = {
-                to:    tx.to,
-                data:  tx.data,
-                value: tx.value,
-              };
-              if (watcher.gasGwei) mirrorTx.gasPrice = ethers.parseUnits(watcher.gasGwei.toString(), 'gwei');
-              const sentTx = await signer.sendTransaction(mirrorTx);
-              await sentTx.wait();
-              wallet.minted = (wallet.minted || 0) + 1;
-              logActivity('success', `Copy minted from ${watcher.targetAddress.slice(0,8)}...`, wallet.label, sentTx.hash, chain);
-              tg(`✅ *Copy Mint SUCCESS!*\nWallet: *${wallet.label}*\nContract: \`${tx.to.slice(0,10)}...\`\n[View tx](${chain.ex}${sentTx.hash})`);
-              log(`Copy mint success: ${sentTx.hash}`);
-            } catch(e) {
-              logActivity('fail', `Copy mint failed from ${watcher.targetAddress.slice(0,8)}...`, wallet.label, null, chain);
-              tg(`❌ *Copy Mint FAILED*\nWallet: *${wallet.label}*\nError: ${(e.reason||e.message||'Unknown').slice(0,100)}`);
-              log(`Copy mint failed: ${e.message}`);
-            }
-          }
-          saveDB();
-        }
-      } catch(e) {
-        // Silent — polling errors are common
-      }
-    }, 12000);
-
-    activeWatchers[watcher.id] = interval;
-    log(`Watcher ${watcher.id} active — polling every 12s`);
-  } catch(e) {
-    log(`Watcher start error: ${e.message}`);
-  }
-}
-
-function stopWatcher(id) {
-  if (activeWatchers[id]) {
-    clearInterval(activeWatchers[id]);
-    delete activeWatchers[id];
-    log(`Watcher ${id} stopped`);
-  }
-}
-
-// Restore active watchers on boot
-if (!DB.copymint) DB.copymint = [];
-DB.copymint.filter(w => w.active).forEach(startWatcher);
-log(`Restored ${DB.copymint.filter(w=>w.active).length} copy mint watchers`);
-
-// Telegram copy mint commands
-if (bot) {
-  bot.onText(/\/watchers/, () => {
-    const list = (DB.copymint||[]);
-    if (!list.length) return tg('No copy mint watchers. Add via web dashboard.');
-    tg(`👁 *Copy Mint Watchers (${list.length})*\n\n` + list.map((w,i) =>
-      `${i+1}. *${w.name}*\nTarget: \`${w.targetAddress.slice(0,10)}...\`\nWallets: ${w.walletLabels.join(', ')}\nStatus: ${w.active?'🟢 Active':'🔴 Stopped'}\nID: \`${w.id}\``
-    ).join('\n\n'));
-  });
-
-  bot.onText(/\/stopwatcher (.+)/, (msg, match) => {
-    const id = parseInt(match[1]);
-    const w  = (DB.copymint||[]).find(x => x.id===id);
-    if (!w) return tg('Watcher not found. Use /watchers.');
-    w.active = false; stopWatcher(id); saveDB();
-    tg(`✅ Watcher *${w.name}* stopped.`);
-  });
-
-  bot.onText(/\/startwatcher (.+)/, (msg, match) => {
-    const id = parseInt(match[1]);
-    const w  = (DB.copymint||[]).find(x => x.id===id);
-    if (!w) return tg('Watcher not found. Use /watchers.');
-    w.active = true; startWatcher(w); saveDB();
-    tg(`✅ Watcher *${w.name}* started.`);
-  });
-}
+// Restore active snipers on boot
+DB.snipers.filter(s => s.active).forEach(s => ensureChainWatcher(s.chain));
+log(`🎯 Restored ${DB.snipers.filter(s=>s.active).length} active snipers`);
 
 // ── Express ───────────────────────────────────────────────
 const app = express();
@@ -483,39 +473,53 @@ app.delete('/api/pnl/:idx', auth, (req,res) => {
   DB.pnl.splice(parseInt(req.params.idx),1); saveDB(); res.json({ ok:true });
 });
 
-// ── Copy Mint API ─────────────────────────────────────────
-app.get('/api/copymint', auth, (req,res) => res.json(DB.copymint||[]));
+// ── Snipers ───────────────────────────────────────────────
+app.get('/api/snipers', auth, (req,res) => res.json(DB.snipers));
 
-app.post('/api/copymint', auth, (req,res) => {
-  const { name, targetAddress, walletLabels, chain, gasGwei } = req.body;
-  if (!name||!targetAddress||!walletLabels?.length) return res.status(400).json({ error:'name, targetAddress and walletLabels required' });
-  if (!targetAddress.startsWith('0x')) return res.status(400).json({ error:'Invalid target address' });
-  if (!DB.copymint) DB.copymint = [];
-  const watcher = { id:Date.now(), name, targetAddress, walletLabels, chain:chain||'ethereum', gasGwei:gasGwei||null, active:true, lastTxHash:null, createdAt:Date.now() };
-  DB.copymint.push(watcher); saveDB();
-  startWatcher(watcher);
-  tg(`👁 *Copy Mint Watcher started!*\nName: *${name}*\nTarget: \`${targetAddress.slice(0,10)}...\`\nWallets: ${walletLabels.join(', ')}\nChain: ${CHAINS[chain]?.name||chain}`);
-  res.json({ ok:true, watcher });
+app.post('/api/snipers', auth, (req,res) => {
+  const { label, targetAddress, chain, walletLabel, valueMode, fixedValueETH, maxValueETH, gasBoostPercent } = req.body;
+  if (!label||!targetAddress||!chain||!walletLabel) return res.status(400).json({ error:'label, targetAddress, chain and walletLabel are required' });
+  if (!CHAINS[chain]) return res.status(400).json({ error:'Unsupported chain' });
+  if (!ethers.isAddress(targetAddress)) return res.status(400).json({ error:'Invalid target address' });
+  const wallet = DB.wallets.find(w => w.label===walletLabel);
+  if (!wallet) return res.status(404).json({ error:'Firing wallet not found' });
+  const sniper = {
+    id: Date.now(), label, targetAddress, chain, walletLabel,
+    valueMode: valueMode==='fixed' ? 'fixed' : 'copy',
+    fixedValueETH: parseFloat(fixedValueETH)||0,
+    maxValueETH: (maxValueETH!==undefined && maxValueETH!==null && maxValueETH!=='') ? parseFloat(maxValueETH) : null,
+    gasBoostPercent: gasBoostPercent!==undefined ? parseInt(gasBoostPercent) : 20,
+    active: true, hits:0, fails:0, lastFiredAt:null, createdAt: Date.now(),
+  };
+  DB.snipers.push(sniper); saveDB();
+  ensureChainWatcher(chain);
+  tg(`🎯 *Sniper armed!*\nLabel: *${label}*\nWatching: \`${targetAddress.slice(0,10)}...\`\nChain: ${CHAINS[chain].name}\nFiring wallet: *${walletLabel}*`);
+  res.json({ ok:true, sniper });
 });
 
-app.patch('/api/copymint/:id', auth, (req,res) => {
-  const id  = parseInt(req.params.id);
-  const w   = (DB.copymint||[]).find(x=>x.id===id);
-  if (!w) return res.status(404).json({ error:'Watcher not found' });
-  const { active } = req.body;
-  w.active = active;
-  if (active) startWatcher(w); else stopWatcher(id);
+app.patch('/api/snipers/:id', auth, (req,res) => {
+  const id = parseInt(req.params.id);
+  const sniper = DB.snipers.find(s => s.id===id);
+  if (!sniper) return res.status(404).json({ error:'Not found' });
+  const prevChain = sniper.chain;
+  ['label','walletLabel','valueMode','fixedValueETH','maxValueETH','gasBoostPercent','active','chain'].forEach(k => {
+    if (req.body[k]!==undefined) sniper[k]=req.body[k];
+  });
   saveDB();
-  tg(`👁 Watcher *${w.name}* ${active?'started':'stopped'}.`);
-  res.json({ ok:true });
+  if (sniper.active) ensureChainWatcher(sniper.chain);
+  teardownChainWatcherIfIdle(prevChain);
+  if (prevChain!==sniper.chain) teardownChainWatcherIfIdle(prevChain);
+  res.json({ ok:true, sniper });
 });
 
-app.delete('/api/copymint/:id', auth, (req,res) => {
-  const id  = parseInt(req.params.id);
-  const idx = (DB.copymint||[]).findIndex(x=>x.id===id);
+app.delete('/api/snipers/:id', auth, (req,res) => {
+  const id = parseInt(req.params.id);
+  const idx = DB.snipers.findIndex(s => s.id===id);
   if (idx===-1) return res.status(404).json({ error:'Not found' });
-  stopWatcher(id);
-  DB.copymint.splice(idx,1); saveDB();
+  const chain = DB.snipers[idx].chain;
+  DB.snipers.splice(idx,1); saveDB();
+  delete sniperSeenTx[id];
+  teardownChainWatcherIfIdle(chain);
   res.json({ ok:true });
 });
 
