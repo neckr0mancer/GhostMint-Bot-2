@@ -83,6 +83,17 @@ function parsePort() {
   return port;
 }
 
+function parseInteger(name, fallback, minimum, maximum) {
+  const raw = optionalString(name);
+  if (raw === null) return fallback;
+  if (!/^\d+$/.test(raw)) throw new ConfigurationError(`${name} must be an integer from ${minimum} to ${maximum}`);
+  const value = Number(raw);
+  if (value < minimum || value > maximum) {
+    throw new ConfigurationError(`${name} must be an integer from ${minimum} to ${maximum}`);
+  }
+  return value;
+}
+
 function validateSecret(name, value, environment, policy) {
   const minimumLength = environment === 'production' ? policy.productionLength : policy.minimumLength;
   if (value.length < minimumLength) {
@@ -104,6 +115,57 @@ function validateSecret(name, value, environment, policy) {
   }
 
   return value;
+}
+
+function parsePostgresUrl(name, required) {
+  const raw = required ? requiredString(name) : optionalString(name);
+  if (raw === null) return null;
+  let parsed;
+  try { parsed = new URL(raw); }
+  catch { throw new ConfigurationError(`${name} must be a valid PostgreSQL URL`); }
+  if (!['postgres:', 'postgresql:'].includes(parsed.protocol) || !parsed.hostname || !parsed.username) {
+    throw new ConfigurationError(`${name} must be a valid PostgreSQL URL`);
+  }
+  return raw;
+}
+
+function parseDatabaseConfig(environment) {
+  const required = environment === 'production';
+  const pooled = parsePostgresUrl('DATABASE_URL', required);
+  const unpooled = parsePostgresUrl('DATABASE_URL_UNPOOLED', required);
+  if ((pooled === null) !== (unpooled === null)) {
+    throw new ConfigurationError('DATABASE_URL and DATABASE_URL_UNPOOLED must be configured together');
+  }
+  return { pooled, unpooled };
+}
+
+function parseEncryptionKeys(environment) {
+  const activeVersion = parseInteger('ENCRYPTION_KEY_VERSION', 1, 1, 2147483647);
+  const activeSecret = validateSecret('ENCRYPTION_SECRET', requiredString('ENCRYPTION_SECRET'), environment, {
+    minimumLength: 32,
+    productionLength: 48,
+    minimumUniqueCharacters: 12,
+  });
+  const rawOldKeys = optionalString('ENCRYPTION_OLD_KEYS') || '{}';
+  let oldKeys;
+  try { oldKeys = JSON.parse(rawOldKeys); }
+  catch { throw new ConfigurationError('ENCRYPTION_OLD_KEYS must be a JSON object keyed by positive integer versions'); }
+  if (!oldKeys || Array.isArray(oldKeys) || typeof oldKeys !== 'object') {
+    throw new ConfigurationError('ENCRYPTION_OLD_KEYS must be a JSON object keyed by positive integer versions');
+  }
+  const keys = { [activeVersion]: activeSecret };
+  for (const [rawVersion, secret] of Object.entries(oldKeys)) {
+    if (!/^[1-9]\d*$/.test(rawVersion) || Number(rawVersion) === activeVersion) {
+      throw new ConfigurationError('ENCRYPTION_OLD_KEYS versions must be positive integers different from ENCRYPTION_KEY_VERSION');
+    }
+    if (typeof secret !== 'string') throw new ConfigurationError('ENCRYPTION_OLD_KEYS values must be strings');
+    keys[Number(rawVersion)] = validateSecret(`ENCRYPTION_OLD_KEYS version ${rawVersion}`, secret, environment, {
+      minimumLength: 32,
+      productionLength: 48,
+      minimumUniqueCharacters: 12,
+    });
+  }
+  return { activeVersion, keys: Object.freeze(keys) };
 }
 
 function parseSupportedChains() {
@@ -147,14 +209,6 @@ function parseRpcUrl(envName, fallback) {
   return { url: parsed.toString(), overridden: configured !== null };
 }
 
-function resolveDataFile() {
-  const configuredPath = requiredString('DATA_FILE');
-  if (configuredPath.includes('\0')) throw new ConfigurationError('DATA_FILE contains an invalid character');
-  return path.isAbsolute(configuredPath)
-    ? path.normalize(configuredPath)
-    : path.resolve(PROJECT_ROOT, configuredPath);
-}
-
 function parseTelegram() {
   const botToken = optionalString('TELEGRAM_BOT_TOKEN');
   const chatId = optionalString('TELEGRAM_CHAT_ID');
@@ -167,6 +221,8 @@ function parseTelegram() {
 const environment = parseEnvironment();
 const supportedChains = parseSupportedChains();
 const telegram = parseTelegram();
+const database = parseDatabaseConfig(environment);
+const encryption = parseEncryptionKeys(environment);
 const rpcOverrides = {};
 const CHAINS = {};
 
@@ -190,17 +246,17 @@ const CONFIG = Object.freeze({
   port: parsePort(),
   botToken: telegram.botToken,
   chatId: telegram.chatId,
-  encryptionSecret: validateSecret('ENCRYPTION_SECRET', requiredString('ENCRYPTION_SECRET'), environment, {
-    minimumLength: 32,
-    productionLength: 48,
-    minimumUniqueCharacters: 12,
-  }),
+  encryptionSecret: encryption.keys[encryption.activeVersion],
+  encryptionKeyVersion: encryption.activeVersion,
+  encryptionKeys: encryption.keys,
   dashboardPassword: validateSecret('DASHBOARD_PASSWORD', requiredString('DASHBOARD_PASSWORD'), environment, {
     minimumLength: 16,
     productionLength: 24,
     minimumUniqueCharacters: 10,
   }),
-  dataFile: resolveDataFile(),
+  databaseUrl: database.pooled,
+  databaseUrlUnpooled: database.unpooled,
+  databasePoolMax: parseInteger('DATABASE_POOL_MAX', 5, 1, 10),
   projectRoot: PROJECT_ROOT,
   supportedChains,
 });
@@ -214,7 +270,11 @@ function getSafeConfigSummary() {
     port: CONFIG.port,
     supportedChains: [...CONFIG.supportedChains],
     telegramEnabled: CONFIG.botToken !== null,
-    dataFileConfigured: true,
+    databaseConfigured: CONFIG.databaseUrl !== null,
+    migrationConnectionConfigured: CONFIG.databaseUrlUnpooled !== null,
+    databasePoolMax: CONFIG.databasePoolMax,
+    activeEncryptionKeyVersion: CONFIG.encryptionKeyVersion,
+    availableEncryptionKeyVersions: Object.keys(CONFIG.encryptionKeys).map(Number).sort((a, b) => a - b),
     rpcOverrides: { ...rpcOverrides },
   };
 }

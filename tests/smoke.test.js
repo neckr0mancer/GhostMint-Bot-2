@@ -2,13 +2,15 @@ const assert = require('node:assert/strict');
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const net = require('node:net');
-const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 const dotenv = require('dotenv');
+const { runMigrations } = require('../src/db/migrate');
 
 const PROJECT_ROOT = path.join(__dirname, '..');
 const EXAMPLE_ENV = dotenv.parse(fs.readFileSync(path.join(PROJECT_ROOT, '.env.example')));
+const localEnvPath = path.join(PROJECT_ROOT, '.env');
+const LOCAL_ENV = fs.existsSync(localEnvPath) ? dotenv.parse(fs.readFileSync(localEnvPath)) : {};
 
 function reservePort() {
   return new Promise((resolve, reject) => {
@@ -42,7 +44,13 @@ async function waitForHealth(url, child, output) {
   throw new Error(`Timed out waiting for ${url}.\n${output()}`);
 }
 
-test('the application starts and exposes a healthy service', { timeout: 15_000 }, async t => {
+const smokeTest = LOCAL_ENV.DATABASE_URL && LOCAL_ENV.DATABASE_URL_UNPOOLED ? test : test.skip;
+
+smokeTest('the application starts and exposes a healthy database-backed service', { timeout: 20_000 }, async t => {
+  await runMigrations({
+    connectionString: LOCAL_ENV.DATABASE_URL_UNPOOLED,
+    migrationsDirectory: path.join(PROJECT_ROOT, 'migrations'),
+  });
   const port = await reservePort();
   let stdout = '';
   let stderr = '';
@@ -51,8 +59,9 @@ test('the application starts and exposes a healthy service', { timeout: 15_000 }
     env: {
       ...process.env,
       ...EXAMPLE_ENV,
+      DATABASE_URL: LOCAL_ENV.DATABASE_URL,
+      DATABASE_URL_UNPOOLED: LOCAL_ENV.DATABASE_URL_UNPOOLED,
       PORT: String(port),
-      DATA_FILE: path.join(os.tmpdir(), 'ghostmint-smoke-data.json'),
       TELEGRAM_BOT_TOKEN: '',
       TELEGRAM_CHAT_ID: '',
     },
@@ -73,6 +82,7 @@ test('the application starts and exposes a healthy service', { timeout: 15_000 }
   const body = await response.json();
 
   assert.equal(body.status, 'ok');
+  assert.equal(body.database, 'connected');
   assert.equal(typeof body.uptime, 'number');
   assert.equal(typeof body.tasks, 'number');
   assert.doesNotMatch(stdout, new RegExp(EXAMPLE_ENV.ENCRYPTION_SECRET));

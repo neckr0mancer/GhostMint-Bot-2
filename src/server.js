@@ -1,46 +1,50 @@
 const express     = require('express');
 const cors        = require('cors');
 const path        = require('path');
-const fs          = require('fs');
 const { ethers }  = require('ethers');
 const TelegramBot = require('node-telegram-bot-api');
-const CryptoJS    = require('crypto-js');
 const axios       = require('axios');
 const { CHAINS, CONFIG, getSafeConfigSummary } = require('./config');
+const { createDatabasePool } = require('./db/pool');
+const { createKeyEncryption } = require('./security/keyEncryption');
+const { createRedactor } = require('./security/redaction');
+const { createPostgresStorage } = require('./storage/postgresStorage');
 
 // ── Config ────────────────────────────────────────────────
 const PORT         = CONFIG.port;
 const BOT_TOKEN    = CONFIG.botToken;
 const CHAT_ID      = CONFIG.chatId;
-const ENC_SECRET   = CONFIG.encryptionSecret;
 const DASH_PASS    = CONFIG.dashboardPassword;
 const PROJECT_ROOT = CONFIG.projectRoot;
-const DATA_FILE    = CONFIG.dataFile;
 
 // ── Data ──────────────────────────────────────────────────
-function loadDB() {
-  try {
-    const d = JSON.parse(fs.readFileSync(DATA_FILE,'utf8'));
-    return { wallets:[], tasks:[], activity:[], pnl:[], snipers:[], ...d };
-  }
-  catch { return { wallets:[], tasks:[], activity:[], pnl:[], snipers:[] }; }
-}
-function saveDB() { fs.writeFileSync(DATA_FILE, JSON.stringify(DB, null, 2)); }
-let DB = loadDB();
+const pool = createDatabasePool({ connectionString: CONFIG.databaseUrl, max: CONFIG.databasePoolMax });
+const storage = createPostgresStorage(pool);
+let DB = { wallets:[], tasks:[], activity:[], pnl:[], snipers:[] };
 
 // ── Crypto ────────────────────────────────────────────────
-const encryptPK = pk  => CryptoJS.AES.encrypt(pk, ENC_SECRET).toString();
-const decryptPK = enc => CryptoJS.AES.decrypt(enc, ENC_SECRET).toString(CryptoJS.enc.Utf8);
+const keyEncryption = createKeyEncryption({
+  activeVersion: CONFIG.encryptionKeyVersion,
+  keys: CONFIG.encryptionKeys,
+});
+const encryptPK = privateKey => keyEncryption.encrypt(privateKey);
+const decryptPK = wallet => keyEncryption.decrypt(wallet.keyEnvelope);
 
 // ── Logger ────────────────────────────────────────────────
-const log = msg => console.log(`[${new Date().toISOString()}] ${msg}`);
+const redact = createRedactor([
+  CONFIG.dashboardPassword,
+  CONFIG.botToken,
+  ...Object.values(CONFIG.encryptionKeys),
+]);
+const log = msg => console.log(`[${new Date().toISOString()}] ${redact(msg)}`);
+const safeError = error => redact(error?.reason || error?.message || 'Unknown error');
 log(`Configuration loaded: ${JSON.stringify(getSafeConfigSummary())}`);
 
 // ── Activity ──────────────────────────────────────────────
-function logActivity(status, title, walletLabel, txHash, chain) {
-  DB.activity.unshift({ status, title, walletLabel, txHash, explorer: chain?.ex, time: Date.now() });
+async function logActivity(status, title, walletLabel, txHash, chain) {
+  const entry = await storage.addActivity({ status, title, walletLabel, txHash, explorer: chain?.ex, time: Date.now() });
+  DB.activity.unshift(entry);
   if (DB.activity.length > 200) DB.activity.pop();
-  saveDB();
 }
 
 // ── Helpers ───────────────────────────────────────────────
@@ -52,7 +56,7 @@ function fmtCD(ms) {
 // ── Mint executor ─────────────────────────────────────────
 async function executeMint({ wallet, contractAddr, fnName='mint', qty=1, priceETH=0, gasGwei=null, chain }) {
   const chainCfg = CHAINS[chain] || CHAINS.ethereum;
-  const pk       = decryptPK(wallet.encryptedKey);
+  const pk       = decryptPK(wallet);
   const provider = new ethers.JsonRpcProvider(chainCfg.rpc);
   const signer   = new ethers.Wallet(pk, provider);
   const abi = [{inputs:[{name:'quantity',type:'uint256'}],name:fnName,outputs:[],stateMutability:'payable',type:'function'}];
@@ -77,13 +81,15 @@ async function executeMint({ wallet, contractAddr, fnName='mint', qty=1, priceET
 const sniperProviders = {};  // chain -> ethers provider, only live while a sniper is active on it
 const sniperSeenTx     = {}; // sniperId -> Set of already-handled tx hashes (capped)
 
-function markSeen(sniperId, hash) {
+async function markSeen(sniperId, hash) {
   if (!sniperSeenTx[sniperId]) sniperSeenTx[sniperId] = new Set();
   const set = sniperSeenTx[sniperId];
   set.add(hash);
   if (set.size > 500) set.delete(set.values().next().value);
+  await storage.markSeenTransaction(sniperId, hash);
 }
-const alreadySeen = (sniperId, hash) => sniperSeenTx[sniperId]?.has(hash);
+const alreadySeen = async (sniperId, hash) => sniperSeenTx[sniperId]?.has(hash)
+  || storage.hasSeenTransaction(sniperId, hash);
 
 const activeSnipersForChain = chain => DB.snipers.filter(s => s.active && s.chain === chain);
 
@@ -92,7 +98,7 @@ function ensureChainWatcher(chain) {
   const provider = new ethers.JsonRpcProvider(CHAINS[chain].rpc);
   provider.pollingInterval = 2500;
   sniperProviders[chain] = provider;
-  provider.on('block', bn => onBlock(chain, bn).catch(e => log(`Sniper block err (${chain}): ${e.message}`)));
+  provider.on('block', bn => onBlock(chain, bn).catch(e => log(`Sniper block err (${chain}): ${safeError(e)}`)));
   log(`🎯 Sniper watcher started on ${CHAINS[chain].name}`);
 }
 
@@ -116,9 +122,9 @@ async function onBlock(chain, blockNumber) {
     if (!tx.to || !tx.data || tx.data === '0x') continue; // skip plain transfers / contract creations
     for (const sniper of snipers) {
       if (tx.from.toLowerCase() !== sniper.targetAddress.toLowerCase()) continue;
-      if (alreadySeen(sniper.id, tx.hash)) continue;
-      markSeen(sniper.id, tx.hash);
-      fireSnipe(sniper, tx, chain).catch(e => log(`Snipe fire error: ${e.message}`));
+      if (await alreadySeen(sniper.id, tx.hash)) continue;
+      await markSeen(sniper.id, tx.hash);
+      fireSnipe(sniper, tx, chain).catch(e => log(`Snipe fire error: ${safeError(e)}`));
     }
   }
 }
@@ -133,7 +139,7 @@ async function fireSnipe(sniper, targetTx, chain) {
   if (sniper.maxValueETH != null) {
     const cap = ethers.parseEther(String(sniper.maxValueETH));
     if (value > cap) {
-      logActivity('fail', `Sniper skipped (value ${ethers.formatEther(value)} ETH > cap)`, wallet.label, null, chainCfg);
+      await logActivity('fail', `Sniper skipped (value ${ethers.formatEther(value)} ETH > cap)`, wallet.label, null, chainCfg);
       tg(`⚠️ *Sniper "${sniper.label}" skipped*\nTarget tx wants ${ethers.formatEther(value)} ETH, over your ${sniper.maxValueETH} ETH cap.`);
       return;
     }
@@ -142,7 +148,7 @@ async function fireSnipe(sniper, targetTx, chain) {
   tg(`🎯 *Target minting detected!*\nSniper: *${sniper.label}*\nTarget: \`${sniper.targetAddress.slice(0,8)}...\`\nCopying with wallet *${wallet.label}*...`);
 
   try {
-    const pk       = decryptPK(wallet.encryptedKey);
+    const pk       = decryptPK(wallet);
     const provider = sniperProviders[chain] || new ethers.JsonRpcProvider(chainCfg.rpc);
     const signer   = new ethers.Wallet(pk, provider);
     const overrides = { to: targetTx.to, data: targetTx.data, value };
@@ -161,20 +167,24 @@ async function fireSnipe(sniper, targetTx, chain) {
     wallet.minted = (wallet.minted || 0) + 1;
     sniper.hits = (sniper.hits || 0) + 1;
     sniper.lastFiredAt = Date.now();
-    saveDB();
-    logActivity('success', `Sniper copy-mint (${sniper.label})`, wallet.label, tx.hash, chainCfg);
+    await Promise.all([
+      storage.updateWalletMinted(wallet.label, wallet.minted),
+      storage.saveSniper(sniper),
+    ]);
+    await logActivity('success', `Sniper copy-mint (${sniper.label})`, wallet.label, tx.hash, chainCfg);
     tg(`✅ *Snipe successful!*\nSniper: *${sniper.label}*\nWallet: *${wallet.label}*\n[View tx](${chainCfg.ex}${tx.hash})`);
   } catch (e) {
-    sniper.fails = (sniper.fails || 0) + 1; saveDB();
-    logActivity('fail', `Sniper copy-mint failed (${sniper.label})`, wallet.label, null, chainCfg);
-    tg(`❌ *Snipe failed*\nSniper: *${sniper.label}*\nError: ${(e.reason || e.message || 'Unknown').slice(0,150)}`);
+    sniper.fails = (sniper.fails || 0) + 1;
+    await storage.saveSniper(sniper);
+    await logActivity('fail', `Sniper copy-mint failed (${sniper.label})`, wallet.label, null, chainCfg);
+    tg(`❌ *Snipe failed*\nSniper: *${sniper.label}*\nError: ${safeError(e).slice(0,150)}`);
   }
 }
 
 // ── Telegram ──────────────────────────────────────────────
 let bot = null;
 function tg(msg) {
-  if (bot && CHAT_ID) bot.sendMessage(CHAT_ID, msg, { parse_mode:'Markdown' }).catch(e => log('TG: '+e.message));
+  if (bot && CHAT_ID) bot.sendMessage(CHAT_ID, msg, { parse_mode:'Markdown' }).catch(e => log('TG: '+safeError(e)));
 }
 
 if (BOT_TOKEN) {
@@ -238,21 +248,21 @@ if (BOT_TOKEN) {
     tg(`📊 *GhostMint Stats*\n\n⬡ Wallets: *${DB.wallets.length}*\n⏱ Pending: *${pending}*\n⚡ Minted: *${minted}*\n✅ Success rate: *${total?Math.round(success/total*100):0}%*\n⏰ Uptime: ${fmtCD(process.uptime()*1000)}`);
   });
 
-  bot.onText(/\/canceltask (.+)/, (msg, match) => {
+  bot.onText(/\/canceltask (.+)/, async (msg, match) => {
     const id  = parseInt(match[1]);
     const idx = DB.tasks.findIndex(t => t.id===id);
     if (idx===-1) return tg('Task not found. Use /tasks to see IDs.');
     const name = DB.tasks[idx].name;
-    DB.tasks.splice(idx, 1); saveDB();
+    DB.tasks.splice(idx, 1); await storage.deleteTask(id);
     if (taskTimers[id]) { clearTimeout(taskTimers[id]); delete taskTimers[id]; }
     tg(`✅ Task *${name}* cancelled.`);
   });
 
-  bot.onText(/\/removewallet (.+)/, (msg, match) => {
+  bot.onText(/\/removewallet (.+)/, async (msg, match) => {
     const label = match[1].trim();
     const idx   = DB.wallets.findIndex(w => w.label.toLowerCase()===label.toLowerCase());
     if (idx===-1) return tg(`Wallet "${label}" not found.`);
-    DB.wallets.splice(idx, 1); saveDB();
+    const [removed] = DB.wallets.splice(idx, 1); await storage.deleteWallet(removed.label);
     tg(`✅ Wallet *${label}* removed.`);
   });
 
@@ -267,11 +277,12 @@ if (BOT_TOKEN) {
     try {
       const txHash = await executeMint({ wallet, contractAddr:contract, fnName:'mint', qty, priceETH:price, chain:ch });
       wallet.minted=(wallet.minted||0)+qty;
-      logActivity('success',`Minted ${qty} NFT${qty>1?'s':''}`,wallet.label,txHash,CHAINS[ch]);
+      await storage.updateWalletMinted(wallet.label, wallet.minted);
+      await logActivity('success',`Minted ${qty} NFT${qty>1?'s':''}`,wallet.label,txHash,CHAINS[ch]);
       tg(`✅ *Mint successful!*\nWallet: *${wallet.label}*\nQty: ${qty}\n[View tx](${CHAINS[ch].ex}${txHash})`);
     } catch(e) {
-      logActivity('fail','Mint failed',wallet.label,null,CHAINS[ch]);
-      tg(`❌ *Mint failed*\n${(e.reason||e.message||'Unknown error').slice(0,120)}`);
+      await logActivity('fail','Mint failed',wallet.label,null,CHAINS[ch]);
+      tg(`❌ *Mint failed*\n${safeError(e).slice(0,120)}`);
     }
   });
 
@@ -295,32 +306,25 @@ async function fireTask(task) {
   log(`Firing: ${task.name}`);
   const wallet = DB.wallets.find(w => w.label===task.walletLabel);
   if (!wallet) {
-    task.status='failed'; saveDB();
+    task.status='failed'; await storage.saveTask(task);
     tg(`❌ *Task failed: ${task.name}*\nWallet "${task.walletLabel}" not found.`);
     return;
   }
-  task.status='running'; saveDB();
+  task.status='running'; await storage.saveTask(task);
   tg(`⚡ *Auto-minting!*\nTask: *${task.name}*\nWallet: *${wallet.label}*\nQty: ${task.qty}`);
   try {
     const txHash = await executeMint({ wallet, contractAddr:task.contract, fnName:task.fn||'mint', qty:task.qty, priceETH:task.price||0, gasGwei:task.gas||null, chain:wallet.chain });
-    task.status='done'; wallet.minted=(wallet.minted||0)+task.qty; saveDB();
-    logActivity('success',`Auto-minted ${task.qty} NFT${task.qty>1?'s':''}`,wallet.label,txHash,CHAINS[wallet.chain]);
+    task.status='done'; wallet.minted=(wallet.minted||0)+task.qty;
+    await Promise.all([storage.saveTask(task), storage.updateWalletMinted(wallet.label, wallet.minted)]);
+    await logActivity('success',`Auto-minted ${task.qty} NFT${task.qty>1?'s':''}`,wallet.label,txHash,CHAINS[wallet.chain]);
     tg(`✅ *Auto-mint SUCCESS!*\nTask: *${task.name}*\nWallet: *${wallet.label}*\nQty: ${task.qty}\n[View tx](${CHAINS[wallet.chain].ex}${txHash})`);
   } catch(e) {
-    task.status='failed'; saveDB();
-    logActivity('fail',`Auto-mint failed: ${task.name}`,wallet.label,null,CHAINS[wallet.chain]);
-    tg(`❌ *Auto-mint FAILED*\nTask: *${task.name}*\nError: ${(e.reason||e.message||'Unknown').slice(0,120)}`);
-    log(`Task failed: ${e.message}`);
+    task.status='failed'; await storage.saveTask(task);
+    await logActivity('fail',`Auto-mint failed: ${task.name}`,wallet.label,null,CHAINS[wallet.chain]);
+    tg(`❌ *Auto-mint FAILED*\nTask: *${task.name}*\nError: ${safeError(e).slice(0,120)}`);
+    log(`Task failed: ${safeError(e)}`);
   }
 }
-
-// Restore tasks on boot
-DB.tasks.filter(t => t.status==='waiting' && t.mintTime>Date.now()).forEach(scheduleTask);
-log(`Restored ${DB.tasks.filter(t=>t.status==='waiting').length} pending tasks`);
-
-// Restore active snipers on boot
-DB.snipers.filter(s => s.active).forEach(s => ensureChainWatcher(s.chain));
-log(`🎯 Restored ${DB.snipers.filter(s=>s.active).length} active snipers`);
 
 // ── Express ───────────────────────────────────────────────
 const app = express();
@@ -354,17 +358,18 @@ app.post('/api/wallets', auth, async (req,res) => {
   if (!privateKey||!label) return res.status(400).json({ error:'privateKey and label required' });
   try {
     const w = new ethers.Wallet(privateKey);
-    DB.wallets.push({ label, address:w.address, chain:chain||'ethereum', encryptedKey:encryptPK(privateKey), minted:0, addedAt:Date.now() });
-    saveDB();
+    const wallet = await storage.addWallet({ label, address:w.address, chain:chain||'ethereum', keyEnvelope:encryptPK(privateKey), minted:0, addedAt:Date.now() });
+    DB.wallets.push(wallet);
     tg(`⬡ *Wallet added*\nLabel: *${label}*\nAddress: \`${w.address.slice(0,6)}...${w.address.slice(-4)}\``);
     res.json({ ok:true, address:w.address });
   } catch { res.status(400).json({ error:'Invalid private key' }); }
 });
 
-app.delete('/api/wallets/:label', auth, (req,res) => {
+app.delete('/api/wallets/:label', auth, async (req,res) => {
   const idx = DB.wallets.findIndex(w=>w.label===req.params.label);
   if (idx===-1) return res.status(404).json({ error:'Not found' });
-  DB.wallets.splice(idx,1); saveDB(); res.json({ ok:true });
+  const [removed] = DB.wallets.splice(idx,1);
+  await storage.deleteWallet(removed.label); res.json({ ok:true });
 });
 
 app.get('/api/balance/:label', auth, async (req,res) => {
@@ -374,12 +379,12 @@ app.get('/api/balance/:label', auth, async (req,res) => {
     const chain=CHAINS[wallet.chain], p=new ethers.JsonRpcProvider(chain.rpc);
     const bal=await p.getBalance(wallet.address);
     res.json({ balance:ethers.formatEther(bal), symbol:chain.sym });
-  } catch(e) { res.status(500).json({ error:e.message }); }
+  } catch(e) { res.status(500).json({ error:safeError(e) }); }
 });
 
 app.get('/api/tasks', auth, (req,res) => res.json(DB.tasks));
 
-app.post('/api/tasks', auth, (req,res) => {
+app.post('/api/tasks', auth, async (req,res) => {
   const { name, walletLabel, contract, fn, qty, price, gas, mintTime } = req.body;
   if (!name||!walletLabel||!contract||!mintTime) return res.status(400).json({ error:'Missing fields' });
   const wallet = DB.wallets.find(w=>w.label===walletLabel);
@@ -387,15 +392,15 @@ app.post('/api/tasks', auth, (req,res) => {
   const mt = new Date(mintTime).getTime();
   if (mt<=Date.now()) return res.status(400).json({ error:'Mint time must be in the future' });
   const task = { id:Date.now(), name, walletLabel, contract, fn:fn||'mint', qty:qty||1, price:price||0, gas:gas||null, mintTime:mt, status:'waiting', createdAt:Date.now() };
-  DB.tasks.push(task); saveDB(); scheduleTask(task);
+  await storage.saveTask(task); DB.tasks.push(task); scheduleTask(task);
   tg(`⏱ *Task scheduled!*\nName: *${name}*\nWallet: *${walletLabel}*\nFires: ${new Date(mt).toLocaleString()}`);
   res.json({ ok:true, task });
 });
 
-app.delete('/api/tasks/:id', auth, (req,res) => {
+app.delete('/api/tasks/:id', auth, async (req,res) => {
   const id=parseInt(req.params.id), idx=DB.tasks.findIndex(t=>t.id===id);
   if (idx===-1) return res.status(404).json({ error:'Not found' });
-  DB.tasks.splice(idx,1); saveDB();
+  DB.tasks.splice(idx,1); await storage.deleteTask(id);
   if (taskTimers[id]) { clearTimeout(taskTimers[id]); delete taskTimers[id]; }
   res.json({ ok:true });
 });
@@ -407,12 +412,13 @@ app.post('/api/mint', auth, async (req,res) => {
   try {
     const txHash = await executeMint({ wallet, contractAddr:contract, fnName:fn||'mint', qty:qty||1, priceETH:price||0, gasGwei:gas||null, chain:chain||wallet.chain });
     wallet.minted=(wallet.minted||0)+(qty||1);
-    logActivity('success',`Minted ${qty||1} NFT${qty>1?'s':''}`,wallet.label,txHash,CHAINS[chain||wallet.chain]);
+    await storage.updateWalletMinted(wallet.label, wallet.minted);
+    await logActivity('success',`Minted ${qty||1} NFT${qty>1?'s':''}`,wallet.label,txHash,CHAINS[chain||wallet.chain]);
     tg(`✅ *Manual mint success!*\nWallet: *${wallet.label}*\nQty: ${qty||1}\n[View tx](${CHAINS[chain||wallet.chain].ex}${txHash})`);
     res.json({ ok:true, txHash, explorer:CHAINS[chain||wallet.chain].ex+txHash });
   } catch(e) {
-    logActivity('fail','Manual mint failed',wallet.label,null,CHAINS[chain||wallet.chain]);
-    res.status(500).json({ error:e.reason||e.message||'Mint failed' });
+    await logActivity('fail','Manual mint failed',wallet.label,null,CHAINS[chain||wallet.chain]);
+    res.status(500).json({ error:safeError(e) });
   }
 });
 
@@ -426,14 +432,14 @@ app.post('/api/batch', auth, async (req,res) => {
     try {
       const txHash = await executeMint({ wallet, contractAddr:contract, fnName:fn||'mint', qty:qty||1, priceETH:price||0, gasGwei:gas||null, chain:wallet.chain });
       wallet.minted=(wallet.minted||0)+(qty||1);
-      logActivity('success',`Batch minted ${qty||1} NFT${qty>1?'s':''}`,wallet.label,txHash,CHAINS[wallet.chain]);
+      await storage.updateWalletMinted(wallet.label, wallet.minted);
+      await logActivity('success',`Batch minted ${qty||1} NFT${qty>1?'s':''}`,wallet.label,txHash,CHAINS[wallet.chain]);
       return { label, status:'success', txHash };
     } catch(e) {
-      logActivity('fail','Batch mint failed',label,null,CHAINS[wallet?.chain]);
-      return { label, status:'error', error:e.message };
+      await logActivity('fail','Batch mint failed',label,null,CHAINS[wallet?.chain]);
+      return { label, status:'error', error:safeError(e) };
     }
   })).then(results => {
-    saveDB();
     const ok=results.filter(r=>r.status==='success').length, fail=results.filter(r=>r.status!=='success').length;
     tg(`🔁 *Batch complete*\n✅ Success: ${ok}\n❌ Failed: ${fail}\n\n${results.map(r=>`${r.status==='success'?'✅':'❌'} ${r.label}`).join('\n')}`);
   });
@@ -454,24 +460,26 @@ app.post('/api/whitelist', auth, async (req,res) => {
     const c=new ethers.Contract(contract,abi,p);
     const result=await c[fn||'isWhitelisted'](address);
     res.json({ listed:!!result, address, contract });
-  } catch(e) { res.status(500).json({ error:e.message }); }
+  } catch(e) { res.status(500).json({ error:safeError(e) }); }
 });
 
 app.get('/api/pnl', auth, (req,res) => res.json(DB.pnl));
-app.post('/api/pnl', auth, (req,res) => {
+app.post('/api/pnl', auth, async (req,res) => {
   const { name, cost, sale, gas } = req.body;
   if (!name) return res.status(400).json({ error:'name required' });
-  DB.pnl.unshift({ nm:name, cost:cost||0, sale:sale||0, gas:gas||0, net:(sale||0)-(cost||0)-(gas||0), t:Date.now() });
-  saveDB(); res.json({ ok:true });
+  const record = await storage.addPnl({ nm:name, cost:cost||0, sale:sale||0, gas:gas||0, net:(sale||0)-(cost||0)-(gas||0), t:Date.now() });
+  DB.pnl.unshift(record); res.json({ ok:true });
 });
-app.delete('/api/pnl/:idx', auth, (req,res) => {
-  DB.pnl.splice(parseInt(req.params.idx),1); saveDB(); res.json({ ok:true });
+app.delete('/api/pnl/:idx', auth, async (req,res) => {
+  const [record] = DB.pnl.splice(parseInt(req.params.idx),1);
+  if (record) await storage.deletePnl(record.id);
+  res.json({ ok:true });
 });
 
 // ── Snipers ───────────────────────────────────────────────
 app.get('/api/snipers', auth, (req,res) => res.json(DB.snipers));
 
-app.post('/api/snipers', auth, (req,res) => {
+app.post('/api/snipers', auth, async (req,res) => {
   const { label, targetAddress, chain, walletLabel, valueMode, fixedValueETH, maxValueETH, gasBoostPercent } = req.body;
   if (!label||!targetAddress||!chain||!walletLabel) return res.status(400).json({ error:'label, targetAddress, chain and walletLabel are required' });
   if (!CHAINS[chain]) return res.status(400).json({ error:'Unsupported chain' });
@@ -486,13 +494,13 @@ app.post('/api/snipers', auth, (req,res) => {
     gasBoostPercent: gasBoostPercent!==undefined ? parseInt(gasBoostPercent) : 20,
     active: true, hits:0, fails:0, lastFiredAt:null, createdAt: Date.now(),
   };
-  DB.snipers.push(sniper); saveDB();
+  await storage.saveSniper(sniper); DB.snipers.push(sniper);
   ensureChainWatcher(chain);
   tg(`🎯 *Sniper armed!*\nLabel: *${label}*\nWatching: \`${targetAddress.slice(0,10)}...\`\nChain: ${CHAINS[chain].name}\nFiring wallet: *${walletLabel}*`);
   res.json({ ok:true, sniper });
 });
 
-app.patch('/api/snipers/:id', auth, (req,res) => {
+app.patch('/api/snipers/:id', auth, async (req,res) => {
   const id = parseInt(req.params.id);
   const sniper = DB.snipers.find(s => s.id===id);
   if (!sniper) return res.status(404).json({ error:'Not found' });
@@ -500,32 +508,51 @@ app.patch('/api/snipers/:id', auth, (req,res) => {
   ['label','walletLabel','valueMode','fixedValueETH','maxValueETH','gasBoostPercent','active','chain'].forEach(k => {
     if (req.body[k]!==undefined) sniper[k]=req.body[k];
   });
-  saveDB();
+  await storage.saveSniper(sniper);
   if (sniper.active) ensureChainWatcher(sniper.chain);
   teardownChainWatcherIfIdle(prevChain);
   if (prevChain!==sniper.chain) teardownChainWatcherIfIdle(prevChain);
   res.json({ ok:true, sniper });
 });
 
-app.delete('/api/snipers/:id', auth, (req,res) => {
+app.delete('/api/snipers/:id', auth, async (req,res) => {
   const id = parseInt(req.params.id);
   const idx = DB.snipers.findIndex(s => s.id===id);
   if (idx===-1) return res.status(404).json({ error:'Not found' });
   const chain = DB.snipers[idx].chain;
-  DB.snipers.splice(idx,1); saveDB();
+  DB.snipers.splice(idx,1); await storage.deleteSniper(id);
   delete sniperSeenTx[id];
   teardownChainWatcherIfIdle(chain);
   res.json({ ok:true });
 });
 
-app.get('/health', (req,res) => res.json({ status:'ok', uptime:Math.floor(process.uptime()), tasks:DB.tasks.filter(t=>t.status==='waiting').length }));
+app.get('/health', async (req,res) => {
+  try {
+    await storage.health();
+    res.json({ status:'ok', database:'connected', uptime:Math.floor(process.uptime()), tasks:DB.tasks.filter(t=>t.status==='waiting').length });
+  } catch {
+    res.status(503).json({ status:'degraded', database:'disconnected', uptime:Math.floor(process.uptime()) });
+  }
+});
 app.get('*', (req,res) => res.sendFile(path.join(PROJECT_ROOT,'public','index.html')));
 
 // ── Start ─────────────────────────────────────────────────
-app.listen(PORT, () => {
-  log(`🚀 GhostMint running on port ${PORT}`);
-  log(`📊 Wallets: ${DB.wallets.length} | Tasks: ${DB.tasks.length}`);
+async function start() {
+  DB = await storage.loadState();
+  DB.tasks.filter(t => t.status==='waiting' && t.mintTime>Date.now()).forEach(scheduleTask);
+  log(`Restored ${DB.tasks.filter(t=>t.status==='waiting').length} pending tasks`);
+  DB.snipers.filter(s => s.active).forEach(s => ensureChainWatcher(s.chain));
+  log(`Restored ${DB.snipers.filter(s=>s.active).length} active snipers`);
+  app.listen(PORT, () => {
+    log(`GhostMint running on port ${PORT}`);
+    log(`Wallets: ${DB.wallets.length} | Tasks: ${DB.tasks.length}`);
+  });
+}
+
+start().catch(error => {
+  log(`Startup failed: ${safeError(error)}`);
+  process.exitCode = 1;
 });
 
-process.on('unhandledRejection', e => log('Rejection: '+e.message));
-process.on('uncaughtException',  e => log('Exception: '+e.message));
+process.on('unhandledRejection', e => log('Rejection: '+safeError(e)));
+process.on('uncaughtException',  e => log('Exception: '+safeError(e)));

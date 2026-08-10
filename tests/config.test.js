@@ -6,15 +6,19 @@ const test = require('node:test');
 const PROJECT_ROOT = path.join(__dirname, '..');
 const CONFIG_PROBE = [
   "const { CONFIG, getSafeConfigSummary } = require('./src/config');",
-  'process.stdout.write(JSON.stringify({ summary: getSafeConfigSummary(), dataFile: CONFIG.dataFile }));',
+  'process.stdout.write(JSON.stringify({ summary: getSafeConfigSummary(), poolMax: CONFIG.databasePoolMax }));',
 ].join(' ');
 
 const VALID_ENV = Object.freeze({
   NODE_ENV: 'development',
   PORT: '3000',
-  DATA_FILE: './data.json',
+  DATABASE_URL: '',
+  DATABASE_URL_UNPOOLED: '',
+  DATABASE_POOL_MAX: '5',
   SUPPORTED_CHAINS: 'ethereum,base,arbitrum,polygon',
   ENCRYPTION_SECRET: 'dev-encryption-key-7Qv9!m2Lx4Rk8Zp3Cw6N',
+  ENCRYPTION_KEY_VERSION: '1',
+  ENCRYPTION_OLD_KEYS: '{}',
   DASHBOARD_PASSWORD: 'dev-dashboard-9Nf4!Tq7Vx2Jm8Kp',
   TELEGRAM_BOT_TOKEN: '',
   TELEGRAM_CHAT_ID: '',
@@ -40,8 +44,8 @@ test('accepts valid development configuration and returns only a safe summary', 
   assert.equal(output.summary.environment, 'development');
   assert.deepEqual(output.summary.supportedChains, ['ethereum', 'base', 'arbitrum', 'polygon']);
   assert.equal(output.summary.telegramEnabled, false);
-  assert.equal(output.summary.dataFileConfigured, true);
-  assert.equal(output.dataFile, path.join(PROJECT_ROOT, 'data.json'));
+  assert.equal(output.summary.databaseConfigured, false);
+  assert.equal(output.poolMax, 5);
 
   const serialized = JSON.stringify(output.summary);
   assert.doesNotMatch(serialized, /7Qv9|9Nf4|encryptionSecret|dashboardPassword/);
@@ -52,24 +56,44 @@ test('accepts each explicit runtime mode when its policy is satisfied', () => {
 
   const production = probeConfig({
     NODE_ENV: 'production',
+    DATABASE_URL: 'postgresql://app:strong-value@pooler.example.com:6543/ghostmint',
+    DATABASE_URL_UNPOOLED: 'postgresql://migrator:strong-value@db.example.com:5432/ghostmint',
     ENCRYPTION_SECRET: 'production-key-7Qv9!m2Lx4Rk8Zp3Cw6N5Hs8Df1Aa4Bb9Cc!',
     DASHBOARD_PASSWORD: 'production-access-9Nf4!Tq7Vx2Jm8Kp6Rs',
   });
   assert.equal(production.status, 0, production.stderr);
 });
 
-test('resolves an environment-driven relative data location from the project root', () => {
-  const result = probeConfig({ DATA_FILE: './runtime/ghostmint-state.json' });
-  assert.equal(result.status, 0, result.stderr);
-  assert.equal(JSON.parse(result.stdout).dataFile, path.join(PROJECT_ROOT, 'runtime', 'ghostmint-state.json'));
-});
-
 test('refuses to start when any required setting is missing', () => {
-  for (const name of ['NODE_ENV', 'DATA_FILE', 'SUPPORTED_CHAINS', 'ENCRYPTION_SECRET', 'DASHBOARD_PASSWORD']) {
+  for (const name of ['NODE_ENV', 'SUPPORTED_CHAINS', 'ENCRYPTION_SECRET', 'DASHBOARD_PASSWORD']) {
     const result = probeConfig({ [name]: '' });
     assert.notEqual(result.status, 0, `${name} should be required`);
     assert.match(result.stderr, new RegExp(`${name} is required`));
   }
+});
+
+test('requires both database URLs in production and validates their protocols', () => {
+  const base = {
+    NODE_ENV: 'production',
+    ENCRYPTION_SECRET: 'production-key-7Qv9!m2Lx4Rk8Zp3Cw6N5Hs8Df1Aa4Bb9Cc!',
+    DASHBOARD_PASSWORD: 'production-access-9Nf4!Tq7Vx2Jm8Kp6Rs',
+  };
+  const missing = probeConfig(base);
+  assert.notEqual(missing.status, 0);
+  assert.match(missing.stderr, /DATABASE_URL is required/);
+
+  const malformed = probeConfig({ ...base, DATABASE_URL: 'https://db.example.com', DATABASE_URL_UNPOOLED: 'postgresql://user:pass@db.example.com/app' });
+  assert.notEqual(malformed.status, 0);
+  assert.match(malformed.stderr, /valid PostgreSQL URL/);
+});
+
+test('validates versioned old encryption keys without exposing values', () => {
+  const oldSecret = 'old-key-material-8Zp3!Cw6N7Qv9Lm2Rx4K';
+  const result = probeConfig({ ENCRYPTION_KEY_VERSION: '2', ENCRYPTION_OLD_KEYS: JSON.stringify({ 1: oldSecret }) });
+  assert.equal(result.status, 0, result.stderr);
+  const output = JSON.parse(result.stdout);
+  assert.deepEqual(output.summary.availableEncryptionKeyVersions, [1, 2]);
+  assert.doesNotMatch(result.stdout, new RegExp(oldSecret));
 });
 
 test('refuses known default and weak secrets without echoing them', () => {
