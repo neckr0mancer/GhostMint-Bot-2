@@ -1,10 +1,14 @@
 const assert = require('node:assert/strict');
 const { spawn } = require('node:child_process');
+const fs = require('node:fs');
 const net = require('node:net');
+const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
+const dotenv = require('dotenv');
 
 const PROJECT_ROOT = path.join(__dirname, '..');
+const EXAMPLE_ENV = dotenv.parse(fs.readFileSync(path.join(PROJECT_ROOT, '.env.example')));
 
 function reservePort() {
   return new Promise((resolve, reject) => {
@@ -46,7 +50,9 @@ test('the application starts and exposes a healthy service', { timeout: 15_000 }
     cwd: PROJECT_ROOT,
     env: {
       ...process.env,
+      ...EXAMPLE_ENV,
       PORT: String(port),
+      DATA_FILE: path.join(os.tmpdir(), 'ghostmint-smoke-data.json'),
       TELEGRAM_BOT_TOKEN: '',
       TELEGRAM_CHAT_ID: '',
     },
@@ -69,4 +75,6 @@ test('the application starts and exposes a healthy service', { timeout: 15_000 }
   assert.equal(body.status, 'ok');
   assert.equal(typeof body.uptime, 'number');
   assert.equal(typeof body.tasks, 'number');
+  assert.doesNotMatch(stdout, new RegExp(EXAMPLE_ENV.ENCRYPTION_SECRET));
+  assert.doesNotMatch(stdout, new RegExp(EXAMPLE_ENV.DASHBOARD_PASSWORD));
 });

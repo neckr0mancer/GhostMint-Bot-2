@@ -1,4 +1,3 @@
-require('dotenv').config();
 const express     = require('express');
 const cors        = require('cors');
 const path        = require('path');
@@ -7,22 +6,16 @@ const { ethers }  = require('ethers');
 const TelegramBot = require('node-telegram-bot-api');
 const CryptoJS    = require('crypto-js');
 const axios       = require('axios');
+const { CHAINS, CONFIG, getSafeConfigSummary } = require('./config');
 
 // ── Config ────────────────────────────────────────────────
-const PORT       = process.env.PORT || 3000;
-const BOT_TOKEN  = process.env.TELEGRAM_BOT_TOKEN;
-const CHAT_ID    = process.env.TELEGRAM_CHAT_ID;
-const ENC_SECRET = process.env.ENCRYPTION_SECRET || 'ghostmint_change_me_32chars_min!!';
-const DASH_PASS  = process.env.DASHBOARD_PASSWORD || 'ghostmint123';
-const PROJECT_ROOT = path.join(__dirname, '..');
-const DATA_FILE    = path.join(PROJECT_ROOT, 'data.json');
-
-const CHAINS = {
-  ethereum: { name:'Ethereum', rpc: process.env.ETH_RPC     || 'https://ethereum.publicnode.com', sym:'ETH',  ex:'https://etherscan.io/tx/' },
-  base:     { name:'Base',     rpc: process.env.BASE_RPC    || 'https://mainnet.base.org',         sym:'ETH',  ex:'https://basescan.org/tx/' },
-  arbitrum: { name:'Arbitrum', rpc: process.env.ARB_RPC     || 'https://arb1.arbitrum.io/rpc',    sym:'ETH',  ex:'https://arbiscan.io/tx/' },
-  polygon:  { name:'Polygon',  rpc: process.env.POLYGON_RPC || 'https://polygon-rpc.com',          sym:'MATIC',ex:'https://polygonscan.com/tx/' },
-};
+const PORT         = CONFIG.port;
+const BOT_TOKEN    = CONFIG.botToken;
+const CHAT_ID      = CONFIG.chatId;
+const ENC_SECRET   = CONFIG.encryptionSecret;
+const DASH_PASS    = CONFIG.dashboardPassword;
+const PROJECT_ROOT = CONFIG.projectRoot;
+const DATA_FILE    = CONFIG.dataFile;
 
 // ── Data ──────────────────────────────────────────────────
 function loadDB() {
@@ -41,6 +34,7 @@ const decryptPK = enc => CryptoJS.AES.decrypt(enc, ENC_SECRET).toString(CryptoJS
 
 // ── Logger ────────────────────────────────────────────────
 const log = msg => console.log(`[${new Date().toISOString()}] ${msg}`);
+log(`Configuration loaded: ${JSON.stringify(getSafeConfigSummary())}`);
 
 // ── Activity ──────────────────────────────────────────────
 function logActivity(status, title, walletLabel, txHash, chain) {

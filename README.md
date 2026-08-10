@@ -35,18 +35,36 @@ GET http://localhost:3000/health
 
 | Variable | Required | Purpose |
 | --- | --- | --- |
-| `NODE_ENV` | No | Runtime environment name. |
+| `NODE_ENV` | Yes | Must be `development`, `test`, or `production`. |
 | `PORT` | No | HTTP port; defaults to `3000`. |
+| `DATA_FILE` | Yes | Absolute path or project-relative path for the current JSON data file. |
+| `SUPPORTED_CHAINS` | Yes | Comma-separated supported chain names; `ethereum` must currently be included. |
 | `TELEGRAM_BOT_TOKEN` | No | Enables Telegram polling when supplied. |
-| `TELEGRAM_CHAT_ID` | With Telegram | Destination chat for bot responses and notifications. |
-| `ENCRYPTION_SECRET` | Before wallet use | Encrypts stored wallet private keys. |
-| `DASHBOARD_PASSWORD` | Before API use | Protects dashboard API endpoints. |
+| `TELEGRAM_CHAT_ID` | With Telegram | Required whenever `TELEGRAM_BOT_TOKEN` is supplied, and vice versa. |
+| `ENCRYPTION_SECRET` | Yes | Encrypts stored wallet private keys; subject to the secret-strength policy below. |
+| `DASHBOARD_PASSWORD` | Yes | Protects dashboard API endpoints; subject to the secret-strength policy below. |
 | `ETH_RPC` | No | Ethereum RPC override. |
 | `BASE_RPC` | No | Base RPC override. |
 | `ARB_RPC` | No | Arbitrum RPC override. |
 | `POLYGON_RPC` | No | Polygon RPC override. |
 
-Milestone 1 preserves the prototype's existing development fallbacks. Fail-closed production configuration belongs to Milestone 2.
+The application fails closed when a required value is missing or invalid. It never falls back to a built-in password or encryption secret.
+
+### Secret-strength policy
+
+- `ENCRYPTION_SECRET`: at least 32 characters in development/test and 48 in production, with at least 12 unique characters.
+- `DASHBOARD_PASSWORD`: at least 16 characters in development/test and 24 in production, with at least 10 unique characters.
+- Both values must contain at least three of: lowercase letters, uppercase letters, digits, and symbols.
+- Known defaults and placeholder patterns such as `ghostmint`, `change_me`, `replace`, `password`, `default`, and `example` are rejected.
+- Leading or trailing whitespace is rejected.
+
+The values in `.env.example` are intentionally development-only. Generate independent random production values rather than reusing them.
+
+### Chain and data configuration
+
+Supported chain names are `ethereum`, `base`, `arbitrum`, and `polygon`. Every configured RPC override must be an HTTP or HTTPS URL without embedded credentials. Public RPC defaults remain available when an override is blank.
+
+`DATA_FILE` controls the existing JSON file location. Relative paths are resolved from the project root; replacing JSON storage with a database remains Milestone 3.
 
 ## Commands
 
@@ -66,7 +84,7 @@ Milestone 1 preserves the prototype's existing development fallbacks. Fail-close
 |-- index.js               Compatibility entrypoint
 |-- src/
 |   |-- server.js          Current application server
-|   |-- config/            Future configuration modules
+|   |-- config/            Validated, fail-closed runtime configuration
 |   |-- routes/            Future HTTP route modules
 |   |-- services/          Future application services
 |   |-- storage/           Future persistence adapters

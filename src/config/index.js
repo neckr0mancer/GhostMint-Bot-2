@@ -1,0 +1,227 @@
+const path = require('node:path');
+const { URL } = require('node:url');
+const dotenv = require('dotenv');
+
+const PROJECT_ROOT = path.resolve(__dirname, '..', '..');
+const ENVIRONMENTS = new Set(['development', 'test', 'production']);
+const WEAK_SECRET_PATTERN = /ghostmint|change[_-]?me|replace|password|default|example|secret123/i;
+
+const CHAIN_DEFINITIONS = Object.freeze({
+  ethereum: Object.freeze({
+    name: 'Ethereum',
+    envName: 'ETH_RPC',
+    defaultRpc: 'https://ethereum.publicnode.com',
+    sym: 'ETH',
+    ex: 'https://etherscan.io/tx/',
+  }),
+  base: Object.freeze({
+    name: 'Base',
+    envName: 'BASE_RPC',
+    defaultRpc: 'https://mainnet.base.org',
+    sym: 'ETH',
+    ex: 'https://basescan.org/tx/',
+  }),
+  arbitrum: Object.freeze({
+    name: 'Arbitrum',
+    envName: 'ARB_RPC',
+    defaultRpc: 'https://arb1.arbitrum.io/rpc',
+    sym: 'ETH',
+    ex: 'https://arbiscan.io/tx/',
+  }),
+  polygon: Object.freeze({
+    name: 'Polygon',
+    envName: 'POLYGON_RPC',
+    defaultRpc: 'https://polygon-rpc.com',
+    sym: 'MATIC',
+    ex: 'https://polygonscan.com/tx/',
+  }),
+});
+
+class ConfigurationError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'ConfigurationError';
+  }
+}
+
+dotenv.config({ path: path.join(PROJECT_ROOT, '.env') });
+
+function requiredString(name) {
+  const value = process.env[name];
+  if (typeof value !== 'string' || value.trim() === '') {
+    throw new ConfigurationError(`${name} is required`);
+  }
+  if (value !== value.trim()) {
+    throw new ConfigurationError(`${name} must not have leading or trailing whitespace`);
+  }
+  return value;
+}
+
+function optionalString(name) {
+  const value = process.env[name];
+  if (typeof value !== 'string' || value.trim() === '') return null;
+  if (value !== value.trim()) {
+    throw new ConfigurationError(`${name} must not have leading or trailing whitespace`);
+  }
+  return value;
+}
+
+function parseEnvironment() {
+  const environment = requiredString('NODE_ENV');
+  if (!ENVIRONMENTS.has(environment)) {
+    throw new ConfigurationError('NODE_ENV must be one of: development, test, production');
+  }
+  return environment;
+}
+
+function parsePort() {
+  const raw = optionalString('PORT');
+  if (raw === null) return 3000;
+  if (!/^\d+$/.test(raw)) throw new ConfigurationError('PORT must be an integer from 1 to 65535');
+  const port = Number(raw);
+  if (port < 1 || port > 65535) throw new ConfigurationError('PORT must be an integer from 1 to 65535');
+  return port;
+}
+
+function validateSecret(name, value, environment, policy) {
+  const minimumLength = environment === 'production' ? policy.productionLength : policy.minimumLength;
+  if (value.length < minimumLength) {
+    throw new ConfigurationError(`${name} must be at least ${minimumLength} characters in ${environment} mode`);
+  }
+
+  const characterClasses = [/[a-z]/, /[A-Z]/, /\d/, /[^A-Za-z0-9]/]
+    .filter(pattern => pattern.test(value)).length;
+  if (characterClasses < 3) {
+    throw new ConfigurationError(`${name} must contain at least three character classes`);
+  }
+
+  if (new Set(value).size < policy.minimumUniqueCharacters) {
+    throw new ConfigurationError(`${name} must contain at least ${policy.minimumUniqueCharacters} unique characters`);
+  }
+
+  if (WEAK_SECRET_PATTERN.test(value)) {
+    throw new ConfigurationError(`${name} contains a known default or placeholder pattern`);
+  }
+
+  return value;
+}
+
+function parseSupportedChains() {
+  const names = requiredString('SUPPORTED_CHAINS')
+    .split(',')
+    .map(name => name.trim().toLowerCase())
+    .filter(Boolean);
+
+  if (names.length === 0) throw new ConfigurationError('SUPPORTED_CHAINS must contain at least one chain');
+  if (new Set(names).size !== names.length) throw new ConfigurationError('SUPPORTED_CHAINS must not contain duplicates');
+
+  const unknown = names.filter(name => !Object.hasOwn(CHAIN_DEFINITIONS, name));
+  if (unknown.length) {
+    throw new ConfigurationError(`SUPPORTED_CHAINS contains unsupported names: ${unknown.join(', ')}`);
+  }
+  if (!names.includes('ethereum')) {
+    throw new ConfigurationError('SUPPORTED_CHAINS must include ethereum while it remains the default chain');
+  }
+
+  return Object.freeze(names);
+}
+
+function parseRpcUrl(envName, fallback) {
+  const configured = optionalString(envName);
+  const raw = configured || fallback;
+  let parsed;
+
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw new ConfigurationError(`${envName} must be a valid HTTP or HTTPS URL`);
+  }
+
+  if (!['http:', 'https:'].includes(parsed.protocol) || !parsed.hostname) {
+    throw new ConfigurationError(`${envName} must be a valid HTTP or HTTPS URL`);
+  }
+  if (parsed.username || parsed.password) {
+    throw new ConfigurationError(`${envName} must not contain embedded credentials`);
+  }
+
+  return { url: parsed.toString(), overridden: configured !== null };
+}
+
+function resolveDataFile() {
+  const configuredPath = requiredString('DATA_FILE');
+  if (configuredPath.includes('\0')) throw new ConfigurationError('DATA_FILE contains an invalid character');
+  return path.isAbsolute(configuredPath)
+    ? path.normalize(configuredPath)
+    : path.resolve(PROJECT_ROOT, configuredPath);
+}
+
+function parseTelegram() {
+  const botToken = optionalString('TELEGRAM_BOT_TOKEN');
+  const chatId = optionalString('TELEGRAM_CHAT_ID');
+  if ((botToken === null) !== (chatId === null)) {
+    throw new ConfigurationError('TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be configured together');
+  }
+  return { botToken, chatId };
+}
+
+const environment = parseEnvironment();
+const supportedChains = parseSupportedChains();
+const telegram = parseTelegram();
+const rpcOverrides = {};
+const CHAINS = {};
+
+for (const chainName of supportedChains) {
+  const definition = CHAIN_DEFINITIONS[chainName];
+  const rpc = parseRpcUrl(definition.envName, definition.defaultRpc);
+  rpcOverrides[chainName] = rpc.overridden;
+  CHAINS[chainName] = Object.freeze({
+    name: definition.name,
+    rpc: rpc.url,
+    sym: definition.sym,
+    ex: definition.ex,
+  });
+}
+
+const CONFIG = Object.freeze({
+  environment,
+  isDevelopment: environment === 'development',
+  isTest: environment === 'test',
+  isProduction: environment === 'production',
+  port: parsePort(),
+  botToken: telegram.botToken,
+  chatId: telegram.chatId,
+  encryptionSecret: validateSecret('ENCRYPTION_SECRET', requiredString('ENCRYPTION_SECRET'), environment, {
+    minimumLength: 32,
+    productionLength: 48,
+    minimumUniqueCharacters: 12,
+  }),
+  dashboardPassword: validateSecret('DASHBOARD_PASSWORD', requiredString('DASHBOARD_PASSWORD'), environment, {
+    minimumLength: 16,
+    productionLength: 24,
+    minimumUniqueCharacters: 10,
+  }),
+  dataFile: resolveDataFile(),
+  projectRoot: PROJECT_ROOT,
+  supportedChains,
+});
+
+Object.freeze(CHAINS);
+Object.freeze(rpcOverrides);
+
+function getSafeConfigSummary() {
+  return {
+    environment: CONFIG.environment,
+    port: CONFIG.port,
+    supportedChains: [...CONFIG.supportedChains],
+    telegramEnabled: CONFIG.botToken !== null,
+    dataFileConfigured: true,
+    rpcOverrides: { ...rpcOverrides },
+  };
+}
+
+module.exports = {
+  CHAINS,
+  CONFIG,
+  ConfigurationError,
+  getSafeConfigSummary,
+};
