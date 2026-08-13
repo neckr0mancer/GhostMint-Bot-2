@@ -43,6 +43,9 @@ function createTargetPolicyRepository(pool) {
     async claimRequest(userId,id,now) { const r=await pool.query(`UPDATE trigger_execution_requests SET status='executing'
       WHERE request_id=$1 AND user_id=$2 AND status='pending' AND expires_at>TO_TIMESTAMP($3/1000.0) RETURNING *`,[id,userId,now]); return mapRequest(r.rows[0]); },
     async finishRequest(id,outcome) { await pool.query(`UPDATE trigger_execution_requests SET status=$2,completed_at=NOW() WHERE request_id=$1`,[id,outcome]); },
+    async rejectRequest(userId,id,now) { const r=await pool.query(`UPDATE trigger_execution_requests
+      SET status='rejected',completed_at=NOW() WHERE request_id=$1 AND user_id=$2 AND status='pending'
+      AND expires_at>TO_TIMESTAMP($3/1000.0) RETURNING *`,[id,userId,now]); return mapRequest(r.rows[0]); },
     async addAudit(value) { await pool.query(`INSERT INTO trigger_execution_audit
       (user_id,target_type,target_id,trigger_source,source_event_id,verification_state,dont_ask_again_active,
        confirmation_shown,transaction_intent_id,transaction_hash,outcome) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,

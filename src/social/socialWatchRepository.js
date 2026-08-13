@@ -42,6 +42,11 @@ function createSocialWatchRepository(pool) {
       const result = await pool.query('DELETE FROM social_watch_rules WHERE user_id=$1 AND rule_id=$2', [userId, id]);
       return result.rowCount > 0;
     },
+    async listEnabledForChannel(channelId) {
+      const result = await pool.query(`SELECT * FROM social_watch_rules WHERE enabled=TRUE
+        AND type='discord_channel' AND config->>'channelId'=$1`, [channelId]);
+      return result.rows.map(mapRule);
+    },
     async listDue(now, limit = 50) {
       const result = await pool.query(`SELECT * FROM social_watch_rules WHERE enabled=TRUE
         AND next_poll_at <= TO_TIMESTAMP($1 / 1000.0) ORDER BY next_poll_at LIMIT $2`, [now, limit]);
@@ -65,6 +70,10 @@ function createSocialWatchRepository(pool) {
       [event.userId, event.address, event.platform, event.sourceContentId, event.sourceUrl,
         event.contentHash, event.matchedRuleIds, event.dedupKey]);
       return mapEvent(result.rows[0]);
+    },
+    async listRecentTriggers(userId,limit=100) {
+      const result=await pool.query(`SELECT * FROM social_trigger_events WHERE user_id=$1
+        ORDER BY detected_at DESC LIMIT $2`,[userId,limit]);return result.rows.map(mapEvent);
     },
     async recordUsage(entry) {
       await pool.query(`INSERT INTO social_adapter_usage

@@ -6,10 +6,11 @@ function createDashboardSessionRepository(pool) {
       [userId,tokenHash,csrfTokenHash,expiresAt]);
       return result.rows[0].session_id;
     },
-    async resolve(tokenHash,now) {
-      const result=await pool.query(`UPDATE dashboard_sessions SET last_seen_at=NOW()
+    async resolve(tokenHash,now,extendByMs) {
+      const result=await pool.query(`UPDATE dashboard_sessions SET last_seen_at=NOW(),
+        expires_at=TO_TIMESTAMP($3/1000.0)
         WHERE token_hash=$1 AND revoked_at IS NULL AND expires_at>TO_TIMESTAMP($2/1000.0)
-        RETURNING session_id,user_id,csrf_token_hash,expires_at`,[tokenHash,now]);
+        RETURNING session_id,user_id,csrf_token_hash,expires_at`,[tokenHash,now,now+extendByMs]);
       if(!result.rowCount)return null;
       const row=result.rows[0];
       return {sessionId:row.session_id,userId:row.user_id,csrfTokenHash:row.csrf_token_hash,expiresAt:new Date(row.expires_at).getTime()};

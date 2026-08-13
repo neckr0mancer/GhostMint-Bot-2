@@ -114,6 +114,10 @@ function createSniperRepository(pool) {
         WHERE user_id=$1 GROUP BY state`,[userId]);
       return result.rows.map(row=>({state:row.state,count:row.count}));
     },
+    async listRecentForUser(userId,limit=100) {
+      const result=await pool.query(`SELECT * FROM sniper_seen_transactions WHERE user_id=$1
+        ORDER BY updated_at DESC LIMIT $2`,[userId,limit]);return result.rows.map(mapEvent);
+    },
   };
 }
 

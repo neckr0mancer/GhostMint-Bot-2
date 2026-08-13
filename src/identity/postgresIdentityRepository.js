@@ -114,6 +114,16 @@ function createPostgresIdentityRepository(pool) {
       );
       return result.rowCount ? { status:'linked', userId:result.rows[0].user_id } : { status:'invalid' };
     },
+
+    async getTheme(userId) {
+      const result = await pool.query('SELECT dashboard_theme FROM users WHERE user_id=$1', [userId]);
+      return result.rows[0]?.dashboard_theme || 'ghost-mint';
+    },
+
+    async setTheme(userId, theme) {
+      await pool.query('UPDATE users SET dashboard_theme=$2 WHERE user_id=$1', [userId, theme]);
+      return theme;
+    },
   };
 }
 

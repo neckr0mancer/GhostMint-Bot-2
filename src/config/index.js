@@ -221,6 +221,19 @@ function parseRpcUrls(definition) {
   return { urls: Object.freeze(urls), overridden: configuredList !== null || legacy !== null };
 }
 
+function parseWsRpcUrl(definition) {
+  const name = `${definition.envName}_WS`;
+  const raw = optionalString(name);
+  if (!raw) return null;
+  let parsed;
+  try { parsed = new URL(raw); }
+  catch { throw new ConfigurationError(`${name} must be a valid WS or WSS URL`); }
+  if (!['ws:', 'wss:'].includes(parsed.protocol) || !parsed.hostname || parsed.username || parsed.password) {
+    throw new ConfigurationError(`${name} must be a WS or WSS URL without embedded credentials`);
+  }
+  return parsed.toString();
+}
+
 function parseTelegram() {
   return { botToken: optionalString('TELEGRAM_BOT_TOKEN') };
 }
@@ -268,6 +281,7 @@ for (const chainName of supportedChains) {
     chainId: definition.chainId,
     rpc: rpc.urls[0],
     rpcUrls: rpc.urls,
+    rpcWsUrl: parseWsRpcUrl(definition),
     sym: definition.sym,
     ex: definition.ex,
   });
@@ -323,6 +337,7 @@ function getSafeConfigSummary() {
     availableEncryptionKeyVersions: Object.keys(CONFIG.encryptionKeys).map(Number).sort((a, b) => a - b),
     rpcOverrides: { ...rpcOverrides },
     rpcEndpointCounts: Object.fromEntries(Object.entries(CHAINS).map(([name, chain]) => [name, chain.rpcUrls.length])),
+    rpcWebSocketConfigured: Object.fromEntries(Object.entries(CHAINS).map(([name, chain]) => [name, chain.rpcWsUrl !== null])),
   };
 }
 

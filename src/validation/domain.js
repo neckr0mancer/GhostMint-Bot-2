@@ -5,6 +5,7 @@ const { URL } = require('node:url');
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const FUNCTION_NAME_PATTERN = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 const WALLET_LABEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9 ._-]*$/;
+const DASHBOARD_THEMES = new Set(['ghost-mint', 'clean-vault', 'neon-arcade', 'quiet-ledger']);
 const WATCH_RULE_TYPES = new Set(['twitter_account', 'twitter_keyword', 'discord_channel', 'discord_keyword']);
 const WATCH_METHODS = new Set(['official_api', 'managed_service', 'scraper']);
 const MAX_SCHEDULE_AHEAD_MS = 5 * 365 * 24 * 60 * 60 * 1000;
@@ -75,6 +76,12 @@ function addressList(value, field) {
 function chainName(value, supportedChains, field = 'chain') {
   const normalized = string(value, field, { max: 32 }).toLowerCase();
   if (!supportedChains.includes(normalized)) fail(field, `must be one of: ${supportedChains.join(', ')}`);
+  return normalized;
+}
+
+function dashboardTheme(value, field = 'theme') {
+  const normalized = string(value, field, { max: 32 }).toLowerCase();
+  if (!DASHBOARD_THEMES.has(normalized)) fail(field, `must be one of: ${[...DASHBOARD_THEMES].join(', ')}`);
   return normalized;
 }
 
@@ -168,13 +175,24 @@ function validateTransactionPolicy(input) {
 }
 
 function validateWalletCreate(input, context) {
+  const importMethod = input.importMethod === 'seedPhrase' ? 'seedPhrase' : 'privateKey';
   let privateKey;
   let address;
-  try {
-    privateKey = string(input.privateKey, 'privateKey', { max: 66 });
-    address = new Wallet(privateKey).address;
+  if (importMethod === 'seedPhrase') {
+    try {
+      const phrase = string(input.seedPhrase, 'seedPhrase', { max: 500 });
+      const derived = Wallet.fromPhrase(phrase);
+      privateKey = derived.privateKey;
+      address = derived.address;
+    }
+    catch { fail('seedPhrase', 'must be a valid BIP-39 recovery phrase'); }
+  } else {
+    try {
+      privateKey = string(input.privateKey, 'privateKey', { max: 66 });
+      address = new Wallet(privateKey).address;
+    }
+    catch { fail('privateKey', 'must be a valid Ethereum private key'); }
   }
-  catch { fail('privateKey', 'must be a valid Ethereum private key'); }
   return {
     privateKey,
     label: uniqueWalletLabel(input.label, context.existingLabels),
@@ -317,6 +335,7 @@ const requestSchemas = Object.freeze({
   watchRuleCreate: input => validateWatchRule(input),
   watchRulePatch: input => validateWatchRule(input, { partial: true }),
   watchRuleDeletion: input => ({ id: uuid(input.id, 'id') }),
+  themeUpdate: input => ({ theme: dashboardTheme(input.theme) }),
 });
 
 function validationPayload(error) {
@@ -337,6 +356,7 @@ module.exports = {
   LIMITS,
   MAX_SCHEDULE_AHEAD_MS,
   ValidationError,
+  dashboardTheme,
   requestSchemas,
   sendValidationError,
   validationPayload,

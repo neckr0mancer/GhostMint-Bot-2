@@ -3,6 +3,7 @@ const cors        = require('cors');
 const path        = require('path');
 const { Buffer }  = require('node:buffer');
 const { ethers }  = require('ethers');
+const WebSocket   = require('ws');
 const { TelegramBot } = require('node-telegram-bot-api');
 const axios       = require('axios');
 const { CHAINS, CONFIG, getSafeConfigSummary } = require('./config');
@@ -31,6 +32,7 @@ const { createSocialWatchRepository } = require('./social/socialWatchRepository'
 const { createSocialWatchService } = require('./social/socialWatchService');
 const { createSocialWatchWorker } = require('./social/socialWatchWorker');
 const { createSocialUsageService, formatUsageSummary } = require('./social/usageService');
+const { createChainWatcher } = require('./sniper/chainWatcher');
 const { createSniperRepository } = require('./sniper/sniperRepository');
 const { createSniperService } = require('./sniper/sniperService');
 const { createAdminCommandService } = require('./governance/adminCommandService');
@@ -165,7 +167,9 @@ async function executeTriggered(event,policy) {
 
 triggerExecutionService=createTriggerExecutionService({repository:targetPolicyRepository,
   policyService:targetPolicyService,prepareExecution:prepareTriggeredExecution,execute:executeTriggered,
-  notify:(userId,value)=>notifyUser(userId,`Trigger requires confirmation.\n${JSON.stringify(value.preview)}\nRun /confirmtrigger ${value.requestId} CONFIRM within 10 minutes.`)});
+  notify:(userId,value)=>notifyUser(userId,`Trigger requires confirmation.\n${JSON.stringify(value.preview)}\nRun /confirmtrigger ${value.requestId} CONFIRM to approve or REJECT to reject within 10 minutes.`),
+  onPending:(userId,request)=>dashboardWebSockets.broadcastToUser(userId,{type:'confirmation.pending',request}),
+  onResolved:(userId,value)=>dashboardWebSockets.broadcastToUser(userId,{type:'confirmation.resolved',...value})});
 const schedulerWorker = createSchedulerWorker({
   repository: schedulerRepository,
   intentRepository: transactionIntentRepository,
@@ -275,7 +279,7 @@ async function executeMint({ wallet, contractAddr, fnName='mint', qty=1, priceET
 // wallets. Detection happens once the target's tx is confirmed in
 // a block, so this is a best-effort copier riding public RPCs, not
 // a mempool front-runner.
-const sniperProviders = {};
+const chainWatchers = {};
 const sniperService = createSniperService({
   repository:sniperRepository,
   intentRepository:transactionIntentRepository,
@@ -293,7 +297,8 @@ const sniperService = createSniperService({
         maxFeePerGasWei:sourceTx.maxFeePerGas?String(copiedFee):null,
         maxPriorityFeePerGasWei:sourceTx.maxFeePerGas?String((sourceTx.maxPriorityFeePerGas||sourceTx.maxFeePerGas)*BigInt(100+sniper.gasBoostPercent)/100n):null,
       },expiresAt:Date.now()+10*60_000});
-    await notifyUser(sniper.userId,`Blockchain trigger for *${sniper.label}* requires confirmation. Contract: \`${sourceTx.to}\`.\nRun /confirmtrigger ${request.id} CONFIRM within 10 minutes.`);
+    dashboardWebSockets.broadcastToUser(sniper.userId,{type:'confirmation.pending',request});
+    await notifyUser(sniper.userId,`Blockchain trigger for *${sniper.label}* requires confirmation. Contract: \`${sourceTx.to}\`.\nRun /confirmtrigger ${request.id} CONFIRM to approve or REJECT to reject within 10 minutes.`);
     return false;
   },
   onEvent:async ({ event, state, reason, intent, error }) => {
@@ -322,6 +327,7 @@ const sniperService = createSniperService({
         dontAskAgain:policy.dontAskAgain,confirmationShown:false,intentId:intent?.intentId,txHash:intent?.txHash,
         outcome:'failed'});
     }
+    dashboardWebSockets.broadcastToUser(sniper.userId,{type:'snipers.changed'});
     await notifyUser(sniper.userId, state === 'confirmed'
       ? `✅ Post-confirmation copy *${sniper.label}* confirmed.`
       : `🎯 Post-confirmation copy *${sniper.label}*: ${state}${reason ? ` — ${reason}` : ''}${error ? ` — ${safeError(error).slice(0,120)}` : ''}`);
@@ -331,28 +337,37 @@ const sniperService = createSniperService({
 const activeSnipersForChain = chain => DB.snipers.filter(s => s.active && s.chain === chain);
 
 function ensureChainWatcher(chain) {
-  if (sniperProviders[chain] || !CHAINS[chain]) return;
-  const provider = new ethers.JsonRpcProvider(CHAINS[chain].rpc);
-  provider.pollingInterval = 2500;
-  sniperProviders[chain] = provider;
-  provider.on('block', bn => onBlock(chain, bn).catch(e => log(`Sniper block err (${chain}): ${safeError(e)}`)));
-  log(`🎯 Sniper watcher started on ${CHAINS[chain].name}`);
+  if (chainWatchers[chain] || !CHAINS[chain]) return;
+  const watcher = createChainWatcher({
+    chain, rpcUrl: CHAINS[chain].rpc, wsUrl: CHAINS[chain].rpcWsUrl,
+    providerFactory: url => new ethers.JsonRpcProvider(url),
+    wsProviderFactory: url => {
+      const socket = new WebSocket(url);
+      const provider = new ethers.WebSocketProvider(socket, CHAINS[chain].chainId);
+      socket.on('close', () => provider.emit('error', new Error('WebSocket closed')));
+      socket.on('error', error => provider.emit('error', error));
+      return provider;
+    },
+    onBlock: (bn, provider) => onBlock(chain, bn, provider).catch(e => log(`Sniper block err (${chain}): ${safeError(e)}`)),
+    log,
+  });
+  chainWatchers[chain] = watcher;
+  watcher.start();
+  log(`🎯 Sniper watcher started on ${CHAINS[chain].name} (${watcher.mode() === 'ws' ? 'WebSocket live push' : 'HTTP polling'})`);
 }
 
 function teardownChainWatcherIfIdle(chain) {
   if (activeSnipersForChain(chain).length) return;
-  const provider = sniperProviders[chain];
-  if (!provider) return;
-  provider.removeAllListeners();
-  provider.destroy?.();
-  delete sniperProviders[chain];
+  const watcher = chainWatchers[chain];
+  if (!watcher) return;
+  watcher.stop();
+  delete chainWatchers[chain];
   log(`🎯 Sniper watcher stopped on ${chain} (no active targets)`);
 }
 
-async function onBlock(chain, blockNumber) {
+async function onBlock(chain, blockNumber, provider) {
   const snipers = activeSnipersForChain(chain);
   if (!snipers.length) return;
-  const provider = sniperProviders[chain];
   const block = await provider.getBlock(blockNumber, true);
   if (!block?.prefetchedTransactions) return;
   for (const tx of block.prefetchedTransactions) {
@@ -395,6 +410,8 @@ async function notifyUser(userId, msg) {
 
 async function handleTriggerEvent(event) {
   log(`Trigger pipeline received ${event.triggerSource} event ${event.id} for ${event.address}`);
+  dashboardWebSockets.broadcastToUser(event.userId,
+    {type: event.triggerSource === 'social-triggered' ? 'watchrules.changed' : 'snipers.changed'});
   if (event.triggerSource === 'social-triggered') await triggerExecutionService.handle({ ...event,
     targetType:'social_rule',targetId:event.matchedRuleIds[0] });
 }
@@ -653,7 +670,8 @@ if (BOT_TOKEN) {
     tg(msg.chat.id,result.requiresConfirmation?`${result.warning}\nChallenge: \`${result.challengeId}\`\nUse /confirmbypass ${result.challengeId} CONFIRM`:`✅ Target preset applied; verification ${result.humanVerification}.`);
   }));
   bot.onText(/^\/confirmtrigger(?:@\w+)?\s+([0-9a-f-]+)\s+(\S+)$/i,withTelegramUser(async(msg,match,userId)=>{
-    const result=await botCommands.confirmTrigger(userId,match[1],match[2]);tg(msg.chat.id,`✅ Triggered mint ${result.result.state}.`);
+    const result=await botCommands.confirmTrigger(userId,match[1],match[2]);
+    tg(msg.chat.id,result.action==='rejected'?'Trigger rejected.':`✅ Triggered mint ${result.result.state}.`);
   }));
   bot.onText(/^\/triggeraudit(?:@\w+)?$/i,withTelegramUser(async(msg,match,userId)=>{
     const rows=await botCommands.triggerAudit(userId);tg(msg.chat.id,rows.length?rows.map(row=>`${row.trigger_source} | ${row.target_type}:${row.target_id} | verification ${row.verification_state} | ${row.outcome}`).join('\n'):'No trigger executions audited.');
@@ -765,6 +783,7 @@ if (BOT_TOKEN) {
 
 const botCommands = createBotCommandService({
   storage,
+  identity,
   schedulerRepository,
   providerService,
   governance,
@@ -807,12 +826,23 @@ const botCommands = createBotCommandService({
   },
 });
 const dashboardApi=createDashboardApi({auth:dashboardAuth,identityRepository,commands:botCommands,
-  supportedChains:CONFIG.supportedChains,loginRateLimiter:createCommandRateLimiter({limit:5,windowMs:60_000})});
+  securityAudit:botSecurityRepository,broadcast:(userId,message)=>dashboardWebSockets.broadcastToUser(userId,message),
+  supportedChains:CONFIG.supportedChains,
+  loginRateLimiter:createCommandRateLimiter({limit:5,windowMs:60_000})});
 
 if (CONFIG.discordBotToken) {
   discordBot = createDiscordBot({ token: CONFIG.discordBotToken,
     applicationId: CONFIG.discordApplicationId, devGuildId: CONFIG.discordDevGuildId,
     identity, commands: botCommands, securityAudit:botSecurityRepository,rateLimiter:commandRateLimiter,log });
+  // Live push: skip the 30s social-watch poll for discord_channel rules by reacting
+  // to the Gateway's messageCreate event directly. The scheduled poller keeps running
+  // as a fallback, so a dropped Gateway connection never stops detection, just slows it.
+  discordBot.client.on('messageCreate', message => {
+    if (message.author?.bot || !message.content) return;
+    socialWatchService.processLiveDiscordMessage({ platform:'discord', id:message.id, text:message.content,
+      url:message.url, publishedAt:message.createdTimestamp, channelId:message.channelId })
+      .catch(error => log(`Live discord watch dispatch failed: ${safeError(error)}`));
+  });
 } else {
   log('Discord disabled because credentials are not configured.');
 }
@@ -833,7 +863,8 @@ app.use(express.static(path.join(PROJECT_ROOT,'public'),{setHeaders:(res,file)=>
 // ── API ───────────────────────────────────────────────────
 const readinessService=createReadinessService({database:storage,providerService,
   chains:CONFIG.supportedChains,schedulerWorker,socialWatchWorker,
-  sniperHealth:()=>({status:'up',activeChains:Object.keys(sniperProviders).length})});
+  sniperHealth:()=>({status:'up',activeChains:Object.keys(chainWatchers).length,
+    liveChains:Object.values(chainWatchers).filter(watcher=>watcher.mode()==='ws').length})});
 app.get('/health', async (req,res) => {
   const health=await readinessService.inspect();
   res.status(health.status==='ok'?200:503).json({...health,uptime:Math.floor(process.uptime())});
@@ -866,8 +897,8 @@ async function start() {
 }
 
 const gracefulShutdown=createGracefulShutdown({getHttpServer:()=>httpServer,telegramBot:bot,discordBot,
-  schedulerWorker,socialWatchWorker,webSocketHub:dashboardWebSockets,stopWatchers:()=>Object.keys(sniperProviders).forEach(chain=>{
-    sniperProviders[chain].removeAllListeners();sniperProviders[chain].destroy?.();delete sniperProviders[chain];
+  schedulerWorker,socialWatchWorker,webSocketHub:dashboardWebSockets,stopWatchers:()=>Object.keys(chainWatchers).forEach(chain=>{
+    chainWatchers[chain].stop();delete chainWatchers[chain];
   }),pool,log});
 for(const signal of ['SIGINT','SIGTERM'])process.once(signal,()=>gracefulShutdown(signal)
   .then(()=>{process.exitCode=0;}).catch(error=>{log(`Shutdown failed: ${safeError(error)}`);process.exitCode=1;}));

@@ -1,4 +1,4 @@
-const { Wallet, formatEther } = require('ethers');
+const { Wallet, formatEther, parseEther } = require('ethers');
 const { findOwnedWallet, stateForUser } = require('../identity/ownership');
 const { ValidationError, requestSchemas } = require('../validation/domain');
 const { paginate, pagination } = require('../pagination');
@@ -8,7 +8,7 @@ function createBotCommandService(dependencies) {
   const { storage, schedulerRepository, providerService, governance, adminCommands, sniperService,
     socialWatchService, socialUsageService, targetPolicyService, triggerExecutionService, governanceRepository,
     triggerAuditRepository, transactionIntentRepository, gasService, supportedChains, chains, encryptPrivateKey, getState, executeMint,
-    sniperRepository, mintService, previewMint, executePreparedMint,
+    sniperRepository, mintService, previewMint, executePreparedMint, identity,
     ensureChainWatcher = () => {} } = dependencies;
 
   function state(userId) { return stateForUser(getState(), userId); }
@@ -137,6 +137,7 @@ function createBotCommandService(dependencies) {
   async function createSniper(userId, input) {
     const validated = sniperService.validateCreate(input);
     wallet(userId, validated.walletLabel);
+    await enforceSniperGovernance(userId,validated);
     const sniper = { ...validated, userId, active: input.active !== false, hits: 0, fails: 0,
       createdAt: Date.now() };
     await storage.saveSniper(sniper);
@@ -159,6 +160,7 @@ function createBotCommandService(dependencies) {
     const current = state(userId).snipers.find(item => item.id === validated.id);
     if (!current) throw new ValidationError({ field: 'id', message: 'was not found' });
     const updated = sniperService.validatePatch(current, patch);
+    await enforceSniperGovernance(userId,updated);
     await storage.saveSniper(updated);
     Object.assign(current, updated);
     if (current.active) ensureChainWatcher(current.chain);
@@ -168,6 +170,24 @@ function createBotCommandService(dependencies) {
   async function gas(chain = 'ethereum') {
     if (!supportedChains.includes(chain)) throw new ValidationError({ field: 'chain', message: `must be one of: ${supportedChains.join(', ')}` });
     return gasService.lookup(chain);
+  }
+
+  async function enforceSniperGovernance(userId,value) {
+    const effective=await governanceRepository.getEffectiveGovernance(userId,value.chain);
+    if(effective.isOwner)return;
+    if(parseEther(String(value.maxValueETH))>effective.maxTransactionValueWei) throw new ValidationError({field:'maxValueETH',message:'exceeds your effective governance ceiling'});
+    if(parseEther(String(value.dailySpendingCapETH))>effective.dailySpendingBudgetWei) throw new ValidationError({field:'dailySpendingCapETH',message:'exceeds your effective governance ceiling'});
+    if(value.maxGasGwei>effective.gasCeilingGwei) throw new ValidationError({field:'maxGasGwei',message:'exceeds your effective governance ceiling'});
+  }
+
+  async function targetDetails(userId,targetType,targetId) {
+    const policy=await targetPolicyService.get(userId,targetType,targetId);
+    const target=targetType==='sniper'?state(userId).snipers.find(item=>item.id===targetId)
+      :(await socialWatchService.list(userId)).find(item=>item.id===targetId);
+    if(!target)throw new ValidationError({field:'targetId',message:'was not found'});
+    const chain=target.chain||'ethereum';
+    const governance=await governanceRepository.getEffectiveGovernance(userId,chain);
+    return {targetType,targetId,label:target.label||target.name,chain,policy,governance};
   }
 
   async function pageFrom(repositoryMethod,fallback,userId,input) {const p=pagination(input);if(repositoryMethod){const result=await repositoryMethod(userId,{limit:p.pageSize,offset:p.offset});return {...p,total:result.total,totalPages:Math.max(1,Math.ceil(result.total/p.pageSize)),items:result.items};}return paginate(fallback(),p);}
@@ -180,6 +200,7 @@ function createBotCommandService(dependencies) {
     createWallet, importWallet, removeWallet, walletBalance, mint, batchMint, createTask, controlTask, addPnl, updatePnl, deletePnl,
     prepareMint,submitPreparedMint,mintPresets:userId=>mintService.listPresets(userId),
     createSniper, updateSniper, removeSniper, gas,
+    sniperEvents:userId=>sniperRepository.listRecentForUser(userId),
     wallets: userId => state(userId).wallets,
     tasks: userId => schedulerRepository.listForUser(userId),
     tasksPage:(userId,input)=>pageFrom(schedulerRepository.listPageForUser?.bind(schedulerRepository),()=>state(userId).tasks,userId,input),
@@ -193,6 +214,7 @@ function createBotCommandService(dependencies) {
     removeWatchRule: async (userId, id) => { const result=await socialWatchService.remove(userId,id);
       await targetPolicyService.reset(userId,{targetType:'social_rule',targetId:id}); return result; },
     watchRules: userId => socialWatchService.list(userId),
+    watchEvents:userId=>socialWatchService.recentTriggers(userId),
     socialUsage: (userId, period) => socialUsageService.summary(userId, period),
     targetPolicy: (userId, targetType, targetId) => targetPolicyService.get(userId, targetType, targetId),
     updateTargetPolicy: (userId, input) => targetPolicyService.save(userId, input),
@@ -204,11 +226,17 @@ function createBotCommandService(dependencies) {
     confirmTrigger: (userId, requestId, confirmation) => triggerExecutionService.confirm(userId, requestId, confirmation),
     triggerAudit: userId => triggerAuditRepository.listAudit(userId),
     pendingConfirmations: userId => triggerAuditRepository.listPendingRequests(userId),
+    targetDetails,
+    modePresets:()=>governanceRepository.listPresets(),
     pendingTransactions: userId => transactionIntentRepository.listNonFinalForUser(userId),
     transactionsPage:(userId,input)=>pageFrom(transactionIntentRepository.listPageForUser?.bind(transactionIntentRepository),()=>[],userId,input),
     stats,
     selectMode: (userId, preset) => governance.selectPreset(userId, preset),
     admin: (userId, input) => adminCommands.execute(userId, input),
+    isOwner:userId=>governanceRepository.isOwner(userId),
+    adminOverview:userId=>governance.dashboardOverview(userId),
+    adminEffective:(userId,input)=>governance.effectiveForLinkedUser(userId,input),
+    linkCode:userId=>identity.createLinkCode(userId),
   };
 }
 

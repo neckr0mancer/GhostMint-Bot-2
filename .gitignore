@@ -1,4 +1,5 @@
 node_modules/
+.claude/
 .npm-cache/
 .project-tools/
 .env

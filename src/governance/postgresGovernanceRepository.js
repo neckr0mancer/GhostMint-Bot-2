@@ -119,6 +119,37 @@ function createPostgresGovernanceRepository(pool) {
       const result = await pool.query('SELECT * FROM mode_presets WHERE preset_key=$1', [key]);
       return mapPreset(result.rows[0]);
     },
+    async listPresets() {
+      const result=await pool.query('SELECT * FROM mode_presets ORDER BY CASE preset_key WHEN \'ultra_fast\' THEN 1 WHEN \'fast\' THEN 2 WHEN \'semi_safe\' THEN 3 ELSE 4 END');
+      return result.rows.map(mapPreset);
+    },
+
+    async listGroups() {
+      const result=await pool.query(`SELECT name,max_transaction_value_wei,daily_spending_budget_wei,
+        gas_ceiling_gwei,simulation_forced,updated_at FROM seat_groups ORDER BY LOWER(name)`);
+      return result.rows.map(row=>({name:row.name,maxTransactionValueWei:row.max_transaction_value_wei,
+        dailySpendingBudgetWei:row.daily_spending_budget_wei,gasCeilingGwei:Number(row.gas_ceiling_gwei),
+        simulationForced:row.simulation_forced,updatedAt:row.updated_at}));
+    },
+
+    async listGovernedUsers() {
+      const result=await pool.query(`SELECT u.user_id,u.is_owner,sg.name AS group_name,
+        ug.max_transaction_value_wei,ug.daily_spending_budget_wei,ug.gas_ceiling_gwei,
+        ug.simulation_forced,ug.selected_preset_key,
+        COALESCE(JSON_AGG(JSON_BUILD_OBJECT('platform',la.platform,'platformUserId',la.platform_user_id)
+          ORDER BY la.platform) FILTER (WHERE la.platform IS NOT NULL),'[]'::JSON) AS linked_accounts
+        FROM users u LEFT JOIN user_governance ug ON ug.user_id=u.user_id
+        LEFT JOIN seat_groups sg ON sg.group_id=ug.group_id
+        LEFT JOIN linked_accounts la ON la.user_id=u.user_id
+        GROUP BY u.user_id,u.is_owner,sg.name,ug.max_transaction_value_wei,
+          ug.daily_spending_budget_wei,ug.gas_ceiling_gwei,ug.simulation_forced,ug.selected_preset_key
+        ORDER BY u.created_at`);
+      return result.rows.map(row=>({userId:row.user_id,isOwner:row.is_owner,groupName:row.group_name,
+        maxTransactionValueWei:row.max_transaction_value_wei,dailySpendingBudgetWei:row.daily_spending_budget_wei,
+        gasCeilingGwei:row.gas_ceiling_gwei===null?null:Number(row.gas_ceiling_gwei),
+        simulationForced:row.simulation_forced,selectedPresetKey:row.selected_preset_key,
+        linkedAccounts:row.linked_accounts}));
+    },
 
     async getEffectiveGovernance(userId, chain) {
       const result = await pool.query(`SELECT u.is_owner,ug.max_transaction_value_wei AS user_max,

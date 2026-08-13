@@ -19,11 +19,64 @@ function fixture(){const sessions=new Map();let counter=0;const consumed=[];cons
     revoke:async id=>{const value=sessions.get(id);if(!value||value.revoked)return false;value.revoked=true;return true;},revokeAll:async userId=>{let count=0;for(const value of sessions.values())if(value.userId===userId&&!value.revoked){value.revoked=true;count++;}return count;}};
   const auth=createDashboardAuthService({identity,repository});return {auth,consumed,sessions};}
 function cookieValues(headers){const list=typeof headers.getSetCookie==='function'?headers.getSetCookie():headers.get('set-cookie').split(/,(?=\s*[^;,]+=)/);return Object.fromEntries(list.map(value=>{const [pair]=value.split(';');const index=pair.indexOf('=');return [pair.slice(0,index),decodeURIComponent(pair.slice(index+1))];}));}
-async function appServer(t){const data=fixture();const api=createDashboardApi({auth:data.auth,identityRepository:{listLinkedAccounts:async()=>[{platform:'telegram',platformUserId:'42'}]},loginRateLimiter:createCommandRateLimiter()});const app=express();app.use(express.json());app.use(api.securityHeaders);app.post('/api/auth/login',api.login);app.post('/api/auth/logout',api.requireSession,api.requireCsrf,api.logout);app.get('/api/profile',api.requireSession,api.profile);const server=http.createServer(app);await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>server.close(resolve)));return {...data,base:`http://127.0.0.1:${server.address().port}`,server};}
+async function appServer(t){const data=fixture();const api=createDashboardApi({auth:data.auth,identityRepository:{listLinkedAccounts:async()=>[{platform:'telegram',platformUserId:'42'}],getTheme:async()=>'ghost-mint'},loginRateLimiter:createCommandRateLimiter()});const app=express();app.use(express.json());app.use(api.securityHeaders);app.post('/api/auth/login',api.login);app.post('/api/auth/logout',api.requireSession,api.requireCsrf,api.logout);app.get('/api/profile',api.requireSession,api.profile);const server=http.createServer(app);await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>server.close(resolve)));return {...data,base:`http://127.0.0.1:${server.address().port}`,server};}
 
 test('invalid and expired-looking link codes return the same generic login error',async t=>{const {base}=await appServer(t);for(const code of ['INVALID','EXPIRED']){const response=await fetch(`${base}/api/auth/login`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({code})});assert.equal(response.status,401);assert.deepEqual(await response.json(),{error:'Invalid or expired login code'});}});
 test('valid link code creates a working session and logout revokes it server-side',async t=>{const {base}=await appServer(t);const login=await fetch(`${base}/api/auth/login`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({code:'VALID'})});assert.equal(login.status,204);const setCookies=typeof login.headers.getSetCookie==='function'?login.headers.getSetCookie():[login.headers.get('set-cookie')];assert.ok(setCookies.some(value=>value.startsWith(`${SESSION_COOKIE}=`)&&/HttpOnly/i.test(value)&&/Secure/i.test(value)&&/SameSite=Strict/i.test(value)));assert.ok(setCookies.some(value=>value.startsWith(`${CSRF_COOKIE}=`)&&!/HttpOnly/i.test(value)&&/Secure/i.test(value)&&/SameSite=Strict/i.test(value)));const values=cookieValues(login.headers);const cookie=`${SESSION_COOKIE}=${values[SESSION_COOKIE]}; ${CSRF_COOKIE}=${values[CSRF_COOKIE]}`;assert.equal((await fetch(`${base}/api/profile`,{headers:{cookie}})).status,200);const noCsrf=await fetch(`${base}/api/auth/logout`,{method:'POST',headers:{cookie}});assert.equal(noCsrf.status,403);const logout=await fetch(`${base}/api/auth/logout`,{method:'POST',headers:{cookie,'x-csrf-token':values[CSRF_COOKIE]}});assert.equal(logout.status,204);assert.equal((await fetch(`${base}/api/profile`,{headers:{cookie}})).status,401);});
 test('unauthenticated API requests are rejected with no-store security headers',async t=>{const {base}=await appServer(t);const response=await fetch(`${base}/api/profile`);assert.equal(response.status,401);assert.match(response.headers.get('cache-control'),/no-store/);assert.equal(response.headers.get('x-frame-options'),'DENY');assert.match(response.headers.get('content-security-policy'),/frame-ancestors 'none'/);});
+
+test('dashboard sessions slide forward on activity and expire after real inactivity',async()=>{
+  let clock=1_000_000;const now=()=>clock;const sessions=new Map();
+  const repository={
+    create:async value=>{const id='session-1';sessions.set(id,{...value,sessionId:id});return id;},
+    resolve:async(tokenHash,at,extendByMs)=>{const value=[...sessions.values()].find(item=>item.tokenHash===tokenHash&&!item.revoked);
+      if(!value||value.expiresAt<=at)return null;value.expiresAt=at+extendByMs;
+      return {sessionId:value.sessionId,userId:value.userId,csrfTokenHash:value.csrfTokenHash,expiresAt:value.expiresAt};},
+    revoke:async()=>false,revokeAll:async()=>0,
+  };
+  const identity={consumeDashboardLinkCode:async()=>'user-a'};
+  const auth=createDashboardAuthService({identity,repository,now,sessionTtlMs:1000});
+  const session=await auth.login('VALID');
+  const cookieHeader=`${SESSION_COOKIE}=${session.token}; ${CSRF_COOKIE}=${session.csrfToken}`;
+  clock+=500;assert.ok(await auth.authenticate(cookieHeader));
+  clock+=500;assert.ok(await auth.authenticate(cookieHeader),'activity within the TTL should slide expiry forward');
+  clock+=1500;assert.equal(await auth.authenticate(cookieHeader),null,'no activity for longer than the TTL must expire the session');
+});
+
+test('requireSession refreshes the session cookie Max-Age on every authenticated request',async t=>{
+  const data=fixture();
+  const api=createDashboardApi({auth:data.auth,identityRepository:{listLinkedAccounts:async()=>[],getTheme:async()=>'ghost-mint',setTheme:async(userId,theme)=>theme},loginRateLimiter:createCommandRateLimiter()});
+  const app=express();app.use(express.json());app.use(api.securityHeaders);
+  app.post('/api/auth/login',api.login);app.get('/api/profile',api.requireSession,api.profile);
+  const server=http.createServer(app);await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>server.close(resolve)));
+  const base=`http://127.0.0.1:${server.address().port}`;
+  const login=await fetch(`${base}/api/auth/login`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({code:'VALID'})});
+  const values=cookieValues(login.headers);
+  const cookie=`${SESSION_COOKIE}=${values[SESSION_COOKIE]}; ${CSRF_COOKIE}=${values[CSRF_COOKIE]}`;
+  const profile=await fetch(`${base}/api/profile`,{headers:{cookie}});assert.equal(profile.status,200);
+  const refreshed=typeof profile.headers.getSetCookie==='function'?profile.headers.getSetCookie():[profile.headers.get('set-cookie')];
+  assert.ok(refreshed.some(value=>value.startsWith(`${SESSION_COOKIE}=`)&&/Max-Age=/.test(value)));
+});
+
+test('the link-code endpoint requires an authenticated session and returns the code for the resolved user',async t=>{
+  const data=fixture();let capturedUserId=null;
+  const commands={linkCode:async userId=>{capturedUserId=userId;return {code:'ABCDE12345',expiresAt:Date.now()+300_000};}};
+  const api=createDashboardApi({auth:data.auth,identityRepository:{listLinkedAccounts:async()=>[],getTheme:async()=>'ghost-mint',setTheme:async(userId,theme)=>theme},commands,loginRateLimiter:createCommandRateLimiter()});
+  const app=express();app.use(express.json());app.use(api.securityHeaders);
+  app.post('/api/auth/login',api.login);app.post('/api/auth/link-code',api.requireSession,api.requireCsrf,api.linkCode);
+  const server=http.createServer(app);await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>server.close(resolve)));
+  const base=`http://127.0.0.1:${server.address().port}`;
+  const unauth=await fetch(`${base}/api/auth/link-code`,{method:'POST',headers:{'content-type':'application/json'},body:'{}'});
+  assert.equal(unauth.status,401);
+  const login=await fetch(`${base}/api/auth/login`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({code:'VALID'})});
+  const values=cookieValues(login.headers);
+  const cookie=`${SESSION_COOKIE}=${values[SESSION_COOKIE]}; ${CSRF_COOKIE}=${values[CSRF_COOKIE]}`;
+  const response=await fetch(`${base}/api/auth/link-code`,{method:'POST',headers:{cookie,'x-csrf-token':values[CSRF_COOKIE],'content-type':'application/json'},body:'{}'});
+  assert.equal(response.status,200);
+  const body=await response.json();
+  assert.equal(body.code,'ABCDE12345');
+  assert.equal(capturedUserId,'user-a');
+});
 
 function openSocket(url,cookie){return new Promise((resolve,reject)=>{const socket=new WebSocket(url,{headers:cookie?{Cookie:cookie}:{}});const messages=[];socket.on('message',value=>messages.push(JSON.parse(value.toString())));socket.once('open',()=>resolve({socket,messages}));socket.once('unexpected-response',(request,response)=>reject(Object.assign(new Error('rejected'),{statusCode:response.statusCode})));socket.once('error',reject);});}
 function nextMessage(socket){return new Promise(resolve=>socket.once('message',value=>resolve(JSON.parse(value.toString()))));}
@@ -42,13 +95,34 @@ async function operationsServer(t){const sessions=new Map([['token-a',{userId:'u
   tasksPage:async userId=>({page:1,pageSize:10,total:userId==='user-a'?1:0,totalPages:1,items:userId==='user-a'?[{id:'task-a'}]:[]}),createTask:async(userId,input)=>{calls.push(['task',userId,input]);return {id:'task'};},controlTask:async(userId,action,id)=>{if(userId!=='user-a'||id!=='task-a')throw new ValidationError({field:'id',message:'was not found'});calls.push(['control',userId,action,id]);return {id};},
   activityPage:async(userId,input)=>({page:Number(input.page)||1,pageSize:2,total:5,totalPages:3,items:[{id:(Number(input.page)||1)*2-1},{id:(Number(input.page)||1)*2}].filter(x=>x.id<=5).map(x=>({...x,userId}))}),
   pnl:userId=>userId==='user-a'?[{id:'pnl-a'}]:[],addPnl:async()=>({}),updatePnl:async()=>({}),deletePnl:async(userId,id)=>{if(userId!=='user-a'||id!=='pnl-a')throw new ValidationError({field:'id',message:'was not found'});calls.push(['deletePnl',userId,id]);},
+  snipers:userId=>userId==='user-a'?[{id:'sniper-a'}]:[],sniperEvents:async()=>[],createSniper:async()=>({}),updateSniper:async(userId,id)=>{if(userId!=='user-a'||id!=='sniper-a')throw new ValidationError({field:'id',message:'was not found'});return {id};},removeSniper:async()=>{},
+  watchRules:async userId=>userId==='user-a'?[{id:'rule-a'}]:[],watchEvents:async()=>[],createWatchRule:async()=>({}),updateWatchRule:async(userId,id)=>{if(userId!=='user-a'||id!=='rule-a')throw new ValidationError({field:'id',message:'was not found'});return {id};},disableWatchRule:async()=>{},removeWatchRule:async()=>{},
+  targetDetails:async(userId,type,id)=>{if(userId!=='user-a'||!['sniper-a','rule-a'].includes(id))throw new ValidationError({field:'targetId',message:'was not found'});return {targetType:type,targetId:id};},updateTargetPolicy:async()=>({}),requestTargetBypass:async()=>({}),confirmTargetBypass:async()=>({}),applyTargetPreset:async()=>({}),modePresets:async()=>[],pendingConfirmations:async()=>[],confirmTrigger:async()=>({}),
  };
  const auth={authenticate:async header=>sessions.get(String(header||'').split('=')[1])||null,verifyCsrf:({headerToken})=>headerToken==='csrf',sessionCookies:()=>[],clearCookies:()=>[],revoke:async()=>{},revokeAll:async()=>{}};
- const api=createDashboardApi({auth,commands,supportedChains:['ethereum'],identityRepository:{listLinkedAccounts:async()=>[]},loginRateLimiter:createCommandRateLimiter()});const app=express();app.use(express.json());app.use(api.securityHeaders);mountDashboardRoutes(app,api);app.use(api.error);const server=http.createServer(app);await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>server.close(resolve)));return {base:`http://127.0.0.1:${server.address().port}`,calls,privateKey};}
+ const themes=new Map();
+ const api=createDashboardApi({auth,commands,supportedChains:['ethereum'],identityRepository:{listLinkedAccounts:async()=>[],getTheme:async userId=>themes.get(userId)||'ghost-mint',setTheme:async(userId,theme)=>{themes.set(userId,theme);return theme;}},loginRateLimiter:createCommandRateLimiter()});const app=express();app.use(express.json());app.use(api.securityHeaders);mountDashboardRoutes(app,api);app.use(api.error);const server=http.createServer(app);await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>server.close(resolve)));return {base:`http://127.0.0.1:${server.address().port}`,calls,privateKey};}
 function authHeaders(user='a',write=false){return {cookie:`ghostmint_session=token-${user}`,...(write?{'content-type':'application/json','x-csrf-token':'csrf'}:{})};}
 test('dashboard wallet responses and errors never expose private keys',async t=>{const {base,privateKey}=await operationsServer(t);const created=await fetch(`${base}/api/wallets/create`,{method:'POST',headers:authHeaders('a',true),body:'{}'});assert.equal(created.status,201);assert.equal((await created.text()).includes(privateKey),false);const failed=await fetch(`${base}/api/wallets/import`,{method:'POST',headers:authHeaders('a',true),body:JSON.stringify({privateKey})});assert.equal(failed.status,500);assert.equal((await failed.text()).includes(privateKey),false);});
 test('mint confirmation requires a simulation-backed, user-bound, single-use preview',async t=>{const {base,calls}=await operationsServer(t);const direct=await fetch(`${base}/api/mints/confirm`,{method:'POST',headers:authHeaders('a',true),body:JSON.stringify({confirmation:'CONFIRM'})});assert.equal(direct.status,400);const preview=await (await fetch(`${base}/api/mints/preview`,{method:'POST',headers:authHeaders('a',true),body:JSON.stringify({walletLabel:'alpha'})})).json();assert.equal(preview.items[0].simulation.simulationPassed,true);assert.equal(preview.items[0].simulation.simulationPerformed,true);assert.equal((await fetch(`${base}/api/mints/confirm`,{method:'POST',headers:authHeaders('b',true),body:JSON.stringify({previewToken:preview.previewToken,confirmation:'CONFIRM'})})).status,400);const second=await (await fetch(`${base}/api/mints/preview`,{method:'POST',headers:authHeaders('a',true),body:JSON.stringify({walletLabel:'alpha'})})).json();assert.equal((await fetch(`${base}/api/mints/confirm`,{method:'POST',headers:authHeaders('a',true),body:JSON.stringify({previewToken:second.previewToken,confirmation:'CONFIRM'})})).status,202);assert.deepEqual(calls.at(-1),['mint','user-a',true]);assert.equal((await fetch(`${base}/api/mints/confirm`,{method:'POST',headers:authHeaders('a',true),body:JSON.stringify({previewToken:second.previewToken,confirmation:'CONFIRM'})})).status,400);});
 test('dashboard resources are user scoped and activity pagination has exact boundaries',async t=>{const {base,calls}=await operationsServer(t);assert.equal((await (await fetch(`${base}/api/wallets`,{headers:authHeaders('b')})).json()).length,0);assert.equal((await (await fetch(`${base}/api/tasks`,{headers:authHeaders('b')})).json()).total,0);assert.equal((await (await fetch(`${base}/api/pnl`,{headers:authHeaders('b')})).json()).length,0);const pages=[];for(const page of [1,2,3])pages.push(await (await fetch(`${base}/api/activity?page=${page}`,{headers:authHeaders('a')})).json());assert.deepEqual(pages.flatMap(value=>value.items.map(item=>item.id)),[1,2,3,4,5]);const deniedWallet=await fetch(`${base}/api/wallets/alpha`,{method:'DELETE',headers:authHeaders('b',true),body:JSON.stringify({confirmation:'CONFIRM'})});const deniedTask=await fetch(`${base}/api/tasks/task-a/control`,{method:'POST',headers:authHeaders('b',true),body:JSON.stringify({action:'cancel',confirmation:'CONFIRM'})});const deniedPnl=await fetch(`${base}/api/pnl/pnl-a`,{method:'DELETE',headers:authHeaders('b',true),body:JSON.stringify({confirmation:'CONFIRM'})});assert.deepEqual([deniedWallet.status,deniedTask.status,deniedPnl.status],[400,400,400]);assert.equal(calls.some(call=>['remove','control','deletePnl'].includes(call[0])),false);});
+
+test('dashboard trigger endpoints cannot expose or configure another user targets',async t=>{const {base}=await operationsServer(t);const [snipers,rules]=await Promise.all([fetch(`${base}/api/snipers`,{headers:authHeaders('b')}),fetch(`${base}/api/watch-rules`,{headers:authHeaders('b')})]);assert.deepEqual((await snipers.json()).items,[]);assert.deepEqual((await rules.json()).items,[]);const target=await fetch(`${base}/api/targets/sniper-a?type=sniper`,{headers:authHeaders('b')});const sniper=await fetch(`${base}/api/snipers/sniper-a`,{method:'PUT',headers:authHeaders('b',true),body:'{}'});const rule=await fetch(`${base}/api/watch-rules/rule-a`,{method:'PUT',headers:authHeaders('b',true),body:'{}'});assert.deepEqual([target.status,sniper.status,rule.status],[400,400,400]);});
+
+test('profile reports the account dashboard theme, defaulting to ghost-mint',async t=>{const {base}=await operationsServer(t);const profile=await (await fetch(`${base}/api/profile`,{headers:authHeaders('a')})).json();assert.equal(profile.theme,'ghost-mint');});
+test('dashboard theme updates persist per account, reject unknown themes, and require CSRF',async t=>{const {base}=await operationsServer(t);
+  const noCsrf=await fetch(`${base}/api/profile/theme`,{method:'PUT',headers:{cookie:'ghostmint_session=token-a','content-type':'application/json'},body:JSON.stringify({theme:'clean-vault'})});
+  assert.equal(noCsrf.status,403);
+  const invalid=await fetch(`${base}/api/profile/theme`,{method:'PUT',headers:authHeaders('a',true),body:JSON.stringify({theme:'not-a-theme'})});
+  assert.equal(invalid.status,400);
+  const updated=await fetch(`${base}/api/profile/theme`,{method:'PUT',headers:authHeaders('a',true),body:JSON.stringify({theme:'clean-vault'})});
+  assert.equal(updated.status,200);
+  assert.deepEqual(await updated.json(),{theme:'clean-vault'});
+  const profileA=await (await fetch(`${base}/api/profile`,{headers:authHeaders('a')})).json();
+  assert.equal(profileA.theme,'clean-vault');
+  const profileB=await (await fetch(`${base}/api/profile`,{headers:authHeaders('b')})).json();
+  assert.equal(profileB.theme,'ghost-mint');
+});
 
 test('task created by the dashboard service is consumed by the existing durable worker path',async()=>{const now=Date.now();const state={wallets:[{id:1,userId:'user-a',label:'alpha',address:'0x0000000000000000000000000000000000000001',chain:'ethereum'}],tasks:[],activity:[],pnl:[],snipers:[]};const rows=[];const repository={
   claimDue:async()=>{const task=rows.find(item=>item.status==='scheduled'&&item.nextAttemptAt<=now+10_000);if(!task)return null;task.status='claimed';task.attemptCount=1;return task;},

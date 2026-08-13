@@ -107,6 +107,23 @@ function createGovernanceService(repository) {
       return repository.setOwner(await targetUser(input.platform, input.platformUserId), input.enabled === true || input.enabled === 'on');
     },
 
+    async dashboardOverview(callerUserId) {
+      await requireOwner(callerUserId);
+      const [groups,users,presets]=await Promise.all([
+        repository.listGroups(),repository.listGovernedUsers(),repository.listPresets(),
+      ]);
+      return {groups,users,presets};
+    },
+
+    async effectiveForLinkedUser(callerUserId,input) {
+      await requireOwner(callerUserId);
+      const userId=await targetUser(input.platform,input.platformUserId);
+      const effective=await repository.getEffectiveGovernance(userId,input.chain);
+      if(effective.isOwner)return {userId,isOwner:true,ceilingExempt:true,maxTransactionValueWei:null,
+        dailySpendingBudgetWei:null,gasCeilingGwei:null,simulationForced:effective.simulationForced,preset:effective.preset};
+      return {...effective,userId,isOwner:false,ceilingExempt:false};
+    },
+
     selectPreset(userId, presetKey) {
       return repository.selectPreset(userId, presetKey);
     },

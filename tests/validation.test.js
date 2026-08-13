@@ -111,6 +111,22 @@ test('addresses, function names, ABI definitions, labels, and label uniqueness a
   }, { supportedChains: CHAINS, existingLabels: ['primary'] }), 'label');
 });
 
+test('wallet import accepts either a private key or a seed phrase and derives the same kind of result either way', () => {
+  const byKey = requestSchemas.walletCreate({
+    importMethod: 'privateKey', privateKey: `0x${'11'.repeat(32)}`, label: 'Primary', chain: 'ethereum',
+  }, { supportedChains: CHAINS, existingLabels: [] });
+  assert.equal(byKey.address, '0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A');
+  const byPhrase = requestSchemas.walletCreate({
+    importMethod: 'seedPhrase', seedPhrase: 'test test test test test test test test test test test junk',
+    label: 'Recovered', chain: 'ethereum',
+  }, { supportedChains: CHAINS, existingLabels: [] });
+  assert.equal(byPhrase.address, '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266');
+  assert.equal(byPhrase.privateKey, '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80');
+  rejectsField(() => requestSchemas.walletCreate({
+    importMethod: 'seedPhrase', seedPhrase: 'not a real recovery phrase', label: 'Bad', chain: 'ethereum',
+  }, { supportedChains: CHAINS, existingLabels: [] }), 'seedPhrase');
+});
+
 test('invalid deletion identifiers are rejected before ownership mutation', () => {
   rejectsField(() => requestSchemas.taskDeletion({ id: '12345' }), 'id');
   rejectsField(() => requestSchemas.sniperDeletion({ id: 'not-a-uuid' }), 'id');

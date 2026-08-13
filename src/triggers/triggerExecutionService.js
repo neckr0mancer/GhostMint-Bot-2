@@ -1,4 +1,5 @@
-function createTriggerExecutionService({repository,policyService,prepareExecution,execute,notify,now=()=>Date.now()}) {
+function createTriggerExecutionService({repository,policyService,prepareExecution,execute,notify,
+  onPending=()=>{},onResolved=()=>{},now=()=>Date.now()}) {
   async function executeAndAudit(event,policy,{confirmationShown=false}={}) {
     try {
       const result=await execute(event,policy);
@@ -23,18 +24,27 @@ function createTriggerExecutionService({repository,policyService,prepareExecutio
     const request=await repository.createRequest({userId:event.userId,targetType:event.targetType,
       targetId:event.targetId,triggerSource:event.triggerSource,sourceEventId:event.id,
       preview:prepared.preview,executionPayload:prepared.executionPayload,expiresAt:now()+10*60_000});
+    await Promise.resolve(onPending(event.userId,request)).catch(()=>{});
     await Promise.resolve(notify(event.userId,{requestId:request.id,preview:prepared.preview,
       triggerSource:event.triggerSource})).catch(()=>{});
     return {action:'confirmation_required',request};
   }
   async function confirm(userId,requestId,confirmation) {
-    if (confirmation!=='CONFIRM') throw new Error('Confirmation must exactly equal CONFIRM');
+    if (confirmation==='REJECT') {
+      const rejected=await repository.rejectRequest(userId,requestId,now());
+      if(!rejected) throw new Error('Confirmation request is invalid, expired, or already used');
+      await Promise.resolve(onResolved(userId,{requestId,status:'rejected'})).catch(()=>{});
+      return {action:'rejected',request:rejected};
+    }
+    if (confirmation!=='CONFIRM') throw new Error('Confirmation must exactly equal CONFIRM or REJECT');
     const request=await repository.claimRequest(userId,requestId,now()); if(!request) throw new Error('Confirmation request is invalid, expired, or already used');
     const policy=await policyService.get(userId,request.targetType,request.targetId);
     try { const outcome=await executeAndAudit({...request.executionPayload,id:request.sourceEventId,userId,
       targetType:request.targetType,targetId:request.targetId,triggerSource:request.triggerSource},policy,{confirmationShown:true});
-      await repository.finishRequest(request.id,'executed'); return outcome; }
-    catch(error){await repository.finishRequest(request.id,'failed');throw error;}
+      await repository.finishRequest(request.id,'executed');
+      await Promise.resolve(onResolved(userId,{requestId,status:'executed',outcome})).catch(()=>{}); return outcome; }
+    catch(error){await repository.finishRequest(request.id,'failed');
+      await Promise.resolve(onResolved(userId,{requestId,status:'failed'})).catch(()=>{});throw error;}
   }
   return {confirm,handle};
 }

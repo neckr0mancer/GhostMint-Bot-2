@@ -46,24 +46,28 @@ function createSocialWatchService({ repository, adapters, emitTrigger, notifyOwn
   }
   async function disable(userId, id) { return update(userId, id, { enabled:false }); }
 
+  async function evaluateItem(rule, item) {
+    if (!contentMatches(rule, item)) return [];
+    const triggers = [];
+    const contentHash = createHash('sha256').update(`${item.platform}:${item.id}:${item.text}`).digest('hex');
+    for (const address of extractContractAddresses(item.text)) {
+      const bucket = Math.floor((item.publishedAt || now()) / dedupWindowMs);
+      const dedupKey = createHash('sha256').update(`${rule.userId}:${item.platform}:${address.toLowerCase()}:${bucket}`).digest('hex');
+      const event = await repository.createTrigger({ userId:rule.userId, address,
+        triggerSource:'social-triggered', platform:item.platform, sourceContentId:item.id,
+        sourceUrl:item.url, contentHash, matchedRuleIds:[rule.id], dedupKey });
+      if (event) { await emitTrigger(event); triggers.push(event); }
+    }
+    return triggers;
+  }
+
   async function processRule(rule) {
     const adapter = adapters.get(rule.method);
     if (!adapter) throw new Error(`No social adapter registered for ${rule.method}`);
     try {
       const result = await adapter.poll(rule);
       const triggers = [];
-      for (const item of result.items) {
-        if (!contentMatches(rule, item)) continue;
-        const contentHash = createHash('sha256').update(`${item.platform}:${item.id}:${item.text}`).digest('hex');
-        for (const address of extractContractAddresses(item.text)) {
-          const bucket = Math.floor((item.publishedAt || now()) / dedupWindowMs);
-          const dedupKey = createHash('sha256').update(`${rule.userId}:${item.platform}:${address.toLowerCase()}:${bucket}`).digest('hex');
-          const event = await repository.createTrigger({ userId:rule.userId, address,
-            triggerSource:'social-triggered', platform:item.platform, sourceContentId:item.id,
-            sourceUrl:item.url, contentHash, matchedRuleIds:[rule.id], dedupKey });
-          if (event) { await emitTrigger(event); triggers.push(event); }
-        }
-      }
+      for (const item of result.items) triggers.push(...await evaluateItem(rule, item));
       await repository.markSuccess(rule, { cursor:result.cursor, nextPollAt:now() + pollIntervalMs });
       return triggers;
     } catch (error) {
@@ -83,8 +87,19 @@ function createSocialWatchService({ repository, adapters, emitTrigger, notifyOwn
     return Promise.allSettled(rules.map(rule => processRule(rule)));
   }
 
+  async function processLiveDiscordMessage(item) {
+    const rules = await repository.listEnabledForChannel(item.channelId);
+    const triggers = [];
+    for (const rule of rules) {
+      try { triggers.push(...await evaluateItem(rule, item)); }
+      catch (error) { log(`Live discord watch rule ${rule.id} failed: ${error.message}`); }
+    }
+    return triggers;
+  }
+
   return { create, disable, extractContractAddresses, list:userId => repository.list(userId),
-    pollOnce, processRule, remove, update };
+    recentTriggers:userId=>repository.listRecentTriggers(userId),
+    pollOnce, processLiveDiscordMessage, processRule, remove, update };
 }
 
 module.exports = { ADDRESS_PATTERN, contentMatches, createSocialWatchService, extractContractAddresses };
