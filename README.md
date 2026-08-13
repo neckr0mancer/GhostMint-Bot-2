@@ -10,7 +10,7 @@ GhostMint is an Express and Telegram service for managing EVM wallets, schedulin
 - npm 11.7.0
 - PostgreSQL 14 or newer (a transaction-mode PgBouncer URL plus a direct migration URL)
 - RPC access for any configured EVM chains
-- Optional Telegram bot token and destination chat ID
+- Optional Telegram bot token
 
 The supported Node version is recorded in both `.nvmrc` and `.node-version`.
 
@@ -42,6 +42,8 @@ GET http://localhost:3000/health
 | `DATABASE_URL` | Production; required to start the app | Pooled PostgreSQL URL used for normal application queries. |
 | `DATABASE_URL_UNPOOLED` | Production; required for migrations | Direct PostgreSQL URL used only by `npm run db:migrate`. |
 | `DATABASE_POOL_MAX` | No | Application pool size from 1-10; defaults to `5`. |
+| `RPC_TIMEOUT_MS` | No | Timeout for one RPC attempt; defaults to `10000`. |
+| `RPC_RETRIES` | No | Retries per RPC endpoint before failover; defaults to `1`. |
 | `SUPPORTED_CHAINS` | Yes | Comma-separated supported chain names; `ethereum` must currently be included. |
 | `TELEGRAM_BOT_TOKEN` | No | Enables Telegram polling when supplied. |
 | `ENCRYPTION_SECRET` | Yes | Encrypts stored wallet private keys; subject to the secret-strength policy below. |
@@ -51,6 +53,7 @@ GET http://localhost:3000/health
 | `BASE_RPC` | No | Base RPC override. |
 | `ARB_RPC` | No | Arbitrum RPC override. |
 | `POLYGON_RPC` | No | Polygon RPC override. |
+| `ETH_RPC_URLS`, `BASE_RPC_URLS`, `ARB_RPC_URLS`, `POLYGON_RPC_URLS` | No | Comma-separated ordered failover lists (1-5 unique URLs); each list overrides its matching single URL. |
 
 The application fails closed when a required value is missing or invalid. It never falls back to a built-in credential or encryption secret.
 
@@ -73,7 +76,28 @@ Telegram commands authenticate from Telegram's immutable sender ID. The first co
 
 Supported chain names are `ethereum`, `base`, `arbitrum`, and `polygon`. Every configured RPC override must be an HTTP or HTTPS URL without embedded credentials. Public RPC defaults remain available when an override is blank.
 
+RPC calls have bounded timeouts and retry the current endpoint before moving through the configured chain-specific fallback list. Configure private authenticated providers through provider-side network controls or secret-bearing gateway configuration; embedded URL credentials are rejected so they cannot leak through configuration output.
+
 Normal queries use `DATABASE_URL` through a `pg` pool capped by `DATABASE_POOL_MAX`. Set this URL to Railway's transaction-mode PgBouncer endpoint (Database → Config → Connection Pooling → Add PgBouncer). Migrations deliberately create a standalone client from `DATABASE_URL_UNPOOLED`; never point the migration variable at PgBouncer transaction mode. The schema is standard PostgreSQL and does not depend on Railway, so Supabase or another provider can be substituted.
+
+### Request validation limits
+
+All bot and future API inputs use the same domain schemas. Unsupported chains fail explicitly and never fall back to Ethereum. Current safety bounds include quantities of 1–100, prices up to 1,000 ETH, gas limits from 21,000–30,000,000, fee inputs up to 100,000 Gwei, sniper gas boosts up to 500%, and batch requests up to 100 unique wallets. Task times must be valid, future timestamps no more than 2,147,000,000 milliseconds (about 24 days) ahead; the durable scheduler in Milestone 9 will replace this temporary Node timer bound.
+
+### Transaction safety policies
+
+Every manual, scheduled, or copy-mint submission uses the same transaction engine. It serializes work per wallet, checks value, fees, estimated cost, balance, and rolling 24-hour spend, simulates by default, then persists a `submitted` intent and its deterministic signed hash before broadcasting. Durable transitions cover `submitted`, `pending`, `confirmed`, `reverted`, `replaced`, and `unknown`; startup reconciles every non-final intent against chain state. Notification delivery is deliberately outside the state decision path.
+
+Policies are database-backed and editable independently at wallet or target scope, with target values taking precedence. A null override inherits the next level. Defaults are deliberately conservative:
+
+- Maximum transaction value: `0.1` native token; large enough for ordinary public mints while limiting the impact of malformed values. Default rolling daily wallet budget: `0.25` native token.
+- Simulation: on. Transaction timeout: 10 minutes.
+- Ethereum: 12 confirmations, 200 Gwei ceiling.
+- Base: 10 confirmations, 5 Gwei ceiling.
+- Arbitrum: 20 confirmations, 5 Gwei ceiling.
+- Polygon: 128 confirmations, 500 Gwei ceiling.
+
+The confirmation counts are operational safety thresholds chosen to be conservative relative to each chain's block cadence and ordinary short reorg exposure; they are not claims of protocol-level economic finality. All values can be overridden per wallet or target through the transaction-policy repository. A later permissions milestone will decide which roles may change them.
 
 Run migrations before starting a new deployment:
 
@@ -151,7 +175,7 @@ Store backups encrypted outside the application host. Test restores regularly an
 
 `railway.json` uses Nixpacks and starts the root compatibility entrypoint with `node index.js`. Configure environment variables, add Railway PgBouncer in transaction mode, and run `npm run db:migrate` with the direct URL before deployment.
 
-Discord bot integration, linked-account dashboard login, transaction validation, durable scheduling, observability, and operational hardening remain future milestones.
+Discord bot integration, linked-account dashboard login, durable scheduling, observability, and operational hardening remain future milestones.
 
 ## Validation
 

@@ -1,176 +1,115 @@
 # GhostMint Project Roadmap
 
-This roadmap breaks the remaining work into small, reviewable milestones. It is intentionally documentation-only and does not include code changes.
+This is the ordered implementation plan for GhostMint. Milestones are intentionally sequenced so automated triggers and bypass modes are built only after transaction, scheduling, and watcher safety rails exist.
 
-## Milestone 1: Repository hygiene and local setup
+## Completed foundation
 
-### Why it's needed
-- The project needs a predictable local workflow before feature work starts.
-- Dependencies, generated data, secrets, and runtime artifacts should be clearly separated from source control.
-- New contributors need a short setup path for installing dependencies, configuring environment variables, and starting the server.
+### Milestone 1 — Repository baseline and local reliability
 
-### Files that will change
-- `.gitignore` — replace the current misnamed ignore file with an actual Git ignore file for `node_modules`, `.env`, `data.json`, logs, and local artifacts.
-- `README.md` — add project overview, prerequisites, install/start steps, required environment variables, and basic operating notes.
-- `.env.example` — document required and optional variables without secrets.
-- `package.json` — add scripts for linting, formatting, tests, and development once those tools are selected.
+- Establish predictable install, start, health-check, lint, test, and validation workflows.
+- Document local and deployment prerequisites without committing secrets.
 
-### How we'll know it's working
-- A fresh clone can run `npm install` and `npm start` using `.env.example` as a guide.
-- `git status --short` no longer shows generated dependencies or local data files.
-- The health endpoint responds locally at `/health` after setup.
+### Milestone 2 — Safe configuration
 
-## Milestone 2: Configuration and data model hardening
+- Centralize environment loading and fail closed on missing, weak, malformed, or unsupported configuration.
+- Validate runtime modes, chains, RPC URLs, and secret strength without logging sensitive values.
 
-### Why it's needed
-- Configuration is currently read directly from environment variables throughout startup, and data persistence uses a single JSON file.
-- The app needs clear validation for secrets, RPC URLs, platform identity, supported chains, and persisted records.
-- Safer defaults are needed before handling private keys and automated transactions in production.
+### Milestone 3 — Durable PostgreSQL storage
 
-### Files that will change
-- `index.js` — move configuration validation and DB initialization behind explicit helper functions or modules.
-- `src/config.js` or `config.js` — centralize environment loading, defaults, and required variable validation.
-- `src/db.js` or `db.js` — encapsulate loading, saving, schema defaults, and write safety for persisted JSON data.
-- `data.example.json` — document the expected shape of wallets, tasks, activity, PnL entries, and copy-mint watchers.
+- Replace JSON persistence with PostgreSQL migrations and user-independent repository boundaries.
+- Use pooled application connections and the direct connection only for migrations.
 
-### How we'll know it's working
-- Starting without required production secrets fails fast with clear messages, while development mode remains easy to run.
-- Existing `data.json` files with missing optional arrays are normalized without crashing.
-- Invalid chain names, malformed addresses, and malformed task records are rejected before runtime transaction logic.
+### Milestone 4 — Private-key security
 
-## Milestone 3: Security baseline for wallet and dashboard access
+- Encrypt wallet keys with versioned AES-256-GCM envelopes and unique salts/nonces.
+- Support master-key rotation, authenticated tamper detection, and key redaction.
 
-### Why it's needed
-- The app stores encrypted private keys, exposes dashboard APIs, and performs on-chain transactions.
-- Platform identity, encryption settings, input validation, and secret handling must be production-ready before adding more automation.
-- Unsafe defaults such as placeholder encryption secrets and shared credentials must be eliminated.
+### Milestone 5 — Multi-user platform identity
 
-### Files that will change
-- `index.js` — strengthen identity checks, wallet creation validation, request validation, and error responses.
-- `src/identity/` — isolate platform-account identity and account-linking behavior.
-- `src/crypto.js` or `crypto.js` — isolate private-key encryption/decryption and enforce secret requirements.
-- `.env.example` — document secure secret requirements and recommended production values.
-- `README.md` — add security warnings, backup guidance, and operational requirements.
+- Resolve Telegram identities to internal UUID users and scope every resource by owner.
+- Support short-lived, single-use, platform-neutral account-link codes for Telegram and Discord identities.
 
-### How we'll know it's working
-- The app refuses to start in production with a default `ENCRYPTION_SECRET` value.
-- Wallet private keys are never returned by API responses or logs.
-- Telegram commands consistently resolve and enforce the sender's internal user identity.
-- Invalid wallet labels, private keys, addresses, and chain values are rejected with clear `400` responses.
+### Milestone 6 — Request validation and domain rules
 
-## Milestone 4: Split the monolith into focused modules
+- Define shared schemas for every active API and bot-command request.
+- Validate addresses, supported chains, wallet labels, quantities, prices, gas/fee caps, function/ABI inputs, schedules, sniper settings, and P&L identifiers.
+- Replace timestamp-derived identifiers with database-generated IDs or UUIDs.
+- Reject invalid or overly distant schedules before they reach timer logic, including the 24.8-day `setTimeout` overflow case.
+- Return consistent validation failures across HTTP and bot interfaces.
 
-### Why it's needed
-- Most application behavior currently lives in one server file, making it difficult to test and safely change.
-- Separating routing, Telegram commands, mint execution, scheduling, persistence, and copy-mint watching will reduce coupling.
-- Smaller modules make future test coverage and bug fixes much easier.
+### Milestone 7 — Transaction engine and spend safety
 
-### Files that will change
-- `index.js` — become the app entrypoint that wires modules together.
-- `src/routes/*.js` — move Express API routes into route-specific files.
-- `src/telegram.js` — move Telegram bot setup and command handlers.
-- `src/mintExecutor.js` — move transaction-building and mint execution.
-- `src/scheduler.js` — move scheduled task timer management.
-- `src/copyMintWatcher.js` — move watcher lifecycle and polling logic.
-- `src/chains.js` — centralize supported chain metadata.
+- Centralize signing and broadcasting behind a transaction service.
+- Add simulation, spend caps, gas/fee ceilings, nonce queues, replay protection, and actionable failure classification.
+- Ensure no command or automated trigger bypasses the same transaction-safety pipeline.
 
-### How we'll know it's working
-- `npm start` still starts the same server and Telegram bot behavior.
-- Existing API endpoints keep the same response shapes unless intentionally changed.
-- Manual smoke checks for `/health` and per-user Telegram wallet, task, and copy-mint listing pass.
-- Each module can be imported without starting the HTTP server as a side effect.
+## Remaining implementation
 
-## Milestone 5: Automated test foundation
+### Milestone 8 — Mint flexibility
 
-### Why it's needed
-- The project controls irreversible blockchain actions, so regressions need to be caught before deployment.
-- Core logic should be testable without hitting live RPC providers, Telegram, or real wallets.
-- A small test suite will make later refactors safer.
+- Support validated custom mint functions, ABI definitions, arguments, quantities, values, and chain-specific fee options.
+- Keep flexible calldata construction behind the validation and transaction-safety boundaries from Milestones 6 and 7.
 
-### Files that will change
-- `package.json` — add test runner dependencies and scripts.
-- `test/` or `__tests__/` — add unit tests for config, DB normalization, auth, validation, and task scheduling.
-- `src/*` — adjust modules to support dependency injection for providers, Telegram, and storage.
-- `.github/workflows/ci.yml` or equivalent CI config — run tests and lint checks on every pull request if this repository uses GitHub Actions.
+### Milestone 9 — Durable scheduler
 
-### How we'll know it's working
-- `npm test` runs locally without requiring live private keys, live Telegram credentials, or real transactions.
-- Unit tests cover successful and failing cases for identity linking, wallet validation, task creation, copy-mint watcher creation, and PnL entries.
-- CI reports passing tests for pull requests.
+- Replace process-local long-duration timers with durable claiming, leasing, retry, and recovery behavior.
+- Handle schedules beyond Node's timer limit without overflow and prevent duplicate execution across restarts or multiple instances.
 
-## Milestone 6: Transaction safety and mint execution controls
+### Milestone 10 — Blockchain watcher and sniper hardening
 
-### Why it's needed
-- Minting and copy-minting can spend real funds and may fail for many chain-specific reasons.
-- The app needs simulation, gas controls, nonce handling, chain validation, and clear failure reporting before users rely on automation.
-- Copy-mint mirroring should guard against blindly replaying high-risk transactions.
+- Add durable deduplication, confirmation depth, reorg handling, target-level limits, and safe retry behavior.
+- Route every copy-mint through the same simulation, spend-cap, nonce, and activity-audit pipeline.
 
-### Files that will change
-- `src/mintExecutor.js` — add transaction simulation, gas/fee handling, nonce strategy, and clearer errors.
-- `src/copyMintWatcher.js` — add filters, per-wallet limits, deduplication, and optional dry-run behavior.
-- `src/routes/mint.js` and `src/routes/batch.js` — expose safety options and validation errors.
-- `README.md` — document safe operating modes and transaction risk.
-- `data.example.json` — include any new safety fields for tasks and watchers.
+### Milestone 10a — Discord bot
 
-### How we'll know it's working
-- Dry-run or simulation mode can validate a mint request without broadcasting a transaction.
-- Duplicate watcher triggers do not submit duplicate transactions for the same source transaction.
-- Gas limits, max fee settings, quantity, price, and chain IDs are validated before signing.
-- Failed transactions produce actionable activity records and Telegram messages without crashing the process.
+- Add Discord command parity for wallets, minting, batch minting, tasks, activity, gas, cancellation, and wallet removal.
+- Build on the Milestone 5 platform-neutral identity system.
+- Use the existing account-link flow so a Discord account can join an existing user instead of creating a separate identity.
 
-## Milestone 7: Dashboard frontend completion
+### Milestone 10b — Social watcher
 
-### Why it's needed
-- The server serves a `public` dashboard, but the repository needs a complete, documented user interface for core workflows.
-- Users need safe screens for linked-identity access, wallet management, manual minting, scheduled minting, batch minting, copy-mint watchers, activity, gas, and PnL.
-- The UI should make destructive or fund-spending actions explicit and hard to trigger accidentally.
+- Monitor configured Twitter/X accounts and Discord announcement channels.
+- Detect contract-address patterns with optional keyword filters.
+- Feed detected addresses into the existing mint pipeline as a trigger source parallel to the Milestone 10 blockchain watcher.
 
-### Files that will change
-- `public/index.html` — add or complete the dashboard structure.
-- `public/styles.css` — add responsive layout and status styling.
-- `public/app.js` — add API calls, form validation, state refresh, and user feedback.
-- `README.md` — add dashboard usage instructions and screenshots if applicable.
+### Milestone 10c — Per-target trigger and verification configuration
 
-### How we'll know it's working
-- A user can log in and complete every major workflow from the browser without using raw API calls.
-- The dashboard displays clear loading, success, validation, and error states.
-- Manual smoke testing confirms wallet CRUD, task CRUD, copy-mint CRUD, activity, gas, PnL, and health status in the UI.
-- If UI changes are visible, a screenshot is captured for review.
+Each tracked contract, copied wallet, or social source receives independent settings:
 
-## Milestone 8: Observability and operational resilience
+- Blockchain trigger: `Auto` or `Manual`.
+- Social trigger: `Auto` or `Manual`.
+- Human verification: `On` or `Bypassed`.
 
-### Why it's needed
-- A 24/7 automation bot needs reliable logging, health checks, restart behavior, and safe error handling.
-- Operators need enough visibility to know whether watchers, scheduled tasks, Telegram, RPC providers, and persistence are healthy.
-- Production issues should be diagnosable without exposing secrets.
+Rules:
 
-### Files that will change
-- `index.js` and `src/*` modules — replace ad hoc logs with structured operational logs.
-- `src/health.js` or route module — expand health checks for DB writeability, scheduler state, Telegram status, and RPC availability.
-- `railway.json` — adjust deployment settings if needed after runtime behavior is clarified.
-- `README.md` — add deployment, monitoring, backup, and restore instructions.
+- Blockchain-auto does not force verification.
+- Social-auto enables human verification by default. A user may explicitly request bypass.
+- Enabling bypass always presents a highest-risk warning and requires an explicit `CONFIRM` reply before taking effect.
+- The warning includes a per-target-only “don't ask again” option. It never applies globally and is reset when the target is removed/re-added or its configuration is reset.
+- Every executed mint records the trigger source and whether verification was on or bypassed at execution time, regardless of whether the warning was displayed for that toggle.
 
-### How we'll know it's working
-- `/health` and any readiness endpoints report useful status without exposing secrets.
-- Startup logs clearly report enabled chains, restored tasks, restored watchers, and disabled optional integrations.
-- Expected transient RPC or Telegram failures are logged and recovered without process crashes.
-- Railway deployment starts cleanly and restarts only on real process failures.
+Milestones 10a, 10b, and 10c depend on the safety infrastructure from Milestones 6–10: validation, spend caps, simulation, nonce queues, durable scheduling, deduplication, and reorg handling. They must not be implemented earlier because automated or bypassed execution has no human check between trigger and spend.
 
-## Milestone 9: Production release checklist
+### Milestone 11 — Secure Telegram and Discord bot integration
 
-### Why it's needed
-- Before calling the project complete, the team needs an agreed definition of done.
-- Release readiness should include security, documentation, testing, deployment, backups, and rollback plans.
-- The final milestone prevents feature-complete code from shipping without operational safeguards.
+- Apply consistent command authorization, rate limits, audit metadata, safe replies, and ownership checks to both Telegram and Discord.
+- Verify linked platform identities before every read, mutation, or transaction request.
+- Ensure platform-specific adapters cannot bypass shared validation, transaction, or tenant-isolation services.
 
-### Files that will change
-- `README.md` — add production runbook, deployment guide, backup/restore process, and known limitations.
-- `CHANGELOG.md` — document notable changes and release notes.
-- `SECURITY.md` — document responsible usage, secret handling, and vulnerability reporting.
-- `package.json` — finalize version and scripts for production checks.
+### Milestone 12 — Observability and production operations
 
-### How we'll know it's working
-- A clean clone can be configured, tested, and deployed by following documentation only.
-- All required checks pass: install, lint, tests, start, and health check.
-- Production secrets are documented but never committed.
-- The team can explain rollback, data backup, and wallet recovery procedures before launch.
+- Add structured redacted logs, readiness checks, metrics, alerting, graceful shutdown, and dependency health reporting.
+- Complete backup/restore drills, deployment runbooks, rollback procedures, and production incident guidance.
+
+### Milestone 13 — Linked-identity web dashboard
+
+- Build the dashboard on the same Telegram/Discord-linked internal identity rather than a shared password.
+- Restore browser workflows only after secure linked-account login, authorization, CSRF/session protection, and the earlier transaction safety milestones are complete.
+
+## Production definition of done
+
+- All validation, lint, unit, integration, migration, and smoke checks pass in CI.
+- Every user-owned read and write is tenant-scoped.
+- Every transaction path uses simulation, spend limits, fee caps, nonce coordination, and durable audit records.
+- Automated triggers cannot bypass configured verification or safety rails silently.
+- Deployment, monitoring, backup, restore, rollback, and key-rotation procedures have been exercised successfully.

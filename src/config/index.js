@@ -9,6 +9,7 @@ const WEAK_SECRET_PATTERN = /ghostmint|change[_-]?me|replace|password|default|ex
 const CHAIN_DEFINITIONS = Object.freeze({
   ethereum: Object.freeze({
     name: 'Ethereum',
+    chainId: 1,
     envName: 'ETH_RPC',
     defaultRpc: 'https://ethereum.publicnode.com',
     sym: 'ETH',
@@ -16,6 +17,7 @@ const CHAIN_DEFINITIONS = Object.freeze({
   }),
   base: Object.freeze({
     name: 'Base',
+    chainId: 8453,
     envName: 'BASE_RPC',
     defaultRpc: 'https://mainnet.base.org',
     sym: 'ETH',
@@ -23,6 +25,7 @@ const CHAIN_DEFINITIONS = Object.freeze({
   }),
   arbitrum: Object.freeze({
     name: 'Arbitrum',
+    chainId: 42161,
     envName: 'ARB_RPC',
     defaultRpc: 'https://arb1.arbitrum.io/rpc',
     sym: 'ETH',
@@ -30,6 +33,7 @@ const CHAIN_DEFINITIONS = Object.freeze({
   }),
   polygon: Object.freeze({
     name: 'Polygon',
+    chainId: 137,
     envName: 'POLYGON_RPC',
     defaultRpc: 'https://polygon-rpc.com',
     sym: 'MATIC',
@@ -188,25 +192,33 @@ function parseSupportedChains() {
   return Object.freeze(names);
 }
 
-function parseRpcUrl(envName, fallback) {
-  const configured = optionalString(envName);
-  const raw = configured || fallback;
-  let parsed;
-
-  try {
-    parsed = new URL(raw);
-  } catch {
-    throw new ConfigurationError(`${envName} must be a valid HTTP or HTTPS URL`);
+function parseRpcUrls(definition) {
+  const listName = `${definition.envName}_URLS`;
+  const configuredList = optionalString(listName);
+  const legacy = optionalString(definition.envName);
+  const rawUrls = configuredList
+    ? configuredList.split(',').map(value => value.trim()).filter(Boolean)
+    : [legacy || definition.defaultRpc];
+  const sourceName = configuredList ? listName : definition.envName;
+  if (rawUrls.length < 1 || rawUrls.length > 5 || new Set(rawUrls).size !== rawUrls.length) {
+    throw new ConfigurationError(`${listName} must contain 1-5 unique URLs`);
   }
-
-  if (!['http:', 'https:'].includes(parsed.protocol) || !parsed.hostname) {
-    throw new ConfigurationError(`${envName} must be a valid HTTP or HTTPS URL`);
-  }
-  if (parsed.username || parsed.password) {
-    throw new ConfigurationError(`${envName} must not contain embedded credentials`);
-  }
-
-  return { url: parsed.toString(), overridden: configured !== null };
+  const urls = rawUrls.map(raw => {
+    let parsed;
+    try { parsed = new URL(raw); }
+    catch {
+      throw new ConfigurationError(configuredList
+        ? `${sourceName} must contain valid HTTP or HTTPS URLs`
+        : `${sourceName} must be a valid HTTP or HTTPS URL`);
+    }
+    if (!['http:', 'https:'].includes(parsed.protocol) || !parsed.hostname || parsed.username || parsed.password) {
+      throw new ConfigurationError(configuredList
+        ? `${sourceName} must contain HTTP or HTTPS URLs without embedded credentials`
+        : `${sourceName} must be a valid HTTP or HTTPS URL without embedded credentials`);
+    }
+    return parsed.toString();
+  });
+  return { urls: Object.freeze(urls), overridden: configuredList !== null || legacy !== null };
 }
 
 function parseTelegram() {
@@ -223,11 +235,13 @@ const CHAINS = {};
 
 for (const chainName of supportedChains) {
   const definition = CHAIN_DEFINITIONS[chainName];
-  const rpc = parseRpcUrl(definition.envName, definition.defaultRpc);
+  const rpc = parseRpcUrls(definition);
   rpcOverrides[chainName] = rpc.overridden;
   CHAINS[chainName] = Object.freeze({
     name: definition.name,
-    rpc: rpc.url,
+    chainId: definition.chainId,
+    rpc: rpc.urls[0],
+    rpcUrls: rpc.urls,
     sym: definition.sym,
     ex: definition.ex,
   });
@@ -245,6 +259,8 @@ const CONFIG = Object.freeze({
   databaseUrl: database.pooled,
   databaseUrlUnpooled: database.unpooled,
   databasePoolMax: parseInteger('DATABASE_POOL_MAX', 5, 1, 10),
+  rpcTimeoutMs: parseInteger('RPC_TIMEOUT_MS', 10_000, 1_000, 60_000),
+  rpcRetries: parseInteger('RPC_RETRIES', 1, 0, 5),
   projectRoot: PROJECT_ROOT,
   supportedChains,
 });
@@ -264,6 +280,7 @@ function getSafeConfigSummary() {
     activeEncryptionKeyVersion: CONFIG.encryptionKeyVersion,
     availableEncryptionKeyVersions: Object.keys(CONFIG.encryptionKeys).map(Number).sort((a, b) => a - b),
     rpcOverrides: { ...rpcOverrides },
+    rpcEndpointCounts: Object.fromEntries(Object.entries(CHAINS).map(([name, chain]) => [name, chain.rpcUrls.length])),
   };
 }
 

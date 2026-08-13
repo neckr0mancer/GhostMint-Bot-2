@@ -15,6 +15,8 @@ const VALID_ENV = Object.freeze({
   DATABASE_URL: '',
   DATABASE_URL_UNPOOLED: '',
   DATABASE_POOL_MAX: '5',
+  RPC_TIMEOUT_MS: '10000',
+  RPC_RETRIES: '1',
   SUPPORTED_CHAINS: 'ethereum,base,arbitrum,polygon',
   ENCRYPTION_SECRET: 'dev-encryption-key-7Qv9!m2Lx4Rk8Zp3Cw6N',
   ENCRYPTION_KEY_VERSION: '1',
@@ -24,6 +26,10 @@ const VALID_ENV = Object.freeze({
   BASE_RPC: '',
   ARB_RPC: '',
   POLYGON_RPC: '',
+  ETH_RPC_URLS: '',
+  BASE_RPC_URLS: '',
+  ARB_RPC_URLS: '',
+  POLYGON_RPC_URLS: '',
 });
 
 function probeConfig(overrides = {}) {
@@ -112,6 +118,16 @@ test('refuses malformed RPC URLs without echoing their values', () => {
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /ETH_RPC must be a valid HTTP or HTTPS URL/);
   assert.doesNotMatch(result.stderr, /private-token/);
+});
+
+test('accepts ordered RPC fallback lists and reports only endpoint counts', () => {
+  const first = 'https://first-rpc.example.com';
+  const second = 'https://second-rpc.example.com';
+  const result = probeConfig({ ETH_RPC_URLS: `${first},${second}` });
+  assert.equal(result.status, 0, result.stderr);
+  const summary = JSON.parse(result.stdout).summary;
+  assert.equal(summary.rpcEndpointCounts.ethereum, 2);
+  assert.doesNotMatch(result.stdout, /first-rpc|second-rpc/);
 });
 
 test('refuses unsupported and duplicate chain names', () => {
