@@ -5,7 +5,7 @@ const { ValidationError, requestSchemas } = require('../validation/domain');
 function createBotCommandService(dependencies) {
   const { storage, schedulerRepository, providerService, governance, adminCommands, sniperService,
     socialWatchService, socialUsageService, targetPolicyService, triggerExecutionService, governanceRepository,
-    triggerAuditRepository, supportedChains, chains, encryptPrivateKey, getState, executeMint,
+    triggerAuditRepository, transactionIntentRepository, supportedChains, chains, encryptPrivateKey, getState, executeMint,
     ensureChainWatcher = () => {} } = dependencies;
 
   function state(userId) { return stateForUser(getState(), userId); }
@@ -166,6 +166,8 @@ function createBotCommandService(dependencies) {
       await governanceRepository.getPreset(input.presetKey)),
     confirmTrigger: (userId, requestId, confirmation) => triggerExecutionService.confirm(userId, requestId, confirmation),
     triggerAudit: userId => triggerAuditRepository.listAudit(userId),
+    pendingConfirmations: userId => triggerAuditRepository.listPendingRequests(userId),
+    pendingTransactions: userId => transactionIntentRepository.listNonFinalForUser(userId),
     selectMode: (userId, preset) => governance.selectPreset(userId, preset),
     admin: (userId, input) => adminCommands.execute(userId, input),
   };

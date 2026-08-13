@@ -129,6 +129,12 @@ function createTransactionIntentRepository(pool) {
       return result.rows.map(mapIntent);
     },
 
+    async listNonFinalForUser(userId,limit=20) {
+      const result=await pool.query(`SELECT * FROM transaction_intents WHERE user_id=$1
+        AND state=ANY($2::TEXT[]) ORDER BY created_at DESC LIMIT $3`,[userId,NON_FINAL_STATES,limit]);
+      return result.rows.map(mapIntent);
+    },
+
     async rollingSpendWei(userId, walletId, sinceMs) {
       const result = await pool.query(`SELECT COALESCE(SUM(estimated_cost_wei),0) AS total
         FROM transaction_intents WHERE user_id=$1 AND wallet_id=$2

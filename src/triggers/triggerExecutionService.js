@@ -23,7 +23,8 @@ function createTriggerExecutionService({repository,policyService,prepareExecutio
     const request=await repository.createRequest({userId:event.userId,targetType:event.targetType,
       targetId:event.targetId,triggerSource:event.triggerSource,sourceEventId:event.id,
       preview:prepared.preview,executionPayload:prepared.executionPayload,expiresAt:now()+10*60_000});
-    await notify(event.userId,{requestId:request.id,preview:prepared.preview,triggerSource:event.triggerSource});
+    await Promise.resolve(notify(event.userId,{requestId:request.id,preview:prepared.preview,
+      triggerSource:event.triggerSource})).catch(()=>{});
     return {action:'confirmation_required',request};
   }
   async function confirm(userId,requestId,confirmation) {

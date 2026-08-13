@@ -71,7 +71,8 @@ function createSocialWatchService({ repository, adapters, emitTrigger, notifyOwn
         Math.min(pollIntervalMs * 2 ** Math.min(rule.consecutiveFailures || 0, 6), 60 * 60_000)) });
       log(`Social watch rule ${rule.id} (${rule.method}) failed: ${error.message}`);
       if (failures >= failureNotifyThreshold && failures % failureNotifyThreshold === 0) {
-        await notifyOwner(rule.userId, `Social watch rule "${rule.name}" has failed ${failures} consecutive times using ${rule.method}. Check its source and adapter configuration.`);
+        await Promise.resolve(notifyOwner(rule.userId, `Social watch rule "${rule.name}" has failed ${failures} consecutive times using ${rule.method}. Check its source and adapter configuration.`))
+          .catch(notifyError=>log(`Social watch rule ${rule.id} failure notification failed: ${notifyError.message}`));
       }
       return [];
     }

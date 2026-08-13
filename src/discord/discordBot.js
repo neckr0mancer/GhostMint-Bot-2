@@ -5,6 +5,8 @@ const { AuthorizationError } = require('../governance/governanceService');
 const { LinkCodeError } = require('../identity/identityService');
 const { ProofResolutionError } = require('../mint/proofResolver');
 const { ValidationError, validationReply } = require('../validation/domain');
+const { BotContextError, RateLimitError, commandName, createCommandRateLimiter, escapeDiscord,
+  verifyDiscordContext } = require('../security/botSecurity');
 
 function json(value, field = 'input') {
   try {
@@ -57,7 +59,7 @@ function commandDefinitions() {
     .addSubcommand(c => c.setName('list').setDescription('List your scheduled tasks'))
     .addSubcommand(c => c.setName('cancel').setDescription('Cancel a task').addStringOption(o => o.setName('id').setDescription('Task UUID').setRequired(true)).addBooleanOption(o => o.setName('confirm').setDescription('Confirm cancellation').setRequired(true)))
     .addSubcommand(c => c.setName('pause').setDescription('Pause a task').addStringOption(o => o.setName('id').setDescription('Task UUID').setRequired(true)))
-    .addSubcommand(c => c.setName('resume').setDescription('Resume a task').addStringOption(o => o.setName('id').setDescription('Task UUID').setRequired(true)))
+    .addSubcommand(c => c.setName('resume').setDescription('Resume a task').addStringOption(o => o.setName('id').setDescription('Task UUID').setRequired(true)).addBooleanOption(o=>o.setName('confirm').setDescription('Confirm resuming value-moving task').setRequired(true)))
     .addSubcommand(c => c.setName('retry').setDescription('Retry a failed task').addStringOption(o => o.setName('id').setDescription('Task UUID').setRequired(true)).addBooleanOption(o => o.setName('confirm').setDescription('Confirm retry').setRequired(true))));
   commands.push(new SlashCommandBuilder().setName('activity').setDescription('Show your recent mint activity'));
   commands.push(new SlashCommandBuilder().setName('pnl').setDescription('Manage your P&L records')
@@ -67,14 +69,16 @@ function commandDefinitions() {
   commands.push(new SlashCommandBuilder().setName('gas').setDescription('Show live chain fee data')
     .addStringOption(o => o.setName('chain').setDescription('Supported chain')));
   commands.push(new SlashCommandBuilder().setName('sniper').setDescription('Manage post-confirmation copy snipers (not mempool front-running)')
-    .addSubcommand(c => c.setName('create').setDescription('Create post-confirmation copy sniper').addStringOption(o => o.setName('input').setDescription('Validated sniper JSON').setRequired(true)))
-    .addSubcommand(c => c.setName('update').setDescription('Update post-confirmation copy sniper').addStringOption(o => o.setName('id').setDescription('Sniper UUID').setRequired(true)).addStringOption(o => o.setName('patch').setDescription('Validated patch JSON').setRequired(true)))
+    .addSubcommand(c => c.setName('create').setDescription('Create post-confirmation copy sniper').addStringOption(o => o.setName('input').setDescription('Validated sniper JSON').setRequired(true)).addBooleanOption(o=>o.setName('confirm').setDescription('Confirm automated copy configuration').setRequired(true)))
+    .addSubcommand(c => c.setName('update').setDescription('Update post-confirmation copy sniper').addStringOption(o => o.setName('id').setDescription('Sniper UUID').setRequired(true)).addStringOption(o => o.setName('patch').setDescription('Validated patch JSON').setRequired(true)).addBooleanOption(o=>o.setName('confirm').setDescription('Confirm automated copy configuration change').setRequired(true)))
     .addSubcommand(c => c.setName('list').setDescription('List post-confirmation copy snipers'))
     .addSubcommand(c => c.setName('status').setDescription('Show a post-confirmation copy sniper').addStringOption(o => o.setName('id').setDescription('Sniper UUID').setRequired(true))));
   commands.push(new SlashCommandBuilder().setName('mode').setDescription('Select your transaction mode preset')
-    .addStringOption(o => o.setName('preset').setDescription('Preset key').setRequired(true)));
+    .addStringOption(o => o.setName('preset').setDescription('Preset key').setRequired(true))
+    .addBooleanOption(o=>o.setName('confirm').setDescription('Confirm transaction-mode change').setRequired(true)));
   commands.push(new SlashCommandBuilder().setName('admin').setDescription('Owner-only governance command')
-    .addStringOption(o => o.setName('action').setDescription('Governance action and arguments').setRequired(true)));
+    .addStringOption(o => o.setName('action').setDescription('Governance action and arguments').setRequired(true))
+    .addBooleanOption(o=>o.setName('confirm').setDescription('Confirm owner-level action').setRequired(true)));
   commands.push(new SlashCommandBuilder().setName('link').setDescription('Create or consume a cross-platform account link code')
     .addStringOption(o => o.setName('code').setDescription('Single-use code from your existing account')));
   commands.push(new SlashCommandBuilder().setName('watch').setDescription('Manage social contract-address watch rules')
@@ -87,16 +91,17 @@ function commandDefinitions() {
     .addStringOption(o => o.setName('period').setDescription('Reporting period').addChoices(
       { name:'Today', value:'today' }, { name:'This month', value:'month' })));
   commands.push(new SlashCommandBuilder().setName('target-policy').setDescription('Configure per-target trigger and verification behavior')
-    .addSubcommand(c=>c.setName('set').setDescription('Set target policy from JSON').addStringOption(o=>o.setName('input').setDescription('Target policy JSON').setRequired(true)))
+    .addSubcommand(c=>c.setName('set').setDescription('Set target policy from JSON').addStringOption(o=>o.setName('input').setDescription('Target policy JSON').setRequired(true)).addBooleanOption(o=>o.setName('confirm').setDescription('Confirm trigger policy change').setRequired(true)))
     .addSubcommand(c=>c.setName('show').setDescription('Show target policy').addStringOption(o=>o.setName('type').setDescription('sniper or social_rule').setRequired(true)).addStringOption(o=>o.setName('id').setDescription('Target UUID').setRequired(true)))
     .addSubcommand(c=>c.setName('bypass').setDescription('Request highest-risk social verification bypass').addStringOption(o=>o.setName('type').setDescription('Target type').setRequired(true)).addStringOption(o=>o.setName('id').setDescription('Target UUID').setRequired(true)).addBooleanOption(o=>o.setName('dont-ask-again').setDescription('Skip future warnings for this target only')))
     .addSubcommand(c=>c.setName('confirm-bypass').setDescription('Explicitly confirm bypass warning').addStringOption(o=>o.setName('challenge').setDescription('Challenge UUID').setRequired(true)).addStringOption(o=>o.setName('confirmation').setDescription('Must be CONFIRM').setRequired(true)))
-    .addSubcommand(c=>c.setName('preset').setDescription('Apply a mode preset starting point').addStringOption(o=>o.setName('input').setDescription('Target and preset JSON').setRequired(true)))
-    .addSubcommand(c=>c.setName('reset').setDescription('Reset target policy and bypass acknowledgement').addStringOption(o=>o.setName('type').setDescription('Target type').setRequired(true)).addStringOption(o=>o.setName('id').setDescription('Target UUID').setRequired(true))));
+    .addSubcommand(c=>c.setName('preset').setDescription('Apply a mode preset starting point').addStringOption(o=>o.setName('input').setDescription('Target and preset JSON').setRequired(true)).addBooleanOption(o=>o.setName('confirm').setDescription('Confirm target preset change').setRequired(true)))
+    .addSubcommand(c=>c.setName('reset').setDescription('Reset target policy and bypass acknowledgement').addStringOption(o=>o.setName('type').setDescription('Target type').setRequired(true)).addStringOption(o=>o.setName('id').setDescription('Target UUID').setRequired(true)).addBooleanOption(o=>o.setName('confirm').setDescription('Confirm policy reset').setRequired(true))));
   commands.push(new SlashCommandBuilder().setName('confirm-trigger').setDescription('Confirm a pending triggered mint')
     .addStringOption(o=>o.setName('request').setDescription('Confirmation request UUID').setRequired(true))
     .addStringOption(o=>o.setName('confirmation').setDescription('Must be CONFIRM').setRequired(true)));
   commands.push(new SlashCommandBuilder().setName('trigger-audit').setDescription('Show trigger execution audit records'));
+  commands.push(new SlashCommandBuilder().setName('pending').setDescription('View pending transactions and confirmations'));
   return commands.map(command => command.toJSON());
 }
 
@@ -104,19 +109,26 @@ function formatRows(rows, empty, mapper) {
   return rows.length ? rows.map(mapper).join('\n') : empty;
 }
 
-function createDiscordInteractionHandler({ identity, commands, log = () => {} }) {
+function createDiscordInteractionHandler({ identity, commands, allowedGuildId, securityAudit={record:async()=>{}},
+  rateLimiter=createCommandRateLimiter(), log = () => {} }) {
+  const audit=value=>Promise.resolve(securityAudit.record(value)).catch(error=>log(`Security audit write failed: ${error.message}`));
   return async interaction => {
     if (!interaction.isChatInputCommand?.()) return;
+    let context,userId=null;
     try {
+      context=verifyDiscordContext(interaction,allowedGuildId);
       await interaction.deferReply({ ephemeral: true });
-      const discordId = interaction.user.id;
+      const discordId = context.platformUserId;
       if (interaction.commandName === 'link' && interaction.options.getString('code')) {
         const userId = await identity.consumeLinkCode({ code: interaction.options.getString('code'),
           platform: 'discord', platformUserId: discordId });
-        await interaction.editReply(`Account linked. Discord now uses GhostMint identity ${userId}.`);
+        await interaction.editReply(escapeDiscord(`Account linked. Discord now uses GhostMint identity ${userId}.`));
         return;
       }
-      const userId = await identity.resolveOrCreate('discord', discordId);
+      userId = await identity.resolveOrCreate('discord', discordId);
+      if(['wallet','mint','batch-mint','admin','watch','sniper','confirm-trigger','target-policy'].includes(interaction.commandName)) {
+        rateLimiter.check('discord',userId,interaction.commandName);
+      }
       let message;
       switch (interaction.commandName) {
         case 'link': {
@@ -148,7 +160,7 @@ function createDiscordInteractionHandler({ identity, commands, log = () => {} })
           const action = interaction.options.getSubcommand();
           if (action === 'create') { confirmation(interaction); const task = await commands.createTask(userId, json(interaction.options.getString('input'))); message = `Task **${task.name}** scheduled for ${new Date(task.mintTime).toISOString()} UTC (ID: ${task.id}).`; }
           else if (action === 'list') message = formatRows(await commands.tasks(userId), 'No scheduled tasks.', task => `**${task.name}** [${task.status}] — ${new Date(task.mintTime).toISOString()} — ${task.id}`);
-          else { if (['cancel', 'retry'].includes(action)) confirmation(interaction); const task = await commands.controlTask(userId, action, interaction.options.getString('id')); message = `Task **${task.name}** is now ${task.status}.`; }
+          else { if (['cancel', 'resume', 'retry'].includes(action)) confirmation(interaction); const task = await commands.controlTask(userId, action, interaction.options.getString('id')); message = `Task **${task.name}** is now ${task.status}.`; }
           break;
         }
         case 'activity': message = formatRows(commands.activity(userId), 'No activity yet.', item => `${item.status}: ${item.title} — ${item.walletLabel}`); break;
@@ -162,13 +174,13 @@ function createDiscordInteractionHandler({ identity, commands, log = () => {} })
         case 'gas': { const value = await commands.gas(interaction.options.getString('chain') || 'ethereum'); message = `${value.chain}: gas ${value.gasPriceGwei ?? 'unavailable'} Gwei, max fee ${value.maxFeePerGasGwei ?? 'unavailable'} Gwei.`; break; }
         case 'sniper': {
           const action = interaction.options.getSubcommand();
-          if (action === 'create') { const sniper = await commands.createSniper(userId, json(interaction.options.getString('input'))); message = `Post-confirmation copy sniper **${sniper.label}** created. This is not mempool front-running.`; }
-          else if (action === 'update') { const sniper = await commands.updateSniper(userId, interaction.options.getString('id'), json(interaction.options.getString('patch'))); message = `Post-confirmation copy sniper **${sniper.label}** updated.`; }
+          if (action === 'create') { confirmation(interaction);const sniper = await commands.createSniper(userId, json(interaction.options.getString('input'))); message = `Post-confirmation copy sniper **${sniper.label}** created. This is not mempool front-running.`; }
+          else if (action === 'update') { confirmation(interaction);const sniper = await commands.updateSniper(userId, interaction.options.getString('id'), json(interaction.options.getString('patch'))); message = `Post-confirmation copy sniper **${sniper.label}** updated.`; }
           else { const values = commands.snipers(userId); const selected = action === 'status' ? values.filter(item => item.id === interaction.options.getString('id')) : values; message = `Post-confirmation copying only; not mempool front-running.\n${formatRows(selected, 'No matching snipers.', item => `**${item.label}** [${item.active ? 'active' : 'inactive'}] — ${item.id}`)}`; }
           break;
         }
-        case 'mode': message = `Transaction mode set to **${await commands.selectMode(userId, interaction.options.getString('preset'))}**.`; break;
-        case 'admin': message = await commands.admin(userId, interaction.options.getString('action')); break;
+        case 'mode': confirmation(interaction);message = `Transaction mode set to **${await commands.selectMode(userId, interaction.options.getString('preset'))}**.`; break;
+        case 'admin': confirmation(interaction);message = await commands.admin(userId, interaction.options.getString('action')); break;
         case 'watch': {
           const action = interaction.options.getSubcommand();
           if (action === 'add') { const rule = await commands.createWatchRule(userId, json(interaction.options.getString('input'))); message = `Social watch rule **${rule.name}** created with ${rule.method}.`; }
@@ -187,24 +199,36 @@ function createDiscordInteractionHandler({ identity, commands, log = () => {} })
         }
         case 'target-policy': {
           const action=interaction.options.getSubcommand();
-          if(action==='set'){const policy=await commands.updateTargetPolicy(userId,json(interaction.options.getString('input')));message=`Target policy saved: blockchain ${policy.blockchainTrigger}, social ${policy.socialTrigger}, verification ${policy.humanVerification}.`;}
+          if(action==='set'){confirmation(interaction);const policy=await commands.updateTargetPolicy(userId,json(interaction.options.getString('input')));message=`Target policy saved: blockchain ${policy.blockchainTrigger}, social ${policy.socialTrigger}, verification ${policy.humanVerification}.`;}
           else if(action==='show'){const policy=await commands.targetPolicy(userId,interaction.options.getString('type'),interaction.options.getString('id'));message=JSON.stringify(policy);}
           else if(action==='bypass'){const result=await commands.requestTargetBypass(userId,{targetType:interaction.options.getString('type'),targetId:interaction.options.getString('id'),dontAskAgain:interaction.options.getBoolean('dont-ask-again')===true});message=result.requiresConfirmation?`${result.warning}\nChallenge: ${result.challengeId}`:'Verification bypass enabled for this previously acknowledged target.';}
           else if(action==='confirm-bypass'){const policy=await commands.confirmTargetBypass(userId,{challengeId:interaction.options.getString('challenge'),confirmation:interaction.options.getString('confirmation')});message=`Verification is now ${policy.humanVerification} for this target.`;}
-          else if(action==='preset'){const result=await commands.applyTargetPreset(userId,json(interaction.options.getString('input')));message=result.requiresConfirmation?`${result.warning}\nChallenge: ${result.challengeId}`:`Target preset applied; verification ${result.humanVerification}.`;}
-          else {const policy=await commands.resetTargetPolicy(userId,{targetType:interaction.options.getString('type'),targetId:interaction.options.getString('id')});message=`Target policy reset. Verification is ${policy.humanVerification}; bypass acknowledgement cleared.`;}
+          else if(action==='preset'){confirmation(interaction);const result=await commands.applyTargetPreset(userId,json(interaction.options.getString('input')));message=result.requiresConfirmation?`${result.warning}\nChallenge: ${result.challengeId}`:`Target preset applied; verification ${result.humanVerification}.`;}
+          else {confirmation(interaction);const policy=await commands.resetTargetPolicy(userId,{targetType:interaction.options.getString('type'),targetId:interaction.options.getString('id')});message=`Target policy reset. Verification is ${policy.humanVerification}; bypass acknowledgement cleared.`;}
           break;
         }
         case 'confirm-trigger': {const result=await commands.confirmTrigger(userId,interaction.options.getString('request'),interaction.options.getString('confirmation'));message=`Triggered mint ${result.result.state}.`;break;}
         case 'trigger-audit': {const rows=await commands.triggerAudit(userId);message=rows.length?rows.map(row=>`${row.trigger_source} | ${row.target_type}:${row.target_id} | verification ${row.verification_state} | ${row.outcome}`).join('\n'):'No trigger executions audited.';break;}
+        case 'pending': {const [transactions,confirmations]=await Promise.all([commands.pendingTransactions(userId),commands.pendingConfirmations(userId)]);
+          message=`Pending transactions: ${transactions.length}\n${transactions.map(row=>`${row.intentId} | ${row.state} | ${row.chain}`).join('\n')||'None'}\n\nPending confirmations: ${confirmations.length}\n${confirmations.map(row=>`${row.id} | ${row.triggerSource} | expires ${new Date(row.expiresAt).toISOString()}`).join('\n')||'None'}`;break;}
         default: throw new Error('Unknown Discord command');
       }
+      message=escapeDiscord(message);
       await interaction.editReply(message);
     } catch (error) {
       let message = 'Command failed safely. Please try again.';
-      if (error instanceof ValidationError) message = validationReply(error);
-      else if (error instanceof AuthorizationError) message = 'Owner access required.';
-      else if (error instanceof LinkCodeError || error instanceof ProofResolutionError) message = error.message;
+      if (error instanceof ValidationError) message = escapeDiscord(validationReply(error));
+      else if (error instanceof AuthorizationError) { message = 'Owner access required.';
+        await audit({userId,platform:'discord',platformUserId:context?.platformUserId,
+          contextId:context?.contextId,command:commandName(interaction.commandName),outcome:'unauthorized',reason:error.message}); }
+      else if (error instanceof RateLimitError) { message=`Too many sensitive commands. Retry in ${Math.ceil(error.retryAfterMs/1000)} seconds.`;
+        await audit({userId,platform:'discord',platformUserId:context?.platformUserId,
+          contextId:context?.contextId,command:commandName(interaction.commandName),outcome:'rate_limited',reason:error.message}); }
+      else if (error instanceof BotContextError) { message='Command rejected: use the authorized development guild and channel.';
+        await audit({platform:'discord',platformUserId:interaction.user?.id,
+          contextId:`${interaction.guildId||''}:${interaction.channelId||''}`,command:commandName(interaction.commandName),
+          outcome:'invalid_context',reason:error.message}); }
+      else if (error instanceof LinkCodeError || error instanceof ProofResolutionError) message = escapeDiscord(error.message);
       else log(`Discord command failed: ${error?.message || 'unknown error'}`);
       if (interaction.deferred || interaction.replied) await interaction.editReply(message).catch(() => {});
       else await interaction.reply({ content: message, ephemeral: true }).catch(() => {});
@@ -212,10 +236,11 @@ function createDiscordInteractionHandler({ identity, commands, log = () => {} })
   };
 }
 
-function createDiscordBot({ token, applicationId, devGuildId, identity, commands, log, client, rest }) {
+function createDiscordBot({ token, applicationId, devGuildId, identity, commands, securityAudit, rateLimiter, log, client, rest }) {
   const discordClient = client || new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.DirectMessages] });
   const api = rest || new REST({ version: '10' }).setToken(token);
-  discordClient.on('interactionCreate', createDiscordInteractionHandler({ identity, commands, log }));
+  discordClient.on('interactionCreate', createDiscordInteractionHandler({ identity, commands, allowedGuildId:devGuildId,
+    securityAudit,rateLimiter,log }));
   return {
     client: discordClient,
     async start() {
@@ -225,9 +250,9 @@ function createDiscordBot({ token, applicationId, devGuildId, identity, commands
     },
     async sendDirectMessage(platformUserId, message) {
       const user = await discordClient.users.fetch(platformUserId);
-      await user.send({ content: message });
+      await user.send({ content: escapeDiscord(message) });
     },
-    stop() { discordClient.destroy(); },
+    async stop() { await discordClient.destroy(); },
   };
 }
 

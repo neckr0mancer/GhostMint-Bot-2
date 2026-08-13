@@ -109,6 +109,12 @@ Verification bypass is never accepted through ordinary policy updates. Telegram 
 
 Blockchain auto copy events proceed through existing sniper execution without forced human verification. Blockchain manual events and all social events except social-auto with confirmed bypass create durable ten-minute confirmation requests containing a decoded M8 preview where available. Confirm with Telegram `/confirmtrigger <request-id> CONFIRM` or Discord `/confirm-trigger`. Executions append queryable `trigger_execution_audit` rows recording source, target, verification state, acknowledgement state, confirmation display, transaction intent/hash, and outcome; Telegram `/triggeraudit` and Discord `/trigger-audit` display recent records.
 
+### Bot security and command confirmation
+
+Telegram commands are accepted only from the immutable sender's private chat; Discord commands are accepted only from the configured development guild and an originating channel. Every command resolves that platform identity to the internal user before accessing repositories. Owner denials, invalid command contexts, and sensitive-command rate-limit events are persisted in `bot_security_audit` with platform identity, context, command, outcome, and reason.
+
+Destructive and value-moving commands require explicit confirmation on both platforms. Discord uses required `confirm` options; Telegram uses the exact final token `CONFIRM` (or a `confirmation: "CONFIRM"` field for JSON mint calls). Sensitive mint, admin, watch-rule, sniper, and target-policy operations are throttled per platform identity. `/pending` and Discord `/pending` show user-scoped non-final transactions and trigger confirmations. Bot responses use plain Telegram text and escaped Discord content to prevent formatting/mention injection. SIGINT/SIGTERM stop polling, Discord, scheduler/social workers, chain watchers, HTTP acceptance, and the database pool in order.
+
 ### Chain and database configuration
 
 Supported chain names are `ethereum`, `base`, `arbitrum`, and `polygon`. Every configured RPC override must be an HTTP or HTTPS URL without embedded credentials. Public RPC defaults remain available when an override is blank.

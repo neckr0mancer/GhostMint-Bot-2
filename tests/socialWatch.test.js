@@ -92,6 +92,14 @@ test('repeated adapter failure notifies the rule owner at the configured thresho
   assert.match(notifications[0][1],/failed 3 consecutive times/);
 });
 
+test('failed social failure-notification does not change watcher failure state or crash polling',async()=>{
+ const repository=memoryRepository();
+ const service=createSocialWatchService({repository,adapters:new Map([['scraper',{poll:async()=>{throw new Error('broken target');}}]]),
+  emitTrigger:async()=>{},notifyOwner:async()=>{throw new Error('delivery down');},failureNotifyThreshold:1});
+ const rule=await service.create('user-a',valid('twitter_account','scraper',1));
+ assert.deepEqual(await service.processRule(rule),[]);assert.equal(rule.consecutiveFailures,1);
+});
+
 test('switching method changes adapter selection without changing watcher core', async () => {
   const repository=memoryRepository(); const calls=[];
   const adapters=new Map(['official_api','managed_service','scraper'].map(method=>[method,{poll:async()=>{calls.push(method);return{items:[]};}}]));

@@ -32,6 +32,10 @@ const { AuthorizationError, createGovernanceService } = require('./governance/go
 const { createPostgresGovernanceRepository } = require('./governance/postgresGovernanceRepository');
 const { createKeyEncryption } = require('./security/keyEncryption');
 const { createRedactor } = require('./security/redaction');
+const { BotContextError, RateLimitError, commandName, createCommandRateLimiter,
+  requireTextConfirmation,verifyTelegramContext } = require('./security/botSecurity');
+const { createBotSecurityRepository } = require('./security/botSecurityRepository');
+const { createGracefulShutdown } = require('./security/gracefulShutdown');
 const { createPostgresStorage } = require('./storage/postgresStorage');
 const { createTransactionIntentRepository } = require('./transactions/intentRepository');
 const { createTransactionPolicyRepository } = require('./transactions/policyRepository');
@@ -58,6 +62,8 @@ const schedulerRepository = createSchedulerRepository(pool);
 const sniperRepository = createSniperRepository(pool);
 const socialWatchRepository = createSocialWatchRepository(pool);
 const targetPolicyRepository = createTargetPolicyRepository(pool);
+const botSecurityRepository = createBotSecurityRepository(pool);
+const commandRateLimiter = createCommandRateLimiter();
 const mintPresetRepository = createPostgresMintPresetRepository(pool);
 const mintService = createMintService({
   presetRepository: mintPresetRepository,
@@ -350,7 +356,7 @@ async function onBlock(chain, blockNumber) {
 let bot = null;
 let discordBot = null;
 function tg(chatId, msg) {
-  if (bot && chatId) return bot.sendMessage(chatId, msg, { parse_mode:'Markdown' }).catch(e => log('TG: '+safeError(e)));
+  if (bot && chatId) return bot.sendMessage(chatId, String(msg)).catch(e => log('TG: '+safeError(e)));
   return Promise.resolve();
 }
 
@@ -394,8 +400,15 @@ function stateFor(userId) {
 
 function withTelegramUser(handler) {
   return async (msg, match) => {
+    let context,userId=null;
+    const audit=value=>Promise.resolve(botSecurityRepository.record(value)).catch(error=>log(`Security audit write failed: ${safeError(error)}`));
     try {
-      const userId = await identity.resolveOrCreate('telegram', msg.from.id);
+      context=verifyTelegramContext(msg);
+      userId=await identity.resolveOrCreate('telegram',context.platformUserId);
+      const command=commandName(msg.text||msg.caption);
+      if(['mintnow','mintcall','mintpreset','admin','watch','confirmtrigger','targetpolicy','updatesniper','importwallet'].includes(command)) {
+        commandRateLimiter.check('telegram',userId,command);
+      }
       await handler(msg, match, userId);
     } catch (error) {
       if (error instanceof ValidationError) {
@@ -403,8 +416,19 @@ function withTelegramUser(handler) {
         return;
       }
       if (error instanceof AuthorizationError) {
+        await audit({userId,platform:'telegram',platformUserId:context?.platformUserId,
+          contextId:context?.contextId,command:commandName(msg.text||msg.caption),outcome:'unauthorized',reason:error.message});
         tg(msg.chat.id, '❌ Owner access required.');
         return;
+      }
+      if(error instanceof RateLimitError){
+        await audit({userId,platform:'telegram',platformUserId:context?.platformUserId,
+          contextId:context?.contextId,command:commandName(msg.text||msg.caption),outcome:'rate_limited',reason:error.message});
+        tg(msg.chat.id,`Too many sensitive commands. Retry in ${Math.ceil(error.retryAfterMs/1000)} seconds.`);return;
+      }
+      if(error instanceof BotContextError){
+        await audit({platform:'telegram',platformUserId:msg.from?.id,contextId:msg.chat?.id,
+          command:commandName(msg.text||msg.caption),outcome:'invalid_context',reason:error.message});return;
       }
       if (error instanceof ProofResolutionError) {
         tg(msg.chat.id, `❌ ${error.message}`);
@@ -420,10 +444,7 @@ if (BOT_TOKEN) {
   bot = new TelegramBot(BOT_TOKEN, { polling: true });
   log('Telegram bot started');
   bot.on('message', msg => {
-    if (msg.text?.startsWith('/') && msg.from?.id) {
-      identity.resolveOrCreate('telegram', msg.from.id)
-        .catch(error => log(`Telegram identity resolution failed: ${safeError(error)}`));
-    }
+    if(msg.text?.startsWith('/')&&!msg.from?.id) log('Telegram command without sender ignored');
   });
 
   bot.onText(/^\/(?:start|help)(?:@\w+)?$/, withTelegramUser(async msg => {
@@ -435,16 +456,20 @@ if (BOT_TOKEN) {
     tg(msg.chat.id, `🔗 *Account link code:* \`${link.code}\`\n\nExpires in 5 minutes and can be used once.`);
   }));
 
-  bot.onText(/^\/mode(?:@\w+)?\s+(.+)$/, withTelegramUser(async (msg, match, userId) => {
+  bot.onText(/^\/mode(?:@\w+)?\s+(\S+)\s+(CONFIRM)$/i, withTelegramUser(async (msg, match, userId) => {
+    requireTextConfirmation(match[2]);
     const selected = await botCommands.selectMode(userId, match[1]);
     tg(msg.chat.id, `✅ Transaction mode set to *${selected.replaceAll('_', ' ')}*.`);
   }));
 
-  bot.onText(/^\/admin(?:@\w+)?(?:\s+(.*))?$/, withTelegramUser(async (msg, match, userId) => {
+  bot.onText(/^\/admin(?:@\w+)?\s+(.+)\s+(CONFIRM)$/i, withTelegramUser(async (msg, match, userId) => {
+    requireTextConfirmation(match[2]);
     tg(msg.chat.id, await botCommands.admin(userId, match[1]));
   }));
 
   async function runFlexibleMint(msg, userId, payload, manualAuthorization) {
+    if(payload.confirmation!=='CONFIRM')throw new ValidationError({field:'confirmation',message:'must exactly equal CONFIRM'});
+    delete payload.confirmation;
     const wallet = findOwnedWallet(DB, userId, payload.walletLabel);
     if (!wallet) throw new ValidationError({ field:'walletLabel', message:'was not found' });
     const prepared = await mintService.prepare({
@@ -491,6 +516,7 @@ if (BOT_TOKEN) {
 
   bot.onText(/^\/mintpreset(?:@\w+)?\s+use\s+(.+)$/, withTelegramUser(async (msg, match, userId) => {
     const payload = commandJson(match[1]);
+    if(payload.confirmation!=='CONFIRM')throw new ValidationError({field:'confirmation',message:'must exactly equal CONFIRM'});
     const wallet = findOwnedWallet(DB, userId, payload.walletLabel);
     if (!wallet) throw new ValidationError({ field:'walletLabel', message:'was not found' });
     const prepared = await mintService.preparePreset(userId, payload.name, wallet.address);
@@ -503,7 +529,8 @@ if (BOT_TOKEN) {
     await tg(msg.chat.id, `✅ Preset mint successful.\n${CHAINS[prepared.chain].ex}${txHash}`, {});
   }));
 
-  bot.onText(/^\/mintpreset(?:@\w+)?\s+delete\s+(.+)$/, withTelegramUser(async (msg, match, userId) => {
+  bot.onText(/^\/mintpreset(?:@\w+)?\s+delete\s+(.+)\s+(CONFIRM)$/i, withTelegramUser(async (msg, match, userId) => {
+    requireTextConfirmation(match[2]);
     const deleted = await mintService.deletePreset(userId, match[1]);
     await tg(msg.chat.id, deleted ? '✅ Mint preset deleted.' : 'Mint preset not found.');
   }));
@@ -522,7 +549,8 @@ if (BOT_TOKEN) {
     tg(msg.chat.id, `🎯 *Post-confirmation copy snipers (${snipers.length})*\n_Not mempool front-running: copying begins only after the source transaction confirms._\n\n${list}`);
   }));
 
-  bot.onText(/^\/updatesniper(?:@\w+)?\s+([0-9a-f-]+)\s+(.+)$/i, withTelegramUser(async (msg, match, userId) => {
+  bot.onText(/^\/updatesniper(?:@\w+)?\s+([0-9a-f-]+)\s+(.+)\s+(CONFIRM)$/i, withTelegramUser(async (msg, match, userId) => {
+    requireTextConfirmation(match[3]);
     const updated = await botCommands.updateSniper(userId, match[1], commandJson(match[2]));
     const sniper = botCommands.snipers(userId).find(item => item.id === updated.id);
     tg(msg.chat.id, `✅ Post-confirmation copy sniper *${sniper.label}* updated. This is not mempool front-running.`);
@@ -562,7 +590,8 @@ if (BOT_TOKEN) {
     tg(msg.chat.id, `⏸ Social watch rule *${rule.name}* disabled.`);
   }));
 
-  bot.onText(/^\/watch(?:@\w+)?\s+remove\s+([0-9a-f-]+)$/i, withTelegramUser(async (msg, match, userId) => {
+  bot.onText(/^\/watch(?:@\w+)?\s+remove\s+([0-9a-f-]+)\s+(CONFIRM)$/i, withTelegramUser(async (msg, match, userId) => {
+    requireTextConfirmation(match[2]);
     await botCommands.removeWatchRule(userId, match[1]);
     tg(msg.chat.id, '✅ Social watch rule removed.');
   }));
@@ -576,7 +605,8 @@ if (BOT_TOKEN) {
     tg(msg.chat.id, formatUsageSummary(await botCommands.socialUsage(userId, match[1] || 'month')));
   }));
 
-  bot.onText(/^\/targetpolicy(?:@\w+)?\s+set\s+(.+)$/i,withTelegramUser(async(msg,match,userId)=>{
+  bot.onText(/^\/targetpolicy(?:@\w+)?\s+set\s+(.+)\s+(CONFIRM)$/i,withTelegramUser(async(msg,match,userId)=>{
+    requireTextConfirmation(match[2]);
     const policy=await botCommands.updateTargetPolicy(userId,commandJson(match[1]));
     tg(msg.chat.id,`✅ Target policy saved: blockchain ${policy.blockchainTrigger}, social ${policy.socialTrigger}, verification ${policy.humanVerification}.`);
   }));
@@ -584,7 +614,8 @@ if (BOT_TOKEN) {
     const policy=await botCommands.targetPolicy(userId,match[1],match[2]);
     tg(msg.chat.id,`Target policy: blockchain ${policy.blockchainTrigger}, social ${policy.socialTrigger}, verification ${policy.humanVerification}, acknowledged ${policy.dontAskAgain?'yes':'no'}.`);
   }));
-  bot.onText(/^\/targetpolicy(?:@\w+)?\s+reset\s+(sniper|social_rule)\s+([0-9a-f-]+)$/i,withTelegramUser(async(msg,match,userId)=>{
+  bot.onText(/^\/targetpolicy(?:@\w+)?\s+reset\s+(sniper|social_rule)\s+([0-9a-f-]+)\s+(CONFIRM)$/i,withTelegramUser(async(msg,match,userId)=>{
+    requireTextConfirmation(match[3]);
     const policy=await botCommands.resetTargetPolicy(userId,match[1],match[2]);
     tg(msg.chat.id,`✅ Target policy reset: blockchain ${policy.blockchainTrigger}, social ${policy.socialTrigger}, verification ${policy.humanVerification}.`);
   }));
@@ -596,7 +627,8 @@ if (BOT_TOKEN) {
     const policy=await botCommands.confirmTargetBypass(userId,{challengeId:match[1],confirmation:match[2]});
     tg(msg.chat.id,`✅ Verification is now ${policy.humanVerification} for this target.`);
   }));
-  bot.onText(/^\/targetpolicy(?:@\w+)?\s+preset\s+(.+)$/i,withTelegramUser(async(msg,match,userId)=>{
+  bot.onText(/^\/targetpolicy(?:@\w+)?\s+preset\s+(.+)\s+(CONFIRM)$/i,withTelegramUser(async(msg,match,userId)=>{
+    requireTextConfirmation(match[2]);
     const result=await botCommands.applyTargetPreset(userId,commandJson(match[1]));
     tg(msg.chat.id,result.requiresConfirmation?`${result.warning}\nChallenge: \`${result.challengeId}\`\nUse /confirmbypass ${result.challengeId} CONFIRM`:`✅ Target preset applied; verification ${result.humanVerification}.`);
   }));
@@ -605,6 +637,10 @@ if (BOT_TOKEN) {
   }));
   bot.onText(/^\/triggeraudit(?:@\w+)?$/i,withTelegramUser(async(msg,match,userId)=>{
     const rows=await botCommands.triggerAudit(userId);tg(msg.chat.id,rows.length?rows.map(row=>`${row.trigger_source} | ${row.target_type}:${row.target_id} | verification ${row.verification_state} | ${row.outcome}`).join('\n'):'No trigger executions audited.');
+  }));
+  bot.onText(/^\/pending(?:@\w+)?$/i,withTelegramUser(async(msg,match,userId)=>{
+    const [transactions,confirmations]=await Promise.all([botCommands.pendingTransactions(userId),botCommands.pendingConfirmations(userId)]);
+    tg(msg.chat.id,`Pending transactions: ${transactions.length}\n${transactions.map(row=>`${row.intentId} | ${row.state} | ${row.chain}`).join('\n')||'None'}\n\nPending confirmations: ${confirmations.length}\n${confirmations.map(row=>`${row.id} | ${row.triggerSource} | expires ${new Date(row.expiresAt).toISOString()}`).join('\n')||'None'}`);
   }));
 
   bot.onText(/^\/tasks(?:@\w+)?$/, withTelegramUser(async (msg, match, userId) => {
@@ -644,7 +680,8 @@ if (BOT_TOKEN) {
     tg(msg.chat.id, `📊 *GhostMint Stats*\n\n⬡ Wallets: *${state.wallets.length}*\n⏱ Pending: *${pending}*\n⚡ Minted: *${minted}*\n✅ Success rate: *${total?Math.round(success/total*100):0}%*\n⏰ Uptime: ${fmtCD(process.uptime()*1000)}`);
   }));
 
-  bot.onText(/^\/canceltask(?:@\w+)?\s+(.+)$/, withTelegramUser(async (msg, match, userId) => {
+  bot.onText(/^\/canceltask(?:@\w+)?\s+([0-9a-f-]+)\s+(CONFIRM)$/i, withTelegramUser(async (msg, match, userId) => {
+    requireTextConfirmation(match[2]);
     const task = await botCommands.controlTask(userId, 'cancel', match[1]);
     tg(msg.chat.id, `✅ Task *${task.name}* cancelled.`);
   }));
@@ -654,22 +691,26 @@ if (BOT_TOKEN) {
     tg(msg.chat.id, `⏸ Task *${task.name}* paused.`);
   }));
 
-  bot.onText(/^\/resumetask(?:@\w+)?\s+(.+)$/, withTelegramUser(async (msg, match, userId) => {
+  bot.onText(/^\/resumetask(?:@\w+)?\s+([0-9a-f-]+)\s+(CONFIRM)$/i, withTelegramUser(async (msg, match, userId) => {
+    requireTextConfirmation(match[2]);
     const task = await botCommands.controlTask(userId, 'resume', match[1]);
     tg(msg.chat.id, `▶ Task *${task.name}* resumed.`);
   }));
 
-  bot.onText(/^\/retrytask(?:@\w+)?\s+(.+)$/, withTelegramUser(async (msg, match, userId) => {
+  bot.onText(/^\/retrytask(?:@\w+)?\s+([0-9a-f-]+)\s+(CONFIRM)$/i, withTelegramUser(async (msg, match, userId) => {
+    requireTextConfirmation(match[2]);
     const task = await botCommands.controlTask(userId, 'retry', match[1]);
     tg(msg.chat.id, `↻ Task *${task.name}* queued for retry.`);
   }));
 
-  bot.onText(/^\/removewallet(?:@\w+)?\s+(.+)$/, withTelegramUser(async (msg, match, userId) => {
+  bot.onText(/^\/removewallet(?:@\w+)?\s+(.+)\s+(CONFIRM)$/i, withTelegramUser(async (msg, match, userId) => {
+    requireTextConfirmation(match[2]);
     const label = await botCommands.removeWallet(userId, match[1]);
     tg(msg.chat.id, `✅ Wallet *${label}* removed.`);
   }));
 
-  bot.onText(/^\/mintnow(?:@\w+)?\s+(.+)$/, withTelegramUser(async (msg, match, userId) => {
+  bot.onText(/^\/mintnow(?:@\w+)?\s+(.+)\s+(CONFIRM)$/i, withTelegramUser(async (msg, match, userId) => {
+    requireTextConfirmation(match[2]);
     const parts = match[1].trim().split(/\s+/);
     if (parts.length < 2) return tg(msg.chat.id, 'Usage: /mintnow <label> <contract> [qty] [price] [chain]');
     const [label, contract, qtyRaw, priceRaw, chainRaw] = parts;
@@ -708,6 +749,7 @@ const botCommands = createBotCommandService({
   targetPolicyService,
   triggerExecutionService,
   triggerAuditRepository:targetPolicyRepository,
+  transactionIntentRepository,
   governanceRepository,
   supportedChains: CONFIG.supportedChains,
   chains: CHAINS,
@@ -729,7 +771,7 @@ const botCommands = createBotCommandService({
 if (CONFIG.discordBotToken) {
   discordBot = createDiscordBot({ token: CONFIG.discordBotToken,
     applicationId: CONFIG.discordApplicationId, devGuildId: CONFIG.discordDevGuildId,
-    identity, commands: botCommands, log });
+    identity, commands: botCommands, securityAudit:botSecurityRepository,rateLimiter:commandRateLimiter,log });
 } else {
   log('Discord disabled because credentials are not configured.');
 }
@@ -758,6 +800,7 @@ app.get('/health', async (req,res) => {
 app.get('*', (req,res) => res.sendFile(path.join(PROJECT_ROOT,'public','index.html')));
 
 // ── Start ─────────────────────────────────────────────────
+let httpServer=null;
 async function start() {
   DB = await storage.loadSystemState();
   const reconciled = await transactionEngine.reconcileNonFinal();
@@ -774,11 +817,18 @@ async function start() {
   log(`Started durable scheduler with ${await schedulerRepository.countActive()} active tasks`);
   DB.snipers.filter(s => s.active).forEach(s => ensureChainWatcher(s.chain));
   log(`Restored ${DB.snipers.filter(s=>s.active).length} active snipers`);
-  app.listen(PORT, () => {
+  httpServer=app.listen(PORT, () => {
     log(`GhostMint running on port ${PORT}`);
     log(`Wallets: ${DB.wallets.length} | Tasks: ${DB.tasks.length}`);
   });
 }
+
+const gracefulShutdown=createGracefulShutdown({getHttpServer:()=>httpServer,telegramBot:bot,discordBot,
+  schedulerWorker,socialWatchWorker,stopWatchers:()=>Object.keys(sniperProviders).forEach(chain=>{
+    sniperProviders[chain].removeAllListeners();sniperProviders[chain].destroy?.();delete sniperProviders[chain];
+  }),pool,log});
+for(const signal of ['SIGINT','SIGTERM'])process.once(signal,()=>gracefulShutdown(signal)
+  .then(()=>{process.exitCode=0;}).catch(error=>{log(`Shutdown failed: ${safeError(error)}`);process.exitCode=1;}));
 
 start().catch(error => {
   log(`Startup failed: ${safeError(error)}`);

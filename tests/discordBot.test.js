@@ -5,7 +5,7 @@ const { commandDefinitions, createDiscordInteractionHandler } = require('../src/
 
 function interaction({ commandName, userId = 'discord-user', subcommand = null, strings = {}, integers = {}, numbers = {}, booleans = {} }) {
   return {
-    commandName, user: { id: userId }, deferred: false, replied: false, replies: [],
+    commandName, user: { id: userId }, guildId:'guild',channelId:'channel',deferred: false, replied: false, replies: [],
     isChatInputCommand: () => true,
     options: {
       getSubcommand: () => subcommand,
@@ -23,7 +23,7 @@ function interaction({ commandName, userId = 'discord-user', subcommand = null, 
 test('Discord command definitions include the complete Milestone 10a surface', () => {
   const definitions = commandDefinitions();
   const names = definitions.map(command => command.name);
-  assert.deepEqual(names, ['wallet', 'mint', 'batch-mint', 'task', 'activity', 'pnl', 'gas', 'sniper', 'mode', 'admin', 'link', 'watch', 'social-usage', 'target-policy', 'confirm-trigger', 'trigger-audit']);
+  assert.deepEqual(names, ['wallet', 'mint', 'batch-mint', 'task', 'activity', 'pnl', 'gas', 'sniper', 'mode', 'admin', 'link', 'watch', 'social-usage', 'target-policy', 'confirm-trigger', 'trigger-audit', 'pending']);
   const wallet = definitions.find(command => command.name === 'wallet');
   const create = wallet.options.find(option => option.name === 'create');
   const imported = wallet.options.find(option => option.name === 'import');
@@ -85,14 +85,22 @@ test('Discord link consumption joins an existing identity without auto-creating 
   }, commands: {} });
   await handler(input);
   assert.equal(resolved, false);
-  assert.match(input.replies[0], /telegram-user/);
+  assert.match(input.replies[0], /telegram\\-user/);
 });
 
-test('non-owner Discord admin invocation is rejected idiomatically', async () => {
-  const input = interaction({ commandName: 'admin', strings: { action: 'group-delete Standard' } });
+test('non-owner Discord admin invocation is rejected and audited', async () => {
+  const audit=[];
+  const input = interaction({ commandName: 'admin', strings: { action: 'group-delete Standard' },booleans:{confirm:true} });
   const handler = createDiscordInteractionHandler({ identity: { resolveOrCreate: async () => 'regular-user' },
-    commands: { admin: async () => { throw new AuthorizationError(); } } });
+    commands: { admin: async () => { throw new AuthorizationError(); } },securityAudit:{record:async value=>audit.push(value)} });
   await handler(input);
   assert.equal(input.deferOptions.ephemeral, true);
   assert.equal(input.replies[0], 'Owner access required.');
+  assert.equal(audit[0].outcome,'unauthorized');assert.equal(audit[0].platformUserId,'discord-user');
+});
+
+test('Discord destructive action requires explicit confirmation before dispatch',async()=>{
+ let removed=false;const input=interaction({commandName:'wallet',subcommand:'remove',strings:{label:'alpha'},booleans:{confirm:false}});
+ await createDiscordInteractionHandler({identity:{resolveOrCreate:async()=> 'u'},commands:{removeWallet:async()=>{removed=true;}}})(input);
+ assert.equal(removed,false);assert.match(input.replies[0],/confirm/i);
 });

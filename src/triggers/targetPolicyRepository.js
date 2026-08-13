@@ -50,6 +50,9 @@ function createTargetPolicyRepository(pool) {
       value.dontAskAgain,value.confirmationShown,value.intentId||null,value.txHash||null,value.outcome]); },
     async listAudit(userId,limit=20) { const r=await pool.query(`SELECT * FROM trigger_execution_audit WHERE user_id=$1
       ORDER BY executed_at DESC LIMIT $2`,[userId,limit]); return r.rows; },
+    async listPendingRequests(userId,limit=20) { const r=await pool.query(`SELECT * FROM trigger_execution_requests
+      WHERE user_id=$1 AND status='pending' AND expires_at>NOW() ORDER BY created_at DESC LIMIT $2`,[userId,limit]);
+      return r.rows.map(mapRequest); },
   };
 }
 module.exports={createTargetPolicyRepository,mapPolicy,mapRequest};
