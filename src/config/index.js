@@ -210,12 +210,7 @@ function parseRpcUrl(envName, fallback) {
 }
 
 function parseTelegram() {
-  const botToken = optionalString('TELEGRAM_BOT_TOKEN');
-  const chatId = optionalString('TELEGRAM_CHAT_ID');
-  if ((botToken === null) !== (chatId === null)) {
-    throw new ConfigurationError('TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be configured together');
-  }
-  return { botToken, chatId };
+  return { botToken: optionalString('TELEGRAM_BOT_TOKEN') };
 }
 
 const environment = parseEnvironment();
@@ -245,15 +240,8 @@ const CONFIG = Object.freeze({
   isProduction: environment === 'production',
   port: parsePort(),
   botToken: telegram.botToken,
-  chatId: telegram.chatId,
-  encryptionSecret: encryption.keys[encryption.activeVersion],
   encryptionKeyVersion: encryption.activeVersion,
   encryptionKeys: encryption.keys,
-  dashboardPassword: validateSecret('DASHBOARD_PASSWORD', requiredString('DASHBOARD_PASSWORD'), environment, {
-    minimumLength: 16,
-    productionLength: 24,
-    minimumUniqueCharacters: 10,
-  }),
   databaseUrl: database.pooled,
   databaseUrlUnpooled: database.unpooled,
   databasePoolMax: parseInteger('DATABASE_POOL_MAX', 5, 1, 10),

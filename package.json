@@ -8,7 +8,7 @@
   "scripts": {
     "start": "node index.js",
     "dev": "node --watch index.js",
-    "check": "node --check index.js && node --check src/config/index.js && node --check src/db/pool.js && node --check src/db/migrate.js && node --check src/security/keyEncryption.js && node --check src/security/redaction.js && node --check src/storage/postgresStorage.js && node --check src/server.js && node --check scripts/migrate.js && node --check scripts/rotate-keys.js && node --check tests/config.test.js && node --check tests/keyEncryption.test.js && node --check tests/storage.integration.test.js && node --check tests/smoke.test.js",
+    "check": "node --check index.js && node --check src/config/index.js && node --check src/db/pool.js && node --check src/db/migrate.js && node --check src/identity/identityService.js && node --check src/identity/ownership.js && node --check src/identity/postgresIdentityRepository.js && node --check src/security/keyEncryption.js && node --check src/security/redaction.js && node --check src/storage/postgresStorage.js && node --check src/server.js && node --check scripts/migrate.js && node --check scripts/rotate-keys.js && node --check tests/commandAuthorization.test.js && node --check tests/config.test.js && node --check tests/identity.integration.test.js && node --check tests/keyEncryption.test.js && node --check tests/storage.integration.test.js && node --check tests/smoke.test.js",
     "lint": "eslint .",
     "test": "node --test",
     "validate": "npm run check && npm run lint && npm test",

@@ -63,7 +63,6 @@ smokeTest('the application starts and exposes a healthy database-backed service'
       DATABASE_URL_UNPOOLED: LOCAL_ENV.DATABASE_URL_UNPOOLED,
       PORT: String(port),
       TELEGRAM_BOT_TOKEN: '',
-      TELEGRAM_CHAT_ID: '',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -86,5 +85,4 @@ smokeTest('the application starts and exposes a healthy database-backed service'
   assert.equal(typeof body.uptime, 'number');
   assert.equal(typeof body.tasks, 'number');
   assert.doesNotMatch(stdout, new RegExp(EXAMPLE_ENV.ENCRYPTION_SECRET));
-  assert.doesNotMatch(stdout, new RegExp(EXAMPLE_ENV.DASHBOARD_PASSWORD));
 });

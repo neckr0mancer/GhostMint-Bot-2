@@ -19,9 +19,7 @@ const VALID_ENV = Object.freeze({
   ENCRYPTION_SECRET: 'dev-encryption-key-7Qv9!m2Lx4Rk8Zp3Cw6N',
   ENCRYPTION_KEY_VERSION: '1',
   ENCRYPTION_OLD_KEYS: '{}',
-  DASHBOARD_PASSWORD: 'dev-dashboard-9Nf4!Tq7Vx2Jm8Kp',
   TELEGRAM_BOT_TOKEN: '',
-  TELEGRAM_CHAT_ID: '',
   ETH_RPC: '',
   BASE_RPC: '',
   ARB_RPC: '',
@@ -48,7 +46,7 @@ test('accepts valid development configuration and returns only a safe summary', 
   assert.equal(output.poolMax, 5);
 
   const serialized = JSON.stringify(output.summary);
-  assert.doesNotMatch(serialized, /7Qv9|9Nf4|encryptionSecret|dashboardPassword/);
+  assert.doesNotMatch(serialized, /7Qv9|encryptionSecret/);
 });
 
 test('accepts each explicit runtime mode when its policy is satisfied', () => {
@@ -59,13 +57,12 @@ test('accepts each explicit runtime mode when its policy is satisfied', () => {
     DATABASE_URL: 'postgresql://app:strong-value@pooler.example.com:6543/ghostmint',
     DATABASE_URL_UNPOOLED: 'postgresql://migrator:strong-value@db.example.com:5432/ghostmint',
     ENCRYPTION_SECRET: 'production-key-7Qv9!m2Lx4Rk8Zp3Cw6N5Hs8Df1Aa4Bb9Cc!',
-    DASHBOARD_PASSWORD: 'production-access-9Nf4!Tq7Vx2Jm8Kp6Rs',
   });
   assert.equal(production.status, 0, production.stderr);
 });
 
 test('refuses to start when any required setting is missing', () => {
-  for (const name of ['NODE_ENV', 'SUPPORTED_CHAINS', 'ENCRYPTION_SECRET', 'DASHBOARD_PASSWORD']) {
+  for (const name of ['NODE_ENV', 'SUPPORTED_CHAINS', 'ENCRYPTION_SECRET']) {
     const result = probeConfig({ [name]: '' });
     assert.notEqual(result.status, 0, `${name} should be required`);
     assert.match(result.stderr, new RegExp(`${name} is required`));
@@ -76,7 +73,6 @@ test('requires both database URLs in production and validates their protocols', 
   const base = {
     NODE_ENV: 'production',
     ENCRYPTION_SECRET: 'production-key-7Qv9!m2Lx4Rk8Zp3Cw6N5Hs8Df1Aa4Bb9Cc!',
-    DASHBOARD_PASSWORD: 'production-access-9Nf4!Tq7Vx2Jm8Kp6Rs',
   };
   const missing = probeConfig(base);
   assert.notEqual(missing.status, 0);
@@ -96,13 +92,7 @@ test('validates versioned old encryption keys without exposing values', () => {
   assert.doesNotMatch(result.stdout, new RegExp(oldSecret));
 });
 
-test('refuses known default and weak secrets without echoing them', () => {
-  const weakSecret = 'ghostmint123';
-  const result = probeConfig({ DASHBOARD_PASSWORD: weakSecret });
-  assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /DASHBOARD_PASSWORD/);
-  assert.doesNotMatch(result.stderr, new RegExp(weakSecret));
-
+test('refuses known default and weak encryption secrets without echoing them', () => {
   const previousDefault = 'ghostmint_change_me_32chars_min!!';
   const previousDefaultResult = probeConfig({ ENCRYPTION_SECRET: previousDefault });
   assert.notEqual(previousDefaultResult.status, 0);
@@ -134,9 +124,8 @@ test('refuses unsupported and duplicate chain names', () => {
   assert.match(duplicate.stderr, /must not contain duplicates/);
 });
 
-test('requires Telegram token and chat ID to be configured together', () => {
-  const result = probeConfig({ TELEGRAM_BOT_TOKEN: '123456:bot-token', TELEGRAM_CHAT_ID: '' });
-  assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /must be configured together/);
-  assert.doesNotMatch(result.stderr, /bot-token/);
+test('accepts a Telegram bot token without a shared chat destination', () => {
+  const result = probeConfig({ TELEGRAM_BOT_TOKEN: '123456:bot-token' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).summary.telegramEnabled, true);
 });

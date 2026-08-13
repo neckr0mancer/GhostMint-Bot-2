@@ -5,6 +5,8 @@ const test = require('node:test');
 const { CONFIG } = require('../src/config');
 const { runMigrations } = require('../src/db/migrate');
 const { createDatabasePool } = require('../src/db/pool');
+const { createIdentityService } = require('../src/identity/identityService');
+const { createPostgresIdentityRepository } = require('../src/identity/postgresIdentityRepository');
 const { createKeyEncryption, KeyDecryptionError } = require('../src/security/keyEncryption');
 const { createPostgresStorage } = require('../src/storage/postgresStorage');
 
@@ -23,8 +25,10 @@ integrationTest('wallet data survives a pool restart and tampering fails authent
 
   const firstPool = createDatabasePool({ connectionString: CONFIG.databaseUrl, max: 2 });
   const firstStorage = createPostgresStorage(firstPool);
+  const identity = createIdentityService(createPostgresIdentityRepository(firstPool));
+  const userId = await identity.resolveOrCreate('telegram', `storage-${process.pid}-${Date.now()}`);
   const inserted = await firstStorage.addWallet({
-    label, address: '0x0000000000000000000000000000000000000001', chain: 'ethereum',
+    userId, label, address: '0x0000000000000000000000000000000000000001', chain: 'ethereum',
     keyEnvelope: crypto.encrypt(privateKey), minted: 0, addedAt: Date.now(),
   });
   await firstStorage.close();
@@ -32,7 +36,7 @@ integrationTest('wallet data survives a pool restart and tampering fails authent
   const secondPool = createDatabasePool({ connectionString: CONFIG.databaseUrl, max: 2 });
   const secondStorage = createPostgresStorage(secondPool);
   try {
-    const state = await secondStorage.loadState();
+    const state = await secondStorage.loadState(userId);
     const reloaded = state.wallets.find(wallet => wallet.label === label);
     assert.ok(reloaded, 'wallet must exist after reconnecting with a new pool');
     assert.equal(crypto.decrypt(reloaded.keyEnvelope), privateKey);
@@ -40,7 +44,7 @@ integrationTest('wallet data survives a pool restart and tampering fails authent
     const tampered = { ...reloaded.keyEnvelope, authTag: Buffer.alloc(16).toString('base64') };
     assert.throws(() => crypto.decrypt(tampered), KeyDecryptionError);
   } finally {
-    await secondStorage.deleteWallet(label);
+    await secondStorage.deleteWallet(userId, label);
     await secondStorage.close();
   }
 

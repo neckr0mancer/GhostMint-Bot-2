@@ -24,7 +24,7 @@ This roadmap breaks the remaining work into small, reviewable milestones. It is 
 
 ### Why it's needed
 - Configuration is currently read directly from environment variables throughout startup, and data persistence uses a single JSON file.
-- The app needs clear validation for secrets, RPC URLs, dashboard password, supported chains, and persisted records.
+- The app needs clear validation for secrets, RPC URLs, platform identity, supported chains, and persisted records.
 - Safer defaults are needed before handling private keys and automated transactions in production.
 
 ### Files that will change
@@ -42,20 +42,20 @@ This roadmap breaks the remaining work into small, reviewable milestones. It is 
 
 ### Why it's needed
 - The app stores encrypted private keys, exposes dashboard APIs, and performs on-chain transactions.
-- Dashboard authentication, encryption settings, input validation, and secret handling must be production-ready before adding more automation.
-- Unsafe defaults such as placeholder encryption secrets and simple shared dashboard passwords should be eliminated or explicitly development-only.
+- Platform identity, encryption settings, input validation, and secret handling must be production-ready before adding more automation.
+- Unsafe defaults such as placeholder encryption secrets and shared credentials must be eliminated.
 
 ### Files that will change
-- `index.js` — strengthen auth checks, wallet creation validation, request validation, and error responses.
-- `src/auth.js` or `auth.js` — isolate dashboard authentication and token/session behavior.
+- `index.js` — strengthen identity checks, wallet creation validation, request validation, and error responses.
+- `src/identity/` — isolate platform-account identity and account-linking behavior.
 - `src/crypto.js` or `crypto.js` — isolate private-key encryption/decryption and enforce secret requirements.
 - `.env.example` — document secure secret requirements and recommended production values.
 - `README.md` — add security warnings, backup guidance, and operational requirements.
 
 ### How we'll know it's working
-- The app refuses to start in production with default `ENCRYPTION_SECRET` or `DASHBOARD_PASSWORD` values.
+- The app refuses to start in production with a default `ENCRYPTION_SECRET` value.
 - Wallet private keys are never returned by API responses or logs.
-- Unauthorized API requests consistently return `401` and authorized requests still work.
+- Telegram commands consistently resolve and enforce the sender's internal user identity.
 - Invalid wallet labels, private keys, addresses, and chain values are rejected with clear `400` responses.
 
 ## Milestone 4: Split the monolith into focused modules
@@ -77,7 +77,7 @@ This roadmap breaks the remaining work into small, reviewable milestones. It is 
 ### How we'll know it's working
 - `npm start` still starts the same server and Telegram bot behavior.
 - Existing API endpoints keep the same response shapes unless intentionally changed.
-- Manual smoke checks for `/health`, `/api/login`, `/api/stats`, wallet listing, task listing, and copy-mint listing pass.
+- Manual smoke checks for `/health` and per-user Telegram wallet, task, and copy-mint listing pass.
 - Each module can be imported without starting the HTTP server as a side effect.
 
 ## Milestone 5: Automated test foundation
@@ -95,7 +95,7 @@ This roadmap breaks the remaining work into small, reviewable milestones. It is 
 
 ### How we'll know it's working
 - `npm test` runs locally without requiring live private keys, live Telegram credentials, or real transactions.
-- Unit tests cover successful and failing cases for login, wallet validation, task creation, copy-mint watcher creation, and PnL entries.
+- Unit tests cover successful and failing cases for identity linking, wallet validation, task creation, copy-mint watcher creation, and PnL entries.
 - CI reports passing tests for pull requests.
 
 ## Milestone 6: Transaction safety and mint execution controls
@@ -122,7 +122,7 @@ This roadmap breaks the remaining work into small, reviewable milestones. It is 
 
 ### Why it's needed
 - The server serves a `public` dashboard, but the repository needs a complete, documented user interface for core workflows.
-- Users need safe screens for login, wallet management, manual minting, scheduled minting, batch minting, copy-mint watchers, activity, gas, and PnL.
+- Users need safe screens for linked-identity access, wallet management, manual minting, scheduled minting, batch minting, copy-mint watchers, activity, gas, and PnL.
 - The UI should make destructive or fund-spending actions explicit and hard to trigger accidentally.
 
 ### Files that will change

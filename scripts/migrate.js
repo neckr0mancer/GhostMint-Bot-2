@@ -6,7 +6,6 @@ const { createRedactor } = require('../src/security/redaction');
 const redact = createRedactor([
   CONFIG.databaseUrl,
   CONFIG.databaseUrlUnpooled,
-  CONFIG.dashboardPassword,
   CONFIG.botToken,
   ...Object.values(CONFIG.encryptionKeys),
 ]);

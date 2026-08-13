@@ -7,7 +7,6 @@ const { createPostgresStorage } = require('../src/storage/postgresStorage');
 const redact = createRedactor([
   CONFIG.databaseUrl,
   CONFIG.databaseUrlUnpooled,
-  CONFIG.dashboardPassword,
   CONFIG.botToken,
   ...Object.values(CONFIG.encryptionKeys),
 ]);
@@ -17,12 +16,12 @@ async function main() {
   const storage = createPostgresStorage(pool);
   const crypto = createKeyEncryption({ activeVersion: CONFIG.encryptionKeyVersion, keys: CONFIG.encryptionKeys });
   try {
-    const { wallets } = await storage.loadState();
+    const { wallets } = await storage.loadSystemState();
     let rotated = 0;
     for (const wallet of wallets) {
       if (wallet.keyEnvelope.keyVersion === crypto.activeVersion) continue;
       const envelope = crypto.rotate(wallet.keyEnvelope);
-      await storage.updateWalletEnvelope(wallet.id, envelope);
+      await storage.updateWalletEnvelope(wallet.userId, wallet.id, envelope);
       rotated += 1;
     }
     console.log(`Key rotation complete; rotated ${rotated} wallet(s) to version ${crypto.activeVersion}.`);

@@ -2,7 +2,7 @@
 
 GhostMint is an Express and Telegram service for managing EVM wallets, scheduling NFT mints, submitting manual and batch mints, and watching target wallets for post-confirmation copy-mint activity.
 
-> **Project status:** active prototype. PostgreSQL persistence and versioned envelope encryption are implemented, but authentication, transaction validation, and durable scheduling still require later milestones. Use disposable test wallets only.
+> **Project status:** active prototype. PostgreSQL persistence, versioned envelope encryption, and Telegram-backed multi-user identity are implemented. Transaction validation and durable scheduling still require later milestones. Use disposable test wallets only.
 
 ## Requirements
 
@@ -44,27 +44,30 @@ GET http://localhost:3000/health
 | `DATABASE_POOL_MAX` | No | Application pool size from 1-10; defaults to `5`. |
 | `SUPPORTED_CHAINS` | Yes | Comma-separated supported chain names; `ethereum` must currently be included. |
 | `TELEGRAM_BOT_TOKEN` | No | Enables Telegram polling when supplied. |
-| `TELEGRAM_CHAT_ID` | With Telegram | Required whenever `TELEGRAM_BOT_TOKEN` is supplied, and vice versa. |
 | `ENCRYPTION_SECRET` | Yes | Encrypts stored wallet private keys; subject to the secret-strength policy below. |
 | `ENCRYPTION_KEY_VERSION` | No | Positive integer identifying the active master key; defaults to `1`. |
 | `ENCRYPTION_OLD_KEYS` | No | JSON object mapping prior key versions to their secrets for decryption during rotation. |
-| `DASHBOARD_PASSWORD` | Yes | Protects dashboard API endpoints; subject to the secret-strength policy below. |
 | `ETH_RPC` | No | Ethereum RPC override. |
 | `BASE_RPC` | No | Base RPC override. |
 | `ARB_RPC` | No | Arbitrum RPC override. |
 | `POLYGON_RPC` | No | Polygon RPC override. |
 
-The application fails closed when a required value is missing or invalid. It never falls back to a built-in password or encryption secret.
+The application fails closed when a required value is missing or invalid. It never falls back to a built-in credential or encryption secret.
 
 ### Secret-strength policy
 
 - `ENCRYPTION_SECRET`: at least 32 characters in development/test and 48 in production, with at least 12 unique characters.
-- `DASHBOARD_PASSWORD`: at least 16 characters in development/test and 24 in production, with at least 10 unique characters.
-- Both values must contain at least three of: lowercase letters, uppercase letters, digits, and symbols.
+- The encryption secret must contain at least three of: lowercase letters, uppercase letters, digits, and symbols.
 - Known defaults and placeholder patterns such as `ghostmint`, `change_me`, `replace`, `password`, `default`, and `example` are rejected.
 - Leading or trailing whitespace is rejected.
 
-The values in `.env.example` are intentionally development-only. Generate independent random production values rather than reusing them.
+The value in `.env.example` is intentionally development-only. Generate independent random production values rather than reusing it.
+
+### Identity and account linking
+
+Telegram commands authenticate from Telegram's immutable sender ID. The first command from a sender automatically creates an internal UUID user and links that Telegram account. All wallets, tasks, activity, P&L records, snipers, and seen transactions are scoped to that UUID in both application logic and repository SQL.
+
+`/link` creates a cryptographically random code that expires after five minutes and can be consumed once. The linking service supports both `telegram` and `discord`; Discord command handling will call the same service when that bot is implemented. Password-based dashboard authentication has been removed. HTTP `/api` routes return `501` until Milestone 13 supplies a platform-linked dashboard login flow.
 
 ### Chain and database configuration
 
@@ -129,6 +132,7 @@ Store backups encrypted outside the application host. Test restores regularly an
 |   |-- server.js          Current application server
 |   |-- config/            Validated, fail-closed runtime configuration
 |   |-- db/                Pooled connections and direct migration runner
+|   |-- identity/          Platform identities and single-use account linking
 |   |-- security/          Authenticated key encryption and log redaction
 |   |-- routes/            Future HTTP route modules
 |   |-- services/          Future application services
@@ -147,7 +151,7 @@ Store backups encrypted outside the application host. Test restores regularly an
 
 `railway.json` uses Nixpacks and starts the root compatibility entrypoint with `node index.js`. Configure environment variables, add Railway PgBouncer in transaction mode, and run `npm run db:migrate` with the direct URL before deployment.
 
-Hardened authentication, transaction validation, durable scheduling, observability, and operational hardening remain future milestones.
+Discord bot integration, linked-account dashboard login, transaction validation, durable scheduling, observability, and operational hardening remain future milestones.
 
 ## Validation
 

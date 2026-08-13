@@ -6,6 +6,9 @@ const TelegramBot = require('node-telegram-bot-api');
 const axios       = require('axios');
 const { CHAINS, CONFIG, getSafeConfigSummary } = require('./config');
 const { createDatabasePool } = require('./db/pool');
+const { createIdentityService } = require('./identity/identityService');
+const { createPostgresIdentityRepository } = require('./identity/postgresIdentityRepository');
+const { findOwnedTask, findOwnedWallet, stateForUser } = require('./identity/ownership');
 const { createKeyEncryption } = require('./security/keyEncryption');
 const { createRedactor } = require('./security/redaction');
 const { createPostgresStorage } = require('./storage/postgresStorage');
@@ -13,13 +16,13 @@ const { createPostgresStorage } = require('./storage/postgresStorage');
 // ── Config ────────────────────────────────────────────────
 const PORT         = CONFIG.port;
 const BOT_TOKEN    = CONFIG.botToken;
-const CHAT_ID      = CONFIG.chatId;
-const DASH_PASS    = CONFIG.dashboardPassword;
 const PROJECT_ROOT = CONFIG.projectRoot;
 
 // ── Data ──────────────────────────────────────────────────
 const pool = createDatabasePool({ connectionString: CONFIG.databaseUrl, max: CONFIG.databasePoolMax });
 const storage = createPostgresStorage(pool);
+const identityRepository = createPostgresIdentityRepository(pool);
+const identity = createIdentityService(identityRepository);
 let DB = { wallets:[], tasks:[], activity:[], pnl:[], snipers:[] };
 
 // ── Crypto ────────────────────────────────────────────────
@@ -32,7 +35,6 @@ const decryptPK = wallet => keyEncryption.decrypt(wallet.keyEnvelope);
 
 // ── Logger ────────────────────────────────────────────────
 const redact = createRedactor([
-  CONFIG.dashboardPassword,
   CONFIG.botToken,
   ...Object.values(CONFIG.encryptionKeys),
 ]);
@@ -41,8 +43,8 @@ const safeError = error => redact(error?.reason || error?.message || 'Unknown er
 log(`Configuration loaded: ${JSON.stringify(getSafeConfigSummary())}`);
 
 // ── Activity ──────────────────────────────────────────────
-async function logActivity(status, title, walletLabel, txHash, chain) {
-  const entry = await storage.addActivity({ status, title, walletLabel, txHash, explorer: chain?.ex, time: Date.now() });
+async function logActivity(userId, status, title, walletLabel, txHash, chain) {
+  const entry = await storage.addActivity({ userId, status, title, walletLabel, txHash, explorer: chain?.ex, time: Date.now() });
   DB.activity.unshift(entry);
   if (DB.activity.length > 200) DB.activity.pop();
 }
@@ -81,15 +83,18 @@ async function executeMint({ wallet, contractAddr, fnName='mint', qty=1, priceET
 const sniperProviders = {};  // chain -> ethers provider, only live while a sniper is active on it
 const sniperSeenTx     = {}; // sniperId -> Set of already-handled tx hashes (capped)
 
-async function markSeen(sniperId, hash) {
-  if (!sniperSeenTx[sniperId]) sniperSeenTx[sniperId] = new Set();
-  const set = sniperSeenTx[sniperId];
+const sniperKey = sniper => `${sniper.userId}:${sniper.id}`;
+
+async function markSeen(sniper, hash) {
+  const key = sniperKey(sniper);
+  if (!sniperSeenTx[key]) sniperSeenTx[key] = new Set();
+  const set = sniperSeenTx[key];
   set.add(hash);
   if (set.size > 500) set.delete(set.values().next().value);
-  await storage.markSeenTransaction(sniperId, hash);
+  await storage.markSeenTransaction(sniper.userId, sniper.id, hash);
 }
-const alreadySeen = async (sniperId, hash) => sniperSeenTx[sniperId]?.has(hash)
-  || storage.hasSeenTransaction(sniperId, hash);
+const alreadySeen = async (sniper, hash) => sniperSeenTx[sniperKey(sniper)]?.has(hash)
+  || storage.hasSeenTransaction(sniper.userId, sniper.id, hash);
 
 const activeSnipersForChain = chain => DB.snipers.filter(s => s.active && s.chain === chain);
 
@@ -122,8 +127,8 @@ async function onBlock(chain, blockNumber) {
     if (!tx.to || !tx.data || tx.data === '0x') continue; // skip plain transfers / contract creations
     for (const sniper of snipers) {
       if (tx.from.toLowerCase() !== sniper.targetAddress.toLowerCase()) continue;
-      if (await alreadySeen(sniper.id, tx.hash)) continue;
-      await markSeen(sniper.id, tx.hash);
+      if (await alreadySeen(sniper, tx.hash)) continue;
+      await markSeen(sniper, tx.hash);
       fireSnipe(sniper, tx, chain).catch(e => log(`Snipe fire error: ${safeError(e)}`));
     }
   }
@@ -131,21 +136,21 @@ async function onBlock(chain, blockNumber) {
 
 async function fireSnipe(sniper, targetTx, chain) {
   const chainCfg = CHAINS[chain];
-  const wallet   = DB.wallets.find(w => w.label === sniper.walletLabel);
-  if (!wallet) { tg(`❌ *Sniper "${sniper.label}" failed*\nFiring wallet "${sniper.walletLabel}" not found.`); return; }
+  const wallet   = DB.wallets.find(w => w.userId === sniper.userId && w.label === sniper.walletLabel);
+  if (!wallet) { await notifyUser(sniper.userId, `❌ *Sniper "${sniper.label}" failed*\nFiring wallet "${sniper.walletLabel}" not found.`); return; }
 
   let value = targetTx.value ?? 0n;
   if (sniper.valueMode === 'fixed') value = ethers.parseEther(String(sniper.fixedValueETH || 0));
   if (sniper.maxValueETH != null) {
     const cap = ethers.parseEther(String(sniper.maxValueETH));
     if (value > cap) {
-      await logActivity('fail', `Sniper skipped (value ${ethers.formatEther(value)} ETH > cap)`, wallet.label, null, chainCfg);
-      tg(`⚠️ *Sniper "${sniper.label}" skipped*\nTarget tx wants ${ethers.formatEther(value)} ETH, over your ${sniper.maxValueETH} ETH cap.`);
+      await logActivity(sniper.userId, 'fail', `Sniper skipped (value ${ethers.formatEther(value)} ETH > cap)`, wallet.label, null, chainCfg);
+      await notifyUser(sniper.userId, `⚠️ *Sniper "${sniper.label}" skipped*\nTarget tx wants ${ethers.formatEther(value)} ETH, over your ${sniper.maxValueETH} ETH cap.`);
       return;
     }
   }
 
-  tg(`🎯 *Target minting detected!*\nSniper: *${sniper.label}*\nTarget: \`${sniper.targetAddress.slice(0,8)}...\`\nCopying with wallet *${wallet.label}*...`);
+  await notifyUser(sniper.userId, `🎯 *Target minting detected!*\nSniper: *${sniper.label}*\nTarget: \`${sniper.targetAddress.slice(0,8)}...\`\nCopying with wallet *${wallet.label}*...`);
 
   try {
     const pk       = decryptPK(wallet);
@@ -168,160 +173,198 @@ async function fireSnipe(sniper, targetTx, chain) {
     sniper.hits = (sniper.hits || 0) + 1;
     sniper.lastFiredAt = Date.now();
     await Promise.all([
-      storage.updateWalletMinted(wallet.label, wallet.minted),
+      storage.updateWalletMinted(sniper.userId, wallet.label, wallet.minted),
       storage.saveSniper(sniper),
     ]);
-    await logActivity('success', `Sniper copy-mint (${sniper.label})`, wallet.label, tx.hash, chainCfg);
-    tg(`✅ *Snipe successful!*\nSniper: *${sniper.label}*\nWallet: *${wallet.label}*\n[View tx](${chainCfg.ex}${tx.hash})`);
+    await logActivity(sniper.userId, 'success', `Sniper copy-mint (${sniper.label})`, wallet.label, tx.hash, chainCfg);
+    await notifyUser(sniper.userId, `✅ *Snipe successful!*\nSniper: *${sniper.label}*\nWallet: *${wallet.label}*\n[View tx](${chainCfg.ex}${tx.hash})`);
   } catch (e) {
     sniper.fails = (sniper.fails || 0) + 1;
     await storage.saveSniper(sniper);
-    await logActivity('fail', `Sniper copy-mint failed (${sniper.label})`, wallet.label, null, chainCfg);
-    tg(`❌ *Snipe failed*\nSniper: *${sniper.label}*\nError: ${safeError(e).slice(0,150)}`);
+    await logActivity(sniper.userId, 'fail', `Sniper copy-mint failed (${sniper.label})`, wallet.label, null, chainCfg);
+    await notifyUser(sniper.userId, `❌ *Snipe failed*\nSniper: *${sniper.label}*\nError: ${safeError(e).slice(0,150)}`);
   }
 }
 
 // ── Telegram ──────────────────────────────────────────────
 let bot = null;
-function tg(msg) {
-  if (bot && CHAT_ID) bot.sendMessage(CHAT_ID, msg, { parse_mode:'Markdown' }).catch(e => log('TG: '+safeError(e)));
+function tg(chatId, msg) {
+  if (bot && chatId) bot.sendMessage(chatId, msg, { parse_mode:'Markdown' }).catch(e => log('TG: '+safeError(e)));
+}
+
+async function notifyUser(userId, msg) {
+  const telegramId = await identityRepository.getLinkedAccount(userId, 'telegram');
+  if (telegramId) tg(telegramId, msg);
+}
+
+function stateFor(userId) {
+  return stateForUser(DB, userId);
+}
+
+function withTelegramUser(handler) {
+  return async (msg, match) => {
+    try {
+      const userId = await identity.resolveOrCreate('telegram', msg.from.id);
+      await handler(msg, match, userId);
+    } catch (error) {
+      log(`Telegram command failed: ${safeError(error)}`);
+      tg(msg.chat.id, 'Command failed safely. Please try again.');
+    }
+  };
 }
 
 if (BOT_TOKEN) {
   bot = new TelegramBot(BOT_TOKEN, { polling: true });
   log('Telegram bot started');
-
-  bot.onText(/\/start|\/help/, () => {
-    tg(`👻 *GhostMint Bot*\n\n*Commands:*\n/wallets — list wallets\n/tasks — scheduled tasks\n/snipers — copy-mint watchers\n/activity — recent mints\n/gas — live gas prices\n/stats — overview\n/canceltask <id> — cancel task\n/removewallet <label> — remove wallet\n/mintnow <label> <contract> <qty> <price> <chain> — instant mint`);
+  bot.on('message', msg => {
+    if (msg.text?.startsWith('/') && msg.from?.id) {
+      identity.resolveOrCreate('telegram', msg.from.id)
+        .catch(error => log(`Telegram identity resolution failed: ${safeError(error)}`));
+    }
   });
 
-  bot.onText(/\/snipers/, () => {
-    if (!DB.snipers.length) return tg('No snipers configured. Add one via the web dashboard → Sniper tab.');
-    const list = DB.snipers.map(s =>
+  bot.onText(/\/start|\/help/, withTelegramUser(async msg => {
+    tg(msg.chat.id, `👻 *GhostMint Bot*\n\n*Commands:*\n/wallets — list wallets\n/tasks — scheduled tasks\n/snipers — copy-mint watchers\n/activity — recent mints\n/gas — live gas prices\n/stats — overview\n/link — create a 5-minute account-link code\n/canceltask <id> — cancel task\n/removewallet <label> — remove wallet\n/mintnow <label> <contract> <qty> <price> <chain> — instant mint`);
+  }));
+
+  bot.onText(/\/link$/, withTelegramUser(async (msg, match, userId) => {
+    const link = await identity.createLinkCode(userId);
+    tg(msg.chat.id, `🔗 *Account link code:* \`${link.code}\`\n\nExpires in 5 minutes and can be used once.`);
+  }));
+
+  bot.onText(/\/snipers/, withTelegramUser(async (msg, match, userId) => {
+    const snipers = stateFor(userId).snipers;
+    if (!snipers.length) return tg(msg.chat.id, 'No snipers configured.');
+    const list = snipers.map(s =>
       `${s.active?'🟢':'⚪'} *${s.label}*\nTarget: \`${s.targetAddress.slice(0,10)}...\`\nChain: ${CHAINS[s.chain]?.name||s.chain} · Wallet: ${s.walletLabel}\nHits: ${s.hits||0} · Fails: ${s.fails||0}`
     ).join('\n\n');
-    tg(`🎯 *Snipers (${DB.snipers.length})*\n\n${list}`);
-  });
+    tg(msg.chat.id, `🎯 *Snipers (${snipers.length})*\n\n${list}`);
+  }));
 
-  bot.onText(/\/wallets/, () => {
-    if (!DB.wallets.length) return tg('No wallets yet. Add via the web dashboard.');
-    const list = DB.wallets.map((w,i) =>
+  bot.onText(/\/wallets/, withTelegramUser(async (msg, match, userId) => {
+    const wallets = stateFor(userId).wallets;
+    if (!wallets.length) return tg(msg.chat.id, 'No wallets yet.');
+    const list = wallets.map((w,i) =>
       `${i+1}. *${w.label}*\n   \`${w.address.slice(0,6)}...${w.address.slice(-4)}\` · ${CHAINS[w.chain]?.name||w.chain} · minted: ${w.minted||0}`
     ).join('\n\n');
-    tg(`⬡ *Wallets (${DB.wallets.length})*\n\n${list}`);
-  });
+    tg(msg.chat.id, `⬡ *Wallets (${wallets.length})*\n\n${list}`);
+  }));
 
-  bot.onText(/\/tasks/, () => {
-    const pending = DB.tasks.filter(t => t.status === 'waiting');
-    if (!pending.length) return tg('No scheduled tasks.');
+  bot.onText(/\/tasks/, withTelegramUser(async (msg, match, userId) => {
+    const pending = stateFor(userId).tasks.filter(t => t.status === 'waiting');
+    if (!pending.length) return tg(msg.chat.id, 'No scheduled tasks.');
     const list = pending.map(t => {
       const ms = t.mintTime - Date.now();
       return `⏱ *${t.name}*\nWallet: ${t.walletLabel}\nQty: ${t.qty} | Price: ${t.price>0?t.price+' ETH':'Free'}\nFires in: *${ms>0?fmtCD(ms):'NOW'}*\nID: \`${t.id}\``;
     }).join('\n\n');
-    tg(`⏱ *Tasks (${pending.length})*\n\n${list}`);
-  });
+    tg(msg.chat.id, `⏱ *Tasks (${pending.length})*\n\n${list}`);
+  }));
 
-  bot.onText(/\/activity/, () => {
-    const recent = DB.activity.slice(0, 10);
-    if (!recent.length) return tg('No activity yet.');
+  bot.onText(/\/activity/, withTelegramUser(async (msg, match, userId) => {
+    const recent = stateFor(userId).activity.slice(0, 10);
+    if (!recent.length) return tg(msg.chat.id, 'No activity yet.');
     const list = recent.map(a => {
       const ico = a.status==='success'?'✅':'❌';
       const tx  = a.txHash?`\n   [View tx](${a.explorer}${a.txHash})`:'';
       return `${ico} ${a.title} · *${a.walletLabel}*\n   ${new Date(a.time).toLocaleString()}${tx}`;
     }).join('\n\n');
-    tg(`📋 *Recent Activity*\n\n${list}`);
-  });
+    tg(msg.chat.id, `📋 *Recent Activity*\n\n${list}`);
+  }));
 
-  bot.onText(/\/gas/, async () => {
+  bot.onText(/\/gas/, withTelegramUser(async msg => {
     try {
       const r = await axios.get('https://api.etherscan.io/api?module=gastracker&action=gasoracle');
       const d = r.data.result;
-      tg(`⛽ *Live Gas (Ethereum)*\n🐢 Slow: *${d.SafeGasPrice}* Gwei\n⚡ Standard: *${d.ProposeGasPrice}* Gwei\n🚀 Fast: *${d.FastGasPrice}* Gwei\nBase fee: ${parseFloat(d.suggestBaseFee).toFixed(2)} Gwei`);
-    } catch { tg('Could not fetch gas prices.'); }
-  });
+      tg(msg.chat.id, `⛽ *Live Gas (Ethereum)*\n🐢 Slow: *${d.SafeGasPrice}* Gwei\n⚡ Standard: *${d.ProposeGasPrice}* Gwei\n🚀 Fast: *${d.FastGasPrice}* Gwei\nBase fee: ${parseFloat(d.suggestBaseFee).toFixed(2)} Gwei`);
+    } catch { tg(msg.chat.id, 'Could not fetch gas prices.'); }
+  }));
 
-  bot.onText(/\/stats/, () => {
-    const total   = DB.activity.length;
-    const success = DB.activity.filter(a => a.status==='success').length;
-    const minted  = DB.wallets.reduce((s,w) => s+(w.minted||0), 0);
-    const pending = DB.tasks.filter(t => t.status==='waiting').length;
-    tg(`📊 *GhostMint Stats*\n\n⬡ Wallets: *${DB.wallets.length}*\n⏱ Pending: *${pending}*\n⚡ Minted: *${minted}*\n✅ Success rate: *${total?Math.round(success/total*100):0}%*\n⏰ Uptime: ${fmtCD(process.uptime()*1000)}`);
-  });
+  bot.onText(/\/stats/, withTelegramUser(async (msg, match, userId) => {
+    const state = stateFor(userId);
+    const total = state.activity.length;
+    const success = state.activity.filter(a => a.status==='success').length;
+    const minted = state.wallets.reduce((sum,w) => sum+(w.minted||0), 0);
+    const pending = state.tasks.filter(t => t.status==='waiting').length;
+    tg(msg.chat.id, `📊 *GhostMint Stats*\n\n⬡ Wallets: *${state.wallets.length}*\n⏱ Pending: *${pending}*\n⚡ Minted: *${minted}*\n✅ Success rate: *${total?Math.round(success/total*100):0}%*\n⏰ Uptime: ${fmtCD(process.uptime()*1000)}`);
+  }));
 
-  bot.onText(/\/canceltask (.+)/, async (msg, match) => {
+  bot.onText(/\/canceltask (.+)/, withTelegramUser(async (msg, match, userId) => {
     const id  = parseInt(match[1]);
-    const idx = DB.tasks.findIndex(t => t.id===id);
-    if (idx===-1) return tg('Task not found. Use /tasks to see IDs.');
-    const name = DB.tasks[idx].name;
-    DB.tasks.splice(idx, 1); await storage.deleteTask(id);
-    if (taskTimers[id]) { clearTimeout(taskTimers[id]); delete taskTimers[id]; }
-    tg(`✅ Task *${name}* cancelled.`);
-  });
+    const ownedTask = findOwnedTask(DB, userId, id);
+    if (!ownedTask) return tg(msg.chat.id, 'Task not found. Use /tasks to see IDs.');
+    const idx = DB.tasks.indexOf(ownedTask);
+    const name = ownedTask.name;
+    DB.tasks.splice(idx, 1); await storage.deleteTask(userId, id);
+    const key = taskKey({ userId, id });
+    if (taskTimers[key]) { clearTimeout(taskTimers[key]); delete taskTimers[key]; }
+    tg(msg.chat.id, `✅ Task *${name}* cancelled.`);
+  }));
 
-  bot.onText(/\/removewallet (.+)/, async (msg, match) => {
+  bot.onText(/\/removewallet (.+)/, withTelegramUser(async (msg, match, userId) => {
     const label = match[1].trim();
-    const idx   = DB.wallets.findIndex(w => w.label.toLowerCase()===label.toLowerCase());
-    if (idx===-1) return tg(`Wallet "${label}" not found.`);
-    const [removed] = DB.wallets.splice(idx, 1); await storage.deleteWallet(removed.label);
-    tg(`✅ Wallet *${label}* removed.`);
-  });
+    const ownedWallet = findOwnedWallet(DB, userId, label);
+    if (!ownedWallet) return tg(msg.chat.id, `Wallet "${label}" not found.`);
+    const idx = DB.wallets.indexOf(ownedWallet);
+    const [removed] = DB.wallets.splice(idx, 1); await storage.deleteWallet(userId, removed.label);
+    tg(msg.chat.id, `✅ Wallet *${label}* removed.`);
+  }));
 
-  bot.onText(/\/mintnow (.+)/, async (msg, match) => {
+  bot.onText(/\/mintnow (.+)/, withTelegramUser(async (msg, match, userId) => {
     const parts = match[1].trim().split(/\s+/);
-    if (parts.length < 2) return tg('Usage: /mintnow <label> <contract> [qty] [price] [chain]');
+    if (parts.length < 2) return tg(msg.chat.id, 'Usage: /mintnow <label> <contract> [qty] [price] [chain]');
     const [label, contract, qtyStr, priceStr, chain] = parts;
-    const wallet = DB.wallets.find(w => w.label.toLowerCase()===label.toLowerCase());
-    if (!wallet) return tg(`Wallet "${label}" not found. Use /wallets.`);
+    const wallet = findOwnedWallet(DB, userId, label);
+    if (!wallet) return tg(msg.chat.id, `Wallet "${label}" not found. Use /wallets.`);
     const qty=parseInt(qtyStr)||1, price=parseFloat(priceStr)||0, ch=chain||wallet.chain||'ethereum';
-    tg(`⚡ Minting from *${wallet.label}*...\nContract: \`${contract.slice(0,10)}...\`\nQty: ${qty} | Price: ${price>0?price+' ETH':'Free'}`);
+    tg(msg.chat.id, `⚡ Minting from *${wallet.label}*...\nContract: \`${contract.slice(0,10)}...\`\nQty: ${qty} | Price: ${price>0?price+' ETH':'Free'}`);
     try {
       const txHash = await executeMint({ wallet, contractAddr:contract, fnName:'mint', qty, priceETH:price, chain:ch });
       wallet.minted=(wallet.minted||0)+qty;
-      await storage.updateWalletMinted(wallet.label, wallet.minted);
-      await logActivity('success',`Minted ${qty} NFT${qty>1?'s':''}`,wallet.label,txHash,CHAINS[ch]);
-      tg(`✅ *Mint successful!*\nWallet: *${wallet.label}*\nQty: ${qty}\n[View tx](${CHAINS[ch].ex}${txHash})`);
+      await storage.updateWalletMinted(userId, wallet.label, wallet.minted);
+      await logActivity(userId, 'success',`Minted ${qty} NFT${qty>1?'s':''}`,wallet.label,txHash,CHAINS[ch]);
+      tg(msg.chat.id, `✅ *Mint successful!*\nWallet: *${wallet.label}*\nQty: ${qty}\n[View tx](${CHAINS[ch].ex}${txHash})`);
     } catch(e) {
-      await logActivity('fail','Mint failed',wallet.label,null,CHAINS[ch]);
-      tg(`❌ *Mint failed*\n${safeError(e).slice(0,120)}`);
+      await logActivity(userId, 'fail','Mint failed',wallet.label,null,CHAINS[ch]);
+      tg(msg.chat.id, `❌ *Mint failed*\n${safeError(e).slice(0,120)}`);
     }
-  });
-
-  setTimeout(() => tg(`👻 *GhostMint is online!*\n\nBot is running 24/7 on Railway.\nType /help for commands.`), 3000);
+  }));
 } else {
   log('⚠️  No TELEGRAM_BOT_TOKEN — Telegram disabled.');
 }
 
 // ── Task Scheduler ────────────────────────────────────────
 const taskTimers = {};
+const taskKey = task => `${task.userId}:${task.id}`;
 
 function scheduleTask(task) {
-  if (taskTimers[task.id]) clearTimeout(taskTimers[task.id]);
+  const key = taskKey(task);
+  if (taskTimers[key]) clearTimeout(taskTimers[key]);
   const ms = task.mintTime - Date.now();
   if (ms <= 0) return;
   log(`Task "${task.name}" fires in ${fmtCD(ms)}`);
-  taskTimers[task.id] = setTimeout(() => fireTask(task), ms);
+  taskTimers[key] = setTimeout(() => fireTask(task), ms);
 }
 
 async function fireTask(task) {
   log(`Firing: ${task.name}`);
-  const wallet = DB.wallets.find(w => w.label===task.walletLabel);
+  const wallet = DB.wallets.find(w => w.userId===task.userId && w.label===task.walletLabel);
   if (!wallet) {
     task.status='failed'; await storage.saveTask(task);
-    tg(`❌ *Task failed: ${task.name}*\nWallet "${task.walletLabel}" not found.`);
+    await notifyUser(task.userId, `❌ *Task failed: ${task.name}*\nWallet "${task.walletLabel}" not found.`);
     return;
   }
   task.status='running'; await storage.saveTask(task);
-  tg(`⚡ *Auto-minting!*\nTask: *${task.name}*\nWallet: *${wallet.label}*\nQty: ${task.qty}`);
+  await notifyUser(task.userId, `⚡ *Auto-minting!*\nTask: *${task.name}*\nWallet: *${wallet.label}*\nQty: ${task.qty}`);
   try {
     const txHash = await executeMint({ wallet, contractAddr:task.contract, fnName:task.fn||'mint', qty:task.qty, priceETH:task.price||0, gasGwei:task.gas||null, chain:wallet.chain });
     task.status='done'; wallet.minted=(wallet.minted||0)+task.qty;
-    await Promise.all([storage.saveTask(task), storage.updateWalletMinted(wallet.label, wallet.minted)]);
-    await logActivity('success',`Auto-minted ${task.qty} NFT${task.qty>1?'s':''}`,wallet.label,txHash,CHAINS[wallet.chain]);
-    tg(`✅ *Auto-mint SUCCESS!*\nTask: *${task.name}*\nWallet: *${wallet.label}*\nQty: ${task.qty}\n[View tx](${CHAINS[wallet.chain].ex}${txHash})`);
+    await Promise.all([storage.saveTask(task), storage.updateWalletMinted(task.userId, wallet.label, wallet.minted)]);
+    await logActivity(task.userId, 'success',`Auto-minted ${task.qty} NFT${task.qty>1?'s':''}`,wallet.label,txHash,CHAINS[wallet.chain]);
+    await notifyUser(task.userId, `✅ *Auto-mint SUCCESS!*\nTask: *${task.name}*\nWallet: *${wallet.label}*\nQty: ${task.qty}\n[View tx](${CHAINS[wallet.chain].ex}${txHash})`);
   } catch(e) {
     task.status='failed'; await storage.saveTask(task);
-    await logActivity('fail',`Auto-mint failed: ${task.name}`,wallet.label,null,CHAINS[wallet.chain]);
-    tg(`❌ *Auto-mint FAILED*\nTask: *${task.name}*\nError: ${safeError(e).slice(0,120)}`);
+    await logActivity(task.userId, 'fail',`Auto-mint failed: ${task.name}`,wallet.label,null,CHAINS[wallet.chain]);
+    await notifyUser(task.userId, `❌ *Auto-mint FAILED*\nTask: *${task.name}*\nError: ${safeError(e).slice(0,120)}`);
     log(`Task failed: ${safeError(e)}`);
   }
 }
@@ -332,200 +375,12 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(PROJECT_ROOT,'public')));
 
-function auth(req, res, next) {
-  const token = req.headers['x-auth-token'] || req.query.token;
-  if (token === DASH_PASS) return next();
-  res.status(401).json({ error:'Unauthorized' });
+function dashboardUnavailable(req, res) {
+  res.status(501).json({ error:'Dashboard identity is unavailable until Milestone 13' });
 }
+app.use('/api', dashboardUnavailable);
 
 // ── API ───────────────────────────────────────────────────
-app.post('/api/login', (req,res) => {
-  if (req.body.password===DASH_PASS) return res.json({ token:DASH_PASS, ok:true });
-  res.status(401).json({ error:'Wrong password' });
-});
-
-app.get('/api/stats', auth, (req,res) => {
-  const total=DB.activity.length, success=DB.activity.filter(a=>a.status==='success').length;
-  res.json({ wallets:DB.wallets.length, tasks:DB.tasks.filter(t=>t.status==='waiting').length, minted:DB.wallets.reduce((s,w)=>s+(w.minted||0),0), rate:total?Math.round(success/total*100):0, uptime:Math.floor(process.uptime()) });
-});
-
-app.get('/api/wallets', auth, (req,res) => {
-  res.json(DB.wallets.map(w=>({ label:w.label, address:w.address, chain:w.chain, minted:w.minted||0 })));
-});
-
-app.post('/api/wallets', auth, async (req,res) => {
-  const { privateKey, label, chain } = req.body;
-  if (!privateKey||!label) return res.status(400).json({ error:'privateKey and label required' });
-  try {
-    const w = new ethers.Wallet(privateKey);
-    const wallet = await storage.addWallet({ label, address:w.address, chain:chain||'ethereum', keyEnvelope:encryptPK(privateKey), minted:0, addedAt:Date.now() });
-    DB.wallets.push(wallet);
-    tg(`⬡ *Wallet added*\nLabel: *${label}*\nAddress: \`${w.address.slice(0,6)}...${w.address.slice(-4)}\``);
-    res.json({ ok:true, address:w.address });
-  } catch { res.status(400).json({ error:'Invalid private key' }); }
-});
-
-app.delete('/api/wallets/:label', auth, async (req,res) => {
-  const idx = DB.wallets.findIndex(w=>w.label===req.params.label);
-  if (idx===-1) return res.status(404).json({ error:'Not found' });
-  const [removed] = DB.wallets.splice(idx,1);
-  await storage.deleteWallet(removed.label); res.json({ ok:true });
-});
-
-app.get('/api/balance/:label', auth, async (req,res) => {
-  const wallet = DB.wallets.find(w=>w.label===req.params.label);
-  if (!wallet) return res.status(404).json({ error:'Not found' });
-  try {
-    const chain=CHAINS[wallet.chain], p=new ethers.JsonRpcProvider(chain.rpc);
-    const bal=await p.getBalance(wallet.address);
-    res.json({ balance:ethers.formatEther(bal), symbol:chain.sym });
-  } catch(e) { res.status(500).json({ error:safeError(e) }); }
-});
-
-app.get('/api/tasks', auth, (req,res) => res.json(DB.tasks));
-
-app.post('/api/tasks', auth, async (req,res) => {
-  const { name, walletLabel, contract, fn, qty, price, gas, mintTime } = req.body;
-  if (!name||!walletLabel||!contract||!mintTime) return res.status(400).json({ error:'Missing fields' });
-  const wallet = DB.wallets.find(w=>w.label===walletLabel);
-  if (!wallet) return res.status(404).json({ error:'Wallet not found' });
-  const mt = new Date(mintTime).getTime();
-  if (mt<=Date.now()) return res.status(400).json({ error:'Mint time must be in the future' });
-  const task = { id:Date.now(), name, walletLabel, contract, fn:fn||'mint', qty:qty||1, price:price||0, gas:gas||null, mintTime:mt, status:'waiting', createdAt:Date.now() };
-  await storage.saveTask(task); DB.tasks.push(task); scheduleTask(task);
-  tg(`⏱ *Task scheduled!*\nName: *${name}*\nWallet: *${walletLabel}*\nFires: ${new Date(mt).toLocaleString()}`);
-  res.json({ ok:true, task });
-});
-
-app.delete('/api/tasks/:id', auth, async (req,res) => {
-  const id=parseInt(req.params.id), idx=DB.tasks.findIndex(t=>t.id===id);
-  if (idx===-1) return res.status(404).json({ error:'Not found' });
-  DB.tasks.splice(idx,1); await storage.deleteTask(id);
-  if (taskTimers[id]) { clearTimeout(taskTimers[id]); delete taskTimers[id]; }
-  res.json({ ok:true });
-});
-
-app.post('/api/mint', auth, async (req,res) => {
-  const { walletLabel, contract, fn, qty, price, gas, chain } = req.body;
-  const wallet = DB.wallets.find(w=>w.label===walletLabel);
-  if (!wallet) return res.status(404).json({ error:'Wallet not found' });
-  try {
-    const txHash = await executeMint({ wallet, contractAddr:contract, fnName:fn||'mint', qty:qty||1, priceETH:price||0, gasGwei:gas||null, chain:chain||wallet.chain });
-    wallet.minted=(wallet.minted||0)+(qty||1);
-    await storage.updateWalletMinted(wallet.label, wallet.minted);
-    await logActivity('success',`Minted ${qty||1} NFT${qty>1?'s':''}`,wallet.label,txHash,CHAINS[chain||wallet.chain]);
-    tg(`✅ *Manual mint success!*\nWallet: *${wallet.label}*\nQty: ${qty||1}\n[View tx](${CHAINS[chain||wallet.chain].ex}${txHash})`);
-    res.json({ ok:true, txHash, explorer:CHAINS[chain||wallet.chain].ex+txHash });
-  } catch(e) {
-    await logActivity('fail','Manual mint failed',wallet.label,null,CHAINS[chain||wallet.chain]);
-    res.status(500).json({ error:safeError(e) });
-  }
-});
-
-app.post('/api/batch', auth, async (req,res) => {
-  const { walletLabels, contract, fn, qty, price, gas } = req.body;
-  if (!walletLabels?.length) return res.status(400).json({ error:'walletLabels required' });
-  res.json({ ok:true, message:`Batch firing across ${walletLabels.length} wallets...` });
-  Promise.all(walletLabels.map(async label => {
-    const wallet = DB.wallets.find(w=>w.label===label);
-    if (!wallet) return { label, status:'error', error:'Wallet not found' };
-    try {
-      const txHash = await executeMint({ wallet, contractAddr:contract, fnName:fn||'mint', qty:qty||1, priceETH:price||0, gasGwei:gas||null, chain:wallet.chain });
-      wallet.minted=(wallet.minted||0)+(qty||1);
-      await storage.updateWalletMinted(wallet.label, wallet.minted);
-      await logActivity('success',`Batch minted ${qty||1} NFT${qty>1?'s':''}`,wallet.label,txHash,CHAINS[wallet.chain]);
-      return { label, status:'success', txHash };
-    } catch(e) {
-      await logActivity('fail','Batch mint failed',label,null,CHAINS[wallet?.chain]);
-      return { label, status:'error', error:safeError(e) };
-    }
-  })).then(results => {
-    const ok=results.filter(r=>r.status==='success').length, fail=results.filter(r=>r.status!=='success').length;
-    tg(`🔁 *Batch complete*\n✅ Success: ${ok}\n❌ Failed: ${fail}\n\n${results.map(r=>`${r.status==='success'?'✅':'❌'} ${r.label}`).join('\n')}`);
-  });
-});
-
-app.get('/api/activity', auth, (req,res) => res.json(DB.activity.slice(0,100)));
-
-app.get('/api/gas', auth, async (req,res) => {
-  try { const r=await axios.get('https://api.etherscan.io/api?module=gastracker&action=gasoracle'); res.json(r.data.result); }
-  catch(e) { res.status(500).json({ error:'Failed to fetch gas' }); }
-});
-
-app.post('/api/whitelist', auth, async (req,res) => {
-  const { contract, address, fn, chain } = req.body;
-  try {
-    const abi=[{inputs:[{name:'addr',type:'address'}],name:fn||'isWhitelisted',outputs:[{name:'',type:'bool'}],stateMutability:'view',type:'function'}];
-    const p=new ethers.JsonRpcProvider(CHAINS[chain||'ethereum'].rpc);
-    const c=new ethers.Contract(contract,abi,p);
-    const result=await c[fn||'isWhitelisted'](address);
-    res.json({ listed:!!result, address, contract });
-  } catch(e) { res.status(500).json({ error:safeError(e) }); }
-});
-
-app.get('/api/pnl', auth, (req,res) => res.json(DB.pnl));
-app.post('/api/pnl', auth, async (req,res) => {
-  const { name, cost, sale, gas } = req.body;
-  if (!name) return res.status(400).json({ error:'name required' });
-  const record = await storage.addPnl({ nm:name, cost:cost||0, sale:sale||0, gas:gas||0, net:(sale||0)-(cost||0)-(gas||0), t:Date.now() });
-  DB.pnl.unshift(record); res.json({ ok:true });
-});
-app.delete('/api/pnl/:idx', auth, async (req,res) => {
-  const [record] = DB.pnl.splice(parseInt(req.params.idx),1);
-  if (record) await storage.deletePnl(record.id);
-  res.json({ ok:true });
-});
-
-// ── Snipers ───────────────────────────────────────────────
-app.get('/api/snipers', auth, (req,res) => res.json(DB.snipers));
-
-app.post('/api/snipers', auth, async (req,res) => {
-  const { label, targetAddress, chain, walletLabel, valueMode, fixedValueETH, maxValueETH, gasBoostPercent } = req.body;
-  if (!label||!targetAddress||!chain||!walletLabel) return res.status(400).json({ error:'label, targetAddress, chain and walletLabel are required' });
-  if (!CHAINS[chain]) return res.status(400).json({ error:'Unsupported chain' });
-  if (!ethers.isAddress(targetAddress)) return res.status(400).json({ error:'Invalid target address' });
-  const wallet = DB.wallets.find(w => w.label===walletLabel);
-  if (!wallet) return res.status(404).json({ error:'Firing wallet not found' });
-  const sniper = {
-    id: Date.now(), label, targetAddress, chain, walletLabel,
-    valueMode: valueMode==='fixed' ? 'fixed' : 'copy',
-    fixedValueETH: parseFloat(fixedValueETH)||0,
-    maxValueETH: (maxValueETH!==undefined && maxValueETH!==null && maxValueETH!=='') ? parseFloat(maxValueETH) : null,
-    gasBoostPercent: gasBoostPercent!==undefined ? parseInt(gasBoostPercent) : 20,
-    active: true, hits:0, fails:0, lastFiredAt:null, createdAt: Date.now(),
-  };
-  await storage.saveSniper(sniper); DB.snipers.push(sniper);
-  ensureChainWatcher(chain);
-  tg(`🎯 *Sniper armed!*\nLabel: *${label}*\nWatching: \`${targetAddress.slice(0,10)}...\`\nChain: ${CHAINS[chain].name}\nFiring wallet: *${walletLabel}*`);
-  res.json({ ok:true, sniper });
-});
-
-app.patch('/api/snipers/:id', auth, async (req,res) => {
-  const id = parseInt(req.params.id);
-  const sniper = DB.snipers.find(s => s.id===id);
-  if (!sniper) return res.status(404).json({ error:'Not found' });
-  const prevChain = sniper.chain;
-  ['label','walletLabel','valueMode','fixedValueETH','maxValueETH','gasBoostPercent','active','chain'].forEach(k => {
-    if (req.body[k]!==undefined) sniper[k]=req.body[k];
-  });
-  await storage.saveSniper(sniper);
-  if (sniper.active) ensureChainWatcher(sniper.chain);
-  teardownChainWatcherIfIdle(prevChain);
-  if (prevChain!==sniper.chain) teardownChainWatcherIfIdle(prevChain);
-  res.json({ ok:true, sniper });
-});
-
-app.delete('/api/snipers/:id', auth, async (req,res) => {
-  const id = parseInt(req.params.id);
-  const idx = DB.snipers.findIndex(s => s.id===id);
-  if (idx===-1) return res.status(404).json({ error:'Not found' });
-  const chain = DB.snipers[idx].chain;
-  DB.snipers.splice(idx,1); await storage.deleteSniper(id);
-  delete sniperSeenTx[id];
-  teardownChainWatcherIfIdle(chain);
-  res.json({ ok:true });
-});
-
 app.get('/health', async (req,res) => {
   try {
     await storage.health();
@@ -538,7 +393,7 @@ app.get('*', (req,res) => res.sendFile(path.join(PROJECT_ROOT,'public','index.ht
 
 // ── Start ─────────────────────────────────────────────────
 async function start() {
-  DB = await storage.loadState();
+  DB = await storage.loadSystemState();
   DB.tasks.filter(t => t.status==='waiting' && t.mintTime>Date.now()).forEach(scheduleTask);
   log(`Restored ${DB.tasks.filter(t=>t.status==='waiting').length} pending tasks`);
   DB.snipers.filter(s => s.active).forEach(s => ensureChainWatcher(s.chain));
