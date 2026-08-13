@@ -97,7 +97,33 @@ Policies are database-backed and editable independently at wallet or target scop
 - Arbitrum: 20 confirmations, 5 Gwei ceiling.
 - Polygon: 128 confirmations, 500 Gwei ceiling.
 
-The confirmation counts are operational safety thresholds chosen to be conservative relative to each chain's block cadence and ordinary short reorg exposure; they are not claims of protocol-level economic finality. All values can be overridden per wallet or target through the transaction-policy repository. A later permissions milestone will decide which roles may change them.
+The confirmation counts are operational safety thresholds chosen to be conservative relative to each chain's block cadence and ordinary short reorg exposure; they are not claims of protocol-level economic finality. Wallet and target values remain editable through the transaction-policy repository, while the governance rules below constrain their effective result for regular users.
+
+### Owners, seat groups, and modes
+
+Owner status belongs to the internal linked-account user, so it applies across that user's Telegram and future Discord identities. Owners can administer groups, user overrides, simulation enforcement, presets, and other owners. Owner-originated transactions remain subject to balance, simulation, signing, chain-ID, nonce, and persistence checks but are exempt from maximum-value, daily-budget, and gas ceilings.
+
+Regular-user ceiling precedence is individual override, then seat group, then the conservative Milestone 7 default. A stricter wallet/target policy still wins. Simulation-forcing precedence is individual rule, then group rule, then forced-on default; it always overrides both a selected preset and a direct wallet/target setting.
+
+The editable presets are `Ultra Fast`, `Fast`, `Semi-Safe`, and `Safe`. Their stored human-verification setting is preparatory only and cannot bypass anything until Milestone 10c implements the confirmation flow. `Fast` uses the contextual `blockchain_off` simulation mode: blockchain-triggered requests skip simulation when permitted, while other sources simulate.
+
+Admin syntax uses precise wei values for monetary ceilings:
+
+```text
+/admin group-set <name> <maxWei> <dailyWei> <gasGwei> <forced|optional>
+/admin group-delete <name>
+/admin assign <telegram|discord> <platformUserId> <group>
+/admin unassign <telegram|discord> <platformUserId>
+/admin user-ceilings <platform> <platformUserId> <maxWei> <dailyWei> <gasGwei>
+/admin user-ceilings-clear <platform> <platformUserId>
+/admin user-simulation <platform> <platformUserId> <forced|optional|inherit>
+/admin group-simulation <group> <forced|optional|inherit>
+/admin preset-set <preset> <on|off|blockchain_off> <confirmations> <on|bypass>
+/admin owner <platform> <platformUserId> <on|off>
+/mode <ultra_fast|fast|semi_safe|safe>
+```
+
+Admin commands never bootstrap ownership. Before the first deployment, a database administrator must designate the initial trusted linked user directly, for example with a reviewed one-time `UPDATE users SET is_owner=TRUE WHERE user_id=...`. Thereafter, only an existing owner can add or remove owners, and the last owner cannot be removed.
 
 Run migrations before starting a new deployment:
 

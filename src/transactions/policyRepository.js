@@ -22,9 +22,30 @@ function overlay(policy, row) {
   return result;
 }
 
-function createTransactionPolicyRepository(pool) {
+function applyGovernance(policy, governance, triggerSource = 'manual') {
+  const result = { ...policy };
+  if (governance.preset) {
+    result.requiredConfirmations = governance.preset.confirmationCount;
+    result.humanVerification = governance.preset.humanVerification;
+    result.simulationEnabled = governance.preset.simulationMode === 'on'
+      || (governance.preset.simulationMode === 'blockchain_off' && triggerSource !== 'blockchain');
+  }
+  if (governance.simulationForced) result.simulationEnabled = true;
+  result.simulationForced = governance.simulationForced;
+  result.ceilingExempt = governance.isOwner;
+  if (!governance.isOwner) {
+    result.maxTransactionValueWei = result.maxTransactionValueWei < governance.maxTransactionValueWei
+      ? result.maxTransactionValueWei : governance.maxTransactionValueWei;
+    result.dailySpendingBudgetWei = result.dailySpendingBudgetWei < governance.dailySpendingBudgetWei
+      ? result.dailySpendingBudgetWei : governance.dailySpendingBudgetWei;
+    result.gasCeilingGwei = Math.min(result.gasCeilingGwei, governance.gasCeilingGwei);
+  }
+  return result;
+}
+
+function createTransactionPolicyRepository(pool, { governanceRepository = null } = {}) {
   return {
-    async resolvePolicy({ userId, walletId, targetId = null, chain }) {
+    async resolvePolicy({ userId, walletId, targetId = null, chain, triggerSource = 'manual' }) {
       const scopes = [['wallet', String(walletId)]];
       if (targetId) scopes.push(['target', String(targetId)]);
       const rows = await pool.query(
@@ -34,7 +55,9 @@ function createTransactionPolicyRepository(pool) {
       );
       const wallet = rows.rows.find(row => row.scope_type === 'wallet');
       const target = rows.rows.find(row => row.scope_type === 'target');
-      return overlay(overlay(defaultPolicy(chain), wallet), target);
+      const policy = overlay(overlay(defaultPolicy(chain), wallet), target);
+      if (!governanceRepository) return policy;
+      return applyGovernance(policy, await governanceRepository.getEffectiveGovernance(userId, chain), triggerSource);
     },
 
     async setPolicy({ userId, scopeType, scopeId, settings }) {
@@ -59,4 +82,4 @@ function createTransactionPolicyRepository(pool) {
   };
 }
 
-module.exports = { createTransactionPolicyRepository, overlay };
+module.exports = { applyGovernance, createTransactionPolicyRepository, overlay };

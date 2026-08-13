@@ -121,6 +121,18 @@ test('value and gas ceilings reject before broadcast', async t => {
   });
 });
 
+test('an owner transaction is exempt from value, gas, and daily ceilings', async () => {
+  const { calls, engine, request } = fixture({ policyOverrides: {
+    ceilingExempt: true,
+    maxTransactionValueWei: 1n,
+    dailySpendingBudgetWei: 1n,
+    gasCeilingGwei: 1,
+  } });
+  const result = await engine.submit({ ...request, valueWei: 2n });
+  assert.equal(result.state, 'confirmed');
+  assert.deepEqual(calls.broadcasts, [0]);
+});
+
 test('insufficient balance and wrong-chain RPC fail before broadcast', async t => {
   await t.test('balance precheck', async () => {
     const { calls, engine, provider, request } = fixture();

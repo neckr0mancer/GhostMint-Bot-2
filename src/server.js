@@ -9,6 +9,9 @@ const { createDatabasePool } = require('./db/pool');
 const { createIdentityService } = require('./identity/identityService');
 const { createPostgresIdentityRepository } = require('./identity/postgresIdentityRepository');
 const { findOwnedTask, findOwnedWallet, stateForUser } = require('./identity/ownership');
+const { createAdminCommandService } = require('./governance/adminCommandService');
+const { AuthorizationError, createGovernanceService } = require('./governance/governanceService');
+const { createPostgresGovernanceRepository } = require('./governance/postgresGovernanceRepository');
 const { createKeyEncryption } = require('./security/keyEncryption');
 const { createRedactor } = require('./security/redaction');
 const { createPostgresStorage } = require('./storage/postgresStorage');
@@ -29,7 +32,10 @@ const storage = createPostgresStorage(pool);
 const identityRepository = createPostgresIdentityRepository(pool);
 const identity = createIdentityService(identityRepository);
 const transactionIntentRepository = createTransactionIntentRepository(pool);
-const transactionPolicyRepository = createTransactionPolicyRepository(pool);
+const governanceRepository = createPostgresGovernanceRepository(pool);
+const governance = createGovernanceService(governanceRepository);
+const adminCommands = createAdminCommandService(governance);
+const transactionPolicyRepository = createTransactionPolicyRepository(pool, { governanceRepository });
 const providerService = createProviderService({
   chains: CHAINS,
   timeoutMs: CONFIG.rpcTimeoutMs,
@@ -75,7 +81,7 @@ function fmtCD(ms) {
 }
 
 // ── Mint executor ─────────────────────────────────────────
-async function executeMint({ wallet, contractAddr, fnName='mint', qty=1, priceETH=0, gasGwei=null, chain }) {
+async function executeMint({ wallet, contractAddr, fnName='mint', qty=1, priceETH=0, gasGwei=null, chain, triggerSource='manual' }) {
   const request = requestSchemas.mint({
     walletLabel: wallet.label,
     contractAddress: contractAddr,
@@ -92,6 +98,7 @@ async function executeMint({ wallet, contractAddr, fnName='mint', qty=1, priceET
     userId: wallet.userId,
     wallet,
     chain: request.chain,
+    triggerSource,
     to: request.contractAddress,
     data: calldata,
     valueWei: value,
@@ -198,6 +205,7 @@ async function fireSnipe(sniper, targetTx, chain) {
       wallet,
       targetId: sniper.id,
       chain,
+      triggerSource: 'blockchain',
       to: targetTx.to,
       data: targetTx.data,
       valueWei: value,
@@ -246,6 +254,10 @@ function withTelegramUser(handler) {
         tg(msg.chat.id, validationReply(error));
         return;
       }
+      if (error instanceof AuthorizationError) {
+        tg(msg.chat.id, '❌ Owner access required.');
+        return;
+      }
       log(`Telegram command failed: ${safeError(error)}`);
       tg(msg.chat.id, 'Command failed safely. Please try again.');
     }
@@ -263,12 +275,21 @@ if (BOT_TOKEN) {
   });
 
   bot.onText(/^\/(?:start|help)(?:@\w+)?$/, withTelegramUser(async msg => {
-    tg(msg.chat.id, `👻 *GhostMint Bot*\n\n*Commands:*\n/wallets — list wallets\n/tasks — scheduled tasks\n/snipers — copy-mint watchers\n/activity — recent mints\n/gas — live gas prices\n/stats — overview\n/link — create a 5-minute account-link code\n/canceltask <id> — cancel task\n/removewallet <label> — remove wallet\n/mintnow <label> <contract> <qty> <price> <chain> — instant mint`);
+    tg(msg.chat.id, `👻 *GhostMint Bot*\n\n*Commands:*\n/wallets — list wallets\n/tasks — scheduled tasks\n/snipers — copy-mint watchers\n/activity — recent mints\n/gas — live gas prices\n/stats — overview\n/link — create a 5-minute account-link code\n/mode <preset> — select a transaction mode\n/admin <action> — owner-only governance\n/canceltask <id> — cancel task\n/removewallet <label> — remove wallet\n/mintnow <label> <contract> <qty> <price> <chain> — instant mint`);
   }));
 
   bot.onText(/^\/link(?:@\w+)?$/, withTelegramUser(async (msg, match, userId) => {
     const link = await identity.createLinkCode(userId);
     tg(msg.chat.id, `🔗 *Account link code:* \`${link.code}\`\n\nExpires in 5 minutes and can be used once.`);
+  }));
+
+  bot.onText(/^\/mode(?:@\w+)?\s+(.+)$/, withTelegramUser(async (msg, match, userId) => {
+    const selected = await governance.selectPreset(userId, match[1]);
+    tg(msg.chat.id, `✅ Transaction mode set to *${selected.replaceAll('_', ' ')}*.`);
+  }));
+
+  bot.onText(/^\/admin(?:@\w+)?(?:\s+(.*))?$/, withTelegramUser(async (msg, match, userId) => {
+    tg(msg.chat.id, await adminCommands.execute(userId, match[1]));
   }));
 
   bot.onText(/^\/snipers(?:@\w+)?$/, withTelegramUser(async (msg, match, userId) => {
@@ -406,7 +427,7 @@ async function fireTask(task) {
   task.status='running'; await storage.saveTask(task);
   await notifyUser(task.userId, `⚡ *Auto-minting!*\nTask: *${task.name}*\nWallet: *${wallet.label}*\nQty: ${task.qty}`);
   try {
-    const txHash = await executeMint({ wallet, contractAddr:task.contract, fnName:task.fn||'mint', qty:task.qty, priceETH:task.price||0, gasGwei:task.gas||null, chain:wallet.chain });
+    const txHash = await executeMint({ wallet, contractAddr:task.contract, fnName:task.fn||'mint', qty:task.qty, priceETH:task.price||0, gasGwei:task.gas||null, chain:wallet.chain, triggerSource:'scheduled' });
     task.status='done'; wallet.minted=(wallet.minted||0)+task.qty;
     await Promise.all([storage.saveTask(task), storage.updateWalletMinted(task.userId, wallet.label, wallet.minted)]);
     await logActivity(task.userId, 'success',`Auto-minted ${task.qty} NFT${task.qty>1?'s':''}`,wallet.label,txHash,CHAINS[wallet.chain]);

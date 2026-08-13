@@ -92,10 +92,11 @@ function createTransactionEngine({
         walletId: request.wallet.id,
         targetId: request.targetId,
         chain: request.chain,
+        triggerSource: request.triggerSource || 'manual',
       });
       const valueWei = asBigInt(request.valueWei ?? 0n, 'valueWei');
       if (valueWei < 0n) throw new TransactionSafetyError('INVALID_TRANSACTION', 'Transaction value cannot be negative');
-      if (valueWei > policy.maxTransactionValueWei) {
+      if (!policy.ceilingExempt && valueWei > policy.maxTransactionValueWei) {
         throw new TransactionSafetyError('VALUE_CEILING_EXCEEDED', 'Transaction value exceeds the configured maximum');
       }
 
@@ -128,7 +129,7 @@ function createTransactionEngine({
         throw new TransactionSafetyError('INVALID_TRANSACTION', 'Priority fee cannot exceed the maximum fee');
       }
       const gasCeilingWei = parseUnits(String(policy.gasCeilingGwei), 'gwei');
-      if (selectedFee > gasCeilingWei) {
+      if (!policy.ceilingExempt && selectedFee > gasCeilingWei) {
         throw new TransactionSafetyError('GAS_CEILING_EXCEEDED', 'Transaction fee exceeds the configured gas ceiling');
       }
 
@@ -145,7 +146,7 @@ function createTransactionEngine({
         throw new TransactionSafetyError('INSUFFICIENT_BALANCE', 'Wallet balance is below the estimated transaction cost');
       }
       const spent = await intentRepository.rollingSpendWei(request.userId, request.wallet.id, now() - 86_400_000);
-      if (spent + estimatedCostWei > policy.dailySpendingBudgetWei) {
+      if (!policy.ceilingExempt && spent + estimatedCostWei > policy.dailySpendingBudgetWei) {
         throw new TransactionSafetyError('DAILY_BUDGET_EXCEEDED', 'Transaction would exceed the wallet daily spending budget');
       }
       if (policy.simulationEnabled) {

@@ -43,6 +43,12 @@ This is the ordered implementation plan for GhostMint. Milestones are intentiona
 - Add simulation, spend caps, gas/fee ceilings, nonce queues, replay protection, and actionable failure classification.
 - Ensure no command or automated trigger bypasses the same transaction-safety pipeline.
 
+### Milestone 7a — Roles, ceilings, and editable mode presets
+
+- Add internal-user owner roles, owner-managed seat groups, per-user ceiling overrides, and forced-simulation governance.
+- Add editable Ultra Fast, Fast, Semi-Safe, and Safe presets while ensuring ceilings and forced simulation always take precedence.
+- Keep preset human-verification choices as stored preparatory configuration for Milestone 10c; do not activate bypass behavior here.
+
 ## Remaining implementation
 
 ### Milestone 8 — Mint flexibility
@@ -107,6 +113,12 @@ Milestones 10a, 10b, and 10c depend on the safety infrastructure from Milestones
 - Restore browser workflows only after secure linked-account login, authorization, CSRF/session protection, and the earlier transaction safety milestones are complete.
 
 ## Production definition of done
+
+### Mandatory pre-Milestone 16 live acceptance TODO
+
+- Before Milestone 16 (production release gate), perform one controlled live testnet acceptance run using a real RPC, a disposable funded testnet wallet, and a deployed test mint contract.
+- This is mandatory because Milestone 7 has only been verified with mocked providers and database-backed automated tests. Defer the one-time run until after Milestones 8–10 stabilize mint construction so it does not need to be repeated unnecessarily.
+- Do not release to production or use meaningful funds until that live acceptance run passes and its evidence is recorded.
 
 - All validation, lint, unit, integration, migration, and smoke checks pass in CI.
 - Every user-owned read and write is tenant-scoped.
