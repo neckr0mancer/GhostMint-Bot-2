@@ -90,6 +90,8 @@ test('negative, NaN, infinite, fractional, and oversized numeric values are reje
 test('addresses, function names, ABI definitions, labels, and label uniqueness are validated', () => {
   rejectsField(() => requestSchemas.mint(validMint({ contractAddress: '0x1234' }), { supportedChains: CHAINS }), 'contractAddress');
   rejectsField(() => requestSchemas.mint(validMint({ functionName: 'mint()' }), { supportedChains: CHAINS }), 'functionName');
+  rejectsField(() => requestSchemas.mint(validMint({ functionName: 'publicMint' }), { supportedChains: CHAINS }), 'functionName');
+  rejectsField(() => requestSchemas.mint(validMint({ abi: [{ type:'function', name:'mint', inputs:[] }] }), { supportedChains: CHAINS }), 'abi');
   rejectsField(() => requestSchemas.mint(validMint({ abi: 'not-json' }), { supportedChains: CHAINS }), 'abi');
   rejectsField(() => requestSchemas.walletCreate({
     privateKey: `0x${'11'.repeat(32)}`, label: 'Primary', chain: 'ethereum',

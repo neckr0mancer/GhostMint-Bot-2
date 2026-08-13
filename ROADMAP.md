@@ -49,12 +49,12 @@ This is the ordered implementation plan for GhostMint. Milestones are intentiona
 - Add editable Ultra Fast, Fast, Semi-Safe, and Safe presets while ensuring ceilings and forced simulation always take precedence.
 - Keep preset human-verification choices as stored preparatory configuration for Milestone 10c; do not activate bypass behavior here.
 
+### Milestone 8 — Flexible mint support
+
+- Encode only an audited registry of common ERC-721, ERC-1155, proof-based, and signature-based mint shapes; reject arbitrary ABI and calldata construction.
+- Support manual/uploaded authorization data plus fail-closed public HTTP/IPFS proof lookup, reusable user-owned mint presets, decoded previews, and simulation of the exact encoded call.
+
 ## Remaining implementation
-
-### Milestone 8 — Mint flexibility
-
-- Support validated custom mint functions, ABI definitions, arguments, quantities, values, and chain-specific fee options.
-- Keep flexible calldata construction behind the validation and transaction-safety boundaries from Milestones 6 and 7.
 
 ### Milestone 9 — Durable scheduler
 

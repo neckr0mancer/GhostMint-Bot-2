@@ -173,11 +173,15 @@ function validateWalletCreate(input, context) {
 
 function validateMintRequest(input, context) {
   const fn = functionName(input.functionName ?? input.fn ?? 'mint');
+  if (fn !== 'mint') fail('functionName', 'must be mint; custom function names are not supported');
+  if (input.abi !== undefined && input.abi !== null && input.abi !== '') {
+    fail('abi', 'custom ABI input is not supported; choose a built-in mint signature');
+  }
   return {
     walletLabel: walletLabel(input.walletLabel),
     contractAddress: ethereumAddress(input.contractAddress ?? input.contract, 'contractAddress'),
     functionName: fn,
-    abi: abiDefinition(input.abi, fn),
+    abi: null,
     quantity: quantity(input.quantity ?? input.qty),
     priceETH: price(input.priceETH ?? input.price),
     gasLimit: gasLimit(input.gasLimit),

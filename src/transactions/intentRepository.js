@@ -26,6 +26,8 @@ function mapIntent(row) {
     replacementTxHash: row.replacement_tx_hash,
     blockNumber: row.block_number === null ? null : Number(row.block_number),
     failureReason: row.failure_reason,
+    methodSignature: row.method_signature,
+    callPreview: row.call_preview,
     createdAt: new Date(row.created_at).getTime(),
     timeoutAt: new Date(row.timeout_at).getTime(),
   };
@@ -40,16 +42,17 @@ function createTransactionIntentRepository(pool) {
         const result = await client.query(`INSERT INTO transaction_intents
           (user_id,wallet_id,target_id,chain,from_address,to_address,calldata,value_wei,nonce,
             gas_limit,gas_price_wei,max_fee_per_gas_wei,max_priority_fee_per_gas_wei,
-            estimated_cost_wei,simulation_enabled,required_confirmations,transaction_timeout_ms,
-            state,timeout_at)
+          estimated_cost_wei,simulation_enabled,required_confirmations,transaction_timeout_ms,
+          state,timeout_at,method_signature,call_preview)
           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,'submitted',
-            TO_TIMESTAMP($18 / 1000.0)) RETURNING *`,
+            TO_TIMESTAMP($18 / 1000.0),$19,$20::JSONB) RETURNING *`,
         [intent.userId, intent.walletId, intent.targetId, intent.chain, intent.from, intent.to,
           intent.data, intent.valueWei.toString(), intent.nonce, intent.gasLimit.toString(),
           intent.gasPriceWei?.toString() ?? null, intent.maxFeePerGasWei?.toString() ?? null,
           intent.maxPriorityFeePerGasWei?.toString() ?? null, intent.estimatedCostWei.toString(),
           intent.simulationEnabled, intent.requiredConfirmations, intent.transactionTimeoutMs,
-          intent.timeoutAt]);
+          intent.timeoutAt, intent.methodSignature || null,
+          intent.callPreview ? JSON.stringify(intent.callPreview) : null]);
         const created = mapIntent(result.rows[0]);
         await client.query(`INSERT INTO transaction_state_transitions (intent_id,from_state,to_state,reason)
           VALUES ($1,NULL,'submitted','intent persisted before broadcast')`, [created.intentId]);

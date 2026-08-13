@@ -125,6 +125,27 @@ Admin syntax uses precise wei values for monetary ceilings:
 
 Admin commands never bootstrap ownership. Before the first deployment, a database administrator must designate the initial trusted linked user directly, for example with a reviewed one-time `UPDATE users SET is_owner=TRUE WHERE user_id=...`. Thereafter, only an existing owner can add or remove owners, and the last owner cannot be removed.
 
+### Flexible mint calls and presets
+
+Flexible minting uses a finite built-in ABI registry. Supported signatures are `mint()`, `mint(uint256)`, `mint(address,uint256)`, `mint(uint256,uint256,bytes)`, `mint(address,uint256,uint256,bytes)`, `mint(uint256,bytes32[])`, `mint(address,uint256,bytes32[])`, `mint(uint256,bytes)`, and `mint(address,uint256,bytes)`. Caller-supplied ABI fragments and arbitrary calldata are rejected.
+
+`/mintcall` accepts one JSON object containing `walletLabel`, `contractAddress`, `methodSignature`, `arguments`, optional `valueWei`, optional `chain`, and optional `proofUrl`. Use `"$wallet"` for a recipient that should resolve to the selected wallet. A proof array or signature can be supplied directly in `arguments`. A JSON proof file can instead be uploaded to Telegram with the `/mintcall <JSON>` command as its caption, omitting the authorization argument from the caption's array.
+
+Automatic authorization lookup accepts public HTTP/HTTPS URLs or `ipfs://` URIs. `{address}` in a URL is replaced with the wallet address; otherwise an `address` query parameter is added. Empty, malformed, inaccessible, credential-bearing, localhost, and private-IP URLs fail closed with an explicit manual-entry-required response. The bot never proceeds with an empty proof or signature.
+
+Before transaction submission the bot sends a decoded preview containing the contract, registered signature, standard, named human-readable arguments, proof/signature presence, and native value. The exact encoded calldata shown by that preview is passed into Milestone 7's simulation and transaction pipeline. Transaction intents persist the signature and decoded preview for auditability.
+
+Reusable presets are user-owned and case-insensitively named:
+
+```text
+/mintpreset save {"name":"Drop","walletLabel":"Primary","contractAddress":"0x...","methodSignature":"mint(address,uint256)","arguments":["$wallet",2],"valueWei":"0","chain":"ethereum"}
+/mintpreset use {"name":"Drop","walletLabel":"Primary"}
+/mintpreset delete Drop
+/mintpresets
+```
+
+For remote-proof presets, save `proofUrl` and omit the proof/signature argument; authorization is fetched again for the executing wallet on each reuse. Scheduled-task internals and sniper-specific preset consumption remain deferred to Milestones 9 and 10.
+
 Run migrations before starting a new deployment:
 
 ```powershell

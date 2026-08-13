@@ -1,6 +1,7 @@
 const express     = require('express');
 const cors        = require('cors');
 const path        = require('path');
+const { Buffer }  = require('node:buffer');
 const { ethers }  = require('ethers');
 const TelegramBot = require('node-telegram-bot-api');
 const axios       = require('axios');
@@ -9,6 +10,11 @@ const { createDatabasePool } = require('./db/pool');
 const { createIdentityService } = require('./identity/identityService');
 const { createPostgresIdentityRepository } = require('./identity/postgresIdentityRepository');
 const { findOwnedTask, findOwnedWallet, stateForUser } = require('./identity/ownership');
+const { formatMintPreview } = require('./mint/mintCall');
+const { createMintExecutionService } = require('./mint/mintExecutionService');
+const { createMintService } = require('./mint/mintService');
+const { createPostgresMintPresetRepository } = require('./mint/postgresMintPresetRepository');
+const { createProofResolver, ProofResolutionError } = require('./mint/proofResolver');
 const { createAdminCommandService } = require('./governance/adminCommandService');
 const { AuthorizationError, createGovernanceService } = require('./governance/governanceService');
 const { createPostgresGovernanceRepository } = require('./governance/postgresGovernanceRepository');
@@ -32,6 +38,12 @@ const storage = createPostgresStorage(pool);
 const identityRepository = createPostgresIdentityRepository(pool);
 const identity = createIdentityService(identityRepository);
 const transactionIntentRepository = createTransactionIntentRepository(pool);
+const mintPresetRepository = createPostgresMintPresetRepository(pool);
+const mintService = createMintService({
+  presetRepository: mintPresetRepository,
+  proofResolver: createProofResolver(),
+  supportedChains: CONFIG.supportedChains,
+});
 const governanceRepository = createPostgresGovernanceRepository(pool);
 const governance = createGovernanceService(governanceRepository);
 const adminCommands = createAdminCommandService(governance);
@@ -66,6 +78,7 @@ const transactionEngine = createTransactionEngine({
   decryptPrivateKey: decryptPK,
   notify: event => log(`Transaction ${event.intent.intentId} is ${event.state}`),
 });
+const mintExecution = createMintExecutionService({ mintService, transactionEngine });
 
 // ── Activity ──────────────────────────────────────────────
 async function logActivity(userId, status, title, walletLabel, txHash, chain) {
@@ -80,8 +93,31 @@ function fmtCD(ms) {
   return d>0?`${d}d ${h%24}h`:h>0?`${h}h ${m%60}m`:m>0?`${m}m ${s%60}s`:`${s}s`;
 }
 
+function commandJson(raw) {
+  try {
+    const parsed = JSON.parse(String(raw || ''));
+    if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') throw new Error();
+    return parsed;
+  } catch { throw new ValidationError({ field:'command', message:'must contain a valid JSON object' }); }
+}
+
+function previewQuantity(preview) {
+  const value = preview.arguments.find(argument => ['quantity', 'amount'].includes(argument.name))?.value;
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : 1;
+}
+
 // ── Mint executor ─────────────────────────────────────────
-async function executeMint({ wallet, contractAddr, fnName='mint', qty=1, priceETH=0, gasGwei=null, chain, triggerSource='manual' }) {
+async function executePreparedMint({ wallet, prepared, chain, triggerSource='manual', gasGwei=null, onPreview }) {
+  if (chain !== prepared.chain) throw new Error('Prepared mint chain mismatch');
+  const intent = await mintExecution.executePrepared({ userId: wallet.userId, wallet, prepared, triggerSource,
+    gasPriceWei: gasGwei === null ? undefined : ethers.parseUnits(String(gasGwei), 'gwei'), onPreview });
+  if (intent.state !== 'confirmed') throw new Error(`Transaction ended in ${intent.state} state`);
+  log(`Confirmed: ${intent.txHash} (block ${intent.blockNumber})`);
+  return intent.txHash;
+}
+
+async function executeMint({ wallet, contractAddr, fnName='mint', qty=1, priceETH=0, gasGwei=null, chain, triggerSource='manual', onPreview }) {
   const request = requestSchemas.mint({
     walletLabel: wallet.label,
     contractAddress: contractAddr,
@@ -91,25 +127,16 @@ async function executeMint({ wallet, contractAddr, fnName='mint', qty=1, priceET
     gasGwei,
     chain,
   }, { supportedChains: CONFIG.supportedChains });
-  const abi = [{inputs:[{name:'quantity',type:'uint256'}],name:request.functionName,outputs:[],stateMutability:'payable',type:'function'}];
-  const calldata = new ethers.Interface(abi).encodeFunctionData(request.functionName, [request.quantity]);
-  const value     = ethers.parseEther((request.priceETH * request.quantity).toString());
-  const intent = await transactionEngine.submit({
-    userId: wallet.userId,
-    wallet,
+  const prepared = await mintService.prepare({
+    contractAddress: request.contractAddress,
+    methodSignature: 'mint(uint256)',
+    arguments: [request.quantity],
+    walletAddress: wallet.address,
+    valueWei: ethers.parseEther(String(request.priceETH)) * BigInt(request.quantity),
     chain: request.chain,
-    triggerSource,
-    to: request.contractAddress,
-    data: calldata,
-    valueWei: value,
-    gasLimitWei: request.gasLimit ?? undefined,
-    gasPriceWei: request.gasGwei === null ? undefined : ethers.parseUnits(String(request.gasGwei), 'gwei'),
-    maxFeePerGasWei: request.maxFeePerGasGwei === null ? undefined : ethers.parseUnits(String(request.maxFeePerGasGwei), 'gwei'),
-    maxPriorityFeePerGasWei: request.maxPriorityFeePerGasGwei === null ? undefined : ethers.parseUnits(String(request.maxPriorityFeePerGasGwei), 'gwei'),
   });
-  if (intent.state !== 'confirmed') throw new Error(`Transaction ended in ${intent.state} state`);
-  log(`Confirmed: ${intent.txHash} (block ${intent.blockNumber})`);
-  return intent.txHash;
+  return executePreparedMint({ wallet, prepared, chain: request.chain, triggerSource,
+    gasGwei: request.gasGwei, onPreview });
 }
 
 // ── Wallet Sniper / Copy-Mint Engine ─────────────────────────
@@ -232,7 +259,8 @@ async function fireSnipe(sniper, targetTx, chain) {
 // ── Telegram ──────────────────────────────────────────────
 let bot = null;
 function tg(chatId, msg) {
-  if (bot && chatId) bot.sendMessage(chatId, msg, { parse_mode:'Markdown' }).catch(e => log('TG: '+safeError(e)));
+  if (bot && chatId) return bot.sendMessage(chatId, msg, { parse_mode:'Markdown' }).catch(e => log('TG: '+safeError(e)));
+  return Promise.resolve();
 }
 
 async function notifyUser(userId, msg) {
@@ -258,6 +286,10 @@ function withTelegramUser(handler) {
         tg(msg.chat.id, '❌ Owner access required.');
         return;
       }
+      if (error instanceof ProofResolutionError) {
+        tg(msg.chat.id, `❌ ${error.message}`);
+        return;
+      }
       log(`Telegram command failed: ${safeError(error)}`);
       tg(msg.chat.id, 'Command failed safely. Please try again.');
     }
@@ -275,7 +307,7 @@ if (BOT_TOKEN) {
   });
 
   bot.onText(/^\/(?:start|help)(?:@\w+)?$/, withTelegramUser(async msg => {
-    tg(msg.chat.id, `👻 *GhostMint Bot*\n\n*Commands:*\n/wallets — list wallets\n/tasks — scheduled tasks\n/snipers — copy-mint watchers\n/activity — recent mints\n/gas — live gas prices\n/stats — overview\n/link — create a 5-minute account-link code\n/mode <preset> — select a transaction mode\n/admin <action> — owner-only governance\n/canceltask <id> — cancel task\n/removewallet <label> — remove wallet\n/mintnow <label> <contract> <qty> <price> <chain> — instant mint`);
+    tg(msg.chat.id, `👻 *GhostMint Bot*\n\n*Commands:*\n/wallets — list wallets\n/tasks — scheduled tasks\n/snipers — copy-mint watchers\n/activity — recent mints\n/gas — live gas prices\n/stats — overview\n/link — create a 5-minute account-link code\n/mode <preset> — select a transaction mode\n/admin <action> — owner-only governance\n/mintcall <JSON> — flexible supported-signature mint\n/mintpreset save|use|delete <JSON/name>\n/mintpresets — list saved mint presets\n/canceltask <id> — cancel task\n/removewallet <label> — remove wallet\n/mintnow <label> <contract> <qty> <price> <chain> — legacy quantity mint`);
   }));
 
   bot.onText(/^\/link(?:@\w+)?$/, withTelegramUser(async (msg, match, userId) => {
@@ -290,6 +322,75 @@ if (BOT_TOKEN) {
 
   bot.onText(/^\/admin(?:@\w+)?(?:\s+(.*))?$/, withTelegramUser(async (msg, match, userId) => {
     tg(msg.chat.id, await adminCommands.execute(userId, match[1]));
+  }));
+
+  async function runFlexibleMint(msg, userId, payload, manualAuthorization) {
+    const wallet = findOwnedWallet(DB, userId, payload.walletLabel);
+    if (!wallet) throw new ValidationError({ field:'walletLabel', message:'was not found' });
+    const prepared = await mintService.prepare({
+      contractAddress: payload.contractAddress,
+      methodSignature: payload.methodSignature,
+      arguments: payload.arguments || [],
+      manualAuthorization,
+      proofUrl: payload.proofUrl,
+      walletAddress: wallet.address,
+      valueWei: payload.valueWei ?? '0',
+      chain: payload.chain || wallet.chain,
+    });
+    const txHash = await executePreparedMint({ wallet, prepared, chain: payload.chain || wallet.chain,
+      onPreview: preview => tg(msg.chat.id, formatMintPreview(preview), {}) });
+    const quantity = previewQuantity(prepared.preview);
+    wallet.minted = (wallet.minted || 0) + quantity;
+    await storage.updateWalletMinted(userId, wallet.label, wallet.minted);
+    await logActivity(userId, 'success', `Minted via ${prepared.method.signature}`, wallet.label, txHash, CHAINS[payload.chain || wallet.chain]);
+    await tg(msg.chat.id, `✅ Mint successful.\n${CHAINS[payload.chain || wallet.chain].ex}${txHash}`, {});
+  }
+
+  bot.onText(/^\/mintcall(?:@\w+)?\s+(.+)$/, withTelegramUser(async (msg, match, userId) => {
+    await runFlexibleMint(msg, userId, commandJson(match[1]));
+  }));
+
+  bot.on('document', withTelegramUser(async (msg, match, userId) => {
+    const command = msg.caption?.match(/^\/mintcall(?:@\w+)?\s+(.+)$/s);
+    if (!command) return;
+    const link = await bot.getFileLink(msg.document.file_id);
+    let response;
+    try { response = await axios.get(link, { responseType:'arraybuffer', timeout:10_000, maxContentLength:1_000_000 }); }
+    catch (error) { throw new ProofResolutionError('The uploaded proof file could not be downloaded.', error); }
+    await runFlexibleMint(msg, userId, commandJson(command[1]), Buffer.from(response.data));
+  }));
+
+  bot.onText(/^\/mintpreset(?:@\w+)?\s+save\s+(.+)$/, withTelegramUser(async (msg, match, userId) => {
+    const payload = commandJson(match[1]);
+    const wallet = findOwnedWallet(DB, userId, payload.walletLabel);
+    if (!wallet) throw new ValidationError({ field:'walletLabel', message:'was not found' });
+    const saved = await mintService.savePreset(userId, { ...payload, walletAddress: wallet.address,
+      valueWei: payload.valueWei ?? '0', chain: payload.chain || wallet.chain });
+    await tg(msg.chat.id, `✅ Mint preset *${saved.name}* saved.`);
+  }));
+
+  bot.onText(/^\/mintpreset(?:@\w+)?\s+use\s+(.+)$/, withTelegramUser(async (msg, match, userId) => {
+    const payload = commandJson(match[1]);
+    const wallet = findOwnedWallet(DB, userId, payload.walletLabel);
+    if (!wallet) throw new ValidationError({ field:'walletLabel', message:'was not found' });
+    const prepared = await mintService.preparePreset(userId, payload.name, wallet.address);
+    const txHash = await executePreparedMint({ wallet, prepared, chain: prepared.chain,
+      onPreview: preview => tg(msg.chat.id, formatMintPreview(preview), {}) });
+    const quantity = previewQuantity(prepared.preview);
+    wallet.minted = (wallet.minted || 0) + quantity;
+    await storage.updateWalletMinted(userId, wallet.label, wallet.minted);
+    await logActivity(userId, 'success', `Preset mint via ${prepared.method.signature}`, wallet.label, txHash, CHAINS[prepared.chain]);
+    await tg(msg.chat.id, `✅ Preset mint successful.\n${CHAINS[prepared.chain].ex}${txHash}`, {});
+  }));
+
+  bot.onText(/^\/mintpreset(?:@\w+)?\s+delete\s+(.+)$/, withTelegramUser(async (msg, match, userId) => {
+    const deleted = await mintService.deletePreset(userId, match[1]);
+    await tg(msg.chat.id, deleted ? '✅ Mint preset deleted.' : 'Mint preset not found.');
+  }));
+
+  bot.onText(/^\/mintpresets(?:@\w+)?$/, withTelegramUser(async (msg, match, userId) => {
+    const presets = await mintService.listPresets(userId);
+    await tg(msg.chat.id, presets.length ? presets.map(preset => `• *${preset.name}* — ${preset.methodSignature}`).join('\n') : 'No mint presets saved.');
   }));
 
   bot.onText(/^\/snipers(?:@\w+)?$/, withTelegramUser(async (msg, match, userId) => {
@@ -385,7 +486,8 @@ if (BOT_TOKEN) {
     const { quantity: qty, priceETH: price, chain: ch } = request;
     tg(msg.chat.id, `⚡ Minting from *${wallet.label}*...\nContract: \`${request.contractAddress.slice(0,10)}...\`\nQty: ${qty} | Price: ${price>0?price+' ETH':'Free'}`);
     try {
-      const txHash = await executeMint({ wallet, contractAddr:request.contractAddress, fnName:'mint', qty, priceETH:price, chain:ch });
+      const txHash = await executeMint({ wallet, contractAddr:request.contractAddress, fnName:'mint', qty, priceETH:price, chain:ch,
+        onPreview: preview => tg(msg.chat.id, formatMintPreview(preview), {}) });
       wallet.minted=(wallet.minted||0)+qty;
       await storage.updateWalletMinted(userId, wallet.label, wallet.minted);
       await logActivity(userId, 'success',`Minted ${qty} NFT${qty>1?'s':''}`,wallet.label,txHash,CHAINS[ch]);
@@ -427,7 +529,8 @@ async function fireTask(task) {
   task.status='running'; await storage.saveTask(task);
   await notifyUser(task.userId, `⚡ *Auto-minting!*\nTask: *${task.name}*\nWallet: *${wallet.label}*\nQty: ${task.qty}`);
   try {
-    const txHash = await executeMint({ wallet, contractAddr:task.contract, fnName:task.fn||'mint', qty:task.qty, priceETH:task.price||0, gasGwei:task.gas||null, chain:wallet.chain, triggerSource:'scheduled' });
+    const txHash = await executeMint({ wallet, contractAddr:task.contract, fnName:task.fn||'mint', qty:task.qty, priceETH:task.price||0, gasGwei:task.gas||null, chain:wallet.chain, triggerSource:'scheduled',
+      onPreview: preview => notifyUser(task.userId, formatMintPreview(preview)) });
     task.status='done'; wallet.minted=(wallet.minted||0)+task.qty;
     await Promise.all([storage.saveTask(task), storage.updateWalletMinted(task.userId, wallet.label, wallet.minted)]);
     await logActivity(task.userId, 'success',`Auto-minted ${task.qty} NFT${task.qty>1?'s':''}`,wallet.label,txHash,CHAINS[wallet.chain]);

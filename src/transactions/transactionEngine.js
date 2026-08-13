@@ -189,6 +189,8 @@ function createTransactionEngine({
             requiredConfirmations: policy.requiredConfirmations,
             transactionTimeoutMs: policy.transactionTimeoutMs,
             timeoutAt: now() + policy.transactionTimeoutMs,
+            methodSignature: request.methodSignature || null,
+            callPreview: request.callPreview || null,
           });
         } catch (error) {
           if (error?.code !== '23505') throw error;
