@@ -19,10 +19,10 @@ The supported Node version is recorded in both `.nvmrc` and `.node-version`.
 ```powershell
 git clone https://github.com/neckr0mancer/GhostMint-Bot-2.git
 Set-Location GhostMint-Bot-2
-npm ci
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\project-npm.ps1 ci
 Copy-Item .env.example .env
-npm run db:migrate
-npm start
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\project-npm.ps1 run db:migrate
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\project-npm.ps1 start
 ```
 
 Edit `.env` before using wallet or Telegram features. The server listens on port `3000` by default.
@@ -285,6 +285,20 @@ Linked-account dashboard login, observability, and operational hardening remain 
 Before opening a pull request or deploying, run:
 
 ```powershell
-npm ci
-npm run validate
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\project-npm.ps1 ci
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\project-npm.ps1 run validate
+```
+
+## Known environment notes
+
+The current Codex bundled Node runtime is `C:\Users\General\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe`. As of August 13, 2026, that runtime ships Node 24.14.0 and pnpm, but no `npm-cli.js` or Corepack. The previously used `...\node\node_modules\npm\bin\npm-cli.js` path therefore no longer exists after the runtime update. Bundled pnpm is not a substitute here because this repository is intentionally locked to npm through `packageManager` and `package-lock.json`; do not invoke the inaccessible system-wide `npm.cmd` or alter PATH.
+
+Use `scripts\project-npm.ps1` for every npm operation on this machine. On first use it downloads the pinned npm 11.7.0 package from the official npm registry into the gitignored `.project-tools` directory, verifies the archive's pinned SHA-512 digest, and invokes it with the bundled Node runtime plus `--use-system-ca`. It falls back to a discoverable `node` executable only if the Codex runtime moves again. The `validate` package script uses Node 24's native `node --run` for its child stages, preventing nested scripts from resolving the inaccessible system `npm.cmd`. Database-backed tests run serially to avoid exhausting or contending on the shared Supabase pool. The repeatable commands are:
+
+```powershell
+# Install the exact dependency lockfile
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\project-npm.ps1 ci
+
+# Run the complete project validation suite
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\project-npm.ps1 run validate
 ```

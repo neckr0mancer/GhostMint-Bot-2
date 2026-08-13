@@ -13,7 +13,7 @@ const nodeGlobals = {
 
 module.exports = [
   {
-    ignores: ['node_modules/**', 'coverage/**'],
+    ignores: ['node_modules/**', 'coverage/**', '.project-tools/**'],
   },
   {
     files: ['**/*.js'],
