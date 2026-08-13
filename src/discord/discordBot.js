@@ -86,6 +86,17 @@ function commandDefinitions() {
   commands.push(new SlashCommandBuilder().setName('social-usage').setDescription('Owner-only social adapter usage and cost estimates')
     .addStringOption(o => o.setName('period').setDescription('Reporting period').addChoices(
       { name:'Today', value:'today' }, { name:'This month', value:'month' })));
+  commands.push(new SlashCommandBuilder().setName('target-policy').setDescription('Configure per-target trigger and verification behavior')
+    .addSubcommand(c=>c.setName('set').setDescription('Set target policy from JSON').addStringOption(o=>o.setName('input').setDescription('Target policy JSON').setRequired(true)))
+    .addSubcommand(c=>c.setName('show').setDescription('Show target policy').addStringOption(o=>o.setName('type').setDescription('sniper or social_rule').setRequired(true)).addStringOption(o=>o.setName('id').setDescription('Target UUID').setRequired(true)))
+    .addSubcommand(c=>c.setName('bypass').setDescription('Request highest-risk social verification bypass').addStringOption(o=>o.setName('type').setDescription('Target type').setRequired(true)).addStringOption(o=>o.setName('id').setDescription('Target UUID').setRequired(true)).addBooleanOption(o=>o.setName('dont-ask-again').setDescription('Skip future warnings for this target only')))
+    .addSubcommand(c=>c.setName('confirm-bypass').setDescription('Explicitly confirm bypass warning').addStringOption(o=>o.setName('challenge').setDescription('Challenge UUID').setRequired(true)).addStringOption(o=>o.setName('confirmation').setDescription('Must be CONFIRM').setRequired(true)))
+    .addSubcommand(c=>c.setName('preset').setDescription('Apply a mode preset starting point').addStringOption(o=>o.setName('input').setDescription('Target and preset JSON').setRequired(true)))
+    .addSubcommand(c=>c.setName('reset').setDescription('Reset target policy and bypass acknowledgement').addStringOption(o=>o.setName('type').setDescription('Target type').setRequired(true)).addStringOption(o=>o.setName('id').setDescription('Target UUID').setRequired(true))));
+  commands.push(new SlashCommandBuilder().setName('confirm-trigger').setDescription('Confirm a pending triggered mint')
+    .addStringOption(o=>o.setName('request').setDescription('Confirmation request UUID').setRequired(true))
+    .addStringOption(o=>o.setName('confirmation').setDescription('Must be CONFIRM').setRequired(true)));
+  commands.push(new SlashCommandBuilder().setName('trigger-audit').setDescription('Show trigger execution audit records'));
   return commands.map(command => command.toJSON());
 }
 
@@ -174,6 +185,18 @@ function createDiscordInteractionHandler({ identity, commands, log = () => {} })
           message = `Social adapter usage (${summary.period})\nTotal: ${summary.requests}\n${rows}\nEstimated pay-per-use: ~$${summary.payPerUseEstimateUsd.toFixed(2)}\nProjected monthly requests: ~${Math.round(summary.projectedMonthlyRequests).toLocaleString('en-US')}\n${tiers}`;
           break;
         }
+        case 'target-policy': {
+          const action=interaction.options.getSubcommand();
+          if(action==='set'){const policy=await commands.updateTargetPolicy(userId,json(interaction.options.getString('input')));message=`Target policy saved: blockchain ${policy.blockchainTrigger}, social ${policy.socialTrigger}, verification ${policy.humanVerification}.`;}
+          else if(action==='show'){const policy=await commands.targetPolicy(userId,interaction.options.getString('type'),interaction.options.getString('id'));message=JSON.stringify(policy);}
+          else if(action==='bypass'){const result=await commands.requestTargetBypass(userId,{targetType:interaction.options.getString('type'),targetId:interaction.options.getString('id'),dontAskAgain:interaction.options.getBoolean('dont-ask-again')===true});message=result.requiresConfirmation?`${result.warning}\nChallenge: ${result.challengeId}`:'Verification bypass enabled for this previously acknowledged target.';}
+          else if(action==='confirm-bypass'){const policy=await commands.confirmTargetBypass(userId,{challengeId:interaction.options.getString('challenge'),confirmation:interaction.options.getString('confirmation')});message=`Verification is now ${policy.humanVerification} for this target.`;}
+          else if(action==='preset'){const result=await commands.applyTargetPreset(userId,json(interaction.options.getString('input')));message=result.requiresConfirmation?`${result.warning}\nChallenge: ${result.challengeId}`:`Target preset applied; verification ${result.humanVerification}.`;}
+          else {const policy=await commands.resetTargetPolicy(userId,{targetType:interaction.options.getString('type'),targetId:interaction.options.getString('id')});message=`Target policy reset. Verification is ${policy.humanVerification}; bypass acknowledgement cleared.`;}
+          break;
+        }
+        case 'confirm-trigger': {const result=await commands.confirmTrigger(userId,interaction.options.getString('request'),interaction.options.getString('confirmation'));message=`Triggered mint ${result.result.state}.`;break;}
+        case 'trigger-audit': {const rows=await commands.triggerAudit(userId);message=rows.length?rows.map(row=>`${row.trigger_source} | ${row.target_type}:${row.target_id} | verification ${row.verification_state} | ${row.outcome}`).join('\n'):'No trigger executions audited.';break;}
         default: throw new Error('Unknown Discord command');
       }
       await interaction.editReply(message);

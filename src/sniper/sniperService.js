@@ -4,7 +4,8 @@ const { ValidationError, requestSchemas } = require('../validation/domain');
 const TRANSIENT_CODES = new Set(['RPC_UNAVAILABLE','BROADCAST_UNKNOWN','NETWORK_ERROR','SERVER_ERROR','TIMEOUT','ETIMEDOUT','ECONNRESET','ECONNREFUSED','EAI_AGAIN']);
 const lower = value => String(value || '').toLowerCase();
 
-function createSniperService({ repository, intentRepository, transactionEngine, supportedChains, now = () => Date.now(), onEvent = async () => {} }) {
+function createSniperService({ repository, intentRepository, transactionEngine, supportedChains, now = () => Date.now(),
+  onEvent = async () => {}, beforeExecute = async () => true }) {
   function validateCreate(input) { return requestSchemas.sniperCreate(input, { supportedChains }); }
   function validatePatch(current, patch) {
     if (!patch || typeof patch !== 'object' || Array.isArray(patch)) throw new ValidationError({ field:'patch', message:'must be an object' });
@@ -42,6 +43,9 @@ function createSniperService({ repository, intentRepository, transactionEngine, 
     const sourceFee = sourceTx.maxFeePerGas ?? sourceTx.gasPrice ?? 0n;
     const copiedFee = sourceFee * boost / 100n;
     if (copiedFee > parseUnits(String(sniper.maxGasGwei), 'gwei')) return skip(event, 'maximum gas price exceeded');
+    if (!await beforeExecute({ sniper, event, sourceTx, wallet, value, copiedFee })) {
+      return skip(event, 'waiting for explicit trigger confirmation');
+    }
     const claimed = await repository.claim(event, sniper.maxAttempts);
     if (!claimed) return 'duplicate';
     try {

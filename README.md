@@ -101,6 +101,14 @@ Every adapter request—including scraper requests used during free testing—is
 
 Pricing assumptions are centralized in `CONFIG.socialPricing`, currently `$0.005` per X read, `$0.015` per X post, and representative managed-service tiers of `$199` and `$499` per month. They are estimates for planning, not billing records; update this single configuration object when provider pricing changes. The report calculates flat-rate break-even request counts under both read and post rates.
 
+### Per-target trigger and verification policy
+
+Each sniper or social watch rule can store independent blockchain `auto|manual`, social `auto|manual`, and human-verification `on|bypassed` settings. Social execution also references an owned wallet label and an M8 mint preset whose contract must match the detected address. Target policy cannot contain spend or gas ceilings; execution always returns to the M7 transaction engine and its M7a governance-derived effective policy.
+
+Verification bypass is never accepted through ordinary policy updates. Telegram `/targetpolicy bypass <JSON>` or Discord `/target-policy bypass` creates a five-minute warning challenge. The user must submit the challenge with the exact word `CONFIRM`. The optional `dontAskAgain` acknowledgement applies only to that target record; reset or removal deletes the target policy and acknowledgement. Presets requesting bypass must use the same challenge mechanism.
+
+Blockchain auto copy events proceed through existing sniper execution without forced human verification. Blockchain manual events and all social events except social-auto with confirmed bypass create durable ten-minute confirmation requests containing a decoded M8 preview where available. Confirm with Telegram `/confirmtrigger <request-id> CONFIRM` or Discord `/confirm-trigger`. Executions append queryable `trigger_execution_audit` rows recording source, target, verification state, acknowledgement state, confirmation display, transaction intent/hash, and outcome; Telegram `/triggeraudit` and Discord `/trigger-audit` display recent records.
+
 ### Chain and database configuration
 
 Supported chain names are `ethereum`, `base`, `arbitrum`, and `polygon`. Every configured RPC override must be an HTTP or HTTPS URL without embedded credentials. Public RPC defaults remain available when an override is blank.

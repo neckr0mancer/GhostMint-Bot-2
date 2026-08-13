@@ -12,7 +12,7 @@ const { createDiscordBot } = require('./discord/discordBot');
 const { createIdentityService } = require('./identity/identityService');
 const { createPostgresIdentityRepository } = require('./identity/postgresIdentityRepository');
 const { findOwnedWallet, stateForUser } = require('./identity/ownership');
-const { formatMintPreview } = require('./mint/mintCall');
+const { decodeMintCall, formatMintPreview } = require('./mint/mintCall');
 const { createMintExecutionService } = require('./mint/mintExecutionService');
 const { createMintService } = require('./mint/mintService');
 const { createNotificationService } = require('./notifications/notificationService');
@@ -38,6 +38,9 @@ const { createTransactionPolicyRepository } = require('./transactions/policyRepo
 const { createProviderService } = require('./transactions/providerService');
 const { createTransactionEngine } = require('./transactions/transactionEngine');
 const { createTriggerPipeline } = require('./triggers/triggerPipeline');
+const { createTargetPolicyRepository } = require('./triggers/targetPolicyRepository');
+const { createTargetPolicyService } = require('./triggers/targetPolicyService');
+const { createTriggerExecutionService } = require('./triggers/triggerExecutionService');
 const { ValidationError, requestSchemas, validationReply } = require('./validation/domain');
 
 // ── Config ────────────────────────────────────────────────
@@ -54,6 +57,7 @@ const transactionIntentRepository = createTransactionIntentRepository(pool);
 const schedulerRepository = createSchedulerRepository(pool);
 const sniperRepository = createSniperRepository(pool);
 const socialWatchRepository = createSocialWatchRepository(pool);
+const targetPolicyRepository = createTargetPolicyRepository(pool);
 const mintPresetRepository = createPostgresMintPresetRepository(pool);
 const mintService = createMintService({
   presetRepository: mintPresetRepository,
@@ -100,6 +104,47 @@ const transactionEngine = createTransactionEngine({
   notify: event => log(`Transaction ${event.intent.intentId} is ${event.state}`),
 });
 const mintExecution = createMintExecutionService({ mintService, transactionEngine });
+const targetPolicyService = createTargetPolicyService({ repository:targetPolicyRepository,
+  governanceRepository, targetExists:async (userId,targetType,targetId) => targetType==='sniper'
+    ? DB.snipers.some(item=>item.userId===userId&&item.id===targetId)
+    : Boolean(await socialWatchRepository.get(userId,targetId)) });
+let triggerExecutionService;
+
+async function prepareTriggeredExecution(event,policy) {
+  if(event.triggerSource==='social-triggered') {
+    if(!policy.walletLabel||!policy.mintPresetName) throw new ValidationError({field:'targetPolicy',message:'social execution requires walletLabel and mintPresetName'});
+    const wallet=findOwnedWallet(DB,event.userId,policy.walletLabel);
+    if(!wallet) throw new ValidationError({field:'walletLabel',message:'was not found'});
+    const prepared=await mintService.preparePreset(event.userId,policy.mintPresetName,wallet.address);
+    if(prepared.preview.contractAddress.toLowerCase()!==event.address.toLowerCase()) throw new ValidationError({field:'mintPresetName',message:'contract does not match the detected social address'});
+    return {preview:prepared.preview,executionPayload:{...event,walletLabel:wallet.label,mintPresetName:policy.mintPresetName}};
+  }
+  return {preview:event.preview,executionPayload:event};
+}
+
+async function executeTriggered(event,policy) {
+  if(event.triggerSource==='social-triggered') {
+    const preparedData=await prepareTriggeredExecution(event,policy);
+    const wallet=findOwnedWallet(DB,event.userId,preparedData.executionPayload.walletLabel);
+    const prepared=await mintService.preparePreset(event.userId,preparedData.executionPayload.mintPresetName,wallet.address);
+    const intent=await mintExecution.executePrepared({userId:event.userId,wallet,prepared,triggerSource:'social',
+      idempotencyKey:`social-trigger:${event.userId}:${event.targetId}:${event.id}`});
+    return {state:intent.state,intentId:intent.intentId,txHash:intent.txHash};
+  }
+  const wallet=findOwnedWallet(DB,event.userId,event.walletLabel);
+  if(!wallet) throw new ValidationError({field:'walletLabel',message:'was not found'});
+  const intent=await transactionEngine.submit({userId:event.userId,wallet,targetId:event.targetId,
+    chain:event.chain,triggerSource:'blockchain',to:event.to,data:event.data,valueWei:BigInt(event.valueWei),
+    gasPriceWei:event.gasPriceWei?BigInt(event.gasPriceWei):undefined,
+    maxFeePerGasWei:event.maxFeePerGasWei?BigInt(event.maxFeePerGasWei):undefined,
+    maxPriorityFeePerGasWei:event.maxPriorityFeePerGasWei?BigInt(event.maxPriorityFeePerGasWei):undefined,
+    idempotencyKey:`sniper:${event.userId}:${event.targetId}:${event.id}`});
+  return {state:intent.state,intentId:intent.intentId,txHash:intent.txHash};
+}
+
+triggerExecutionService=createTriggerExecutionService({repository:targetPolicyRepository,
+  policyService:targetPolicyService,prepareExecution:prepareTriggeredExecution,execute:executeTriggered,
+  notify:(userId,value)=>notifyUser(userId,`Trigger requires confirmation.\n${JSON.stringify(value.preview)}\nRun /confirmtrigger ${value.requestId} CONFIRM within 10 minutes.`)});
 const schedulerWorker = createSchedulerWorker({
   repository: schedulerRepository,
   intentRepository: transactionIntentRepository,
@@ -211,6 +256,21 @@ const sniperService = createSniperService({
   intentRepository:transactionIntentRepository,
   transactionEngine,
   supportedChains:CONFIG.supportedChains,
+  beforeExecute:async ({sniper,event,sourceTx,wallet,value,copiedFee}) => {
+    const policy=await targetPolicyService.get(sniper.userId,'sniper',sniper.id);
+    if(policy.blockchainTrigger==='auto') return true;
+    const preview=decodeMintCall({contractAddress:sourceTx.to,calldata:sourceTx.data,valueWei:value});
+    const request=await targetPolicyRepository.createRequest({userId:sniper.userId,targetType:'sniper',targetId:sniper.id,
+      triggerSource:'blockchain-triggered',sourceEventId:event.txHash,preview,executionPayload:{
+        userId:sniper.userId,targetType:'sniper',targetId:sniper.id,triggerSource:'blockchain-triggered',
+        address:sourceTx.to,walletLabel:wallet.label,chain:sniper.chain,to:sourceTx.to,data:sourceTx.data,
+        valueWei:String(value),gasPriceWei:sourceTx.maxFeePerGas?null:String(copiedFee),
+        maxFeePerGasWei:sourceTx.maxFeePerGas?String(copiedFee):null,
+        maxPriorityFeePerGasWei:sourceTx.maxFeePerGas?String((sourceTx.maxPriorityFeePerGas||sourceTx.maxFeePerGas)*BigInt(100+sniper.gasBoostPercent)/100n):null,
+      },expiresAt:Date.now()+10*60_000});
+    await notifyUser(sniper.userId,`Blockchain trigger for *${sniper.label}* requires confirmation. Contract: \`${sourceTx.to}\`.\nRun /confirmtrigger ${request.id} CONFIRM within 10 minutes.`);
+    return false;
+  },
   onEvent:async ({ event, state, reason, intent, error }) => {
     const sniper = DB.snipers.find(item => item.userId === event.userId && item.id === event.sniperId);
     if (!sniper) return;
@@ -223,9 +283,18 @@ const sniperService = createSniperService({
         ? storage.updateWalletMinted(sniper.userId, wallet.label, wallet.minted) : Promise.resolve()]);
       if (wallet) await logActivity(sniper.userId, 'success', `Post-confirmation copy-mint (${sniper.label})`,
         wallet.label, intent?.txHash || null, CHAINS[sniper.chain]);
+      const policy=await targetPolicyService.get(sniper.userId,'sniper',sniper.id);
+      await targetPolicyRepository.addAudit({userId:sniper.userId,targetType:'sniper',targetId:sniper.id,
+        triggerSource:'blockchain-triggered',sourceEventId:event.txHash,verificationState:policy.humanVerification,
+        dontAskAgain:policy.dontAskAgain,confirmationShown:false,intentId:intent?.intentId,txHash:intent?.txHash,outcome:'confirmed'});
     } else if (state === 'failed') {
       sniper.fails = (sniper.fails || 0) + 1;
       await storage.saveSniper(sniper);
+      const policy=await targetPolicyService.get(sniper.userId,'sniper',sniper.id);
+      await targetPolicyRepository.addAudit({userId:sniper.userId,targetType:'sniper',targetId:sniper.id,
+        triggerSource:'blockchain-triggered',sourceEventId:event.txHash,verificationState:policy.humanVerification,
+        dontAskAgain:policy.dontAskAgain,confirmationShown:false,intentId:intent?.intentId,txHash:intent?.txHash,
+        outcome:'failed'});
     }
     await notifyUser(sniper.userId, state === 'confirmed'
       ? `✅ Post-confirmation copy *${sniper.label}* confirmed.`
@@ -266,8 +335,8 @@ async function onBlock(chain, blockNumber) {
       try {
         if (tx.from.toLowerCase() !== sniper.targetAddress.toLowerCase()) continue;
         const detected = await sniperService.detect(sniper, { hash:tx.hash, to:tx.to, blockNumber, blockHash:block.hash });
-        if (detected) await triggerPipeline.publish({ id:`${sniper.id}:${tx.hash}`, userId:sniper.userId,
-          address:tx.to, triggerSource:'blockchain-triggered', sourceTransactionHash:tx.hash });
+        if (detected) await triggerPipeline.publish({ id:tx.hash,userId:sniper.userId,targetId:sniper.id,
+          address:tx.to,triggerSource:'blockchain-triggered',sourceTransactionHash:tx.hash });
       } catch (error) { log(`Sniper ${sniper.id} detection failed: ${safeError(error)}`); }
     }
   }
@@ -300,9 +369,8 @@ async function notifyUser(userId, msg) {
 
 async function handleTriggerEvent(event) {
   log(`Trigger pipeline received ${event.triggerSource} event ${event.id} for ${event.address}`);
-  if (event.triggerSource === 'social-triggered') {
-    await notifyUser(event.userId, `Social source detected contract \`${event.address}\`. Trigger recorded for manual review; Milestone 10c will govern execution and verification behavior.`);
-  }
+  if (event.triggerSource === 'social-triggered') await triggerExecutionService.handle({ ...event,
+    targetType:'social_rule',targetId:event.matchedRuleIds[0] });
 }
 
 const triggerPipeline = createTriggerPipeline({ handlers:[handleTriggerEvent], log });
@@ -508,6 +576,37 @@ if (BOT_TOKEN) {
     tg(msg.chat.id, formatUsageSummary(await botCommands.socialUsage(userId, match[1] || 'month')));
   }));
 
+  bot.onText(/^\/targetpolicy(?:@\w+)?\s+set\s+(.+)$/i,withTelegramUser(async(msg,match,userId)=>{
+    const policy=await botCommands.updateTargetPolicy(userId,commandJson(match[1]));
+    tg(msg.chat.id,`✅ Target policy saved: blockchain ${policy.blockchainTrigger}, social ${policy.socialTrigger}, verification ${policy.humanVerification}.`);
+  }));
+  bot.onText(/^\/targetpolicy(?:@\w+)?\s+show\s+(sniper|social_rule)\s+([0-9a-f-]+)$/i,withTelegramUser(async(msg,match,userId)=>{
+    const policy=await botCommands.targetPolicy(userId,match[1],match[2]);
+    tg(msg.chat.id,`Target policy: blockchain ${policy.blockchainTrigger}, social ${policy.socialTrigger}, verification ${policy.humanVerification}, acknowledged ${policy.dontAskAgain?'yes':'no'}.`);
+  }));
+  bot.onText(/^\/targetpolicy(?:@\w+)?\s+reset\s+(sniper|social_rule)\s+([0-9a-f-]+)$/i,withTelegramUser(async(msg,match,userId)=>{
+    const policy=await botCommands.resetTargetPolicy(userId,match[1],match[2]);
+    tg(msg.chat.id,`✅ Target policy reset: blockchain ${policy.blockchainTrigger}, social ${policy.socialTrigger}, verification ${policy.humanVerification}.`);
+  }));
+  bot.onText(/^\/targetpolicy(?:@\w+)?\s+bypass\s+(.+)$/i,withTelegramUser(async(msg,match,userId)=>{
+    const result=await botCommands.requestTargetBypass(userId,commandJson(match[1]));
+    tg(msg.chat.id,result.requiresConfirmation?`${result.warning}\nChallenge: \`${result.challengeId}\`\nUse /confirmbypass ${result.challengeId} CONFIRM`:'✅ Verification bypass enabled for this previously acknowledged target.');
+  }));
+  bot.onText(/^\/confirmbypass(?:@\w+)?\s+([0-9a-f-]+)\s+(\S+)$/i,withTelegramUser(async(msg,match,userId)=>{
+    const policy=await botCommands.confirmTargetBypass(userId,{challengeId:match[1],confirmation:match[2]});
+    tg(msg.chat.id,`✅ Verification is now ${policy.humanVerification} for this target.`);
+  }));
+  bot.onText(/^\/targetpolicy(?:@\w+)?\s+preset\s+(.+)$/i,withTelegramUser(async(msg,match,userId)=>{
+    const result=await botCommands.applyTargetPreset(userId,commandJson(match[1]));
+    tg(msg.chat.id,result.requiresConfirmation?`${result.warning}\nChallenge: \`${result.challengeId}\`\nUse /confirmbypass ${result.challengeId} CONFIRM`:`✅ Target preset applied; verification ${result.humanVerification}.`);
+  }));
+  bot.onText(/^\/confirmtrigger(?:@\w+)?\s+([0-9a-f-]+)\s+(\S+)$/i,withTelegramUser(async(msg,match,userId)=>{
+    const result=await botCommands.confirmTrigger(userId,match[1],match[2]);tg(msg.chat.id,`✅ Triggered mint ${result.result.state}.`);
+  }));
+  bot.onText(/^\/triggeraudit(?:@\w+)?$/i,withTelegramUser(async(msg,match,userId)=>{
+    const rows=await botCommands.triggerAudit(userId);tg(msg.chat.id,rows.length?rows.map(row=>`${row.trigger_source} | ${row.target_type}:${row.target_id} | verification ${row.verification_state} | ${row.outcome}`).join('\n'):'No trigger executions audited.');
+  }));
+
   bot.onText(/^\/tasks(?:@\w+)?$/, withTelegramUser(async (msg, match, userId) => {
     const pending = await botCommands.tasks(userId);
     if (!pending.length) return tg(msg.chat.id, 'No scheduled tasks.');
@@ -606,6 +705,10 @@ const botCommands = createBotCommandService({
   sniperService,
   socialWatchService,
   socialUsageService,
+  targetPolicyService,
+  triggerExecutionService,
+  triggerAuditRepository:targetPolicyRepository,
+  governanceRepository,
   supportedChains: CONFIG.supportedChains,
   chains: CHAINS,
   encryptPrivateKey: encryptPK,

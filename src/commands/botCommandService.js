@@ -4,7 +4,8 @@ const { ValidationError, requestSchemas } = require('../validation/domain');
 
 function createBotCommandService(dependencies) {
   const { storage, schedulerRepository, providerService, governance, adminCommands, sniperService,
-    socialWatchService, socialUsageService, supportedChains, chains, encryptPrivateKey, getState, executeMint,
+    socialWatchService, socialUsageService, targetPolicyService, triggerExecutionService, governanceRepository,
+    triggerAuditRepository, supportedChains, chains, encryptPrivateKey, getState, executeMint,
     ensureChainWatcher = () => {} } = dependencies;
 
   function state(userId) { return stateForUser(getState(), userId); }
@@ -114,6 +115,15 @@ function createBotCommandService(dependencies) {
     return sniper;
   }
 
+  async function removeSniper(userId,id) {
+    const validated=requestSchemas.sniperDeletion({id});
+    const current=state(userId).snipers.find(item=>item.id===validated.id);
+    if(!current||!await storage.deleteSniper(userId,validated.id)) throw new ValidationError({field:'id',message:'was not found'});
+    getState().snipers.splice(getState().snipers.indexOf(current),1);
+    await targetPolicyService.reset(userId,{targetType:'sniper',targetId:validated.id});
+    return validated.id;
+  }
+
   async function updateSniper(userId, id, patch) {
     const validated = requestSchemas.sniperDeletion({ id });
     const current = state(userId).snipers.find(item => item.id === validated.id);
@@ -134,7 +144,7 @@ function createBotCommandService(dependencies) {
 
   return {
     createWallet, importWallet, removeWallet, walletBalance, mint, batchMint, createTask, controlTask, addPnl, deletePnl,
-    createSniper, updateSniper, gas,
+    createSniper, updateSniper, removeSniper, gas,
     wallets: userId => state(userId).wallets,
     tasks: userId => schedulerRepository.listForUser(userId),
     activity: userId => state(userId).activity.slice(0, 10),
@@ -143,9 +153,19 @@ function createBotCommandService(dependencies) {
     createWatchRule: (userId, input) => socialWatchService.create(userId, input),
     updateWatchRule: (userId, id, input) => socialWatchService.update(userId, id, input),
     disableWatchRule: (userId, id) => socialWatchService.disable(userId, id),
-    removeWatchRule: (userId, id) => socialWatchService.remove(userId, id),
+    removeWatchRule: async (userId, id) => { const result=await socialWatchService.remove(userId,id);
+      await targetPolicyService.reset(userId,{targetType:'social_rule',targetId:id}); return result; },
     watchRules: userId => socialWatchService.list(userId),
     socialUsage: (userId, period) => socialUsageService.summary(userId, period),
+    targetPolicy: (userId, targetType, targetId) => targetPolicyService.get(userId, targetType, targetId),
+    updateTargetPolicy: (userId, input) => targetPolicyService.save(userId, input),
+    requestTargetBypass: (userId, input) => targetPolicyService.requestBypass(userId, input),
+    confirmTargetBypass: (userId, input) => targetPolicyService.confirmBypass(userId, input),
+    resetTargetPolicy: (userId, input) => targetPolicyService.reset(userId, input),
+    applyTargetPreset: async (userId, input) => targetPolicyService.applyPreset(userId,input,
+      await governanceRepository.getPreset(input.presetKey)),
+    confirmTrigger: (userId, requestId, confirmation) => triggerExecutionService.confirm(userId, requestId, confirmation),
+    triggerAudit: userId => triggerAuditRepository.listAudit(userId),
     selectMode: (userId, preset) => governance.selectPreset(userId, preset),
     admin: (userId, input) => adminCommands.execute(userId, input),
   };

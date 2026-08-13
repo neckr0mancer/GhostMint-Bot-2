@@ -113,6 +113,13 @@ function createPostgresGovernanceRepository(pool) {
       return key;
     },
 
+    async getPreset(presetKey) {
+      const key = normalizePresetKey(presetKey);
+      if (!PRESET_KEYS.includes(key)) throw new Error('Unknown mode preset');
+      const result = await pool.query('SELECT * FROM mode_presets WHERE preset_key=$1', [key]);
+      return mapPreset(result.rows[0]);
+    },
+
     async getEffectiveGovernance(userId, chain) {
       const result = await pool.query(`SELECT u.is_owner,ug.max_transaction_value_wei AS user_max,
         ug.daily_spending_budget_wei AS user_daily,ug.gas_ceiling_gwei AS user_gas,

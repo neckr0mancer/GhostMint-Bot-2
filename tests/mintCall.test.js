@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const { Interface } = require('ethers');
 const { createMintExecutionService } = require('../src/mint/mintExecutionService');
-const { buildMintCall, formatMintPreview } = require('../src/mint/mintCall');
+const { buildMintCall, decodeMintCall, formatMintPreview } = require('../src/mint/mintCall');
 const { MINT_METHODS } = require('../src/mint/mintRegistry');
 const { createMintService } = require('../src/mint/mintService');
 const { createProofResolver } = require('../src/mint/proofResolver');
@@ -69,4 +69,13 @@ test('decoded previews are human-readable for ERC-721 and ERC-1155 calls', () =>
   assert.match(formatMintPreview(erc1155.preview), /tokenId: 77/);
   assert.match(formatMintPreview(erc1155.preview), /amount: 3/);
   assert.match(formatMintPreview(erc1155.preview), /data: empty bytes/);
+});
+
+test('copied calldata is decoded only when it matches a supported M8 mint method', () => {
+  const encoded=buildMintCall({contractAddress:CONTRACT,methodSignature:'mint(address,uint256)',
+    arguments:[RECIPIENT,2],walletAddress:WALLET,valueWei:10n});
+  const preview=decodeMintCall({contractAddress:CONTRACT,calldata:encoded.calldata,valueWei:10n});
+  assert.equal(preview.methodSignature,'mint(address,uint256)');
+  assert.equal(preview.arguments[0].value.toLowerCase(),RECIPIENT.toLowerCase());
+  assert.throws(()=>decodeMintCall({contractAddress:CONTRACT,calldata:'0x12345678',valueWei:0n}),ValidationError);
 });

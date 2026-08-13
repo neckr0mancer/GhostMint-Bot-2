@@ -23,7 +23,7 @@ function interaction({ commandName, userId = 'discord-user', subcommand = null, 
 test('Discord command definitions include the complete Milestone 10a surface', () => {
   const definitions = commandDefinitions();
   const names = definitions.map(command => command.name);
-  assert.deepEqual(names, ['wallet', 'mint', 'batch-mint', 'task', 'activity', 'pnl', 'gas', 'sniper', 'mode', 'admin', 'link', 'watch', 'social-usage']);
+  assert.deepEqual(names, ['wallet', 'mint', 'batch-mint', 'task', 'activity', 'pnl', 'gas', 'sniper', 'mode', 'admin', 'link', 'watch', 'social-usage', 'target-policy', 'confirm-trigger', 'trigger-audit']);
   const wallet = definitions.find(command => command.name === 'wallet');
   const create = wallet.options.find(option => option.name === 'create');
   const imported = wallet.options.find(option => option.name === 'import');

@@ -1,6 +1,6 @@
 const { formatEther, isAddress } = require('ethers');
 const { ValidationError } = require('../validation/domain');
-const { getMintMethod } = require('./mintRegistry');
+const { MINT_METHODS, getMintMethod } = require('./mintRegistry');
 
 const UINT256_MAX = 2n ** 256n - 1n;
 const HEX_BYTES = /^0x(?:[0-9a-fA-F]{2})*$/;
@@ -81,6 +81,23 @@ function buildMintCall({ contractAddress, methodSignature, arguments: values = [
   return { abiFragment: method.fragment, arguments: args, calldata, method, preview, valueWei: nativeValue };
 }
 
+function decodeMintCall({ contractAddress, calldata, valueWei = 0n }) {
+  if (!isAddress(contractAddress)) invalid('contractAddress', 'must be a valid Ethereum address');
+  if (typeof calldata !== 'string' || !HEX_BYTES.test(calldata) || calldata.length < 10) invalid('calldata', 'must be encoded hexadecimal function calldata');
+  const selector=calldata.slice(0,10).toLowerCase();
+  const method=Object.values(MINT_METHODS).find(candidate=>candidate.iface.getFunction('mint').selector.toLowerCase()===selector);
+  if (!method) invalid('calldata', 'does not match a supported Milestone 8 mint signature');
+  let nativeValue;
+  try { nativeValue=BigInt(valueWei); } catch { invalid('valueWei', 'must be a non-negative integer amount in wei'); }
+  if (nativeValue<0n) invalid('valueWei', 'must be a non-negative integer amount in wei');
+  let decoded;
+  try { decoded=method.iface.decodeFunctionData('mint',calldata); }
+  catch { invalid('calldata', `could not be decoded as ${method.signature}`); }
+  return {contractAddress,methodSignature:method.signature,standard:method.standard,
+    arguments:method.inputs.map((input,index)=>({name:input.name,type:input.type,value:previewValue(input,decoded[index])})),
+    nativeValueWei:nativeValue.toString(),nativeValue:formatEther(nativeValue)};
+}
+
 function formatMintPreview(preview) {
   const args = preview.arguments.length
     ? preview.arguments.map(item => `• ${item.name}: ${item.value}`).join('\n')
@@ -88,4 +105,4 @@ function formatMintPreview(preview) {
   return `Mint preview\nContract: ${preview.contractAddress}\nMethod: ${preview.methodSignature}\nStandard: ${preview.standard}\n${args}\nNative value: ${preview.nativeValue}`;
 }
 
-module.exports = { buildMintCall, formatMintPreview, validateArguments };
+module.exports = { buildMintCall, decodeMintCall, formatMintPreview, validateArguments };

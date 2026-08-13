@@ -57,7 +57,19 @@ function createTransactionPolicyRepository(pool, { governanceRepository = null }
       const target = rows.rows.find(row => row.scope_type === 'target');
       const policy = overlay(overlay(defaultPolicy(chain), wallet), target);
       if (!governanceRepository) return policy;
-      return applyGovernance(policy, await governanceRepository.getEffectiveGovernance(userId, chain), triggerSource);
+      const governance = await governanceRepository.getEffectiveGovernance(userId, chain);
+      if (targetId) {
+        const targetPreset = await pool.query(`SELECT mp.* FROM target_trigger_policies tp
+          JOIN mode_presets mp ON mp.preset_key=tp.mode_preset_key
+          WHERE tp.user_id=$1 AND tp.target_id=$2`, [userId, String(targetId)]);
+        if (targetPreset.rows[0]) governance.preset = {
+          key: targetPreset.rows[0].preset_key, displayName: targetPreset.rows[0].display_name,
+          simulationMode: targetPreset.rows[0].simulation_mode,
+          confirmationCount: Number(targetPreset.rows[0].confirmation_count),
+          humanVerification: targetPreset.rows[0].human_verification,
+        };
+      }
+      return applyGovernance(policy, governance, triggerSource);
     },
 
     async setPolicy({ userId, scopeType, scopeId, settings }) {
