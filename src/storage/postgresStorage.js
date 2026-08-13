@@ -12,7 +12,7 @@ function mapWallet(row) {
 
 function mapTask(row) {
   return {
-    id: Number(row.id), userId: row.user_id, name: row.name, walletLabel: row.wallet_label,
+    id: row.id, userId: row.user_id, name: row.name, walletLabel: row.wallet_label,
     contract: row.contract_address, fn: row.function_name, qty: row.quantity,
     price: number(row.price_eth), gas: number(row.gas_gwei), mintTime: time(row.mint_time),
     status: row.status, createdAt: time(row.created_at),
@@ -31,7 +31,7 @@ function mapPnl(row) {
 
 function mapSniper(row) {
   return {
-    id: Number(row.id), userId: row.user_id, label: row.label, targetAddress: row.target_address,
+    id: row.id, userId: row.user_id, label: row.label, targetAddress: row.target_address,
     chain: row.chain, walletLabel: row.wallet_label, valueMode: row.value_mode,
     fixedValueETH: number(row.fixed_value_eth), maxValueETH: number(row.max_value_eth),
     gasBoostPercent: row.gas_boost_percent, active: row.active, hits: row.hits,

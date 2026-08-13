@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const { randomUUID } = require('node:crypto');
 const path = require('node:path');
 const test = require('node:test');
 const { CONFIG } = require('../src/config');
@@ -8,6 +9,7 @@ const { LinkCodeError, createIdentityService } = require('../src/identity/identi
 const { createPostgresIdentityRepository } = require('../src/identity/postgresIdentityRepository');
 const { createKeyEncryption } = require('../src/security/keyEncryption');
 const { createPostgresStorage } = require('../src/storage/postgresStorage');
+const { ValidationError, requestSchemas } = require('../src/validation/domain');
 
 const integrationTest = CONFIG.databaseUrl && CONFIG.databaseUrlUnpooled ? test : test.skip;
 
@@ -42,7 +44,7 @@ integrationTest('wallet and task repository operations cannot cross Telegram use
   const crypto = createKeyEncryption({ activeVersion: CONFIG.encryptionKeyVersion, keys: CONFIG.encryptionKeys });
   const suffix = `${process.pid}-${Date.now()}`;
   const walletLabel = `owned-${suffix}`;
-  const taskId = Date.now();
+  const taskId = randomUUID();
   try {
     const ownerId = await identity.resolveOrCreate('telegram', `owner-${suffix}`);
     const attackerId = await identity.resolveOrCreate('telegram', `attacker-${suffix}`);
@@ -58,6 +60,7 @@ integrationTest('wallet and task repository operations cannot cross Telegram use
     assert.equal(attackerState.tasks.some(task => task.id === taskId), false);
     assert.equal(await storage.deleteWallet(attackerId, walletLabel), false);
     assert.equal(await storage.deleteTask(attackerId, taskId), false);
+    assert.throws(() => requestSchemas.taskDeletion({ id: 'not-an-id' }), ValidationError);
 
     const ownerState = await storage.loadState(ownerId);
     assert.equal(ownerState.wallets.some(wallet => wallet.label === walletLabel), true);
