@@ -9,12 +9,14 @@ const { CHAINS, CONFIG, getSafeConfigSummary } = require('./config');
 const { createDatabasePool } = require('./db/pool');
 const { createIdentityService } = require('./identity/identityService');
 const { createPostgresIdentityRepository } = require('./identity/postgresIdentityRepository');
-const { findOwnedTask, findOwnedWallet, stateForUser } = require('./identity/ownership');
+const { findOwnedWallet, stateForUser } = require('./identity/ownership');
 const { formatMintPreview } = require('./mint/mintCall');
 const { createMintExecutionService } = require('./mint/mintExecutionService');
 const { createMintService } = require('./mint/mintService');
 const { createPostgresMintPresetRepository } = require('./mint/postgresMintPresetRepository');
 const { createProofResolver, ProofResolutionError } = require('./mint/proofResolver');
+const { createSchedulerRepository } = require('./scheduler/schedulerRepository');
+const { createSchedulerWorker } = require('./scheduler/schedulerWorker');
 const { createAdminCommandService } = require('./governance/adminCommandService');
 const { AuthorizationError, createGovernanceService } = require('./governance/governanceService');
 const { createPostgresGovernanceRepository } = require('./governance/postgresGovernanceRepository');
@@ -25,7 +27,7 @@ const { createTransactionIntentRepository } = require('./transactions/intentRepo
 const { createTransactionPolicyRepository } = require('./transactions/policyRepository');
 const { createProviderService } = require('./transactions/providerService');
 const { createTransactionEngine } = require('./transactions/transactionEngine');
-const { MAX_SCHEDULE_AHEAD_MS, ValidationError, requestSchemas, validationReply } = require('./validation/domain');
+const { ValidationError, requestSchemas, validationReply } = require('./validation/domain');
 
 // ── Config ────────────────────────────────────────────────
 const PORT         = CONFIG.port;
@@ -38,6 +40,7 @@ const storage = createPostgresStorage(pool);
 const identityRepository = createPostgresIdentityRepository(pool);
 const identity = createIdentityService(identityRepository);
 const transactionIntentRepository = createTransactionIntentRepository(pool);
+const schedulerRepository = createSchedulerRepository(pool);
 const mintPresetRepository = createPostgresMintPresetRepository(pool);
 const mintService = createMintService({
   presetRepository: mintPresetRepository,
@@ -79,6 +82,44 @@ const transactionEngine = createTransactionEngine({
   notify: event => log(`Transaction ${event.intent.intentId} is ${event.state}`),
 });
 const mintExecution = createMintExecutionService({ mintService, transactionEngine });
+const schedulerWorker = createSchedulerWorker({
+  repository: schedulerRepository,
+  intentRepository: transactionIntentRepository,
+  transactionEngine,
+  executeTask: async (task, hooks) => {
+    const wallet = DB.wallets.find(item => item.userId === task.userId && item.label === task.walletLabel);
+    if (!wallet) throw new ValidationError({ field:'walletLabel', message:'was not found' });
+    const request = requestSchemas.mint({ walletLabel:wallet.label, contractAddress:task.contract,
+      functionName:task.fn || 'mint', quantity:task.qty, priceETH:task.price || 0,
+      gasGwei:task.gas, chain:wallet.chain }, { supportedChains:CONFIG.supportedChains });
+    const prepared = await mintService.prepare({ contractAddress:request.contractAddress,
+      methodSignature:'mint(uint256)', arguments:[request.quantity], walletAddress:wallet.address,
+      valueWei:ethers.parseEther(String(request.priceETH)) * BigInt(request.quantity), chain:request.chain });
+    return mintExecution.executePrepared({ userId:task.userId, wallet, prepared, triggerSource:'scheduled',
+      gasPriceWei:request.gasGwei === null ? undefined : ethers.parseUnits(String(request.gasGwei), 'gwei'),
+      idempotencyKey:hooks.idempotencyKey, onIntentPersisted:hooks.onIntentPersisted,
+      onPreview:preview => notifyUser(task.userId, formatMintPreview(preview)) });
+  },
+  notify: async event => {
+    const wallet = DB.wallets.find(item => item.userId === event.task.userId && item.label === event.task.walletLabel);
+    if (event.outcome === 'success') {
+      if (wallet) {
+        wallet.minted = (wallet.minted || 0) + event.task.qty;
+        await storage.updateWalletMinted(event.task.userId, wallet.label, wallet.minted);
+        await logActivity(event.task.userId, 'success', `Scheduled mint: ${event.task.name}`, wallet.label,
+          event.intent?.txHash || null, CHAINS[wallet.chain]);
+      }
+      await notifyUser(event.task.userId, `✅ Scheduled mint *${event.task.name}* confirmed.`);
+    }
+    if (['failure','failed'].includes(event.outcome)) {
+      if (wallet) await logActivity(event.task.userId, 'fail', `Scheduled mint failed: ${event.task.name}`,
+        wallet.label, event.intent?.txHash || null, CHAINS[wallet.chain]);
+      await notifyUser(event.task.userId, `❌ Scheduled mint *${event.task.name}* failed.`);
+    }
+  },
+  log,
+  sanitizeError:safeError,
+});
 
 // ── Activity ──────────────────────────────────────────────
 async function logActivity(userId, status, title, walletLabel, txHash, chain) {
@@ -412,11 +453,11 @@ if (BOT_TOKEN) {
   }));
 
   bot.onText(/^\/tasks(?:@\w+)?$/, withTelegramUser(async (msg, match, userId) => {
-    const pending = stateFor(userId).tasks.filter(t => t.status === 'waiting');
+    const pending = await schedulerRepository.listForUser(userId);
     if (!pending.length) return tg(msg.chat.id, 'No scheduled tasks.');
     const list = pending.map(t => {
       const ms = t.mintTime - Date.now();
-      return `⏱ *${t.name}*\nWallet: ${t.walletLabel}\nQty: ${t.qty} | Price: ${t.price>0?t.price+' ETH':'Free'}\nFires in: *${ms>0?fmtCD(ms):'NOW'}*\nID: \`${t.id}\``;
+      return `⏱ *${t.name}* [${t.status}]\nWallet: ${t.walletLabel}\nQty: ${t.qty} | Price: ${t.price>0?t.price+' ETH':'Free'}\nDue (UTC): *${new Date(t.mintTime).toISOString()}*${ms>0?`\nFires in: *${fmtCD(ms)}*`:''}\nID: \`${t.id}\``;
     }).join('\n\n');
     tg(msg.chat.id, `⏱ *Tasks (${pending.length})*\n\n${list}`);
   }));
@@ -445,20 +486,32 @@ if (BOT_TOKEN) {
     const total = state.activity.length;
     const success = state.activity.filter(a => a.status==='success').length;
     const minted = state.wallets.reduce((sum,w) => sum+(w.minted||0), 0);
-    const pending = state.tasks.filter(t => t.status==='waiting').length;
+    const pending = (await schedulerRepository.listForUser(userId)).filter(t => ['scheduled','retry','claimed','paused'].includes(t.status)).length;
     tg(msg.chat.id, `📊 *GhostMint Stats*\n\n⬡ Wallets: *${state.wallets.length}*\n⏱ Pending: *${pending}*\n⚡ Minted: *${minted}*\n✅ Success rate: *${total?Math.round(success/total*100):0}%*\n⏰ Uptime: ${fmtCD(process.uptime()*1000)}`);
   }));
 
   bot.onText(/^\/canceltask(?:@\w+)?\s+(.+)$/, withTelegramUser(async (msg, match, userId) => {
     const { id } = requestSchemas.taskDeletion({ id: match[1] });
-    const ownedTask = findOwnedTask(DB, userId, id);
-    if (!ownedTask) return tg(msg.chat.id, 'Task not found. Use /tasks to see IDs.');
-    const idx = DB.tasks.indexOf(ownedTask);
-    const name = ownedTask.name;
-    DB.tasks.splice(idx, 1); await storage.deleteTask(userId, id);
-    const key = taskKey({ userId, id });
-    if (taskTimers[key]) { clearTimeout(taskTimers[key]); delete taskTimers[key]; }
-    tg(msg.chat.id, `✅ Task *${name}* cancelled.`);
+    const task = await schedulerRepository.cancel(userId, id);
+    tg(msg.chat.id, task ? `✅ Task *${task.name}* cancelled.` : 'Task not found or cannot be cancelled in its current state.');
+  }));
+
+  bot.onText(/^\/pausetask(?:@\w+)?\s+(.+)$/, withTelegramUser(async (msg, match, userId) => {
+    const { id } = requestSchemas.taskDeletion({ id: match[1] });
+    const task = await schedulerRepository.pause(userId, id);
+    tg(msg.chat.id, task ? `⏸ Task *${task.name}* paused.` : 'Task not found or cannot be paused in its current state.');
+  }));
+
+  bot.onText(/^\/resumetask(?:@\w+)?\s+(.+)$/, withTelegramUser(async (msg, match, userId) => {
+    const { id } = requestSchemas.taskDeletion({ id: match[1] });
+    const task = await schedulerRepository.resume(userId, id, Date.now());
+    tg(msg.chat.id, task ? `▶ Task *${task.name}* resumed.` : 'Task not found or is not paused.');
+  }));
+
+  bot.onText(/^\/retrytask(?:@\w+)?\s+(.+)$/, withTelegramUser(async (msg, match, userId) => {
+    const { id } = requestSchemas.taskDeletion({ id: match[1] });
+    const task = await schedulerRepository.retry(userId, id, Date.now());
+    tg(msg.chat.id, task ? `↻ Task *${task.name}* queued for retry.` : 'Task not found or is not failed.');
   }));
 
   bot.onText(/^\/removewallet(?:@\w+)?\s+(.+)$/, withTelegramUser(async (msg, match, userId) => {
@@ -502,47 +555,6 @@ if (BOT_TOKEN) {
 }
 
 // ── Task Scheduler ────────────────────────────────────────
-const taskTimers = {};
-const taskKey = task => `${task.userId}:${task.id}`;
-
-function scheduleTask(task) {
-  const key = taskKey(task);
-  if (taskTimers[key]) clearTimeout(taskTimers[key]);
-  const ms = task.mintTime - Date.now();
-  if (ms <= 0) return;
-  if (!Number.isFinite(ms) || ms > MAX_SCHEDULE_AHEAD_MS) {
-    log(`Task "${task.name}" not scheduled: mint time is outside the safe timer range`);
-    return;
-  }
-  log(`Task "${task.name}" fires in ${fmtCD(ms)}`);
-  taskTimers[key] = setTimeout(() => fireTask(task), ms);
-}
-
-async function fireTask(task) {
-  log(`Firing: ${task.name}`);
-  const wallet = DB.wallets.find(w => w.userId===task.userId && w.label===task.walletLabel);
-  if (!wallet) {
-    task.status='failed'; await storage.saveTask(task);
-    await notifyUser(task.userId, `❌ *Task failed: ${task.name}*\nWallet "${task.walletLabel}" not found.`);
-    return;
-  }
-  task.status='running'; await storage.saveTask(task);
-  await notifyUser(task.userId, `⚡ *Auto-minting!*\nTask: *${task.name}*\nWallet: *${wallet.label}*\nQty: ${task.qty}`);
-  try {
-    const txHash = await executeMint({ wallet, contractAddr:task.contract, fnName:task.fn||'mint', qty:task.qty, priceETH:task.price||0, gasGwei:task.gas||null, chain:wallet.chain, triggerSource:'scheduled',
-      onPreview: preview => notifyUser(task.userId, formatMintPreview(preview)) });
-    task.status='done'; wallet.minted=(wallet.minted||0)+task.qty;
-    await Promise.all([storage.saveTask(task), storage.updateWalletMinted(task.userId, wallet.label, wallet.minted)]);
-    await logActivity(task.userId, 'success',`Auto-minted ${task.qty} NFT${task.qty>1?'s':''}`,wallet.label,txHash,CHAINS[wallet.chain]);
-    await notifyUser(task.userId, `✅ *Auto-mint SUCCESS!*\nTask: *${task.name}*\nWallet: *${wallet.label}*\nQty: ${task.qty}\n[View tx](${CHAINS[wallet.chain].ex}${txHash})`);
-  } catch(e) {
-    task.status='failed'; await storage.saveTask(task);
-    await logActivity(task.userId, 'fail',`Auto-mint failed: ${task.name}`,wallet.label,null,CHAINS[wallet.chain]);
-    await notifyUser(task.userId, `❌ *Auto-mint FAILED*\nTask: *${task.name}*\nError: ${safeError(e).slice(0,120)}`);
-    log(`Task failed: ${safeError(e)}`);
-  }
-}
-
 // ── Express ───────────────────────────────────────────────
 const app = express();
 app.use(cors());
@@ -558,7 +570,7 @@ app.use('/api', dashboardUnavailable);
 app.get('/health', async (req,res) => {
   try {
     await storage.health();
-    res.json({ status:'ok', database:'connected', uptime:Math.floor(process.uptime()), tasks:DB.tasks.filter(t=>t.status==='waiting').length });
+    res.json({ status:'ok', database:'connected', uptime:Math.floor(process.uptime()), tasks:await schedulerRepository.countActive() });
   } catch {
     res.status(503).json({ status:'degraded', database:'disconnected', uptime:Math.floor(process.uptime()) });
   }
@@ -570,8 +582,10 @@ async function start() {
   DB = await storage.loadSystemState();
   const reconciled = await transactionEngine.reconcileNonFinal();
   log(`Reconciled ${reconciled.length} non-final transaction intents`);
-  DB.tasks.filter(t => t.status==='waiting' && t.mintTime>Date.now()).forEach(scheduleTask);
-  log(`Restored ${DB.tasks.filter(t=>t.status==='waiting').length} pending tasks`);
+  const recovered = await schedulerWorker.recoverStaleClaims();
+  log(`Recovered ${recovered} expired scheduler claims`);
+  schedulerWorker.start();
+  log(`Started durable scheduler with ${await schedulerRepository.countActive()} active tasks`);
   DB.snipers.filter(s => s.active).forEach(s => ensureChainWatcher(s.chain));
   log(`Restored ${DB.snipers.filter(s=>s.active).length} active snipers`);
   app.listen(PORT, () => {

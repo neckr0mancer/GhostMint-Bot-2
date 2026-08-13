@@ -208,7 +208,8 @@ Store backups encrypted outside the application host. Test restores regularly an
 |   |-- routes/            Future HTTP route modules
 |   |-- services/          Future application services
 |   |-- storage/           PostgreSQL repository adapter
-|   `-- workers/           Future scheduler and watcher workers
+|   |-- scheduler/         Durable task repository and polling worker
+|   `-- workers/           Future blockchain/social watcher workers
 |-- migrations/            Versioned PostgreSQL schema migrations
 |-- scripts/               Migration and key-rotation commands
 |-- tests/                 Config, crypto, persistence, and process smoke tests

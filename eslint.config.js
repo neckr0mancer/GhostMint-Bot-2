@@ -1,12 +1,14 @@
 const nodeGlobals = {
   __dirname: 'readonly',
   clearTimeout: 'readonly',
+  clearInterval: 'readonly',
   console: 'readonly',
   fetch: 'readonly',
   module: 'readonly',
   process: 'readonly',
   require: 'readonly',
   setTimeout: 'readonly',
+  setInterval: 'readonly',
 };
 
 module.exports = [

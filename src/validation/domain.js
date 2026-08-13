@@ -4,7 +4,7 @@ const { randomUUID } = require('node:crypto');
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const FUNCTION_NAME_PATTERN = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 const WALLET_LABEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9 ._-]*$/;
-const MAX_SCHEDULE_AHEAD_MS = 2_147_000_000;
+const MAX_SCHEDULE_AHEAD_MS = 5 * 365 * 24 * 60 * 60 * 1000;
 const LIMITS = Object.freeze({
   quantity: 100,
   priceEth: 1_000,
@@ -115,11 +115,14 @@ function abiDefinition(value, requestedFunction = null) {
 }
 
 function scheduleTimestamp(value, { now = Date.now(), maxAheadMs = MAX_SCHEDULE_AHEAD_MS } = {}) {
+  if (typeof value === 'string' && !/(?:Z|[+-]\d{2}:\d{2})$/i.test(value.trim())) {
+    fail('mintTime', 'must include an explicit UTC offset or Z suffix');
+  }
   const timestamp = typeof value === 'number' ? value : Date.parse(value);
   if (!Number.isFinite(timestamp)) fail('mintTime', 'must be a valid date and time');
   if (timestamp <= now) fail('mintTime', 'must be in the future');
   if (timestamp - now > maxAheadMs) {
-    fail('mintTime', `must be no more than ${Math.floor(maxAheadMs / 86_400_000)} days in the future`);
+    fail('mintTime', `must be no more than ${Math.floor(maxAheadMs / 31_536_000_000)} years in the future`);
   }
   return timestamp;
 }

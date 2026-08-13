@@ -28,6 +28,7 @@ function mapIntent(row) {
     failureReason: row.failure_reason,
     methodSignature: row.method_signature,
     callPreview: row.call_preview,
+    idempotencyKey: row.idempotency_key,
     createdAt: new Date(row.created_at).getTime(),
     timeoutAt: new Date(row.timeout_at).getTime(),
   };
@@ -43,16 +44,16 @@ function createTransactionIntentRepository(pool) {
           (user_id,wallet_id,target_id,chain,from_address,to_address,calldata,value_wei,nonce,
             gas_limit,gas_price_wei,max_fee_per_gas_wei,max_priority_fee_per_gas_wei,
           estimated_cost_wei,simulation_enabled,required_confirmations,transaction_timeout_ms,
-          state,timeout_at,method_signature,call_preview)
+          state,timeout_at,method_signature,call_preview,idempotency_key)
           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,'submitted',
-            TO_TIMESTAMP($18 / 1000.0),$19,$20::JSONB) RETURNING *`,
+            TO_TIMESTAMP($18 / 1000.0),$19,$20::JSONB,$21) RETURNING *`,
         [intent.userId, intent.walletId, intent.targetId, intent.chain, intent.from, intent.to,
           intent.data, intent.valueWei.toString(), intent.nonce, intent.gasLimit.toString(),
           intent.gasPriceWei?.toString() ?? null, intent.maxFeePerGasWei?.toString() ?? null,
           intent.maxPriorityFeePerGasWei?.toString() ?? null, intent.estimatedCostWei.toString(),
           intent.simulationEnabled, intent.requiredConfirmations, intent.transactionTimeoutMs,
           intent.timeoutAt, intent.methodSignature || null,
-          intent.callPreview ? JSON.stringify(intent.callPreview) : null]);
+          intent.callPreview ? JSON.stringify(intent.callPreview) : null, intent.idempotencyKey || null]);
         const created = mapIntent(result.rows[0]);
         await client.query(`INSERT INTO transaction_state_transitions (intent_id,from_state,to_state,reason)
           VALUES ($1,NULL,'submitted','intent persisted before broadcast')`, [created.intentId]);
@@ -112,6 +113,11 @@ function createTransactionIntentRepository(pool) {
 
     async get(intentId) {
       const result = await pool.query('SELECT * FROM transaction_intents WHERE intent_id=$1', [intentId]);
+      return mapIntent(result.rows[0]);
+    },
+
+    async getByIdempotencyKey(idempotencyKey) {
+      const result = await pool.query('SELECT * FROM transaction_intents WHERE idempotency_key=$1', [idempotencyKey]);
       return mapIntent(result.rows[0]);
     },
 

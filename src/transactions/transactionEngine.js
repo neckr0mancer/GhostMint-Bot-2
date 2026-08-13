@@ -87,6 +87,10 @@ function createTransactionEngine({
   async function submit(request) {
     const walletKey = `${request.chain}:${request.wallet.id}`;
     return nonceQueue.run(walletKey, async () => {
+      if (request.idempotencyKey && intentRepository.getByIdempotencyKey) {
+        const existing = await intentRepository.getByIdempotencyKey(request.idempotencyKey);
+        if (existing) return existing;
+      }
       const policy = await policyRepository.resolvePolicy({
         userId: request.userId,
         walletId: request.wallet.id,
@@ -191,12 +195,18 @@ function createTransactionEngine({
             timeoutAt: now() + policy.transactionTimeoutMs,
             methodSignature: request.methodSignature || null,
             callPreview: request.callPreview || null,
+            idempotencyKey: request.idempotencyKey || null,
           });
         } catch (error) {
           if (error?.code !== '23505') throw error;
+          if (request.idempotencyKey && intentRepository.getByIdempotencyKey) {
+            const existing = await intentRepository.getByIdempotencyKey(request.idempotencyKey);
+            if (existing) return existing;
+          }
         }
       }
       if (!intent) throw new TransactionSafetyError('NONCE_RESERVATION_FAILED', 'Could not reserve a unique wallet nonce');
+      if (request.onIntentPersisted) await request.onIntentPersisted(intent);
       const transaction = {
         to: request.to,
         data: request.data || '0x',

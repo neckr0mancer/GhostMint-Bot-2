@@ -43,13 +43,19 @@ function rejectsField(callback, field) {
   });
 }
 
-test('invalid, past, and timer-overflow dates cannot create tasks', () => {
+test('invalid, past, and overly distant dates cannot create tasks', () => {
   rejectsField(() => requestSchemas.taskCreate(validTask({ mintTime: 'not-a-date' }), { supportedChains: CHAINS, now: NOW }), 'mintTime');
   rejectsField(() => requestSchemas.taskCreate(validTask({ mintTime: new Date(NOW - 1).toISOString() }), { supportedChains: CHAINS, now: NOW }), 'mintTime');
   rejectsField(() => requestSchemas.taskCreate(validTask({ mintTime: NOW + MAX_SCHEDULE_AHEAD_MS + 1 }), { supportedChains: CHAINS, now: NOW }), 'mintTime');
   const accepted = requestSchemas.taskCreate(validTask(), { supportedChains: CHAINS, now: NOW });
   assert.equal(accepted.mintTime, NOW + 60_000);
   assert.match(accepted.id, /^[0-9a-f-]{36}$/);
+});
+
+test('schedule strings require an explicit timezone', () => {
+  rejectsField(() => requestSchemas.taskCreate(validTask({ mintTime:'2030-01-01T12:00:00' }), { supportedChains:CHAINS, now:NOW }), 'mintTime');
+  assert.equal(requestSchemas.taskCreate(validTask({ mintTime:'2030-01-01T12:00:00Z' }), { supportedChains:CHAINS, now:NOW }).mintTime,
+    Date.parse('2030-01-01T12:00:00Z'));
 });
 
 test('unsupported chains are rejected instead of defaulting to Ethereum', () => {
