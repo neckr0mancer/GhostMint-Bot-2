@@ -50,6 +50,14 @@ function createPostgresIdentityRepository(pool) {
       return result.rows[0]?.platform_user_id || null;
     },
 
+    async listLinkedAccounts(userId) {
+      const result = await pool.query(
+        'SELECT platform,platform_user_id FROM linked_accounts WHERE user_id=$1 ORDER BY platform',
+        [userId],
+      );
+      return result.rows.map(row => ({ platform: row.platform, platformUserId: row.platform_user_id }));
+    },
+
     async createLinkCode({ userId, codeHash, expiresAt }) {
       await pool.query('DELETE FROM account_link_codes WHERE user_id=$1 AND used_at IS NULL', [userId]);
       await pool.query(

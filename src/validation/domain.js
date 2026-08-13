@@ -65,6 +65,14 @@ function ethereumAddress(value, field) {
   return normalized;
 }
 
+function addressList(value, field) {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value) || value.length > 100) fail(field, 'must be an array with at most 100 Ethereum addresses');
+  const addresses = value.map((item, index) => ethereumAddress(item, `${field}[${index}]`));
+  if (new Set(addresses.map(item => item.toLowerCase())).size !== addresses.length) fail(field, 'must not contain duplicates');
+  return addresses;
+}
+
 function chainName(value, supportedChains, field = 'chain') {
   const normalized = string(value, field, { max: 32 }).toLowerCase();
   if (!supportedChains.includes(normalized)) fail(field, `must be one of: ${supportedChains.join(', ')}`);

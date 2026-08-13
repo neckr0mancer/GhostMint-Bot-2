@@ -74,15 +74,21 @@ This is the ordered implementation plan for GhostMint. Milestones are intentiona
 - Build on the Milestone 5 platform-neutral identity system.
 - Use the existing account-link flow so a Discord account can join an existing user instead of creating a separate identity.
 
-### Milestone 10b — Social watcher
+### Milestone 10b-1 — Social watcher framework and initial adapters
 
-- Monitor configured Twitter/X accounts and Discord announcement channels.
-- Detect contract-address patterns with optional keyword filters.
-- Feed detected addresses into the existing mint pipeline as a trigger source parallel to the Milestone 10 blockchain watcher.
+- Build a pluggable watch-rule architecture in which every source is a typed record with a `type` and adapter-specific configuration; adding later watch types must not require redesigning the watcher core.
+- Initially support `twitter_account`, `twitter_keyword`, `discord_channel`, and `discord_keyword` rules.
+- Give every source a user-selected `method` of `official_api` or `scraper`; core detection and mint-trigger logic remains independent of the active acquisition method.
+- Feed detected contract addresses into the mint pipeline as social trigger sources parallel to the Milestone 10 post-confirmation blockchain watcher.
+
+### Milestone 10b-2 — Additional social adapters (optional, unscheduled)
+
+- Add platform or watch-type adapters beyond the initial Twitter/X and Discord account/keyword set using the Milestone 10b-1 framework.
+- This milestone is optional and has no scheduled implementation date.
 
 ### Milestone 10c — Per-target trigger and verification configuration
 
-Each tracked contract, copied wallet, or social source receives independent settings:
+Each tracked contract, copied wallet, or social watch rule receives independent settings. Configuration consumes trigger sources from both the Milestone 10 blockchain watcher and whichever Milestone 10b-1 social watch rules exist:
 
 - Blockchain trigger: `Auto` or `Manual`.
 - Social trigger: `Auto` or `Manual`.
@@ -96,7 +102,7 @@ Rules:
 - The warning includes a per-target-only “don't ask again” option. It never applies globally and is reset when the target is removed/re-added or its configuration is reset.
 - Every executed mint records the trigger source and whether verification was on or bypassed at execution time, regardless of whether the warning was displayed for that toggle.
 
-Milestones 10a, 10b, and 10c depend on the safety infrastructure from Milestones 6–10: validation, spend caps, simulation, nonce queues, durable scheduling, deduplication, and reorg handling. They must not be implemented earlier because automated or bypassed execution has no human check between trigger and spend.
+Milestones 10a, 10b-1, 10b-2, and 10c depend on the safety infrastructure from Milestones 6–10: validation, spend caps, simulation, nonce queues, durable scheduling, deduplication, and reorg handling. They must not be implemented earlier because automated or bypassed execution has no human check between trigger and spend.
 
 ### Milestone 11 — Secure Telegram and Discord bot integration
 

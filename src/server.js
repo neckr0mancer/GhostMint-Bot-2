@@ -6,13 +6,16 @@ const { ethers }  = require('ethers');
 const TelegramBot = require('node-telegram-bot-api');
 const axios       = require('axios');
 const { CHAINS, CONFIG, getSafeConfigSummary } = require('./config');
+const { createBotCommandService } = require('./commands/botCommandService');
 const { createDatabasePool } = require('./db/pool');
+const { createDiscordBot } = require('./discord/discordBot');
 const { createIdentityService } = require('./identity/identityService');
 const { createPostgresIdentityRepository } = require('./identity/postgresIdentityRepository');
 const { findOwnedWallet, stateForUser } = require('./identity/ownership');
 const { formatMintPreview } = require('./mint/mintCall');
 const { createMintExecutionService } = require('./mint/mintExecutionService');
 const { createMintService } = require('./mint/mintService');
+const { createNotificationService } = require('./notifications/notificationService');
 const { createPostgresMintPresetRepository } = require('./mint/postgresMintPresetRepository');
 const { createProofResolver, ProofResolutionError } = require('./mint/proofResolver');
 const { createSchedulerRepository } = require('./scheduler/schedulerRepository');
@@ -72,6 +75,7 @@ const decryptPK = wallet => keyEncryption.decrypt(wallet.keyEnvelope);
 // ── Logger ────────────────────────────────────────────────
 const redact = createRedactor([
   CONFIG.botToken,
+  CONFIG.discordBotToken,
   ...Object.values(CONFIG.encryptionKeys),
 ]);
 const log = msg => console.log(`[${new Date().toISOString()}] ${redact(msg)}`);
@@ -262,14 +266,23 @@ async function onBlock(chain, blockNumber) {
 
 // ── Telegram ──────────────────────────────────────────────
 let bot = null;
+let discordBot = null;
 function tg(chatId, msg) {
   if (bot && chatId) return bot.sendMessage(chatId, msg, { parse_mode:'Markdown' }).catch(e => log('TG: '+safeError(e)));
   return Promise.resolve();
 }
 
+const notificationService = createNotificationService({
+  identityRepository,
+  transports: {
+    telegram: (platformUserId, message) => tg(platformUserId, message),
+    discord: (platformUserId, message) => discordBot?.sendDirectMessage(platformUserId, message),
+  },
+  log,
+});
+
 async function notifyUser(userId, msg) {
-  const telegramId = await identityRepository.getLinkedAccount(userId, 'telegram');
-  if (telegramId) tg(telegramId, msg);
+  await notificationService.sendToUser(userId, msg);
 }
 
 function stateFor(userId) {
@@ -311,7 +324,7 @@ if (BOT_TOKEN) {
   });
 
   bot.onText(/^\/(?:start|help)(?:@\w+)?$/, withTelegramUser(async msg => {
-    tg(msg.chat.id, `👻 *GhostMint Bot*\n\n*Commands:*\n/wallets — list wallets\n/tasks — scheduled tasks\n/snipers — post-confirmation copy watchers\n/updatesniper <id> <JSON> — update copy limits\n/activity — recent mints\n/gas — live gas prices\n/stats — overview\n/link — create a 5-minute account-link code\n/mode <preset> — select a transaction mode\n/admin <action> — owner-only governance\n/mintcall <JSON> — flexible supported-signature mint\n/mintpreset save|use|delete <JSON/name>\n/mintpresets — list saved mint presets\n/canceltask <id> — cancel task\n/pausetask <id> — pause task\n/resumetask <id> — resume task\n/retrytask <id> — retry failed task\n/removewallet <label> — remove wallet\n/mintnow <label> <contract> <qty> <price> <chain> — legacy quantity mint`);
+    tg(msg.chat.id, `*GhostMint Bot*\n\n*Wallet onboarding:*\n/createwallet <label> <chain> — recommended; generates and encrypts a new wallet server-side\n/importwallet <label> <chain> <private-key> — not recommended; the key crosses Telegram message transit and may remain in chat history or notification previews\n/wallets — list wallets\n/removewallet <label> — remove wallet\n\n*Transactions and automation:*\n/mintnow <label> <contract> <qty> <price> <chain>\n/mintcall <JSON>\n/mintpreset save|use|delete <JSON/name>\n/mintpresets\n/tasks\n/canceltask <id>\n/pausetask <id>\n/resumetask <id>\n/retrytask <id>\n/snipers\n/updatesniper <id> <JSON>\n/activity\n/gas\n/stats\n/mode <preset>\n/link\n/admin <action>`);
   }));
 
   bot.onText(/^\/link(?:@\w+)?$/, withTelegramUser(async (msg, match, userId) => {
@@ -320,12 +333,12 @@ if (BOT_TOKEN) {
   }));
 
   bot.onText(/^\/mode(?:@\w+)?\s+(.+)$/, withTelegramUser(async (msg, match, userId) => {
-    const selected = await governance.selectPreset(userId, match[1]);
+    const selected = await botCommands.selectMode(userId, match[1]);
     tg(msg.chat.id, `✅ Transaction mode set to *${selected.replaceAll('_', ' ')}*.`);
   }));
 
   bot.onText(/^\/admin(?:@\w+)?(?:\s+(.*))?$/, withTelegramUser(async (msg, match, userId) => {
-    tg(msg.chat.id, await adminCommands.execute(userId, match[1]));
+    tg(msg.chat.id, await botCommands.admin(userId, match[1]));
   }));
 
   async function runFlexibleMint(msg, userId, payload, manualAuthorization) {
@@ -398,7 +411,7 @@ if (BOT_TOKEN) {
   }));
 
   bot.onText(/^\/snipers(?:@\w+)?$/, withTelegramUser(async (msg, match, userId) => {
-    const snipers = stateFor(userId).snipers;
+    const snipers = botCommands.snipers(userId);
     if (!snipers.length) return tg(msg.chat.id, 'No snipers configured.');
     const list = snipers.map(s =>
       `${s.active?'🟢':'⚪'} *${s.label}*\nTarget: \`${s.targetAddress.slice(0,10)}...\`\nChain: ${CHAINS[s.chain]?.name||s.chain} · Wallet: ${s.walletLabel}\nHits: ${s.hits||0} · Fails: ${s.fails||0}`
@@ -407,20 +420,13 @@ if (BOT_TOKEN) {
   }));
 
   bot.onText(/^\/updatesniper(?:@\w+)?\s+([0-9a-f-]+)\s+(.+)$/i, withTelegramUser(async (msg, match, userId) => {
-    const { id } = requestSchemas.sniperDeletion({ id:match[1] });
-    const sniper = DB.snipers.find(item => item.userId === userId && item.id === id);
-    if (!sniper) return tg(msg.chat.id, 'Post-confirmation copy sniper not found.');
-    const previousChain = sniper.chain;
-    const updated = sniperService.validatePatch(sniper, commandJson(match[2]));
-    await storage.saveSniper(updated);
-    Object.assign(sniper, updated);
-    if (sniper.active) ensureChainWatcher(sniper.chain);
-    if (previousChain !== sniper.chain || !sniper.active) teardownChainWatcherIfIdle(previousChain);
+    const updated = await botCommands.updateSniper(userId, match[1], commandJson(match[2]));
+    const sniper = botCommands.snipers(userId).find(item => item.id === updated.id);
     tg(msg.chat.id, `✅ Post-confirmation copy sniper *${sniper.label}* updated. This is not mempool front-running.`);
   }));
 
   bot.onText(/^\/wallets(?:@\w+)?$/, withTelegramUser(async (msg, match, userId) => {
-    const wallets = stateFor(userId).wallets;
+    const wallets = botCommands.wallets(userId);
     if (!wallets.length) return tg(msg.chat.id, 'No wallets yet.');
     const list = wallets.map((w,i) =>
       `${i+1}. *${w.label}*\n   \`${w.address.slice(0,6)}...${w.address.slice(-4)}\` · ${CHAINS[w.chain]?.name||w.chain} · minted: ${w.minted||0}`
@@ -428,8 +434,18 @@ if (BOT_TOKEN) {
     tg(msg.chat.id, `⬡ *Wallets (${wallets.length})*\n\n${list}`);
   }));
 
+  bot.onText(/^\/createwallet(?:@\w+)?\s+(\S+)\s+(\S+)$/i, withTelegramUser(async (msg, match, userId) => {
+    const wallet = await botCommands.createWallet(userId, { label: match[1], chain: match[2] });
+    tg(msg.chat.id, `✅ Wallet *${wallet.label}* generated securely.\nPublic address: \`${wallet.address}\`\nChain: ${wallet.chain}\n\nFund this public address to use it. The private key was encrypted at creation and is never returned through Telegram.`);
+  }));
+
+  bot.onText(/^\/importwallet(?:@\w+)?\s+(\S+)\s+(\S+)\s+(\S+)$/i, withTelegramUser(async (msg, match, userId) => {
+    const wallet = await botCommands.importWallet(userId, { label: match[1], chain: match[2], privateKey: match[3] });
+    tg(msg.chat.id, `✅ Wallet *${wallet.label}* imported at \`${wallet.address}\`.\n\n⚠️ *Not recommended:* the private key passed through Telegram's message transit and may remain in client history or notification previews. Prefer /createwallet; a future HTTPS dashboard will provide a safer import path.`);
+  }));
+
   bot.onText(/^\/tasks(?:@\w+)?$/, withTelegramUser(async (msg, match, userId) => {
-    const pending = await schedulerRepository.listForUser(userId);
+    const pending = await botCommands.tasks(userId);
     if (!pending.length) return tg(msg.chat.id, 'No scheduled tasks.');
     const list = pending.map(t => {
       const ms = t.mintTime - Date.now();
@@ -439,7 +455,7 @@ if (BOT_TOKEN) {
   }));
 
   bot.onText(/^\/activity(?:@\w+)?$/, withTelegramUser(async (msg, match, userId) => {
-    const recent = stateFor(userId).activity.slice(0, 10);
+    const recent = botCommands.activity(userId);
     if (!recent.length) return tg(msg.chat.id, 'No activity yet.');
     const list = recent.map(a => {
       const ico = a.status==='success'?'✅':'❌';
@@ -451,9 +467,8 @@ if (BOT_TOKEN) {
 
   bot.onText(/^\/gas(?:@\w+)?$/, withTelegramUser(async msg => {
     try {
-      const r = await axios.get('https://api.etherscan.io/api?module=gastracker&action=gasoracle');
-      const d = r.data.result;
-      tg(msg.chat.id, `⛽ *Live Gas (Ethereum)*\n🐢 Slow: *${d.SafeGasPrice}* Gwei\n⚡ Standard: *${d.ProposeGasPrice}* Gwei\n🚀 Fast: *${d.FastGasPrice}* Gwei\nBase fee: ${parseFloat(d.suggestBaseFee).toFixed(2)} Gwei`);
+      const fees = await botCommands.gas('ethereum');
+      tg(msg.chat.id, `⛽ *Live Gas (Ethereum)*\nGas price: *${fees.gasPriceGwei ?? 'unavailable'}* Gwei\nMax fee: *${fees.maxFeePerGasGwei ?? 'unavailable'}* Gwei`);
     } catch { tg(msg.chat.id, 'Could not fetch gas prices.'); }
   }));
 
@@ -467,35 +482,27 @@ if (BOT_TOKEN) {
   }));
 
   bot.onText(/^\/canceltask(?:@\w+)?\s+(.+)$/, withTelegramUser(async (msg, match, userId) => {
-    const { id } = requestSchemas.taskDeletion({ id: match[1] });
-    const task = await schedulerRepository.cancel(userId, id);
-    tg(msg.chat.id, task ? `✅ Task *${task.name}* cancelled.` : 'Task not found or cannot be cancelled in its current state.');
+    const task = await botCommands.controlTask(userId, 'cancel', match[1]);
+    tg(msg.chat.id, `✅ Task *${task.name}* cancelled.`);
   }));
 
   bot.onText(/^\/pausetask(?:@\w+)?\s+(.+)$/, withTelegramUser(async (msg, match, userId) => {
-    const { id } = requestSchemas.taskDeletion({ id: match[1] });
-    const task = await schedulerRepository.pause(userId, id);
-    tg(msg.chat.id, task ? `⏸ Task *${task.name}* paused.` : 'Task not found or cannot be paused in its current state.');
+    const task = await botCommands.controlTask(userId, 'pause', match[1]);
+    tg(msg.chat.id, `⏸ Task *${task.name}* paused.`);
   }));
 
   bot.onText(/^\/resumetask(?:@\w+)?\s+(.+)$/, withTelegramUser(async (msg, match, userId) => {
-    const { id } = requestSchemas.taskDeletion({ id: match[1] });
-    const task = await schedulerRepository.resume(userId, id, Date.now());
-    tg(msg.chat.id, task ? `▶ Task *${task.name}* resumed.` : 'Task not found or is not paused.');
+    const task = await botCommands.controlTask(userId, 'resume', match[1]);
+    tg(msg.chat.id, `▶ Task *${task.name}* resumed.`);
   }));
 
   bot.onText(/^\/retrytask(?:@\w+)?\s+(.+)$/, withTelegramUser(async (msg, match, userId) => {
-    const { id } = requestSchemas.taskDeletion({ id: match[1] });
-    const task = await schedulerRepository.retry(userId, id, Date.now());
-    tg(msg.chat.id, task ? `↻ Task *${task.name}* queued for retry.` : 'Task not found or is not failed.');
+    const task = await botCommands.controlTask(userId, 'retry', match[1]);
+    tg(msg.chat.id, `↻ Task *${task.name}* queued for retry.`);
   }));
 
   bot.onText(/^\/removewallet(?:@\w+)?\s+(.+)$/, withTelegramUser(async (msg, match, userId) => {
-    const { label } = requestSchemas.walletDeletion({ label: match[1] });
-    const ownedWallet = findOwnedWallet(DB, userId, label);
-    if (!ownedWallet) return tg(msg.chat.id, `Wallet "${label}" not found.`);
-    const idx = DB.wallets.indexOf(ownedWallet);
-    const [removed] = DB.wallets.splice(idx, 1); await storage.deleteWallet(userId, removed.label);
+    const label = await botCommands.removeWallet(userId, match[1]);
     tg(msg.chat.id, `✅ Wallet *${label}* removed.`);
   }));
 
@@ -515,12 +522,8 @@ if (BOT_TOKEN) {
     const { quantity: qty, priceETH: price, chain: ch } = request;
     tg(msg.chat.id, `⚡ Minting from *${wallet.label}*...\nContract: \`${request.contractAddress.slice(0,10)}...\`\nQty: ${qty} | Price: ${price>0?price+' ETH':'Free'}`);
     try {
-      const txHash = await executeMint({ wallet, contractAddr:request.contractAddress, fnName:'mint', qty, priceETH:price, chain:ch,
-        onPreview: preview => tg(msg.chat.id, formatMintPreview(preview), {}) });
-      wallet.minted=(wallet.minted||0)+qty;
-      await storage.updateWalletMinted(userId, wallet.label, wallet.minted);
-      await logActivity(userId, 'success',`Minted ${qty} NFT${qty>1?'s':''}`,wallet.label,txHash,CHAINS[ch]);
-      tg(msg.chat.id, `✅ *Mint successful!*\nWallet: *${wallet.label}*\nQty: ${qty}\n[View tx](${CHAINS[ch].ex}${txHash})`);
+      const result = await botCommands.mint(userId, request);
+      tg(msg.chat.id, `✅ *Mint successful!*\nWallet: *${wallet.label}*\nQty: ${qty}\n[View tx](${CHAINS[ch].ex}${result.txHash})`);
     } catch(e) {
       await logActivity(userId, 'fail','Mint failed',wallet.label,null,CHAINS[ch]);
       tg(msg.chat.id, `❌ *Mint failed*\n${safeError(e).slice(0,120)}`);
@@ -528,6 +531,38 @@ if (BOT_TOKEN) {
   }));
 } else {
   log('⚠️  No TELEGRAM_BOT_TOKEN — Telegram disabled.');
+}
+
+const botCommands = createBotCommandService({
+  storage,
+  schedulerRepository,
+  providerService,
+  governance,
+  adminCommands,
+  sniperService,
+  supportedChains: CONFIG.supportedChains,
+  chains: CHAINS,
+  encryptPrivateKey: encryptPK,
+  getState: () => DB,
+  ensureChainWatcher,
+  executeMint: async ({ userId, wallet, request }) => {
+    const txHash = await executeMint({ wallet, contractAddr: request.contractAddress,
+      qty: request.quantity, priceETH: request.priceETH, gasGwei: request.gasGwei,
+      chain: request.chain, triggerSource: 'manual' });
+    wallet.minted = (wallet.minted || 0) + request.quantity;
+    await storage.updateWalletMinted(userId, wallet.label, wallet.minted);
+    await logActivity(userId, 'success', `Minted ${request.quantity} NFT${request.quantity > 1 ? 's' : ''}`,
+      wallet.label, txHash, CHAINS[request.chain]);
+    return { state: 'confirmed', txHash };
+  },
+});
+
+if (CONFIG.discordBotToken) {
+  discordBot = createDiscordBot({ token: CONFIG.discordBotToken,
+    applicationId: CONFIG.discordApplicationId, devGuildId: CONFIG.discordDevGuildId,
+    identity, commands: botCommands, log });
+} else {
+  log('Discord disabled because credentials are not configured.');
 }
 
 // ── Task Scheduler ────────────────────────────────────────
@@ -560,6 +595,10 @@ async function start() {
   log(`Reconciled ${reconciled.length} non-final transaction intents`);
   const recovered = await schedulerWorker.recoverStaleClaims();
   log(`Recovered ${recovered} expired scheduler claims`);
+  if (discordBot) {
+    const discordUser = await discordBot.start();
+    log(`Discord bot started as ${discordUser?.tag || discordUser?.id || 'configured application'}`);
+  }
   schedulerWorker.start();
   log(`Started durable scheduler with ${await schedulerRepository.countActive()} active tasks`);
   DB.snipers.filter(s => s.active).forEach(s => ensureChainWatcher(s.chain));

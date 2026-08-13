@@ -225,9 +225,24 @@ function parseTelegram() {
   return { botToken: optionalString('TELEGRAM_BOT_TOKEN') };
 }
 
+function parseDiscord() {
+  const botToken = optionalString('DISCORD_BOT_TOKEN');
+  const applicationId = optionalString('DISCORD_APPLICATION_ID');
+  const devGuildId = optionalString('DISCORD_DEV_GUILD_ID');
+  const values = [botToken, applicationId, devGuildId];
+  if (values.some(Boolean) && !values.every(Boolean)) {
+    throw new ConfigurationError('DISCORD_BOT_TOKEN, DISCORD_APPLICATION_ID, and DISCORD_DEV_GUILD_ID must be configured together');
+  }
+  for (const [name, value] of [['DISCORD_APPLICATION_ID', applicationId], ['DISCORD_DEV_GUILD_ID', devGuildId]]) {
+    if (value && !/^\d{17,20}$/.test(value)) throw new ConfigurationError(`${name} must be a valid Discord snowflake`);
+  }
+  return { botToken, applicationId, devGuildId };
+}
+
 const environment = parseEnvironment();
 const supportedChains = parseSupportedChains();
 const telegram = parseTelegram();
+const discord = parseDiscord();
 const database = parseDatabaseConfig(environment);
 const encryption = parseEncryptionKeys(environment);
 const rpcOverrides = {};
@@ -254,6 +269,9 @@ const CONFIG = Object.freeze({
   isProduction: environment === 'production',
   port: parsePort(),
   botToken: telegram.botToken,
+  discordBotToken: discord.botToken,
+  discordApplicationId: discord.applicationId,
+  discordDevGuildId: discord.devGuildId,
   encryptionKeyVersion: encryption.activeVersion,
   encryptionKeys: encryption.keys,
   databaseUrl: database.pooled,
@@ -274,6 +292,7 @@ function getSafeConfigSummary() {
     port: CONFIG.port,
     supportedChains: [...CONFIG.supportedChains],
     telegramEnabled: CONFIG.botToken !== null,
+    discordEnabled: CONFIG.discordBotToken !== null,
     databaseConfigured: CONFIG.databaseUrl !== null,
     migrationConnectionConfigured: CONFIG.databaseUrlUnpooled !== null,
     databasePoolMax: CONFIG.databasePoolMax,

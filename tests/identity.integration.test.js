@@ -35,6 +35,23 @@ integrationTest('different Telegram accounts automatically resolve to different 
   }
 });
 
+integrationTest('a first-seen Discord account is created and can link into an existing Telegram identity', { timeout: 30_000 }, async () => {
+  await migrate();
+  const pool = createDatabasePool({ connectionString: CONFIG.databaseUrl, max: 2 });
+  const repository = createPostgresIdentityRepository(pool);
+  const identity = createIdentityService(repository);
+  const suffix = `${process.pid}-${Date.now()}`;
+  try {
+    const standalone = await identity.resolveOrCreate('discord', `standalone-discord-${suffix}`);
+    assert.equal(await identity.resolveOrCreate('discord', `standalone-discord-${suffix}`), standalone);
+    const telegramUser = await identity.resolveOrCreate('telegram', `telegram-link-${suffix}`);
+    const link = await identity.createLinkCode(telegramUser);
+    assert.equal(await identity.consumeLinkCode({ code: link.code, platform: 'discord',
+      platformUserId: `linked-discord-${suffix}` }), telegramUser);
+    assert.equal(await identity.resolveOrCreate('discord', `linked-discord-${suffix}`), telegramUser);
+  } finally { await pool.end(); }
+});
+
 integrationTest('wallet and task repository operations cannot cross Telegram user ownership', { timeout: 30_000 }, async () => {
   await migrate();
   const pool = createDatabasePool({ connectionString: CONFIG.databaseUrl, max: 2 });

@@ -22,6 +22,9 @@ const VALID_ENV = Object.freeze({
   ENCRYPTION_KEY_VERSION: '1',
   ENCRYPTION_OLD_KEYS: '{}',
   TELEGRAM_BOT_TOKEN: '',
+  DISCORD_BOT_TOKEN: '',
+  DISCORD_APPLICATION_ID: '',
+  DISCORD_DEV_GUILD_ID: '',
   ETH_RPC: '',
   BASE_RPC: '',
   ARB_RPC: '',
@@ -48,6 +51,7 @@ test('accepts valid development configuration and returns only a safe summary', 
   assert.equal(output.summary.environment, 'development');
   assert.deepEqual(output.summary.supportedChains, ['ethereum', 'base', 'arbitrum', 'polygon']);
   assert.equal(output.summary.telegramEnabled, false);
+  assert.equal(output.summary.discordEnabled, false);
   assert.equal(output.summary.databaseConfigured, false);
   assert.equal(output.poolMax, 5);
 
@@ -144,4 +148,23 @@ test('accepts a Telegram bot token without a shared chat destination', () => {
   const result = probeConfig({ TELEGRAM_BOT_TOKEN: '123456:bot-token' });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(JSON.parse(result.stdout).summary.telegramEnabled, true);
+});
+
+test('accepts a complete Discord configuration and never exposes its token', () => {
+  const token = 'discord-super-secret-token';
+  const result = probeConfig({ DISCORD_BOT_TOKEN: token, DISCORD_APPLICATION_ID: '123456789012345678',
+    DISCORD_DEV_GUILD_ID: '223456789012345678' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).summary.discordEnabled, true);
+  assert.doesNotMatch(result.stdout, new RegExp(token));
+});
+
+test('rejects partial or malformed Discord configuration', () => {
+  const partial = probeConfig({ DISCORD_BOT_TOKEN: 'token-only' });
+  assert.notEqual(partial.status, 0);
+  assert.match(partial.stderr, /must be configured together/);
+  const malformed = probeConfig({ DISCORD_BOT_TOKEN: 'token', DISCORD_APPLICATION_ID: 'not-a-snowflake',
+    DISCORD_DEV_GUILD_ID: '223456789012345678' });
+  assert.notEqual(malformed.status, 0);
+  assert.match(malformed.stderr, /valid Discord snowflake/);
 });

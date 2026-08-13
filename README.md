@@ -1,6 +1,6 @@
 # GhostMint Bot
 
-GhostMint is an Express and Telegram service for managing EVM wallets, scheduling NFT mints, submitting manual and batch mints, and watching target wallets for post-confirmation copy-mint activity.
+GhostMint is an Express, Telegram, and Discord service for managing EVM wallets, scheduling NFT mints, submitting manual and batch mints, and watching target wallets for post-confirmation copy-mint activity.
 
 > **Project status:** active prototype. PostgreSQL persistence, versioned envelope encryption, multi-user identity, transaction safety, flexible mint calls, durable scheduling, and post-confirmation copy-watcher hardening are implemented. Production operations and later platform/trigger milestones remain incomplete. Use disposable test wallets only.
 
@@ -46,6 +46,9 @@ GET http://localhost:3000/health
 | `RPC_RETRIES` | No | Retries per RPC endpoint before failover; defaults to `1`. |
 | `SUPPORTED_CHAINS` | Yes | Comma-separated supported chain names; `ethereum` must currently be included. |
 | `TELEGRAM_BOT_TOKEN` | No | Enables Telegram polling when supplied. |
+| `DISCORD_BOT_TOKEN` | No* | Enables the Discord bot. Must be supplied with both Discord IDs. |
+| `DISCORD_APPLICATION_ID` | No* | Discord application snowflake used for slash-command registration. |
+| `DISCORD_DEV_GUILD_ID` | No* | Development guild snowflake for immediate command registration. |
 | `ENCRYPTION_SECRET` | Yes | Encrypts stored wallet private keys; subject to the secret-strength policy below. |
 | `ENCRYPTION_KEY_VERSION` | No | Positive integer identifying the active master key; defaults to `1`. |
 | `ENCRYPTION_OLD_KEYS` | No | JSON object mapping prior key versions to their secrets for decryption during rotation. |
@@ -70,7 +73,17 @@ The value in `.env.example` is intentionally development-only. Generate independ
 
 Telegram commands authenticate from Telegram's immutable sender ID. The first command from a sender automatically creates an internal UUID user and links that Telegram account. All wallets, tasks, activity, P&L records, snipers, and seen transactions are scoped to that UUID in both application logic and repository SQL.
 
-`/link` creates a cryptographically random code that expires after five minutes and can be consumed once. The linking service supports both `telegram` and `discord`; Discord command handling will call the same service when that bot is implemented. Password-based dashboard authentication has been removed. HTTP `/api` routes return `501` until Milestone 13 supplies a platform-linked dashboard login flow.
+`/link` creates a cryptographically random code that expires after five minutes and can be consumed once. Run `/link` on an existing Telegram identity and then `/link code:<value>` in Discord to attach Discord directly to the same internal user. Link-code consumption occurs before Discord's first-seen auto-creation path, avoiding a duplicate identity. Password-based dashboard authentication has been removed. HTTP `/api` routes return `501` until Milestone 13 supplies a platform-linked dashboard login flow.
+
+### Discord bot
+
+Configure all three Discord variables together. Startup registers guild-scoped slash commands immediately and logs in the bot. `/wallet`, `/mint`, `/batch-mint`, `/task`, `/activity`, `/pnl`, `/gas`, `/sniper`, `/mode`, `/admin`, and `/link` use the same identity, validation, governance, transaction, scheduler, and storage services as Telegram. Replies are ephemeral; destructive and value-bearing commands require an explicit `confirm` option. Sniper output states that copying is post-confirmation and is not mempool front-running.
+
+Wallet generation is the recommended onboarding path on both platforms: use Telegram `/createwallet <label> <chain>` or Discord `/wallet create`. GhostMint generates the key server-side, immediately envelope-encrypts it, stores only the encrypted envelope, and returns only the public funding address.
+
+Private-key import remains available through Telegram `/importwallet <label> <chain> <private-key>` and Discord `/wallet import`, but both commands are explicitly marked **not recommended**. The key necessarily passes through Telegram or Discord infrastructure and may appear in client chat history or notification previews before GhostMint receives and encrypts it. Use imports only when an existing wallet is unavoidable, delete the originating platform message where possible, and prefer the future HTTPS Milestone 13 dashboard import flow when it becomes available.
+
+Transaction and scheduler notifications are delivered independently to every linked platform account. A delivery failure on one platform is logged but cannot change transaction state or suppress delivery to another platform.
 
 ### Chain and database configuration
 
@@ -241,7 +254,7 @@ Store backups encrypted outside the application host. Test restores regularly an
 
 `railway.json` uses Nixpacks and starts the root compatibility entrypoint with `node index.js`. Configure environment variables, add Railway PgBouncer in transaction mode, and run `npm run db:migrate` with the direct URL before deployment.
 
-Discord bot integration, linked-account dashboard login, durable scheduling, observability, and operational hardening remain future milestones.
+Linked-account dashboard login, observability, and operational hardening remain future milestones.
 
 ## Validation
 
