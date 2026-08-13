@@ -120,6 +120,21 @@ Milestones 10a, 10b-1, 10b-2, and 10c depend on the safety infrastructure from M
 - Build the dashboard on the same Telegram/Discord-linked internal identity rather than a shared password.
 - Restore browser workflows only after secure linked-account login, authorization, CSRF/session protection, and the earlier transaction safety milestones are complete.
 
+Milestone 13 is divided into these ordered, independently testable build phases:
+
+- **13a — Foundation:** React/Vite SPA scaffold, static hosting from the existing Express deployment, linked-account `/link` code login, server-side sessions and CSRF protection, authenticated per-user WebSocket scaffold, and the responsive base layout.
+- **13b — Core operations:** Wallets, manual and batch minting, scheduled tasks, activity, and P&L dashboard workflows.
+- **13c — Triggers:** Snipers, social watch rules, target policies, and real-time confirmation approval over the authenticated WebSocket channel.
+- **13d — Admin/governance:** Groups, ceilings, editable presets, and owner management.
+- **13e — Settings/reporting:** Gas, social API usage statistics, and general settings.
+
+Technology decisions for all Milestone 13 phases:
+
+- Frontend: React with Vite using plain JavaScript.
+- Hosting: a static production build served by the existing Express server on the same domain.
+- Authentication: the existing Milestone 5 platform-neutral `/link` code flow; no dashboard password system.
+- Real-time transport: WebSocket authenticated by the server-side session cookie and scoped to the internal `user_id`.
+
 ## Production definition of done
 
 ### Mandatory pre-Milestone 16 live acceptance TODO

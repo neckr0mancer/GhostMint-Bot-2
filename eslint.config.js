@@ -13,7 +13,7 @@ const nodeGlobals = {
 
 module.exports = [
   {
-    ignores: ['node_modules/**', 'coverage/**', '.project-tools/**'],
+    ignores: ['node_modules/**', 'coverage/**', '.project-tools/**', 'public/dashboard/**'],
   },
   {
     files: ['**/*.js'],
@@ -27,5 +27,15 @@ module.exports = [
       'no-undef': 'error',
       'no-unreachable': 'error',
     },
+  },
+  {
+    files: ['dashboard/src/**/*.{js,jsx}'],
+    languageOptions: {
+      ecmaVersion: 'latest',
+      sourceType: 'module',
+      parserOptions: { ecmaFeatures: { jsx: true } },
+      globals: { console:'readonly', document:'readonly', fetch:'readonly', WebSocket:'readonly', window:'readonly' },
+    },
+    rules: { 'no-dupe-keys':'error','no-undef':'error','no-unreachable':'error' },
   },
 ];

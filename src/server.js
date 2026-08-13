@@ -9,6 +9,10 @@ const { CHAINS, CONFIG, getSafeConfigSummary } = require('./config');
 const { createBotCommandService } = require('./commands/botCommandService');
 const { createDatabasePool } = require('./db/pool');
 const { createDiscordBot } = require('./discord/discordBot');
+const {createDashboardApi}=require('./dashboard/api');
+const {createDashboardAuthService}=require('./dashboard/authService');
+const {createDashboardSessionRepository}=require('./dashboard/sessionRepository');
+const {createDashboardWebSocketHub}=require('./dashboard/webSocketHub');
 const { createEtherscanGasService } = require('./gas/etherscanGasService');
 const { createReadinessService } = require('./health/readinessService');
 const { createIdentityService } = require('./identity/identityService');
@@ -59,6 +63,7 @@ const pool = createDatabasePool({ connectionString: CONFIG.databaseUrl, max: CON
 const storage = createPostgresStorage(pool);
 const identityRepository = createPostgresIdentityRepository(pool);
 const identity = createIdentityService(identityRepository);
+const dashboardAuth=createDashboardAuthService({identity,repository:createDashboardSessionRepository(pool)});
 const transactionIntentRepository = createTransactionIntentRepository(pool);
 const schedulerRepository = createSchedulerRepository(pool);
 const sniperRepository = createSniperRepository(pool);
@@ -66,6 +71,8 @@ const socialWatchRepository = createSocialWatchRepository(pool);
 const targetPolicyRepository = createTargetPolicyRepository(pool);
 const botSecurityRepository = createBotSecurityRepository(pool);
 const commandRateLimiter = createCommandRateLimiter();
+const dashboardApi=createDashboardApi({auth:dashboardAuth,identityRepository,
+  loginRateLimiter:createCommandRateLimiter({limit:5,windowMs:60_000})});
 const providerService = createProviderService({
   chains: CHAINS,
   timeoutMs: CONFIG.rpcTimeoutMs,
@@ -110,6 +117,7 @@ const redact = createRedactor([
 ]);
 const log = msg => console.log(`[${new Date().toISOString()}] ${redact(msg)}`);
 const safeError = error => redact(error?.reason || error?.message || 'Unknown error');
+const dashboardWebSockets=createDashboardWebSocketHub({auth:dashboardAuth,log});
 log(`Configuration loaded: ${JSON.stringify(getSafeConfigSummary())}`);
 const transactionEngine = createTransactionEngine({
   providerService,
@@ -801,12 +809,15 @@ if (CONFIG.discordBotToken) {
 const app = express();
 app.use(cors());
 app.use(express.json());
-app.use(express.static(path.join(PROJECT_ROOT,'public')));
-
-function dashboardUnavailable(req, res) {
-  res.status(501).json({ error:'Dashboard identity is unavailable until Milestone 13' });
-}
-app.use('/api', dashboardUnavailable);
+app.use(dashboardApi.securityHeaders);
+app.post('/api/auth/login',dashboardApi.login);
+app.post('/api/auth/logout',dashboardApi.requireSession,dashboardApi.requireCsrf,dashboardApi.logout);
+app.post('/api/auth/logout-all',dashboardApi.requireSession,dashboardApi.requireCsrf,dashboardApi.logoutAll);
+app.get('/api/profile',dashboardApi.requireSession,dashboardApi.profile);
+app.use('/api',(req,res)=>res.status(404).json({error:'API route not found'}));
+app.use('/dashboard/assets',express.static(path.join(PROJECT_ROOT,'public','dashboard','assets'),{immutable:true,maxAge:'1y'}));
+app.get(['/dashboard','/dashboard/*'],(req,res)=>{res.set('Cache-Control','no-store');res.sendFile(path.join(PROJECT_ROOT,'public','dashboard','index.html'));});
+app.use(express.static(path.join(PROJECT_ROOT,'public'),{setHeaders:(res,file)=>res.set('Cache-Control',file.endsWith('.html')?'no-store':'public, max-age=3600')}));
 
 // ── API ───────────────────────────────────────────────────
 const readinessService=createReadinessService({database:storage,providerService,
@@ -840,10 +851,11 @@ async function start() {
     log(`GhostMint running on port ${PORT}`);
     log(`Wallets: ${DB.wallets.length} | Tasks: ${DB.tasks.length}`);
   });
+  dashboardWebSockets.attach(httpServer);
 }
 
 const gracefulShutdown=createGracefulShutdown({getHttpServer:()=>httpServer,telegramBot:bot,discordBot,
-  schedulerWorker,socialWatchWorker,stopWatchers:()=>Object.keys(sniperProviders).forEach(chain=>{
+  schedulerWorker,socialWatchWorker,webSocketHub:dashboardWebSockets,stopWatchers:()=>Object.keys(sniperProviders).forEach(chain=>{
     sniperProviders[chain].removeAllListeners();sniperProviders[chain].destroy?.();delete sniperProviders[chain];
   }),pool,log});
 for(const signal of ['SIGINT','SIGTERM'])process.once(signal,()=>gracefulShutdown(signal)

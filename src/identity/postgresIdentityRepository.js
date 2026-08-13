@@ -104,6 +104,16 @@ function createPostgresIdentityRepository(pool) {
         client.release();
       }
     },
+
+    async consumeLinkCodeForSession({ codeHash, now }) {
+      const result = await pool.query(
+        `UPDATE account_link_codes SET used_at=NOW()
+         WHERE code_hash=$1 AND used_at IS NULL AND expires_at > TO_TIMESTAMP($2 / 1000.0)
+         RETURNING user_id`,
+        [codeHash, now],
+      );
+      return result.rowCount ? { status:'linked', userId:result.rows[0].user_id } : { status:'invalid' };
+    },
   };
 }
 

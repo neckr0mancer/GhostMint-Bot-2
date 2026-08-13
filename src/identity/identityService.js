@@ -47,6 +47,12 @@ function createIdentityService(identityRepository, { now = () => Date.now(), lin
       if (result.status === 'conflict') throw new LinkCodeError('This platform account is already linked to another user');
       return result.userId;
     },
+
+    async consumeDashboardLinkCode(code) {
+      const result = await identityRepository.consumeLinkCodeForSession({ codeHash:hashCode(code), now:now() });
+      if (result.status === 'invalid') throw new LinkCodeError('Link code is invalid, expired, or already used');
+      return result.userId;
+    },
   };
 }
 
