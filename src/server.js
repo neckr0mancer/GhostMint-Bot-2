@@ -9,6 +9,8 @@ const { CHAINS, CONFIG, getSafeConfigSummary } = require('./config');
 const { createBotCommandService } = require('./commands/botCommandService');
 const { createDatabasePool } = require('./db/pool');
 const { createDiscordBot } = require('./discord/discordBot');
+const { createEtherscanGasService } = require('./gas/etherscanGasService');
+const { createReadinessService } = require('./health/readinessService');
 const { createIdentityService } = require('./identity/identityService');
 const { createPostgresIdentityRepository } = require('./identity/postgresIdentityRepository');
 const { findOwnedWallet, stateForUser } = require('./identity/ownership');
@@ -64,21 +66,27 @@ const socialWatchRepository = createSocialWatchRepository(pool);
 const targetPolicyRepository = createTargetPolicyRepository(pool);
 const botSecurityRepository = createBotSecurityRepository(pool);
 const commandRateLimiter = createCommandRateLimiter();
-const mintPresetRepository = createPostgresMintPresetRepository(pool);
-const mintService = createMintService({
-  presetRepository: mintPresetRepository,
-  proofResolver: createProofResolver(),
-  supportedChains: CONFIG.supportedChains,
-});
-const governanceRepository = createPostgresGovernanceRepository(pool);
-const governance = createGovernanceService(governanceRepository);
-const adminCommands = createAdminCommandService(governance);
-const transactionPolicyRepository = createTransactionPolicyRepository(pool, { governanceRepository });
 const providerService = createProviderService({
   chains: CHAINS,
   timeoutMs: CONFIG.rpcTimeoutMs,
   retries: CONFIG.rpcRetries,
 });
+const gasService = createEtherscanGasService({
+  apiKey: CONFIG.etherscanApiKey,
+  chains: CHAINS,
+  timeoutMs: CONFIG.rpcTimeoutMs,
+});
+const mintPresetRepository = createPostgresMintPresetRepository(pool);
+const mintService = createMintService({
+  presetRepository: mintPresetRepository,
+  proofResolver: createProofResolver(),
+  supportedChains: CONFIG.supportedChains,
+  providerService,
+});
+const governanceRepository = createPostgresGovernanceRepository(pool);
+const governance = createGovernanceService(governanceRepository);
+const adminCommands = createAdminCommandService(governance);
+const transactionPolicyRepository = createTransactionPolicyRepository(pool, { governanceRepository });
 const socialUsageService = createSocialUsageService({ repository:socialWatchRepository, governance,
   pricing:CONFIG.socialPricing });
 let DB = { wallets:[], tasks:[], activity:[], pnl:[], snipers:[] };
@@ -97,6 +105,7 @@ const redact = createRedactor([
   CONFIG.discordBotToken,
   CONFIG.socialOfficialApiToken,
   CONFIG.socialManagedServiceToken,
+  CONFIG.etherscanApiKey,
   ...Object.values(CONFIG.encryptionKeys),
 ]);
 const log = msg => console.log(`[${new Date().toISOString()}] ${redact(msg)}`);
@@ -176,7 +185,7 @@ const schedulerWorker = createSchedulerWorker({
         wallet.minted = (wallet.minted || 0) + event.task.qty;
         await storage.updateWalletMinted(event.task.userId, wallet.label, wallet.minted);
         await logActivity(event.task.userId, 'success', `Scheduled mint: ${event.task.name}`, wallet.label,
-          event.intent?.txHash || null, CHAINS[wallet.chain]);
+          event.intent || null, CHAINS[wallet.chain]);
       }
       await notifyUser(event.task.userId, `✅ Scheduled mint *${event.task.name}* confirmed.`);
     }
@@ -192,7 +201,10 @@ const schedulerWorker = createSchedulerWorker({
 
 // ── Activity ──────────────────────────────────────────────
 async function logActivity(userId, status, title, walletLabel, txHash, chain) {
-  const entry = await storage.addActivity({ userId, status, title, walletLabel, txHash, explorer: chain?.ex, time: Date.now() });
+  const intent = txHash && typeof txHash === 'object' ? txHash : null;
+  const entry = await storage.addActivity({ userId, status, title, walletLabel,
+    txHash: intent?.txHash || txHash, explorer: chain?.ex, time: Date.now(),
+    actualNetworkCostWei: intent?.actualNetworkCostWei ?? null });
   DB.activity.unshift(entry);
   if (DB.activity.length > 200) DB.activity.pop();
 }
@@ -224,7 +236,7 @@ async function executePreparedMint({ wallet, prepared, chain, triggerSource='man
     gasPriceWei: gasGwei === null ? undefined : ethers.parseUnits(String(gasGwei), 'gwei'), onPreview });
   if (intent.state !== 'confirmed') throw new Error(`Transaction ended in ${intent.state} state`);
   log(`Confirmed: ${intent.txHash} (block ${intent.blockNumber})`);
-  return intent.txHash;
+  return intent;
 }
 
 async function executeMint({ wallet, contractAddr, fnName='mint', qty=1, priceETH=0, gasGwei=null, chain, triggerSource='manual', onPreview }) {
@@ -288,7 +300,7 @@ const sniperService = createSniperService({
       await Promise.all([storage.saveSniper(sniper), wallet
         ? storage.updateWalletMinted(sniper.userId, wallet.label, wallet.minted) : Promise.resolve()]);
       if (wallet) await logActivity(sniper.userId, 'success', `Post-confirmation copy-mint (${sniper.label})`,
-        wallet.label, intent?.txHash || null, CHAINS[sniper.chain]);
+        wallet.label, intent || null, CHAINS[sniper.chain]);
       const policy=await targetPolicyService.get(sniper.userId,'sniper',sniper.id);
       await targetPolicyRepository.addAudit({userId:sniper.userId,targetType:'sniper',targetId:sniper.id,
         triggerSource:'blockchain-triggered',sourceEventId:event.txHash,verificationState:policy.humanVerification,
@@ -482,13 +494,13 @@ if (BOT_TOKEN) {
       valueWei: payload.valueWei ?? '0',
       chain: payload.chain || wallet.chain,
     });
-    const txHash = await executePreparedMint({ wallet, prepared, chain: payload.chain || wallet.chain,
+    const intent = await executePreparedMint({ wallet, prepared, chain: payload.chain || wallet.chain,
       onPreview: preview => tg(msg.chat.id, formatMintPreview(preview), {}) });
     const quantity = previewQuantity(prepared.preview);
     wallet.minted = (wallet.minted || 0) + quantity;
     await storage.updateWalletMinted(userId, wallet.label, wallet.minted);
-    await logActivity(userId, 'success', `Minted via ${prepared.method.signature}`, wallet.label, txHash, CHAINS[payload.chain || wallet.chain]);
-    await tg(msg.chat.id, `✅ Mint successful.\n${CHAINS[payload.chain || wallet.chain].ex}${txHash}`, {});
+    await logActivity(userId, 'success', `Minted via ${prepared.method.signature}`, wallet.label, intent, CHAINS[payload.chain || wallet.chain]);
+    await tg(msg.chat.id, `✅ Mint successful.\n${CHAINS[payload.chain || wallet.chain].ex}${intent.txHash}`, {});
   }
 
   bot.onText(/^\/mintcall(?:@\w+)?\s+(.+)$/, withTelegramUser(async (msg, match, userId) => {
@@ -520,13 +532,13 @@ if (BOT_TOKEN) {
     const wallet = findOwnedWallet(DB, userId, payload.walletLabel);
     if (!wallet) throw new ValidationError({ field:'walletLabel', message:'was not found' });
     const prepared = await mintService.preparePreset(userId, payload.name, wallet.address);
-    const txHash = await executePreparedMint({ wallet, prepared, chain: prepared.chain,
+    const intent = await executePreparedMint({ wallet, prepared, chain: prepared.chain,
       onPreview: preview => tg(msg.chat.id, formatMintPreview(preview), {}) });
     const quantity = previewQuantity(prepared.preview);
     wallet.minted = (wallet.minted || 0) + quantity;
     await storage.updateWalletMinted(userId, wallet.label, wallet.minted);
-    await logActivity(userId, 'success', `Preset mint via ${prepared.method.signature}`, wallet.label, txHash, CHAINS[prepared.chain]);
-    await tg(msg.chat.id, `✅ Preset mint successful.\n${CHAINS[prepared.chain].ex}${txHash}`, {});
+    await logActivity(userId, 'success', `Preset mint via ${prepared.method.signature}`, wallet.label, intent, CHAINS[prepared.chain]);
+    await tg(msg.chat.id, `✅ Preset mint successful.\n${CHAINS[prepared.chain].ex}${intent.txHash}`, {});
   }));
 
   bot.onText(/^\/mintpreset(?:@\w+)?\s+delete\s+(.+)\s+(CONFIRM)$/i, withTelegramUser(async (msg, match, userId) => {
@@ -642,26 +654,33 @@ if (BOT_TOKEN) {
     const [transactions,confirmations]=await Promise.all([botCommands.pendingTransactions(userId),botCommands.pendingConfirmations(userId)]);
     tg(msg.chat.id,`Pending transactions: ${transactions.length}\n${transactions.map(row=>`${row.intentId} | ${row.state} | ${row.chain}`).join('\n')||'None'}\n\nPending confirmations: ${confirmations.length}\n${confirmations.map(row=>`${row.id} | ${row.triggerSource} | expires ${new Date(row.expiresAt).toISOString()}`).join('\n')||'None'}`);
   }));
+  bot.onText(/^\/transactions(?:@\w+)?(?:\s+(\d+))?$/i,withTelegramUser(async(msg,match,userId)=>{
+    const page=await botCommands.transactionsPage(userId,{page:match[1]||1});
+    const rows=page.items.map(row=>`${row.intentId} | ${row.state} | ${row.chain}`).join('\n')||'No transactions.';
+    tg(msg.chat.id,`Transactions (page ${page.page}/${page.totalPages}, ${page.total} total)\n${rows}`);
+  }));
 
-  bot.onText(/^\/tasks(?:@\w+)?$/, withTelegramUser(async (msg, match, userId) => {
-    const pending = await botCommands.tasks(userId);
+  bot.onText(/^\/tasks(?:@\w+)?(?:\s+(\d+))?$/, withTelegramUser(async (msg, match, userId) => {
+    const page = await botCommands.tasksPage(userId, { page: match[1] || 1 });
+    const pending = page.items;
     if (!pending.length) return tg(msg.chat.id, 'No scheduled tasks.');
     const list = pending.map(t => {
       const ms = t.mintTime - Date.now();
       return `⏱ *${t.name}* [${t.status}]\nWallet: ${t.walletLabel}\nQty: ${t.qty} | Price: ${t.price>0?t.price+' ETH':'Free'}\nDue (UTC): *${new Date(t.mintTime).toISOString()}*${ms>0?`\nFires in: *${fmtCD(ms)}*`:''}\nID: \`${t.id}\``;
     }).join('\n\n');
-    tg(msg.chat.id, `⏱ *Tasks (${pending.length})*\n\n${list}`);
+    tg(msg.chat.id, `⏱ *Tasks (page ${page.page}/${page.totalPages}, ${page.total} total)*\n\n${list}`);
   }));
 
-  bot.onText(/^\/activity(?:@\w+)?$/, withTelegramUser(async (msg, match, userId) => {
-    const recent = botCommands.activity(userId);
+  bot.onText(/^\/activity(?:@\w+)?(?:\s+(\d+))?$/, withTelegramUser(async (msg, match, userId) => {
+    const page = await botCommands.activityPage(userId, { page: match[1] || 1 });
+    const recent = page.items;
     if (!recent.length) return tg(msg.chat.id, 'No activity yet.');
     const list = recent.map(a => {
       const ico = a.status==='success'?'✅':'❌';
       const tx  = a.txHash?`\n   [View tx](${a.explorer}${a.txHash})`:'';
       return `${ico} ${a.title} · *${a.walletLabel}*\n   ${new Date(a.time).toLocaleString()}${tx}`;
     }).join('\n\n');
-    tg(msg.chat.id, `📋 *Recent Activity*\n\n${list}`);
+    tg(msg.chat.id, `📋 *Activity (page ${page.page}/${page.totalPages}, ${page.total} total)*\n\n${list}`);
   }));
 
   bot.onText(/^\/gas(?:@\w+)?$/, withTelegramUser(async msg => {
@@ -673,11 +692,10 @@ if (BOT_TOKEN) {
 
   bot.onText(/^\/stats(?:@\w+)?$/, withTelegramUser(async (msg, match, userId) => {
     const state = stateFor(userId);
-    const total = state.activity.length;
-    const success = state.activity.filter(a => a.status==='success').length;
+    const stats = await botCommands.stats(userId);
     const minted = state.wallets.reduce((sum,w) => sum+(w.minted||0), 0);
     const pending = (await schedulerRepository.listForUser(userId)).filter(t => ['scheduled','retry','claimed','paused'].includes(t.status)).length;
-    tg(msg.chat.id, `📊 *GhostMint Stats*\n\n⬡ Wallets: *${state.wallets.length}*\n⏱ Pending: *${pending}*\n⚡ Minted: *${minted}*\n✅ Success rate: *${total?Math.round(success/total*100):0}%*\n⏰ Uptime: ${fmtCD(process.uptime()*1000)}`);
+    tg(msg.chat.id, `📊 *GhostMint Stats*\n\n⬡ Wallets: *${state.wallets.length}*\n⏱ Pending: *${pending}*\n⚡ Minted: *${minted}*\n⏭ Skipped: *${stats.skipped}*\n✅ Success rate: *${stats.successRate}%*\n⏰ Uptime: ${fmtCD(process.uptime()*1000)}`);
   }));
 
   bot.onText(/^\/canceltask(?:@\w+)?\s+([0-9a-f-]+)\s+(CONFIRM)$/i, withTelegramUser(async (msg, match, userId) => {
@@ -750,6 +768,8 @@ const botCommands = createBotCommandService({
   triggerExecutionService,
   triggerAuditRepository:targetPolicyRepository,
   transactionIntentRepository,
+  gasService,
+  sniperRepository,
   governanceRepository,
   supportedChains: CONFIG.supportedChains,
   chains: CHAINS,
@@ -757,14 +777,14 @@ const botCommands = createBotCommandService({
   getState: () => DB,
   ensureChainWatcher,
   executeMint: async ({ userId, wallet, request }) => {
-    const txHash = await executeMint({ wallet, contractAddr: request.contractAddress,
+    const intent = await executeMint({ wallet, contractAddr: request.contractAddress,
       qty: request.quantity, priceETH: request.priceETH, gasGwei: request.gasGwei,
       chain: request.chain, triggerSource: 'manual' });
     wallet.minted = (wallet.minted || 0) + request.quantity;
     await storage.updateWalletMinted(userId, wallet.label, wallet.minted);
     await logActivity(userId, 'success', `Minted ${request.quantity} NFT${request.quantity > 1 ? 's' : ''}`,
-      wallet.label, txHash, CHAINS[request.chain]);
-    return { state: 'confirmed', txHash };
+      wallet.label, intent, CHAINS[request.chain]);
+    return intent;
   },
 });
 
@@ -789,13 +809,12 @@ function dashboardUnavailable(req, res) {
 app.use('/api', dashboardUnavailable);
 
 // ── API ───────────────────────────────────────────────────
+const readinessService=createReadinessService({database:storage,providerService,
+  chains:CONFIG.supportedChains,schedulerWorker,socialWatchWorker,
+  sniperHealth:()=>({status:'up',activeChains:Object.keys(sniperProviders).length})});
 app.get('/health', async (req,res) => {
-  try {
-    await storage.health();
-    res.json({ status:'ok', database:'connected', uptime:Math.floor(process.uptime()), tasks:await schedulerRepository.countActive() });
-  } catch {
-    res.status(503).json({ status:'degraded', database:'disconnected', uptime:Math.floor(process.uptime()) });
-  }
+  const health=await readinessService.inspect();
+  res.status(health.status==='ok'?200:503).json({...health,uptime:Math.floor(process.uptime())});
 });
 app.get('*', (req,res) => res.sendFile(path.join(PROJECT_ROOT,'public','index.html')));
 

@@ -30,6 +30,7 @@ const VALID_ENV = Object.freeze({
   SOCIAL_MANAGED_SERVICE_URL: '',
   SOCIAL_MANAGED_SERVICE_TOKEN: '',
   SOCIAL_POLL_INTERVAL_MS: '30000',
+  ETHERSCAN_API_KEY: '',
   ETH_RPC: '',
   BASE_RPC: '',
   ARB_RPC: '',
@@ -38,6 +39,14 @@ const VALID_ENV = Object.freeze({
   BASE_RPC_URLS: '',
   ARB_RPC_URLS: '',
   POLYGON_RPC_URLS: '',
+});
+
+test('reports only whether the Etherscan key is configured', () => {
+  const key='etherscan-private-key';
+  const result=probeConfig({ETHERSCAN_API_KEY:key});
+  assert.equal(result.status,0,result.stderr);
+  assert.equal(JSON.parse(result.stdout).summary.etherscanGasConfigured,true);
+  assert.doesNotMatch(result.stdout,new RegExp(key));
 });
 
 function probeConfig(overrides = {}) {

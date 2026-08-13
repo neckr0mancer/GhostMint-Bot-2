@@ -301,6 +301,8 @@ The current Codex bundled Node runtime is `C:\Users\General\.cache\codex-runtime
 
 Use `scripts\project-npm.ps1` for every npm operation on this machine. On first use it downloads the pinned npm 11.7.0 package from the official npm registry into the gitignored `.project-tools` directory, verifies the archive's pinned SHA-512 digest, and invokes it with the bundled Node runtime plus `--use-system-ca`. It falls back to a discoverable `node` executable only if the Codex runtime moves again. The `validate` package script uses Node 24's native `node --run` for its child stages, preventing nested scripts from resolving the inaccessible system `npm.cmd`. Database-backed tests run serially to avoid exhausting or contending on the shared Supabase pool. The repeatable commands are:
 
+The launcher forwards every token after the script path directly to npm, so commands such as `ci`, `run validate`, and `run db:migrate` use the same syntax shown below.
+
 ```powershell
 # Install the exact dependency lockfile
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\project-npm.ps1 ci

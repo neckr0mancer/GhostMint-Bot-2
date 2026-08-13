@@ -169,9 +169,12 @@ test('a submitted intent is reconciled from chain state after restart', async ()
   });
   const hash = `0x${'ab'.repeat(32)}`;
   await repository.attachSignedHash(intent.intentId, hash);
-  receipts.set(hash, { status: 1, blockNumber: 100 });
+  receipts.set(hash, { status: 1, blockNumber: 100, gasUsed:21_000n, gasPrice:2n });
   const [reconciled] = await engine.reconcileNonFinal();
   assert.equal(reconciled.state, 'confirmed');
+  assert.equal(reconciled.actualNetworkCostWei,42_000n);
+  assert.equal(reconciled.gasUsed,21_000n);
+  assert.equal(reconciled.effectiveGasPriceWei,2n);
   assert.equal(repository.intents[0].state, 'confirmed');
 });
 

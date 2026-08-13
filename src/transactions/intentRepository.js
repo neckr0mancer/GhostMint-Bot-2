@@ -18,6 +18,9 @@ function mapIntent(row) {
     maxFeePerGasWei: row.max_fee_per_gas_wei === null ? null : BigInt(row.max_fee_per_gas_wei),
     maxPriorityFeePerGasWei: row.max_priority_fee_per_gas_wei === null ? null : BigInt(row.max_priority_fee_per_gas_wei),
     estimatedCostWei: BigInt(row.estimated_cost_wei),
+    gasUsed: row.gas_used === null || row.gas_used === undefined ? null : BigInt(row.gas_used),
+    effectiveGasPriceWei: row.effective_gas_price_wei === null || row.effective_gas_price_wei === undefined ? null : BigInt(row.effective_gas_price_wei),
+    actualNetworkCostWei: row.actual_network_cost_wei === null || row.actual_network_cost_wei === undefined ? null : BigInt(row.actual_network_cost_wei),
     simulationEnabled: row.simulation_enabled,
     requiredConfirmations: row.required_confirmations,
     transactionTimeoutMs: row.transaction_timeout_ms,
@@ -83,7 +86,8 @@ function createTransactionIntentRepository(pool) {
       return mapIntent(result.rows[0]);
     },
 
-    async transition(intentId, toState, { reason = null, replacementTxHash = null, blockNumber = null } = {}) {
+    async transition(intentId, toState, { reason = null, replacementTxHash = null, blockNumber = null,
+      gasUsed=null,effectiveGasPriceWei=null,actualNetworkCostWei=null } = {}) {
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
@@ -92,11 +96,13 @@ function createTransactionIntentRepository(pool) {
         const fromState = current.rows[0].state;
         const result = await client.query(`UPDATE transaction_intents SET state=$2,
           failure_reason=$3,replacement_tx_hash=COALESCE($4,replacement_tx_hash),
-          block_number=COALESCE($5,block_number),last_reconciled_at=NOW(),
+          block_number=COALESCE($5,block_number),gas_used=COALESCE($6,gas_used),
+          effective_gas_price_wei=COALESCE($7,effective_gas_price_wei),actual_network_cost_wei=COALESCE($8,actual_network_cost_wei),last_reconciled_at=NOW(),
           pending_at=CASE WHEN $2='pending' THEN COALESCE(pending_at,NOW()) ELSE pending_at END,
           finalized_at=CASE WHEN $2 IN ('confirmed','reverted','replaced') THEN NOW() ELSE finalized_at END
           WHERE intent_id=$1 RETURNING *`,
-        [intentId, toState, reason, replacementTxHash, blockNumber]);
+        [intentId, toState, reason, replacementTxHash, blockNumber,gasUsed?.toString()??null,
+          effectiveGasPriceWei?.toString()??null,actualNetworkCostWei?.toString()??null]);
         if (fromState !== toState || reason) {
           await client.query(`INSERT INTO transaction_state_transitions (intent_id,from_state,to_state,reason)
             VALUES ($1,$2,$3,$4)`, [intentId, fromState, toState, reason]);
@@ -135,8 +141,15 @@ function createTransactionIntentRepository(pool) {
       return result.rows.map(mapIntent);
     },
 
+    async listPageForUser(userId,{limit,offset}) {
+      const [rows,count]=await Promise.all([pool.query(`SELECT * FROM transaction_intents WHERE user_id=$1
+        ORDER BY created_at DESC,intent_id DESC LIMIT $2 OFFSET $3`,[userId,limit,offset]),
+      pool.query('SELECT COUNT(*)::INTEGER AS total FROM transaction_intents WHERE user_id=$1',[userId])]);
+      return {items:rows.rows.map(mapIntent),total:count.rows[0].total};
+    },
+
     async rollingSpendWei(userId, walletId, sinceMs) {
-      const result = await pool.query(`SELECT COALESCE(SUM(estimated_cost_wei),0) AS total
+      const result = await pool.query(`SELECT COALESCE(SUM(COALESCE(actual_network_cost_wei,estimated_cost_wei)),0) AS total
         FROM transaction_intents WHERE user_id=$1 AND wallet_id=$2
         AND created_at >= TO_TIMESTAMP($3 / 1000.0)
         AND state IN ('submitted','pending','confirmed')`, [userId, walletId, sinceMs]);

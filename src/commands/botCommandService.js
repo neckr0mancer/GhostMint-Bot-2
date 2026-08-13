@@ -1,11 +1,14 @@
 const { Wallet, formatEther } = require('ethers');
 const { findOwnedWallet, stateForUser } = require('../identity/ownership');
 const { ValidationError, requestSchemas } = require('../validation/domain');
+const { paginate, pagination } = require('../pagination');
+const { calculateStatistics } = require('../statistics/statisticsService');
 
 function createBotCommandService(dependencies) {
   const { storage, schedulerRepository, providerService, governance, adminCommands, sniperService,
     socialWatchService, socialUsageService, targetPolicyService, triggerExecutionService, governanceRepository,
-    triggerAuditRepository, transactionIntentRepository, supportedChains, chains, encryptPrivateKey, getState, executeMint,
+    triggerAuditRepository, transactionIntentRepository, gasService, supportedChains, chains, encryptPrivateKey, getState, executeMint,
+    sniperRepository,
     ensureChainWatcher = () => {} } = dependencies;
 
   function state(userId) { return stateForUser(getState(), userId); }
@@ -137,17 +140,23 @@ function createBotCommandService(dependencies) {
 
   async function gas(chain = 'ethereum') {
     if (!supportedChains.includes(chain)) throw new ValidationError({ field: 'chain', message: `must be one of: ${supportedChains.join(', ')}` });
-    const fees = await providerService.perform(chain, 'getFeeData', provider => provider.getFeeData());
-    return { chain, gasPriceGwei: fees.gasPrice === null ? null : Number(fees.gasPrice) / 1e9,
-      maxFeePerGasGwei: fees.maxFeePerGas === null ? null : Number(fees.maxFeePerGas) / 1e9 };
+    return gasService.lookup(chain);
   }
+
+  async function pageFrom(repositoryMethod,fallback,userId,input) {const p=pagination(input);if(repositoryMethod){const result=await repositoryMethod(userId,{limit:p.pageSize,offset:p.offset});return {...p,total:result.total,totalPages:Math.max(1,Math.ceil(result.total/p.pageSize)),items:result.items};}return paginate(fallback(),p);}
+
+  async function stats(userId) {const rows=sniperRepository?.statsForUser?await sniperRepository.statsForUser(userId):[];
+    const sniperEvents=rows.flatMap(row=>Array.from({length:row.count},()=>({state:row.state})));
+    return calculateStatistics({activity:state(userId).activity,sniperEvents});}
 
   return {
     createWallet, importWallet, removeWallet, walletBalance, mint, batchMint, createTask, controlTask, addPnl, deletePnl,
     createSniper, updateSniper, removeSniper, gas,
     wallets: userId => state(userId).wallets,
     tasks: userId => schedulerRepository.listForUser(userId),
+    tasksPage:(userId,input)=>pageFrom(schedulerRepository.listPageForUser?.bind(schedulerRepository),()=>state(userId).tasks,userId,input),
     activity: userId => state(userId).activity.slice(0, 10),
+    activityPage:(userId,input)=>pageFrom(storage.listActivityPage?.bind(storage),()=>state(userId).activity,userId,input),
     pnl: userId => state(userId).pnl,
     snipers: userId => state(userId).snipers,
     createWatchRule: (userId, input) => socialWatchService.create(userId, input),
@@ -168,6 +177,8 @@ function createBotCommandService(dependencies) {
     triggerAudit: userId => triggerAuditRepository.listAudit(userId),
     pendingConfirmations: userId => triggerAuditRepository.listPendingRequests(userId),
     pendingTransactions: userId => transactionIntentRepository.listNonFinalForUser(userId),
+    transactionsPage:(userId,input)=>pageFrom(transactionIntentRepository.listPageForUser?.bind(transactionIntentRepository),()=>[],userId,input),
+    stats,
     selectMode: (userId, preset) => governance.selectPreset(userId, preset),
     admin: (userId, input) => adminCommands.execute(userId, input),
   };

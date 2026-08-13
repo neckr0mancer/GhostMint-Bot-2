@@ -55,6 +55,12 @@ function createSchedulerRepository(pool) {
       const result = await pool.query('SELECT * FROM mint_tasks WHERE user_id=$1 ORDER BY mint_time', [userId]);
       return result.rows.map(mapTask);
     },
+    async listPageForUser(userId,{limit,offset}) {
+      const [rows,count]=await Promise.all([pool.query(`SELECT * FROM mint_tasks WHERE user_id=$1
+        ORDER BY mint_time,id LIMIT $2 OFFSET $3`,[userId,limit,offset]),
+      pool.query('SELECT COUNT(*)::INTEGER AS total FROM mint_tasks WHERE user_id=$1',[userId])]);
+      return {items:rows.rows.map(mapTask),total:count.rows[0].total};
+    },
 
     async countActive() {
       const result = await pool.query("SELECT COUNT(*)::INTEGER AS count FROM mint_tasks WHERE status IN ('scheduled','retry','claimed','paused')");

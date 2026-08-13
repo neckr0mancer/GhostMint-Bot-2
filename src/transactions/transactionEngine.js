@@ -48,13 +48,18 @@ function createTransactionEngine({
     if (!intent.txHash) return { state: 'unknown', reason: 'signed transaction hash was not persisted' };
     const receipt = await providerCall(intent.chain, 'getTransactionReceipt', provider => provider.getTransactionReceipt(intent.txHash));
     if (receipt) {
-      if (Number(receipt.status) === 0) return { state: 'reverted', blockNumber: Number(receipt.blockNumber), reason: 'transaction reverted on chain' };
+      const gasUsed=receipt.gasUsed===undefined?null:BigInt(receipt.gasUsed);
+      const effectiveGasPriceWei=receipt.gasPrice===undefined||receipt.gasPrice===null
+        ? (receipt.effectiveGasPrice===undefined||receipt.effectiveGasPrice===null?null:BigInt(receipt.effectiveGasPrice)):BigInt(receipt.gasPrice);
+      const actualNetworkCostWei=gasUsed!==null&&effectiveGasPriceWei!==null?gasUsed*effectiveGasPriceWei:null;
+      const receiptCost={gasUsed,effectiveGasPriceWei,actualNetworkCostWei};
+      if (Number(receipt.status) === 0) return { state: 'reverted', blockNumber: Number(receipt.blockNumber), reason: 'transaction reverted on chain',...receiptCost };
       const currentBlock = await providerCall(intent.chain, 'getBlockNumber', provider => provider.getBlockNumber());
       const confirmations = Math.max(0, Number(currentBlock) - Number(receipt.blockNumber) + 1);
       if (confirmations >= intent.requiredConfirmations) {
-        return { state: 'confirmed', blockNumber: Number(receipt.blockNumber), reason: `${confirmations} confirmations observed` };
+        return { state: 'confirmed', blockNumber: Number(receipt.blockNumber), reason: `${confirmations} confirmations observed`,...receiptCost };
       }
-      return { state: 'pending', blockNumber: Number(receipt.blockNumber), reason: `${confirmations}/${intent.requiredConfirmations} confirmations observed` };
+      return { state: 'pending', blockNumber: Number(receipt.blockNumber), reason: `${confirmations}/${intent.requiredConfirmations} confirmations observed`,...receiptCost };
     }
     const transaction = await providerCall(intent.chain, 'getTransaction', provider => provider.getTransaction(intent.txHash));
     if (transaction) return { state: 'pending', reason: 'transaction is present in the provider mempool' };

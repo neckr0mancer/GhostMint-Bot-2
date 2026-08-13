@@ -2,6 +2,7 @@ const { isAddress } = require('ethers');
 const { ValidationError } = require('../validation/domain');
 const { buildMintCall } = require('./mintCall');
 const { getMintMethod } = require('./mintRegistry');
+const { runAllowlistCheck, validateAllowlistCheck } = require('./allowlistCheckRegistry');
 
 function invalid(field, message) { throw new ValidationError({ field, message }); }
 function presetName(value) {
@@ -22,12 +23,15 @@ function abiMatches(method, fragment) {
       && input.type === method.fragment.inputs[index].type);
 }
 
-function createMintService({ presetRepository, proofResolver, supportedChains }) {
+function createMintService({ presetRepository, proofResolver, supportedChains, providerService }) {
   async function prepare(input) {
     if (!supportedChains.includes(input.chain)) invalid('chain', `must be one of: ${supportedChains.join(', ')}`);
     if (!isAddress(input.walletAddress)) invalid('walletAddress', 'must be a valid Ethereum address');
+    const allowlistCheck=validateAllowlistCheck(input.allowlistCheck);
+    if (allowlistCheck) await runAllowlistCheck({check:allowlistCheck,chain:input.chain,
+      contractAddress:input.contractAddress,walletAddress:input.walletAddress,providerService});
     const resolvedArguments = await proofResolver.resolve(input);
-    return { ...buildMintCall({ ...input, arguments: resolvedArguments }), chain: input.chain };
+    return { ...buildMintCall({ ...input, arguments: resolvedArguments }), chain: input.chain, allowlistCheck };
   }
 
   return {
@@ -45,6 +49,7 @@ function createMintService({ presetRepository, proofResolver, supportedChains })
         arguments: serializableArguments(input.arguments || []),
         valueWei: prepared.valueWei,
         proofUrl: input.proofUrl || null,
+        allowlistCheck: prepared.allowlistCheck,
       });
     },
 
@@ -62,6 +67,7 @@ function createMintService({ presetRepository, proofResolver, supportedChains })
         walletAddress,
         valueWei: preset.valueWei,
         proofUrl: preset.proofUrl,
+        allowlistCheck: preset.allowlistCheck,
         chain: preset.chain,
       });
     },

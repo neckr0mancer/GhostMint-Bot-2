@@ -33,7 +33,7 @@ async function waitForHealth(url, child, output) {
 
     try {
       const response = await fetch(url);
-      if (response.ok) return response;
+      return response;
     } catch {
       // The child process may still be binding its HTTP listener.
     }
@@ -80,9 +80,10 @@ smokeTest('the application starts and exposes a healthy database-backed service'
   const response = await waitForHealth(`http://127.0.0.1:${port}/health`, child, output);
   const body = await response.json();
 
-  assert.equal(body.status, 'ok');
-  assert.equal(body.database, 'connected');
+  assert.ok(['ok','degraded'].includes(body.status));
+  assert.equal(body.dependencies.database.status, 'up');
+  assert.equal(typeof body.dependencies.rpc, 'object');
+  assert.equal(typeof body.dependencies.scheduler.status, 'string');
   assert.equal(typeof body.uptime, 'number');
-  assert.equal(typeof body.tasks, 'number');
   assert.doesNotMatch(stdout, new RegExp(EXAMPLE_ENV.ENCRYPTION_SECRET));
 });

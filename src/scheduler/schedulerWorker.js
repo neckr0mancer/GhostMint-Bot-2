@@ -21,6 +21,7 @@ function createSchedulerWorker({ repository, intentRepository, transactionEngine
   pollIntervalMs = 1_000, retryBaseMs = 5_000, notify, log = () => {}, sanitizeError = errorReason }) {
   let timer = null;
   let active = false;
+  let lastTickAt=null;let lastSuccessAt=null;let lastError=null;
 
   function retryAt(attemptCount) {
     return now() + retryBaseMs * (2 ** Math.max(0, attemptCount - 1));
@@ -86,12 +87,15 @@ function createSchedulerWorker({ repository, intentRepository, transactionEngine
   async function tick() {
     if (active) return false;
     active = true;
+    lastTickAt=now();
     try {
       const task = await repository.claimDue({ workerId, now: now(), leaseMs });
-      if (!task) return false;
+      if (!task) {lastSuccessAt=now();lastError=null;return false;}
       await processTask(task, false);
+      lastSuccessAt=now();lastError=null;
       return true;
-    } finally { active = false; }
+    } catch(error){lastError=String(error?.message||'poll failed').slice(0,200);throw error;}
+    finally { active = false; }
   }
 
   function start() {
@@ -105,7 +109,8 @@ function createSchedulerWorker({ repository, intentRepository, transactionEngine
     timer = null;
   }
 
-  return { processTask, recoverStaleClaims, start, stop, tick, workerId };
+  function health(){return {status:timer&&(!lastError||lastSuccessAt>=lastTickAt)?'up':'down',running:Boolean(timer),active,lastTickAt,lastSuccessAt,lastError};}
+  return { health,processTask, recoverStaleClaims, start, stop, tick, workerId };
 }
 
 module.exports = { TRANSIENT_CODES, createSchedulerWorker, errorReason, isTransientFailure };

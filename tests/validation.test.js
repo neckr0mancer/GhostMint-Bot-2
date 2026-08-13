@@ -115,6 +115,8 @@ test('invalid deletion identifiers are rejected before ownership mutation', () =
   rejectsField(() => requestSchemas.taskDeletion({ id: '12345' }), 'id');
   rejectsField(() => requestSchemas.sniperDeletion({ id: 'not-a-uuid' }), 'id');
   rejectsField(() => requestSchemas.pnlDeletion({ id: -1 }), 'id');
+  assert.equal(requestSchemas.pnlDeletion({id:'123e4567-e89b-42d3-a456-426614174000'}).id,
+    '123e4567-e89b-42d3-a456-426614174000');
   assert.deepEqual(requestSchemas.taskDeletion({ id: '550e8400-e29b-41d4-a716-446655440000' }), {
     id: '550e8400-e29b-41d4-a716-446655440000',
   });

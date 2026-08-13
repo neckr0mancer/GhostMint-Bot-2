@@ -1,9 +1,5 @@
-param(
-  [Parameter(ValueFromRemainingArguments = $true)]
-  [string[]] $NpmArguments
-)
-
 $ErrorActionPreference = 'Stop'
+$npmArguments = @($args)
 $npmVersion = '11.7.0'
 $npmArchiveUrl = "https://registry.npmjs.org/npm/-/npm-$npmVersion.tgz"
 $npmArchiveSha512 = 'C22099A6FFF8D5B2286C2A09DF5352B4858A7C0C716320F58989D60AD8B29ECF2CE6FDFE97CCB41C23FFB1272E1FA079F868487DD6B81D02A2A9E199C095A117'
@@ -30,5 +26,5 @@ if (-not (Test-Path -LiteralPath $npmCli)) {
   Remove-Item -LiteralPath $archive -Force
 }
 
-& $node --use-system-ca $npmCli @NpmArguments
+& $node --use-system-ca $npmCli @npmArguments
 exit $LASTEXITCODE

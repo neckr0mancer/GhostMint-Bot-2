@@ -96,7 +96,7 @@ function createSniperRepository(pool) {
     },
 
     async dailySpendWei(userId, sniperId, since) {
-      const result = await pool.query(`SELECT COALESCE(SUM(COALESCE(intent.estimated_cost_wei,event.copied_value_wei,0)),0) AS total
+      const result = await pool.query(`SELECT COALESCE(SUM(COALESCE(intent.actual_network_cost_wei,intent.estimated_cost_wei,event.copied_value_wei,0)),0) AS total
         FROM sniper_seen_transactions event LEFT JOIN transaction_intents intent
           ON intent.intent_id=event.transaction_intent_id
         WHERE event.user_id=$1 AND event.sniper_id=$2 AND event.state IN ('submitted','confirmed')
@@ -108,6 +108,11 @@ function createSniperRepository(pool) {
       const result = await pool.query(`SELECT * FROM sniper_seen_transactions
         WHERE user_id=$1 AND sniper_id=$2 AND tx_hash=$3`, [userId, sniperId, txHash]);
       return mapEvent(result.rows[0]);
+    },
+    async statsForUser(userId) {
+      const result=await pool.query(`SELECT state,COUNT(*)::INTEGER AS count FROM sniper_seen_transactions
+        WHERE user_id=$1 GROUP BY state`,[userId]);
+      return result.rows.map(row=>({state:row.state,count:row.count}));
     },
   };
 }

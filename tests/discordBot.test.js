@@ -23,7 +23,7 @@ function interaction({ commandName, userId = 'discord-user', subcommand = null, 
 test('Discord command definitions include the complete Milestone 10a surface', () => {
   const definitions = commandDefinitions();
   const names = definitions.map(command => command.name);
-  assert.deepEqual(names, ['wallet', 'mint', 'batch-mint', 'task', 'activity', 'pnl', 'gas', 'sniper', 'mode', 'admin', 'link', 'watch', 'social-usage', 'target-policy', 'confirm-trigger', 'trigger-audit', 'pending']);
+  assert.deepEqual(names, ['wallet', 'mint', 'batch-mint', 'task', 'activity', 'pnl', 'gas', 'sniper', 'mode', 'admin', 'link', 'watch', 'social-usage', 'target-policy', 'confirm-trigger', 'trigger-audit', 'pending', 'transactions']);
   const wallet = definitions.find(command => command.name === 'wallet');
   const create = wallet.options.find(option => option.name === 'create');
   const imported = wallet.options.find(option => option.name === 'import');
@@ -57,7 +57,8 @@ test('every normal Discord command resolves the sender identity before dispatch'
   const input = interaction({ commandName: 'activity', userId: 'discord-42' });
   const handler = createDiscordInteractionHandler({
     identity: { resolveOrCreate: async (...args) => { resolved.push(args); return 'user-42'; } },
-    commands: { activity: userId => [{ userId, status: 'success', title: 'owned', walletLabel: 'alpha' }] },
+    commands: { activityPage: async userId => ({page:1,totalPages:1,total:1,
+      items:[{ userId, status: 'success', title: 'owned', walletLabel: 'alpha' }]}) },
   });
   await handler(input);
   assert.deepEqual(resolved, [['discord', 'discord-42']]);

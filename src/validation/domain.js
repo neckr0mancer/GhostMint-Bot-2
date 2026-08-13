@@ -58,10 +58,6 @@ function uuid(value, field = 'id') {
   return normalized.toLowerCase();
 }
 
-function positiveDatabaseId(value, field = 'id') {
-  return finiteNumber(value, field, { min: 1, max: Number.MAX_SAFE_INTEGER, integer: true });
-}
-
 function ethereumAddress(value, field) {
   const normalized = string(value, field, { max: 42 });
   if (!isAddress(normalized)) fail(field, 'must be a valid Ethereum address');
@@ -309,7 +305,7 @@ const requestSchemas = Object.freeze({
   },
   taskDeletion: input => ({ id: uuid(input.id, 'id') }),
   sniperDeletion: input => ({ id: uuid(input.id, 'id') }),
-  pnlDeletion: input => ({ id: positiveDatabaseId(input.id, 'id') }),
+  pnlDeletion: input => ({ id: uuid(input.id, 'id') }),
   walletDeletion: input => ({ label: walletLabel(input.label, 'label') }),
   walletCreate: validateWalletCreate,
   mint: validateMintRequest,

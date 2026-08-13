@@ -56,16 +56,17 @@ function commandDefinitions() {
     .addSubcommand(c => c.setName('create').setDescription('Create a UTC scheduled mint')
       .addStringOption(o => o.setName('input').setDescription('Validated task JSON; mintTime must include Z/offset').setRequired(true))
       .addBooleanOption(o => o.setName('confirm').setDescription('Confirm scheduled value-bearing action').setRequired(true)))
-    .addSubcommand(c => c.setName('list').setDescription('List your scheduled tasks'))
+    .addSubcommand(c => c.setName('list').setDescription('List your scheduled tasks').addIntegerOption(o=>o.setName('page').setDescription('Page number').setMinValue(1)))
     .addSubcommand(c => c.setName('cancel').setDescription('Cancel a task').addStringOption(o => o.setName('id').setDescription('Task UUID').setRequired(true)).addBooleanOption(o => o.setName('confirm').setDescription('Confirm cancellation').setRequired(true)))
     .addSubcommand(c => c.setName('pause').setDescription('Pause a task').addStringOption(o => o.setName('id').setDescription('Task UUID').setRequired(true)))
     .addSubcommand(c => c.setName('resume').setDescription('Resume a task').addStringOption(o => o.setName('id').setDescription('Task UUID').setRequired(true)).addBooleanOption(o=>o.setName('confirm').setDescription('Confirm resuming value-moving task').setRequired(true)))
     .addSubcommand(c => c.setName('retry').setDescription('Retry a failed task').addStringOption(o => o.setName('id').setDescription('Task UUID').setRequired(true)).addBooleanOption(o => o.setName('confirm').setDescription('Confirm retry').setRequired(true))));
-  commands.push(new SlashCommandBuilder().setName('activity').setDescription('Show your recent mint activity'));
+  commands.push(new SlashCommandBuilder().setName('activity').setDescription('Show your mint activity')
+    .addIntegerOption(o=>o.setName('page').setDescription('Page number').setMinValue(1)));
   commands.push(new SlashCommandBuilder().setName('pnl').setDescription('Manage your P&L records')
     .addSubcommand(c => c.setName('list').setDescription('List your P&L records'))
     .addSubcommand(c => c.setName('add').setDescription('Add a P&L record').addStringOption(o => o.setName('input').setDescription('Record JSON').setRequired(true)))
-    .addSubcommand(c => c.setName('delete').setDescription('Delete a P&L record').addIntegerOption(o => o.setName('id').setDescription('Record ID').setRequired(true)).addBooleanOption(o => o.setName('confirm').setDescription('Confirm deletion').setRequired(true))));
+    .addSubcommand(c => c.setName('delete').setDescription('Delete a P&L record').addStringOption(o => o.setName('id').setDescription('Record UUID').setRequired(true)).addBooleanOption(o => o.setName('confirm').setDescription('Confirm deletion').setRequired(true))));
   commands.push(new SlashCommandBuilder().setName('gas').setDescription('Show live chain fee data')
     .addStringOption(o => o.setName('chain').setDescription('Supported chain')));
   commands.push(new SlashCommandBuilder().setName('sniper').setDescription('Manage post-confirmation copy snipers (not mempool front-running)')
@@ -102,6 +103,8 @@ function commandDefinitions() {
     .addStringOption(o=>o.setName('confirmation').setDescription('Must be CONFIRM').setRequired(true)));
   commands.push(new SlashCommandBuilder().setName('trigger-audit').setDescription('Show trigger execution audit records'));
   commands.push(new SlashCommandBuilder().setName('pending').setDescription('View pending transactions and confirmations'));
+  commands.push(new SlashCommandBuilder().setName('transactions').setDescription('List your transaction history')
+    .addIntegerOption(o=>o.setName('page').setDescription('Page number').setMinValue(1)));
   return commands.map(command => command.toJSON());
 }
 
@@ -159,16 +162,16 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, s
         case 'task': {
           const action = interaction.options.getSubcommand();
           if (action === 'create') { confirmation(interaction); const task = await commands.createTask(userId, json(interaction.options.getString('input'))); message = `Task **${task.name}** scheduled for ${new Date(task.mintTime).toISOString()} UTC (ID: ${task.id}).`; }
-          else if (action === 'list') message = formatRows(await commands.tasks(userId), 'No scheduled tasks.', task => `**${task.name}** [${task.status}] — ${new Date(task.mintTime).toISOString()} — ${task.id}`);
+          else if (action === 'list') { const page=await commands.tasksPage(userId,{page:interaction.options.getInteger('page')||1}); message=`${formatRows(page.items,'No scheduled tasks.',task=>`**${task.name}** [${task.status}] — ${new Date(task.mintTime).toISOString()} — ${task.id}`)}\nPage ${page.page}/${page.totalPages} (${page.total} total)`; }
           else { if (['cancel', 'resume', 'retry'].includes(action)) confirmation(interaction); const task = await commands.controlTask(userId, action, interaction.options.getString('id')); message = `Task **${task.name}** is now ${task.status}.`; }
           break;
         }
-        case 'activity': message = formatRows(commands.activity(userId), 'No activity yet.', item => `${item.status}: ${item.title} — ${item.walletLabel}`); break;
+        case 'activity': { const page=await commands.activityPage(userId,{page:interaction.options.getInteger('page')||1}); message=`${formatRows(page.items,'No activity yet.',item=>`${item.status}: ${item.title} — ${item.walletLabel}`)}\nPage ${page.page}/${page.totalPages} (${page.total} total)`; break; }
         case 'pnl': {
           const action = interaction.options.getSubcommand();
           if (action === 'list') message = formatRows(commands.pnl(userId), 'No P&L records.', item => `#${item.id} **${item.nm}** — net ${item.net}`);
           else if (action === 'add') { const record = await commands.addPnl(userId, json(interaction.options.getString('input'))); message = `P&L record #${record.id} saved.`; }
-          else { confirmation(interaction); message = `P&L record #${await commands.deletePnl(userId, interaction.options.getInteger('id'))} deleted.`; }
+          else { confirmation(interaction); message = `P&L record #${await commands.deletePnl(userId, interaction.options.getString('id'))} deleted.`; }
           break;
         }
         case 'gas': { const value = await commands.gas(interaction.options.getString('chain') || 'ethereum'); message = `${value.chain}: gas ${value.gasPriceGwei ?? 'unavailable'} Gwei, max fee ${value.maxFeePerGasGwei ?? 'unavailable'} Gwei.`; break; }
@@ -211,6 +214,7 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, s
         case 'trigger-audit': {const rows=await commands.triggerAudit(userId);message=rows.length?rows.map(row=>`${row.trigger_source} | ${row.target_type}:${row.target_id} | verification ${row.verification_state} | ${row.outcome}`).join('\n'):'No trigger executions audited.';break;}
         case 'pending': {const [transactions,confirmations]=await Promise.all([commands.pendingTransactions(userId),commands.pendingConfirmations(userId)]);
           message=`Pending transactions: ${transactions.length}\n${transactions.map(row=>`${row.intentId} | ${row.state} | ${row.chain}`).join('\n')||'None'}\n\nPending confirmations: ${confirmations.length}\n${confirmations.map(row=>`${row.id} | ${row.triggerSource} | expires ${new Date(row.expiresAt).toISOString()}`).join('\n')||'None'}`;break;}
+        case 'transactions': {const page=await commands.transactionsPage(userId,{page:interaction.options.getInteger('page')||1});message=`${formatRows(page.items,'No transactions.',row=>`${row.intentId} | ${row.state} | ${row.chain}`)}\nPage ${page.page}/${page.totalPages} (${page.total} total)`;break;}
         default: throw new Error('Unknown Discord command');
       }
       message=escapeDiscord(message);

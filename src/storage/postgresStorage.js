@@ -23,11 +23,12 @@ function mapTask(row) {
 
 function mapActivity(row) {
   return { id: Number(row.id), userId: row.user_id, status: row.status, title: row.title,
-    walletLabel: row.wallet_label, txHash: row.tx_hash, explorer: row.explorer, time: time(row.occurred_at) };
+    walletLabel: row.wallet_label, txHash: row.tx_hash, explorer: row.explorer, time: time(row.occurred_at),
+    actualNetworkCostWei:row.actual_network_cost_wei===null?null:BigInt(row.actual_network_cost_wei) };
 }
 
 function mapPnl(row) {
-  return { id: Number(row.id), userId: row.user_id, nm: row.name, cost: number(row.cost),
+  return { id: row.id, userId: row.user_id, nm: row.name, cost: number(row.cost),
     sale: number(row.sale), gas: number(row.gas), net: number(row.net), t: time(row.created_at) };
 }
 
@@ -67,6 +68,12 @@ function createPostgresStorage(pool) {
     },
     loadState,
     loadSystemState() { return loadState(); },
+    async listActivityPage(userId,{limit,offset}) {
+      const [rows,count]=await Promise.all([pool.query(`SELECT * FROM activity WHERE user_id=$1
+        ORDER BY occurred_at DESC,id DESC LIMIT $2 OFFSET $3`,[userId,limit,offset]),
+      pool.query('SELECT COUNT(*)::INTEGER AS total FROM activity WHERE user_id=$1',[userId])]);
+      return {items:rows.rows.map(mapActivity),total:count.rows[0].total};
+    },
 
     async addWallet(wallet) {
       const e = wallet.keyEnvelope;
@@ -119,9 +126,10 @@ function createPostgresStorage(pool) {
 
     async addActivity(entry) {
       const result = await pool.query(`INSERT INTO activity
-        (user_id,status,title,wallet_label,tx_hash,explorer,occurred_at)
-        VALUES ($1,$2,$3,$4,$5,$6,TO_TIMESTAMP($7 / 1000.0)) RETURNING *`,
-      [entry.userId, entry.status, entry.title, entry.walletLabel, entry.txHash, entry.explorer, entry.time]);
+        (user_id,status,title,wallet_label,tx_hash,explorer,occurred_at,actual_network_cost_wei)
+        VALUES ($1,$2,$3,$4,$5,$6,TO_TIMESTAMP($7 / 1000.0),$8) RETURNING *`,
+      [entry.userId, entry.status, entry.title, entry.walletLabel, entry.txHash, entry.explorer, entry.time,
+        entry.actualNetworkCostWei?.toString()??null]);
       return mapActivity(result.rows[0]);
     },
     async addPnl(record) {
