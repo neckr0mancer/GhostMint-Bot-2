@@ -91,6 +91,13 @@ test('negative, NaN, infinite, fractional, and oversized numeric values are reje
     label: 'watcher', targetAddress: CONTRACT, chain: 'ethereum', walletLabel: 'Primary',
   }, { supportedChains: CHAINS });
   assert.match(sniper.id, /^[0-9a-f-]{36}$/);
+  rejectsField(() => requestSchemas.sniperCreate({
+    label:'watcher', targetAddress:CONTRACT, chain:'ethereum', walletLabel:'Primary',
+    contractAllowlist:[CONTRACT], contractDenylist:[CONTRACT],
+  }, { supportedChains:CHAINS }), 'contractAllowlist');
+  rejectsField(() => requestSchemas.sniperCreate({
+    label:'watcher', targetAddress:CONTRACT, chain:'ethereum', walletLabel:'Primary', maxAttempts:21,
+  }, { supportedChains:CHAINS }), 'maxAttempts');
 });
 
 test('addresses, function names, ABI definitions, labels, and label uniqueness are validated', () => {

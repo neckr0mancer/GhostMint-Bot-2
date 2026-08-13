@@ -54,17 +54,19 @@ This is the ordered implementation plan for GhostMint. Milestones are intentiona
 - Encode only an audited registry of common ERC-721, ERC-1155, proof-based, and signature-based mint shapes; reject arbitrary ABI and calldata construction.
 - Support manual/uploaded authorization data plus fail-closed public HTTP/IPFS proof lookup, reusable user-owned mint presets, decoded previews, and simulation of the exact encoded call.
 
-## Remaining implementation
-
 ### Milestone 9 — Durable scheduler
 
-- Replace process-local long-duration timers with durable claiming, leasing, retry, and recovery behavior.
-- Handle schedules beyond Node's timer limit without overflow and prevent duplicate execution across restarts or multiple instances.
+- Replace process-local long-duration timers with database-backed due times, atomic multi-instance claiming, leases, attempt history, and bounded retry behavior.
+- Recover expired claims from persisted transaction intents and chain state, enforce task idempotency, and provide owner-scoped cancel, pause, resume, and retry controls.
+- Store and display authoritative schedule timestamps in UTC while safely supporting schedules beyond Node's timer limit.
 
-### Milestone 10 — Blockchain watcher and sniper hardening
+### Milestone 10 — Post-confirmation copy-mint hardening
 
-- Add durable deduplication, confirmation depth, reorg handling, target-level limits, and safe retry behavior.
-- Route every copy-mint through the same simulation, spend-cap, nonce, and activity-audit pipeline.
+- Persist source-event state and transition history, deduplicate delivery across instances/restarts, and verify canonical source receipts after configurable confirmations.
+- Enforce validated per-sniper value, gas, daily-spend, cooldown, attempt, and contract-list limits through the shared transaction engine.
+- Isolate each sniper's failures and label this feature accurately as post-confirmation copying rather than mempool front-running.
+
+## Remaining implementation
 
 ### Milestone 10a — Discord bot
 

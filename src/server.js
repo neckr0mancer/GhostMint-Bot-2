@@ -17,6 +17,8 @@ const { createPostgresMintPresetRepository } = require('./mint/postgresMintPrese
 const { createProofResolver, ProofResolutionError } = require('./mint/proofResolver');
 const { createSchedulerRepository } = require('./scheduler/schedulerRepository');
 const { createSchedulerWorker } = require('./scheduler/schedulerWorker');
+const { createSniperRepository } = require('./sniper/sniperRepository');
+const { createSniperService } = require('./sniper/sniperService');
 const { createAdminCommandService } = require('./governance/adminCommandService');
 const { AuthorizationError, createGovernanceService } = require('./governance/governanceService');
 const { createPostgresGovernanceRepository } = require('./governance/postgresGovernanceRepository');
@@ -41,6 +43,7 @@ const identityRepository = createPostgresIdentityRepository(pool);
 const identity = createIdentityService(identityRepository);
 const transactionIntentRepository = createTransactionIntentRepository(pool);
 const schedulerRepository = createSchedulerRepository(pool);
+const sniperRepository = createSniperRepository(pool);
 const mintPresetRepository = createPostgresMintPresetRepository(pool);
 const mintService = createMintService({
   presetRepository: mintPresetRepository,
@@ -187,21 +190,33 @@ async function executeMint({ wallet, contractAddr, fnName='mint', qty=1, priceET
 // wallets. Detection happens once the target's tx is confirmed in
 // a block, so this is a best-effort copier riding public RPCs, not
 // a mempool front-runner.
-const sniperProviders = {};  // chain -> ethers provider, only live while a sniper is active on it
-const sniperSeenTx     = {}; // sniperId -> Set of already-handled tx hashes (capped)
-
-const sniperKey = sniper => `${sniper.userId}:${sniper.id}`;
-
-async function markSeen(sniper, hash) {
-  const key = sniperKey(sniper);
-  if (!sniperSeenTx[key]) sniperSeenTx[key] = new Set();
-  const set = sniperSeenTx[key];
-  set.add(hash);
-  if (set.size > 500) set.delete(set.values().next().value);
-  await storage.markSeenTransaction(sniper.userId, sniper.id, hash);
-}
-const alreadySeen = async (sniper, hash) => sniperSeenTx[sniperKey(sniper)]?.has(hash)
-  || storage.hasSeenTransaction(sniper.userId, sniper.id, hash);
+const sniperProviders = {};
+const sniperService = createSniperService({
+  repository:sniperRepository,
+  intentRepository:transactionIntentRepository,
+  transactionEngine,
+  supportedChains:CONFIG.supportedChains,
+  onEvent:async ({ event, state, reason, intent, error }) => {
+    const sniper = DB.snipers.find(item => item.userId === event.userId && item.id === event.sniperId);
+    if (!sniper) return;
+    const wallet = DB.wallets.find(item => item.userId === sniper.userId && item.label === sniper.walletLabel);
+    if (state === 'confirmed') {
+      sniper.hits = (sniper.hits || 0) + 1;
+      sniper.lastFiredAt = Date.now();
+      if (wallet) wallet.minted = (wallet.minted || 0) + 1;
+      await Promise.all([storage.saveSniper(sniper), wallet
+        ? storage.updateWalletMinted(sniper.userId, wallet.label, wallet.minted) : Promise.resolve()]);
+      if (wallet) await logActivity(sniper.userId, 'success', `Post-confirmation copy-mint (${sniper.label})`,
+        wallet.label, intent?.txHash || null, CHAINS[sniper.chain]);
+    } else if (state === 'failed') {
+      sniper.fails = (sniper.fails || 0) + 1;
+      await storage.saveSniper(sniper);
+    }
+    await notifyUser(sniper.userId, state === 'confirmed'
+      ? `✅ Post-confirmation copy *${sniper.label}* confirmed.`
+      : `🎯 Post-confirmation copy *${sniper.label}*: ${state}${reason ? ` — ${reason}` : ''}${error ? ` — ${safeError(error).slice(0,120)}` : ''}`);
+  },
+});
 
 const activeSnipersForChain = chain => DB.snipers.filter(s => s.active && s.chain === chain);
 
@@ -233,68 +248,16 @@ async function onBlock(chain, blockNumber) {
   for (const tx of block.prefetchedTransactions) {
     if (!tx.to || !tx.data || tx.data === '0x') continue; // skip plain transfers / contract creations
     for (const sniper of snipers) {
-      if (tx.from.toLowerCase() !== sniper.targetAddress.toLowerCase()) continue;
-      if (await alreadySeen(sniper, tx.hash)) continue;
-      await markSeen(sniper, tx.hash);
-      fireSnipe(sniper, tx, chain).catch(e => log(`Snipe fire error: ${safeError(e)}`));
+      try {
+        if (tx.from.toLowerCase() !== sniper.targetAddress.toLowerCase()) continue;
+        await sniperService.detect(sniper, { hash:tx.hash, to:tx.to, blockNumber, blockHash:block.hash });
+      } catch (error) { log(`Sniper ${sniper.id} detection failed: ${safeError(error)}`); }
     }
   }
-}
-
-async function fireSnipe(sniper, targetTx, chain) {
-  const chainCfg = CHAINS[chain];
-  const wallet   = DB.wallets.find(w => w.userId === sniper.userId && w.label === sniper.walletLabel);
-  if (!wallet) { await notifyUser(sniper.userId, `❌ *Sniper "${sniper.label}" failed*\nFiring wallet "${sniper.walletLabel}" not found.`); return; }
-
-  let value = targetTx.value ?? 0n;
-  if (sniper.valueMode === 'fixed') value = ethers.parseEther(String(sniper.fixedValueETH || 0));
-  if (sniper.maxValueETH != null) {
-    const cap = ethers.parseEther(String(sniper.maxValueETH));
-    if (value > cap) {
-      await logActivity(sniper.userId, 'fail', `Sniper skipped (value ${ethers.formatEther(value)} ETH > cap)`, wallet.label, null, chainCfg);
-      await notifyUser(sniper.userId, `⚠️ *Sniper "${sniper.label}" skipped*\nTarget tx wants ${ethers.formatEther(value)} ETH, over your ${sniper.maxValueETH} ETH cap.`);
-      return;
-    }
-  }
-
-  await notifyUser(sniper.userId, `🎯 *Target minting detected!*\nSniper: *${sniper.label}*\nTarget: \`${sniper.targetAddress.slice(0,8)}...\`\nCopying with wallet *${wallet.label}*...`);
-
-  try {
-    const boostBp = BigInt(100 + (sniper.gasBoostPercent ?? 20)); // e.g. 120 = +20%
-    const feeOverrides = {};
-    if (targetTx.maxFeePerGas) {
-      feeOverrides.maxFeePerGasWei         = (targetTx.maxFeePerGas * boostBp) / 100n;
-      feeOverrides.maxPriorityFeePerGasWei = ((targetTx.maxPriorityFeePerGas || targetTx.maxFeePerGas) * boostBp) / 100n;
-    } else if (targetTx.gasPrice) {
-      feeOverrides.gasPriceWei = (targetTx.gasPrice * boostBp) / 100n;
-    }
-    const intent = await transactionEngine.submit({
-      userId: sniper.userId,
-      wallet,
-      targetId: sniper.id,
-      chain,
-      triggerSource: 'blockchain',
-      to: targetTx.to,
-      data: targetTx.data,
-      valueWei: value,
-      ...feeOverrides,
-    });
-    if (intent.state !== 'confirmed') throw new Error(`Transaction ended in ${intent.state} state`);
-    wallet.minted = (wallet.minted || 0) + 1;
-    sniper.hits = (sniper.hits || 0) + 1;
-    sniper.lastFiredAt = Date.now();
-    await Promise.all([
-      storage.updateWalletMinted(sniper.userId, wallet.label, wallet.minted),
-      storage.saveSniper(sniper),
-    ]);
-    await logActivity(sniper.userId, 'success', `Sniper copy-mint (${sniper.label})`, wallet.label, intent.txHash, chainCfg);
-    await notifyUser(sniper.userId, `✅ *Snipe successful!*\nSniper: *${sniper.label}*\nWallet: *${wallet.label}*\n[View tx](${chainCfg.ex}${intent.txHash})`);
-  } catch (e) {
-    sniper.fails = (sniper.fails || 0) + 1;
-    await storage.saveSniper(sniper);
-    await logActivity(sniper.userId, 'fail', `Sniper copy-mint failed (${sniper.label})`, wallet.label, null, chainCfg);
-    await notifyUser(sniper.userId, `❌ *Snipe failed*\nSniper: *${sniper.label}*\nError: ${safeError(e).slice(0,150)}`);
-  }
+  await sniperService.processBlock(chain, blockNumber, snipers,
+    hash => provider.getTransaction(hash),
+    hash => provider.getTransactionReceipt(hash),
+    sniper => DB.wallets.find(wallet => wallet.userId === sniper.userId && wallet.label === sniper.walletLabel));
 }
 
 // ── Telegram ──────────────────────────────────────────────
@@ -348,7 +311,7 @@ if (BOT_TOKEN) {
   });
 
   bot.onText(/^\/(?:start|help)(?:@\w+)?$/, withTelegramUser(async msg => {
-    tg(msg.chat.id, `👻 *GhostMint Bot*\n\n*Commands:*\n/wallets — list wallets\n/tasks — scheduled tasks\n/snipers — copy-mint watchers\n/activity — recent mints\n/gas — live gas prices\n/stats — overview\n/link — create a 5-minute account-link code\n/mode <preset> — select a transaction mode\n/admin <action> — owner-only governance\n/mintcall <JSON> — flexible supported-signature mint\n/mintpreset save|use|delete <JSON/name>\n/mintpresets — list saved mint presets\n/canceltask <id> — cancel task\n/removewallet <label> — remove wallet\n/mintnow <label> <contract> <qty> <price> <chain> — legacy quantity mint`);
+    tg(msg.chat.id, `👻 *GhostMint Bot*\n\n*Commands:*\n/wallets — list wallets\n/tasks — scheduled tasks\n/snipers — post-confirmation copy watchers\n/updatesniper <id> <JSON> — update copy limits\n/activity — recent mints\n/gas — live gas prices\n/stats — overview\n/link — create a 5-minute account-link code\n/mode <preset> — select a transaction mode\n/admin <action> — owner-only governance\n/mintcall <JSON> — flexible supported-signature mint\n/mintpreset save|use|delete <JSON/name>\n/mintpresets — list saved mint presets\n/canceltask <id> — cancel task\n/pausetask <id> — pause task\n/resumetask <id> — resume task\n/retrytask <id> — retry failed task\n/removewallet <label> — remove wallet\n/mintnow <label> <contract> <qty> <price> <chain> — legacy quantity mint`);
   }));
 
   bot.onText(/^\/link(?:@\w+)?$/, withTelegramUser(async (msg, match, userId) => {
@@ -440,7 +403,20 @@ if (BOT_TOKEN) {
     const list = snipers.map(s =>
       `${s.active?'🟢':'⚪'} *${s.label}*\nTarget: \`${s.targetAddress.slice(0,10)}...\`\nChain: ${CHAINS[s.chain]?.name||s.chain} · Wallet: ${s.walletLabel}\nHits: ${s.hits||0} · Fails: ${s.fails||0}`
     ).join('\n\n');
-    tg(msg.chat.id, `🎯 *Snipers (${snipers.length})*\n\n${list}`);
+    tg(msg.chat.id, `🎯 *Post-confirmation copy snipers (${snipers.length})*\n_Not mempool front-running: copying begins only after the source transaction confirms._\n\n${list}`);
+  }));
+
+  bot.onText(/^\/updatesniper(?:@\w+)?\s+([0-9a-f-]+)\s+(.+)$/i, withTelegramUser(async (msg, match, userId) => {
+    const { id } = requestSchemas.sniperDeletion({ id:match[1] });
+    const sniper = DB.snipers.find(item => item.userId === userId && item.id === id);
+    if (!sniper) return tg(msg.chat.id, 'Post-confirmation copy sniper not found.');
+    const previousChain = sniper.chain;
+    const updated = sniperService.validatePatch(sniper, commandJson(match[2]));
+    await storage.saveSniper(updated);
+    Object.assign(sniper, updated);
+    if (sniper.active) ensureChainWatcher(sniper.chain);
+    if (previousChain !== sniper.chain || !sniper.active) teardownChainWatcherIfIdle(previousChain);
+    tg(msg.chat.id, `✅ Post-confirmation copy sniper *${sniper.label}* updated. This is not mempool front-running.`);
   }));
 
   bot.onText(/^\/wallets(?:@\w+)?$/, withTelegramUser(async (msg, match, userId) => {

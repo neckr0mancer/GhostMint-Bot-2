@@ -12,6 +12,8 @@ const LIMITS = Object.freeze({
   feeGwei: 100_000,
   sniperValueEth: 1_000,
   sniperGasBoostPercent: 500,
+  sniperCooldownMs: 86_400_000,
+  sniperMaxAttempts: 20,
   pnlAmount: 1_000_000_000_000,
   batchWallets: 100,
 });
@@ -216,6 +218,10 @@ function validateBatchMint(input, context) {
 function validateSniper(input, context) {
   const valueMode = input.valueMode === undefined ? 'copy' : string(input.valueMode, 'valueMode', { max: 5 }).toLowerCase();
   if (!['copy', 'fixed'].includes(valueMode)) fail('valueMode', 'must be copy or fixed');
+  const contractAllowlist = addressList(input.contractAllowlist, 'contractAllowlist');
+  const contractDenylist = addressList(input.contractDenylist, 'contractDenylist');
+  const denied = new Set(contractDenylist.map(item => item.toLowerCase()));
+  if (contractAllowlist.some(item => denied.has(item.toLowerCase()))) fail('contractAllowlist', 'must not overlap the denylist');
   return {
     id: input.id === undefined ? randomUUID() : uuid(input.id, 'id'),
     label: string(input.label, 'label', { max: 100 }),
@@ -224,8 +230,15 @@ function validateSniper(input, context) {
     walletLabel: walletLabel(input.walletLabel),
     valueMode,
     fixedValueETH: finiteNumber(input.fixedValueETH ?? 0, 'fixedValueETH', { min: 0, max: LIMITS.sniperValueEth }),
-    maxValueETH: finiteNumber(input.maxValueETH, 'maxValueETH', { min: 0, max: LIMITS.sniperValueEth, required: false }),
+    maxValueETH: finiteNumber(input.maxValueETH ?? 0.1, 'maxValueETH', { min: 0, max: LIMITS.sniperValueEth }),
     gasBoostPercent: finiteNumber(input.gasBoostPercent ?? 20, 'gasBoostPercent', { min: 0, max: LIMITS.sniperGasBoostPercent, integer: true }),
+    maxGasGwei: fee(input.maxGasGwei ?? 200, 'maxGasGwei'),
+    dailySpendingCapETH: finiteNumber(input.dailySpendingCapETH ?? 0.25, 'dailySpendingCapETH', { min: 0, max: LIMITS.sniperValueEth }),
+    cooldownMs: finiteNumber(input.cooldownMs ?? 60_000, 'cooldownMs', { min: 0, max: LIMITS.sniperCooldownMs, integer: true }),
+    maxAttempts: finiteNumber(input.maxAttempts ?? 3, 'maxAttempts', { min: 1, max: LIMITS.sniperMaxAttempts, integer: true }),
+    contractAllowlist,
+    contractDenylist,
+    sourceConfirmations: finiteNumber(input.sourceConfirmations ?? 2, 'sourceConfirmations', { min: 1, max: 1000, integer: true }),
   };
 }
 

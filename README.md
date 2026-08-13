@@ -2,7 +2,7 @@
 
 GhostMint is an Express and Telegram service for managing EVM wallets, scheduling NFT mints, submitting manual and batch mints, and watching target wallets for post-confirmation copy-mint activity.
 
-> **Project status:** active prototype. PostgreSQL persistence, versioned envelope encryption, and Telegram-backed multi-user identity are implemented. Transaction validation and durable scheduling still require later milestones. Use disposable test wallets only.
+> **Project status:** active prototype. PostgreSQL persistence, versioned envelope encryption, multi-user identity, transaction safety, flexible mint calls, durable scheduling, and post-confirmation copy-watcher hardening are implemented. Production operations and later platform/trigger milestones remain incomplete. Use disposable test wallets only.
 
 ## Requirements
 
@@ -82,7 +82,25 @@ Normal queries use `DATABASE_URL` through a `pg` pool capped by `DATABASE_POOL_M
 
 ### Request validation limits
 
-All bot and future API inputs use the same domain schemas. Unsupported chains fail explicitly and never fall back to Ethereum. Current safety bounds include quantities of 1–100, prices up to 1,000 ETH, gas limits from 21,000–30,000,000, fee inputs up to 100,000 Gwei, sniper gas boosts up to 500%, and batch requests up to 100 unique wallets. Task times must be valid, future timestamps no more than 2,147,000,000 milliseconds (about 24 days) ahead; the durable scheduler in Milestone 9 will replace this temporary Node timer bound.
+All bot and future API inputs use the same domain schemas. Unsupported chains fail explicitly and never fall back to Ethereum. Current safety bounds include quantities of 1–100, prices up to 1,000 ETH, gas limits from 21,000–30,000,000, fee inputs up to 100,000 Gwei, sniper gas boosts up to 500%, and batch requests up to 100 unique wallets. Task times must be valid future timestamps no more than five years ahead.
+
+### Durable scheduled tasks and time zones
+
+Scheduled mints are PostgreSQL rows, not process-local timers. Workers atomically claim due rows with `FOR UPDATE SKIP LOCKED`, write an attempt record, and use a lease so multiple app instances cannot claim the same task. Each task has a stable idempotency key that is also stored on its transaction intent; recovery checks that intent and current chain state before deciding whether to complete, retry, or continue reconciling a task.
+
+Transient RPC and network failures retry up to the task's bounded attempt limit with exponential backoff. Validation and other permanent failures stop immediately. `/canceltask`, `/pausetask`, `/resumetask`, and `/retrytask` update durable, owner-scoped state.
+
+All task timestamps are stored as PostgreSQL `TIMESTAMPTZ` values and displayed by Telegram as ISO-8601 UTC (`Z`). Current inputs must include an explicit offset or `Z`; a client accepting a local wall-clock time must convert it to an offset-bearing ISO timestamp before applying the shared task schema. Relative countdowns are informational only; the UTC due time is authoritative. Valid schedules may be up to five years ahead, a product safety bound independent of JavaScript's timer range.
+
+### Post-confirmation copy snipers
+
+Wallet-copy snipers are explicitly post-confirmation copiers, not mempool front-runners. The watcher records a matching source transaction, waits for the sniper's configured confirmation count, and verifies that the receipt still has the same block hash before submitting a copy. Duplicate block delivery and process restarts reuse the durable `(user, sniper, source transaction)` record, while reorg-dropped transactions are recorded as skipped rather than copied.
+
+Each sniper has independent maximum copied value, maximum gas price, rolling daily copied-value cap, cooldown, maximum attempts, source-confirmation depth, and optional contract allow/deny lists. Denylist entries always block copying. The shared Milestone 7 transaction engine remains responsible for wallet nonce serialization, simulation, signing, balance checks, and broader wallet/target policies.
+
+Existing sniper settings can be patched with `/updatesniper <id> <JSON>`. The merged configuration is fully validated before the database or running watcher is changed; unknown fields, malformed addresses, overlapping allow/deny lists, invalid limits, and non-boolean activation values are rejected.
+
+Future mempool mode should be a separate trigger adapter and explicitly labeled higher-risk. It would require WebSocket/pending-transaction provider support, replacement tracking, uncertain-source-state handling, tighter rate and spend controls, and separate event semantics; it must still feed the existing validation, idempotency, and transaction engine. It is intentionally not implemented as part of the post-confirmation watcher.
 
 ### Transaction safety policies
 
