@@ -8,7 +8,7 @@ function createBotCommandService(dependencies) {
   const { storage, schedulerRepository, providerService, governance, adminCommands, sniperService,
     socialWatchService, socialUsageService, targetPolicyService, triggerExecutionService, governanceRepository,
     triggerAuditRepository, transactionIntentRepository, gasService, supportedChains, chains, encryptPrivateKey, getState, executeMint,
-    sniperRepository,
+    sniperRepository, mintService, previewMint, executePreparedMint,
     ensureChainWatcher = () => {} } = dependencies;
 
   function state(userId) { return stateForUser(getState(), userId); }
@@ -107,6 +107,33 @@ function createBotCommandService(dependencies) {
     return validated.id;
   }
 
+  async function updatePnl(userId,id,input) {
+    const validatedId=requestSchemas.pnlDeletion({id}).id;
+    const owned=state(userId).pnl.find(item=>item.id===validatedId);
+    if(!owned) throw new ValidationError({field:'id',message:'was not found'});
+    const value=requestSchemas.pnlCreate(input);
+    const saved=await storage.updatePnl(userId,validatedId,{nm:value.name,cost:value.cost,sale:value.sale,
+      gas:value.gas,net:value.net});
+    if(!saved) throw new ValidationError({field:'id',message:'was not found'});
+    Object.assign(owned,saved);return saved;
+  }
+
+  async function prepareMint(userId,input) {
+    const owned=wallet(userId,input.walletLabel);
+    if(!input.presetName&&input.chain&&input.chain!==owned.chain) throw new ValidationError({field:'chain',message:'must match the selected wallet chain'});
+    const prepared=input.presetName
+      ? await mintService.preparePreset(userId,input.presetName,owned.address)
+      : await mintService.prepare({...input,walletAddress:owned.address,chain:input.chain||owned.chain});
+    if(prepared.chain!==owned.chain) throw new ValidationError({field:'preset',message:'chain must match the selected wallet chain'});
+    const simulation=await previewMint({userId,wallet:owned,prepared,gasGwei:input.gasGwei});
+    return {wallet:{label:owned.label,address:owned.address,chain:owned.chain},prepared,simulation};
+  }
+
+  async function submitPreparedMint(userId,value) {
+    const owned=wallet(userId,value.wallet.label);
+    return executePreparedMint({userId,wallet:owned,prepared:value.prepared,gasGwei:value.gasGwei});
+  }
+
   async function createSniper(userId, input) {
     const validated = sniperService.validateCreate(input);
     wallet(userId, validated.walletLabel);
@@ -150,7 +177,8 @@ function createBotCommandService(dependencies) {
     return calculateStatistics({activity:state(userId).activity,sniperEvents});}
 
   return {
-    createWallet, importWallet, removeWallet, walletBalance, mint, batchMint, createTask, controlTask, addPnl, deletePnl,
+    createWallet, importWallet, removeWallet, walletBalance, mint, batchMint, createTask, controlTask, addPnl, updatePnl, deletePnl,
+    prepareMint,submitPreparedMint,mintPresets:userId=>mintService.listPresets(userId),
     createSniper, updateSniper, removeSniper, gas,
     wallets: userId => state(userId).wallets,
     tasks: userId => schedulerRepository.listForUser(userId),

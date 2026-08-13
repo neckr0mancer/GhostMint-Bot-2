@@ -24,7 +24,8 @@ function mapTask(row) {
 function mapActivity(row) {
   return { id: Number(row.id), userId: row.user_id, status: row.status, title: row.title,
     walletLabel: row.wallet_label, txHash: row.tx_hash, explorer: row.explorer, time: time(row.occurred_at),
-    actualNetworkCostWei:row.actual_network_cost_wei===null?null:BigInt(row.actual_network_cost_wei) };
+    actualNetworkCostWei:row.actual_network_cost_wei===null?null:BigInt(row.actual_network_cost_wei),
+    triggerSource:row.trigger_source || null, verificationState:row.verification_state || null };
 }
 
 function mapPnl(row) {
@@ -126,16 +127,21 @@ function createPostgresStorage(pool) {
 
     async addActivity(entry) {
       const result = await pool.query(`INSERT INTO activity
-        (user_id,status,title,wallet_label,tx_hash,explorer,occurred_at,actual_network_cost_wei)
-        VALUES ($1,$2,$3,$4,$5,$6,TO_TIMESTAMP($7 / 1000.0),$8) RETURNING *`,
+        (user_id,status,title,wallet_label,tx_hash,explorer,occurred_at,actual_network_cost_wei,trigger_source,verification_state)
+        VALUES ($1,$2,$3,$4,$5,$6,TO_TIMESTAMP($7 / 1000.0),$8,$9,$10) RETURNING *`,
       [entry.userId, entry.status, entry.title, entry.walletLabel, entry.txHash, entry.explorer, entry.time,
-        entry.actualNetworkCostWei?.toString()??null]);
+        entry.actualNetworkCostWei?.toString()??null,entry.triggerSource??null,entry.verificationState??null]);
       return mapActivity(result.rows[0]);
     },
     async addPnl(record) {
       const result = await pool.query(`INSERT INTO pnl_records (user_id,name,cost,sale,gas,net,created_at)
         VALUES ($1,$2,$3,$4,$5,$6,TO_TIMESTAMP($7 / 1000.0)) RETURNING *`,
       [record.userId, record.nm, record.cost, record.sale, record.gas, record.net, record.t]);
+      return mapPnl(result.rows[0]);
+    },
+    async updatePnl(userId,id,record) {
+      const result=await pool.query(`UPDATE pnl_records SET name=$3,cost=$4,sale=$5,gas=$6,net=$7
+        WHERE user_id=$1 AND id=$2 RETURNING *`,[userId,id,record.nm,record.cost,record.sale,record.gas,record.net]);
       return mapPnl(result.rows[0]);
     },
     async deletePnl(userId, id) {

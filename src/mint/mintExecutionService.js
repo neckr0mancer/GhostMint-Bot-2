@@ -19,6 +19,11 @@ function createMintExecutionService({ mintService, transactionEngine }) {
   }
 
   return {
+    preview({userId,wallet,prepared,triggerSource='manual',gasPriceWei}) {
+      return transactionEngine.preview({userId,wallet,chain:prepared.chain,triggerSource,to:prepared.preview.contractAddress,
+        data:prepared.calldata,valueWei:prepared.valueWei,methodSignature:prepared.method.signature,
+        callPreview:prepared.preview,gasPriceWei,forceSimulation:true});
+    },
     executePrepared,
     async execute({ userId, wallet, input, triggerSource, gasPriceWei, onPreview, idempotencyKey, onIntentPersisted }) {
       const prepared = await mintService.prepare({ ...input, walletAddress: wallet.address });

@@ -9,7 +9,7 @@ const { CHAINS, CONFIG, getSafeConfigSummary } = require('./config');
 const { createBotCommandService } = require('./commands/botCommandService');
 const { createDatabasePool } = require('./db/pool');
 const { createDiscordBot } = require('./discord/discordBot');
-const {createDashboardApi}=require('./dashboard/api');
+const {createDashboardApi,mountDashboardRoutes}=require('./dashboard/api');
 const {createDashboardAuthService}=require('./dashboard/authService');
 const {createDashboardSessionRepository}=require('./dashboard/sessionRepository');
 const {createDashboardWebSocketHub}=require('./dashboard/webSocketHub');
@@ -71,8 +71,6 @@ const socialWatchRepository = createSocialWatchRepository(pool);
 const targetPolicyRepository = createTargetPolicyRepository(pool);
 const botSecurityRepository = createBotSecurityRepository(pool);
 const commandRateLimiter = createCommandRateLimiter();
-const dashboardApi=createDashboardApi({auth:dashboardAuth,identityRepository,
-  loginRateLimiter:createCommandRateLimiter({limit:5,windowMs:60_000})});
 const providerService = createProviderService({
   chains: CHAINS,
   timeoutMs: CONFIG.rpcTimeoutMs,
@@ -193,13 +191,13 @@ const schedulerWorker = createSchedulerWorker({
         wallet.minted = (wallet.minted || 0) + event.task.qty;
         await storage.updateWalletMinted(event.task.userId, wallet.label, wallet.minted);
         await logActivity(event.task.userId, 'success', `Scheduled mint: ${event.task.name}`, wallet.label,
-          event.intent || null, CHAINS[wallet.chain]);
+          event.intent || null, CHAINS[wallet.chain],{triggerSource:'scheduled'});
       }
       await notifyUser(event.task.userId, `✅ Scheduled mint *${event.task.name}* confirmed.`);
     }
     if (['failure','failed'].includes(event.outcome)) {
       if (wallet) await logActivity(event.task.userId, 'fail', `Scheduled mint failed: ${event.task.name}`,
-        wallet.label, event.intent?.txHash || null, CHAINS[wallet.chain]);
+        wallet.label, event.intent?.txHash || null, CHAINS[wallet.chain],{triggerSource:'scheduled'});
       await notifyUser(event.task.userId, `❌ Scheduled mint *${event.task.name}* failed.`);
     }
   },
@@ -208,11 +206,12 @@ const schedulerWorker = createSchedulerWorker({
 });
 
 // ── Activity ──────────────────────────────────────────────
-async function logActivity(userId, status, title, walletLabel, txHash, chain) {
+async function logActivity(userId, status, title, walletLabel, txHash, chain,context={}) {
   const intent = txHash && typeof txHash === 'object' ? txHash : null;
   const entry = await storage.addActivity({ userId, status, title, walletLabel,
     txHash: intent?.txHash || txHash, explorer: chain?.ex, time: Date.now(),
-    actualNetworkCostWei: intent?.actualNetworkCostWei ?? null });
+    actualNetworkCostWei: intent?.actualNetworkCostWei ?? null,
+    triggerSource:context.triggerSource??null,verificationState:context.verificationState??null });
   DB.activity.unshift(entry);
   if (DB.activity.length > 200) DB.activity.pop();
 }
@@ -308,7 +307,8 @@ const sniperService = createSniperService({
       await Promise.all([storage.saveSniper(sniper), wallet
         ? storage.updateWalletMinted(sniper.userId, wallet.label, wallet.minted) : Promise.resolve()]);
       if (wallet) await logActivity(sniper.userId, 'success', `Post-confirmation copy-mint (${sniper.label})`,
-        wallet.label, intent || null, CHAINS[sniper.chain]);
+        wallet.label, intent || null, CHAINS[sniper.chain],{triggerSource:'blockchain-triggered',
+          verificationState:(await targetPolicyService.get(sniper.userId,'sniper',sniper.id)).humanVerification});
       const policy=await targetPolicyService.get(sniper.userId,'sniper',sniper.id);
       await targetPolicyRepository.addAudit({userId:sniper.userId,targetType:'sniper',targetId:sniper.id,
         triggerSource:'blockchain-triggered',sourceEventId:event.txHash,verificationState:policy.humanVerification,
@@ -778,12 +778,23 @@ const botCommands = createBotCommandService({
   transactionIntentRepository,
   gasService,
   sniperRepository,
+  mintService,
   governanceRepository,
   supportedChains: CONFIG.supportedChains,
   chains: CHAINS,
   encryptPrivateKey: encryptPK,
   getState: () => DB,
   ensureChainWatcher,
+  previewMint:async({userId,wallet,prepared,gasGwei})=>mintExecution.preview({userId,wallet,prepared,
+    gasPriceWei:gasGwei===undefined||gasGwei===null?undefined:ethers.parseUnits(String(gasGwei),'gwei')}),
+  executePreparedMint:async({userId,wallet,prepared,gasGwei})=>{
+    const intent=await mintExecution.executePrepared({userId,wallet,prepared,triggerSource:'manual',
+      gasPriceWei:gasGwei===undefined||gasGwei===null?undefined:ethers.parseUnits(String(gasGwei),'gwei')});
+    wallet.minted=(wallet.minted||0)+previewQuantity(prepared.preview);
+    await storage.updateWalletMinted(userId,wallet.label,wallet.minted);
+    await logActivity(userId,'success',`Minted ${previewQuantity(prepared.preview)} NFT(s)`,wallet.label,intent,CHAINS[wallet.chain],{triggerSource:'manual'});
+    return intent;
+  },
   executeMint: async ({ userId, wallet, request }) => {
     const intent = await executeMint({ wallet, contractAddr: request.contractAddress,
       qty: request.quantity, priceETH: request.priceETH, gasGwei: request.gasGwei,
@@ -791,10 +802,12 @@ const botCommands = createBotCommandService({
     wallet.minted = (wallet.minted || 0) + request.quantity;
     await storage.updateWalletMinted(userId, wallet.label, wallet.minted);
     await logActivity(userId, 'success', `Minted ${request.quantity} NFT${request.quantity > 1 ? 's' : ''}`,
-      wallet.label, intent, CHAINS[request.chain]);
+      wallet.label, intent, CHAINS[request.chain],{triggerSource:'manual'});
     return intent;
   },
 });
+const dashboardApi=createDashboardApi({auth:dashboardAuth,identityRepository,commands:botCommands,
+  supportedChains:CONFIG.supportedChains,loginRateLimiter:createCommandRateLimiter({limit:5,windowMs:60_000})});
 
 if (CONFIG.discordBotToken) {
   discordBot = createDiscordBot({ token: CONFIG.discordBotToken,
@@ -810,11 +823,9 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 app.use(dashboardApi.securityHeaders);
-app.post('/api/auth/login',dashboardApi.login);
-app.post('/api/auth/logout',dashboardApi.requireSession,dashboardApi.requireCsrf,dashboardApi.logout);
-app.post('/api/auth/logout-all',dashboardApi.requireSession,dashboardApi.requireCsrf,dashboardApi.logoutAll);
-app.get('/api/profile',dashboardApi.requireSession,dashboardApi.profile);
+mountDashboardRoutes(app,dashboardApi);
 app.use('/api',(req,res)=>res.status(404).json({error:'API route not found'}));
+app.use(dashboardApi.error);
 app.use('/dashboard/assets',express.static(path.join(PROJECT_ROOT,'public','dashboard','assets'),{immutable:true,maxAge:'1y'}));
 app.get(['/dashboard','/dashboard/*'],(req,res)=>{res.set('Cache-Control','no-store');res.sendFile(path.join(PROJECT_ROOT,'public','dashboard','index.html'));});
 app.use(express.static(path.join(PROJECT_ROOT,'public'),{setHeaders:(res,file)=>res.set('Cache-Control',file.endsWith('.html')?'no-store':'public, max-age=3600')}));

@@ -43,10 +43,10 @@ integrationTest('durable scheduler stores distant jobs, claims once, audits atte
     assert.equal(await schedulerA.claimDue({ workerId:'early-worker', now:Date.now(), leaseMs:60_000, userId }), null,
       'a distant task must not fire immediately');
 
-    await pool.query('UPDATE mint_tasks SET mint_time=NOW()-INTERVAL \'1 second\',next_attempt_at=NOW()-INTERVAL \'1 second\' WHERE user_id=$1 AND id=$2', [userId, distant.id]);
+    const dueTestTime=distantTime+1_000;
     const claims = await Promise.all([
-      schedulerA.claimDue({ workerId:'worker-a', now:Date.now(), leaseMs:60_000, userId }),
-      schedulerB.claimDue({ workerId:'worker-b', now:Date.now(), leaseMs:60_000, userId }),
+      schedulerA.claimDue({ workerId:'worker-a', now:dueTestTime, leaseMs:60_000, userId }),
+      schedulerB.claimDue({ workerId:'worker-b', now:dueTestTime, leaseMs:60_000, userId }),
     ]);
     assert.equal(claims.filter(Boolean).length, 1, 'SKIP LOCKED claim must have exactly one winner');
     const attempts = await pool.query('SELECT * FROM mint_task_attempts WHERE user_id=$1 AND task_id=$2', [userId, distant.id]);
@@ -59,9 +59,9 @@ integrationTest('durable scheduler stores distant jobs, claims once, audits atte
     assert.equal((await schedulerA.resume(userId, controllable.id, Date.now())).status, 'scheduled');
     assert.equal((await schedulerA.cancel(userId, controllable.id)).status, 'cancelled');
 
-    const retryable = makeTask('manual retry', Date.now() - 1_000);
+    const retryable = makeTask('manual retry', dueTestTime + 1_000);
     await storage.saveTask(retryable);
-    const failedClaim = await schedulerA.claimDue({ workerId:'worker-c', now:Date.now(), leaseMs:60_000, userId });
+    const failedClaim = await schedulerA.claimDue({ workerId:'worker-c', now:dueTestTime+2_000, leaseMs:60_000, userId });
     assert.equal(failedClaim.id, retryable.id);
     assert.equal(await schedulerA.fail(failedClaim, { reason:'permanent validation failure', transient:false }), 'failed');
     assert.equal((await schedulerA.retry(userId, retryable.id, Date.now())).status, 'retry');

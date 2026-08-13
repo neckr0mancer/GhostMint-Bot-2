@@ -75,6 +75,35 @@ function createTransactionEngine({
     return transition(intent.intentId, observed.state, observed);
   }
 
+  async function preview(request) {
+    const policy=await policyRepository.resolvePolicy({userId:request.userId,walletId:request.wallet.id,
+      targetId:request.targetId,chain:request.chain,triggerSource:request.triggerSource||'manual'});
+    const valueWei=asBigInt(request.valueWei??0n,'valueWei');
+    if(valueWei<0n) throw new TransactionSafetyError('INVALID_TRANSACTION','Transaction value cannot be negative');
+    if(!policy.ceilingExempt&&valueWei>policy.maxTransactionValueWei) throw new TransactionSafetyError('VALUE_CEILING_EXCEEDED','Transaction value exceeds the configured maximum');
+    const base={from:request.wallet.address,to:request.to,data:request.data||'0x',value:valueWei};
+    const feeData=await providerCall(request.chain,'getFeeData',provider=>provider.getFeeData());
+    const explicit=request.gasPriceWei!==undefined&&request.gasPriceWei!==null;
+    const gasPriceWei=explicit?asBigInt(request.gasPriceWei,'gasPriceWei'):(feeData.maxFeePerGas?null:feeData.gasPrice);
+    const maxFeePerGasWei=explicit?null:feeData.maxFeePerGas;
+    const maxPriorityFeePerGasWei=explicit?null:feeData.maxPriorityFeePerGas;
+    const selectedFee=maxFeePerGasWei??gasPriceWei;
+    if(selectedFee===null||selectedFee===undefined) throw new TransactionSafetyError('FEE_UNAVAILABLE','RPC provider did not return usable fee data');
+    if(!policy.ceilingExempt&&selectedFee>parseUnits(String(policy.gasCeilingGwei),'gwei')) throw new TransactionSafetyError('GAS_CEILING_EXCEEDED','Transaction fee exceeds the configured gas ceiling');
+    const feeFields=maxFeePerGasWei!==null&&maxFeePerGasWei!==undefined
+      ?{maxFeePerGas:maxFeePerGasWei,maxPriorityFeePerGas:maxPriorityFeePerGasWei??0n,type:2}:{gasPrice:gasPriceWei};
+    const gasLimit=await providerCall(request.chain,'estimateGas',provider=>provider.estimateGas({...base,...feeFields}));
+    const estimatedCostWei=valueWei+BigInt(gasLimit)*BigInt(selectedFee);
+    const balance=await providerCall(request.chain,'getBalance',provider=>provider.getBalance(request.wallet.address));
+    if(BigInt(balance)<estimatedCostWei) throw new TransactionSafetyError('INSUFFICIENT_BALANCE','Wallet balance is below the estimated transaction cost');
+    const spent=await intentRepository.rollingSpendWei(request.userId,request.wallet.id,now()-86_400_000);
+    if(!policy.ceilingExempt&&spent+estimatedCostWei>policy.dailySpendingBudgetWei) throw new TransactionSafetyError('DAILY_BUDGET_EXCEEDED','Transaction would exceed the wallet daily spending budget');
+    const simulationPerformed=policy.simulationEnabled||request.forceSimulation===true;
+    if(simulationPerformed) await providerCall(request.chain,'simulate',provider=>provider.call({...base,...feeFields,gasLimit}));
+    return {simulationEnabled:policy.simulationEnabled,simulationPerformed,simulationPassed:true,gasLimit:BigInt(gasLimit),
+      estimatedCostWei,feePerGasWei:BigInt(selectedFee)};
+  }
+
   async function waitForFinality(intent) {
     let current = intent;
     while (!FINAL_STATES.has(current.state) && now() < current.timeoutAt) {
@@ -246,7 +275,7 @@ function createTransactionEngine({
     return results;
   }
 
-  return { reconcileIntent, reconcileNonFinal, submit, waitForFinality };
+  return { preview,reconcileIntent, reconcileNonFinal, submit, waitForFinality };
 }
 
 module.exports = { FINAL_STATES, TransactionSafetyError, createTransactionEngine };
