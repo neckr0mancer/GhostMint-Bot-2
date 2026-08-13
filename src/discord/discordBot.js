@@ -77,6 +77,15 @@ function commandDefinitions() {
     .addStringOption(o => o.setName('action').setDescription('Governance action and arguments').setRequired(true)));
   commands.push(new SlashCommandBuilder().setName('link').setDescription('Create or consume a cross-platform account link code')
     .addStringOption(o => o.setName('code').setDescription('Single-use code from your existing account')));
+  commands.push(new SlashCommandBuilder().setName('watch').setDescription('Manage social contract-address watch rules')
+    .addSubcommand(c => c.setName('add').setDescription('Add a social watch rule').addStringOption(o => o.setName('input').setDescription('Watch rule JSON').setRequired(true)))
+    .addSubcommand(c => c.setName('edit').setDescription('Edit a rule or switch its adapter method').addStringOption(o => o.setName('id').setDescription('Rule UUID').setRequired(true)).addStringOption(o => o.setName('patch').setDescription('Watch rule patch JSON').setRequired(true)))
+    .addSubcommand(c => c.setName('disable').setDescription('Disable a social watch rule').addStringOption(o => o.setName('id').setDescription('Rule UUID').setRequired(true)))
+    .addSubcommand(c => c.setName('remove').setDescription('Remove a social watch rule').addStringOption(o => o.setName('id').setDescription('Rule UUID').setRequired(true)).addBooleanOption(o => o.setName('confirm').setDescription('Confirm permanent removal').setRequired(true)))
+    .addSubcommand(c => c.setName('list').setDescription('List your social watch rules')));
+  commands.push(new SlashCommandBuilder().setName('social-usage').setDescription('Owner-only social adapter usage and cost estimates')
+    .addStringOption(o => o.setName('period').setDescription('Reporting period').addChoices(
+      { name:'Today', value:'today' }, { name:'This month', value:'month' })));
   return commands.map(command => command.toJSON());
 }
 
@@ -149,6 +158,22 @@ function createDiscordInteractionHandler({ identity, commands, log = () => {} })
         }
         case 'mode': message = `Transaction mode set to **${await commands.selectMode(userId, interaction.options.getString('preset'))}**.`; break;
         case 'admin': message = await commands.admin(userId, interaction.options.getString('action')); break;
+        case 'watch': {
+          const action = interaction.options.getSubcommand();
+          if (action === 'add') { const rule = await commands.createWatchRule(userId, json(interaction.options.getString('input'))); message = `Social watch rule **${rule.name}** created with ${rule.method}.`; }
+          else if (action === 'edit') { const rule = await commands.updateWatchRule(userId, interaction.options.getString('id'), json(interaction.options.getString('patch'))); message = `Social watch rule **${rule.name}** updated; ${rule.method} adapter selected.`; }
+          else if (action === 'disable') { const rule = await commands.disableWatchRule(userId, interaction.options.getString('id')); message = `Social watch rule **${rule.name}** disabled.`; }
+          else if (action === 'remove') { confirmation(interaction); const id = await commands.removeWatchRule(userId, interaction.options.getString('id')); message = `Social watch rule ${id} removed.`; }
+          else message = formatRows(await commands.watchRules(userId), 'No social watch rules.', rule => `**${rule.name}** [${rule.enabled ? 'enabled' : 'disabled'}] — ${rule.type} via ${rule.method} — ${rule.id}`);
+          break;
+        }
+        case 'social-usage': {
+          const summary = await commands.socialUsage(userId, interaction.options.getString('period') || 'month');
+          const rows = summary.rows.length ? summary.rows.map(row => `${row.ruleName} | ${row.method}: ${row.requests}`).join('\n') : 'No requests recorded.';
+          const tiers = summary.breakEvenRequests.map(tier => `$${tier.price}/mo: ~${tier.atReadRate.toLocaleString('en-US')} reads`).join('\n');
+          message = `Social adapter usage (${summary.period})\nTotal: ${summary.requests}\n${rows}\nEstimated pay-per-use: ~$${summary.payPerUseEstimateUsd.toFixed(2)}\nProjected monthly requests: ~${Math.round(summary.projectedMonthlyRequests).toLocaleString('en-US')}\n${tiers}`;
+          break;
+        }
         default: throw new Error('Unknown Discord command');
       }
       await interaction.editReply(message);

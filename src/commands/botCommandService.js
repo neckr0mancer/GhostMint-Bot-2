@@ -4,7 +4,8 @@ const { ValidationError, requestSchemas } = require('../validation/domain');
 
 function createBotCommandService(dependencies) {
   const { storage, schedulerRepository, providerService, governance, adminCommands, sniperService,
-    supportedChains, chains, encryptPrivateKey, getState, executeMint, ensureChainWatcher = () => {} } = dependencies;
+    socialWatchService, socialUsageService, supportedChains, chains, encryptPrivateKey, getState, executeMint,
+    ensureChainWatcher = () => {} } = dependencies;
 
   function state(userId) { return stateForUser(getState(), userId); }
   function wallet(userId, label) {
@@ -139,6 +140,12 @@ function createBotCommandService(dependencies) {
     activity: userId => state(userId).activity.slice(0, 10),
     pnl: userId => state(userId).pnl,
     snipers: userId => state(userId).snipers,
+    createWatchRule: (userId, input) => socialWatchService.create(userId, input),
+    updateWatchRule: (userId, id, input) => socialWatchService.update(userId, id, input),
+    disableWatchRule: (userId, id) => socialWatchService.disable(userId, id),
+    removeWatchRule: (userId, id) => socialWatchService.remove(userId, id),
+    watchRules: userId => socialWatchService.list(userId),
+    socialUsage: (userId, period) => socialUsageService.summary(userId, period),
     selectMode: (userId, preset) => governance.selectPreset(userId, preset),
     admin: (userId, input) => adminCommands.execute(userId, input),
   };

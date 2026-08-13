@@ -85,6 +85,22 @@ Private-key import remains available through Telegram `/importwallet <label> <ch
 
 Transaction and scheduler notifications are delivered independently to every linked platform account. A delivery failure on one platform is logged but cannot change transaction state or suppress delivery to another platform.
 
+### Social watcher adapters
+
+Social watch rules are user-owned PostgreSQL records with a `type`, a `method`, and validated type-specific `config`. Supported types are `twitter_account`, `twitter_keyword`, `discord_channel`, and `discord_keyword`; supported methods are `official_api`, `managed_service`, and `scraper`. Telegram exposes `/watch add|edit|disable|remove|list`; Discord exposes the equivalent `/watch` subcommands through the same shared command service.
+
+Every method adapter implements one operation: `poll(rule) -> { items, cursor }`. Each item has `id`, `text`, `platform`, optional `url`, and `publishedAt`. Adapters own transport authentication, response normalization, rate-limit interpretation, and errors. The core watcher only selects `adapters.get(rule.method)`, extracts addresses, persists deduplicated trigger events, and advances the cursor. A new acquisition method therefore requires one adapter registration; a new source type requires validation plus adapter-side query mapping, without changing polling or trigger logic.
+
+Official API and managed-service credentials are environment-only and must never be placed in rule config. `SOCIAL_OFFICIAL_API_URL`/`SOCIAL_OFFICIAL_API_TOKEN` and `SOCIAL_MANAGED_SERVICE_URL`/`SOCIAL_MANAGED_SERVICE_TOKEN` configure those transports. Scraper rules provide a credential-free HTTP(S) `sourceUrl`. All adapters expect either an array or `{ "items": [...], "cursor": ... }`, where each item includes at least `id` and `text`. Repeated failures use bounded backoff and notify the owning user; one failed rule cannot stop others.
+
+The official and managed-service endpoint variables intentionally point to operator-selected normalized gateways. Their requests receive the rule `type`, credential-free `config`, and `cursor`, so changing providers or moving between direct official APIs and an operator gateway does not alter stored rules or watcher code. The gateway must return the normalized item format above. This avoids coupling the core to X's changing pricing/product shape or to one managed vendor.
+
+Extracted Ethereum addresses are checksum-normalized and recorded as `social-triggered` events. Same-user, same-platform, same-address matches within a five-minute bucket deduplicate across rules. This milestone records and notifies only; Milestone 10c will decide manual/automatic execution and verification policy.
+
+Every adapter request—including scraper requests used during free testing—is persisted in `social_adapter_usage` with its timestamp, rule, method, request type, success state, and any provider-reported `costUsd`/`credits` or corresponding response headers. Owners can run Telegram `/socialusage today|month` or Discord `/social-usage` to see totals by rule and method, provider-reported consumption, projected volume, and comparative estimates.
+
+Pricing assumptions are centralized in `CONFIG.socialPricing`, currently `$0.005` per X read, `$0.015` per X post, and representative managed-service tiers of `$199` and `$499` per month. They are estimates for planning, not billing records; update this single configuration object when provider pricing changes. The report calculates flat-rate break-even request counts under both read and post rates.
+
 ### Chain and database configuration
 
 Supported chain names are `ethereum`, `base`, `arbitrum`, and `polygon`. Every configured RPC override must be an HTTP or HTTPS URL without embedded credentials. Public RPC defaults remain available when an override is blank.

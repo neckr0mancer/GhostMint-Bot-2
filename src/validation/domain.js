@@ -1,9 +1,12 @@
 const { isAddress, Interface, Wallet } = require('ethers');
 const { randomUUID } = require('node:crypto');
+const { URL } = require('node:url');
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const FUNCTION_NAME_PATTERN = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 const WALLET_LABEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9 ._-]*$/;
+const WATCH_RULE_TYPES = new Set(['twitter_account', 'twitter_keyword', 'discord_channel', 'discord_keyword']);
+const WATCH_METHODS = new Set(['official_api', 'managed_service', 'scraper']);
 const MAX_SCHEDULE_AHEAD_MS = 5 * 365 * 24 * 60 * 60 * 1000;
 const LIMITS = Object.freeze({
   quantity: 100,
@@ -257,6 +260,48 @@ function validatePnlRecord(input) {
   return { name: string(input.name, 'name', { max: 100 }), cost, sale, gas, net: sale - cost - gas };
 }
 
+function watchRuleConfig(type, method, value) {
+  if (!value || Array.isArray(value) || typeof value !== 'object') fail('config', 'must be an object');
+  const forbidden = Object.keys(value).find(key => /token|secret|password|authorization|api[_-]?key/i.test(key));
+  if (forbidden) fail(`config.${forbidden}`, 'must not contain credentials; configure adapter credentials through environment variables');
+  const keywords = value.keywords === undefined ? [] : value.keywords;
+  if (!Array.isArray(keywords) || keywords.length > 25) fail('config.keywords', 'must be an array with at most 25 entries');
+  const normalizedKeywords = keywords.map((item, index) => string(item, `config.keywords[${index}]`, { max: 100 }).toLowerCase());
+  const config = { keywords: [...new Set(normalizedKeywords)] };
+  if (type === 'twitter_account') config.handle = string(value.handle, 'config.handle', { max: 50 }).replace(/^@/, '');
+  if (type === 'discord_channel') config.channelId = string(value.channelId, 'config.channelId', { max: 20 });
+  if (type === 'twitter_keyword' || type === 'discord_keyword') {
+    if (!config.keywords.length) fail('config.keywords', 'must contain at least one keyword');
+  }
+  if (type === 'discord_keyword' && value.channelIds !== undefined) {
+    if (!Array.isArray(value.channelIds) || value.channelIds.length > 25) fail('config.channelIds', 'must be an array with at most 25 Discord channel IDs');
+    config.channelIds = value.channelIds.map((item, index) => string(item, `config.channelIds[${index}]`, { max: 20 }));
+  }
+  if (method === 'scraper') {
+    const raw = string(value.sourceUrl, 'config.sourceUrl', { max: 2048 });
+    let parsed;
+    try { parsed = new URL(raw); } catch { fail('config.sourceUrl', 'must be a valid HTTP or HTTPS URL'); }
+    if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) {
+      fail('config.sourceUrl', 'must be an HTTP or HTTPS URL without embedded credentials');
+    }
+    config.sourceUrl = parsed.toString();
+  }
+  return config;
+}
+
+function validateWatchRule(input, { partial = false } = {}) {
+  if (!input || Array.isArray(input) || typeof input !== 'object') fail('watchRule', 'must be an object');
+  const type = input.type === undefined && partial ? null : string(input.type, 'type', { max: 32 }).toLowerCase();
+  const method = input.method === undefined && partial ? null : string(input.method, 'method', { max: 32 }).toLowerCase();
+  if (type !== null && !WATCH_RULE_TYPES.has(type)) fail('type', `must be one of: ${[...WATCH_RULE_TYPES].join(', ')}`);
+  if (method !== null && !WATCH_METHODS.has(method)) fail('method', `must be one of: ${[...WATCH_METHODS].join(', ')}`);
+  if (partial) return { name: input.name === undefined ? null : string(input.name, 'name', { max: 100 }),
+    type, method, config: input.config === undefined ? null : input.config,
+    enabled: input.enabled === undefined ? null : optionalBoolean(input.enabled, 'enabled') };
+  return { name: string(input.name, 'name', { max: 100 }), type, method,
+    config: watchRuleConfig(type, method, input.config), enabled: input.enabled === undefined ? true : optionalBoolean(input.enabled, 'enabled') };
+}
+
 const requestSchemas = Object.freeze({
   noArguments: input => {
     if (input && Object.keys(input).length) fail('command', 'does not accept arguments');
@@ -273,6 +318,9 @@ const requestSchemas = Object.freeze({
   sniperCreate: validateSniper,
   pnlCreate: validatePnlRecord,
   transactionPolicy: validateTransactionPolicy,
+  watchRuleCreate: input => validateWatchRule(input),
+  watchRulePatch: input => validateWatchRule(input, { partial: true }),
+  watchRuleDeletion: input => ({ id: uuid(input.id, 'id') }),
 });
 
 function validationPayload(error) {

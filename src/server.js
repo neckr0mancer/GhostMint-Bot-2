@@ -20,6 +20,11 @@ const { createPostgresMintPresetRepository } = require('./mint/postgresMintPrese
 const { createProofResolver, ProofResolutionError } = require('./mint/proofResolver');
 const { createSchedulerRepository } = require('./scheduler/schedulerRepository');
 const { createSchedulerWorker } = require('./scheduler/schedulerWorker');
+const { createSocialAdapters } = require('./social/adapters');
+const { createSocialWatchRepository } = require('./social/socialWatchRepository');
+const { createSocialWatchService } = require('./social/socialWatchService');
+const { createSocialWatchWorker } = require('./social/socialWatchWorker');
+const { createSocialUsageService, formatUsageSummary } = require('./social/usageService');
 const { createSniperRepository } = require('./sniper/sniperRepository');
 const { createSniperService } = require('./sniper/sniperService');
 const { createAdminCommandService } = require('./governance/adminCommandService');
@@ -32,6 +37,7 @@ const { createTransactionIntentRepository } = require('./transactions/intentRepo
 const { createTransactionPolicyRepository } = require('./transactions/policyRepository');
 const { createProviderService } = require('./transactions/providerService');
 const { createTransactionEngine } = require('./transactions/transactionEngine');
+const { createTriggerPipeline } = require('./triggers/triggerPipeline');
 const { ValidationError, requestSchemas, validationReply } = require('./validation/domain');
 
 // ── Config ────────────────────────────────────────────────
@@ -47,6 +53,7 @@ const identity = createIdentityService(identityRepository);
 const transactionIntentRepository = createTransactionIntentRepository(pool);
 const schedulerRepository = createSchedulerRepository(pool);
 const sniperRepository = createSniperRepository(pool);
+const socialWatchRepository = createSocialWatchRepository(pool);
 const mintPresetRepository = createPostgresMintPresetRepository(pool);
 const mintService = createMintService({
   presetRepository: mintPresetRepository,
@@ -62,6 +69,8 @@ const providerService = createProviderService({
   timeoutMs: CONFIG.rpcTimeoutMs,
   retries: CONFIG.rpcRetries,
 });
+const socialUsageService = createSocialUsageService({ repository:socialWatchRepository, governance,
+  pricing:CONFIG.socialPricing });
 let DB = { wallets:[], tasks:[], activity:[], pnl:[], snipers:[] };
 
 // ── Crypto ────────────────────────────────────────────────
@@ -76,6 +85,8 @@ const decryptPK = wallet => keyEncryption.decrypt(wallet.keyEnvelope);
 const redact = createRedactor([
   CONFIG.botToken,
   CONFIG.discordBotToken,
+  CONFIG.socialOfficialApiToken,
+  CONFIG.socialManagedServiceToken,
   ...Object.values(CONFIG.encryptionKeys),
 ]);
 const log = msg => console.log(`[${new Date().toISOString()}] ${redact(msg)}`);
@@ -254,7 +265,9 @@ async function onBlock(chain, blockNumber) {
     for (const sniper of snipers) {
       try {
         if (tx.from.toLowerCase() !== sniper.targetAddress.toLowerCase()) continue;
-        await sniperService.detect(sniper, { hash:tx.hash, to:tx.to, blockNumber, blockHash:block.hash });
+        const detected = await sniperService.detect(sniper, { hash:tx.hash, to:tx.to, blockNumber, blockHash:block.hash });
+        if (detected) await triggerPipeline.publish({ id:`${sniper.id}:${tx.hash}`, userId:sniper.userId,
+          address:tx.to, triggerSource:'blockchain-triggered', sourceTransactionHash:tx.hash });
       } catch (error) { log(`Sniper ${sniper.id} detection failed: ${safeError(error)}`); }
     }
   }
@@ -284,6 +297,28 @@ const notificationService = createNotificationService({
 async function notifyUser(userId, msg) {
   await notificationService.sendToUser(userId, msg);
 }
+
+async function handleTriggerEvent(event) {
+  log(`Trigger pipeline received ${event.triggerSource} event ${event.id} for ${event.address}`);
+  if (event.triggerSource === 'social-triggered') {
+    await notifyUser(event.userId, `Social source detected contract \`${event.address}\`. Trigger recorded for manual review; Milestone 10c will govern execution and verification behavior.`);
+  }
+}
+
+const triggerPipeline = createTriggerPipeline({ handlers:[handleTriggerEvent], log });
+
+const socialWatchService = createSocialWatchService({
+  repository: socialWatchRepository,
+  adapters: createSocialAdapters({ officialApi:{ endpoint:CONFIG.socialOfficialApiUrl,
+    token:CONFIG.socialOfficialApiToken }, managedService:{ endpoint:CONFIG.socialManagedServiceUrl,
+    token:CONFIG.socialManagedServiceToken }, recordUsage:entry => socialWatchRepository.recordUsage(entry) }),
+  emitTrigger: event => triggerPipeline.publish(event),
+  notifyOwner: notifyUser,
+  log,
+  pollIntervalMs: CONFIG.socialPollIntervalMs,
+});
+const socialWatchWorker = createSocialWatchWorker({ service:socialWatchService,
+  intervalMs:CONFIG.socialPollIntervalMs, log });
 
 function stateFor(userId) {
   return stateForUser(DB, userId);
@@ -444,6 +479,35 @@ if (BOT_TOKEN) {
     tg(msg.chat.id, `✅ Wallet *${wallet.label}* imported at \`${wallet.address}\`.\n\n⚠️ *Not recommended:* the private key passed through Telegram's message transit and may remain in client history or notification previews. Prefer /createwallet; a future HTTPS dashboard will provide a safer import path.`);
   }));
 
+  bot.onText(/^\/watch(?:@\w+)?\s+add\s+(.+)$/i, withTelegramUser(async (msg, match, userId) => {
+    const rule = await botCommands.createWatchRule(userId, commandJson(match[1]));
+    tg(msg.chat.id, `✅ Social watch rule *${rule.name}* created using ${rule.method}.`);
+  }));
+
+  bot.onText(/^\/watch(?:@\w+)?\s+edit\s+([0-9a-f-]+)\s+(.+)$/i, withTelegramUser(async (msg, match, userId) => {
+    const rule = await botCommands.updateWatchRule(userId, match[1], commandJson(match[2]));
+    tg(msg.chat.id, `✅ Social watch rule *${rule.name}* updated; ${rule.method} adapter selected.`);
+  }));
+
+  bot.onText(/^\/watch(?:@\w+)?\s+disable\s+([0-9a-f-]+)$/i, withTelegramUser(async (msg, match, userId) => {
+    const rule = await botCommands.disableWatchRule(userId, match[1]);
+    tg(msg.chat.id, `⏸ Social watch rule *${rule.name}* disabled.`);
+  }));
+
+  bot.onText(/^\/watch(?:@\w+)?\s+remove\s+([0-9a-f-]+)$/i, withTelegramUser(async (msg, match, userId) => {
+    await botCommands.removeWatchRule(userId, match[1]);
+    tg(msg.chat.id, '✅ Social watch rule removed.');
+  }));
+
+  bot.onText(/^\/watch(?:@\w+)?\s+list$/i, withTelegramUser(async (msg, match, userId) => {
+    const rules = await botCommands.watchRules(userId);
+    tg(msg.chat.id, rules.length ? rules.map(rule => `${rule.enabled?'🟢':'⚪'} *${rule.name}* — ${rule.type} via ${rule.method}\nID: \`${rule.id}\``).join('\n\n') : 'No social watch rules.');
+  }));
+
+  bot.onText(/^\/socialusage(?:@\w+)?(?:\s+(today|month))?$/i, withTelegramUser(async (msg, match, userId) => {
+    tg(msg.chat.id, formatUsageSummary(await botCommands.socialUsage(userId, match[1] || 'month')));
+  }));
+
   bot.onText(/^\/tasks(?:@\w+)?$/, withTelegramUser(async (msg, match, userId) => {
     const pending = await botCommands.tasks(userId);
     if (!pending.length) return tg(msg.chat.id, 'No scheduled tasks.');
@@ -540,6 +604,8 @@ const botCommands = createBotCommandService({
   governance,
   adminCommands,
   sniperService,
+  socialWatchService,
+  socialUsageService,
   supportedChains: CONFIG.supportedChains,
   chains: CHAINS,
   encryptPrivateKey: encryptPK,
@@ -600,6 +666,8 @@ async function start() {
     log(`Discord bot started as ${discordUser?.tag || discordUser?.id || 'configured application'}`);
   }
   schedulerWorker.start();
+  socialWatchWorker.start();
+  log('Started social watch-rule worker');
   log(`Started durable scheduler with ${await schedulerRepository.countActive()} active tasks`);
   DB.snipers.filter(s => s.active).forEach(s => ensureChainWatcher(s.chain));
   log(`Restored ${DB.snipers.filter(s=>s.active).length} active snipers`);

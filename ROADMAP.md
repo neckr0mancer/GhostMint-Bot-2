@@ -78,7 +78,7 @@ This is the ordered implementation plan for GhostMint. Milestones are intentiona
 
 - Build a pluggable watch-rule architecture in which every source is a typed record with a `type` and adapter-specific configuration; adding later watch types must not require redesigning the watcher core.
 - Initially support `twitter_account`, `twitter_keyword`, `discord_channel`, and `discord_keyword` rules.
-- Give every source a user-selected `method` of `official_api` or `scraper`; core detection and mint-trigger logic remains independent of the active acquisition method.
+- Give every source a user-selected `method` of `official_api`, `managed_service`, or `scraper`; core detection and mint-trigger logic remains independent of the active acquisition method.
 - Feed detected contract addresses into the mint pipeline as social trigger sources parallel to the Milestone 10 post-confirmation blockchain watcher.
 
 ### Milestone 10b-2 — Additional social adapters (optional, unscheduled)

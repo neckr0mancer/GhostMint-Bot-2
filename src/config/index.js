@@ -239,10 +239,20 @@ function parseDiscord() {
   return { botToken, applicationId, devGuildId };
 }
 
+function parseSocialAdapters() {
+  return {
+    officialApiEndpoint: optionalString('SOCIAL_OFFICIAL_API_URL'),
+    officialApiToken: optionalString('SOCIAL_OFFICIAL_API_TOKEN'),
+    managedServiceEndpoint: optionalString('SOCIAL_MANAGED_SERVICE_URL'),
+    managedServiceToken: optionalString('SOCIAL_MANAGED_SERVICE_TOKEN'),
+  };
+}
+
 const environment = parseEnvironment();
 const supportedChains = parseSupportedChains();
 const telegram = parseTelegram();
 const discord = parseDiscord();
+const socialAdapters = parseSocialAdapters();
 const database = parseDatabaseConfig(environment);
 const encryption = parseEncryptionKeys(environment);
 const rpcOverrides = {};
@@ -272,6 +282,13 @@ const CONFIG = Object.freeze({
   discordBotToken: discord.botToken,
   discordApplicationId: discord.applicationId,
   discordDevGuildId: discord.devGuildId,
+  socialOfficialApiUrl: socialAdapters.officialApiEndpoint,
+  socialOfficialApiToken: socialAdapters.officialApiToken,
+  socialManagedServiceUrl: socialAdapters.managedServiceEndpoint,
+  socialManagedServiceToken: socialAdapters.managedServiceToken,
+  socialPollIntervalMs: parseInteger('SOCIAL_POLL_INTERVAL_MS', 30_000, 5_000, 3_600_000),
+  socialPricing: Object.freeze({ officialReadUsd:0.005, officialPostUsd:0.015,
+    managedMonthlyTiersUsd:Object.freeze([199, 499]) }),
   encryptionKeyVersion: encryption.activeVersion,
   encryptionKeys: encryption.keys,
   databaseUrl: database.pooled,
@@ -293,6 +310,9 @@ function getSafeConfigSummary() {
     supportedChains: [...CONFIG.supportedChains],
     telegramEnabled: CONFIG.botToken !== null,
     discordEnabled: CONFIG.discordBotToken !== null,
+    socialOfficialApiConfigured: CONFIG.socialOfficialApiUrl !== null && CONFIG.socialOfficialApiToken !== null,
+    socialManagedServiceConfigured: CONFIG.socialManagedServiceUrl !== null && CONFIG.socialManagedServiceToken !== null,
+    socialScraperAvailable: true,
     databaseConfigured: CONFIG.databaseUrl !== null,
     migrationConnectionConfigured: CONFIG.databaseUrlUnpooled !== null,
     databasePoolMax: CONFIG.databasePoolMax,
