@@ -246,7 +246,7 @@ Store backups encrypted outside the application host. Test restores regularly an
 
 ### Live testnet acceptance run
 
-`npm run acceptance:run` drives one real mint through the unmodified transaction engine against a real testnet (Sepolia), and records the outcome in `live_acceptance_runs`. This is a manual, owner-only, one-time gate required before Milestone 16 — see [`docs/LIVE_ACCEPTANCE_RUNBOOK.md`](docs/LIVE_ACCEPTANCE_RUNBOOK.md) for the full procedure. It is never run automatically.
+`npm run acceptance:run` drives one real mint through the unmodified transaction engine against a real testnet (Sepolia), and records the outcome in `live_acceptance_runs`. This is a manual, owner-only, one-time gate required before production release / real funds — see [`docs/LIVE_ACCEPTANCE_RUNBOOK.md`](docs/LIVE_ACCEPTANCE_RUNBOOK.md) and ROADMAP.md's "Production definition of done" for the full procedure and requirement. It is never run automatically.
 
 ## Commands
 

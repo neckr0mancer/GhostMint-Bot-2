@@ -172,3 +172,4 @@ Owners today can assign or remove a user from a governance group (Standard/VIP-s
 - Every transaction path uses simulation, spend limits, fee caps, nonce coordination, and durable audit records.
 - Automated triggers cannot bypass configured verification or safety rails silently.
 - Deployment, monitoring, backup, restore, rollback, and key-rotation procedures have been exercised successfully.
+- A `passed` row exists in `live_acceptance_runs` (Milestone 14's Sepolia live acceptance run, `docs/LIVE_ACCEPTANCE_RUNBOOK.md`) with its `run_id`, chain, contract address, and transaction hash recorded in the release notes. Not yet confirmed complete as of Milestone 16 — the project owner must run `npm run acceptance:run` end to end and record the result here.

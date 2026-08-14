@@ -5,9 +5,9 @@
 The Milestone 7 transaction engine (simulation, spend caps, gas ceilings, nonce
 queueing, replay protection) has only ever been exercised against mocked RPC
 providers and database-backed automated tests. Before GhostMint is trusted
-with real funds (Milestone 16, production release gate), it must be proven
-against a real chain at least once, using the exact same code path a
-production mint would use — no shortcuts, no mocks, no bypass.
+with real funds (see "Production definition of done" in `ROADMAP.md`), it
+must be proven against a real chain at least once, using the exact same code
+path a production mint would use — no shortcuts, no mocks, no bypass.
 
 `scripts/live-acceptance-run.js` drives that one real mint through the
 unmodified `mintService` → `mintExecutionService` → `transactionEngine`
@@ -106,12 +106,12 @@ confirmation count, with `simulation_performed = true`. Anything else
 (reverted, replaced, unknown/timed out, or refused before broadcast) is
 recorded as `failed` with a classified `failure_code` and `failure_reason`.
 
-## Before Milestone 16
+## Before production release
 
 Do not release to production or move meaningful funds until a `passed` row
 exists for this run. Record the `run_id`, chain, contract address, and
 transaction hash in the release notes as the evidence for the mandatory
-live acceptance requirement in `ROADMAP.md`.
+live acceptance requirement in `ROADMAP.md`'s "Production definition of done".
 
 ## What this tool deliberately does not do
 
