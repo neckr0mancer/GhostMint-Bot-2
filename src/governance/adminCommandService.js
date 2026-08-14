@@ -1,9 +1,11 @@
+const { ValidationError } = require('../validation/domain');
+
 function createAdminCommandService(governance) {
   return {
     async execute(callerUserId, input) {
       await governance.requireOwner(callerUserId);
       const [action, ...args] = String(input || '').trim().split(/\s+/);
-      if (!action) throw new Error('Admin action is required');
+      if (!action) throw new ValidationError({ field: 'action', message: 'is required' });
       switch (action.toLowerCase()) {
         case 'group-set':
           await governance.upsertGroup(callerUserId, { name: args[0], maxTransactionValueWei: args[1],
@@ -37,7 +39,7 @@ function createAdminCommandService(governance) {
         case 'owner':
           await governance.setOwner(callerUserId, { platform: args[0], platformUserId: args[1], enabled: args[2] });
           return 'Owner status updated.';
-        default: throw new Error('Unknown admin action');
+        default: throw new ValidationError({ field: 'action', message: `is unknown: ${action}` });
       }
     },
   };

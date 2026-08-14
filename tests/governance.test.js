@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const { createAdminCommandService } = require('../src/governance/adminCommandService');
 const { AuthorizationError, createGovernanceService } = require('../src/governance/governanceService');
+const { ValidationError } = require('../src/validation/domain');
 const { applyGovernance } = require('../src/transactions/policyRepository');
 
 function nonOwnerFixture() {
@@ -9,6 +10,11 @@ function nonOwnerFixture() {
     isOwner: async () => false,
     findUserByPlatform: async () => 'target-user',
   };
+  return createAdminCommandService(createGovernanceService(repository));
+}
+
+function ownerFixture({ findUserByPlatform = async () => 'target-user' } = {}) {
+  const repository = { isOwner: async () => true, findUserByPlatform };
   return createAdminCommandService(createGovernanceService(repository));
 }
 
@@ -31,6 +37,36 @@ test('a non-owner cannot execute any admin input', async () => {
   for (const command of commands) {
     await assert.rejects(admin.execute('regular-user', command), error => error instanceof AuthorizationError && error.code === 'OWNER_REQUIRED');
   }
+});
+
+test('an owner who mistypes an admin command gets a ValidationError with a specific, safe-to-show reason instead of a generic failure', async () => {
+  const admin = ownerFixture();
+  await assert.rejects(admin.execute('owner-user', ''),
+    error => error instanceof ValidationError && error.issues[0].field === 'action');
+  await assert.rejects(admin.execute('owner-user', 'not-a-real-action foo bar'),
+    error => error instanceof ValidationError && error.issues[0].field === 'action' && /not-a-real-action/.test(error.issues[0].message));
+  await assert.rejects(admin.execute('owner-user', 'owner telegram 123456789 true'),
+    error => error instanceof ValidationError && error.issues[0].field === 'enabled');
+  await assert.rejects(admin.execute('owner-user', 'owner martian 123456789 on'),
+    error => error instanceof ValidationError && error.issues[0].field === 'platform');
+});
+
+test('targeting a platform ID with no linked GhostMint account surfaces a ValidationError, not a generic failure', async () => {
+  const admin = ownerFixture({ findUserByPlatform: async () => null });
+  await assert.rejects(admin.execute('owner-user', 'owner telegram 123456789 on'),
+    error => error instanceof ValidationError && error.issues[0].field === 'platformUserId');
+});
+
+test('a valid owner grant command succeeds end to end once the syntax and target are correct', async () => {
+  const calls = [];
+  const admin = createAdminCommandService(createGovernanceService({
+    isOwner: async () => true,
+    findUserByPlatform: async () => 'target-user',
+    setOwner: async (userId, enabled) => { calls.push({ userId, enabled }); },
+  }));
+  const result = await admin.execute('owner-user', 'owner telegram 123456789 on');
+  assert.deepEqual(calls, [{ userId: 'target-user', enabled: true }]);
+  assert.equal(result, 'Owner status updated.');
 });
 
 const basePolicy = {

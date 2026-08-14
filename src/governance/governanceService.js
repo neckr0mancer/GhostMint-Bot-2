@@ -1,4 +1,4 @@
-const { requestSchemas } = require('../validation/domain');
+const { requestSchemas, ValidationError } = require('../validation/domain');
 
 class AuthorizationError extends Error {
   constructor(message = 'Owner access required') {
@@ -8,17 +8,22 @@ class AuthorizationError extends Error {
   }
 }
 
+// These throw ValidationError, not a plain Error, on purpose: they are input mistakes an owner
+// can immediately fix (wrong platform name, unlinked user, bad on/off value, missing ceiling), and
+// every bot surface already knows how to show a ValidationError's message safely to the caller.
+// A plain Error here would instead be swallowed into a generic "command failed" reply, which is
+// the right behavior for a genuinely unexpected failure but the wrong one for a typo.
 function requiredText(value, field, max = 100) {
   const normalized = String(value || '').trim();
-  if (!normalized || normalized.length > max) throw new Error(`${field} is required and must be at most ${max} characters`);
+  if (!normalized || normalized.length > max) throw new ValidationError({ field, message: `is required and must be at most ${max} characters` });
   return normalized;
 }
 
-function forcedValue(value, { nullable = false } = {}) {
+function forcedValue(value, field = 'simulationForced', { nullable = false } = {}) {
   if (nullable && (value === null || value === 'inherit')) return null;
   if (value === true || value === 'forced') return true;
   if (value === false || value === 'optional') return false;
-  throw new Error(nullable ? 'Simulation must be forced, optional, or inherit' : 'Simulation must be forced or optional');
+  throw new ValidationError({ field, message: nullable ? 'must be forced, optional, or inherit' : 'must be forced or optional' });
 }
 
 function validateCeilings(input, { allowClear = false } = {}) {
@@ -28,7 +33,7 @@ function validateCeilings(input, { allowClear = false } = {}) {
     gasCeilingGwei: input.gasCeilingGwei,
   });
   if (!allowClear && [validated.maxTransactionValueWei, validated.dailySpendingBudgetWei, validated.gasCeilingGwei].some(value => value === null)) {
-    throw new Error('All three ceilings are required');
+    throw new ValidationError({ field: 'ceilings', message: 'all three (max value, daily budget, gas ceiling) are required together' });
   }
   return validated;
 }
@@ -40,9 +45,9 @@ function createGovernanceService(repository) {
 
   async function targetUser(platform, platformUserId) {
     const normalizedPlatform = requiredText(platform, 'platform', 16).toLowerCase();
-    if (!['telegram', 'discord'].includes(normalizedPlatform)) throw new Error('Platform must be telegram or discord');
+    if (!['telegram', 'discord'].includes(normalizedPlatform)) throw new ValidationError({ field: 'platform', message: 'must be telegram or discord' });
     const userId = await repository.findUserByPlatform(normalizedPlatform, requiredText(platformUserId, 'platformUserId', 255));
-    if (!userId) throw new Error('Linked user not found');
+    if (!userId) throw new ValidationError({ field: 'platformUserId', message: 'has no linked GhostMint account -- that platform ID must have run a command at least once' });
     return userId;
   }
 
@@ -82,20 +87,20 @@ function createGovernanceService(repository) {
       await requireOwner(callerUserId);
       return repository.setUserSimulation({ actorUserId: callerUserId,
         userId: await targetUser(input.platform, input.platformUserId),
-        simulationForced: forcedValue(input.simulationForced, { nullable: true }) });
+        simulationForced: forcedValue(input.simulationForced, 'simulationForced', { nullable: true }) });
     },
 
     async setGroupSimulation(callerUserId, input) {
       await requireOwner(callerUserId);
-      return repository.setGroupSimulation(requiredText(input.groupName, 'groupName'), forcedValue(input.simulationForced, { nullable: true }));
+      return repository.setGroupSimulation(requiredText(input.groupName, 'groupName'), forcedValue(input.simulationForced, 'simulationForced', { nullable: true }));
     },
 
     async updatePreset(callerUserId, input) {
       await requireOwner(callerUserId);
       const simulationMode = requiredText(input.simulationMode, 'simulationMode', 32).toLowerCase();
       const humanVerification = requiredText(input.humanVerification, 'humanVerification', 16).toLowerCase();
-      if (!['on', 'off', 'blockchain_off'].includes(simulationMode)) throw new Error('Simulation mode must be on, off, or blockchain_off');
-      if (!['on', 'bypass'].includes(humanVerification)) throw new Error('Human verification must be on or bypass');
+      if (!['on', 'off', 'blockchain_off'].includes(simulationMode)) throw new ValidationError({ field: 'simulationMode', message: 'must be on, off, or blockchain_off' });
+      if (!['on', 'bypass'].includes(humanVerification)) throw new ValidationError({ field: 'humanVerification', message: 'must be on or bypass' });
       const { requiredConfirmations } = requestSchemas.transactionPolicy({ requiredConfirmations: input.confirmationCount });
       return repository.updatePreset({ actorUserId: callerUserId, presetKey: input.presetKey,
         simulationMode, confirmationCount: requiredConfirmations, humanVerification });
@@ -103,7 +108,7 @@ function createGovernanceService(repository) {
 
     async setOwner(callerUserId, input) {
       await requireOwner(callerUserId);
-      if (![true, false, 'on', 'off'].includes(input.enabled)) throw new Error('Owner status must be on or off');
+      if (![true, false, 'on', 'off'].includes(input.enabled)) throw new ValidationError({ field: 'enabled', message: 'must be on or off' });
       return repository.setOwner(await targetUser(input.platform, input.platformUserId), input.enabled === true || input.enabled === 'on');
     },
 
