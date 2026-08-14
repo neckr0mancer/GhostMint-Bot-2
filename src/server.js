@@ -1117,7 +1117,9 @@ const dashboardApi=createDashboardApi({auth:dashboardAuth,identityRepository,com
 if (CONFIG.discordBotToken) {
   discordBot = createDiscordBot({ token: CONFIG.discordBotToken,
     applicationId: CONFIG.discordApplicationId, devGuildId: CONFIG.discordDevGuildId,
-    identity, commands: botCommands, securityAudit:botSecurityRepository,rateLimiter:commandRateLimiter,log });
+    identity, commands: botCommands, securityAudit:botSecurityRepository,rateLimiter:commandRateLimiter,log,
+    isOwner: userId => governanceRepository.isOwner(userId),
+    supportedChains: CONFIG.supportedChains, chains: CHAINS });
   // Live push: skip the 30s social-watch poll for discord_channel rules by reacting
   // to the Gateway's messageCreate event directly. The scheduled poller keeps running
   // as a fallback, so a dropped Gateway connection never stops detection, just slows it.
