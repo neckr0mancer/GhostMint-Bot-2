@@ -81,10 +81,11 @@ This is the ordered implementation plan for GhostMint. Milestones are intentiona
 - Give every source a user-selected `method` of `official_api`, `managed_service`, or `scraper`; core detection and mint-trigger logic remains independent of the active acquisition method.
 - Feed detected contract addresses into the mint pipeline as social trigger sources parallel to the Milestone 10 post-confirmation blockchain watcher.
 
-### Milestone 10b-2 — Additional social adapters (optional, unscheduled)
+### Milestone 10b-2 — Additional social adapters (optional)
 
 - Add platform or watch-type adapters beyond the initial Twitter/X and Discord account/keyword set using the Milestone 10b-1 framework.
-- This milestone is optional and has no scheduled implementation date.
+- Implemented: `farcaster_account` and `farcaster_keyword` watch types, reusing the existing `official_api`/`managed_service`/`scraper` acquisition methods unchanged. Added `WATCH_TYPE_PLATFORMS` as the single source of truth mapping a watch-rule type to its platform, so adapters fail closed instead of guessing a platform for an unmapped type.
+- Further platforms or watch types beyond Farcaster remain optional and unscheduled.
 
 ### Milestone 10c — Per-target trigger and verification configuration
 

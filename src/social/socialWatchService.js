@@ -15,10 +15,13 @@ function extractContractAddresses(text) {
   return [...unique.values()];
 }
 
+// Account/channel-style rules follow everything from their source and only need keywords to
+// narrow that firehose; keyword-style rules have no source to follow and always require a match.
+const FOLLOW_STYLE_TYPES = new Set(['twitter_account', 'discord_channel', 'farcaster_account']);
+
 function contentMatches(rule, item) {
   const text = item.text.toLowerCase();
-  if (rule.type === 'twitter_account') return !rule.config.keywords.length || rule.config.keywords.some(keyword => text.includes(keyword));
-  if (rule.type === 'discord_channel') return !rule.config.keywords.length || rule.config.keywords.some(keyword => text.includes(keyword));
+  if (FOLLOW_STYLE_TYPES.has(rule.type)) return !rule.config.keywords.length || rule.config.keywords.some(keyword => text.includes(keyword));
   return rule.config.keywords.some(keyword => text.includes(keyword));
 }
 

@@ -37,3 +37,24 @@ integrationTest('social rules and deduplicated trigger events persist in Postgre
     assert.equal(usage[0].method,'scraper');
   } finally { await pool.query('DELETE FROM users WHERE user_id=$1',[userId]).catch(()=>{}); await pool.end(); }
 });
+
+integrationTest('Milestone 10b-2: a Farcaster watch rule persists and its trigger events carry the farcaster platform', { timeout:30_000 }, async () => {
+  await runMigrations({ connectionString:CONFIG.databaseUrlUnpooled,
+    migrationsDirectory:path.join(CONFIG.projectRoot,'migrations') });
+  const pool=createDatabasePool({connectionString:CONFIG.databaseUrl,max:2});
+  const identity=createIdentityService(createPostgresIdentityRepository(pool));
+  const userId=await identity.resolveOrCreate('telegram',`social-farcaster-${process.pid}-${Date.now()}`);
+  const repository=createSocialWatchRepository(pool); const emitted=[];
+  const service=createSocialWatchService({repository,adapters:new Map([['scraper',{poll:async()=>({items:[{
+    id:'cast-1',text:'contract 0x000000000000000000000000000000000000dEaD',platform:'farcaster',publishedAt:Date.now(),
+  }]})}]]),emitTrigger:async event=>emitted.push(event)});
+  try {
+    const rule=await service.create(userId,{name:'persistent farcaster',type:'farcaster_account',method:'scraper',
+      config:{handle:'ghostmint',keywords:[],sourceUrl:'https://example.com/casts'}});
+    await service.processRule(rule);
+    assert.equal((await repository.list(userId))[0].type,'farcaster_account');
+    assert.equal(emitted.length,1);
+    const persisted=await pool.query('SELECT platform FROM social_trigger_events WHERE user_id=$1',[userId]);
+    assert.deepEqual(persisted.rows,[{platform:'farcaster'}]);
+  } finally { await pool.query('DELETE FROM users WHERE user_id=$1',[userId]).catch(()=>{}); await pool.end(); }
+});

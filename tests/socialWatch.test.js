@@ -26,16 +26,16 @@ function memoryRepository() {
 
 function valid(type, method = 'scraper', index = 0) {
   const base = { name:`rule-${type}-${index}`, type, method, config:{ sourceUrl:'https://source.example/feed' } };
-  if (type === 'twitter_account') base.config.handle='ghostmint';
-  if (type === 'twitter_keyword' || type === 'discord_keyword') base.config.keywords=['mint'];
+  if (type === 'twitter_account' || type === 'farcaster_account') base.config.handle='ghostmint';
+  if (type === 'twitter_keyword' || type === 'discord_keyword' || type === 'farcaster_keyword') base.config.keywords=['mint'];
   if (type === 'discord_channel') base.config.channelId='123456789012345678';
   return base;
 }
 
-test('every initial watch-rule type can be created, edited, disabled, and removed', async () => {
+test('every watch-rule type, including the Milestone 10b-2 Farcaster addition, can be created, edited, disabled, and removed', async () => {
   const repository=memoryRepository();
   const service=createSocialWatchService({repository,adapters:new Map(),emitTrigger:async()=>{}});
-  for (const type of ['twitter_account','twitter_keyword','discord_channel','discord_keyword']) {
+  for (const type of ['twitter_account','twitter_keyword','discord_channel','discord_keyword','farcaster_account','farcaster_keyword']) {
     const created=await service.create('user-a',valid(type,'scraper',repository.rules.length));
     const edited=await service.update('user-a',created.id,{name:`edited-${type}`});
     assert.equal(edited.name,`edited-${type}`);
@@ -144,4 +144,28 @@ test('scraper adapter extracts visible content from a credential-free HTML respo
   assert.equal(result.items.length,1);
   assert.match(result.items[0].text,/Mint 0x/);
   assert.doesNotMatch(result.items[0].text,/<html>|<style>/);
+});
+
+test('Milestone 10b-2: a new watch type (Farcaster) is tagged with its own platform through the same adapter code', async () => {
+  const adapter=createSocialAdapters({request:async()=>({data:{items:[{id:'cast-1',text:ADDRESS}]}})}).get('scraper');
+  const result=await adapter.poll({type:'farcaster_account',config:{sourceUrl:'https://public.example/casts',handle:'ghostmint',keywords:[]},cursor:null});
+  assert.equal(result.items[0].platform,'farcaster');
+});
+
+test('an adapter refuses to poll a watch type with no registered platform instead of silently mislabeling it', async () => {
+  const adapter=createSocialAdapters({request:async()=>({data:{items:[]}})}).get('scraper');
+  await assert.rejects(
+    adapter.poll({type:'unknown_type',config:{sourceUrl:'https://public.example/feed'},cursor:null}),
+    error=>error.code==='SOCIAL_ADAPTER_FAILED',
+  );
+});
+
+test('Farcaster account rules follow everything until keywords narrow them, matching the Twitter/Discord account pattern', async () => {
+  const repository=memoryRepository(); const emitted=[];
+  const adapter={poll:async()=>({items:[{id:'cast-1',text:`ship it ${ADDRESS}`,platform:'farcaster',publishedAt:3_000}]})};
+  const service=createSocialWatchService({repository,adapters:new Map([['scraper',adapter]]),emitTrigger:async event=>emitted.push(event),now:()=>3_000});
+  const rule=await service.create('user-a',valid('farcaster_account','scraper',1));
+  await service.processRule(rule);
+  assert.equal(emitted.length,1);
+  assert.equal(emitted[0].platform,'farcaster');
 });

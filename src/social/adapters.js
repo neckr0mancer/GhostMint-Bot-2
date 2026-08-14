@@ -1,5 +1,6 @@
 const { createHash } = require('node:crypto');
 const axios = require('axios');
+const { WATCH_TYPE_PLATFORMS } = require('../validation/domain');
 
 class AdapterError extends Error {
   constructor(method, message, { retryAfterMs = null } = {}) {
@@ -34,6 +35,8 @@ function createHttpAdapter(method, { request, endpoint, token, recordUsage = asy
     async poll(rule) {
       if (method !== 'scraper' && !endpoint) throw new AdapterError(method, `${method} endpoint is not configured`);
       if (!token && method !== 'scraper') throw new AdapterError(method, `${method} credential is not configured`);
+      const platform = defaultPlatform || WATCH_TYPE_PLATFORMS[rule.type];
+      if (!platform) throw new AdapterError(method, `no platform is registered for watch type ${rule.type}`);
       let response;
       let succeeded = false;
       try {
@@ -44,7 +47,6 @@ function createHttpAdapter(method, { request, endpoint, token, recordUsage = asy
           ? scrapedItems(response.data, rule.config.sourceUrl)
           : (Array.isArray(response.data) ? response.data : response.data?.items);
         if (!Array.isArray(raw)) throw new Error('response must contain an items array');
-        const platform = defaultPlatform || (rule.type.startsWith('twitter_') ? 'twitter' : 'discord');
         succeeded = true;
         return { items: raw.map(item => normalizeContent(item, platform)), cursor: response.data?.cursor ?? rule.cursor };
       } catch (error) {

@@ -6,8 +6,20 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3
 const FUNCTION_NAME_PATTERN = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 const WALLET_LABEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9 ._-]*$/;
 const DASHBOARD_THEMES = new Set(['ghost-mint', 'clean-vault', 'neon-arcade', 'quiet-ledger']);
-const WATCH_RULE_TYPES = new Set(['twitter_account', 'twitter_keyword', 'discord_channel', 'discord_keyword']);
+const WATCH_RULE_TYPES = new Set(['twitter_account', 'twitter_keyword', 'discord_channel', 'discord_keyword',
+  'farcaster_account', 'farcaster_keyword']);
 const WATCH_METHODS = new Set(['official_api', 'managed_service', 'scraper']);
+// Single source of truth for which platform a watch-rule type belongs to. Adapters use this
+// instead of inferring platform from the type string, so adding a type can never silently
+// mislabel events with the wrong platform.
+const WATCH_TYPE_PLATFORMS = Object.freeze({
+  twitter_account: 'twitter',
+  twitter_keyword: 'twitter',
+  discord_channel: 'discord',
+  discord_keyword: 'discord',
+  farcaster_account: 'farcaster',
+  farcaster_keyword: 'farcaster',
+});
 const MAX_SCHEDULE_AHEAD_MS = 5 * 365 * 24 * 60 * 60 * 1000;
 const LIMITS = Object.freeze({
   quantity: 100,
@@ -300,9 +312,9 @@ function watchRuleConfig(type, method, value) {
   if (!Array.isArray(keywords) || keywords.length > 25) fail('config.keywords', 'must be an array with at most 25 entries');
   const normalizedKeywords = keywords.map((item, index) => string(item, `config.keywords[${index}]`, { max: 100 }).toLowerCase());
   const config = { keywords: [...new Set(normalizedKeywords)] };
-  if (type === 'twitter_account') config.handle = string(value.handle, 'config.handle', { max: 50 }).replace(/^@/, '');
+  if (type === 'twitter_account' || type === 'farcaster_account') config.handle = string(value.handle, 'config.handle', { max: 50 }).replace(/^@/, '');
   if (type === 'discord_channel') config.channelId = string(value.channelId, 'config.channelId', { max: 20 });
-  if (type === 'twitter_keyword' || type === 'discord_keyword') {
+  if (type === 'twitter_keyword' || type === 'discord_keyword' || type === 'farcaster_keyword') {
     if (!config.keywords.length) fail('config.keywords', 'must contain at least one keyword');
   }
   if (type === 'discord_keyword' && value.channelIds !== undefined) {
@@ -377,6 +389,7 @@ module.exports = {
   LIMITS,
   MAX_SCHEDULE_AHEAD_MS,
   ValidationError,
+  WATCH_TYPE_PLATFORMS,
   dashboardTheme,
   requestSchemas,
   sendValidationError,
