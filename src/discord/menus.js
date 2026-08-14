@@ -50,7 +50,7 @@ function walletsMenu() {
 }
 
 function settingsMenu({ isOwner = false } = {}) {
-  const rows = [row([button('🔗 Link another platform', 'link:generate')])];
+  const rows = [row([button('🔗 Enter a link code from Telegram', 'link:enter')])];
   if (isOwner) rows.push(row([button('🛡️ Admin console', 'menu:admin')]));
   rows.push(row([button('⬅️ Back to menu', 'menu:main')]));
   return { content: '**Settings**', components: rows };

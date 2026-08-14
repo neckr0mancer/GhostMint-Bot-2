@@ -206,3 +206,41 @@ test('createDiscordInteractionHandler accepts an injected flow store for tests t
   await handler(buttonInteraction('wallet:create:start', 'injected-user'));
   assert.ok(flowState.get('discord', 'injected-user'));
 });
+
+test('the Settings link button opens a code-entry modal instead of generating a code', async () => {
+  let generated = false;
+  const handler = createDiscordInteractionHandler({
+    identity: { resolveOrCreate: async () => 'internal-user', createLinkCode: async () => { generated = true; return { code: 'should-not-happen' }; } },
+    commands: {},
+  });
+  const btn = buttonInteraction('link:enter', 'link-user-1');
+  await handler(btn);
+  assert.equal(generated, false);
+  assert.equal(btn.modal.custom_id, 'link:code:submit');
+});
+
+test('submitting the link-code modal consumes the code without auto-creating an identity first', async () => {
+  const seen = [];
+  const handler = createDiscordInteractionHandler({
+    identity: {
+      resolveOrCreate: async () => { throw new Error('must not resolve/create an identity before consuming a link code'); },
+      consumeLinkCode: async input => { seen.push(input); return 'telegram-user-id'; },
+    },
+    commands: {},
+  });
+  const modal = modalInteraction('link:code:submit', { value: 'ABC123' }, 'link-user-2');
+  await handler(modal);
+  assert.deepEqual(seen, [{ code: 'ABC123', platform: 'discord', platformUserId: 'link-user-2' }]);
+  assert.match(modal.replies[0].content, /linked.*telegram-user-id/i);
+});
+
+test('an invalid or expired link code surfaces a clear message instead of a generic failure', async () => {
+  const { LinkCodeError } = require('../src/identity/identityService');
+  const handler = createDiscordInteractionHandler({
+    identity: { consumeLinkCode: async () => { throw new LinkCodeError('Link code is invalid, expired, or already used.'); } },
+    commands: {},
+  });
+  const modal = modalInteraction('link:code:submit', { value: 'expired' }, 'link-user-3');
+  await handler(modal);
+  assert.match(modal.replies[0].content, /invalid, expired, or already used/i);
+});

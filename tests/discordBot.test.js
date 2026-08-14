@@ -30,6 +30,21 @@ test('Discord command definitions include the complete Milestone 10a surface', (
   assert.doesNotMatch(JSON.stringify(create), /private-key/);
   assert.match(imported.description, /Not recommended/);
   assert.match(imported.options.find(option => option.name === 'private-key').description, /transit|history/);
+  const link = definitions.find(command => command.name === 'link');
+  const linkCode = link.options.find(option => option.name === 'code');
+  assert.equal(linkCode.required, true, 'Discord must never be able to generate a link code, only consume one');
+});
+
+test('Discord /link without a code cannot generate one and does not touch identity resolution', async () => {
+  let generated = false;
+  const input = interaction({ commandName: 'link', strings: {} });
+  const handler = createDiscordInteractionHandler({
+    identity: { createLinkCode: async () => { generated = true; return { code: 'should-not-happen' }; }, resolveOrCreate: async () => 'user-a' },
+    commands: {},
+  });
+  await handler(input);
+  assert.equal(generated, false);
+  assert.match(input.replies[0], /link code is required.*Telegram/i);
 });
 
 test('Discord wallet creation returns only a funding address and import explains platform exposure', async () => {

@@ -36,7 +36,7 @@ test('the wallets menu offers every wallet action and a way back to the main men
 
 test('settings shows the link button to every user and admin console only to owners', () => {
   const buttons = flatButtons(settingsMenu({ isOwner: false }).components).map(b => b.custom_id);
-  assert.ok(buttons.includes('link:generate'));
+  assert.ok(buttons.includes('link:enter'));
   assert.equal(buttons.includes('menu:admin'), false);
   assert.ok(flatButtons(settingsMenu({ isOwner: true }).components).some(b => b.custom_id === 'menu:admin'));
 });
