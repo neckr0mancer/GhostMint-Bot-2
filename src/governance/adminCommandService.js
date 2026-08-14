@@ -39,6 +39,43 @@ function createAdminCommandService(governance) {
         case 'owner':
           await governance.setOwner(callerUserId, { platform: args[0], platformUserId: args[1], enabled: args[2] });
           return 'Owner status updated.';
+
+        // ── Milestone 16a: account lifecycle ──
+        case 'ban':
+          await governance.banUser(callerUserId, { platform: args[0], platformUserId: args[1], reason: args.slice(2).join(' ') });
+          return 'Account banned.';
+        case 'unban':
+          await governance.unbanUser(callerUserId, { platform: args[0], platformUserId: args[1], reason: args.slice(2).join(' ') });
+          return 'Account unbanned.';
+        case 'suspend':
+          await governance.suspendUser(callerUserId, { platform: args[0], platformUserId: args[1],
+            durationDays: args[2], reason: args.slice(3).join(' ') });
+          return 'Account suspended.';
+        case 'unsuspend':
+          await governance.unsuspendUser(callerUserId, { platform: args[0], platformUserId: args[1], reason: args.slice(2).join(' ') });
+          return 'Account unsuspended.';
+        case 'deactivate':
+          await governance.deactivateUser(callerUserId, { platform: args[0], platformUserId: args[1], reason: args.slice(2).join(' ') });
+          return 'Account deactivated. Wallets, tasks, and activity are retained; run reactivate to restore access.';
+        case 'reactivate':
+          await governance.reactivateUser(callerUserId, { platform: args[0], platformUserId: args[1], reason: args.slice(2).join(' ') });
+          return 'Account reactivated.';
+        case 'subscription':
+          await governance.setSubscriptionActive(callerUserId, { platform: args[0], platformUserId: args[1], active: args[2] });
+          return 'Subscription status updated.';
+        case 'good-standing':
+          await governance.setGoodStandingOverride(callerUserId, { platform: args[0], platformUserId: args[1], enabled: args[2] });
+          return 'Good-standing override updated.';
+
+        // ── Milestone 16b: governance-group retention scheduling ──
+        case 'group-retention':
+          await governance.setGroupRetentionPolicy(callerUserId, { groupName: args[0], retentionPeriodDays: args[1],
+            requireActiveSubscription: args[2], requireRecentActivityDays: args[3] });
+          return `Retention policy for ${args[0]} saved.`;
+        case 'schedule-removal':
+          await governance.scheduleRemoval(callerUserId, { platform: args[0], platformUserId: args[1], days: args[2] });
+          return args[2] === 'off' ? 'Scheduled removal cleared.' : 'Scheduled removal set.';
+
         default: throw new ValidationError({ field: 'action', message: `is unknown: ${action}` });
       }
     },

@@ -1,7 +1,7 @@
 const {
   Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder,
 } = require('discord.js');
-const { AuthorizationError } = require('../governance/governanceService');
+const { AccountBlockedError, AuthorizationError } = require('../governance/governanceService');
 const { LinkCodeError } = require('../identity/identityService');
 const { ProofResolutionError } = require('../mint/proofResolver');
 const { ValidationError, validationReply } = require('../validation/domain');
@@ -155,6 +155,7 @@ function retryStepForField(error) {
 
 function componentErrorMessage(error) {
   if (error instanceof ValidationError) return escapeDiscord(validationReply(error));
+  if (error instanceof AccountBlockedError) return escapeDiscord(`⛔ Your account is ${error.status}${error.reason ? `: ${error.reason}` : ''}. Contact the project owner if you believe this is a mistake.`);
   if (error instanceof AuthorizationError) return 'Owner access required.';
   if (error instanceof RateLimitError) return `Too many sensitive commands. Retry in ${Math.ceil(error.retryAfterMs / 1000)} seconds.`;
   if (error instanceof BotContextError) return 'Command rejected: use the authorized development guild and channel.';
@@ -171,10 +172,11 @@ function dcRespond(interaction, payload) {
 }
 
 function createDiscordInteractionHandler({ identity, commands, allowedGuildId, securityAudit={record:async()=>{}},
-  rateLimiter=createCommandRateLimiter(), log = () => {}, isOwner, supportedChains=[], chains={},
+  rateLimiter=createCommandRateLimiter(), log = () => {}, isOwner, checkAccountStatus, supportedChains=[], chains={},
   flowState=createFlowStateStore() }) {
   const audit=value=>Promise.resolve(securityAudit.record(value)).catch(error=>log(`Security audit write failed: ${error.message}`));
   const ownerFlag = async userId => (typeof isOwner === 'function' ? Boolean(await isOwner(userId)) : false);
+  const enforceAccountStatus = async userId => { if (typeof checkAccountStatus === 'function') await checkAccountStatus(userId); };
 
   async function handleComponent(interaction) {
     let context, userId = null;
@@ -182,6 +184,7 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, s
     try {
       context = verifyDiscordContext(interaction, allowedGuildId);
       userId = await identity.resolveOrCreate('discord', context.platformUserId);
+      await enforceAccountStatus(userId);
       const platformUserId = context.platformUserId;
 
       const activeFlow = flowState.get('discord', platformUserId);
@@ -330,6 +333,7 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, s
       }
 
       const userId = await identity.resolveOrCreate('discord', platformUserId);
+      await enforceAccountStatus(userId);
       const flow = flowState.get('discord', platformUserId);
       if (!flow) { await interaction.reply({ content: 'This step has expired. Open the Wallets menu again.', ephemeral: true }).catch(() => {}); return; }
       if (flow.pendingCancel) { await interaction.reply({ ...discordMenus.confirmCancelPrompt(FLOW_LABELS[flow.flow] || flow.flow), ephemeral: true }).catch(() => {}); return; }
@@ -401,6 +405,7 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, s
         return;
       }
       userId = await identity.resolveOrCreate('discord', discordId);
+      await enforceAccountStatus(userId);
       if(['wallet','mint','batch-mint','admin','watch','sniper','confirm-trigger','target-policy'].includes(interaction.commandName)) {
         rateLimiter.check('discord',userId,interaction.commandName);
       }
@@ -494,6 +499,9 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, s
     } catch (error) {
       let message = 'Command failed safely. Please try again.';
       if (error instanceof ValidationError) message = escapeDiscord(validationReply(error));
+      else if (error instanceof AccountBlockedError) { message = escapeDiscord(`⛔ Your account is ${error.status}${error.reason ? `: ${error.reason}` : ''}. Contact the project owner if you believe this is a mistake.`);
+        await audit({userId,platform:'discord',platformUserId:context?.platformUserId,
+          contextId:context?.contextId,command:commandName(interaction.commandName),outcome:'account_blocked',reason:error.message}); }
       else if (error instanceof AuthorizationError) { message = 'Owner access required.';
         await audit({userId,platform:'discord',platformUserId:context?.platformUserId,
           contextId:context?.contextId,command:commandName(interaction.commandName),outcome:'unauthorized',reason:error.message}); }
@@ -512,12 +520,12 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, s
   };
 }
 
-function createDiscordBot({ token, applicationId, devGuildId, identity, commands, securityAudit, rateLimiter, log, client, rest, isOwner, supportedChains, chains }) {
+function createDiscordBot({ token, applicationId, devGuildId, identity, commands, securityAudit, rateLimiter, log, client, rest, isOwner, checkAccountStatus, supportedChains, chains }) {
   const discordClient = client || new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.DirectMessages,
     GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent] });
   const api = rest || new REST({ version: '10' }).setToken(token);
   discordClient.on('interactionCreate', createDiscordInteractionHandler({ identity, commands, allowedGuildId:devGuildId,
-    securityAudit,rateLimiter,log,isOwner,supportedChains,chains }));
+    securityAudit,rateLimiter,log,isOwner,checkAccountStatus,supportedChains,chains }));
   return {
     client: discordClient,
     async start() {

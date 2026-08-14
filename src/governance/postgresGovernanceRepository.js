@@ -133,21 +133,27 @@ function createPostgresGovernanceRepository(pool) {
     },
 
     async listGovernedUsers() {
-      const result=await pool.query(`SELECT u.user_id,u.is_owner,sg.name AS group_name,
+      const result=await pool.query(`SELECT u.user_id,u.is_owner,u.account_status,u.subscription_active,
+        u.good_standing_override,sg.name AS group_name,
         ug.max_transaction_value_wei,ug.daily_spending_budget_wei,ug.gas_ceiling_gwei,
-        ug.simulation_forced,ug.selected_preset_key,
+        ug.simulation_forced,ug.selected_preset_key,ug.scheduled_removal_at,
         COALESCE(JSON_AGG(JSON_BUILD_OBJECT('platform',la.platform,'platformUserId',la.platform_user_id)
           ORDER BY la.platform) FILTER (WHERE la.platform IS NOT NULL),'[]'::JSON) AS linked_accounts
         FROM users u LEFT JOIN user_governance ug ON ug.user_id=u.user_id
         LEFT JOIN seat_groups sg ON sg.group_id=ug.group_id
         LEFT JOIN linked_accounts la ON la.user_id=u.user_id
-        GROUP BY u.user_id,u.is_owner,sg.name,ug.max_transaction_value_wei,
-          ug.daily_spending_budget_wei,ug.gas_ceiling_gwei,ug.simulation_forced,ug.selected_preset_key
+        GROUP BY u.user_id,u.is_owner,u.account_status,u.subscription_active,u.good_standing_override,
+          sg.name,ug.max_transaction_value_wei,
+          ug.daily_spending_budget_wei,ug.gas_ceiling_gwei,ug.simulation_forced,ug.selected_preset_key,
+          ug.scheduled_removal_at
         ORDER BY u.created_at`);
-      return result.rows.map(row=>({userId:row.user_id,isOwner:row.is_owner,groupName:row.group_name,
+      return result.rows.map(row=>({userId:row.user_id,isOwner:row.is_owner,accountStatus:row.account_status,
+        subscriptionActive:row.subscription_active,goodStandingOverride:row.good_standing_override,
+        groupName:row.group_name,
         maxTransactionValueWei:row.max_transaction_value_wei,dailySpendingBudgetWei:row.daily_spending_budget_wei,
         gasCeilingGwei:row.gas_ceiling_gwei===null?null:Number(row.gas_ceiling_gwei),
         simulationForced:row.simulation_forced,selectedPresetKey:row.selected_preset_key,
+        scheduledRemovalAt:row.scheduled_removal_at,
         linkedAccounts:row.linked_accounts}));
     },
 
@@ -171,6 +177,151 @@ function createPostgresGovernanceRepository(pool) {
         simulationForced: row.user_simulation_forced ?? row.group_simulation_forced ?? true,
         preset: mapPreset(row),
       };
+    },
+
+    // ── Milestone 16a: account lifecycle (ban/suspend/deactivate/reinstate) ──
+    async setAccountStatus(userId, { status, reason, actorUserId, suspendedUntil = null }) {
+      const result = await pool.query(`UPDATE users SET account_status=$2,status_reason=$3,
+        status_changed_at=NOW(),status_changed_by=$4,suspended_until=$5
+        WHERE user_id=$1 RETURNING user_id,account_status,status_reason,suspended_until`,
+      [userId, status, reason, actorUserId, status === 'suspended' ? suspendedUntil : null]);
+      if (!result.rowCount) throw new Error('User not found');
+      return result.rows[0];
+    },
+
+    async getAccountStatus(userId) {
+      const result = await pool.query(
+        'SELECT account_status,status_reason,suspended_until,is_owner FROM users WHERE user_id=$1', [userId]);
+      if (!result.rowCount) return null;
+      const row = result.rows[0];
+      return { status: row.account_status, reason: row.status_reason,
+        suspendedUntil: row.suspended_until, isOwner: row.is_owner };
+    },
+
+    // Flips a time-boxed suspension back to active once suspended_until has passed. Called from the
+    // identity-resolution choke point so this self-heals on the user's next command with no worker
+    // or cron needed -- an indefinite suspension (suspended_until IS NULL) is never auto-lifted.
+    async autoReinstateIfExpired(userId) {
+      const result = await pool.query(`UPDATE users SET account_status='active',suspended_until=NULL,
+        status_reason='Suspension period ended',status_changed_at=NOW()
+        WHERE user_id=$1 AND account_status='suspended' AND suspended_until IS NOT NULL AND suspended_until<=NOW()
+        RETURNING user_id`, [userId]);
+      return result.rowCount > 0;
+    },
+
+    async setSubscriptionActive(userId, active) {
+      const result = await pool.query(
+        'UPDATE users SET subscription_active=$2 WHERE user_id=$1 RETURNING user_id,subscription_active',
+        [userId, active]);
+      if (!result.rowCount) throw new Error('User not found');
+      return result.rows[0];
+    },
+
+    async setGoodStandingOverride(userId, enabled) {
+      const result = await pool.query(
+        'UPDATE users SET good_standing_override=$2 WHERE user_id=$1 RETURNING user_id,good_standing_override',
+        [userId, enabled]);
+      if (!result.rowCount) throw new Error('User not found');
+      return result.rows[0];
+    },
+
+    // ── Milestone 16b: governance-group retention scheduling ──
+    async setGroupRetentionPolicy(groupName, { retentionPeriodDays, requireActiveSubscription, requireRecentActivityDays }) {
+      const result = await pool.query(`UPDATE seat_groups SET retention_period_days=$2,
+        require_active_subscription=$3,require_recent_activity_days=$4,updated_at=NOW()
+        WHERE LOWER(name)=LOWER($1) RETURNING *`,
+      [groupName, retentionPeriodDays, requireActiveSubscription, requireRecentActivityDays]);
+      if (!result.rowCount) throw new Error('Group not found');
+      return result.rows[0];
+    },
+
+    async scheduleRemoval(userId, removalAt) {
+      const result = await pool.query(`INSERT INTO user_governance (user_id,scheduled_removal_at) VALUES ($1,$2)
+        ON CONFLICT (user_id) DO UPDATE SET scheduled_removal_at=$2,updated_at=NOW()
+        RETURNING user_id,group_id,scheduled_removal_at`, [userId, removalAt]);
+      if (!result.rows[0].group_id) throw new Error('User is not assigned to a group');
+      return result.rows[0];
+    },
+
+    // Due items joined with everything the worker needs to evaluate them in one round trip: the
+    // group's configured retention policy, the user's subscription/override flags, and their most
+    // recent activity timestamp (there is no dedicated last-activity column -- MAX(occurred_at) on
+    // the existing append-only activity log is the only signal of bot usage recency today).
+    async listDueRetentions(now) {
+      const result = await pool.query(`SELECT ug.user_id,ug.group_id,ug.scheduled_removal_at,
+          sg.name AS group_name,sg.retention_period_days,sg.require_active_subscription,
+          sg.require_recent_activity_days,u.subscription_active,u.good_standing_override,
+          (SELECT MAX(occurred_at) FROM activity WHERE activity.user_id=ug.user_id) AS last_activity_at
+        FROM user_governance ug
+        JOIN seat_groups sg ON sg.group_id=ug.group_id
+        JOIN users u ON u.user_id=ug.user_id
+        WHERE ug.scheduled_removal_at IS NOT NULL AND ug.scheduled_removal_at<=$1`, [now]);
+      return result.rows.map(row => ({
+        userId: row.user_id, groupId: row.group_id, groupName: row.group_name,
+        scheduledRemovalAt: row.scheduled_removal_at, retentionPeriodDays: row.retention_period_days,
+        requireActiveSubscription: row.require_active_subscription,
+        requireRecentActivityDays: row.require_recent_activity_days,
+        subscriptionActive: row.subscription_active, goodStandingOverride: row.good_standing_override,
+        lastActivityAt: row.last_activity_at,
+      }));
+    },
+
+    // Both renewal and removal are guarded by an optimistic-concurrency WHERE clause on the exact
+    // scheduled_removal_at value the worker just read, so a due item can never be double-processed
+    // (renewed and removed, or renewed twice) even if the worker's poll loop overlaps a slow tick.
+    async renewRetention({ userId, groupId, previousScheduledRemovalAt, nextScheduledRemovalAt, reason }) {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const updated = await client.query(`UPDATE user_governance SET scheduled_removal_at=$3,
+            retention_renewed_at=NOW(),updated_at=NOW()
+          WHERE user_id=$1 AND group_id=$2 AND scheduled_removal_at=$4
+          RETURNING user_id`, [userId, groupId, nextScheduledRemovalAt, previousScheduledRemovalAt]);
+        if (updated.rowCount) {
+          await client.query(`INSERT INTO group_retention_events
+            (user_id,group_id,outcome,reason,previous_scheduled_removal_at,next_scheduled_removal_at)
+            VALUES ($1,$2,'renewed',$3,$4,$5)`,
+          [userId, groupId, reason, previousScheduledRemovalAt, nextScheduledRemovalAt]);
+        }
+        await client.query('COMMIT');
+        return updated.rowCount > 0;
+      } catch (error) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw error;
+      } finally { client.release(); }
+    },
+
+    async removeFromGroupForRetention({ userId, groupId, previousScheduledRemovalAt, reason }) {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const updated = await client.query(`UPDATE user_governance SET group_id=NULL,
+            scheduled_removal_at=NULL,retention_renewed_at=NULL,updated_at=NOW()
+          WHERE user_id=$1 AND group_id=$2 AND scheduled_removal_at=$3
+          RETURNING user_id`, [userId, groupId, previousScheduledRemovalAt]);
+        if (updated.rowCount) {
+          await client.query(`INSERT INTO group_retention_events
+            (user_id,group_id,outcome,reason,previous_scheduled_removal_at,next_scheduled_removal_at)
+            VALUES ($1,$2,'removed',$3,$4,NULL)`,
+          [userId, groupId, reason, previousScheduledRemovalAt]);
+        }
+        await client.query('COMMIT');
+        return updated.rowCount > 0;
+      } catch (error) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw error;
+      } finally { client.release(); }
+    },
+
+    async listRetentionEvents(userId, { limit = 20 } = {}) {
+      const result = await pool.query(
+        'SELECT * FROM group_retention_events WHERE user_id=$1 ORDER BY evaluated_at DESC LIMIT $2',
+        [userId, limit]);
+      return result.rows.map(row => ({
+        eventId: row.event_id, userId: row.user_id, groupId: row.group_id, outcome: row.outcome,
+        reason: row.reason, previousScheduledRemovalAt: row.previous_scheduled_removal_at,
+        nextScheduledRemovalAt: row.next_scheduled_removal_at, evaluatedAt: row.evaluated_at,
+      }));
     },
   };
 }

@@ -31,6 +31,7 @@ const { createSocialAdapters } = require('./social/adapters');
 const { createSocialWatchRepository } = require('./social/socialWatchRepository');
 const { createSocialWatchService } = require('./social/socialWatchService');
 const { createSocialWatchWorker } = require('./social/socialWatchWorker');
+const { createRetentionWorker } = require('./governance/retentionWorker');
 const { createSocialUsageService, formatUsageSummary } = require('./social/usageService');
 const { createFlowStateStore } = require('./telegram/flowState');
 const telegramMenus = require('./telegram/menus');
@@ -38,7 +39,7 @@ const { createChainWatcher } = require('./sniper/chainWatcher');
 const { createSniperRepository } = require('./sniper/sniperRepository');
 const { createSniperService } = require('./sniper/sniperService');
 const { createAdminCommandService } = require('./governance/adminCommandService');
-const { AuthorizationError, createGovernanceService } = require('./governance/governanceService');
+const { AccountBlockedError, AuthorizationError, createGovernanceService } = require('./governance/governanceService');
 const { createPostgresGovernanceRepository } = require('./governance/postgresGovernanceRepository');
 const { createKeyEncryption } = require('./security/keyEncryption');
 const { createRedactor } = require('./security/redaction');
@@ -432,6 +433,9 @@ const socialWatchService = createSocialWatchService({
 });
 const socialWatchWorker = createSocialWatchWorker({ service:socialWatchService,
   intervalMs:CONFIG.socialPollIntervalMs, log });
+// Hourly is intentionally coarse: a scheduled group removal is measured in days/weeks, not minutes,
+// so there is no need for a dedicated CONFIG knob the way the sub-minute social/scheduler polls have.
+const retentionWorker = createRetentionWorker({ repository: governanceRepository, intervalMs: 60 * 60 * 1000, log });
 
 function stateFor(userId) {
   return stateForUser(DB, userId);
@@ -487,7 +491,10 @@ async function handleFlowTextMessage(msg) {
   let context;
   try { context = verifyTelegramContext(msg); } catch { return; }
   let userId;
-  try { userId = await identity.resolveOrCreate('telegram', context.platformUserId); } catch { return; }
+  try {
+    userId = await identity.resolveOrCreate('telegram', context.platformUserId);
+    await governance.checkAccountStatus(userId);
+  } catch { return; }
   const chatId = msg.chat.id;
   const flow = telegramFlowState.get('telegram', chatId);
   if (!flow) return;
@@ -543,6 +550,7 @@ function withTelegramCallback(handler) {
     try {
       context = verifyTelegramContext({ from: query.from, chat: query.message?.chat });
       userId = await identity.resolveOrCreate('telegram', context.platformUserId);
+      await governance.checkAccountStatus(userId);
       bot.answerCallbackQuery(query.id).catch(() => {});
 
       const data = query.data || '';
@@ -570,6 +578,12 @@ function withTelegramCallback(handler) {
       await handler(query, userId, { chatId, messageId });
     } catch (error) {
       if (error instanceof ValidationError) { tg(chatId, validationReply(error)); return; }
+      if (error instanceof AccountBlockedError) {
+        await audit({userId,platform:'telegram',platformUserId:context?.platformUserId,
+          contextId:context?.contextId,command:commandName(query.data),outcome:'account_blocked',reason:error.message});
+        tg(chatId, `⛔ Your account is ${error.status}${error.reason ? `: ${error.reason}` : ''}. Contact the project owner if you believe this is a mistake.`);
+        return;
+      }
       if (error instanceof AuthorizationError) {
         await audit({userId,platform:'telegram',platformUserId:context?.platformUserId,
           contextId:context?.contextId,command:commandName(query.data),outcome:'unauthorized',reason:error.message});
@@ -601,6 +615,7 @@ function withTelegramUser(handler) {
     try {
       context=verifyTelegramContext(msg);
       userId=await identity.resolveOrCreate('telegram',context.platformUserId);
+      await governance.checkAccountStatus(userId);
       const activeFlow=telegramFlowState.get('telegram',context.contextId);
       if(activeFlow) {
         telegramFlowState.markPendingCancel('telegram',context.contextId);
@@ -615,6 +630,12 @@ function withTelegramUser(handler) {
     } catch (error) {
       if (error instanceof ValidationError) {
         tg(msg.chat.id, validationReply(error));
+        return;
+      }
+      if (error instanceof AccountBlockedError) {
+        await audit({userId,platform:'telegram',platformUserId:context?.platformUserId,
+          contextId:context?.contextId,command:commandName(msg.text||msg.caption),outcome:'account_blocked',reason:error.message});
+        tg(msg.chat.id, `⛔ Your account is ${error.status}${error.reason ? `: ${error.reason}` : ''}. Contact the project owner if you believe this is a mistake.`);
         return;
       }
       if (error instanceof AuthorizationError) {
@@ -1112,6 +1133,7 @@ const botCommands = createBotCommandService({
 const dashboardApi=createDashboardApi({auth:dashboardAuth,identityRepository,commands:botCommands,
   securityAudit:botSecurityRepository,broadcast:(userId,message)=>dashboardWebSockets.broadcastToUser(userId,message),
   supportedChains:CONFIG.supportedChains,
+  checkAccountStatus:userId=>governance.checkAccountStatus(userId),
   loginRateLimiter:createCommandRateLimiter({limit:5,windowMs:60_000})});
 
 if (CONFIG.discordBotToken) {
@@ -1119,6 +1141,7 @@ if (CONFIG.discordBotToken) {
     applicationId: CONFIG.discordApplicationId, devGuildId: CONFIG.discordDevGuildId,
     identity, commands: botCommands, securityAudit:botSecurityRepository,rateLimiter:commandRateLimiter,log,
     isOwner: userId => governanceRepository.isOwner(userId),
+    checkAccountStatus: userId => governance.checkAccountStatus(userId),
     supportedChains: CONFIG.supportedChains, chains: CHAINS });
   // Live push: skip the 30s social-watch poll for discord_channel rules by reacting
   // to the Gateway's messageCreate event directly. The scheduled poller keeps running
@@ -1148,7 +1171,7 @@ app.use(express.static(path.join(PROJECT_ROOT,'public'),{setHeaders:(res,file)=>
 
 // ── API ───────────────────────────────────────────────────
 const readinessService=createReadinessService({database:storage,providerService,
-  chains:CONFIG.supportedChains,schedulerWorker,socialWatchWorker,
+  chains:CONFIG.supportedChains,schedulerWorker,socialWatchWorker,retentionWorker,
   sniperHealth:()=>({status:'up',activeChains:Object.keys(chainWatchers).length,
     liveChains:Object.values(chainWatchers).filter(watcher=>watcher.mode()==='ws').length})});
 app.get('/health', async (req,res) => {
@@ -1171,7 +1194,9 @@ async function start() {
   }
   schedulerWorker.start();
   socialWatchWorker.start();
+  retentionWorker.start();
   log('Started social watch-rule worker');
+  log('Started governance-group retention worker');
   log(`Started durable scheduler with ${await schedulerRepository.countActive()} active tasks`);
   DB.snipers.filter(s => s.active).forEach(s => ensureChainWatcher(s.chain));
   log(`Restored ${DB.snipers.filter(s=>s.active).length} active snipers`);
@@ -1183,7 +1208,7 @@ async function start() {
 }
 
 const gracefulShutdown=createGracefulShutdown({getHttpServer:()=>httpServer,telegramBot:bot,discordBot,
-  schedulerWorker,socialWatchWorker,webSocketHub:dashboardWebSockets,stopWatchers:()=>Object.keys(chainWatchers).forEach(chain=>{
+  schedulerWorker,socialWatchWorker,retentionWorker,webSocketHub:dashboardWebSockets,stopWatchers:()=>Object.keys(chainWatchers).forEach(chain=>{
     chainWatchers[chain].stop();delete chainWatchers[chain];
   }),pool,log});
 for(const signal of ['SIGINT','SIGTERM'])process.once(signal,()=>gracefulShutdown(signal)

@@ -2,7 +2,7 @@ const {randomUUID}=require('node:crypto');
 const {LinkCodeError}=require('../identity/identityService');
 const {RateLimitError,requireTextConfirmation}=require('../security/botSecurity');
 const {ValidationError,sendValidationError,requestSchemas}=require('../validation/domain');
-const {AuthorizationError}=require('../governance/governanceService');
+const {AccountBlockedError,AuthorizationError}=require('../governance/governanceService');
 const {GasLookupError}=require('../gas/etherscanGasService');
 const SECURITY_HEADERS=Object.freeze({
   'Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' ws: wss:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
@@ -12,9 +12,11 @@ function noStore(res){res.set('Cache-Control','no-store, private');}
 function publicWallet(value){return {label:value.label,address:value.address,chain:value.chain,balance:value.balance??null,symbol:value.symbol??null,minted:value.minted??0};}
 function jsonSafe(value){return JSON.parse(JSON.stringify(value,(_key,item)=>typeof item==='bigint'?item.toString():item));}
 
-function createDashboardApi({auth,identityRepository,loginRateLimiter,commands,securityAudit={record:async()=>{}},broadcast=()=>{},supportedChains=[],now=()=>Date.now()}) {
+function createDashboardApi({auth,identityRepository,loginRateLimiter,commands,securityAudit={record:async()=>{}},broadcast=()=>{},supportedChains=[],now=()=>Date.now(),checkAccountStatus}) {
   const previews=new Map();
-  const requireSession=async(req,res,next)=>{try{const session=await auth.authenticate(req.headers.cookie);if(!session)return res.status(401).json({error:'Authentication required'});req.dashboardSession=session;const refreshed=auth.refreshSessionCookies?.(req.headers.cookie);if(refreshed?.length)res.setHeader('Set-Cookie',refreshed);next();}catch(error){next(error);}};
+  const requireSession=async(req,res,next)=>{try{const session=await auth.authenticate(req.headers.cookie);if(!session)return res.status(401).json({error:'Authentication required'});
+      if(typeof checkAccountStatus==='function'){try{await checkAccountStatus(session.userId);}catch(error){if(error instanceof AccountBlockedError)return res.status(403).json({error:error.message,code:error.code,status:error.status});throw error;}}
+      req.dashboardSession=session;const refreshed=auth.refreshSessionCookies?.(req.headers.cookie);if(refreshed?.length)res.setHeader('Set-Cookie',refreshed);next();}catch(error){next(error);}};
   const requireCsrf=(req,res,next)=>auth.verifyCsrf({session:req.dashboardSession,cookieHeader:req.headers.cookie,headerToken:req.get('x-csrf-token')})?next():res.status(403).json({error:'Invalid CSRF token'});
   const action=handler=>async(req,res,next)=>{try{await handler(req,res);}catch(error){if(error instanceof ValidationError)return sendValidationError(res,error);if(error instanceof AuthorizationError)return res.status(403).json({error:'Owner access required'});next(error);}};
   function confirmation(req){requireTextConfirmation(req.body?.confirmation);}
@@ -29,6 +31,12 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,commands,s
     'user-ceilings-clear':['platform','platformUserId'],'user-simulation':['platform','platformUserId','simulation'],
     'group-simulation':['group','simulation'],'preset-set':['preset','simulation','confirmations','verification'],
     owner:['platform','platformUserId','enabled'],
+    ban:['platform','platformUserId','reason'],unban:['platform','platformUserId','reason'],
+    suspend:['platform','platformUserId','durationDays','reason'],unsuspend:['platform','platformUserId','reason'],
+    deactivate:['platform','platformUserId','reason'],reactivate:['platform','platformUserId','reason'],
+    subscription:['platform','platformUserId','active'],'good-standing':['platform','platformUserId','enabled'],
+    'group-retention':['groupName','retentionPeriodDays','requireActiveSubscription','requireRecentActivityDays'],
+    'schedule-removal':['platform','platformUserId','days'],
   });
   function adminInput(actionName,body={}){const fields=ADMIN_FIELDS[actionName];if(!fields)throw new ValidationError({field:'action',message:'is not supported'});return [actionName,...fields.map(field=>body[field])].join(' ');}
   async function auditAdminWrite(req,actionName){await Promise.resolve(securityAudit.record({userId:user(req),platform:'dashboard',
@@ -85,9 +93,9 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,commands,s
     adminOverview:action(async(req,res)=>res.json(jsonSafe(await commands.adminOverview(user(req))))),
     adminEffective:action(async(req,res)=>res.json(jsonSafe(await commands.adminEffective(user(req),req.query)))),
     adminWrite:action(async(req,res)=>{const actionName=String(req.params.action||'').toLowerCase();
-      if(actionName==='group-delete'||actionName==='owner')confirmation(req);
+      if(['group-delete','owner','ban','suspend','deactivate'].includes(actionName))confirmation(req);
       let result;try{result=await commands.admin(user(req),adminInput(actionName,req.body));}
-      catch(error){if(error instanceof AuthorizationError)throw error;throw new ValidationError({field:'admin',message:error.message});}
+      catch(error){if(error instanceof AuthorizationError||error instanceof ValidationError)throw error;throw new ValidationError({field:'admin',message:error.message});}
       await auditAdminWrite(req,actionName);res.json({message:result});}),
     error(error,req,res,next){if(res.headersSent)return next(error);res.status(500).json({error:'Request failed safely'});},
   };

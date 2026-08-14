@@ -244,3 +244,47 @@ test('an invalid or expired link code surfaces a clear message instead of a gene
   await handler(modal);
   assert.match(modal.replies[0].content, /invalid, expired, or already used/i);
 });
+
+// ── Milestone 16a: account status enforcement ──
+
+test('a banned account cannot run a slash command and sees a clear reason, not a generic failure', async () => {
+  const { AccountBlockedError } = require('../src/governance/governanceService');
+  const handler = createDiscordInteractionHandler({
+    identity: { resolveOrCreate: async () => 'blocked-user' },
+    checkAccountStatus: async () => { throw new AccountBlockedError('banned', 'spamming other users'); },
+    commands: { wallets: () => { throw new Error('must never reach a command handler once blocked'); } },
+  });
+  const slash = chatInteraction('wallet', 'blocked-user-1');
+  await handler(slash);
+  assert.match(slash.replies[0], /banned.*spamming other users/i);
+});
+
+test('a suspended account is blocked from button interactions the same way as slash commands', async () => {
+  const { AccountBlockedError } = require('../src/governance/governanceService');
+  const handler = createDiscordInteractionHandler({
+    identity: { resolveOrCreate: async () => 'blocked-user' },
+    checkAccountStatus: async () => { throw new AccountBlockedError('suspended', 'cooling off period'); },
+    commands: {},
+  });
+  const btn = buttonInteraction('menu:wallets', 'blocked-user-2');
+  await handler(btn);
+  assert.match(btn.updates[0].content, /suspended.*cooling off period/i);
+});
+
+test('an active (non-blocked) account is unaffected when checkAccountStatus is wired in', async () => {
+  const handler = createDiscordInteractionHandler({
+    identity: { resolveOrCreate: async () => 'fine-user' },
+    checkAccountStatus: async () => {},
+    commands: {},
+  });
+  const btn = buttonInteraction('menu:wallets', 'fine-user-1');
+  await handler(btn);
+  assert.match(btn.updates[0].content, /Wallets/);
+});
+
+test('omitting checkAccountStatus entirely (e.g. in tests that do not care about it) never blocks anyone', async () => {
+  const handler = createDiscordInteractionHandler({ identity: { resolveOrCreate: async () => 'user-a' }, commands: {} });
+  const btn = buttonInteraction('menu:wallets', 'no-check-user');
+  await handler(btn);
+  assert.match(btn.updates[0].content, /Wallets/);
+});

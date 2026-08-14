@@ -1,10 +1,10 @@
-function createGracefulShutdown({getHttpServer=()=>null,telegramBot,discordBot,schedulerWorker,socialWatchWorker,webSocketHub,stopWatchers,pool,log=()=>{}}) {
+function createGracefulShutdown({getHttpServer=()=>null,telegramBot,discordBot,schedulerWorker,socialWatchWorker,retentionWorker,webSocketHub,stopWatchers,pool,log=()=>{}}) {
   let stopping=null;
   return async function shutdown(signal='shutdown') {
     if(stopping)return stopping;
     stopping=(async()=>{
       log(`Graceful shutdown started (${signal})`);
-      schedulerWorker?.stop();socialWatchWorker?.stop();stopWatchers?.();
+      schedulerWorker?.stop();socialWatchWorker?.stop();retentionWorker?.stop();stopWatchers?.();
       await Promise.allSettled([
         telegramBot?.stopPolling?.({cancel:true}),discordBot?.stop?.(),
         webSocketHub?.close?.(),

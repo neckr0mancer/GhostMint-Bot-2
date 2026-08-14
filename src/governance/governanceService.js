@@ -8,6 +8,19 @@ class AuthorizationError extends Error {
   }
 }
 
+// Thrown by checkAccountStatus (Milestone 16a) for a suspended/banned/deactivated caller. Deliberately
+// a distinct class from AuthorizationError: that one means "you're not an owner", this one means "your
+// own account is blocked" -- the bot surfaces show a different message for each.
+class AccountBlockedError extends Error {
+  constructor(status, reason) {
+    super(`Account is ${status}${reason ? `: ${reason}` : ''}`);
+    this.name = 'AccountBlockedError';
+    this.code = 'ACCOUNT_BLOCKED';
+    this.status = status;
+    this.reason = reason || null;
+  }
+}
+
 // These throw ValidationError, not a plain Error, on purpose: they are input mistakes an owner
 // can immediately fix (wrong platform name, unlinked user, bad on/off value, missing ceiling), and
 // every bot surface already knows how to show a ValidationError's message safely to the caller.
@@ -24,6 +37,27 @@ function forcedValue(value, field = 'simulationForced', { nullable = false } = {
   if (value === true || value === 'forced') return true;
   if (value === false || value === 'optional') return false;
   throw new ValidationError({ field, message: nullable ? 'must be forced, optional, or inherit' : 'must be forced or optional' });
+}
+
+function parseOnOff(value, field) {
+  if (value === true || value === 'on') return true;
+  if (value === false || value === 'off') return false;
+  throw new ValidationError({ field, message: 'must be on or off' });
+}
+
+function parsePositiveInteger(value, field) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed <= 0) {
+    throw new ValidationError({ field, message: 'must be a positive whole number' });
+  }
+  return parsed;
+}
+
+// A schedule/period field accepts either "off" (clears/disables it) or a positive integer number of
+// days; used by suspension duration, group retention period, and group activity-recency requirement.
+function parseOptionalDays(value, field) {
+  if (value === undefined || value === null || value === 'off' || value === 'indefinite') return null;
+  return parsePositiveInteger(value, field);
 }
 
 function validateCeilings(input, { allowClear = false } = {}) {
@@ -51,8 +85,100 @@ function createGovernanceService(repository) {
     return userId;
   }
 
+  // Shared by ban/unban/suspend/unsuspend/deactivate/reactivate: resolves the target, refuses to
+  // touch an owner account (mirrors the existing "cannot remove the last owner" invariant on
+  // setOwner -- owner status must be revoked first, so account status changes can never be used to
+  // silently lock an owner out of their own bot), and requires a reason for every transition so
+  // status_changed_at/status_changed_by/status_reason is always a meaningful audit trail.
+  async function setStatus(callerUserId, { platform, platformUserId, status, reason, suspendedUntil = null }) {
+    await requireOwner(callerUserId);
+    const targetId = await targetUser(platform, platformUserId);
+    const current = await repository.getAccountStatus(targetId);
+    if (current?.isOwner) {
+      throw new ValidationError({ field: 'platformUserId', message: 'belongs to an owner -- remove owner status first before changing account status' });
+    }
+    return repository.setAccountStatus(targetId, {
+      status, reason: requiredText(reason, 'reason', 500), actorUserId: callerUserId, suspendedUntil,
+    });
+  }
+
   return {
     requireOwner,
+
+    // ── Milestone 16a: account lifecycle ──
+    banUser(callerUserId, input) {
+      return setStatus(callerUserId, { ...input, status: 'banned' });
+    },
+
+    unbanUser(callerUserId, input) {
+      return setStatus(callerUserId, { ...input, status: 'active' });
+    },
+
+    suspendUser(callerUserId, input) {
+      const days = parseOptionalDays(input.durationDays, 'durationDays');
+      const suspendedUntil = days === null ? null : new Date(Date.now() + days * 86_400_000);
+      return setStatus(callerUserId, { ...input, status: 'suspended', suspendedUntil });
+    },
+
+    unsuspendUser(callerUserId, input) {
+      return setStatus(callerUserId, { ...input, status: 'active' });
+    },
+
+    deactivateUser(callerUserId, input) {
+      return setStatus(callerUserId, { ...input, status: 'deactivated' });
+    },
+
+    reactivateUser(callerUserId, input) {
+      return setStatus(callerUserId, { ...input, status: 'active' });
+    },
+
+    async setSubscriptionActive(callerUserId, input) {
+      await requireOwner(callerUserId);
+      const targetId = await targetUser(input.platform, input.platformUserId);
+      return repository.setSubscriptionActive(targetId, parseOnOff(input.active, 'active'));
+    },
+
+    async setGoodStandingOverride(callerUserId, input) {
+      await requireOwner(callerUserId);
+      const targetId = await targetUser(input.platform, input.platformUserId);
+      return repository.setGoodStandingOverride(targetId, parseOnOff(input.enabled, 'enabled'));
+    },
+
+    // Not owner-gated: called for every user on every command, at the same identity-resolution
+    // choke point every platform already funnels through, so a blocked account can never reach any
+    // command by using a different bot surface. Self-heals a time-boxed suspension whose window has
+    // passed without needing a worker or cron.
+    async checkAccountStatus(userId) {
+      await repository.autoReinstateIfExpired(userId);
+      const status = await repository.getAccountStatus(userId);
+      if (!status || status.status === 'active' || status.isOwner) return;
+      throw new AccountBlockedError(status.status, status.reason);
+    },
+
+    // ── Milestone 16b: governance-group retention scheduling ──
+    async setGroupRetentionPolicy(callerUserId, input) {
+      await requireOwner(callerUserId);
+      const name = requiredText(input.groupName, 'groupName');
+      const retentionPeriodDays = parseOptionalDays(input.retentionPeriodDays, 'retentionPeriodDays');
+      const requireActiveSubscription = parseOnOff(input.requireActiveSubscription, 'requireActiveSubscription');
+      const requireRecentActivityDays = parseOptionalDays(input.requireRecentActivityDays, 'requireRecentActivityDays');
+      return repository.setGroupRetentionPolicy(name, { retentionPeriodDays, requireActiveSubscription, requireRecentActivityDays });
+    },
+
+    async scheduleRemoval(callerUserId, input) {
+      await requireOwner(callerUserId);
+      const targetId = await targetUser(input.platform, input.platformUserId);
+      const days = parseOptionalDays(input.days, 'days');
+      const removalAt = days === null ? null : new Date(Date.now() + days * 86_400_000);
+      try {
+        return await repository.scheduleRemoval(targetId, removalAt);
+      } catch (error) {
+        if (error.message === 'User is not assigned to a group') {
+          throw new ValidationError({ field: 'platformUserId', message: 'is not assigned to a governance group -- assign one first' });
+        }
+        throw error;
+      }
+    },
 
     async upsertGroup(callerUserId, input) {
       await requireOwner(callerUserId);
@@ -135,4 +261,4 @@ function createGovernanceService(repository) {
   };
 }
 
-module.exports = { AuthorizationError, createGovernanceService, forcedValue, validateCeilings };
+module.exports = { AccountBlockedError, AuthorizationError, createGovernanceService, forcedValue, validateCeilings };
