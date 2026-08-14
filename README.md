@@ -242,6 +242,10 @@ pg_restore --clean --if-exists --no-owner --no-acl --dbname $env:DATABASE_URL_UN
 
 Store backups encrypted outside the application host. Test restores regularly and verify the `schema_migrations`, `wallets`, and task/activity tables before declaring a backup usable.
 
+### Live testnet acceptance run
+
+`npm run acceptance:run` drives one real mint through the unmodified transaction engine against a real testnet (Sepolia), and records the outcome in `live_acceptance_runs`. This is a manual, owner-only, one-time gate required before Milestone 16 — see [`docs/LIVE_ACCEPTANCE_RUNBOOK.md`](docs/LIVE_ACCEPTANCE_RUNBOOK.md) for the full procedure. It is never run automatically.
+
 ## Commands
 
 | Command | Purpose |

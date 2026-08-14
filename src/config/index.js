@@ -14,6 +14,7 @@ const CHAIN_DEFINITIONS = Object.freeze({
     defaultRpc: 'https://ethereum.publicnode.com',
     sym: 'ETH',
     ex: 'https://etherscan.io/tx/',
+    isTestnet: false,
   }),
   base: Object.freeze({
     name: 'Base',
@@ -22,6 +23,7 @@ const CHAIN_DEFINITIONS = Object.freeze({
     defaultRpc: 'https://mainnet.base.org',
     sym: 'ETH',
     ex: 'https://basescan.org/tx/',
+    isTestnet: false,
   }),
   arbitrum: Object.freeze({
     name: 'Arbitrum',
@@ -30,6 +32,7 @@ const CHAIN_DEFINITIONS = Object.freeze({
     defaultRpc: 'https://arb1.arbitrum.io/rpc',
     sym: 'ETH',
     ex: 'https://arbiscan.io/tx/',
+    isTestnet: false,
   }),
   polygon: Object.freeze({
     name: 'Polygon',
@@ -38,6 +41,16 @@ const CHAIN_DEFINITIONS = Object.freeze({
     defaultRpc: 'https://polygon-rpc.com',
     sym: 'MATIC',
     ex: 'https://polygonscan.com/tx/',
+    isTestnet: false,
+  }),
+  sepolia: Object.freeze({
+    name: 'Sepolia',
+    chainId: 11155111,
+    envName: 'SEPOLIA_RPC',
+    defaultRpc: 'https://ethereum-sepolia-rpc.publicnode.com',
+    sym: 'ETH',
+    ex: 'https://sepolia.etherscan.io/tx/',
+    isTestnet: true,
   }),
 });
 
@@ -284,6 +297,7 @@ for (const chainName of supportedChains) {
     rpcWsUrl: parseWsRpcUrl(definition),
     sym: definition.sym,
     ex: definition.ex,
+    isTestnet: definition.isTestnet,
   });
 }
 

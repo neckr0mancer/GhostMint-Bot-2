@@ -181,6 +181,17 @@ function validateTransactionPolicy(input) {
   };
 }
 
+function validateLiveAcceptanceRun(input, context) {
+  return {
+    operatorUserId: uuid(input.operatorUserId, 'operatorUserId'),
+    chain: chainName(input.chain, context.supportedChains, 'chain'),
+    walletId: finiteNumber(input.walletId, 'walletId', { min: 1, integer: true }),
+    contractAddress: ethereumAddress(input.contractAddress, 'contractAddress'),
+    methodSignature: string(input.methodSignature, 'methodSignature', { max: 64 }).replace(/\s+/g, ''),
+    valueWei: optionalWei(input.valueWei, 'valueWei') ?? 0n,
+  };
+}
+
 function validateWalletCreate(input, context) {
   const importMethod = input.importMethod === 'seedPhrase' ? 'seedPhrase' : 'privateKey';
   let privateKey;
@@ -345,6 +356,7 @@ const requestSchemas = Object.freeze({
   themeUpdate: input => ({ theme: dashboardTheme(input.theme) }),
   defaultChainUpdate: (input, context) => ({ defaultChain: chainName(input.defaultChain, context.supportedChains, 'defaultChain') }),
   socialUsagePeriod: input => ({ period: usagePeriod(input.period) }),
+  liveAcceptanceRun: validateLiveAcceptanceRun,
 });
 
 function validationPayload(error) {

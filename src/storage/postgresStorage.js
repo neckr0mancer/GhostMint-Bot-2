@@ -100,6 +100,10 @@ function createPostgresStorage(pool) {
       [userId, id, envelope.ciphertext, envelope.salt, envelope.nonce, envelope.authTag, envelope.keyVersion]);
       return result.rowCount > 0;
     },
+    async getWallet(userId, id) {
+      const result = await pool.query('SELECT * FROM wallets WHERE user_id=$1 AND id=$2', [userId, id]);
+      return result.rowCount ? mapWallet(result.rows[0]) : null;
+    },
 
     async saveTask(task) {
       const status = task.status === 'waiting' ? 'scheduled' : task.status;

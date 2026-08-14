@@ -135,13 +135,15 @@ Technology decisions for all Milestone 13 phases:
 - Authentication: the existing Milestone 5 platform-neutral `/link` code flow; no dashboard password system.
 - Real-time transport: WebSocket authenticated by the server-side session cookie and scoped to the internal `user_id`.
 
+### Milestone 14 — Live testnet acceptance run tooling
+
+- Add an operator-only, owner-scoped CLI tool that drives one controlled live testnet mint through the unmodified Milestone 7 transaction engine and Milestone 8 mint-construction pipeline (no bypass path): real RPC, a disposable funded testnet wallet already onboarded through the existing encrypted wallet flow, and a deployed test mint contract.
+- Add a durable, redacted audit record of each attempted run (chain, contract, wallet, transaction intent linkage, policy ceilings applied, simulation outcome, confirmations, pass/fail) so evidence survives beyond a local file.
+- Add a runbook documenting the exact human steps to fund a throwaway wallet, deploy a disposable test mint contract, and execute the tool, since the run itself requires real (testnet) secrets this project must never request, log, or store outside the existing encrypted wallet path.
+- This tooling exists because Milestone 7 has only been verified with mocked providers and database-backed automated tests to date. Executing the actual one-time live run against real testnet infrastructure is a manual operational step for the project owner, not something automated in CI, and remains gated on real testnet credentials the owner supplies outside of chat/CLI logs.
+- Do not release to production or use meaningful funds until that live acceptance run has actually been executed with this tooling and its evidence recorded as passing.
+
 ## Production definition of done
-
-### Mandatory pre-Milestone 16 live acceptance TODO
-
-- Before Milestone 16 (production release gate), perform one controlled live testnet acceptance run using a real RPC, a disposable funded testnet wallet, and a deployed test mint contract.
-- This is mandatory because Milestone 7 has only been verified with mocked providers and database-backed automated tests. Defer the one-time run until after Milestones 8–10 stabilize mint construction so it does not need to be repeated unnecessarily.
-- Do not release to production or use meaningful funds until that live acceptance run passes and its evidence is recorded.
 
 - All validation, lint, unit, integration, migration, and smoke checks pass in CI.
 - Every user-owned read and write is tenant-scoped.
