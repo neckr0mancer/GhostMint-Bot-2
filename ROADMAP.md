@@ -144,6 +144,17 @@ Technology decisions for all Milestone 13 phases:
 - This tooling exists because Milestone 7 has only been verified with mocked providers and database-backed automated tests to date. Executing the actual one-time live run against real testnet infrastructure is a manual operational step for the project owner, not something automated in CI, and remains gated on real testnet credentials the owner supplies outside of chat/CLI logs.
 - Do not release to production or use meaningful funds until that live acceptance run has actually been executed with this tooling and its evidence recorded as passing.
 
+### Milestone 15 — Conversational bot UX and session integrity
+
+Telegram and Discord today are entirely regex/slash-argument driven with plain-text replies; there is no persistent menu, no button-based navigation, and Telegram never registers its command list with `setMyCommands`, so its `/` autocomplete is unreliable. This milestone makes both bots feel like interactive products rather than a command reference, without touching the underlying validation, transaction, or governance services they already call correctly.
+
+- **15a — Command discovery and a persistent main menu:** Register Telegram's command list via `setMyCommands` so `/` autocomplete is always populated. Add a button-based main menu (Telegram inline keyboard; Discord already has structured slash commands, so this phase adds equivalent embeds/buttons) reachable from `/start` and from a persistent "Menu" affordance, covering Wallets, Mint, Tasks, Snipers, Watch Rules, Activity, Gas, and Settings/Admin entry points.
+- **15b — Guided multi-step flows with cancel confirmation:** Add a per-user, per-platform in-memory flow-state tracker for multi-step actions (wallet create/import, funding, mint, task create, sniper create, etc.). If the user navigates away mid-flow (taps a different menu button, sends an unrelated command), the bot asks for explicit confirmation before abandoning the in-progress step; on confirmation, the flow state is fully cleared and the user is returned to the main menu. Flow state never bypasses existing validation or the M7 transaction engine — it only sequences the same requests that already exist as slash commands.
+- **15c — Discord parity:** Apply the same guided-flow and cancel-confirmation behavior to Discord using message components (buttons/select menus), through the same shared command service used by Telegram, per the Milestone 11 tenant-isolation and shared-validation guarantees.
+- **15d — Dashboard link/session bug fix:** Investigate and fix the reported issue where generating a new `/link` code after a prior login/logout does not work as expected. Root cause must be confirmed against reproduction steps before a fix is written; this phase does not change the Milestone 13a session/CSRF model unless the root cause requires it.
+
+This milestone changes presentation and interaction flow only. It must not introduce a second way to submit a transaction, alter spend/gas ceilings, or bypass the Milestone 6 validation schemas or Milestone 7 transaction engine — every button and guided step ultimately calls the same shared command service already used by the existing slash/text commands.
+
 ## Production definition of done
 
 - All validation, lint, unit, integration, migration, and smoke checks pass in CI.

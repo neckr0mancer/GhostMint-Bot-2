@@ -32,6 +32,8 @@ const { createSocialWatchRepository } = require('./social/socialWatchRepository'
 const { createSocialWatchService } = require('./social/socialWatchService');
 const { createSocialWatchWorker } = require('./social/socialWatchWorker');
 const { createSocialUsageService, formatUsageSummary } = require('./social/usageService');
+const { createFlowStateStore } = require('./telegram/flowState');
+const telegramMenus = require('./telegram/menus');
 const { createChainWatcher } = require('./sniper/chainWatcher');
 const { createSniperRepository } = require('./sniper/sniperRepository');
 const { createSniperService } = require('./sniper/sniperService');
@@ -435,6 +437,163 @@ function stateFor(userId) {
   return stateForUser(DB, userId);
 }
 
+// ── Telegram guided-menu UX (Milestone 15a/15b) ──────────────
+// A persistent inline-keyboard menu plus a small per-chat flow-state tracker for multi-step
+// actions (wallet create/import today; the same pattern extends to mint/task/sniper flows in a
+// follow-up pass). None of this bypasses botCommands/validation/the transaction engine — every
+// guided step ends by calling the exact same service function the equivalent slash command uses.
+const telegramFlowState = createFlowStateStore();
+const FLOW_LABELS = { wallet_create: 'creating a wallet', wallet_import: 'importing a wallet' };
+const FLOW_CONTINUATION_PREFIXES = { wallet_create: ['flow:chain:'], wallet_import: ['flow:chain:'] };
+
+function cancelOnlyKeyboard() {
+  return telegramMenus.keyboard([[telegramMenus.button('❌ Cancel', 'flow:cancel:ask')]]);
+}
+
+function renderFlowStep(flow, step) {
+  if (flow === 'wallet_create') {
+    if (step === 'awaiting_label') return { text: 'Send the label for your new wallet (letters, numbers, spaces, `.`, `_`, `-`).', replyMarkup: cancelOnlyKeyboard() };
+    if (step === 'awaiting_chain') return telegramMenus.chainPicker(CONFIG.supportedChains, CHAINS);
+  }
+  if (flow === 'wallet_import') {
+    if (step === 'awaiting_label') return { text: 'Send the label for the wallet you are importing.', replyMarkup: cancelOnlyKeyboard() };
+    if (step === 'awaiting_chain') return telegramMenus.chainPicker(CONFIG.supportedChains, CHAINS);
+    if (step === 'awaiting_key') return { text: '⚠️ *Not recommended:* send the private key now. It passes through Telegram message transit and may remain in chat history or notification previews. Delete your message afterward if you can.', replyMarkup: cancelOnlyKeyboard() };
+  }
+  return telegramMenus.mainMenu({});
+}
+
+function retryStepForField(error) {
+  const field = error.issues?.[0]?.field;
+  if (field === 'label') return 'awaiting_label';
+  if (field === 'privateKey' || field === 'seedPhrase') return 'awaiting_key';
+  if (field === 'chain') return 'awaiting_chain';
+  return null;
+}
+
+function tgMenu(chatId, { text, replyMarkup }) {
+  if (!bot || !chatId) return Promise.resolve();
+  return bot.sendMessage(chatId, String(text), { reply_markup: replyMarkup }).catch(e => log('TG: '+safeError(e)));
+}
+
+function tgEditMenu(chatId, messageId, { text, replyMarkup }) {
+  if (!bot || !chatId || !messageId) return tgMenu(chatId, { text, replyMarkup });
+  return bot.editMessageText(String(text), { chat_id: chatId, message_id: messageId, reply_markup: replyMarkup })
+    .catch(() => tgMenu(chatId, { text, replyMarkup }));
+}
+
+async function handleFlowTextMessage(msg) {
+  if (!msg.text || msg.text.startsWith('/')) return;
+  let context;
+  try { context = verifyTelegramContext(msg); } catch { return; }
+  let userId;
+  try { userId = await identity.resolveOrCreate('telegram', context.platformUserId); } catch { return; }
+  const chatId = msg.chat.id;
+  const flow = telegramFlowState.get('telegram', chatId);
+  if (!flow) return;
+  if (flow.pendingCancel) { tgMenu(chatId, telegramMenus.confirmCancelPrompt(FLOW_LABELS[flow.flow] || flow.flow)); return; }
+  const isTextStep = (flow.flow === 'wallet_create' && flow.step === 'awaiting_label')
+    || (flow.flow === 'wallet_import' && (flow.step === 'awaiting_label' || flow.step === 'awaiting_key'));
+  if (!isTextStep) { tgMenu(chatId, { text: 'Please use the buttons above, or tap Cancel.', replyMarkup: cancelOnlyKeyboard() }); return; }
+
+  const value = msg.text.trim();
+  if (flow.step === 'awaiting_label') {
+    if (!value || value.length > 64) { tgMenu(chatId, { text: 'Label must be 1-64 characters. Try again.', replyMarkup: cancelOnlyKeyboard() }); return; }
+    telegramFlowState.advance('telegram', chatId, 'awaiting_chain', { label: value });
+    tgMenu(chatId, renderFlowStep(flow.flow, 'awaiting_chain'));
+    return;
+  }
+  if (flow.step === 'awaiting_key') {
+    try {
+      commandRateLimiter.check('telegram', userId, 'importwallet');
+      const wallet = await botCommands.importWallet(userId, { label: flow.data.label, chain: flow.data.chain, privateKey: value });
+      telegramFlowState.clear('telegram', chatId);
+      tgMenu(chatId, { text: `✅ Wallet *${wallet.label}* imported at \`${wallet.address}\`.\n\n⚠️ Not recommended going forward: prefer /createwallet for new wallets.`,
+        replyMarkup: telegramMenus.keyboard([[telegramMenus.button('⬅️ Back to wallets', 'menu:wallets')]]) });
+    } catch (error) {
+      if (error instanceof ValidationError) {
+        const retryStep = retryStepForField(error);
+        if (retryStep) {
+          telegramFlowState.advance('telegram', chatId, retryStep, {});
+          const prompt = renderFlowStep(flow.flow, retryStep);
+          tgMenu(chatId, { text: `${validationReply(error)}\n\n${prompt.text}`, replyMarkup: prompt.replyMarkup });
+          return;
+        }
+        telegramFlowState.clear('telegram', chatId);
+        tgMenu(chatId, { text: validationReply(error), replyMarkup: telegramMenus.mainMenu({}).replyMarkup });
+        return;
+      }
+      if (error instanceof RateLimitError) {
+        tgMenu(chatId, { text: `Too many sensitive commands. Retry in ${Math.ceil(error.retryAfterMs/1000)} seconds.`, replyMarkup: cancelOnlyKeyboard() });
+        return;
+      }
+      telegramFlowState.clear('telegram', chatId);
+      log(`Telegram guided wallet import failed: ${safeError(error)}`);
+      tgMenu(chatId, { text: 'Import failed safely. Please try again from the Wallets menu.', replyMarkup: telegramMenus.mainMenu({}).replyMarkup });
+    }
+  }
+}
+
+function withTelegramCallback(handler) {
+  return async query => {
+    const chatId = query.message?.chat?.id;
+    const messageId = query.message?.message_id;
+    let context, userId = null;
+    const audit=value=>Promise.resolve(botSecurityRepository.record(value)).catch(error=>log(`Security audit write failed: ${safeError(error)}`));
+    try {
+      context = verifyTelegramContext({ from: query.from, chat: query.message?.chat });
+      userId = await identity.resolveOrCreate('telegram', context.platformUserId);
+      bot.answerCallbackQuery(query.id).catch(() => {});
+
+      const data = query.data || '';
+      const activeFlow = telegramFlowState.get('telegram', chatId);
+      const isCancelControl = data === 'flow:cancel:confirm' || data === 'flow:cancel:resume';
+      if (activeFlow && !isCancelControl) {
+        const allowed = FLOW_CONTINUATION_PREFIXES[activeFlow.flow] || [];
+        if (!allowed.some(prefix => data.startsWith(prefix))) {
+          telegramFlowState.markPendingCancel('telegram', chatId);
+          await tgEditMenu(chatId, messageId, telegramMenus.confirmCancelPrompt(FLOW_LABELS[activeFlow.flow] || activeFlow.flow));
+          return;
+        }
+      }
+      if (data === 'flow:cancel:confirm') {
+        telegramFlowState.clear('telegram', chatId);
+        await tgEditMenu(chatId, messageId, telegramMenus.mainMenu({ isOwner: await governanceRepository.isOwner(userId) }));
+        return;
+      }
+      if (data === 'flow:cancel:resume') {
+        const flow = telegramFlowState.clearPendingCancel('telegram', chatId);
+        await tgEditMenu(chatId, messageId, flow ? renderFlowStep(flow.flow, flow.step) : telegramMenus.mainMenu({ isOwner: await governanceRepository.isOwner(userId) }));
+        return;
+      }
+
+      await handler(query, userId, { chatId, messageId });
+    } catch (error) {
+      if (error instanceof ValidationError) { tg(chatId, validationReply(error)); return; }
+      if (error instanceof AuthorizationError) {
+        await audit({userId,platform:'telegram',platformUserId:context?.platformUserId,
+          contextId:context?.contextId,command:commandName(query.data),outcome:'unauthorized',reason:error.message});
+        tg(chatId, '❌ Owner access required.');
+        return;
+      }
+      if (error instanceof RateLimitError) {
+        await audit({userId,platform:'telegram',platformUserId:context?.platformUserId,
+          contextId:context?.contextId,command:commandName(query.data),outcome:'rate_limited',reason:error.message});
+        tg(chatId, `Too many sensitive commands. Retry in ${Math.ceil(error.retryAfterMs/1000)} seconds.`);
+        return;
+      }
+      if (error instanceof BotContextError) {
+        await audit({platform:'telegram',platformUserId:query.from?.id,contextId:query.message?.chat?.id,
+          command:commandName(query.data),outcome:'invalid_context',reason:error.message});
+        return;
+      }
+      if (error instanceof ProofResolutionError) { tg(chatId, `❌ ${error.message}`); return; }
+      log(`Telegram callback failed: ${safeError(error)}`);
+      tg(chatId, 'Action failed safely. Please try again.');
+    }
+  };
+}
+
 function withTelegramUser(handler) {
   return async (msg, match) => {
     let context,userId=null;
@@ -442,6 +601,12 @@ function withTelegramUser(handler) {
     try {
       context=verifyTelegramContext(msg);
       userId=await identity.resolveOrCreate('telegram',context.platformUserId);
+      const activeFlow=telegramFlowState.get('telegram',context.contextId);
+      if(activeFlow) {
+        telegramFlowState.markPendingCancel('telegram',context.contextId);
+        await tgMenu(msg.chat.id, telegramMenus.confirmCancelPrompt(FLOW_LABELS[activeFlow.flow]||activeFlow.flow));
+        return;
+      }
       const command=commandName(msg.text||msg.caption);
       if(['mintnow','mintcall','mintpreset','admin','watch','confirmtrigger','targetpolicy','updatesniper','importwallet'].includes(command)) {
         commandRateLimiter.check('telegram',userId,command);
@@ -480,12 +645,131 @@ function withTelegramUser(handler) {
 if (BOT_TOKEN) {
   bot = new TelegramBot(BOT_TOKEN, { polling: true });
   log('Telegram bot started');
+  // Milestone 15a: register the command list so Telegram's "/" autocomplete is always populated,
+  // instead of relying on users remembering exact command syntax.
+  bot.setMyCommands([
+    { command: 'start', description: 'Open the main menu' },
+    { command: 'wallets', description: 'List your wallets' },
+    { command: 'createwallet', description: 'Generate and encrypt a new wallet' },
+    { command: 'importwallet', description: 'Import an existing wallet (not recommended)' },
+    { command: 'removewallet', description: 'Remove a wallet' },
+    { command: 'mintnow', description: 'Mint immediately' },
+    { command: 'mintcall', description: 'Mint via raw validated call JSON' },
+    { command: 'mintpresets', description: 'List saved mint presets' },
+    { command: 'tasks', description: 'List scheduled mint tasks' },
+    { command: 'snipers', description: 'List post-confirmation copy snipers' },
+    { command: 'watch', description: 'Manage social watch rules' },
+    { command: 'activity', description: 'Recent mint activity' },
+    { command: 'gas', description: 'Live chain fee data' },
+    { command: 'stats', description: 'Account statistics' },
+    { command: 'mode', description: 'Switch transaction mode preset' },
+    { command: 'link', description: 'Get a code to link Discord or the dashboard' },
+    { command: 'admin', description: 'Owner-only governance actions' },
+    { command: 'help', description: 'Show the main menu' },
+  ]).catch(error => log(`Failed to register Telegram command list: ${safeError(error)}`));
+
   bot.on('message', msg => {
     if(msg.text?.startsWith('/')&&!msg.from?.id) log('Telegram command without sender ignored');
+    handleFlowTextMessage(msg).catch(error => log(`Telegram flow text handling failed: ${safeError(error)}`));
   });
 
-  bot.onText(/^\/(?:start|help)(?:@\w+)?$/, withTelegramUser(async msg => {
-    tg(msg.chat.id, `*GhostMint Bot*\n\n*Wallet onboarding:*\n/createwallet <label> <chain> — recommended; generates and encrypts a new wallet server-side\n/importwallet <label> <chain> <private-key> — not recommended; the key crosses Telegram message transit and may remain in chat history or notification previews\n/wallets — list wallets\n/removewallet <label> — remove wallet\n\n*Transactions and automation:*\n/mintnow <label> <contract> <qty> <price> <chain>\n/mintcall <JSON>\n/mintpreset save|use|delete <JSON/name>\n/mintpresets\n/tasks\n/canceltask <id>\n/pausetask <id>\n/resumetask <id>\n/retrytask <id>\n/snipers\n/updatesniper <id> <JSON>\n/activity\n/gas\n/stats\n/mode <preset>\n/link\n/admin <action>`);
+  bot.on('callback_query', withTelegramCallback(async (query, userId, { chatId, messageId }) => {
+    const data = query.data || '';
+    const ownerFlag = async () => governanceRepository.isOwner(userId);
+
+    if (data === 'menu:main') return tgEditMenu(chatId, messageId, telegramMenus.mainMenu({ isOwner: await ownerFlag() }));
+    if (data === 'menu:wallets') return tgEditMenu(chatId, messageId, telegramMenus.walletsMenu());
+    if (data === 'menu:settings') return tgEditMenu(chatId, messageId, telegramMenus.settingsMenu({ isOwner: await ownerFlag() }));
+    if (data === 'menu:mint') return tgEditMenu(chatId, messageId, telegramMenus.placeholderMenu('Mint', 'Use /mintnow <label> <contract> <qty> <price> <chain>, or save a preset with /mintpreset save then run /mintpreset use <name>. A guided mint flow is coming in a follow-up pass.'));
+    if (data === 'menu:tasks') return tgEditMenu(chatId, messageId, telegramMenus.placeholderMenu('Tasks', 'Use /tasks to list, /canceltask, /pausetask, /resumetask, or /retrytask <id>.'));
+    if (data === 'menu:snipers') return tgEditMenu(chatId, messageId, telegramMenus.placeholderMenu('Snipers', 'Use /snipers to list, /updatesniper <id> <JSON> to edit.'));
+    if (data === 'menu:watch') return tgEditMenu(chatId, messageId, telegramMenus.placeholderMenu('Watch rules', 'Use /watch add|edit|disable|remove|list.'));
+    if (data === 'menu:activity') return tgEditMenu(chatId, messageId, telegramMenus.placeholderMenu('Activity', 'Use /activity to see recent mint activity.'));
+    if (data === 'menu:gas') return tgEditMenu(chatId, messageId, telegramMenus.placeholderMenu('Gas', 'Use /gas <chain> for live fee data.'));
+    if (data === 'menu:mode') return tgEditMenu(chatId, messageId, telegramMenus.placeholderMenu('Transaction mode', 'Use /mode <preset> CONFIRM to switch presets.'));
+    if (data === 'menu:admin') return tgEditMenu(chatId, messageId, telegramMenus.placeholderMenu('Admin', 'Use /admin <action> CONFIRM. Owner-only.'));
+
+    if (data === 'link:generate') {
+      const link = await identity.createLinkCode(userId);
+      return tgEditMenu(chatId, messageId, { text: `🔗 *Account link code:* \`${link.code}\`\n\nExpires in 5 minutes and can be used once. Enter it on the dashboard, or use the equivalent link command on another platform.`,
+        replyMarkup: telegramMenus.keyboard([[telegramMenus.button('⬅️ Back to settings', 'menu:settings')]]) });
+    }
+
+    if (data === 'wallet:list') {
+      const wallets = botCommands.wallets(userId);
+      if (!wallets.length) return tgEditMenu(chatId, messageId, telegramMenus.placeholderMenu('Wallets', 'No wallets yet. Go back and tap Create wallet.'));
+      const list = wallets.map((w,i) =>
+        `${i+1}. *${w.label}*\n   \`${w.address.slice(0,6)}...${w.address.slice(-4)}\` · ${CHAINS[w.chain]?.name||w.chain} · minted: ${w.minted||0}`
+      ).join('\n\n');
+      return tgEditMenu(chatId, messageId, { text: `*Wallets (${wallets.length})*\n\n${list}`,
+        replyMarkup: telegramMenus.keyboard([[telegramMenus.button('⬅️ Back to wallets', 'menu:wallets')]]) });
+    }
+
+    if (data === 'wallet:create:start') {
+      telegramFlowState.start('telegram', chatId, 'wallet_create', 'awaiting_label');
+      return tgEditMenu(chatId, messageId, renderFlowStep('wallet_create', 'awaiting_label'));
+    }
+    if (data === 'wallet:import:start') {
+      telegramFlowState.start('telegram', chatId, 'wallet_import', 'awaiting_label');
+      return tgEditMenu(chatId, messageId, renderFlowStep('wallet_import', 'awaiting_label'));
+    }
+
+    if (data.startsWith('flow:chain:')) {
+      const chain = data.slice('flow:chain:'.length);
+      const flow = telegramFlowState.get('telegram', chatId);
+      if (!flow) return tgEditMenu(chatId, messageId, telegramMenus.mainMenu({ isOwner: await ownerFlag() }));
+      if (flow.flow === 'wallet_create') {
+        try {
+          const wallet = await botCommands.createWallet(userId, { label: flow.data.label, chain });
+          telegramFlowState.clear('telegram', chatId);
+          return tgEditMenu(chatId, messageId, { text: `✅ Wallet *${wallet.label}* generated securely.\nAddress: \`${wallet.address}\`\nChain: ${wallet.chain}\n\nFund this address to use it. The private key was encrypted at creation and never leaves the server.`,
+            replyMarkup: telegramMenus.keyboard([[telegramMenus.button('⬅️ Back to wallets', 'menu:wallets')]]) });
+        } catch (error) {
+          if (error instanceof ValidationError) {
+            const retryStep = retryStepForField(error) || 'awaiting_label';
+            telegramFlowState.advance('telegram', chatId, retryStep, {});
+            const prompt = renderFlowStep('wallet_create', retryStep);
+            return tgEditMenu(chatId, messageId, { text: `${validationReply(error)}\n\n${prompt.text}`, replyMarkup: prompt.replyMarkup });
+          }
+          telegramFlowState.clear('telegram', chatId);
+          throw error;
+        }
+      }
+      if (flow.flow === 'wallet_import') {
+        telegramFlowState.advance('telegram', chatId, 'awaiting_key', { chain });
+        return tgEditMenu(chatId, messageId, renderFlowStep('wallet_import', 'awaiting_key'));
+      }
+      return;
+    }
+
+    if (data === 'wallet:balance:pick') {
+      return tgEditMenu(chatId, messageId, telegramMenus.walletPicker(botCommands.wallets(userId), { prefix:'wallet:balance', emptyHint:'No wallets yet. Create one first.' }));
+    }
+    if (data.startsWith('wallet:balance:') && data !== 'wallet:balance:pick') {
+      const label = data.slice('wallet:balance:'.length);
+      const result = await botCommands.walletBalance(userId, label);
+      return tgEditMenu(chatId, messageId, { text: `*${result.label}*\nBalance: ${result.balance} ${result.symbol}`,
+        replyMarkup: telegramMenus.keyboard([[telegramMenus.button('⬅️ Back to wallets', 'menu:wallets')]]) });
+    }
+
+    if (data === 'wallet:remove:pick') {
+      return tgEditMenu(chatId, messageId, telegramMenus.walletPicker(botCommands.wallets(userId), { prefix:'wallet:remove:pick', emptyHint:'No wallets yet.' }));
+    }
+    if (data.startsWith('wallet:remove:pick:')) {
+      const label = data.slice('wallet:remove:pick:'.length);
+      return tgEditMenu(chatId, messageId, telegramMenus.confirmRemoveWallet(label));
+    }
+    if (data.startsWith('wallet:remove:do:')) {
+      const label = data.slice('wallet:remove:do:'.length);
+      await botCommands.removeWallet(userId, label);
+      return tgEditMenu(chatId, messageId, { text: `🗑️ Wallet *${label}* removed.`,
+        replyMarkup: telegramMenus.keyboard([[telegramMenus.button('⬅️ Back to wallets', 'menu:wallets')]]) });
+    }
+  }));
+
+  bot.onText(/^\/(?:start|help)(?:@\w+)?$/, withTelegramUser(async (msg, match, userId) => {
+    const menu = telegramMenus.mainMenu({ isOwner: await governanceRepository.isOwner(userId) });
+    tgMenu(msg.chat.id, menu);
   }));
 
   bot.onText(/^\/link(?:@\w+)?$/, withTelegramUser(async (msg, match, userId) => {
