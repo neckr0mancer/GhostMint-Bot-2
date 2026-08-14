@@ -150,6 +150,7 @@ button:disabled{opacity:.45;cursor:not-allowed;box-shadow:none}
   font-size:.9rem;line-height:1.5}
 .notice.error{background:var(--danger-soft);border-color:color-mix(in srgb,var(--danger) 30%,transparent);color:var(--danger)}
 .notice.ok{background:var(--success-soft);border-color:color-mix(in srgb,var(--success) 30%,transparent);color:var(--success)}
+.notice.notice-warning{background:var(--warning-soft);border-color:color-mix(in srgb,var(--warning) 30%,transparent);color:var(--warning)}
 .error{color:var(--danger)}
 .ok{color:var(--success)}
 .warning{color:var(--warning);border-left:3px solid var(--warning);padding-left:.85rem;font-size:.88rem;line-height:1.5}
@@ -163,6 +164,14 @@ button:disabled{opacity:.45;cursor:not-allowed;box-shadow:none}
 .pill-danger{background:var(--danger-soft);color:var(--danger)}
 .pill-warning{background:var(--warning-soft);color:var(--warning)}
 .pill-neutral{background:color-mix(in srgb,var(--text) 10%,transparent);color:var(--text-muted)}
+
+/* ==========================================================================
+   Settings: gas prices / social API usage reporting
+   ========================================================================== */
+.gas-readout,.usage-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(9rem,1fr));gap:.75rem;margin-top:1rem}
+.gas-readout>div,.usage-stats>div{padding:.85rem 1rem;border-radius:var(--radius-sm);background:var(--surface-2);border:1px solid var(--border)}
+.gas-readout span,.usage-stats span{display:block;font-size:.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.03em;margin-bottom:.3rem}
+.gas-readout strong,.usage-stats strong{font-size:1.15rem}
 
 /* ==========================================================================
    Skeleton loading

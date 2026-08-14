@@ -85,6 +85,13 @@ function dashboardTheme(value, field = 'theme') {
   return normalized;
 }
 
+function usagePeriod(value, field = 'period') {
+  if (value === undefined || value === null || value === '') return undefined;
+  const normalized = string(value, field, { max: 16 }).toLowerCase();
+  if (normalized !== 'today' && normalized !== 'month') fail(field, 'must be today or month');
+  return normalized;
+}
+
 function walletLabel(value, field = 'walletLabel') {
   const normalized = string(value, field, { max: 48 });
   if (!WALLET_LABEL_PATTERN.test(normalized)) {
@@ -336,6 +343,8 @@ const requestSchemas = Object.freeze({
   watchRulePatch: input => validateWatchRule(input, { partial: true }),
   watchRuleDeletion: input => ({ id: uuid(input.id, 'id') }),
   themeUpdate: input => ({ theme: dashboardTheme(input.theme) }),
+  defaultChainUpdate: (input, context) => ({ defaultChain: chainName(input.defaultChain, context.supportedChains, 'defaultChain') }),
+  socialUsagePeriod: input => ({ period: usagePeriod(input.period) }),
 });
 
 function validationPayload(error) {

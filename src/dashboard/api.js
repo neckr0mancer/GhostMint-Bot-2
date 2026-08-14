@@ -3,6 +3,7 @@ const {LinkCodeError}=require('../identity/identityService');
 const {RateLimitError,requireTextConfirmation}=require('../security/botSecurity');
 const {ValidationError,sendValidationError,requestSchemas}=require('../validation/domain');
 const {AuthorizationError}=require('../governance/governanceService');
+const {GasLookupError}=require('../gas/etherscanGasService');
 const SECURITY_HEADERS=Object.freeze({
   'Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' ws: wss:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
   'Cross-Origin-Opener-Policy':'same-origin','Referrer-Policy':'no-referrer','X-Content-Type-Options':'nosniff','X-Frame-Options':'DENY',
@@ -38,8 +39,16 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,commands,s
       catch(error){if(error instanceof LinkCodeError)return res.status(401).json({error:'Invalid or expired login code'});if(error instanceof RateLimitError){res.set('Retry-After',String(Math.ceil(error.retryAfterMs/1000)));return res.status(429).json({error:'Too many login attempts'});}throw error;}},
     logout:async(req,res)=>{noStore(res);await auth.revoke(req.dashboardSession);res.setHeader('Set-Cookie',auth.clearCookies());res.status(204).end();},
     logoutAll:async(req,res)=>{noStore(res);await auth.revokeAll(req.dashboardSession);res.setHeader('Set-Cookie',auth.clearCookies());res.status(204).end();},
-    profile:async(req,res)=>{noStore(res);res.json({userId:user(req),isOwner:commands?.isOwner?await commands.isOwner(user(req)):false,linkedAccounts:await identityRepository.listLinkedAccounts(user(req)),supportedChains,theme:await identityRepository.getTheme(user(req))});},
+    profile:async(req,res)=>{noStore(res);res.json({userId:user(req),isOwner:commands?.isOwner?await commands.isOwner(user(req)):false,linkedAccounts:await identityRepository.listLinkedAccounts(user(req)),supportedChains,theme:await identityRepository.getTheme(user(req)),defaultChain:identityRepository.getDefaultChain?await identityRepository.getDefaultChain(user(req)):null});},
     updateTheme:action(async(req,res)=>{const {theme}=requestSchemas.themeUpdate(req.body||{});res.json({theme:await identityRepository.setTheme(user(req),theme)});}),
+    updateDefaultChain:action(async(req,res)=>{const {defaultChain}=requestSchemas.defaultChainUpdate(req.body||{},{supportedChains});res.json({defaultChain:await identityRepository.setDefaultChain(user(req),defaultChain)});}),
+    gas:action(async(req,res)=>{noStore(res);
+      try{res.json(await commands.gas(req.params.chain));}
+      catch(error){
+        if(error instanceof GasLookupError){const status=error.code==='UNSUPPORTED_CHAIN'?400:503;res.status(status).json({error:error.message,code:error.code});return;}
+        throw error;
+      }}),
+    socialUsage:action(async(req,res)=>{noStore(res);const {period}=requestSchemas.socialUsagePeriod(req.query);res.json(jsonSafe(await commands.socialUsage(user(req),period)));}),
     linkCode:action(async(req,res)=>{noStore(res);res.json(await commands.linkCode(user(req)));}),
     wallets:action(async(req,res)=>{const values=commands.wallets(user(req));const settled=await Promise.allSettled(values.map(value=>commands.walletBalance(user(req),value.label)));res.json(settled.map((result,index)=>publicWallet(result.status==='fulfilled'?result.value:values[index])));}),
     createWallet:action(async(req,res)=>{const wallet=await commands.createWallet(user(req),req.body);changed(req,'wallets');res.status(201).json(publicWallet(wallet));}),
@@ -89,6 +98,9 @@ function mountDashboardRoutes(app,api){
   app.post('/api/auth/logout-all',api.requireSession,api.requireCsrf,api.logoutAll);
   app.get('/api/profile',api.requireSession,api.profile);
   app.put('/api/profile/theme',api.requireSession,api.requireCsrf,api.updateTheme);
+  app.put('/api/profile/default-chain',api.requireSession,api.requireCsrf,api.updateDefaultChain);
+  app.get('/api/gas/:chain',api.requireSession,api.gas);
+  app.get('/api/social-usage',api.requireSession,api.socialUsage);
   app.post('/api/auth/link-code',api.requireSession,api.requireCsrf,api.linkCode);
   app.get('/api/wallets',api.requireSession,api.wallets);
   app.post('/api/wallets/create',api.requireSession,api.requireCsrf,api.createWallet);

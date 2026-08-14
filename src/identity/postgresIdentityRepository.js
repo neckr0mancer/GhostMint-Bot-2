@@ -124,6 +124,16 @@ function createPostgresIdentityRepository(pool) {
       await pool.query('UPDATE users SET dashboard_theme=$2 WHERE user_id=$1', [userId, theme]);
       return theme;
     },
+
+    async getDefaultChain(userId) {
+      const result = await pool.query('SELECT default_chain FROM users WHERE user_id=$1', [userId]);
+      return result.rows[0]?.default_chain || null;
+    },
+
+    async setDefaultChain(userId, defaultChain) {
+      await pool.query('UPDATE users SET default_chain=$2 WHERE user_id=$1', [userId, defaultChain]);
+      return defaultChain;
+    },
   };
 }
 
