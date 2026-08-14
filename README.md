@@ -77,7 +77,9 @@ Telegram commands authenticate from Telegram's immutable sender ID. The first co
 
 ### Discord bot
 
-Configure all three Discord variables together. Startup registers guild-scoped slash commands immediately and logs in the bot. `/wallet`, `/mint`, `/batch-mint`, `/task`, `/activity`, `/pnl`, `/gas`, `/sniper`, `/mode`, `/admin`, and `/link` use the same identity, validation, governance, transaction, scheduler, and storage services as Telegram. Replies are ephemeral; destructive and value-bearing commands require an explicit `confirm` option. Sniper output states that copying is post-confirmation and is not mempool front-running.
+Configure all three Discord variables together. Startup registers guild-scoped slash commands immediately and logs in the bot. `/menu`, `/wallet`, `/mint`, `/batch-mint`, `/task`, `/activity`, `/pnl`, `/gas`, `/sniper`, `/mode`, `/admin`, and `/link` use the same identity, validation, governance, transaction, scheduler, and storage services as Telegram. Replies are ephemeral; destructive and value-bearing commands require an explicit `confirm` option. Sniper output states that copying is post-confirmation and is not mempool front-running.
+
+Run `/menu` for a button-driven main menu (Milestone 15c) instead of typing full slash commands. It covers Wallets (list, guided create/import, balance, remove), and Settings, including a "Link another platform" button that generates a `/link` code inline. Mint/Tasks/Snipers/Watch Rules/Activity/Gas currently show a placeholder pointing at their slash command; guided wizards for those are unscheduled follow-up work. Wallet create/import walks through a modal for the label (and, for import, the private key) and a select menu for the chain. Clicking a different menu button or running another slash command mid-flow prompts for confirmation before the in-progress flow is discarded.
 
 Wallet generation is the recommended onboarding path on both platforms: use Telegram `/createwallet <label> <chain>` or Discord `/wallet create`. GhostMint generates the key server-side, immediately envelope-encrypts it, stores only the encrypted envelope, and returns only the public funding address.
 
