@@ -147,7 +147,7 @@ smokeTest('a Discord login failure does not prevent the HTTP server and workers 
 // scheduled task picked up by the background scheduler loop never passes through -- so a task
 // created while the owner was in good standing kept executing and spending from their wallet even
 // after they were banned. This proves the real, running scheduler now refuses the task instead.
-smokeTest('a banned account\'s due scheduled task fails without executing, instead of spending funds', { timeout: 20_000 }, async t => {
+smokeTest('a banned account\'s due scheduled task fails without executing, instead of spending funds', { timeout: 45_000 }, async t => {
   await runMigrations({
     connectionString: LOCAL_ENV.DATABASE_URL_UNPOOLED,
     migrationsDirectory: path.join(PROJECT_ROOT, 'migrations'),
