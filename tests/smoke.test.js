@@ -92,6 +92,55 @@ smokeTest('the application starts and exposes a healthy database-backed service'
   assert.doesNotMatch(stdout, new RegExp(EXAMPLE_ENV.ENCRYPTION_SECRET));
 });
 
+// Regression test: startup used to await discordBot.start() with no try/catch, so an invalid or
+// revoked Discord token (or any transient Discord API failure) aborted the rest of the sequential
+// start() function -- meaning the HTTP server (including /health and the dashboard), the scheduler,
+// the social watch worker, the retention worker, and sniper-watcher restoration never ran either,
+// even though every one of those is otherwise fully independent of Discord.
+smokeTest('a Discord login failure does not prevent the HTTP server and workers from starting', { timeout: 20_000 }, async t => {
+  await runMigrations({
+    connectionString: LOCAL_ENV.DATABASE_URL_UNPOOLED,
+    migrationsDirectory: path.join(PROJECT_ROOT, 'migrations'),
+  });
+  const port = await reservePort();
+  let stdout = '';
+  let stderr = '';
+  const child = spawn(process.execPath, [path.join(PROJECT_ROOT, 'index.js')], {
+    cwd: PROJECT_ROOT,
+    env: {
+      ...process.env,
+      ...EXAMPLE_ENV,
+      DATABASE_URL: LOCAL_ENV.DATABASE_URL,
+      DATABASE_URL_UNPOOLED: LOCAL_ENV.DATABASE_URL_UNPOOLED,
+      PORT: String(port),
+      TELEGRAM_BOT_TOKEN: '',
+      DISCORD_BOT_TOKEN: 'smoke-test-invalid-token-will-fail-login',
+      DISCORD_APPLICATION_ID: '123456789012345678',
+      DISCORD_DEV_GUILD_ID: '123456789012345678',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  child.stdout.setEncoding('utf8');
+  child.stderr.setEncoding('utf8');
+  child.stdout.on('data', chunk => { stdout += chunk; });
+  child.stderr.on('data', chunk => { stderr += chunk; });
+
+  t.after(() => {
+    if (child.exitCode === null) child.kill();
+  });
+
+  const output = () => `stdout:\n${stdout}\nstderr:\n${stderr}`;
+  const response = await waitForHealth(`http://127.0.0.1:${port}/health`, child, output);
+  const body = await response.json();
+
+  assert.ok(['ok','degraded'].includes(body.status),
+    'the HTTP server must come up and report health even though Discord login failed');
+  assert.equal(body.dependencies.database.status, 'up');
+  assert.equal(typeof body.dependencies.scheduler.status, 'string');
+  assert.match(stdout, /Discord bot failed to start, continuing without it/);
+});
+
 // Regression test: the scheduler worker's executeTask callback used to look up the wallet and
 // prepare/submit the mint with no account-status check at all. M16's ban/suspend/deactivate
 // enforcement only ran at the per-command choke point (identity.resolveOrCreate), which a due
@@ -167,3 +216,5 @@ smokeTest('a banned account\'s due scheduled task fails without executing, inste
     await pool.query('DELETE FROM mint_tasks WHERE id=$1', [taskId]).catch(() => {});
     await pool.query('DELETE FROM users WHERE user_id=$1', [userId]).catch(() => {});
     await pool.end();
+  }
+});

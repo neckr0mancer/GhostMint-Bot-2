@@ -1215,8 +1215,17 @@ async function start() {
   const recovered = await schedulerWorker.recoverStaleClaims();
   log(`Recovered ${recovered} expired scheduler claims`);
   if (discordBot) {
-    const discordUser = await discordBot.start();
-    log(`Discord bot started as ${discordUser?.tag || discordUser?.id || 'configured application'}`);
+    // Discord's login/command-registration must never abort the rest of startup -- Telegram, the
+    // HTTP server (including /health and the dashboard), and every background worker are otherwise
+    // independent of Discord, so a bad/revoked token or a transient Discord outage should degrade
+    // only the Discord integration, the same way one chain's provider failure doesn't take down
+    // another chain's sniper watcher.
+    try {
+      const discordUser = await discordBot.start();
+      log(`Discord bot started as ${discordUser?.tag || discordUser?.id || 'configured application'}`);
+    } catch (error) {
+      log(`Discord bot failed to start, continuing without it: ${safeError(error)}`);
+    }
   }
   schedulerWorker.start();
   socialWatchWorker.start();
@@ -1246,4 +1255,18 @@ start().catch(error => {
 });
 
 process.on('unhandledRejection', e => log('Rejection: '+safeError(e)));
-process.on('uncaughtException',  e => log('Exception: '+safeError(e)));
+// Per Node's own guidance, resuming normal operation after an uncaught exception is unsafe -- the
+// process may be in a corrupted state (partially-unwound locks, listeners, in-flight writes). Best
+// effort graceful shutdown (reusing the same path SIGINT/SIGTERM already use, which is idempotent),
+// capped so a hung shutdown can't turn a crash into a silent, permanent freeze, then a hard exit so
+// an external process manager restarts the service into a known-good state.
+let crashing = false;
+process.on('uncaughtException', e => {
+  log('Exception: '+safeError(e));
+  if (crashing) return;
+  crashing = true;
+  Promise.race([
+    gracefulShutdown('uncaughtException'),
+    new Promise(resolve => setTimeout(resolve, 5000).unref()),
+  ]).finally(() => process.exit(1));
+});
