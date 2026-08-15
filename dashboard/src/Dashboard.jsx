@@ -47,16 +47,28 @@ export default function Dashboard({profile,go}){
     [wallets.data,tasks.data,snipers.data,watchRules.data,activity.data,pnl.data,confirmations.data]);
   const widgets=THEME_WIDGETS[profile.theme]||THEME_WIDGETS['ghost-mint'];
   const props={summary,go,profile};
+  const isSplitColumns=profile.theme==='ghost-mint'||profile.theme==='ghost-mint-light';
   return <>
     <widgets.StatusBar {...props}/>
     <widgets.AlertBanner {...props}/>
-    <div className="dashboard-grid">
+    {isSplitColumns?<div className="dashboard-grid dashboard-grid-split">
+      <div className="dashboard-col">
+        <widgets.HeroAction {...props}/>
+        <widgets.PendingQueue {...props}/>
+        <widgets.ActivityFeed {...props}/>
+      </div>
+      <div className="dashboard-col">
+        <widgets.StatsStrip {...props}/>
+        <widgets.TasksSnipersSummary {...props}/>
+        <widgets.WatchTargetSummary {...props}/>
+      </div>
+    </div>:<div className="dashboard-grid">
       <widgets.HeroAction {...props}/>
       <widgets.PendingQueue {...props}/>
       <widgets.StatsStrip {...props}/>
       <widgets.TasksSnipersSummary {...props}/>
       <widgets.WatchTargetSummary {...props}/>
       <widgets.ActivityFeed {...props}/>
-    </div>
+    </div>}
   </>;
 }

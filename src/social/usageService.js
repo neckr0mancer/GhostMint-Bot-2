@@ -3,8 +3,10 @@ const DAY_MS = 86_400_000;
 function periodStart(period, now) {
   const date = new Date(now);
   if (period === 'today') return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
+  if (period === 'day') return now - DAY_MS;
+  if (period === 'week') return now - (7 * DAY_MS);
   if (period === 'month') return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1);
-  throw new Error('Usage period must be today or month');
+  throw new Error('Usage period must be today, day, week, or month');
 }
 
 function createSocialUsageService({ repository, governance, pricing, now = () => Date.now() }) {

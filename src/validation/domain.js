@@ -5,7 +5,7 @@ const { URL } = require('node:url');
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const FUNCTION_NAME_PATTERN = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 const WALLET_LABEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9 ._-]*$/;
-const DASHBOARD_THEMES = new Set(['ghost-mint', 'clean-vault', 'neon-arcade', 'quiet-ledger']);
+const DASHBOARD_THEMES = new Set(['ghost-mint', 'ghost-mint-light', 'clean-vault', 'neon-arcade', 'quiet-ledger']);
 const WATCH_RULE_TYPES = new Set(['twitter_account', 'twitter_keyword', 'discord_channel', 'discord_keyword',
   'farcaster_account', 'farcaster_keyword']);
 const WATCH_METHODS = new Set(['official_api', 'managed_service', 'scraper']);
@@ -100,7 +100,7 @@ function dashboardTheme(value, field = 'theme') {
 function usagePeriod(value, field = 'period') {
   if (value === undefined || value === null || value === '') return undefined;
   const normalized = string(value, field, { max: 16 }).toLowerCase();
-  if (normalized !== 'today' && normalized !== 'month') fail(field, 'must be today or month');
+  if (!['today', 'day', 'week', 'month'].includes(normalized)) fail(field, 'must be today, day, week, or month');
   return normalized;
 }
 

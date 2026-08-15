@@ -1,6 +1,14 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { createSocialUsageService, formatUsageSummary } = require('../src/social/usageService');
+const { createSocialUsageService, formatUsageSummary, periodStart } = require('../src/social/usageService');
+
+test('dashboard usage periods include rolling 24-hour and seven-day windows', () => {
+  const now=Date.UTC(2026,7,15,18,30);
+  assert.equal(periodStart('day',now),now-(24*60*60*1000));
+  assert.equal(periodStart('week',now),now-(7*24*60*60*1000));
+  assert.equal(periodStart('today',now),Date.UTC(2026,7,15));
+  assert.equal(periodStart('month',now),Date.UTC(2026,7,1));
+});
 
 test('owner usage report aggregates actual rows and compares configurable pricing models', async () => {
   const callers=[];

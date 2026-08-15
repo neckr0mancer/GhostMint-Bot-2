@@ -24,6 +24,7 @@ integrationTest('group, individual, simulation, owner, and editable-preset prece
   const suffix = `${process.pid}-${Date.now()}`;
   let ownerId;
   let userId;
+  const preexistingOwnerCount = Number((await pool.query('SELECT COUNT(*) AS count FROM users WHERE is_owner=TRUE')).rows[0].count);
   const groupName = `Standard-${suffix}`;
   try {
     ownerId = await identity.resolveOrCreate('telegram', `owner-${suffix}`);
@@ -77,7 +78,9 @@ integrationTest('group, individual, simulation, owner, and editable-preset prece
     await governance.setOwner(ownerId, { platform: 'telegram', platformUserId: `user-${suffix}`, enabled: 'on' });
     assert.equal(await repository.isOwner(userId), true);
     await governance.setOwner(ownerId, { platform: 'telegram', platformUserId: `user-${suffix}`, enabled: 'off' });
-    await assert.rejects(governance.setOwner(ownerId, { platform: 'telegram', platformUserId: `owner-${suffix}`, enabled: 'off' }), /last owner/);
+    const removeTemporaryOwner=governance.setOwner(ownerId, { platform: 'telegram', platformUserId: `owner-${suffix}`, enabled: 'off' });
+    if(preexistingOwnerCount===0)await assert.rejects(removeTemporaryOwner,/last owner/);
+    else { await removeTemporaryOwner;assert.equal(await repository.isOwner(ownerId),false); }
   } finally {
     await pool.query(`UPDATE mode_presets SET simulation_mode='on',confirmation_count=12,
       human_verification='on',updated_by=NULL WHERE preset_key='semi_safe'`).catch(() => {});

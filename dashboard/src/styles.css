@@ -40,21 +40,18 @@ code{font-family:ui-monospace,'SF Mono',Consolas,monospace;font-size:.9em}
 .status-dot.live{background:var(--success);animation:pulseDot 2.2s ease-in-out infinite}
 .status-pill{display:inline-flex;align-items:center;gap:.4rem}
 
-.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
-.theme-select select{padding:.4rem .6rem;border:1px solid var(--border-strong);border-radius:var(--radius-sm);
-  background:var(--surface-2);color:var(--text);font-size:.82rem;font-weight:600;min-height:var(--tap-min)}
-
 .hamburger{display:none;flex-direction:column;justify-content:center;gap:.3rem;width:2.5rem;height:2.5rem;
   padding:.55rem;border:0;border-radius:var(--radius-sm);background:transparent;transition:background var(--fast) var(--ease)}
 .hamburger span{display:block;width:100%;height:2px;border-radius:2px;background:var(--text)}
 .hamburger:hover{background:var(--surface-hover)}
 
-.shell aside{grid-area:aside;border-right:1px solid var(--border);padding:1.1rem .9rem;background:var(--surface-deep)}
+.shell aside{grid-area:aside;border-right:1px solid var(--border);padding:1.1rem .9rem;background:var(--surface-deep);
+  position:sticky;top:4.5rem;align-self:start;max-height:calc(100vh - 4.5rem);overflow-y:auto}
 .shell ul{padding:0;margin:0;list-style:none;display:grid;gap:.15rem}
 .shell nav button{width:100%;display:flex;align-items:center;gap:.7rem;text-align:left;border:0;border-radius:var(--radius-sm);
   padding:.65rem .8rem;color:var(--text-muted);background:transparent;font-weight:600;font-size:.92rem;
   transition:background var(--fast) var(--ease),color var(--fast) var(--ease);position:relative}
-.shell nav button:hover{background:var(--surface-hover);color:var(--text)}
+.shell nav button:hover{background:var(--accent-soft);color:var(--text)}
 .shell nav button[aria-current=page]{background:var(--accent-soft);color:var(--text)}
 .shell nav button[aria-current=page]::before{content:'';position:absolute;left:-.9rem;top:.35rem;bottom:.35rem;width:3px;
   border-radius:0 4px 4px 0;background:var(--accent)}
@@ -67,10 +64,24 @@ code{font-family:ui-monospace,'SF Mono',Consolas,monospace;font-size:.9em}
 .content{grid-area:content;padding:clamp(1.5rem,4vw,3.25rem);outline:none;overflow:hidden}
 .backdrop{display:none}
 
-.admin-shell{grid-template-columns:1fr;grid-template-areas:'header' 'content'}
+.admin-shell{grid-template-columns:13.125rem minmax(0,1fr);grid-template-rows:1fr;grid-template-areas:'aside content';min-height:100vh}
 .admin-content{max-width:72rem;margin:0 auto;width:100%}
 .admin-banner{padding:.85rem 1.2rem;margin-bottom:1.4rem;border-radius:var(--radius);
   background:var(--admin-banner-bg);border:1px solid var(--admin-banner-border);color:var(--admin-banner-text);font-weight:700}
+.admin-nav{grid-area:aside;border-right:1px solid var(--border);background:var(--surface-deep);
+  padding:1.1rem .75rem;display:flex;flex-direction:column;position:sticky;top:0;height:100vh;overflow-y:auto}
+.admin-nav>.brand{margin-bottom:1.1rem;padding:0 .1rem}
+.admin-nav ul{padding:0;margin:0;list-style:none;display:grid;gap:.15rem}
+.admin-nav a{display:flex;align-items:center;gap:.65rem;padding:.55rem .6rem;border-radius:var(--radius-sm);
+  color:var(--text-muted);font-weight:600;font-size:.86rem;text-decoration:none;transition:background var(--fast) var(--ease),color var(--fast) var(--ease)}
+.admin-nav a:hover{background:var(--surface-hover);color:var(--text)}
+.admin-nav-bottom{margin-top:auto;display:grid;gap:.3rem;padding-top:.75rem;border-top:1px solid var(--border)}
+.admin-nav-bottom .admin-link{display:flex;align-items:center;gap:.5rem;padding:.55rem .6rem;font-size:.84rem}
+.admin-nav-bottom .admin-link svg{width:.9rem;height:.9rem}
+@media(max-width:700px){
+  .admin-shell{grid-template-columns:1fr;grid-template-rows:auto 1fr;grid-template-areas:'aside' 'content'}
+  .admin-nav{border-right:0;border-bottom:1px solid var(--border);position:static;height:auto;overflow:visible}
+}
 
 /* ==========================================================================
    Typography / page title
@@ -108,6 +119,12 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
   outline:2px solid var(--accent-2);outline-offset:2px}
 .fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(12rem,1fr));gap:1rem;align-items:end}
 .fields button{align-self:end}
+/* Explicit paired-field rows within a form, for pages with a specified field
+   arrangement (e.g. Minting: wallet+preset together, contract+method
+   together, arguments+value together) rather than the generic auto-fit flow. */
+.field-row{grid-column:1/-1;display:grid;grid-template-columns:1fr 1fr;gap:.75rem;align-items:end}
+.field-full{grid-column:1/-1}
+@media(max-width:640px){.field-row{grid-template-columns:1fr}}
 .form{padding:1.5rem}
 .form>p{color:var(--text-muted);margin:.35rem 0 1rem;font-size:.9rem;line-height:1.5}
 
@@ -141,6 +158,11 @@ button:disabled{opacity:.45;cursor:not-allowed;box-shadow:none}
 .danger:hover:not(:disabled){filter:brightness(1.12)}
 .small{padding:.45rem .7rem;font-size:.8rem;border-radius:.5rem;min-height:auto}
 .actions{display:flex;gap:.4rem;flex-wrap:wrap}
+/* Systemic rule: any card/panel body text is always followed by breathing
+   room before its action row, not just the specific widgets flagged during
+   review - applies to every current and future card/panel automatically. */
+.card p,.panel p{margin:.35rem 0}
+.card>.actions,.panel>.actions{margin-top:.75rem}
 
 /* ==========================================================================
    Alerts / notices
@@ -210,11 +232,23 @@ tbody tr:last-child td{border-bottom:0}
 .preview{padding:1rem 0;border-top:1px solid var(--border)}
 
 /* ==========================================================================
-   Confirmations / policy / bypass
+   Notification bell (replaces the old always-expanded confirmations panel)
    ========================================================================== */
-.confirmations{padding:1.1rem 1.3rem;margin-bottom:1.6rem;border:1px solid var(--accent);border-radius:var(--radius-lg);
-  background:linear-gradient(180deg,var(--surface-2),var(--surface));box-shadow:0 0 0 1px var(--accent-soft),var(--shadow)}
-.confirmations h2{margin-top:0;display:flex;align-items:center;gap:.6rem}
+.notification-bell{position:relative}
+.bell-trigger{position:relative;width:2.2rem;height:2.2rem;padding:0;border-radius:50%;display:grid;place-items:center;
+  background:var(--surface-2);color:var(--text-muted);box-shadow:none}
+.bell-trigger:hover:not(:disabled){filter:none;background:var(--surface-hover);color:var(--text)}
+.bell-trigger svg{width:1.05rem;height:1.05rem}
+.bell-count{position:absolute;top:-.2rem;right:-.2rem;min-width:1.05rem;height:1.05rem;padding:0 .25rem;
+  border-radius:999px;background:var(--warning);color:var(--accent-contrast);font-size:.62rem;font-weight:800;
+  display:grid;place-items:center;line-height:1}
+.bell-backdrop{position:fixed;inset:0;z-index:49;background:transparent}
+.bell-dropdown{position:absolute;top:calc(100% + .6rem);right:0;z-index:50;width:min(22rem,90vw);max-height:70vh;overflow:auto;
+  padding:1rem 1.1rem;border-radius:var(--radius-lg);border:1px solid var(--border-strong);
+  background:linear-gradient(180deg,var(--surface-2),var(--surface));box-shadow:var(--shadow-lg);animation:fadeIn var(--fast) var(--ease)}
+.bell-dropdown h2{margin:0 0 .6rem;font-size:1rem}
+.bell-empty{color:var(--text-muted);font-size:.85rem;margin:0}
+.notification-bell-desktop{display:none}
 .policy-grid{display:grid;gap:1rem}
 .bypass,.warning-box{display:grid;gap:.8rem;margin-top:1rem;padding:1rem 1.1rem;
   border:1px solid color-mix(in srgb,var(--danger) 35%,var(--border-strong));border-radius:var(--radius)}
@@ -241,14 +275,20 @@ tbody tr:last-child td{border-bottom:0}
 .glow{box-shadow:var(--icon-badge-shadow),var(--shadow)}
 .dash-hero-animated button{animation:pulseDot 2.4s ease-in-out infinite}
 .dash-stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(7rem,1fr));gap:.75rem;margin:1rem 0}
+.dash-stat-grid-2col{grid-template-columns:1fr 1fr}
 .dash-stat-grid div{display:grid;gap:.2rem;padding:.85rem;border-radius:var(--radius-sm);background:var(--surface-2);border:1px solid var(--border)}
 .dash-stat-grid strong{font-size:1.3rem}
+.dash-stat-grid strong.stat-accent{color:var(--accent)}
+.dash-stat-grid strong.stat-accent-2{color:var(--accent-2)}
 .dash-stat-grid span{color:var(--text-muted);font-size:.78rem;text-transform:uppercase;letter-spacing:.03em}
 .dash-stat-tiles div{background:var(--surface);box-shadow:none}
 .dash-chip-row{display:flex;flex-wrap:wrap;gap:.5rem;margin:1rem 0}
-.dash-chip{padding:.4rem .8rem;border-radius:999px;background:var(--accent-soft);color:var(--accent-2);font-size:.8rem;font-weight:700}
+.dash-chip{padding:.4rem .8rem;border-radius:999px;background:var(--surface-2);border:1px solid transparent;font-size:.8rem;font-weight:700}
+.dash-chip-sniper{border-color:color-mix(in srgb,var(--accent) 30%,transparent);color:var(--accent)}
+.dash-chip-social{border-color:color-mix(in srgb,var(--accent-2) 30%,transparent);color:var(--accent-2)}
 .dash-chip.pulse{animation:pulseDot 2s ease-in-out infinite}
 .dash-activity .feed{margin-top:1rem}
+.panel-cta{margin-top:.85rem}
 
 /* Clean Vault: progress bar, sortable table */
 .dash-progress{height:.5rem;border-radius:999px;background:var(--surface-2);border:1px solid var(--border);overflow:hidden;margin:.75rem 0}
@@ -287,6 +327,242 @@ tbody tr:last-child td{border-bottom:0}
 .dash-plain-stats li{padding:.6rem 0;border-bottom:1px solid var(--border)}
 
 /* ==========================================================================
+   Settings — appearance / theme picker
+   ========================================================================== */
+.settings-layout{display:grid;grid-template-columns:minmax(15rem,.72fr) minmax(18rem,1.28fr);gap:.875rem;align-items:start}
+.settings-layout>.panel{margin:0;min-width:0}
+.settings-appearance{max-width:none}
+.settings-panel-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:1rem;margin-bottom:.7rem}
+.settings-panel-heading h2{margin:.15rem 0 0}
+.settings-panel-heading>.chain-select{min-width:13rem}
+.settings-chain .chain-select{margin-top:1rem}
+.settings-gas{grid-column:1/-1}
+.settings-usage{grid-column:1/-1}
+.settings-usage-tables{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(17rem,.7fr);gap:.875rem;align-items:start}
+.settings-usage-tables .table-wrap{margin-top:1rem}
+.usage-period{flex-wrap:wrap;justify-content:flex-end}
+.settings-appearance>p{color:var(--text-muted);font-size:.85rem;margin:.2rem 0 .9rem}
+.theme-picker{flex-wrap:wrap}
+.theme-picker button{flex:0 1 auto;min-width:5.25rem;display:flex;align-items:center;justify-content:center;gap:.4rem}
+.theme-picker-icon{width:.9rem;height:.9rem;display:flex;flex-shrink:0}
+.theme-picker-icon svg{width:100%;height:100%}
+.settings-more-themes{margin-top:.9rem}
+.settings-more-themes summary{cursor:pointer;font-weight:700;font-size:.82rem;color:var(--text-muted);
+  list-style:none;display:flex;align-items:center;gap:.4rem}
+.settings-more-themes summary::-webkit-details-marker{display:none}
+.settings-more-themes summary::before{content:'\25B8';display:inline-block;transition:transform var(--fast) var(--ease)}
+.settings-more-themes[open] summary::before{transform:rotate(90deg)}
+.settings-more-themes summary:hover{color:var(--text)}
+.settings-note{margin:.85rem 0 0;color:var(--text-faint);font-size:.78rem}
+
+/* "More themes" grid: each option previews its OWN theme's colors via a
+   hardcoded swatch, independent of the currently active theme - deliberately
+   not driven by CSS custom properties, since those always resolve to
+   whichever theme is presently applied to the document. */
+.theme-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(9rem,1fr));gap:.6rem;margin-top:.7rem}
+.theme-option{display:flex;align-items:center;gap:.65rem;padding:.6rem .75rem;background:var(--surface-2);
+  color:var(--text);font-weight:600;font-size:.85rem;border:1px solid var(--border-strong);border-radius:var(--radius-sm);
+  box-shadow:none;justify-content:flex-start;transition:border-color var(--fast) var(--ease),box-shadow var(--fast) var(--ease)}
+.theme-option:hover:not(:disabled){filter:none;border-color:var(--accent)}
+.theme-option.active{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+.theme-swatch{width:1.9rem;height:1.9rem;border-radius:.45rem;flex-shrink:0;display:grid;place-items:center;
+  border:1px solid rgba(0,0,0,.15)}
+.theme-swatch-accent{width:.6rem;height:.6rem;border-radius:50%}
+.theme-swatch-clean-vault{background:#fafafa}
+.theme-swatch-clean-vault .theme-swatch-accent{background:#2563eb}
+.theme-swatch-neon-arcade{background:#06040b;border-color:rgba(255,255,255,.15)}
+.theme-swatch-neon-arcade .theme-swatch-accent{background:#ff2e93}
+.theme-swatch-quiet-ledger{background:#ffffff}
+.theme-swatch-quiet-ledger .theme-swatch-accent{background:#0f5fa8}
+
+/* ==========================================================================
+   Header avatar (mobile header, Ghost Mint rail themes only)
+   ========================================================================== */
+.header-avatar{display:none}
+
+/* ==========================================================================
+   Ghost Mint v2 — icon-rail sidebar (desktop), asymmetric Dashboard grid,
+   and mobile bottom-bar navigation. Scoped to [data-theme="ghost-mint"] and
+   [data-theme="ghost-mint-light"] only — every other theme keeps the
+   existing full-width labeled sidebar and hamburger/drawer mobile nav.
+   ========================================================================== */
+.shell .rail-mobile-header{display:none}
+html[data-theme="ghost-mint"] .rail-shell,
+html[data-theme="ghost-mint-light"] .rail-shell{
+  grid-template-columns:4.5rem minmax(0,1fr);grid-template-rows:1fr;grid-template-areas:'aside content';
+  min-height:100vh;transition:grid-template-columns var(--normal) var(--ease)}
+html[data-theme="ghost-mint"] .rail-shell[data-rail="expanded"],
+html[data-theme="ghost-mint-light"] .rail-shell[data-rail="expanded"]{
+  grid-template-columns:13.5rem minmax(0,1fr)}
+html[data-theme="ghost-mint"] .rail-shell aside,
+html[data-theme="ghost-mint-light"] .rail-shell aside{
+  grid-area:aside;position:sticky;top:0;height:100vh;max-height:none;overflow:hidden;
+  display:flex;flex-direction:column;padding:.85rem .4rem;gap:.15rem}
+html[data-theme="ghost-mint"] .rail-shell[data-rail="expanded"] aside,
+html[data-theme="ghost-mint-light"] .rail-shell[data-rail="expanded"] aside{
+  padding:.85rem .65rem}
+.rail-top{display:flex;align-items:center;justify-content:center;
+  padding:.1rem .1rem .6rem;margin-bottom:.3rem;border-bottom:1px solid var(--border)}
+html[data-theme="ghost-mint"] .rail-shell[data-rail="expanded"] .rail-top,
+html[data-theme="ghost-mint-light"] .rail-shell[data-rail="expanded"] .rail-top{
+  justify-content:flex-start}
+/* Edge toggle: a control for the sidebar itself, not a tab — sits on the
+   sidebar's right border, vertically aligned with the brand icon, and stays
+   there in both states (arrow just flips direction). */
+.rail-edge-toggle{display:none}
+html[data-theme="ghost-mint"] .rail-edge-toggle,html[data-theme="ghost-mint-light"] .rail-edge-toggle{
+  display:grid;place-items:center;position:fixed;top:1.05rem;width:1.5rem;height:1.5rem;padding:0;
+  border-radius:50%;background:var(--surface);border:1px solid var(--border-strong);color:var(--text-faint);
+  box-shadow:var(--shadow-sm);z-index:25;transition:left var(--normal) var(--ease)}
+.rail-edge-toggle:hover:not(:disabled){filter:none;background:var(--surface-hover);color:var(--text)}
+.rail-edge-toggle svg{width:.7rem;height:.7rem}
+html[data-theme="ghost-mint"] .rail-shell:not([data-rail="expanded"]) .rail-edge-toggle,
+html[data-theme="ghost-mint-light"] .rail-shell:not([data-rail="expanded"]) .rail-edge-toggle{
+  left:3.75rem}
+html[data-theme="ghost-mint"] .rail-shell[data-rail="expanded"] .rail-edge-toggle,
+html[data-theme="ghost-mint-light"] .rail-shell[data-rail="expanded"] .rail-edge-toggle{
+  left:12.75rem}
+.rail-main-nav{flex:1;min-height:0}
+.rail-bottom-nav{border-top:1px solid var(--border);padding-top:.25rem;margin-top:.25rem}
+html[data-theme="ghost-mint"] .rail-shell nav button,
+html[data-theme="ghost-mint-light"] .rail-shell nav button{
+  justify-content:center;padding:.4rem;gap:0}
+html[data-theme="ghost-mint"] .rail-shell[data-rail="expanded"] nav button,
+html[data-theme="ghost-mint-light"] .rail-shell[data-rail="expanded"] nav button{
+  justify-content:flex-start;padding:.42rem .5rem;gap:.55rem}
+html[data-theme="ghost-mint"] .rail-shell .nav-label,
+html[data-theme="ghost-mint-light"] .rail-shell .nav-label{
+  position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+html[data-theme="ghost-mint"] .rail-shell[data-rail="expanded"] .nav-label,
+html[data-theme="ghost-mint-light"] .rail-shell[data-rail="expanded"] .nav-label{
+  position:static;width:auto;height:auto;padding:0;margin:0;overflow:visible;clip:auto}
+html[data-theme="ghost-mint"] .rail-shell nav button[aria-current=page]::before,
+html[data-theme="ghost-mint-light"] .rail-shell nav button[aria-current=page]::before{
+  display:none}
+html[data-theme="ghost-mint"] .rail-shell nav button[aria-current=page],
+html[data-theme="ghost-mint-light"] .rail-shell nav button[aria-current=page]{
+  color:var(--accent)}
+html[data-theme="ghost-mint"] .rail-shell .nav-icon,html[data-theme="ghost-mint-light"] .rail-shell .nav-icon{
+  width:1.9rem;height:1.9rem;border-radius:.5rem}
+html[data-theme="ghost-mint"] .rail-top .brand-mark,html[data-theme="ghost-mint-light"] .rail-top .brand-mark{
+  width:1.9rem;height:1.9rem;border-radius:.5rem;margin:0}
+html[data-theme="ghost-mint"] .rail-shell nav button[aria-current=page] .nav-icon,
+html[data-theme="ghost-mint-light"] .rail-shell nav button[aria-current=page] .nav-icon{
+  box-shadow:none;transform:none}
+html[data-theme="ghost-mint"] .notification-bell-desktop,
+html[data-theme="ghost-mint-light"] .notification-bell-desktop{
+  display:block;position:fixed;top:1rem;right:1.25rem;z-index:30}
+
+/* Tighter spacing for this theme pair — dense, not decorative */
+html[data-theme="ghost-mint"] .content,html[data-theme="ghost-mint-light"] .content{
+  padding:clamp(1.1rem,2.5vw,2rem)}
+html[data-theme="ghost-mint"] .page-title,html[data-theme="ghost-mint-light"] .page-title{
+  margin-bottom:1.2rem}
+html[data-theme="ghost-mint"] .card,html[data-theme="ghost-mint"] .panel,
+html[data-theme="ghost-mint-light"] .card,html[data-theme="ghost-mint-light"] .panel{
+  padding:1.1rem}
+html[data-theme="ghost-mint"] .dash-hero,html[data-theme="ghost-mint-light"] .dash-hero{
+  padding:1.2rem}
+html[data-theme="ghost-mint"] .dashboard-grid,html[data-theme="ghost-mint-light"] .dashboard-grid{
+  margin-top:1rem}
+html[data-theme="ghost-mint"] .dash-statusbar-wallet,html[data-theme="ghost-mint-light"] .dash-statusbar-wallet{
+  padding:.7rem 1rem}
+
+/* Flat surfaces (no gradient panels) for this theme pair only */
+html[data-theme="ghost-mint"] .panel,html[data-theme="ghost-mint"] .card,
+html[data-theme="ghost-mint"] .login-card,html[data-theme="ghost-mint"] .feed-item,
+html[data-theme="ghost-mint-light"] .panel,html[data-theme="ghost-mint-light"] .card,
+html[data-theme="ghost-mint-light"] .login-card,html[data-theme="ghost-mint-light"] .feed-item{
+  background:var(--surface)}
+
+/* Solid mint hero panel instead of the shared glow treatment */
+html[data-theme="ghost-mint"] .dash-hero,html[data-theme="ghost-mint-light"] .dash-hero{
+  background:var(--accent);color:var(--accent-contrast);box-shadow:none}
+html[data-theme="ghost-mint"] .dash-hero p,html[data-theme="ghost-mint-light"] .dash-hero p{
+  color:var(--accent-contrast);opacity:.85}
+html[data-theme="ghost-mint"] .dash-hero button,html[data-theme="ghost-mint-light"] .dash-hero button{
+  background:var(--accent-contrast);color:var(--accent)}
+
+/* Asymmetric dashboard layout: hero/queue/activity in a wider left column,
+   stats/tasks/watch in a narrower right column. Each column is its own flex
+   stack (dashboard-col) so a short widget never leaves dead space under it
+   waiting for a taller widget in the other column to catch up. */
+.dashboard-grid-split{grid-template-columns:1.3fr 1fr;gap:.875rem;align-items:start}
+.dashboard-col{display:flex;flex-direction:column;gap:.875rem;min-width:0}
+
+/* Mobile bottom bar + FAB + "More" sheet — replaces the hamburger/drawer
+   nav below 700px for these two themes only. Structural, not per-theme:
+   both ghost-mint and ghost-mint-light render the identical DOM, only
+   tokens differ. */
+.mobile-bottombar{display:none}
+.more-sheet,.sheet-backdrop{display:none}
+@media(max-width:700px){
+  html[data-theme="ghost-mint"] .rail-shell,html[data-theme="ghost-mint-light"] .rail-shell{
+    grid-template-columns:1fr;grid-template-rows:3.5rem 1fr;grid-template-areas:'header' 'content'}
+  html[data-theme="ghost-mint"] .rail-shell aside,html[data-theme="ghost-mint-light"] .rail-shell aside{display:none}
+  html[data-theme="ghost-mint"] .notification-bell-desktop,html[data-theme="ghost-mint-light"] .notification-bell-desktop{display:none}
+  html[data-theme="ghost-mint"] .rail-edge-toggle,html[data-theme="ghost-mint-light"] .rail-edge-toggle{display:none}
+  html[data-theme="ghost-mint"] .rail-mobile-header,html[data-theme="ghost-mint-light"] .rail-mobile-header{
+    grid-area:header;display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:0 1rem;
+    height:3.5rem;border-bottom:1px solid var(--border);background:var(--header-bg);backdrop-filter:blur(10px);
+    position:sticky;top:0;z-index:20}
+  html[data-theme="ghost-mint"] .rail-mobile-header .brand-mark,html[data-theme="ghost-mint-light"] .rail-mobile-header .brand-mark{width:1.9rem;height:1.9rem}
+  html[data-theme="ghost-mint"] .content,html[data-theme="ghost-mint-light"] .content{padding-bottom:6.5rem}
+  html[data-theme="ghost-mint"] .rail-mobile-header .bell-trigger,html[data-theme="ghost-mint-light"] .rail-mobile-header .bell-trigger{
+    width:1.875rem;height:1.875rem;background:var(--surface-hover)}
+  html[data-theme="ghost-mint"] .rail-mobile-header .bell-trigger svg,html[data-theme="ghost-mint-light"] .rail-mobile-header .bell-trigger svg{width:.9rem;height:.9rem}
+  html[data-theme="ghost-mint"] .rail-mobile-header .bell-dropdown,html[data-theme="ghost-mint-light"] .rail-mobile-header .bell-dropdown{
+    width:min(20rem,88vw)}
+  html[data-theme="ghost-mint"] .header-avatar,html[data-theme="ghost-mint-light"] .header-avatar{
+    display:grid;place-items:center;width:1.875rem;height:1.875rem;border-radius:50%;padding:0;
+    background:var(--surface-hover);border:1px solid var(--border-strong);color:var(--text);box-shadow:none}
+  html[data-theme="ghost-mint"] .header-avatar svg,html[data-theme="ghost-mint-light"] .header-avatar svg{width:.9375rem;height:.9375rem}
+  html[data-theme="ghost-mint"] .header-avatar[aria-current=page],html[data-theme="ghost-mint-light"] .header-avatar[aria-current=page]{
+    background:var(--accent-soft);border-color:transparent;color:var(--accent)}
+  html[data-theme="ghost-mint"] .mobile-bottombar,html[data-theme="ghost-mint-light"] .mobile-bottombar{
+    display:flex;align-items:center;justify-content:space-around;height:4.125rem;padding:0 .375rem;
+    border-top:1px solid var(--border);background:var(--surface-deep);position:fixed;left:0;right:0;bottom:0;z-index:40}
+  html[data-theme="ghost-mint"] .mobile-bottombar>button,html[data-theme="ghost-mint-light"] .mobile-bottombar>button{
+    background:transparent;box-shadow:none;padding:0;color:var(--text-faint);display:flex;flex-direction:column;
+    align-items:center;gap:.15rem;font-size:.625rem;font-weight:600}
+  html[data-theme="ghost-mint"] .mobile-bottombar>button .nav-icon,html[data-theme="ghost-mint-light"] .mobile-bottombar>button .nav-icon{
+    width:1.25rem;height:1.25rem;background:transparent;box-shadow:none;color:inherit}
+  html[data-theme="ghost-mint"] .mobile-bottombar>button[aria-current=page],html[data-theme="ghost-mint-light"] .mobile-bottombar>button[aria-current=page]{
+    color:var(--accent);font-weight:700}
+  html[data-theme="ghost-mint"] .bottombar-fab-gap,html[data-theme="ghost-mint-light"] .bottombar-fab-gap{width:3.75rem;flex:none}
+  html[data-theme="ghost-mint"] .bottombar-fab,html[data-theme="ghost-mint-light"] .bottombar-fab{
+    position:absolute;left:50%;top:-1.75rem;width:3.75rem;transform:translateX(-50%);display:flex;flex-direction:column;
+    align-items:center;gap:.2rem;color:var(--accent);font-size:.625rem;font-weight:700}
+  html[data-theme="ghost-mint"] .fab-circle,html[data-theme="ghost-mint-light"] .fab-circle{
+    width:3.75rem;height:3.75rem;border-radius:50%;background:var(--accent);border:4px solid var(--bg);
+    display:grid;place-items:center;box-shadow:0 8px 18px -4px #0006;color:var(--accent-contrast)}
+  html[data-theme="ghost-mint"] .fab-circle svg,html[data-theme="ghost-mint-light"] .fab-circle svg{width:1.6rem;height:1.6rem}
+  html[data-theme="ghost-mint"] .bottombar-fab.active .fab-circle,html[data-theme="ghost-mint-light"] .bottombar-fab.active .fab-circle{
+    box-shadow:0 6px 14px -2px var(--accent)}
+  html[data-theme="ghost-mint"] .sheet-backdrop,html[data-theme="ghost-mint-light"] .sheet-backdrop{
+    display:block;position:fixed;inset:0;background:#000000a0;z-index:45;animation:fadeIn var(--fast) var(--ease)}
+  html[data-theme="ghost-mint"] .more-sheet,html[data-theme="ghost-mint-light"] .more-sheet{
+    display:flex;flex-direction:column;position:fixed;left:0;right:0;bottom:0;z-index:46;
+    padding:.625rem 1.1rem 1.5rem;border-top:1px solid var(--border);border-radius:1.25rem 1.25rem 0 0;
+    background:var(--surface-deep);box-shadow:0 -12px 30px -10px #000a;
+    transform:translateY(100%);transition:transform var(--normal) var(--ease);max-height:58vh;overflow:auto}
+  html[data-theme="ghost-mint"] .more-sheet.open,html[data-theme="ghost-mint-light"] .more-sheet.open{transform:translateY(0)}
+  html[data-theme="ghost-mint"] .sheet-handle,html[data-theme="ghost-mint-light"] .sheet-handle{
+    width:2.25rem;height:4px;border-radius:3px;background:var(--border-strong);border:0;padding:0;
+    margin:0 auto .875rem;box-shadow:none}
+  html[data-theme="ghost-mint"] .more-sheet h2,html[data-theme="ghost-mint-light"] .more-sheet h2{margin:0 0 .75rem;font-size:.95rem}
+  html[data-theme="ghost-mint"] .sheet-grid,html[data-theme="ghost-mint-light"] .sheet-grid{
+    display:grid;grid-template-columns:1fr 1fr;gap:.625rem}
+  html[data-theme="ghost-mint"] .sheet-grid button,html[data-theme="ghost-mint-light"] .sheet-grid button{
+    display:flex;align-items:center;gap:.625rem;padding:.7rem;border-radius:var(--radius);background:var(--surface);
+    border:1px solid var(--border);box-shadow:none;color:var(--text);font-weight:600;font-size:.82rem;justify-content:flex-start}
+  html[data-theme="ghost-mint"] .sheet-grid button .nav-icon,html[data-theme="ghost-mint-light"] .sheet-grid button .nav-icon{
+    width:1.7rem;height:1.7rem}
+  html[data-theme="ghost-mint"] .sheet-grid button .nav-label,html[data-theme="ghost-mint-light"] .sheet-grid button .nav-label{
+    position:static;width:auto;height:auto;padding:0;margin:0;overflow:visible;clip:auto}
+}
+
+/* ==========================================================================
    Login page
    ========================================================================== */
 .login-page{min-height:100vh;display:grid;place-items:center;padding:1.25rem}
@@ -310,4 +586,280 @@ tbody tr:last-child td{border-bottom:0}
   .content{padding:1.25rem}
   .feed-item{display:block}
   .backdrop{display:block;position:fixed;inset:4.5rem 0 0 0;background:#000000a0;z-index:30;animation:fadeIn var(--fast) var(--ease)}
+}
+
+/* ==========================================================================
+   Ghost Mint v2 page fidelity
+   The rail and its edge toggle are intentionally not touched here. These
+   overrides bring the real page content onto the handoff's compact type,
+   field, card, table, and column rhythm for dark and light Ghost Mint only.
+   ========================================================================== */
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .rail-shell .content{
+  width:100%;max-width:80rem;padding:1.75rem 2rem}
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .page-title{margin-bottom:1.25rem}
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .page-title h1{
+  margin:.125rem 0 .375rem;font-size:1.5rem;line-height:1.15;letter-spacing:-.015em}
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .page-title>p:last-child{
+  max-width:35rem;font-size:.84rem;line-height:1.45}
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .eyebrow{
+  color:var(--accent);font-size:.6875rem;letter-spacing:.14em}
+
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .card-grid,
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .form-grid{
+  gap:.875rem;margin:1.125rem 0}
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .wallet-grid{
+  grid-template-columns:repeat(3,minmax(0,1fr));margin-bottom:1.375rem}
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .wallet-forms{
+  grid-template-columns:repeat(2,minmax(0,1fr));align-items:start}
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .sniper-grid,
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .watch-grid{
+  grid-template-columns:repeat(2,minmax(0,1fr))}
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .pnl-grid{
+  grid-template-columns:repeat(3,minmax(0,1fr))}
+
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .card,
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .panel,
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .feed-item{
+  border-radius:.875rem;box-shadow:none}
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .card:hover{
+  border-color:var(--border-strong);box-shadow:none;transform:none}
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .card h2,
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .panel h2,
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .feed-item h2{
+  margin:.5rem 0 .4rem;font-size:.94rem;line-height:1.25}
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .card p,
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .panel p{
+  color:var(--text-muted);font-size:.78rem;line-height:1.45}
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .card code{
+  display:block;color:var(--text-faint);font-size:.78rem}
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .card strong{
+  margin:.7rem 0 .8rem;font-size:1rem}
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .net-gain{color:var(--success)}
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .net-loss{color:var(--danger)}
+
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .form{
+  padding:1.25rem;margin-bottom:1.125rem}
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .form>h2{
+  margin:0 0 .35rem;font-size:1rem}
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .form>p{
+  margin:0 0 .875rem;font-size:.78rem;line-height:1.45}
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .form label,
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .method-toggle{
+  gap:.375rem;font-size:.75rem}
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .form input,
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .form select,
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .form textarea,
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .warning-box input{
+  padding:.625rem .75rem;border-color:var(--border);border-radius:.5rem;background:var(--surface-2);font-size:.81rem}
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .form textarea{
+  min-height:6.875rem;font-size:.75rem}
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .form textarea.compact{min-height:5rem}
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .fields{gap:.75rem}
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .field-row{gap:.625rem}
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .form button{
+  justify-self:start;padding:.625rem 1rem;font-size:.8rem}
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .wallet-forms .fields,
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .form-json .fields{
+  grid-template-columns:1fr}
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .form-mint{
+  max-width:37.5rem}
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .form-mint .fields{
+  grid-template-columns:1fr}
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .form-mint>p{max-width:34rem}
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .mint-preview{max-width:35rem}
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .form-task .fields{
+  grid-template-columns:repeat(3,minmax(0,1fr));gap:.625rem}
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .form-task .fields>button{
+  grid-column:1/-1}
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .form-pnl{
+  max-width:30rem}
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .form-pnl .fields{
+  grid-template-columns:repeat(2,minmax(0,1fr));gap:.625rem}
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .form-json{
+  max-width:35rem}
+
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) button{
+  border-radius:.45rem;box-shadow:none}
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .danger{
+  background:var(--danger-soft);color:var(--danger)}
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .warning{
+  color:var(--warning);font-size:.75rem}
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .pill{
+  padding:.2rem .55rem;border-radius:.4rem;font-size:.65rem}
+
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .table-wrap{
+  margin-top:1.125rem;border-radius:.875rem}
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) th,
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) td{
+  padding:.75rem 1rem;font-size:.8rem}
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) th{
+  font-size:.68rem;background:var(--surface)}
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .pager{
+  gap:1rem;margin:1.25rem 0;font-size:.8rem}
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .activity-feed{gap:.625rem}
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .activity-feed .feed-item{
+  padding:1rem 1.125rem}
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .activity-context p{
+  color:var(--text-faint);font-size:.75rem}
+
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .policy-grid{
+  max-width:35rem;gap:.875rem}
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .policy-grid>.panel{padding:1.25rem}
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .policy-grid .form{
+  margin:.875rem 0;padding:0;border:0;border-radius:0;background:transparent;box-shadow:none}
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .policy-grid .form .fields{
+  grid-template-columns:repeat(3,minmax(0,1fr));gap:.625rem}
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .policy-grid .form .fields>button{
+  grid-column:1/-1}
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .bypass{
+  grid-template-columns:1fr auto;align-items:center;padding:.75rem 0 0;border:0;border-top:1px solid var(--border);border-radius:0}
+
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .dash-statusbar .page-title{
+  margin-bottom:.875rem}
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .dash-bell{display:none}
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .dash-statusbar-wallet{
+  padding:.875rem 1.125rem;border-radius:.625rem;font-size:.83rem}
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .dash-hero{
+  padding:1.5rem}
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .dash-hero h2{
+  margin:0;font-size:1.25rem}
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .dash-stat-grid>div{
+  padding:.75rem;border-radius:.55rem;background:var(--surface-2);border:1px solid var(--border)}
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .dash-pending>.panel,
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .dash-activity>.panel{
+  margin:.35rem 0 0;padding:.75rem 0;border:0;border-radius:0;background:transparent;box-shadow:none}
+
+/* Admin reuses the exact Ghost Mint rail behavior while each governance
+   concern owns a full-width view instead of one anchor-scrolling document. */
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .admin-content{
+  width:100%;max-width:80rem;margin:0;padding:1.75rem 2rem}
+.admin-view{width:100%;animation:fadeIn var(--normal) var(--ease)}
+.admin-view>.notice:first-child{margin-bottom:.875rem}
+.admin-view>section{margin-top:1.25rem}
+.admin-metric-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:.75rem}
+.admin-metric-grid .panel{padding:1rem}
+.admin-metric-grid span{display:block;color:var(--text-muted);font-size:.69rem;font-weight:800;text-transform:uppercase;letter-spacing:.08em}
+.admin-metric-grid strong{display:block;margin:.4rem 0 .2rem;font-size:1.75rem;line-height:1;color:var(--accent)}
+.admin-metric-grid p{font-size:.72rem}
+.admin-overview-grid{display:grid;grid-template-columns:1.15fr .85fr;gap:.875rem;margin-top:.875rem;align-items:start}
+.section-heading{display:flex;align-items:center;justify-content:space-between;gap:1rem;margin-bottom:.75rem}
+.section-heading h2{margin:.15rem 0 0}
+.admin-compact-list{display:grid;gap:0}
+.admin-compact-list>div{display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:.7rem 0;border-bottom:1px solid var(--border)}
+.admin-compact-list>div:last-child{border-bottom:0}
+.admin-compact-list span{color:var(--text-muted);font-size:.76rem;text-align:right}
+.admin-distribution{display:grid;grid-template-columns:repeat(3,1fr);gap:.625rem}
+.admin-distribution>div{padding:.8rem;border:1px solid var(--border);border-radius:.55rem;background:var(--surface-2)}
+.admin-distribution strong,.admin-distribution span{display:block}
+.admin-distribution strong{font-size:1.3rem;color:var(--accent)}
+.admin-distribution span{margin-top:.25rem;color:var(--text-muted);font-size:.7rem}
+.admin-primary-form{margin:0 0 1.25rem}
+.admin-group-form .fields{grid-template-columns:1.1fr 1fr 1fr .75fr .8fr auto}
+.admin-group-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
+.admin-control-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.875rem;align-items:start}
+.admin-control-grid .form{margin:0}
+.admin-control-grid .form .fields{grid-template-columns:repeat(2,minmax(0,1fr))}
+.admin-user-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
+.admin-user-toolbar{align-items:end}
+.admin-search{display:grid;gap:.35rem;min-width:min(19rem,100%);color:var(--text-muted);font-size:.72rem;font-weight:700}
+.admin-search input{width:100%;padding:.625rem .75rem;border:1px solid var(--border);border-radius:.5rem;background:var(--surface-2);color:var(--text)}
+.admin-detail-list{display:grid;gap:.55rem;margin:.8rem 0 1rem}
+.admin-detail-list>div{display:flex;justify-content:space-between;gap:1rem;padding-bottom:.45rem;border-bottom:1px solid var(--border)}
+.admin-detail-list dt{color:var(--text-muted);font-size:.74rem}
+.admin-detail-list dd{margin:0;font-size:.76rem;font-weight:700;text-align:right;overflow-wrap:anywhere}
+.admin-effective-layout{display:grid;grid-template-columns:minmax(19rem,.85fr) minmax(22rem,1.15fr);gap:.875rem;align-items:start}
+.admin-effective-layout .form{margin:0}
+.effective-read{min-height:100%;display:flex;flex-direction:column;justify-content:center}
+.empty-copy{max-width:28rem}
+.admin-preset-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+.admin-preset-grid .form{margin:0}
+.admin-preset-grid .fields{grid-template-columns:repeat(3,minmax(0,1fr))}
+.admin-owner-layout{display:grid;grid-template-columns:minmax(25rem,1.15fr) minmax(19rem,.85fr);gap:.875rem;align-items:start}
+.admin-owner-layout>.panel{margin:0}
+.admin-owner-layout>.panel>.fields{grid-template-columns:repeat(3,minmax(0,1fr))}
+.admin-rail-link{width:100%;display:flex;align-items:center;gap:.7rem;text-align:left;border-radius:var(--radius-sm);padding:.4rem;color:var(--text-muted);font-weight:600;font-size:.92rem;text-decoration:none}
+.admin-rail-link:hover{background:var(--accent-soft);color:var(--text)}
+.scroll-top{position:fixed;right:1.25rem;bottom:1.25rem;width:2.75rem;height:2.75rem;padding:0;border-radius:50%;z-index:35;font-size:1.2rem;box-shadow:var(--shadow)}
+.admin-sheet-actions{display:grid;gap:.5rem;margin-top:1rem;padding-top:1rem;border-top:1px solid var(--border)}
+.admin-sheet-actions .admin-link,.admin-sheet-actions button{width:100%;text-align:center}
+
+@media(max-width:700px){
+  :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .rail-shell .content{
+    max-width:none;padding:1rem 1rem 6.75rem}
+  :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .page-title{margin-bottom:1rem}
+  :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .page-title h1{font-size:1.375rem}
+  :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .page-title>p:last-child{font-size:.78rem}
+  :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .wallet-grid,
+  :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .wallet-forms,
+  :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .sniper-grid,
+  :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .watch-grid,
+  :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .pnl-grid,
+  :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .admin-content .card-grid{
+    grid-template-columns:1fr}
+  :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .form-task .fields,
+  :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .form-pnl .fields,
+  :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .policy-grid .form .fields{
+    grid-template-columns:1fr}
+  :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .form-mint,
+  :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .form-task,
+  :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .form-pnl,
+  :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .form-json,
+  :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .policy-grid{
+    max-width:none}
+  :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .field-row{grid-template-columns:1fr}
+  :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .dashboard-grid-split{
+    display:flex;flex-direction:column;gap:.625rem}
+  :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .dashboard-col{display:contents}
+  :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .dash-hero{order:1}
+  :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .dash-pending{order:2}
+  :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .dash-stats{order:3}
+  :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .dash-tasks-snipers{order:4}
+  :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .dash-watch-target{order:5}
+  :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .dash-activity{order:6}
+  :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .task-table{
+    border:0;overflow:visible;background:transparent}
+  :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .task-table thead{display:none}
+  :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .task-table table,
+  :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .task-table tbody{
+    display:block;background:transparent}
+  :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .task-table tr{
+    display:grid;gap:.45rem;margin-bottom:.625rem;padding:.875rem;border:1px solid var(--border);border-radius:.75rem;background:var(--surface)}
+  :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .task-table td{
+    display:grid;grid-template-columns:5rem minmax(0,1fr);gap:.5rem;padding:0;border:0;white-space:normal}
+  :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .task-table td::before{
+    content:attr(data-label);color:var(--text-faint);font-size:.67rem;font-weight:800;text-transform:uppercase}
+  :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .task-table td.actions{
+    display:flex;grid-template-columns:none;padding-top:.25rem}
+  :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .task-table td.actions::before{display:none}
+  :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .bypass{
+    grid-template-columns:1fr}
+  :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .admin-content{
+    max-width:none;padding:1rem}
+  .settings-layout,.settings-usage-tables,.admin-overview-grid,.admin-control-grid,
+  .admin-effective-layout,.admin-owner-layout{grid-template-columns:1fr}
+  .settings-panel-heading{align-items:flex-start}
+  .settings-gas .settings-panel-heading{display:grid}
+  .settings-panel-heading>.chain-select{min-width:0;width:100%}
+  .usage-period{justify-content:flex-start;width:100%}
+  .settings-usage .settings-panel-heading{display:grid}
+  .admin-metric-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .admin-metric-grid .panel:last-child{grid-column:1/-1}
+  .admin-group-form .fields,.admin-control-grid .form .fields,
+  .admin-preset-grid .fields,.admin-owner-layout>.panel>.fields{grid-template-columns:1fr}
+  .admin-distribution{grid-template-columns:1fr}
+  .admin-user-toolbar{align-items:stretch;flex-direction:column}
+  .admin-search{width:100%;min-width:0}
+  .admin-compact-list>div{align-items:flex-start;flex-direction:column;gap:.2rem}
+  .admin-compact-list span{text-align:left}
+  .admin-mobile-bottombar{justify-content:space-around}
+  .admin-mobile-bottombar>button{flex:1}
+  .scroll-top{right:1rem;bottom:5rem;width:2.5rem;height:2.5rem}
+}
+
+@media(min-width:701px) and (max-width:1050px){
+  .admin-metric-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .admin-group-form .fields{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .admin-group-grid,.admin-user-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .admin-owner-layout{grid-template-columns:1fr}
+  .settings-usage-tables{grid-template-columns:1fr}
 }

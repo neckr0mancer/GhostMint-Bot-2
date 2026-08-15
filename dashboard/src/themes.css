@@ -7,43 +7,42 @@
 
 :root{
   color-scheme:dark;
-  --bg:#05070d;
-  --bg-glow:radial-gradient(circle at 15% -10%,#1c2a5e33 0,transparent 40rem),
-            radial-gradient(circle at 100% 0%,#3a1f6b26 0,transparent 36rem),#05070d;
-  --surface:#0d1220;
-  --surface-2:#101728;
-  --surface-hover:#141c33;
-  --surface-deep:#080b14;
-  --header-bg:#0a0e1acc;
-  --border:#1f2843;
-  --border-strong:#2e3a63;
-  --text:#f2f4ff;
-  --text-muted:#a9b3d6;
-  --text-faint:#6c76a0;
-  --accent:#7c6bff;
-  --accent-2:#9d8bff;
-  --accent-soft:#7c6bff26;
-  --accent-contrast:#ffffff;
-  --success:#3ddc97;
-  --success-soft:#3ddc9720;
-  --danger:#ff6b81;
-  --danger-soft:#ff6b8120;
-  --warning:#f5b95a;
-  --warning-soft:#f5b95a20;
-  --radius-sm:.55rem;
-  --radius:.9rem;
-  --radius-lg:1.4rem;
-  --shadow-sm:0 1px 2px #00000040;
-  --shadow:0 12px 28px -10px #000a;
-  --shadow-lg:0 24px 60px -16px #000c;
-  --icon-badge-bg:linear-gradient(135deg,#7c6bff,#4f8dff);
+  --bg:#0c0f0d;
+  --bg-glow:#0c0f0d;
+  --surface:#14181a;
+  --surface-2:#0f1214;
+  --surface-hover:#1b2023;
+  --surface-deep:#0f1214;
+  --header-bg:#0a0c0bcc;
+  --border:#22262a;
+  --border-strong:#2e3338;
+  --text:#eef1ee;
+  --text-muted:#9aa2a9;
+  --text-faint:#6b7176;
+  --accent:#2dd4a7;
+  --accent-2:#e8a33d;
+  --accent-soft:#2dd4a71f;
+  --accent-contrast:#0a0c0b;
+  --success:#2dd4a7;
+  --success-soft:#2dd4a71f;
+  --danger:#e0475f;
+  --danger-soft:#e0475f1f;
+  --warning:#e8a33d;
+  --warning-soft:#e8a33d1f;
+  --radius-sm:.5rem;
+  --radius:.875rem;
+  --radius-lg:1rem;
+  --shadow-sm:none;
+  --shadow:0 8px 20px -8px #0008;
+  --shadow-lg:0 16px 40px -12px #000a;
+  --icon-badge-bg:#2dd4a7;
   --icon-badge-border:none;
-  --icon-badge-shadow:0 4px 14px -4px #7c6bff80;
-  --icon-badge-fg:#ffffff;
+  --icon-badge-shadow:none;
+  --icon-badge-fg:#0a0c0b;
   --tap-min:auto;
-  --admin-banner-bg:linear-gradient(180deg,#1a1f2e,#12141f);
-  --admin-banner-border:#3a4152;
-  --admin-banner-text:#ff8a8a;
+  --admin-banner-bg:#171c1e;
+  --admin-banner-border:#2e3338;
+  --admin-banner-text:#e8a33d;
   --space-1:.25rem;
   --space-2:.5rem;
   --space-3:.75rem;
@@ -59,46 +58,88 @@
   background:var(--bg);
 }
 
-/* Ghost Mint (Option A, default) — matches the :root fallback above exactly */
+/* Ghost Mint v2 (Option A, default) — charcoal base, single mint accent + amber
+   touch. No purple/blue gradients. Matches the :root fallback above exactly. */
 html[data-theme="ghost-mint"]{
   color-scheme:dark;
-  --bg:#05070d;
-  --bg-glow:radial-gradient(circle at 15% -10%,#1c2a5e33 0,transparent 40rem),
-            radial-gradient(circle at 100% 0%,#3a1f6b26 0,transparent 36rem),#05070d;
-  --surface:#0d1220;
-  --surface-2:#101728;
-  --surface-hover:#141c33;
-  --surface-deep:#080b14;
-  --header-bg:#0a0e1acc;
-  --border:#1f2843;
-  --border-strong:#2e3a63;
-  --text:#f2f4ff;
-  --text-muted:#a9b3d6;
-  --text-faint:#6c76a0;
-  --accent:#7c6bff;
-  --accent-2:#9d8bff;
-  --accent-soft:#7c6bff26;
-  --accent-contrast:#ffffff;
-  --success:#3ddc97;
-  --success-soft:#3ddc9720;
-  --danger:#ff6b81;
-  --danger-soft:#ff6b8120;
-  --warning:#f5b95a;
-  --warning-soft:#f5b95a20;
-  --radius-sm:.55rem;
-  --radius:.9rem;
-  --radius-lg:1.4rem;
-  --shadow-sm:0 1px 2px #00000040;
-  --shadow:0 12px 28px -10px #000a;
-  --shadow-lg:0 24px 60px -16px #000c;
-  --icon-badge-bg:linear-gradient(135deg,#7c6bff,#4f8dff);
+  --bg:#0c0f0d;
+  --bg-glow:#0c0f0d;
+  --surface:#14181a;
+  --surface-2:#0f1214;
+  --surface-hover:#1b2023;
+  --surface-deep:#0f1214;
+  --header-bg:#0a0c0bcc;
+  --border:#22262a;
+  --border-strong:#2e3338;
+  --text:#eef1ee;
+  --text-muted:#9aa2a9;
+  --text-faint:#6b7176;
+  --accent:#2dd4a7;
+  --accent-2:#e8a33d;
+  --accent-soft:#2dd4a71f;
+  --accent-contrast:#0a0c0b;
+  --success:#2dd4a7;
+  --success-soft:#2dd4a71f;
+  --danger:#e0475f;
+  --danger-soft:#e0475f1f;
+  --warning:#e8a33d;
+  --warning-soft:#e8a33d1f;
+  --radius-sm:.5rem;
+  --radius:.875rem;
+  --radius-lg:1rem;
+  --shadow-sm:none;
+  --shadow:0 8px 20px -8px #0008;
+  --shadow-lg:0 16px 40px -12px #000a;
+  --icon-badge-bg:#2dd4a7;
   --icon-badge-border:none;
-  --icon-badge-shadow:0 4px 14px -4px #7c6bff80;
+  --icon-badge-shadow:none;
+  --icon-badge-fg:#0a0c0b;
+  --tap-min:auto;
+  --admin-banner-bg:#171c1e;
+  --admin-banner-border:#2e3338;
+  --admin-banner-text:#e8a33d;
+}
+
+/* Ghost Mint Light — same mint + amber identity, light surfaces. Pure token
+   swap from the dark theme above, no structural differences. */
+html[data-theme="ghost-mint-light"]{
+  color-scheme:light;
+  --bg:#faf9f6;
+  --bg-glow:#faf9f6;
+  --surface:#ffffff;
+  --surface-2:#fbfbf9;
+  --surface-hover:#f1efe9;
+  --surface-deep:#f1efe9;
+  --header-bg:#ffffffcc;
+  --border:#e6e3dc;
+  --border-strong:#d7d3c8;
+  --text:#14171a;
+  --text-muted:#5f6469;
+  --text-faint:#8b8f94;
+  --accent:#1f9d76;
+  --accent-2:#b6541f;
+  --accent-soft:#1f9d761a;
+  --accent-contrast:#ffffff;
+  --success:#1f9d76;
+  --success-soft:#1f9d761a;
+  --danger:#c0384f;
+  --danger-soft:#c0384f1a;
+  --warning:#b6541f;
+  --warning-soft:#b6541f1a;
+  --radius-sm:.5rem;
+  --radius:.875rem;
+  --radius-lg:1rem;
+  --shadow-sm:none;
+  --shadow:0 4px 14px -6px #00000014;
+  --shadow-lg:0 12px 30px -10px #00000018;
+  --icon-badge-bg:#1f9d76;
+  --icon-badge-border:none;
+  --icon-badge-shadow:none;
   --icon-badge-fg:#ffffff;
   --tap-min:auto;
-  --admin-banner-bg:linear-gradient(180deg,#1a1f2e,#12141f);
-  --admin-banner-border:#3a4152;
-  --admin-banner-text:#ff8a8a;
+  --admin-banner-bg:#eef7f2;
+  --admin-banner-border:#cfe9dc;
+  --admin-banner-text:#177a5c;
 }
 
 /* Clean Vault (Option B) — light, minimal, fintech-style */

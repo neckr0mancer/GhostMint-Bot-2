@@ -87,9 +87,9 @@ test('a non-owner session is rejected from social usage reporting',async t=>{
   assert.deepEqual(await response.json(),{error:'Owner access required'});
 });
 
-test('an owner session gets the correct usage summary shape for both today and month',async t=>{
+test('an owner session gets the correct usage summary shape for every dashboard period preset',async t=>{
   const {base}=await server(t,{owner:true});
-  for(const period of ['today','month']){
+  for(const period of ['today','day','week','month']){
     const response=await fetch(`${base}/api/social-usage?period=${period}`,{headers:headers()});
     assert.equal(response.status,200);
     const body=await response.json();

@@ -240,10 +240,11 @@ function createGovernanceService(repository) {
 
     async dashboardOverview(callerUserId) {
       await requireOwner(callerUserId);
-      const [groups,users,presets]=await Promise.all([
+      const [groups,users,presets,metrics]=await Promise.all([
         repository.listGroups(),repository.listGovernedUsers(),repository.listPresets(),
+        repository.getAdminOverviewMetrics(),
       ]);
-      return {groups,users,presets};
+      return {groups,users,presets,metrics};
     },
 
     async effectiveForLinkedUser(callerUserId,input) {

@@ -157,6 +157,21 @@ function createPostgresGovernanceRepository(pool) {
         linkedAccounts:row.linked_accounts}));
     },
 
+    async getAdminOverviewMetrics() {
+      const result = await pool.query(`SELECT
+        (SELECT COUNT(*)::INTEGER FROM users) AS total_users,
+        (SELECT COUNT(*)::INTEGER FROM users WHERE is_owner=TRUE) AS owners,
+        (SELECT COUNT(*)::INTEGER FROM linked_accounts) AS linked_accounts,
+        (SELECT COUNT(*)::INTEGER FROM seat_groups) AS groups,
+        (SELECT COUNT(DISTINCT user_id)::INTEGER FROM dashboard_sessions
+          WHERE revoked_at IS NULL AND expires_at>NOW()
+            AND last_seen_at>=NOW()-INTERVAL '15 minutes') AS active_users`);
+      const row = result.rows[0];
+      return { totalUsers:row.total_users, activeUsers:row.active_users,
+        linkedAccounts:row.linked_accounts, groups:row.groups, owners:row.owners,
+        activeWindowMinutes:15 };
+    },
+
     async getEffectiveGovernance(userId, chain) {
       const result = await pool.query(`SELECT u.is_owner,ug.max_transaction_value_wei AS user_max,
         ug.daily_spending_budget_wei AS user_daily,ug.gas_ceiling_gwei AS user_gas,
