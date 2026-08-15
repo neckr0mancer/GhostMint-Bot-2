@@ -11,7 +11,7 @@
 
 const DEFAULT_TTL_MS = 10 * 60 * 1000;
 
-function createFlowStateStore({ ttlMs = DEFAULT_TTL_MS, now = () => Date.now() } = {}) {
+function createFlowStateStore({ ttlMs = DEFAULT_TTL_MS, now = () => Date.now(), sweepThreshold = 10_000 } = {}) {
   const flows = new Map();
 
   function key(platform, chatId) {
@@ -22,20 +22,36 @@ function createFlowStateStore({ ttlMs = DEFAULT_TTL_MS, now = () => Date.now() }
     return !entry || now() - entry.updatedAt > ttlMs;
   }
 
+  // get()'s lazy expiry only ever cleans up the ONE key being read, so a chat that starts a flow and
+  // then never sends another message leaves its entry in `flows` forever -- directly contradicting
+  // this store's own "in-memory, bounded, ephemeral" design intent above. Only sweeping once the map
+  // has grown large keeps the common case free of extra work.
+  function sweepIfLarge() {
+    if (flows.size < sweepThreshold) return;
+    for (const [entryKey, entry] of flows) if (expired(entry)) flows.delete(entryKey);
+  }
+
+  // Shared by every read/mutate method below so expiry is self-enforced here rather than relying on
+  // every caller to have already called get() first (which happens to be true at every current call
+  // site, but isn't a guarantee this store itself makes).
+  function activeEntry(platform, chatId) {
+    const mapKey = key(platform, chatId);
+    const entry = flows.get(mapKey);
+    if (!expired(entry)) return entry;
+    flows.delete(mapKey);
+    return null;
+  }
+
   return {
     // Returns the active flow for this chat, or null if none exists or it has expired.
     get(platform, chatId) {
-      const entry = flows.get(key(platform, chatId));
-      if (expired(entry)) {
-        flows.delete(key(platform, chatId));
-        return null;
-      }
-      return entry;
+      return activeEntry(platform, chatId);
     },
 
     // Starts or replaces a flow outright (no confirmation) — used once the user has already
     // agreed to abandon whatever was there before, or when starting fresh.
     start(platform, chatId, flow, step, data = {}) {
+      sweepIfLarge();
       const value = { flow, step, data, updatedAt: now(), pendingCancel: false };
       flows.set(key(platform, chatId), value);
       return value;
@@ -44,7 +60,7 @@ function createFlowStateStore({ ttlMs = DEFAULT_TTL_MS, now = () => Date.now() }
     // Advances the current flow to a new step without asking for confirmation (normal forward
     // progress within the same guided flow).
     advance(platform, chatId, step, data) {
-      const existing = flows.get(key(platform, chatId));
+      const existing = activeEntry(platform, chatId);
       if (!existing) return null;
       existing.step = step;
       if (data !== undefined) existing.data = { ...existing.data, ...data };
@@ -56,7 +72,7 @@ function createFlowStateStore({ ttlMs = DEFAULT_TTL_MS, now = () => Date.now() }
     // Marks the current flow as "about to be abandoned" so the next explicit confirm/resume
     // action is unambiguous even if further unrelated messages arrive in between.
     markPendingCancel(platform, chatId) {
-      const existing = flows.get(key(platform, chatId));
+      const existing = activeEntry(platform, chatId);
       if (!existing) return null;
       existing.pendingCancel = true;
       existing.updatedAt = now();
@@ -64,7 +80,7 @@ function createFlowStateStore({ ttlMs = DEFAULT_TTL_MS, now = () => Date.now() }
     },
 
     clearPendingCancel(platform, chatId) {
-      const existing = flows.get(key(platform, chatId));
+      const existing = activeEntry(platform, chatId);
       if (!existing) return null;
       existing.pendingCancel = false;
       existing.updatedAt = now();

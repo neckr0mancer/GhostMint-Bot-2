@@ -29,10 +29,23 @@ function verifyDiscordContext(interaction,allowedGuildId) {
   }
   return {platformUserId:String(interaction.user.id),contextId:`${interaction.guildId}:${interaction.channelId}`};
 }
-function createCommandRateLimiter({now=()=>Date.now(),limit=3,windowMs=30_000}={}) {
+function createCommandRateLimiter({now=()=>Date.now(),limit=3,windowMs=30_000,sweepThreshold=10_000}={}) {
   const buckets=new Map();
+  // A key (one per distinct platform:userId:command ever seen) never gets removed just from being
+  // checked -- the entry being updated always ends up non-empty right after the push below, so a
+  // bucket only goes stale when that exact command stops being called, which check() alone can never
+  // detect for its OWN key. Without this, a long-running bot accumulates one entry per unique command
+  // ever tried by every user, forever. Sweeping only when the map has grown large keeps the common
+  // case free of extra work instead of paying an O(n) scan on every single call.
+  function sweep(timestamp) {
+    for (const [key, values] of buckets) {
+      const recent=values.filter(value=>timestamp-value<windowMs);
+      if (recent.length) buckets.set(key,recent); else buckets.delete(key);
+    }
+  }
   return {check(platform,userId,command) {
     const key=`${platform}:${userId}:${command}`, timestamp=now();
+    if (buckets.size>=sweepThreshold) sweep(timestamp);
     const recent=(buckets.get(key)||[]).filter(value=>timestamp-value<windowMs);
     if(recent.length>=limit) throw new RateLimitError(windowMs-(timestamp-recent[0]));
     recent.push(timestamp);buckets.set(key,recent);

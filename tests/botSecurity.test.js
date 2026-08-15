@@ -21,6 +21,26 @@ test('destructive confirmation and rate limiting are shared platform controls',(
  now=1200;assert.doesNotThrow(()=>limiter.check('telegram','u','mint'));
 });
 
+// Regression test: every distinct platform:userId:command key created a bucket that was never
+// removed, even once every timestamp in it aged out of the rate-limit window -- checking a key only
+// ever refreshes THAT key, so a command a user tries once and never again leaves its bucket sitting
+// in memory forever. Over a long-running bot's lifetime this grows without bound. sweepThreshold
+// forces the prune path here (its real default is 10,000, too high to exercise directly in a test).
+test('rate limiter buckets that have fully aged out are pruned instead of growing forever', () => {
+  let now = 0;
+  const limiter = createCommandRateLimiter({ now: () => now, limit: 2, windowMs: 100, sweepThreshold: 3 });
+  limiter.check('telegram', 'stale-user-1', 'mint');
+  limiter.check('telegram', 'stale-user-2', 'mint');
+  now = 1000; // well past windowMs=100, so both buckets above are now fully stale
+  limiter.check('telegram', 'fresh-user', 'mint'); // brings buckets.size to 3 == sweepThreshold
+  // check() reads buckets.size before adding its own key, so the sweep fires on this next call (the
+  // first one made once size has already reached the threshold), not the call that reached it.
+  assert.doesNotThrow(() => { limiter.check('telegram', 'stale-user-1', 'mint'); limiter.check('telegram', 'stale-user-1', 'mint'); },
+    'a swept-out bucket must behave exactly like a fresh one, not carry over stale state');
+  assert.throws(() => limiter.check('telegram', 'stale-user-1', 'mint'), RateLimitError,
+    'pruning must not weaken the limit -- the two fresh checks just above still count toward it');
+});
+
 test('user content escaping neutralizes Telegram, Discord, and mention formatting',()=>{
  assert.equal(escapeTelegram('*bold*_[x]'),'\\*bold\\*\\_\\[x\\]');
  const discord=escapeDiscord('**boom** @everyone `code`');
