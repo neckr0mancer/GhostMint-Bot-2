@@ -95,7 +95,7 @@ const mintService = createMintService({
 });
 const governanceRepository = createPostgresGovernanceRepository(pool);
 const governance = createGovernanceService(governanceRepository);
-const adminCommands = createAdminCommandService(governance);
+const adminCommands = createAdminCommandService(governance, identity);
 const transactionPolicyRepository = createTransactionPolicyRepository(pool, { governanceRepository });
 const socialUsageService = createSocialUsageService({ repository:socialWatchRepository, governance,
   pricing:CONFIG.socialPricing });

@@ -37,6 +37,7 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,commands,s
     subscription:['platform','platformUserId','active'],'good-standing':['platform','platformUserId','enabled'],
     'group-retention':['groupName','retentionPeriodDays','requireActiveSubscription','requireRecentActivityDays'],
     'schedule-removal':['platform','platformUserId','days'],
+    'merge-account':['sourcePlatform','sourcePlatformUserId','targetPlatform','targetPlatformUserId'],
   });
   function adminInput(actionName,body={}){const fields=ADMIN_FIELDS[actionName];if(!fields)throw new ValidationError({field:'action',message:'is not supported'});return [actionName,...fields.map(field=>body[field])].join(' ');}
   async function auditAdminWrite(req,actionName){await Promise.resolve(securityAudit.record({userId:user(req),platform:'dashboard',
@@ -93,7 +94,7 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,commands,s
     adminOverview:action(async(req,res)=>res.json(jsonSafe(await commands.adminOverview(user(req))))),
     adminEffective:action(async(req,res)=>res.json(jsonSafe(await commands.adminEffective(user(req),req.query)))),
     adminWrite:action(async(req,res)=>{const actionName=String(req.params.action||'').toLowerCase();
-      if(['group-delete','owner','ban','suspend','deactivate'].includes(actionName))confirmation(req);
+      if(['group-delete','owner','ban','suspend','deactivate','merge-account'].includes(actionName))confirmation(req);
       let result;try{result=await commands.admin(user(req),adminInput(actionName,req.body));}
       catch(error){if(error instanceof AuthorizationError||error instanceof ValidationError)throw error;throw new ValidationError({field:'admin',message:error.message});}
       await auditAdminWrite(req,actionName);res.json({message:result});}),

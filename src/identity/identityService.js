@@ -1,7 +1,14 @@
 const { createHash, randomBytes } = require('node:crypto');
+const { ValidationError } = require('../validation/domain');
 
 const SUPPORTED_PLATFORMS = new Set(['telegram', 'discord']);
 const DEFAULT_LINK_TTL_MS = 5 * 60 * 1000;
+const MERGE_ERROR_FIELDS = {
+  SOURCE_NOT_FOUND: 'sourcePlatformUserId',
+  TARGET_NOT_FOUND: 'targetPlatformUserId',
+  SAME_ACCOUNT: 'targetPlatformUserId',
+  ACCOUNT_NOT_EMPTY: 'sourcePlatformUserId',
+};
 
 class LinkCodeError extends Error {
   constructor(message) {
@@ -52,6 +59,26 @@ function createIdentityService(identityRepository, { now = () => Date.now(), lin
       const result = await identityRepository.consumeLinkCodeForSession({ codeHash:hashCode(code), now:now() });
       if (result.status === 'invalid') throw new LinkCodeError('Link code is invalid, expired, or already used');
       return result.userId;
+    },
+
+    // Owner-only (gated by the caller, same as every other admin action): repoints a platform
+    // identity that ended up on its own separate account -- because both platforms auto-create one
+    // on first contact, before ever using a link code -- onto an existing account, and removes the
+    // empty duplicate. Refuses and changes nothing if the duplicate has any real data; see
+    // postgresIdentityRepository.mergeAccount for the exact emptiness check.
+    async mergeAccount({ sourcePlatform, sourcePlatformUserId, targetPlatform, targetPlatformUserId }) {
+      const source = normalizeIdentity(sourcePlatform, sourcePlatformUserId);
+      const target = normalizeIdentity(targetPlatform, targetPlatformUserId);
+      try {
+        return await identityRepository.mergeAccount({
+          sourcePlatform: source.platform, sourcePlatformUserId: source.platformUserId,
+          targetPlatform: target.platform, targetPlatformUserId: target.platformUserId,
+        });
+      } catch (error) {
+        const field = MERGE_ERROR_FIELDS[error.code];
+        if (field) throw new ValidationError({ field, message: error.message });
+        throw error;
+      }
     },
   };
 }

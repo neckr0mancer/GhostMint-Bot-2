@@ -1,6 +1,6 @@
 const { ValidationError } = require('../validation/domain');
 
-function createAdminCommandService(governance) {
+function createAdminCommandService(governance, identity) {
   return {
     async execute(callerUserId, input) {
       await governance.requireOwner(callerUserId);
@@ -75,6 +75,14 @@ function createAdminCommandService(governance) {
         case 'schedule-removal':
           await governance.scheduleRemoval(callerUserId, { platform: args[0], platformUserId: args[1], days: args[2] });
           return args[2] === 'off' ? 'Scheduled removal cleared.' : 'Scheduled removal set.';
+
+        // ── Merge an empty platform-created duplicate account into an existing one ──
+        case 'merge-account': {
+          if (!identity) throw new ValidationError({ field: 'action', message: 'merge-account is not available' });
+          const result = await identity.mergeAccount({ sourcePlatform: args[0], sourcePlatformUserId: args[1],
+            targetPlatform: args[2], targetPlatformUserId: args[3] });
+          return `Merged ${args[0]}:${args[1]} into account ${result.targetUserId}; the empty duplicate account has been removed.`;
+        }
 
         default: throw new ValidationError({ field: 'action', message: `is unknown: ${action}` });
       }

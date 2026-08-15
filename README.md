@@ -250,7 +250,11 @@ Store backups encrypted outside the application host. Test restores regularly an
 
 ### Merging a duplicate platform-created account
 
-Both Telegram and Discord auto-create a fresh account the first time a platform identity is seen, even without a link code. If a platform is used before it's ever linked to an existing account, it ends up with its own separate account, and a link code from the other platform correctly refuses to attach to it ("This platform account is already linked to another user"). `npm run merge:duplicate-account` (env vars: `MERGE_CONFIRM=RUN`, `MERGE_SOURCE_PLATFORM`, `MERGE_SOURCE_PLATFORM_USER_ID`, `MERGE_TARGET_PLATFORM`, `MERGE_TARGET_PLATFORM_USER_ID`) repoints the source platform identity onto the target account and removes the now-orphaned duplicate — but only if the duplicate is verified empty (no wallets, tasks, activity, or other data) first. If it isn't empty, the script refuses and changes nothing; that case needs a real data merge, which this tool intentionally does not attempt.
+Both Telegram and Discord auto-create a fresh account the first time a platform identity is seen, even without a link code. If a platform is used before it's ever linked to an existing account, it ends up with its own separate account, and a link code from the other platform correctly refuses to attach to it ("This platform account is already linked to another user").
+
+The preferred fix is the owner-only `merge-account` admin action, available the same way as every other admin action — from Telegram (`/admin merge-account <sourcePlatform> <sourcePlatformUserId> <targetPlatform> <targetPlatformUserId> CONFIRM`), Discord, or the dashboard's Owner access page. It repoints the source platform identity onto the target account and removes the now-orphaned duplicate — but only if the duplicate is verified empty (no wallets, tasks, activity, or other data) first. If it isn't empty, it refuses and changes nothing; that case needs a real data merge, which this feature intentionally does not attempt. The source platform's numeric ID doesn't require logging back into that platform — it's visible in the dashboard's Users list (or `/admin` overview) as the duplicate account's only linked identity.
+
+`npm run merge:duplicate-account` (env vars: `MERGE_CONFIRM=RUN`, `MERGE_SOURCE_PLATFORM`, `MERGE_SOURCE_PLATFORM_USER_ID`, `MERGE_TARGET_PLATFORM`, `MERGE_TARGET_PLATFORM_USER_ID`) does exactly the same thing from a shell, for the rare case where none of the above are reachable.
 
 ## Commands
 

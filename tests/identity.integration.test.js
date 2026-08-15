@@ -118,3 +118,63 @@ integrationTest('link codes expire and are single-use', { timeout: 30_000 }, asy
     await pool.end();
   }
 });
+
+integrationTest('mergeAccount repoints an empty duplicate account onto an existing one and removes it', { timeout: 30_000 }, async () => {
+  await migrate();
+  const pool = createDatabasePool({ connectionString: CONFIG.databaseUrl, max: 2 });
+  const identity = createIdentityService(createPostgresIdentityRepository(pool));
+  const suffix = `${process.pid}-${Date.now()}`;
+  const sourcePlatformUserId = `stray-discord-${suffix}`;
+  const targetPlatformUserId = `telegram-owner-of-merge-${suffix}`;
+  try {
+    const sourceUserId = await identity.resolveOrCreate('discord', sourcePlatformUserId);
+    const targetUserId = await identity.resolveOrCreate('telegram', targetPlatformUserId);
+
+    const result = await identity.mergeAccount({
+      sourcePlatform: 'discord', sourcePlatformUserId, targetPlatform: 'telegram', targetPlatformUserId,
+    });
+    assert.equal(result.sourceUserId, sourceUserId);
+    assert.equal(result.targetUserId, targetUserId);
+
+    assert.equal(await identity.resolveOrCreate('discord', sourcePlatformUserId), targetUserId,
+      'the Discord identity now resolves to the target account, not a fresh one');
+
+    await assert.rejects(
+      identity.mergeAccount({ sourcePlatform: 'discord', sourcePlatformUserId, targetPlatform: 'telegram', targetPlatformUserId }),
+      error => error.issues?.[0]?.field === 'sourcePlatformUserId',
+      'the orphaned duplicate account row is actually gone, not just relinked',
+    );
+  } finally {
+    await pool.end();
+  }
+});
+
+integrationTest('mergeAccount refuses and changes nothing if the duplicate account has a wallet', { timeout: 30_000 }, async () => {
+  await migrate();
+  const pool = createDatabasePool({ connectionString: CONFIG.databaseUrl, max: 2 });
+  const identity = createIdentityService(createPostgresIdentityRepository(pool));
+  const storage = createPostgresStorage(pool);
+  const crypto = createKeyEncryption({ activeVersion: CONFIG.encryptionKeyVersion, keys: CONFIG.encryptionKeys });
+  const suffix = `${process.pid}-${Date.now()}`;
+  const sourcePlatformUserId = `used-discord-${suffix}`;
+  const targetPlatformUserId = `telegram-target-${suffix}`;
+  const walletLabel = `merge-guard-${suffix}`;
+  try {
+    const sourceUserId = await identity.resolveOrCreate('discord', sourcePlatformUserId);
+    await identity.resolveOrCreate('telegram', targetPlatformUserId);
+    await storage.addWallet({ userId: sourceUserId, label: walletLabel,
+      address: '0x0000000000000000000000000000000000000004', chain: 'ethereum',
+      keyEnvelope: crypto.encrypt(`0x${'78'.repeat(32)}`), minted: 0, addedAt: Date.now() });
+
+    await assert.rejects(
+      identity.mergeAccount({ sourcePlatform: 'discord', sourcePlatformUserId, targetPlatform: 'telegram', targetPlatformUserId }),
+      error => error.issues?.[0]?.field === 'sourcePlatformUserId' && /wallets/.test(error.issues[0].message),
+    );
+
+    assert.equal(await identity.resolveOrCreate('discord', sourcePlatformUserId), sourceUserId,
+      'the duplicate account must still exist, untouched, after a refused merge');
+    await storage.deleteWallet(sourceUserId, walletLabel);
+  } finally {
+    await storage.close();
+  }
+});
