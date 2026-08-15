@@ -141,8 +141,9 @@ integrationTest('mergeAccount repoints an empty duplicate account onto an existi
 
     await assert.rejects(
       identity.mergeAccount({ sourcePlatform: 'discord', sourcePlatformUserId, targetPlatform: 'telegram', targetPlatformUserId }),
-      error => error.issues?.[0]?.field === 'sourcePlatformUserId',
-      'the orphaned duplicate account row is actually gone, not just relinked',
+      error => error.issues?.[0]?.field === 'targetPlatformUserId',
+      'the Discord identity was relinked onto the target, not deleted, so repeating the merge now targets ' +
+        'the same account on both sides and correctly refuses as SAME_ACCOUNT',
     );
   } finally {
     await pool.end();
