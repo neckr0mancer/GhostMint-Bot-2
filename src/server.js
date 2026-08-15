@@ -149,6 +149,12 @@ async function prepareTriggeredExecution(event,policy) {
 }
 
 async function executeTriggered(event,policy) {
+  // Covers both branches below: the manual-confirm path (/confirmtrigger) already passes through the
+  // per-command account-status choke point, so this is a harmless redundant re-check there, but the
+  // fully-automatic social-auto-with-bypass path (triggerExecutionService.handle -> here, with no
+  // human command in between) has no other gate at all -- same reasoning as the scheduler and sniper
+  // fixes above.
+  await governance.checkAccountStatus(event.userId);
   if(event.triggerSource==='social-triggered') {
     const preparedData=await prepareTriggeredExecution(event,policy);
     const wallet=findOwnedWallet(DB,event.userId,preparedData.executionPayload.walletLabel);
@@ -178,6 +184,12 @@ const schedulerWorker = createSchedulerWorker({
   intentRepository: transactionIntentRepository,
   transactionEngine,
   executeTask: async (task, hooks) => {
+    // Scheduled tasks are created while the owning account is in good standing, but the account can
+    // be banned/suspended/deactivated afterward -- account-status enforcement otherwise only runs at
+    // the per-command choke point (identity.resolveOrCreate), which this background worker loop never
+    // passes through. AccountBlockedError isn't in schedulerWorker's TRANSIENT_CODES, so this is
+    // correctly classified as a permanent (non-retried) failure rather than retried indefinitely.
+    await governance.checkAccountStatus(task.userId);
     const wallet = DB.wallets.find(item => item.userId === task.userId && item.label === task.walletLabel);
     if (!wallet) throw new ValidationError({ field:'walletLabel', message:'was not found' });
     const request = requestSchemas.mint({ walletLabel:wallet.label, contractAddress:task.contract,
@@ -289,6 +301,20 @@ const sniperService = createSniperService({
   transactionEngine,
   supportedChains:CONFIG.supportedChains,
   beforeExecute:async ({sniper,event,sourceTx,wallet,value,copiedFee}) => {
+    // Same reasoning as the scheduler's executeTask above: a sniper can be created while its owner is
+    // in good standing and later that account gets banned/suspended/deactivated, but the chain
+    // watcher's block loop never passes through the per-command account-status choke point. Returning
+    // false (rather than throwing) matches beforeExecute's existing boolean contract -- sniperService
+    // routes it through the same skip() path already used for pending manual confirmation, landing the
+    // event in a definitive terminal 'skipped' state rather than retrying it on the next block.
+    try { await governance.checkAccountStatus(sniper.userId); }
+    catch (error) {
+      if (error instanceof AccountBlockedError) {
+        log(`Sniper ${sniper.id} skipped: owner account is ${error.status}`);
+        return false;
+      }
+      throw error;
+    }
     const policy=await targetPolicyService.get(sniper.userId,'sniper',sniper.id);
     if(policy.blockchainTrigger==='auto') return true;
     const preview=decodeMintCall({contractAddress:sourceTx.to,calldata:sourceTx.data,valueWei:value});
