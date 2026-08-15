@@ -94,7 +94,7 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,commands,s
     adminOverview:action(async(req,res)=>res.json(jsonSafe(await commands.adminOverview(user(req))))),
     adminEffective:action(async(req,res)=>res.json(jsonSafe(await commands.adminEffective(user(req),req.query)))),
     adminWrite:action(async(req,res)=>{const actionName=String(req.params.action||'').toLowerCase();
-      if(['group-delete','owner','ban','suspend','deactivate','merge-account'].includes(actionName))confirmation(req);
+      if(['group-delete','owner','ban','unban','suspend','unsuspend','deactivate','reactivate','merge-account'].includes(actionName))confirmation(req);
       let result;try{result=await commands.admin(user(req),adminInput(actionName,req.body));}
       catch(error){if(error instanceof AuthorizationError||error instanceof ValidationError)throw error;throw new ValidationError({field:'admin',message:error.message});}
       await auditAdminWrite(req,actionName);changed(req,'admin');res.json({message:result});}),

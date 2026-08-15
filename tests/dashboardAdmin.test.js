@@ -31,6 +31,25 @@ test('owner overview returns truthful database-backed identity and activity metr
 
 test('last owner cannot be removed through the dashboard API',async t=>{const {base}=await server(t);const response=await write(base,'owner','owner',{platform:'telegram',platformUserId:'1',enabled:'off',confirmation:'CONFIRM'});assert.equal(response.status,400);assert.match(JSON.stringify(await response.json()),/last owner/i);});
 
+// Regression test: unban/unsuspend/reactivate could previously be called with no confirmation field
+// at all, unlike their forward counterparts ban/suspend/deactivate (and owner/group-delete/merge-account),
+// which all required an explicit CONFIRM. Restoring an account's access is not obviously lower-stakes
+// than restricting it, so the confirmation gate is now symmetric. group-delete (already gated, and
+// fully mocked in this fixture) establishes what a missing-confirmation rejection actually looks like;
+// the three lifecycle-restore actions must be rejected the same way, before ever reaching adminCommandService
+// (whose mock repository here has no unbanUser/unsuspendUser/reactivateUser -- if confirmation weren't
+// enforced first, these calls would throw for an unrelated reason and this test would still pass for
+// the wrong reason, so the status code is compared directly against the known-gated baseline).
+test('unban, unsuspend, and reactivate require the same explicit CONFIRM as ban, suspend, and deactivate',async t=>{
+  const {base}=await server(t);
+  const baseline=await write(base,'owner','group-delete',{name:'nonexistent'});
+  assert.notEqual(baseline.status,200,'sanity check: a known-gated action without confirmation must not succeed');
+  for(const action of ['unban','unsuspend','reactivate']){
+    const response=await write(base,'owner',action,{platform:'telegram',platformUserId:'2',reason:'test'});
+    assert.equal(response.status,baseline.status,`${action} without confirmation must be rejected the same way group-delete is`);
+  }
+});
+
 test('group edits immediately change an assigned user effective ceiling and successful writes are audited',async t=>{const {base,audits}=await server(t);assert.equal((await write(base,'owner','group-set',{name:'Standard',maxWei:'100',dailyWei:'200',gasGwei:'10',simulation:'optional'})).status,200);assert.equal((await write(base,'owner','assign',{platform:'telegram',platformUserId:'2',group:'Standard'})).status,200);let effective=await (await fetch(`${base}/api/admin/effective?platform=telegram&platformUserId=2&chain=ethereum`,{headers:headers()})).json();assert.equal(effective.gasCeilingGwei,10);assert.equal((await write(base,'owner','group-set',{name:'standard',maxWei:'100',dailyWei:'200',gasGwei:'25',simulation:'optional'})).status,200);effective=await (await fetch(`${base}/api/admin/effective?platform=telegram&platformUserId=2&chain=ethereum`,{headers:headers()})).json();assert.equal(effective.gasCeilingGwei,25);assert.equal(audits.length,3);assert.ok(audits.every(value=>value.platform==='dashboard'&&value.outcome==='success'));});
 
 test('effective governance reports owners as exempt instead of numeric ceilings',async t=>{const {base}=await server(t);const effective=await (await fetch(`${base}/api/admin/effective?platform=telegram&platformUserId=1&chain=ethereum`,{headers:headers()})).json();assert.equal(effective.isOwner,true);assert.equal(effective.ceilingExempt,true);assert.equal(effective.maxTransactionValueWei,null);assert.equal(effective.dailySpendingBudgetWei,null);assert.equal(effective.gasCeilingGwei,null);});
