@@ -9,6 +9,8 @@ const CHAIN_POLICY_DEFAULTS = Object.freeze({
   base: Object.freeze({ gasCeilingGwei: 5, requiredConfirmations: 10 }),
   arbitrum: Object.freeze({ gasCeilingGwei: 5, requiredConfirmations: 20 }),
   polygon: Object.freeze({ gasCeilingGwei: 500, requiredConfirmations: 128 }),
+  // Same PoS consensus/finality shape as ethereum mainnet, so the same confirmation depth applies.
+  sepolia: Object.freeze({ gasCeilingGwei: 200, requiredConfirmations: 12 }),
 });
 
 function defaultPolicy(chain) {

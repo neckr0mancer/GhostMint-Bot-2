@@ -7,7 +7,7 @@ function normalizePresetKey(value) {
 }
 
 function mapPreset(row) {
-  if (!row) return null;
+  if (!row?.preset_key) return null;
   return {
     key: row.preset_key,
     displayName: row.display_name,

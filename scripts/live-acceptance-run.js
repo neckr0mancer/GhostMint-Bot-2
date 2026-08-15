@@ -21,13 +21,19 @@ const { createMintExecutionService } = require('../src/mint/mintExecutionService
 const { createLiveAcceptanceRunRepository } = require('../src/acceptance/liveAcceptanceRunRepository');
 const { createLiveAcceptanceRunService } = require('../src/acceptance/liveAcceptanceRunService');
 
-const redact = createRedactor([
+const secrets = [
   CONFIG.databaseUrl,
   CONFIG.databaseUrlUnpooled,
   CONFIG.botToken,
   CONFIG.discordBotToken,
   ...Object.values(CONFIG.encryptionKeys),
-]);
+];
+// Full redaction (configured secrets + private-key-shaped values) for arbitrary/error text that
+// could theoretically have a leaked key embedded in it. The evidence payload below is already
+// constructed to never contain key material, so it only needs the configured-secrets pass -- the
+// key-shape regex would otherwise blank out legitimate public tx/block hashes.
+const redact = createRedactor(secrets);
+const redactPublic = createRedactor(secrets, { matchKeyShapes: false });
 
 function readInput() {
   return {
@@ -41,6 +47,8 @@ function readInput() {
 }
 
 function printSummary(run) {
+  // Chain identifiers (run id, contract, tx hash, explorer link) are public by construction --
+  // only the configured-secrets pass applies here, not the private-key-shape regex (see redaction.js).
   const lines = [
     `Live acceptance run ${run.runId}: ${run.outcome.toUpperCase()}`,
     `Chain: ${run.chain}  Contract: ${run.contractAddress}  Method: ${run.methodSignature}`,
@@ -49,9 +57,11 @@ function printSummary(run) {
   if (run.intentId) lines.push(`Transaction intent: ${run.intentId}`);
   if (run.evidence?.intent?.txHash) lines.push(`Tx hash: ${run.evidence.intent.txHash}`);
   if (run.evidence?.intent?.explorerUrl) lines.push(`Explorer: ${run.evidence.intent.explorerUrl}`);
-  if (run.outcome === 'failed') lines.push(`Failure: ${run.failureCode} — ${run.failureReason}`);
-  console.log(redact(lines.join('\n')));
-  console.log(redact(`Full evidence: ${JSON.stringify(run.evidence, null, 2)}`));
+  console.log(redactPublic(lines.join('\n')));
+  // The failure reason wraps an arbitrary underlying error message, which could in principle have a
+  // key-shaped value embedded in it -- keep the full (key-shape-scrubbing) redactor for this line only.
+  if (run.outcome === 'failed') console.log(redact(`Failure: ${run.failureCode} — ${run.failureReason}`));
+  console.log(redactPublic(`Full evidence: ${JSON.stringify(run.evidence, null, 2)}`));
 }
 
 async function main() {

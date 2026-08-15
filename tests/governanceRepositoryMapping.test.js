@@ -8,7 +8,7 @@ const { createPostgresGovernanceRepository } = require('../src/governance/postgr
 // user.suspendedUntil). This does not require a database: it stubs pool.query directly,
 // so it proves the SQL-to-camelCase mapping without needing network/DB access.
 function fakePool(rows) {
-  return { query: async () => ({ rows }) };
+  return { query: async () => ({ rows, rowCount: rows.length }) };
 }
 
 test('listGovernedUsers maps status_reason/suspended_until/status_changed_at to camelCase fields', async () => {
@@ -53,4 +53,23 @@ test('listGovernedUsers leaves status fields null for an active user with no lif
   assert.equal(user.suspendedUntil, null);
   assert.equal(user.statusChangedAt, null);
   assert.equal(user.gasCeilingGwei, null);
+});
+
+// Regression test: mapPreset used to check `if (!row) return null`, but `row` is the entire
+// joined getEffectiveGovernance result (always truthy), not the mode_presets columns. For a user
+// with no selected_preset_key, the LEFT JOIN leaves every mp.* column null, and the old check let
+// mapPreset build a fake preset object with confirmationCount: Number(null) === 0 -- which
+// applyGovernance then wrote straight into transaction_intents.required_confirmations, violating
+// its BETWEEN 1 AND 1000 check constraint on every execution for a user who never selected a
+// preset via /mode.
+test('getEffectiveGovernance returns a null preset (not a zeroed fake one) for a user with no selected preset', async () => {
+  const rows = [{
+    is_owner: true, user_max: null, user_daily: null, user_gas: null, user_simulation_forced: null,
+    group_max: null, group_daily: null, group_gas: null, group_simulation_forced: null,
+    preset_key: null, display_name: null, simulation_mode: null, confirmation_count: null, human_verification: null,
+  }];
+  const repository = createPostgresGovernanceRepository(fakePool(rows));
+  const governance = await repository.getEffectiveGovernance('user-3', 'ethereum');
+
+  assert.equal(governance.preset, null);
 });
