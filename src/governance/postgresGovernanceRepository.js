@@ -133,7 +133,8 @@ function createPostgresGovernanceRepository(pool) {
     },
 
     async listGovernedUsers() {
-      const result=await pool.query(`SELECT u.user_id,u.is_owner,u.account_status,u.subscription_active,
+      const result=await pool.query(`SELECT u.user_id,u.is_owner,u.account_status,u.status_reason,
+        u.suspended_until,u.status_changed_at,u.subscription_active,
         u.good_standing_override,sg.name AS group_name,
         ug.max_transaction_value_wei,ug.daily_spending_budget_wei,ug.gas_ceiling_gwei,
         ug.simulation_forced,ug.selected_preset_key,ug.scheduled_removal_at,
@@ -142,12 +143,14 @@ function createPostgresGovernanceRepository(pool) {
         FROM users u LEFT JOIN user_governance ug ON ug.user_id=u.user_id
         LEFT JOIN seat_groups sg ON sg.group_id=ug.group_id
         LEFT JOIN linked_accounts la ON la.user_id=u.user_id
-        GROUP BY u.user_id,u.is_owner,u.account_status,u.subscription_active,u.good_standing_override,
+        GROUP BY u.user_id,u.is_owner,u.account_status,u.status_reason,u.suspended_until,
+          u.status_changed_at,u.subscription_active,u.good_standing_override,
           sg.name,ug.max_transaction_value_wei,
           ug.daily_spending_budget_wei,ug.gas_ceiling_gwei,ug.simulation_forced,ug.selected_preset_key,
           ug.scheduled_removal_at
         ORDER BY u.created_at`);
       return result.rows.map(row=>({userId:row.user_id,isOwner:row.is_owner,accountStatus:row.account_status,
+        statusReason:row.status_reason,suspendedUntil:row.suspended_until,statusChangedAt:row.status_changed_at,
         subscriptionActive:row.subscription_active,goodStandingOverride:row.good_standing_override,
         groupName:row.group_name,
         maxTransactionValueWei:row.max_transaction_value_wei,dailySpendingBudgetWei:row.daily_spending_budget_wei,

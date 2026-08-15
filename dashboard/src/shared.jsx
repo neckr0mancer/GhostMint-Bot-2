@@ -3,6 +3,16 @@ import React,{useCallback,useEffect,useState} from 'react';
 
 export const ACTIVITY_EVENTS=['snipers.changed','tasks.changed','watchrules.changed','wallets.changed'];
 
+// All chains the transaction engine currently supports are EVM (Ethereum, Base, Arbitrum, Polygon,
+// and any future addition to src/config's CHAIN_DEFINITIONS) -- a single wallet address already
+// works across every one of them. Solana is listed for visibility but is not wired up anywhere in
+// the app (different key format, no provider/transaction-engine integration); it is always disabled.
+export const EVM_CHAINS=['ethereum','base','arbitrum','polygon'];
+export function GroupedChainOptions({options=[],labelFor=value=>value}){return <>
+  <optgroup label="EVM">{options.filter(value=>EVM_CHAINS.includes(value)).map(value=><option key={value} value={value}>{labelFor(value)}</option>)}</optgroup>
+  <optgroup label="Solana"><option value="solana" disabled>Solana (not yet supported)</option></optgroup>
+</>;}
+
 export function csrf(){return document.cookie.split(';').map(value=>value.trim()).find(value=>value.startsWith('ghostmint_csrf='))?.split('=').slice(1).join('=')||'';}
 export async function api(path,options={}){const response=await fetch(path,{...options,headers:{'Content-Type':'application/json',...(options.method&&options.method!=='GET'?{'X-CSRF-Token':decodeURIComponent(csrf())}:{})}});const body=response.status===204?null:await response.json().catch(()=>({}));if(!response.ok){const error=new Error(body?.issues?.map(item=>`${item.field} ${item.message}`).join('; ')||body?.error||'Request failed');error.status=response.status;error.code=body?.code;throw error;}return body;}
 export function useLoad(path,dependencies=[],wsEvents){const [data,setData]=useState(null);const [error,setError]=useState('');const load=useCallback(()=>{setError('');return api(path).then(setData).catch(value=>setError(value.message));},[path,...dependencies]);useEffect(()=>{load();},[load]);useEffect(()=>{if(!wsEvents)return;const watched=[].concat(wsEvents);const listener=event=>{if(watched.includes(event.detail?.type))load();};window.addEventListener('ghostmint-ws',listener);return()=>window.removeEventListener('ghostmint-ws',listener);},[load,wsEvents]);return {data,error,load};}
