@@ -1,8 +1,7 @@
 /* global FormData, URLSearchParams */
-import React,{useCallback,useEffect,useState} from 'react';
-import {api,Empty,PageTitle,Skeleton} from './shared.jsx';
+import React,{useState} from 'react';
+import {api,Empty,PageTitle,Skeleton,useLoad} from './shared.jsx';
 
-function useLoad(path){const [data,setData]=useState(null);const [error,setError]=useState('');const load=useCallback(()=>api(path).then(value=>{setData(value);setError('');}).catch(value=>setError(value.message)),[path]);useEffect(()=>{load();},[load]);return {data,error,load};}
 function Field({label,required=true,...props}){return <label>{label}<input required={required} {...props}/></label>}
 function Select({label,options=[],...props}){return <label>{label}<select required {...props}>{options.map(value=><option key={value} value={value}>{value}</option>)}</select></label>}
 function Form({title,note,onSubmit,children,className=''}){return <form className={`panel form ${className}`.trim()} onSubmit={onSubmit}><h2>{title}</h2>{note&&<p>{note}</p>}<div className="fields">{children}</div></form>}
@@ -33,7 +32,7 @@ function Presets({data,formWrite}){return <><PageTitle eyebrow="Execution modes"
 
 function Owners({data,write}){const owners=data?.users.filter(user=>user.isOwner)||[];return <><PageTitle eyebrow="Global access" title="Owner access" subtitle="Grant or remove global governance rights. Every change requires explicit confirmation."/><div className="admin-owner-layout"><section className="panel form"><p className="warning">Owner changes affect global administration rights. The final owner can never be removed.</p><OwnerControl write={write}/></section><section className="panel"><div className="section-heading"><div><p className="eyebrow">Current owners</p><h2>{owners.length} owner{owners.length===1?'':'s'}</h2></div></div><div className="admin-compact-list">{owners.map(user=>{const account=identity(user);return <div key={user.userId}><strong>{account?`${account.platform}:${account.platformUserId}`:user.userId}</strong><span>{user.linkedAccounts.length} linked platform account{user.linkedAccounts.length===1?'':'s'}</span></div>})}</div></section><section className="panel form field-full"><p className="notice">Merge an empty platform-created duplicate account into an existing one -- for example, a platform that was used before it was ever linked. Find the duplicate's platform and ID on the Users page (it will show only one linked account and no group). Refuses safely and changes nothing if the duplicate has any wallets, tasks, or other data.</p><MergeAccountControl write={write}/></section></div></>}
 
-export default function Admin({profile,section='Overview',go}){const overview=useLoad('/api/admin');const [error,setError]=useState('');const [ok,setOk]=useState('');const [effective,setEffective]=useState(null);
+export default function Admin({profile,section='Overview',go}){const overview=useLoad('/api/admin',[],'admin.changed');const [error,setError]=useState('');const [ok,setOk]=useState('');const [effective,setEffective]=useState(null);
   async function write(action,value){setError('');setOk('');try{const result=await api(`/api/admin/${action}`,{method:'POST',body:JSON.stringify(value)});setOk(result.message);await overview.load();return result;}catch(reason){setError(reason.message);throw reason;}}
   async function formWrite(event,action){event.preventDefault();const form=event.currentTarget;try{await write(action,Object.fromEntries(new FormData(form)));}catch{}}
   async function submitterWrite(event){return formWrite(event,event.nativeEvent.submitter.value);}

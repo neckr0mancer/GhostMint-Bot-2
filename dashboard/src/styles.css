@@ -113,6 +113,16 @@ code{font-family:ui-monospace,'SF Mono',Consolas,monospace;font-size:.9em}
   background:var(--surface-deep);color:var(--text);font-size:.95rem;min-height:var(--tap-min);transition:border-color var(--fast) var(--ease),box-shadow var(--fast) var(--ease)}
 .login-card input::placeholder,.form input::placeholder,.form textarea::placeholder{color:var(--text-faint)}
 .login-card input:hover,.form input:hover,.form select:hover,.form textarea:hover{border-color:color-mix(in srgb,var(--border-strong) 55%,var(--accent) 45%)}
+/* Native <select> popups otherwise fall back to unstyled OS chrome (the closed box above matches
+   the theme, but the browser renders the open option list itself). appearance:none plus a themed
+   chevron makes the closed box look intentional; background-color/color on <option> gets the open
+   list itself to follow the theme in Chromium/Firefox/Edge (Safari largely ignores <option> styling
+   regardless -- a platform limitation this can reduce but not fully remove). */
+.form select,.chain-select-control select{
+  appearance:none;-webkit-appearance:none;-moz-appearance:none;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%239aa4c7' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:right .75rem center;background-size:1.1rem;padding-right:2.5rem}
+.form select option,.chain-select-control select option{background-color:var(--surface-deep);color:var(--text)}
 .form textarea{min-height:10rem;font-family:ui-monospace,monospace;grid-column:1/-1;line-height:1.5}
 .form textarea.compact{min-height:5rem;font-family:inherit}
 button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{

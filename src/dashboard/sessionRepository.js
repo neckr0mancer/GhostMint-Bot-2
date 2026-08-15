@@ -6,11 +6,16 @@ function createDashboardSessionRepository(pool) {
       [userId,tokenHash,csrfTokenHash,expiresAt]);
       return result.rows[0].session_id;
     },
-    async resolve(tokenHash,now,extendByMs) {
+    // extendByMs slides expires_at forward on every call (an idle timeout: stay signed in by staying
+    // active). maxLifetimeMs is an absolute cap measured from created_at that sliding can never push
+    // past, so a session that's kept "alive" by continuous use for weeks still forces a re-login
+    // eventually -- without maxLifetimeMs, extendByMs alone never expires a session in active use.
+    async resolve(tokenHash,now,extendByMs,maxLifetimeMs) {
       const result=await pool.query(`UPDATE dashboard_sessions SET last_seen_at=NOW(),
         expires_at=TO_TIMESTAMP($3/1000.0)
         WHERE token_hash=$1 AND revoked_at IS NULL AND expires_at>TO_TIMESTAMP($2/1000.0)
-        RETURNING session_id,user_id,csrf_token_hash,expires_at`,[tokenHash,now,now+extendByMs]);
+          AND ($4::BIGINT IS NULL OR created_at>TO_TIMESTAMP(($2-$4)/1000.0))
+        RETURNING session_id,user_id,csrf_token_hash,expires_at`,[tokenHash,now,now+extendByMs,maxLifetimeMs??null]);
       if(!result.rowCount)return null;
       const row=result.rows[0];
       return {sessionId:row.session_id,userId:row.user_id,csrfTokenHash:row.csrf_token_hash,expiresAt:new Date(row.expires_at).getTime()};

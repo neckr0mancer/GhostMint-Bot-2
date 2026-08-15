@@ -43,6 +43,30 @@ test('dashboard sessions slide forward on activity and expire after real inactiv
   clock+=1500;assert.equal(await auth.authenticate(cookieHeader),null,'no activity for longer than the TTL must expire the session');
 });
 
+test('a session cannot be kept alive past its absolute maximum lifetime, even with continuous activity',async()=>{
+  let clock=1_000_000;const now=()=>clock;const sessions=new Map();
+  const repository={
+    create:async value=>{const id='session-1';sessions.set(id,{...value,sessionId:id,createdAt:clock});return id;},
+    resolve:async(tokenHash,at,extendByMs,maxLifetimeMs)=>{const value=[...sessions.values()].find(item=>item.tokenHash===tokenHash&&!item.revoked);
+      if(!value||value.expiresAt<=at)return null;
+      if(maxLifetimeMs!=null&&value.createdAt<=at-maxLifetimeMs)return null;
+      value.expiresAt=at+extendByMs;
+      return {sessionId:value.sessionId,userId:value.userId,csrfTokenHash:value.csrfTokenHash,expiresAt:value.expiresAt};},
+    revoke:async()=>false,revokeAll:async()=>0,
+  };
+  const identity={consumeDashboardLinkCode:async()=>'user-a'};
+  const auth=createDashboardAuthService({identity,repository,now,sessionTtlMs:1000,sessionMaxLifetimeMs:5000});
+  const session=await auth.login('VALID');
+  const cookieHeader=`${SESSION_COOKIE}=${session.token}; ${CSRF_COOKIE}=${session.csrfToken}`;
+  for (let i=0;i<8;i+=1) {
+    clock+=600;
+    const result=await auth.authenticate(cookieHeader);
+    if (clock-1_000_000<5000) assert.ok(result,`activity at +${clock-1_000_000}ms should still be within the absolute cap`);
+  }
+  clock+=600;
+  assert.equal(await auth.authenticate(cookieHeader),null,'continuous activity must not extend a session past its absolute maximum lifetime');
+});
+
 test('requireSession refreshes the session cookie Max-Age on every authenticated request',async t=>{
   const data=fixture();
   const api=createDashboardApi({auth:data.auth,identityRepository:{listLinkedAccounts:async()=>[],getTheme:async()=>'ghost-mint',setTheme:async(userId,theme)=>theme},loginRateLimiter:createCommandRateLimiter()});

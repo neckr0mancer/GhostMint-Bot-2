@@ -97,7 +97,7 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,commands,s
       if(['group-delete','owner','ban','suspend','deactivate','merge-account'].includes(actionName))confirmation(req);
       let result;try{result=await commands.admin(user(req),adminInput(actionName,req.body));}
       catch(error){if(error instanceof AuthorizationError||error instanceof ValidationError)throw error;throw new ValidationError({field:'admin',message:error.message});}
-      await auditAdminWrite(req,actionName);res.json({message:result});}),
+      await auditAdminWrite(req,actionName);changed(req,'admin');res.json({message:result});}),
     error(error,req,res,next){if(res.headersSent)return next(error);res.status(500).json({error:'Request failed safely'});},
   };
 }
