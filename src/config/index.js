@@ -356,6 +356,7 @@ function getSafeConfigSummary() {
 }
 
 module.exports = {
+  CHAIN_DEFINITIONS,
   CHAINS,
   CONFIG,
   ConfigurationError,

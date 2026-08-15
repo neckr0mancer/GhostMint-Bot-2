@@ -50,3 +50,39 @@ integrationTest('wallet data survives a pool restart and tampering fails authent
 
   assert.equal(inserted.keyEnvelope.keyVersion, CONFIG.encryptionKeyVersion);
 });
+
+integrationTest('listActivityPage search filters at the database level, not just the currently-loaded page', { timeout: 30_000 }, async () => {
+  const migration = await runMigrations({
+    connectionString: CONFIG.databaseUrlUnpooled,
+    migrationsDirectory: path.join(CONFIG.projectRoot, 'migrations'),
+  });
+  assert.equal(migration.connection, 'unpooled');
+
+  const pool = createDatabasePool({ connectionString: CONFIG.databaseUrl, max: 2 });
+  const storage = createPostgresStorage(pool);
+  const identity = createIdentityService(createPostgresIdentityRepository(pool));
+  const userId = await identity.resolveOrCreate('telegram', `search-activity-${process.pid}-${Date.now()}`);
+  try {
+    const base = Date.now();
+    // The matching entry is the OLDEST of the nine (listActivityPage orders occurred_at DESC), so it
+    // sorts into what would be page two -- a bug that filtered only the already-fetched page (limit:5)
+    // would never see it.
+    await storage.addActivity({ userId, status:'success', title:'Findme special mint', walletLabel:null,
+      txHash:null, explorer:null, time: base - 9_000 });
+    for (let i = 0; i < 8; i++) {
+      await storage.addActivity({ userId, status:'success', title:`Unrelated event ${i}`, walletLabel:null,
+        txHash:null, explorer:null, time: base - (8 - i) * 1000 });
+    }
+
+    const page = await storage.listActivityPage(userId, { limit:5, offset:0, search:'findme' });
+    assert.equal(page.total, 1, 'total must reflect only the matching row, not the unfiltered first page');
+    assert.equal(page.items.length, 1);
+    assert.equal(page.items[0].title, 'Findme special mint');
+
+    const unfiltered = await storage.listActivityPage(userId, { limit:5, offset:0 });
+    assert.equal(unfiltered.total, 9, 'without a search term every activity row for the user is still counted');
+  } finally {
+    await pool.query('DELETE FROM users WHERE user_id=$1', [userId]).catch(() => {});
+    await storage.close();
+  }
+});

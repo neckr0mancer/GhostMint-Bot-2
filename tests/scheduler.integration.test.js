@@ -70,3 +70,47 @@ integrationTest('durable scheduler stores distant jobs, claims once, audits atte
     await storage.close();
   }
 });
+
+integrationTest('listPageForUser search filters at the database level, not just the currently-loaded page', { timeout:30_000 }, async () => {
+  const migration = await runMigrations({ connectionString:CONFIG.databaseUrlUnpooled,
+    migrationsDirectory:path.join(CONFIG.projectRoot, 'migrations') });
+  assert.equal(migration.connection, 'unpooled');
+
+  const pool = createDatabasePool({ connectionString:CONFIG.databaseUrl, max:2 });
+  const storage = createPostgresStorage(pool);
+  const scheduler = createSchedulerRepository(pool);
+  const identity = createIdentityService(createPostgresIdentityRepository(pool));
+  const userId = await identity.resolveOrCreate('telegram', `search-tasks-${process.pid}-${Date.now()}`);
+  const label = `search-wallet-${Date.now()}`;
+  const crypto = createKeyEncryption({ activeVersion:CONFIG.encryptionKeyVersion, keys:CONFIG.encryptionKeys });
+  await storage.addWallet({ userId, label, address:'0x0000000000000000000000000000000000000033', chain:'ethereum',
+    keyEnvelope:crypto.encrypt(`0x${'46'.repeat(32)}`), minted:0, addedAt:Date.now() });
+  const makeTask = (name, mintTime) => ({ userId, id:randomUUID(), name, walletLabel:label,
+    contract:'0x0000000000000000000000000000000000000044', fn:'mint', qty:1, price:0, gas:null,
+    chain:'ethereum', mintTime, status:'scheduled', createdAt:Date.now() });
+  try {
+    const base = Date.now() + 24 * 60 * 60 * 1000;
+    // Eight non-matching tasks sort ahead of the one matching task under the query's own
+    // ORDER BY (mint_time,id) -- a bug that filtered only the already-fetched page (limit:5)
+    // would never see the match, since it sorts into what would be page two.
+    for (let i = 0; i < 8; i++) {
+      const validated = requestSchemas.taskCreate(makeTask(`unrelated-${i}`, base + i * 1000),
+        { supportedChains:CONFIG.supportedChains, now:Date.now() });
+      await storage.saveTask({ ...makeTask(`unrelated-${i}`, base + i * 1000), ...validated });
+    }
+    const matchingRaw = makeTask('findme-special-task', base + 8_000);
+    const matchingValidated = requestSchemas.taskCreate(matchingRaw, { supportedChains:CONFIG.supportedChains, now:Date.now() });
+    await storage.saveTask({ ...matchingRaw, ...matchingValidated });
+
+    const page = await scheduler.listPageForUser(userId, { limit:5, offset:0, search:'findme' });
+    assert.equal(page.total, 1, 'total must reflect only the matching row, not the unfiltered first page');
+    assert.equal(page.items.length, 1);
+    assert.equal(page.items[0].name, 'findme-special-task');
+
+    const unfiltered = await scheduler.listPageForUser(userId, { limit:5, offset:0 });
+    assert.equal(unfiltered.total, 9, 'without a search term every task for the user is still counted');
+  } finally {
+    await pool.query('DELETE FROM users WHERE user_id=$1', [userId]).catch(() => {});
+    await storage.close();
+  }
+});
