@@ -43,6 +43,15 @@ const CHAIN_DEFINITIONS = Object.freeze({
     ex: 'https://polygonscan.com/tx/',
     isTestnet: false,
   }),
+  robinhood: Object.freeze({
+    name: 'Robinhood Chain',
+    chainId: 4663,
+    envName: 'ROBINHOOD_RPC',
+    defaultRpc: 'https://rpc.mainnet.chain.robinhood.com',
+    sym: 'ETH',
+    ex: 'https://robinhoodchain.blockscout.com/tx/',
+    isTestnet: false,
+  }),
   sepolia: Object.freeze({
     name: 'Sepolia',
     chainId: 11155111,

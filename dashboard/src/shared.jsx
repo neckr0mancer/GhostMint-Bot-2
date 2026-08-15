@@ -7,7 +7,7 @@ export const ACTIVITY_EVENTS=['snipers.changed','tasks.changed','watchrules.chan
 // and any future addition to src/config's CHAIN_DEFINITIONS) -- a single wallet address already
 // works across every one of them. Solana is listed for visibility but is not wired up anywhere in
 // the app (different key format, no provider/transaction-engine integration); it is always disabled.
-export const EVM_CHAINS=['ethereum','base','arbitrum','polygon','sepolia'];
+export const EVM_CHAINS=['ethereum','base','arbitrum','polygon','robinhood','sepolia'];
 export function GroupedChainOptions({options=[],labelFor=value=>value}){return <>
   <optgroup label="EVM">{options.filter(value=>EVM_CHAINS.includes(value)).map(value=><option key={value} value={value}>{labelFor(value)}</option>)}</optgroup>
   <optgroup label="Solana"><option value="solana" disabled>Solana (not yet supported)</option></optgroup>

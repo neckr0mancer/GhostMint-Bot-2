@@ -56,7 +56,8 @@ GET http://localhost:3000/health
 | `BASE_RPC` | No | Base RPC override. |
 | `ARB_RPC` | No | Arbitrum RPC override. |
 | `POLYGON_RPC` | No | Polygon RPC override. |
-| `ETH_RPC_URLS`, `BASE_RPC_URLS`, `ARB_RPC_URLS`, `POLYGON_RPC_URLS` | No | Comma-separated ordered failover lists (1-5 unique URLs); each list overrides its matching single URL. |
+| `ROBINHOOD_RPC` | No | Robinhood Chain RPC override; defaults to the public `rpc.mainnet.chain.robinhood.com` endpoint, which is rate-limited and not recommended for production use. |
+| `ETH_RPC_URLS`, `BASE_RPC_URLS`, `ARB_RPC_URLS`, `POLYGON_RPC_URLS`, `ROBINHOOD_RPC_URLS` | No | Comma-separated ordered failover lists (1-5 unique URLs); each list overrides its matching single URL. |
 
 The application fails closed when a required value is missing or invalid. It never falls back to a built-in credential or encryption secret.
 

@@ -11,6 +11,12 @@ const CHAIN_POLICY_DEFAULTS = Object.freeze({
   polygon: Object.freeze({ gasCeilingGwei: 500, requiredConfirmations: 128 }),
   // Same PoS consensus/finality shape as ethereum mainnet, so the same confirmation depth applies.
   sepolia: Object.freeze({ gasCeilingGwei: 200, requiredConfirmations: 12 }),
+  // Robinhood Chain is an Arbitrum Orbit chain running Arbitrum Nitro with BoLD dispute resolution
+  // (per docs.robinhood.com/chain) -- the same fraud-proof/challenge-window mechanics as the existing
+  // arbitrum entry above, so mirrors its values rather than guessing. Newer and less battle-tested
+  // than Arbitrum mainnet itself, so treat these as a conservative starting point to revisit once the
+  // chain has an established track record, not a settled judgment.
+  robinhood: Object.freeze({ gasCeilingGwei: 5, requiredConfirmations: 20 }),
 });
 
 function defaultPolicy(chain) {
