@@ -248,6 +248,10 @@ Store backups encrypted outside the application host. Test restores regularly an
 
 `npm run acceptance:run` drives one real mint through the unmodified transaction engine against a real testnet (Sepolia), and records the outcome in `live_acceptance_runs`. This is a manual, owner-only, one-time gate required before production release / real funds — see [`docs/LIVE_ACCEPTANCE_RUNBOOK.md`](docs/LIVE_ACCEPTANCE_RUNBOOK.md) and ROADMAP.md's "Production definition of done" for the full procedure and requirement. It is never run automatically.
 
+### Merging a duplicate platform-created account
+
+Both Telegram and Discord auto-create a fresh account the first time a platform identity is seen, even without a link code. If a platform is used before it's ever linked to an existing account, it ends up with its own separate account, and a link code from the other platform correctly refuses to attach to it ("This platform account is already linked to another user"). `npm run merge:duplicate-account` (env vars: `MERGE_CONFIRM=RUN`, `MERGE_SOURCE_PLATFORM`, `MERGE_SOURCE_PLATFORM_USER_ID`, `MERGE_TARGET_PLATFORM`, `MERGE_TARGET_PLATFORM_USER_ID`) repoints the source platform identity onto the target account and removes the now-orphaned duplicate — but only if the duplicate is verified empty (no wallets, tasks, activity, or other data) first. If it isn't empty, the script refuses and changes nothing; that case needs a real data merge, which this tool intentionally does not attempt.
+
 ## Commands
 
 | Command | Purpose |
@@ -260,6 +264,7 @@ Store backups encrypted outside the application host. Test restores regularly an
 | `npm run validate` | Run syntax, lint, and tests together. |
 | `npm run db:migrate` | Apply pending migrations over the direct/unpooled connection. |
 | `npm run keys:rotate` | Re-encrypt older wallet envelopes with the active key version. |
+| `npm run merge:duplicate-account` | Repoint and remove an empty platform-created duplicate account into an existing one. |
 
 ## Project structure
 
