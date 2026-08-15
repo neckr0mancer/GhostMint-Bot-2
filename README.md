@@ -256,6 +256,10 @@ The preferred fix is the owner-only `merge-account` admin action, available the 
 
 `npm run merge:duplicate-account` (env vars: `MERGE_CONFIRM=RUN`, `MERGE_SOURCE_PLATFORM`, `MERGE_SOURCE_PLATFORM_USER_ID`, `MERGE_TARGET_PLATFORM`, `MERGE_TARGET_PLATFORM_USER_ID`) does exactly the same thing from a shell, for the rare case where none of the above are reachable.
 
+### Clearing every non-owner account (test cleanup)
+
+`npm run clear:non-owner-users` (env var: `CLEAR_CONFIRM=DELETE-NON-OWNER-USERS`) permanently deletes every non-owner account and everything attached to it, including wallets and their encrypted private keys. Owner accounts are never touched. Unlike the merge tool above, this does **not** check whether an account has real data first — it is meant for wiping out accumulated test/duplicate accounts, not for routine account management. There is no bot or dashboard equivalent; this is intentionally shell-only, matching `scripts/rotate-keys.js` and `scripts/live-acceptance-run.js`. Prefer `merge-account` or the account-lifecycle actions (`ban`/`suspend`/`deactivate`) for anything involving a real user.
+
 ## Commands
 
 | Command | Purpose |
@@ -269,6 +273,7 @@ The preferred fix is the owner-only `merge-account` admin action, available the 
 | `npm run db:migrate` | Apply pending migrations over the direct/unpooled connection. |
 | `npm run keys:rotate` | Re-encrypt older wallet envelopes with the active key version. |
 | `npm run merge:duplicate-account` | Repoint and remove an empty platform-created duplicate account into an existing one. |
+| `npm run clear:non-owner-users` | **Destructive.** Permanently delete every non-owner account and all attached data, including wallets. |
 
 ## Project structure
 
