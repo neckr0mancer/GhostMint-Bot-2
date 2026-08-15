@@ -1,4 +1,4 @@
-const { isAddress, Interface, Wallet } = require('ethers');
+const { isAddress, Wallet } = require('ethers');
 const { randomUUID } = require('node:crypto');
 const { URL } = require('node:url');
 
@@ -124,29 +124,6 @@ function functionName(value = 'mint', field = 'functionName') {
   const normalized = string(value, field, { max: 128 });
   if (!FUNCTION_NAME_PATTERN.test(normalized)) fail(field, 'must be a valid Solidity function name');
   return normalized;
-}
-
-function abiDefinition(value, requestedFunction = null) {
-  if (value === undefined || value === null || value === '') return null;
-  let definition = value;
-  if (typeof value === 'string') {
-    if (value.length > 100_000) fail('abi', 'is too large');
-    try { definition = JSON.parse(value); }
-    catch { fail('abi', 'must be valid JSON'); }
-  }
-  if (!Array.isArray(definition) || definition.length === 0 || definition.length > 100) {
-    fail('abi', 'must be a non-empty array with at most 100 entries');
-  }
-  let parsed;
-  try { parsed = new Interface(definition); }
-  catch { fail('abi', 'must be a valid Ethereum ABI'); }
-  if (requestedFunction) {
-    try {
-      if (!parsed.getFunction(requestedFunction)) fail('abi', `must define function ${requestedFunction}`);
-    }
-    catch { fail('abi', `must define function ${requestedFunction}`); }
-  }
-  return definition;
 }
 
 function scheduleTimestamp(value, { now = Date.now(), maxAheadMs = MAX_SCHEDULE_AHEAD_MS } = {}) {
