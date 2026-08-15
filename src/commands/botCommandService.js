@@ -190,7 +190,7 @@ function createBotCommandService(dependencies) {
     return {targetType,targetId,label:target.label||target.name,chain,policy,governance};
   }
 
-  async function pageFrom(repositoryMethod,fallback,userId,input) {const p=pagination(input);if(repositoryMethod){const result=await repositoryMethod(userId,{limit:p.pageSize,offset:p.offset});return {...p,total:result.total,totalPages:Math.max(1,Math.ceil(result.total/p.pageSize)),items:result.items};}return paginate(fallback(),p);}
+  async function pageFrom(repositoryMethod,fallback,userId,input,searchFields) {const p=pagination(input);const search=typeof input?.search==='string'?input.search.trim():'';if(repositoryMethod){const result=await repositoryMethod(userId,{limit:p.pageSize,offset:p.offset,search});return {...p,total:result.total,totalPages:Math.max(1,Math.ceil(result.total/p.pageSize)),items:result.items};}const source=fallback();const items=search&&searchFields?source.filter(item=>searchFields.some(field=>String(item[field]||'').toLowerCase().includes(search.toLowerCase()))):source;return paginate(items,p);}
 
   async function stats(userId) {const rows=sniperRepository?.statsForUser?await sniperRepository.statsForUser(userId):[];
     const sniperEvents=rows.flatMap(row=>Array.from({length:row.count},()=>({state:row.state})));
@@ -203,9 +203,9 @@ function createBotCommandService(dependencies) {
     sniperEvents:userId=>sniperRepository.listRecentForUser(userId),
     wallets: userId => state(userId).wallets,
     tasks: userId => schedulerRepository.listForUser(userId),
-    tasksPage:(userId,input)=>pageFrom(schedulerRepository.listPageForUser?.bind(schedulerRepository),()=>state(userId).tasks,userId,input),
+    tasksPage:(userId,input)=>pageFrom(schedulerRepository.listPageForUser?.bind(schedulerRepository),()=>state(userId).tasks,userId,input,['name','walletLabel']),
     activity: userId => state(userId).activity.slice(0, 10),
-    activityPage:(userId,input)=>pageFrom(storage.listActivityPage?.bind(storage),()=>state(userId).activity,userId,input),
+    activityPage:(userId,input)=>pageFrom(storage.listActivityPage?.bind(storage),()=>state(userId).activity,userId,input,['title','walletLabel']),
     pnl: userId => state(userId).pnl,
     snipers: userId => state(userId).snipers,
     createWatchRule: (userId, input) => socialWatchService.create(userId, input),

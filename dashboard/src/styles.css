@@ -133,6 +133,9 @@ code{font-family:ui-monospace,'SF Mono',Consolas,monospace;font-size:.9em}
 .user-detail-panel h3{margin:1.2rem 0 .5rem;font-size:.95rem;color:var(--text-muted)}
 .user-card-clickable{cursor:pointer}
 .user-actions,.user-actions-inline{display:flex;flex-wrap:wrap;gap:.5rem;margin-top:.6rem}
+.context-menu{position:fixed;z-index:90;min-width:12rem;background:var(--surface);border:1px solid var(--border-strong);border-radius:var(--radius-lg);box-shadow:var(--shadow-lg);padding:.75rem}
+.context-menu-title{margin:0 0 .5rem;font-size:.85rem;color:var(--text-muted);word-break:break-all}
+.context-menu .user-actions,.context-menu .user-actions-inline{margin-top:0}
 .form textarea{min-height:10rem;font-family:ui-monospace,monospace;grid-column:1/-1;line-height:1.5}
 .form textarea.compact{min-height:5rem;font-family:inherit}
 button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{
@@ -783,6 +786,9 @@ html[data-theme="ghost-mint"] .dash-hero button,html[data-theme="ghost-mint-ligh
 .admin-user-toolbar{align-items:end}
 .admin-search{display:grid;gap:.35rem;min-width:min(19rem,100%);color:var(--text-muted);font-size:.72rem;font-weight:700}
 .admin-search input{width:100%;padding:.625rem .75rem;border:1px solid var(--border);border-radius:.5rem;background:var(--surface-2);color:var(--text)}
+.page-toolbar{display:flex;align-items:end;justify-content:space-between;gap:1rem;flex-wrap:wrap;margin-bottom:.875rem}
+.page-search{display:grid;gap:.35rem;min-width:min(19rem,100%);color:var(--text-muted);font-size:.72rem;font-weight:700}
+.page-search input{width:100%;padding:.625rem .75rem;border:1px solid var(--border);border-radius:.5rem;background:var(--surface-2);color:var(--text)}
 .admin-detail-list{display:grid;gap:.55rem;margin:.8rem 0 1rem}
 .admin-detail-list>div{display:flex;justify-content:space-between;gap:1rem;padding-bottom:.45rem;border-bottom:1px solid var(--border)}
 .admin-detail-list dt{color:var(--text-muted);font-size:.74rem}
@@ -869,6 +875,7 @@ html[data-theme="ghost-mint"] .dash-hero button,html[data-theme="ghost-mint-ligh
   .admin-distribution{grid-template-columns:1fr}
   .admin-user-toolbar{align-items:stretch;flex-direction:column}
   .admin-search{width:100%;min-width:0}
+  .page-search{width:100%;min-width:0}
   .admin-compact-list>div{align-items:flex-start;flex-direction:column;gap:.2rem}
   .admin-compact-list span{text-align:left}
   .admin-mobile-bottombar{justify-content:space-around}

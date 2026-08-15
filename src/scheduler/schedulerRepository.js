@@ -55,10 +55,15 @@ function createSchedulerRepository(pool) {
       const result = await pool.query('SELECT * FROM mint_tasks WHERE user_id=$1 ORDER BY mint_time', [userId]);
       return result.rows.map(mapTask);
     },
-    async listPageForUser(userId,{limit,offset}) {
-      const [rows,count]=await Promise.all([pool.query(`SELECT * FROM mint_tasks WHERE user_id=$1
-        ORDER BY mint_time,id LIMIT $2 OFFSET $3`,[userId,limit,offset]),
-      pool.query('SELECT COUNT(*)::INTEGER AS total FROM mint_tasks WHERE user_id=$1',[userId])]);
+    async listPageForUser(userId,{limit,offset,search}) {
+      const term=search?`%${search}%`:null;
+      const mainWhere=term?'WHERE user_id=$1 AND (name ILIKE $4 OR wallet_label ILIKE $4)':'WHERE user_id=$1';
+      const mainParams=term?[userId,limit,offset,term]:[userId,limit,offset];
+      const countWhere=term?'WHERE user_id=$1 AND (name ILIKE $2 OR wallet_label ILIKE $2)':'WHERE user_id=$1';
+      const countParams=term?[userId,term]:[userId];
+      const [rows,count]=await Promise.all([pool.query(`SELECT * FROM mint_tasks ${mainWhere}
+        ORDER BY mint_time,id LIMIT $2 OFFSET $3`,mainParams),
+      pool.query(`SELECT COUNT(*)::INTEGER AS total FROM mint_tasks ${countWhere}`,countParams)]);
       return {items:rows.rows.map(mapTask),total:count.rows[0].total};
     },
 

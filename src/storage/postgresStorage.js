@@ -69,10 +69,15 @@ function createPostgresStorage(pool) {
     },
     loadState,
     loadSystemState() { return loadState(); },
-    async listActivityPage(userId,{limit,offset}) {
-      const [rows,count]=await Promise.all([pool.query(`SELECT * FROM activity WHERE user_id=$1
-        ORDER BY occurred_at DESC,id DESC LIMIT $2 OFFSET $3`,[userId,limit,offset]),
-      pool.query('SELECT COUNT(*)::INTEGER AS total FROM activity WHERE user_id=$1',[userId])]);
+    async listActivityPage(userId,{limit,offset,search}) {
+      const term=search?`%${search}%`:null;
+      const mainWhere=term?'WHERE user_id=$1 AND (title ILIKE $4 OR wallet_label ILIKE $4)':'WHERE user_id=$1';
+      const mainParams=term?[userId,limit,offset,term]:[userId,limit,offset];
+      const countWhere=term?'WHERE user_id=$1 AND (title ILIKE $2 OR wallet_label ILIKE $2)':'WHERE user_id=$1';
+      const countParams=term?[userId,term]:[userId];
+      const [rows,count]=await Promise.all([pool.query(`SELECT * FROM activity ${mainWhere}
+        ORDER BY occurred_at DESC,id DESC LIMIT $2 OFFSET $3`,mainParams),
+      pool.query(`SELECT COUNT(*)::INTEGER AS total FROM activity ${countWhere}`,countParams)]);
       return {items:rows.rows.map(mapActivity),total:count.rows[0].total};
     },
 
