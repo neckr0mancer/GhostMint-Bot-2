@@ -368,7 +368,7 @@ const activeSnipersForChain = chain => DB.snipers.filter(s => s.active && s.chai
 function ensureChainWatcher(chain) {
   if (chainWatchers[chain] || !CHAINS[chain]) return;
   const watcher = createChainWatcher({
-    chain, rpcUrl: CHAINS[chain].rpc, wsUrl: CHAINS[chain].rpcWsUrl,
+    chain, rpcUrls: CHAINS[chain].rpcUrls, wsUrl: CHAINS[chain].rpcWsUrl,
     providerFactory: url => new ethers.JsonRpcProvider(url),
     wsProviderFactory: url => {
       const socket = new WebSocket(url);
