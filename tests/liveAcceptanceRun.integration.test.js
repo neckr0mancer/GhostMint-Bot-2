@@ -26,8 +26,9 @@ integrationTest('live acceptance runs persist durably and stay owner-scoped', { 
   const crypto = createKeyEncryption({ activeVersion: CONFIG.encryptionKeyVersion, keys: CONFIG.encryptionKeys });
   const runRepository = createLiveAcceptanceRunRepository(pool);
 
+  let userId;
   try {
-    const userId = await identity.resolveOrCreate('telegram', `acceptance-${process.pid}-${Date.now()}`);
+    userId = await identity.resolveOrCreate('telegram', `acceptance-${process.pid}-${Date.now()}`);
     await governanceRepository.setOwner(userId, true);
     const wallet = await storage.addWallet({
       userId, label: `acceptance-${process.pid}-${Date.now()}`,
@@ -63,6 +64,15 @@ integrationTest('live acceptance runs persist durably and stay owner-scoped', { 
     assert.equal(runs.length, 2);
     assert.ok(runs.every(run => run.operatorUserId === userId));
   } finally {
+    // live_acceptance_runs.operator_user_id is ON DELETE RESTRICT by design (the audit trail must
+    // outlive a deleted operator in production), and wallets has no cascade either, so a plain
+    // DELETE FROM users would fail here. Clean up in dependency order instead -- this test's own
+    // records only, never a real run.
+    if (userId) {
+      await pool.query('DELETE FROM live_acceptance_runs WHERE operator_user_id=$1', [userId]).catch(() => {});
+      await pool.query('DELETE FROM wallets WHERE user_id=$1', [userId]).catch(() => {});
+      await pool.query('DELETE FROM users WHERE user_id=$1', [userId]).catch(() => {});
+    }
     await storage.close();
   }
 });
