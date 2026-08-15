@@ -178,6 +178,45 @@ test('a submitted intent is reconciled from chain state after restart', async ()
   assert.equal(repository.intents[0].state, 'confirmed');
 });
 
+test('a reconciliation failure is reported through notify and does not stop the rest of the sweep, or throw', async () => {
+  const notified = [];
+  const { engine, provider, repository, request } = fixture({ notification: async event => notified.push(event) });
+  const failing = await repository.createSubmitted({
+    ...request, walletId: request.wallet.id, from: request.wallet.address, nonce: 7,
+    gasLimit: 21_000n, gasPriceWei: 1n, maxFeePerGasWei: null,
+    maxPriorityFeePerGasWei: null, estimatedCostWei: 21_000n,
+    simulationEnabled: true, requiredConfirmations: 1,
+    transactionTimeoutMs: 60_000, timeoutAt: Date.now() + 60_000,
+  });
+  const failingHash = `0x${'cd'.repeat(32)}`;
+  await repository.attachSignedHash(failing.intentId, failingHash);
+  const okay = await repository.createSubmitted({
+    ...request, walletId: request.wallet.id, from: request.wallet.address, nonce: 8,
+    gasLimit: 21_000n, gasPriceWei: 1n, maxFeePerGasWei: null,
+    maxPriorityFeePerGasWei: null, estimatedCostWei: 21_000n,
+    simulationEnabled: true, requiredConfirmations: 1,
+    transactionTimeoutMs: 60_000, timeoutAt: Date.now() + 60_000,
+  });
+  const okayHash = `0x${'ef'.repeat(32)}`;
+  await repository.attachSignedHash(okay.intentId, okayHash);
+
+  const originalGetReceipt = provider.getTransactionReceipt.bind(provider);
+  provider.getTransactionReceipt = async hash => {
+    if (hash === failingHash) throw new Error('RPC unavailable');
+    return originalGetReceipt(hash);
+  };
+
+  const results = await engine.reconcileNonFinal();
+  assert.equal(results.length, 2, 'a reconciliation failure must not stop the rest of the sweep');
+  assert.equal(results.find(item => item.intentId === failing.intentId).state, 'submitted',
+    'the failing intent keeps its prior state rather than being silently marked as anything else');
+
+  const failureEvent = notified.find(event => event.state === 'reconcile_failed');
+  assert.ok(failureEvent, 'a reconciliation failure must be reported through notify, not swallowed silently');
+  assert.equal(failureEvent.intent.intentId, failing.intentId);
+  assert.match(failureEvent.error, /RPC unavailable/);
+});
+
 test('notification failure cannot alter confirmed transaction status', async () => {
   const { engine, repository, request } = fixture({ notification: async () => { throw new Error('telegram offline'); } });
   const result = await engine.submit(request);

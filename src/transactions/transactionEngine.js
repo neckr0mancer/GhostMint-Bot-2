@@ -270,7 +270,16 @@ function createTransactionEngine({
     const results = [];
     for (const intent of intents) {
       try { results.push(await reconcileIntent(intent)); }
-      catch { results.push(intent); }
+      catch (error) {
+        // A failure here (e.g. an RPC outage during the boot-time reconciliation sweep) used to be
+        // swallowed with no trace: the intent still counted toward reconcileNonFinal's returned
+        // length, making a stuck/errored intent indistinguishable from a successfully-reconciled one
+        // in the "Reconciled N non-final transaction intents" startup log. This is the engine's only
+        // outward signal (it has no log dependency of its own), so a failed reconciliation is at
+        // least observable to whatever the caller wires notify to.
+        await safeNotify(notify, { intent, state: 'reconcile_failed', error: error?.message });
+        results.push(intent);
+      }
     }
     return results;
   }
