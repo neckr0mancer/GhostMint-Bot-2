@@ -50,6 +50,28 @@ test('unban, unsuspend, and reactivate require the same explicit CONFIRM as ban,
   }
 });
 
+// Regression test: adminInput() re-encodes the dashboard's structured JSON body into the same
+// whitespace-joined command string Telegram/Discord raw text produces, then adminCommandService
+// re-splits it on whitespace. A group name submitted as "VIP Members" used to silently become
+// name="VIP" with every field after it (the real ceiling values) shifted one slot to the right --
+// gasGwei's value landing in simulation, etc. -- surfacing only as a confusing, unrelated validation
+// error deep in governanceService (or worse, if the shifted values happened to all still parse as
+// valid numbers, succeeding with silently wrong ceilings). This must now be rejected immediately,
+// naming the actual field, before the join ever happens. A hyphenated name must still work exactly
+// as before -- this isn't a ban on the characters just typing rendered as spaces.
+test('a group name containing a space is rejected before it can corrupt the fields after it, but a hyphenated name still works',async t=>{
+  const {base}=await server(t);
+  const spaced=await write(base,'owner','group-set',{name:'VIP Members',maxWei:'100',dailyWei:'200',gasGwei:'10',simulation:'optional'});
+  assert.equal(spaced.status,400);
+  const spacedBody=await spaced.json();
+  assert.equal(spacedBody.issues?.[0]?.field,'name');
+  assert.doesNotMatch(JSON.stringify(spacedBody),/non-negative integer/i,
+    'must fail as a clear "no spaces" error on the name field, not a confusing downstream wei-parsing error');
+
+  const hyphenated=await write(base,'owner','group-set',{name:'VIP-Members',maxWei:'100',dailyWei:'200',gasGwei:'10',simulation:'optional'});
+  assert.equal(hyphenated.status,200);
+});
+
 test('group edits immediately change an assigned user effective ceiling and successful writes are audited',async t=>{const {base,audits}=await server(t);assert.equal((await write(base,'owner','group-set',{name:'Standard',maxWei:'100',dailyWei:'200',gasGwei:'10',simulation:'optional'})).status,200);assert.equal((await write(base,'owner','assign',{platform:'telegram',platformUserId:'2',group:'Standard'})).status,200);let effective=await (await fetch(`${base}/api/admin/effective?platform=telegram&platformUserId=2&chain=ethereum`,{headers:headers()})).json();assert.equal(effective.gasCeilingGwei,10);assert.equal((await write(base,'owner','group-set',{name:'standard',maxWei:'100',dailyWei:'200',gasGwei:'25',simulation:'optional'})).status,200);effective=await (await fetch(`${base}/api/admin/effective?platform=telegram&platformUserId=2&chain=ethereum`,{headers:headers()})).json();assert.equal(effective.gasCeilingGwei,25);assert.equal(audits.length,3);assert.ok(audits.every(value=>value.platform==='dashboard'&&value.outcome==='success'));});
 
 test('effective governance reports owners as exempt instead of numeric ceilings',async t=>{const {base}=await server(t);const effective=await (await fetch(`${base}/api/admin/effective?platform=telegram&platformUserId=1&chain=ethereum`,{headers:headers()})).json();assert.equal(effective.isOwner,true);assert.equal(effective.ceilingExempt,true);assert.equal(effective.maxTransactionValueWei,null);assert.equal(effective.dailySpendingBudgetWei,null);assert.equal(effective.gasCeilingGwei,null);});

@@ -57,6 +57,33 @@ test('targeting a platform ID with no linked GhostMint account surfaces a Valida
     error => error instanceof ValidationError && error.issues[0].field === 'platformUserId');
 });
 
+// Regression test, at the governanceService layer directly (independent of dashboard/api.js's own
+// adminInput check): a group name is one positional token among several in the shared command
+// syntax every platform funnels through, unlike a free-text reason. This is defense-in-depth for any
+// caller that reaches governanceService directly rather than through the command-string round-trip.
+test('a group name containing whitespace is rejected at every group-name entry point in governanceService', async () => {
+  const repository = { isOwner: async () => true, findUserByPlatform: async () => 'target-user-id' };
+  const governance = createGovernanceService(repository);
+  const rejectsOnName = value => error => error instanceof ValidationError && /must not contain spaces/.test(error.issues[0].message) && value(error);
+
+  await assert.rejects(
+    governance.upsertGroup('owner-user', { name: 'VIP Members', maxTransactionValueWei: '1', dailySpendingBudgetWei: '2', gasCeilingGwei: '3' }),
+    rejectsOnName(error => error.issues[0].field === 'name'));
+  await assert.rejects(governance.deleteGroup('owner-user', 'VIP Members'),
+    rejectsOnName(error => error.issues[0].field === 'name'));
+  await assert.rejects(governance.assignGroup('owner-user', { platform: 'telegram', platformUserId: '123', groupName: 'VIP Members' }),
+    rejectsOnName(error => error.issues[0].field === 'groupName'));
+  await assert.rejects(governance.setGroupSimulation('owner-user', { groupName: 'VIP Members', simulationForced: 'forced' }),
+    rejectsOnName(error => error.issues[0].field === 'groupName'));
+  await assert.rejects(governance.setGroupRetentionPolicy('owner-user', { groupName: 'VIP Members', retentionPeriodDays: 'off' }),
+    rejectsOnName(error => error.issues[0].field === 'groupName'));
+
+  // A hyphenated name is not itself the problem -- only the space is.
+  const okRepository = { isOwner: async () => true, upsertGroup: async value => value };
+  await assert.doesNotReject(createGovernanceService(okRepository).upsertGroup('owner-user',
+    { name: 'VIP-Members', maxTransactionValueWei: '1', dailySpendingBudgetWei: '2', gasCeilingGwei: '3', simulationForced: 'forced' }));
+});
+
 test('a valid owner grant command succeeds end to end once the syntax and target are correct', async () => {
   const calls = [];
   const admin = createAdminCommandService(createGovernanceService({

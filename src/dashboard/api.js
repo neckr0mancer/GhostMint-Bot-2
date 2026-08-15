@@ -39,7 +39,26 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,commands,s
     'schedule-removal':['platform','platformUserId','days'],
     'merge-account':['sourcePlatform','sourcePlatformUserId','targetPlatform','targetPlatformUserId'],
   });
-  function adminInput(actionName,body={}){const fields=ADMIN_FIELDS[actionName];if(!fields)throw new ValidationError({field:'action',message:'is not supported'});return [actionName,...fields.map(field=>body[field])].join(' ');}
+  // Every field here becomes one whitespace-joined, then re-split, positional token in
+  // adminCommandService's shared command syntax -- except 'reason', which is deliberately designed
+  // to absorb every trailing word (adminCommandService slices from its position to the end and
+  // rejoins). A space inside any OTHER field (e.g. a group name typed as "VIP Members" in the
+  // dashboard's form) would silently shift every field after it once this string gets re-split,
+  // misaligning real values like ceiling amounts into the wrong slots. Reject it here, before the
+  // join, while the original field name is still known -- by the time validation runs deeper in the
+  // call chain the string has already been split apart and the original association is lost.
+  function adminInput(actionName,body={}){
+    const fields=ADMIN_FIELDS[actionName];
+    if(!fields)throw new ValidationError({field:'action',message:'is not supported'});
+    for(const field of fields){
+      if(field==='reason')continue;
+      const value=body[field];
+      if(typeof value==='string' && /\s/.test(value.trim())){
+        throw new ValidationError({field,message:'must not contain spaces -- admin actions use a shared single-token command syntax; try hyphens or underscores instead'});
+      }
+    }
+    return [actionName,...fields.map(field=>body[field])].join(' ');
+  }
   async function auditAdminWrite(req,actionName){await Promise.resolve(securityAudit.record({userId:user(req),platform:'dashboard',
     contextId:req.dashboardSession.sessionId,command:`admin:${actionName}`,outcome:'success',reason:'Governance write completed'})).catch(()=>{});}
 

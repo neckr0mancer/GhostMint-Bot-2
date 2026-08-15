@@ -32,6 +32,20 @@ function requiredText(value, field, max = 100) {
   return normalized;
 }
 
+// Unlike a reason (free text, always the last positional argument so it can safely absorb every
+// remaining word) a group name is one positional token among several in the shared kebab-case
+// adminCommandService syntax Telegram, Discord, and the dashboard all funnel through -- a space would
+// silently shift every field after it, e.g. group-set "VIP Members" 100 200 10 splitting into
+// name="VIP", maxWei="Members" (a validation error, but a mystifying one) with the real ceiling
+// values then misaligned by one. Reject the space here instead, with a message that says why.
+function requiredGroupName(value, field = 'name') {
+  const normalized = requiredText(value, field);
+  if (/\s/.test(normalized)) {
+    throw new ValidationError({ field, message: 'must not contain spaces (it is a single token in admin command syntax) -- try hyphens or underscores instead' });
+  }
+  return normalized;
+}
+
 function forcedValue(value, field = 'simulationForced', { nullable = false } = {}) {
   if (nullable && (value === null || value === 'inherit')) return null;
   if (value === true || value === 'forced') return true;
@@ -158,7 +172,7 @@ function createGovernanceService(repository) {
     // ── Milestone 16b: governance-group retention scheduling ──
     async setGroupRetentionPolicy(callerUserId, input) {
       await requireOwner(callerUserId);
-      const name = requiredText(input.groupName, 'groupName');
+      const name = requiredGroupName(input.groupName, 'groupName');
       const retentionPeriodDays = parseOptionalDays(input.retentionPeriodDays, 'retentionPeriodDays');
       const requireActiveSubscription = parseOnOff(input.requireActiveSubscription, 'requireActiveSubscription');
       const requireRecentActivityDays = parseOptionalDays(input.requireRecentActivityDays, 'requireRecentActivityDays');
@@ -183,18 +197,18 @@ function createGovernanceService(repository) {
     async upsertGroup(callerUserId, input) {
       await requireOwner(callerUserId);
       const ceilings = validateCeilings(input);
-      return repository.upsertGroup({ actorUserId: callerUserId, name: requiredText(input.name, 'name'),
+      return repository.upsertGroup({ actorUserId: callerUserId, name: requiredGroupName(input.name, 'name'),
         ...ceilings, simulationForced: forcedValue(input.simulationForced) });
     },
 
     async deleteGroup(callerUserId, name) {
       await requireOwner(callerUserId);
-      return repository.deleteGroup(requiredText(name, 'name'));
+      return repository.deleteGroup(requiredGroupName(name, 'name'));
     },
 
     async assignGroup(callerUserId, input) {
       await requireOwner(callerUserId);
-      return repository.assignGroup(await targetUser(input.platform, input.platformUserId), requiredText(input.groupName, 'groupName'));
+      return repository.assignGroup(await targetUser(input.platform, input.platformUserId), requiredGroupName(input.groupName, 'groupName'));
     },
 
     async removeGroup(callerUserId, input) {
@@ -218,7 +232,7 @@ function createGovernanceService(repository) {
 
     async setGroupSimulation(callerUserId, input) {
       await requireOwner(callerUserId);
-      return repository.setGroupSimulation(requiredText(input.groupName, 'groupName'), forcedValue(input.simulationForced, 'simulationForced', { nullable: true }));
+      return repository.setGroupSimulation(requiredGroupName(input.groupName, 'groupName'), forcedValue(input.simulationForced, 'simulationForced', { nullable: true }));
     },
 
     async updatePreset(callerUserId, input) {
