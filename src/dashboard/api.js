@@ -108,7 +108,6 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,exportKeyR
     }),
     mintPresets:action(async(req,res)=>res.json(jsonSafe(await commands.mintPresets(user(req))))),
     detectMint:action(async(req,res)=>{noStore(res);res.json(jsonSafe(await commands.detectMintContract(user(req),{contractAddress:req.query.contractAddress,quantity:req.query.quantity})));}),
-    detectSeaDrop:action(async(req,res)=>{noStore(res);res.json(jsonSafe(await commands.detectSeaDropDrop(user(req),{contractAddress:req.query.contractAddress,quantity:req.query.quantity})));}),
     previewMint:action(async(req,res)=>{const labels=req.body.walletLabels||[req.body.walletLabel];const entries=[];for(const walletLabel of labels)entries.push(await commands.prepareMint(user(req),{...req.body,walletLabel}));const previewToken=issuePreview(user(req),entries);res.json({previewToken,expiresInSeconds:300,items:entries.map(value=>({wallet:value.wallet,preview:value.prepared.preview,simulation:jsonSafe(value.simulation)}))});}),
     confirmMint:action(async(req,res)=>{confirmation(req);const value=consumePreview(user(req),req.body.previewToken);const results=[];for(const entry of value.entries)results.push(await commands.submitPreparedMint(user(req),entry));res.status(202).json(jsonSafe({results}));}),
     tasks:action(async(req,res)=>res.json(await commands.tasksPage(user(req),req.query))),
@@ -164,7 +163,6 @@ function mountDashboardRoutes(app,api){
   app.post('/api/wallets/:label/export',api.requireSession,api.requireCsrf,api.exportWalletKey);
   app.get('/api/mint-presets',api.requireSession,api.mintPresets);
   app.get('/api/mints/detect',api.requireSession,api.detectMint);
-  app.get('/api/mints/seadrop/detect',api.requireSession,api.detectSeaDrop);
   app.post('/api/mints/preview',api.requireSession,api.requireCsrf,api.previewMint);
   app.post('/api/mints/confirm',api.requireSession,api.requireCsrf,api.confirmMint);
   app.get('/api/tasks',api.requireSession,api.tasks);
