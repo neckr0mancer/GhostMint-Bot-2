@@ -123,9 +123,48 @@ function Users({data,formWrite,submitterWrite,write,profile}){const [query,setQu
 
 function Effective({profile,inspect,effective}){return <><PageTitle eyebrow="Policy resolution" title="Effective lookup" subtitle="Inspect the exact limits the transaction engine resolves for a linked user and chain."/><div className="admin-effective-layout"><Form title="Inspect linked user" note="This uses the same resolver as transaction policy enforcement." onSubmit={inspect}><Select name="platform" label="Platform" options={['telegram','discord']}/><Field name="platformUserId" label="Platform user ID"/><label>Chain<select name="chain" required defaultValue={profile.supportedChains[0]}><GroupedChainOptions options={profile.supportedChains}/></select></label><button>Read effective limits</button></Form><article className="panel effective-read" aria-live="polite"><p className="eyebrow">Resolved policy</p><h2>Effective result</h2>{!effective?<p className="empty-copy">Select a linked identity and chain to inspect its current governance policy.</p>:effective.ceilingExempt?<p className="ok">Owner — exempt from value, daily, and gas ceilings.</p>:<dl className="admin-detail-list"><div><dt>Maximum per transaction</dt><dd>{effective.maxTransactionValueWei} wei</dd></div><div><dt>Daily budget</dt><dd>{effective.dailySpendingBudgetWei} wei</dd></div><div><dt>Gas ceiling</dt><dd>{effective.gasCeilingGwei} gwei</dd></div></dl>}{effective&&<p>Simulation: <strong>{effective.simulationForced?'forced':'optional'}</strong></p>}</article></div></>}
 
-function Presets({data,formWrite}){return <><PageTitle eyebrow="Execution modes" title="Mode presets" subtitle="Edit the four shared speed and safety profiles without changing per-target bypass confirmation rules."/><p className="notice notice-warning">Human verification is preparatory per-target configuration. A preset never bypasses verification by itself; the explicit CONFIRM challenge still applies.</p><div className="card-grid admin-preset-grid">{data?.presets.map(preset=><Form key={`${preset.key}:${preset.simulationMode}:${preset.confirmationCount}:${preset.humanVerification}`} title={preset.displayName} onSubmit={event=>formWrite(event,'preset-set')}><input type="hidden" name="preset" value={preset.key}/><Select name="simulation" label="Simulation" options={['on','off','blockchain_off']} defaultValue={preset.simulationMode}/><Field name="confirmations" label="Confirmations" type="number" min="1" max="1000" defaultValue={preset.confirmationCount}/><Select name="verification" label="Verification" options={['on','bypass']} defaultValue={preset.humanVerification}/><button>Save preset</button></Form>)}</div></>}
+function Presets({data,formWrite}){return <><PageTitle eyebrow="Execution modes" title="Mode presets" subtitle="Edit the four shared speed and safety profiles without changing per-target bypass confirmation rules."/><p className="notice notice-warning">Human verification is preparatory per-target configuration. A preset never bypasses verification by itself; the explicit CONFIRM challenge still applies.</p><div className="card-grid admin-preset-grid">{data?.presets.map(preset=><Form key={`${preset.key}:${preset.simulationMode}:${preset.confirmationCount}:${preset.humanVerification}:${preset.gasPriceMultiplier}`} title={preset.displayName} onSubmit={event=>formWrite(event,'preset-set')}><input type="hidden" name="preset" value={preset.key}/><Select name="simulation" label="Simulation" options={['on','off','blockchain_off']} defaultValue={preset.simulationMode}/><Field name="confirmations" label="Confirmations" type="number" min="1" max="1000" defaultValue={preset.confirmationCount}/><Select name="verification" label="Verification" options={['on','bypass']} defaultValue={preset.humanVerification}/><Field name="gasMultiplier" label="Gas price multiplier (x network price)" type="number" step="0.05" min="1" max="10" defaultValue={preset.gasPriceMultiplier??1}/><button>Save preset</button></Form>)}</div></>}
 
 function Owners({data,write,profile}){const owners=data?.users.filter(user=>user.isOwner)||[];const rootCount=owners.filter(user=>user.isRootOwner).length;return <><PageTitle eyebrow="Global access" title="Owner access" subtitle="Two tiers: root owners (max 2) can grant or revoke owner status and are the only ones who can act on an existing owner; owners get admin access but cannot touch another owner."/><div className="admin-owner-layout"><section className="panel form">{profile?.isRootOwner?<><p className="warning">Owner changes affect global administration rights. The final owner can never be removed.</p><OwnerControl write={write} users={data?.users}/></>:<p className="notice">Only a root owner can grant or revoke owner status.</p>}</section><section className="panel form">{profile?.isRootOwner?<><p className="warning">Root owner changes affect who can manage owners at all. Capped at 2 ({rootCount} currently); the final root owner can never be removed.</p><RootOwnerControl write={write} users={data?.users}/></>:<p className="notice">Only a root owner can grant or revoke root owner status.</p>}</section><section className="panel"><div className="section-heading"><div><p className="eyebrow">Current owners</p><h2>{owners.length} owner{owners.length===1?'':'s'} · {rootCount} root</h2></div></div><div className="admin-compact-list">{owners.map(user=>{const account=identity(user);return <div key={user.userId}><strong>{account?`${account.platform}:${account.platformUserId}`:user.userId}</strong><span className="pill">{tierLabel(user)}</span><span>{user.linkedAccounts.length} linked platform account{user.linkedAccounts.length===1?'':'s'}</span></div>})}</div></section><section className="panel form field-full"><p className="notice">Merge an empty platform-created duplicate account into an existing one -- for example, a platform that was used before it was ever linked. Find the duplicate's platform and ID on the Users page (it will show only one linked account and no group). Refuses safely and changes nothing if the duplicate has any wallets, tasks, or other data.</p><MergeAccountControl write={write} users={data?.users}/></section></div></>}
+
+// Owner-only bulk wallet import: a paste of comma-separated private keys instead of one key per
+// form submission. Labels are auto-generated server-side (prefix-1, prefix-2, ...) since a bare
+// list of keys carries no labels of its own -- see importWalletsBatch in botCommandService.js,
+// which every key here runs through individually (same validation/encryption as a single import,
+// just looped, so one bad key is reported per-entry instead of aborting the whole paste).
+function BatchImport({profile}){
+  const [chain,setChain]=useState(profile?.supportedChains?.[0]||'ethereum');
+  const [results,setResults]=useState(null);
+  async function submit(event){
+    event.preventDefault();
+    const form=event.currentTarget;
+    const values=Object.fromEntries(new FormData(form));
+    const privateKeys=String(values.privateKeys||'').split(',').map(v=>v.trim()).filter(Boolean);
+    if(!privateKeys.length){notify('Enter at least one private key.',{type:'error'});return;}
+    if(!await confirmDialog(`Import ${privateKeys.length} wallet(s) from pasted private keys? Not recommended over generating wallets -- the keys cross browser memory once, are encrypted immediately, and are never returned.`))return;
+    try{
+      const {results:imported}=await api('/api/wallets/batch-import',{method:'POST',
+        body:JSON.stringify({privateKeys,chain:values.chain,labelPrefix:values.labelPrefix||undefined})});
+      setResults(imported);
+      form.reset();
+      const succeeded=imported.filter(r=>r.status==='success').length;
+      notify(`Batch import: ${succeeded}/${imported.length} wallet(s) imported.`,{type:succeeded===imported.length?'success':'error'});
+    }catch(value){notify(value.message,{type:'error'});}
+  }
+  return <>
+    <PageTitle eyebrow="Owner only" title="Batch wallet import" subtitle="Import many private keys at once, comma-separated. Not recommended over generating wallets -- keys cross browser memory once, are encrypted immediately, and are never returned."/>
+    <Form title="Batch import" onSubmit={submit}>
+      <label>Private keys (comma-separated)<textarea name="privateKeys" required rows="4" placeholder="0xabc...,0xdef...,0x123..." autoComplete="off"/></label>
+      <label>Chain<select name="chain" required value={chain} onChange={e=>setChain(e.target.value)}><GroupedChainOptions options={profile?.supportedChains||[]}/></select></label>
+      <Field name="labelPrefix" label="Label prefix (optional)" required={false} placeholder="wallet"/>
+      <button>Import batch</button>
+    </Form>
+    {results&&<section className="panel">
+      <h2>Results: {results.filter(r=>r.status==='success').length}/{results.length} succeeded</h2>
+      <div className="admin-compact-list">{results.map(r=><div key={r.index}>{r.status==='success'?<><strong>{r.label}</strong><code>{r.address}</code></>:<span className="warning">#{r.index+1}: {r.error}</span>}</div>)}</div>
+    </section>}
+  </>;
+}
 
 export default function Admin({profile,section='Overview',go}){const overview=useLoad('/api/admin',[],['admin.changed','identity.changed']);const [effective,setEffective]=useState(null);
   async function write(action,value){try{const result=await api(`/api/admin/${action}`,{method:'POST',body:JSON.stringify(value)});await overview.load();notify(result.message,{type:'success'});return result;}catch(reason){notify(reason.message,{type:'error'});throw reason;}}
@@ -133,6 +172,6 @@ export default function Admin({profile,section='Overview',go}){const overview=us
   async function submitterWrite(event){return formWrite(event,event.nativeEvent.submitter.value);}
   async function inspect(event){event.preventDefault();try{const query=new URLSearchParams(Object.fromEntries(new FormData(event.currentTarget)));setEffective(await api(`/api/admin/effective?${query}`));}catch(reason){notify(reason.message,{type:'error'});}}
   const shared={data:overview.data,formWrite,write};let view;
-  if(section==='Groups')view=<Groups {...shared}/>;else if(section==='Users')view=<Users data={overview.data} formWrite={formWrite} submitterWrite={submitterWrite} write={write} profile={profile}/>;else if(section==='Effective')view=<Effective profile={profile} inspect={inspect} effective={effective}/>;else if(section==='Presets')view=<Presets data={overview.data} formWrite={formWrite}/>;else if(section==='Owners')view=<Owners data={overview.data} write={write} profile={profile}/>;else view=<Overview data={overview.data} go={go}/>;
+  if(section==='Groups')view=<Groups {...shared}/>;else if(section==='Users')view=<Users data={overview.data} formWrite={formWrite} submitterWrite={submitterWrite} write={write} profile={profile}/>;else if(section==='Effective')view=<Effective profile={profile} inspect={inspect} effective={effective}/>;else if(section==='Presets')view=<Presets data={overview.data} formWrite={formWrite}/>;else if(section==='Owners')view=<Owners data={overview.data} write={write} profile={profile}/>;else if(section==='Wallets')view=<BatchImport profile={profile}/>;else view=<Overview data={overview.data} go={go}/>;
   return <div className="admin-view">{overview.error&&<p className="notice error" role="alert">{overview.error}</p>}{view}</div>;
 }

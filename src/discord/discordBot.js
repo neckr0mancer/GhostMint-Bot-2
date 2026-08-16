@@ -1,6 +1,7 @@
 const {
   Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder,
 } = require('discord.js');
+const { formatEther } = require('ethers');
 const { AccountBlockedError, AuthorizationError } = require('../governance/governanceService');
 const { LinkCodeError } = require('../identity/identityService');
 const { ProofResolutionError } = require('../mint/proofResolver');
@@ -43,7 +44,14 @@ function commandDefinitions() {
       .addStringOption(o => o.setName('label').setDescription('Wallet label').setRequired(true).setAutocomplete(true)))
     .addSubcommand(c => c.setName('remove').setDescription('Permanently remove a wallet')
       .addStringOption(o => o.setName('label').setDescription('Wallet label').setRequired(true).setAutocomplete(true))
-      .addBooleanOption(o => o.setName('confirm').setDescription('Confirm permanent removal').setRequired(true))));
+      .addBooleanOption(o => o.setName('confirm').setDescription('Confirm permanent removal').setRequired(true)))
+    .addSubcommand(c => c.setName('batch-import').setDescription('Owner only: import many private keys at once')
+      .addStringOption(o => o.setName('private-keys').setDescription('Comma-separated private keys').setRequired(true))
+      .addStringOption(o => o.setName('chain').setDescription('Supported chain').setRequired(true))
+      .addBooleanOption(o => o.setName('confirm').setDescription('Confirm batch import of multiple private keys').setRequired(true))
+      .addStringOption(o => o.setName('label-prefix').setDescription('Label prefix; wallets are named prefix-1, prefix-2, ...'))));
+  commands.push(new SlashCommandBuilder().setName('deposit').setDescription('💰 Get a wallet address to fund')
+    .addStringOption(o => o.setName('label').setDescription('Wallet label (optional if you have only one)').setAutocomplete(true)));
   commands.push(new SlashCommandBuilder().setName('mint').setDescription('⚡ Execute a supported mint')
     .addStringOption(o => o.setName('wallet').setDescription('Wallet label').setRequired(true).setAutocomplete(true))
     .addStringOption(o => o.setName('contract').setDescription('Contract address').setRequired(true))
@@ -81,7 +89,12 @@ function commandDefinitions() {
     .addSubcommand(c => c.setName('list').setDescription('List post-confirmation copy snipers'))
     .addSubcommand(c => c.setName('status').setDescription('Show a post-confirmation copy sniper').addStringOption(o => o.setName('id').setDescription('Sniper UUID').setRequired(true))));
   commands.push(new SlashCommandBuilder().setName('mode').setDescription('🎛️ Select your transaction mode preset')
-    .addStringOption(o => o.setName('preset').setDescription('Preset key').setRequired(true))
+    .addStringOption(o => o.setName('preset').setDescription('Preset').setRequired(true).addChoices(
+      { name: '🔥 Degen -- fastest, high gas, no confirmation', value: 'ultra_fast' },
+      { name: '⚡ Fast -- quick, higher gas, still confirms', value: 'fast' },
+      { name: '🐢 Cautious -- careful, moderate gas', value: 'semi_safe' },
+      { name: '🛡️ Normie -- slowest, safest, network-price gas', value: 'safe' },
+    ))
     .addBooleanOption(o=>o.setName('confirm').setDescription('Confirm transaction-mode change').setRequired(true)));
   commands.push(new SlashCommandBuilder().setName('admin').setDescription('🛡️ Owner-only governance command')
     .addStringOption(o => o.setName('action').setDescription('Governance action and arguments').setRequired(true))
@@ -432,6 +445,15 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, s
           await interaction.editReply(discordMenus.mainMenu({ isOwner: await ownerFlag(userId) }));
           return;
         }
+        case 'deposit': {
+          const wallets = commands.wallets(userId);
+          if (!wallets.length) { message = 'No wallets yet. Use `/wallet create` first.'; break; }
+          const label = interaction.options.getString('label');
+          const target = label ? wallets.find(w => w.label === label) : (wallets.length === 1 ? wallets[0] : null);
+          if (!target) { message = `You have multiple wallets -- specify one: ${wallets.map(w => `**${w.label}**`).join(', ')}.`; break; }
+          message = `Send funds to **${target.label}**: \`${target.address}\`. This address works on any EVM chain (${target.chain} is its home chain here).`;
+          break;
+        }
         case 'wallet': {
           const action = interaction.options.getSubcommand();
           if (action === 'create') {
@@ -446,7 +468,19 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, s
             const lines = value.balances.map(b => `${chains[b.chain]?.name || b.chain}: ${b.balance ?? 'unavailable'} ${b.symbol || ''}`).join('\n');
             message = `**${value.label}**\n${lines}`;
           }
-          else { confirmation(interaction); message = `Wallet **${await commands.removeWallet(userId, interaction.options.getString('label'))}** removed.`; }
+          else if (action === 'batch-import') {
+            confirmation(interaction);
+            const keys = interaction.options.getString('private-keys').split(',').map(v => v.trim()).filter(Boolean);
+            const results = await commands.importWalletsBatch(userId, { privateKeys: keys,
+              chain: interaction.options.getString('chain'), labelPrefix: interaction.options.getString('label-prefix') || undefined });
+            const succeeded = results.filter(r => r.status === 'success');
+            const failed = results.filter(r => r.status === 'failed');
+            const lines = [`Batch import: ${succeeded.length} succeeded, ${failed.length} failed.`,
+              ...succeeded.map(r => `✅ **${r.label}** — \`${r.address}\``),
+              ...failed.map(r => `❌ #${r.index + 1}: ${r.error}`)];
+            message = lines.join('\n').slice(0, 1900);
+          }
+          else if (action === 'remove') { confirmation(interaction); message = `Wallet **${await commands.removeWallet(userId, interaction.options.getString('label'))}** removed.`; }
           break;
         }
         case 'mint': {
@@ -547,6 +581,32 @@ function createDiscordBot({ token, applicationId, devGuildId, identity, commands
   const api = rest || new REST({ version: '10' }).setToken(token);
   discordClient.on('interactionCreate', createDiscordInteractionHandler({ identity, commands, allowedGuildId:devGuildId,
     securityAudit,rateLimiter,log,isOwner,checkAccountStatus,supportedChains,chains }));
+  // Telegram counterpart: a bare contract address with no leading slash and no active flow shows
+  // contract details instead of being ignored (see handleFlowTextMessage in src/server.js). Any
+  // other plain message, and anything failing the same guild/channel/account checks every slash
+  // command already enforces, is silently ignored -- this only ever reads, never mutates, so a
+  // failed check is not worth surfacing as an error to a channel that may not even be the bot's.
+  discordClient.on('messageCreate', async message => {
+    try {
+      if (!message.author || message.author.bot) return;
+      const trimmed = String(message.content || '').trim();
+      if (!/^0x[0-9a-fA-F]{40}$/.test(trimmed)) return;
+      const context = verifyDiscordContext({ user: message.author, guildId: message.guildId, channelId: message.channelId }, devGuildId);
+      const userId = await identity.resolveOrCreate('discord', context.platformUserId);
+      await checkAccountStatus(userId);
+      const detected = await commands.detectMintContract(userId, { contractAddress: trimmed, quantity: 1 });
+      const payload = discordMenus.contractDetails({
+        contractAddress: trimmed, chainLabel: chains[detected.chain]?.name || detected.chain,
+        isSeaDrop: detected.isSeaDrop,
+        priceETH: detected.priceKnown ? formatEther(BigInt(detected.valueWei)) : null,
+        priceUnknown: !detected.priceKnown,
+        maxSupply: detected.maxSupply, maxPerWallet: detected.maxPerWallet,
+        startTime: detected.startTime, collection: detected.collection,
+        soldOut: detected.soldOut, displayPrice: detected.displayPrice,
+      });
+      await message.reply(payload).catch(() => {});
+    } catch { /* not address-shaped, unauthorized context, blocked account, or lookup failure -- ignore */ }
+  });
   return {
     client: discordClient,
     async start() {

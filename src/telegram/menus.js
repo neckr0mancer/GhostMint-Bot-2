@@ -1,7 +1,13 @@
 // Pure menu-building functions for the Milestone 15a/15b Telegram redesign. Nothing here talks
 // to a bot, a database, or the transaction engine — every function takes plain data in and
-// returns a { text, replyMarkup } payload, which keeps this module trivially unit-testable and
-// keeps server.js (the composition root) responsible only for wiring, not UI layout.
+// returns a { text, replyMarkup, parseMode } payload, which keeps this module trivially
+// unit-testable and keeps server.js (the composition root) responsible only for wiring, not UI
+// layout. Every returned text uses Telegram's HTML parse mode (<b>/<code>, never legacy
+// *asterisk*/`backtick` Markdown) since that's the only mode server.js's tg* senders use -- any
+// free-text value a user typed (a wallet label, a task name) is escaped with escapeTelegramHtml
+// before being interpolated next to a real tag so it can never break or inject into the markup.
+
+const { escapeTelegramHtml } = require('../security/botSecurity');
 
 function button(text, callbackData) {
   return { text, callback_data: callbackData };
@@ -26,14 +32,15 @@ function mainMenu({ isOwner = false } = {}) {
   ];
   if (isOwner) rows.push([button('🛡️ Admin', 'menu:admin')]);
   return {
-    text: '*GhostMint*\n\nChoose a section below, or type a command directly if you already know it.',
+    text: '<b>GhostMint</b>\n\nChoose a section below, or type a command directly if you already know it.',
     replyMarkup: keyboard(rows),
+    parseMode: 'HTML',
   };
 }
 
 function walletsMenu() {
   return {
-    text: '*Wallets*\n\nGenerating a new wallet server-side is recommended over importing an existing key.',
+    text: '<b>Wallets</b>\n\nGenerating a new wallet server-side is recommended over importing an existing key.',
     replyMarkup: keyboard([
       [button('📋 List wallets', 'wallet:list')],
       [button('➕ Create wallet', 'wallet:create:start')],
@@ -43,6 +50,7 @@ function walletsMenu() {
       [button('🗑️ Remove wallet', 'wallet:remove:pick')],
       [button('⬅️ Back to menu', 'menu:main')],
     ]),
+    parseMode: 'HTML',
   };
 }
 
@@ -53,27 +61,32 @@ function settingsMenu({ isOwner = false } = {}) {
   ];
   if (isOwner) rows.push([button('🛡️ Admin console', 'menu:admin')]);
   rows.push([button('⬅️ Back to menu', 'menu:main')]);
-  return { text: '*Settings*', replyMarkup: keyboard(rows) };
+  return { text: '<b>Settings</b>', replyMarkup: keyboard(rows), parseMode: 'HTML' };
 }
 
+// title/hint are always literal strings the developer wrote at the call site (never user input),
+// and a couple of call sites already hand-escape a literal placeholder like "&lt;id&gt;" into
+// hint themselves -- so neither is run through escapeTelegramHtml here, which would double-escape
+// those entities.
 function placeholderMenu(title, hint) {
   return {
-    text: `*${title}*\n\n${hint}`,
+    text: `<b>${title}</b>\n\n${hint}`,
     replyMarkup: keyboard([[button('⬅️ Back to menu', 'menu:main')]]),
+    parseMode: 'HTML',
   };
 }
 
 function chainPicker(supportedChains, chains, { prefix = 'flow:chain' } = {}) {
   const rows = supportedChains.map(chain => [button(chains[chain]?.name || chain, `${prefix}:${chain}`)]);
   rows.push([button('❌ Cancel', 'flow:cancel:ask')]);
-  return { text: 'Choose a chain:', replyMarkup: keyboard(rows) };
+  return { text: 'Choose a chain:', replyMarkup: keyboard(rows), parseMode: 'HTML' };
 }
 
 function walletPicker(wallets, { prefix, emptyHint }) {
   if (!wallets.length) return placeholderMenu('Wallets', emptyHint);
   const rows = wallets.map(wallet => [button(`${wallet.label} (${wallet.chain})`, `${prefix}:${wallet.label}`)]);
   rows.push([button('⬅️ Back to menu', 'menu:wallets')]);
-  return { text: 'Choose a wallet:', replyMarkup: keyboard(rows) };
+  return { text: 'Choose a wallet:', replyMarkup: keyboard(rows), parseMode: 'HTML' };
 }
 
 // Multi-select variant for /batch: tapping a wallet toggles it (re-renders this same menu with the
@@ -88,13 +101,14 @@ function walletMultiPicker(wallets, selectedLabels, { emptyHint }) {
     rows.push([button(`▶️ Continue with ${selectedLabels.length} wallet${selectedLabels.length === 1 ? '' : 's'}`, 'flow:walletcontinue')]);
   }
   rows.push([button('❌ Cancel', 'flow:cancel:ask')]);
-  return { text: 'Tap each wallet to include in the batch, then Continue:', replyMarkup: keyboard(rows) };
+  return { text: 'Tap each wallet to include in the batch, then Continue:', replyMarkup: keyboard(rows), parseMode: 'HTML' };
 }
 
 function sendConfirmation({ walletLabel, toAddress, chainLabel, amountETH, sym, estimatedGasETH, totalETH }) {
   return {
-    text: `*Confirm send*\nFrom: ${walletLabel}\nTo: \`${toAddress}\`\nChain: ${chainLabel}\nAmount: ${amountETH} ${sym}\nEstimated gas: ~${estimatedGasETH} ${sym}\nTotal: ~${totalETH} ${sym}\n\nProceed?`,
+    text: `<b>Confirm send</b>\nFrom: ${escapeTelegramHtml(walletLabel)}\nTo: <code>${toAddress}</code>\nChain: ${chainLabel}\nAmount: ${amountETH} ${sym}\nEstimated gas: ~${estimatedGasETH} ${sym}\nTotal: ~${totalETH} ${sym}\n\nProceed?`,
     replyMarkup: keyboard([[button('✅ Confirm', 'flow:sendconfirm')], [button('❌ Cancel', 'flow:cancel:ask')]]),
+    parseMode: 'HTML',
   };
 }
 
@@ -104,8 +118,9 @@ function sendConfirmation({ walletLabel, toAddress, chainLabel, amountETH, sym, 
 // before it fires.
 function exportKeyWarning({ walletLabel }) {
   return {
-    text: `⚠️ *Export private key for ${walletLabel}?*\n\nThis reveals full control of this wallet's funds. The message will auto-delete shortly, but deletion is a courtesy, not a control — the key still transits Telegram's servers and can be screenshotted or forwarded before the timer fires. Only proceed if you understand the risk.`,
+    text: `⚠️ <b>Export private key for ${escapeTelegramHtml(walletLabel)}?</b>\n\nThis reveals full control of this wallet's funds. The message will auto-delete shortly, but deletion is a courtesy, not a control — the key still transits Telegram's servers and can be screenshotted or forwarded before the timer fires. Only proceed if you understand the risk.`,
     replyMarkup: keyboard([[button('⚠️ Export anyway', 'flow:exportconfirm')], [button('❌ Cancel', 'flow:cancel:ask')]]),
+    parseMode: 'HTML',
   };
 }
 
@@ -125,7 +140,9 @@ function usdSuffix(usd) {
 // below are untouched: they always describe what an actual mint transaction would spend, never a
 // secondary-market reference figure.
 function contractDetails({ contractAddress, chainLabel, isSeaDrop, priceETH, priceUnknown, maxSupply, maxPerWallet, startTime, collection, soldOut, displayPrice }) {
-  const lines = [collection?.name ? `*${collection.name}*` : '*Contract details*', `\`${contractAddress}\``,
+  // collection (OpenSea metadata) is untrusted third-party data, not a hardcoded literal -- escape
+  // both name and description before they land in the same text as real <b> tags.
+  const lines = [collection?.name ? `<b>${escapeTelegramHtml(collection.name)}</b>` : '<b>Contract details</b>', `<code>${contractAddress}</code>`,
     `Chain: ${chainLabel}`, `Type: ${isSeaDrop ? 'SeaDrop drop' : 'Standard mint(uint256)'}`];
   if (soldOut) {
     lines.push(displayPrice
@@ -142,10 +159,11 @@ function contractDetails({ contractAddress, chainLabel, isSeaDrop, priceETH, pri
     const opensAt = new Date(startTime * 1000).toISOString();
     lines.push(startTime * 1000 > Date.now() ? `Opens: ${opensAt} UTC` : `Opened: ${opensAt} UTC`);
   }
-  if (collection?.description) lines.push('', collection.description.slice(0, 300));
+  if (collection?.description) lines.push('', escapeTelegramHtml(collection.description.slice(0, 300)));
   return {
     text: lines.join('\n'),
     replyMarkup: keyboard([[button('▶️ Continue', 'flow:mintdetailscontinue')], [button('❌ Cancel', 'flow:cancel:ask')]]),
+    parseMode: 'HTML',
   };
 }
 
@@ -154,51 +172,102 @@ function taskConfirmation({ name, contractAddress, chainLabel, walletLabel, mint
     ? 'Price: not exposed by this contract — using the amount you entered above.'
     : `Price: ${priceETH} per item (read from the contract)${displayPrice ? usdSuffix(displayPrice.usd) : ''}`;
   const timeLine = autoDetectedTime
-    ? `Fires (UTC): *${mintTime}* (this contract's own opening time)`
-    : `Fires (UTC): *${mintTime}*`;
+    ? `Fires (UTC): <b>${escapeTelegramHtml(mintTime)}</b> (this contract's own opening time)`
+    : `Fires (UTC): <b>${escapeTelegramHtml(mintTime)}</b>`;
   return {
-    text: `*Confirm scheduled mint*\nName: ${name}\nContract: \`${contractAddress}\`\nChain: ${chainLabel}\nWallet: ${walletLabel}\nQuantity: 1\n${priceLine}\n${timeLine}\n\nProceed?`,
+    text: `<b>Confirm scheduled mint</b>\nName: ${escapeTelegramHtml(name)}\nContract: <code>${contractAddress}</code>\nChain: ${chainLabel}\nWallet: ${escapeTelegramHtml(walletLabel)}\nQuantity: 1\n${priceLine}\n${timeLine}\n\nProceed?`,
     replyMarkup: keyboard([[button('✅ Schedule it', 'flow:taskconfirm')], [button('❌ Cancel', 'flow:cancel:ask')]]),
+    parseMode: 'HTML',
+  };
+}
+
+// Groups chain-switch buttons 3-per-row so the keyboard stays compact regardless of how many
+// chains are configured, rather than one button per row like the flow-only chainPicker above.
+function chunk(items, size) {
+  const rows = [];
+  for (let index = 0; index < items.length; index += size) rows.push(items.slice(index, index + size));
+  return rows;
+}
+
+function gasMenu(chain, fees, supportedChains, chains) {
+  const chainButtons = supportedChains.map(value => button(chains[value]?.name || value, `gas:chain:${value}`));
+  const rows = chunk(chainButtons, 3);
+  rows.push([button('⬅️ Back to menu', 'menu:main')]);
+  const readout = fees
+    ? `Safe: <b>${fees.safeGasPriceGwei ?? 'unavailable'}</b> Gwei\nStandard: <b>${fees.gasPriceGwei ?? 'unavailable'}</b> Gwei\nFast: <b>${fees.maxFeePerGasGwei ?? 'unavailable'}</b> Gwei`
+    : 'Could not fetch gas prices for this chain.';
+  return {
+    text: `⛽ <b>Live Gas — ${escapeTelegramHtml(chains[chain]?.name || chain)}</b>\n${readout}`,
+    replyMarkup: keyboard(rows),
+    parseMode: 'HTML',
   };
 }
 
 function tasksMenu() {
   return {
-    text: '*Tasks*\n\nSchedule a mint to run automatically at a future time. Use /tasks to list, /canceltask, /pausetask, /resumetask, or /retrytask <id> to manage one.',
+    text: '<b>Tasks</b>\n\nSchedule a mint to run automatically at a future time. Use /tasks to list, /canceltask, /pausetask, /resumetask, or /retrytask &lt;id&gt; to manage one.',
     replyMarkup: keyboard([
       [button('🗓️ Schedule mint', 'menu:schedule')],
       [button('⬅️ Back to menu', 'menu:main')],
     ]),
+    parseMode: 'HTML',
   };
 }
 
-function mintConfirmation({ contractAddress, chainLabel, walletLabels, priceETH, priceUnknown }) {
+// Same 4 presets/labels as Discord's /mode choices (discordBot.js) -- kept in sync by hand since
+// the two platforms build their option lists in entirely different shapes (inline keyboard vs.
+// slash-command choices).
+const MODE_META = {
+  ultra_fast: { label: 'Degen', hint: 'fastest, high gas, no confirmation' },
+  fast: { label: 'Fast', hint: 'quick, higher gas, still confirms' },
+  semi_safe: { label: 'Cautious', hint: 'careful, moderate gas' },
+  safe: { label: 'Normie', hint: 'slowest, safest, network-price gas' },
+};
+
+function modeMenu(currentKey, presets) {
+  const rows = presets.map(preset => {
+    const meta = MODE_META[preset.key] || { label: preset.displayName, hint: '' };
+    return [button(`${preset.key === currentKey ? '✅ ' : ''}${meta.label} — ${meta.hint}`, `mode:pick:${preset.key}`)];
+  });
+  rows.push([button('⬅️ Back to settings', 'menu:settings')]);
+  const currentLabel = MODE_META[currentKey]?.label || 'none selected';
+  return {
+    text: `<b>Transaction mode</b>\n\nCurrent: <b>${escapeTelegramHtml(currentLabel)}</b>\n\nControls confirmation prompts and gas aggression for every mint. Ceilings and forced simulation always take precedence regardless of mode.`,
+    replyMarkup: keyboard(rows),
+    parseMode: 'HTML',
+  };
+}
+
+function mintConfirmation({ contractAddress, chainLabel, walletLabels, quantity = 1, priceETH, priceUnknown }) {
   const priceLine = priceUnknown
     ? 'Price: not exposed by this contract — using the amount you entered above.'
     : `Price: ${priceETH} per item (read from the contract)`;
   return {
-    text: `*Confirm mint*\nContract: \`${contractAddress}\`\nChain: ${chainLabel}\nWallet(s): ${walletLabels.join(', ')}\nQuantity: 1 each\n${priceLine}\n\nProceed?`,
+    text: `<b>Confirm mint</b>\nContract: <code>${contractAddress}</code>\nChain: ${chainLabel}\nWallet(s): ${walletLabels.map(escapeTelegramHtml).join(', ')}\nQuantity: ${quantity} each\n${priceLine}\n\nProceed?`,
     replyMarkup: keyboard([[button('✅ Confirm', 'flow:mintconfirm')], [button('❌ Cancel', 'flow:cancel:ask')]]),
+    parseMode: 'HTML',
   };
 }
 
 function confirmCancelPrompt(flowLabel) {
   return {
-    text: `You're in the middle of *${flowLabel}*. Leave it and go back to the menu? Your progress will be cleared.`,
+    text: `You're in the middle of <b>${escapeTelegramHtml(flowLabel)}</b>. Leave it and go back to the menu? Your progress will be cleared.`,
     replyMarkup: keyboard([
       [button('✅ Yes, cancel and go back', 'flow:cancel:confirm')],
       [button('↩️ No, keep going', 'flow:cancel:resume')],
     ]),
+    parseMode: 'HTML',
   };
 }
 
 function confirmRemoveWallet(label) {
   return {
-    text: `Remove wallet *${label}*? This cannot be undone.`,
+    text: `Remove wallet <b>${escapeTelegramHtml(label)}</b>? This cannot be undone.`,
     replyMarkup: keyboard([
       [button('✅ Yes, remove it', `wallet:remove:do:${label}`)],
       [button('❌ No, keep it', 'menu:wallets')],
     ]),
+    parseMode: 'HTML',
   };
 }
 
@@ -220,4 +289,7 @@ module.exports = {
   exportKeyWarning,
   confirmCancelPrompt,
   confirmRemoveWallet,
+  modeMenu,
+  MODE_META,
+  gasMenu,
 };

@@ -14,6 +14,7 @@ function mapPreset(row) {
     simulationMode: row.simulation_mode,
     confirmationCount: Number(row.confirmation_count),
     humanVerification: row.human_verification,
+    gasPriceMultiplier: Number(row.gas_price_multiplier),
   };
 }
 
@@ -123,12 +124,12 @@ function createPostgresGovernanceRepository(pool) {
       if (!result.rowCount) throw new Error('Group not found');
     },
 
-    async updatePreset({ actorUserId, presetKey, simulationMode, confirmationCount, humanVerification }) {
+    async updatePreset({ actorUserId, presetKey, simulationMode, confirmationCount, humanVerification, gasPriceMultiplier }) {
       const key = normalizePresetKey(presetKey);
       if (!PRESET_KEYS.includes(key)) throw new Error('Unknown mode preset');
       const result = await pool.query(`UPDATE mode_presets SET simulation_mode=$2,
-        confirmation_count=$3,human_verification=$4,updated_by=$5,updated_at=NOW()
-        WHERE preset_key=$1 RETURNING *`, [key, simulationMode, confirmationCount, humanVerification, actorUserId]);
+        confirmation_count=$3,human_verification=$4,gas_price_multiplier=COALESCE($5,gas_price_multiplier),updated_by=$6,updated_at=NOW()
+        WHERE preset_key=$1 RETURNING *`, [key, simulationMode, confirmationCount, humanVerification, gasPriceMultiplier ?? null, actorUserId]);
       return mapPreset(result.rows[0]);
     },
 

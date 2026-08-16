@@ -20,6 +20,19 @@ function feePerGas(transaction) {
   return transaction.maxFeePerGasWei ?? transaction.gasPriceWei;
 }
 
+// Applies a mode preset's gasPriceMultiplier (Section C: "degen" bids gas up, "normie" pays the
+// network's own estimate) to an auto-computed fee value only -- never to a caller-explicit
+// gasPriceWei/maxFeePerGasWei/maxPriorityFeePerGasWei, which is an intentional override the
+// multiplier must not silently change. Integer math throughout: BigInt has no native float
+// multiplication, so the multiplier is scaled to a fixed-point ratio (4 decimal places) instead of
+// converting to Number, which would lose precision on large wei values.
+function applyGasMultiplier(weiValue, multiplier) {
+  if (weiValue === null || weiValue === undefined) return weiValue;
+  if (!multiplier || multiplier === 1) return weiValue;
+  const scaled = BigInt(Math.round(multiplier * 10_000));
+  return (BigInt(weiValue) * scaled) / 10_000n;
+}
+
 function safeNotify(notify, event) {
   return Promise.resolve().then(() => notify?.(event)).catch(() => {});
 }
@@ -105,9 +118,9 @@ function createTransactionEngine({
     const base={from:request.wallet.address,to:request.to,data:request.data||'0x',value:valueWei};
     const feeData=await providerCall(request.chain,'getFeeData',provider=>provider.getFeeData());
     const explicit=request.gasPriceWei!==undefined&&request.gasPriceWei!==null;
-    const gasPriceWei=explicit?asBigInt(request.gasPriceWei,'gasPriceWei'):(feeData.maxFeePerGas?null:feeData.gasPrice);
-    const maxFeePerGasWei=explicit?null:feeData.maxFeePerGas;
-    const maxPriorityFeePerGasWei=explicit?null:feeData.maxPriorityFeePerGas;
+    const gasPriceWei=explicit?asBigInt(request.gasPriceWei,'gasPriceWei'):(feeData.maxFeePerGas?null:applyGasMultiplier(feeData.gasPrice,policy.gasPriceMultiplier));
+    const maxFeePerGasWei=explicit?null:applyGasMultiplier(feeData.maxFeePerGas,policy.gasPriceMultiplier);
+    const maxPriorityFeePerGasWei=explicit?null:applyGasMultiplier(feeData.maxPriorityFeePerGas,policy.gasPriceMultiplier);
     const selectedFee=maxFeePerGasWei??gasPriceWei;
     if(selectedFee===null||selectedFee===undefined) throw new TransactionSafetyError('FEE_UNAVAILABLE','RPC provider did not return usable fee data');
     if(!policy.ceilingExempt&&selectedFee>parseUnits(String(policy.gasCeilingGwei),'gwei')) throw new TransactionSafetyError('GAS_CEILING_EXCEEDED','Transaction fee exceeds the configured gas ceiling');
@@ -166,15 +179,15 @@ function createTransactionEngine({
       const hasExplicitMaxFee = request.maxFeePerGasWei !== undefined && request.maxFeePerGasWei !== null;
       const gasPriceWei = hasExplicitLegacyFee
         ? asBigInt(request.gasPriceWei, 'gasPriceWei')
-        : (hasExplicitMaxFee || feeData.maxFeePerGas ? null : feeData.gasPrice);
+        : (hasExplicitMaxFee || feeData.maxFeePerGas ? null : applyGasMultiplier(feeData.gasPrice, policy.gasPriceMultiplier));
       const maxFeePerGasWei = hasExplicitLegacyFee
         ? null
-        : (hasExplicitMaxFee ? asBigInt(request.maxFeePerGasWei, 'maxFeePerGasWei') : feeData.maxFeePerGas);
+        : (hasExplicitMaxFee ? asBigInt(request.maxFeePerGasWei, 'maxFeePerGasWei') : applyGasMultiplier(feeData.maxFeePerGas, policy.gasPriceMultiplier));
       const maxPriorityFeePerGasWei = hasExplicitLegacyFee
         ? null
         : (request.maxPriorityFeePerGasWei !== undefined && request.maxPriorityFeePerGasWei !== null
           ? asBigInt(request.maxPriorityFeePerGasWei, 'maxPriorityFeePerGasWei')
-          : feeData.maxPriorityFeePerGas);
+          : applyGasMultiplier(feeData.maxPriorityFeePerGas, policy.gasPriceMultiplier));
       const selectedFee = maxFeePerGasWei ?? gasPriceWei;
       if (selectedFee === null || selectedFee === undefined) {
         throw new TransactionSafetyError('FEE_UNAVAILABLE', 'RPC provider did not return usable fee data');

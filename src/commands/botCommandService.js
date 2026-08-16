@@ -1,6 +1,6 @@
 const { Wallet, formatEther, isAddress, parseEther } = require('ethers');
 const { findOwnedWallet, stateForUser } = require('../identity/ownership');
-const { ValidationError, requestSchemas } = require('../validation/domain');
+const { ValidationError, requestSchemas, LIMITS } = require('../validation/domain');
 const { paginate, pagination } = require('../pagination');
 const { calculateStatistics } = require('../statistics/statisticsService');
 const { detectContractChain } = require('../mint/chainDetector');
@@ -177,6 +177,39 @@ function createBotCommandService(dependencies) {
 
   function importWallet(userId, input) {
     return persistWallet(userId, input);
+  }
+
+  // Owner-only: import many private keys in one call (dashboard and Discord both collect these as
+  // a single comma-separated paste, split before reaching here). Each key is imported through the
+  // exact same persistWallet() a single import uses -- no bypass of validation, encryption, or the
+  // per-user label-uniqueness check -- and one bad key is reported per-entry rather than aborting
+  // the rest of the batch, since a single typo shouldn't cost the whole paste. Labels are
+  // auto-generated (labelPrefix-N, deduped against both existing wallets and labels already
+  // claimed earlier in this same batch) since the caller supplies only keys, not one label per key.
+  async function importWalletsBatch(userId, { privateKeys, chain, labelPrefix }) {
+    await governance.requireOwner(userId);
+    if (!Array.isArray(privateKeys) || privateKeys.length < 1 || privateKeys.length > LIMITS.batchWalletImport) {
+      throw new ValidationError({ field: 'privateKeys', message: `must contain 1-${LIMITS.batchWalletImport} private keys` });
+    }
+    const prefix = String(labelPrefix || 'wallet').trim().slice(0, 40) || 'wallet';
+    const claimed = new Set(state(userId).wallets.map(item => item.label.toLowerCase()));
+    const results = [];
+    for (let index = 0; index < privateKeys.length; index += 1) {
+      const privateKey = String(privateKeys[index] || '').trim();
+      if (!privateKey) { results.push({ index, status: 'failed', error: 'empty private key' }); continue; }
+      let label = `${prefix}-${index + 1}`;
+      let suffix = 1;
+      while (claimed.has(label.toLowerCase())) { suffix += 1; label = `${prefix}-${index + 1}-${suffix}`; }
+      try {
+        const saved = await persistWallet(userId, { label, chain, privateKey, importMethod: 'privateKey' });
+        claimed.add(saved.label.toLowerCase());
+        results.push({ index, status: 'success', label: saved.label, address: saved.address });
+      } catch (error) {
+        results.push({ index, status: 'failed',
+          error: error instanceof ValidationError ? error.issues.map(issue => issue.message).join('; ') : 'import failed' });
+      }
+    }
+    return results;
   }
 
   async function removeWallet(userId, label) {
@@ -417,7 +450,7 @@ function createBotCommandService(dependencies) {
     return calculateStatistics({activity:state(userId).activity,sniperEvents});}
 
   return {
-    createWallet, importWallet, removeWallet, walletBalance, invalidateBalance, exportWalletKeyRaw, exportWalletKeystore, mint, batchMint, send, createTask, controlTask, addPnl, updatePnl, deletePnl,
+    createWallet, importWallet, importWalletsBatch, removeWallet, walletBalance, invalidateBalance, exportWalletKeyRaw, exportWalletKeystore, mint, batchMint, send, createTask, controlTask, addPnl, updatePnl, deletePnl,
     prepareMint,submitPreparedMint,detectMintContract,mintPresets:userId=>mintService.listPresets(userId),
     createSniper, updateSniper, removeSniper, gas,
     sniperEvents:userId=>sniperRepository.listRecentForUser(userId),
@@ -452,6 +485,7 @@ function createBotCommandService(dependencies) {
     pendingConfirmations: userId => triggerAuditRepository.listPendingRequests(userId),
     targetDetails,
     modePresets:()=>governanceRepository.listPresets(),
+    currentMode: async userId => (await governanceRepository.getEffectiveGovernance(userId, 'ethereum')).preset,
     pendingTransactions: userId => transactionIntentRepository.listNonFinalForUser(userId),
     transactionsPage:(userId,input)=>pageFrom(transactionIntentRepository.listPageForUser?.bind(transactionIntentRepository),()=>[],userId,input),
     stats,

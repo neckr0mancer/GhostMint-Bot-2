@@ -32,6 +32,7 @@ const LIMITS = Object.freeze({
   sniperMaxAttempts: 20,
   pnlAmount: 1_000_000_000_000,
   batchWallets: 100,
+  batchWalletImport: 50,
 });
 
 class ValidationError extends Error {

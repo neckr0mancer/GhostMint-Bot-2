@@ -10,6 +10,12 @@ class RateLimitError extends Error {
 
 function escapeDiscord(value) { return String(value??'').replace(DISCORD_MARKDOWN,'\\$1').replaceAll('@','@\u200b'); }
 function escapeTelegram(value) { return String(value??'').replace(TELEGRAM_MARKDOWN,'\\$1'); }
+// Telegram's HTML parse mode (the mode every bot message now uses -- see src/server.js's tg*
+// primitives) only requires escaping these three characters; anything else (including literal
+// asterisks/underscores/backticks, which HTML mode does not treat as markup) passes through as-is.
+// Used wherever free-text a user supplied (wallet label, task name, watch-rule name) is interpolated
+// into a message alongside real <b>/<code> tags, so it can never break out of or corrupt those tags.
+function escapeTelegramHtml(value) { return String(value??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 function commandName(value) { return String(value||'unknown').trim().split(/\s+/)[0].replace(/^\//,'').split('@')[0].toLowerCase().slice(0,64)||'unknown'; }
 function requireTextConfirmation(value) {
   if(value!=='CONFIRM')throw new BotContextError('Destructive or value-moving command requires exact CONFIRM');
@@ -51,5 +57,5 @@ function createCommandRateLimiter({now=()=>Date.now(),limit=3,windowMs=30_000,sw
     recent.push(timestamp);buckets.set(key,recent);
   }};
 }
-module.exports={BotContextError,RateLimitError,commandName,createCommandRateLimiter,escapeDiscord,escapeTelegram,
+module.exports={BotContextError,RateLimitError,commandName,createCommandRateLimiter,escapeDiscord,escapeTelegram,escapeTelegramHtml,
   requireTextConfirmation,verifyDiscordContext,verifyTelegramContext};

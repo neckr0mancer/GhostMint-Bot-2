@@ -35,6 +35,27 @@ function mainMenu({ isOwner = false } = {}) {
   return { content: '**GhostMint**\nChoose a section below, or use a slash command directly if you already know it.', components: rows };
 }
 
+// Discord counterpart to Telegram's contractDetails (src/telegram/menus.js) -- shown when a bare
+// contract address is sent as a plain message with no active flow. Discord has no guided mint flow
+// yet (see the roadmap), so this is informational only, with the exact slash command to run next.
+function contractDetails({ contractAddress, chainLabel, isSeaDrop, priceETH, priceUnknown, maxSupply, maxPerWallet, startTime, collection, soldOut, displayPrice }) {
+  const lines = [collection?.name ? `**${collection.name}**` : '**Contract details**', `\`${contractAddress}\``,
+    `Chain: ${chainLabel}`, `Type: ${isSeaDrop ? 'SeaDrop drop' : 'Standard mint(uint256)'}`];
+  if (soldOut) {
+    lines.push(displayPrice ? `Status: Sold out — floor price ${displayPrice.eth} ETH` : 'Status: Sold out — floor price unavailable');
+  } else {
+    lines.push(priceUnknown ? 'Price: not exposed by this contract' : `Price: ${priceETH} per item`);
+  }
+  if (maxPerWallet !== null && maxPerWallet !== undefined) lines.push(`Max per wallet: ${maxPerWallet}`);
+  if (maxSupply !== null && maxSupply !== undefined) lines.push(`Max supply: ${maxSupply}`);
+  if (startTime) {
+    const opensAt = new Date(startTime * 1000).toISOString();
+    lines.push(startTime * 1000 > Date.now() ? `Opens: ${opensAt} UTC` : `Opened: ${opensAt} UTC`);
+  }
+  lines.push('', `Run \`/mint contract:${contractAddress} quantity:1\` to mint this now.`);
+  return { content: lines.join('\n') };
+}
+
 function walletsMenu() {
   return {
     content: '**Wallets**\nGenerating a new wallet server-side is recommended over importing an existing key.',
@@ -114,5 +135,5 @@ function labelModal({ customId, title, placeholder = '', style = 'short', maxLen
 
 module.exports = {
   button, row, select, mainMenu, walletsMenu, settingsMenu, placeholderMenu,
-  chainSelect, walletSelect, confirmCancelPrompt, confirmRemoveWallet, labelModal,
+  chainSelect, walletSelect, confirmCancelPrompt, confirmRemoveWallet, labelModal, contractDetails,
 };

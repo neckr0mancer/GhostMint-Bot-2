@@ -507,6 +507,18 @@ tbody tr:last-child td{border-bottom:0}
 .theme-swatch-quiet-ledger{background:#ffffff}
 .theme-swatch-quiet-ledger .theme-swatch-accent{background:#0f5fa8}
 
+.mode-grid{margin:.7rem 0 0}
+.mode-card{display:flex;flex-direction:column;align-items:flex-start;gap:.25rem;padding:.75rem .9rem;
+  min-height:var(--tap-min,44px);background:var(--surface-2);color:var(--text);text-align:left;
+  border:1px solid var(--border-strong);border-radius:var(--radius-sm);box-shadow:none;
+  transition:border-color var(--fast) var(--ease),box-shadow var(--fast) var(--ease)}
+.mode-card:hover:not(:disabled){filter:none;border-color:var(--accent)}
+.mode-card.active{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+.mode-card:disabled{opacity:.6;cursor:default}
+.mode-card strong{font-size:1rem}
+.mode-card span{font-size:.82rem;color:var(--text-muted)}
+.mode-card-detail{font-family:ui-monospace,monospace}
+
 /* ==========================================================================
    Header avatar (mobile header, Ghost Mint rail themes only)
    ========================================================================== */

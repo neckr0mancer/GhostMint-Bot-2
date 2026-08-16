@@ -24,11 +24,13 @@ function overlay(policy, row) {
 
 function applyGovernance(policy, governance, triggerSource = 'manual') {
   const result = { ...policy };
+  result.gasPriceMultiplier = 1;
   if (governance.preset) {
     result.requiredConfirmations = governance.preset.confirmationCount;
     result.humanVerification = governance.preset.humanVerification;
     result.simulationEnabled = governance.preset.simulationMode === 'on'
       || (governance.preset.simulationMode === 'blockchain_off' && triggerSource !== 'blockchain');
+    result.gasPriceMultiplier = governance.preset.gasPriceMultiplier ?? 1;
   }
   if (governance.simulationForced) result.simulationEnabled = true;
   result.simulationForced = governance.simulationForced;
@@ -67,6 +69,7 @@ function createTransactionPolicyRepository(pool, { governanceRepository = null }
           simulationMode: targetPreset.rows[0].simulation_mode,
           confirmationCount: Number(targetPreset.rows[0].confirmation_count),
           humanVerification: targetPreset.rows[0].human_verification,
+          gasPriceMultiplier: Number(targetPreset.rows[0].gas_price_multiplier),
         };
       }
       return applyGovernance(policy, governance, triggerSource);
