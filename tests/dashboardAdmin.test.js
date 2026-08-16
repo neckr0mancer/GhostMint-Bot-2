@@ -9,7 +9,7 @@ const {createCommandRateLimiter}=require('../src/security/botSecurity');
 const {defaultPolicy}=require('../src/transactions/defaults');
 
 function fixture(){const users=new Map([['owner',{userId:'owner',isOwner:true,platform:'telegram',platformUserId:'1'}],['member',{userId:'member',isOwner:false,platform:'telegram',platformUserId:'2'}]]);const groups=new Map();const rules=new Map();const presets=[{key:'ultra_fast',displayName:'Ultra Fast',simulationMode:'off',confirmationCount:1,humanVerification:'bypass'}];const repository={
-  isOwner:async id=>users.get(id)?.isOwner===true,findUserByPlatform:async(platform,id)=>[...users.values()].find(user=>user.platform===platform&&user.platformUserId===String(id))?.userId||null,
+  isOwner:async id=>users.get(id)?.isOwner===true,isRootOwner:async id=>users.get(id)?.isOwner===true,findUserByPlatform:async(platform,id)=>[...users.values()].find(user=>user.platform===platform&&user.platformUserId===String(id))?.userId||null,
   async setOwner(id,enabled){const current=users.get(id);if(!enabled&&current.isOwner&&[...users.values()].filter(user=>user.isOwner).length<=1)throw new Error('Cannot remove the last owner');current.isOwner=enabled;return current;},
   async upsertGroup(value){groups.set(value.name.toLowerCase(),{...value});return value;},async deleteGroup(name){return groups.delete(name.toLowerCase());},
   async assignGroup(userId,name){if(!groups.has(name.toLowerCase()))throw new Error('Group not found');rules.set(userId,{...(rules.get(userId)||{}),groupName:name.toLowerCase()});},async removeGroup(userId){rules.set(userId,{...(rules.get(userId)||{}),groupName:null});},

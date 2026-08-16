@@ -29,7 +29,7 @@ function hashCode(code) {
   return createHash('sha256').update(String(code).trim().toUpperCase()).digest('hex');
 }
 
-function createIdentityService(identityRepository, { now = () => Date.now(), linkTtlMs = DEFAULT_LINK_TTL_MS } = {}) {
+function createIdentityService(identityRepository, { now = () => Date.now(), linkTtlMs = DEFAULT_LINK_TTL_MS, broadcast } = {}) {
   return {
     resolveOrCreate(platform, platformUserId) {
       return identityRepository.resolveOrCreateIdentity(normalizeIdentity(platform, platformUserId));
@@ -52,6 +52,10 @@ function createIdentityService(identityRepository, { now = () => Date.now(), lin
       });
       if (result.status === 'invalid') throw new LinkCodeError('Link code is invalid, expired, or already used');
       if (result.status === 'conflict') throw new LinkCodeError('This platform account is already linked to another user');
+      // Consumed exclusively via Discord's /link command (Telegram only ever generates a code) --
+      // nothing about a REST write here to broadcast from, so the dashboard would otherwise have no
+      // way to know linkedAccounts changed short of a manual reload.
+      broadcast?.(result.userId, { type: 'identity.changed' });
       return result.userId;
     },
 

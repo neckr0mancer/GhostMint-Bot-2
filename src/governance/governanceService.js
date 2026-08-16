@@ -91,6 +91,10 @@ function createGovernanceService(repository) {
     if (!await repository.isOwner(callerUserId)) throw new AuthorizationError();
   }
 
+  async function requireRootOwner(callerUserId) {
+    if (!await repository.isRootOwner(callerUserId)) throw new AuthorizationError('Root owner access required');
+  }
+
   async function targetUser(platform, platformUserId) {
     const normalizedPlatform = requiredText(platform, 'platform', 16).toLowerCase();
     if (!['telegram', 'discord'].includes(normalizedPlatform)) throw new ValidationError({ field: 'platform', message: 'must be telegram or discord' });
@@ -99,17 +103,21 @@ function createGovernanceService(repository) {
     return userId;
   }
 
-  // Shared by ban/unban/suspend/unsuspend/deactivate/reactivate: resolves the target, refuses to
-  // touch an owner account (mirrors the existing "cannot remove the last owner" invariant on
-  // setOwner -- owner status must be revoked first, so account status changes can never be used to
-  // silently lock an owner out of their own bot), and requires a reason for every transition so
-  // status_changed_at/status_changed_by/status_reason is always a meaningful audit trail.
+  // Shared by ban/unban/suspend/unsuspend/deactivate/reactivate: resolves the target and enforces
+  // the owner hierarchy before touching account status. A root owner can never be touched this way
+  // at all (root status must be removed first, mirroring the existing "cannot remove the last owner"
+  // invariant on setOwner one tier up); a regular owner can only be touched by a root owner, never by
+  // a peer. Also requires a reason for every transition so status_changed_at/status_changed_by/
+  // status_reason is always a meaningful audit trail.
   async function setStatus(callerUserId, { platform, platformUserId, status, reason, suspendedUntil = null }) {
     await requireOwner(callerUserId);
     const targetId = await targetUser(platform, platformUserId);
     const current = await repository.getAccountStatus(targetId);
-    if (current?.isOwner) {
-      throw new ValidationError({ field: 'platformUserId', message: 'belongs to an owner -- remove owner status first before changing account status' });
+    if (current?.isRootOwner) {
+      throw new ValidationError({ field: 'platformUserId', message: 'belongs to a root owner -- remove root owner status first before changing account status' });
+    }
+    if (current?.isOwner && !await repository.isRootOwner(callerUserId)) {
+      throw new ValidationError({ field: 'platformUserId', message: 'belongs to an owner -- only a root owner can change an owner\'s account status' });
     }
     return repository.setAccountStatus(targetId, {
       status, reason: requiredText(reason, 'reason', 500), actorUserId: callerUserId, suspendedUntil,
@@ -246,10 +254,20 @@ function createGovernanceService(repository) {
         simulationMode, confirmationCount: requiredConfirmations, humanVerification });
     },
 
+    // Only root owners can grant or revoke the (regular) owner title -- a peer owner cannot create
+    // more owners or demote existing ones.
     async setOwner(callerUserId, input) {
-      await requireOwner(callerUserId);
+      await requireRootOwner(callerUserId);
       if (![true, false, 'on', 'off'].includes(input.enabled)) throw new ValidationError({ field: 'enabled', message: 'must be on or off' });
       return repository.setOwner(await targetUser(input.platform, input.platformUserId), input.enabled === true || input.enabled === 'on');
+    },
+
+    // The top tier: max 2, only settable by an existing root owner, and only onto someone who is
+    // already a regular owner (promoting straight from a regular user would skip that step entirely).
+    async setRootOwner(callerUserId, input) {
+      await requireRootOwner(callerUserId);
+      if (![true, false, 'on', 'off'].includes(input.enabled)) throw new ValidationError({ field: 'enabled', message: 'must be on or off' });
+      return repository.setRootOwner(await targetUser(input.platform, input.platformUserId), input.enabled === true || input.enabled === 'on');
     },
 
     async dashboardOverview(callerUserId) {

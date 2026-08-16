@@ -14,7 +14,7 @@ function nonOwnerFixture() {
 }
 
 function ownerFixture({ findUserByPlatform = async () => 'target-user' } = {}) {
-  const repository = { isOwner: async () => true, findUserByPlatform };
+  const repository = { isOwner: async () => true, isRootOwner: async () => true, findUserByPlatform };
   return createAdminCommandService(createGovernanceService(repository));
 }
 
@@ -88,6 +88,7 @@ test('a valid owner grant command succeeds end to end once the syntax and target
   const calls = [];
   const admin = createAdminCommandService(createGovernanceService({
     isOwner: async () => true,
+    isRootOwner: async () => true,
     findUserByPlatform: async () => 'target-user',
     setOwner: async (userId, enabled) => { calls.push({ userId, enabled }); },
   }));
@@ -102,6 +103,7 @@ function accountRepository(overrides = {}) {
   const statuses = new Map();
   return {
     isOwner: async () => true,
+    isRootOwner: async () => false,
     findUserByPlatform: async () => 'target-user',
     getAccountStatus: async userId => statuses.get(userId) || { status: 'active', reason: null, suspendedUntil: null, isOwner: false },
     setAccountStatus: async (userId, { status, reason, suspendedUntil }) => {

@@ -97,6 +97,10 @@ function dashboardTheme(value, field = 'theme') {
   return normalized;
 }
 
+function displayName(value, field = 'displayName') {
+  return string(value, field, { min: 1, max: 40 });
+}
+
 function usagePeriod(value, field = 'period') {
   if (value === undefined || value === null || value === '') return undefined;
   const normalized = string(value, field, { max: 16 }).toLowerCase();
@@ -343,6 +347,7 @@ const requestSchemas = Object.freeze({
   watchRulePatch: input => validateWatchRule(input, { partial: true }),
   watchRuleDeletion: input => ({ id: uuid(input.id, 'id') }),
   themeUpdate: input => ({ theme: dashboardTheme(input.theme) }),
+  displayNameUpdate: input => ({ displayName: displayName(input.displayName) }),
   defaultChainUpdate: (input, context) => ({ defaultChain: chainName(input.defaultChain, context.supportedChains, 'defaultChain') }),
   socialUsagePeriod: input => ({ period: usagePeriod(input.period) }),
   liveAcceptanceRun: validateLiveAcceptanceRun,
@@ -368,6 +373,7 @@ module.exports = {
   ValidationError,
   WATCH_TYPE_PLATFORMS,
   dashboardTheme,
+  displayName,
   requestSchemas,
   sendValidationError,
   validationPayload,

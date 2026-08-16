@@ -60,8 +60,15 @@ function placeholderMenu(title, hint) {
   return { content: `**${title}**\n${hint}`, components: [row([button('⬅️ Back to menu', 'menu:main')])] };
 }
 
+// Discord select-menu options carry a real emoji field (rendered as a small icon beside the
+// label, not text) -- unlike command/option names, which the API forbids emoji in entirely.
+const CHAIN_EMOJI = { ethereum: '💎', base: '🔵', arbitrum: '🔷', polygon: '🟣', sepolia: '🧪', robinhood: '🟢' };
+
 function chainSelect(supportedChains, chains, { customId = 'flow:chain:select' } = {}) {
-  const options = supportedChains.map(chain => ({ label: chains[chain]?.name || chain, value: chain }));
+  const options = supportedChains.map(chain => ({
+    label: chains[chain]?.name || chain, value: chain,
+    emoji: CHAIN_EMOJI[chain] ? { name: CHAIN_EMOJI[chain] } : undefined,
+  }));
   return {
     content: 'Choose a chain:',
     components: [select(customId, options, 'Select a chain'), row([button('❌ Cancel', 'flow:cancel:ask', 'danger')])],

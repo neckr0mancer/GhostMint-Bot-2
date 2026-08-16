@@ -9,7 +9,7 @@ const SECURITY_HEADERS=Object.freeze({
   'Cross-Origin-Opener-Policy':'same-origin','Referrer-Policy':'no-referrer','X-Content-Type-Options':'nosniff','X-Frame-Options':'DENY',
 });
 function noStore(res){res.set('Cache-Control','no-store, private');}
-function publicWallet(value){return {label:value.label,address:value.address,chain:value.chain,balance:value.balance??null,symbol:value.symbol??null,minted:value.minted??0};}
+function publicWallet(value){return {label:value.label,address:value.address,chain:value.chain,balances:value.balances??[],minted:value.minted??0};}
 function jsonSafe(value){return JSON.parse(JSON.stringify(value,(_key,item)=>typeof item==='bigint'?item.toString():item));}
 
 function createDashboardApi({auth,identityRepository,loginRateLimiter,commands,securityAudit={record:async()=>{}},broadcast=()=>{},supportedChains=[],now=()=>Date.now(),checkAccountStatus}) {
@@ -67,8 +67,9 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,commands,s
       catch(error){if(error instanceof LinkCodeError)return res.status(401).json({error:'Invalid or expired login code'});if(error instanceof RateLimitError){res.set('Retry-After',String(Math.ceil(error.retryAfterMs/1000)));return res.status(429).json({error:'Too many login attempts'});}throw error;}},
     logout:async(req,res)=>{noStore(res);await auth.revoke(req.dashboardSession);res.setHeader('Set-Cookie',auth.clearCookies());res.status(204).end();},
     logoutAll:async(req,res)=>{noStore(res);await auth.revokeAll(req.dashboardSession);res.setHeader('Set-Cookie',auth.clearCookies());res.status(204).end();},
-    profile:async(req,res)=>{noStore(res);res.json({userId:user(req),isOwner:commands?.isOwner?await commands.isOwner(user(req)):false,linkedAccounts:await identityRepository.listLinkedAccounts(user(req)),supportedChains,theme:await identityRepository.getTheme(user(req)),defaultChain:identityRepository.getDefaultChain?await identityRepository.getDefaultChain(user(req)):null});},
+    profile:async(req,res)=>{noStore(res);res.json({userId:user(req),isOwner:commands?.isOwner?await commands.isOwner(user(req)):false,isRootOwner:commands?.isRootOwner?await commands.isRootOwner(user(req)):false,linkedAccounts:await identityRepository.listLinkedAccounts(user(req)),supportedChains,theme:await identityRepository.getTheme(user(req)),displayName:identityRepository.getDisplayName?await identityRepository.getDisplayName(user(req)):null,defaultChain:identityRepository.getDefaultChain?await identityRepository.getDefaultChain(user(req)):null});},
     updateTheme:action(async(req,res)=>{const {theme}=requestSchemas.themeUpdate(req.body||{});res.json({theme:await identityRepository.setTheme(user(req),theme)});}),
+    updateDisplayName:action(async(req,res)=>{const {displayName}=requestSchemas.displayNameUpdate(req.body||{});res.json({displayName:await identityRepository.setDisplayName(user(req),displayName)});}),
     updateDefaultChain:action(async(req,res)=>{const {defaultChain}=requestSchemas.defaultChainUpdate(req.body||{},{supportedChains});res.json({defaultChain:await identityRepository.setDefaultChain(user(req),defaultChain)});}),
     gas:action(async(req,res)=>{noStore(res);
       try{res.json(await commands.gas(req.params.chain));}
@@ -83,6 +84,7 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,commands,s
     importWallet:action(async(req,res)=>{const wallet=await commands.importWallet(user(req),req.body);changed(req,'wallets');res.status(201).json(publicWallet(wallet));}),
     removeWallet:action(async(req,res)=>{confirmation(req);await commands.removeWallet(user(req),req.params.label);changed(req,'wallets');res.status(204).end();}),
     mintPresets:action(async(req,res)=>res.json(jsonSafe(await commands.mintPresets(user(req))))),
+    detectMint:action(async(req,res)=>{noStore(res);res.json(jsonSafe(await commands.detectMintContract(user(req),{contractAddress:req.query.contractAddress,quantity:req.query.quantity})));}),
     previewMint:action(async(req,res)=>{const labels=req.body.walletLabels||[req.body.walletLabel];const entries=[];for(const walletLabel of labels)entries.push(await commands.prepareMint(user(req),{...req.body,walletLabel}));const previewToken=issuePreview(user(req),entries);res.json({previewToken,expiresInSeconds:300,items:entries.map(value=>({wallet:value.wallet,preview:value.prepared.preview,simulation:jsonSafe(value.simulation)}))});}),
     confirmMint:action(async(req,res)=>{confirmation(req);const value=consumePreview(user(req),req.body.previewToken);const results=[];for(const entry of value.entries)results.push(await commands.submitPreparedMint(user(req),entry));res.status(202).json(jsonSafe({results}));}),
     tasks:action(async(req,res)=>res.json(await commands.tasksPage(user(req),req.query))),
@@ -126,6 +128,7 @@ function mountDashboardRoutes(app,api){
   app.post('/api/auth/logout-all',api.requireSession,api.requireCsrf,api.logoutAll);
   app.get('/api/profile',api.requireSession,api.profile);
   app.put('/api/profile/theme',api.requireSession,api.requireCsrf,api.updateTheme);
+  app.put('/api/profile/display-name',api.requireSession,api.requireCsrf,api.updateDisplayName);
   app.put('/api/profile/default-chain',api.requireSession,api.requireCsrf,api.updateDefaultChain);
   app.get('/api/gas/:chain',api.requireSession,api.gas);
   app.get('/api/social-usage',api.requireSession,api.socialUsage);
@@ -135,6 +138,7 @@ function mountDashboardRoutes(app,api){
   app.post('/api/wallets/import',api.requireSession,api.requireCsrf,api.importWallet);
   app.delete('/api/wallets/:label',api.requireSession,api.requireCsrf,api.removeWallet);
   app.get('/api/mint-presets',api.requireSession,api.mintPresets);
+  app.get('/api/mints/detect',api.requireSession,api.detectMint);
   app.post('/api/mints/preview',api.requireSession,api.requireCsrf,api.previewMint);
   app.post('/api/mints/confirm',api.requireSession,api.requireCsrf,api.confirmMint);
   app.get('/api/tasks',api.requireSession,api.tasks);

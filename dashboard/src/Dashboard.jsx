@@ -1,11 +1,39 @@
-import React,{useMemo} from 'react';
-import {useLoad} from './shared.jsx';
+import React,{useEffect,useMemo} from 'react';
+import {api,promptDialog,useLoad} from './shared.jsx';
 import {THEME_WIDGETS} from './dashboardWidgets/index.js';
 
 const SUCCESS_STATUSES=new Set(['confirmed','success','executed','enabled','healthy','submitted','resolved','up']);
 const LOW_BALANCE_THRESHOLD=0.01;
 
 function numeric(value){const parsed=Number(value);return Number.isFinite(parsed)?parsed:null;}
+
+function greetingForHour(hour){
+  if(hour<5)return 'Good night';
+  if(hour<12)return 'Good morning';
+  if(hour<18)return 'Good afternoon';
+  return 'Good evening';
+}
+
+// Every user without a saved display name gets prompted once per dashboard visit -- new accounts
+// and pre-existing ones that never set one look identical here (both have displayName===null).
+function DashboardGreeting({displayName,onNamed}){
+  useEffect(()=>{
+    if(displayName)return;
+    let cancelled=false;
+    (async()=>{
+      const value=await promptDialog('What should we call you?',{placeholder:'Your name'});
+      const trimmed=value?.trim();
+      if(cancelled||!trimmed)return;
+      try{
+        const result=await api('/api/profile/display-name',{method:'PUT',body:JSON.stringify({displayName:trimmed})});
+        onNamed(result.displayName);
+      }catch{/* leave it unset -- the prompt will just ask again next visit */}
+    })();
+    return()=>{cancelled=true;};
+  },[displayName]);
+  if(!displayName)return null;
+  return <p className="dashboard-greeting">{greetingForHour(new Date().getHours())}, {displayName}.</p>;
+}
 
 function summarize({wallets,tasks,snipers,watchRules,activity,pnl,confirmations}){
   const walletList=wallets.data||[];
@@ -35,7 +63,7 @@ function summarize({wallets,tasks,snipers,watchRules,activity,pnl,confirmations}
   };
 }
 
-export default function Dashboard({profile,go}){
+export default function Dashboard({profile,go,onProfileChange}){
   const wallets=useLoad('/api/wallets',[],'wallets.changed');
   const tasks=useLoad('/api/tasks?page=1&pageSize=5',[],'tasks.changed');
   const snipers=useLoad('/api/snipers',[],'snipers.changed');
@@ -49,6 +77,7 @@ export default function Dashboard({profile,go}){
   const props={summary,go,profile};
   const isSplitColumns=profile.theme==='ghost-mint'||profile.theme==='ghost-mint-light';
   return <>
+    <DashboardGreeting displayName={profile.displayName} onNamed={name=>onProfileChange?.(current=>({...current,displayName:name}))}/>
     <widgets.StatusBar {...props}/>
     <widgets.AlertBanner {...props}/>
     {isSplitColumns?<div className="dashboard-grid dashboard-grid-split">

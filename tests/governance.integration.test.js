@@ -29,7 +29,7 @@ integrationTest('group, individual, simulation, owner, and editable-preset prece
   try {
     ownerId = await identity.resolveOrCreate('telegram', `owner-${suffix}`);
     userId = await identity.resolveOrCreate('telegram', `user-${suffix}`);
-    await pool.query('UPDATE users SET is_owner=TRUE WHERE user_id=$1', [ownerId]);
+    await pool.query('UPDATE users SET is_owner=TRUE,is_root_owner=TRUE WHERE user_id=$1', [ownerId]);
     await governance.upsertGroup(ownerId, { name: groupName, maxTransactionValueWei: 100n,
       dailySpendingBudgetWei: 200n, gasCeilingGwei: 10, simulationForced: 'optional' });
     await governance.upsertGroup(ownerId, { name: groupName.toLowerCase(), maxTransactionValueWei: 100n,
@@ -78,9 +78,18 @@ integrationTest('group, individual, simulation, owner, and editable-preset prece
     await governance.setOwner(ownerId, { platform: 'telegram', platformUserId: `user-${suffix}`, enabled: 'on' });
     assert.equal(await repository.isOwner(userId), true);
     await governance.setOwner(ownerId, { platform: 'telegram', platformUserId: `user-${suffix}`, enabled: 'off' });
-    const removeTemporaryOwner=governance.setOwner(ownerId, { platform: 'telegram', platformUserId: `owner-${suffix}`, enabled: 'off' });
-    if(preexistingOwnerCount===0)await assert.rejects(removeTemporaryOwner,/last owner/);
-    else { await removeTemporaryOwner;assert.equal(await repository.isOwner(ownerId),false); }
+    // ownerId only needed root status for the setOwner calls above; a root owner must be demoted
+    // from root before its regular owner status can be touched at all (root removing its own root
+    // status here exercises the "last root owner" invariant), then the plain "last owner" invariant
+    // is exercised directly at the repository layer, same as governance.setOwner's own target check.
+    const demoteFromRoot=governance.setRootOwner(ownerId, { platform: 'telegram', platformUserId: `owner-${suffix}`, enabled: 'off' });
+    if(preexistingOwnerCount===0){
+      await assert.rejects(demoteFromRoot,/last root owner/);
+    } else {
+      await demoteFromRoot;
+      await repository.setOwner(ownerId,false);
+      assert.equal(await repository.isOwner(ownerId),false);
+    }
   } finally {
     await pool.query(`UPDATE mode_presets SET simulation_mode='on',confirmation_count=12,
       human_verification='on',updated_by=NULL WHERE preset_key='semi_safe'`).catch(() => {});

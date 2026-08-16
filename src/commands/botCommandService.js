@@ -1,15 +1,56 @@
-const { Wallet, formatEther, parseEther } = require('ethers');
+const { Wallet, formatEther, isAddress, parseEther } = require('ethers');
 const { findOwnedWallet, stateForUser } = require('../identity/ownership');
 const { ValidationError, requestSchemas } = require('../validation/domain');
 const { paginate, pagination } = require('../pagination');
 const { calculateStatistics } = require('../statistics/statisticsService');
+const { detectContractChain } = require('../mint/chainDetector');
 
 function createBotCommandService(dependencies) {
   const { storage, schedulerRepository, providerService, governance, adminCommands, sniperService,
     socialWatchService, socialUsageService, targetPolicyService, triggerExecutionService, governanceRepository,
     triggerAuditRepository, transactionIntentRepository, gasService, supportedChains, chains, encryptPrivateKey, getState, executeMint,
-    sniperRepository, mintService, previewMint, executePreparedMint, identity,
+    sniperRepository, mintService, previewMint, executePreparedMint, identity, contractValueResolver,
     ensureChainWatcher = () => {} } = dependencies;
+
+  // Discord's /mint no longer has a price input; Telegram's guided flow doesn't ask for one either.
+  // If the caller already gave a price (either field name the schema accepts), that stands -- an
+  // explicit value always wins over a probed one. Only probes when both chain and contract are
+  // present; otherwise leaves it alone so normal validation reports the real missing field.
+  async function resolvePriceIfMissing(input, chain) {
+    if (input.priceETH !== undefined && input.priceETH !== null) return input;
+    if (input.price !== undefined && input.price !== null) return input;
+    if (!contractValueResolver || !chain || !input.contractAddress) return input;
+    const resolved = await contractValueResolver.resolve(chain, input.contractAddress);
+    if (!resolved.price) {
+      throw new ValidationError({ field: 'priceETH', message: 'could not be determined from this contract; please provide it' });
+    }
+    return { ...input, priceETH: formatEther(BigInt(resolved.price.value)) };
+  }
+
+  // Dashboard-facing counterpart to what Telegram/Discord's guided /mint flow already does
+  // automatically: find which configured chain the contract lives on, then probe it for a mint
+  // price the same way resolvePriceIfMissing does. mint(uint256) is the assumption the guided
+  // flow already makes for a plain quantity-only mint -- this mirrors that rather than inventing
+  // a second convention, so a dashboard user gets the same result a bot user would. An unresolved
+  // price returns valueWei:null (never 0) so a paid contract can never look like a free one.
+  async function detectMintContract(userId, input) {
+    const contractAddress = String(input.contractAddress || '').trim();
+    if (!isAddress(contractAddress)) throw new ValidationError({ field: 'contractAddress', message: 'must be a valid Ethereum address' });
+    const chain = await detectContractChain({ providerService, supportedChains, contractAddress });
+    if (!chain) throw new ValidationError({ field: 'contractAddress', message: 'could not be found on any supported chain' });
+    const quantity = Math.max(1, Math.min(100, Math.floor(Number(input.quantity)) || 1));
+    const resolved = contractValueResolver ? await contractValueResolver.resolve(chain, contractAddress) : { price: null, maxSupply: null, maxPerWallet: null };
+    const priceKnown = Boolean(resolved.price);
+    return {
+      chain,
+      methodSignature: 'mint(uint256)',
+      arguments: [quantity],
+      valueWei: priceKnown ? (BigInt(resolved.price.value) * BigInt(quantity)).toString() : null,
+      priceKnown,
+      maxSupply: resolved.maxSupply?.value ?? null,
+      maxPerWallet: resolved.maxPerWallet?.value ?? null,
+    };
+  }
 
   function state(userId) { return stateForUser(getState(), userId); }
   function wallet(userId, label) {
@@ -45,20 +86,36 @@ function createBotCommandService(dependencies) {
     return owned.label;
   }
 
+  // A wallet's stored chain is just its nominal home chain now (see DEFAULT_EVM_CHAIN in the
+  // dashboard) -- the same address is valid on every configured EVM chain, and it can mint on any
+  // of them. Checking only owned.chain would silently hide funds sent to the wallet on any other
+  // chain, so this checks all of them and reports a per-chain breakdown instead of one number. A
+  // single chain's RPC failing (rather than reporting a real zero) is reported as null, not
+  // dropped, so the caller can tell "no funds here" apart from "couldn't check this one."
   async function walletBalance(userId, label) {
     const owned = wallet(userId, label);
-    const balance = await providerService.perform(owned.chain, 'getBalance', provider => provider.getBalance(owned.address));
-    return { ...owned, balance: formatEther(balance), symbol: chains[owned.chain].sym };
+    const balances = await Promise.all(supportedChains.map(async chain => {
+      try {
+        const balance = await providerService.perform(chain, 'getBalance', provider => provider.getBalance(owned.address));
+        return { chain, balance: formatEther(balance), symbol: chains[chain].sym };
+      } catch {
+        return { chain, balance: null, symbol: chains[chain].sym };
+      }
+    }));
+    return { ...owned, balances };
   }
 
   async function mint(userId, input) {
     const owned = wallet(userId, input.walletLabel);
-    const validated = requestSchemas.mint({ ...input, chain: input.chain || owned.chain }, { supportedChains });
+    const chain = input.chain || owned.chain;
+    const withPrice = await resolvePriceIfMissing(input, chain);
+    const validated = requestSchemas.mint({ ...withPrice, chain }, { supportedChains });
     return executeMint({ userId, wallet: owned, request: validated });
   }
 
   async function batchMint(userId, input) {
-    const validated = requestSchemas.batchMint(input, { supportedChains });
+    const withPrice = await resolvePriceIfMissing(input, input.chain);
+    const validated = requestSchemas.batchMint(withPrice, { supportedChains });
     const results = [];
     for (const label of validated.walletLabels) {
       results.push(await mint(userId, { ...validated, walletLabel: label }));
@@ -118,13 +175,16 @@ function createBotCommandService(dependencies) {
     Object.assign(owned,saved);return saved;
   }
 
+  // Wallets store one nominal home chain (see DEFAULT_EVM_CHAIN in the dashboard), but an EVM
+  // address is valid on every EVM chain, and mint()/batchMint() already let a mint target any
+  // supported chain regardless of the wallet's stored chain. This used to also require
+  // input.chain to match owned.chain, which would have blocked minting on anything but a
+  // wallet's default chain -- removed so preview/confirm behaves the same as mint()/batchMint().
   async function prepareMint(userId,input) {
     const owned=wallet(userId,input.walletLabel);
-    if(!input.presetName&&input.chain&&input.chain!==owned.chain) throw new ValidationError({field:'chain',message:'must match the selected wallet chain'});
     const prepared=input.presetName
       ? await mintService.preparePreset(userId,input.presetName,owned.address)
       : await mintService.prepare({...input,walletAddress:owned.address,chain:input.chain||owned.chain});
-    if(prepared.chain!==owned.chain) throw new ValidationError({field:'preset',message:'chain must match the selected wallet chain'});
     const simulation=await previewMint({userId,wallet:owned,prepared,gasGwei:input.gasGwei});
     return {wallet:{label:owned.label,address:owned.address,chain:owned.chain},prepared,simulation};
   }
@@ -198,7 +258,7 @@ function createBotCommandService(dependencies) {
 
   return {
     createWallet, importWallet, removeWallet, walletBalance, mint, batchMint, createTask, controlTask, addPnl, updatePnl, deletePnl,
-    prepareMint,submitPreparedMint,mintPresets:userId=>mintService.listPresets(userId),
+    prepareMint,submitPreparedMint,detectMintContract,mintPresets:userId=>mintService.listPresets(userId),
     createSniper, updateSniper, removeSniper, gas,
     sniperEvents:userId=>sniperRepository.listRecentForUser(userId),
     wallets: userId => state(userId).wallets,
@@ -234,6 +294,7 @@ function createBotCommandService(dependencies) {
     selectMode: (userId, preset) => governance.selectPreset(userId, preset),
     admin: (userId, input) => adminCommands.execute(userId, input),
     isOwner:userId=>governanceRepository.isOwner(userId),
+    isRootOwner:userId=>governanceRepository.isRootOwner(userId),
     adminOverview:userId=>governance.dashboardOverview(userId),
     adminEffective:(userId,input)=>governance.effectiveForLinkedUser(userId,input),
     linkCode:userId=>identity.createLinkCode(userId),

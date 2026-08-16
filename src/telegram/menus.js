@@ -69,6 +69,31 @@ function walletPicker(wallets, { prefix, emptyHint }) {
   return { text: 'Choose a wallet:', replyMarkup: keyboard(rows) };
 }
 
+// Multi-select variant for /batch: tapping a wallet toggles it (re-renders this same menu with the
+// updated checkmark), Continue only appears once at least one wallet is selected.
+function walletMultiPicker(wallets, selectedLabels, { emptyHint }) {
+  if (!wallets.length) return placeholderMenu('Wallets', emptyHint);
+  const rows = wallets.map(wallet => {
+    const checked = selectedLabels.includes(wallet.label);
+    return [button(`${checked ? '✅' : '⬜'} ${wallet.label} (${wallet.chain})`, `flow:wallettoggle:${wallet.label}`)];
+  });
+  if (selectedLabels.length) {
+    rows.push([button(`▶️ Continue with ${selectedLabels.length} wallet${selectedLabels.length === 1 ? '' : 's'}`, 'flow:walletcontinue')]);
+  }
+  rows.push([button('❌ Cancel', 'flow:cancel:ask')]);
+  return { text: 'Tap each wallet to include in the batch, then Continue:', replyMarkup: keyboard(rows) };
+}
+
+function mintConfirmation({ contractAddress, chainLabel, walletLabels, priceETH, priceUnknown }) {
+  const priceLine = priceUnknown
+    ? 'Price: not exposed by this contract — using the amount you entered above.'
+    : `Price: ${priceETH} per item (read from the contract)`;
+  return {
+    text: `*Confirm mint*\nContract: \`${contractAddress}\`\nChain: ${chainLabel}\nWallet(s): ${walletLabels.join(', ')}\nQuantity: 1 each\n${priceLine}\n\nProceed?`,
+    replyMarkup: keyboard([[button('✅ Confirm', 'flow:mintconfirm')], [button('❌ Cancel', 'flow:cancel:ask')]]),
+  };
+}
+
 function confirmCancelPrompt(flowLabel) {
   return {
     text: `You're in the middle of *${flowLabel}*. Leave it and go back to the menu? Your progress will be cleared.`,
@@ -98,6 +123,8 @@ module.exports = {
   placeholderMenu,
   chainPicker,
   walletPicker,
+  walletMultiPicker,
+  mintConfirmation,
   confirmCancelPrompt,
   confirmRemoveWallet,
 };

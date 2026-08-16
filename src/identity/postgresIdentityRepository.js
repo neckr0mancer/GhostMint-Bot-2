@@ -255,6 +255,16 @@ function createPostgresIdentityRepository(pool) {
       return theme;
     },
 
+    async getDisplayName(userId) {
+      const result = await pool.query('SELECT display_name FROM users WHERE user_id=$1', [userId]);
+      return result.rows[0]?.display_name || null;
+    },
+
+    async setDisplayName(userId, displayName) {
+      await pool.query('UPDATE users SET display_name=$2 WHERE user_id=$1', [userId, displayName]);
+      return displayName;
+    },
+
     async getDefaultChain(userId) {
       const result = await pool.query('SELECT default_chain FROM users WHERE user_id=$1', [userId]);
       return result.rows[0]?.default_chain || null;

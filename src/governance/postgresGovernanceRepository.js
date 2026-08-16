@@ -24,6 +24,11 @@ function createPostgresGovernanceRepository(pool) {
       return result.rows[0]?.is_owner === true;
     },
 
+    async isRootOwner(userId) {
+      const result = await pool.query('SELECT is_root_owner FROM users WHERE user_id=$1', [userId]);
+      return result.rows[0]?.is_root_owner === true;
+    },
+
     async findUserByPlatform(platform, platformUserId) {
       const result = await pool.query(
         'SELECT user_id FROM linked_accounts WHERE platform=$1 AND platform_user_id=$2',
@@ -33,13 +38,35 @@ function createPostgresGovernanceRepository(pool) {
     },
 
     async setOwner(userId, enabled) {
+      const current = await pool.query('SELECT is_owner,is_root_owner FROM users WHERE user_id=$1', [userId]);
+      if (!current.rowCount) throw new Error('User not found');
       if (!enabled) {
-        const count = await pool.query('SELECT COUNT(*)::INTEGER AS count FROM users WHERE is_owner=TRUE');
-        const current = await this.isOwner(userId);
-        if (current && count.rows[0].count <= 1) throw new Error('Cannot remove the last owner');
+        if (current.rows[0].is_root_owner) throw new Error('User is a root owner -- remove root owner status first');
+        if (current.rows[0].is_owner) {
+          const count = await pool.query('SELECT COUNT(*)::INTEGER AS count FROM users WHERE is_owner=TRUE');
+          if (count.rows[0].count <= 1) throw new Error('Cannot remove the last owner');
+        }
       }
       const result = await pool.query('UPDATE users SET is_owner=$2 WHERE user_id=$1 RETURNING user_id,is_owner', [userId, enabled]);
-      if (!result.rowCount) throw new Error('User not found');
+      return result.rows[0];
+    },
+
+    // Root owners are capped at 2 and can only be drawn from existing owners -- promoting straight
+    // from a regular user would let someone skip the regular-owner step entirely. Mirrors setOwner's
+    // "cannot remove the last owner" protection one tier up: at least one root owner must always remain.
+    async setRootOwner(userId, enabled) {
+      const current = await pool.query('SELECT is_owner,is_root_owner FROM users WHERE user_id=$1', [userId]);
+      if (!current.rowCount) throw new Error('User not found');
+      if (enabled) {
+        if (current.rows[0].is_root_owner) return { user_id: userId, is_root_owner: true };
+        if (!current.rows[0].is_owner) throw new Error('User must already be an owner before becoming a root owner');
+        const count = await pool.query('SELECT COUNT(*)::INTEGER AS count FROM users WHERE is_root_owner=TRUE');
+        if (count.rows[0].count >= 2) throw new Error('There are already 2 root owners -- remove one first');
+      } else if (current.rows[0].is_root_owner) {
+        const count = await pool.query('SELECT COUNT(*)::INTEGER AS count FROM users WHERE is_root_owner=TRUE');
+        if (count.rows[0].count <= 1) throw new Error('Cannot remove the last root owner');
+      }
+      const result = await pool.query('UPDATE users SET is_root_owner=$2 WHERE user_id=$1 RETURNING user_id,is_root_owner', [userId, enabled]);
       return result.rows[0];
     },
 
@@ -133,7 +160,7 @@ function createPostgresGovernanceRepository(pool) {
     },
 
     async listGovernedUsers() {
-      const result=await pool.query(`SELECT u.user_id,u.is_owner,u.account_status,u.status_reason,
+      const result=await pool.query(`SELECT u.user_id,u.is_owner,u.is_root_owner,u.account_status,u.status_reason,
         u.suspended_until,u.status_changed_at,u.subscription_active,
         u.good_standing_override,sg.name AS group_name,
         ug.max_transaction_value_wei,ug.daily_spending_budget_wei,ug.gas_ceiling_gwei,
@@ -143,13 +170,13 @@ function createPostgresGovernanceRepository(pool) {
         FROM users u LEFT JOIN user_governance ug ON ug.user_id=u.user_id
         LEFT JOIN seat_groups sg ON sg.group_id=ug.group_id
         LEFT JOIN linked_accounts la ON la.user_id=u.user_id
-        GROUP BY u.user_id,u.is_owner,u.account_status,u.status_reason,u.suspended_until,
+        GROUP BY u.user_id,u.is_owner,u.is_root_owner,u.account_status,u.status_reason,u.suspended_until,
           u.status_changed_at,u.subscription_active,u.good_standing_override,
           sg.name,ug.max_transaction_value_wei,
           ug.daily_spending_budget_wei,ug.gas_ceiling_gwei,ug.simulation_forced,ug.selected_preset_key,
           ug.scheduled_removal_at
         ORDER BY u.created_at`);
-      return result.rows.map(row=>({userId:row.user_id,isOwner:row.is_owner,accountStatus:row.account_status,
+      return result.rows.map(row=>({userId:row.user_id,isOwner:row.is_owner,isRootOwner:row.is_root_owner,accountStatus:row.account_status,
         statusReason:row.status_reason,suspendedUntil:row.suspended_until,statusChangedAt:row.status_changed_at,
         subscriptionActive:row.subscription_active,goodStandingOverride:row.good_standing_override,
         groupName:row.group_name,
@@ -164,6 +191,7 @@ function createPostgresGovernanceRepository(pool) {
       const result = await pool.query(`SELECT
         (SELECT COUNT(*)::INTEGER FROM users) AS total_users,
         (SELECT COUNT(*)::INTEGER FROM users WHERE is_owner=TRUE) AS owners,
+        (SELECT COUNT(*)::INTEGER FROM users WHERE is_root_owner=TRUE) AS root_owners,
         (SELECT COUNT(*)::INTEGER FROM linked_accounts) AS linked_accounts,
         (SELECT COUNT(*)::INTEGER FROM seat_groups) AS groups,
         (SELECT COUNT(DISTINCT user_id)::INTEGER FROM dashboard_sessions
@@ -171,7 +199,7 @@ function createPostgresGovernanceRepository(pool) {
             AND last_seen_at>=NOW()-INTERVAL '15 minutes') AS active_users`);
       const row = result.rows[0];
       return { totalUsers:row.total_users, activeUsers:row.active_users,
-        linkedAccounts:row.linked_accounts, groups:row.groups, owners:row.owners,
+        linkedAccounts:row.linked_accounts, groups:row.groups, owners:row.owners, rootOwners:row.root_owners,
         activeWindowMinutes:15 };
     },
 
@@ -209,11 +237,11 @@ function createPostgresGovernanceRepository(pool) {
 
     async getAccountStatus(userId) {
       const result = await pool.query(
-        'SELECT account_status,status_reason,suspended_until,is_owner FROM users WHERE user_id=$1', [userId]);
+        'SELECT account_status,status_reason,suspended_until,is_owner,is_root_owner FROM users WHERE user_id=$1', [userId]);
       if (!result.rowCount) return null;
       const row = result.rows[0];
       return { status: row.account_status, reason: row.status_reason,
-        suspendedUntil: row.suspended_until, isOwner: row.is_owner };
+        suspendedUntil: row.suspended_until, isOwner: row.is_owner, isRootOwner: row.is_root_owner };
     },
 
     // Flips a time-boxed suspension back to active once suspended_until has passed. Called from the

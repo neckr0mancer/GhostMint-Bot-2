@@ -39,6 +39,9 @@ function createAdminCommandService(governance, identity) {
         case 'owner':
           await governance.setOwner(callerUserId, { platform: args[0], platformUserId: args[1], enabled: args[2] });
           return 'Owner status updated.';
+        case 'root-owner':
+          await governance.setRootOwner(callerUserId, { platform: args[0], platformUserId: args[1], enabled: args[2] });
+          return 'Root owner status updated.';
 
         // ── Milestone 16a: account lifecycle ──
         case 'ban':

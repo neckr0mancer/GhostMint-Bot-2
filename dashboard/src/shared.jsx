@@ -1,7 +1,104 @@
-/* global CustomEvent, WebSocket */
+/* global CustomEvent, WebSocket, setTimeout */
 import React,{useCallback,useEffect,useState} from 'react';
 
 export const ACTIVITY_EVENTS=['snipers.changed','tasks.changed','watchrules.changed','wallets.changed'];
+
+// Drop-in async replacements for window.confirm/window.prompt -- native browser dialogs can't be
+// themed and look broken against the rest of the UI. Any component calls confirmDialog/promptDialog
+// directly, exactly like the window.* functions they replace; the one <ConfirmHost/> mounted per
+// shell renders whichever request is currently pending via this tiny module-level pub-sub (no
+// context provider needed since there's only ever one dialog open at a time app-wide).
+let activeDialogRequest=null;
+let dialogRequestListeners=[];
+function publishDialogRequest(request){activeDialogRequest=request;dialogRequestListeners.forEach(listener=>listener(request));}
+function subscribeDialogRequest(listener){dialogRequestListeners.push(listener);return()=>{dialogRequestListeners=dialogRequestListeners.filter(item=>item!==listener);};}
+export function confirmDialog(message){return new Promise(resolve=>{publishDialogRequest({type:'confirm',message,resolve:value=>{publishDialogRequest(null);resolve(value);}});});}
+export function promptDialog(message,{defaultValue='',placeholder=''}={}){return new Promise(resolve=>{publishDialogRequest({type:'prompt',message,defaultValue,placeholder,resolve:value=>{publishDialogRequest(null);resolve(value);}});});}
+export function ConfirmHost(){
+  const [request,setRequest]=useState(activeDialogRequest);
+  useEffect(()=>subscribeDialogRequest(setRequest),[]);
+  const [value,setValue]=useState('');
+  useEffect(()=>{if(request?.type==='prompt')setValue(request.defaultValue||'');},[request]);
+  function confirmChoice(){request.resolve(request.type==='confirm'?true:value);}
+  function cancelChoice(){request.resolve(request.type==='confirm'?false:null);}
+  useEffect(()=>{
+    if(!request)return;
+    function onKeyDown(event){
+      if(event.key==='Escape'){event.preventDefault();cancelChoice();}
+      else if(event.key==='Enter'&&request.type==='confirm'){event.preventDefault();confirmChoice();}
+    }
+    document.addEventListener('keydown',onKeyDown);
+    return()=>document.removeEventListener('keydown',onKeyDown);
+  },[request]);
+  if(!request)return null;
+  return <div className="confirm-modal-backdrop" onClick={cancelChoice}>
+    <div className="confirm-modal" role="alertdialog" aria-modal="true" onClick={event=>event.stopPropagation()}>
+      <p>{request.message}</p>
+      {request.type==='prompt'&&<input autoFocus value={value} placeholder={request.placeholder} onChange={event=>setValue(event.target.value)} onKeyDown={event=>{if(event.key==='Enter'){event.preventDefault();confirmChoice();}}}/>}
+      <div className="confirm-modal-actions">
+        <button type="button" className="quiet" onClick={cancelChoice}>Cancel</button>
+        <button type="button" onClick={confirmChoice}>{request.type==='prompt'?'OK':'Confirm'}</button>
+      </div>
+    </div>
+  </div>;
+}
+
+// Toast notifications -- transient, auto-dismissing feedback for one-off events (a save succeeded,
+// a write failed) that replace messages which used to sit at the top of a page until the next
+// action or a full refresh cleared them. Same module-level pub-sub shape as the dialog above, but
+// keeps a *list* since more than one toast can be visible at once. notify() is fire-and-forget;
+// call it from anywhere, the one <ToastHost/> mounted per shell renders whatever's currently active.
+let toastItems=[];
+let toastListeners=[];
+let toastSeq=0;
+function publishToasts(){toastListeners.forEach(listener=>listener(toastItems));}
+// Every notify() also appends to this longer-lived log (independent of the toast's own
+// auto-dismiss), so the notification bell can show recent events you may have missed, not just
+// pending confirmations. Capped rather than persisted -- it's a "what just happened" scratchpad,
+// not a durable notification store.
+let notificationLog=[];
+let notificationLogListeners=[];
+const NOTIFICATION_LOG_LIMIT=20;
+function publishNotificationLog(){notificationLogListeners.forEach(listener=>listener(notificationLog));}
+export function subscribeNotificationLog(listener){notificationLogListeners.push(listener);return()=>{notificationLogListeners=notificationLogListeners.filter(item=>item!==listener);};}
+export function getNotificationLog(){return notificationLog;}
+export function notify(message,{type='info',timeoutMs=5000}={}){
+  if(!message)return null;
+  const id=++toastSeq;
+  toastItems=[...toastItems,{id,message,type,leaving:false}];
+  publishToasts();
+  notificationLog=[{id,message,type,at:Date.now()},...notificationLog].slice(0,NOTIFICATION_LOG_LIMIT);
+  publishNotificationLog();
+  if(timeoutMs>0)setTimeout(()=>dismissToast(id),timeoutMs);
+  return id;
+}
+export function dismissToast(id){
+  if(!toastItems.some(item=>item.id===id&&!item.leaving))return;
+  toastItems=toastItems.map(item=>item.id===id?{...item,leaving:true}:item);
+  publishToasts();
+  setTimeout(()=>{toastItems=toastItems.filter(item=>item.id!==id);publishToasts();},220);
+}
+const TOAST_ICONS={
+  success:<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M5 13l4 4L19 7"/></svg>,
+  error:<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>,
+  info:<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>,
+};
+export function ToastHost(){
+  const [toasts,setToasts]=useState(toastItems);
+  useEffect(()=>{
+    const listener=next=>setToasts(next);
+    toastListeners.push(listener);
+    return()=>{toastListeners=toastListeners.filter(item=>item!==listener);};
+  },[]);
+  if(!toasts.length)return null;
+  return <div className="toast-host" role="status" aria-live="polite">
+    {toasts.map(toast=><div key={toast.id} className={`toast toast-${toast.type}${toast.leaving?' leaving':''}`}>
+      <span className="toast-icon" aria-hidden="true">{TOAST_ICONS[toast.type]||TOAST_ICONS.info}</span>
+      <span className="toast-message">{toast.message}</span>
+      <button type="button" className="toast-dismiss" aria-label="Dismiss notification" onClick={()=>dismissToast(toast.id)}>×</button>
+    </div>)}
+  </div>;
+}
 
 // All chains the transaction engine currently supports are EVM (Ethereum, Base, Arbitrum, Polygon,
 // and any future addition to src/config's CHAIN_DEFINITIONS) -- a single wallet address already
