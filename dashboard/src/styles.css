@@ -9,6 +9,10 @@
 html{transition:background-color var(--normal) var(--ease)}
 body{margin:0;min-width:320px;background:var(--bg-glow);-webkit-font-smoothing:antialiased;transition:background var(--normal) var(--ease),color var(--normal) var(--ease)}
 button,input,select,textarea{font:inherit;color:inherit}
+/* display:contents drops the fieldset's own box so its children still participate directly in a
+   parent .fields grid or .field-row flex row, while the native disabled-descendants behavior (and
+   the resulting button:disabled/etc. styling) keeps working regardless of display value. */
+fieldset{border:0;padding:0;margin:0;min-width:0;display:contents}
 h1,h2,h3,p{margin:0}
 code{font-family:ui-monospace,'SF Mono',Consolas,monospace;font-size:.9em}
 
@@ -497,6 +501,13 @@ tbody tr:last-child td{border-bottom:0}
   box-shadow:none;justify-content:flex-start;transition:border-color var(--fast) var(--ease),box-shadow var(--fast) var(--ease)}
 .theme-option:hover:not(:disabled){filter:none;border-color:var(--accent)}
 .theme-option.active{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+.mode-preset-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(11rem,1fr));gap:.6rem;margin-top:.7rem}
+.mode-preset-option{display:flex;flex-direction:column;align-items:flex-start;gap:.3rem;padding:.7rem .85rem;background:var(--surface-2);
+  color:var(--text);text-align:left;border:1px solid var(--border-strong);border-radius:var(--radius-sm);
+  box-shadow:none;transition:border-color var(--fast) var(--ease),box-shadow var(--fast) var(--ease)}
+.mode-preset-option span{font-weight:400;font-size:.8rem;color:var(--text-muted)}
+.mode-preset-option:hover:not(:disabled){filter:none;border-color:var(--accent)}
+.mode-preset-option.active{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
 .theme-swatch{width:1.9rem;height:1.9rem;border-radius:.45rem;flex-shrink:0;display:grid;place-items:center;
   border:1px solid rgba(0,0,0,.15)}
 .theme-swatch-accent{width:.6rem;height:.6rem;border-radius:50%}
@@ -702,6 +713,12 @@ html[data-theme="ghost-mint"] .dash-hero button,html[data-theme="ghost-mint-ligh
 .login-card .brand-mark{margin-bottom:1rem}
 .login-card h1{font-size:2.3rem;margin:.2rem 0;letter-spacing:-.02em}
 .login-card>p{color:var(--text-muted);line-height:1.5;margin-bottom:1.5rem}
+.login-mode-toggle{margin:1rem 0}
+.account-credential-row{display:flex;align-items:center;gap:.75rem;padding:.6rem 0;border-top:1px solid var(--border)}
+.account-credential-row:first-of-type{border-top:0}
+.account-credential-row span{flex:0 0 auto;min-width:9rem;color:var(--text-muted);font-weight:600;font-size:.85rem}
+.account-credential-row strong{flex:1}
+.account-credential-row button{flex:0 0 auto}
 .login-card button{width:100%;margin-top:.5rem}
 
 /* ==========================================================================
@@ -868,11 +885,18 @@ html[data-theme="ghost-mint"] .dash-hero button,html[data-theme="ghost-mint-ligh
 .admin-view{width:100%;animation:fadeIn var(--normal) var(--ease)}
 .admin-view>.notice:first-child{margin-bottom:.875rem}
 .admin-view>section{margin-top:1.25rem}
-.admin-metric-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:.75rem}
-.admin-metric-grid .panel{padding:1rem}
+.admin-metric-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(9rem,1fr));gap:.75rem}
+.admin-metric-grid .panel,.admin-metric-card{padding:1rem}
 .admin-metric-grid span{display:block;color:var(--text-muted);font-size:.69rem;font-weight:800;text-transform:uppercase;letter-spacing:.08em}
 .admin-metric-grid strong{display:block;margin:.4rem 0 .2rem;font-size:1.75rem;line-height:1;color:var(--accent)}
 .admin-metric-grid p{font-size:.72rem}
+/* Metric cards are real <button>s (clickable -> navigates to the relevant admin page), so they need
+   the global button reset undone: no accent fill, left-aligned text, and the same panel/hover look
+   as the rest of the overview instead of looking like a call-to-action button. */
+.admin-metric-card{display:block;width:100%;text-align:left;background:var(--surface);color:inherit;
+  border:1px solid var(--border-strong);box-shadow:none;cursor:pointer;
+  transition:border-color var(--fast) var(--ease),box-shadow var(--fast) var(--ease)}
+.admin-metric-card:hover:not(:disabled){filter:none;border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
 .admin-overview-grid{display:grid;grid-template-columns:1.15fr .85fr;gap:.875rem;margin-top:.875rem;align-items:start}
 .section-heading{display:flex;align-items:center;justify-content:space-between;gap:1rem;margin-bottom:.75rem}
 .section-heading h2{margin:.15rem 0 0}

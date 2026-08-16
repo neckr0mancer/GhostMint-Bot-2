@@ -13,6 +13,8 @@ const {createCommandRateLimiter}=require('../src/security/botSecurity');
 const {createBotCommandService}=require('../src/commands/botCommandService');
 const {createSchedulerWorker}=require('../src/scheduler/schedulerWorker');
 const {ValidationError}=require('../src/validation/domain');
+const {hashSecurityPassword}=require('../src/security/securityPassword');
+const {UsernameTakenError}=require('../src/identity/postgresIdentityRepository');
 
 function fixture(){const sessions=new Map();let counter=0;const consumed=[];const identity={consumeDashboardLinkCode:async code=>{consumed.push(code);if(code!=='VALID')throw new LinkCodeError('specific internal reason');return 'user-a';}};
   const repository={create:async value=>{const id=`session-${++counter}`;sessions.set(id,{...value,sessionId:id});return id;},resolve:async tokenHash=>[...sessions.values()].find(value=>value.tokenHash===tokenHash&&!value.revoked)||null,
@@ -109,12 +111,12 @@ test('WebSocket rejects unauthenticated clients and isolates user broadcasts',as
 
 test('dashboard production bundle contains no server secrets or secret variable names',()=>{const root=path.join(__dirname,'..','public','dashboard');assert.equal(fs.existsSync(path.join(root,'index.html')),true,'dashboard must be built before tests');const content=fs.readdirSync(path.join(root,'assets')).map(name=>fs.readFileSync(path.join(root,'assets',name),'utf8')).join('\n');const forbidden=['ENCRYPTION_SECRET','DATABASE_URL','DISCORD_BOT_TOKEN','TELEGRAM_BOT_TOKEN','dev-encryption-key-7Qv9'];const envPath=path.join(__dirname,'..','.env');if(fs.existsSync(envPath)){const values=require('dotenv').parse(fs.readFileSync(envPath));for(const name of ['ENCRYPTION_SECRET','DISCORD_BOT_TOKEN','TELEGRAM_BOT_TOKEN','SOCIAL_OFFICIAL_API_TOKEN','SOCIAL_MANAGED_SERVICE_TOKEN'])if(values[name]?.length>=8)forbidden.push(values[name]);}for(const value of forbidden)assert.equal(content.includes(value),false,`bundle contains forbidden server value: ${value.startsWith('dev-')?value:'[redacted]'}`);});
 
-async function operationsServer(t){const sessions=new Map([['token-a',{userId:'user-a',csrfTokenHash:'csrf'}],['token-b',{userId:'user-b',csrfTokenHash:'csrf'}]]);const privateKey=`0x${'11'.repeat(32)}`;const calls=[];const commands={
+async function operationsServer(t){const sessions=new Map([['token-a',{userId:'user-a',csrfTokenHash:'csrf'}],['token-b',{userId:'user-b',csrfTokenHash:'csrf'}]]);const privateKey=`0x${'11'.repeat(32)}`;const calls=[];const selectedPresets=new Map();const commands={
   wallets:userId=>userId==='user-a'?[{label:'alpha',address:'0x0000000000000000000000000000000000000001',chain:'ethereum',keyEnvelope:{ciphertext:'secret'}}]:[],
   walletBalance:async(userId,label)=>({label,address:'0x0000000000000000000000000000000000000001',chain:'ethereum',balances:[{chain:'ethereum',balance:'1.0',symbol:'ETH'}]}),
   createWallet:async()=>({label:'new',address:'0x0000000000000000000000000000000000000002',chain:'ethereum',privateKey}),
   importWallet:async()=>{throw Object.assign(new Error(`bad key ${privateKey}`),{privateKey});},removeWallet:async(userId,label)=>{if(userId!=='user-a')throw new ValidationError({field:'label',message:'was not found'});calls.push(['remove',userId,label]);},
-  exportWalletKeystore:async(userId,label,password)=>{if(userId!=='user-a'||label!=='alpha')throw new ValidationError({field:'label',message:'was not found'});if(String(password||'').length<12)throw new ValidationError({field:'password',message:'must contain 12-200 characters'});calls.push(['export',userId,label]);return {label,keystore:'{"encrypted":"keystore-json"}'};},
+  exportWalletKeystore:async(userId,label,password)=>{if(userId!=='user-a'||label!=='alpha')throw new ValidationError({field:'label',message:'was not found'});if(String(password||'').length<12)throw new ValidationError({field:'securityPassword',message:'must contain 12-200 characters'});calls.push(['export',userId,label]);return {label,keystore:'{"encrypted":"keystore-json"}'};},
   mintPresets:async()=>[],prepareMint:async(userId,input)=>({wallet:{label:input.walletLabel,address:'0x0000000000000000000000000000000000000001',chain:'ethereum'},prepared:{preview:{contractAddress:'0x0000000000000000000000000000000000000003',methodSignature:'mint(uint256)',nativeValue:'0 ETH',arguments:[{name:'quantity',value:'1'}]}},simulation:{simulationEnabled:false,simulationPerformed:true,simulationPassed:true,gasLimit:21000n,estimatedCostWei:1n}}),
   submitPreparedMint:async(userId,value)=>{calls.push(['mint',userId,value.simulation.simulationPassed]);return {state:'pending'};},
   tasksPage:async userId=>({page:1,pageSize:10,total:userId==='user-a'?1:0,totalPages:1,items:userId==='user-a'?[{id:'task-a'}]:[]}),createTask:async(userId,input)=>{calls.push(['task',userId,input]);return {id:'task'};},controlTask:async(userId,action,id)=>{if(userId!=='user-a'||id!=='task-a')throw new ValidationError({field:'id',message:'was not found'});calls.push(['control',userId,action,id]);return {id};},
@@ -122,15 +124,36 @@ async function operationsServer(t){const sessions=new Map([['token-a',{userId:'u
   pnl:userId=>userId==='user-a'?[{id:'pnl-a'}]:[],addPnl:async()=>({}),updatePnl:async()=>({}),deletePnl:async(userId,id)=>{if(userId!=='user-a'||id!=='pnl-a')throw new ValidationError({field:'id',message:'was not found'});calls.push(['deletePnl',userId,id]);},
   snipers:userId=>userId==='user-a'?[{id:'sniper-a'}]:[],sniperEvents:async()=>[],createSniper:async()=>({}),updateSniper:async(userId,id)=>{if(userId!=='user-a'||id!=='sniper-a')throw new ValidationError({field:'id',message:'was not found'});return {id};},removeSniper:async()=>{},
   watchRules:async userId=>userId==='user-a'?[{id:'rule-a'}]:[],watchEvents:async()=>[],createWatchRule:async()=>({}),updateWatchRule:async(userId,id)=>{if(userId!=='user-a'||id!=='rule-a')throw new ValidationError({field:'id',message:'was not found'});return {id};},disableWatchRule:async()=>{},removeWatchRule:async()=>{},
-  targetDetails:async(userId,type,id)=>{if(userId!=='user-a'||!['sniper-a','rule-a'].includes(id))throw new ValidationError({field:'targetId',message:'was not found'});return {targetType:type,targetId:id};},updateTargetPolicy:async()=>({}),requestTargetBypass:async()=>({}),confirmTargetBypass:async()=>({}),applyTargetPreset:async()=>({}),modePresets:async()=>[],pendingConfirmations:async()=>[],confirmTrigger:async()=>({}),
+  targetDetails:async(userId,type,id)=>{if(userId!=='user-a'||!['sniper-a','rule-a'].includes(id))throw new ValidationError({field:'targetId',message:'was not found'});return {targetType:type,targetId:id};},updateTargetPolicy:async()=>({}),requestTargetBypass:async()=>({}),confirmTargetBypass:async()=>({}),applyTargetPreset:async()=>({}),modePresets:async()=>[{key:'ultra_fast',displayName:'Ultra fast',simulationMode:'optional',confirmationCount:0,humanVerification:false},{key:'safe',displayName:'Safe',simulationMode:'forced',confirmationCount:2,humanVerification:true}],
+  myGovernance:async(userId,chain)=>{if(userId!=='user-a')throw new Error('User not found');return {isOwner:false,maxTransactionValueWei:1000000000000000000n,dailySpendingBudgetWei:5000000000000000000n,gasCeilingGwei:50,simulationForced:true,preset:selectedPresets.get(userId)?{key:selectedPresets.get(userId),displayName:selectedPresets.get(userId),simulationMode:'forced',confirmationCount:1,humanVerification:false}:null,chain};},
+  selectMode:async(userId,preset)=>{if(!['ultra_fast','fast','semi_safe','safe'].includes(preset))throw new Error('Unknown mode preset');selectedPresets.set(userId,preset);return preset;},
+  pendingConfirmations:async()=>[],confirmTrigger:async()=>({}),
  };
- const auth={authenticate:async header=>sessions.get(String(header||'').split('=')[1])||null,verifyCsrf:({headerToken})=>headerToken==='csrf',sessionCookies:()=>[],clearCookies:()=>[],revoke:async()=>{},revokeAll:async()=>{}};
+ const auth={authenticate:async header=>sessions.get(String(header||'').split('=')[1])||null,verifyCsrf:({headerToken})=>headerToken==='csrf',
+   loginWithUserId:async userId=>{const token=`token-login-${userId}-${sessions.size}`;sessions.set(token,{userId});return {token};},
+   sessionCookies:session=>[`ghostmint_session=${session.token}`],clearCookies:()=>[],revoke:async()=>{},revokeAll:async()=>{}};
  const themes=new Map();
- const api=createDashboardApi({auth,commands,supportedChains:['ethereum'],identityRepository:{listLinkedAccounts:async()=>[],getTheme:async userId=>themes.get(userId)||'ghost-mint',setTheme:async(userId,theme)=>{themes.set(userId,theme);return theme;},getDisplayName:async()=>null},loginRateLimiter:createCommandRateLimiter(),exportKeyRateLimiter:createCommandRateLimiter({limit:2,windowMs:60_000})});const app=express();app.use(express.json());app.use(api.securityHeaders);mountDashboardRoutes(app,api);app.use(api.error);const server=http.createServer(app);await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>server.close(resolve)));return {base:`http://127.0.0.1:${server.address().port}`,calls,privateKey};}
+ const securityPasswordHashes=new Map([['user-a',hashSecurityPassword('a-strong-enough-password')],['user-b',hashSecurityPassword('a-strong-enough-password')]]);
+ const usernames=new Map();
+ const api=createDashboardApi({auth,commands,supportedChains:['ethereum'],identityRepository:{listLinkedAccounts:async()=>[],getTheme:async userId=>themes.get(userId)||'ghost-mint',setTheme:async(userId,theme)=>{themes.set(userId,theme);return theme;},getDisplayName:async()=>null,getSecurityPasswordHash:async userId=>securityPasswordHashes.get(userId)||null,setSecurityPasswordHash:async(userId,hash)=>{securityPasswordHashes.set(userId,hash);},
+   getUsername:async userId=>usernames.get(userId)||null,
+   setUsername:async(userId,value)=>{if([...usernames.values()].includes(value))throw new UsernameTakenError();usernames.set(userId,value);},
+   findUserIdByUsername:async value=>[...usernames.entries()].find(([,name])=>name===value)?.[0]||null,
+ },loginRateLimiter:createCommandRateLimiter(),passwordLoginRateLimiter:createCommandRateLimiter({limit:2,windowMs:60_000}),exportKeyRateLimiter:createCommandRateLimiter({limit:2,windowMs:60_000})});const app=express();app.use(express.json());app.use(api.securityHeaders);mountDashboardRoutes(app,api);app.use(api.error);const server=http.createServer(app);await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>server.close(resolve)));return {base:`http://127.0.0.1:${server.address().port}`,calls,privateKey,securityPasswordHashes,usernames};}
 function authHeaders(user='a',write=false){return {cookie:`ghostmint_session=token-${user}`,...(write?{'content-type':'application/json','x-csrf-token':'csrf'}:{})};}
 test('dashboard wallet responses and errors never expose private keys',async t=>{const {base,privateKey}=await operationsServer(t);const created=await fetch(`${base}/api/wallets/create`,{method:'POST',headers:authHeaders('a',true),body:'{}'});assert.equal(created.status,201);assert.equal((await created.text()).includes(privateKey),false);const failed=await fetch(`${base}/api/wallets/import`,{method:'POST',headers:authHeaders('a',true),body:JSON.stringify({privateKey})});assert.equal(failed.status,500);assert.equal((await failed.text()).includes(privateKey),false);});
-test('keystore export requires confirmation, is user-scoped, enforces a minimum password, and never returns raw key material',async t=>{const {base,calls,privateKey}=await operationsServer(t);const noConfirm=await fetch(`${base}/api/wallets/alpha/export`,{method:'POST',headers:authHeaders('a',true),body:JSON.stringify({password:'a-strong-enough-password'})});assert.equal(noConfirm.status,400);const shortPassword=await fetch(`${base}/api/wallets/alpha/export`,{method:'POST',headers:authHeaders('a',true),body:JSON.stringify({password:'short',confirmation:'CONFIRM'})});assert.equal(shortPassword.status,400);const crossUser=await fetch(`${base}/api/wallets/alpha/export`,{method:'POST',headers:authHeaders('b',true),body:JSON.stringify({password:'a-strong-enough-password',confirmation:'CONFIRM'})});assert.equal(crossUser.status,400);const ok=await fetch(`${base}/api/wallets/alpha/export`,{method:'POST',headers:authHeaders('a',true),body:JSON.stringify({password:'a-strong-enough-password',confirmation:'CONFIRM'})});assert.equal(ok.status,200);const body=await ok.json();assert.deepEqual(Object.keys(body),['keystore']);assert.equal(body.keystore,'{"encrypted":"keystore-json"}');assert.equal(JSON.stringify(body).includes(privateKey),false);assert.deepEqual(calls.filter(call=>call[0]==='export'),[['export','user-a','alpha']]);});
-test('keystore export is rate limited independently of other sensitive commands',async t=>{const {base}=await operationsServer(t);const attempt=()=>fetch(`${base}/api/wallets/alpha/export`,{method:'POST',headers:authHeaders('a',true),body:JSON.stringify({password:'a-strong-enough-password',confirmation:'CONFIRM'})});assert.equal((await attempt()).status,200);assert.equal((await attempt()).status,200);const limited=await attempt();assert.equal(limited.status,429);assert.ok(limited.headers.get('retry-after'));});
+test('keystore export requires confirmation, is user-scoped, enforces a minimum password, and never returns raw key material',async t=>{const {base,calls,privateKey}=await operationsServer(t);const noConfirm=await fetch(`${base}/api/wallets/alpha/export`,{method:'POST',headers:authHeaders('a',true),body:JSON.stringify({securityPassword:'a-strong-enough-password'})});assert.equal(noConfirm.status,400);const shortPassword=await fetch(`${base}/api/wallets/alpha/export`,{method:'POST',headers:authHeaders('a',true),body:JSON.stringify({securityPassword:'short',confirmation:'CONFIRM'})});assert.equal(shortPassword.status,400);const crossUser=await fetch(`${base}/api/wallets/alpha/export`,{method:'POST',headers:authHeaders('b',true),body:JSON.stringify({securityPassword:'a-strong-enough-password',confirmation:'CONFIRM'})});assert.equal(crossUser.status,400);const ok=await fetch(`${base}/api/wallets/alpha/export`,{method:'POST',headers:authHeaders('a',true),body:JSON.stringify({securityPassword:'a-strong-enough-password',confirmation:'CONFIRM'})});assert.equal(ok.status,200);const body=await ok.json();assert.deepEqual(Object.keys(body),['keystore']);assert.equal(body.keystore,'{"encrypted":"keystore-json"}');assert.equal(JSON.stringify(body).includes(privateKey),false);assert.deepEqual(calls.filter(call=>call[0]==='export'),[['export','user-a','alpha']]);});
+test('keystore export refuses when no security password is set, and rejects an incorrect one',async t=>{const {base,securityPasswordHashes}=await operationsServer(t);securityPasswordHashes.delete('user-a');const notSet=await fetch(`${base}/api/wallets/alpha/export`,{method:'POST',headers:authHeaders('a',true),body:JSON.stringify({securityPassword:'a-strong-enough-password',confirmation:'CONFIRM'})});assert.equal(notSet.status,400);assert.equal((await notSet.json()).code,'SECURITY_PASSWORD_NOT_SET');securityPasswordHashes.set('user-a',hashSecurityPassword('a-strong-enough-password'));const wrong=await fetch(`${base}/api/wallets/alpha/export`,{method:'POST',headers:authHeaders('a',true),body:JSON.stringify({securityPassword:'a-different-password',confirmation:'CONFIRM'})});assert.equal(wrong.status,401);});
+test('keystore export is rate limited independently of other sensitive commands',async t=>{const {base}=await operationsServer(t);const attempt=()=>fetch(`${base}/api/wallets/alpha/export`,{method:'POST',headers:authHeaders('a',true),body:JSON.stringify({securityPassword:'a-strong-enough-password',confirmation:'CONFIRM'})});assert.equal((await attempt()).status,200);assert.equal((await attempt()).status,200);const limited=await attempt();assert.equal(limited.status,429);assert.ok(limited.headers.get('retry-after'));});
+// Split across separate operationsServer(t) instances rather than firing several requests at the
+// same endpoint in one test -- each instance gets its own exportKeyRateLimiter (limit 2/60s in this
+// fixture), and 'securitypassword' shares that limiter's bucket with 'exportkey' by design (see
+// dashboard/api.js), so more than two calls in one instance hits 429 instead of exercising the
+// scenario being tested.
+test('security password can be set for the first time without a current password',async t=>{const {base,securityPasswordHashes}=await operationsServer(t);securityPasswordHashes.delete('user-a');const firstSet=await fetch(`${base}/api/auth/security-password`,{method:'PUT',headers:authHeaders('a',true),body:JSON.stringify({newPassword:'a-brand-new-password'})});assert.equal(firstSet.status,200);});
+test('security password change is rejected without the current password',async t=>{const {base}=await operationsServer(t);const missingCurrent=await fetch(`${base}/api/auth/security-password`,{method:'PUT',headers:authHeaders('a',true),body:JSON.stringify({newPassword:'another-new-password'})});assert.equal(missingCurrent.status,401);});
+test('security password change is rejected with an incorrect current password',async t=>{const {base}=await operationsServer(t);const wrongCurrent=await fetch(`${base}/api/auth/security-password`,{method:'PUT',headers:authHeaders('a',true),body:JSON.stringify({currentPassword:'not-it-at-all',newPassword:'another-new-password'})});assert.equal(wrongCurrent.status,401);});
+test('security password changes with the correct current password, and the new one immediately works for export',async t=>{const {base}=await operationsServer(t);const changed=await fetch(`${base}/api/auth/security-password`,{method:'PUT',headers:authHeaders('a',true),body:JSON.stringify({currentPassword:'a-strong-enough-password',newPassword:'another-new-password'})});assert.equal(changed.status,200);const exported=await fetch(`${base}/api/wallets/alpha/export`,{method:'POST',headers:authHeaders('a',true),body:JSON.stringify({securityPassword:'another-new-password',confirmation:'CONFIRM'})});assert.equal(exported.status,200);});
 test('mint confirmation requires a simulation-backed, user-bound, single-use preview',async t=>{const {base,calls}=await operationsServer(t);const direct=await fetch(`${base}/api/mints/confirm`,{method:'POST',headers:authHeaders('a',true),body:JSON.stringify({confirmation:'CONFIRM'})});assert.equal(direct.status,400);const preview=await (await fetch(`${base}/api/mints/preview`,{method:'POST',headers:authHeaders('a',true),body:JSON.stringify({walletLabel:'alpha'})})).json();assert.equal(preview.items[0].simulation.simulationPassed,true);assert.equal(preview.items[0].simulation.simulationPerformed,true);assert.equal((await fetch(`${base}/api/mints/confirm`,{method:'POST',headers:authHeaders('b',true),body:JSON.stringify({previewToken:preview.previewToken,confirmation:'CONFIRM'})})).status,400);const second=await (await fetch(`${base}/api/mints/preview`,{method:'POST',headers:authHeaders('a',true),body:JSON.stringify({walletLabel:'alpha'})})).json();assert.equal((await fetch(`${base}/api/mints/confirm`,{method:'POST',headers:authHeaders('a',true),body:JSON.stringify({previewToken:second.previewToken,confirmation:'CONFIRM'})})).status,202);assert.deepEqual(calls.at(-1),['mint','user-a',true]);assert.equal((await fetch(`${base}/api/mints/confirm`,{method:'POST',headers:authHeaders('a',true),body:JSON.stringify({previewToken:second.previewToken,confirmation:'CONFIRM'})})).status,400);});
 test('dashboard resources are user scoped and activity pagination has exact boundaries',async t=>{const {base,calls}=await operationsServer(t);assert.equal((await (await fetch(`${base}/api/wallets`,{headers:authHeaders('b')})).json()).length,0);assert.equal((await (await fetch(`${base}/api/tasks`,{headers:authHeaders('b')})).json()).total,0);assert.equal((await (await fetch(`${base}/api/pnl`,{headers:authHeaders('b')})).json()).length,0);const pages=[];for(const page of [1,2,3])pages.push(await (await fetch(`${base}/api/activity?page=${page}`,{headers:authHeaders('a')})).json());assert.deepEqual(pages.flatMap(value=>value.items.map(item=>item.id)),[1,2,3,4,5]);const deniedWallet=await fetch(`${base}/api/wallets/alpha`,{method:'DELETE',headers:authHeaders('b',true),body:JSON.stringify({confirmation:'CONFIRM'})});const deniedTask=await fetch(`${base}/api/tasks/task-a/control`,{method:'POST',headers:authHeaders('b',true),body:JSON.stringify({action:'cancel',confirmation:'CONFIRM'})});const deniedPnl=await fetch(`${base}/api/pnl/pnl-a`,{method:'DELETE',headers:authHeaders('b',true),body:JSON.stringify({confirmation:'CONFIRM'})});assert.deepEqual([deniedWallet.status,deniedTask.status,deniedPnl.status],[400,400,400]);assert.equal(calls.some(call=>['remove','control','deletePnl'].includes(call[0])),false);});
 
@@ -149,6 +172,71 @@ test('dashboard theme updates persist per account, reject unknown themes, and re
   assert.equal(profileA.theme,'clean-vault');
   const profileB=await (await fetch(`${base}/api/profile`,{headers:authHeaders('b')})).json();
   assert.equal(profileB.theme,'ghost-mint');
+});
+test('every account can list, read, and select any transaction mode preset -- there is no owner-only or group-gated subset',async t=>{
+  const {base}=await operationsServer(t);
+  const presets=await (await fetch(`${base}/api/mode-presets`,{headers:authHeaders('a')})).json();
+  assert.deepEqual(presets.map(preset=>preset.key),['ultra_fast','safe']);
+  const before=await (await fetch(`${base}/api/governance/mine`,{headers:authHeaders('a')})).json();
+  assert.equal(before.preset,null);
+  const noCsrf=await fetch(`${base}/api/governance/mode`,{method:'PUT',headers:{cookie:'ghostmint_session=token-a','content-type':'application/json'},body:JSON.stringify({preset:'ultra_fast'})});
+  assert.equal(noCsrf.status,403);
+  const selected=await fetch(`${base}/api/governance/mode`,{method:'PUT',headers:authHeaders('a',true),body:JSON.stringify({preset:'ultra_fast'})});
+  assert.equal(selected.status,200);
+  assert.deepEqual(await selected.json(),{preset:'ultra_fast'});
+  const after=await (await fetch(`${base}/api/governance/mine`,{headers:authHeaders('a')})).json();
+  assert.equal(after.preset.key,'ultra_fast');
+});
+
+test('setting a username requires a security password first, rejects bad formats, and enforces uniqueness',async t=>{
+  const {base,securityPasswordHashes}=await operationsServer(t);
+  securityPasswordHashes.delete('user-a');
+  const noPassword=await fetch(`${base}/api/auth/username`,{method:'PUT',headers:authHeaders('a',true),body:JSON.stringify({username:'ghostuser'})});
+  assert.equal(noPassword.status,400);
+  assert.equal((await noPassword.json()).code,'SECURITY_PASSWORD_NOT_SET');
+  securityPasswordHashes.set('user-a',hashSecurityPassword('a-strong-enough-password'));
+  const badFormat=await fetch(`${base}/api/auth/username`,{method:'PUT',headers:authHeaders('a',true),body:JSON.stringify({username:'Not Valid!'})});
+  assert.equal(badFormat.status,400);
+  const set=await fetch(`${base}/api/auth/username`,{method:'PUT',headers:authHeaders('a',true),body:JSON.stringify({username:'ghostuser'})});
+  assert.equal(set.status,200);
+  assert.deepEqual(await set.json(),{username:'ghostuser'});
+  securityPasswordHashes.set('user-b',hashSecurityPassword('a-strong-enough-password'));
+  const taken=await fetch(`${base}/api/auth/username`,{method:'PUT',headers:authHeaders('b',true),body:JSON.stringify({username:'ghostuser'})});
+  assert.equal(taken.status,409);
+});
+
+test('username+password login fails identically for an unknown username or a wrong password, is rate limited per username, and succeeds with correct credentials',async t=>{
+  const {base,securityPasswordHashes,usernames}=await operationsServer(t);
+  usernames.set('user-a','ghostuser');
+  securityPasswordHashes.delete('user-a');
+  const unknownUser=await fetch(`${base}/api/auth/login-password`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({username:'nobody-here',password:'whatever-password'})});
+  assert.equal(unknownUser.status,401);
+  const unknownBody=await unknownUser.json();
+  // 'ghostuser' currently has no security password set at all -- still a generic 401, not a
+  // different error, so a wrong/never-set password can't be distinguished from a wrong username.
+  const noPasswordSet=await fetch(`${base}/api/auth/login-password`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({username:'ghostuser',password:'whatever-password'})});
+  assert.equal(noPasswordSet.status,401);
+  assert.deepEqual(unknownBody,await noPasswordSet.json());
+  // This is the 2nd attempt against the 'ghostuser' bucket (limit is 2/60s in this fixture) --
+  // still allowed through to the credential check itself.
+  securityPasswordHashes.set('user-a',hashSecurityPassword('a-strong-enough-password'));
+  const wrongPassword=await fetch(`${base}/api/auth/login-password`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({username:'ghostuser',password:'totally-wrong-password'})});
+  assert.equal(wrongPassword.status,401);
+  // 3rd attempt against 'ghostuser' -- now rate limited, even with the correct password.
+  const limited=await fetch(`${base}/api/auth/login-password`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({username:'ghostuser',password:'a-strong-enough-password'})});
+  assert.equal(limited.status,429);
+  assert.ok(limited.headers.get('retry-after'));
+});
+test('username+password login creates a working, cookie-authenticated session for the resolved user',async t=>{
+  const {base,securityPasswordHashes,usernames}=await operationsServer(t);
+  usernames.set('user-a','ghostuser');
+  securityPasswordHashes.set('user-a',hashSecurityPassword('a-strong-enough-password'));
+  const login=await fetch(`${base}/api/auth/login-password`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({username:'ghostuser',password:'a-strong-enough-password'})});
+  assert.equal(login.status,204);
+  const setCookie=login.headers.get('set-cookie');
+  assert.ok(setCookie&&setCookie.startsWith('ghostmint_session='));
+  const profile=await (await fetch(`${base}/api/profile`,{headers:{cookie:setCookie}})).json();
+  assert.equal(profile.username,'ghostuser');
 });
 
 test('task created by the dashboard service is consumed by the existing durable worker path',async()=>{const now=Date.now();const state={wallets:[{id:1,userId:'user-a',label:'alpha',address:'0x0000000000000000000000000000000000000001',chain:'ethereum'}],tasks:[],activity:[],pnl:[],snipers:[]};const rows=[];const repository={

@@ -1,5 +1,5 @@
-import React,{useEffect,useMemo,useState} from 'react';
-import {api,confirmDialog,notify,promptDialog,useLoad} from './shared.jsx';
+import React,{useEffect,useMemo,useRef,useState} from 'react';
+import {api,confirmDialog,Field,Form,notify,promptDialog,Select,useLoad} from './shared.jsx';
 import {THEME_WIDGETS} from './dashboardWidgets/index.js';
 
 const ADDRESS_SHAPE=/^0x[0-9a-fA-F]{40}$/;
@@ -8,9 +8,12 @@ const ADDRESS_SHAPE=/^0x[0-9a-fA-F]{40}$/;
 function usdSuffix(usd){return usd===null||usd===undefined?'':` (~$${usd.toFixed(2)})`;}
 
 // A condensed version of the full Minting page's auto-detect-and-mint path, for the common single-
-// wallet case, right on the page every session starts on -- same /api/mints/detect|preview|confirm
-// calls, just without batch wallets, saved presets, or the advanced manual-calldata override, which
-// stay exclusive to the full page ("Advanced options" links there for those).
+// wallet case, right in the dashboard grid alongside the rest of the overview -- same
+// /api/mints/detect|preview|confirm calls, just without batch wallets, saved presets, or the
+// advanced manual-calldata override, which stay exclusive to the full page ("Advanced options"
+// links there for those). No manual "Detect" button, matching the full Minting page: detection
+// always runs itself on blur, whenever the contract address or quantity changes from what was last
+// detected.
 function QuickMint({go}){
   const wallets=useLoad('/api/wallets',[],'wallets.changed');
   const [walletLabel,setWalletLabel]=useState('');
@@ -19,21 +22,24 @@ function QuickMint({go}){
   const [detecting,setDetecting]=useState(false);
   const [detected,setDetected]=useState(null);
   const [preview,setPreview]=useState(null);
+  const [busy,setBusy]=useState(false);
+  const lastDetected=useRef('');
   useEffect(()=>{if(!walletLabel&&wallets.data?.length)setWalletLabel(wallets.data[0].label);},[wallets.data]);
-  function reset(){setContractAddress('');setQuantity('1');setDetected(null);setPreview(null);}
+  function reset(){setContractAddress('');setQuantity('1');setDetected(null);setPreview(null);lastDetected.current='';}
   async function detect(){
     const trimmed=contractAddress.trim();
     if(!trimmed){notify('Enter a contract address first.',{type:'error'});return;}
     setDetecting(true);
     try{
       const result=await api(`/api/mints/detect?contractAddress=${encodeURIComponent(trimmed)}&quantity=${encodeURIComponent(quantity)}`);
+      lastDetected.current=`${trimmed}:${quantity}`;
       setDetected(result);
       const label=result.isSeaDrop?'SeaDrop drop':'contract';
       notify(result.priceKnown?`Detected ${label} on ${result.chain} — price read from the contract.`:`Detected ${label} on ${result.chain}, but the price couldn't be read.`,{type:result.priceKnown?'success':'info'});
     }catch(value){notify(value.message,{type:'error'});setDetected(null);}
     finally{setDetecting(false);}
   }
-  function handleContractBlur(){if(ADDRESS_SHAPE.test(contractAddress.trim()))detect();}
+  function handleAutoDetectBlur(){const trimmed=contractAddress.trim();if(ADDRESS_SHAPE.test(trimmed)&&`${trimmed}:${quantity}`!==lastDetected.current)detect();}
   async function submit(event){
     event.preventDefault();
     if(!detected){notify('Detect the contract first.',{type:'error'});return;}
@@ -41,47 +47,46 @@ function QuickMint({go}){
     // unknown price would silently submit valueWei:'0', which could treat a paid mint as free.
     // Send unknown-price contracts to the full page instead of guessing.
     if(!detected.priceKnown){go('Minting');return;}
+    setBusy(true);
     try{
       const input={walletLabel,contractAddress:contractAddress.trim(),methodSignature:detected.methodSignature,
         seaDropAddress:detected.seaDropAddress||undefined,arguments:detected.arguments,valueWei:detected.valueWei||'0'};
       setPreview(await api('/api/mints/preview',{method:'POST',body:JSON.stringify(input)}));
     }catch(value){notify(value.message,{type:'error'});}
+    finally{setBusy(false);}
   }
   async function confirmMint(){
     if(!await confirmDialog('Broadcast this simulation-backed mint?'))return;
+    setBusy(true);
     try{
       await api('/api/mints/confirm',{method:'POST',body:JSON.stringify({previewToken:preview.previewToken,confirmation:'CONFIRM'})});
       notify('Mint submitted.',{type:'success'});
       reset();
     }catch(value){notify(value.message,{type:'error'});}
+    finally{setBusy(false);}
   }
-  return <section className="panel quick-mint">
-    <h2>Quick mint</h2>
-    <form onSubmit={submit}>
+  return <Form className="quick-mint" title="Quick mint" onSubmit={submit}>
+    <fieldset disabled={busy}>
       <div className="field-row">
-        <label>Wallet<select value={walletLabel} onChange={e=>setWalletLabel(e.target.value)} required>
-          {wallets.data?.map(w=><option key={w.label} value={w.label}>{w.label}</option>)}
-        </select></label>
-        <label>Quantity<input type="number" min="1" max="100" value={quantity} onChange={e=>setQuantity(e.target.value)}/></label>
+        <Select label="Wallet" options={wallets.data?.map(w=>w.label)} value={walletLabel} onChange={e=>setWalletLabel(e.target.value)}/>
+        <Field label="Quantity" type="number" min="1" max="100" value={quantity} onChange={e=>setQuantity(e.target.value)} onBlur={handleAutoDetectBlur}/>
       </div>
-      <label>Contract address<input value={contractAddress} placeholder="0x…"
-        onChange={e=>{setContractAddress(e.target.value);setDetected(null);}} onBlur={handleContractBlur}/></label>
-      <div className="field-row">
-        <button type="button" className="quiet" onClick={detect} disabled={detecting}>{detecting?'Detecting…':'Detect'}</button>
-        <button type="submit" disabled={!detected}>{detected&&!detected.priceKnown?'Open full page to set price':'Preview mint'}</button>
-      </div>
-      {detected&&<p className="mint-detected-summary">Detected on {detected.chain}: <code>{detected.methodSignature}</code>
+      <Field label="Contract address" required={false} placeholder="0x…" value={contractAddress}
+        onChange={e=>{setContractAddress(e.target.value);setDetected(null);}} onBlur={handleAutoDetectBlur}/>
+      {detecting&&<p className="mint-detected-summary">Detecting…</p>}
+      {!detecting&&detected&&<p className="mint-detected-summary">Detected on {detected.chain}: <code>{detected.methodSignature}</code>
         {detected.priceKnown?` · ${detected.valueWei==='0'?'free':detected.valueWei+' wei'}`:' · price not exposed by this contract -- enter it manually on the full page'}
         {detected.soldOut
           ?(detected.displayPrice?` · Sold out — floor ${detected.displayPrice.eth} ETH${usdSuffix(detected.displayPrice.usd)}`:' · Sold out — floor price unavailable')
           :(detected.displayPrice?usdSuffix(detected.displayPrice.usd):'')}</p>}
-    </form>
+      <button type="submit" disabled={!detected||busy}>{detected&&!detected.priceKnown?'Open full page to set price':'Preview mint'}</button>
+    </fieldset>
     {preview&&<div className="preview">
       <p>Estimated total: {preview.items[0].simulation.estimatedCostWei} wei | Gas: {preview.items[0].simulation.gasLimit}</p>
-      <button className="quiet" onClick={confirmMint}>Confirm and broadcast</button>
+      <button className="quiet" disabled={busy} onClick={confirmMint}>Confirm and broadcast</button>
     </div>}
     <button type="button" className="quiet panel-cta" onClick={()=>go('Minting')}>Advanced options →</button>
-  </section>;
+  </Form>;
 }
 
 const SUCCESS_STATUSES=new Set(['confirmed','success','executed','enabled','healthy','submitted','resolved','up']);
@@ -160,11 +165,11 @@ export default function Dashboard({profile,go,onProfileChange}){
   const isSplitColumns=profile.theme==='ghost-mint'||profile.theme==='ghost-mint-light';
   return <>
     <DashboardGreeting displayName={profile.displayName} onNamed={name=>onProfileChange?.(current=>({...current,displayName:name}))}/>
-    <QuickMint go={go}/>
     <widgets.StatusBar {...props}/>
     <widgets.AlertBanner {...props}/>
     {isSplitColumns?<div className="dashboard-grid dashboard-grid-split">
       <div className="dashboard-col">
+        <QuickMint go={go}/>
         <widgets.HeroAction {...props}/>
         <widgets.PendingQueue {...props}/>
         <widgets.ActivityFeed {...props}/>
@@ -175,6 +180,7 @@ export default function Dashboard({profile,go,onProfileChange}){
         <widgets.WatchTargetSummary {...props}/>
       </div>
     </div>:<div className="dashboard-grid">
+      <QuickMint go={go}/>
       <widgets.HeroAction {...props}/>
       <widgets.PendingQueue {...props}/>
       <widgets.StatsStrip {...props}/>

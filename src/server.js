@@ -1975,6 +1975,7 @@ const dashboardApi=createDashboardApi({auth:dashboardAuth,identityRepository,com
   supportedChains:CONFIG.supportedChains,
   checkAccountStatus:userId=>governance.checkAccountStatus(userId),
   loginRateLimiter:createCommandRateLimiter({limit:5,windowMs:60_000}),
+  passwordLoginRateLimiter:createCommandRateLimiter({limit:5,windowMs:15*60_000}),
   exportKeyRateLimiter});
 
 if (CONFIG.discordBotToken) {

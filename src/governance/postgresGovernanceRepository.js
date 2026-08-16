@@ -166,7 +166,11 @@ function createPostgresGovernanceRepository(pool) {
         ug.max_transaction_value_wei,ug.daily_spending_budget_wei,ug.gas_ceiling_gwei,
         ug.simulation_forced,ug.selected_preset_key,ug.scheduled_removal_at,
         COALESCE(JSON_AGG(JSON_BUILD_OBJECT('platform',la.platform,'platformUserId',la.platform_user_id)
-          ORDER BY la.platform) FILTER (WHERE la.platform IS NOT NULL),'[]'::JSON) AS linked_accounts
+          ORDER BY la.platform) FILTER (WHERE la.platform IS NOT NULL),'[]'::JSON) AS linked_accounts,
+        GREATEST(
+          (SELECT MAX(last_seen_at) FROM dashboard_sessions WHERE user_id=u.user_id AND revoked_at IS NULL),
+          (SELECT MAX(occurred_at) FROM activity WHERE user_id=u.user_id)
+        ) AS last_active_at
         FROM users u LEFT JOIN user_governance ug ON ug.user_id=u.user_id
         LEFT JOIN seat_groups sg ON sg.group_id=ug.group_id
         LEFT JOIN linked_accounts la ON la.user_id=u.user_id
@@ -184,9 +188,14 @@ function createPostgresGovernanceRepository(pool) {
         gasCeilingGwei:row.gas_ceiling_gwei===null?null:Number(row.gas_ceiling_gwei),
         simulationForced:row.simulation_forced,selectedPresetKey:row.selected_preset_key,
         scheduledRemovalAt:row.scheduled_removal_at,
+        lastActiveAt:row.last_active_at,
         linkedAccounts:row.linked_accounts}));
     },
 
+    // activeUsers is deliberately narrow (dashboard sessions only, 15-minute window) -- it answers
+    // "who's on the dashboard right now." activeAnyPlatform24h answers the broader question admins
+    // actually care about day to day: who's been doing anything at all, including a Telegram/Discord
+    // user who has never once opened the dashboard. Neither metric replaces the other.
     async getAdminOverviewMetrics() {
       const result = await pool.query(`SELECT
         (SELECT COUNT(*)::INTEGER FROM users) AS total_users,
@@ -196,9 +205,15 @@ function createPostgresGovernanceRepository(pool) {
         (SELECT COUNT(*)::INTEGER FROM seat_groups) AS groups,
         (SELECT COUNT(DISTINCT user_id)::INTEGER FROM dashboard_sessions
           WHERE revoked_at IS NULL AND expires_at>NOW()
-            AND last_seen_at>=NOW()-INTERVAL '15 minutes') AS active_users`);
+            AND last_seen_at>=NOW()-INTERVAL '15 minutes') AS active_users,
+        (SELECT COUNT(DISTINCT user_id)::INTEGER FROM (
+          SELECT user_id FROM dashboard_sessions
+            WHERE revoked_at IS NULL AND expires_at>NOW() AND last_seen_at>=NOW()-INTERVAL '15 minutes'
+          UNION
+          SELECT user_id FROM activity WHERE occurred_at>=NOW()-INTERVAL '24 hours'
+        ) combined) AS active_any_platform_24h`);
       const row = result.rows[0];
-      return { totalUsers:row.total_users, activeUsers:row.active_users,
+      return { totalUsers:row.total_users, activeUsers:row.active_users, activeAnyPlatform24h:row.active_any_platform_24h,
         linkedAccounts:row.linked_accounts, groups:row.groups, owners:row.owners, rootOwners:row.root_owners,
         activeWindowMinutes:15 };
     },

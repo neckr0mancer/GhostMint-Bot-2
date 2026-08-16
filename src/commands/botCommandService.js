@@ -229,12 +229,13 @@ function createBotCommandService(dependencies) {
   }
 
   // SEC-01, web half: never returns the raw key at all -- exportKeystore (server.js) decrypts the
-  // stored envelope and immediately re-encrypts it into a standard V3 keystore under a password the
-  // user chose in the browser, so the plaintext key exists only inside that one server-side call.
+  // stored envelope and immediately re-encrypts it into a standard V3 keystore under the account
+  // security password dashboard/api.js already verified before calling this, so the plaintext key
+  // exists only inside that one server-side call.
   async function exportWalletKeystore(userId, label, password) {
     const owned = wallet(userId, label);
-    const validated = requestSchemas.walletExport({ password });
-    return { label: owned.label, keystore: await exportKeystore({ wallet: owned, password: validated.password }) };
+    const validated = requestSchemas.walletExport({ securityPassword: password });
+    return { label: owned.label, keystore: await exportKeystore({ wallet: owned, password: validated.securityPassword }) };
   }
 
   async function mint(userId, input) {
@@ -452,6 +453,11 @@ function createBotCommandService(dependencies) {
     pendingConfirmations: userId => triggerAuditRepository.listPendingRequests(userId),
     targetDetails,
     modePresets:()=>governanceRepository.listPresets(),
+    // Every registered preset (ultra_fast/fast/semi_safe/safe) is selectable by every user already
+    // -- Telegram's /mode and selectMode below have never gated this by owner status or group, so
+    // this just reads back what's actually in effect (including which preset, if any, is currently
+    // selected) rather than introducing a restriction that doesn't exist anywhere else in the app.
+    myGovernance: (userId, chain) => governanceRepository.getEffectiveGovernance(userId, chain || supportedChains[0]),
     pendingTransactions: userId => transactionIntentRepository.listNonFinalForUser(userId),
     transactionsPage:(userId,input)=>pageFrom(transactionIntentRepository.listPageForUser?.bind(transactionIntentRepository),()=>[],userId,input),
     stats,
