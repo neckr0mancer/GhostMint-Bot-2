@@ -27,6 +27,10 @@ const { createPostgresMintPresetRepository } = require('./mint/postgresMintPrese
 const { createProofResolver, ProofResolutionError } = require('./mint/proofResolver');
 const { createContractValueRepository } = require('./mint/contractValueRepository');
 const { createContractValueResolver } = require('./mint/contractValueResolver');
+const { createSeaDropDiscoveryService } = require('./mint/seaDropDiscoveryService');
+const { createSeaDropPublicDropResolver } = require('./mint/seaDropPublicDropResolver');
+const { computeSeaDropValueWei } = require('./mint/seaDropCall');
+const { SEADROP_MINT_SIGNATURE } = require('./mint/seaDropRegistry');
 const { detectContractChain } = require('./mint/chainDetector');
 const { createSchedulerRepository } = require('./scheduler/schedulerRepository');
 const { createSchedulerWorker } = require('./scheduler/schedulerWorker');
@@ -100,9 +104,18 @@ const mintService = createMintService({
   supportedChains: CONFIG.supportedChains,
   providerService,
 });
+const contractValueRepository = createContractValueRepository(pool);
 const contractValueResolver = createContractValueResolver({
   providerService,
-  repository: createContractValueRepository(pool),
+  repository: contractValueRepository,
+});
+const seaDropPublicDropResolver = createSeaDropPublicDropResolver({ providerService });
+const seaDropDiscoveryService = createSeaDropDiscoveryService({
+  providerService,
+  publicDropResolver: seaDropPublicDropResolver,
+  chains: CHAINS,
+  apiKey: CONFIG.etherscanApiKey,
+  repository: contractValueRepository,
 });
 const governanceRepository = createPostgresGovernanceRepository(pool);
 const governance = createGovernanceService(governanceRepository);
@@ -276,6 +289,11 @@ async function executePreparedMint({ wallet, prepared, chain, triggerSource='man
   return intent;
 }
 
+// Shared quick-mint landing point for every platform: Discord's /mint calls straight into this via
+// botCommands.mint(), and Telegram's guided flow's final step (finishMintExecution) does the same.
+// SeaDrop tokens don't implement any whitelisted mint(...) signature (see seaDropCall.js) --
+// checking here, once, is what gives SeaDrop support to both platforms without either needing its
+// own SeaDrop-aware flow.
 async function executeMint({ wallet, contractAddr, fnName='mint', qty=1, priceETH=0, gasGwei=null, chain, triggerSource='manual', onPreview }) {
   const request = requestSchemas.mint({
     walletLabel: wallet.label,
@@ -286,14 +304,27 @@ async function executeMint({ wallet, contractAddr, fnName='mint', qty=1, priceET
     gasGwei,
     chain,
   }, { supportedChains: CONFIG.supportedChains });
-  const prepared = await mintService.prepare({
-    contractAddress: request.contractAddress,
-    methodSignature: 'mint(uint256)',
-    arguments: [request.quantity],
-    walletAddress: wallet.address,
-    valueWei: ethers.parseEther(String(request.priceETH)) * BigInt(request.quantity),
-    chain: request.chain,
-  });
+  const seaDrop = await seaDropDiscoveryService.resolve(request.chain, request.contractAddress);
+  const prepared = seaDrop.address
+    ? await mintService.prepare({
+      contractAddress: request.contractAddress,
+      methodSignature: SEADROP_MINT_SIGNATURE,
+      seaDropAddress: seaDrop.address,
+      arguments: [seaDrop.feeRecipient, '$wallet', request.quantity],
+      walletAddress: wallet.address,
+      valueWei: seaDrop.publicDrop
+        ? computeSeaDropValueWei({ mintPriceWei: seaDrop.publicDrop.mintPriceWei, quantity: request.quantity })
+        : ethers.parseEther(String(request.priceETH)) * BigInt(request.quantity),
+      chain: request.chain,
+    })
+    : await mintService.prepare({
+      contractAddress: request.contractAddress,
+      methodSignature: 'mint(uint256)',
+      arguments: [request.quantity],
+      walletAddress: wallet.address,
+      valueWei: ethers.parseEther(String(request.priceETH)) * BigInt(request.quantity),
+      chain: request.chain,
+    });
   return executePreparedMint({ wallet, prepared, chain: request.chain, triggerSource,
     gasGwei: request.gasGwei, onPreview });
 }
@@ -565,6 +596,17 @@ async function advanceFromWalletSelection(chatId, messageId, userId, flow, selec
   const resolved = await contractValueResolver.resolve(flow.data.chain, flow.data.contractAddress);
   if (resolved.price) {
     const priceETH = Number(ethers.formatEther(BigInt(resolved.price.value)));
+    const data = { ...flow.data, selectedWallets, priceETH, priceUnknown: false };
+    telegramFlowState.advance('telegram', chatId, 'awaiting_confirm', data);
+    return tgEditMenu(chatId, messageId, renderFlowStep('mint_guided', 'awaiting_confirm', { userId, data }));
+  }
+  // Nothing to probe via the plain mint(uint256) assumption -- try SeaDrop before falling back to
+  // asking the user to type a price by hand. A price they'd type here would just be discarded
+  // anyway once executeMint recomputes it from the discovered PublicDrop, so skip straight to
+  // confirmation when it's already known.
+  const seaDrop = await seaDropDiscoveryService.resolve(flow.data.chain, flow.data.contractAddress);
+  if (seaDrop.address && seaDrop.publicDrop) {
+    const priceETH = Number(ethers.formatEther(BigInt(seaDrop.publicDrop.mintPriceWei)));
     const data = { ...flow.data, selectedWallets, priceETH, priceUnknown: false };
     telegramFlowState.advance('telegram', chatId, 'awaiting_confirm', data);
     return tgEditMenu(chatId, messageId, renderFlowStep('mint_guided', 'awaiting_confirm', { userId, data }));
@@ -1292,6 +1334,7 @@ const botCommands = createBotCommandService({
   schedulerRepository,
   providerService,
   contractValueResolver,
+  seaDropDiscoveryService,
   governance,
   adminCommands,
   sniperService,

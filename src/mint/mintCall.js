@@ -102,7 +102,9 @@ function formatMintPreview(preview) {
   const args = preview.arguments.length
     ? preview.arguments.map(item => `• ${item.name}: ${item.value}`).join('\n')
     : '• No arguments';
-  return `Mint preview\nContract: ${preview.contractAddress}\nMethod: ${preview.methodSignature}\nStandard: ${preview.standard}\n${args}\nNative value: ${preview.nativeValue}`;
+  const callTargetLine = preview.callTarget && preview.callTarget !== preview.contractAddress
+    ? `\nCall target: ${preview.callTarget}` : '';
+  return `Mint preview\nContract: ${preview.contractAddress}${callTargetLine}\nMethod: ${preview.methodSignature}\nStandard: ${preview.standard}\n${args}\nNative value: ${preview.nativeValue}`;
 }
 
 module.exports = { buildMintCall, decodeMintCall, formatMintPreview, validateArguments };

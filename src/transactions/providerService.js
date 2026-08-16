@@ -1,5 +1,12 @@
 const { JsonRpcProvider } = require('ethers');
 
+// Error codes ethers uses for a definitive answer from a provider that was actually reached --
+// retrying or failing over to a different RPC endpoint cannot change these (a different node won't
+// suddenly know the wallet has funds, or that the call wouldn't revert), so they should propagate
+// immediately with their real reason intact rather than being swallowed into a generic
+// "RPC providers failed" message after wasting retries.
+const NON_RETRYABLE_ERROR_CODES = new Set(['CALL_EXCEPTION', 'INSUFFICIENT_FUNDS']);
+
 class RpcUnavailableError extends Error {
   constructor(chain, attempts) {
     super(`All RPC providers failed for ${chain} after ${attempts} attempts`);
@@ -44,12 +51,7 @@ function createProviderService({ chains, timeoutMs = 10_000, retries = 1, provid
             `${chain} ${operationName}`,
           );
         } catch (error) {
-          // A CALL_EXCEPTION means a provider was reached and answered definitively that this
-          // specific call would revert -- retrying or failing over to another provider can't change
-          // that answer, and doing so both wastes calls and replaces a useful revert reason with a
-          // misleading "RPC providers failed" message. Every other error (timeout, connection
-          // refused, rate limited, etc.) keeps the existing retry/fail-over behavior below.
-          if (error?.code === 'CALL_EXCEPTION') throw error;
+          if (NON_RETRYABLE_ERROR_CODES.has(error?.code)) throw error;
         }
       }
     }

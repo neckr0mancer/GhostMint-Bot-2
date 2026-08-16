@@ -3,6 +3,8 @@ const { ValidationError } = require('../validation/domain');
 const { buildMintCall } = require('./mintCall');
 const { getMintMethod } = require('./mintRegistry');
 const { runAllowlistCheck, validateAllowlistCheck } = require('./allowlistCheckRegistry');
+const { buildSeaDropMintCall } = require('./seaDropCall');
+const { SEADROP_MINT_SIGNATURE } = require('./seaDropRegistry');
 
 function invalid(field, message) { throw new ValidationError({ field, message }); }
 function presetName(value) {
@@ -31,6 +33,9 @@ function createMintService({ presetRepository, proofResolver, supportedChains, p
     if (allowlistCheck) await runAllowlistCheck({check:allowlistCheck,chain:input.chain,
       contractAddress:input.contractAddress,walletAddress:input.walletAddress,providerService});
     const resolvedArguments = await proofResolver.resolve(input);
+    if (String(input.methodSignature || '').replace(/\s+/g, '') === SEADROP_MINT_SIGNATURE) {
+      return { ...buildSeaDropMintCall({ ...input, arguments: resolvedArguments }), chain: input.chain, allowlistCheck };
+    }
     return { ...buildMintCall({ ...input, arguments: resolvedArguments }), chain: input.chain, allowlistCheck };
   }
 
@@ -38,6 +43,12 @@ function createMintService({ presetRepository, proofResolver, supportedChains, p
     prepare,
 
     async savePreset(userId, input) {
+      // preparePreset() below rejects any preset whose signature isn't in the M8 mint whitelist
+      // (getMintMethod returns null for SEADROP_MINT_SIGNATURE), so allowing a SeaDrop mint to save
+      // here would silently create a preset that can never be reloaded. Reject it up front instead.
+      if (String(input.methodSignature || '').replace(/\s+/g, '') === SEADROP_MINT_SIGNATURE) {
+        invalid('methodSignature', 'SeaDrop mints cannot be saved as presets yet');
+      }
       const prepared = await prepare(input);
       return presetRepository.save({
         userId,
