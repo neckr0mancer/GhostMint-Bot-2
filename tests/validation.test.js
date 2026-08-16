@@ -149,6 +149,34 @@ test('HTTP and Telegram validation formats carry the same stable code and issue'
   assert.match(reply, /Validation failed: chain/);
 });
 
+test('send requires a positive amount, a valid destination, and has no contract-shaped fields', () => {
+  const valid = requestSchemas.send({
+    walletLabel: 'Primary', toAddress: CONTRACT, amountETH: 0.5, chain: 'ethereum',
+  }, { supportedChains: CHAINS });
+  assert.deepEqual(Object.keys(valid).sort(), ['amountETH', 'chain', 'gasGwei', 'toAddress', 'walletLabel']);
+  rejectsField(() => requestSchemas.send({
+    walletLabel: 'Primary', toAddress: CONTRACT, amountETH: 0, chain: 'ethereum',
+  }, { supportedChains: CHAINS }), 'amountETH');
+  rejectsField(() => requestSchemas.send({
+    walletLabel: 'Primary', toAddress: CONTRACT, amountETH: -1, chain: 'ethereum',
+  }, { supportedChains: CHAINS }), 'amountETH');
+  rejectsField(() => requestSchemas.send({
+    walletLabel: 'Primary', toAddress: CONTRACT, amountETH: LIMITS.priceEth + 1, chain: 'ethereum',
+  }, { supportedChains: CHAINS }), 'amountETH');
+  rejectsField(() => requestSchemas.send({
+    walletLabel: 'Primary', toAddress: '0x1234', amountETH: 1, chain: 'ethereum',
+  }, { supportedChains: CHAINS }), 'toAddress');
+  rejectsField(() => requestSchemas.send({
+    walletLabel: 'Primary', toAddress: CONTRACT, amountETH: 1, chain: 'solana',
+  }, { supportedChains: CHAINS }), 'chain');
+});
+
+test('keystore export password must be at least 12 characters', () => {
+  rejectsField(() => requestSchemas.walletExport({ password: 'short' }), 'password');
+  rejectsField(() => requestSchemas.walletExport({}), 'password');
+  assert.equal(requestSchemas.walletExport({ password: 'a-long-enough-password' }).password, 'a-long-enough-password');
+});
+
 test('transaction policy settings validate editable safety values', () => {
   const settings = requestSchemas.transactionPolicy({
     simulationEnabled: false,

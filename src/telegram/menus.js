@@ -18,6 +18,7 @@ function keyboard(rows) {
 function mainMenu({ isOwner = false } = {}) {
   const rows = [
     [button('👛 Wallets', 'menu:wallets'), button('⚡ Mint', 'menu:mint')],
+    [button('💸 Send', 'menu:send')],
     [button('🗓️ Tasks', 'menu:tasks'), button('🎯 Snipers', 'menu:snipers')],
     [button('📡 Watch rules', 'menu:watch'), button('📊 Activity', 'menu:activity')],
     [button('⛽ Gas', 'menu:gas'), button('⚙️ Settings', 'menu:settings')],
@@ -38,6 +39,7 @@ function walletsMenu() {
       [button('➕ Create wallet', 'wallet:create:start')],
       [button('📥 Import wallet', 'wallet:import:start')],
       [button('💰 Check balance', 'wallet:balance:pick')],
+      [button('🔑 Export key', 'menu:exportkey')],
       [button('🗑️ Remove wallet', 'wallet:remove:pick')],
       [button('⬅️ Back to menu', 'menu:main')],
     ]),
@@ -89,6 +91,24 @@ function walletMultiPicker(wallets, selectedLabels, { emptyHint }) {
   return { text: 'Tap each wallet to include in the batch, then Continue:', replyMarkup: keyboard(rows) };
 }
 
+function sendConfirmation({ walletLabel, toAddress, chainLabel, amountETH, sym, estimatedGasETH, totalETH }) {
+  return {
+    text: `*Confirm send*\nFrom: ${walletLabel}\nTo: \`${toAddress}\`\nChain: ${chainLabel}\nAmount: ${amountETH} ${sym}\nEstimated gas: ~${estimatedGasETH} ${sym}\nTotal: ~${totalETH} ${sym}\n\nProceed?`,
+    replyMarkup: keyboard([[button('✅ Confirm', 'flow:sendconfirm')], [button('❌ Cancel', 'flow:cancel:ask')]]),
+  };
+}
+
+// Deliberately not a bare "Confirm" -- this is the one place in the app where under-promising is
+// the correct product decision. The warning has to say the timer is a courtesy, not a control,
+// because it is: the key still transits Telegram's servers and can be screenshotted or forwarded
+// before it fires.
+function exportKeyWarning({ walletLabel }) {
+  return {
+    text: `⚠️ *Export private key for ${walletLabel}?*\n\nThis reveals full control of this wallet's funds. The message will auto-delete shortly, but deletion is a courtesy, not a control — the key still transits Telegram's servers and can be screenshotted or forwarded before the timer fires. Only proceed if you understand the risk.`,
+    replyMarkup: keyboard([[button('⚠️ Export anyway', 'flow:exportconfirm')], [button('❌ Cancel', 'flow:cancel:ask')]]),
+  };
+}
+
 function mintConfirmation({ contractAddress, chainLabel, walletLabels, priceETH, priceUnknown }) {
   const priceLine = priceUnknown
     ? 'Price: not exposed by this contract — using the amount you entered above.'
@@ -130,6 +150,8 @@ module.exports = {
   walletPicker,
   walletMultiPicker,
   mintConfirmation,
+  sendConfirmation,
+  exportKeyWarning,
   confirmCancelPrompt,
   confirmRemoveWallet,
 };

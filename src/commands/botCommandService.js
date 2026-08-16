@@ -11,8 +11,9 @@ const { createWalletBalanceCache } = require('./walletBalanceCache');
 function createBotCommandService(dependencies) {
   const { storage, schedulerRepository, providerService, governance, adminCommands, sniperService,
     socialWatchService, socialUsageService, targetPolicyService, triggerExecutionService, governanceRepository,
-    triggerAuditRepository, transactionIntentRepository, gasService, supportedChains, chains, encryptPrivateKey, getState, executeMint,
+    triggerAuditRepository, transactionIntentRepository, gasService, supportedChains, chains, encryptPrivateKey, getState, executeMint, executeSend,
     sniperRepository, mintService, previewMint, executePreparedMint, identity, contractValueResolver, seaDropDiscoveryService,
+    exportRawKey, exportKeystore,
     ensureChainWatcher = () => {}, broadcast = () => {}, walletBalanceCache = createWalletBalanceCache() } = dependencies;
 
   // Discord's /mint no longer has a price input; Telegram's guided flow doesn't ask for one either.
@@ -154,12 +155,43 @@ function createBotCommandService(dependencies) {
     walletBalanceCache.invalidate(userId, label);
   }
 
+  // SEC-01, Telegram half: the raw decrypted key, for a chat message that self-deletes on a short
+  // timer (server.js). Ownership is checked the same way every other wallet-scoped command checks
+  // it (wallet() throws if this userId doesn't own this label) -- there is deliberately no other
+  // gate here; rate limiting and the audit-log write are platform-layer concerns (see server.js's
+  // finishExportKeyExecution and dashboard/api.js's exportWalletKey), matching how every other
+  // command's rate limiting already lives at the platform adapter, not in this shared service.
+  async function exportWalletKeyRaw(userId, label) {
+    const owned = wallet(userId, label);
+    return { label: owned.label, privateKey: await exportRawKey({ wallet: owned }) };
+  }
+
+  // SEC-01, web half: never returns the raw key at all -- exportKeystore (server.js) decrypts the
+  // stored envelope and immediately re-encrypts it into a standard V3 keystore under a password the
+  // user chose in the browser, so the plaintext key exists only inside that one server-side call.
+  async function exportWalletKeystore(userId, label, password) {
+    const owned = wallet(userId, label);
+    const validated = requestSchemas.walletExport({ password });
+    return { label: owned.label, keystore: await exportKeystore({ wallet: owned, password: validated.password }) };
+  }
+
   async function mint(userId, input) {
     const owned = wallet(userId, input.walletLabel);
     const chain = input.chain || owned.chain;
     const withPrice = await resolvePriceIfMissing(input, chain);
     const validated = requestSchemas.mint({ ...withPrice, chain }, { supportedChains });
     return executeMint({ userId, wallet: owned, request: validated });
+  }
+
+  // A plain native-currency transfer -- unlike mint(), there's no contract/method/ABI to resolve,
+  // so this skips mintService entirely and hands off straight to executeSend (wired in server.js to
+  // call transactionEngine.submit directly), which still applies the same spend caps, gas ceiling,
+  // and nonce queue every mint goes through.
+  async function send(userId, input) {
+    const owned = wallet(userId, input.walletLabel);
+    const chain = input.chain || owned.chain;
+    const validated = requestSchemas.send({ ...input, chain }, { supportedChains });
+    return executeSend({ userId, wallet: owned, request: validated });
   }
 
   async function batchMint(userId, input) {
@@ -315,7 +347,7 @@ function createBotCommandService(dependencies) {
     return calculateStatistics({activity:state(userId).activity,sniperEvents});}
 
   return {
-    createWallet, importWallet, removeWallet, walletBalance, invalidateBalance, mint, batchMint, createTask, controlTask, addPnl, updatePnl, deletePnl,
+    createWallet, importWallet, removeWallet, walletBalance, invalidateBalance, exportWalletKeyRaw, exportWalletKeystore, mint, batchMint, send, createTask, controlTask, addPnl, updatePnl, deletePnl,
     prepareMint,submitPreparedMint,detectMintContract,mintPresets:userId=>mintService.listPresets(userId),
     createSniper, updateSniper, removeSniper, gas,
     sniperEvents:userId=>sniperRepository.listRecentForUser(userId),

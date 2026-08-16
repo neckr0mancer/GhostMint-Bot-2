@@ -1,6 +1,6 @@
 const {randomUUID}=require('node:crypto');
 const {LinkCodeError}=require('../identity/identityService');
-const {RateLimitError,requireTextConfirmation}=require('../security/botSecurity');
+const {BotContextError,RateLimitError,requireTextConfirmation}=require('../security/botSecurity');
 const {ValidationError,sendValidationError,requestSchemas}=require('../validation/domain');
 const {AccountBlockedError,AuthorizationError}=require('../governance/governanceService');
 const {GasLookupError}=require('../gas/etherscanGasService');
@@ -13,13 +13,18 @@ function noStore(res){res.set('Cache-Control','no-store, private');}
 function publicWallet(value){return {label:value.label,address:value.address,chain:value.chain,balances:value.balances??[],minted:value.minted??0};}
 function jsonSafe(value){return JSON.parse(JSON.stringify(value,(_key,item)=>typeof item==='bigint'?item.toString():item));}
 
-function createDashboardApi({auth,identityRepository,loginRateLimiter,commands,securityAudit={record:async()=>{}},broadcast=()=>{},supportedChains=[],now=()=>Date.now(),checkAccountStatus}) {
+function createDashboardApi({auth,identityRepository,loginRateLimiter,exportKeyRateLimiter,commands,securityAudit={record:async()=>{}},broadcast=()=>{},supportedChains=[],now=()=>Date.now(),checkAccountStatus}) {
   const previews=new Map();
   const requireSession=async(req,res,next)=>{try{const session=await auth.authenticate(req.headers.cookie);if(!session)return res.status(401).json({error:'Authentication required'});
       if(typeof checkAccountStatus==='function'){try{await checkAccountStatus(session.userId);}catch(error){if(error instanceof AccountBlockedError)return res.status(403).json({error:error.message,code:error.code,status:error.status});throw error;}}
       req.dashboardSession=session;const refreshed=auth.refreshSessionCookies?.(req.headers.cookie);if(refreshed?.length)res.setHeader('Set-Cookie',refreshed);next();}catch(error){next(error);}};
   const requireCsrf=(req,res,next)=>auth.verifyCsrf({session:req.dashboardSession,cookieHeader:req.headers.cookie,headerToken:req.get('x-csrf-token')})?next():res.status(403).json({error:'Invalid CSRF token'});
-  const action=handler=>async(req,res,next)=>{try{await handler(req,res);}catch(error){if(error instanceof ValidationError)return sendValidationError(res,error);if(error instanceof AuthorizationError)return res.status(403).json({error:'Owner access required'});if(error instanceof TransactionSafetyError)return res.status(400).json({error:error.message,code:error.code});next(error);}};
+  // BotContextError (thrown by requireTextConfirmation, below, when confirmation is missing or
+  // wrong) previously had no explicit mapping here and fell through to the generic 500 handler --
+  // a client sending a bad/missing confirmation is a 400, not a server fault. Every route that
+  // calls confirmation(req) (removeWallet, deletePnl, removeSniper, removeWatchRule, confirmMint,
+  // adminWrite's ban/unban/suspend/etc.) gets the correct status from this one fix.
+  const action=handler=>async(req,res,next)=>{try{await handler(req,res);}catch(error){if(error instanceof ValidationError)return sendValidationError(res,error);if(error instanceof BotContextError)return res.status(400).json({error:error.message});if(error instanceof AuthorizationError)return res.status(403).json({error:'Owner access required'});if(error instanceof TransactionSafetyError)return res.status(400).json({error:error.message,code:error.code});next(error);}};
   function confirmation(req){requireTextConfirmation(req.body?.confirmation);}
   function issuePreview(userId,entries){const token=randomUUID();previews.set(token,{userId,entries,expiresAt:now()+5*60_000});return token;}
   function consumePreview(userId,token){const value=previews.get(String(token||''));previews.delete(String(token||''));if(!value||value.userId!==userId||value.expiresAt<=now())throw new ValidationError({field:'previewToken',message:'is invalid or expired'});return value;}
@@ -62,6 +67,8 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,commands,s
   }
   async function auditAdminWrite(req,actionName){await Promise.resolve(securityAudit.record({userId:user(req),platform:'dashboard',
     contextId:req.dashboardSession.sessionId,command:`admin:${actionName}`,outcome:'success',reason:'Governance write completed'})).catch(()=>{});}
+  async function auditExportKey(req,outcome,reason){await Promise.resolve(securityAudit.record({userId:user(req),platform:'dashboard',
+    contextId:req.dashboardSession.sessionId,command:'exportkey',outcome,reason})).catch(()=>{});}
 
   return {securityHeaders(req,res,next){for(const [name,value] of Object.entries(SECURITY_HEADERS))res.set(name,value);if(req.path.startsWith('/api/'))noStore(res);next();},requireSession,requireCsrf,
     login:async(req,res)=>{noStore(res);try{loginRateLimiter.check('dashboard',req.ip||'unknown','login');const session=await auth.login(req.body?.code);res.setHeader('Set-Cookie',auth.sessionCookies(session));res.status(204).end();}
@@ -84,6 +91,21 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,commands,s
     createWallet:action(async(req,res)=>{const wallet=await commands.createWallet(user(req),req.body);res.status(201).json(publicWallet(wallet));}),
     importWallet:action(async(req,res)=>{const wallet=await commands.importWallet(user(req),req.body);res.status(201).json(publicWallet(wallet));}),
     removeWallet:action(async(req,res)=>{confirmation(req);await commands.removeWallet(user(req),req.params.label);res.status(204).end();}),
+    // SEC-01, web half: the raw key never reaches this response -- commands.exportWalletKeystore
+    // (botCommandService -> server.js's exportKeystore) decrypts the stored envelope and immediately
+    // re-encrypts it into a standard V3 keystore under the password the browser sent, so only the
+    // encrypted blob ever comes back. Rate limiter is shared with Telegram's /exportkey (same
+    // instance, passed in from server.js) so switching platforms doesn't double the effective rate.
+    exportWalletKey:action(async(req,res)=>{confirmation(req);noStore(res);
+      try{exportKeyRateLimiter.check('dashboard',user(req),'exportkey');}
+      catch(error){
+        if(error instanceof RateLimitError){await auditExportKey(req,'rate_limited','export key rate limit exceeded');res.set('Retry-After',String(Math.ceil(error.retryAfterMs/1000)));return res.status(429).json({error:'Too many export attempts'});}
+        throw error;
+      }
+      const {keystore}=await commands.exportWalletKeystore(user(req),req.params.label,req.body?.password);
+      await auditExportKey(req,'success','keystore export delivered');
+      res.json({keystore});
+    }),
     mintPresets:action(async(req,res)=>res.json(jsonSafe(await commands.mintPresets(user(req))))),
     detectMint:action(async(req,res)=>{noStore(res);res.json(jsonSafe(await commands.detectMintContract(user(req),{contractAddress:req.query.contractAddress,quantity:req.query.quantity})));}),
     previewMint:action(async(req,res)=>{const labels=req.body.walletLabels||[req.body.walletLabel];const entries=[];for(const walletLabel of labels)entries.push(await commands.prepareMint(user(req),{...req.body,walletLabel}));const previewToken=issuePreview(user(req),entries);res.json({previewToken,expiresInSeconds:300,items:entries.map(value=>({wallet:value.wallet,preview:value.prepared.preview,simulation:jsonSafe(value.simulation)}))});}),
@@ -138,6 +160,7 @@ function mountDashboardRoutes(app,api){
   app.post('/api/wallets/create',api.requireSession,api.requireCsrf,api.createWallet);
   app.post('/api/wallets/import',api.requireSession,api.requireCsrf,api.importWallet);
   app.delete('/api/wallets/:label',api.requireSession,api.requireCsrf,api.removeWallet);
+  app.post('/api/wallets/:label/export',api.requireSession,api.requireCsrf,api.exportWalletKey);
   app.get('/api/mint-presets',api.requireSession,api.mintPresets);
   app.get('/api/mints/detect',api.requireSession,api.detectMint);
   app.post('/api/mints/preview',api.requireSession,api.requireCsrf,api.previewMint);
