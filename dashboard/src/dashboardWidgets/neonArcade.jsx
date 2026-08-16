@@ -1,7 +1,7 @@
 /* global setTimeout, clearTimeout */
 import React,{useEffect,useMemo,useState} from 'react';
 import {Empty,PageTitle,StatusPill} from '../shared.jsx';
-import {formatAmount,formatWhen} from './helpers.jsx';
+import {formatAmount,formatWhen,QuickMintToggle} from './helpers.jsx';
 
 const SUCCESS_STATUSES=new Set(['confirmed','success','executed','enabled','healthy','submitted','resolved','up']);
 
@@ -23,7 +23,10 @@ export function AlertBanner({summary}){if(!summary.lowBalanceWallets.length)retu
 export function HeroAction({go}){return <section className="panel dash-hero glow dash-hero-animated">
   <h2>Mint Now</h2>
   <p>Jump straight into the Minting flow with simulation-backed previews.</p>
-  <button onClick={()=>go('Minting')}>Mint now</button>
+  <div className="dash-hero-actions">
+    <button onClick={()=>go('Minting')}>Mint now</button>
+    <QuickMintToggle go={go}/>
+  </div>
 </section>;}
 
 let toastCounter=0;

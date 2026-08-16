@@ -1,6 +1,6 @@
 import React,{useState} from 'react';
 import {Empty,PageTitle,StatusPill} from '../shared.jsx';
-import {formatAmount,formatWhen} from './helpers.jsx';
+import {formatAmount,formatWhen,QuickMintToggle} from './helpers.jsx';
 
 function AdvancedRow({summaryLine,details}){const [open,setOpen]=useState(false);return <div className="dash-plain-row">
   <p>{summaryLine}</p>
@@ -26,7 +26,10 @@ export function AlertBanner({summary}){if(!summary.lowBalanceWallets.length)retu
 </div>;}
 
 export function HeroAction({go}){return <section className="panel dash-hero dash-quiet">
-  <button className="dash-big-mint" onClick={()=>go('Minting')}>Mint</button>
+  <div className="dash-hero-actions">
+    <button className="dash-big-mint" onClick={()=>go('Minting')}>Mint</button>
+    <QuickMintToggle go={go}/>
+  </div>
 </section>;}
 
 export function PendingQueue({summary,go}){return <section className="panel dash-quiet">

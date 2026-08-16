@@ -1,6 +1,6 @@
 import React from 'react';
 import {Empty,PageTitle,StatusPill} from '../shared.jsx';
-import {formatAmount,formatWhen} from './helpers.jsx';
+import {formatAmount,formatWhen,QuickMintToggle} from './helpers.jsx';
 
 export function StatusBar({summary,go}){return <div className="dash-statusbar">
   <PageTitle eyebrow="Everything in one view" title="Dashboard" subtitle="A live summary of every tab below - drill into any card for the full picture."/>
@@ -20,7 +20,10 @@ export function AlertBanner({summary}){if(!summary.lowBalanceWallets.length)retu
 export function HeroAction({go}){return <section className="panel dash-hero glow">
   <h2>Mint Now</h2>
   <p>Jump straight into the Minting flow with simulation-backed previews.</p>
-  <button onClick={()=>go('Minting')}>Mint now</button>
+  <div className="dash-hero-actions">
+    <button onClick={()=>go('Minting')}>Mint now</button>
+    <QuickMintToggle go={go}/>
+  </div>
 </section>;}
 
 const TRIGGER_LABELS={'blockchain-triggered':'sniper','social-triggered':'social'};

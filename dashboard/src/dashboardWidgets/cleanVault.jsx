@@ -22,7 +22,10 @@ export function AlertBanner({summary}){if(!summary.lowBalanceWallets.length)retu
 export function HeroAction({go}){return <section className="panel dash-hero">
   <h2>New Mint</h2>
   <p>Jump straight into the Minting flow with simulation-backed previews.</p>
-  <button onClick={()=>go('Minting')}>New mint</button>
+  <div className="dash-hero-actions">
+    <button onClick={()=>go('Minting')}>New mint</button>
+    <QuickMintToggle go={go}/>
+  </div>
 </section>;}
 
 export function PendingQueue({summary,go}){const percent=Math.min(100,Math.round(summary.pendingConfirmations.length/QUEUE_SCALE*100));return <section className="panel">
