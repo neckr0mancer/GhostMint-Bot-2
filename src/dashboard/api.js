@@ -1,6 +1,6 @@
 const {randomUUID}=require('node:crypto');
 const {LinkCodeError}=require('../identity/identityService');
-const {RateLimitError,requireTextConfirmation}=require('../security/botSecurity');
+const {BotContextError,RateLimitError,requireTextConfirmation}=require('../security/botSecurity');
 const {ValidationError,sendValidationError,requestSchemas}=require('../validation/domain');
 const {AccountBlockedError,AuthorizationError}=require('../governance/governanceService');
 const {GasLookupError}=require('../gas/etherscanGasService');
@@ -13,13 +13,18 @@ function noStore(res){res.set('Cache-Control','no-store, private');}
 function publicWallet(value){return {label:value.label,address:value.address,chain:value.chain,balances:value.balances??[],minted:value.minted??0};}
 function jsonSafe(value){return JSON.parse(JSON.stringify(value,(_key,item)=>typeof item==='bigint'?item.toString():item));}
 
-function createDashboardApi({auth,identityRepository,loginRateLimiter,commands,securityAudit={record:async()=>{}},broadcast=()=>{},supportedChains=[],now=()=>Date.now(),checkAccountStatus}) {
+function createDashboardApi({auth,identityRepository,loginRateLimiter,exportKeyRateLimiter,commands,securityAudit={record:async()=>{}},broadcast=()=>{},supportedChains=[],now=()=>Date.now(),checkAccountStatus}) {
   const previews=new Map();
   const requireSession=async(req,res,next)=>{try{const session=await auth.authenticate(req.headers.cookie);if(!session)return res.status(401).json({error:'Authentication required'});
       if(typeof checkAccountStatus==='function'){try{await checkAccountStatus(session.userId);}catch(error){if(error instanceof AccountBlockedError)return res.status(403).json({error:error.message,code:error.code,status:error.status});throw error;}}
       req.dashboardSession=session;const refreshed=auth.refreshSessionCookies?.(req.headers.cookie);if(refreshed?.length)res.setHeader('Set-Cookie',refreshed);next();}catch(error){next(error);}};
   const requireCsrf=(req,res,next)=>auth.verifyCsrf({session:req.dashboardSession,cookieHeader:req.headers.cookie,headerToken:req.get('x-csrf-token')})?next():res.status(403).json({error:'Invalid CSRF token'});
-  const action=handler=>async(req,res,next)=>{try{await handler(req,res);}catch(error){if(error instanceof ValidationError)return sendValidationError(res,error);if(error instanceof AuthorizationError)return res.status(403).json({error:'Owner access required'});if(error instanceof TransactionSafetyError)return res.status(400).json({error:error.message,code:error.code});next(error);}};
+  // BotContextError (thrown by requireTextConfirmation, below, when confirmation is missing or
+  // wrong) previously had no explicit mapping here and fell through to the generic 500 handler --
+  // a client sending a bad/missing confirmation is a 400, not a server fault. Every route that
+  // calls confirmation(req) (removeWallet, deletePnl, removeSniper, removeWatchRule, confirmMint,
+  // adminWrite's ban/unban/suspend/etc.) gets the correct status from this one fix.
+  const action=handler=>async(req,res,next)=>{try{await handler(req,res);}catch(error){if(error instanceof ValidationError)return sendValidationError(res,error);if(error instanceof BotContextError)return res.status(400).json({error:error.message});if(error instanceof AuthorizationError)return res.status(403).json({error:'Owner access required'});if(error instanceof TransactionSafetyError)return res.status(400).json({error:error.message,code:error.code});next(error);}};
   function confirmation(req){requireTextConfirmation(req.body?.confirmation);}
   function issuePreview(userId,entries){const token=randomUUID();previews.set(token,{userId,entries,expiresAt:now()+5*60_000});return token;}
   function consumePreview(userId,token){const value=previews.get(String(token||''));previews.delete(String(token||''));if(!value||value.userId!==userId||value.expiresAt<=now())throw new ValidationError({field:'previewToken',message:'is invalid or expired'});return value;}
@@ -62,6 +67,8 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,commands,s
   }
   async function auditAdminWrite(req,actionName){await Promise.resolve(securityAudit.record({userId:user(req),platform:'dashboard',
     contextId:req.dashboardSession.sessionId,command:`admin:${actionName}`,outcome:'success',reason:'Governance write completed'})).catch(()=>{});}
+  async function auditExportKey(req,outcome,reason){await Promise.resolve(securityAudit.record({userId:user(req),platform:'dashboard',
+    contextId:req.dashboardSession.sessionId,command:'exportkey',outcome,reason})).catch(()=>{});}
 
   return {securityHeaders(req,res,next){for(const [name,value] of Object.entries(SECURITY_HEADERS))res.set(name,value);if(req.path.startsWith('/api/'))noStore(res);next();},requireSession,requireCsrf,
     login:async(req,res)=>{noStore(res);try{loginRateLimiter.check('dashboard',req.ip||'unknown','login');const session=await auth.login(req.body?.code);res.setHeader('Set-Cookie',auth.sessionCookies(session));res.status(204).end();}
@@ -81,31 +88,46 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,commands,s
     socialUsage:action(async(req,res)=>{noStore(res);const {period}=requestSchemas.socialUsagePeriod(req.query);res.json(jsonSafe(await commands.socialUsage(user(req),period)));}),
     linkCode:action(async(req,res)=>{noStore(res);res.json(await commands.linkCode(user(req)));}),
     wallets:action(async(req,res)=>{const values=commands.wallets(user(req));const settled=await Promise.allSettled(values.map(value=>commands.walletBalance(user(req),value.label)));res.json(settled.map((result,index)=>publicWallet(result.status==='fulfilled'?result.value:values[index])));}),
-    createWallet:action(async(req,res)=>{const wallet=await commands.createWallet(user(req),req.body);changed(req,'wallets');res.status(201).json(publicWallet(wallet));}),
-    importWallet:action(async(req,res)=>{const wallet=await commands.importWallet(user(req),req.body);changed(req,'wallets');res.status(201).json(publicWallet(wallet));}),
-    removeWallet:action(async(req,res)=>{confirmation(req);await commands.removeWallet(user(req),req.params.label);changed(req,'wallets');res.status(204).end();}),
+    createWallet:action(async(req,res)=>{const wallet=await commands.createWallet(user(req),req.body);res.status(201).json(publicWallet(wallet));}),
+    importWallet:action(async(req,res)=>{const wallet=await commands.importWallet(user(req),req.body);res.status(201).json(publicWallet(wallet));}),
+    removeWallet:action(async(req,res)=>{confirmation(req);await commands.removeWallet(user(req),req.params.label);res.status(204).end();}),
+    // SEC-01, web half: the raw key never reaches this response -- commands.exportWalletKeystore
+    // (botCommandService -> server.js's exportKeystore) decrypts the stored envelope and immediately
+    // re-encrypts it into a standard V3 keystore under the password the browser sent, so only the
+    // encrypted blob ever comes back. Rate limiter is shared with Telegram's /exportkey (same
+    // instance, passed in from server.js) so switching platforms doesn't double the effective rate.
+    exportWalletKey:action(async(req,res)=>{confirmation(req);noStore(res);
+      try{exportKeyRateLimiter.check('dashboard',user(req),'exportkey');}
+      catch(error){
+        if(error instanceof RateLimitError){await auditExportKey(req,'rate_limited','export key rate limit exceeded');res.set('Retry-After',String(Math.ceil(error.retryAfterMs/1000)));return res.status(429).json({error:'Too many export attempts'});}
+        throw error;
+      }
+      const {keystore}=await commands.exportWalletKeystore(user(req),req.params.label,req.body?.password);
+      await auditExportKey(req,'success','keystore export delivered');
+      res.json({keystore});
+    }),
     mintPresets:action(async(req,res)=>res.json(jsonSafe(await commands.mintPresets(user(req))))),
     detectMint:action(async(req,res)=>{noStore(res);res.json(jsonSafe(await commands.detectMintContract(user(req),{contractAddress:req.query.contractAddress,quantity:req.query.quantity})));}),
     detectSeaDrop:action(async(req,res)=>{noStore(res);res.json(jsonSafe(await commands.detectSeaDropDrop(user(req),{contractAddress:req.query.contractAddress,quantity:req.query.quantity})));}),
     previewMint:action(async(req,res)=>{const labels=req.body.walletLabels||[req.body.walletLabel];const entries=[];for(const walletLabel of labels)entries.push(await commands.prepareMint(user(req),{...req.body,walletLabel}));const previewToken=issuePreview(user(req),entries);res.json({previewToken,expiresInSeconds:300,items:entries.map(value=>({wallet:value.wallet,preview:value.prepared.preview,simulation:jsonSafe(value.simulation)}))});}),
     confirmMint:action(async(req,res)=>{confirmation(req);const value=consumePreview(user(req),req.body.previewToken);const results=[];for(const entry of value.entries)results.push(await commands.submitPreparedMint(user(req),entry));res.status(202).json(jsonSafe({results}));}),
     tasks:action(async(req,res)=>res.json(await commands.tasksPage(user(req),req.query))),
-    createTask:action(async(req,res)=>{const task=await commands.createTask(user(req),req.body);changed(req,'tasks');res.status(201).json(task);}),
-    controlTask:action(async(req,res)=>{if(req.body?.action==='cancel')confirmation(req);const result=await commands.controlTask(user(req),req.body?.action,req.params.id);changed(req,'tasks');res.json(result);}),
+    createTask:action(async(req,res)=>{const task=await commands.createTask(user(req),req.body);res.status(201).json(task);}),
+    controlTask:action(async(req,res)=>{if(req.body?.action==='cancel')confirmation(req);const result=await commands.controlTask(user(req),req.body?.action,req.params.id);res.json(result);}),
     activity:action(async(req,res)=>res.json(jsonSafe(await commands.activityPage(user(req),req.query)))),
     pnl:action(async(req,res)=>res.json(await commands.pnl(user(req)))),
-    addPnl:action(async(req,res)=>{const record=await commands.addPnl(user(req),req.body);changed(req,'pnl');res.status(201).json(record);}),
-    updatePnl:action(async(req,res)=>{const record=await commands.updatePnl(user(req),req.params.id,req.body);changed(req,'pnl');res.json(record);}),
-    deletePnl:action(async(req,res)=>{confirmation(req);await commands.deletePnl(user(req),req.params.id);changed(req,'pnl');res.status(204).end();}),
+    addPnl:action(async(req,res)=>{const record=await commands.addPnl(user(req),req.body);res.status(201).json(record);}),
+    updatePnl:action(async(req,res)=>{const record=await commands.updatePnl(user(req),req.params.id,req.body);res.json(record);}),
+    deletePnl:action(async(req,res)=>{confirmation(req);await commands.deletePnl(user(req),req.params.id);res.status(204).end();}),
     snipers:action(async(req,res)=>{const [items,events]=await Promise.all([commands.snipers(user(req)),commands.sniperEvents(user(req))]);res.json(jsonSafe({items,events}));}),
-    createSniper:action(async(req,res)=>{const sniper=await commands.createSniper(user(req),req.body);changed(req,'snipers');res.status(201).json(jsonSafe(sniper));}),
-    updateSniper:action(async(req,res)=>{const sniper=await commands.updateSniper(user(req),req.params.id,req.body);changed(req,'snipers');res.json(jsonSafe(sniper));}),
-    removeSniper:action(async(req,res)=>{confirmation(req);await commands.removeSniper(user(req),req.params.id);changed(req,'snipers');res.status(204).end();}),
+    createSniper:action(async(req,res)=>{const sniper=await commands.createSniper(user(req),req.body);res.status(201).json(jsonSafe(sniper));}),
+    updateSniper:action(async(req,res)=>{const sniper=await commands.updateSniper(user(req),req.params.id,req.body);res.json(jsonSafe(sniper));}),
+    removeSniper:action(async(req,res)=>{confirmation(req);await commands.removeSniper(user(req),req.params.id);res.status(204).end();}),
     watchRules:action(async(req,res)=>{const [items,events]=await Promise.all([commands.watchRules(user(req)),commands.watchEvents(user(req))]);res.json({items,events});}),
-    createWatchRule:action(async(req,res)=>{const rule=await commands.createWatchRule(user(req),req.body);changed(req,'watchrules');res.status(201).json(rule);}),
-    updateWatchRule:action(async(req,res)=>{const rule=await commands.updateWatchRule(user(req),req.params.id,req.body);changed(req,'watchrules');res.json(rule);}),
-    disableWatchRule:action(async(req,res)=>{const rule=await commands.disableWatchRule(user(req),req.params.id);changed(req,'watchrules');res.json(rule);}),
-    removeWatchRule:action(async(req,res)=>{confirmation(req);await commands.removeWatchRule(user(req),req.params.id);changed(req,'watchrules');res.status(204).end();}),
+    createWatchRule:action(async(req,res)=>{const rule=await commands.createWatchRule(user(req),req.body);res.status(201).json(rule);}),
+    updateWatchRule:action(async(req,res)=>{const rule=await commands.updateWatchRule(user(req),req.params.id,req.body);res.json(rule);}),
+    disableWatchRule:action(async(req,res)=>{const rule=await commands.disableWatchRule(user(req),req.params.id);res.json(rule);}),
+    removeWatchRule:action(async(req,res)=>{confirmation(req);await commands.removeWatchRule(user(req),req.params.id);res.status(204).end();}),
     target:action(async(req,res)=>res.json(jsonSafe(await commands.targetDetails(user(req),req.query.type,req.params.id)))),
     updateTarget:action(async(req,res)=>res.json(jsonSafe(await commands.updateTargetPolicy(user(req),{...req.body,targetType:req.body.targetType,targetId:req.params.id})))),
     requestBypass:action(async(req,res)=>res.json(await commands.requestTargetBypass(user(req),{...req.body,targetId:req.params.id}))),
@@ -139,6 +161,7 @@ function mountDashboardRoutes(app,api){
   app.post('/api/wallets/create',api.requireSession,api.requireCsrf,api.createWallet);
   app.post('/api/wallets/import',api.requireSession,api.requireCsrf,api.importWallet);
   app.delete('/api/wallets/:label',api.requireSession,api.requireCsrf,api.removeWallet);
+  app.post('/api/wallets/:label/export',api.requireSession,api.requireCsrf,api.exportWalletKey);
   app.get('/api/mint-presets',api.requireSession,api.mintPresets);
   app.get('/api/mints/detect',api.requireSession,api.detectMint);
   app.get('/api/mints/seadrop/detect',api.requireSession,api.detectSeaDrop);

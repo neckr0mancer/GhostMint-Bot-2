@@ -338,6 +338,14 @@ tbody tr:last-child td{border-bottom:0}
 .feed-item p{margin:.3rem 0;color:var(--text-muted);font-size:.88rem}
 .preview{padding:1rem 0;border-top:1px solid var(--border)}
 
+.mint-detected-summary{margin:.4rem 0 0;padding:.6rem .85rem;border-radius:var(--radius-md);
+  background:var(--surface-2);color:var(--text-muted);font-size:.85rem}
+.mint-detected-summary code{overflow-wrap:anywhere}
+.mint-advanced{margin:.6rem 0}
+.mint-advanced summary{cursor:pointer;color:var(--text-muted);font-size:.85rem;padding:.3rem 0}
+.mint-advanced summary:hover{color:var(--text)}
+.mint-advanced .field-row{margin-top:.6rem}
+
 /* ==========================================================================
    Notification bell (replaces the old always-expanded confirmations panel)
    ========================================================================== */

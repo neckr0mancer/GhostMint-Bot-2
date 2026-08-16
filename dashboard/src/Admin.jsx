@@ -1,6 +1,6 @@
-/* global FormData, URLSearchParams, navigator, setTimeout */
+/* global FormData, URLSearchParams */
 import React,{useState,useEffect} from 'react';
-import {api,confirmDialog,Empty,GroupedChainOptions,notify,PageTitle,promptDialog,Skeleton,useLoad} from './shared.jsx';
+import {api,confirmDialog,CopyButton,Empty,GroupedChainOptions,notify,PageTitle,promptDialog,Skeleton,useLoad} from './shared.jsx';
 
 function Field({label,required=true,...props}){return <label>{label}<input required={required} {...props}/></label>}
 function Select({label,options=[],...props}){return <label>{label}<select required {...props}>{options.map(value=><option key={value} value={value}>{value}</option>)}</select></label>}
@@ -46,20 +46,6 @@ function UserMatchPreview({platformUserId,user}){
 
 const ICON_PROPS={viewBox:"0 0 24 24",fill:"none",stroke:"currentColor",strokeWidth:"1.8",strokeLinecap:"round",strokeLinejoin:"round",xmlns:"http://www.w3.org/2000/svg"};
 const PERSON_ICON=<svg {...ICON_PROPS}><circle cx="12" cy="8" r="3.5"/><path d="M5 20c1.2-3.7 4.2-5.5 7-5.5s5.8 1.8 7 5.5"/></svg>;
-const COPY_ICON=<svg {...ICON_PROPS}><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M4 16V5a1 1 0 0 1 1-1h11"/></svg>;
-const CHECK_ICON=<svg {...ICON_PROPS} strokeWidth="2.4"><path d="M5 13l4 4L19 7"/></svg>;
-
-// Copies just the platform user ID (what the owner/restrict/merge controls above actually take as
-// input), not the "platform:id" display string -- so copy-then-paste works directly.
-function CopyButton({value,label}){
-  const [copied,setCopied]=useState(false);
-  async function copy(event){
-    event.stopPropagation();
-    if(!value)return;
-    try{await navigator.clipboard.writeText(value);setCopied(true);setTimeout(()=>setCopied(false),1500);}catch{/* clipboard permission denied -- nothing more we can do */}
-  }
-  return <button type="button" className="user-card-copy" aria-label={label} onClick={copy}>{copied?CHECK_ICON:COPY_ICON}</button>;
-}
 
 // disabledReason lets the caller block opening the CONFIRM step entirely when required fields
 // are still empty -- these controls live in a plain div, not a <form>, so the Field component's

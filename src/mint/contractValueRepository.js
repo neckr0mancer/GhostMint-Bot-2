@@ -4,6 +4,7 @@ function mapRow(row) {
     price: row.price_wei === null ? null : { value: row.price_wei, source: row.price_source },
     maxSupply: row.max_supply === null ? null : { value: row.max_supply, source: row.supply_source },
     maxPerWallet: row.max_per_wallet === null ? null : { value: row.max_per_wallet, source: row.per_wallet_source },
+    totalMinted: row.total_minted === null ? null : { value: row.total_minted, source: row.total_minted_source },
     resolvedAt: row.resolved_at,
   };
 }
@@ -23,6 +24,18 @@ function mapSeaDropRow(row) {
       restrictFeeRecipients: row.seadrop_restrict_fee_recipients,
     },
     resolvedAt: row.seadrop_resolved_at,
+  };
+}
+
+function mapOpenSeaRow(row) {
+  if (!row || row.opensea_resolved_at === null || row.opensea_resolved_at === undefined) return null;
+  return {
+    name: row.opensea_name,
+    description: row.opensea_description,
+    imageUrl: row.opensea_image_url,
+    floorPrice: row.opensea_floor_price,
+    floorPriceSymbol: row.opensea_floor_price_symbol,
+    resolvedAt: row.opensea_resolved_at,
   };
 }
 
@@ -63,17 +76,42 @@ function createContractValueRepository(pool) {
       return mapSeaDropRow(result.rows[0]);
     },
 
-    async save(chain, contractAddress, { price, maxSupply, maxPerWallet }) {
+    async getOpenSea(chain, contractAddress) {
+      const result = await pool.query(
+        'SELECT * FROM contract_value_cache WHERE chain=$1 AND contract_address=$2',
+        [chain, contractAddress.toLowerCase()],
+      );
+      return mapOpenSeaRow(result.rows[0]);
+    },
+
+    async saveOpenSea(chain, contractAddress, { name, description, imageUrl, floorPrice, floorPriceSymbol }) {
       const result = await pool.query(`INSERT INTO contract_value_cache
-        (chain,contract_address,price_wei,price_source,max_supply,supply_source,max_per_wallet,per_wallet_source)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+        (chain,contract_address,opensea_name,opensea_description,opensea_image_url,
+         opensea_floor_price,opensea_floor_price_symbol,opensea_resolved_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())
+        ON CONFLICT (chain,contract_address) DO UPDATE SET
+          opensea_name=EXCLUDED.opensea_name,opensea_description=EXCLUDED.opensea_description,
+          opensea_image_url=EXCLUDED.opensea_image_url,opensea_floor_price=EXCLUDED.opensea_floor_price,
+          opensea_floor_price_symbol=EXCLUDED.opensea_floor_price_symbol,opensea_resolved_at=NOW() RETURNING *`,
+        [chain, contractAddress.toLowerCase(), name ?? null, description ?? null, imageUrl ?? null,
+          floorPrice ?? null, floorPriceSymbol ?? null]);
+      return mapOpenSeaRow(result.rows[0]);
+    },
+
+    async save(chain, contractAddress, { price, maxSupply, maxPerWallet, totalMinted }) {
+      const result = await pool.query(`INSERT INTO contract_value_cache
+        (chain,contract_address,price_wei,price_source,max_supply,supply_source,max_per_wallet,per_wallet_source,
+         total_minted,total_minted_source)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
         ON CONFLICT (chain,contract_address) DO UPDATE SET
           price_wei=EXCLUDED.price_wei,price_source=EXCLUDED.price_source,
           max_supply=EXCLUDED.max_supply,supply_source=EXCLUDED.supply_source,
           max_per_wallet=EXCLUDED.max_per_wallet,per_wallet_source=EXCLUDED.per_wallet_source,
+          total_minted=EXCLUDED.total_minted,total_minted_source=EXCLUDED.total_minted_source,
           resolved_at=NOW() RETURNING *`,
         [chain, contractAddress.toLowerCase(), price?.value ?? null, price?.source ?? null,
-          maxSupply?.value ?? null, maxSupply?.source ?? null, maxPerWallet?.value ?? null, maxPerWallet?.source ?? null]);
+          maxSupply?.value ?? null, maxSupply?.source ?? null, maxPerWallet?.value ?? null, maxPerWallet?.source ?? null,
+          totalMinted?.value ?? null, totalMinted?.source ?? null]);
       return mapRow(result.rows[0]);
     },
   };

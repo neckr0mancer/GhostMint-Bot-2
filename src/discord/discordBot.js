@@ -48,7 +48,6 @@ function commandDefinitions() {
     .addStringOption(o => o.setName('wallet').setDescription('Wallet label').setRequired(true).setAutocomplete(true))
     .addStringOption(o => o.setName('contract').setDescription('Contract address').setRequired(true))
     .addIntegerOption(o => o.setName('quantity').setDescription('Quantity').setMinValue(1).setRequired(true))
-    .addBooleanOption(o => o.setName('confirm').setDescription('Confirm value-bearing action').setRequired(true))
     // Not required: price is read from the contract when possible (mintPrice/price/cost/etc.).
     // Only needed if the contract doesn't expose a recognized price getter.
     .addNumberOption(o => o.setName('price').setDescription('Native price per item (only if the contract does not expose one)').setMinValue(0))
@@ -58,8 +57,7 @@ function commandDefinitions() {
     .addStringOption(o => o.setName('contract').setDescription('Contract address').setRequired(true))
     .addIntegerOption(o => o.setName('quantity').setDescription('Quantity per wallet').setMinValue(1).setRequired(true))
     .addNumberOption(o => o.setName('price').setDescription('Native price per item').setMinValue(0).setRequired(true))
-    .addStringOption(o => o.setName('chain').setDescription('Chain').setRequired(true))
-    .addBooleanOption(o => o.setName('confirm').setDescription('Confirm value-bearing batch').setRequired(true)));
+    .addStringOption(o => o.setName('chain').setDescription('Chain').setRequired(true)));
   commands.push(new SlashCommandBuilder().setName('task').setDescription('🗓️ Manage durable scheduled mints')
     .addSubcommand(c => c.setName('create').setDescription('Create a UTC scheduled mint')
       .addStringOption(o => o.setName('input').setDescription('Validated task JSON; mintTime must include Z/offset').setRequired(true))
@@ -452,11 +450,11 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, s
           break;
         }
         case 'mint': {
-          confirmation(interaction); const result = await commands.mint(userId, { walletLabel: interaction.options.getString('wallet'), contractAddress: interaction.options.getString('contract'), quantity: interaction.options.getInteger('quantity'), priceETH: interaction.options.getNumber('price'), chain: interaction.options.getString('chain') });
+          const result = await commands.mint(userId, { walletLabel: interaction.options.getString('wallet'), contractAddress: interaction.options.getString('contract'), quantity: interaction.options.getInteger('quantity'), priceETH: interaction.options.getNumber('price'), chain: interaction.options.getString('chain') });
           message = `Mint ${result.state}: ${result.txHash || result.intentId}`; break;
         }
         case 'batch-mint': {
-          confirmation(interaction); const results = await commands.batchMint(userId, { walletLabels: interaction.options.getString('wallets').split(',').map(v => v.trim()), contractAddress: interaction.options.getString('contract'), quantity: interaction.options.getInteger('quantity'), priceETH: interaction.options.getNumber('price'), chain: interaction.options.getString('chain') });
+          const results = await commands.batchMint(userId, { walletLabels: interaction.options.getString('wallets').split(',').map(v => v.trim()), contractAddress: interaction.options.getString('contract'), quantity: interaction.options.getInteger('quantity'), priceETH: interaction.options.getNumber('price'), chain: interaction.options.getString('chain') });
           message = `Batch complete: ${results.length} wallet transaction(s).`; break;
         }
         case 'task': {

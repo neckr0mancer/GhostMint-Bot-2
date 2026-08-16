@@ -289,6 +289,7 @@ const telegram = parseTelegram();
 const discord = parseDiscord();
 const socialAdapters = parseSocialAdapters();
 const etherscanApiKey = optionalString('ETHERSCAN_API_KEY');
+const openSeaApiKey = optionalString('OPENSEA_API_KEY');
 const database = parseDatabaseConfig(environment);
 const encryption = parseEncryptionKeys(environment);
 const rpcOverrides = {};
@@ -325,6 +326,7 @@ const CONFIG = Object.freeze({
   socialManagedServiceUrl: socialAdapters.managedServiceEndpoint,
   socialManagedServiceToken: socialAdapters.managedServiceToken,
   etherscanApiKey,
+  openSeaApiKey,
   socialPollIntervalMs: parseInteger('SOCIAL_POLL_INTERVAL_MS', 30_000, 5_000, 3_600_000),
   socialPricing: Object.freeze({ officialReadUsd:0.005, officialPostUsd:0.015,
     managedMonthlyTiersUsd:Object.freeze([199, 499]) }),
@@ -353,6 +355,7 @@ function getSafeConfigSummary() {
     socialManagedServiceConfigured: CONFIG.socialManagedServiceUrl !== null && CONFIG.socialManagedServiceToken !== null,
     socialScraperAvailable: true,
     etherscanGasConfigured: CONFIG.etherscanApiKey !== null,
+    openSeaConfigured: CONFIG.openSeaApiKey !== null,
     databaseConfigured: CONFIG.databaseUrl !== null,
     migrationConnectionConfigured: CONFIG.databaseUrlUnpooled !== null,
     databasePoolMax: CONFIG.databasePoolMax,

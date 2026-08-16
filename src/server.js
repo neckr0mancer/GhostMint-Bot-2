@@ -29,9 +29,10 @@ const { createContractValueRepository } = require('./mint/contractValueRepositor
 const { createContractValueResolver } = require('./mint/contractValueResolver');
 const { createSeaDropDiscoveryService } = require('./mint/seaDropDiscoveryService');
 const { createSeaDropPublicDropResolver } = require('./mint/seaDropPublicDropResolver');
+const { createOpenSeaService } = require('./mint/openSeaService');
+const { createPriceFeedService } = require('./mint/priceFeedService');
 const { computeSeaDropValueWei } = require('./mint/seaDropCall');
 const { SEADROP_MINT_SIGNATURE } = require('./mint/seaDropRegistry');
-const { detectContractChain } = require('./mint/chainDetector');
 const { createSchedulerRepository } = require('./scheduler/schedulerRepository');
 const { createSchedulerWorker } = require('./scheduler/schedulerWorker');
 const { createSocialAdapters } = require('./social/adapters');
@@ -87,6 +88,11 @@ const socialWatchRepository = createSocialWatchRepository(pool);
 const targetPolicyRepository = createTargetPolicyRepository(pool);
 const botSecurityRepository = createBotSecurityRepository(pool);
 const commandRateLimiter = createCommandRateLimiter();
+// Key export gets its own, much stricter bucket than every other sensitive command -- shared
+// across Telegram and the dashboard (this one instance is passed into createDashboardApi below) so
+// a user can't just switch platforms to double their effective rate. Two per hour is generous for
+// "I need to back this up occasionally" and tight for anything automated.
+const exportKeyRateLimiter = createCommandRateLimiter({ limit: 2, windowMs: 60 * 60 * 1000 });
 const providerService = createProviderService({
   chains: CHAINS,
   timeoutMs: CONFIG.rpcTimeoutMs,
@@ -117,6 +123,11 @@ const seaDropDiscoveryService = createSeaDropDiscoveryService({
   apiKey: CONFIG.etherscanApiKey,
   repository: contractValueRepository,
 });
+const openSeaService = createOpenSeaService({
+  apiKey: CONFIG.openSeaApiKey,
+  repository: contractValueRepository,
+});
+const priceFeedService = createPriceFeedService();
 const governanceRepository = createPostgresGovernanceRepository(pool);
 const governance = createGovernanceService(governanceRepository);
 const adminCommands = createAdminCommandService(governance, identity);
@@ -140,6 +151,7 @@ const redact = createRedactor([
   CONFIG.socialOfficialApiToken,
   CONFIG.socialManagedServiceToken,
   CONFIG.etherscanApiKey,
+  CONFIG.openSeaApiKey,
   ...Object.values(CONFIG.encryptionKeys),
 ]);
 const log = msg => console.log(`[${new Date().toISOString()}] ${redact(msg)}`);
@@ -257,6 +269,17 @@ async function logActivity(userId, status, title, walletLabel, txHash, chain,con
     triggerSource:context.triggerSource??null,verificationState:context.verificationState??null });
   DB.activity.unshift(entry);
   if (DB.activity.length > 200) DB.activity.pop();
+  // logActivity is the sole writer of activity entries (mint, scheduled mint, sniper copy-mint,
+  // mintcall/mintpreset all funnel through here), so it's the one place that needs to know a
+  // transaction happened in order to push both a live activity-feed update and a live balance
+  // refresh -- a 'fail' entry moved no funds, so only 'success' also triggers wallets.changed and
+  // drops the cached balance for that wallet (botCommands is created further below; referencing it
+  // here is safe since logActivity only runs later, once a transaction actually completes).
+  dashboardWebSockets.broadcastToUser(userId, {type:'activity.changed'});
+  if (status === 'success') {
+    dashboardWebSockets.broadcastToUser(userId, {type:'wallets.changed'});
+    botCommands.invalidateBalance(userId, walletLabel);
+  }
 }
 
 // ── Helpers ───────────────────────────────────────────────
@@ -277,6 +300,18 @@ function previewQuantity(preview) {
   const value = preview.arguments.find(argument => ['quantity', 'amount'].includes(argument.name))?.value;
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : 1;
+}
+
+// Shared by both botCommands.executeMint (Discord's /mint and Telegram's guided flow, via the local
+// executeMint()) and botCommands.executePreparedMint (the dashboard's preview/confirm flow) so every
+// successful mint is logged to Activity the same way regardless of which platform triggered it --
+// previously these were two independently-written copies whose message text and increment logic
+// could silently drift apart.
+async function recordMintActivity({ userId, wallet, quantity, intent, chain }) {
+  wallet.minted = (wallet.minted || 0) + quantity;
+  await storage.updateWalletMinted(userId, wallet.label, wallet.minted);
+  await logActivity(userId, 'success', `Minted ${quantity} NFT${quantity === 1 ? '' : 's'}`,
+    wallet.label, intent, CHAINS[chain], { triggerSource: 'manual' });
 }
 
 // ── Mint executor ─────────────────────────────────────────
@@ -515,9 +550,37 @@ function stateFor(userId) {
 // follow-up pass). None of this bypasses botCommands/validation/the transaction engine — every
 // guided step ends by calling the exact same service function the equivalent slash command uses.
 const telegramFlowState = createFlowStateStore();
-const FLOW_LABELS = { wallet_create: 'creating a wallet', wallet_import: 'importing a wallet', mint_guided: 'minting' };
+const FLOW_LABELS = { wallet_create: 'creating a wallet', wallet_import: 'importing a wallet', mint_guided: 'minting', send_guided: 'sending funds', export_guided: 'exporting a private key', task_guided: 'scheduling a mint' };
 const FLOW_CONTINUATION_PREFIXES = { wallet_create: ['flow:chain:'], wallet_import: ['flow:chain:'],
-  mint_guided: ['flow:wallettoggle:', 'flow:walletpick:', 'flow:walletcontinue', 'flow:mintconfirm'] };
+  mint_guided: ['flow:mintdetailscontinue', 'flow:wallettoggle:', 'flow:walletpick:', 'flow:walletcontinue', 'flow:mintconfirm'],
+  send_guided: ['flow:sendwalletpick:', 'flow:sendconfirm'],
+  export_guided: ['flow:exportwalletpick:', 'flow:exportconfirm'],
+  // Shares flow:mintdetailscontinue with mint_guided -- the contract-details screen and its
+  // Continue button are the same component either way; the callback handler branches on
+  // flow.flow to decide whether "continue" means "go mint it" or "go schedule it".
+  task_guided: ['flow:mintdetailscontinue', 'flow:taskwalletpick:', 'flow:taskconfirm'] };
+
+// Generic one-shot confirmation gate for simple "<command> <id> CONFIRM"-shaped destructive actions
+// (remove wallet, cancel/resume/retry task, remove watch rule) -- replaces typing the literal word
+// CONFIRM with a single inline tap. Only one pending confirmation exists per chat at a time, the
+// same "one thing in flight" rule telegramFlowState already applies to guided flows; issuing a
+// second confirmable command simply replaces whatever was pending before it.
+const pendingConfirmations = new Map();
+const PENDING_CONFIRMATION_TTL_MS = 2 * 60 * 1000;
+
+function setPendingConfirmation(chatId, run) {
+  pendingConfirmations.set(chatId, { run, expiresAt: Date.now() + PENDING_CONFIRMATION_TTL_MS });
+}
+
+function takePendingConfirmation(chatId) {
+  const pending = pendingConfirmations.get(chatId);
+  pendingConfirmations.delete(chatId);
+  return pending && pending.expiresAt >= Date.now() ? pending : null;
+}
+
+function confirmationKeyboard() {
+  return telegramMenus.keyboard([[telegramMenus.button('✅ Confirm', 'confirm:pending'), telegramMenus.button('❌ Cancel', 'cancel:pending')]]);
+}
 
 function cancelOnlyKeyboard() {
   return telegramMenus.keyboard([[telegramMenus.button('❌ Cancel', 'flow:cancel:ask')]]);
@@ -538,6 +601,21 @@ function renderFlowStep(flow, step, { userId, data = {} } = {}) {
   }
   if (flow === 'mint_guided') {
     if (step === 'awaiting_contract') return { text: 'Send the contract address to mint from.', replyMarkup: cancelOnlyKeyboard() };
+    if (step === 'awaiting_details') {
+      return telegramMenus.contractDetails({
+        contractAddress: data.contractAddress,
+        chainLabel: CHAINS[data.chain]?.name || data.chain,
+        isSeaDrop: data.isSeaDrop,
+        priceETH: data.priceETH,
+        priceUnknown: data.priceUnknown,
+        maxSupply: data.maxSupply,
+        maxPerWallet: data.maxPerWallet,
+        startTime: data.startTime,
+        collection: data.collection,
+        soldOut: data.soldOut,
+        displayPrice: data.displayPrice,
+      });
+    }
     if (step === 'awaiting_wallet') {
       const wallets = botCommands.wallets(userId);
       return data.multi
@@ -557,6 +635,76 @@ function renderFlowStep(flow, step, { userId, data = {} } = {}) {
       });
     }
   }
+  if (flow === 'send_guided') {
+    if (step === 'awaiting_wallet') {
+      return telegramMenus.walletPicker(botCommands.wallets(userId), { prefix: 'flow:sendwalletpick', emptyHint: 'No wallets yet. Create one first from the Wallets menu.' });
+    }
+    if (step === 'awaiting_amount') {
+      return { text: `How much ${CHAINS[data.chain]?.sym || 'native currency'} do you want to send from *${data.walletLabel}*?`, replyMarkup: cancelOnlyKeyboard() };
+    }
+    if (step === 'awaiting_destination') {
+      return { text: 'Send the destination address.', replyMarkup: cancelOnlyKeyboard() };
+    }
+    if (step === 'awaiting_confirm') {
+      const totalWei = BigInt(data.estimatedCostWei);
+      const amountWei = ethers.parseEther(String(data.amountETH));
+      return telegramMenus.sendConfirmation({
+        walletLabel: data.walletLabel,
+        toAddress: data.toAddress,
+        chainLabel: CHAINS[data.chain]?.name || data.chain,
+        amountETH: data.amountETH,
+        sym: CHAINS[data.chain]?.sym || '',
+        estimatedGasETH: ethers.formatEther(totalWei - amountWei),
+        totalETH: ethers.formatEther(totalWei),
+      });
+    }
+  }
+  if (flow === 'export_guided') {
+    if (step === 'awaiting_wallet') {
+      return telegramMenus.walletPicker(botCommands.wallets(userId), { prefix: 'flow:exportwalletpick', emptyHint: 'No wallets yet.' });
+    }
+    if (step === 'awaiting_confirm') {
+      return telegramMenus.exportKeyWarning({ walletLabel: data.walletLabel });
+    }
+  }
+  if (flow === 'task_guided') {
+    if (step === 'awaiting_contract') return { text: 'Send the contract address to schedule a mint for.', replyMarkup: cancelOnlyKeyboard() };
+    if (step === 'awaiting_details') {
+      return telegramMenus.contractDetails({
+        contractAddress: data.contractAddress,
+        chainLabel: CHAINS[data.chain]?.name || data.chain,
+        isSeaDrop: data.isSeaDrop,
+        priceETH: data.priceETH,
+        priceUnknown: data.priceUnknown,
+        maxSupply: data.maxSupply,
+        maxPerWallet: data.maxPerWallet,
+        startTime: data.startTime,
+        collection: data.collection,
+        soldOut: data.soldOut,
+        displayPrice: data.displayPrice,
+      });
+    }
+    if (step === 'awaiting_wallet') {
+      return telegramMenus.walletPicker(botCommands.wallets(userId), { prefix: 'flow:taskwalletpick', emptyHint: 'No wallets yet. Create one first from the Wallets menu.' });
+    }
+    if (step === 'awaiting_name') return { text: 'Send a name for this scheduled mint.', replyMarkup: cancelOnlyKeyboard() };
+    if (step === 'awaiting_time') {
+      return { text: 'This contract\'s opening time is not known. Send the UTC date/time to mint at, including an explicit Z or offset, e.g. `2026-08-20T18:00:00Z`.', replyMarkup: cancelOnlyKeyboard() };
+    }
+    if (step === 'awaiting_confirm') {
+      return telegramMenus.taskConfirmation({
+        name: data.name,
+        contractAddress: data.contractAddress,
+        chainLabel: CHAINS[data.chain]?.name || data.chain,
+        walletLabel: data.walletLabel,
+        mintTime: data.mintTime,
+        autoDetectedTime: Boolean(data.startTime && new Date(data.mintTime).getTime() === data.startTime * 1000),
+        priceETH: data.priceETH,
+        priceUnknown: data.priceUnknown,
+        displayPrice: data.displayPrice,
+      });
+    }
+  }
   return telegramMenus.mainMenu({});
 }
 
@@ -570,10 +718,12 @@ function retryStepForField(error) {
 
 // Entry point for /mint, /batch, and the "Mint" menu button. With no contract address yet, starts
 // the guided flow at awaiting_contract. With one (typed inline, or sent as the awaiting_contract
-// reply), validates it and derives which supported chain it's actually deployed on before moving
-// to the wallet picker -- multi picks multiple wallets (batch), single picks exactly one (mint).
+// reply), runs the same full detection the dashboard's auto-detect uses (chain, SeaDrop vs plain
+// mint, price, supply/per-wallet limits, SeaDrop opening time, OpenSea metadata) and shows it as
+// its own step before wallet selection -- multi picks multiple wallets (batch), single picks
+// exactly one (mint).
 async function startMintFlow({ chatId, messageId, userId, multi, contractAddressInput }) {
-  const send = payload => messageId ? tgEditMenu(chatId, messageId, payload) : tgMenu(chatId, payload);
+  const send = payload => tgUpdate(chatId, messageId, payload);
   if (!contractAddressInput) {
     telegramFlowState.start('telegram', chatId, 'mint_guided', 'awaiting_contract', { multi });
     return send(renderFlowStep('mint_guided', 'awaiting_contract'));
@@ -581,39 +731,52 @@ async function startMintFlow({ chatId, messageId, userId, multi, contractAddress
   if (!ethers.isAddress(contractAddressInput)) {
     return send({ text: 'That does not look like a valid contract address. Try again with /mint <contract> or /batch <contract>.', replyMarkup: telegramMenus.mainMenu({}).replyMarkup });
   }
-  const chain = await detectContractChain({ providerService, supportedChains: CONFIG.supportedChains, contractAddress: contractAddressInput });
-  if (!chain) {
-    return send({ text: 'Could not find this contract on any supported chain. Double-check the address.', replyMarkup: telegramMenus.mainMenu({}).replyMarkup });
+  let detected;
+  try {
+    detected = await botCommands.detectMintContract(userId, { contractAddress: contractAddressInput, quantity: 1 });
+  } catch (error) {
+    if (error instanceof ValidationError) {
+      return send({ text: 'Could not find this contract on any supported chain. Double-check the address.', replyMarkup: telegramMenus.mainMenu({}).replyMarkup });
+    }
+    throw error;
   }
-  const data = { multi, contractAddress: contractAddressInput, chain, selectedWallets: [] };
-  telegramFlowState.start('telegram', chatId, 'mint_guided', 'awaiting_wallet', data);
-  return send(renderFlowStep('mint_guided', 'awaiting_wallet', { userId, data }));
+  const data = {
+    multi, contractAddress: contractAddressInput, chain: detected.chain, selectedWallets: [],
+    isSeaDrop: detected.isSeaDrop,
+    priceETH: detected.priceKnown ? Number(ethers.formatEther(BigInt(detected.valueWei))) : undefined,
+    priceUnknown: !detected.priceKnown,
+    maxSupply: detected.maxSupply, maxPerWallet: detected.maxPerWallet,
+    startTime: detected.startTime, endTime: detected.endTime, collection: detected.collection,
+    soldOut: detected.soldOut, displayPrice: detected.displayPrice,
+  };
+  telegramFlowState.start('telegram', chatId, 'mint_guided', 'awaiting_details', data);
+  return send(renderFlowStep('mint_guided', 'awaiting_details', { userId, data }));
 }
 
-// Once wallet(s) are picked (single tap for /mint, Continue for /batch), resolve price from the
-// contract; only fall back to asking when the resolver genuinely can't determine it.
+// After the user has seen (and tapped through) the contract details, move on to wallet selection.
+// A single wallet has nothing to pick between -- asking anyway is a tap that teaches the user
+// nothing, and /start already creates that one wallet automatically for a brand-new user, so this
+// is the common case, not an edge case.
+async function advanceFromDetails(chatId, messageId, userId, flow) {
+  const wallets = botCommands.wallets(userId);
+  if (!flow.data.multi && wallets.length === 1) {
+    return advanceFromWalletSelection(chatId, messageId, userId, flow, [wallets[0].label]);
+  }
+  telegramFlowState.advance('telegram', chatId, 'awaiting_wallet', flow.data);
+  return tgUpdate(chatId, messageId, renderFlowStep('mint_guided', 'awaiting_wallet', { userId, data: flow.data }));
+}
+
+// Once wallet(s) are picked (single tap for /mint, Continue for /batch): price was already
+// resolved back in startMintFlow's details step, so this only needs to decide whether that
+// resolution actually found a price (straight to confirm) or not (ask for one by hand).
 async function advanceFromWalletSelection(chatId, messageId, userId, flow, selectedWallets) {
-  const resolved = await contractValueResolver.resolve(flow.data.chain, flow.data.contractAddress);
-  if (resolved.price) {
-    const priceETH = Number(ethers.formatEther(BigInt(resolved.price.value)));
-    const data = { ...flow.data, selectedWallets, priceETH, priceUnknown: false };
-    telegramFlowState.advance('telegram', chatId, 'awaiting_confirm', data);
-    return tgEditMenu(chatId, messageId, renderFlowStep('mint_guided', 'awaiting_confirm', { userId, data }));
-  }
-  // Nothing to probe via the plain mint(uint256) assumption -- try SeaDrop before falling back to
-  // asking the user to type a price by hand. A price they'd type here would just be discarded
-  // anyway once executeMint recomputes it from the discovered PublicDrop, so skip straight to
-  // confirmation when it's already known.
-  const seaDrop = await seaDropDiscoveryService.resolve(flow.data.chain, flow.data.contractAddress);
-  if (seaDrop.address && seaDrop.publicDrop) {
-    const priceETH = Number(ethers.formatEther(BigInt(seaDrop.publicDrop.mintPriceWei)));
-    const data = { ...flow.data, selectedWallets, priceETH, priceUnknown: false };
-    telegramFlowState.advance('telegram', chatId, 'awaiting_confirm', data);
-    return tgEditMenu(chatId, messageId, renderFlowStep('mint_guided', 'awaiting_confirm', { userId, data }));
-  }
   const data = { ...flow.data, selectedWallets };
-  telegramFlowState.advance('telegram', chatId, 'awaiting_price', data);
-  return tgEditMenu(chatId, messageId, renderFlowStep('mint_guided', 'awaiting_price', { userId, data }));
+  if (data.priceUnknown) {
+    telegramFlowState.advance('telegram', chatId, 'awaiting_price', data);
+    return tgUpdate(chatId, messageId, renderFlowStep('mint_guided', 'awaiting_price', { userId, data }));
+  }
+  telegramFlowState.advance('telegram', chatId, 'awaiting_confirm', data);
+  return tgUpdate(chatId, messageId, renderFlowStep('mint_guided', 'awaiting_confirm', { userId, data }));
 }
 
 async function finishMintExecution(chatId, messageId, userId, flowData) {
@@ -624,19 +787,199 @@ async function finishMintExecution(chatId, messageId, userId, flowData) {
       const results = await botCommands.batchMint(userId, { walletLabels: flowData.selectedWallets,
         contractAddress: flowData.contractAddress, chain: flowData.chain, quantity: 1, priceETH: flowData.priceETH });
       telegramFlowState.clear('telegram', chatId);
-      return tgEditMenu(chatId, messageId, { text: `✅ Batch complete: ${results.length} wallet transaction(s).`, replyMarkup: backToMenu });
+      return tgUpdate(chatId, messageId, { text: `✅ Batch complete: ${results.length} wallet transaction(s).`, replyMarkup: backToMenu });
     }
     const result = await botCommands.mint(userId, { walletLabel: flowData.selectedWallets[0],
       contractAddress: flowData.contractAddress, chain: flowData.chain, quantity: 1, priceETH: flowData.priceETH });
     telegramFlowState.clear('telegram', chatId);
-    return tgEditMenu(chatId, messageId, { text: `✅ Mint ${result.state}: ${result.txHash || result.intentId}`, replyMarkup: backToMenu });
+    return tgUpdate(chatId, messageId, { text: `✅ Mint ${result.state}: ${result.txHash || result.intentId}`, replyMarkup: backToMenu });
   } catch (error) {
     if (error instanceof RateLimitError) {
-      return tgEditMenu(chatId, messageId, { text: `Too many sensitive commands. Retry in ${Math.ceil(error.retryAfterMs / 1000)} seconds.`, replyMarkup: backToMenu });
+      return tgUpdate(chatId, messageId, { text: `Too many sensitive commands. Retry in ${Math.ceil(error.retryAfterMs / 1000)} seconds.`, replyMarkup: backToMenu });
     }
     telegramFlowState.clear('telegram', chatId);
-    if (error instanceof ValidationError) return tgEditMenu(chatId, messageId, { text: validationReply(error), replyMarkup: backToMenu });
-    if (error instanceof TransactionSafetyError) return tgEditMenu(chatId, messageId, { text: `❌ ${error.message}`, replyMarkup: backToMenu });
+    if (error instanceof ValidationError) return tgUpdate(chatId, messageId, { text: validationReply(error), replyMarkup: backToMenu });
+    if (error instanceof TransactionSafetyError) return tgUpdate(chatId, messageId, { text: `❌ ${error.message}`, replyMarkup: backToMenu });
+    throw error;
+  }
+}
+
+// Entry point for /send and the "Send" menu button. Single-wallet users (the common case, since
+// /start already auto-creates one) skip straight to the amount prompt -- same TG-05 auto-select
+// idiom startMintFlow already uses for wallet selection.
+async function startSendFlow({ chatId, messageId, userId }) {
+  const wallets = botCommands.wallets(userId);
+  if (!wallets.length) {
+    return tgUpdate(chatId, messageId, { text: 'No wallets yet. Create one first from the Wallets menu.', replyMarkup: telegramMenus.mainMenu({}).replyMarkup });
+  }
+  if (wallets.length === 1) {
+    const data = { walletLabel: wallets[0].label, chain: wallets[0].chain };
+    telegramFlowState.start('telegram', chatId, 'send_guided', 'awaiting_amount', data);
+    return tgUpdate(chatId, messageId, renderFlowStep('send_guided', 'awaiting_amount', { userId, data }));
+  }
+  telegramFlowState.start('telegram', chatId, 'send_guided', 'awaiting_wallet', {});
+  return tgUpdate(chatId, messageId, renderFlowStep('send_guided', 'awaiting_wallet', { userId }));
+}
+
+// Once amount and destination are both known, resolve the actual gas cost via the same
+// transactionEngine.preview() the dashboard's mint preview uses, so the one-tap confirm screen
+// shows a real number rather than a guess -- and so a request that would fail the value/gas
+// ceiling or insufficient-balance checks is caught here instead of at broadcast time.
+async function advanceToSendConfirm(chatId, messageId, userId, flow, toAddress) {
+  const owned = findOwnedWallet(DB, userId, flow.data.walletLabel);
+  const backToMenu = telegramMenus.mainMenu({}).replyMarkup;
+  if (!owned) {
+    telegramFlowState.clear('telegram', chatId);
+    return tgUpdate(chatId, messageId, { text: 'That wallet no longer exists.', replyMarkup: backToMenu });
+  }
+  try {
+    const valueWei = ethers.parseEther(String(flow.data.amountETH));
+    const simulation = await transactionEngine.preview({ userId, wallet: owned, chain: flow.data.chain,
+      to: toAddress, valueWei, triggerSource: 'manual' });
+    const data = { ...flow.data, toAddress, estimatedCostWei: simulation.estimatedCostWei.toString() };
+    telegramFlowState.advance('telegram', chatId, 'awaiting_confirm', data);
+    return tgUpdate(chatId, messageId, renderFlowStep('send_guided', 'awaiting_confirm', { userId, data }));
+  } catch (error) {
+    telegramFlowState.clear('telegram', chatId);
+    if (error instanceof TransactionSafetyError) return tgUpdate(chatId, messageId, { text: `❌ ${error.message}`, replyMarkup: backToMenu });
+    throw error;
+  }
+}
+
+async function finishSendExecution(chatId, messageId, userId, flowData) {
+  const backToMenu = telegramMenus.mainMenu({}).replyMarkup;
+  try {
+    commandRateLimiter.check('telegram', userId, 'send');
+    const result = await botCommands.send(userId, { walletLabel: flowData.walletLabel,
+      toAddress: flowData.toAddress, amountETH: flowData.amountETH, chain: flowData.chain });
+    telegramFlowState.clear('telegram', chatId);
+    return tgUpdate(chatId, messageId, { text: `✅ Send ${result.state}: ${result.txHash || result.intentId}`, replyMarkup: backToMenu });
+  } catch (error) {
+    if (error instanceof RateLimitError) {
+      return tgUpdate(chatId, messageId, { text: `Too many sensitive commands. Retry in ${Math.ceil(error.retryAfterMs / 1000)} seconds.`, replyMarkup: backToMenu });
+    }
+    telegramFlowState.clear('telegram', chatId);
+    if (error instanceof ValidationError) return tgUpdate(chatId, messageId, { text: validationReply(error), replyMarkup: backToMenu });
+    if (error instanceof TransactionSafetyError) return tgUpdate(chatId, messageId, { text: `❌ ${error.message}`, replyMarkup: backToMenu });
+    throw error;
+  }
+}
+
+// Entry point for /exportkey and the Wallets menu's "Export key" button. Every step here is
+// button-only (no free-text capture needed) up to the explicit warning tap, unlike mint/send.
+async function startExportKeyFlow({ chatId, messageId, userId }) {
+  const wallets = botCommands.wallets(userId);
+  if (!wallets.length) {
+    return tgUpdate(chatId, messageId, { text: 'No wallets yet.', replyMarkup: telegramMenus.mainMenu({}).replyMarkup });
+  }
+  if (wallets.length === 1) {
+    const data = { walletLabel: wallets[0].label };
+    telegramFlowState.start('telegram', chatId, 'export_guided', 'awaiting_confirm', data);
+    return tgUpdate(chatId, messageId, renderFlowStep('export_guided', 'awaiting_confirm', { userId, data }));
+  }
+  telegramFlowState.start('telegram', chatId, 'export_guided', 'awaiting_wallet', {});
+  return tgUpdate(chatId, messageId, renderFlowStep('export_guided', 'awaiting_wallet', { userId }));
+}
+
+// SEC-01. The decrypted key never touches telegramFlowState, never reaches log(), and lives only as
+// a local variable for the one call that builds the self-destructing message below. The anchor
+// message (this function's own tgUpdate) is a plain acknowledgement -- the key itself always goes
+// out through tgSendSelfDestruct as its own distinct message, never through the shared flow anchor.
+async function finishExportKeyExecution(chatId, messageId, userId, flowData, platformUserId) {
+  const backToMenu = telegramMenus.mainMenu({}).replyMarkup;
+  const audit = value => Promise.resolve(botSecurityRepository.record(value)).catch(error => log(`Security audit write failed: ${safeError(error)}`));
+  try {
+    exportKeyRateLimiter.check('telegram', userId, 'exportkey');
+    const exported = await botCommands.exportWalletKeyRaw(userId, flowData.walletLabel);
+    telegramFlowState.clear('telegram', chatId);
+    await tgUpdate(chatId, messageId, { text: `✅ Key for *${exported.label}* sent below. It self-deletes in ${EXPORT_KEY_TTL_MS / 1000}s -- deletion is a courtesy, not a control.`, replyMarkup: backToMenu });
+    await tgSendSelfDestruct(chatId, `🔑 <b>${exported.label}</b>\n<code>${exported.privateKey}</code>`, { parse_mode: 'HTML' });
+    await audit({ userId, platform: 'telegram', platformUserId, contextId: String(chatId), command: 'exportkey', outcome: 'success', reason: 'key export delivered' });
+  } catch (error) {
+    if (error instanceof RateLimitError) {
+      await audit({ userId, platform: 'telegram', platformUserId, contextId: String(chatId), command: 'exportkey', outcome: 'rate_limited', reason: 'export key rate limit exceeded' });
+      return tgUpdate(chatId, messageId, { text: `Too many export attempts. Retry in ${Math.ceil(error.retryAfterMs / 1000)} seconds.`, replyMarkup: backToMenu });
+    }
+    telegramFlowState.clear('telegram', chatId);
+    if (error instanceof ValidationError) return tgUpdate(chatId, messageId, { text: validationReply(error), replyMarkup: backToMenu });
+    throw error;
+  }
+}
+
+// Entry point for /schedule and the Tasks menu's "Schedule mint" button. Shares the same contract
+// detection and details screen as startMintFlow (botCommands.detectMintContract) -- what a
+// contract *is* doesn't depend on whether you're minting it now or scheduling it for later. A
+// SeaDrop drop's own future opening time is carried into flow data as a pre-filled mintTime, same
+// as createTask's own auto-detection, so the confirm screen can skip asking for it entirely.
+async function startTaskScheduleFlow({ chatId, messageId, userId, contractAddressInput }) {
+  const send = payload => tgUpdate(chatId, messageId, payload);
+  if (!contractAddressInput) {
+    telegramFlowState.start('telegram', chatId, 'task_guided', 'awaiting_contract', {});
+    return send(renderFlowStep('task_guided', 'awaiting_contract'));
+  }
+  if (!ethers.isAddress(contractAddressInput)) {
+    return send({ text: 'That does not look like a valid contract address. Try again with /schedule <contract>.', replyMarkup: telegramMenus.mainMenu({}).replyMarkup });
+  }
+  let detected;
+  try {
+    detected = await botCommands.detectMintContract(userId, { contractAddress: contractAddressInput, quantity: 1 });
+  } catch (error) {
+    if (error instanceof ValidationError) {
+      return send({ text: 'Could not find this contract on any supported chain. Double-check the address.', replyMarkup: telegramMenus.mainMenu({}).replyMarkup });
+    }
+    throw error;
+  }
+  const futureStartTime = detected.startTime && detected.startTime * 1000 > Date.now() ? detected.startTime : null;
+  const data = {
+    contractAddress: contractAddressInput, chain: detected.chain, isSeaDrop: detected.isSeaDrop,
+    priceETH: detected.priceKnown ? Number(ethers.formatEther(BigInt(detected.valueWei))) : undefined,
+    priceUnknown: !detected.priceKnown,
+    maxSupply: detected.maxSupply, maxPerWallet: detected.maxPerWallet,
+    startTime: detected.startTime, endTime: detected.endTime, collection: detected.collection,
+    soldOut: detected.soldOut, displayPrice: detected.displayPrice,
+    mintTime: futureStartTime ? new Date(futureStartTime * 1000).toISOString() : null,
+  };
+  telegramFlowState.start('telegram', chatId, 'task_guided', 'awaiting_details', data);
+  return send(renderFlowStep('task_guided', 'awaiting_details', { userId, data }));
+}
+
+// Scheduling is always single-wallet (createTask has no batch concept), so this always shows a
+// picker rather than the mint flow's multi/single branching -- except the auto-select-with-one-
+// wallet shortcut, which still applies.
+async function advanceFromTaskDetails(chatId, messageId, userId, flow) {
+  const wallets = botCommands.wallets(userId);
+  if (wallets.length === 1) {
+    return advanceFromTaskWallet(chatId, messageId, userId, flow, wallets[0].label);
+  }
+  telegramFlowState.advance('telegram', chatId, 'awaiting_wallet', flow.data);
+  return tgUpdate(chatId, messageId, renderFlowStep('task_guided', 'awaiting_wallet', { userId, data: flow.data }));
+}
+
+// After the wallet is picked, always ask for a name (there's no way to auto-detect that), then
+// skip straight to confirm if mintTime was already auto-filled from the contract's own opening
+// time, or ask for it by hand when it wasn't.
+async function advanceFromTaskWallet(chatId, messageId, userId, flow, walletLabel) {
+  const data = { ...flow.data, walletLabel };
+  telegramFlowState.advance('telegram', chatId, 'awaiting_name', data);
+  return tgUpdate(chatId, messageId, renderFlowStep('task_guided', 'awaiting_name', { userId, data }));
+}
+
+async function finishTaskSchedule(chatId, messageId, userId, flowData) {
+  const backToMenu = telegramMenus.mainMenu({}).replyMarkup;
+  try {
+    commandRateLimiter.check('telegram', userId, 'task');
+    const task = await botCommands.createTask(userId, {
+      name: flowData.name, walletLabel: flowData.walletLabel, contractAddress: flowData.contractAddress,
+      chain: flowData.chain, quantity: 1, priceETH: flowData.priceETH, mintTime: flowData.mintTime,
+    });
+    telegramFlowState.clear('telegram', chatId);
+    return tgUpdate(chatId, messageId, { text: `✅ Scheduled *${task.name}* for ${new Date(task.mintTime).toISOString()} UTC.`, replyMarkup: backToMenu });
+  } catch (error) {
+    if (error instanceof RateLimitError) {
+      return tgUpdate(chatId, messageId, { text: `Too many sensitive commands. Retry in ${Math.ceil(error.retryAfterMs / 1000)} seconds.`, replyMarkup: backToMenu });
+    }
+    telegramFlowState.clear('telegram', chatId);
+    if (error instanceof ValidationError) return tgUpdate(chatId, messageId, { text: validationReply(error), replyMarkup: backToMenu });
     throw error;
   }
 }
@@ -652,6 +995,69 @@ function tgEditMenu(chatId, messageId, { text, replyMarkup, parseMode }) {
     .catch(() => tgMenu(chatId, { text, replyMarkup, parseMode }));
 }
 
+// ── Telegram anchored-menu rendering ─────────────────────────
+// Guided flows used to call tgMenu() (a brand-new sendMessage) on every step, so a single wallet
+// import or mint left a trail of half a dozen separate bot bubbles behind in the chat -- including,
+// worse, the user's own raw private-key message sitting in transit history. tgRender keeps exactly
+// one live "menu" message per chat by editing it in place across an entire flow, only falling back
+// to a new message when there's nothing left to edit (first message ever, or Telegram can no longer
+// edit the old one). Unlike tgEditMenu, a failed edit here must NOT fall back to sending through
+// itself -- tgRender needs to know the edit failed so it can send the replacement AND update the
+// anchor, whereas tgEditMenu's callers already treat "sent a new message instead" as success.
+const chatAnchors = new Map();
+
+async function tgEditRaw(chatId, messageId, { text, replyMarkup, parseMode }) {
+  if (!bot || !chatId || !messageId) return null;
+  try {
+    return await bot.editMessageText(String(text), { chat_id: chatId, message_id: messageId, reply_markup: replyMarkup, parse_mode: parseMode });
+  } catch {
+    return null;
+  }
+}
+
+async function tgRender(chatId, payload) {
+  const anchor = chatAnchors.get(chatId);
+  const edited = anchor && await tgEditRaw(chatId, anchor, payload);
+  if (edited) return edited;
+  const sent = await tgMenu(chatId, payload);
+  if (sent?.message_id) chatAnchors.set(chatId, sent.message_id);
+  return sent;
+}
+
+// Guided-flow steps triggered by a button tap always have a messageId to edit in place; the same
+// steps reached by auto-advancing past a skipped step (e.g. the single-wallet auto-select below,
+// which never renders a wallet-picker message to edit) do not. Falling back to tgRender rather than
+// tgEditMenu's own bare tgMenu fallback keeps that case anchored too, instead of spawning a new
+// message the moment a flow happens to skip a step.
+function tgUpdate(chatId, messageId, payload) {
+  return messageId ? tgEditMenu(chatId, messageId, payload) : tgRender(chatId, payload);
+}
+
+// Best-effort cleanup of the user's own free-text flow reply (a wallet label, a private key, a
+// contract address, a typed price) once it's been consumed -- most valuable for the private-key
+// import step, where leaving the key sitting in chat history is a real exposure, not just clutter.
+// Telegram only allows a bot to delete a private-chat message within 48 hours, so failures here
+// (older messages, group chats) are expected and safe to swallow.
+function tgDeleteUserMessage(msg) {
+  if (!bot || !msg?.chat?.id || !msg?.message_id) return;
+  bot.deleteMessage(msg.chat.id, msg.message_id).catch(() => {});
+}
+
+const EXPORT_KEY_TTL_MS = 30_000;
+
+// SEC-01: a distinct, non-anchored message (never tgRender's shared per-chat anchor -- the key
+// must not become the content of a message that anything else could later edit or that could
+// outlive its own timer) that deletes itself shortly after being sent. protect_content blocks
+// Telegram's own forward/save affordances and disable_notification keeps the key out of a
+// notification preview -- neither stops a screenshot, and deletion here is a courtesy, not a
+// control: the key already transited Telegram's servers once it was sent.
+async function tgSendSelfDestruct(chatId, text, { ttlMs = EXPORT_KEY_TTL_MS, ...options } = {}) {
+  if (!bot || !chatId) return null;
+  const sent = await bot.sendMessage(chatId, text, { protect_content: true, disable_notification: true, ...options });
+  setTimeout(() => bot.deleteMessage(chatId, sent.message_id).catch(() => {}), ttlMs).unref();
+  return sent;
+}
+
 async function handleFlowTextMessage(msg) {
   if (!msg.text || msg.text.startsWith('/')) return;
   let context;
@@ -664,17 +1070,23 @@ async function handleFlowTextMessage(msg) {
   const chatId = msg.chat.id;
   const flow = telegramFlowState.get('telegram', chatId);
   if (!flow) return;
-  if (flow.pendingCancel) { tgMenu(chatId, telegramMenus.confirmCancelPrompt(FLOW_LABELS[flow.flow] || flow.flow)); return; }
+  if (flow.pendingCancel) { tgDeleteUserMessage(msg); tgRender(chatId, telegramMenus.confirmCancelPrompt(FLOW_LABELS[flow.flow] || flow.flow)); return; }
   const isTextStep = (flow.flow === 'wallet_create' && flow.step === 'awaiting_label')
     || (flow.flow === 'wallet_import' && (flow.step === 'awaiting_label' || flow.step === 'awaiting_key'))
-    || (flow.flow === 'mint_guided' && (flow.step === 'awaiting_contract' || flow.step === 'awaiting_price'));
-  if (!isTextStep) { tgMenu(chatId, { text: 'Please use the buttons above, or tap Cancel.', replyMarkup: cancelOnlyKeyboard() }); return; }
+    || (flow.flow === 'mint_guided' && (flow.step === 'awaiting_contract' || flow.step === 'awaiting_price'))
+    || (flow.flow === 'send_guided' && (flow.step === 'awaiting_amount' || flow.step === 'awaiting_destination'))
+    || (flow.flow === 'task_guided' && (flow.step === 'awaiting_contract' || flow.step === 'awaiting_name' || flow.step === 'awaiting_time'));
+  if (!isTextStep) { tgDeleteUserMessage(msg); tgRender(chatId, { text: 'Please use the buttons above, or tap Cancel.', replyMarkup: cancelOnlyKeyboard() }); return; }
 
+  // Consumed as flow input from here on -- clear it immediately rather than after a successful
+  // outcome, so a private key or any other sensitive reply never lingers in chat history even if
+  // validation later rejects it.
+  tgDeleteUserMessage(msg);
   const value = msg.text.trim();
   if (flow.step === 'awaiting_label') {
-    if (!value || value.length > 64) { tgMenu(chatId, { text: 'Label must be 1-64 characters. Try again.', replyMarkup: cancelOnlyKeyboard() }); return; }
+    if (!value || value.length > 64) { tgRender(chatId, { text: 'Label must be 1-64 characters. Try again.', replyMarkup: cancelOnlyKeyboard() }); return; }
     telegramFlowState.advance('telegram', chatId, 'awaiting_chain', { label: value });
-    tgMenu(chatId, renderFlowStep(flow.flow, 'awaiting_chain'));
+    tgRender(chatId, renderFlowStep(flow.flow, 'awaiting_chain'));
     return;
   }
   if (flow.step === 'awaiting_key') {
@@ -682,7 +1094,7 @@ async function handleFlowTextMessage(msg) {
       commandRateLimiter.check('telegram', userId, 'importwallet');
       const wallet = await botCommands.importWallet(userId, { label: flow.data.label, chain: flow.data.chain, privateKey: value });
       telegramFlowState.clear('telegram', chatId);
-      tgMenu(chatId, { text: `✅ Wallet *${wallet.label}* imported at \`${wallet.address}\`.\n\n⚠️ Not recommended going forward: prefer /createwallet for new wallets.`,
+      tgRender(chatId, { text: `✅ Wallet *${wallet.label}* imported at \`${wallet.address}\`.\n\n⚠️ Not recommended going forward: prefer /createwallet for new wallets.`,
         replyMarkup: telegramMenus.keyboard([[telegramMenus.button('⬅️ Back to wallets', 'menu:wallets')]]) });
     } catch (error) {
       if (error instanceof ValidationError) {
@@ -690,20 +1102,20 @@ async function handleFlowTextMessage(msg) {
         if (retryStep) {
           telegramFlowState.advance('telegram', chatId, retryStep, {});
           const prompt = renderFlowStep(flow.flow, retryStep);
-          tgMenu(chatId, { text: `${validationReply(error)}\n\n${prompt.text}`, replyMarkup: prompt.replyMarkup });
+          tgRender(chatId, { text: `${validationReply(error)}\n\n${prompt.text}`, replyMarkup: prompt.replyMarkup });
           return;
         }
         telegramFlowState.clear('telegram', chatId);
-        tgMenu(chatId, { text: validationReply(error), replyMarkup: telegramMenus.mainMenu({}).replyMarkup });
+        tgRender(chatId, { text: validationReply(error), replyMarkup: telegramMenus.mainMenu({}).replyMarkup });
         return;
       }
       if (error instanceof RateLimitError) {
-        tgMenu(chatId, { text: `Too many sensitive commands. Retry in ${Math.ceil(error.retryAfterMs/1000)} seconds.`, replyMarkup: cancelOnlyKeyboard() });
+        tgRender(chatId, { text: `Too many sensitive commands. Retry in ${Math.ceil(error.retryAfterMs/1000)} seconds.`, replyMarkup: cancelOnlyKeyboard() });
         return;
       }
       telegramFlowState.clear('telegram', chatId);
       log(`Telegram guided wallet import failed: ${safeError(error)}`);
-      tgMenu(chatId, { text: 'Import failed safely. Please try again from the Wallets menu.', replyMarkup: telegramMenus.mainMenu({}).replyMarkup });
+      tgRender(chatId, { text: 'Import failed safely. Please try again from the Wallets menu.', replyMarkup: telegramMenus.mainMenu({}).replyMarkup });
     }
     return;
   }
@@ -714,12 +1126,56 @@ async function handleFlowTextMessage(msg) {
   if (flow.flow === 'mint_guided' && flow.step === 'awaiting_price') {
     const priceETH = Number(value);
     if (!Number.isFinite(priceETH) || priceETH < 0) {
-      tgMenu(chatId, { text: 'Send a valid non-negative number.', replyMarkup: cancelOnlyKeyboard() });
+      tgRender(chatId, { text: 'Send a valid non-negative number.', replyMarkup: cancelOnlyKeyboard() });
       return;
     }
     const data = { ...flow.data, priceETH, priceUnknown: true };
     telegramFlowState.advance('telegram', chatId, 'awaiting_confirm', data);
-    tgMenu(chatId, renderFlowStep('mint_guided', 'awaiting_confirm', { userId, data }));
+    tgRender(chatId, renderFlowStep('mint_guided', 'awaiting_confirm', { userId, data }));
+    return;
+  }
+  if (flow.flow === 'send_guided' && flow.step === 'awaiting_amount') {
+    const amountETH = Number(value);
+    if (!Number.isFinite(amountETH) || amountETH <= 0) {
+      tgRender(chatId, { text: 'Send a positive number.', replyMarkup: cancelOnlyKeyboard() });
+      return;
+    }
+    const data = { ...flow.data, amountETH };
+    telegramFlowState.advance('telegram', chatId, 'awaiting_destination', data);
+    tgRender(chatId, renderFlowStep('send_guided', 'awaiting_destination', { userId, data }));
+    return;
+  }
+  if (flow.flow === 'send_guided' && flow.step === 'awaiting_destination') {
+    if (!ethers.isAddress(value)) {
+      tgRender(chatId, { text: 'That does not look like a valid address. Try again.', replyMarkup: cancelOnlyKeyboard() });
+      return;
+    }
+    await advanceToSendConfirm(chatId, null, userId, flow, value);
+    return;
+  }
+  if (flow.flow === 'task_guided' && flow.step === 'awaiting_contract') {
+    await startTaskScheduleFlow({ chatId, messageId: null, userId, contractAddressInput: value });
+    return;
+  }
+  if (flow.flow === 'task_guided' && flow.step === 'awaiting_name') {
+    if (!value || value.length > 100) {
+      tgRender(chatId, { text: 'Name must be 1-100 characters. Try again.', replyMarkup: cancelOnlyKeyboard() });
+      return;
+    }
+    const data = { ...flow.data, name: value };
+    const nextStep = data.mintTime ? 'awaiting_confirm' : 'awaiting_time';
+    telegramFlowState.advance('telegram', chatId, nextStep, data);
+    tgRender(chatId, renderFlowStep('task_guided', nextStep, { userId, data }));
+    return;
+  }
+  if (flow.flow === 'task_guided' && flow.step === 'awaiting_time') {
+    if (!/(?:Z|[+-]\d{2}:\d{2})$/i.test(value)) {
+      tgRender(chatId, { text: 'Include an explicit UTC offset or Z suffix, e.g. `2026-08-20T18:00:00Z`. Try again.', replyMarkup: cancelOnlyKeyboard() });
+      return;
+    }
+    const data = { ...flow.data, mintTime: value };
+    telegramFlowState.advance('telegram', chatId, 'awaiting_confirm', data);
+    tgRender(chatId, renderFlowStep('task_guided', 'awaiting_confirm', { userId, data }));
   }
 }
 
@@ -734,10 +1190,16 @@ function withTelegramCallback(handler) {
       userId = await identity.resolveOrCreate('telegram', context.platformUserId);
       await governance.checkAccountStatus(userId);
       bot.answerCallbackQuery(query.id).catch(() => {});
+      // A button tap is always on the chat's current live message, whether or not it started life
+      // as a tgRender() anchor -- keep the anchor pointed at it so a free-text reply that follows
+      // (e.g. typing a price after tapping through the mint flow) edits this same message instead
+      // of spawning a new one.
+      if (messageId) chatAnchors.set(chatId, messageId);
 
       const data = query.data || '';
       const activeFlow = telegramFlowState.get('telegram', chatId);
-      const isCancelControl = data === 'flow:cancel:confirm' || data === 'flow:cancel:resume';
+      const isCancelControl = data === 'flow:cancel:confirm' || data === 'flow:cancel:resume'
+        || data === 'confirm:pending' || data === 'cancel:pending';
       if (activeFlow && !isCancelControl) {
         const allowed = FLOW_CONTINUATION_PREFIXES[activeFlow.flow] || [];
         if (!allowed.some(prefix => data.startsWith(prefix))) {
@@ -754,6 +1216,21 @@ function withTelegramCallback(handler) {
       if (data === 'flow:cancel:resume') {
         const flow = telegramFlowState.clearPendingCancel('telegram', chatId);
         await tgEditMenu(chatId, messageId, flow ? renderFlowStep(flow.flow, flow.step, { userId, data: flow.data }) : telegramMenus.mainMenu({ isOwner: await governanceRepository.isOwner(userId) }));
+        return;
+      }
+      if (data === 'confirm:pending' || data === 'cancel:pending') {
+        const backToMenu = telegramMenus.mainMenu({ isOwner: await governanceRepository.isOwner(userId) }).replyMarkup;
+        const pending = takePendingConfirmation(chatId);
+        if (!pending) {
+          await tgEditMenu(chatId, messageId, { text: 'That confirmation expired or was already handled. Run the command again if needed.', replyMarkup: backToMenu });
+          return;
+        }
+        if (data === 'cancel:pending') {
+          await tgEditMenu(chatId, messageId, { text: 'Cancelled.', replyMarkup: backToMenu });
+          return;
+        }
+        const resultText = await pending.run();
+        await tgEditMenu(chatId, messageId, { text: resultText, replyMarkup: backToMenu });
         return;
       }
 
@@ -801,7 +1278,7 @@ function withTelegramUser(handler) {
       const activeFlow=telegramFlowState.get('telegram',context.contextId);
       if(activeFlow) {
         telegramFlowState.markPendingCancel('telegram',context.contextId);
-        await tgMenu(msg.chat.id, telegramMenus.confirmCancelPrompt(FLOW_LABELS[activeFlow.flow]||activeFlow.flow));
+        await tgRender(msg.chat.id, telegramMenus.confirmCancelPrompt(FLOW_LABELS[activeFlow.flow]||activeFlow.flow));
         return;
       }
       const command=commandName(msg.text||msg.caption);
@@ -856,13 +1333,18 @@ if (BOT_TOKEN) {
   // instead of relying on users remembering exact command syntax.
   bot.setMyCommands([
     { command: 'start', description: 'Open the main menu' },
+    { command: 'mint', description: 'Mint from a contract' },
+    { command: 'send', description: 'Send funds to an address' },
     { command: 'wallets', description: 'List your wallets' },
+    { command: 'address', description: 'Get your wallet address' },
     { command: 'createwallet', description: 'Generate and encrypt a new wallet' },
     { command: 'importwallet', description: 'Import an existing wallet (not recommended)' },
     { command: 'removewallet', description: 'Remove a wallet' },
+    { command: 'exportkey', description: 'Export a wallet\'s private key' },
     { command: 'mintnow', description: 'Mint immediately' },
     { command: 'mintcall', description: 'Mint via raw validated call JSON' },
     { command: 'mintpresets', description: 'List saved mint presets' },
+    { command: 'schedule', description: 'Schedule a future mint' },
     { command: 'tasks', description: 'List scheduled mint tasks' },
     { command: 'snipers', description: 'List post-confirmation copy snipers' },
     { command: 'watch', description: 'Manage social watch rules' },
@@ -888,7 +1370,10 @@ if (BOT_TOKEN) {
     if (data === 'menu:wallets') return tgEditMenu(chatId, messageId, telegramMenus.walletsMenu());
     if (data === 'menu:settings') return tgEditMenu(chatId, messageId, telegramMenus.settingsMenu({ isOwner: await ownerFlag() }));
     if (data === 'menu:mint') return startMintFlow({ chatId, messageId, userId, multi: false, contractAddressInput: null });
-    if (data === 'menu:tasks') return tgEditMenu(chatId, messageId, telegramMenus.placeholderMenu('Tasks', 'Use /tasks to list, /canceltask, /pausetask, /resumetask, or /retrytask <id>.'));
+    if (data === 'menu:send') return startSendFlow({ chatId, messageId, userId });
+    if (data === 'menu:exportkey') return startExportKeyFlow({ chatId, messageId, userId });
+    if (data === 'menu:tasks') return tgEditMenu(chatId, messageId, telegramMenus.tasksMenu());
+    if (data === 'menu:schedule') return startTaskScheduleFlow({ chatId, messageId, userId, contractAddressInput: null });
     if (data === 'menu:snipers') return tgEditMenu(chatId, messageId, telegramMenus.placeholderMenu('Snipers', 'Use /snipers to list, /updatesniper <id> <JSON> to edit.'));
     if (data === 'menu:watch') return tgEditMenu(chatId, messageId, telegramMenus.placeholderMenu('Watch rules', 'Use /watch add|edit|disable|remove|list.'));
     if (data === 'menu:activity') return tgEditMenu(chatId, messageId, telegramMenus.placeholderMenu('Activity', 'Use /activity to see recent mint activity.'));
@@ -898,18 +1383,18 @@ if (BOT_TOKEN) {
 
     if (data === 'link:generate') {
       const link = await identity.createLinkCode(userId);
+      // Reachable from both the main menu and Settings now, so "back" always returns to the top
+      // level rather than assuming Settings was the entry point.
       return tgEditMenu(chatId, messageId, { text: `🔗 <b>Account link code:</b> <code>${link.code}</code>\n\nTap the code to copy it. Expires in 5 minutes and can be used once. Enter it on the dashboard, or use the equivalent link command on another platform.`,
-        replyMarkup: telegramMenus.keyboard([[telegramMenus.button('⬅️ Back to settings', 'menu:settings')]]), parseMode: 'HTML' });
+        replyMarkup: telegramMenus.keyboard([[telegramMenus.button('⬅️ Back to menu', 'menu:main')]]), parseMode: 'HTML' });
     }
 
     if (data === 'wallet:list') {
       const wallets = botCommands.wallets(userId);
       if (!wallets.length) return tgEditMenu(chatId, messageId, telegramMenus.placeholderMenu('Wallets', 'No wallets yet. Go back and tap Create wallet.'));
-      const list = wallets.map((w,i) =>
-        `${i+1}. *${w.label}*\n   \`${w.address.slice(0,6)}...${w.address.slice(-4)}\` · ${CHAINS[w.chain]?.name||w.chain} · minted: ${w.minted||0}`
-      ).join('\n\n');
-      return tgEditMenu(chatId, messageId, { text: `*Wallets (${wallets.length})*\n\n${list}`,
-        replyMarkup: telegramMenus.keyboard([[telegramMenus.button('⬅️ Back to wallets', 'menu:wallets')]]) });
+      const summary = await walletSummaryHtml(userId);
+      return tgEditMenu(chatId, messageId, { text: `<b>Wallets (${wallets.length})</b>\n\n${summary}`,
+        replyMarkup: telegramMenus.keyboard([[telegramMenus.button('⬅️ Back to wallets', 'menu:wallets')]]), parseMode: 'HTML' });
     }
 
     if (data === 'wallet:create:start') {
@@ -949,6 +1434,24 @@ if (BOT_TOKEN) {
       return;
     }
 
+    if (data === 'flow:mintdetailscontinue') {
+      const flow = telegramFlowState.get('telegram', chatId);
+      if (!flow) return;
+      if (flow.flow === 'mint_guided') return advanceFromDetails(chatId, messageId, userId, flow);
+      if (flow.flow === 'task_guided') return advanceFromTaskDetails(chatId, messageId, userId, flow);
+      return;
+    }
+    if (data.startsWith('flow:taskwalletpick:')) {
+      const label = data.slice('flow:taskwalletpick:'.length);
+      const flow = telegramFlowState.get('telegram', chatId);
+      if (!flow || flow.flow !== 'task_guided') return;
+      return advanceFromTaskWallet(chatId, messageId, userId, flow, label);
+    }
+    if (data === 'flow:taskconfirm') {
+      const flow = telegramFlowState.get('telegram', chatId);
+      if (!flow || flow.flow !== 'task_guided') return;
+      return finishTaskSchedule(chatId, messageId, userId, flow.data);
+    }
     if (data.startsWith('flow:walletpick:')) {
       const label = data.slice('flow:walletpick:'.length);
       const flow = telegramFlowState.get('telegram', chatId);
@@ -976,6 +1479,38 @@ if (BOT_TOKEN) {
       return finishMintExecution(chatId, messageId, userId, flow.data);
     }
 
+    if (data.startsWith('flow:sendwalletpick:')) {
+      const label = data.slice('flow:sendwalletpick:'.length);
+      const flow = telegramFlowState.get('telegram', chatId);
+      if (!flow || flow.flow !== 'send_guided') return;
+      const owned = botCommands.wallets(userId).find(w => w.label === label);
+      if (!owned) return;
+      const flowData = { walletLabel: owned.label, chain: owned.chain };
+      telegramFlowState.advance('telegram', chatId, 'awaiting_amount', flowData);
+      return tgEditMenu(chatId, messageId, renderFlowStep('send_guided', 'awaiting_amount', { userId, data: flowData }));
+    }
+    if (data === 'flow:sendconfirm') {
+      const flow = telegramFlowState.get('telegram', chatId);
+      if (!flow || flow.flow !== 'send_guided') return;
+      return finishSendExecution(chatId, messageId, userId, flow.data);
+    }
+
+    if (data.startsWith('flow:exportwalletpick:')) {
+      const label = data.slice('flow:exportwalletpick:'.length);
+      const flow = telegramFlowState.get('telegram', chatId);
+      if (!flow || flow.flow !== 'export_guided') return;
+      const owned = botCommands.wallets(userId).find(w => w.label === label);
+      if (!owned) return;
+      const flowData = { walletLabel: owned.label };
+      telegramFlowState.advance('telegram', chatId, 'awaiting_confirm', flowData);
+      return tgEditMenu(chatId, messageId, renderFlowStep('export_guided', 'awaiting_confirm', { userId, data: flowData }));
+    }
+    if (data === 'flow:exportconfirm') {
+      const flow = telegramFlowState.get('telegram', chatId);
+      if (!flow || flow.flow !== 'export_guided') return;
+      return finishExportKeyExecution(chatId, messageId, userId, flow.data, String(query.from.id));
+    }
+
     if (data === 'wallet:balance:pick') {
       return tgEditMenu(chatId, messageId, telegramMenus.walletPicker(botCommands.wallets(userId), { prefix:'wallet:balance', emptyHint:'No wallets yet. Create one first.' }));
     }
@@ -983,8 +1518,18 @@ if (BOT_TOKEN) {
       const label = data.slice('wallet:balance:'.length);
       const result = await botCommands.walletBalance(userId, label);
       const lines = result.balances.map(b => `${CHAINS[b.chain]?.name || b.chain}: ${b.balance ?? 'unavailable'} ${b.symbol || ''}`).join('\n');
-      return tgEditMenu(chatId, messageId, { text: `*${result.label}*\n${lines}`,
-        replyMarkup: telegramMenus.keyboard([[telegramMenus.button('⬅️ Back to wallets', 'menu:wallets')]]) });
+      return tgEditMenu(chatId, messageId, { text: `<b>${result.label}</b>\n<code>${result.address}</code>\n${lines}`,
+        replyMarkup: telegramMenus.keyboard([[telegramMenus.button('⬅️ Back to wallets', 'menu:wallets')]]), parseMode: 'HTML' });
+    }
+
+    // Only reached from /address's own picker (no menu entry point -- the point of /address is to
+    // skip menu traversal entirely; the wallets menu's "List wallets" already shows every address).
+    if (data.startsWith('wallet:address:pick:')) {
+      const label = data.slice('wallet:address:pick:'.length);
+      const owned = botCommands.wallets(userId).find(w => w.label === label);
+      if (!owned) return tgEditMenu(chatId, messageId, telegramMenus.placeholderMenu('Wallets', 'That wallet no longer exists.'));
+      return tgEditMenu(chatId, messageId, { text: `<b>${owned.label}</b>\n<code>${owned.address}</code>`,
+        replyMarkup: telegramMenus.keyboard([[telegramMenus.button('⬅️ Back to wallets', 'menu:wallets')]]), parseMode: 'HTML' });
     }
 
     if (data === 'wallet:remove:pick') {
@@ -1002,37 +1547,76 @@ if (BOT_TOKEN) {
     }
   }));
 
+  // Shared by /start, /wallets, and the wallet:list menu button so the three surfaces never drift:
+  // full address in an HTML <code> block -- Telegram's actual tap-to-copy affordance, which the
+  // `backtick` Markdown these previously used never enabled since none of these call sites set
+  // parse_mode -- plus the live per-chain balance from walletBalance's cache (TG-08).
+  async function walletSummaryHtml(userId) {
+    const wallets = botCommands.wallets(userId);
+    if (!wallets.length) return 'No wallets yet.';
+    const blocks = await Promise.all(wallets.map(async w => {
+      const { balances } = await botCommands.walletBalance(userId, w.label);
+      const lines = balances.map(b => `${CHAINS[b.chain]?.name || b.chain}: ${b.balance ?? 'unavailable'} ${b.symbol || ''}`).join('\n');
+      return `<b>${w.label}</b>\n<code>${w.address}</code>\n${lines}`;
+    }));
+    return blocks.join('\n\n');
+  }
+
   const WELCOME_TEXT = `gm. i mint things.
 
 here's the short version:
 
 /mint — mint from a contract
 /batch — mint across multiple wallets
-/wallets — see your wallets
+/send — send funds to an address
+/address — get your wallet address
 /help — this again
-
-i made you a wallet already. /wallets to see it.
 
 send /mint with a contract address to get going.`;
 
   bot.onText(/^\/(?:start|help)(?:@\w+)?$/, withTelegramUser(async (msg, match, userId) => {
-    if (msg.text.startsWith('/start')) {
-      if (botCommands.wallets(userId).length === 0) {
-        try { await botCommands.createWallet(userId, { label: 'wallet-1', chain: CONFIG.supportedChains[0] }); }
-        catch (error) { log(`Auto wallet creation on /start failed: ${safeError(error)}`); }
-      }
-      await tg(msg.chat.id, WELCOME_TEXT);
+    const isStart = msg.text.startsWith('/start');
+    if (isStart && botCommands.wallets(userId).length === 0) {
+      try { await botCommands.createWallet(userId, { label: 'wallet-1', chain: CONFIG.supportedChains[0] }); }
+      catch (error) { log(`Auto wallet creation on /start failed: ${safeError(error)}`); }
     }
     const menu = telegramMenus.mainMenu({ isOwner: await governanceRepository.isOwner(userId) });
-    tgMenu(msg.chat.id, menu);
+    if (!isStart) return tgRender(msg.chat.id, { text: menu.text, replyMarkup: menu.replyMarkup });
+    const summary = await walletSummaryHtml(userId);
+    tgRender(msg.chat.id, { text: `${WELCOME_TEXT}\n\n${summary}\n\n${menu.text}`, replyMarkup: menu.replyMarkup, parseMode: 'HTML' });
   }));
 
-  bot.onText(/^\/mint(?:@\w+)?(?:\s+(\S+))?$/, withTelegramUser(async (msg, match, userId) => {
+  bot.onText(/^\/address(?:@\w+)?$/, withTelegramUser(async (msg, match, userId) => {
+    const wallets = botCommands.wallets(userId);
+    if (!wallets.length) return tg(msg.chat.id, 'No wallets yet. /wallets to create one.');
+    if (wallets.length === 1) {
+      return tg(msg.chat.id, `<b>${wallets[0].label}</b>\n<code>${wallets[0].address}</code>`, { parse_mode: 'HTML' });
+    }
+    tgRender(msg.chat.id, telegramMenus.walletPicker(wallets, { prefix: 'wallet:address:pick', emptyHint: 'No wallets yet.' }));
+  }));
+
+  // /mintnow is the same immediate, auto-detecting mint as /mint -- same handler, just the name a
+  // user reaching for "mint right now" is more likely to type. commandName() reads the literal
+  // word from msg.text, so /mintnow still gets its own extra rate-limit check in withTelegramUser
+  // even though both commands share this handler.
+  bot.onText(/^\/(?:mint|mintnow)(?:@\w+)?(?:\s+(\S+))?$/, withTelegramUser(async (msg, match, userId) => {
     await startMintFlow({ chatId: msg.chat.id, messageId: null, userId, multi: false, contractAddressInput: match[1] || null });
   }));
 
   bot.onText(/^\/batch(?:@\w+)?(?:\s+(\S+))?$/, withTelegramUser(async (msg, match, userId) => {
     await startMintFlow({ chatId: msg.chat.id, messageId: null, userId, multi: true, contractAddressInput: match[1] || null });
+  }));
+
+  bot.onText(/^\/send(?:@\w+)?$/, withTelegramUser(async (msg, match, userId) => {
+    await startSendFlow({ chatId: msg.chat.id, messageId: null, userId });
+  }));
+
+  bot.onText(/^\/exportkey(?:@\w+)?$/, withTelegramUser(async (msg, match, userId) => {
+    await startExportKeyFlow({ chatId: msg.chat.id, messageId: null, userId });
+  }));
+
+  bot.onText(/^\/schedule(?:@\w+)?(?:\s+(\S+))?$/, withTelegramUser(async (msg, match, userId) => {
+    await startTaskScheduleFlow({ chatId: msg.chat.id, messageId: null, userId, contractAddressInput: match[1] || null });
   }));
 
   bot.onText(/^\/link(?:@\w+)?$/, withTelegramUser(async (msg, match, userId) => {
@@ -1143,10 +1727,8 @@ send /mint with a contract address to get going.`;
   bot.onText(/^\/wallets(?:@\w+)?$/, withTelegramUser(async (msg, match, userId) => {
     const wallets = botCommands.wallets(userId);
     if (!wallets.length) return tg(msg.chat.id, 'No wallets yet.');
-    const list = wallets.map((w,i) =>
-      `${i+1}. *${w.label}*\n   \`${w.address.slice(0,6)}...${w.address.slice(-4)}\` · ${CHAINS[w.chain]?.name||w.chain} · minted: ${w.minted||0}`
-    ).join('\n\n');
-    tg(msg.chat.id, `⬡ *Wallets (${wallets.length})*\n\n${list}`);
+    const summary = await walletSummaryHtml(userId);
+    tg(msg.chat.id, `⬡ <b>Wallets (${wallets.length})</b>\n\n${summary}`, { parse_mode: 'HTML' });
   }));
 
   bot.onText(/^\/createwallet(?:@\w+)?\s+(\S+)\s+(\S+)$/i, withTelegramUser(async (msg, match, userId) => {
@@ -1174,10 +1756,15 @@ send /mint with a contract address to get going.`;
     tg(msg.chat.id, `⏸ Social watch rule *${rule.name}* disabled.`);
   }));
 
-  bot.onText(/^\/watch(?:@\w+)?\s+remove\s+([0-9a-f-]+)\s+(CONFIRM)$/i, withTelegramUser(async (msg, match, userId) => {
-    requireTextConfirmation(match[2]);
-    await botCommands.removeWatchRule(userId, match[1]);
-    tg(msg.chat.id, '✅ Social watch rule removed.');
+  bot.onText(/^\/watch(?:@\w+)?\s+remove\s+([0-9a-f-]+)$/i, withTelegramUser(async (msg, match, userId) => {
+    const id = match[1];
+    const rule = (await botCommands.watchRules(userId)).find(item => item.id === id);
+    if (!rule) return tg(msg.chat.id, 'Social watch rule not found. Use /watch list.');
+    setPendingConfirmation(msg.chat.id, async () => {
+      await botCommands.removeWatchRule(userId, id);
+      return `✅ Social watch rule *${rule.name}* removed.`;
+    });
+    tgRender(msg.chat.id, { text: `Remove social watch rule *${rule.name}*? This cannot be undone.`, replyMarkup: confirmationKeyboard() });
   }));
 
   bot.onText(/^\/watch(?:@\w+)?\s+list$/i, withTelegramUser(async (msg, match, userId) => {
@@ -1271,10 +1858,15 @@ send /mint with a contract address to get going.`;
     tg(msg.chat.id, `📊 *GhostMint Stats*\n\n⬡ Wallets: *${state.wallets.length}*\n⏱ Pending: *${pending}*\n⚡ Minted: *${minted}*\n⏭ Skipped: *${stats.skipped}*\n✅ Success rate: *${stats.successRate}%*\n⏰ Uptime: ${fmtCD(process.uptime()*1000)}`);
   }));
 
-  bot.onText(/^\/canceltask(?:@\w+)?\s+([0-9a-f-]+)\s+(CONFIRM)$/i, withTelegramUser(async (msg, match, userId) => {
-    requireTextConfirmation(match[2]);
-    const task = await botCommands.controlTask(userId, 'cancel', match[1]);
-    tg(msg.chat.id, `✅ Task *${task.name}* cancelled.`);
+  bot.onText(/^\/canceltask(?:@\w+)?\s+([0-9a-f-]+)$/i, withTelegramUser(async (msg, match, userId) => {
+    const id = match[1];
+    const task = (await botCommands.tasks(userId)).find(item => item.id === id);
+    if (!task) return tg(msg.chat.id, 'Task not found. Use /tasks.');
+    setPendingConfirmation(msg.chat.id, async () => {
+      const cancelled = await botCommands.controlTask(userId, 'cancel', id);
+      return `✅ Task *${cancelled.name}* cancelled.`;
+    });
+    tgRender(msg.chat.id, { text: `Cancel task *${task.name}*? This cannot be undone.`, replyMarkup: confirmationKeyboard() });
   }));
 
   bot.onText(/^\/pausetask(?:@\w+)?\s+(.+)$/, withTelegramUser(async (msg, match, userId) => {
@@ -1282,48 +1874,39 @@ send /mint with a contract address to get going.`;
     tg(msg.chat.id, `⏸ Task *${task.name}* paused.`);
   }));
 
-  bot.onText(/^\/resumetask(?:@\w+)?\s+([0-9a-f-]+)\s+(CONFIRM)$/i, withTelegramUser(async (msg, match, userId) => {
-    requireTextConfirmation(match[2]);
-    const task = await botCommands.controlTask(userId, 'resume', match[1]);
-    tg(msg.chat.id, `▶ Task *${task.name}* resumed.`);
+  bot.onText(/^\/resumetask(?:@\w+)?\s+([0-9a-f-]+)$/i, withTelegramUser(async (msg, match, userId) => {
+    const id = match[1];
+    const task = (await botCommands.tasks(userId)).find(item => item.id === id);
+    if (!task) return tg(msg.chat.id, 'Task not found. Use /tasks.');
+    setPendingConfirmation(msg.chat.id, async () => {
+      const resumed = await botCommands.controlTask(userId, 'resume', id);
+      return `▶ Task *${resumed.name}* resumed.`;
+    });
+    tgRender(msg.chat.id, { text: `Resume task *${task.name}*?`, replyMarkup: confirmationKeyboard() });
   }));
 
-  bot.onText(/^\/retrytask(?:@\w+)?\s+([0-9a-f-]+)\s+(CONFIRM)$/i, withTelegramUser(async (msg, match, userId) => {
-    requireTextConfirmation(match[2]);
-    const task = await botCommands.controlTask(userId, 'retry', match[1]);
-    tg(msg.chat.id, `↻ Task *${task.name}* queued for retry.`);
+  bot.onText(/^\/retrytask(?:@\w+)?\s+([0-9a-f-]+)$/i, withTelegramUser(async (msg, match, userId) => {
+    const id = match[1];
+    const task = (await botCommands.tasks(userId)).find(item => item.id === id);
+    if (!task) return tg(msg.chat.id, 'Task not found. Use /tasks.');
+    setPendingConfirmation(msg.chat.id, async () => {
+      const retried = await botCommands.controlTask(userId, 'retry', id);
+      return `↻ Task *${retried.name}* queued for retry.`;
+    });
+    tgRender(msg.chat.id, { text: `Retry task *${task.name}*?`, replyMarkup: confirmationKeyboard() });
   }));
 
-  bot.onText(/^\/removewallet(?:@\w+)?\s+(.+)\s+(CONFIRM)$/i, withTelegramUser(async (msg, match, userId) => {
-    requireTextConfirmation(match[2]);
-    const label = await botCommands.removeWallet(userId, match[1]);
-    tg(msg.chat.id, `✅ Wallet *${label}* removed.`);
+  bot.onText(/^\/removewallet(?:@\w+)?\s+(.+)$/i, withTelegramUser(async (msg, match, userId) => {
+    const label = match[1].trim();
+    const owned = botCommands.wallets(userId).find(item => item.label === label);
+    if (!owned) return tg(msg.chat.id, `Wallet "${label}" not found. Use /wallets.`);
+    setPendingConfirmation(msg.chat.id, async () => {
+      const removed = await botCommands.removeWallet(userId, owned.label);
+      return `✅ Wallet *${removed}* removed.`;
+    });
+    tgRender(msg.chat.id, { text: `Remove wallet *${owned.label}*? This cannot be undone.`, replyMarkup: confirmationKeyboard() });
   }));
 
-  bot.onText(/^\/mintnow(?:@\w+)?\s+(.+)\s+(CONFIRM)$/i, withTelegramUser(async (msg, match, userId) => {
-    requireTextConfirmation(match[2]);
-    const parts = match[1].trim().split(/\s+/);
-    if (parts.length < 2) return tg(msg.chat.id, 'Usage: /mintnow <label> <contract> [qty] [price] [chain]');
-    const [label, contract, qtyRaw, priceRaw, chainRaw] = parts;
-    const wallet = findOwnedWallet(DB, userId, label);
-    if (!wallet) return tg(msg.chat.id, `Wallet "${label}" not found. Use /wallets.`);
-    const request = requestSchemas.mint({
-      walletLabel: wallet.label,
-      contractAddress: contract,
-      quantity: qtyRaw === undefined ? 1 : qtyRaw,
-      priceETH: priceRaw === undefined ? 0 : priceRaw,
-      chain: chainRaw === undefined ? wallet.chain : chainRaw,
-    }, { supportedChains: CONFIG.supportedChains });
-    const { quantity: qty, priceETH: price, chain: ch } = request;
-    tg(msg.chat.id, `⚡ Minting from *${wallet.label}*...\nContract: \`${request.contractAddress.slice(0,10)}...\`\nQty: ${qty} | Price: ${price>0?price+' ETH':'Free'}`);
-    try {
-      const result = await botCommands.mint(userId, request);
-      tg(msg.chat.id, `✅ *Mint successful!*\nWallet: *${wallet.label}*\nQty: ${qty}\n[View tx](${CHAINS[ch].ex}${result.txHash})`);
-    } catch(e) {
-      await logActivity(userId, 'fail','Mint failed',wallet.label,null,CHAINS[ch]);
-      tg(msg.chat.id, `❌ *Mint failed*\n${safeError(e).slice(0,120)}`);
-    }
-  }));
 } else {
   log('⚠️  No TELEGRAM_BOT_TOKEN — Telegram disabled.');
 }
@@ -1331,10 +1914,13 @@ send /mint with a contract address to get going.`;
 const botCommands = createBotCommandService({
   storage,
   identity,
+  broadcast: (userId, resource) => dashboardWebSockets.broadcastToUser(userId, {type:`${resource}.changed`}),
   schedulerRepository,
   providerService,
   contractValueResolver,
   seaDropDiscoveryService,
+  openSeaService,
+  priceFeedService,
   governance,
   adminCommands,
   sniperService,
@@ -1358,27 +1944,38 @@ const botCommands = createBotCommandService({
   executePreparedMint:async({userId,wallet,prepared,gasGwei})=>{
     const intent=await mintExecution.executePrepared({userId,wallet,prepared,triggerSource:'manual',
       gasPriceWei:gasGwei===undefined||gasGwei===null?undefined:ethers.parseUnits(String(gasGwei),'gwei')});
-    wallet.minted=(wallet.minted||0)+previewQuantity(prepared.preview);
-    await storage.updateWalletMinted(userId,wallet.label,wallet.minted);
-    await logActivity(userId,'success',`Minted ${previewQuantity(prepared.preview)} NFT(s)`,wallet.label,intent,CHAINS[wallet.chain],{triggerSource:'manual'});
+    await recordMintActivity({ userId, wallet, quantity: previewQuantity(prepared.preview), intent, chain: wallet.chain });
     return intent;
   },
   executeMint: async ({ userId, wallet, request }) => {
     const intent = await executeMint({ wallet, contractAddr: request.contractAddress,
       qty: request.quantity, priceETH: request.priceETH, gasGwei: request.gasGwei,
       chain: request.chain, triggerSource: 'manual' });
-    wallet.minted = (wallet.minted || 0) + request.quantity;
-    await storage.updateWalletMinted(userId, wallet.label, wallet.minted);
-    await logActivity(userId, 'success', `Minted ${request.quantity} NFT${request.quantity > 1 ? 's' : ''}`,
-      wallet.label, intent, CHAINS[request.chain],{triggerSource:'manual'});
+    await recordMintActivity({ userId, wallet, quantity: request.quantity, intent, chain: request.chain });
     return intent;
   },
+  // Unlike mint, a send has no contract/calldata to prepare -- calls transactionEngine.submit
+  // directly (same pattern the sniper's blockchain-triggered copy path already uses at
+  // executeTriggered above), which still applies the same spend caps, gas ceiling, and nonce queue.
+  executeSend: async ({ userId, wallet, request }) => {
+    const intent = await transactionEngine.submit({ userId, wallet, chain: request.chain,
+      to: request.toAddress, valueWei: ethers.parseEther(String(request.amountETH)), triggerSource: 'manual',
+      gasPriceWei: request.gasGwei === undefined || request.gasGwei === null ? undefined : ethers.parseUnits(String(request.gasGwei), 'gwei') });
+    await logActivity(userId, 'success', `Sent ${request.amountETH} ${CHAINS[request.chain]?.sym || ''} to ${request.toAddress}`,
+      wallet.label, intent, CHAINS[request.chain], { triggerSource: 'manual' });
+    return intent;
+  },
+  // SEC-01. decryptPK/keyEncryption stay private to this module either way -- these are the only
+  // two places outside transactionEngine's signing step that ever call it.
+  exportRawKey: async ({ wallet }) => decryptPK(wallet),
+  exportKeystore: async ({ wallet, password }) => new ethers.Wallet(decryptPK(wallet)).encrypt(password),
 });
 const dashboardApi=createDashboardApi({auth:dashboardAuth,identityRepository,commands:botCommands,
   securityAudit:botSecurityRepository,broadcast:(userId,message)=>dashboardWebSockets.broadcastToUser(userId,message),
   supportedChains:CONFIG.supportedChains,
   checkAccountStatus:userId=>governance.checkAccountStatus(userId),
-  loginRateLimiter:createCommandRateLimiter({limit:5,windowMs:60_000})});
+  loginRateLimiter:createCommandRateLimiter({limit:5,windowMs:60_000}),
+  exportKeyRateLimiter});
 
 if (CONFIG.discordBotToken) {
   discordBot = createDiscordBot({ token: CONFIG.discordBotToken,

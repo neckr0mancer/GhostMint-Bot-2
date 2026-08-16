@@ -1,4 +1,4 @@
-/* global CustomEvent, WebSocket, setTimeout */
+/* global Blob, CustomEvent, navigator, URL, WebSocket, setTimeout */
 import React,{useCallback,useEffect,useState} from 'react';
 
 export const ACTIVITY_EVENTS=['snipers.changed','tasks.changed','watchrules.changed','wallets.changed'];
@@ -13,7 +13,7 @@ let dialogRequestListeners=[];
 function publishDialogRequest(request){activeDialogRequest=request;dialogRequestListeners.forEach(listener=>listener(request));}
 function subscribeDialogRequest(listener){dialogRequestListeners.push(listener);return()=>{dialogRequestListeners=dialogRequestListeners.filter(item=>item!==listener);};}
 export function confirmDialog(message){return new Promise(resolve=>{publishDialogRequest({type:'confirm',message,resolve:value=>{publishDialogRequest(null);resolve(value);}});});}
-export function promptDialog(message,{defaultValue='',placeholder=''}={}){return new Promise(resolve=>{publishDialogRequest({type:'prompt',message,defaultValue,placeholder,resolve:value=>{publishDialogRequest(null);resolve(value);}});});}
+export function promptDialog(message,{defaultValue='',placeholder='',masked=false}={}){return new Promise(resolve=>{publishDialogRequest({type:'prompt',message,defaultValue,placeholder,masked,resolve:value=>{publishDialogRequest(null);resolve(value);}});});}
 export function ConfirmHost(){
   const [request,setRequest]=useState(activeDialogRequest);
   useEffect(()=>subscribeDialogRequest(setRequest),[]);
@@ -34,7 +34,7 @@ export function ConfirmHost(){
   return <div className="confirm-modal-backdrop" onClick={cancelChoice}>
     <div className="confirm-modal" role="alertdialog" aria-modal="true" onClick={event=>event.stopPropagation()}>
       <p>{request.message}</p>
-      {request.type==='prompt'&&<input autoFocus value={value} placeholder={request.placeholder} onChange={event=>setValue(event.target.value)} onKeyDown={event=>{if(event.key==='Enter'){event.preventDefault();confirmChoice();}}}/>}
+      {request.type==='prompt'&&<input autoFocus type={request.masked?'password':'text'} autoComplete="off" value={value} placeholder={request.placeholder} onChange={event=>setValue(event.target.value)} onKeyDown={event=>{if(event.key==='Enter'){event.preventDefault();confirmChoice();}}}/>}
       <div className="confirm-modal-actions">
         <button type="button" className="quiet" onClick={cancelChoice}>Cancel</button>
         <button type="button" onClick={confirmChoice}>{request.type==='prompt'?'OK':'Confirm'}</button>
@@ -100,6 +100,23 @@ export function ToastHost(){
   </div>;
 }
 
+const COPY_ICON_PROPS={viewBox:"0 0 24 24",fill:"none",stroke:"currentColor",strokeWidth:"1.8",strokeLinecap:"round",strokeLinejoin:"round",xmlns:"http://www.w3.org/2000/svg"};
+const COPY_ICON=<svg {...COPY_ICON_PROPS}><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M4 16V5a1 1 0 0 1 1-1h11"/></svg>;
+const CHECK_ICON=<svg {...COPY_ICON_PROPS} strokeWidth="2.4"><path d="M5 13l4 4L19 7"/></svg>;
+// Small clipboard-copy button used next to every address-shaped value shown anywhere in the
+// dashboard (wallet/contract addresses, tx hashes, platform account IDs) so a value never has to be
+// selected and copied by hand. `value` is the raw string actually copied -- pass just the address,
+// not a formatted display string, so copy-then-paste works directly.
+export function CopyButton({value,label}){
+  const [copied,setCopied]=useState(false);
+  async function copy(event){
+    event.stopPropagation();
+    if(!value)return;
+    try{await navigator.clipboard.writeText(value);setCopied(true);setTimeout(()=>setCopied(false),1500);}catch{/* clipboard permission denied -- nothing more we can do */}
+  }
+  return <button type="button" className="user-card-copy" aria-label={label} onClick={copy}>{copied?CHECK_ICON:COPY_ICON}</button>;
+}
+
 // All chains the transaction engine currently supports are EVM (Ethereum, Base, Arbitrum, Polygon,
 // and any future addition to src/config's CHAIN_DEFINITIONS) -- a single wallet address already
 // works across every one of them. Solana is listed for visibility but is not wired up anywhere in
@@ -112,6 +129,18 @@ export function GroupedChainOptions({options=[],labelFor=value=>value}){return <
 
 export function csrf(){return document.cookie.split(';').map(value=>value.trim()).find(value=>value.startsWith('ghostmint_csrf='))?.split('=').slice(1).join('=')||'';}
 export async function api(path,options={}){const response=await fetch(path,{...options,headers:{'Content-Type':'application/json',...(options.method&&options.method!=='GET'?{'X-CSRF-Token':decodeURIComponent(csrf())}:{})}});const body=response.status===204?null:await response.json().catch(()=>({}));if(!response.ok){const error=new Error(body?.issues?.map(item=>`${item.field} ${item.message}`).join('; ')||body?.error||'Request failed');error.status=response.status;error.code=body?.code;throw error;}return body;}
+
+// Triggers a client-side file save (used for the exported wallet keystore) via the standard
+// Blob-URL-plus-synthetic-<a>-click pattern -- content never leaves the browser except through the
+// download itself, since the anchor is never actually inserted into visible layout.
+export function downloadFile(filename,content,mimeType='application/json'){
+  const blob=new Blob([content],{type:mimeType});
+  const url=URL.createObjectURL(blob);
+  const link=document.createElement('a');
+  link.href=url;link.download=filename;
+  document.body.appendChild(link);link.click();document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
 export function useLoad(path,dependencies=[],wsEvents){const [data,setData]=useState(null);const [error,setError]=useState('');const load=useCallback(()=>{setError('');return api(path).then(setData).catch(value=>setError(value.message));},[path,...dependencies]);useEffect(()=>{load();},[load]);useEffect(()=>{if(!wsEvents)return;const watched=[].concat(wsEvents);const listener=event=>{if(watched.includes(event.detail?.type))load();};window.addEventListener('ghostmint-ws',listener);return()=>window.removeEventListener('ghostmint-ws',listener);},[load,wsEvents]);return {data,error,load};}
 // Opens the one live-update socket for the whole session (shared by both the regular dashboard
 // shell and the admin shell, which previously never opened one at all -- so admin pages had no live

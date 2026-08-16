@@ -116,6 +116,13 @@ function walletLabel(value, field = 'walletLabel') {
   return normalized;
 }
 
+// The password a dashboard user picks to encrypt their own exported V3 keystore -- server-side
+// only (see server.js's exportKeystore), never a login/account credential, so there's nothing to
+// check it against; only a minimum length to keep it from being trivially crackable.
+function keystorePassword(value, field = 'password') {
+  return string(value, field, { min: 12, max: 200 });
+}
+
 function uniqueWalletLabel(value, existingLabels = []) {
   const normalized = walletLabel(value, 'label');
   if (existingLabels.some(label => String(label).toLowerCase() === normalized.toLowerCase())) {
@@ -233,6 +240,20 @@ function validateMintRequest(input, context) {
   };
 }
 
+// A plain native-currency transfer -- deliberately has no contractAddress/functionName/abi at all,
+// unlike every other value-bearing schema in this file, since it never touches mint-shaped calldata.
+function validateSendRequest(input, context) {
+  const amountETH = finiteNumber(input.amountETH ?? input.amount, 'amountETH', { min: 0, max: LIMITS.priceEth });
+  if (amountETH <= 0) fail('amountETH', 'must be greater than 0');
+  return {
+    walletLabel: walletLabel(input.walletLabel),
+    toAddress: ethereumAddress(input.toAddress ?? input.to, 'toAddress'),
+    amountETH,
+    chain: chainName(input.chain, context.supportedChains),
+    gasGwei: fee(input.gasGwei ?? input.gas, 'gasGwei'),
+  };
+}
+
 function validateTaskCreate(input, context) {
   return {
     id: input.id === undefined ? randomUUID() : uuid(input.id, 'id'),
@@ -339,6 +360,8 @@ const requestSchemas = Object.freeze({
   walletCreate: validateWalletCreate,
   mint: validateMintRequest,
   batchMint: validateBatchMint,
+  send: validateSendRequest,
+  walletExport: input => ({ password: keystorePassword(input.password) }),
   taskCreate: validateTaskCreate,
   sniperCreate: validateSniper,
   pnlCreate: validatePnlRecord,
