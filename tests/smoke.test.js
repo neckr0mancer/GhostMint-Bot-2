@@ -193,7 +193,13 @@ smokeTest('a banned account\'s due scheduled task fails without executing, inste
     const output = () => `stdout:\n${stdout}\nstderr:\n${stderr}`;
     await waitForHealth(`http://127.0.0.1:${port}/health`, child, output);
 
-    const deadline = Date.now() + 15_000;
+    // Generous on purpose. The worker polls once a second and this assertion needs a full
+    // claim -> AccountBlockedError -> permanent-fail round trip against a remote database, which
+    // measured ~14s standalone but tips past a 15s budget when the rest of the suite has been
+    // hammering the same connection pool -- a timeout here was reported as a scheduler failure
+    // when nothing was actually broken. Widening only changes how long we wait for a verdict; it
+    // does not weaken any assertion below, and a genuinely stuck task still fails the run.
+    const deadline = Date.now() + 60_000;
     let row;
     do {
       const result = await pool.query('SELECT status,last_error FROM mint_tasks WHERE id=$1 AND user_id=$2', [taskId, userId]);
