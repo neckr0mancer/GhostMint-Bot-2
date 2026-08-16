@@ -3,143 +3,246 @@
 Tracks the backlog of user-facing feature work (mint reliability, transaction modes, sniper, gas,
 wallet import, OpenSea pricing, send/deposit UX, Telegram formatting). Separate from
 [`ROADMAP.md`](../ROADMAP.md), which covers the numbered platform/safety milestones (1–16, all
-shipped). Last updated 2026-08-16 after a full implementation pass — see "What shipped" per
-section for the actual code, and "Verification" at the bottom for how it was checked.
+shipped).
+
+- **Round 1** (Sections A–K) was scoped and implemented on 2026-08-16; 9 of 11 sections shipped in
+  commit `423c7c1`. Kept below as the record of what exists.
+- **Round 2** (Sections L–R) is the newer batch of requirements, not yet started.
 
 Status legend: ✅ Done · 🟡 Partial · ❌ Not started
 
-## Section A — Mint reliability ✅
+---
 
-- `/mintnow` is a real one-shot now: with a resolvable contract, one wallet, and a known price,
-  it reaches execution with zero taps *when the caller's transaction mode allows bypass*
-  (Section C's Degen preset). Anything genuinely unresolvable (multiple wallets, unknown price)
-  is still asked for; without bypass mode it behaves like `/mint`. `startMintFlow`/
-  `isVerificationBypassed` in `src/server.js`.
-- Bare `0x…` addresses with no command now show contract details on both Telegram
-  (`handleFlowTextMessage`) and Discord (new `messageCreate` listener in `discordBot.js`).
-- Telegram message formatting migrated from broken `*asterisk*` Markdown (never had `parse_mode`
-  set) to real HTML across the entire bot — every one-shot command, every guided-flow template,
-  every background push notification. `escapeTelegramHtml` (`src/security/botSecurity.js`) added
-  and applied to every interpolated free-text value.
+# Round 2 — additional requirements (current backlog)
 
-## Section B — Scheduled mint parity with `/mint` ✅
+## Section L — Custom "X amount" input everywhere ❌
 
-- Fixed the real bug: `executeTask` (scheduler fire-time execution) used to hardcode
-  `mint(uint256)` sent to the NFT contract directly, while immediate `/mint` correctly branched
-  to SeaDrop's core contract when needed — a scheduled mint of a SeaDrop drop would not have
-  minted correctly. Factored a shared `prepareMintCall()` in `src/server.js` used by both
-  `executeMint` (immediate) and the scheduler's `executeTask`, so they can't drift apart again.
-- Dashboard's Schedule form now has the same "Auto-detect price & opening time" button Minting
-  already had (`dashboard/src/App.jsx`, `Tasks` component).
-- 🟡 Discord's `/task create` still requires a raw JSON body with an explicit `mintTime` — no
-  auto-detection reaches Discord. Tracked separately (see "Still open" below) since it needs a
-  guided modal/select-menu flow, bundled with Section E's Discord work.
+Round 1 added fixed quick-pick buttons (send: Max/75/50/25; mint quantity: 1/2/5/max). What's
+missing is an explicit **`X` / custom** button on those same keyboards that switches to manual
+entry, rather than relying on the user knowing they can just type a number.
 
-## Section C — Transaction mode UX (Degen → Normie) ✅
+- Applies to: send amount, mint quantity, and any other quick-pick keyboard added later
+  (scheduled-mint quantity, sniper caps).
+- Typing a raw number already works today on both steps — this is about making that discoverable
+  as a button, and making the prompt say so.
 
-- Data model: migration `035_mode_preset_gas_multiplier.sql` adds `gas_price_multiplier` to
-  `mode_presets` (Degen 1.5×, Fast 1.2×, Cautious 1.05×, Normie 1.0× network price), applied in
-  `transactionEngine.js`'s fee computation — only to auto-computed fees, never overriding an
-  explicit caller-supplied gas price. Threaded through `policyRepository.js` including the
-  per-target preset override path.
-- UI: Discord's `/mode` is a proper `.addChoices()` dropdown. Dashboard Settings has a
-  self-service mode-picker panel (`TransactionModePanel` in `App.jsx`) plus the owner preset
-  editor (`Admin.jsx`) got a gas-multiplier field. Telegram's Settings → Transaction mode is a
-  real button menu (`telegramMenus.modeMenu`) — tap a preset, Y/N confirm, applied.
+## Section M — Automatic contract detection → one-shot mint popup 🟡
 
-## Section D — Gas command per-chain selection ✅
+Round 1 got partway: pasting a bare `0x…` address with no command now auto-detects the contract
+and shows the details screen, on Telegram and Discord. What's missing is collapsing the rest of
+the flow into that one popup.
 
-- Telegram's `/gas` accepts an optional chain argument (was hardcoded to `ethereum`) and both
-  `/gas` and the Gas menu button render a button-based chain switcher
-  (`telegramMenus.gasMenu`) instead of the old placeholder text.
-- `ETHERSCAN_API_KEY` is set in `.env` (user-provided) — `/gas` returns real data on all 6
-  configured chains (ethereum, base, arbitrum, polygon, robinhood, sepolia).
+- Today after detection: details → Continue → (quantity, if max>1) → wallet → (price) → confirm.
+  That's up to five taps.
+- Wanted: the detection result **is** the mint interface — one popup carrying default amount
+  buttons, the `X` custom-amount button from Section L, and Yes/No confirm, completing the mint
+  without leaving it.
+- **Multi-wallet behavior (decided):** show a select-wallet prompt first, then the confirmation
+  after it. So the shape is:
+  - *One wallet* (the common case, already auto-selected today): paste → popup with amount
+    buttons + `X` custom → Yes/No confirm → done.
+  - *Multiple wallets*: paste → popup with amount buttons + `X` custom → select wallet →
+    confirm → done.
+- **Depends on Section N.** The headline case here is "user pastes an address" — i.e. the user
+  types a message — which is exactly when the anchored-panel bug bites. Today pasting an address
+  already renders the details panel *above* the pasted text (the bare-address branch doesn't
+  delete the user's message the way flow steps do). Building M before N means shipping the new
+  popup directly on top of the bug, so N should land first or alongside.
 
-## Section E — Sniper configuration + auto mint-open detection ❌ still open
+## Section N — Telegram prompts appear above the user's input ✅
 
-The largest remaining item — not started this pass.
+Reported symptom: new prompts still render above what the user just typed.
 
-- No guided config flow anywhere: Telegram has no sniper-creation command (list/edit-by-raw-JSON
-  only); Discord's `/sniper create` takes one pre-validated JSON string.
-- No mint-open auto-detection integrated into sniper. Today's "sniper" is post-confirmation
-  copy-trading of a target wallet (`src/sniper/sniperService.js`), unrelated to detecting when a
-  contract's own mint opens. SeaDrop's on-chain `PublicDrop.startTime` is the one real signal
-  that exists, currently wired only into `/mint`/`/schedule`.
-- Plan (unchanged from original scoping): guided flow (contract → chain → wallet → fee tolerance
-  → caps) on both platforms; a new `sniper_mode: 'copy' | 'contract_open'` field; for
-  `contract_open`, poll `PublicDrop.startTime` (SeaDrop) or a `paused()`/`saleActive()` getter
-  (plain contracts), firing through the same transaction-engine path once open, respecting the
-  sniper's own fee/value/daily caps. `socialWatchWorker.js`/`schedulerWorker.js` are reusable
-  poll-loop skeletons.
+**This is a real consequence of Round 1's Section J**, and worth being upfront about: converting
+every one-shot command reply to edit an anchored message means the panel stays where it was in the
+transcript. When you then type `/gas`, your message is the newest thing in the chat and the bot's
+updated panel sits above it — so the chat reads out of order. Guided flows hide this by deleting
+the user's message (`tgDeleteUserMessage`), but that only runs on flow text steps and only works
+when the bot has delete permission.
 
-## Section F — Batch wallet import ✅
+Three candidate fixes, in increasing order of intrusiveness:
 
-- Owner-only (`governance.requireOwner`), on both dashboard (Admin → Batch import page) and
-  Discord (`/wallet batch-import`). Reuses `persistWallet` per key — same validation/encryption
-  as a single import — so one bad key doesn't sink the batch; per-key success/failure reported.
-  Intentionally skipped on Telegram (pasting many raw private keys into a Telegram text field is
-  a worse security posture than the other two surfaces) — say so if you want it there too.
+1. **Re-anchor on divergence** — if the anchored panel is no longer the most recent message in the
+   chat, delete it and send a fresh one instead of editing in place. Keeps one live panel and
+   keeps it at the bottom. Costs one delete + one send per interaction.
+2. **Delete the user's command message too**, extending what guided flows already do to one-shot
+   commands. Cheapest, but silently removes the user's own messages from their history, and fails
+   closed where the bot lacks delete rights.
+3. **Only edit while the panel is still last**, otherwise send new — a middle ground that leaves
+   stale panels behind in scrollback.
 
-## Section G + K — OpenSea price fallback + accept-price flow + quantity prompt ✅
+**Shipped (option 1, re-anchor).** Ordering logic lives in `src/telegram/panelState.js` as a pure,
+unit-tested store (11 tests), mirroring how `flowState.js` separates sequencing from delivery;
+`server.js` keeps only the Telegram calls that act on its decisions. Behavior:
 
-- `OPENSEA_API_KEY` is set in `.env`. Turned out OpenSea has a public, self-service, no-login
-  "agent" free-tier key endpoint (`POST https://api.opensea.io/api/v2/auth/keys`) — confirmed
-  working, currently issued key expires 2026-08-23. `npm run opensea:refresh-key`
-  (`scripts/refresh-opensea-key.js`) re-requests and rewrites it into `.env` when it lapses.
-- When a contract's price can't be read and OpenSea has a floor price, it's offered as a one-tap
-  accept via Y/N-style buttons ("Use X ETH" / "Enter manually") on both `/mint` and `/schedule`'s
-  guided flows — reuses the existing free-text fallback either way.
-- When a contract's `maxPerWallet` allows more than 1, Telegram's mint flow now asks quantity
-  (quick buttons for 1/2/5/max, or type a number) instead of hardcoding 1 — threaded through to
-  execution and the confirm screen. Discord and the dashboard already asked.
+- The panel is edited in place while it is still the newest message in the chat.
+- Once the user sends anything below it, the panel *moves*: a fresh one is sent at the bottom and
+  the stale one deleted. The delete is attempted only after the replacement sends, so a failed
+  send can never leave the chat with no panel.
+- Guided flows that delete the user's reply roll that back (`noteDeleted`), so they keep editing
+  in place rather than pointlessly chasing a message nobody can see.
+- Telegram message ids are per-chat sequential, so `newest > anchor` decides this with no extra
+  API call.
 
-## Section H — Deposit command + wallet list format ✅
+Writing the tests caught a real ordering bug in the first implementation: the size sweep ran
+before the insert, so a store one entry below its threshold never swept at all.
 
-- `/deposit` added on Telegram and Discord (deposit-framed wallet-address lookup).
-- Telegram's `/wallets` and `/start` wallet summary now prefix each wallet's balance block with
-  `EVM` before the per-chain lines, matching the dashboard's existing chain-family labeling.
+## Section O — Button ⇄ command parity ❌
 
-## Section I — Send flow quick-select amount buttons ✅
+Every UI button must do exactly what its `/` command does, sharing the same code path rather than
+a parallel implementation. Round 1 fixed two of these (Telegram's Gas and Transaction mode buttons
+now act directly, calling the same `botCommands.gas()` / `selectMode()` the commands use). The
+rest are still placeholder screens that just tell the user to go type a command:
 
-- Telegram's send flow shows Max/75%/50%/25% buttons alongside free-text entry. Max reserves a
-  gas buffer (21000 gas at the chain's current fast fee + 30% headroom — `/send` is always a
-  plain native-currency transfer, so gas usage is deterministic) so it doesn't leave nothing for
-  the network fee; percentage tiers are straightforward fractions of balance.
+| Surface | Buttons still telling the user to type a command |
+|---|---|
+| Telegram | `menu:snipers`, `menu:watch`, `menu:activity`, `menu:admin` |
+| Discord | `menu:mint`, `menu:tasks`, `menu:snipers`, `menu:watch`, `menu:activity`, `menu:gas`, `menu:admin` |
 
-## Section J — Telegram "edit in place" ✅
+Discord's menu is substantially further behind than Telegram's — effectively every entry is a
+placeholder there.
 
-Per your explicit choice ("every bot reply, chat becomes one living panel"): all ~45 remaining
-one-shot command replies (`/mode`, `/gas`, `/stats`, `/watch *`, `/mintpreset`, `/admin`,
-`/mintcall`, task pause/resume/retry, error-catch branches, background push notifications'
-formatting-only) now use `tgRender` instead of a bare `sendMessage`, so they edit the chat's
-anchored message instead of posting a new bubble. Guided multi-step flows already worked this
-way and are unchanged.
+**On the Gas / Transaction-mode wording:** the requirements say these buttons "should not
+prompt/use the equivalent command" but also "must remain consistent with the command-based
+implementation" and, under parity, must "act as UI shortcuts to the existing command
+functionality." Read literally those pull in opposite directions, so I've taken it as: *the button
+must not reply with "go type `/gas <chain>`" — it must perform the action itself, through the same
+underlying service the command calls, so results are identical either way.* That's what Round 1
+already implemented for Telegram's two. **Correct me if you meant something else** — specifically
+if "independently fetch gas data" was meant to imply a separate data source rather than a separate
+prompt, that's a different (and contradictory) requirement.
+
+## Section P — Watch specific transactions ❌
+
+Today's watching is wallet-level (`sniperService` copies a target wallet's confirmed transactions;
+`socialWatch` monitors social sources). Wanted: watch a **specific transaction** tied to a wallet
+address and notify on occurrence/state change.
+
+- Delivery routes to whichever platform is configured — Discord if configured, Telegram if
+  configured. `notificationService` already resolves a user's linked platforms, so the delivery
+  half largely exists; the tracking half does not.
+- Overlaps with Section R (sniper contract-open detection) — both want a poller watching chain
+  state and firing a notification/action. Worth building one watcher abstraction for both rather
+  than two.
+
+## Section Q — Accept OpenSea collection links ❌
+
+Accept `opensea.io` collection URLs anywhere a contract address is accepted, resolve the URL to
+its collection/contract, then continue into the normal contract/mint workflow.
+
+- `openSeaService` already talks to the OpenSea API and can map a collection slug to a contract
+  (`/collections/{slug}` → contract address), so this is mostly URL parsing plus one lookup, not
+  new integration work.
+- Should slot into the same entry points as a bare address (Section M), so pasting a link behaves
+  exactly like pasting the contract it refers to.
+
+## Section R — Sniper guided config + contract-open auto-detection ❌
+
+Carried over from Round 1, still the largest single item.
+
+- No guided config flow: Telegram has no sniper-creation command at all; Discord's `/sniper create`
+  takes one pre-validated JSON blob.
+- No mint-open detection. Plan: guided flow (contract → chain → wallet → fee tolerance → caps), a
+  `sniper_mode: 'copy' | 'contract_open'` field, and for `contract_open` a poller on
+  `PublicDrop.startTime` (SeaDrop) or a `paused()`/`saleActive()` getter, firing through the same
+  transaction engine once open and respecting the sniper's own caps. Share the watcher with
+  Section P.
+
+## Section S — Discord guided task-schedule ❌
+
+Carried over. Discord's `/task create` still needs a raw JSON body with explicit `mintTime`, while
+Telegram and the dashboard both auto-detect price and opening time. Needs a modal/select-menu flow
+like Discord's existing wallet create/import. Natural to bundle with Sections O and R, which all
+need the same Discord component patterns.
+
+## Suggested order for Round 2
+
+1. **Section N** (prompt position) — it's a live UX regression from Round 1 and needs a decision
+   from you before anything else touches Telegram rendering.
+2. **Section L** (custom X button) — small, self-contained, and Section M depends on it.
+3. **Section M** (paste → one-shot mint popup) + **Section Q** (OpenSea links) — same entry point,
+   best done together.
+4. **Section O** (parity) — mechanical but broad; Discord is the bulk of it.
+5. **Section P** + **Section R** — share one watcher abstraction, build together.
+6. **Section S** — folds naturally into O/R's Discord work.
+
+## Open questions blocking clean implementation
+
+- ~~**Section N:** which of the three fixes?~~ **Answered:** re-anchor. Shipped — M is unblocked.
+- ~~**Section M:** multi-wallet behavior?~~ **Answered:** select-wallet prompt first, then
+  confirmation.
+- **Section O:** confirm the Gas/mode reading above — "don't make the user type the command,"
+  not "use a different data source."
 
 ---
 
-## Still open
+# Round 1 — shipped 2026-08-16 (commit `423c7c1`)
 
-1. **Section E — Sniper guided config + contract-open auto-detection.** Largest remaining item;
-   not started.
-2. **Discord guided flows for task-schedule.** Give Discord's `/task create` the same contract
-   auto-detection (price, opening time) Telegram and the dashboard have, instead of a raw JSON
-   body — likely a modal/select-menu flow similar to Discord's existing wallet create/import.
-   Natural to bundle with #1 since both need the same Discord component patterns.
+## Section A — Mint reliability ✅
 
-## Verification
+- `/mintnow` is a real one-shot: with a resolvable contract, one wallet, and a known price it
+  reaches execution with zero taps *when the caller's transaction mode allows bypass* (Degen).
+  Anything unresolvable is still asked for; without bypass it behaves like `/mint`.
+- Bare `0x…` addresses with no command show contract details on Telegram and Discord.
+- Telegram formatting migrated from broken `*asterisk*` Markdown (which never rendered, since
+  `parse_mode` was never set) to HTML bot-wide, with `escapeTelegramHtml` applied to every
+  interpolated free-text value.
 
-Every change this pass was checked with: `npm run check` (syntax across the whole project),
-`npm run lint`, and the full test suite (`npm test`, 375 tests, all passing) — including
-integration tests against the real database. `npm run dashboard:build` was re-run after every
-dashboard change. Migration `035` was applied and its values spot-checked directly against the
-database. A real bug this process caught: the new Discord `/wallet batch-import` subcommand had
-an optional option ordered before a required one, which discord.js's builder didn't reject at
-build time but Discord's own API rejected at command-registration time (surfaced only by actually
-booting the bot) — fixed, then verified programmatically that no other command has the same
-ordering defect.
+## Section B — Scheduled mint parity ✅
 
-## Inputs already provided
+- Fixed a real bug: `executeTask` hardcoded `mint(uint256)` straight to the NFT contract while
+  immediate `/mint` correctly branched to SeaDrop's core contract — a scheduled SeaDrop mint would
+  not have minted. Both paths now share `prepareMintCall()`.
+- Dashboard's Schedule form gained the same auto-detect the Minting form had.
 
-- **Etherscan API key** — set in `.env`, Section D confirmed working.
-- **OpenSea API key** — set in `.env` via the self-service free-tier endpoint, expires
-  2026-08-23; `npm run opensea:refresh-key` renews it.
+## Section C — Transaction modes (Degen → Normie) ✅
+
+- Migration `035` adds `gas_price_multiplier` to `mode_presets` (Degen 1.5×, Fast 1.2×, Cautious
+  1.05×, Normie 1.0×), applied in `transactionEngine.js` to auto-computed fees only — never
+  overriding an explicit caller-supplied gas price.
+- Button/dropdown mode selection on Telegram, Discord, and the dashboard.
+
+## Section D — Gas per-chain ✅
+
+Telegram's `/gas` takes a chain argument and the Gas button renders a real chain switcher.
+`ETHERSCAN_API_KEY` set; live data on all 6 configured chains.
+
+## Section F — Batch wallet import ✅
+
+Owner-only, on dashboard and Discord, reusing `persistWallet` per key with per-key success/failure
+reporting. Skipped on Telegram deliberately (pasting raw private keys into Telegram is a worse
+security posture).
+
+## Section G + K — OpenSea price fallback, accept-price, quantity ✅
+
+- `OPENSEA_API_KEY` set via OpenSea's public self-service free-tier endpoint
+  (`POST /api/v2/auth/keys`, no login). Expires ~weekly; `npm run opensea:refresh-key` renews it.
+- Unreadable contract price → OpenSea floor offered as one-tap accept, free-text fallback either
+  way, on both `/mint` and `/schedule`.
+- `maxPerWallet > 1` now prompts for quantity instead of hardcoding 1.
+
+## Section H — Deposit + wallet list ✅
+
+`/deposit` on Telegram and Discord; `EVM` prefix on Telegram wallet balance blocks.
+
+## Section I — Send quick amounts ✅
+
+Max/75/50/25 buttons; Max reserves a gas buffer (21000 gas at current fast fee +30%) so it doesn't
+leave nothing for the network fee.
+
+## Section J — Telegram edit-in-place ✅ (see Section N)
+
+All ~45 one-shot command replies now edit the chat's anchored message via `tgRender`. **Note the
+side effect captured in Section N above** — this is what causes prompts to render above newly
+typed user input.
+
+## Verification (Round 1)
+
+`npm run check`, `npm run lint`, `npm run dashboard:build`, and the full 375-test suite all pass.
+Migration `035` applied and spot-checked against the database. Two real defects were caught by
+actually booting/merging rather than by tests: a Discord command-registration ordering error
+(optional option before a required one, which discord.js accepts at build time but Discord's API
+rejects at registration), and a merge that would have reverted a wrong-network safety fix on
+`main`. A third finding — the banned-account scheduler smoke test failing — was diagnosed as a
+pre-existing 15s timing budget against a ~14s operation, not a regression; deadline widened to 60s
+with assertions unchanged.

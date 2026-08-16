@@ -42,6 +42,7 @@ const { createSocialWatchWorker } = require('./social/socialWatchWorker');
 const { createRetentionWorker } = require('./governance/retentionWorker');
 const { createSocialUsageService, formatUsageSummary } = require('./social/usageService');
 const { createFlowStateStore } = require('./telegram/flowState');
+const { createPanelStore } = require('./telegram/panelState');
 const telegramMenus = require('./telegram/menus');
 const { createChainWatcher } = require('./sniper/chainWatcher');
 const { createSniperRepository } = require('./sniper/sniperRepository');
@@ -1138,7 +1139,9 @@ function tgEditMenu(chatId, messageId, { text, replyMarkup, parseMode }) {
 // edit the old one). Unlike tgEditMenu, a failed edit here must NOT fall back to sending through
 // itself -- tgRender needs to know the edit failed so it can send the replacement AND update the
 // anchor, whereas tgEditMenu's callers already treat "sent a new message instead" as success.
-const chatAnchors = new Map();
+// Ordering rules live in src/telegram/panelState.js (pure, unit-tested); this file owns only the
+// Telegram calls that act on its decisions.
+const telegramPanels = createPanelStore();
 
 async function tgEditRaw(chatId, messageId, { text, replyMarkup, parseMode }) {
   if (!bot || !chatId || !messageId) return null;
@@ -1149,12 +1152,26 @@ async function tgEditRaw(chatId, messageId, { text, replyMarkup, parseMode }) {
   }
 }
 
+// Editing in place is only correct while the panel is still the newest message in the chat. Once
+// the user has sent anything below it -- a slash command, a pasted contract address -- an edit
+// would update a bubble that now sits ABOVE their message, so the conversation reads out of order
+// (the panel appears to answer before the question). In that case the panel *moves* instead: a
+// fresh one is sent at the bottom and the stale one removed, so there is still exactly one live
+// panel and it is always below whatever the user just typed. The delete is deliberately attempted
+// only after the replacement has been sent, so a failed send can never leave the chat with no
+// panel at all.
 async function tgRender(chatId, payload) {
-  const anchor = chatAnchors.get(chatId);
-  const edited = anchor && await tgEditRaw(chatId, anchor, payload);
-  if (edited) return edited;
+  const { anchor } = telegramPanels.read(chatId);
+  const stale = telegramPanels.shouldMove(chatId);
+  if (anchor && !stale) {
+    const edited = await tgEditRaw(chatId, anchor, payload);
+    if (edited) return edited;
+  }
   const sent = await tgMenu(chatId, payload);
-  if (sent?.message_id) chatAnchors.set(chatId, sent.message_id);
+  if (sent?.message_id) {
+    if (stale && bot) bot.deleteMessage(chatId, anchor).catch(() => {});
+    telegramPanels.noteAnchor(chatId, sent.message_id);
+  }
   return sent;
 }
 
@@ -1172,9 +1189,17 @@ function tgUpdate(chatId, messageId, payload) {
 // import step, where leaving the key sitting in chat history is a real exposure, not just clutter.
 // Telegram only allows a bot to delete a private-chat message within 48 hours, so failures here
 // (older messages, group chats) are expected and safe to swallow.
-function tgDeleteUserMessage(msg) {
+// Awaited by its callers (rather than fire-and-forget) so the panel bookkeeping below settles
+// before the next tgRender decides whether to edit in place or move.
+async function tgDeleteUserMessage(msg) {
   if (!bot || !msg?.chat?.id || !msg?.message_id) return;
-  bot.deleteMessage(msg.chat.id, msg.message_id).catch(() => {});
+  try {
+    await bot.deleteMessage(msg.chat.id, msg.message_id);
+    // The message is gone, so it no longer sits below the live panel. Forgetting it keeps guided
+    // flows editing in place -- they always consume and delete the user's reply -- instead of
+    // pointlessly moving the panel to get below a message nobody can see any more.
+    telegramPanels.noteDeleted(msg.chat.id, msg.message_id);
+  } catch { /* older than 48h, or a chat where the bot lacks delete rights -- expected, ignore */ }
 }
 
 const EXPORT_KEY_TTL_MS = 30_000;
@@ -1212,18 +1237,18 @@ async function handleFlowTextMessage(msg) {
     if (ethers.isAddress(trimmed)) await startMintFlow({ chatId, messageId: null, userId, multi: false, contractAddressInput: trimmed });
     return;
   }
-  if (flow.pendingCancel) { tgDeleteUserMessage(msg); tgRender(chatId, telegramMenus.confirmCancelPrompt(FLOW_LABELS[flow.flow] || flow.flow)); return; }
+  if (flow.pendingCancel) { await tgDeleteUserMessage(msg); tgRender(chatId, telegramMenus.confirmCancelPrompt(FLOW_LABELS[flow.flow] || flow.flow)); return; }
   const isTextStep = (flow.flow === 'wallet_create' && flow.step === 'awaiting_label')
     || (flow.flow === 'wallet_import' && (flow.step === 'awaiting_label' || flow.step === 'awaiting_key'))
     || (flow.flow === 'mint_guided' && ['awaiting_contract', 'awaiting_quantity', 'awaiting_price'].includes(flow.step))
     || (flow.flow === 'send_guided' && (flow.step === 'awaiting_amount' || flow.step === 'awaiting_destination'))
     || (flow.flow === 'task_guided' && ['awaiting_contract', 'awaiting_price', 'awaiting_name', 'awaiting_time'].includes(flow.step));
-  if (!isTextStep) { tgDeleteUserMessage(msg); tgRender(chatId, { text: 'Please use the buttons above, or tap Cancel.', replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' }); return; }
+  if (!isTextStep) { await tgDeleteUserMessage(msg); tgRender(chatId, { text: 'Please use the buttons above, or tap Cancel.', replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' }); return; }
 
   // Consumed as flow input from here on -- clear it immediately rather than after a successful
   // outcome, so a private key or any other sensitive reply never lingers in chat history even if
   // validation later rejects it.
-  tgDeleteUserMessage(msg);
+  await tgDeleteUserMessage(msg);
   const value = msg.text.trim();
   if (flow.step === 'awaiting_label') {
     if (!value || value.length > 64) { tgRender(chatId, { text: 'Label must be 1-64 characters. Try again.', replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' }); return; }
@@ -1342,7 +1367,7 @@ function withTelegramCallback(handler) {
       // as a tgRender() anchor -- keep the anchor pointed at it so a free-text reply that follows
       // (e.g. typing a price after tapping through the mint flow) edits this same message instead
       // of spawning a new one.
-      if (messageId) chatAnchors.set(chatId, messageId);
+      if (messageId) telegramPanels.noteAnchor(chatId, messageId);
 
       const data = query.data || '';
       const activeFlow = telegramFlowState.get('telegram', chatId);
@@ -1508,6 +1533,11 @@ if (BOT_TOKEN) {
 
   bot.on('message', msg => {
     if(msg.text?.startsWith('/')&&!msg.from?.id) log('Telegram command without sender ignored');
+    // Every inbound message -- slash command or free text -- lands below the live panel, which is
+    // what makes an in-place edit read out of order. Recording it here (before any handler runs)
+    // is what lets tgRender decide to move the panel instead. Guided flows that delete the user's
+    // reply undo this again inside tgDeleteUserMessage.
+    if (msg.chat?.id && msg.message_id) telegramPanels.noteIncoming(msg.chat.id, msg.message_id);
     handleFlowTextMessage(msg).catch(error => log(`Telegram flow text handling failed: ${safeError(error)}`));
   });
 
