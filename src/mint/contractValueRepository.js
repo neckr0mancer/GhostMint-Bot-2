@@ -8,6 +8,24 @@ function mapRow(row) {
   };
 }
 
+function mapSeaDropRow(row) {
+  if (!row || row.seadrop_resolved_at === null || row.seadrop_resolved_at === undefined) return null;
+  return {
+    address: row.seadrop_address,
+    discoverySource: row.seadrop_discovery_source,
+    feeRecipient: row.seadrop_fee_recipient,
+    publicDrop: row.seadrop_mint_price_wei === null ? null : {
+      mintPriceWei: row.seadrop_mint_price_wei,
+      startTime: row.seadrop_start_time,
+      endTime: row.seadrop_end_time,
+      maxTotalMintableByWallet: row.seadrop_max_total_mintable_by_wallet,
+      feeBps: row.seadrop_fee_bps,
+      restrictFeeRecipients: row.seadrop_restrict_fee_recipients,
+    },
+    resolvedAt: row.seadrop_resolved_at,
+  };
+}
+
 function createContractValueRepository(pool) {
   return {
     async get(chain, contractAddress) {
@@ -16,6 +34,33 @@ function createContractValueRepository(pool) {
         [chain, contractAddress.toLowerCase()],
       );
       return mapRow(result.rows[0]);
+    },
+
+    async getSeaDrop(chain, contractAddress) {
+      const result = await pool.query(
+        'SELECT * FROM contract_value_cache WHERE chain=$1 AND contract_address=$2',
+        [chain, contractAddress.toLowerCase()],
+      );
+      return mapSeaDropRow(result.rows[0]);
+    },
+
+    async saveSeaDrop(chain, contractAddress, { address, discoverySource, publicDrop, feeRecipient }) {
+      const result = await pool.query(`INSERT INTO contract_value_cache
+        (chain,contract_address,seadrop_address,seadrop_discovery_source,seadrop_fee_recipient,
+         seadrop_mint_price_wei,seadrop_start_time,seadrop_end_time,seadrop_max_total_mintable_by_wallet,
+         seadrop_fee_bps,seadrop_restrict_fee_recipients,seadrop_resolved_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW())
+        ON CONFLICT (chain,contract_address) DO UPDATE SET
+          seadrop_address=EXCLUDED.seadrop_address,seadrop_discovery_source=EXCLUDED.seadrop_discovery_source,
+          seadrop_fee_recipient=EXCLUDED.seadrop_fee_recipient,seadrop_mint_price_wei=EXCLUDED.seadrop_mint_price_wei,
+          seadrop_start_time=EXCLUDED.seadrop_start_time,seadrop_end_time=EXCLUDED.seadrop_end_time,
+          seadrop_max_total_mintable_by_wallet=EXCLUDED.seadrop_max_total_mintable_by_wallet,
+          seadrop_fee_bps=EXCLUDED.seadrop_fee_bps,seadrop_restrict_fee_recipients=EXCLUDED.seadrop_restrict_fee_recipients,
+          seadrop_resolved_at=NOW() RETURNING *`,
+        [chain, contractAddress.toLowerCase(), address ?? null, discoverySource ?? null, feeRecipient ?? null,
+          publicDrop?.mintPriceWei ?? null, publicDrop?.startTime ?? null, publicDrop?.endTime ?? null,
+          publicDrop?.maxTotalMintableByWallet ?? null, publicDrop?.feeBps ?? null, publicDrop?.restrictFeeRecipients ?? null]);
+      return mapSeaDropRow(result.rows[0]);
     },
 
     async save(chain, contractAddress, { price, maxSupply, maxPerWallet }) {

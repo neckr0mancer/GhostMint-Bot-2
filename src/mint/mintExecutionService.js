@@ -7,7 +7,7 @@ function createMintExecutionService({ mintService, transactionEngine }) {
       wallet,
       chain: prepared.chain,
       triggerSource,
-      to: prepared.preview.contractAddress,
+      to: prepared.preview.callTarget ?? prepared.preview.contractAddress,
       data: prepared.calldata,
       valueWei: prepared.valueWei,
       methodSignature: prepared.method.signature,
@@ -20,7 +20,7 @@ function createMintExecutionService({ mintService, transactionEngine }) {
 
   return {
     preview({userId,wallet,prepared,triggerSource='manual',gasPriceWei}) {
-      return transactionEngine.preview({userId,wallet,chain:prepared.chain,triggerSource,to:prepared.preview.contractAddress,
+      return transactionEngine.preview({userId,wallet,chain:prepared.chain,triggerSource,to:prepared.preview.callTarget ?? prepared.preview.contractAddress,
         data:prepared.calldata,valueWei:prepared.valueWei,methodSignature:prepared.method.signature,
         callPreview:prepared.preview,gasPriceWei,forceSimulation:true});
     },

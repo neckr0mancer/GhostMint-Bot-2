@@ -4,27 +4,38 @@ const { ValidationError, requestSchemas } = require('../validation/domain');
 const { paginate, pagination } = require('../pagination');
 const { calculateStatistics } = require('../statistics/statisticsService');
 const { detectContractChain } = require('../mint/chainDetector');
+const { computeSeaDropValueWei } = require('../mint/seaDropCall');
 
 function createBotCommandService(dependencies) {
   const { storage, schedulerRepository, providerService, governance, adminCommands, sniperService,
     socialWatchService, socialUsageService, targetPolicyService, triggerExecutionService, governanceRepository,
     triggerAuditRepository, transactionIntentRepository, gasService, supportedChains, chains, encryptPrivateKey, getState, executeMint,
-    sniperRepository, mintService, previewMint, executePreparedMint, identity, contractValueResolver,
+    sniperRepository, mintService, previewMint, executePreparedMint, identity, contractValueResolver, seaDropDiscoveryService,
     ensureChainWatcher = () => {} } = dependencies;
 
   // Discord's /mint no longer has a price input; Telegram's guided flow doesn't ask for one either.
   // If the caller already gave a price (either field name the schema accepts), that stands -- an
   // explicit value always wins over a probed one. Only probes when both chain and contract are
   // present; otherwise leaves it alone so normal validation reports the real missing field.
+  // A SeaDrop drop with a known PublicDrop price is deliberately left with no priceETH here --
+  // executeMint's own SeaDrop branch computes valueWei directly from the discovered mintPriceWei
+  // (in wei, not the lossy ETH-string round trip this function produces), so forcing a priceETH
+  // here would just be discarded downstream. If SeaDrop's price genuinely can't be read either,
+  // this still falls through to the same "please provide it" error as any other contract.
   async function resolvePriceIfMissing(input, chain) {
     if (input.priceETH !== undefined && input.priceETH !== null) return input;
     if (input.price !== undefined && input.price !== null) return input;
-    if (!contractValueResolver || !chain || !input.contractAddress) return input;
-    const resolved = await contractValueResolver.resolve(chain, input.contractAddress);
-    if (!resolved.price) {
-      throw new ValidationError({ field: 'priceETH', message: 'could not be determined from this contract; please provide it' });
+    if (!chain || !input.contractAddress) return input;
+    if (contractValueResolver) {
+      const resolved = await contractValueResolver.resolve(chain, input.contractAddress);
+      if (resolved.price) return { ...input, priceETH: formatEther(BigInt(resolved.price.value)) };
     }
-    return { ...input, priceETH: formatEther(BigInt(resolved.price.value)) };
+    if (seaDropDiscoveryService) {
+      const seaDrop = await seaDropDiscoveryService.resolve(chain, input.contractAddress);
+      if (seaDrop.address && seaDrop.publicDrop) return input;
+    }
+    if (!contractValueResolver && !seaDropDiscoveryService) return input;
+    throw new ValidationError({ field: 'priceETH', message: 'could not be determined from this contract; please provide it' });
   }
 
   // Dashboard-facing counterpart to what Telegram/Discord's guided /mint flow already does
@@ -49,6 +60,37 @@ function createBotCommandService(dependencies) {
       priceKnown,
       maxSupply: resolved.maxSupply?.value ?? null,
       maxPerWallet: resolved.maxPerWallet?.value ?? null,
+    };
+  }
+
+  // Dashboard-only counterpart to detectMintContract, for contracts that don't implement any
+  // whitelisted mint(...) signature at all -- SeaDrop tokens gate their own mint function and
+  // require calling a separate SeaDrop core contract instead (see seaDropDiscoveryService.js and
+  // seaDropCall.js). Mirrors detectMintContract's "unknown is a valid outcome" shape: a drop that
+  // can't be auto-discovered returns seaDropFound:false rather than throwing, so the dashboard can
+  // fall back to a manually-entered SeaDrop core address.
+  async function detectSeaDropDrop(userId, input) {
+    const contractAddress = String(input.contractAddress || '').trim();
+    if (!isAddress(contractAddress)) throw new ValidationError({ field: 'contractAddress', message: 'must be a valid Ethereum address' });
+    const chain = await detectContractChain({ providerService, supportedChains, contractAddress });
+    if (!chain) throw new ValidationError({ field: 'contractAddress', message: 'could not be found on any supported chain' });
+    const quantity = Math.max(1, Math.min(100, Math.floor(Number(input.quantity)) || 1));
+    const resolved = seaDropDiscoveryService
+      ? await seaDropDiscoveryService.resolve(chain, contractAddress)
+      : { address: null, publicDrop: null, feeRecipient: null };
+    const seaDropFound = Boolean(resolved.address);
+    const priceKnown = seaDropFound && Boolean(resolved.publicDrop);
+    return {
+      chain,
+      seaDropFound,
+      seaDropAddress: resolved.address,
+      feeRecipient: resolved.feeRecipient,
+      quantity,
+      priceKnown,
+      valueWei: priceKnown ? computeSeaDropValueWei({ mintPriceWei: resolved.publicDrop.mintPriceWei, quantity }).toString() : null,
+      maxTotalMintableByWallet: resolved.publicDrop?.maxTotalMintableByWallet ?? null,
+      startTime: resolved.publicDrop?.startTime ?? null,
+      endTime: resolved.publicDrop?.endTime ?? null,
     };
   }
 
@@ -258,7 +300,7 @@ function createBotCommandService(dependencies) {
 
   return {
     createWallet, importWallet, removeWallet, walletBalance, mint, batchMint, createTask, controlTask, addPnl, updatePnl, deletePnl,
-    prepareMint,submitPreparedMint,detectMintContract,mintPresets:userId=>mintService.listPresets(userId),
+    prepareMint,submitPreparedMint,detectMintContract,detectSeaDropDrop,mintPresets:userId=>mintService.listPresets(userId),
     createSniper, updateSniper, removeSniper, gas,
     sniperEvents:userId=>sniperRepository.listRecentForUser(userId),
     wallets: userId => state(userId).wallets,
