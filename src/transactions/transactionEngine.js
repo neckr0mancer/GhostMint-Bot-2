@@ -38,6 +38,27 @@ function createTransactionEngine({
     return providerService.perform(chain, name, operation);
   }
 
+  // estimateGas/call revert with a raw ethers CALL_EXCEPTION (not a TransactionSafetyError) when the
+  // target contract doesn't actually implement the call being made -- the most common cause being a
+  // wrong or unsupported function signature. Without this, that exception was falling all the way
+  // through to a generic "request failed" response instead of a message that explains what happened.
+  function explainCallFailure(error) {
+    if (error?.reason) return `Simulating this call failed: ${error.reason}`;
+    if (error?.shortMessage) return `Simulating this call failed: ${error.shortMessage}`;
+    if (error?.message) return `Simulating this call failed: ${error.message}`;
+    return 'Simulating this call failed -- the contract may not implement this function, or the call would revert.';
+  }
+
+  async function estimateGasSafely(chain, params) {
+    try { return await providerCall(chain, 'estimateGas', provider => provider.estimateGas(params)); }
+    catch (error) { throw new TransactionSafetyError('SIMULATION_FAILED', explainCallFailure(error)); }
+  }
+
+  async function simulateCallSafely(chain, params) {
+    try { return await providerCall(chain, 'simulate', provider => provider.call(params)); }
+    catch (error) { throw new TransactionSafetyError('SIMULATION_FAILED', explainCallFailure(error)); }
+  }
+
   async function transition(intentId, state, details) {
     const updated = await intentRepository.transition(intentId, state, details);
     await safeNotify(notify, { intent: updated, state });
@@ -92,14 +113,14 @@ function createTransactionEngine({
     if(!policy.ceilingExempt&&selectedFee>parseUnits(String(policy.gasCeilingGwei),'gwei')) throw new TransactionSafetyError('GAS_CEILING_EXCEEDED','Transaction fee exceeds the configured gas ceiling');
     const feeFields=maxFeePerGasWei!==null&&maxFeePerGasWei!==undefined
       ?{maxFeePerGas:maxFeePerGasWei,maxPriorityFeePerGas:maxPriorityFeePerGasWei??0n,type:2}:{gasPrice:gasPriceWei};
-    const gasLimit=await providerCall(request.chain,'estimateGas',provider=>provider.estimateGas({...base,...feeFields}));
+    const gasLimit=await estimateGasSafely(request.chain,{...base,...feeFields});
     const estimatedCostWei=valueWei+BigInt(gasLimit)*BigInt(selectedFee);
     const balance=await providerCall(request.chain,'getBalance',provider=>provider.getBalance(request.wallet.address));
     if(BigInt(balance)<estimatedCostWei) throw new TransactionSafetyError('INSUFFICIENT_BALANCE','Wallet balance is below the estimated transaction cost');
     const spent=await intentRepository.rollingSpendWei(request.userId,request.wallet.id,now()-86_400_000);
     if(!policy.ceilingExempt&&spent+estimatedCostWei>policy.dailySpendingBudgetWei) throw new TransactionSafetyError('DAILY_BUDGET_EXCEEDED','Transaction would exceed the wallet daily spending budget');
     const simulationPerformed=policy.simulationEnabled||request.forceSimulation===true;
-    if(simulationPerformed) await providerCall(request.chain,'simulate',provider=>provider.call({...base,...feeFields,gasLimit}));
+    if(simulationPerformed) await simulateCallSafely(request.chain,{...base,...feeFields,gasLimit});
     return {simulationEnabled:policy.simulationEnabled,simulationPerformed,simulationPassed:true,gasLimit:BigInt(gasLimit),
       estimatedCostWei,feePerGasWei:BigInt(selectedFee)};
   }
@@ -175,7 +196,7 @@ function createTransactionEngine({
         ? { maxFeePerGas: maxFeePerGasWei, maxPriorityFeePerGas: maxPriorityFeePerGasWei ?? 0n, type: 2 }
         : { gasPrice: gasPriceWei };
       const gasLimit = request.gasLimitWei === undefined
-        ? await providerCall(request.chain, 'estimateGas', provider => provider.estimateGas({ ...base, ...feeFields }))
+        ? await estimateGasSafely(request.chain, { ...base, ...feeFields })
         : asBigInt(request.gasLimitWei, 'gasLimitWei');
       if (gasLimit <= 0n) throw new TransactionSafetyError('INVALID_TRANSACTION', 'Gas limit must be positive');
       const estimatedCostWei = valueWei + gasLimit * selectedFee;
@@ -188,7 +209,7 @@ function createTransactionEngine({
         throw new TransactionSafetyError('DAILY_BUDGET_EXCEEDED', 'Transaction would exceed the wallet daily spending budget');
       }
       if (policy.simulationEnabled) {
-        await providerCall(request.chain, 'simulate', provider => provider.call({ ...base, ...feeFields, gasLimit }));
+        await simulateCallSafely(request.chain, { ...base, ...feeFields, gasLimit });
       }
 
       const providerNonce = Number(await providerCall(request.chain, 'getTransactionCount', provider => provider.getTransactionCount(from, 'pending')));

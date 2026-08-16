@@ -364,6 +364,13 @@ tbody tr:last-child td{border-bottom:0}
 .bell-log-info .bell-log-dot{background:var(--accent)}
 .bell-log-message{flex:1;min-width:0;color:var(--text);overflow-wrap:anywhere}
 .bell-log-time{flex-shrink:0;color:var(--text-faint);font-size:.72rem;white-space:nowrap}
+/* Compact auto-popup for a single new notification -- same anchor point and card styling as the
+   full dropdown, but shows only the newest entry and disappears on its own (see NotificationBell). */
+.bell-auto-preview{position:absolute;top:calc(100% + .6rem);right:0;z-index:50;width:min(20rem,88vw);
+  padding:.75rem .9rem;border-radius:var(--radius-lg);border:1px solid var(--border-strong);
+  background:linear-gradient(180deg,var(--surface-2),var(--surface));box-shadow:var(--shadow-lg);
+  display:flex;align-items:flex-start;gap:.55rem;cursor:pointer;animation:fadeIn var(--fast) var(--ease)}
+.bell-auto-preview .bell-log-dot{margin-top:.4rem}
 .notification-bell-desktop{display:none}
 .policy-grid{display:grid;gap:1rem}
 .bypass,.warning-box{display:grid;gap:.8rem;margin-top:1rem;padding:1rem 1.1rem;

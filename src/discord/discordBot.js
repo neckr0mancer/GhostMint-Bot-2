@@ -4,6 +4,7 @@ const {
 const { AccountBlockedError, AuthorizationError } = require('../governance/governanceService');
 const { LinkCodeError } = require('../identity/identityService');
 const { ProofResolutionError } = require('../mint/proofResolver');
+const { TransactionSafetyError } = require('../transactions/transactionEngine');
 const { ValidationError, validationReply } = require('../validation/domain');
 const { BotContextError, RateLimitError, commandName, createCommandRateLimiter, escapeDiscord,
   verifyDiscordContext } = require('../security/botSecurity');
@@ -161,7 +162,7 @@ function componentErrorMessage(error) {
   if (error instanceof AuthorizationError) return 'Owner access required.';
   if (error instanceof RateLimitError) return `Too many sensitive commands. Retry in ${Math.ceil(error.retryAfterMs / 1000)} seconds.`;
   if (error instanceof BotContextError) return 'Command rejected: use the authorized development guild and channel.';
-  if (error instanceof LinkCodeError || error instanceof ProofResolutionError) return escapeDiscord(error.message);
+  if (error instanceof LinkCodeError || error instanceof ProofResolutionError || error instanceof TransactionSafetyError) return escapeDiscord(error.message);
   return 'Action failed safely. Please try again.';
 }
 
@@ -304,7 +305,7 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, s
         await audit({platform:'discord',platformUserId:interaction.user?.id,
           contextId:`${interaction.guildId||''}:${interaction.channelId||''}`,command:commandName(data),
           outcome:'invalid_context',reason:error.message});
-      } else if (!(error instanceof ValidationError) && !(error instanceof LinkCodeError) && !(error instanceof ProofResolutionError)) {
+      } else if (!(error instanceof ValidationError) && !(error instanceof LinkCodeError) && !(error instanceof ProofResolutionError) && !(error instanceof TransactionSafetyError)) {
         log(`Discord component interaction failed: ${error?.message || 'unknown error'}`);
       }
       await dcRespond(interaction, { content: componentErrorMessage(error), components: [] });
@@ -534,7 +535,7 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, s
         await audit({platform:'discord',platformUserId:interaction.user?.id,
           contextId:`${interaction.guildId||''}:${interaction.channelId||''}`,command:commandName(interaction.commandName),
           outcome:'invalid_context',reason:error.message}); }
-      else if (error instanceof LinkCodeError || error instanceof ProofResolutionError) message = escapeDiscord(error.message);
+      else if (error instanceof LinkCodeError || error instanceof ProofResolutionError || error instanceof TransactionSafetyError) message = escapeDiscord(error.message);
       else log(`Discord command failed: ${error?.message || 'unknown error'}`);
       if (interaction.deferred || interaction.replied) await interaction.editReply(message).catch(() => {});
       else await interaction.reply({ content: message, ephemeral: true }).catch(() => {});

@@ -43,8 +43,13 @@ function createProviderService({ chains, timeoutMs = 10_000, retries = 1, provid
             timeoutMs,
             `${chain} ${operationName}`,
           );
-        } catch {
-          // Try the same endpoint according to policy, then fail over.
+        } catch (error) {
+          // A CALL_EXCEPTION means a provider was reached and answered definitively that this
+          // specific call would revert -- retrying or failing over to another provider can't change
+          // that answer, and doing so both wastes calls and replaces a useful revert reason with a
+          // misleading "RPC providers failed" message. Every other error (timeout, connection
+          // refused, rate limited, etc.) keeps the existing retry/fail-over behavior below.
+          if (error?.code === 'CALL_EXCEPTION') throw error;
         }
       }
     }

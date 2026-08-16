@@ -54,7 +54,7 @@ const { createPostgresStorage } = require('./storage/postgresStorage');
 const { createTransactionIntentRepository } = require('./transactions/intentRepository');
 const { createTransactionPolicyRepository } = require('./transactions/policyRepository');
 const { createProviderService } = require('./transactions/providerService');
-const { createTransactionEngine } = require('./transactions/transactionEngine');
+const { createTransactionEngine, TransactionSafetyError } = require('./transactions/transactionEngine');
 const { createTriggerPipeline } = require('./triggers/triggerPipeline');
 const { createTargetPolicyRepository } = require('./triggers/targetPolicyRepository');
 const { createTargetPolicyService } = require('./triggers/targetPolicyService');
@@ -594,6 +594,7 @@ async function finishMintExecution(chatId, messageId, userId, flowData) {
     }
     telegramFlowState.clear('telegram', chatId);
     if (error instanceof ValidationError) return tgEditMenu(chatId, messageId, { text: validationReply(error), replyMarkup: backToMenu });
+    if (error instanceof TransactionSafetyError) return tgEditMenu(chatId, messageId, { text: `❌ ${error.message}`, replyMarkup: backToMenu });
     throw error;
   }
 }
@@ -793,6 +794,10 @@ function withTelegramUser(handler) {
           command:commandName(msg.text||msg.caption),outcome:'invalid_context',reason:error.message});return;
       }
       if (error instanceof ProofResolutionError) {
+        tg(msg.chat.id, `❌ ${error.message}`);
+        return;
+      }
+      if (error instanceof TransactionSafetyError) {
         tg(msg.chat.id, `❌ ${error.message}`);
         return;
       }

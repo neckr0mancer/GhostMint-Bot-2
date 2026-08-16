@@ -1,4 +1,4 @@
-/* global CustomEvent, FormData, localStorage */
+/* global clearTimeout, CustomEvent, FormData, localStorage, setTimeout */
 import React,{useCallback,useEffect,useRef,useState} from 'react';
 import Admin from './Admin.jsx';
 import {ACTIVITY_EVENTS,api,confirmDialog,ConfirmHost,csrf,Empty,EVM_CHAINS,getNotificationLog,notify,Notice,PageTitle,Pager,Skeleton,StatusPill,subscribeNotificationLog,ToastHost,useLoad,useLiveSocket} from './shared.jsx';
@@ -87,15 +87,38 @@ function relativeTime(at){const seconds=Math.max(0,Math.floor((Date.now()-at)/10
 // The bell surfaces two different things: pending confirmations (actionable, drive the badge
 // count) and a short recent-notifications log (informational, sourced from the same notify() log
 // the toast host reads -- so anything a toast reported is still checkable here after it auto-dismisses).
-function NotificationBell(){const [items,setItems]=useState([]);const [open,setOpen]=useState(false);const [log,setLog]=useState(getNotificationLog());const load=useCallback(()=>api('/api/confirmations').then(setItems).catch(x=>notify(x.message,{type:'error'})),[]);useEffect(()=>{load();const listener=event=>{const message=event.detail;if(message.type==='confirmation.pending')setItems(current=>[message.request,...current.filter(x=>x.id!==message.request.id)]);if(message.type==='confirmation.resolved')setItems(current=>current.filter(x=>x.id!==message.requestId));};window.addEventListener('ghostmint-ws',listener);return()=>window.removeEventListener('ghostmint-ws',listener);},[load]);useEffect(()=>subscribeNotificationLog(setLog),[]);async function resolve(id,decision){try{await api(`/api/confirmations/${id}`,{method:'POST',body:JSON.stringify({decision})});setItems(current=>current.filter(x=>x.id!==id));}catch(x){notify(x.message,{type:'error'});load();}}
+function NotificationBell(){const [items,setItems]=useState([]);const [open,setOpen]=useState(false);const [log,setLog]=useState(getNotificationLog());const [autoPreview,setAutoPreview]=useState(null);const seenIds=useRef(new Set(getNotificationLog().map(entry=>entry.id)));const autoPreviewTimer=useRef(null);const load=useCallback(()=>api('/api/confirmations').then(setItems).catch(x=>notify(x.message,{type:'error'})),[]);useEffect(()=>{load();const listener=event=>{const message=event.detail;if(message.type==='confirmation.pending')setItems(current=>[message.request,...current.filter(x=>x.id!==message.request.id)]);if(message.type==='confirmation.resolved')setItems(current=>current.filter(x=>x.id!==message.requestId));};window.addEventListener('ghostmint-ws',listener);return()=>window.removeEventListener('ghostmint-ws',listener);},[load]);
+  // New notifications pop a compact preview off the bell itself (not the full dropdown) for a few
+  // seconds, so you don't have to open the list to notice something just happened. Suppressed while
+  // the full dropdown is already open, since the new entry is already visible there.
+  useEffect(()=>subscribeNotificationLog(next=>{
+    setLog(next);
+    const newest=next[0];
+    if(newest&&!seenIds.current.has(newest.id)){
+      seenIds.current.add(newest.id);
+      if(!open){
+        setAutoPreview(newest);
+        clearTimeout(autoPreviewTimer.current);
+        autoPreviewTimer.current=setTimeout(()=>setAutoPreview(null),5000);
+      }
+    }
+  }),[open]);
+  useEffect(()=>()=>clearTimeout(autoPreviewTimer.current),[]);
+  async function resolve(id,decision){try{await api(`/api/confirmations/${id}`,{method:'POST',body:JSON.stringify({decision})});setItems(current=>current.filter(x=>x.id!==id));}catch(x){notify(x.message,{type:'error'});load();}}
+  function dismissAutoPreview(){setAutoPreview(null);clearTimeout(autoPreviewTimer.current);}
+  function toggleBell(){if(autoPreview){dismissAutoPreview();return;}setOpen(value=>!value);}
   return <div className="notification-bell">
-    <button type="button" className="bell-trigger" aria-label={`${items.length} pending confirmations`} aria-expanded={open} onClick={()=>setOpen(value=>!value)}>{BELL_ICON}{items.length>0&&<span className="bell-count">{items.length}</span>}</button>
+    <button type="button" className="bell-trigger" aria-label={`${items.length} pending confirmations`} aria-expanded={open} onClick={toggleBell}>{BELL_ICON}{items.length>0&&<span className="bell-count">{items.length}</span>}</button>
     {open&&<div className="bell-backdrop" onClick={()=>setOpen(false)}/>}
     {open&&<div className="bell-dropdown" role="dialog" aria-label="Notifications">
       <h2>Pending confirmations</h2>
       {items.length===0?<p className="bell-empty">Nothing pending confirmation right now.</p>:items.map(item=><article className="preview" key={item.id}><strong>{item.triggerSource} | {item.targetType}:{item.targetId}</strong><p>{item.preview?.contractAddress} | {item.preview?.methodSignature}</p>{item.preview?.arguments?.map(arg=><p key={arg.name}>{arg.name}: <code>{String(arg.value)}</code></p>)}<div className="actions"><button onClick={()=>resolve(item.id,'CONFIRM')}>Approve</button><button className="danger" onClick={()=>resolve(item.id,'REJECT')}>Reject</button></div></article>)}
       <h2 className="bell-section">Recent notifications</h2>
       {log.length===0?<p className="bell-empty">Nothing recent.</p>:<ul className="bell-log">{log.map(entry=><li key={entry.id} className={`bell-log-item bell-log-${entry.type}`}><span className="bell-log-dot" aria-hidden="true"/><span className="bell-log-message">{entry.message}</span><span className="bell-log-time">{relativeTime(entry.at)}</span></li>)}</ul>}
+    </div>}
+    {!open&&autoPreview&&<div className={`bell-auto-preview bell-log-${autoPreview.type}`} role="status" aria-live="polite" onClick={dismissAutoPreview}>
+      <span className="bell-log-dot" aria-hidden="true"/>
+      <span className="bell-log-message">{autoPreview.message}</span>
     </div>}
   </div>;}
 function Account({profile,onLogout}){const [linking,setLinking]=useState(null);async function generate(){try{setLinking(await api('/api/auth/link-code',{method:'POST',body:JSON.stringify({})}));}catch(value){notify(value.message,{type:'error'});}}return <><PageTitle eyebrow="Identity" title="Account" subtitle="One account, shared across Telegram, Discord, and this dashboard."/><div className="card-grid">{profile.linkedAccounts.map(account=><article className="card" key={account.platform}><span className="pill">{account.platform}</span><h2>{account.platformUserId}</h2></article>)}</div><div className="panel"><h2>Connect another platform</h2><p>Generate a five-minute, single-use code, then run <code>/link code:&lt;code&gt;</code> in Discord (or <code>/link</code> generates the same kind of code directly from Telegram) to connect it to this same account instead of creating a separate one.</p><button className="panel-cta" onClick={generate}>Generate link code</button>{linking&&<div className="link-code-result"><strong>{linking.code}</strong><p>Expires at {new Date(linking.expiresAt).toLocaleTimeString()}</p></div>}</div>{profile.isOwner&&<div className="panel"><h2>Admin</h2><p>Owner-only controls for groups, ceilings, presets, and platform-wide governance live on a separate screen.</p><a className="quiet admin-link panel-cta" href="/dashboard/admin">Open admin dashboard</a></div>}<div className="panel"><h2>Session</h2><p>Signed in {profile.linkedAccounts.map(item=>item.platform).join(' + ')||'as a linked user'}.</p><button className="quiet panel-cta" onClick={onLogout}>Log out</button></div></>}
