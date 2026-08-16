@@ -71,7 +71,7 @@ function commandServiceFixture({ contractValueResolver, seaDropDiscoveryService 
   const state = { wallets: [{ userId: 'user-a', label: 'main', address: WALLET, chain: 'ethereum' }], tasks: [], activity: [], pnl: [], snipers: [] };
   const calls = [];
   const service = createBotCommandService({
-    storage: {}, schedulerRepository: {}, providerService: {}, governance: {}, adminCommands: {}, sniperService: {},
+    storage: {}, schedulerRepository: {}, providerService: { perform: async () => '0x1234' }, governance: {}, adminCommands: {}, sniperService: {},
     supportedChains: ['ethereum'], chains: { ethereum: { sym: 'ETH' } }, getState: () => state,
     contractValueResolver, seaDropDiscoveryService,
     executeMint: async ({ userId, wallet, request }) => { calls.push(['executeMint', userId, wallet.label, request]); return { txHash: '0xabc' }; },
@@ -105,4 +105,32 @@ test('mint() still requires a manual price when neither resolver finds anything'
   });
   await assert.rejects(service.mint('user-a', { walletLabel: 'main', contractAddress: CONTRACT, quantity: 1, chain: 'ethereum' }), ValidationError);
   assert.equal(calls.length, 0);
+});
+
+test('detectMintContract tries SeaDrop first and returns a SeaDrop-shaped result when a core is found', async () => {
+  const { service } = commandServiceFixture({
+    contractValueResolver: { resolve: async () => { throw new Error('should not be reached -- SeaDrop was found first'); } },
+    seaDropDiscoveryService: { resolve: async () => ({ address: SEADROP, publicDrop: { mintPriceWei: '1000', maxTotalMintableByWallet: 5 }, feeRecipient: FEE_RECIPIENT }) },
+  });
+  const result = await service.detectMintContract('user-a', { contractAddress: CONTRACT, quantity: 2 });
+  assert.equal(result.isSeaDrop, true);
+  assert.equal(result.methodSignature, SEADROP_MINT_SIGNATURE);
+  assert.equal(result.seaDropAddress, SEADROP);
+  assert.equal(result.priceKnown, true);
+  assert.equal(result.valueWei, '2000');
+  assert.equal(result.maxPerWallet, 5);
+});
+
+test('detectMintContract falls back to the plain mint(uint256) assumption when no SeaDrop core is found', async () => {
+  const { service } = commandServiceFixture({
+    contractValueResolver: { resolve: async () => ({ price: { value: '500' }, maxSupply: { value: '10000' }, maxPerWallet: { value: '3' } }) },
+    seaDropDiscoveryService: { resolve: async () => ({ address: null, publicDrop: null, feeRecipient: null }) },
+  });
+  const result = await service.detectMintContract('user-a', { contractAddress: CONTRACT, quantity: 2 });
+  assert.equal(result.isSeaDrop, false);
+  assert.equal(result.methodSignature, 'mint(uint256)');
+  assert.equal(result.seaDropAddress, null);
+  assert.equal(result.priceKnown, true);
+  assert.equal(result.valueWei, '1000');
+  assert.equal(result.maxPerWallet, '3');
 });

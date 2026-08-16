@@ -1,4 +1,4 @@
-/* global CustomEvent, WebSocket, setTimeout */
+/* global CustomEvent, navigator, WebSocket, setTimeout */
 import React,{useCallback,useEffect,useState} from 'react';
 
 export const ACTIVITY_EVENTS=['snipers.changed','tasks.changed','watchrules.changed','wallets.changed'];
@@ -98,6 +98,23 @@ export function ToastHost(){
       <button type="button" className="toast-dismiss" aria-label="Dismiss notification" onClick={()=>dismissToast(toast.id)}>×</button>
     </div>)}
   </div>;
+}
+
+const COPY_ICON_PROPS={viewBox:"0 0 24 24",fill:"none",stroke:"currentColor",strokeWidth:"1.8",strokeLinecap:"round",strokeLinejoin:"round",xmlns:"http://www.w3.org/2000/svg"};
+const COPY_ICON=<svg {...COPY_ICON_PROPS}><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M4 16V5a1 1 0 0 1 1-1h11"/></svg>;
+const CHECK_ICON=<svg {...COPY_ICON_PROPS} strokeWidth="2.4"><path d="M5 13l4 4L19 7"/></svg>;
+// Small clipboard-copy button used next to every address-shaped value shown anywhere in the
+// dashboard (wallet/contract addresses, tx hashes, platform account IDs) so a value never has to be
+// selected and copied by hand. `value` is the raw string actually copied -- pass just the address,
+// not a formatted display string, so copy-then-paste works directly.
+export function CopyButton({value,label}){
+  const [copied,setCopied]=useState(false);
+  async function copy(event){
+    event.stopPropagation();
+    if(!value)return;
+    try{await navigator.clipboard.writeText(value);setCopied(true);setTimeout(()=>setCopied(false),1500);}catch{/* clipboard permission denied -- nothing more we can do */}
+  }
+  return <button type="button" className="user-card-copy" aria-label={label} onClick={copy}>{copied?CHECK_ICON:COPY_ICON}</button>;
 }
 
 // All chains the transaction engine currently supports are EVM (Ethereum, Base, Arbitrum, Polygon,

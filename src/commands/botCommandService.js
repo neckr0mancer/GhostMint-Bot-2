@@ -5,6 +5,7 @@ const { paginate, pagination } = require('../pagination');
 const { calculateStatistics } = require('../statistics/statisticsService');
 const { detectContractChain } = require('../mint/chainDetector');
 const { computeSeaDropValueWei } = require('../mint/seaDropCall');
+const { SEADROP_MINT_SIGNATURE } = require('../mint/seaDropRegistry');
 
 function createBotCommandService(dependencies) {
   const { storage, schedulerRepository, providerService, governance, adminCommands, sniperService,
@@ -39,58 +40,51 @@ function createBotCommandService(dependencies) {
   }
 
   // Dashboard-facing counterpart to what Telegram/Discord's guided /mint flow already does
-  // automatically: find which configured chain the contract lives on, then probe it for a mint
-  // price the same way resolvePriceIfMissing does. mint(uint256) is the assumption the guided
-  // flow already makes for a plain quantity-only mint -- this mirrors that rather than inventing
-  // a second convention, so a dashboard user gets the same result a bot user would. An unresolved
-  // price returns valueWei:null (never 0) so a paid contract can never look like a free one.
+  // automatically: find which configured chain the contract lives on, then figure out how to mint
+  // it without asking the user to know or supply that shape themselves. SeaDrop tokens are tried
+  // first since they don't implement any whitelisted mint(...) signature at all -- their real entry
+  // point is a separate SeaDrop core contract (see seaDropDiscoveryService.js/seaDropCall.js) -- and
+  // everything else falls back to the plain mint(uint256) assumption the guided flow already makes.
+  // A drop whose price genuinely can't be read returns valueWei:null (never 0), and a SeaDrop core
+  // that can't be auto-discovered returns seaDropAddress:null so the dashboard can fall back to a
+  // manually-entered one -- "unknown" is always a valid outcome here, never a thrown error.
   async function detectMintContract(userId, input) {
     const contractAddress = String(input.contractAddress || '').trim();
     if (!isAddress(contractAddress)) throw new ValidationError({ field: 'contractAddress', message: 'must be a valid Ethereum address' });
     const chain = await detectContractChain({ providerService, supportedChains, contractAddress });
     if (!chain) throw new ValidationError({ field: 'contractAddress', message: 'could not be found on any supported chain' });
     const quantity = Math.max(1, Math.min(100, Math.floor(Number(input.quantity)) || 1));
+
+    const seaDrop = seaDropDiscoveryService
+      ? await seaDropDiscoveryService.resolve(chain, contractAddress)
+      : { address: null, publicDrop: null, feeRecipient: null };
+    if (seaDrop.address) {
+      const priceKnown = Boolean(seaDrop.publicDrop);
+      return {
+        chain,
+        isSeaDrop: true,
+        methodSignature: SEADROP_MINT_SIGNATURE,
+        seaDropAddress: seaDrop.address,
+        arguments: [seaDrop.feeRecipient || null, '$wallet', quantity],
+        valueWei: priceKnown ? computeSeaDropValueWei({ mintPriceWei: seaDrop.publicDrop.mintPriceWei, quantity }).toString() : null,
+        priceKnown,
+        maxSupply: null,
+        maxPerWallet: seaDrop.publicDrop?.maxTotalMintableByWallet ?? null,
+      };
+    }
+
     const resolved = contractValueResolver ? await contractValueResolver.resolve(chain, contractAddress) : { price: null, maxSupply: null, maxPerWallet: null };
     const priceKnown = Boolean(resolved.price);
     return {
       chain,
+      isSeaDrop: false,
       methodSignature: 'mint(uint256)',
+      seaDropAddress: null,
       arguments: [quantity],
       valueWei: priceKnown ? (BigInt(resolved.price.value) * BigInt(quantity)).toString() : null,
       priceKnown,
       maxSupply: resolved.maxSupply?.value ?? null,
       maxPerWallet: resolved.maxPerWallet?.value ?? null,
-    };
-  }
-
-  // Dashboard-only counterpart to detectMintContract, for contracts that don't implement any
-  // whitelisted mint(...) signature at all -- SeaDrop tokens gate their own mint function and
-  // require calling a separate SeaDrop core contract instead (see seaDropDiscoveryService.js and
-  // seaDropCall.js). Mirrors detectMintContract's "unknown is a valid outcome" shape: a drop that
-  // can't be auto-discovered returns seaDropFound:false rather than throwing, so the dashboard can
-  // fall back to a manually-entered SeaDrop core address.
-  async function detectSeaDropDrop(userId, input) {
-    const contractAddress = String(input.contractAddress || '').trim();
-    if (!isAddress(contractAddress)) throw new ValidationError({ field: 'contractAddress', message: 'must be a valid Ethereum address' });
-    const chain = await detectContractChain({ providerService, supportedChains, contractAddress });
-    if (!chain) throw new ValidationError({ field: 'contractAddress', message: 'could not be found on any supported chain' });
-    const quantity = Math.max(1, Math.min(100, Math.floor(Number(input.quantity)) || 1));
-    const resolved = seaDropDiscoveryService
-      ? await seaDropDiscoveryService.resolve(chain, contractAddress)
-      : { address: null, publicDrop: null, feeRecipient: null };
-    const seaDropFound = Boolean(resolved.address);
-    const priceKnown = seaDropFound && Boolean(resolved.publicDrop);
-    return {
-      chain,
-      seaDropFound,
-      seaDropAddress: resolved.address,
-      feeRecipient: resolved.feeRecipient,
-      quantity,
-      priceKnown,
-      valueWei: priceKnown ? computeSeaDropValueWei({ mintPriceWei: resolved.publicDrop.mintPriceWei, quantity }).toString() : null,
-      maxTotalMintableByWallet: resolved.publicDrop?.maxTotalMintableByWallet ?? null,
-      startTime: resolved.publicDrop?.startTime ?? null,
-      endTime: resolved.publicDrop?.endTime ?? null,
     };
   }
 
@@ -300,7 +294,7 @@ function createBotCommandService(dependencies) {
 
   return {
     createWallet, importWallet, removeWallet, walletBalance, mint, batchMint, createTask, controlTask, addPnl, updatePnl, deletePnl,
-    prepareMint,submitPreparedMint,detectMintContract,detectSeaDropDrop,mintPresets:userId=>mintService.listPresets(userId),
+    prepareMint,submitPreparedMint,detectMintContract,mintPresets:userId=>mintService.listPresets(userId),
     createSniper, updateSniper, removeSniper, gas,
     sniperEvents:userId=>sniperRepository.listRecentForUser(userId),
     wallets: userId => state(userId).wallets,

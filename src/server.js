@@ -279,6 +279,18 @@ function previewQuantity(preview) {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : 1;
 }
 
+// Shared by both botCommands.executeMint (Discord's /mint and Telegram's guided flow, via the local
+// executeMint()) and botCommands.executePreparedMint (the dashboard's preview/confirm flow) so every
+// successful mint is logged to Activity the same way regardless of which platform triggered it --
+// previously these were two independently-written copies whose message text and increment logic
+// could silently drift apart.
+async function recordMintActivity({ userId, wallet, quantity, intent, chain }) {
+  wallet.minted = (wallet.minted || 0) + quantity;
+  await storage.updateWalletMinted(userId, wallet.label, wallet.minted);
+  await logActivity(userId, 'success', `Minted ${quantity} NFT${quantity === 1 ? '' : 's'}`,
+    wallet.label, intent, CHAINS[chain], { triggerSource: 'manual' });
+}
+
 // ── Mint executor ─────────────────────────────────────────
 async function executePreparedMint({ wallet, prepared, chain, triggerSource='manual', gasGwei=null, onPreview }) {
   if (chain !== prepared.chain) throw new Error('Prepared mint chain mismatch');
@@ -1358,19 +1370,14 @@ const botCommands = createBotCommandService({
   executePreparedMint:async({userId,wallet,prepared,gasGwei})=>{
     const intent=await mintExecution.executePrepared({userId,wallet,prepared,triggerSource:'manual',
       gasPriceWei:gasGwei===undefined||gasGwei===null?undefined:ethers.parseUnits(String(gasGwei),'gwei')});
-    wallet.minted=(wallet.minted||0)+previewQuantity(prepared.preview);
-    await storage.updateWalletMinted(userId,wallet.label,wallet.minted);
-    await logActivity(userId,'success',`Minted ${previewQuantity(prepared.preview)} NFT(s)`,wallet.label,intent,CHAINS[wallet.chain],{triggerSource:'manual'});
+    await recordMintActivity({ userId, wallet, quantity: previewQuantity(prepared.preview), intent, chain: wallet.chain });
     return intent;
   },
   executeMint: async ({ userId, wallet, request }) => {
     const intent = await executeMint({ wallet, contractAddr: request.contractAddress,
       qty: request.quantity, priceETH: request.priceETH, gasGwei: request.gasGwei,
       chain: request.chain, triggerSource: 'manual' });
-    wallet.minted = (wallet.minted || 0) + request.quantity;
-    await storage.updateWalletMinted(userId, wallet.label, wallet.minted);
-    await logActivity(userId, 'success', `Minted ${request.quantity} NFT${request.quantity > 1 ? 's' : ''}`,
-      wallet.label, intent, CHAINS[request.chain],{triggerSource:'manual'});
+    await recordMintActivity({ userId, wallet, quantity: request.quantity, intent, chain: request.chain });
     return intent;
   },
 });
