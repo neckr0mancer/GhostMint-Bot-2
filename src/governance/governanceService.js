@@ -59,6 +59,15 @@ function parseOnOff(value, field) {
   throw new ValidationError({ field, message: 'must be on or off' });
 }
 
+// Same shape as forcedValue, but 'allowed'/'not-allowed'/'inherit' reads correctly for a grant
+// (Degen/Fast access) rather than a simulation rule -- 'forced'/'optional' would be nonsensical here.
+function allowedValue(value, field = 'advancedModesAllowed', { nullable = false } = {}) {
+  if (nullable && (value === null || value === undefined || value === 'inherit')) return null;
+  if (value === true || value === 'allowed') return true;
+  if (value === false || value === 'not-allowed') return false;
+  throw new ValidationError({ field, message: nullable ? 'must be allowed, not-allowed, or inherit' : 'must be allowed or not-allowed' });
+}
+
 function parsePositiveInteger(value, field) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed <= 0) {
@@ -206,7 +215,8 @@ function createGovernanceService(repository) {
       await requireOwner(callerUserId);
       const ceilings = validateCeilings(input);
       return repository.upsertGroup({ actorUserId: callerUserId, name: requiredGroupName(input.name, 'name'),
-        ...ceilings, simulationForced: forcedValue(input.simulationForced) });
+        ...ceilings, simulationForced: forcedValue(input.simulationForced),
+        advancedModesAllowed: allowedValue(input.advancedModesAllowed, 'advancedModesAllowed') });
     },
 
     async deleteGroup(callerUserId, name) {
@@ -236,6 +246,13 @@ function createGovernanceService(repository) {
       return repository.setUserSimulation({ actorUserId: callerUserId,
         userId: await targetUser(input.platform, input.platformUserId),
         simulationForced: forcedValue(input.simulationForced, 'simulationForced', { nullable: true }) });
+    },
+
+    async setUserAdvancedModes(callerUserId, input) {
+      await requireOwner(callerUserId);
+      return repository.setUserAdvancedModes({ actorUserId: callerUserId,
+        userId: await targetUser(input.platform, input.platformUserId),
+        advancedModesAllowed: allowedValue(input.advancedModesAllowed, 'advancedModesAllowed', { nullable: true }) });
     },
 
     async setGroupSimulation(callerUserId, input) {
@@ -297,10 +314,12 @@ function createGovernanceService(repository) {
       return {...effective,userId,isOwner:false,ceilingExempt:false};
     },
 
+    // A falsy presetKey means "reset to whatever the default is" (see clearPreset's comment) --
+    // distinct from explicitly naming the current default preset.
     selectPreset(userId, presetKey) {
-      return repository.selectPreset(userId, presetKey);
+      return presetKey ? repository.selectPreset(userId, presetKey) : repository.clearPreset(userId);
     },
   };
 }
 
-module.exports = { AccountBlockedError, AuthorizationError, createGovernanceService, forcedValue, validateCeilings };
+module.exports = { AccountBlockedError, AuthorizationError, allowedValue, createGovernanceService, forcedValue, validateCeilings };

@@ -530,6 +530,8 @@ tbody tr:last-child td{border-bottom:0}
 .mode-card strong{font-size:1rem}
 .mode-card span{font-size:.82rem;color:var(--text-muted)}
 .mode-card-detail{font-family:ui-monospace,monospace}
+.mode-card-default{margin-left:.5rem;font-size:.6rem;vertical-align:middle}
+.mode-card-locked{color:var(--text-muted)}
 
 /* ==========================================================================
    Header avatar (mobile header, Ghost Mint rail themes only)

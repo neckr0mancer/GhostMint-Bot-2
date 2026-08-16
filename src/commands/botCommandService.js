@@ -487,6 +487,7 @@ function createBotCommandService(dependencies) {
     targetDetails,
     modePresets:()=>governanceRepository.listPresets(),
     currentMode: async userId => (await governanceRepository.getEffectiveGovernance(userId, 'ethereum')).preset,
+    advancedModesAllowed: async userId => (await governanceRepository.getEffectiveGovernance(userId, 'ethereum')).advancedModesAllowed,
     pendingTransactions: userId => transactionIntentRepository.listNonFinalForUser(userId),
     transactionsPage:(userId,input)=>pageFrom(transactionIntentRepository.listPageForUser?.bind(transactionIntentRepository),()=>[],userId,input),
     stats,

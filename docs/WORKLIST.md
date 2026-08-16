@@ -46,6 +46,14 @@ Status legend: ✅ Done · 🟡 Partial · ❌ Not started
   self-service mode-picker panel (`TransactionModePanel` in `App.jsx`) plus the owner preset
   editor (`Admin.jsx`) got a gas-multiplier field. Telegram's Settings → Transaction mode is a
   real button menu (`telegramMenus.modeMenu`) — tap a preset, Y/N confirm, applied.
+- Migration `038_mode_advanced_access_and_default.sql`: the admin Presets editor was still
+  showing the raw `display_name` ("Ultra Fast" etc.) since it rendered the DB value directly with
+  no relabeling — now fixed at the source. Normie (`safe`) is now a real seeded default
+  (`mode_presets.is_default`), resolved in `getEffectiveGovernance` for both display and actual
+  policy enforcement, instead of unset users silently falling back to unrelated chain defaults.
+  Degen and Fast now require `seat_groups.advanced_modes_allowed` or a per-user
+  `user_governance.advanced_modes_allowed` grant — previously any user could select Degen with no
+  gating at all.
 
 ## Section D — Gas command per-chain selection ✅
 

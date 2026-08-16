@@ -1533,8 +1533,10 @@ if (BOT_TOKEN) {
       return tgEditMenu(chatId, messageId, telegramMenus.gasMenu(chain, fees, CONFIG.supportedChains, CHAINS));
     }
     if (data === 'menu:mode') {
-      const [presets, current] = await Promise.all([botCommands.modePresets(), botCommands.currentMode(userId)]);
-      return tgEditMenu(chatId, messageId, telegramMenus.modeMenu(current?.key, presets));
+      const [presets, current, advancedModesAllowed] = await Promise.all([
+        botCommands.modePresets(), botCommands.currentMode(userId), botCommands.advancedModesAllowed(userId),
+      ]);
+      return tgEditMenu(chatId, messageId, telegramMenus.modeMenu(current?.key, presets, advancedModesAllowed));
     }
     if (data.startsWith('mode:pick:')) {
       const key = data.slice('mode:pick:'.length);

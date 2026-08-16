@@ -24,11 +24,12 @@ export function QuickMint({go}){
   const [detecting,setDetecting]=useState(false);
   const [detected,setDetected]=useState(null);
   const [preview,setPreview]=useState(null);
+  const [confirmResult,setConfirmResult]=useState(null);
   const [busy,setBusy]=useState(false);
   const lastDetected=useRef('');
   const previewRef=useRef(null);
   useEffect(()=>{if(!walletLabel&&wallets.data?.length)setWalletLabel(wallets.data[0].label);},[wallets.data]);
-  function reset(){setContractAddress('');setQuantity('1');setDetected(null);setPreview(null);lastDetected.current='';}
+  function reset(){setContractAddress('');setQuantity('1');setDetected(null);setPreview(null);setConfirmResult(null);lastDetected.current='';}
   // Whatever's already typed here follows to the full page instead of being lost -- landing on an
   // empty contract field after already having pasted one in is exactly the dead-end this avoids.
   function goToFullMint(){setPendingMintPrefill({contractAddress,quantity,walletLabel});go('Minting');}
@@ -66,18 +67,23 @@ export function QuickMint({go}){
       const input={walletLabel,contractAddress:contractAddress.trim(),methodSignature:detected.methodSignature,
         seaDropAddress:detected.seaDropAddress||undefined,arguments:detected.arguments,valueWei:detected.valueWei||'0'};
       setPreview(await api('/api/mints/preview',{method:'POST',body:JSON.stringify(input)}));
+      setConfirmResult(null);
       notify('Simulation passed -- review the details below and confirm to broadcast.',{type:'success'});
       previewRef.current?.scrollIntoView({behavior:'smooth',block:'nearest'});
     }catch(value){notify(value.message,{type:'error'});}
     finally{setBusy(false);}
   }
+  // Single wallet here, but /api/mints/confirm now always reports a per-entry outcome rather than
+  // throwing on failure (so a batch elsewhere can't have one bad wallet cancel the rest) -- must
+  // check result.status explicitly instead of treating "the request didn't throw" as success.
   async function confirmMint(){
     if(!await confirmDialog('Broadcast this simulation-backed mint?'))return;
     setBusy(true);
     try{
-      await api('/api/mints/confirm',{method:'POST',body:JSON.stringify({previewToken:preview.previewToken,confirmation:'CONFIRM'})});
-      notify('Mint submitted.',{type:'success'});
-      reset();
+      const response=await api('/api/mints/confirm',{method:'POST',body:JSON.stringify({previewToken:preview.previewToken,confirmation:'CONFIRM'})});
+      const [result]=response.results;
+      if(result?.status==='success'){notify('Mint submitted.',{type:'success'});reset();}
+      else{setConfirmResult(result);notify(`Mint failed: ${result?.error||'unknown reason'}`,{type:'error'});}
     }catch(value){notify(value.message,{type:'error'});}
     finally{setBusy(false);}
   }
@@ -100,7 +106,7 @@ export function QuickMint({go}){
     {preview&&<div className="preview" ref={previewRef}>
       <h2>Simulation passed</h2>
       <p>Estimated total: {preview.items[0].simulation.estimatedCostWei} wei | Gas: {preview.items[0].simulation.gasLimit}</p>
-      <button className="quiet" disabled={busy} onClick={confirmMint}>Confirm and broadcast</button>
+      {confirmResult?<p className="warning">❌ Failed: {confirmResult.error}</p>:<button className="quiet" disabled={busy} onClick={confirmMint}>Confirm and broadcast</button>}
     </div>}
     <button type="button" className="quiet panel-cta" onClick={goToFullMint}>Advanced options →</button>
   </Form>;

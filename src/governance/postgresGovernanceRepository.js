@@ -1,4 +1,5 @@
 const { defaultPolicy } = require('../transactions/defaults');
+const { ValidationError } = require('../validation/domain');
 
 const PRESET_KEYS = Object.freeze(['ultra_fast', 'fast', 'semi_safe', 'safe']);
 
@@ -15,7 +16,20 @@ function mapPreset(row) {
     confirmationCount: Number(row.confirmation_count),
     humanVerification: row.human_verification,
     gasPriceMultiplier: Number(row.gas_price_multiplier),
+    isDefault: row.is_default === true,
   };
+}
+
+// Degen (ultra_fast) and Fast trade away enough safety (skipped/lightened confirmation and
+// verification) that picking them requires opt-in: either the caller's seat group allows it for
+// everyone assigned to it, or the caller has been granted it individually regardless of group.
+const ADVANCED_PRESET_KEYS = Object.freeze(['ultra_fast', 'fast']);
+
+async function checkAdvancedModesAllowed(pool, userId) {
+  const result = await pool.query(`SELECT COALESCE(ug.advanced_modes_allowed,sg.advanced_modes_allowed,FALSE) AS allowed
+    FROM users u LEFT JOIN user_governance ug ON ug.user_id=u.user_id
+    LEFT JOIN seat_groups sg ON sg.group_id=ug.group_id WHERE u.user_id=$1`, [userId]);
+  return result.rows[0]?.allowed === true;
 }
 
 function createPostgresGovernanceRepository(pool) {
@@ -71,16 +85,17 @@ function createPostgresGovernanceRepository(pool) {
       return result.rows[0];
     },
 
-    async upsertGroup({ actorUserId, name, maxTransactionValueWei, dailySpendingBudgetWei, gasCeilingGwei, simulationForced }) {
+    async upsertGroup({ actorUserId, name, maxTransactionValueWei, dailySpendingBudgetWei, gasCeilingGwei, simulationForced, advancedModesAllowed }) {
       const result = await pool.query(`INSERT INTO seat_groups
-        (name,max_transaction_value_wei,daily_spending_budget_wei,gas_ceiling_gwei,simulation_forced,created_by)
-        VALUES ($1,$2,$3,$4,$5,$6)
+        (name,max_transaction_value_wei,daily_spending_budget_wei,gas_ceiling_gwei,simulation_forced,advanced_modes_allowed,created_by)
+        VALUES ($1,$2,$3,$4,$5,$6,$7)
         ON CONFLICT ((LOWER(name))) DO UPDATE SET
           max_transaction_value_wei=EXCLUDED.max_transaction_value_wei,
           daily_spending_budget_wei=EXCLUDED.daily_spending_budget_wei,
           gas_ceiling_gwei=EXCLUDED.gas_ceiling_gwei,
-          simulation_forced=EXCLUDED.simulation_forced,updated_at=NOW()
-        RETURNING *`, [name, maxTransactionValueWei.toString(), dailySpendingBudgetWei.toString(), gasCeilingGwei, simulationForced, actorUserId]);
+          simulation_forced=EXCLUDED.simulation_forced,
+          advanced_modes_allowed=EXCLUDED.advanced_modes_allowed,updated_at=NOW()
+        RETURNING *`, [name, maxTransactionValueWei.toString(), dailySpendingBudgetWei.toString(), gasCeilingGwei, simulationForced, advancedModesAllowed, actorUserId]);
       return result.rows[0];
     },
 
@@ -119,6 +134,13 @@ function createPostgresGovernanceRepository(pool) {
       [userId, simulationForced, actorUserId]);
     },
 
+    async setUserAdvancedModes({ actorUserId, userId, advancedModesAllowed }) {
+      await pool.query(`INSERT INTO user_governance (user_id,advanced_modes_allowed,updated_by)
+        VALUES ($1,$2,$3) ON CONFLICT (user_id) DO UPDATE SET
+        advanced_modes_allowed=EXCLUDED.advanced_modes_allowed,updated_by=$3,updated_at=NOW()`,
+      [userId, advancedModesAllowed, actorUserId]);
+    },
+
     async setGroupSimulation(groupName, simulationForced) {
       const result = await pool.query('UPDATE seat_groups SET simulation_forced=$2,updated_at=NOW() WHERE LOWER(name)=LOWER($1)', [groupName, simulationForced]);
       if (!result.rowCount) throw new Error('Group not found');
@@ -136,9 +158,25 @@ function createPostgresGovernanceRepository(pool) {
     async selectPreset(userId, presetKey) {
       const key = normalizePresetKey(presetKey);
       if (!PRESET_KEYS.includes(key)) throw new Error('Unknown mode preset');
+      if (ADVANCED_PRESET_KEYS.includes(key) && !await checkAdvancedModesAllowed(pool, userId)) {
+        throw new ValidationError({ field: 'preset', message: 'Degen and Fast require group access or a manual admin grant -- ask an owner to enable it.' });
+      }
       await pool.query(`INSERT INTO user_governance (user_id,selected_preset_key) VALUES ($1,$2)
         ON CONFLICT (user_id) DO UPDATE SET selected_preset_key=$2,updated_at=NOW()`, [userId, key]);
       return key;
+    },
+
+    // Explicitly clears the caller's selection rather than pointing it at whatever preset is
+    // currently the default -- so a later admin change to which preset is_default carries
+    // forward automatically for reset users, but not for someone who explicitly chose Normie by
+    // name while it happened to also be the default.
+    async clearPreset(userId) {
+      await pool.query(`INSERT INTO user_governance (user_id,selected_preset_key) VALUES ($1,NULL)
+        ON CONFLICT (user_id) DO UPDATE SET selected_preset_key=NULL,updated_at=NOW()`, [userId]);
+    },
+
+    isAdvancedModesAllowed(userId) {
+      return checkAdvancedModesAllowed(pool, userId);
     },
 
     async getPreset(presetKey) {
@@ -154,10 +192,10 @@ function createPostgresGovernanceRepository(pool) {
 
     async listGroups() {
       const result=await pool.query(`SELECT name,max_transaction_value_wei,daily_spending_budget_wei,
-        gas_ceiling_gwei,simulation_forced,updated_at FROM seat_groups ORDER BY LOWER(name)`);
+        gas_ceiling_gwei,simulation_forced,advanced_modes_allowed,updated_at FROM seat_groups ORDER BY LOWER(name)`);
       return result.rows.map(row=>({name:row.name,maxTransactionValueWei:row.max_transaction_value_wei,
         dailySpendingBudgetWei:row.daily_spending_budget_wei,gasCeilingGwei:Number(row.gas_ceiling_gwei),
-        simulationForced:row.simulation_forced,updatedAt:row.updated_at}));
+        simulationForced:row.simulation_forced,advancedModesAllowed:row.advanced_modes_allowed,updatedAt:row.updated_at}));
     },
 
     async listGovernedUsers() {
@@ -165,7 +203,7 @@ function createPostgresGovernanceRepository(pool) {
         u.suspended_until,u.status_changed_at,u.subscription_active,
         u.good_standing_override,sg.name AS group_name,
         ug.max_transaction_value_wei,ug.daily_spending_budget_wei,ug.gas_ceiling_gwei,
-        ug.simulation_forced,ug.selected_preset_key,ug.scheduled_removal_at,
+        ug.simulation_forced,ug.selected_preset_key,ug.scheduled_removal_at,ug.advanced_modes_allowed,
         COALESCE(JSON_AGG(JSON_BUILD_OBJECT('platform',la.platform,'platformUserId',la.platform_user_id)
           ORDER BY la.platform) FILTER (WHERE la.platform IS NOT NULL),'[]'::JSON) AS linked_accounts,
         GREATEST(
@@ -179,7 +217,7 @@ function createPostgresGovernanceRepository(pool) {
           u.status_changed_at,u.subscription_active,u.good_standing_override,
           sg.name,ug.max_transaction_value_wei,
           ug.daily_spending_budget_wei,ug.gas_ceiling_gwei,ug.simulation_forced,ug.selected_preset_key,
-          ug.scheduled_removal_at
+          ug.scheduled_removal_at,ug.advanced_modes_allowed
         ORDER BY u.created_at`);
       return result.rows.map(row=>({userId:row.user_id,isOwner:row.is_owner,isRootOwner:row.is_root_owner,accountStatus:row.account_status,
         statusReason:row.status_reason,suspendedUntil:row.suspended_until,statusChangedAt:row.status_changed_at,
@@ -188,7 +226,7 @@ function createPostgresGovernanceRepository(pool) {
         maxTransactionValueWei:row.max_transaction_value_wei,dailySpendingBudgetWei:row.daily_spending_budget_wei,
         gasCeilingGwei:row.gas_ceiling_gwei===null?null:Number(row.gas_ceiling_gwei),
         simulationForced:row.simulation_forced,selectedPresetKey:row.selected_preset_key,
-        scheduledRemovalAt:row.scheduled_removal_at,
+        scheduledRemovalAt:row.scheduled_removal_at,advancedModesAllowed:row.advanced_modes_allowed,
         lastActiveAt:row.last_active_at,
         linkedAccounts:row.linked_accounts}));
     },
@@ -223,11 +261,13 @@ function createPostgresGovernanceRepository(pool) {
       const result = await pool.query(`SELECT u.is_owner,ug.max_transaction_value_wei AS user_max,
         ug.daily_spending_budget_wei AS user_daily,ug.gas_ceiling_gwei AS user_gas,
         ug.simulation_forced AS user_simulation_forced,
+        ug.advanced_modes_allowed AS user_advanced,sg.advanced_modes_allowed AS group_advanced,
         sg.max_transaction_value_wei AS group_max,sg.daily_spending_budget_wei AS group_daily,
         sg.gas_ceiling_gwei AS group_gas,sg.simulation_forced AS group_simulation_forced,
         mp.* FROM users u LEFT JOIN user_governance ug ON ug.user_id=u.user_id
         LEFT JOIN seat_groups sg ON sg.group_id=ug.group_id
-        LEFT JOIN mode_presets mp ON mp.preset_key=ug.selected_preset_key WHERE u.user_id=$1`, [userId]);
+        LEFT JOIN mode_presets mp ON mp.preset_key=COALESCE(ug.selected_preset_key,(SELECT preset_key FROM mode_presets WHERE is_default))
+        WHERE u.user_id=$1`, [userId]);
       if (!result.rowCount) throw new Error('User not found');
       const row = result.rows[0];
       const defaults = defaultPolicy(chain);
@@ -238,6 +278,7 @@ function createPostgresGovernanceRepository(pool) {
         gasCeilingGwei: Number(row.user_gas ?? row.group_gas ?? defaults.gasCeilingGwei),
         simulationForced: row.user_simulation_forced ?? row.group_simulation_forced ?? true,
         preset: mapPreset(row),
+        advancedModesAllowed: row.user_advanced ?? row.group_advanced ?? false,
       };
     },
 
