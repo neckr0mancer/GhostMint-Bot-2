@@ -11,12 +11,17 @@ function keyboard(rows) {
   return { inline_keyboard: rows };
 }
 
+// Also reachable from Settings ("Link another platform") -- same callback_data, same
+// createLinkCode() call underneath. Putting it on the main menu too just cuts the common case
+// from two taps to one; it doesn't change what the code does or its security properties (still
+// single-use, still expires in five minutes, still Telegram-only origin per Milestone 15e).
 function mainMenu({ isOwner = false } = {}) {
   const rows = [
     [button('👛 Wallets', 'menu:wallets'), button('⚡ Mint', 'menu:mint')],
     [button('🗓️ Tasks', 'menu:tasks'), button('🎯 Snipers', 'menu:snipers')],
     [button('📡 Watch rules', 'menu:watch'), button('📊 Activity', 'menu:activity')],
     [button('⛽ Gas', 'menu:gas'), button('⚙️ Settings', 'menu:settings')],
+    [button('🔗 Link Discord or dashboard', 'link:generate')],
   ];
   if (isOwner) rows.push([button('🛡️ Admin', 'menu:admin')]);
   return {

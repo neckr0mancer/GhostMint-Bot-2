@@ -1025,8 +1025,10 @@ if (BOT_TOKEN) {
 
     if (data === 'link:generate') {
       const link = await identity.createLinkCode(userId);
+      // Reachable from both the main menu and Settings now, so "back" always returns to the top
+      // level rather than assuming Settings was the entry point.
       return tgEditMenu(chatId, messageId, { text: `🔗 <b>Account link code:</b> <code>${link.code}</code>\n\nTap the code to copy it. Expires in 5 minutes and can be used once. Enter it on the dashboard, or use the equivalent link command on another platform.`,
-        replyMarkup: telegramMenus.keyboard([[telegramMenus.button('⬅️ Back to settings', 'menu:settings')]]), parseMode: 'HTML' });
+        replyMarkup: telegramMenus.keyboard([[telegramMenus.button('⬅️ Back to menu', 'menu:main')]]), parseMode: 'HTML' });
     }
 
     if (data === 'wallet:list') {
