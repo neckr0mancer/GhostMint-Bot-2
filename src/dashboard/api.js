@@ -41,7 +41,7 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLo
     'group-delete':['name'],'assign':['platform','platformUserId','group'],'unassign':['platform','platformUserId'],
     'user-ceilings':['platform','platformUserId','maxWei','dailyWei','gasGwei'],
     'user-ceilings-clear':['platform','platformUserId'],'user-simulation':['platform','platformUserId','simulation'],
-    'group-simulation':['group','simulation'],'preset-set':['preset','simulation','confirmations','verification'],
+    'group-simulation':['group','simulation'],'preset-set':['preset','simulation','confirmations','verification','gasMultiplier'],
     owner:['platform','platformUserId','enabled'],
     ban:['platform','platformUserId','reason'],unban:['platform','platformUserId','reason'],
     suspend:['platform','platformUserId','durationDays','reason'],unsuspend:['platform','platformUserId','reason'],
@@ -114,7 +114,8 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLo
     },
     logout:async(req,res)=>{noStore(res);await auth.revoke(req.dashboardSession);res.setHeader('Set-Cookie',auth.clearCookies());res.status(204).end();},
     logoutAll:async(req,res)=>{noStore(res);await auth.revokeAll(req.dashboardSession);res.setHeader('Set-Cookie',auth.clearCookies());res.status(204).end();},
-    profile:async(req,res)=>{noStore(res);res.json({userId:user(req),isOwner:commands?.isOwner?await commands.isOwner(user(req)):false,isRootOwner:commands?.isRootOwner?await commands.isRootOwner(user(req)):false,linkedAccounts:await identityRepository.listLinkedAccounts(user(req)),supportedChains,theme:await identityRepository.getTheme(user(req)),displayName:identityRepository.getDisplayName?await identityRepository.getDisplayName(user(req)):null,defaultChain:identityRepository.getDefaultChain?await identityRepository.getDefaultChain(user(req)):null,securityPasswordSet:identityRepository.getSecurityPasswordHash?Boolean(await identityRepository.getSecurityPasswordHash(user(req))):false,username:identityRepository.getUsername?await identityRepository.getUsername(user(req)):null});},
+    profile:async(req,res)=>{noStore(res);res.json({userId:user(req),isOwner:commands?.isOwner?await commands.isOwner(user(req)):false,isRootOwner:commands?.isRootOwner?await commands.isRootOwner(user(req)):false,linkedAccounts:await identityRepository.listLinkedAccounts(user(req)),supportedChains,theme:await identityRepository.getTheme(user(req)),displayName:identityRepository.getDisplayName?await identityRepository.getDisplayName(user(req)):null,defaultChain:identityRepository.getDefaultChain?await identityRepository.getDefaultChain(user(req)):null,securityPasswordSet:identityRepository.getSecurityPasswordHash?Boolean(await identityRepository.getSecurityPasswordHash(user(req))):false,username:identityRepository.getUsername?await identityRepository.getUsername(user(req)):null,currentMode:commands?.currentMode?await commands.currentMode(user(req)):null});},
+    updateMode:action(async(req,res)=>{res.json({mode:await commands.selectMode(user(req),req.body.preset)});}),
     updateTheme:action(async(req,res)=>{const {theme}=requestSchemas.themeUpdate(req.body||{});res.json({theme:await identityRepository.setTheme(user(req),theme)});}),
     updateDisplayName:action(async(req,res)=>{const {displayName}=requestSchemas.displayNameUpdate(req.body||{});res.json({displayName:await identityRepository.setDisplayName(user(req),displayName)});}),
     updateDefaultChain:action(async(req,res)=>{const {defaultChain}=requestSchemas.defaultChainUpdate(req.body||{},{supportedChains});res.json({defaultChain:await identityRepository.setDefaultChain(user(req),defaultChain)});}),
@@ -160,6 +161,7 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLo
     wallets:action(async(req,res)=>{const values=commands.wallets(user(req));const settled=await Promise.allSettled(values.map(value=>commands.walletBalance(user(req),value.label)));res.json(settled.map((result,index)=>publicWallet(result.status==='fulfilled'?result.value:values[index])));}),
     createWallet:action(async(req,res)=>{const wallet=await commands.createWallet(user(req),req.body);res.status(201).json(publicWallet(wallet));}),
     importWallet:action(async(req,res)=>{const wallet=await commands.importWallet(user(req),req.body);res.status(201).json(publicWallet(wallet));}),
+    importWalletsBatch:action(async(req,res)=>{const results=await commands.importWalletsBatch(user(req),req.body);res.status(201).json({results});}),
     removeWallet:action(async(req,res)=>{confirmation(req);await commands.removeWallet(user(req),req.params.label);res.status(204).end();}),
     // SEC-01, web half: the raw key never reaches this response -- commands.exportWalletKeystore
     // (botCommandService -> server.js's exportKeystore) decrypts the stored envelope and immediately
@@ -210,8 +212,6 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLo
     confirmBypass:action(async(req,res)=>res.json(await commands.confirmTargetBypass(user(req),req.body))),
     applyPreset:action(async(req,res)=>res.json(await commands.applyTargetPreset(user(req),{...req.body,targetId:req.params.id}))),
     modePresets:action(async(req,res)=>res.json(await commands.modePresets())),
-    myGovernance:action(async(req,res)=>{noStore(res);res.json(jsonSafe(await commands.myGovernance(user(req),req.query.chain)));}),
-    selectMode:action(async(req,res)=>{const {preset}=req.body||{};res.json({preset:await commands.selectMode(user(req),preset)});}),
     pendingConfirmations:action(async(req,res)=>res.json(await commands.pendingConfirmations(user(req)))),
     resolveConfirmation:action(async(req,res)=>res.json(jsonSafe(await commands.confirmTrigger(user(req),req.params.id,req.body?.decision)))),
     adminOverview:action(async(req,res)=>res.json(jsonSafe(await commands.adminOverview(user(req))))),
@@ -235,12 +235,14 @@ function mountDashboardRoutes(app,api){
   app.put('/api/profile/default-chain',api.requireSession,api.requireCsrf,api.updateDefaultChain);
   app.put('/api/auth/security-password',api.requireSession,api.requireCsrf,api.securityPasswordSet);
   app.put('/api/auth/username',api.requireSession,api.requireCsrf,api.usernameSet);
+  app.put('/api/profile/mode',api.requireSession,api.requireCsrf,api.updateMode);
   app.get('/api/gas/:chain',api.requireSession,api.gas);
   app.get('/api/social-usage',api.requireSession,api.socialUsage);
   app.post('/api/auth/link-code',api.requireSession,api.requireCsrf,api.linkCode);
   app.get('/api/wallets',api.requireSession,api.wallets);
   app.post('/api/wallets/create',api.requireSession,api.requireCsrf,api.createWallet);
   app.post('/api/wallets/import',api.requireSession,api.requireCsrf,api.importWallet);
+  app.post('/api/wallets/batch-import',api.requireSession,api.requireCsrf,api.importWalletsBatch);
   app.delete('/api/wallets/:label',api.requireSession,api.requireCsrf,api.removeWallet);
   app.post('/api/wallets/:label/export',api.requireSession,api.requireCsrf,api.exportWalletKey);
   app.get('/api/mint-presets',api.requireSession,api.mintPresets);
@@ -270,8 +272,6 @@ function mountDashboardRoutes(app,api){
   app.post('/api/targets/bypass/confirm',api.requireSession,api.requireCsrf,api.confirmBypass);
   app.post('/api/targets/:id/preset',api.requireSession,api.requireCsrf,api.applyPreset);
   app.get('/api/mode-presets',api.requireSession,api.modePresets);
-  app.get('/api/governance/mine',api.requireSession,api.myGovernance);
-  app.put('/api/governance/mode',api.requireSession,api.requireCsrf,api.selectMode);
   app.get('/api/confirmations',api.requireSession,api.pendingConfirmations);
   app.post('/api/confirmations/:id',api.requireSession,api.requireCsrf,api.resolveConfirmation);
   app.get('/api/admin',api.requireSession,api.adminOverview);

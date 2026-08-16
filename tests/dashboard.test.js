@@ -125,7 +125,7 @@ async function operationsServer(t){const sessions=new Map([['token-a',{userId:'u
   snipers:userId=>userId==='user-a'?[{id:'sniper-a'}]:[],sniperEvents:async()=>[],createSniper:async()=>({}),updateSniper:async(userId,id)=>{if(userId!=='user-a'||id!=='sniper-a')throw new ValidationError({field:'id',message:'was not found'});return {id};},removeSniper:async()=>{},
   watchRules:async userId=>userId==='user-a'?[{id:'rule-a'}]:[],watchEvents:async()=>[],createWatchRule:async()=>({}),updateWatchRule:async(userId,id)=>{if(userId!=='user-a'||id!=='rule-a')throw new ValidationError({field:'id',message:'was not found'});return {id};},disableWatchRule:async()=>{},removeWatchRule:async()=>{},
   targetDetails:async(userId,type,id)=>{if(userId!=='user-a'||!['sniper-a','rule-a'].includes(id))throw new ValidationError({field:'targetId',message:'was not found'});return {targetType:type,targetId:id};},updateTargetPolicy:async()=>({}),requestTargetBypass:async()=>({}),confirmTargetBypass:async()=>({}),applyTargetPreset:async()=>({}),modePresets:async()=>[{key:'ultra_fast',displayName:'Ultra fast',simulationMode:'optional',confirmationCount:0,humanVerification:false},{key:'safe',displayName:'Safe',simulationMode:'forced',confirmationCount:2,humanVerification:true}],
-  myGovernance:async(userId,chain)=>{if(userId!=='user-a')throw new Error('User not found');return {isOwner:false,maxTransactionValueWei:1000000000000000000n,dailySpendingBudgetWei:5000000000000000000n,gasCeilingGwei:50,simulationForced:true,preset:selectedPresets.get(userId)?{key:selectedPresets.get(userId),displayName:selectedPresets.get(userId),simulationMode:'forced',confirmationCount:1,humanVerification:false}:null,chain};},
+  currentMode:async userId=>selectedPresets.get(userId)?{key:selectedPresets.get(userId),displayName:selectedPresets.get(userId),simulationMode:'forced',confirmationCount:1,humanVerification:false}:null,
   selectMode:async(userId,preset)=>{if(!['ultra_fast','fast','semi_safe','safe'].includes(preset))throw new Error('Unknown mode preset');selectedPresets.set(userId,preset);return preset;},
   pendingConfirmations:async()=>[],confirmTrigger:async()=>({}),
  };
@@ -177,15 +177,15 @@ test('every account can list, read, and select any transaction mode preset -- th
   const {base}=await operationsServer(t);
   const presets=await (await fetch(`${base}/api/mode-presets`,{headers:authHeaders('a')})).json();
   assert.deepEqual(presets.map(preset=>preset.key),['ultra_fast','safe']);
-  const before=await (await fetch(`${base}/api/governance/mine`,{headers:authHeaders('a')})).json();
-  assert.equal(before.preset,null);
-  const noCsrf=await fetch(`${base}/api/governance/mode`,{method:'PUT',headers:{cookie:'ghostmint_session=token-a','content-type':'application/json'},body:JSON.stringify({preset:'ultra_fast'})});
+  const before=await (await fetch(`${base}/api/profile`,{headers:authHeaders('a')})).json();
+  assert.equal(before.currentMode,null);
+  const noCsrf=await fetch(`${base}/api/profile/mode`,{method:'PUT',headers:{cookie:'ghostmint_session=token-a','content-type':'application/json'},body:JSON.stringify({preset:'ultra_fast'})});
   assert.equal(noCsrf.status,403);
-  const selected=await fetch(`${base}/api/governance/mode`,{method:'PUT',headers:authHeaders('a',true),body:JSON.stringify({preset:'ultra_fast'})});
+  const selected=await fetch(`${base}/api/profile/mode`,{method:'PUT',headers:authHeaders('a',true),body:JSON.stringify({preset:'ultra_fast'})});
   assert.equal(selected.status,200);
-  assert.deepEqual(await selected.json(),{preset:'ultra_fast'});
-  const after=await (await fetch(`${base}/api/governance/mine`,{headers:authHeaders('a')})).json();
-  assert.equal(after.preset.key,'ultra_fast');
+  assert.deepEqual(await selected.json(),{mode:'ultra_fast'});
+  const after=await (await fetch(`${base}/api/profile`,{headers:authHeaders('a')})).json();
+  assert.equal(after.currentMode.key,'ultra_fast');
 });
 
 test('setting a username requires a security password first, rejects bad formats, and enforces uniqueness',async t=>{

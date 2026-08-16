@@ -34,7 +34,7 @@ function createAdminCommandService(governance, identity) {
           return 'Group simulation rule saved.';
         case 'preset-set':
           await governance.updatePreset(callerUserId, { presetKey: args[0], simulationMode: args[1],
-            confirmationCount: args[2], humanVerification: args[3] });
+            confirmationCount: args[2], humanVerification: args[3], gasPriceMultiplier: args[4] });
           return `Preset ${args[0]} updated.`;
         case 'owner':
           await governance.setOwner(callerUserId, { platform: args[0], platformUserId: args[1], enabled: args[2] });

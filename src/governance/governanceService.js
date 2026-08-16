@@ -250,8 +250,17 @@ function createGovernanceService(repository) {
       if (!['on', 'off', 'blockchain_off'].includes(simulationMode)) throw new ValidationError({ field: 'simulationMode', message: 'must be on, off, or blockchain_off' });
       if (!['on', 'bypass'].includes(humanVerification)) throw new ValidationError({ field: 'humanVerification', message: 'must be on or bypass' });
       const { requiredConfirmations } = requestSchemas.transactionPolicy({ requiredConfirmations: input.confirmationCount });
+      // Optional: omitted (undefined/null/empty) leaves the preset's existing multiplier untouched
+      // (repository.updatePreset COALESCEs it) rather than forcing every caller to always resend it.
+      let gasPriceMultiplier;
+      if (input.gasPriceMultiplier !== undefined && input.gasPriceMultiplier !== null && input.gasPriceMultiplier !== '') {
+        gasPriceMultiplier = Number(input.gasPriceMultiplier);
+        if (!Number.isFinite(gasPriceMultiplier) || gasPriceMultiplier < 1 || gasPriceMultiplier > 10) {
+          throw new ValidationError({ field: 'gasPriceMultiplier', message: 'must be a number from 1 (network price) to 10 (10x network price)' });
+        }
+      }
       return repository.updatePreset({ actorUserId: callerUserId, presetKey: input.presetKey,
-        simulationMode, confirmationCount: requiredConfirmations, humanVerification });
+        simulationMode, confirmationCount: requiredConfirmations, humanVerification, gasPriceMultiplier });
     },
 
     // Only root owners can grant or revoke the (regular) owner title -- a peer owner cannot create
