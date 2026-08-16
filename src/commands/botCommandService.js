@@ -6,13 +6,14 @@ const { calculateStatistics } = require('../statistics/statisticsService');
 const { detectContractChain } = require('../mint/chainDetector');
 const { computeSeaDropValueWei } = require('../mint/seaDropCall');
 const { SEADROP_MINT_SIGNATURE } = require('../mint/seaDropRegistry');
+const { createWalletBalanceCache } = require('./walletBalanceCache');
 
 function createBotCommandService(dependencies) {
   const { storage, schedulerRepository, providerService, governance, adminCommands, sniperService,
     socialWatchService, socialUsageService, targetPolicyService, triggerExecutionService, governanceRepository,
     triggerAuditRepository, transactionIntentRepository, gasService, supportedChains, chains, encryptPrivateKey, getState, executeMint,
     sniperRepository, mintService, previewMint, executePreparedMint, identity, contractValueResolver, seaDropDiscoveryService,
-    ensureChainWatcher = () => {}, broadcast = () => {} } = dependencies;
+    ensureChainWatcher = () => {}, broadcast = () => {}, walletBalanceCache = createWalletBalanceCache() } = dependencies;
 
   // Discord's /mint no longer has a price input; Telegram's guided flow doesn't ask for one either.
   // If the caller already gave a price (either field name the schema accepts), that stands -- an
@@ -132,6 +133,8 @@ function createBotCommandService(dependencies) {
   // dropped, so the caller can tell "no funds here" apart from "couldn't check this one."
   async function walletBalance(userId, label) {
     const owned = wallet(userId, label);
+    const cached = walletBalanceCache.get(userId, owned.label);
+    if (cached) return { ...owned, balances: cached };
     const balances = await Promise.all(supportedChains.map(async chain => {
       try {
         const balance = await providerService.perform(chain, 'getBalance', provider => provider.getBalance(owned.address));
@@ -140,7 +143,15 @@ function createBotCommandService(dependencies) {
         return { chain, balance: null, symbol: chains[chain].sym };
       }
     }));
+    walletBalanceCache.set(userId, owned.label, balances);
     return { ...owned, balances };
+  }
+
+  // Called from logActivity's success branch (server.js), the single funnel every mint outcome --
+  // bot, scheduled, sniper copy-mint -- already passes through, so a just-confirmed transaction is
+  // never masked by a stale cached balance read.
+  function invalidateBalance(userId, label) {
+    walletBalanceCache.invalidate(userId, label);
   }
 
   async function mint(userId, input) {
@@ -304,7 +315,7 @@ function createBotCommandService(dependencies) {
     return calculateStatistics({activity:state(userId).activity,sniperEvents});}
 
   return {
-    createWallet, importWallet, removeWallet, walletBalance, mint, batchMint, createTask, controlTask, addPnl, updatePnl, deletePnl,
+    createWallet, importWallet, removeWallet, walletBalance, invalidateBalance, mint, batchMint, createTask, controlTask, addPnl, updatePnl, deletePnl,
     prepareMint,submitPreparedMint,detectMintContract,mintPresets:userId=>mintService.listPresets(userId),
     createSniper, updateSniper, removeSniper, gas,
     sniperEvents:userId=>sniperRepository.listRecentForUser(userId),

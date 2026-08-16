@@ -57,3 +57,31 @@ test('shared task controls always pass the resolved internal user ID to the repo
   await assert.rejects(service.controlTask('user-a', 'cancel', id), ValidationError);
   assert.deepEqual(calls, [['cancel', 'user-a', id]]);
 });
+
+test('walletBalance caches its per-chain RPC fan-out instead of re-querying on every call', async () => {
+  let performCalls = 0;
+  const state = { wallets: [{ userId: 'user-a', label: 'alpha', address: '0x0000000000000000000000000000000000000001', chain: 'ethereum' }], tasks: [], activity: [], pnl: [], snipers: [] };
+  const service = createBotCommandService({
+    storage: {}, schedulerRepository: {}, providerService: { perform: async () => { performCalls++; return 1_000000000000000000n; } },
+    governance: {}, adminCommands: {}, sniperService: {}, supportedChains: ['ethereum'], chains: { ethereum: { sym: 'ETH' } },
+    encryptPrivateKey: () => ({}), getState: () => state,
+  });
+  const first = await service.walletBalance('user-a', 'alpha');
+  const second = await service.walletBalance('user-a', 'alpha');
+  assert.equal(performCalls, 1, 'the second call must be served from cache, not a second RPC round trip');
+  assert.deepEqual(first.balances, second.balances);
+});
+
+test('invalidateBalance forces the next walletBalance call to re-query the chain', async () => {
+  let performCalls = 0;
+  const state = { wallets: [{ userId: 'user-a', label: 'alpha', address: '0x0000000000000000000000000000000000000001', chain: 'ethereum' }], tasks: [], activity: [], pnl: [], snipers: [] };
+  const service = createBotCommandService({
+    storage: {}, schedulerRepository: {}, providerService: { perform: async () => { performCalls++; return 1_000000000000000000n; } },
+    governance: {}, adminCommands: {}, sniperService: {}, supportedChains: ['ethereum'], chains: { ethereum: { sym: 'ETH' } },
+    encryptPrivateKey: () => ({}), getState: () => state,
+  });
+  await service.walletBalance('user-a', 'alpha');
+  service.invalidateBalance('user-a', 'alpha');
+  await service.walletBalance('user-a', 'alpha');
+  assert.equal(performCalls, 2);
+});

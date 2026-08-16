@@ -260,9 +260,14 @@ async function logActivity(userId, status, title, walletLabel, txHash, chain,con
   // logActivity is the sole writer of activity entries (mint, scheduled mint, sniper copy-mint,
   // mintcall/mintpreset all funnel through here), so it's the one place that needs to know a
   // transaction happened in order to push both a live activity-feed update and a live balance
-  // refresh -- a 'fail' entry moved no funds, so only 'success' also triggers wallets.changed.
+  // refresh -- a 'fail' entry moved no funds, so only 'success' also triggers wallets.changed and
+  // drops the cached balance for that wallet (botCommands is created further below; referencing it
+  // here is safe since logActivity only runs later, once a transaction actually completes).
   dashboardWebSockets.broadcastToUser(userId, {type:'activity.changed'});
-  if (status === 'success') dashboardWebSockets.broadcastToUser(userId, {type:'wallets.changed'});
+  if (status === 'success') {
+    dashboardWebSockets.broadcastToUser(userId, {type:'wallets.changed'});
+    botCommands.invalidateBalance(userId, walletLabel);
+  }
 }
 
 // ── Helpers ───────────────────────────────────────────────
@@ -976,7 +981,9 @@ if (BOT_TOKEN) {
   // instead of relying on users remembering exact command syntax.
   bot.setMyCommands([
     { command: 'start', description: 'Open the main menu' },
+    { command: 'mint', description: 'Mint from a contract' },
     { command: 'wallets', description: 'List your wallets' },
+    { command: 'address', description: 'Get your wallet address' },
     { command: 'createwallet', description: 'Generate and encrypt a new wallet' },
     { command: 'importwallet', description: 'Import an existing wallet (not recommended)' },
     { command: 'removewallet', description: 'Remove a wallet' },
@@ -1025,11 +1032,9 @@ if (BOT_TOKEN) {
     if (data === 'wallet:list') {
       const wallets = botCommands.wallets(userId);
       if (!wallets.length) return tgEditMenu(chatId, messageId, telegramMenus.placeholderMenu('Wallets', 'No wallets yet. Go back and tap Create wallet.'));
-      const list = wallets.map((w,i) =>
-        `${i+1}. *${w.label}*\n   \`${w.address.slice(0,6)}...${w.address.slice(-4)}\` · ${CHAINS[w.chain]?.name||w.chain} · minted: ${w.minted||0}`
-      ).join('\n\n');
-      return tgEditMenu(chatId, messageId, { text: `*Wallets (${wallets.length})*\n\n${list}`,
-        replyMarkup: telegramMenus.keyboard([[telegramMenus.button('⬅️ Back to wallets', 'menu:wallets')]]) });
+      const summary = await walletSummaryHtml(userId);
+      return tgEditMenu(chatId, messageId, { text: `<b>Wallets (${wallets.length})</b>\n\n${summary}`,
+        replyMarkup: telegramMenus.keyboard([[telegramMenus.button('⬅️ Back to wallets', 'menu:wallets')]]), parseMode: 'HTML' });
     }
 
     if (data === 'wallet:create:start') {
@@ -1103,8 +1108,18 @@ if (BOT_TOKEN) {
       const label = data.slice('wallet:balance:'.length);
       const result = await botCommands.walletBalance(userId, label);
       const lines = result.balances.map(b => `${CHAINS[b.chain]?.name || b.chain}: ${b.balance ?? 'unavailable'} ${b.symbol || ''}`).join('\n');
-      return tgEditMenu(chatId, messageId, { text: `*${result.label}*\n${lines}`,
-        replyMarkup: telegramMenus.keyboard([[telegramMenus.button('⬅️ Back to wallets', 'menu:wallets')]]) });
+      return tgEditMenu(chatId, messageId, { text: `<b>${result.label}</b>\n<code>${result.address}</code>\n${lines}`,
+        replyMarkup: telegramMenus.keyboard([[telegramMenus.button('⬅️ Back to wallets', 'menu:wallets')]]), parseMode: 'HTML' });
+    }
+
+    // Only reached from /address's own picker (no menu entry point -- the point of /address is to
+    // skip menu traversal entirely; the wallets menu's "List wallets" already shows every address).
+    if (data.startsWith('wallet:address:pick:')) {
+      const label = data.slice('wallet:address:pick:'.length);
+      const owned = botCommands.wallets(userId).find(w => w.label === label);
+      if (!owned) return tgEditMenu(chatId, messageId, telegramMenus.placeholderMenu('Wallets', 'That wallet no longer exists.'));
+      return tgEditMenu(chatId, messageId, { text: `<b>${owned.label}</b>\n<code>${owned.address}</code>`,
+        replyMarkup: telegramMenus.keyboard([[telegramMenus.button('⬅️ Back to wallets', 'menu:wallets')]]), parseMode: 'HTML' });
     }
 
     if (data === 'wallet:remove:pick') {
@@ -1122,16 +1137,29 @@ if (BOT_TOKEN) {
     }
   }));
 
+  // Shared by /start, /wallets, and the wallet:list menu button so the three surfaces never drift:
+  // full address in an HTML <code> block -- Telegram's actual tap-to-copy affordance, which the
+  // `backtick` Markdown these previously used never enabled since none of these call sites set
+  // parse_mode -- plus the live per-chain balance from walletBalance's cache (TG-08).
+  async function walletSummaryHtml(userId) {
+    const wallets = botCommands.wallets(userId);
+    if (!wallets.length) return 'No wallets yet.';
+    const blocks = await Promise.all(wallets.map(async w => {
+      const { balances } = await botCommands.walletBalance(userId, w.label);
+      const lines = balances.map(b => `${CHAINS[b.chain]?.name || b.chain}: ${b.balance ?? 'unavailable'} ${b.symbol || ''}`).join('\n');
+      return `<b>${w.label}</b>\n<code>${w.address}</code>\n${lines}`;
+    }));
+    return blocks.join('\n\n');
+  }
+
   const WELCOME_TEXT = `gm. i mint things.
 
 here's the short version:
 
 /mint — mint from a contract
 /batch — mint across multiple wallets
-/wallets — see your wallets
+/address — get your wallet address
 /help — this again
-
-i made you a wallet already. /wallets to see it.
 
 send /mint with a contract address to get going.`;
 
@@ -1142,7 +1170,18 @@ send /mint with a contract address to get going.`;
       catch (error) { log(`Auto wallet creation on /start failed: ${safeError(error)}`); }
     }
     const menu = telegramMenus.mainMenu({ isOwner: await governanceRepository.isOwner(userId) });
-    tgRender(msg.chat.id, { text: isStart ? `${WELCOME_TEXT}\n\n${menu.text}` : menu.text, replyMarkup: menu.replyMarkup });
+    if (!isStart) return tgRender(msg.chat.id, { text: menu.text, replyMarkup: menu.replyMarkup });
+    const summary = await walletSummaryHtml(userId);
+    tgRender(msg.chat.id, { text: `${WELCOME_TEXT}\n\n${summary}\n\n${menu.text}`, replyMarkup: menu.replyMarkup, parseMode: 'HTML' });
+  }));
+
+  bot.onText(/^\/address(?:@\w+)?$/, withTelegramUser(async (msg, match, userId) => {
+    const wallets = botCommands.wallets(userId);
+    if (!wallets.length) return tg(msg.chat.id, 'No wallets yet. /wallets to create one.');
+    if (wallets.length === 1) {
+      return tg(msg.chat.id, `<b>${wallets[0].label}</b>\n<code>${wallets[0].address}</code>`, { parse_mode: 'HTML' });
+    }
+    tgRender(msg.chat.id, telegramMenus.walletPicker(wallets, { prefix: 'wallet:address:pick', emptyHint: 'No wallets yet.' }));
   }));
 
   // /mintnow is the same immediate, auto-detecting mint as /mint -- same handler, just the name a
@@ -1265,10 +1304,8 @@ send /mint with a contract address to get going.`;
   bot.onText(/^\/wallets(?:@\w+)?$/, withTelegramUser(async (msg, match, userId) => {
     const wallets = botCommands.wallets(userId);
     if (!wallets.length) return tg(msg.chat.id, 'No wallets yet.');
-    const list = wallets.map((w,i) =>
-      `${i+1}. *${w.label}*\n   \`${w.address.slice(0,6)}...${w.address.slice(-4)}\` · ${CHAINS[w.chain]?.name||w.chain} · minted: ${w.minted||0}`
-    ).join('\n\n');
-    tg(msg.chat.id, `⬡ *Wallets (${wallets.length})*\n\n${list}`);
+    const summary = await walletSummaryHtml(userId);
+    tg(msg.chat.id, `⬡ <b>Wallets (${wallets.length})</b>\n\n${summary}`, { parse_mode: 'HTML' });
   }));
 
   bot.onText(/^\/createwallet(?:@\w+)?\s+(\S+)\s+(\S+)$/i, withTelegramUser(async (msg, match, userId) => {
