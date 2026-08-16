@@ -1,8 +1,8 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const {
-  mainMenu, walletsMenu, settingsMenu, chainPicker, walletPicker,
-  confirmCancelPrompt, confirmRemoveWallet, placeholderMenu,
+  mainMenu, walletsMenu, settingsMenu, tasksMenu, chainPicker, walletPicker,
+  contractDetails, taskConfirmation, confirmCancelPrompt, confirmRemoveWallet, placeholderMenu,
 } = require('../src/telegram/menus');
 
 function flatButtons(replyMarkup) {
@@ -75,4 +75,116 @@ test('the remove-wallet confirmation embeds the exact label being removed', () =
 test('placeholder menu always offers a way back to the main menu', () => {
   const menu = placeholderMenu('Mint', 'Use /mintnow for now.');
   assert.deepEqual(flatButtons(menu.replyMarkup).map(b => b.callback_data), ['menu:main']);
+});
+
+test('the tasks menu offers a way to schedule a mint and a way back to the main menu', () => {
+  const buttons = flatButtons(tasksMenu().replyMarkup).map(b => b.callback_data);
+  assert.deepEqual(buttons, ['menu:schedule', 'menu:main']);
+});
+
+test('contract details renders every known field and degrades gracefully with none of the optional ones', () => {
+  const full = contractDetails({
+    contractAddress: '0xabc', chainLabel: 'Ethereum', isSeaDrop: true, priceETH: 0.05, priceUnknown: false,
+    maxSupply: 10000, maxPerWallet: 3, startTime: Math.floor(Date.now() / 1000) + 3_600,
+    collection: { name: 'Cool Cats', description: 'A collection', floorPrice: 0.5, floorPriceSymbol: 'ETH' },
+    soldOut: false, displayPrice: { eth: 0.05, usd: 150.25, source: 'mint' },
+  });
+  assert.match(full.text, /Cool Cats/);
+  assert.match(full.text, /SeaDrop drop/);
+  assert.match(full.text, /Price: 0\.05 per item \(~\$150\.25\)/);
+  assert.match(full.text, /Max per wallet: 3/);
+  assert.match(full.text, /Max supply: 10000/);
+  assert.match(full.text, /Opens:/);
+  assert.match(full.text, /A collection/);
+  const buttons = flatButtons(full.replyMarkup);
+  assert.deepEqual(buttons.map(b => b.callback_data), ['flow:mintdetailscontinue', 'flow:cancel:ask']);
+
+  const minimal = contractDetails({
+    contractAddress: '0xdef', chainLabel: 'Base', isSeaDrop: false, priceUnknown: true,
+    maxSupply: null, maxPerWallet: null, startTime: null, collection: null, soldOut: false, displayPrice: null,
+  });
+  assert.match(minimal.text, /Contract details/);
+  assert.match(minimal.text, /Standard mint\(uint256\)/);
+  assert.match(minimal.text, /not exposed by this contract/);
+  assert.equal(minimal.text.includes('Max per wallet'), false);
+  assert.equal(minimal.text.includes('Opens'), false);
+});
+
+test('an already-open SeaDrop opening time renders as "Opened", not "Opens"', () => {
+  const details = contractDetails({
+    contractAddress: '0xabc', chainLabel: 'Ethereum', isSeaDrop: true, priceETH: 0, priceUnknown: false,
+    maxSupply: null, maxPerWallet: null, startTime: Math.floor(Date.now() / 1000) - 3_600, collection: null,
+    soldOut: false, displayPrice: null,
+  });
+  assert.match(details.text, /Opened:/);
+  assert.equal(details.text.includes('Opens:'), false);
+});
+
+test('a sold-out collection shows the OpenSea floor price instead of the mint price, with a USD equivalent', () => {
+  const details = contractDetails({
+    contractAddress: '0xabc', chainLabel: 'Ethereum', isSeaDrop: true, priceETH: 0.05, priceUnknown: false,
+    maxSupply: null, maxPerWallet: null, startTime: null, collection: null,
+    soldOut: true, displayPrice: { eth: 0.3, usd: 900, source: 'floor' },
+  });
+  assert.match(details.text, /Status: Sold out — floor price 0\.3 ETH \(~\$900\.00\)/);
+  assert.equal(details.text.includes('Price: 0.05 per item'), false);
+});
+
+test('a sold-out collection with a genuine floor price of 0 shows 0, not "unavailable"', () => {
+  const details = contractDetails({
+    contractAddress: '0xabc', chainLabel: 'Ethereum', isSeaDrop: true, priceETH: 0.05, priceUnknown: false,
+    maxSupply: null, maxPerWallet: null, startTime: null, collection: null,
+    soldOut: true, displayPrice: { eth: 0, usd: 0, source: 'floor' },
+  });
+  assert.match(details.text, /Status: Sold out — floor price 0 ETH \(~\$0\.00\)/);
+  assert.equal(details.text.includes('unavailable'), false);
+});
+
+test('a sold-out collection with no OpenSea floor data at all says so plainly', () => {
+  const details = contractDetails({
+    contractAddress: '0xabc', chainLabel: 'Ethereum', isSeaDrop: true, priceETH: 0.05, priceUnknown: false,
+    maxSupply: null, maxPerWallet: null, startTime: null, collection: null,
+    soldOut: true, displayPrice: null,
+  });
+  assert.match(details.text, /Status: Sold out — floor price unavailable/);
+});
+
+test('a missing USD price omits the parenthetical entirely rather than showing $NaN', () => {
+  const details = contractDetails({
+    contractAddress: '0xabc', chainLabel: 'Ethereum', isSeaDrop: false, priceETH: 0.05, priceUnknown: false,
+    maxSupply: null, maxPerWallet: null, startTime: null, collection: null,
+    soldOut: false, displayPrice: { eth: 0.05, usd: null, source: 'mint' },
+  });
+  assert.match(details.text, /Price: 0\.05 per item$/m);
+  assert.equal(details.text.includes('~$'), false);
+});
+
+test('task confirmation names the auto-detected opening time distinctly from a manually entered one', () => {
+  const startTime = Math.floor(Date.now() / 1000) + 3_600;
+  const mintTime = new Date(startTime * 1000).toISOString();
+  const auto = taskConfirmation({
+    name: 'drop', contractAddress: '0xabc', chainLabel: 'Ethereum', walletLabel: 'main',
+    mintTime, autoDetectedTime: true, priceETH: 0.1, priceUnknown: false,
+  });
+  assert.match(auto.text, /this contract's own opening time/);
+  const manual = taskConfirmation({
+    name: 'drop', contractAddress: '0xabc', chainLabel: 'Ethereum', walletLabel: 'main',
+    mintTime, autoDetectedTime: false, priceETH: 0.1, priceUnknown: false,
+  });
+  assert.equal(manual.text.includes("this contract's own opening time"), false);
+  assert.deepEqual(flatButtons(auto.replyMarkup).map(b => b.callback_data), ['flow:taskconfirm', 'flow:cancel:ask']);
+});
+
+test('task confirmation appends a USD equivalent to the price when a displayPrice is known', () => {
+  const withUsd = taskConfirmation({
+    name: 'drop', contractAddress: '0xabc', chainLabel: 'Ethereum', walletLabel: 'main',
+    mintTime: '2026-08-20T18:00:00.000Z', autoDetectedTime: false, priceETH: 0.1, priceUnknown: false,
+    displayPrice: { eth: 0.1, usd: 300, source: 'mint' },
+  });
+  assert.match(withUsd.text, /Price: 0\.1 per item \(read from the contract\) \(~\$300\.00\)/);
+  const withoutUsd = taskConfirmation({
+    name: 'drop', contractAddress: '0xabc', chainLabel: 'Ethereum', walletLabel: 'main',
+    mintTime: '2026-08-20T18:00:00.000Z', autoDetectedTime: false, priceETH: 0.1, priceUnknown: false,
+  });
+  assert.equal(withoutUsd.text.includes('~$'), false);
 });

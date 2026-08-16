@@ -29,9 +29,10 @@ const { createContractValueRepository } = require('./mint/contractValueRepositor
 const { createContractValueResolver } = require('./mint/contractValueResolver');
 const { createSeaDropDiscoveryService } = require('./mint/seaDropDiscoveryService');
 const { createSeaDropPublicDropResolver } = require('./mint/seaDropPublicDropResolver');
+const { createOpenSeaService } = require('./mint/openSeaService');
+const { createPriceFeedService } = require('./mint/priceFeedService');
 const { computeSeaDropValueWei } = require('./mint/seaDropCall');
 const { SEADROP_MINT_SIGNATURE } = require('./mint/seaDropRegistry');
-const { detectContractChain } = require('./mint/chainDetector');
 const { createSchedulerRepository } = require('./scheduler/schedulerRepository');
 const { createSchedulerWorker } = require('./scheduler/schedulerWorker');
 const { createSocialAdapters } = require('./social/adapters');
@@ -122,6 +123,11 @@ const seaDropDiscoveryService = createSeaDropDiscoveryService({
   apiKey: CONFIG.etherscanApiKey,
   repository: contractValueRepository,
 });
+const openSeaService = createOpenSeaService({
+  apiKey: CONFIG.openSeaApiKey,
+  repository: contractValueRepository,
+});
+const priceFeedService = createPriceFeedService();
 const governanceRepository = createPostgresGovernanceRepository(pool);
 const governance = createGovernanceService(governanceRepository);
 const adminCommands = createAdminCommandService(governance, identity);
@@ -145,6 +151,7 @@ const redact = createRedactor([
   CONFIG.socialOfficialApiToken,
   CONFIG.socialManagedServiceToken,
   CONFIG.etherscanApiKey,
+  CONFIG.openSeaApiKey,
   ...Object.values(CONFIG.encryptionKeys),
 ]);
 const log = msg => console.log(`[${new Date().toISOString()}] ${redact(msg)}`);
@@ -543,11 +550,15 @@ function stateFor(userId) {
 // follow-up pass). None of this bypasses botCommands/validation/the transaction engine — every
 // guided step ends by calling the exact same service function the equivalent slash command uses.
 const telegramFlowState = createFlowStateStore();
-const FLOW_LABELS = { wallet_create: 'creating a wallet', wallet_import: 'importing a wallet', mint_guided: 'minting', send_guided: 'sending funds', export_guided: 'exporting a private key' };
+const FLOW_LABELS = { wallet_create: 'creating a wallet', wallet_import: 'importing a wallet', mint_guided: 'minting', send_guided: 'sending funds', export_guided: 'exporting a private key', task_guided: 'scheduling a mint' };
 const FLOW_CONTINUATION_PREFIXES = { wallet_create: ['flow:chain:'], wallet_import: ['flow:chain:'],
-  mint_guided: ['flow:wallettoggle:', 'flow:walletpick:', 'flow:walletcontinue', 'flow:mintconfirm'],
+  mint_guided: ['flow:mintdetailscontinue', 'flow:wallettoggle:', 'flow:walletpick:', 'flow:walletcontinue', 'flow:mintconfirm'],
   send_guided: ['flow:sendwalletpick:', 'flow:sendconfirm'],
-  export_guided: ['flow:exportwalletpick:', 'flow:exportconfirm'] };
+  export_guided: ['flow:exportwalletpick:', 'flow:exportconfirm'],
+  // Shares flow:mintdetailscontinue with mint_guided -- the contract-details screen and its
+  // Continue button are the same component either way; the callback handler branches on
+  // flow.flow to decide whether "continue" means "go mint it" or "go schedule it".
+  task_guided: ['flow:mintdetailscontinue', 'flow:taskwalletpick:', 'flow:taskconfirm'] };
 
 // Generic one-shot confirmation gate for simple "<command> <id> CONFIRM"-shaped destructive actions
 // (remove wallet, cancel/resume/retry task, remove watch rule) -- replaces typing the literal word
@@ -590,6 +601,21 @@ function renderFlowStep(flow, step, { userId, data = {} } = {}) {
   }
   if (flow === 'mint_guided') {
     if (step === 'awaiting_contract') return { text: 'Send the contract address to mint from.', replyMarkup: cancelOnlyKeyboard() };
+    if (step === 'awaiting_details') {
+      return telegramMenus.contractDetails({
+        contractAddress: data.contractAddress,
+        chainLabel: CHAINS[data.chain]?.name || data.chain,
+        isSeaDrop: data.isSeaDrop,
+        priceETH: data.priceETH,
+        priceUnknown: data.priceUnknown,
+        maxSupply: data.maxSupply,
+        maxPerWallet: data.maxPerWallet,
+        startTime: data.startTime,
+        collection: data.collection,
+        soldOut: data.soldOut,
+        displayPrice: data.displayPrice,
+      });
+    }
     if (step === 'awaiting_wallet') {
       const wallets = botCommands.wallets(userId);
       return data.multi
@@ -641,6 +667,44 @@ function renderFlowStep(flow, step, { userId, data = {} } = {}) {
       return telegramMenus.exportKeyWarning({ walletLabel: data.walletLabel });
     }
   }
+  if (flow === 'task_guided') {
+    if (step === 'awaiting_contract') return { text: 'Send the contract address to schedule a mint for.', replyMarkup: cancelOnlyKeyboard() };
+    if (step === 'awaiting_details') {
+      return telegramMenus.contractDetails({
+        contractAddress: data.contractAddress,
+        chainLabel: CHAINS[data.chain]?.name || data.chain,
+        isSeaDrop: data.isSeaDrop,
+        priceETH: data.priceETH,
+        priceUnknown: data.priceUnknown,
+        maxSupply: data.maxSupply,
+        maxPerWallet: data.maxPerWallet,
+        startTime: data.startTime,
+        collection: data.collection,
+        soldOut: data.soldOut,
+        displayPrice: data.displayPrice,
+      });
+    }
+    if (step === 'awaiting_wallet') {
+      return telegramMenus.walletPicker(botCommands.wallets(userId), { prefix: 'flow:taskwalletpick', emptyHint: 'No wallets yet. Create one first from the Wallets menu.' });
+    }
+    if (step === 'awaiting_name') return { text: 'Send a name for this scheduled mint.', replyMarkup: cancelOnlyKeyboard() };
+    if (step === 'awaiting_time') {
+      return { text: 'This contract\'s opening time is not known. Send the UTC date/time to mint at, including an explicit Z or offset, e.g. `2026-08-20T18:00:00Z`.', replyMarkup: cancelOnlyKeyboard() };
+    }
+    if (step === 'awaiting_confirm') {
+      return telegramMenus.taskConfirmation({
+        name: data.name,
+        contractAddress: data.contractAddress,
+        chainLabel: CHAINS[data.chain]?.name || data.chain,
+        walletLabel: data.walletLabel,
+        mintTime: data.mintTime,
+        autoDetectedTime: Boolean(data.startTime && new Date(data.mintTime).getTime() === data.startTime * 1000),
+        priceETH: data.priceETH,
+        priceUnknown: data.priceUnknown,
+        displayPrice: data.displayPrice,
+      });
+    }
+  }
   return telegramMenus.mainMenu({});
 }
 
@@ -654,8 +718,10 @@ function retryStepForField(error) {
 
 // Entry point for /mint, /batch, and the "Mint" menu button. With no contract address yet, starts
 // the guided flow at awaiting_contract. With one (typed inline, or sent as the awaiting_contract
-// reply), validates it and derives which supported chain it's actually deployed on before moving
-// to the wallet picker -- multi picks multiple wallets (batch), single picks exactly one (mint).
+// reply), runs the same full detection the dashboard's auto-detect uses (chain, SeaDrop vs plain
+// mint, price, supply/per-wallet limits, SeaDrop opening time, OpenSea metadata) and shows it as
+// its own step before wallet selection -- multi picks multiple wallets (batch), single picks
+// exactly one (mint).
 async function startMintFlow({ chatId, messageId, userId, multi, contractAddressInput }) {
   const send = payload => tgUpdate(chatId, messageId, payload);
   if (!contractAddressInput) {
@@ -665,46 +731,52 @@ async function startMintFlow({ chatId, messageId, userId, multi, contractAddress
   if (!ethers.isAddress(contractAddressInput)) {
     return send({ text: 'That does not look like a valid contract address. Try again with /mint <contract> or /batch <contract>.', replyMarkup: telegramMenus.mainMenu({}).replyMarkup });
   }
-  const chain = await detectContractChain({ providerService, supportedChains: CONFIG.supportedChains, contractAddress: contractAddressInput });
-  if (!chain) {
-    return send({ text: 'Could not find this contract on any supported chain. Double-check the address.', replyMarkup: telegramMenus.mainMenu({}).replyMarkup });
+  let detected;
+  try {
+    detected = await botCommands.detectMintContract(userId, { contractAddress: contractAddressInput, quantity: 1 });
+  } catch (error) {
+    if (error instanceof ValidationError) {
+      return send({ text: 'Could not find this contract on any supported chain. Double-check the address.', replyMarkup: telegramMenus.mainMenu({}).replyMarkup });
+    }
+    throw error;
   }
-  const data = { multi, contractAddress: contractAddressInput, chain, selectedWallets: [] };
-  telegramFlowState.start('telegram', chatId, 'mint_guided', 'awaiting_wallet', data);
-  // A single wallet has nothing to pick between -- asking anyway is a tap that teaches the user
-  // nothing, and /start already creates that one wallet automatically for a brand-new user, so
-  // this is the common case, not an edge case.
-  const wallets = botCommands.wallets(userId);
-  if (!multi && wallets.length === 1) {
-    return advanceFromWalletSelection(chatId, messageId, userId, { data }, [wallets[0].label]);
-  }
-  return send(renderFlowStep('mint_guided', 'awaiting_wallet', { userId, data }));
+  const data = {
+    multi, contractAddress: contractAddressInput, chain: detected.chain, selectedWallets: [],
+    isSeaDrop: detected.isSeaDrop,
+    priceETH: detected.priceKnown ? Number(ethers.formatEther(BigInt(detected.valueWei))) : undefined,
+    priceUnknown: !detected.priceKnown,
+    maxSupply: detected.maxSupply, maxPerWallet: detected.maxPerWallet,
+    startTime: detected.startTime, endTime: detected.endTime, collection: detected.collection,
+    soldOut: detected.soldOut, displayPrice: detected.displayPrice,
+  };
+  telegramFlowState.start('telegram', chatId, 'mint_guided', 'awaiting_details', data);
+  return send(renderFlowStep('mint_guided', 'awaiting_details', { userId, data }));
 }
 
-// Once wallet(s) are picked (single tap for /mint, Continue for /batch), resolve price from the
-// contract; only fall back to asking when the resolver genuinely can't determine it.
+// After the user has seen (and tapped through) the contract details, move on to wallet selection.
+// A single wallet has nothing to pick between -- asking anyway is a tap that teaches the user
+// nothing, and /start already creates that one wallet automatically for a brand-new user, so this
+// is the common case, not an edge case.
+async function advanceFromDetails(chatId, messageId, userId, flow) {
+  const wallets = botCommands.wallets(userId);
+  if (!flow.data.multi && wallets.length === 1) {
+    return advanceFromWalletSelection(chatId, messageId, userId, flow, [wallets[0].label]);
+  }
+  telegramFlowState.advance('telegram', chatId, 'awaiting_wallet', flow.data);
+  return tgUpdate(chatId, messageId, renderFlowStep('mint_guided', 'awaiting_wallet', { userId, data: flow.data }));
+}
+
+// Once wallet(s) are picked (single tap for /mint, Continue for /batch): price was already
+// resolved back in startMintFlow's details step, so this only needs to decide whether that
+// resolution actually found a price (straight to confirm) or not (ask for one by hand).
 async function advanceFromWalletSelection(chatId, messageId, userId, flow, selectedWallets) {
-  const resolved = await contractValueResolver.resolve(flow.data.chain, flow.data.contractAddress);
-  if (resolved.price) {
-    const priceETH = Number(ethers.formatEther(BigInt(resolved.price.value)));
-    const data = { ...flow.data, selectedWallets, priceETH, priceUnknown: false };
-    telegramFlowState.advance('telegram', chatId, 'awaiting_confirm', data);
-    return tgUpdate(chatId, messageId, renderFlowStep('mint_guided', 'awaiting_confirm', { userId, data }));
-  }
-  // Nothing to probe via the plain mint(uint256) assumption -- try SeaDrop before falling back to
-  // asking the user to type a price by hand. A price they'd type here would just be discarded
-  // anyway once executeMint recomputes it from the discovered PublicDrop, so skip straight to
-  // confirmation when it's already known.
-  const seaDrop = await seaDropDiscoveryService.resolve(flow.data.chain, flow.data.contractAddress);
-  if (seaDrop.address && seaDrop.publicDrop) {
-    const priceETH = Number(ethers.formatEther(BigInt(seaDrop.publicDrop.mintPriceWei)));
-    const data = { ...flow.data, selectedWallets, priceETH, priceUnknown: false };
-    telegramFlowState.advance('telegram', chatId, 'awaiting_confirm', data);
-    return tgUpdate(chatId, messageId, renderFlowStep('mint_guided', 'awaiting_confirm', { userId, data }));
-  }
   const data = { ...flow.data, selectedWallets };
-  telegramFlowState.advance('telegram', chatId, 'awaiting_price', data);
-  return tgUpdate(chatId, messageId, renderFlowStep('mint_guided', 'awaiting_price', { userId, data }));
+  if (data.priceUnknown) {
+    telegramFlowState.advance('telegram', chatId, 'awaiting_price', data);
+    return tgUpdate(chatId, messageId, renderFlowStep('mint_guided', 'awaiting_price', { userId, data }));
+  }
+  telegramFlowState.advance('telegram', chatId, 'awaiting_confirm', data);
+  return tgUpdate(chatId, messageId, renderFlowStep('mint_guided', 'awaiting_confirm', { userId, data }));
 }
 
 async function finishMintExecution(chatId, messageId, userId, flowData) {
@@ -834,6 +906,84 @@ async function finishExportKeyExecution(chatId, messageId, userId, flowData, pla
   }
 }
 
+// Entry point for /schedule and the Tasks menu's "Schedule mint" button. Shares the same contract
+// detection and details screen as startMintFlow (botCommands.detectMintContract) -- what a
+// contract *is* doesn't depend on whether you're minting it now or scheduling it for later. A
+// SeaDrop drop's own future opening time is carried into flow data as a pre-filled mintTime, same
+// as createTask's own auto-detection, so the confirm screen can skip asking for it entirely.
+async function startTaskScheduleFlow({ chatId, messageId, userId, contractAddressInput }) {
+  const send = payload => tgUpdate(chatId, messageId, payload);
+  if (!contractAddressInput) {
+    telegramFlowState.start('telegram', chatId, 'task_guided', 'awaiting_contract', {});
+    return send(renderFlowStep('task_guided', 'awaiting_contract'));
+  }
+  if (!ethers.isAddress(contractAddressInput)) {
+    return send({ text: 'That does not look like a valid contract address. Try again with /schedule <contract>.', replyMarkup: telegramMenus.mainMenu({}).replyMarkup });
+  }
+  let detected;
+  try {
+    detected = await botCommands.detectMintContract(userId, { contractAddress: contractAddressInput, quantity: 1 });
+  } catch (error) {
+    if (error instanceof ValidationError) {
+      return send({ text: 'Could not find this contract on any supported chain. Double-check the address.', replyMarkup: telegramMenus.mainMenu({}).replyMarkup });
+    }
+    throw error;
+  }
+  const futureStartTime = detected.startTime && detected.startTime * 1000 > Date.now() ? detected.startTime : null;
+  const data = {
+    contractAddress: contractAddressInput, chain: detected.chain, isSeaDrop: detected.isSeaDrop,
+    priceETH: detected.priceKnown ? Number(ethers.formatEther(BigInt(detected.valueWei))) : undefined,
+    priceUnknown: !detected.priceKnown,
+    maxSupply: detected.maxSupply, maxPerWallet: detected.maxPerWallet,
+    startTime: detected.startTime, endTime: detected.endTime, collection: detected.collection,
+    soldOut: detected.soldOut, displayPrice: detected.displayPrice,
+    mintTime: futureStartTime ? new Date(futureStartTime * 1000).toISOString() : null,
+  };
+  telegramFlowState.start('telegram', chatId, 'task_guided', 'awaiting_details', data);
+  return send(renderFlowStep('task_guided', 'awaiting_details', { userId, data }));
+}
+
+// Scheduling is always single-wallet (createTask has no batch concept), so this always shows a
+// picker rather than the mint flow's multi/single branching -- except the auto-select-with-one-
+// wallet shortcut, which still applies.
+async function advanceFromTaskDetails(chatId, messageId, userId, flow) {
+  const wallets = botCommands.wallets(userId);
+  if (wallets.length === 1) {
+    return advanceFromTaskWallet(chatId, messageId, userId, flow, wallets[0].label);
+  }
+  telegramFlowState.advance('telegram', chatId, 'awaiting_wallet', flow.data);
+  return tgUpdate(chatId, messageId, renderFlowStep('task_guided', 'awaiting_wallet', { userId, data: flow.data }));
+}
+
+// After the wallet is picked, always ask for a name (there's no way to auto-detect that), then
+// skip straight to confirm if mintTime was already auto-filled from the contract's own opening
+// time, or ask for it by hand when it wasn't.
+async function advanceFromTaskWallet(chatId, messageId, userId, flow, walletLabel) {
+  const data = { ...flow.data, walletLabel };
+  telegramFlowState.advance('telegram', chatId, 'awaiting_name', data);
+  return tgUpdate(chatId, messageId, renderFlowStep('task_guided', 'awaiting_name', { userId, data }));
+}
+
+async function finishTaskSchedule(chatId, messageId, userId, flowData) {
+  const backToMenu = telegramMenus.mainMenu({}).replyMarkup;
+  try {
+    commandRateLimiter.check('telegram', userId, 'task');
+    const task = await botCommands.createTask(userId, {
+      name: flowData.name, walletLabel: flowData.walletLabel, contractAddress: flowData.contractAddress,
+      chain: flowData.chain, quantity: 1, priceETH: flowData.priceETH, mintTime: flowData.mintTime,
+    });
+    telegramFlowState.clear('telegram', chatId);
+    return tgUpdate(chatId, messageId, { text: `✅ Scheduled *${task.name}* for ${new Date(task.mintTime).toISOString()} UTC.`, replyMarkup: backToMenu });
+  } catch (error) {
+    if (error instanceof RateLimitError) {
+      return tgUpdate(chatId, messageId, { text: `Too many sensitive commands. Retry in ${Math.ceil(error.retryAfterMs / 1000)} seconds.`, replyMarkup: backToMenu });
+    }
+    telegramFlowState.clear('telegram', chatId);
+    if (error instanceof ValidationError) return tgUpdate(chatId, messageId, { text: validationReply(error), replyMarkup: backToMenu });
+    throw error;
+  }
+}
+
 function tgMenu(chatId, { text, replyMarkup, parseMode }) {
   if (!bot || !chatId) return Promise.resolve();
   return bot.sendMessage(chatId, String(text), { reply_markup: replyMarkup, parse_mode: parseMode }).catch(e => log('TG: '+safeError(e)));
@@ -924,7 +1074,8 @@ async function handleFlowTextMessage(msg) {
   const isTextStep = (flow.flow === 'wallet_create' && flow.step === 'awaiting_label')
     || (flow.flow === 'wallet_import' && (flow.step === 'awaiting_label' || flow.step === 'awaiting_key'))
     || (flow.flow === 'mint_guided' && (flow.step === 'awaiting_contract' || flow.step === 'awaiting_price'))
-    || (flow.flow === 'send_guided' && (flow.step === 'awaiting_amount' || flow.step === 'awaiting_destination'));
+    || (flow.flow === 'send_guided' && (flow.step === 'awaiting_amount' || flow.step === 'awaiting_destination'))
+    || (flow.flow === 'task_guided' && (flow.step === 'awaiting_contract' || flow.step === 'awaiting_name' || flow.step === 'awaiting_time'));
   if (!isTextStep) { tgDeleteUserMessage(msg); tgRender(chatId, { text: 'Please use the buttons above, or tap Cancel.', replyMarkup: cancelOnlyKeyboard() }); return; }
 
   // Consumed as flow input from here on -- clear it immediately rather than after a successful
@@ -1000,6 +1151,31 @@ async function handleFlowTextMessage(msg) {
       return;
     }
     await advanceToSendConfirm(chatId, null, userId, flow, value);
+    return;
+  }
+  if (flow.flow === 'task_guided' && flow.step === 'awaiting_contract') {
+    await startTaskScheduleFlow({ chatId, messageId: null, userId, contractAddressInput: value });
+    return;
+  }
+  if (flow.flow === 'task_guided' && flow.step === 'awaiting_name') {
+    if (!value || value.length > 100) {
+      tgRender(chatId, { text: 'Name must be 1-100 characters. Try again.', replyMarkup: cancelOnlyKeyboard() });
+      return;
+    }
+    const data = { ...flow.data, name: value };
+    const nextStep = data.mintTime ? 'awaiting_confirm' : 'awaiting_time';
+    telegramFlowState.advance('telegram', chatId, nextStep, data);
+    tgRender(chatId, renderFlowStep('task_guided', nextStep, { userId, data }));
+    return;
+  }
+  if (flow.flow === 'task_guided' && flow.step === 'awaiting_time') {
+    if (!/(?:Z|[+-]\d{2}:\d{2})$/i.test(value)) {
+      tgRender(chatId, { text: 'Include an explicit UTC offset or Z suffix, e.g. `2026-08-20T18:00:00Z`. Try again.', replyMarkup: cancelOnlyKeyboard() });
+      return;
+    }
+    const data = { ...flow.data, mintTime: value };
+    telegramFlowState.advance('telegram', chatId, 'awaiting_confirm', data);
+    tgRender(chatId, renderFlowStep('task_guided', 'awaiting_confirm', { userId, data }));
   }
 }
 
@@ -1168,6 +1344,7 @@ if (BOT_TOKEN) {
     { command: 'mintnow', description: 'Mint immediately' },
     { command: 'mintcall', description: 'Mint via raw validated call JSON' },
     { command: 'mintpresets', description: 'List saved mint presets' },
+    { command: 'schedule', description: 'Schedule a future mint' },
     { command: 'tasks', description: 'List scheduled mint tasks' },
     { command: 'snipers', description: 'List post-confirmation copy snipers' },
     { command: 'watch', description: 'Manage social watch rules' },
@@ -1195,7 +1372,8 @@ if (BOT_TOKEN) {
     if (data === 'menu:mint') return startMintFlow({ chatId, messageId, userId, multi: false, contractAddressInput: null });
     if (data === 'menu:send') return startSendFlow({ chatId, messageId, userId });
     if (data === 'menu:exportkey') return startExportKeyFlow({ chatId, messageId, userId });
-    if (data === 'menu:tasks') return tgEditMenu(chatId, messageId, telegramMenus.placeholderMenu('Tasks', 'Use /tasks to list, /canceltask, /pausetask, /resumetask, or /retrytask <id>.'));
+    if (data === 'menu:tasks') return tgEditMenu(chatId, messageId, telegramMenus.tasksMenu());
+    if (data === 'menu:schedule') return startTaskScheduleFlow({ chatId, messageId, userId, contractAddressInput: null });
     if (data === 'menu:snipers') return tgEditMenu(chatId, messageId, telegramMenus.placeholderMenu('Snipers', 'Use /snipers to list, /updatesniper <id> <JSON> to edit.'));
     if (data === 'menu:watch') return tgEditMenu(chatId, messageId, telegramMenus.placeholderMenu('Watch rules', 'Use /watch add|edit|disable|remove|list.'));
     if (data === 'menu:activity') return tgEditMenu(chatId, messageId, telegramMenus.placeholderMenu('Activity', 'Use /activity to see recent mint activity.'));
@@ -1256,6 +1434,24 @@ if (BOT_TOKEN) {
       return;
     }
 
+    if (data === 'flow:mintdetailscontinue') {
+      const flow = telegramFlowState.get('telegram', chatId);
+      if (!flow) return;
+      if (flow.flow === 'mint_guided') return advanceFromDetails(chatId, messageId, userId, flow);
+      if (flow.flow === 'task_guided') return advanceFromTaskDetails(chatId, messageId, userId, flow);
+      return;
+    }
+    if (data.startsWith('flow:taskwalletpick:')) {
+      const label = data.slice('flow:taskwalletpick:'.length);
+      const flow = telegramFlowState.get('telegram', chatId);
+      if (!flow || flow.flow !== 'task_guided') return;
+      return advanceFromTaskWallet(chatId, messageId, userId, flow, label);
+    }
+    if (data === 'flow:taskconfirm') {
+      const flow = telegramFlowState.get('telegram', chatId);
+      if (!flow || flow.flow !== 'task_guided') return;
+      return finishTaskSchedule(chatId, messageId, userId, flow.data);
+    }
     if (data.startsWith('flow:walletpick:')) {
       const label = data.slice('flow:walletpick:'.length);
       const flow = telegramFlowState.get('telegram', chatId);
@@ -1417,6 +1613,10 @@ send /mint with a contract address to get going.`;
 
   bot.onText(/^\/exportkey(?:@\w+)?$/, withTelegramUser(async (msg, match, userId) => {
     await startExportKeyFlow({ chatId: msg.chat.id, messageId: null, userId });
+  }));
+
+  bot.onText(/^\/schedule(?:@\w+)?(?:\s+(\S+))?$/, withTelegramUser(async (msg, match, userId) => {
+    await startTaskScheduleFlow({ chatId: msg.chat.id, messageId: null, userId, contractAddressInput: match[1] || null });
   }));
 
   bot.onText(/^\/link(?:@\w+)?$/, withTelegramUser(async (msg, match, userId) => {
@@ -1719,6 +1919,8 @@ const botCommands = createBotCommandService({
   providerService,
   contractValueResolver,
   seaDropDiscoveryService,
+  openSeaService,
+  priceFeedService,
   governance,
   adminCommands,
   sniperService,

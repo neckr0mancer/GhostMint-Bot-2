@@ -12,7 +12,7 @@ function createBotCommandService(dependencies) {
   const { storage, schedulerRepository, providerService, governance, adminCommands, sniperService,
     socialWatchService, socialUsageService, targetPolicyService, triggerExecutionService, governanceRepository,
     triggerAuditRepository, transactionIntentRepository, gasService, supportedChains, chains, encryptPrivateKey, getState, executeMint, executeSend,
-    sniperRepository, mintService, previewMint, executePreparedMint, identity, contractValueResolver, seaDropDiscoveryService,
+    sniperRepository, mintService, previewMint, executePreparedMint, identity, contractValueResolver, seaDropDiscoveryService, openSeaService, priceFeedService,
     exportRawKey, exportKeystore,
     ensureChainWatcher = () => {}, broadcast = () => {}, walletBalanceCache = createWalletBalanceCache() } = dependencies;
 
@@ -41,6 +41,40 @@ function createBotCommandService(dependencies) {
     throw new ValidationError({ field: 'priceETH', message: 'could not be determined from this contract; please provide it' });
   }
 
+  // Only SeaDrop drops have a real on-chain "opening time" (PublicDrop.startTime) -- a plain
+  // mint(uint256) contract has no equivalent concept anywhere (on-chain or otherwise), so this
+  // leaves mintTime untouched in that case and normal validation still requires it explicitly. A
+  // startTime that has already passed is also left alone rather than scheduling a task in the
+  // past, which validation would reject anyway -- the drop is already open, so an immediate /mint
+  // is the right move, not a scheduled task.
+  async function resolveMintTimeIfMissing(input, chain) {
+    if (input.mintTime !== undefined && input.mintTime !== null && input.mintTime !== '') return input;
+    if (!chain || !input.contractAddress || !seaDropDiscoveryService) return input;
+    const seaDrop = await seaDropDiscoveryService.resolve(chain, input.contractAddress);
+    const startTime = seaDrop.publicDrop?.startTime;
+    if (seaDrop.address && startTime && startTime * 1000 > Date.now()) {
+      return { ...input, mintTime: new Date(startTime * 1000).toISOString() };
+    }
+    return input;
+  }
+
+  // displayPrice is purely informational context for "what is this collection worth" -- it must
+  // never be confused with priceETH/valueWei above, which is the amount an actual mint transaction
+  // will send. A sold-out collection's mint price is no longer obtainable (nobody can mint at it),
+  // so the display switches to OpenSea's floor price instead; a real floor price of exactly 0 is
+  // shown as 0, never hidden or treated as "unavailable" (same nullish-not-truthy convention as the
+  // rest of this app). USD is best-effort only -- a missing price feed or unmapped chain symbol
+  // just omits it, same "unknown is fine" philosophy as everything else in this function.
+  async function resolveDisplayPrice({ chain, soldOut, mintPriceKnown, mintPriceWeiPerItem, floorPrice }) {
+    const eth = soldOut
+      ? (floorPrice === null || floorPrice === undefined ? null : floorPrice)
+      : (mintPriceKnown ? Number(formatEther(mintPriceWeiPerItem)) : null);
+    if (eth === null) return null;
+    const sym = chains[chain]?.sym;
+    const usdRate = priceFeedService && sym ? await priceFeedService.getUsdPrice(sym) : null;
+    return { eth, usd: usdRate !== null && usdRate !== undefined ? eth * usdRate : null, source: soldOut ? 'floor' : 'mint' };
+  }
+
   // Dashboard-facing counterpart to what Telegram/Discord's guided /mint flow already does
   // automatically: find which configured chain the contract lives on, then figure out how to mint
   // it without asking the user to know or supply that shape themselves. SeaDrop tokens are tried
@@ -56,12 +90,21 @@ function createBotCommandService(dependencies) {
     const chain = await detectContractChain({ providerService, supportedChains, contractAddress });
     if (!chain) throw new ValidationError({ field: 'contractAddress', message: 'could not be found on any supported chain' });
     const quantity = Math.max(1, Math.min(100, Math.floor(Number(input.quantity)) || 1));
+    // Display-only, same "unknown is fine" shape as everything else here -- a missing API key or
+    // an OpenSea outage never blocks detection, it just leaves these fields null.
+    const openSea = openSeaService ? await openSeaService.getCollectionMetadata(chain, contractAddress) : null;
 
     const seaDrop = seaDropDiscoveryService
       ? await seaDropDiscoveryService.resolve(chain, contractAddress)
       : { address: null, publicDrop: null, feeRecipient: null };
     if (seaDrop.address) {
       const priceKnown = Boolean(seaDrop.publicDrop);
+      // SeaDrop's own PublicDrop struct has no current-supply field -- its endTime having already
+      // passed is the signal available here, distinct from the totalMinted>=maxSupply comparison
+      // the plain-mint branch below uses.
+      const soldOut = Boolean(seaDrop.publicDrop?.endTime && seaDrop.publicDrop.endTime * 1000 <= Date.now());
+      const displayPrice = await resolveDisplayPrice({ chain, soldOut, mintPriceKnown: priceKnown,
+        mintPriceWeiPerItem: priceKnown ? BigInt(seaDrop.publicDrop.mintPriceWei) : null, floorPrice: openSea?.floorPrice });
       return {
         chain,
         isSeaDrop: true,
@@ -72,11 +115,25 @@ function createBotCommandService(dependencies) {
         priceKnown,
         maxSupply: null,
         maxPerWallet: seaDrop.publicDrop?.maxTotalMintableByWallet ?? null,
+        // Real on-chain SeaDrop PublicDrop fields (unix seconds) -- null for a drop with no known
+        // PublicDrop yet, not "no opening time exists." Non-SeaDrop contracts have no equivalent
+        // on-chain concept, so these stay null in the branch below.
+        startTime: seaDrop.publicDrop?.startTime ?? null,
+        endTime: seaDrop.publicDrop?.endTime ?? null,
+        collection: openSea,
+        soldOut,
+        displayPrice,
       };
     }
 
-    const resolved = contractValueResolver ? await contractValueResolver.resolve(chain, contractAddress) : { price: null, maxSupply: null, maxPerWallet: null };
+    const resolved = contractValueResolver
+      ? await contractValueResolver.resolve(chain, contractAddress)
+      : { price: null, maxSupply: null, maxPerWallet: null, totalMinted: null };
     const priceKnown = Boolean(resolved.price);
+    const soldOut = Boolean(resolved.maxSupply?.value && resolved.totalMinted?.value
+      && BigInt(resolved.totalMinted.value) >= BigInt(resolved.maxSupply.value));
+    const displayPrice = await resolveDisplayPrice({ chain, soldOut, mintPriceKnown: priceKnown,
+      mintPriceWeiPerItem: priceKnown ? BigInt(resolved.price.value) : null, floorPrice: openSea?.floorPrice });
     return {
       chain,
       isSeaDrop: false,
@@ -87,6 +144,11 @@ function createBotCommandService(dependencies) {
       priceKnown,
       maxSupply: resolved.maxSupply?.value ?? null,
       maxPerWallet: resolved.maxPerWallet?.value ?? null,
+      startTime: null,
+      endTime: null,
+      collection: openSea,
+      soldOut,
+      displayPrice,
     };
   }
 
@@ -204,9 +266,17 @@ function createBotCommandService(dependencies) {
     return results;
   }
 
+  // Price and opening time now default the same way mint()'s does -- an explicit value always
+  // wins, otherwise probe the contract before falling back to requiring it. Chain resolution
+  // mirrors mint()'s own owned.chain fallback rather than doing independent auto-detection here;
+  // a guided flow that wants full chain auto-detection from a bare contract address (the way
+  // startMintFlow does) resolves it upstream and passes chain in explicitly, same as it does for mint().
   async function createTask(userId, input) {
-    const validated = requestSchemas.taskCreate(input, { supportedChains, now: Date.now() });
-    wallet(userId, validated.walletLabel);
+    const owned = wallet(userId, input.walletLabel);
+    const chain = input.chain || owned.chain;
+    const withPrice = await resolvePriceIfMissing({ ...input, contractAddress: input.contractAddress ?? input.contract }, chain);
+    const withMintTime = await resolveMintTimeIfMissing(withPrice, chain);
+    const validated = requestSchemas.taskCreate({ ...withMintTime, chain }, { supportedChains, now: Date.now() });
     const task = { userId, id: validated.id, name: validated.name, walletLabel: validated.walletLabel,
       contract: validated.contractAddress, fn: validated.functionName, qty: validated.quantity,
       price: validated.priceETH, gas: validated.gasGwei, mintTime: validated.mintTime,

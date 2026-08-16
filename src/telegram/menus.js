@@ -109,6 +109,69 @@ function exportKeyWarning({ walletLabel }) {
   };
 }
 
+// A real USD figure of $0 is possible (a genuinely worthless floor) and must render as $0.00, not
+// be dropped -- only a missing/unpriced feed (null) omits the suffix entirely.
+function usdSuffix(usd) {
+  return usd === null || usd === undefined ? '' : ` (~$${usd.toFixed(2)})`;
+}
+
+// Shown once, right after a contract address resolves to a chain -- before wallet selection --
+// so "what is this thing" is answered up front instead of being buried inside the final confirm
+// screen. collection (OpenSea metadata) and startTime/endTime (SeaDrop only) are both optional:
+// a plain mint(uint256) contract or an unconfigured OpenSea key just renders fewer lines, never an
+// error. displayPrice/soldOut (botCommandService.js's detectMintContract) drive which price this
+// shows -- the still-minting mint price, or once sold out, OpenSea's floor (including a genuine
+// floor of exactly 0, which is a real value here, not "unavailable") -- but priceETH/priceUnknown
+// below are untouched: they always describe what an actual mint transaction would spend, never a
+// secondary-market reference figure.
+function contractDetails({ contractAddress, chainLabel, isSeaDrop, priceETH, priceUnknown, maxSupply, maxPerWallet, startTime, collection, soldOut, displayPrice }) {
+  const lines = [collection?.name ? `*${collection.name}*` : '*Contract details*', `\`${contractAddress}\``,
+    `Chain: ${chainLabel}`, `Type: ${isSeaDrop ? 'SeaDrop drop' : 'Standard mint(uint256)'}`];
+  if (soldOut) {
+    lines.push(displayPrice
+      ? `Status: Sold out — floor price ${displayPrice.eth} ETH${usdSuffix(displayPrice.usd)}`
+      : 'Status: Sold out — floor price unavailable');
+  } else {
+    lines.push(priceUnknown
+      ? 'Price: not exposed by this contract — you will be asked to enter it'
+      : `Price: ${priceETH} per item${displayPrice ? usdSuffix(displayPrice.usd) : ''}`);
+  }
+  if (maxPerWallet !== null && maxPerWallet !== undefined) lines.push(`Max per wallet: ${maxPerWallet}`);
+  if (maxSupply !== null && maxSupply !== undefined) lines.push(`Max supply: ${maxSupply}`);
+  if (startTime) {
+    const opensAt = new Date(startTime * 1000).toISOString();
+    lines.push(startTime * 1000 > Date.now() ? `Opens: ${opensAt} UTC` : `Opened: ${opensAt} UTC`);
+  }
+  if (collection?.description) lines.push('', collection.description.slice(0, 300));
+  return {
+    text: lines.join('\n'),
+    replyMarkup: keyboard([[button('▶️ Continue', 'flow:mintdetailscontinue')], [button('❌ Cancel', 'flow:cancel:ask')]]),
+  };
+}
+
+function taskConfirmation({ name, contractAddress, chainLabel, walletLabel, mintTime, autoDetectedTime, priceETH, priceUnknown, displayPrice }) {
+  const priceLine = priceUnknown
+    ? 'Price: not exposed by this contract — using the amount you entered above.'
+    : `Price: ${priceETH} per item (read from the contract)${displayPrice ? usdSuffix(displayPrice.usd) : ''}`;
+  const timeLine = autoDetectedTime
+    ? `Fires (UTC): *${mintTime}* (this contract's own opening time)`
+    : `Fires (UTC): *${mintTime}*`;
+  return {
+    text: `*Confirm scheduled mint*\nName: ${name}\nContract: \`${contractAddress}\`\nChain: ${chainLabel}\nWallet: ${walletLabel}\nQuantity: 1\n${priceLine}\n${timeLine}\n\nProceed?`,
+    replyMarkup: keyboard([[button('✅ Schedule it', 'flow:taskconfirm')], [button('❌ Cancel', 'flow:cancel:ask')]]),
+  };
+}
+
+function tasksMenu() {
+  return {
+    text: '*Tasks*\n\nSchedule a mint to run automatically at a future time. Use /tasks to list, /canceltask, /pausetask, /resumetask, or /retrytask <id> to manage one.',
+    replyMarkup: keyboard([
+      [button('🗓️ Schedule mint', 'menu:schedule')],
+      [button('⬅️ Back to menu', 'menu:main')],
+    ]),
+  };
+}
+
 function mintConfirmation({ contractAddress, chainLabel, walletLabels, priceETH, priceUnknown }) {
   const priceLine = priceUnknown
     ? 'Price: not exposed by this contract — using the amount you entered above.'
@@ -145,12 +208,15 @@ module.exports = {
   mainMenu,
   walletsMenu,
   settingsMenu,
+  tasksMenu,
   placeholderMenu,
   chainPicker,
   walletPicker,
   walletMultiPicker,
+  contractDetails,
   mintConfirmation,
   sendConfirmation,
+  taskConfirmation,
   exportKeyWarning,
   confirmCancelPrompt,
   confirmRemoveWallet,

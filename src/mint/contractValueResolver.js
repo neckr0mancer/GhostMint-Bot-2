@@ -8,6 +8,11 @@ const CANDIDATES = Object.freeze({
   price: ['mintPrice', 'price', 'cost', 'PUBLIC_PRICE', 'publicPrice'],
   maxSupply: ['maxSupply', 'MAX_SUPPLY', 'totalSupply', 'collectionSize'],
   maxPerWallet: ['maxPerWallet', 'maxMintsPerWallet', 'maxPerTx'],
+  // Deliberately probed separately from maxSupply (whose own candidate list falls back to
+  // totalSupply() as a stand-in for a fixed cap on collections with no dedicated max-supply
+  // getter) -- this one is read as *current* minted count, so it can be compared against maxSupply
+  // to tell "sold out" apart from "still minting" for the contract-details display.
+  totalMinted: ['totalSupply', 'totalMinted', '_totalMinted', 'totalMintedSupply'],
 });
 
 function createContractValueResolver({ providerService, repository }) {
@@ -36,12 +41,13 @@ function createContractValueResolver({ providerService, repository }) {
   async function resolve(chain, contractAddress) {
     const cached = await repository.get(chain, contractAddress);
     if (cached) return cached;
-    const [price, maxSupply, maxPerWallet] = await Promise.all([
+    const [price, maxSupply, maxPerWallet, totalMinted] = await Promise.all([
       resolveOne(chain, contractAddress, 'price'),
       resolveOne(chain, contractAddress, 'maxSupply'),
       resolveOne(chain, contractAddress, 'maxPerWallet'),
+      resolveOne(chain, contractAddress, 'totalMinted'),
     ]);
-    return repository.save(chain, contractAddress, { price, maxSupply, maxPerWallet });
+    return repository.save(chain, contractAddress, { price, maxSupply, maxPerWallet, totalMinted });
   }
 
   return { resolve };
