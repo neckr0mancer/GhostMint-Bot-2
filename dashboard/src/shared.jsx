@@ -149,6 +149,14 @@ export function useLoad(path,dependencies=[],wsEvents){const [data,setData]=useS
 export function useLiveSocket(){const [live,setLive]=useState(false);useEffect(()=>{const protocol=window.location.protocol==='https:'?'wss:':'ws:';const socket=new WebSocket(`${protocol}//${window.location.host}/ws`);socket.onmessage=event=>{const message=JSON.parse(event.data);if(message.type==='connected')setLive(true);window.dispatchEvent(new CustomEvent('ghostmint-ws',{detail:message}));};socket.onclose=()=>setLive(false);return()=>socket.close();},[]);return live;}
 export function Notice({error,ok}){return <>{error&&<p className="notice error" role="alert">{error}</p>}{ok&&<p className="notice ok" role="status">{ok}</p>}</>}
 export function relativeTime(at){const seconds=Math.max(0,Math.floor((Date.now()-at)/1000));if(seconds<5)return 'just now';if(seconds<60)return `${seconds}s ago`;const minutes=Math.floor(seconds/60);if(minutes<60)return `${minutes}m ago`;const hours=Math.floor(minutes/60);if(hours<24)return `${hours}h ago`;return `${Math.floor(hours/24)}d ago`;}
+// Carries the contract address (and whatever else was already typed) from Quick Mint's "Advanced
+// options" hand-off into the full Minting page, so the field it lands on isn't empty and detection
+// can fire immediately -- a plain module-level value is enough since this is a same-tab SPA
+// navigation (go() just swaps which component renders, never a real page load), not real
+// cross-request state.
+let pendingMintPrefill=null;
+export function setPendingMintPrefill(value){pendingMintPrefill=value;}
+export function consumePendingMintPrefill(){const value=pendingMintPrefill;pendingMintPrefill=null;return value;}
 // The one Form/Field/Select family every dashboard form is built from -- previously duplicated
 // separately in App.jsx and Admin.jsx (and not available to Dashboard.jsx at all, since it can't
 // import from App.jsx without a cycle), which is how Quick Mint ended up with its own raw

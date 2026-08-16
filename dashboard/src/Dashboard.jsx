@@ -1,5 +1,5 @@
 import React,{useEffect,useMemo,useRef,useState} from 'react';
-import {api,confirmDialog,Field,Form,notify,promptDialog,Select,useLoad} from './shared.jsx';
+import {api,confirmDialog,Field,Form,notify,promptDialog,Select,setPendingMintPrefill,useLoad} from './shared.jsx';
 import {THEME_WIDGETS} from './dashboardWidgets/index.js';
 
 const ADDRESS_SHAPE=/^0x[0-9a-fA-F]{40}$/;
@@ -26,6 +26,9 @@ function QuickMint({go}){
   const lastDetected=useRef('');
   useEffect(()=>{if(!walletLabel&&wallets.data?.length)setWalletLabel(wallets.data[0].label);},[wallets.data]);
   function reset(){setContractAddress('');setQuantity('1');setDetected(null);setPreview(null);lastDetected.current='';}
+  // Whatever's already typed here follows to the full page instead of being lost -- landing on an
+  // empty contract field after already having pasted one in is exactly the dead-end this avoids.
+  function goToFullMint(){setPendingMintPrefill({contractAddress,quantity,walletLabel});go('Minting');}
   async function detect(){
     const trimmed=contractAddress.trim();
     if(!trimmed){notify('Enter a contract address first.',{type:'error'});return;}
@@ -34,6 +37,10 @@ function QuickMint({go}){
       const result=await api(`/api/mints/detect?contractAddress=${encodeURIComponent(trimmed)}&quantity=${encodeURIComponent(quantity)}`);
       lastDetected.current=`${trimmed}:${quantity}`;
       setDetected(result);
+      // A quantity already typed in before detection finished can be higher than the contract's
+      // real per-wallet cap -- pull it back down rather than leaving an already-invalid value sitting
+      // in the field.
+      if(result.maxPerWallet&&Number(quantity)>result.maxPerWallet)setQuantity(String(result.maxPerWallet));
       const label=result.isSeaDrop?'SeaDrop drop':'contract';
       notify(result.priceKnown?`Detected ${label} on ${result.chain} — price read from the contract.`:`Detected ${label} on ${result.chain}, but the price couldn't be read.`,{type:result.priceKnown?'success':'info'});
     }catch(value){notify(value.message,{type:'error'});setDetected(null);}
@@ -46,7 +53,7 @@ function QuickMint({go}){
     // Unlike the full Minting page, this widget has no manual-value override -- proceeding with an
     // unknown price would silently submit valueWei:'0', which could treat a paid mint as free.
     // Send unknown-price contracts to the full page instead of guessing.
-    if(!detected.priceKnown){go('Minting');return;}
+    if(!detected.priceKnown){goToFullMint();return;}
     setBusy(true);
     try{
       const input={walletLabel,contractAddress:contractAddress.trim(),methodSignature:detected.methodSignature,
@@ -69,11 +76,11 @@ function QuickMint({go}){
     <fieldset disabled={busy}>
       <div className="field-row">
         <Select label="Wallet" options={wallets.data?.map(w=>w.label)} value={walletLabel} onChange={e=>setWalletLabel(e.target.value)}/>
-        <Field label="Quantity" type="number" min="1" max="100" value={quantity} onChange={e=>setQuantity(e.target.value)} onBlur={handleAutoDetectBlur}/>
+        <Field label={detected?.maxPerWallet?`Quantity (max ${detected.maxPerWallet} per wallet)`:'Quantity'} type="number" min="1" max={detected?.maxPerWallet||100} value={quantity} onChange={e=>setQuantity(e.target.value)} onBlur={handleAutoDetectBlur}/>
       </div>
       <Field label="Contract address" required={false} placeholder="0x…" value={contractAddress}
         onChange={e=>{setContractAddress(e.target.value);setDetected(null);}} onBlur={handleAutoDetectBlur}/>
-      {detecting&&<p className="mint-detected-summary">Detecting…</p>}
+      {detecting&&<p className="mint-detecting"><span className="spinner spinner-quiet" aria-hidden="true"/>Detecting…</p>}
       {!detecting&&detected&&<p className="mint-detected-summary">Detected on {detected.chain}: <code>{detected.methodSignature}</code>
         {detected.priceKnown?` · ${detected.valueWei==='0'?'free':detected.valueWei+' wei'}`:' · price not exposed by this contract -- enter it manually on the full page'}
         {detected.soldOut
@@ -85,7 +92,7 @@ function QuickMint({go}){
       <p>Estimated total: {preview.items[0].simulation.estimatedCostWei} wei | Gas: {preview.items[0].simulation.gasLimit}</p>
       <button className="quiet" disabled={busy} onClick={confirmMint}>Confirm and broadcast</button>
     </div>}
-    <button type="button" className="quiet panel-cta" onClick={()=>go('Minting')}>Advanced options →</button>
+    <button type="button" className="quiet panel-cta" onClick={goToFullMint}>Advanced options →</button>
   </Form>;
 }
 

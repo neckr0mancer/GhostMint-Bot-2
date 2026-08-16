@@ -322,6 +322,11 @@ button:disabled{opacity:.45;cursor:not-allowed;box-shadow:none}
 .skeleton-line:nth-child(3n+3){width:60%}
 .spinner{display:inline-block;width:1em;height:1em;border-radius:50%;border:2px solid color-mix(in srgb,var(--accent-contrast) 35%,transparent);
   border-top-color:var(--accent-contrast);animation:spin .7s linear infinite;vertical-align:-.15em;margin-right:.5em}
+/* A quieter variant for use on a plain panel background (not an accent-filled button) -- the
+   detecting cue itself: small and muted rather than a full status line, so it reads as "still
+   working" without competing with the "Detected ..." summary it gets replaced by once done. */
+.spinner-quiet{border-color:color-mix(in srgb,var(--text-muted) 35%,transparent);border-top-color:var(--text-muted)}
+.mint-detecting{display:flex;align-items:center;font-size:.8rem;color:var(--text-muted);margin:.3rem 0 0}
 
 /* ==========================================================================
    Tables / lists
