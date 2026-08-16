@@ -12,7 +12,7 @@ function createBotCommandService(dependencies) {
     socialWatchService, socialUsageService, targetPolicyService, triggerExecutionService, governanceRepository,
     triggerAuditRepository, transactionIntentRepository, gasService, supportedChains, chains, encryptPrivateKey, getState, executeMint,
     sniperRepository, mintService, previewMint, executePreparedMint, identity, contractValueResolver, seaDropDiscoveryService,
-    ensureChainWatcher = () => {} } = dependencies;
+    ensureChainWatcher = () => {}, broadcast = () => {} } = dependencies;
 
   // Discord's /mint no longer has a price input; Telegram's guided flow doesn't ask for one either.
   // If the caller already gave a price (either field name the schema accepts), that stands -- an
@@ -102,6 +102,7 @@ function createBotCommandService(dependencies) {
     const saved = await storage.addWallet({ userId, label: validated.label, address: validated.address,
       chain: validated.chain, keyEnvelope: encryptPrivateKey(validated.privateKey), minted: 0, addedAt: Date.now() });
     getState().wallets.push(saved);
+    broadcast(userId, 'wallets');
     return { label: saved.label, address: saved.address, chain: saved.chain };
   }
 
@@ -119,6 +120,7 @@ function createBotCommandService(dependencies) {
     const owned = wallet(userId, validated.label);
     await storage.deleteWallet(userId, owned.label);
     getState().wallets.splice(getState().wallets.indexOf(owned), 1);
+    broadcast(userId, 'wallets');
     return owned.label;
   }
 
@@ -169,6 +171,7 @@ function createBotCommandService(dependencies) {
       idempotencyKey: `scheduled-mint:${userId}:${validated.id}` };
     await storage.saveTask(task);
     getState().tasks.push(task);
+    broadcast(userId, 'tasks');
     return task;
   }
 
@@ -181,6 +184,7 @@ function createBotCommandService(dependencies) {
     if (!task) throw new ValidationError({ field: 'id', message: `was not found or cannot be ${action}d` });
     const cached = getState().tasks.find(item => item.userId === userId && item.id === task.id);
     if (cached) Object.assign(cached, task);
+    broadcast(userId, 'tasks');
     return task;
   }
 
@@ -189,6 +193,7 @@ function createBotCommandService(dependencies) {
     const saved = await storage.addPnl({ userId, nm: value.name, cost: value.cost, sale: value.sale,
       gas: value.gas, net: value.net, t: Date.now() });
     getState().pnl.unshift(saved);
+    broadcast(userId, 'pnl');
     return saved;
   }
 
@@ -197,6 +202,7 @@ function createBotCommandService(dependencies) {
     const owned = state(userId).pnl.find(item => item.id === validated.id);
     if (!owned || !await storage.deletePnl(userId, validated.id)) throw new ValidationError({ field: 'id', message: 'was not found' });
     getState().pnl.splice(getState().pnl.indexOf(owned), 1);
+    broadcast(userId, 'pnl');
     return validated.id;
   }
 
@@ -208,7 +214,9 @@ function createBotCommandService(dependencies) {
     const saved=await storage.updatePnl(userId,validatedId,{nm:value.name,cost:value.cost,sale:value.sale,
       gas:value.gas,net:value.net});
     if(!saved) throw new ValidationError({field:'id',message:'was not found'});
-    Object.assign(owned,saved);return saved;
+    Object.assign(owned,saved);
+    broadcast(userId, 'pnl');
+    return saved;
   }
 
   // Wallets store one nominal home chain (see DEFAULT_EVM_CHAIN in the dashboard), but an EVM
@@ -239,6 +247,7 @@ function createBotCommandService(dependencies) {
     await storage.saveSniper(sniper);
     getState().snipers.push(sniper);
     if (sniper.active) ensureChainWatcher(sniper.chain);
+    broadcast(userId, 'snipers');
     return sniper;
   }
 
@@ -248,6 +257,7 @@ function createBotCommandService(dependencies) {
     if(!current||!await storage.deleteSniper(userId,validated.id)) throw new ValidationError({field:'id',message:'was not found'});
     getState().snipers.splice(getState().snipers.indexOf(current),1);
     await targetPolicyService.reset(userId,{targetType:'sniper',targetId:validated.id});
+    broadcast(userId, 'snipers');
     return validated.id;
   }
 
@@ -260,6 +270,7 @@ function createBotCommandService(dependencies) {
     await storage.saveSniper(updated);
     Object.assign(current, updated);
     if (current.active) ensureChainWatcher(current.chain);
+    broadcast(userId, 'snipers');
     return current;
   }
 
@@ -304,11 +315,15 @@ function createBotCommandService(dependencies) {
     activityPage:(userId,input)=>pageFrom(storage.listActivityPage?.bind(storage),()=>state(userId).activity,userId,input,['title','walletLabel']),
     pnl: userId => state(userId).pnl,
     snipers: userId => state(userId).snipers,
-    createWatchRule: (userId, input) => socialWatchService.create(userId, input),
-    updateWatchRule: (userId, id, input) => socialWatchService.update(userId, id, input),
-    disableWatchRule: (userId, id) => socialWatchService.disable(userId, id),
+    createWatchRule: async (userId, input) => { const rule=await socialWatchService.create(userId, input);
+      broadcast(userId,'watchrules'); return rule; },
+    updateWatchRule: async (userId, id, input) => { const rule=await socialWatchService.update(userId, id, input);
+      broadcast(userId,'watchrules'); return rule; },
+    disableWatchRule: async (userId, id) => { const rule=await socialWatchService.disable(userId, id);
+      broadcast(userId,'watchrules'); return rule; },
     removeWatchRule: async (userId, id) => { const result=await socialWatchService.remove(userId,id);
-      await targetPolicyService.reset(userId,{targetType:'social_rule',targetId:id}); return result; },
+      await targetPolicyService.reset(userId,{targetType:'social_rule',targetId:id});
+      broadcast(userId,'watchrules'); return result; },
     watchRules: userId => socialWatchService.list(userId),
     watchEvents:userId=>socialWatchService.recentTriggers(userId),
     socialUsage: (userId, period) => socialUsageService.summary(userId, period),

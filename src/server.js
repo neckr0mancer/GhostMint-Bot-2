@@ -257,6 +257,12 @@ async function logActivity(userId, status, title, walletLabel, txHash, chain,con
     triggerSource:context.triggerSource??null,verificationState:context.verificationState??null });
   DB.activity.unshift(entry);
   if (DB.activity.length > 200) DB.activity.pop();
+  // logActivity is the sole writer of activity entries (mint, scheduled mint, sniper copy-mint,
+  // mintcall/mintpreset all funnel through here), so it's the one place that needs to know a
+  // transaction happened in order to push both a live activity-feed update and a live balance
+  // refresh -- a 'fail' entry moved no funds, so only 'success' also triggers wallets.changed.
+  dashboardWebSockets.broadcastToUser(userId, {type:'activity.changed'});
+  if (status === 'success') dashboardWebSockets.broadcastToUser(userId, {type:'wallets.changed'});
 }
 
 // ── Helpers ───────────────────────────────────────────────
@@ -585,7 +591,7 @@ function retryStepForField(error) {
 // reply), validates it and derives which supported chain it's actually deployed on before moving
 // to the wallet picker -- multi picks multiple wallets (batch), single picks exactly one (mint).
 async function startMintFlow({ chatId, messageId, userId, multi, contractAddressInput }) {
-  const send = payload => messageId ? tgEditMenu(chatId, messageId, payload) : tgMenu(chatId, payload);
+  const send = payload => messageId ? tgEditMenu(chatId, messageId, payload) : tgRender(chatId, payload);
   if (!contractAddressInput) {
     telegramFlowState.start('telegram', chatId, 'mint_guided', 'awaiting_contract', { multi });
     return send(renderFlowStep('mint_guided', 'awaiting_contract'));
@@ -664,6 +670,45 @@ function tgEditMenu(chatId, messageId, { text, replyMarkup, parseMode }) {
     .catch(() => tgMenu(chatId, { text, replyMarkup, parseMode }));
 }
 
+// ── Telegram anchored-menu rendering ─────────────────────────
+// Guided flows used to call tgMenu() (a brand-new sendMessage) on every step, so a single wallet
+// import or mint left a trail of half a dozen separate bot bubbles behind in the chat -- including,
+// worse, the user's own raw private-key message sitting in transit history. tgRender keeps exactly
+// one live "menu" message per chat by editing it in place across an entire flow, only falling back
+// to a new message when there's nothing left to edit (first message ever, or Telegram can no longer
+// edit the old one). Unlike tgEditMenu, a failed edit here must NOT fall back to sending through
+// itself -- tgRender needs to know the edit failed so it can send the replacement AND update the
+// anchor, whereas tgEditMenu's callers already treat "sent a new message instead" as success.
+const chatAnchors = new Map();
+
+async function tgEditRaw(chatId, messageId, { text, replyMarkup, parseMode }) {
+  if (!bot || !chatId || !messageId) return null;
+  try {
+    return await bot.editMessageText(String(text), { chat_id: chatId, message_id: messageId, reply_markup: replyMarkup, parse_mode: parseMode });
+  } catch {
+    return null;
+  }
+}
+
+async function tgRender(chatId, payload) {
+  const anchor = chatAnchors.get(chatId);
+  const edited = anchor && await tgEditRaw(chatId, anchor, payload);
+  if (edited) return edited;
+  const sent = await tgMenu(chatId, payload);
+  if (sent?.message_id) chatAnchors.set(chatId, sent.message_id);
+  return sent;
+}
+
+// Best-effort cleanup of the user's own free-text flow reply (a wallet label, a private key, a
+// contract address, a typed price) once it's been consumed -- most valuable for the private-key
+// import step, where leaving the key sitting in chat history is a real exposure, not just clutter.
+// Telegram only allows a bot to delete a private-chat message within 48 hours, so failures here
+// (older messages, group chats) are expected and safe to swallow.
+function tgDeleteUserMessage(msg) {
+  if (!bot || !msg?.chat?.id || !msg?.message_id) return;
+  bot.deleteMessage(msg.chat.id, msg.message_id).catch(() => {});
+}
+
 async function handleFlowTextMessage(msg) {
   if (!msg.text || msg.text.startsWith('/')) return;
   let context;
@@ -676,17 +721,21 @@ async function handleFlowTextMessage(msg) {
   const chatId = msg.chat.id;
   const flow = telegramFlowState.get('telegram', chatId);
   if (!flow) return;
-  if (flow.pendingCancel) { tgMenu(chatId, telegramMenus.confirmCancelPrompt(FLOW_LABELS[flow.flow] || flow.flow)); return; }
+  if (flow.pendingCancel) { tgDeleteUserMessage(msg); tgRender(chatId, telegramMenus.confirmCancelPrompt(FLOW_LABELS[flow.flow] || flow.flow)); return; }
   const isTextStep = (flow.flow === 'wallet_create' && flow.step === 'awaiting_label')
     || (flow.flow === 'wallet_import' && (flow.step === 'awaiting_label' || flow.step === 'awaiting_key'))
     || (flow.flow === 'mint_guided' && (flow.step === 'awaiting_contract' || flow.step === 'awaiting_price'));
-  if (!isTextStep) { tgMenu(chatId, { text: 'Please use the buttons above, or tap Cancel.', replyMarkup: cancelOnlyKeyboard() }); return; }
+  if (!isTextStep) { tgDeleteUserMessage(msg); tgRender(chatId, { text: 'Please use the buttons above, or tap Cancel.', replyMarkup: cancelOnlyKeyboard() }); return; }
 
+  // Consumed as flow input from here on -- clear it immediately rather than after a successful
+  // outcome, so a private key or any other sensitive reply never lingers in chat history even if
+  // validation later rejects it.
+  tgDeleteUserMessage(msg);
   const value = msg.text.trim();
   if (flow.step === 'awaiting_label') {
-    if (!value || value.length > 64) { tgMenu(chatId, { text: 'Label must be 1-64 characters. Try again.', replyMarkup: cancelOnlyKeyboard() }); return; }
+    if (!value || value.length > 64) { tgRender(chatId, { text: 'Label must be 1-64 characters. Try again.', replyMarkup: cancelOnlyKeyboard() }); return; }
     telegramFlowState.advance('telegram', chatId, 'awaiting_chain', { label: value });
-    tgMenu(chatId, renderFlowStep(flow.flow, 'awaiting_chain'));
+    tgRender(chatId, renderFlowStep(flow.flow, 'awaiting_chain'));
     return;
   }
   if (flow.step === 'awaiting_key') {
@@ -694,7 +743,7 @@ async function handleFlowTextMessage(msg) {
       commandRateLimiter.check('telegram', userId, 'importwallet');
       const wallet = await botCommands.importWallet(userId, { label: flow.data.label, chain: flow.data.chain, privateKey: value });
       telegramFlowState.clear('telegram', chatId);
-      tgMenu(chatId, { text: `✅ Wallet *${wallet.label}* imported at \`${wallet.address}\`.\n\n⚠️ Not recommended going forward: prefer /createwallet for new wallets.`,
+      tgRender(chatId, { text: `✅ Wallet *${wallet.label}* imported at \`${wallet.address}\`.\n\n⚠️ Not recommended going forward: prefer /createwallet for new wallets.`,
         replyMarkup: telegramMenus.keyboard([[telegramMenus.button('⬅️ Back to wallets', 'menu:wallets')]]) });
     } catch (error) {
       if (error instanceof ValidationError) {
@@ -702,20 +751,20 @@ async function handleFlowTextMessage(msg) {
         if (retryStep) {
           telegramFlowState.advance('telegram', chatId, retryStep, {});
           const prompt = renderFlowStep(flow.flow, retryStep);
-          tgMenu(chatId, { text: `${validationReply(error)}\n\n${prompt.text}`, replyMarkup: prompt.replyMarkup });
+          tgRender(chatId, { text: `${validationReply(error)}\n\n${prompt.text}`, replyMarkup: prompt.replyMarkup });
           return;
         }
         telegramFlowState.clear('telegram', chatId);
-        tgMenu(chatId, { text: validationReply(error), replyMarkup: telegramMenus.mainMenu({}).replyMarkup });
+        tgRender(chatId, { text: validationReply(error), replyMarkup: telegramMenus.mainMenu({}).replyMarkup });
         return;
       }
       if (error instanceof RateLimitError) {
-        tgMenu(chatId, { text: `Too many sensitive commands. Retry in ${Math.ceil(error.retryAfterMs/1000)} seconds.`, replyMarkup: cancelOnlyKeyboard() });
+        tgRender(chatId, { text: `Too many sensitive commands. Retry in ${Math.ceil(error.retryAfterMs/1000)} seconds.`, replyMarkup: cancelOnlyKeyboard() });
         return;
       }
       telegramFlowState.clear('telegram', chatId);
       log(`Telegram guided wallet import failed: ${safeError(error)}`);
-      tgMenu(chatId, { text: 'Import failed safely. Please try again from the Wallets menu.', replyMarkup: telegramMenus.mainMenu({}).replyMarkup });
+      tgRender(chatId, { text: 'Import failed safely. Please try again from the Wallets menu.', replyMarkup: telegramMenus.mainMenu({}).replyMarkup });
     }
     return;
   }
@@ -726,12 +775,12 @@ async function handleFlowTextMessage(msg) {
   if (flow.flow === 'mint_guided' && flow.step === 'awaiting_price') {
     const priceETH = Number(value);
     if (!Number.isFinite(priceETH) || priceETH < 0) {
-      tgMenu(chatId, { text: 'Send a valid non-negative number.', replyMarkup: cancelOnlyKeyboard() });
+      tgRender(chatId, { text: 'Send a valid non-negative number.', replyMarkup: cancelOnlyKeyboard() });
       return;
     }
     const data = { ...flow.data, priceETH, priceUnknown: true };
     telegramFlowState.advance('telegram', chatId, 'awaiting_confirm', data);
-    tgMenu(chatId, renderFlowStep('mint_guided', 'awaiting_confirm', { userId, data }));
+    tgRender(chatId, renderFlowStep('mint_guided', 'awaiting_confirm', { userId, data }));
   }
 }
 
@@ -746,6 +795,11 @@ function withTelegramCallback(handler) {
       userId = await identity.resolveOrCreate('telegram', context.platformUserId);
       await governance.checkAccountStatus(userId);
       bot.answerCallbackQuery(query.id).catch(() => {});
+      // A button tap is always on the chat's current live message, whether or not it started life
+      // as a tgRender() anchor -- keep the anchor pointed at it so a free-text reply that follows
+      // (e.g. typing a price after tapping through the mint flow) edits this same message instead
+      // of spawning a new one.
+      if (messageId) chatAnchors.set(chatId, messageId);
 
       const data = query.data || '';
       const activeFlow = telegramFlowState.get('telegram', chatId);
@@ -813,7 +867,7 @@ function withTelegramUser(handler) {
       const activeFlow=telegramFlowState.get('telegram',context.contextId);
       if(activeFlow) {
         telegramFlowState.markPendingCancel('telegram',context.contextId);
-        await tgMenu(msg.chat.id, telegramMenus.confirmCancelPrompt(FLOW_LABELS[activeFlow.flow]||activeFlow.flow));
+        await tgRender(msg.chat.id, telegramMenus.confirmCancelPrompt(FLOW_LABELS[activeFlow.flow]||activeFlow.flow));
         return;
       }
       const command=commandName(msg.text||msg.caption);
@@ -1028,15 +1082,13 @@ i made you a wallet already. /wallets to see it.
 send /mint with a contract address to get going.`;
 
   bot.onText(/^\/(?:start|help)(?:@\w+)?$/, withTelegramUser(async (msg, match, userId) => {
-    if (msg.text.startsWith('/start')) {
-      if (botCommands.wallets(userId).length === 0) {
-        try { await botCommands.createWallet(userId, { label: 'wallet-1', chain: CONFIG.supportedChains[0] }); }
-        catch (error) { log(`Auto wallet creation on /start failed: ${safeError(error)}`); }
-      }
-      await tg(msg.chat.id, WELCOME_TEXT);
+    const isStart = msg.text.startsWith('/start');
+    if (isStart && botCommands.wallets(userId).length === 0) {
+      try { await botCommands.createWallet(userId, { label: 'wallet-1', chain: CONFIG.supportedChains[0] }); }
+      catch (error) { log(`Auto wallet creation on /start failed: ${safeError(error)}`); }
     }
     const menu = telegramMenus.mainMenu({ isOwner: await governanceRepository.isOwner(userId) });
-    tgMenu(msg.chat.id, menu);
+    tgRender(msg.chat.id, { text: isStart ? `${WELCOME_TEXT}\n\n${menu.text}` : menu.text, replyMarkup: menu.replyMarkup });
   }));
 
   bot.onText(/^\/mint(?:@\w+)?(?:\s+(\S+))?$/, withTelegramUser(async (msg, match, userId) => {
@@ -1343,6 +1395,7 @@ send /mint with a contract address to get going.`;
 const botCommands = createBotCommandService({
   storage,
   identity,
+  broadcast: (userId, resource) => dashboardWebSockets.broadcastToUser(userId, {type:`${resource}.changed`}),
   schedulerRepository,
   providerService,
   contractValueResolver,
