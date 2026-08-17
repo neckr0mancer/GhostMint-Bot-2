@@ -128,6 +128,35 @@ function createBotCommandService(dependencies) {
     // an OpenSea outage never blocks detection, it just leaves these fields null.
     const openSea = openSeaService ? await openSeaService.getCollectionMetadata(chain, contractAddress) : null;
 
+    // Section AD Tier 1 (collection info card): opt-in and skipped entirely by the ordinary mint
+    // flow, which has no use for it and shouldn't pay its extra RPC/API cost on every paste. Both
+    // probes below are deliberately live, not the cached values this function already computes
+    // elsewhere (resolved.totalMinted below, openSea.floorPrice above) -- the card's whole point
+    // is a Refresh button that actually refreshes, not one that replays whatever was cached the
+    // first time this contract was ever looked up. Computed once here, shared by both the SeaDrop
+    // and plain-mint branches below, since collection-level stats don't depend on mint mechanism.
+    let stats = null;
+    if (input.includeStats) {
+      const [liveTotalMinted, liveStats] = await Promise.all([
+        contractValueResolver ? contractValueResolver.probeTotalMinted(chain, contractAddress) : null,
+        openSeaService ? openSeaService.getCollectionStats(chain, contractAddress) : null,
+      ]);
+      const totalMintedValue = liveTotalMinted ? Number(liveTotalMinted.value) : null;
+      const floorPrice = liveStats?.floorPrice ?? null;
+      stats = {
+        totalMinted: totalMintedValue,
+        floorPrice,
+        floorPriceSymbol: liveStats?.floorPriceSymbol ?? null,
+        numOwners: liveStats?.numOwners ?? null,
+        volume: liveStats?.volume ?? { oneDay: null, sevenDay: null, thirtyDay: null, allTime: null },
+        sales: liveStats?.sales ?? { oneDay: null, sevenDay: null, thirtyDay: null, allTime: null },
+        // floor price x current minted supply -- deliberately current supply, not maxSupply, since
+        // they diverge for an in-progress mint and market cap means circulating supply x price
+        // everywhere else this term is used.
+        marketCap: floorPrice !== null && totalMintedValue !== null ? floorPrice * totalMintedValue : null,
+      };
+    }
+
     const seaDrop = seaDropDiscoveryService
       ? await seaDropDiscoveryService.resolve(chain, contractAddress)
       : { address: null, publicDrop: null, feeRecipient: null };
@@ -157,6 +186,7 @@ function createBotCommandService(dependencies) {
         collection: openSea,
         soldOut,
         displayPrice,
+        stats,
       };
     }
 
@@ -183,6 +213,7 @@ function createBotCommandService(dependencies) {
       collection: openSea,
       soldOut,
       displayPrice,
+      stats,
     };
   }
 

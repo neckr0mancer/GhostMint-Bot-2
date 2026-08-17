@@ -44,8 +44,27 @@ test('returns empty (never throws) when no API key is configured, and does not c
 test('returns empty when the chain has no OpenSea mapping, without calling http', async () => {
   const repository = fakeRepository();
   const service = createOpenSeaService({ apiKey: 'test-key', repository, http: { get: async () => { throw new Error('should not be called'); } } });
-  const result = await service.getCollectionMetadata('robinhood', CONTRACT);
+  const result = await service.getCollectionMetadata('not-a-real-chain', CONTRACT);
   assert.equal(result.name, null);
+});
+
+// Regression: robinhood was missing from OPENSEA_CHAIN_SLUGS entirely (confirmed live -- OpenSea's
+// own API reports Robinhood Chain collections under chain identifier "robinhood"), silently
+// degrading collection metadata, live stats, and opensea.io/collection link resolution for every
+// Robinhood Chain contract even with a working API key. This asserts it is mapped, not just that
+// some other chain is.
+test('robinhood is a mapped OpenSea chain, not treated as unsupported', async () => {
+  const calls = [];
+  const http = { get: async url => {
+    calls.push(url);
+    if (url.includes('/chain/robinhood/contract/')) return { data: { collection: 'market-arcana' } };
+    if (url.endsWith('/collections/market-arcana')) return { data: { name: 'MARKET ARCANA' } };
+    if (url.endsWith('/collections/market-arcana/stats')) return { data: { total: { floor_price: 1 } } };
+    throw new Error(`unexpected url ${url}`);
+  } };
+  const service = createOpenSeaService({ apiKey: 'test-key', repository: fakeRepository(), http });
+  const result = await service.getCollectionMetadata('robinhood', CONTRACT);
+  assert.equal(result.name, 'MARKET ARCANA');
 });
 
 test('returns empty when the contract has no OpenSea collection slug', async () => {
@@ -101,6 +120,22 @@ test('resolveCollectionContract returns the first contract deployed on a chain t
   assert.deepEqual(result, { chain: 'ethereum', contractAddress: '0xBBB' });
 });
 
+// Regression: this is the exact shape of a real reported failure -- pasting
+// https://opensea.io/collection/fish-it-813600972 (a genuine Robinhood Chain collection) silently
+// failed to resolve because robinhood was missing from OPENSEA_CHAIN_SLUGS, even though robinhood
+// is one of this app's configured supportedChains.
+test('resolveCollectionContract resolves a Robinhood Chain collection, not just the more common chains', async () => {
+  const http = { get: async url => {
+    if (url.endsWith('/collections/fish-it-813600972')) {
+      return { data: { contracts: [{ address: '0x8052f4683a8b3572af3ebadfacfe8bcccebcd294', chain: 'robinhood' }] } };
+    }
+    throw new Error(`unexpected url ${url}`);
+  } };
+  const service = createOpenSeaService({ apiKey: 'test-key', repository: fakeRepository(), http });
+  const result = await service.resolveCollectionContract('fish-it-813600972', ['ethereum', 'robinhood']);
+  assert.deepEqual(result, { chain: 'robinhood', contractAddress: '0x8052f4683a8b3572af3ebadfacfe8bcccebcd294' });
+});
+
 test('resolveCollectionContract returns null when none of the collection\'s chains are supported', async () => {
   const http = { get: async () => ({ data: { contracts: [{ address: '0xAAA', chain: 'matic' }] } }) };
   const service = createOpenSeaService({ apiKey: 'test-key', repository: fakeRepository(), http });
@@ -119,4 +154,68 @@ test('resolveCollectionContract returns null (never throws) on a network failure
   assert.equal(await failing.resolveCollectionContract('cool-cats', ['ethereum']), null);
   const malformed = createOpenSeaService({ apiKey: 'test-key', repository: fakeRepository(), http: { get: async () => ({ data: {} }) } });
   assert.equal(await malformed.resolveCollectionContract('cool-cats', ['ethereum']), null);
+});
+
+// Section AD Tier 1 -- live collection stats for the collection info card. Deliberately never
+// cached (unlike getCollectionMetadata above): volume is a rolling window that goes stale within
+// minutes, so this always calls out fresh.
+test('getCollectionStats reads floor price, owner count, and every volume/sales window from a real-shaped stats response', async () => {
+  const calls = [];
+  const http = { get: async url => {
+    calls.push(url);
+    if (url.includes('/chain/ethereum/contract/')) return { data: { collection: 'cool-cats' } };
+    if (url.endsWith('/collections/cool-cats/stats')) {
+      return { data: {
+        total: { volume: 1580057.5, sales: 57279, num_owners: 5600, floor_price: 8.049, floor_price_symbol: 'ETH' },
+        intervals: [
+          { interval: 'one_day', volume: 72.9, sales: 8 },
+          { interval: 'seven_day', volume: 330.5, sales: 35 },
+          { interval: 'thirty_day', volume: 1544.6, sales: 173 },
+        ],
+      } };
+    }
+    throw new Error(`unexpected url ${url}`);
+  } };
+  const service = createOpenSeaService({ apiKey: 'test-key', repository: fakeRepository(), http });
+  const stats = await service.getCollectionStats('ethereum', CONTRACT);
+  assert.equal(stats.floorPrice, 8.049);
+  assert.equal(stats.floorPriceSymbol, 'ETH');
+  assert.equal(stats.numOwners, 5600);
+  assert.deepEqual(stats.volume, { oneDay: 72.9, sevenDay: 330.5, thirtyDay: 1544.6, allTime: 1580057.5 });
+  assert.deepEqual(stats.sales, { oneDay: 8, sevenDay: 35, thirtyDay: 173, allTime: 57279 });
+  // Only the stats endpoint is called, not the paired /collections/{slug} metadata call
+  // getCollectionMetadata's fetchCollectionDetails makes -- the card's live refresh has no use for
+  // name/description on every tap, only on first resolve.
+  assert.ok(!calls.some(url => url.endsWith('/collections/cool-cats')), 'must not fetch collection metadata, only stats');
+});
+
+test('getCollectionStats returns an all-null shape (never throws) when unconfigured, unsupported, or the API fails', async () => {
+  const noKey = createOpenSeaService({ apiKey: null, repository: fakeRepository(), http: { get: async () => { throw new Error('should not be called'); } } });
+  assert.deepEqual(await noKey.getCollectionStats('ethereum', CONTRACT), {
+    floorPrice: null, floorPriceSymbol: null, numOwners: null,
+    volume: { oneDay: null, sevenDay: null, thirtyDay: null, allTime: null },
+    sales: { oneDay: null, sevenDay: null, thirtyDay: null, allTime: null },
+  });
+
+  const unsupportedChain = createOpenSeaService({ apiKey: 'test-key', repository: fakeRepository(), http: { get: async () => { throw new Error('should not be called'); } } });
+  assert.equal((await unsupportedChain.getCollectionStats('not-a-real-chain', CONTRACT)).floorPrice, null);
+
+  const noSlug = createOpenSeaService({ apiKey: 'test-key', repository: fakeRepository(), http: { get: async () => ({ data: {} }) } });
+  assert.equal((await noSlug.getCollectionStats('ethereum', CONTRACT)).floorPrice, null);
+
+  const networkFailure = createOpenSeaService({ apiKey: 'test-key', repository: fakeRepository(), http: { get: async () => { throw new Error('network error'); } } });
+  assert.equal((await networkFailure.getCollectionStats('ethereum', CONTRACT)).floorPrice, null);
+});
+
+test('getCollectionStats tolerates a stats response missing some fields, filling in null rather than throwing', async () => {
+  const http = { get: async url => {
+    if (url.includes('/chain/ethereum/contract/')) return { data: { collection: 'partial-collection' } };
+    if (url.endsWith('/collections/partial-collection/stats')) return { data: { total: { floor_price: 0.5 } } };
+    throw new Error(`unexpected url ${url}`);
+  } };
+  const service = createOpenSeaService({ apiKey: 'test-key', repository: fakeRepository(), http });
+  const stats = await service.getCollectionStats('ethereum', CONTRACT);
+  assert.equal(stats.floorPrice, 0.5);
+  assert.equal(stats.numOwners, null);
+  assert.deepEqual(stats.volume, { oneDay: null, sevenDay: null, thirtyDay: null, allTime: null });
 });

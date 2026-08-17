@@ -246,6 +246,16 @@ test('simulation setting independently skips or enforces dry-run', async t => {
     const { engine, request } = fixture({ simulationError });
     await assert.rejects(engine.submit(request), /would hold 7, exceeding the 5 allowed per wallet/);
   });
+  await t.test('a zero-data revert explains itself instead of surfacing ethers\' cryptic "require(false)" text verbatim', async () => {
+    // Reproduced live against a real reported failure: calling mint(uint256) on a contract that
+    // implements neither that function nor a fallback reverts with zero bytes of data, which
+    // ethers synthesizes into the literal reason string "require(false)" (confirmed against the
+    // installed package's own AbiCoder.getBuiltinCallException) -- showing that raw text as if it
+    // were an informative revert reason is misleading, not merely unhelpful.
+    const simulationError = Object.assign(new Error('execution reverted (no data present; likely require(false) occurred'), { code: 'CALL_EXCEPTION', reason: 'require(false)', data: '0x' });
+    const { engine, request } = fixture({ simulationError });
+    await assert.rejects(engine.submit(request), /no reason given by the contract/);
+  });
 });
 
 test('provider service retries then falls back to the next configured RPC', async () => {

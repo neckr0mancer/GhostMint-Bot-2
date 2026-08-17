@@ -83,3 +83,22 @@ test('an already-cached row is returned immediately without any provider calls',
 test('candidate lists are exported for other modules to reference', () => {
   assert.ok(CANDIDATES.totalMinted.includes('totalSupply'));
 });
+
+// Section AD Tier 1 -- probeTotalMinted must be live every call, never served from the shared
+// contract_value_cache row (which may already exist with total_minted left NULL from a SeaDrop or
+// OpenSea-only save, per resolve()'s cache-row gotcha documented in the source).
+test('probeTotalMinted resolves live and ignores the repository entirely, even when a cached row already exists', async () => {
+  const providerService = fakeProviderService({ totalSupply: 4_242n });
+  const repository = fakeRepository({ price: null, maxSupply: null, maxPerWallet: null, totalMinted: null, resolvedAt: new Date() });
+  const resolver = createContractValueResolver({ providerService, repository });
+  const result = await resolver.probeTotalMinted('ethereum', CONTRACT);
+  assert.deepEqual(result, { value: '4242', source: 'totalSupply' });
+  assert.equal(repository.saved.length, 0, 'must never write to the shared cache row');
+});
+
+test('probeTotalMinted returns null when no candidate getter resolves, without throwing', async () => {
+  const providerService = fakeProviderService({});
+  const repository = fakeRepository();
+  const resolver = createContractValueResolver({ providerService, repository });
+  assert.equal(await resolver.probeTotalMinted('ethereum', CONTRACT), null);
+});

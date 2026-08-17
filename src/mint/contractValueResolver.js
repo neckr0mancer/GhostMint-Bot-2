@@ -50,7 +50,18 @@ function createContractValueResolver({ providerService, repository }) {
     return repository.save(chain, contractAddress, { price, maxSupply, maxPerWallet, totalMinted });
   }
 
-  return { resolve };
+  // Section AD Tier 1 (collection info card): current minted supply needs to be live on every
+  // card view/Refresh tap, unlike price/maxSupply which this app treats as effectively static and
+  // caches forever via resolve() above. Deliberately bypasses repository.get()/save() entirely --
+  // reusing resolve()'s cache would be actively wrong here, not just stale: contract_value_cache
+  // is one shared row per (chain, contractAddress), and a SeaDrop or OpenSea-only save may have
+  // already created that row with total_minted left NULL, which would make repository.get() return
+  // that row as "cached" forever and resolve() would never probe totalMinted for it at all.
+  async function probeTotalMinted(chain, contractAddress) {
+    return resolveOne(chain, contractAddress, 'totalMinted');
+  }
+
+  return { resolve, probeTotalMinted };
 }
 
 module.exports = { createContractValueResolver, CANDIDATES };

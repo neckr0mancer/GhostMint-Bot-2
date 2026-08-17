@@ -8,6 +8,7 @@ const OPENSEA_CHAIN_SLUGS = Object.freeze({
   base: 'base',
   arbitrum: 'arbitrum',
   polygon: 'matic',
+  robinhood: 'robinhood',
   sepolia: 'sepolia',
 });
 
@@ -64,6 +65,59 @@ function createOpenSeaService({ apiKey, repository, baseUrl = 'https://api.opens
     return null;
   }
 
+  // Section AD Tier 1 (collection info card): live market stats, deliberately never cached via
+  // repository the way getCollectionMetadata's name/description/floor are -- volume is a rolling
+  // window (1d/7d/30d) that goes stale within minutes, so every card view/Refresh tap calls this
+  // fresh rather than serving a resolvedAt-stamped row that would quickly lie. Reuses the same
+  // /collections/{slug}/stats response getCollectionMetadata already fetches via
+  // fetchCollectionDetails, just called directly here (only stats are needed, not the paired
+  // /collections/{slug} metadata call) and reading fields that response always had but nothing
+  // parsed before now: total.volume/sales/num_owners and the one_day/seven_day/thirty_day entries
+  // in intervals[] (confirmed present in a real response, live-checked against the actual API).
+  const EMPTY_STATS = Object.freeze({
+    floorPrice: null, floorPriceSymbol: null, numOwners: null,
+    volume: Object.freeze({ oneDay: null, sevenDay: null, thirtyDay: null, allTime: null }),
+    sales: Object.freeze({ oneDay: null, sevenDay: null, thirtyDay: null, allTime: null }),
+  });
+
+  function intervalValue(intervals, name, field) {
+    const entry = Array.isArray(intervals) ? intervals.find(item => item?.interval === name) : null;
+    return entry && typeof entry[field] === 'number' ? entry[field] : null;
+  }
+
+  async function getCollectionStats(chain, contractAddress) {
+    const openSeaChain = OPENSEA_CHAIN_SLUGS[chain];
+    if (!apiKey || !openSeaChain) return EMPTY_STATS;
+    try {
+      const slug = await fetchCollectionSlug(openSeaChain, contractAddress);
+      if (!slug) return EMPTY_STATS;
+      const response = await http.get(`${baseUrl}/collections/${slug}/stats`, { timeout: timeoutMs, headers: { 'x-api-key': apiKey } });
+      const total = response.data?.total;
+      const intervals = response.data?.intervals;
+      return {
+        floorPrice: total?.floor_price ?? null,
+        floorPriceSymbol: total?.floor_price_symbol ?? null,
+        numOwners: typeof total?.num_owners === 'number' ? total.num_owners : null,
+        volume: {
+          oneDay: intervalValue(intervals, 'one_day', 'volume'),
+          sevenDay: intervalValue(intervals, 'seven_day', 'volume'),
+          thirtyDay: intervalValue(intervals, 'thirty_day', 'volume'),
+          allTime: typeof total?.volume === 'number' ? total.volume : null,
+        },
+        sales: {
+          oneDay: intervalValue(intervals, 'one_day', 'sales'),
+          sevenDay: intervalValue(intervals, 'seven_day', 'sales'),
+          thirtyDay: intervalValue(intervals, 'thirty_day', 'sales'),
+          allTime: typeof total?.sales === 'number' ? total.sales : null,
+        },
+      };
+    } catch {
+      // Network failure, timeout, 404, rate limit -- same "nothing to show" outcome as an
+      // unconfigured key or unsupported chain, never a thrown error into the card renderer.
+      return EMPTY_STATS;
+    }
+  }
+
   async function getCollectionMetadata(chain, contractAddress) {
     const cached = await repository.getOpenSea(chain, contractAddress);
     if (cached) return cached;
@@ -93,7 +147,7 @@ function createOpenSeaService({ apiKey, repository, baseUrl = 'https://api.opens
     return repository.saveOpenSea(chain, contractAddress, metadata);
   }
 
-  return { getCollectionMetadata, resolveCollectionContract };
+  return { getCollectionMetadata, resolveCollectionContract, getCollectionStats };
 }
 
 module.exports = { OPENSEA_CHAIN_SLUGS, createOpenSeaService };

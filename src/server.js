@@ -30,7 +30,7 @@ const { createContractValueRepository } = require('./mint/contractValueRepositor
 const { createContractValueResolver } = require('./mint/contractValueResolver');
 const { createSeaDropDiscoveryService } = require('./mint/seaDropDiscoveryService');
 const { createSeaDropPublicDropResolver } = require('./mint/seaDropPublicDropResolver');
-const { createOpenSeaService } = require('./mint/openSeaService');
+const { createOpenSeaService, OPENSEA_CHAIN_SLUGS } = require('./mint/openSeaService');
 const { createPriceFeedService } = require('./mint/priceFeedService');
 const { computeSeaDropValueWei } = require('./mint/seaDropCall');
 const { SEADROP_MINT_SIGNATURE } = require('./mint/seaDropRegistry');
@@ -583,7 +583,7 @@ function stateFor(userId) {
 const telegramFlowState = createFlowStateStore();
 const FLOW_LABELS = { wallet_create: 'creating a wallet', wallet_import: 'importing a wallet', mint_guided: 'minting', send_guided: 'sending funds', export_guided: 'exporting a private key', task_guided: 'scheduling a mint', watch_guided: 'adding a watch rule' };
 const FLOW_CONTINUATION_PREFIXES = { wallet_create: ['flow:chain:'], wallet_import: ['flow:chain:'],
-  mint_guided: ['flow:mintdetailscontinue', 'flow:mintqty:', 'flow:priceaccept', 'flow:pricemanual', 'flow:wallettoggle:', 'flow:walletpick:', 'flow:walletcontinue', 'flow:mintconfirm'],
+  mint_guided: ['flow:mintdetailscontinue', 'flow:detailsrefresh', 'flow:copyca', 'flow:mintqty:', 'flow:priceaccept', 'flow:pricemanual', 'flow:wallettoggle:', 'flow:walletpick:', 'flow:walletcontinue', 'flow:mintconfirm'],
   send_guided: ['flow:sendwalletpick:', 'flow:sendamount:', 'flow:sendconfirm'],
   export_guided: ['flow:exportwalletpick:', 'flow:exportconfirm'],
   // Shares flow:mintdetailscontinue with mint_guided -- the contract-details screen and its
@@ -653,7 +653,7 @@ function quantityStepPayload(data) {
   return { text: `How many would you like to mint? (max ${max} per wallet). You can also type an exact number.`, replyMarkup: telegramMenus.keyboard([row, [telegramMenus.button('✏️ Enter manually', 'flow:mintqty:x')], [telegramMenus.button('❌ Cancel', 'flow:cancel:ask')]]), parseMode: 'HTML' };
 }
 
-function renderFlowStep(flow, step, { userId, data = {}, withDetailsHeader = false } = {}) {
+function renderFlowStep(flow, step, { userId, data = {} } = {}) {
   if (flow === 'wallet_create') {
     if (step === 'awaiting_label') return { text: 'Send the label for your new wallet (letters, numbers, spaces, <code>.</code>, <code>_</code>, <code>-</code>).', replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' };
     if (step === 'awaiting_chain') return telegramMenus.chainPicker(CONFIG.supportedChains, CHAINS);
@@ -664,34 +664,15 @@ function renderFlowStep(flow, step, { userId, data = {}, withDetailsHeader = fal
     if (step === 'awaiting_key') return { text: '⚠️ <b>Not recommended:</b> send the private key now. It passes through Telegram message transit and may remain in chat history or notification previews. Delete your message afterward if you can.', replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' };
   }
   if (flow === 'mint_guided') {
-    // Section M: mint_guided never renders a standalone "here's the contract, tap Continue"
-    // screen (awaiting_details is a transient flow-state name only, per startMintFlow/
-    // advanceFromDetails -- there is no case for it here). withDetailsHeader instead prepends the
-    // same contractDetailsText onto whichever step below turns out to be the flow's actual first
-    // screen, so the detection result reads as the mint interface itself, not a preamble to it.
     if (step === 'awaiting_contract') return { text: 'Send the contract address to mint from.', replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' };
-    let payload;
-    if (step === 'awaiting_wallet') {
-      const wallets = botCommands.wallets(userId);
-      payload = data.multi
-        ? telegramMenus.walletMultiPicker(wallets, data.selectedWallets || [], { emptyHint: 'No wallets yet. Create one first from the Wallets menu.' })
-        : telegramMenus.walletPicker(wallets, { prefix: 'flow:walletpick', emptyHint: 'No wallets yet. Create one first from the Wallets menu.' });
-    } else if (step === 'awaiting_quantity') payload = quantityStepPayload(data);
-    else if (step === 'awaiting_price') payload = priceStepPayload(data);
-    else if (step === 'awaiting_confirm') {
-      payload = telegramMenus.mintConfirmation({
+    // Section AD Tier 1: the flow's real first screen -- market cap, volume, floor, holders
+    // alongside the existing mint-specific fields, with Mint Now as one of several actions
+    // (Refresh, Copy CA, View on OpenSea) rather than a dead "tap to continue" pass-through.
+    if (step === 'awaiting_details') {
+      return telegramMenus.collectionInfoCard({
         contractAddress: data.contractAddress,
         chainLabel: CHAINS[data.chain]?.name || data.chain,
-        walletLabels: data.selectedWallets,
-        quantity: data.quantity || 1,
-        priceETH: data.priceETH,
-        priceUnknown: data.priceUnknown,
-      });
-    }
-    if (payload && withDetailsHeader) {
-      return { ...payload, text: `${telegramMenus.contractDetailsText({
-        contractAddress: data.contractAddress,
-        chainLabel: CHAINS[data.chain]?.name || data.chain,
+        chainSym: CHAINS[data.chain]?.sym,
         isSeaDrop: data.isSeaDrop,
         priceETH: data.priceETH,
         priceUnknown: data.priceUnknown,
@@ -701,9 +682,28 @@ function renderFlowStep(flow, step, { userId, data = {}, withDetailsHeader = fal
         collection: data.collection,
         soldOut: data.soldOut,
         displayPrice: data.displayPrice,
-      })}\n\n${payload.text}` };
+        stats: data.stats,
+        openSeaUrl: data.openSeaUrl,
+      });
     }
-    if (payload) return payload;
+    if (step === 'awaiting_wallet') {
+      const wallets = botCommands.wallets(userId);
+      return data.multi
+        ? telegramMenus.walletMultiPicker(wallets, data.selectedWallets || [], { emptyHint: 'No wallets yet. Create one first from the Wallets menu.' })
+        : telegramMenus.walletPicker(wallets, { prefix: 'flow:walletpick', emptyHint: 'No wallets yet. Create one first from the Wallets menu.' });
+    }
+    if (step === 'awaiting_quantity') return quantityStepPayload(data);
+    if (step === 'awaiting_price') return priceStepPayload(data);
+    if (step === 'awaiting_confirm') {
+      return telegramMenus.mintConfirmation({
+        contractAddress: data.contractAddress,
+        chainLabel: CHAINS[data.chain]?.name || data.chain,
+        walletLabels: data.selectedWallets,
+        quantity: data.quantity || 1,
+        priceETH: data.priceETH,
+        priceUnknown: data.priceUnknown,
+      });
+    }
   }
   if (flow === 'send_guided') {
     if (step === 'awaiting_wallet') {
@@ -838,7 +838,7 @@ async function startMintFlow({ chatId, messageId, userId, multi, contractAddress
   }
   let detected;
   try {
-    detected = await botCommands.detectMintContract(userId, { contractAddress, quantity: 1 });
+    detected = await botCommands.detectMintContract(userId, { contractAddress, quantity: 1, includeStats: true });
   } catch (error) {
     if (error instanceof ValidationError) {
       return send({ text: 'Could not find this contract on any supported chain. Double-check the address.', replyMarkup: telegramMenus.mainMenu({}).replyMarkup });
@@ -854,6 +854,8 @@ async function startMintFlow({ chatId, messageId, userId, multi, contractAddress
     maxSupply: detected.maxSupply, maxPerWallet: detected.maxPerWallet,
     startTime: detected.startTime, endTime: detected.endTime, collection: detected.collection,
     soldOut: detected.soldOut, displayPrice: detected.displayPrice,
+    stats: detected.stats,
+    openSeaUrl: OPENSEA_CHAIN_SLUGS[detected.chain] ? `https://opensea.io/assets/${OPENSEA_CHAIN_SLUGS[detected.chain]}/${contractAddress}` : null,
     skipConfirm,
   };
   if (skipConfirm) {
@@ -862,14 +864,13 @@ async function startMintFlow({ chatId, messageId, userId, multi, contractAddress
       return finishMintExecution(chatId, messageId, userId, { ...data, selectedWallets: [wallets[0].label] });
     }
   }
-  // Section M: no standalone "here's the contract, tap Continue" screen -- start the flow state at
-  // awaiting_details (kept as the state name so cancel-confirmation and existing tests still see a
-  // sensible step), but immediately resolve straight through to whichever screen is actually the
-  // first thing the user needs to act on (quantity, wallet, price, or confirm), with the contract
-  // details prepended to it. advanceFromDetails already contains this exact decision tree for
-  // subsequent taps; reusing it here (rather than duplicating it) is what keeps this one-shot.
+  // Section AD Tier 1: pasting an address/link now shows the rich collection info card
+  // (market cap, volume, floor, holders) as the flow's real first screen, with "Mint Now" as one
+  // of its actions -- superseding Section M's header-merge approach, which skipped straight past
+  // this screen into whatever came next. That decision tree (advanceFromDetails and friends) is
+  // unchanged and is exactly what the Mint Now button below triggers.
   telegramFlowState.start('telegram', chatId, 'mint_guided', 'awaiting_details', data);
-  return advanceFromDetails(chatId, messageId, userId, { data }, true);
+  return send(renderFlowStep('mint_guided', 'awaiting_details', { userId, data }));
 }
 
 // After the user has seen (and tapped through) the contract details, move on to wallet selection.
@@ -878,45 +879,42 @@ async function startMintFlow({ chatId, messageId, userId, multi, contractAddress
 // is the common case, not an edge case.
 // A contract allowing more than 1 per wallet asks how many before wallet selection; a max of 1 (or
 // unknown) has nothing to ask, so it skips straight past this step exactly like it always did.
-// withDetailsHeader is only ever true on the single initial call made by startMintFlow (Section
-// M) -- every recursive call this function itself makes passes it along unchanged, but every
-// button-tap handler elsewhere calls these functions with it omitted (defaulting false), since by
-// definition a screen reached via a tap is never the flow's first screen. It's a plain call
-// parameter, not flow-state data, specifically so it can never leak into a later render by
-// accident.
 // Applies a decision from src/mint/mintFlowDecision.js (the platform-agnostic "what's next" core
 // Discord's guided mint flow shares): persists the resulting step and renders it, or executes
-// outright when the decision was 'execute'. This is now the only Telegram-specific tail below --
-// the actual branching (skip wallet-select for a single wallet, skip quantity when maxPerWallet
-// <= 1, skip confirm when skipConfirm, etc.) lives in exactly one place, not one per platform.
-async function applyMintFlowStep(chatId, messageId, userId, { step, data }, withDetailsHeader = false) {
+// outright when the decision was 'execute'. This is the only Telegram-specific tail below -- the
+// actual branching (skip wallet-select for a single wallet, skip quantity when maxPerWallet <= 1,
+// skip confirm when skipConfirm, etc.) lives in exactly one place, not one per platform.
+async function applyMintFlowStep(chatId, messageId, userId, { step, data }) {
   if (step === 'execute') return finishMintExecution(chatId, messageId, userId, data);
   telegramFlowState.advance('telegram', chatId, step, data);
-  return tgUpdate(chatId, messageId, renderFlowStep('mint_guided', step, { userId, data, withDetailsHeader }));
+  return tgUpdate(chatId, messageId, renderFlowStep('mint_guided', step, { userId, data }));
 }
 
-async function advanceFromDetails(chatId, messageId, userId, flow, withDetailsHeader = false) {
+// Reached by tapping "🪙 Mint Now" on the Section AD collection info card (startMintFlow's real
+// first screen) -- decides whether a quantity, wallet, or price still needs asking, or the flow
+// can go straight to confirm/execute.
+async function advanceFromDetails(chatId, messageId, userId, flow) {
   const wallets = botCommands.wallets(userId);
   const result = mintFlowDecision.afterDetails({ data: flow.data, wallets });
-  return applyMintFlowStep(chatId, messageId, userId, result, withDetailsHeader);
+  return applyMintFlowStep(chatId, messageId, userId, result);
 }
 
 // After the user has seen (and tapped through) the contract details and picked a quantity, move on
 // to wallet selection. A single wallet has nothing to pick between -- asking anyway is a tap that
 // teaches the user nothing, and /start already creates that one wallet automatically for a
 // brand-new user, so this is the common case, not an edge case.
-async function advanceFromQuantity(chatId, messageId, userId, flow, quantity, withDetailsHeader = false) {
+async function advanceFromQuantity(chatId, messageId, userId, flow, quantity) {
   const wallets = botCommands.wallets(userId);
   const result = mintFlowDecision.afterQuantity({ data: { ...flow.data, quantity }, wallets });
-  return applyMintFlowStep(chatId, messageId, userId, result, withDetailsHeader);
+  return applyMintFlowStep(chatId, messageId, userId, result);
 }
 
 // Once wallet(s) are picked (single tap for /mint, Continue for /batch): price was already
 // resolved back in startMintFlow's details step, so this only needs to decide whether that
 // resolution actually found a price (straight to confirm) or not (ask for one by hand).
-async function advanceFromWalletSelection(chatId, messageId, userId, flow, selectedWallets, withDetailsHeader = false) {
+async function advanceFromWalletSelection(chatId, messageId, userId, flow, selectedWallets) {
   const result = mintFlowDecision.afterWalletSelection({ data: { ...flow.data, selectedWallets } });
-  return applyMintFlowStep(chatId, messageId, userId, result, withDetailsHeader);
+  return applyMintFlowStep(chatId, messageId, userId, result);
 }
 
 // Shared by both flows' awaiting_price step (typed amount and the accept-OpenSea-price button):
@@ -1811,6 +1809,35 @@ if (BOT_TOKEN) {
       if (flow.flow === 'mint_guided') return advanceFromDetails(chatId, messageId, userId, flow);
       if (flow.flow === 'task_guided') return advanceFromTaskDetails(chatId, messageId, userId, flow);
       return;
+    }
+    if (data === 'flow:detailsrefresh') {
+      const flow = telegramFlowState.get('telegram', chatId);
+      if (!flow || flow.flow !== 'mint_guided' || flow.step !== 'awaiting_details') return;
+      let detected;
+      try {
+        detected = await botCommands.detectMintContract(userId, { contractAddress: flow.data.contractAddress, quantity: 1, includeStats: true });
+      } catch {
+        return; // Transient lookup failure -- leave the card showing its last-known values.
+      }
+      const refreshed = {
+        ...flow.data,
+        isSeaDrop: detected.isSeaDrop,
+        priceETH: detected.priceKnown ? Number(ethers.formatEther(BigInt(detected.valueWei))) : undefined,
+        priceUnknown: !detected.priceKnown,
+        maxSupply: detected.maxSupply, maxPerWallet: detected.maxPerWallet,
+        startTime: detected.startTime, endTime: detected.endTime, collection: detected.collection,
+        soldOut: detected.soldOut, displayPrice: detected.displayPrice,
+        stats: detected.stats,
+      };
+      telegramFlowState.advance('telegram', chatId, 'awaiting_details', refreshed);
+      return tgEditMenu(chatId, messageId, renderFlowStep('mint_guided', 'awaiting_details', { userId, data: refreshed }));
+    }
+    if (data === 'flow:copyca') {
+      const flow = telegramFlowState.get('telegram', chatId);
+      if (!flow || flow.flow !== 'mint_guided' || !flow.data.contractAddress) return;
+      // A plain, untracked message (not the anchored panel) -- purely a copy-friendly echo of the
+      // address already shown on the card, so tapping it never moves or replaces the live panel.
+      return tgMenu(chatId, { text: `<code>${flow.data.contractAddress}</code>`, parseMode: 'HTML' });
     }
     if (data === 'flow:mintqty:x') {
       const flow = telegramFlowState.get('telegram', chatId);

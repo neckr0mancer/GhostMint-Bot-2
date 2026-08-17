@@ -16,6 +16,13 @@ function button(label, customId, style = 'secondary') {
   return { type: BUTTON, style: BUTTON_STYLE[style] || BUTTON_STYLE.secondary, custom_id: customId, label };
 }
 
+// A link-style button (style 5) opens directly in the user's browser and carries `url` instead of
+// `custom_id` -- Discord never sends this bot an interaction for it at all, same distinction as
+// Telegram's urlButton.
+function urlButton(label, url) {
+  return { type: BUTTON, style: 5, url, label };
+}
+
 function row(components) {
   return { type: ROW, components };
 }
@@ -54,6 +61,74 @@ function contractDetailsText({ contractAddress, chainLabel, isSeaDrop, priceETH,
     lines.push(startTime * 1000 > Date.now() ? `Opens: ${opensAt} UTC` : `Opened: ${opensAt} UTC`);
   }
   return lines.join('\n');
+}
+
+// Rounds to 4 decimal places for display -- enough precision to distinguish real mint/floor
+// prices without spilling a raw wei-derived float's trailing digits onto the card.
+function formatEthAmount(value, sym) {
+  if (value === null || value === undefined) return null;
+  return `${Math.round(value * 10_000) / 10_000} ${sym || 'ETH'}`;
+}
+
+// Section AD Tier 1 -- Discord counterpart to Telegram's collectionInfoCard: market cap, live
+// floor, and volume alongside the existing mint-specific fields, shown as the mint_guided flow's
+// real first screen (superseding Section AA's withDetailsHeader merge, the same way Section M's
+// merge was superseded on Telegram) with "🪙 Mint Now" as one of several actions. stats is null
+// until detectMintContract has been called with includeStats:true; every stats-derived line is
+// simply omitted rather than shown as a placeholder when a field is unavailable. openSeaUrl is
+// built by discordBot.js (from OPENSEA_CHAIN_SLUGS), not here, so this module stays free of a
+// cross-directory import into src/mint/ -- null omits the button entirely.
+function collectionInfoCard({ contractAddress, chainLabel, chainSym, isSeaDrop, priceETH, priceUnknown, maxSupply, maxPerWallet, startTime, collection, soldOut, displayPrice, stats, openSeaUrl }) {
+  const sym = chainSym || 'ETH';
+  const lines = [
+    collection?.name ? `**${collection.name}**` : '**Contract details**',
+    `\`${contractAddress}\``,
+    `Chain: ${chainLabel} · ${isSeaDrop ? 'SeaDrop drop' : 'Standard mint(uint256)'}`,
+  ];
+
+  if (soldOut) {
+    lines.push(displayPrice ? `Status: Sold out — floor ${displayPrice.eth} ${sym}` : 'Status: Sold out — floor price unavailable');
+  } else {
+    lines.push(priceUnknown ? 'Mint price: not exposed by this contract' : `Mint price: ${priceETH} ${sym} per item`);
+  }
+
+  if (stats) {
+    const floor = formatEthAmount(stats.floorPrice, stats.floorPriceSymbol || sym);
+    if (floor) lines.push(`Floor: ${floor}${stats.numOwners !== null ? ` · ${stats.numOwners} holders` : ''}`);
+    const marketCap = formatEthAmount(stats.marketCap, sym);
+    if (marketCap) {
+      const mintedNote = maxSupply ? `${stats.totalMinted}/${maxSupply} minted`
+        : stats.totalMinted !== null ? `${stats.totalMinted} minted` : '';
+      lines.push(`Market cap: ${marketCap}${mintedNote ? ` (${mintedNote})` : ''}`);
+    }
+    const volume = stats.volume || {};
+    const volumeParts = [];
+    if (volume.oneDay !== null && volume.oneDay !== undefined) volumeParts.push(`24h ${formatEthAmount(volume.oneDay, sym)}`);
+    if (volume.sevenDay !== null && volume.sevenDay !== undefined) volumeParts.push(`7d ${formatEthAmount(volume.sevenDay, sym)}`);
+    if (volume.thirtyDay !== null && volume.thirtyDay !== undefined) volumeParts.push(`30d ${formatEthAmount(volume.thirtyDay, sym)}`);
+    if (volumeParts.length) lines.push(`Volume: ${volumeParts.join(' · ')}`);
+  }
+
+  if (maxPerWallet !== null && maxPerWallet !== undefined) lines.push(`Max per wallet: ${maxPerWallet}`);
+  if (maxSupply !== null && maxSupply !== undefined) lines.push(`Max supply: ${maxSupply}`);
+  if (startTime) {
+    const opensAt = new Date(startTime * 1000).toISOString();
+    lines.push(startTime * 1000 > Date.now() ? `Opens: ${opensAt} UTC` : `Opened: ${opensAt} UTC`);
+  }
+  if (collection?.description) lines.push('', collection.description.slice(0, 300));
+
+  const utilityRow = [button('🔄 Refresh', 'flow:detailsrefresh')];
+  if (openSeaUrl) utilityRow.push(urlButton('🔗 OpenSea', openSeaUrl));
+
+  return {
+    content: lines.join('\n'),
+    components: [
+      row([button('🪙 Mint Now', 'flow:mintdetailscontinue', 'success')]),
+      row(utilityRow),
+      row([button('📋 Copy CA', 'flow:copyca')]),
+      row([button('❌ Cancel', 'flow:cancel:ask', 'danger')]),
+    ],
+  };
 }
 
 // Section AA -- Discord counterpart to Telegram's quantityStepPayload/Section L. A select menu
@@ -291,7 +366,7 @@ function labelModal({ customId, title, placeholder = '', style = 'short', maxLen
 module.exports = {
   button, row, select, mainMenu, walletsMenu, settingsMenu, placeholderMenu,
   chainSelect, walletSelect, confirmCancelPrompt, confirmRemoveWallet, labelModal,
-  contractDetailsText, mintQuantitySelect, mintPriceStep, mintConfirmation, numberModal,
+  contractDetailsText, collectionInfoCard, mintQuantitySelect, mintPriceStep, mintConfirmation, numberModal,
   watchTypeSelect, watchMethodSelect, watchConfigModal, watchRuleConfirmation,
   watchRulesList, watchRuleActions, confirmRemoveWatchRule,
 };

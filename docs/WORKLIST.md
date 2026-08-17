@@ -18,7 +18,8 @@ shipped).
 - **Round 6** (Section AC) differentiates SeaDrop's own revert reasons into plain English instead
   of one generic "would revert" message; shipped 2026-08-17.
 - **Round 7** (Section AD) is a degen-bot-style refreshable collection info card, both platforms —
-  logged 2026-08-17, not started; splits into a cheap tier and a research-first tier, see below.
+  logged 2026-08-17; splits into a cheap tier and a research-first tier, see below. Tier 1 shipped
+  2026-08-17; Tier 2 remains research-only, nothing built.
 
 Status legend: ✅ Done · 🟡 Partial · ❌ Not started
 
@@ -26,7 +27,7 @@ Status legend: ✅ Done · 🟡 Partial · ❌ Not started
 
 # Round 7 — degen-style collection info card, both platforms (2026-08-17)
 
-## Section AD — Refreshable collection info card with market/holder/risk data, both platforms ❌
+## Section AD — Refreshable collection info card with market/holder/risk data, both platforms 🟡
 
 Reference: a screenshot of a Discord bot ("Lute Synapse") posting a rich embed for a pasted token
 — contract address in a copyable block, socials, **Market Cap / ATH / Volume**, a **Top Holders**
@@ -38,29 +39,47 @@ for NFT **collections** instead of tokens, on both Telegram and Discord.
 This splits cleanly into two tiers by how much is actually known right now vs. how much needs
 research before it can even be scoped:
 
-### Tier 1 — buildable from data this app already has or already fetches ❌
+### Tier 1 — buildable from data this app already has or already fetches ✅
 
-- **Market cap equivalent:** floor price × supply is a real computable number from data
-  `detectMintContract`/`openSeaService` already resolve per contract. Needs a decision on what
-  "supply" means for this card — current minted count, or `maxSupply` — since they diverge for an
-  in-progress mint.
-- **Volume (24h/7d/30d/all-time):** confirmed already available for free. `openSeaService.js`'s
-  `fetchCollectionDetails` already calls `GET /collections/{slug}/stats` — live-checked against
-  that real endpoint just now, and its response includes `total.volume`/`total.sales`/
-  `total.num_owners` and an `intervals` array with `one_day`/`seven_day`/`thirty_day` volume and
-  sales, none of which `getCollectionMetadata` currently reads (only `floor_price`/
-  `floor_price_symbol` are kept from this same response today). This is a parsing change, not a
-  new integration.
-- **Holder count / rough concentration proxy:** `total.num_owners` from that same response, against
-  known supply, gives a coarse "supply per holder" signal cheaply. This is **not** the same as the
-  screenshot's actual **per-wallet Top Holders %** breakdown, which needs real per-address
-  ownership data (see Tier 2) — worth being upfront that this is a weaker substitute, not the same
-  feature.
-- **Refreshable card UI + action buttons:** directly buildable on the existing pattern from
-  Sections M/Q/AA (paste an address or OpenSea link → detection → an interactive panel) — a 🔄
-  Refresh button re-running the same lookup, plus collection-relevant actions in place of
-  Send/Call (most obviously **Mint Now**, **Copy CA**, **View on OpenSea**; "Send"/"Call" don't
-  have obvious 1:1 NFT-collection equivalents and need a decision on what replaces them).
+Shipped 2026-08-17. Market cap uses `maxSupply` (not current minted count) once known, falling
+back to minted count alone when `maxSupply` is unset — floor price × supply, computed in
+`botCommandService.js`'s `detectMintContract` behind a new opt-in `includeStats` flag so every
+other caller (task scheduling, batch mint, plain slash-command lookups) is unaffected and pays no
+extra latency. Implementation:
+
+- `openSeaService.js` gained `getCollectionStats(chain, contractAddress)` — live, never cached
+  (unlike the existing metadata/price cache), reading `total.volume`/`total.sales`/
+  `total.num_owners`/`total.floor_price` plus the `intervals[]` one/seven/thirty-day breakdown from
+  `GET /collections/{slug}/stats`, exactly the endpoint identified during Tier 2's research pass.
+- `contractValueResolver.js` gained `probeTotalMinted(chain, contractAddress)` — a live,
+  **uncached** read of just `totalMinted`, added after discovering that the shared
+  `contract_value_cache` row (one row per chain+contract, columns for price/supply/SeaDrop/OpenSea
+  fields all sharing it) makes `resolve()`'s normal cache check return truthy — and skip probing —
+  the moment *any* prior save touched that row, even one that never actually probed
+  `totalMinted` itself. Market cap needs a real current count, so this bypasses the cache
+  entirely rather than risk a stale or never-fetched value.
+- Holder count shows as `total.num_owners` next to the floor price line, labeled plainly as a
+  holder count — not represented as the screenshot's per-wallet Top Holders % breakdown, which
+  still needs Tier 2's Alchemy integration.
+- The card itself: `collectionInfoCard()` in both `src/telegram/menus.js` and
+  `src/discord/menus.js`, shown as `mint_guided`'s real first screen (`awaiting_details`) on both
+  platforms, superseding the older Section M/AA behavior of folding contract details into
+  whatever the next step happened to be. Actions: **🪙 Mint Now** (advances the flow via the
+  shared `mintFlowDecision.afterDetails` core, same as before), **🔄 Refresh** (re-runs
+  `detectMintContract` with `includeStats:true` and re-renders in place), **📋 Copy CA** (a
+  standalone ephemeral/plain echo that never touches flow state), **🔗 View on OpenSea** (a link
+  button, omitted when the chain isn't in `OPENSEA_CHAIN_SLUGS`), **❌ Cancel**. Every
+  stats-derived line (floor, market cap, volume) is simply omitted rather than shown as a
+  placeholder when unavailable, matching the existing "unknown is fine" convention the plain
+  contract-details text already used.
+- Two bugs surfaced and fixed while wiring this up (both from real user reports, not found by
+  chance): `OPENSEA_CHAIN_SLUGS` was missing a `robinhood` entry despite Robinhood Chain being one
+  of the app's `supportedChains` — this silently broke OpenSea-link resolution *and* degraded
+  collection metadata/stats for every Robinhood collection (confirmed live against a real
+  Robinhood Chain collection, "FISH IT"). And `transactionEngine.js`'s `explainCallFailure` was
+  parroting ethers' cryptic `require(false)` text verbatim for any zero-data revert, which is
+  ambiguous (could be a real bare `require()`, or the contract simply not implementing the
+  function called) — now explains both possibilities in plain English instead.
 
 ### Tier 2 — research complete (2026-08-17); real findings below, nothing built yet ❌
 
@@ -117,10 +136,10 @@ research before it can even be scoped:
   any new vendor account. Real Top Holders % needs one new (free) Alchemy account. True ATH and
   the funding-trail definition of Insiders remain the two genuinely open-ended pieces.
 
-**Not started.** Recommend Tier 1 as its own first pass (real value, everything needed is already
-verified as available), then a scoped Tier 2 covering Dev Hold/Sniper/same-tx-Bundler (zero new
-accounts) and Top Holders (one new free Alchemy account) as a second pass, leaving true ATH and
-funding-trail Insiders explicitly deferred rather than blocking on them.
+**Tier 1 shipped, Tier 2 not started.** Recommend a scoped Tier 2 pass covering
+Dev Hold/Sniper/same-tx-Bundler (zero new accounts) and Top Holders (one new free Alchemy account)
+next, leaving true ATH and funding-trail Insiders explicitly deferred rather than blocking on
+them.
 
 ---
 

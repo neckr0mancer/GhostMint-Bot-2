@@ -66,6 +66,17 @@ function createTransactionEngine({
     // non-SeaDrop failure is harmless.
     const seaDropReason = describeSeaDropError(error?.data);
     if (seaDropReason) return seaDropReason;
+    // ethers synthesizes the literal reason "require(false)" whenever a revert returned zero
+    // bytes of data (confirmed against the installed package's own AbiCoder.getBuiltinCallException)
+    // -- reproduced live against a real reported failure (a contract with no mint(uint256) and no
+    // fallback function). That zero-length signature is genuinely ambiguous between a real bare
+    // require() with no message and calling a selector the contract doesn't implement at all, but
+    // showing the raw "require(false)" text as if it were an informative reason is actively
+    // misleading either way -- it reads like a real revert message when it is really "no
+    // information was returned."
+    if (error?.reason === 'require(false)' && (!error?.data || error.data === '0x')) {
+      return 'Simulating this call failed with no reason given by the contract -- it may not implement the function this app tried to call, or a requirement failed silently (e.g. wrong price, quantity, or timing).';
+    }
     if (error?.reason) return `Simulating this call failed: ${error.reason}`;
     if (error?.shortMessage) return `Simulating this call failed: ${error.shortMessage}`;
     if (error?.message) return `Simulating this call failed: ${error.message}`;

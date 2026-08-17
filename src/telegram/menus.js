@@ -13,6 +13,13 @@ function button(text, callbackData) {
   return { text, callback_data: callbackData };
 }
 
+// A link button opens directly in the user's browser -- Telegram distinguishes it from a regular
+// button by carrying `url` instead of `callback_data`, and it never reaches this bot's callback
+// handler at all.
+function urlButton(text, url) {
+  return { text, url };
+}
+
 function keyboard(rows) {
   return { inline_keyboard: rows };
 }
@@ -171,6 +178,79 @@ function contractDetails(data) {
   return {
     text: contractDetailsText(data),
     replyMarkup: keyboard([[button('▶️ Continue', 'flow:mintdetailscontinue')], [button('❌ Cancel', 'flow:cancel:ask')]]),
+    parseMode: 'HTML',
+  };
+}
+
+// Rounds to 4 decimal places for display -- enough precision to distinguish real mint/floor
+// prices without spilling a raw wei-derived float's trailing digits onto the card.
+function formatEthAmount(value, sym) {
+  if (value === null || value === undefined) return null;
+  return `${Math.round(value * 10_000) / 10_000} ${sym || 'ETH'}`;
+}
+
+// Section AD Tier 1: the collection info card mint_guided's first screen renders instead of the
+// old merged-details-header (Section M) -- market cap, live floor, and volume alongside the
+// existing mint-specific fields, with "🪙 Mint Now" as one of several actions (Refresh, Copy CA,
+// View on OpenSea) rather than the screen's only purpose. stats is null until
+// detectMintContract has been called with includeStats:true (server.js's job, not this file's);
+// every stats-derived line is simply omitted rather than shown as a placeholder when a field is
+// unavailable, the same "unknown is fine" convention contractDetailsText above already uses.
+// openSeaUrl is built by the caller (server.js, from OPENSEA_CHAIN_SLUGS) rather than here, so
+// this module stays free of a cross-directory import into src/mint/ -- null omits the button
+// entirely rather than linking to a chain OpenSea doesn't index.
+function collectionInfoCard({ contractAddress, chainLabel, chainSym, isSeaDrop, priceETH, priceUnknown, maxSupply, maxPerWallet, startTime, collection, soldOut, displayPrice, stats, openSeaUrl }) {
+  const sym = chainSym || 'ETH';
+  const lines = [
+    collection?.name ? `<b>${escapeTelegramHtml(collection.name)}</b>` : '<b>Contract details</b>',
+    `<code>${contractAddress}</code>`,
+    `Chain: ${chainLabel} · ${isSeaDrop ? 'SeaDrop drop' : 'Standard mint(uint256)'}`,
+  ];
+
+  if (soldOut) {
+    lines.push(displayPrice
+      ? `Status: Sold out — floor ${displayPrice.eth} ${sym}${usdSuffix(displayPrice.usd)}`
+      : 'Status: Sold out — floor price unavailable');
+  } else {
+    lines.push(priceUnknown ? 'Mint price: not exposed by this contract' : `Mint price: ${priceETH} ${sym} per item`);
+  }
+
+  if (stats) {
+    const floor = formatEthAmount(stats.floorPrice, stats.floorPriceSymbol || sym);
+    if (floor) lines.push(`Floor: ${floor}${stats.numOwners !== null ? ` · ${stats.numOwners} holders` : ''}`);
+    const marketCap = formatEthAmount(stats.marketCap, sym);
+    if (marketCap) {
+      const mintedNote = maxSupply ? `${stats.totalMinted}/${maxSupply} minted`
+        : stats.totalMinted !== null ? `${stats.totalMinted} minted` : '';
+      lines.push(`Market cap: ${marketCap}${mintedNote ? ` (${mintedNote})` : ''}`);
+    }
+    const volume = stats.volume || {};
+    const volumeParts = [];
+    if (volume.oneDay !== null && volume.oneDay !== undefined) volumeParts.push(`24h ${formatEthAmount(volume.oneDay, sym)}`);
+    if (volume.sevenDay !== null && volume.sevenDay !== undefined) volumeParts.push(`7d ${formatEthAmount(volume.sevenDay, sym)}`);
+    if (volume.thirtyDay !== null && volume.thirtyDay !== undefined) volumeParts.push(`30d ${formatEthAmount(volume.thirtyDay, sym)}`);
+    if (volumeParts.length) lines.push(`Volume: ${volumeParts.join(' · ')}`);
+  }
+
+  if (maxPerWallet !== null && maxPerWallet !== undefined) lines.push(`Max per wallet: ${maxPerWallet}`);
+  if (maxSupply !== null && maxSupply !== undefined) lines.push(`Max supply: ${maxSupply}`);
+  if (startTime) {
+    const opensAt = new Date(startTime * 1000).toISOString();
+    lines.push(startTime * 1000 > Date.now() ? `Opens: ${opensAt} UTC` : `Opened: ${opensAt} UTC`);
+  }
+  if (collection?.description) lines.push('', escapeTelegramHtml(collection.description.slice(0, 300)));
+
+  const utilityRow = [button('🔄 Refresh', 'flow:detailsrefresh')];
+  if (openSeaUrl) utilityRow.push(urlButton('🔗 OpenSea', openSeaUrl));
+
+  return {
+    text: lines.join('\n'),
+    replyMarkup: keyboard([
+      [button('🪙 Mint Now', 'flow:mintdetailscontinue')],
+      utilityRow,
+      [button('📋 Copy CA', 'flow:copyca')],
+      [button('❌ Cancel', 'flow:cancel:ask')],
+    ]),
     parseMode: 'HTML',
   };
 }
@@ -381,6 +461,7 @@ module.exports = {
   walletMultiPicker,
   contractDetails,
   contractDetailsText,
+  collectionInfoCard,
   mintConfirmation,
   sendConfirmation,
   taskConfirmation,

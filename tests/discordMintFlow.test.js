@@ -7,6 +7,15 @@ const { RateLimitError } = require('../src/security/botSecurity');
 // Section AA: Discord's guided mint flow. Mirrors the mock shape and coverage bar set by
 // tests/discordFlowUX.test.js (wallet create/import) -- see WORKLIST.md's Section AA note on why
 // this flow is held to that precedent rather than server.js's untested mint_guided.
+//
+// Section AD Tier 1 changed this flow's shape: a paste no longer jumps straight to
+// quantity/wallet/price/confirm -- it always lands on the collection info card
+// (awaiting_details) first, and reaching the rest of the flow now requires one extra tap on the
+// card's "Mint Now" button (flow:mintdetailscontinue). That tap is what neutralizes the public
+// origin message and flips originMessagePublic to false, so every test below that used to treat
+// its first flow-continuation tap as "the first touch" now performs that tap via
+// flow:mintdetailscontinue instead, and whatever was previously the first touch becomes the
+// second (already-ephemeral, update-in-place) one.
 
 function mockMessage(content, userId = 'paster') {
   return {
@@ -82,31 +91,124 @@ function baseCommands(overrides = {}) {
   };
 }
 
-test('a single wallet, maxPerWallet 1, and a known price reaches the confirm screen with zero intermediate taps', async () => {
+test('a paste always lands on the collection details card first', async () => {
   const flowState = createFlowStateStore();
   const commands = baseCommands();
   const message = mockMessage('0x0000000000000000000000000000000000000001');
   await handleMintPasteMessage({ identity: { resolveOrCreate: async () => 'internal-user' }, commands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT }, message);
   assert.equal(message.replies.length, 1);
-  assert.match(message.replies[0].content, /Confirm mint/);
   assert.match(message.replies[0].content, /Contract details|SeaDrop|Standard mint/);
+  assert.match(message.replies[0].content, /0x0000000000000000000000000000000000000001/);
+  assert.deepEqual(message.replies[0].components[0].components.map(b => b.custom_id), ['flow:mintdetailscontinue']);
 });
 
-test('maxPerWallet > 1 shows the quantity select with the contract details prepended', async () => {
+test('flow:detailsrefresh re-fetches live stats and updates the card in place without neutralizing the public origin message', async () => {
+  const flowState = createFlowStateStore();
+  let calls = 0;
+  const commands = baseCommands({
+    detectMintContract: async () => {
+      calls += 1;
+      return {
+        chain: 'ethereum', isSeaDrop: false, priceKnown: true, valueWei: '1000000000000000000',
+        maxSupply: 100, maxPerWallet: 1, startTime: null, endTime: null, collection: null, soldOut: false, displayPrice: null,
+        stats: calls === 1 ? null : {
+          floorPrice: 0.09, floorPriceSymbol: 'ETH', numOwners: 7, totalMinted: 10, marketCap: 0.9,
+          volume: { oneDay: null, sevenDay: null, thirtyDay: null, allTime: null },
+        },
+      };
+    },
+  });
+  const identity = { resolveOrCreate: async () => 'internal-user' };
+  const ctx = { identity, commands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT };
+  const message = mockMessage('0x0000000000000000000000000000000000000001', 'paster-11');
+  await handleMintPasteMessage(ctx, message);
+  assert.equal(message.replies[0].content.includes('Floor:'), false);
+
+  const handler = createDiscordInteractionHandler(ctx);
+  const refresh = buttonInteraction('flow:detailsrefresh', 'paster-11');
+  await handler(refresh);
+  assert.equal(calls, 2);
+  assert.equal(refresh.messageEdits.length, 0, 'refresh must not neutralize the public origin message');
+  assert.equal(refresh.replies.length, 0);
+  assert.equal(refresh.updates.length, 1);
+  assert.match(refresh.updates[0].content, /Floor: 0\.09 ETH · 7 holders/);
+  assert.equal(flowState.get('discord', 'paster-11').step, 'awaiting_details');
+});
+
+test('a transient failure during flow:detailsrefresh leaves the last-known card values in place instead of erroring out', async () => {
+  const flowState = createFlowStateStore();
+  const commands = baseCommands();
+  const identity = { resolveOrCreate: async () => 'internal-user' };
+  const ctx = { identity, commands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT };
+  const message = mockMessage('0x0000000000000000000000000000000000000001', 'paster-12');
+  await handleMintPasteMessage(ctx, message);
+
+  const failingCtx = { ...ctx, commands: { ...commands, detectMintContract: async () => { throw new Error('rate limited'); } } };
+  const handler = createDiscordInteractionHandler(failingCtx);
+  const refresh = buttonInteraction('flow:detailsrefresh', 'paster-12');
+  await handler(refresh);
+  assert.equal(refresh.updates.length, 1);
+  assert.match(refresh.updates[0].content, /0x0000000000000000000000000000000000000001/);
+  assert.equal(flowState.get('discord', 'paster-12').step, 'awaiting_details');
+});
+
+test('flow:copyca replies with a copy-friendly echo of the address without touching flow state or the origin message', async () => {
+  const flowState = createFlowStateStore();
+  const commands = baseCommands();
+  const identity = { resolveOrCreate: async () => 'internal-user' };
+  const ctx = { identity, commands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT };
+  const message = mockMessage('0x0000000000000000000000000000000000000001', 'paster-13');
+  await handleMintPasteMessage(ctx, message);
+
+  const handler = createDiscordInteractionHandler(ctx);
+  const copy = buttonInteraction('flow:copyca', 'paster-13');
+  await handler(copy);
+  assert.equal(copy.replies.length, 1);
+  assert.equal(copy.replies[0].ephemeral, true);
+  assert.match(copy.replies[0].content, /0x0000000000000000000000000000000000000001/);
+  assert.equal(copy.messageEdits.length, 0);
+  assert.equal(copy.updates.length, 0);
+  assert.equal(flowState.get('discord', 'paster-13').step, 'awaiting_details');
+});
+
+test('tapping Mint Now on a single wallet, maxPerWallet 1, known-price contract reaches the confirm screen with no further taps', async () => {
+  const flowState = createFlowStateStore();
+  const commands = baseCommands();
+  const identity = { resolveOrCreate: async () => 'internal-user' };
+  const ctx = { identity, commands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT };
+  const message = mockMessage('0x0000000000000000000000000000000000000001');
+  await handleMintPasteMessage(ctx, message);
+
+  const handler = createDiscordInteractionHandler(ctx);
+  const mintNow = buttonInteraction('flow:mintdetailscontinue', 'paster');
+  await handler(mintNow);
+  assert.equal(mintNow.messageEdits.length, 1, 'the public origin message must be neutralized on the Mint Now tap');
+  assert.equal(mintNow.replies.length, 1);
+  assert.equal(mintNow.replies[0].ephemeral, true);
+  assert.match(mintNow.replies[0].content, /Confirm mint/);
+});
+
+test('maxPerWallet > 1 shows the quantity select after the Mint Now tap', async () => {
   const flowState = createFlowStateStore();
   const commands = baseCommands({ detectMintContract: async () => ({
     chain: 'ethereum', isSeaDrop: false, priceKnown: true, valueWei: '1000000000000000000',
     maxSupply: 100, maxPerWallet: 5, startTime: null, endTime: null, collection: null, soldOut: false, displayPrice: null,
   }) });
+  const identity = { resolveOrCreate: async () => 'internal-user' };
+  const ctx = { identity, commands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT };
   const message = mockMessage('0x0000000000000000000000000000000000000001');
-  await handleMintPasteMessage({ identity: { resolveOrCreate: async () => 'internal-user' }, commands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT }, message);
+  await handleMintPasteMessage(ctx, message);
   assert.match(message.replies[0].content, /Standard mint/);
-  assert.match(message.replies[0].content, /How many would you like to mint\? \(max 5 per wallet\)/);
-  const select = message.replies[0].components[0].components[0];
+
+  const handler = createDiscordInteractionHandler(ctx);
+  const mintNow = buttonInteraction('flow:mintdetailscontinue', 'paster');
+  await handler(mintNow);
+  assert.match(mintNow.replies[0].content, /How many would you like to mint\? \(max 5 per wallet\)/);
+  const select = mintNow.replies[0].components[0].components[0];
   assert.deepEqual(select.options.map(o => o.value), ['1', '2', '5', 'custom']);
 });
 
-test('full happy path: paste -> quantity select -> wallet select -> confirm -> mint executes and clears the flow', async () => {
+test('full happy path: paste -> details card -> Mint Now -> quantity select -> wallet select -> confirm -> mint executes and clears the flow', async () => {
   const flowState = createFlowStateStore();
   const minted = [];
   const commands = baseCommands({
@@ -122,15 +224,22 @@ test('full happy path: paste -> quantity select -> wallet select -> confirm -> m
 
   const message = mockMessage('0x0000000000000000000000000000000000000001', 'paster-1');
   await handleMintPasteMessage(ctx, message);
-  assert.match(message.replies[0].content, /How many would you like to mint/);
+  assert.match(message.replies[0].content, /Contract details|Standard mint/);
 
   const handler = createDiscordInteractionHandler(ctx);
+  const mintNow = buttonInteraction('flow:mintdetailscontinue', 'paster-1');
+  await handler(mintNow);
+  assert.equal(mintNow.messageEdits.length, 1, 'the public origin message must be neutralized on first touch');
+  assert.equal(mintNow.replies.length, 1);
+  assert.equal(mintNow.replies[0].ephemeral, true);
+  assert.match(mintNow.replies[0].content, /How many would you like to mint/);
+
   const qty = selectInteraction('flow:mintqty:select', ['2'], 'paster-1');
   await handler(qty);
-  assert.equal(qty.messageEdits.length, 1, 'the public origin message must be neutralized on first touch');
-  assert.equal(qty.replies.length, 1);
-  assert.equal(qty.replies[0].ephemeral, true);
-  assert.match(qty.replies[0].content, /Choose a wallet/);
+  assert.equal(qty.messageEdits.length, 0, 'already neutralized by the earlier Mint Now tap');
+  assert.equal(qty.updates.length, 1, 'already-ephemeral steps update in place, not a fresh reply');
+  assert.equal(qty.replies.length, 0);
+  assert.match(qty.updates[0].content, /Choose a wallet/);
 
   const walletPick = selectInteraction('flow:mintwallet:select', ['beta'], 'paster-1');
   await handler(walletPick);
@@ -165,7 +274,7 @@ test('a different user\'s click on the flow\'s public message is rejected epheme
   await handleMintPasteMessage(ctx, message);
 
   const handler = createDiscordInteractionHandler(ctx);
-  const strangerClick = selectInteraction('flow:mintqty:select', ['2'], 'stranger-1');
+  const strangerClick = buttonInteraction('flow:mintdetailscontinue', 'stranger-1');
   await handler(strangerClick);
   assert.equal(strangerClick.replies.length, 1);
   assert.equal(strangerClick.replies[0].ephemeral, true);
@@ -173,12 +282,12 @@ test('a different user\'s click on the flow\'s public message is rejected epheme
   assert.equal(strangerClick.messageEdits.length, 0, 'a stranger\'s click must not neutralize the owner\'s message');
   assert.equal(strangerClick.updates.length, 0);
 
-  const ownerClick = selectInteraction('flow:mintqty:select', ['2'], 'owner-1');
+  const ownerClick = buttonInteraction('flow:mintdetailscontinue', 'owner-1');
   await handler(ownerClick);
   assert.equal(ownerClick.messageEdits.length, 1, 'the real owner can still continue normally afterward');
 });
 
-test('picking "custom" on the quantity select opens a modal, neutralizing the origin message even though the response is a modal', async () => {
+test('picking "custom" on the quantity select opens a modal; the origin message was already neutralized by the earlier Mint Now tap', async () => {
   const flowState = createFlowStateStore();
   const commands = baseCommands({
     detectMintContract: async () => ({
@@ -193,10 +302,14 @@ test('picking "custom" on the quantity select opens a modal, neutralizing the or
   await handleMintPasteMessage(ctx, message);
 
   const handler = createDiscordInteractionHandler(ctx);
+  const mintNow = buttonInteraction('flow:mintdetailscontinue', 'paster-2');
+  await handler(mintNow);
+  assert.equal(mintNow.messageEdits.length, 1);
+
   const customPick = selectInteraction('flow:mintqty:select', ['custom'], 'paster-2');
   await handler(customPick);
   assert.equal(customPick.modal.custom_id, 'flow:mintqty:submit');
-  assert.equal(customPick.messageEdits.length, 1);
+  assert.equal(customPick.messageEdits.length, 0, 'already neutralized by the earlier Mint Now tap');
 
   const submit = modalInteraction('flow:mintqty:submit', { value: '3' }, 'paster-2');
   await handler(submit);
@@ -215,6 +328,7 @@ test('an out-of-range custom quantity is rejected without advancing the flow', a
   const message = mockMessage('0x0000000000000000000000000000000000000001', 'paster-3');
   await handleMintPasteMessage(ctx, message);
   const handler = createDiscordInteractionHandler(ctx);
+  await handler(buttonInteraction('flow:mintdetailscontinue', 'paster-3'));
   await handler(selectInteraction('flow:mintqty:select', ['custom'], 'paster-3'));
   const submit = modalInteraction('flow:mintqty:submit', { value: '99' }, 'paster-3');
   await handler(submit);
@@ -232,13 +346,17 @@ test('price step offers the OpenSea floor as a one-tap accept', async () => {
   const ctx = { identity, commands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT };
   const message = mockMessage('0x0000000000000000000000000000000000000001', 'paster-4');
   await handleMintPasteMessage(ctx, message);
-  assert.match(message.replies[0].content, /OpenSea suggests a floor price/);
 
   const handler = createDiscordInteractionHandler(ctx);
+  const mintNow = buttonInteraction('flow:mintdetailscontinue', 'paster-4');
+  await handler(mintNow);
+  assert.match(mintNow.replies[0].content, /OpenSea suggests a floor price/);
+
   const accept = buttonInteraction('flow:priceaccept', 'paster-4');
   await handler(accept);
-  assert.match(accept.replies[0].content, /Confirm mint/);
-  assert.match(accept.replies[0].content, /using the amount you entered above/);
+  assert.equal(accept.updates.length, 1, 'already ephemeral by this point -- updates in place, not a fresh reply');
+  assert.match(accept.updates[0].content, /Confirm mint/);
+  assert.match(accept.updates[0].content, /using the amount you entered above/);
 });
 
 test('manual price entry via modal advances past the price step', async () => {
@@ -251,9 +369,12 @@ test('manual price entry via modal advances past the price step', async () => {
   const ctx = { identity, commands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT };
   const message = mockMessage('0x0000000000000000000000000000000000000001', 'paster-5');
   await handleMintPasteMessage(ctx, message);
-  assert.match(message.replies[0].content, /Enter the price per item/);
 
   const handler = createDiscordInteractionHandler(ctx);
+  const mintNow = buttonInteraction('flow:mintdetailscontinue', 'paster-5');
+  await handler(mintNow);
+  assert.match(mintNow.replies[0].content, /Enter the price per item/);
+
   const manual = buttonInteraction('flow:pricemanual', 'paster-5');
   await handler(manual);
   assert.equal(manual.modal.custom_id, 'flow:mintprice:submit');
@@ -271,15 +392,20 @@ test('a rate limit during execution keeps the flow intact instead of discarding 
   const ctx = { identity, commands, flowState, chains: CHAINS, rateLimiter };
   const message = mockMessage('0x0000000000000000000000000000000000000001', 'paster-6');
   await handleMintPasteMessage(ctx, message);
-  assert.match(message.replies[0].content, /Confirm mint/);
 
   const handler = createDiscordInteractionHandler(ctx);
+  const mintNow = buttonInteraction('flow:mintdetailscontinue', 'paster-6');
+  await handler(mintNow);
+  assert.match(mintNow.replies[0].content, /Confirm mint/);
+
   const confirm = buttonInteraction('flow:mintconfirm', 'paster-6');
   await handler(confirm);
-  // this flow reached confirm as its very first screen (single wallet, known price, maxPerWallet
-  // 1), so tapping Confirm is the flow's first interaction -- the response goes ephemeral, not an
-  // in-place update of the still-public origin message.
-  assert.match(confirm.replies[0].content, /Too many sensitive commands/);
+  // Mint Now was this flow's first interaction (single wallet, known price, maxPerWallet 1 needs
+  // no further taps to reach confirm), so by the time Confirm is tapped the flow is already
+  // ephemeral -- the rate-limit message updates that same ephemeral message in place rather than
+  // sending a fresh reply.
+  assert.equal(confirm.updates.length, 1);
+  assert.match(confirm.updates[0].content, /Too many sensitive commands/);
   assert.equal(flowState.get('discord', 'paster-6').flow, 'mint_guided');
 });
 

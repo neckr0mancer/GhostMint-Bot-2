@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const {
   mainMenu, walletsMenu, settingsMenu, tasksMenu, chainPicker, walletPicker,
-  contractDetails, contractDetailsText, taskConfirmation, confirmCancelPrompt, confirmRemoveWallet, placeholderMenu,
+  contractDetails, contractDetailsText, collectionInfoCard, taskConfirmation, confirmCancelPrompt, confirmRemoveWallet, placeholderMenu,
 } = require('../src/telegram/menus');
 
 function flatButtons(replyMarkup) {
@@ -166,6 +166,46 @@ test('a missing USD price omits the parenthetical entirely rather than showing $
   });
   assert.match(details.text, /Price: 0\.05 per item$/m);
   assert.equal(details.text.includes('~$'), false);
+});
+
+test('collectionInfoCard renders the mint_guided flow\'s real first screen: Mint Now, Refresh, Copy CA, Cancel, with OpenSea only when a link is given', () => {
+  const withoutOpenSea = collectionInfoCard({
+    contractAddress: '0xabc', chainLabel: 'Ethereum', chainSym: 'ETH', isSeaDrop: false, priceETH: 0.05, priceUnknown: false,
+    maxSupply: 100, maxPerWallet: 1, startTime: null, collection: null, soldOut: false, displayPrice: null, stats: null, openSeaUrl: null,
+  });
+  assert.deepEqual(flatButtons(withoutOpenSea.replyMarkup).map(b => b.callback_data), ['flow:mintdetailscontinue', 'flow:detailsrefresh', 'flow:copyca', 'flow:cancel:ask']);
+
+  const withOpenSea = collectionInfoCard({
+    contractAddress: '0xabc', chainLabel: 'Ethereum', chainSym: 'ETH', isSeaDrop: false, priceETH: 0.05, priceUnknown: false,
+    maxSupply: 100, maxPerWallet: 1, startTime: null, collection: null, soldOut: false, displayPrice: null, stats: null,
+    openSeaUrl: 'https://opensea.io/assets/ethereum/0xabc',
+  });
+  const buttons = flatButtons(withOpenSea.replyMarkup);
+  assert.deepEqual(buttons.map(b => b.callback_data || b.url), ['flow:mintdetailscontinue', 'flow:detailsrefresh', 'https://opensea.io/assets/ethereum/0xabc', 'flow:copyca', 'flow:cancel:ask']);
+  assert.equal(buttons.find(b => b.url)?.text, '🔗 OpenSea');
+});
+
+test('collectionInfoCard omits every stats-derived line when stats is null, and shows floor/market cap/volume when it is not', () => {
+  const noStats = collectionInfoCard({
+    contractAddress: '0xabc', chainLabel: 'Ethereum', chainSym: 'ETH', isSeaDrop: false, priceETH: 0.05, priceUnknown: false,
+    maxSupply: 100, maxPerWallet: 1, startTime: null, collection: null, soldOut: false, displayPrice: null, stats: null, openSeaUrl: null,
+  });
+  assert.equal(noStats.text.includes('Floor:'), false);
+  assert.equal(noStats.text.includes('Market cap:'), false);
+  assert.equal(noStats.text.includes('Volume:'), false);
+
+  const withStats = collectionInfoCard({
+    contractAddress: '0xabc', chainLabel: 'Ethereum', chainSym: 'ETH', isSeaDrop: false, priceETH: 0.05, priceUnknown: false,
+    maxSupply: 100, maxPerWallet: 1, startTime: null, collection: null, soldOut: false, displayPrice: null, openSeaUrl: null,
+    stats: {
+      floorPrice: 0.08, floorPriceSymbol: 'ETH', numOwners: 42, totalMinted: 55,
+      marketCap: 4.4, volume: { oneDay: 1.2, sevenDay: 5.5, thirtyDay: null, allTime: 20 },
+    },
+  });
+  assert.match(withStats.text, /Floor: 0\.08 ETH · 42 holders/);
+  assert.match(withStats.text, /Market cap: 4\.4 ETH \(55\/100 minted\)/);
+  assert.match(withStats.text, /Volume: 24h 1\.2 ETH · 7d 5\.5 ETH/);
+  assert.equal(withStats.text.includes('30d'), false);
 });
 
 test('task confirmation names the auto-detected opening time distinctly from a manually entered one', () => {

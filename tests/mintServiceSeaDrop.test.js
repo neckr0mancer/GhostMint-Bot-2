@@ -239,6 +239,77 @@ test('detectMintContract never fails just because no openSeaService is wired in'
   assert.equal(result.collection, null);
 });
 
+// Section AD Tier 1 -- stats is opt-in via includeStats, computed live (never the cached
+// resolve()/getCollectionMetadata values this function already uses elsewhere), and shared by
+// both the SeaDrop and plain-mint branches.
+test('detectMintContract omits stats entirely when includeStats is not set, for both branches', async () => {
+  const seaDropResult = await commandServiceFixture({
+    contractValueResolver: { resolve: async () => { throw new Error('should not be reached'); }, probeTotalMinted: async () => { throw new Error('must not be called without includeStats'); } },
+    seaDropDiscoveryService: { resolve: async () => ({ address: SEADROP, publicDrop: { mintPriceWei: '1000' }, feeRecipient: FEE_RECIPIENT }) },
+    openSeaService: { getCollectionMetadata: async () => null, getCollectionStats: async () => { throw new Error('must not be called without includeStats'); } },
+  }).service.detectMintContract('user-a', { contractAddress: CONTRACT, quantity: 1 });
+  assert.equal(seaDropResult.stats, null);
+
+  const plainResult = await commandServiceFixture({
+    contractValueResolver: { resolve: async () => ({ price: { value: '500' }, maxSupply: null, maxPerWallet: null }), probeTotalMinted: async () => { throw new Error('must not be called without includeStats'); } },
+    seaDropDiscoveryService: { resolve: async () => ({ address: null, publicDrop: null, feeRecipient: null }) },
+  }).service.detectMintContract('user-a', { contractAddress: CONTRACT, quantity: 1 });
+  assert.equal(plainResult.stats, null);
+});
+
+test('detectMintContract computes live stats and market cap (floor x current minted supply) when includeStats is set, for a SeaDrop drop', async () => {
+  const { service } = commandServiceFixture({
+    contractValueResolver: { resolve: async () => { throw new Error('should not be reached -- SeaDrop was found first'); }, probeTotalMinted: async () => ({ value: '4000', source: 'totalSupply' }) },
+    seaDropDiscoveryService: { resolve: async () => ({ address: SEADROP, publicDrop: { mintPriceWei: '1000' }, feeRecipient: FEE_RECIPIENT }) },
+    openSeaService: {
+      getCollectionMetadata: async () => ({ name: 'Cool Cats' }),
+      getCollectionStats: async () => ({ floorPrice: 1.5, floorPriceSymbol: 'ETH', numOwners: 900,
+        volume: { oneDay: 10, sevenDay: 50, thirtyDay: 200, allTime: 5000 },
+        sales: { oneDay: 2, sevenDay: 9, thirtyDay: 40, allTime: 1200 } }),
+    },
+  });
+  const result = await service.detectMintContract('user-a', { contractAddress: CONTRACT, quantity: 1, includeStats: true });
+  assert.equal(result.stats.totalMinted, 4000);
+  assert.equal(result.stats.floorPrice, 1.5);
+  assert.equal(result.stats.numOwners, 900);
+  assert.deepEqual(result.stats.volume, { oneDay: 10, sevenDay: 50, thirtyDay: 200, allTime: 5000 });
+  assert.equal(result.stats.marketCap, 6000); // 1.5 ETH floor x 4000 minted
+});
+
+test('detectMintContract computes live stats for a plain (non-SeaDrop) contract too, reusing the same stats shape', async () => {
+  const { service } = commandServiceFixture({
+    contractValueResolver: {
+      resolve: async () => ({ price: { value: '500' }, maxSupply: { value: '10000' }, maxPerWallet: null, totalMinted: { value: '1' } }),
+      probeTotalMinted: async () => ({ value: '3333', source: 'totalSupply' }),
+    },
+    seaDropDiscoveryService: { resolve: async () => ({ address: null, publicDrop: null, feeRecipient: null }) },
+    openSeaService: { getCollectionMetadata: async () => null, getCollectionStats: async () => ({ floorPrice: 0.2, floorPriceSymbol: 'ETH', numOwners: 500,
+      volume: { oneDay: null, sevenDay: null, thirtyDay: null, allTime: null }, sales: { oneDay: null, sevenDay: null, thirtyDay: null, allTime: null } }) },
+  });
+  const result = await service.detectMintContract('user-a', { contractAddress: CONTRACT, quantity: 1, includeStats: true });
+  // Live-probed totalMinted (3333), not resolve()'s separately-cached totalMinted (1) used for soldOut.
+  assert.equal(result.stats.totalMinted, 3333);
+  assert.equal(result.stats.marketCap, 666.6);
+});
+
+test('market cap is null (not a guess) when either the floor price or the live minted count is unknown', async () => {
+  const noFloor = await commandServiceFixture({
+    contractValueResolver: { resolve: async () => ({ price: { value: '500' }, maxSupply: null, maxPerWallet: null }), probeTotalMinted: async () => ({ value: '100', source: 'totalSupply' }) },
+    seaDropDiscoveryService: { resolve: async () => ({ address: null, publicDrop: null, feeRecipient: null }) },
+    openSeaService: { getCollectionMetadata: async () => null, getCollectionStats: async () => ({ floorPrice: null, floorPriceSymbol: null, numOwners: null,
+      volume: { oneDay: null, sevenDay: null, thirtyDay: null, allTime: null }, sales: { oneDay: null, sevenDay: null, thirtyDay: null, allTime: null } }) },
+  }).service.detectMintContract('user-a', { contractAddress: CONTRACT, quantity: 1, includeStats: true });
+  assert.equal(noFloor.stats.marketCap, null);
+
+  const noSupply = await commandServiceFixture({
+    contractValueResolver: { resolve: async () => ({ price: { value: '500' }, maxSupply: null, maxPerWallet: null }), probeTotalMinted: async () => null },
+    seaDropDiscoveryService: { resolve: async () => ({ address: null, publicDrop: null, feeRecipient: null }) },
+    openSeaService: { getCollectionMetadata: async () => null, getCollectionStats: async () => ({ floorPrice: 1, floorPriceSymbol: 'ETH', numOwners: null,
+      volume: { oneDay: null, sevenDay: null, thirtyDay: null, allTime: null }, sales: { oneDay: null, sevenDay: null, thirtyDay: null, allTime: null } }) },
+  }).service.detectMintContract('user-a', { contractAddress: CONTRACT, quantity: 1, includeStats: true });
+  assert.equal(noSupply.stats.marketCap, null);
+});
+
 function taskServiceFixture({ contractValueResolver, seaDropDiscoveryService }) {
   const state = { wallets: [{ id: 1, userId: 'user-a', label: 'main', address: WALLET, chain: 'ethereum' }], tasks: [], activity: [], pnl: [], snipers: [] };
   const saved = [];
