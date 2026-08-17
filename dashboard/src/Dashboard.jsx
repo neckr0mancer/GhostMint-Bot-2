@@ -46,7 +46,7 @@ function summarize({wallets,tasks,snipers,watchRules,activity,pnl,confirmations}
   const pnlItems=pnl.data||[];
   return {
     loading:wallets.data===null||tasks.data===null||snipers.data===null||watchRules.data===null||activity.data===null||pnl.data===null,
-    wallet:walletList[0]||null,
+    wallets:walletList.slice(0,2),
     walletCount:walletList.length,
     lowBalanceWallets,
     pendingConfirmations:confirmations.data||[],

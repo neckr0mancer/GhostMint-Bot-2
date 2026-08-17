@@ -5,8 +5,8 @@ import {formatAmount,formatWhen,QuickMintToggle} from './helpers.jsx';
 export function StatusBar({summary,go}){return <div className="dash-statusbar">
   <PageTitle eyebrow="Everything in one view" title="Dashboard" subtitle="A live summary of every tab below - drill into any card for the full picture."/>
   <div className="dash-statusbar-wallet">
-    {summary.wallet
-      ?<><span className="pill">{summary.wallet.chain}</span><strong>{summary.wallet.label}</strong><code>{summary.wallet.address}</code><span>{summary.wallet.balance??'Unavailable'} {summary.wallet.symbol||''}</span></>
+    {summary.wallets.length
+      ?<div className="dash-wallet-chips">{summary.wallets.map(wallet=><span className="dash-wallet-chip" key={wallet.label}><span className="pill">{wallet.chain}</span><strong>{wallet.label}</strong><span>{wallet.balance??'—'} {wallet.symbol||''}</span></span>)}{summary.walletCount>summary.wallets.length&&<span className="dash-wallet-more">+{summary.walletCount-summary.wallets.length} more</span>}</div>
       :<span>No wallets yet</span>}
     <button className="quiet small" onClick={()=>go('Wallets')}>View wallets</button>
     <span className="dash-bell" aria-label={`${summary.pendingConfirmations.length} pending confirmations`}>&#128276; {summary.pendingConfirmations.length}</span>

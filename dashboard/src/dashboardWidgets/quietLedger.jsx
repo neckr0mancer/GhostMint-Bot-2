@@ -13,9 +13,10 @@ function AdvancedRow({summaryLine,details}){const [open,setOpen]=useState(false)
 export function StatusBar({summary,go}){return <div className="dash-statusbar dash-quiet">
   <PageTitle eyebrow="Everything in one view" title="Dashboard" subtitle="A summary of every tab below. Open any section for the full picture."/>
   <div className="dash-statusbar-wallet">
-    {summary.wallet
-      ?<p>Wallet <strong>{summary.wallet.label}</strong> on {summary.wallet.chain}: {summary.wallet.balance??'balance unavailable'} {summary.wallet.symbol||''}</p>
+    {summary.wallets.length
+      ?summary.wallets.map(wallet=><p key={wallet.label}>Wallet <strong>{wallet.label}</strong> on {wallet.chain}: {wallet.balance??'—'} {wallet.symbol||''}</p>)
       :<p>No wallets yet.</p>}
+    {summary.walletCount>summary.wallets.length&&<p className="dash-wallet-more">+{summary.walletCount-summary.wallets.length} more</p>}
     <button className="quiet" onClick={()=>go('Wallets')}>View wallets</button>
     <p>{summary.pendingConfirmations.length} confirmations waiting for you</p>
   </div>

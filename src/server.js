@@ -311,6 +311,21 @@ async function recordMintActivity({ userId, wallet, quantity, intent, chain }) {
   await storage.updateWalletMinted(userId, wallet.label, wallet.minted);
   await logActivity(userId, 'success', `Minted ${quantity} NFT${quantity === 1 ? '' : 's'}`,
     wallet.label, intent, CHAINS[chain], { triggerSource: 'manual' });
+  await autoRecordPnl({ userId, wallet, quantity, intent });
+}
+
+// Every confirmed mint becomes its own P&L row automatically -- cost and gas are real numbers
+// straight from the confirmed receipt (intent.valueWei / intent.actualNetworkCostWei), nothing
+// guessed. Sale is left at 0 since there is no data source anywhere for actual resale proceeds --
+// the owner (or a future sales watcher, once it detects a resale) fills that in later.
+async function autoRecordPnl({ userId, wallet, quantity, intent }) {
+  if (intent?.actualNetworkCostWei === undefined || intent?.actualNetworkCostWei === null) return;
+  const costEth = Number(ethers.formatEther(intent.valueWei ?? 0n));
+  const gasEth = Number(ethers.formatEther(intent.actualNetworkCostWei));
+  const saved = await storage.addPnl({ userId, nm: `Minted ${quantity} NFT${quantity === 1 ? '' : 's'} — ${wallet.label}`,
+    cost: costEth, sale: 0, gas: gasEth, net: -(costEth + gasEth), t: Date.now() });
+  DB.pnl.unshift(saved);
+  dashboardWebSockets.broadcastToUser(userId, { type: 'pnl.changed' });
 }
 
 // ── Mint executor ─────────────────────────────────────────
@@ -2142,6 +2157,7 @@ send /mint with a contract address to get going.`;
 const botCommands = createBotCommandService({
   storage,
   identity,
+  botSecurityRepository,
   broadcast: (userId, resource) => dashboardWebSockets.broadcastToUser(userId, {type:`${resource}.changed`}),
   schedulerRepository,
   providerService,
@@ -2200,6 +2216,7 @@ const botCommands = createBotCommandService({
 });
 const dashboardApi=createDashboardApi({auth:dashboardAuth,identityRepository,commands:botCommands,
   securityAudit:botSecurityRepository,broadcast:(userId,message)=>dashboardWebSockets.broadcastToUser(userId,message),
+  broadcastToUsers:(userIds,message)=>dashboardWebSockets.broadcastToUsers(userIds,message),
   supportedChains:CONFIG.supportedChains,
   checkAccountStatus:userId=>governance.checkAccountStatus(userId),
   loginRateLimiter:createCommandRateLimiter({limit:5,windowMs:60_000}),
@@ -2247,6 +2264,14 @@ const readinessService=createReadinessService({database:storage,providerService,
 app.get('/health', async (req,res) => {
   const health=await readinessService.inspect();
   res.status(health.status==='ok'?200:503).json({...health,uptime:Math.floor(process.uptime())});
+});
+// Same data as the public /health above, but behind a session + owner check so it shows up inside
+// the admin dashboard itself instead of only being reachable by hitting the bare endpoint by hand.
+app.get('/api/admin/health', dashboardApi.requireSession, async (req,res) => {
+  try { await governance.requireOwner(req.dashboardSession.userId); }
+  catch { return res.status(403).json({error:'Owner access required'}); }
+  const health=await readinessService.inspect();
+  res.json({...health,uptime:Math.floor(process.uptime())});
 });
 app.get('*', (req,res) => res.sendFile(path.join(PROJECT_ROOT,'public','index.html')));
 

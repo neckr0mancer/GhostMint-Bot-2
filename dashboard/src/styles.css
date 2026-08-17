@@ -110,6 +110,10 @@ code{font-family:ui-monospace,'SF Mono',Consolas,monospace;font-size:.9em}
 .wallet-balance-row{display:flex;align-items:baseline;justify-content:space-between;gap:.75rem;font-size:.82rem;color:var(--text-muted)}
 .wallet-balance-row strong{display:inline;margin:0;font-size:.92rem;color:var(--text)}
 .card-grid,.form-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,20rem),1fr));gap:1rem;margin:1.1rem 0}
+.pnl-summary-grid{grid-template-columns:repeat(auto-fit,minmax(min(100%,11rem),1fr))}
+.pnl-summary-card{gap:.3rem}
+.pnl-summary-card strong{font-size:1.3rem}
+.pnl-summary-card p{margin:0;font-size:.76rem;color:var(--text-muted)}
 
 /* ==========================================================================
    Forms
@@ -177,6 +181,15 @@ code{font-family:ui-monospace,'SF Mono',Consolas,monospace;font-size:.9em}
 .user-card-heading h2{margin:0;font-size:1rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
 .user-card-identity{display:flex;align-items:center;gap:.4rem;margin:.5rem 0 .85rem;color:var(--text-muted)}
 .user-card-identity code{overflow-wrap:anywhere}
+.user-card-identity-list{display:flex;flex-direction:column;gap:.3rem;margin:.5rem 0 .85rem}
+.user-card-identity-list .user-card-identity{margin:0}
+.admin-sensitive-disclosure{margin:1rem 0;padding-top:.85rem;border-top:1px solid var(--border)}
+.admin-sensitive-disclosure summary{cursor:pointer;color:var(--text-muted);font-weight:700;font-size:.85rem;padding:.3rem 0}
+.admin-sensitive-disclosure summary:hover{color:var(--text)}
+.admin-cross-data{margin-top:.6rem;padding:.75rem 1rem;border-radius:var(--radius-sm);background:var(--surface-2);border:1px solid var(--border)}
+.admin-cross-data h4{margin:.8rem 0 .3rem;font-size:.78rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.03em}
+.admin-cross-data h4:first-child{margin-top:0}
+.user-detail-extra-actions{margin:.5rem 0}
 .user-card-copy{padding:.3rem;min-height:0;background:transparent;color:var(--text-faint);box-shadow:none;flex-shrink:0}
 .user-card-copy:hover:not(:disabled){filter:none;background:var(--surface-hover);color:var(--text)}
 .user-card-copy svg{width:.9rem;height:.9rem;display:block}
@@ -408,8 +421,12 @@ tbody tr:last-child td{border-bottom:0}
 .dashboard-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,18rem),1fr));gap:1rem;margin-top:1.5rem}
 .dash-statusbar{margin-bottom:0}
 .dash-statusbar-wallet{display:flex;flex-wrap:wrap;align-items:center;gap:.75rem;padding:1rem 1.3rem;
+  width:fit-content;max-width:100%;
   border:1px solid var(--border);border-radius:var(--radius-lg);background:linear-gradient(180deg,var(--surface-2),var(--surface))}
-.dash-statusbar-wallet code{color:var(--text-muted);overflow-wrap:anywhere}
+.dash-wallet-chips{display:flex;flex-wrap:wrap;align-items:center;gap:.6rem}
+.dash-wallet-chip{display:inline-flex;align-items:center;gap:.4rem;padding:.3rem .6rem;border-radius:.5rem;
+  background:var(--surface);border:1px solid var(--border)}
+.dash-wallet-more{font-size:.78rem;color:var(--text-muted)}
 .dash-bell{margin-left:auto;font-weight:700;color:var(--text-muted)}
 .dash-hero{grid-column:1/-1;display:grid;gap:.6rem;justify-items:start}
 .dash-hero p{color:var(--text-muted)}

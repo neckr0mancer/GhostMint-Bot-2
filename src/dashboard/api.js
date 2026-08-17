@@ -19,7 +19,7 @@ function noStore(res){res.set('Cache-Control','no-store, private');}
 function publicWallet(value){return {label:value.label,address:value.address,chain:value.chain,balances:value.balances??[],minted:value.minted??0};}
 function jsonSafe(value){return JSON.parse(JSON.stringify(value,(_key,item)=>typeof item==='bigint'?item.toString():item));}
 
-function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLoginRateLimiter,exportKeyRateLimiter,commands,securityAudit={record:async()=>{}},broadcast=()=>{},supportedChains=[],now=()=>Date.now(),checkAccountStatus}) {
+function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLoginRateLimiter,exportKeyRateLimiter,commands,securityAudit={record:async()=>{}},broadcast=()=>{},broadcastToUsers=()=>{},supportedChains=[],now=()=>Date.now(),checkAccountStatus}) {
   const previews=new Map();
   const requireSession=async(req,res,next)=>{try{const session=await auth.authenticate(req.headers.cookie);if(!session)return res.status(401).json({error:'Authentication required'});
       if(typeof checkAccountStatus==='function'){try{await checkAccountStatus(session.userId);}catch(error){if(error instanceof AccountBlockedError)return res.status(403).json({error:error.message,code:error.code,status:error.status});throw error;}}
@@ -225,11 +225,25 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLo
     resolveConfirmation:action(async(req,res)=>res.json(jsonSafe(await commands.confirmTrigger(user(req),req.params.id,req.body?.decision)))),
     adminOverview:action(async(req,res)=>res.json(jsonSafe(await commands.adminOverview(user(req))))),
     adminEffective:action(async(req,res)=>res.json(jsonSafe(await commands.adminEffective(user(req),req.query)))),
+    adminSecurityAudit:action(async(req,res)=>res.json(jsonSafe(await commands.adminSecurityAudit(user(req),req.query)))),
+    // Same balance-merge-then-sanitize shape as the self-service wallets route (see publicWallet
+    // above) -- the only difference is which userId's wallets get looked up.
+    adminUserWallets:action(async(req,res)=>{const values=await commands.adminUserWallets(user(req),req.params.userId);
+      const settled=await Promise.allSettled(values.map(value=>commands.walletBalance(req.params.userId,value.label)));
+      res.json(settled.map((result,index)=>publicWallet(result.status==='fulfilled'?result.value:values[index])));}),
+    adminUserActivity:action(async(req,res)=>res.json(jsonSafe(await commands.adminUserActivity(user(req),req.params.userId,req.query)))),
+    adminUserTasks:action(async(req,res)=>res.json(jsonSafe(await commands.adminUserTasks(user(req),req.params.userId,req.query)))),
+    adminUserPnl:action(async(req,res)=>res.json(await commands.adminUserPnl(user(req),req.params.userId))),
     adminWrite:action(async(req,res)=>{const actionName=String(req.params.action||'').toLowerCase();
       if(['group-delete','owner','ban','unban','suspend','unsuspend','deactivate','reactivate','merge-account'].includes(actionName))confirmation(req);
       let result;try{result=await commands.admin(user(req),adminInput(actionName,req.body));}
       catch(error){if(error instanceof AuthorizationError||error instanceof ValidationError)throw error;throw new ValidationError({field:'admin',message:error.message});}
-      await auditAdminWrite(req,actionName);changed(req,'admin');res.json({message:result});}),
+      await auditAdminWrite(req,actionName);
+      // Every currently-connected owner sees this, not just whoever made the change -- broadcast(),
+      // used everywhere else in this file, only ever reaches the acting user's own session.
+      const ownerIds=commands.listOwnerUserIds?await commands.listOwnerUserIds():[user(req)];
+      broadcastToUsers(ownerIds,{type:'admin.changed'});
+      res.json({message:result});}),
     error(error,req,res,next){if(res.headersSent)return next(error);res.status(500).json({error:'Request failed safely'});},
   };
 }
@@ -285,6 +299,11 @@ function mountDashboardRoutes(app,api){
   app.post('/api/confirmations/:id',api.requireSession,api.requireCsrf,api.resolveConfirmation);
   app.get('/api/admin',api.requireSession,api.adminOverview);
   app.get('/api/admin/effective',api.requireSession,api.adminEffective);
+  app.get('/api/admin/security-audit',api.requireSession,api.adminSecurityAudit);
+  app.get('/api/admin/users/:userId/wallets',api.requireSession,api.adminUserWallets);
+  app.get('/api/admin/users/:userId/activity',api.requireSession,api.adminUserActivity);
+  app.get('/api/admin/users/:userId/tasks',api.requireSession,api.adminUserTasks);
+  app.get('/api/admin/users/:userId/pnl',api.requireSession,api.adminUserPnl);
   app.post('/api/admin/:action',api.requireSession,api.requireCsrf,api.adminWrite);
 }
 module.exports={SECURITY_HEADERS,createDashboardApi,jsonSafe,mountDashboardRoutes,noStore,publicWallet};

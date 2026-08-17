@@ -13,7 +13,7 @@ function createBotCommandService(dependencies) {
     socialWatchService, socialUsageService, targetPolicyService, triggerExecutionService, governanceRepository,
     triggerAuditRepository, transactionIntentRepository, gasService, supportedChains, chains, encryptPrivateKey, getState, executeMint, executeSend,
     sniperRepository, mintService, previewMint, executePreparedMint, identity, contractValueResolver, seaDropDiscoveryService, openSeaService, priceFeedService,
-    exportRawKey, exportKeystore,
+    exportRawKey, exportKeystore, botSecurityRepository,
     ensureChainWatcher = () => {}, broadcast = () => {}, walletBalanceCache = createWalletBalanceCache() } = dependencies;
 
   // Discord's /mint no longer has a price input; Telegram's guided flow doesn't ask for one either.
@@ -495,8 +495,19 @@ function createBotCommandService(dependencies) {
     admin: (userId, input) => adminCommands.execute(userId, input),
     isOwner:userId=>governanceRepository.isOwner(userId),
     isRootOwner:userId=>governanceRepository.isRootOwner(userId),
+    listOwnerUserIds:()=>governanceRepository.listOwnerUserIds(),
     adminOverview:userId=>governance.dashboardOverview(userId),
     adminEffective:(userId,input)=>governance.effectiveForLinkedUser(userId,input),
+    // Owner-only cross-user visibility -- every one of these already takes an explicit userId
+    // rather than deriving "the caller" internally, so the only thing missing is the owner gate
+    // before pointing that userId at someone other than the caller.
+    adminUserWallets:async(callerUserId,targetUserId)=>{await governance.requireOwner(callerUserId);return state(targetUserId).wallets;},
+    adminUserActivity:async(callerUserId,targetUserId,input)=>{await governance.requireOwner(callerUserId);
+      return pageFrom(storage.listActivityPage?.bind(storage),()=>state(targetUserId).activity,targetUserId,input,['title','walletLabel']);},
+    adminUserTasks:async(callerUserId,targetUserId,input)=>{await governance.requireOwner(callerUserId);
+      return pageFrom(schedulerRepository.listPageForUser?.bind(schedulerRepository),()=>state(targetUserId).tasks,targetUserId,input,['name','walletLabel']);},
+    adminUserPnl:async(callerUserId,targetUserId)=>{await governance.requireOwner(callerUserId);return state(targetUserId).pnl;},
+    adminSecurityAudit:async(callerUserId,input)=>{await governance.requireOwner(callerUserId);return botSecurityRepository.listRecent(input);},
     linkCode:userId=>identity.createLinkCode(userId),
   };
 }

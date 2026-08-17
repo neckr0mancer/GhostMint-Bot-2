@@ -25,11 +25,14 @@ function mapPreset(row) {
 // everyone assigned to it, or the caller has been granted it individually regardless of group.
 const ADVANCED_PRESET_KEYS = Object.freeze(['ultra_fast', 'fast']);
 
+// Owners always get Degen/Fast unlocked -- never force-selected, just made pickable, the same way
+// ceiling-exemption is an availability, not a forced change to what a user already has active.
 async function checkAdvancedModesAllowed(pool, userId) {
-  const result = await pool.query(`SELECT COALESCE(ug.advanced_modes_allowed,sg.advanced_modes_allowed,FALSE) AS allowed
+  const result = await pool.query(`SELECT u.is_owner,COALESCE(ug.advanced_modes_allowed,sg.advanced_modes_allowed,FALSE) AS allowed
     FROM users u LEFT JOIN user_governance ug ON ug.user_id=u.user_id
     LEFT JOIN seat_groups sg ON sg.group_id=ug.group_id WHERE u.user_id=$1`, [userId]);
-  return result.rows[0]?.allowed === true;
+  const row = result.rows[0];
+  return row?.is_owner === true || row?.allowed === true;
 }
 
 function createPostgresGovernanceRepository(pool) {
@@ -204,6 +207,9 @@ function createPostgresGovernanceRepository(pool) {
         u.good_standing_override,sg.name AS group_name,
         ug.max_transaction_value_wei,ug.daily_spending_budget_wei,ug.gas_ceiling_gwei,
         ug.simulation_forced,ug.selected_preset_key,ug.scheduled_removal_at,ug.advanced_modes_allowed,
+        sg.max_transaction_value_wei AS group_max,sg.daily_spending_budget_wei AS group_daily,
+        sg.gas_ceiling_gwei AS group_gas,sg.simulation_forced AS group_simulation_forced,
+        sg.advanced_modes_allowed AS group_advanced,
         COALESCE(JSON_AGG(JSON_BUILD_OBJECT('platform',la.platform,'platformUserId',la.platform_user_id)
           ORDER BY la.platform) FILTER (WHERE la.platform IS NOT NULL),'[]'::JSON) AS linked_accounts,
         GREATEST(
@@ -217,18 +223,36 @@ function createPostgresGovernanceRepository(pool) {
           u.status_changed_at,u.subscription_active,u.good_standing_override,
           sg.name,ug.max_transaction_value_wei,
           ug.daily_spending_budget_wei,ug.gas_ceiling_gwei,ug.simulation_forced,ug.selected_preset_key,
-          ug.scheduled_removal_at,ug.advanced_modes_allowed
+          ug.scheduled_removal_at,ug.advanced_modes_allowed,
+          sg.max_transaction_value_wei,sg.daily_spending_budget_wei,sg.gas_ceiling_gwei,
+          sg.simulation_forced,sg.advanced_modes_allowed
         ORDER BY u.created_at`);
+      // Resolved fields fold in the same fallback chain enforcement actually uses (own override ->
+      // group -> system default) so the UI can show what really applies instead of a bare "inherit"
+      // that leaves the admin to guess. Simulation/advanced-modes are chain-independent, so fully
+      // resolvable here; ceilings are chain-dependent (see defaultPolicy) so only the group's own
+      // number is resolved -- with no group either, the UI falls back to "system default" wording.
       return result.rows.map(row=>({userId:row.user_id,isOwner:row.is_owner,isRootOwner:row.is_root_owner,accountStatus:row.account_status,
         statusReason:row.status_reason,suspendedUntil:row.suspended_until,statusChangedAt:row.status_changed_at,
         subscriptionActive:row.subscription_active,goodStandingOverride:row.good_standing_override,
         groupName:row.group_name,
         maxTransactionValueWei:row.max_transaction_value_wei,dailySpendingBudgetWei:row.daily_spending_budget_wei,
         gasCeilingGwei:row.gas_ceiling_gwei===null?null:Number(row.gas_ceiling_gwei),
+        groupMaxTransactionValueWei:row.group_max,groupDailySpendingBudgetWei:row.group_daily,
+        groupGasCeilingGwei:row.group_gas===null?null:Number(row.group_gas),
         simulationForced:row.simulation_forced,selectedPresetKey:row.selected_preset_key,
         scheduledRemovalAt:row.scheduled_removal_at,advancedModesAllowed:row.advanced_modes_allowed,
+        resolvedSimulationForced:row.simulation_forced??row.group_simulation_forced??true,
+        resolvedAdvancedModesAllowed:row.is_owner||row.advanced_modes_allowed||row.group_advanced||false,
         lastActiveAt:row.last_active_at,
         linkedAccounts:row.linked_accounts}));
+    },
+
+    // So an admin write can notify every currently-connected owner, not just whoever made the
+    // change -- broadcastToUser alone only ever reaches the acting admin's own session.
+    async listOwnerUserIds() {
+      const result = await pool.query('SELECT user_id FROM users WHERE is_owner=TRUE');
+      return result.rows.map(row => row.user_id);
     },
 
     // activeUsers is deliberately narrow (dashboard sessions only, 15-minute window) -- it answers
@@ -278,7 +302,7 @@ function createPostgresGovernanceRepository(pool) {
         gasCeilingGwei: Number(row.user_gas ?? row.group_gas ?? defaults.gasCeilingGwei),
         simulationForced: row.user_simulation_forced ?? row.group_simulation_forced ?? true,
         preset: mapPreset(row),
-        advancedModesAllowed: row.user_advanced ?? row.group_advanced ?? false,
+        advancedModesAllowed: row.is_owner || row.user_advanced || row.group_advanced || false,
       };
     },
 
