@@ -24,8 +24,70 @@ shipped).
   directly alongside three other items (FCFS/GTD phase scheduling, a simulation-before-execution
   question, and repo-privacy); shipped 2026-08-17. The other three were answered without code —
   see the note at the end of this section.
+- **Round 9** (Section AF) is phase-aware scheduled mints — logged 2026-08-17, not started. Next
+  up when the session resumes.
 
 Status legend: ✅ Done · 🟡 Partial · ❌ Not started
+
+---
+
+# Round 9 — phase-aware scheduled mints (2026-08-17)
+
+## Section AF — Scheduling a mint against a specific phase, not just a fixed clock time ❌
+
+Raised 2026-08-17 alongside a copy-accuracy bug in the same area (see below). **Not started —
+this is the next thing to pick up.**
+
+**The actual request:** "schedule mint" is not a reminder/alarm — it means the bot should *carry
+out* a mint automatically once a given time (or, ideally, a given drop *phase*) arrives. The
+existing `/schedule` flow already does this for a fixed clock time (`src/scheduler/` fires the
+real mint at `mintTime`, not a notification). What's missing is scheduling against a *phase*
+(e.g. "the FCFS phase" or "the GTD phase") rather than a time the user has to already know and
+type in by hand.
+
+**Phase determinability — re-checked 2026-08-17, unchanged from Round 8's research:**
+- **Allowlist-gated phases (true GTD/FCFS) still aren't determinable.** They need a per-wallet
+  merkle proof, which comes from the project's own mint site/API, not from anything on-chain or
+  any generic third-party service. No standardized source exists across projects. This app also
+  still only ever constructs `mintPublic()` calls — it doesn't build `mintAllowList`/`mintSigned`
+  calldata at all yet, a separate, currently-unbuilt capability (same finding as Round 8's Tier 2
+  "Insiders" research: reading someone else's differently-shaped mint tx needs those signatures).
+- **Public-only phases aren't pre-declared anywhere either.** SeaDrop's `PublicDrop` (the struct
+  this app already reads for price/timing/limits) is a *single mutable* struct the project updates
+  live when each phase begins — not a stored schedule of upcoming phases. There's nothing on-chain
+  to poll ahead of time that says "phase 2 starts at X with price Y."
+- **Net effect:** nothing here is a data-fetching problem this app can solve by calling a
+  different API — the phase schedule genuinely only exists off-chain, in the project's own
+  announcements (Discord/website/socials).
+
+**Two workaround shapes worth scoping, not mutually exclusive:**
+1. **Manual multi-phase scheduling (buildable now, zero new capability):** let a user create
+   *several* `/schedule` tasks against the same contract, each with its own manually-entered
+   time/price/max-per-wallet taken from the project's own announcement — one task per known
+   phase. `/schedule` already accepts manual price/time when the contract doesn't expose them;
+   this is arguably just a UX/copy question (does the guided flow make "add another phase" an
+   obvious next step after scheduling one?) rather than new engineering.
+2. **Allowlist-phase support via manual proof entry:** extend the guided schedule flow to
+   optionally accept a merkle proof (mirroring `/mintcall`'s existing manual-proof capability) so
+   an allowlist-stage mint can be scheduled at all, even without automatic discovery. Bigger lift:
+   needs `mintAllowList`/`mintSigned` calldata construction added to `src/mint/mintCall.js` (or
+   wherever SeaDrop calls are built), a new schedule-flow step for proof entry on both platforms,
+   and probably a "which phase is this for" label since the same contract could have several
+   scheduled tasks running against different phases in parallel.
+
+Recommend scoping shape 1 first (cheap, immediately useful, no new mint-construction capability)
+and treating shape 2 as a distinct, larger follow-up if the manual-proof workflow turns out to be
+something users actually want, rather than building it speculatively.
+
+## Also flagged: "Confirm Scheduled Mint" copy reads like a reminder, not an execution ❌
+
+From the same 2026-08-17 message, and from the in-flight Telegram copy-tone pass (a separate,
+concurrent session's work, not this one's) — `taskConfirmation`'s Telegram text currently ends
+with "Set the alarm?" This undersells what actually happens: the bot doesn't just remind the user,
+it submits a real transaction unattended at the scheduled time. Worth a copy fix wherever the tone
+pass lands (not just reverting to "Proceed?" -- something that still reads as intentional/on-brand
+but accurately conveys "this will fire on its own," e.g. "Lock it in?" or similar) — flagging here
+since it surfaced in the same conversation as Section AF, not because it needs new engineering.
 
 ---
 
