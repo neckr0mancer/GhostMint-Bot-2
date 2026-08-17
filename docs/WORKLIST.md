@@ -7,11 +7,12 @@ shipped).
 
 - **Round 1** (Sections A–K) was scoped and implemented on 2026-08-16; 9 of 11 sections shipped in
   commit `423c7c1`. Kept below as the record of what exists.
-- **Round 2** (Sections L–S) is the newer batch of requirements, not yet started.
+- **Round 2** (Sections L–S) is the newer batch of requirements; L, M, N, and Q have shipped,
+  O/P/R/S remain open.
 - **Round 3** (Sections T–Z) is candidate work sourced from studying an external reference project,
   not yet scoped or estimated.
-- **Round 4** (Section AA) is a follow-up requirement raised while shipping Round 2's Section Q,
-  not yet started.
+- **Round 4** (Section AA) is a follow-up requirement raised while shipping Round 2's Section Q;
+  shipped 2026-08-17.
 
 Status legend: ✅ Done · 🟡 Partial · ❌ Not started
 
@@ -19,7 +20,7 @@ Status legend: ✅ Done · 🟡 Partial · ❌ Not started
 
 # Round 4 — Discord guided mint flow (2026-08-17)
 
-## Section AA — Discord guided mint flow via pasted text/link, with real wallet/quantity picking ❌
+## Section AA — Discord guided mint flow via pasted text/link, with real wallet/quantity picking ✅
 
 Section Q (below) added OpenSea-link acceptance to Discord's bare-content detector, but that
 detector is still read-only — it shows contract details and stops. Discord has no equivalent of
@@ -70,8 +71,54 @@ options" otherwise).
   (`detectMintContract`, `resolveMintContractInput`, `mint`) the slash command and Telegram already
   use — no parallel validation or execution path, per this file's and `ROADMAP.md`'s existing rule
   for every guided step on every platform.
-- Not started. Scope is closer to "give Discord a mint_guided" than a small follow-up fix — sized
-  accordingly rather than folded silently into Section Q's commit.
+- **What shipped, against each of the six design points above:**
+  1. `src/mint/mintFlowDecision.js` is the one shared, pure, platform-agnostic decision core
+     (`afterDetails`/`afterQuantity`/`afterWalletSelection`/`afterPriceResolved`) — Telegram's
+     `server.js` was refactored to call it too (not just Discord), so the branching now lives in
+     exactly one place. `advanceFromDetails`/`advanceFromQuantity`/`advanceFromWalletSelection`
+     collapsed into thin wrappers around it plus a new shared `applyMintFlowStep` tail.
+  2. Ownership is enforced by construction, not a bolted-on check: `flowState` is already keyed to
+     the *clicking* user's own Discord id, so a stranger's click on the flow's public message
+     simply finds no matching flow under their id — every mint-flow component handler checks this
+     and replies with an ephemeral "this isn't your mint prompt" rather than silently no-oping.
+     Visibility: the owner's first interaction against the flow (`data.originMessagePublic`) fires
+     `neutralizeMintOriginMessage` (strips the public message's components — best-effort, never
+     blocks the real response) and switches every response from there on to an ephemeral
+     `interaction.reply`; once already ephemeral, later steps just `dcRespond` (update in place)
+     like any other guided flow. Confirmed: wallet labels, price, and the mint result never appear
+     on the public message once the owner has engaged.
+  3. No free-text steps: quantity and wallet picks are select menus (`flow:mintqty:select`,
+     `flow:mintwallet:select`); price is accept/manual buttons; custom quantity and manual price
+     both use modals (`flow:mintqty:submit`, `flow:mintprice:submit`). Every custom_id is fixed
+     (values carry the choice, not the id), so `FLOW_CONTINUATIONS.mint_guided` needs no
+     dynamic/prefix matching, unlike Telegram's callback-data scheme.
+  4. The existing mid-flow divergence pattern covers `mint_guided` for free: `FLOW_LABELS` and the
+     generic `activeFlow` checks in both `handleComponent` and the slash-command dispatcher already
+     key off `flow.flow`, so no code changed there beyond adding `mint_guided: 'minting'` to
+     `FLOW_LABELS`. A second paste while a flow is active now also asks before discarding it
+     (new: `handleMintPasteMessage`'s own `existingFlow` check, mirroring the same UX).
+  5. `tests/discordMintFlow.test.js` (13 tests) plus `tests/mintFlowDecision.test.js` (6 tests) —
+     full happy path, one-shot zero-tap confirm (single wallet + `maxPerWallet` 1 + known price),
+     quantity >1, custom quantity/price via modal, OpenSea floor accept, non-owner rejection,
+     rate-limit-preserves-flow, OpenSea-link resolution, cancel-confirmation (paste-triggered and
+     slash-command-triggered), and invalid-input-is-ignored. `discordFlowUX.test.js`'s 14 remained
+     green throughout the refactor.
+  6. Sequencing followed as planned: this shipped as its own vertical. Section O's `menu:mint`
+     button and Section S's schedule flow were **not** touched — both remain open, now with
+     `discordMenus.mintQuantitySelect`/`mintPriceStep`/`mintConfirmation`/`numberModal` available
+     as building blocks to reuse rather than re-invent.
+- **Scoped out of this pass, not silently dropped:** `/mint` with no options does not yet reach
+  this flow (only the bare-paste/link trigger does) — the slash command's `contract`/`wallet`/
+  `quantity` options are still all required, unchanged. `skipConfirm`/zero-tap bypass mode
+  (`/mintnow`'s Telegram equivalent) is not wired here either: Telegram's own bare-paste trigger
+  never bypasses confirmation, so Discord's paste trigger matches that, not `/mintnow`. `/batch`-
+  equivalent (multi-wallet) paste minting is also out of scope — the trigger always starts a
+  single-wallet flow (`multi: false`), matching what a bare paste already means on Telegram.
+- Verified: `npm run check`, `npm run lint`, `npm run check:discord-menu`, and the full relevant
+  suite (126 tests: every file above plus every previously-passing Telegram/Discord/OpenSea/
+  botCommandService test, confirming the `mintFlowDecision` extraction didn't change Telegram's
+  observable behavior). No live-bot manual click-through — flagged here rather than claimed, same
+  as Section M.
 
 ---
 

@@ -13,6 +13,10 @@ const { BotContextError, RateLimitError, commandName, createCommandRateLimiter, 
 // it is a platform-namespaced (platform, chatId) -> flow tracker, written to be reused here.
 const { createFlowStateStore } = require('../telegram/flowState');
 const discordMenus = require('./menus');
+// Section AA: the same platform-agnostic mint_guided decision core Telegram's server.js uses --
+// see src/mint/mintFlowDecision.js for why this exists as one shared module instead of a
+// hand-mirrored copy per platform.
+const mintFlowDecision = require('../mint/mintFlowDecision');
 
 function json(value, field = 'input') {
   try {
@@ -137,10 +141,13 @@ function formatRows(rows, empty, mapper) {
 // of Telegram's inline keyboard + plain-text replies. Every guided step still ends by calling the
 // exact same botCommandService function the equivalent slash command already used above -- this
 // changes presentation only, never validation, transaction submission, or governance.
-const FLOW_LABELS = { wallet_create: 'creating a wallet', wallet_import: 'importing a wallet' };
+const FLOW_LABELS = { wallet_create: 'creating a wallet', wallet_import: 'importing a wallet', mint_guided: 'minting' };
 const FLOW_CONTINUATIONS = {
   wallet_create: ['flow:label:submit', 'flow:chain:select'],
   wallet_import: ['flow:label:submit', 'flow:chain:select', 'wallet:import:key-modal', 'flow:key:submit'],
+  // Section AA -- every custom_id stays fixed (select-menu VALUES carry the chosen quantity/
+  // wallet, never the custom_id itself), so this list needs no dynamic/prefix matching.
+  mint_guided: ['flow:mintqty:select', 'flow:mintqty:submit', 'flow:mintwallet:select', 'flow:priceaccept', 'flow:pricemanual', 'flow:mintprice:submit', 'flow:mintconfirm'],
 };
 
 function renderFlowStep(flow, step, { supportedChains = [], chains = {} } = {}) {
@@ -185,12 +192,139 @@ function dcRespond(interaction, payload) {
   return Promise.resolve();
 }
 
+// ── Section AA: Discord guided mint flow ──────────────
+// Pasting a bare contract address or an OpenSea link (Section Q) starts this the same way
+// Telegram's mint_guided does, sharing its decision core (src/mint/mintFlowDecision.js) so the
+// two platforms can't silently diverge. Every step still ends by calling the exact same
+// botCommandService function the slash command uses.
+//
+// The one real platform difference: the opening message comes from a plain channel reply
+// (message.reply can't be ephemeral, unlike every other Discord reply in this bot), so it's
+// visible to the whole channel until the owning user's first interaction. From that first
+// interaction on, every further step -- wallet labels, prices, the final mint result -- goes
+// ephemeral, and the now-stale public message has its buttons stripped so nobody else can act on
+// it. flowState is already keyed per clicking user (context.platformUserId), so a non-owner's
+// click never sees or advances someone else's flow; it just gets told to start their own.
+function mintFlowRenderPayload(step, data, { withDetailsHeader = false, wallets = [], chains = {} } = {}) {
+  let payload;
+  if (step === 'awaiting_quantity') payload = discordMenus.mintQuantitySelect(data);
+  else if (step === 'awaiting_wallet') {
+    payload = discordMenus.walletSelect(wallets, { customId: 'flow:mintwallet:select', emptyHint: 'No wallets yet. Create one first from the Wallets menu.' });
+  } else if (step === 'awaiting_price') payload = discordMenus.mintPriceStep({ chainSym: chains[data.chain]?.sym, displayPrice: data.displayPrice });
+  else if (step === 'awaiting_confirm') {
+    payload = discordMenus.mintConfirmation({
+      contractAddress: data.contractAddress, chainLabel: chains[data.chain]?.name || data.chain,
+      walletLabels: data.selectedWallets, quantity: data.quantity || 1, priceETH: data.priceETH, priceUnknown: data.priceUnknown,
+    });
+  }
+  if (payload && withDetailsHeader) {
+    return { ...payload, content: `${discordMenus.contractDetailsText({
+      contractAddress: data.contractAddress, chainLabel: chains[data.chain]?.name || data.chain,
+      isSeaDrop: data.isSeaDrop, priceETH: data.priceETH, priceUnknown: data.priceUnknown,
+      maxSupply: data.maxSupply, maxPerWallet: data.maxPerWallet, startTime: data.startTime,
+      collection: data.collection, soldOut: data.soldOut, displayPrice: data.displayPrice,
+    })}\n\n${payload.content}` };
+  }
+  return payload;
+}
+
+// Best-effort: strips the public opening message's components the moment the owning user's first
+// interaction against this flow happens (button/select click, or opening a custom-amount modal),
+// so a later click by someone else in the channel has nothing left to act on. Never blocks the
+// real response on this succeeding -- flow ownership is already enforced by flowState being keyed
+// to the clicking user's own id regardless of whether this edit lands.
+function neutralizeMintOriginMessage(interaction) {
+  interaction.message?.edit?.({ content: '↩️ Continuing below — only visible to you.', components: [] }).catch(() => {});
+}
+
+// Applies a decision from mintFlowDecision.js: persists the resulting step and renders it, or
+// executes outright when the decision was 'execute'. `respond` is supplied by the caller (a plain
+// message reply for the flow's opening screen, an interaction reply/update for every step after)
+// so this stays delivery-agnostic. `ctx` bundles the handful of dependencies both createDiscordBot
+// (the messageCreate trigger) and createDiscordInteractionHandler (every later step) already have.
+async function applyMintFlowStep(ctx, respond, platformUserId, userId, { step, data }, { withDetailsHeader = false } = {}) {
+  const { commands, flowState, chains } = ctx;
+  if (step === 'execute') return finishMintExecutionDiscord(ctx, respond, platformUserId, userId, data);
+  const wallets = step === 'awaiting_wallet' ? commands.wallets(userId) : [];
+  flowState.advance('discord', platformUserId, step, data);
+  return respond(mintFlowRenderPayload(step, data, { withDetailsHeader, wallets, chains }));
+}
+
+// Mirrors server.js's finishMintExecution exactly: a rate limit leaves the flow intact (so the
+// user can just retry once it clears) instead of discarding their in-progress mint; every other
+// outcome, success or failure, clears it.
+async function finishMintExecutionDiscord(ctx, respond, platformUserId, userId, flowData) {
+  const { commands, flowState, rateLimiter } = ctx;
+  const backToMenu = [discordMenus.row([discordMenus.button('⬅️ Back to menu', 'menu:main')])];
+  try {
+    rateLimiter.check('discord', userId, flowData.multi ? 'batch-mint' : 'mint');
+    if (flowData.multi) {
+      const results = await commands.batchMint(userId, { walletLabels: flowData.selectedWallets,
+        contractAddress: flowData.contractAddress, chain: flowData.chain, quantity: flowData.quantity || 1, priceETH: flowData.priceETH });
+      flowState.clear('discord', platformUserId);
+      return respond({ content: `✅ Batch complete: ${results.length} wallet transaction(s).`, components: backToMenu });
+    }
+    const result = await commands.mint(userId, { walletLabel: flowData.selectedWallets[0],
+      contractAddress: flowData.contractAddress, chain: flowData.chain, quantity: flowData.quantity || 1, priceETH: flowData.priceETH });
+    flowState.clear('discord', platformUserId);
+    return respond({ content: `✅ Mint ${result.state}: \`${escapeDiscord(String(result.txHash || result.intentId))}\``, components: backToMenu });
+  } catch (error) {
+    if (error instanceof RateLimitError) {
+      return respond({ content: `Too many sensitive commands. Retry in ${Math.ceil(error.retryAfterMs / 1000)} seconds.`, components: backToMenu });
+    }
+    flowState.clear('discord', platformUserId);
+    if (error instanceof ValidationError) return respond({ content: escapeDiscord(validationReply(error)), components: backToMenu });
+    if (error instanceof TransactionSafetyError) return respond({ content: `❌ ${escapeDiscord(error.message)}`, components: backToMenu });
+    throw error;
+  }
+}
+
+// Entry point for a bare address/link paste (Section Q's resolution) with no active flow. Mirrors
+// server.js's startMintFlow: resolves straight through to whichever screen is actually the flow's
+// first actionable one (Section M's one-shot popup, via the shared decision core), never a dead
+// "here's the contract" screen first. skipConfirm is always false here -- Telegram's own bare-paste
+// trigger never bypasses confirmation either; that's /mintnow-specific and out of scope for a
+// plain paste on either platform.
+async function startMintGuidedFlow(ctx, respond, platformUserId, userId, contractAddressInput) {
+  const { commands, flowState, chains } = ctx;
+  const contractAddress = await commands.resolveMintContractInput(contractAddressInput);
+  if (!contractAddress) return undefined;
+  let detected;
+  try {
+    detected = await commands.detectMintContract(userId, { contractAddress, quantity: 1 });
+  } catch (error) {
+    if (error instanceof ValidationError) return undefined;
+    throw error;
+  }
+  const data = {
+    multi: false, contractAddress, chain: detected.chain, selectedWallets: [],
+    isSeaDrop: detected.isSeaDrop,
+    priceETH: detected.priceKnown ? Number(formatEther(BigInt(detected.valueWei))) : undefined,
+    priceUnknown: !detected.priceKnown,
+    maxSupply: detected.maxSupply, maxPerWallet: detected.maxPerWallet,
+    startTime: detected.startTime, endTime: detected.endTime, collection: detected.collection,
+    soldOut: detected.soldOut, displayPrice: detected.displayPrice,
+    skipConfirm: false,
+    originMessagePublic: true,
+  };
+  const wallets = commands.wallets(userId);
+  const decision = mintFlowDecision.afterDetails({ data, wallets });
+  flowState.start('discord', platformUserId, 'mint_guided', decision.step, decision.data);
+  if (decision.step === 'execute') return finishMintExecutionDiscord(ctx, respond, platformUserId, userId, decision.data);
+  const stepWallets = decision.step === 'awaiting_wallet' ? wallets : [];
+  return respond(mintFlowRenderPayload(decision.step, decision.data, { withDetailsHeader: true, wallets: stepWallets, chains }));
+}
+
 function createDiscordInteractionHandler({ identity, commands, allowedGuildId, securityAudit={record:async()=>{}},
   rateLimiter=createCommandRateLimiter(), log = () => {}, isOwner, checkAccountStatus, supportedChains=[], chains={},
   flowState=createFlowStateStore() }) {
   const audit=value=>Promise.resolve(securityAudit.record(value)).catch(error=>log(`Security audit write failed: ${error.message}`));
   const ownerFlag = async userId => (typeof isOwner === 'function' ? Boolean(await isOwner(userId)) : false);
   const enforceAccountStatus = async userId => { if (typeof checkAccountStatus === 'function') await checkAccountStatus(userId); };
+  // Section AA: shared bundle applyMintFlowStep/finishMintExecutionDiscord/startMintGuidedFlow
+  // need, so every call site below passes the same four dependencies instead of re-listing them.
+  const mintCtx = { commands, flowState, chains, rateLimiter };
+  const notYourMintPrompt = interaction => interaction.reply({ content: "This isn't your mint prompt. Paste your own address or link to start one.", ephemeral: true }).catch(() => {});
 
   async function handleComponent(interaction) {
     let context, userId = null;
@@ -304,6 +438,73 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, s
         return dcRespond(interaction, { content: `🗑️ Wallet **${label}** removed.`,
           components: [discordMenus.row([discordMenus.button('⬅️ Back to wallets', 'menu:wallets')])] });
       }
+
+      // Section AA -- every branch below first confirms the CLICKING user (not just anyone who
+      // can see the message) owns this exact mint_guided flow at this exact step; flowState is
+      // keyed per clicking user, so a stranger's click naturally finds no matching flow and gets
+      // an ephemeral rejection rather than ever touching someone else's wallet list or in-progress
+      // mint. wentEphemeral decides delivery: the flow's opening message is a public message.reply
+      // (Discord can't make that ephemeral), so the owner's first interaction against it strips
+      // its buttons and moves everything from here on into an ephemeral reply only they can see;
+      // every later step, already ephemeral, just updates in place like any other guided flow.
+      if (data === 'flow:mintqty:select') {
+        const flow = flowState.get('discord', platformUserId);
+        if (!flow || flow.flow !== 'mint_guided' || flow.step !== 'awaiting_quantity') return notYourMintPrompt(interaction);
+        const chosen = interaction.values?.[0];
+        if (chosen === 'custom') {
+          if (flow.data.originMessagePublic) {
+            neutralizeMintOriginMessage(interaction);
+            flowState.advance('discord', platformUserId, flow.step, { originMessagePublic: false });
+          }
+          return interaction.showModal(discordMenus.numberModal({ customId: 'flow:mintqty:submit', title: `Quantity (max ${flow.data.maxPerWallet || 1})`, placeholder: '1' }));
+        }
+        const quantity = Number(chosen);
+        if (!Number.isInteger(quantity) || quantity < 1) return undefined;
+        const wentEphemeral = Boolean(flow.data.originMessagePublic);
+        if (wentEphemeral) neutralizeMintOriginMessage(interaction);
+        const wallets = commands.wallets(userId);
+        const decision = mintFlowDecision.afterQuantity({ data: { ...flow.data, originMessagePublic: false, quantity }, wallets });
+        const respond = payload => (wentEphemeral ? interaction.reply({ ...payload, ephemeral: true }).catch(() => {}) : dcRespond(interaction, payload));
+        return applyMintFlowStep(mintCtx, respond, platformUserId, userId, decision);
+      }
+      if (data === 'flow:mintwallet:select') {
+        const flow = flowState.get('discord', platformUserId);
+        if (!flow || flow.flow !== 'mint_guided' || flow.step !== 'awaiting_wallet') return notYourMintPrompt(interaction);
+        const label = interaction.values?.[0];
+        if (!label) return undefined;
+        const wentEphemeral = Boolean(flow.data.originMessagePublic);
+        if (wentEphemeral) neutralizeMintOriginMessage(interaction);
+        const decision = mintFlowDecision.afterWalletSelection({ data: { ...flow.data, originMessagePublic: false, selectedWallets: [label] } });
+        const respond = payload => (wentEphemeral ? interaction.reply({ ...payload, ephemeral: true }).catch(() => {}) : dcRespond(interaction, payload));
+        return applyMintFlowStep(mintCtx, respond, platformUserId, userId, decision);
+      }
+      if (data === 'flow:priceaccept') {
+        const flow = flowState.get('discord', platformUserId);
+        if (!flow || flow.flow !== 'mint_guided' || flow.step !== 'awaiting_price' || !flow.data.displayPrice) return notYourMintPrompt(interaction);
+        const wentEphemeral = Boolean(flow.data.originMessagePublic);
+        if (wentEphemeral) neutralizeMintOriginMessage(interaction);
+        const decision = mintFlowDecision.afterPriceResolved({ data: { ...flow.data, originMessagePublic: false }, priceETH: flow.data.displayPrice.eth });
+        const respond = payload => (wentEphemeral ? interaction.reply({ ...payload, ephemeral: true }).catch(() => {}) : dcRespond(interaction, payload));
+        return applyMintFlowStep(mintCtx, respond, platformUserId, userId, decision);
+      }
+      if (data === 'flow:pricemanual') {
+        const flow = flowState.get('discord', platformUserId);
+        if (!flow || flow.flow !== 'mint_guided' || flow.step !== 'awaiting_price') return notYourMintPrompt(interaction);
+        if (flow.data.originMessagePublic) {
+          neutralizeMintOriginMessage(interaction);
+          flowState.advance('discord', platformUserId, flow.step, { originMessagePublic: false });
+        }
+        return interaction.showModal(discordMenus.numberModal({ customId: 'flow:mintprice:submit', title: 'Price per item (0 if free)', placeholder: '0.01' }));
+      }
+      if (data === 'flow:mintconfirm') {
+        const flow = flowState.get('discord', platformUserId);
+        if (!flow || flow.flow !== 'mint_guided' || flow.step !== 'awaiting_confirm') return notYourMintPrompt(interaction);
+        const wentEphemeral = Boolean(flow.data.originMessagePublic);
+        if (wentEphemeral) neutralizeMintOriginMessage(interaction);
+        const respond = payload => (wentEphemeral ? interaction.reply({ ...payload, ephemeral: true }).catch(() => {}) : dcRespond(interaction, payload));
+        return finishMintExecutionDiscord(mintCtx, respond, platformUserId, userId, { ...flow.data, originMessagePublic: false });
+      }
+
       return undefined;
     } catch (error) {
       if (error instanceof AuthorizationError) {
@@ -387,6 +588,34 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, s
           log(`Discord guided wallet import failed: ${error?.message || 'unknown error'}`);
           await interaction.reply({ content: 'Import failed safely. Please try again from the Wallets menu.', ephemeral: true }).catch(() => {});
         }
+      }
+
+      // Section AA -- custom quantity / manual price entry. Always ephemeral: a modal submission
+      // is its own fresh interaction that can only reply, never update the (by now already
+      // neutralized -- see flow:mintqty:select/flow:pricemanual) public origin message.
+      if (data === 'flow:mintqty:submit') {
+        if (flow.flow !== 'mint_guided' || flow.step !== 'awaiting_quantity') { await interaction.reply({ content: 'This step has expired. Paste the address or link again.', ephemeral: true }).catch(() => {}); return; }
+        const quantity = Math.floor(Number(String(interaction.fields.getTextInputValue('value') || '').trim()));
+        const max = Number(flow.data.maxPerWallet) || 100;
+        if (!Number.isInteger(quantity) || quantity < 1 || quantity > max) {
+          await interaction.reply({ content: `Send a whole number from 1 to ${max}. Tap the quantity prompt again to retry.`, ephemeral: true }).catch(() => {});
+          return;
+        }
+        const wallets = commands.wallets(userId);
+        const decision = mintFlowDecision.afterQuantity({ data: { ...flow.data, quantity }, wallets });
+        await applyMintFlowStep(mintCtx, payload => interaction.reply({ ...payload, ephemeral: true }).catch(() => {}), platformUserId, userId, decision);
+        return;
+      }
+      if (data === 'flow:mintprice:submit') {
+        if (flow.flow !== 'mint_guided' || flow.step !== 'awaiting_price') { await interaction.reply({ content: 'This step has expired. Paste the address or link again.', ephemeral: true }).catch(() => {}); return; }
+        const priceETH = Number(String(interaction.fields.getTextInputValue('value') || '').trim());
+        if (!Number.isFinite(priceETH) || priceETH < 0) {
+          await interaction.reply({ content: 'Send a valid non-negative number. Tap the price prompt again to retry.', ephemeral: true }).catch(() => {});
+          return;
+        }
+        const decision = mintFlowDecision.afterPriceResolved({ data: flow.data, priceETH });
+        await applyMintFlowStep(mintCtx, payload => interaction.reply({ ...payload, ephemeral: true }).catch(() => {}), platformUserId, userId, decision);
+        return;
       }
     } catch (error) {
       log(`Discord modal submission failed: ${error?.message || 'unknown error'}`);
@@ -575,42 +804,49 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, s
   };
 }
 
+// Section AA -- exported separately (mirroring createDiscordInteractionHandler) so tests can drive
+// the paste-to-flow trigger directly with a mock message, without needing a real discord.js
+// Client. Telegram counterpart: a bare contract address or opensea.io collection link (Section
+// Q), with no leading slash and no active flow, starts the same guided mint flow Section AA's
+// other entry points do (server.js's handleFlowTextMessage does the equivalent for Telegram). Any
+// other plain message, and anything failing the same guild/channel/account checks every slash
+// command already enforces, is silently ignored -- a failed check here is never worth surfacing
+// as an error to a channel that may not even be the bot's.
+async function handleMintPasteMessage({ identity, commands, flowState, chains, rateLimiter, checkAccountStatus, allowedGuildId }, message) {
+  try {
+    if (!message.author || message.author.bot) return;
+    const trimmed = String(message.content || '').trim();
+    const looksAddressOrLink = /^0x[0-9a-fA-F]{40}$/.test(trimmed) || commands.parseOpenSeaCollectionSlug(trimmed);
+    if (!looksAddressOrLink) return;
+    const context = verifyDiscordContext({ user: message.author, guildId: message.guildId, channelId: message.channelId }, allowedGuildId);
+    const userId = await identity.resolveOrCreate('discord', context.platformUserId);
+    if (typeof checkAccountStatus === 'function') await checkAccountStatus(userId);
+    const platformUserId = context.platformUserId;
+    // Mirrors the mid-flow divergence handling every slash command and component already gets: a
+    // second paste while a flow (mint or otherwise) is already in progress asks before discarding
+    // it, rather than silently starting over or silently doing nothing.
+    const existingFlow = flowState.get('discord', platformUserId);
+    if (existingFlow) {
+      flowState.markPendingCancel('discord', platformUserId);
+      await message.reply(discordMenus.confirmCancelPrompt(FLOW_LABELS[existingFlow.flow] || existingFlow.flow)).catch(() => {});
+      return;
+    }
+    await startMintGuidedFlow({ commands, flowState, chains, rateLimiter }, payload => message.reply(payload).catch(() => {}), platformUserId, userId, trimmed);
+  } catch { /* not address-shaped, unauthorized context, blocked account, or lookup failure -- ignore */ }
+}
+
 function createDiscordBot({ token, applicationId, devGuildId, identity, commands, securityAudit, rateLimiter, log, client, rest, isOwner, checkAccountStatus, supportedChains, chains }) {
   const discordClient = client || new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.DirectMessages,
     GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent] });
   const api = rest || new REST({ version: '10' }).setToken(token);
+  // Shared between the interaction handler (every button/select/modal step below) and the
+  // messageCreate listener (Section AA's paste-to-flow trigger) so a flow started by one is
+  // visible to the other -- they'd otherwise be two independent, non-communicating stores.
+  const flowState = createFlowStateStore();
   discordClient.on('interactionCreate', createDiscordInteractionHandler({ identity, commands, allowedGuildId:devGuildId,
-    securityAudit,rateLimiter,log,isOwner,checkAccountStatus,supportedChains,chains }));
-  // Telegram counterpart: a bare contract address or opensea.io collection link (Section Q), with
-  // no leading slash and no active flow, shows contract details instead of being ignored (see
-  // handleFlowTextMessage in src/server.js). Any other plain message, and anything failing the
-  // same guild/channel/account checks every slash command already enforces, is silently ignored
-  // -- this only ever reads, never mutates, so a failed check is not worth surfacing as an error
-  // to a channel that may not even be the bot's.
-  discordClient.on('messageCreate', async message => {
-    try {
-      if (!message.author || message.author.bot) return;
-      const trimmed = String(message.content || '').trim();
-      const looksAddressOrLink = /^0x[0-9a-fA-F]{40}$/.test(trimmed) || commands.parseOpenSeaCollectionSlug(trimmed);
-      if (!looksAddressOrLink) return;
-      const context = verifyDiscordContext({ user: message.author, guildId: message.guildId, channelId: message.channelId }, devGuildId);
-      const userId = await identity.resolveOrCreate('discord', context.platformUserId);
-      await checkAccountStatus(userId);
-      const contractAddress = await commands.resolveMintContractInput(trimmed);
-      if (!contractAddress) return;
-      const detected = await commands.detectMintContract(userId, { contractAddress, quantity: 1 });
-      const payload = discordMenus.contractDetails({
-        contractAddress, chainLabel: chains[detected.chain]?.name || detected.chain,
-        isSeaDrop: detected.isSeaDrop,
-        priceETH: detected.priceKnown ? formatEther(BigInt(detected.valueWei)) : null,
-        priceUnknown: !detected.priceKnown,
-        maxSupply: detected.maxSupply, maxPerWallet: detected.maxPerWallet,
-        startTime: detected.startTime, collection: detected.collection,
-        soldOut: detected.soldOut, displayPrice: detected.displayPrice,
-      });
-      await message.reply(payload).catch(() => {});
-    } catch { /* not address-shaped, unauthorized context, blocked account, or lookup failure -- ignore */ }
-  });
+    securityAudit,rateLimiter,log,isOwner,checkAccountStatus,supportedChains,chains,flowState }));
+  discordClient.on('messageCreate', message =>
+    handleMintPasteMessage({ identity, commands, flowState, chains, rateLimiter, checkAccountStatus, allowedGuildId: devGuildId }, message));
   return {
     client: discordClient,
     async start() {
@@ -626,4 +862,4 @@ function createDiscordBot({ token, applicationId, devGuildId, identity, commands
   };
 }
 
-module.exports = { commandDefinitions, createDiscordBot, createDiscordInteractionHandler };
+module.exports = { commandDefinitions, createDiscordBot, createDiscordInteractionHandler, handleMintPasteMessage };

@@ -35,10 +35,11 @@ function mainMenu({ isOwner = false } = {}) {
   return { content: '**GhostMint**\nChoose a section below, or use a slash command directly if you already know it.', components: rows };
 }
 
-// Discord counterpart to Telegram's contractDetails (src/telegram/menus.js) -- shown when a bare
-// contract address is sent as a plain message with no active flow. Discord has no guided mint flow
-// yet (see the roadmap), so this is informational only, with the exact slash command to run next.
-function contractDetails({ contractAddress, chainLabel, isSeaDrop, priceETH, priceUnknown, maxSupply, maxPerWallet, startTime, collection, soldOut, displayPrice }) {
+// Discord counterpart to Telegram's contractDetailsText (src/telegram/menus.js). Pure text only --
+// callers attach whatever's actionable for the moment (Section AA's guided-flow screens prepend
+// this as a header; nothing else needs it standalone anymore now that the bare-content detector
+// starts the real flow instead of a static preview).
+function contractDetailsText({ contractAddress, chainLabel, isSeaDrop, priceETH, priceUnknown, maxSupply, maxPerWallet, startTime, collection, soldOut, displayPrice }) {
   const lines = [collection?.name ? `**${collection.name}**` : '**Contract details**', `\`${contractAddress}\``,
     `Chain: ${chainLabel}`, `Type: ${isSeaDrop ? 'SeaDrop drop' : 'Standard mint(uint256)'}`];
   if (soldOut) {
@@ -52,8 +53,67 @@ function contractDetails({ contractAddress, chainLabel, isSeaDrop, priceETH, pri
     const opensAt = new Date(startTime * 1000).toISOString();
     lines.push(startTime * 1000 > Date.now() ? `Opens: ${opensAt} UTC` : `Opened: ${opensAt} UTC`);
   }
-  lines.push('', `Run \`/mint contract:${contractAddress} quantity:1\` to mint this now.`);
-  return { content: lines.join('\n') };
+  return lines.join('\n');
+}
+
+// Section AA -- Discord counterpart to Telegram's quantityStepPayload/Section L. A select menu
+// (not a button row) so the custom_id stays a single fixed value; the wallet/quantity/price steps
+// all follow this same shape so FLOW_CONTINUATIONS in discordBot.js only ever needs exact,
+// unchanging custom_ids, matching how chainSelect/walletSelect already work.
+function mintQuantitySelect({ maxPerWallet }) {
+  const max = Math.max(1, Math.min(Number(maxPerWallet) || 1, 100));
+  const quick = [...new Set([1, 2, 5, max].filter(value => value <= max))];
+  const options = quick.map(value => ({ label: value === max ? `Max (${max})` : String(value), value: String(value) }));
+  options.push({ label: '✏️ Custom amount', value: 'custom' });
+  return {
+    content: `How many would you like to mint? (max ${max} per wallet)`,
+    components: [select('flow:mintqty:select', options, 'Select a quantity'), row([button('❌ Cancel', 'flow:cancel:ask', 'danger')])],
+  };
+}
+
+// Section AA -- Discord counterpart to Telegram's priceStepPayload (Section G's OpenSea-floor
+// accept/manual choice). Manual entry always uses a modal (Discord has no plain-text flow-input
+// step, unlike Telegram) -- see flow:pricemanual's handler in discordBot.js.
+function mintPriceStep({ chainSym, displayPrice }) {
+  const sym = chainSym || 'native currency';
+  if (displayPrice) {
+    return {
+      content: `This contract does not expose a recognized price function. OpenSea suggests a floor price of **${displayPrice.eth} ${sym}**. Use this as the mint price, or enter one yourself?`,
+      components: [
+        row([button(`✅ Use ${displayPrice.eth} ${sym}`, 'flow:priceaccept', 'success'), button('✏️ Enter manually', 'flow:pricemanual')]),
+        row([button('❌ Cancel', 'flow:cancel:ask', 'danger')]),
+      ],
+    };
+  }
+  return {
+    content: `This contract does not expose a recognized price function. Enter the price per item in ${sym} (0 if free).`,
+    components: [row([button('✏️ Enter price', 'flow:pricemanual')]), row([button('❌ Cancel', 'flow:cancel:ask', 'danger')])],
+  };
+}
+
+// Section AA -- Discord counterpart to Telegram's mintConfirmation.
+function mintConfirmation({ contractAddress, chainLabel, walletLabels, quantity = 1, priceETH, priceUnknown }) {
+  const priceLine = priceUnknown
+    ? 'Price: not exposed by this contract — using the amount you entered above.'
+    : `Price: ${priceETH} per item (read from the contract)`;
+  return {
+    content: `**Confirm mint**\nContract: \`${contractAddress}\`\nChain: ${chainLabel}\nWallet(s): ${walletLabels.join(', ')}\nQuantity: ${quantity} each\n${priceLine}\n\nProceed?`,
+    components: [row([button('✅ Confirm', 'flow:mintconfirm', 'success'), button('❌ Cancel', 'flow:cancel:ask', 'danger')])],
+  };
+}
+
+// Section AA -- numeric-entry modal for custom quantity and manual price, sharing labelModal's
+// text-input shape (Discord has no dedicated number input component; validated on submit exactly
+// like Telegram's typed-number free-text steps already are).
+function numberModal({ customId, title, placeholder = '' }) {
+  return {
+    custom_id: customId,
+    title,
+    components: [row([{
+      type: TEXT_INPUT, custom_id: 'value', style: TEXT_STYLE.short,
+      label: title, placeholder, required: true, max_length: 20,
+    }])],
+  };
 }
 
 function walletsMenu() {
@@ -135,5 +195,6 @@ function labelModal({ customId, title, placeholder = '', style = 'short', maxLen
 
 module.exports = {
   button, row, select, mainMenu, walletsMenu, settingsMenu, placeholderMenu,
-  chainSelect, walletSelect, confirmCancelPrompt, confirmRemoveWallet, labelModal, contractDetails,
+  chainSelect, walletSelect, confirmCancelPrompt, confirmRemoveWallet, labelModal,
+  contractDetailsText, mintQuantitySelect, mintPriceStep, mintConfirmation, numberModal,
 };

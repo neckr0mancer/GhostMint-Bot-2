@@ -33,6 +33,7 @@ const { createOpenSeaService } = require('./mint/openSeaService');
 const { createPriceFeedService } = require('./mint/priceFeedService');
 const { computeSeaDropValueWei } = require('./mint/seaDropCall');
 const { SEADROP_MINT_SIGNATURE } = require('./mint/seaDropRegistry');
+const mintFlowDecision = require('./mint/mintFlowDecision');
 const { createSchedulerRepository } = require('./scheduler/schedulerRepository');
 const { createSchedulerWorker } = require('./scheduler/schedulerWorker');
 const { createSocialAdapters } = require('./social/adapters');
@@ -867,12 +868,21 @@ async function startMintFlow({ chatId, messageId, userId, multi, contractAddress
 // definition a screen reached via a tap is never the flow's first screen. It's a plain call
 // parameter, not flow-state data, specifically so it can never leak into a later render by
 // accident.
+// Applies a decision from src/mint/mintFlowDecision.js (the platform-agnostic "what's next" core
+// Discord's guided mint flow shares): persists the resulting step and renders it, or executes
+// outright when the decision was 'execute'. This is now the only Telegram-specific tail below --
+// the actual branching (skip wallet-select for a single wallet, skip quantity when maxPerWallet
+// <= 1, skip confirm when skipConfirm, etc.) lives in exactly one place, not one per platform.
+async function applyMintFlowStep(chatId, messageId, userId, { step, data }, withDetailsHeader = false) {
+  if (step === 'execute') return finishMintExecution(chatId, messageId, userId, data);
+  telegramFlowState.advance('telegram', chatId, step, data);
+  return tgUpdate(chatId, messageId, renderFlowStep('mint_guided', step, { userId, data, withDetailsHeader }));
+}
+
 async function advanceFromDetails(chatId, messageId, userId, flow, withDetailsHeader = false) {
-  if (Number(flow.data.maxPerWallet) > 1) {
-    telegramFlowState.advance('telegram', chatId, 'awaiting_quantity', flow.data);
-    return tgUpdate(chatId, messageId, renderFlowStep('mint_guided', 'awaiting_quantity', { userId, data: flow.data, withDetailsHeader }));
-  }
-  return advanceFromQuantity(chatId, messageId, userId, flow, 1, withDetailsHeader);
+  const wallets = botCommands.wallets(userId);
+  const result = mintFlowDecision.afterDetails({ data: flow.data, wallets });
+  return applyMintFlowStep(chatId, messageId, userId, result, withDetailsHeader);
 }
 
 // After the user has seen (and tapped through) the contract details and picked a quantity, move on
@@ -880,41 +890,31 @@ async function advanceFromDetails(chatId, messageId, userId, flow, withDetailsHe
 // teaches the user nothing, and /start already creates that one wallet automatically for a
 // brand-new user, so this is the common case, not an edge case.
 async function advanceFromQuantity(chatId, messageId, userId, flow, quantity, withDetailsHeader = false) {
-  const data = { ...flow.data, quantity };
   const wallets = botCommands.wallets(userId);
-  if (!data.multi && wallets.length === 1) {
-    return advanceFromWalletSelection(chatId, messageId, userId, { data }, [wallets[0].label], withDetailsHeader);
-  }
-  telegramFlowState.advance('telegram', chatId, 'awaiting_wallet', data);
-  return tgUpdate(chatId, messageId, renderFlowStep('mint_guided', 'awaiting_wallet', { userId, data, withDetailsHeader }));
+  const result = mintFlowDecision.afterQuantity({ data: { ...flow.data, quantity }, wallets });
+  return applyMintFlowStep(chatId, messageId, userId, result, withDetailsHeader);
 }
 
 // Once wallet(s) are picked (single tap for /mint, Continue for /batch): price was already
 // resolved back in startMintFlow's details step, so this only needs to decide whether that
 // resolution actually found a price (straight to confirm) or not (ask for one by hand).
 async function advanceFromWalletSelection(chatId, messageId, userId, flow, selectedWallets, withDetailsHeader = false) {
-  const data = { ...flow.data, selectedWallets };
-  if (data.priceUnknown) {
-    telegramFlowState.advance('telegram', chatId, 'awaiting_price', data);
-    return tgUpdate(chatId, messageId, renderFlowStep('mint_guided', 'awaiting_price', { userId, data, withDetailsHeader }));
-  }
-  if (data.skipConfirm) return finishMintExecution(chatId, messageId, userId, data);
-  telegramFlowState.advance('telegram', chatId, 'awaiting_confirm', data);
-  return tgUpdate(chatId, messageId, renderFlowStep('mint_guided', 'awaiting_confirm', { userId, data, withDetailsHeader }));
+  const result = mintFlowDecision.afterWalletSelection({ data: { ...flow.data, selectedWallets } });
+  return applyMintFlowStep(chatId, messageId, userId, result, withDetailsHeader);
 }
 
 // Shared by both flows' awaiting_price step (typed amount and the accept-OpenSea-price button):
 // mint_guided goes on to confirm (or straight to execution in degen/skipConfirm mode), while
-// task_guided still needs a name before it can reach its own confirm screen.
+// task_guided still needs a name before it can reach its own confirm screen -- that branch is
+// task_guided-specific and stays here rather than in the shared mint_guided decision core.
 async function advanceFromPriceResolved(chatId, messageId, userId, flow, priceETH) {
-  const data = { ...flow.data, priceETH, priceUnknown: true };
   if (flow.flow === 'task_guided') {
+    const data = { ...flow.data, priceETH, priceUnknown: true };
     telegramFlowState.advance('telegram', chatId, 'awaiting_name', data);
     return tgUpdate(chatId, messageId, renderFlowStep('task_guided', 'awaiting_name', { userId, data }));
   }
-  if (data.skipConfirm) return finishMintExecution(chatId, messageId, userId, data);
-  telegramFlowState.advance('telegram', chatId, 'awaiting_confirm', data);
-  return tgUpdate(chatId, messageId, renderFlowStep('mint_guided', 'awaiting_confirm', { userId, data }));
+  const result = mintFlowDecision.afterPriceResolved({ data: flow.data, priceETH });
+  return applyMintFlowStep(chatId, messageId, userId, result);
 }
 
 async function finishMintExecution(chatId, messageId, userId, flowData) {
