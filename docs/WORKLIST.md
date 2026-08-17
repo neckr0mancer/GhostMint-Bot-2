@@ -150,17 +150,20 @@ way and are unchanged.
      per-token endpoint** — only collection-level floor-price/metadata (`/api/v2/collections/
      {slug}` and `/stats`). A sales watcher needs OpenSea's per-NFT events endpoint instead, which
      this codebase has zero prior usage of to pattern-match against.
-   - **Blocked on verification, not on the key existing.** `OPENSEA_API_KEY` is *not* present in
-     this working copy's `.env` (checked directly — 09:30 Aug 16 file, zero matches for that
-     variable name) even though it's genuinely configured somewhere (this file's own "Inputs
-     already provided" section below says it's set, expiring 2026-08-23, and the Section G/K price
-     fallback above clearly required and used it). Most likely a sync gap between this dev copy's
-     `.env` and wherever the bot actually runs (production/Railway), not a missing credential.
-     Before building the sales-watcher parser: get the real key into this environment's `.env` (or
-     run `npm run opensea:refresh-key`) and do a live one-off call against the real per-NFT events
-     endpoint to confirm its exact response shape — do not write the parser from memory of
-     OpenSea's docs alone, the same discipline the rest of this file's OpenSea work already
-     followed.
+   - **Blocked on the key itself, confirmed by production telemetry, not just a local sync gap.**
+     `OPENSEA_API_KEY` is absent from this working copy's `.env` (checked directly — zero matches),
+     and the 2026-08-17T00:19:48Z production boot log's own startup config line confirms
+     `"openSeaConfigured":false` in production too — despite this file's "Inputs already provided"
+     section below previously claiming it was set and wouldn't expire until 2026-08-23. The key is
+     genuinely gone, not just unsynced to this dev copy; that "Inputs already provided" line is
+     stale and should be treated as wrong until re-confirmed. Before building the sales-watcher
+     parser: run `npm run opensea:refresh-key` (or otherwise obtain a fresh key) so
+     `openSeaConfigured` reports `true` on the next boot, then do a live one-off call against the
+     real per-NFT events endpoint to confirm its exact response shape — do not write the parser
+     from memory of OpenSea's docs alone, the same discipline the rest of this file's OpenSea work
+     already followed. Note this also means the Section G/K OpenSea floor-price fallback (mint
+     price detection) is currently non-functional in production too, not just the P&L piece here —
+     worth confirming that's also on your radar.
    - Worker skeleton to reuse once unblocked: `src/social/socialWatchWorker.js`'s shape
      (`setInterval` + re-entrancy guard + `health()` + swallow-and-log failures) is the pattern to
      copy for a new `salesWatchWorker.js`, mirroring `contract_value_cache`'s "NULL value + non-null
@@ -183,5 +186,10 @@ ordering defect.
 ## Inputs already provided
 
 - **Etherscan API key** — set in `.env`, Section D confirmed working.
-- **OpenSea API key** — set in `.env` via the self-service free-tier endpoint, expires
-  2026-08-23; `npm run opensea:refresh-key` renews it.
+- **OpenSea API key** — ⚠️ stale claim, contradicted by production telemetry: this previously said
+  it was set (expiring 2026-08-23), but the 2026-08-17T00:19:48Z production boot log reports
+  `"openSeaConfigured":false`, and it's absent from this dev copy's `.env` too. The key is
+  genuinely gone from wherever it's supposed to live — re-run `npm run opensea:refresh-key` (or
+  otherwise obtain a fresh one) and confirm `openSeaConfigured:true` on the next boot before
+  trusting this line again. Affects both Section G/K's mint-price fallback (already shipped, now
+  silently degraded) and the deferred P&L sales-detection work above.
