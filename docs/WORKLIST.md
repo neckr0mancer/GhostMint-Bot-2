@@ -24,8 +24,10 @@ shipped).
   directly alongside three other items (FCFS/GTD phase scheduling, a simulation-before-execution
   question, and repo-privacy); shipped 2026-08-17. The other three were answered without code —
   see the note at the end of this section.
-- **Round 9** (Section AF) is phase-aware scheduled mints — logged 2026-08-17, not started. Next
-  up when the session resumes.
+- **Round 9** (Section AF) is phase-aware scheduled mints — logged 2026-08-17. Shape 1 (manual
+  multi-phase scheduling on Telegram) shipped 2026-08-18, together with the scheduled-mint
+  confirmation copy fix flagged in the same section; shape 2 (allowlist phases via a hand-entered
+  merkle proof) remains deliberately unbuilt.
 
 Status legend: ✅ Done · 🟡 Partial · ❌ Not started
 
@@ -33,10 +35,10 @@ Status legend: ✅ Done · 🟡 Partial · ❌ Not started
 
 # Round 9 — phase-aware scheduled mints (2026-08-17)
 
-## Section AF — Scheduling a mint against a specific phase, not just a fixed clock time ❌
+## Section AF — Scheduling a mint against a specific phase, not just a fixed clock time 🟡
 
-Raised 2026-08-17 alongside a copy-accuracy bug in the same area (see below). **Not started —
-this is the next thing to pick up.**
+Raised 2026-08-17 alongside a copy-accuracy bug in the same area (see below). **Shape 1 shipped
+2026-08-18; shape 2 remains deliberately unbuilt.**
 
 **The actual request:** "schedule mint" is not a reminder/alarm — it means the bot should *carry
 out* a mint automatically once a given time (or, ideally, a given drop *phase*) arrives. The
@@ -61,13 +63,13 @@ type in by hand.
   announcements (Discord/website/socials).
 
 **Two workaround shapes worth scoping, not mutually exclusive:**
-1. **Manual multi-phase scheduling (buildable now, zero new capability):** let a user create
-   *several* `/schedule` tasks against the same contract, each with its own manually-entered
-   time/price/max-per-wallet taken from the project's own announcement — one task per known
-   phase. `/schedule` already accepts manual price/time when the contract doesn't expose them;
-   this is arguably just a UX/copy question (does the guided flow make "add another phase" an
-   obvious next step after scheduling one?) rather than new engineering.
-2. **Allowlist-phase support via manual proof entry:** extend the guided schedule flow to
+1. **Manual multi-phase scheduling (buildable now, zero new capability):** ✅ **shipped
+   2026-08-18** — let a user create *several* `/schedule` tasks against the same contract, each
+   with its own manually-entered time/price taken from the project's own announcement — one task
+   per known phase. `/schedule` already accepted manual price/time when the contract doesn't
+   expose them, so this turned out to be exactly the predicted UX/copy question rather than new
+   engineering. See "What shape 1 actually shipped" below.
+2. **Allowlist-phase support via manual proof entry:** ❌ still not started, deliberately — extend the guided schedule flow to
    optionally accept a merkle proof (mirroring `/mintcall`'s existing manual-proof capability) so
    an allowlist-stage mint can be scheduled at all, even without automatic discovery. Bigger lift:
    needs `mintAllowList`/`mintSigned` calldata construction added to `src/mint/mintCall.js` (or
@@ -77,17 +79,67 @@ type in by hand.
 
 Recommend scoping shape 1 first (cheap, immediately useful, no new mint-construction capability)
 and treating shape 2 as a distinct, larger follow-up if the manual-proof workflow turns out to be
-something users actually want, rather than building it speculatively.
+something users actually want, rather than building it speculatively. *That recommendation was
+followed: shape 1 shipped, shape 2 is still unbuilt and should stay that way until asked for.*
 
-## Also flagged: "Confirm Scheduled Mint" copy reads like a reminder, not an execution ❌
+### What shape 1 actually shipped (2026-08-18) ✅
 
-From the same 2026-08-17 message, and from the in-flight Telegram copy-tone pass (a separate,
-concurrent session's work, not this one's) — `taskConfirmation`'s Telegram text currently ends
-with "Set the alarm?" This undersells what actually happens: the bot doesn't just remind the user,
-it submits a real transaction unattended at the scheduled time. Worth a copy fix wherever the tone
-pass lands (not just reverting to "Proceed?" -- something that still reads as intentional/on-brand
-but accurately conveys "this will fire on its own," e.g. "Lock it in?" or similar) — flagging here
-since it surfaced in the same conversation as Section AF, not because it needs new engineering.
+**Scope: Telegram's guided `/schedule` only** — the same reasoning Section AE recorded for
+`/batch`. Discord's `/task create` takes one raw JSON `input` string with every parameter
+supplied up front and never enters a guided step machine, so there is no "next step" moment to put
+an add-a-phase button into; issuing `/task create` several times is already one task per phase
+there. Nothing on the Discord side needed touching. (Section S — a guided Discord task-schedule
+flow — stays open and is where this would land if it's ever wanted there.)
+
+- **The success screen became the feature.** Creating a task used to end on a dead-end
+  "✅ Scheduled X for <time>" line. It now renders `telegramMenus.taskScheduled`, which offers
+  **"➕ Add phase N"** as the primary next tap, plus See all tasks / Back to base. Tapping it
+  re-enters the guided flow against the same contract with the phase counter incremented, so
+  staging a three-stage drop is contract-paste → phase 1 → tap → phase 2 → tap → phase 3.
+- **The add-phase button is stateless.** Its callback data is `flow:phase:<n>:<address>`, so it
+  keeps working on a success screen that's still on screen after a bot restart (guided flow state
+  is deliberately in-memory only — see `src/telegram/flowState.js`'s own note). 55 bytes for a
+  40-hex address, comfortably inside Telegram's 64-byte `callback_data` limit; a test pins that.
+- **A later phase never inherits the live stage's numbers.** This is the correctness core of the
+  change. `startTaskScheduleFlow` re-detects the contract for phase 2+, but everything detection
+  reports about price and opening time describes whichever stage is live *right now* — so the
+  detected `priceETH` is demoted to a `suggestedPriceETH` one-tap suggestion, `mintTime` is
+  cleared so the flow always asks, and the details screen is skipped (the user saw it moments ago
+  on the way to phase 1). Without this, phase 2 would silently inherit phase 1's price and fire at
+  phase 1's time.
+- **Phase-aware copy at every step it matters:** the price step asks what *phase N* costs and says
+  plainly that the chain only knows the live stage; the name step explains the name is how you'll
+  tell stages apart in `/tasks` and suggests `Phase N public`; the time step says a stage isn't
+  announced on-chain before it goes live, so the time comes off the project's own post; and the
+  confirm screen is headed "Confirm phase N" and labels the price "your number for this phase"
+  rather than claiming the contract exposed it.
+- **`/tasks` now shows each task's contract.** Staging several phases of one drop is a normal
+  thing to do as of this change, and one user can stage two drops at once — the name alone stopped
+  being enough to tell rows apart.
+- **Not silently replacing a live flow:** `flow:phase:` is deliberately *not* in
+  `FLOW_CONTINUATION_PREFIXES.task_guided`, so tapping "add phase N" on an older success screen
+  while some other guided flow is mid-air raises the usual abandon-this-flow prompt instead of
+  quietly discarding it.
+- **Still true, and worth restating:** none of this makes phases *discoverable*. The bot cannot
+  tell you when phase 2 opens or what it costs — the user reads that off the project's
+  announcement and types it in. What shipped is the ability to pre-arm every stage once you know
+  them, which is the whole of what was buildable without the merkle-proof capability shape 2
+  describes.
+
+## Also flagged: "Confirm Scheduled Mint" copy reads like a reminder, not an execution ✅
+
+From the same 2026-08-17 message, and from the then-in-flight Telegram copy-tone pass —
+`taskConfirmation`'s Telegram text ended with "Set the alarm?", which undersells what actually
+happens: the bot doesn't just remind the user, it submits a real transaction unattended at the
+scheduled time.
+
+**Fixed 2026-08-18**, with Section AF's shape 1. The tone pass (commit `1029c5d`) shipped without
+touching this line, so it was picked up here — same screen, same session, and leaving a known
+inaccuracy on the one screen this round was rebuilding made no sense. The confirmation now reads
+"This is not a reminder — the bot signs and sends the mint itself at that moment, phone in your
+pocket, you asleep." and ends on "Lock it in?" — the shape suggested above: still on-brand, no
+longer describing an alarm clock. A test pins both halves (the claim is present, the word "alarm"
+is gone) so a future copy pass can't quietly reintroduce it.
 
 ---
 

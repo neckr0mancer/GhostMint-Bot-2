@@ -255,16 +255,43 @@ function collectionInfoCard({ contractAddress, chainLabel, chainSym, isSeaDrop, 
   };
 }
 
-function taskConfirmation({ name, contractAddress, chainLabel, walletLabel, mintTime, autoDetectedTime, priceETH, priceUnknown, displayPrice }) {
-  const priceLine = priceUnknown
-    ? 'Price: not exposed by this contract. Using the amount you punched in above.'
-    : `Price: ${priceETH} per item (straight from the contract)${displayPrice ? usdSuffix(displayPrice.usd) : ''}`;
+// phaseNumber > 1 means this task is a later stage of a multi-stage drop (Section AF). Its price and
+// time were typed by hand off the project's own announcement -- nothing on-chain describes a stage
+// that isn't live yet -- so the price line must not claim the contract said so.
+function taskConfirmation({ name, contractAddress, chainLabel, walletLabel, mintTime, autoDetectedTime, priceETH, priceUnknown, displayPrice, phaseNumber }) {
+  const phase = Number(phaseNumber) > 1 ? Number(phaseNumber) : null;
+  let priceLine;
+  if (phase) priceLine = `Price: ${priceETH} per item (your number for this phase)`;
+  else if (priceUnknown) priceLine = 'Price: not exposed by this contract. Using the amount you punched in above.';
+  else priceLine = `Price: ${priceETH} per item (straight from the contract)${displayPrice ? usdSuffix(displayPrice.usd) : ''}`;
   const timeLine = autoDetectedTime
     ? `Fires (UTC): <b>${escapeTelegramHtml(mintTime)}</b> (this contract's own opening time)`
     : `Fires (UTC): <b>${escapeTelegramHtml(mintTime)}</b>`;
+  const heading = phase ? `<b>⏰ Confirm phase ${phase}</b>` : '<b>⏰ Confirm scheduled mint</b>';
   return {
-    text: `<b>⏰ Confirm scheduled mint</b>\nName: ${escapeTelegramHtml(name)}\nContract: <code>${contractAddress}</code>\nChain: ${chainLabel}\nWallet: ${escapeTelegramHtml(walletLabel)}\nQuantity: 1\n${priceLine}\n${timeLine}\n\nSet the alarm?`,
+    text: `${heading}\nName: ${escapeTelegramHtml(name)}\nContract: <code>${contractAddress}</code>\nChain: ${chainLabel}\nWallet: ${escapeTelegramHtml(walletLabel)}\nQuantity: 1\n${priceLine}\n${timeLine}\n\nThis is not a reminder — the bot signs and sends the mint itself at that moment, phone in your pocket, you asleep.\n\nLock it in?`,
     replyMarkup: keyboard([[button('✅ Schedule it', 'flow:taskconfirm')], [button('❌ Nah, cancel', 'flow:cancel:ask')]]),
+    parseMode: 'HTML',
+  };
+}
+
+// Success screen for a created task, and the whole point of Section AF: a drop with several stages
+// has no on-chain schedule to read (SeaDrop's PublicDrop is one mutable struct describing only the
+// stage that is live right now), so the only way to pre-arm every stage is one task per stage, each
+// with its own hand-entered time and price. Offering that as the obvious next tap is the feature --
+// the contract address rides in the callback data so the next phase skips straight past re-pasting.
+function taskScheduled({ name, contractAddress, mintTime, phaseNumber }) {
+  const phase = Number(phaseNumber) > 1 ? Number(phaseNumber) : 1;
+  const armed = phase > 1
+    ? `✅ Phase ${phase} armed: <b>${escapeTelegramHtml(name)}</b>`
+    : `✅ Locked in: <b>${escapeTelegramHtml(name)}</b>`;
+  return {
+    text: `${armed}\nFires (UTC): <b>${escapeTelegramHtml(mintTime)}</b>\n\nGot another public stage on this drop? Different time, different price — stack one task per stage and the bot works down the list. Allowlist/GTD stages need a per-wallet proof this bot can't fetch yet, so those aren't schedulable.`,
+    replyMarkup: keyboard([
+      [button(`➕ Add phase ${phase + 1}`, `flow:phase:${phase + 1}:${contractAddress}`)],
+      [button('🗓️ See all tasks', 'menu:tasks')],
+      [button('⬅️ Back to base', 'menu:main')],
+    ]),
     parseMode: 'HTML',
   };
 }
@@ -490,6 +517,7 @@ module.exports = {
   gasTolerancePrompt,
   sendConfirmation,
   taskConfirmation,
+  taskScheduled,
   exportKeyWarning,
   confirmCancelPrompt,
   confirmRemoveWallet,

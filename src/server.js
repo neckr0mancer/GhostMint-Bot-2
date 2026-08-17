@@ -592,7 +592,9 @@ const FLOW_CONTINUATION_PREFIXES = { wallet_create: ['flow:chain:'], wallet_impo
   // Continue button are the same component either way; the callback handler branches on
   // flow.flow to decide whether "continue" means "go mint it" or "go schedule it". Also shares
   // flow:priceaccept/flow:pricemanual (Section G's OpenSea-price-accept step) the same way.
-  task_guided: ['flow:mintdetailscontinue', 'flow:priceaccept', 'flow:pricemanual', 'flow:taskwalletpick:', 'flow:taskconfirm'],
+  // flow:phase: is deliberately NOT listed: tapping "add phase N" on an older success screen while
+  // some other flow is mid-air should raise the usual abandon prompt, not silently replace it.
+  task_guided: ['flow:mintdetailscontinue', 'flow:priceaccept', 'flow:pricemanual', 'flow:phasepriceaccept', 'flow:taskwalletpick:', 'flow:taskconfirm'],
   watch_guided: ['flow:watchtype:', 'flow:watchmethod:', 'flow:watchconfirm'] };
 
 // Generic one-shot confirmation gate for simple "<command> <id> CONFIRM"-shaped destructive actions
@@ -630,6 +632,21 @@ function cancelOnlyKeyboard() {
 // buttons are shown, same as before this existed.
 function priceStepPayload(data) {
   const sym = CHAINS[data.chain]?.sym || 'native currency';
+  // Section AF: for a later phase of the same drop, the contract's live price belongs to whichever
+  // stage is open right now, not to the one being scheduled -- so it is offered as a starting point
+  // to tap rather than filled in silently, and typing a different number is the expected path.
+  if (data.phaseNumber > 1) {
+    const rows = [];
+    if (data.suggestedPriceETH !== undefined) {
+      rows.push([telegramMenus.button(`Same as right now (${data.suggestedPriceETH} ${sym})`, 'flow:phasepriceaccept')]);
+    }
+    rows.push([telegramMenus.button('❌ Cancel', 'flow:cancel:ask')]);
+    return {
+      text: `What does <b>phase ${data.phaseNumber}</b> cost per item, in ${sym}? Take it from the project's own announcement — the chain only knows the stage that's live right now. Send 0 if that stage is free.`,
+      replyMarkup: telegramMenus.keyboard(rows),
+      parseMode: 'HTML',
+    };
+  }
   if (data.displayPrice) {
     const usdSuffix = data.displayPrice.usd ? ` (~$${data.displayPrice.usd.toFixed(2)})` : '';
     return {
@@ -775,9 +792,16 @@ function renderFlowStep(flow, step, { userId, data = {} } = {}) {
       return telegramMenus.walletPicker(botCommands.wallets(userId), { prefix: 'flow:taskwalletpick', emptyHint: 'No wallets yet. Create one first from the Wallets menu.' });
     }
     if (step === 'awaiting_price') return priceStepPayload(data);
-    if (step === 'awaiting_name') return { text: 'Send a name for this scheduled mint.', replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' };
+    if (step === 'awaiting_name') {
+      return data.phaseNumber > 1
+        ? { text: `Name phase ${data.phaseNumber}. This is what you'll pick it out by in /tasks when several stages of the same drop are queued up, so make it obvious — e.g. <code>Phase ${data.phaseNumber} public</code>.`, replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' }
+        : { text: 'Send a name for this scheduled mint.', replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' };
+    }
     if (step === 'awaiting_time') {
-      return { text: 'This contract\'s opening time is not known. Send the UTC date/time to mint at, including an explicit Z or offset, e.g. <code>2026-08-20T18:00:00Z</code>.', replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' };
+      const lead = data.phaseNumber > 1
+        ? `When does <b>phase ${data.phaseNumber}</b> open? Nothing on-chain announces a stage before it goes live, so this comes off the project's own post.`
+        : 'This contract\'s opening time is not known.';
+      return { text: `${lead} Send the UTC date/time to mint at, including an explicit Z or offset, e.g. <code>2026-08-20T18:00:00Z</code>.`, replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' };
     }
     if (step === 'awaiting_confirm') {
       return telegramMenus.taskConfirmation({
@@ -790,6 +814,7 @@ function renderFlowStep(flow, step, { userId, data = {} } = {}) {
         priceETH: data.priceETH,
         priceUnknown: data.priceUnknown,
         displayPrice: data.displayPrice,
+        phaseNumber: data.phaseNumber,
       });
     }
   }
@@ -1174,7 +1199,11 @@ async function finishExportKeyExecution(chatId, messageId, userId, flowData, pla
 // contract *is* doesn't depend on whether you're minting it now or scheduling it for later. A
 // SeaDrop drop's own future opening time is carried into flow data as a pre-filled mintTime, same
 // as createTask's own auto-detection, so the confirm screen can skip asking for it entirely.
-async function startTaskScheduleFlow({ chatId, messageId, userId, contractAddressInput }) {
+// phaseNumber > 1 arrives from the previous task's success screen ("add phase N", Section AF). The
+// contract is re-detected rather than carried in memory so the entry point stays stateless across a
+// restart, but everything the detection reports about price/timing describes the stage that is live
+// *now* -- for a later stage it is a suggestion at most, so both are re-asked below.
+async function startTaskScheduleFlow({ chatId, messageId, userId, contractAddressInput, phaseNumber = 1 }) {
   const send = payload => tgUpdate(chatId, messageId, payload);
   if (!contractAddressInput) {
     telegramFlowState.start('telegram', chatId, 'task_guided', 'awaiting_contract', {});
@@ -1203,6 +1232,18 @@ async function startTaskScheduleFlow({ chatId, messageId, userId, contractAddres
     soldOut: detected.soldOut, displayPrice: detected.displayPrice,
     mintTime: futureStartTime ? new Date(futureStartTime * 1000).toISOString() : null,
   };
+  if (phaseNumber > 1) {
+    // The details screen is skipped: the user was looking at it moments ago on the way to phase 1.
+    // Clearing priceETH/mintTime (and flagging priceUnknown) is what forces this phase through the
+    // manual price and time steps instead of inheriting the live stage's numbers -- the detected
+    // price survives only as the one-tap suggestion priceStepPayload offers.
+    Object.assign(data, {
+      phaseNumber, suggestedPriceETH: data.priceETH,
+      priceETH: undefined, priceUnknown: true, mintTime: null,
+    });
+    const flow = telegramFlowState.start('telegram', chatId, 'task_guided', 'awaiting_wallet', data);
+    return advanceFromTaskDetails(chatId, messageId, userId, flow);
+  }
   telegramFlowState.start('telegram', chatId, 'task_guided', 'awaiting_details', data);
   return send(renderFlowStep('task_guided', 'awaiting_details', { userId, data }));
 }
@@ -1243,7 +1284,10 @@ async function finishTaskSchedule(chatId, messageId, userId, flowData) {
       chain: flowData.chain, quantity: 1, priceETH: flowData.priceETH, mintTime: flowData.mintTime,
     });
     telegramFlowState.clear('telegram', chatId);
-    return tgUpdate(chatId, messageId, { text: `✅ Scheduled <b>${escapeTelegramHtml(task.name)}</b> for ${new Date(task.mintTime).toISOString()} UTC.`, replyMarkup: backToMenu, parseMode: 'HTML' });
+    return tgUpdate(chatId, messageId, telegramMenus.taskScheduled({
+      name: task.name, contractAddress: flowData.contractAddress,
+      mintTime: new Date(task.mintTime).toISOString(), phaseNumber: flowData.phaseNumber,
+    }));
   } catch (error) {
     if (error instanceof RateLimitError) {
       return tgUpdate(chatId, messageId, { text: `Too many sensitive commands. Retry in ${Math.ceil(error.retryAfterMs / 1000)} seconds.`, replyMarkup: backToMenu, parseMode: 'HTML' });
@@ -1914,6 +1958,20 @@ if (BOT_TOKEN) {
       if (!flow || flow.flow !== 'mint_guided' || flow.step !== 'awaiting_gastolerance') return;
       return tgEditMenu(chatId, messageId, { text: `Send the gas price cap in gwei (a whole or decimal number, no higher than your account's ceiling of ${flow.data.gasCeilingGwei} gwei).`, replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' });
     }
+    // "Add phase N" from a task's success screen (Section AF) -- carries its own contract address so
+    // it works on any still-visible success screen, including one from before a restart.
+    if (data.startsWith('flow:phase:')) {
+      const [phase, address] = data.slice('flow:phase:'.length).split(':');
+      const phaseNumber = Number(phase);
+      if (!Number.isInteger(phaseNumber) || phaseNumber < 2 || !ethers.isAddress(address)) return;
+      return startTaskScheduleFlow({ chatId, messageId, userId, contractAddressInput: address, phaseNumber });
+    }
+    if (data === 'flow:phasepriceaccept') {
+      const flow = telegramFlowState.get('telegram', chatId);
+      if (!flow || flow.flow !== 'task_guided' || flow.step !== 'awaiting_price') return;
+      if (flow.data.suggestedPriceETH === undefined) return;
+      return advanceFromPriceResolved(chatId, messageId, userId, flow, flow.data.suggestedPriceETH);
+    }
     if (data.startsWith('flow:taskwalletpick:')) {
       const label = data.slice('flow:taskwalletpick:'.length);
       const flow = telegramFlowState.get('telegram', chatId);
@@ -2360,7 +2418,10 @@ send /mint with a contract address to get going.`;
     if (!pending.length) return tgRender(msg.chat.id, { text: 'No scheduled tasks.', parseMode: 'HTML' });
     const list = pending.map(t => {
       const ms = t.mintTime - Date.now();
-      return `⏱ <b>${escapeTelegramHtml(t.name)}</b> [${t.status}]\nWallet: ${escapeTelegramHtml(t.walletLabel)}\nQty: ${t.qty} | Price: ${t.price>0?t.price+' ETH':'Free'}\nDue (UTC): <b>${new Date(t.mintTime).toISOString()}</b>${ms>0?`\nFires in: <b>${fmtCD(ms)}</b>`:''}\nID: <code>${t.id}</code>`;
+      // The contract line matters more since Section AF: staging a multi-phase drop is now a normal
+      // thing to do, so several of these rows routinely share one contract (and one user can be
+      // staging two drops at once) -- name alone stopped being enough to tell them apart.
+      return `⏱ <b>${escapeTelegramHtml(t.name)}</b> [${t.status}]\nContract: <code>${t.contract}</code>\nWallet: ${escapeTelegramHtml(t.walletLabel)}\nQty: ${t.qty} | Price: ${t.price>0?t.price+' ETH':'Free'}\nDue (UTC): <b>${new Date(t.mintTime).toISOString()}</b>${ms>0?`\nFires in: <b>${fmtCD(ms)}</b>`:''}\nID: <code>${t.id}</code>`;
     }).join('\n\n');
     tgRender(msg.chat.id, { text: `⏱ <b>Tasks (page ${page.page}/${page.totalPages}, ${page.total} total)</b>\n\n${list}`, parseMode: 'HTML' });
   }));

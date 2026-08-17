@@ -3,7 +3,7 @@ const test = require('node:test');
 const {
   mainMenu, walletsMenu, settingsMenu, tasksMenu, chainPicker, walletPicker,
   contractDetails, contractDetailsText, collectionInfoCard, mintConfirmation, gasTolerancePrompt,
-  taskConfirmation, confirmCancelPrompt, confirmRemoveWallet, placeholderMenu,
+  taskConfirmation, taskScheduled, confirmCancelPrompt, confirmRemoveWallet, placeholderMenu,
 } = require('../src/telegram/menus');
 
 function flatButtons(replyMarkup) {
@@ -269,4 +269,56 @@ test('task confirmation appends a USD equivalent to the price when a displayPric
     mintTime: '2026-08-20T18:00:00.000Z', autoDetectedTime: false, priceETH: 0.1, priceUnknown: false,
   });
   assert.equal(withoutUsd.text.includes('~$'), false);
+});
+
+// The old copy ended on "Set the alarm?", which reads like a reminder -- the bot actually signs and
+// broadcasts the mint unattended, which is a materially different thing to be agreeing to.
+test('task confirmation says the bot executes the mint itself rather than reminding the user', () => {
+  const prompt = taskConfirmation({
+    name: 'drop', contractAddress: '0xabc', chainLabel: 'Ethereum', walletLabel: 'main',
+    mintTime: '2026-08-20T18:00:00.000Z', autoDetectedTime: false, priceETH: 0.1, priceUnknown: false,
+  });
+  assert.match(prompt.text, /not a reminder/i);
+  assert.match(prompt.text, /signs and sends/i);
+  assert.equal(/alarm/i.test(prompt.text), false);
+});
+
+test('a later phase is labelled as one and never claims its price came from the contract', () => {
+  const base = {
+    name: 'phase 2 public', contractAddress: '0xabc', chainLabel: 'Ethereum', walletLabel: 'main',
+    mintTime: '2026-08-20T18:00:00.000Z', autoDetectedTime: false, priceETH: 0.08,
+  };
+  // priceUnknown is set for every phase past the first (it is what forces the manual price step),
+  // but the reason is "the chain only describes the live stage", not "this contract hides its price".
+  const phase = taskConfirmation({ ...base, priceUnknown: true, phaseNumber: 2 });
+  assert.match(phase.text, /Confirm phase 2/);
+  assert.match(phase.text, /Price: 0\.08 per item \(your number for this phase\)/);
+  assert.equal(phase.text.includes('not exposed by this contract'), false);
+  const first = taskConfirmation({ ...base, priceUnknown: true, phaseNumber: 1 });
+  assert.match(first.text, /Confirm scheduled mint/);
+  assert.match(first.text, /not exposed by this contract/);
+});
+
+test('the scheduled-task screen offers the next phase for the same contract', () => {
+  const screen = taskScheduled({
+    name: 'phase 1 allowlist', contractAddress: '0x1234567890abcdef1234567890abcdef12345678',
+    mintTime: '2026-08-20T18:00:00.000Z',
+  });
+  const next = flatButtons(screen.replyMarkup).find(b => b.callback_data.startsWith('flow:phase:'));
+  assert.equal(next.callback_data, 'flow:phase:2:0x1234567890abcdef1234567890abcdef12345678');
+  assert.match(next.text, /phase 2/i);
+  // Telegram rejects callback_data over 64 bytes outright, and this one carries a full address.
+  // Every character in it is ASCII (prefix, digits, hex address), so length is the byte count.
+  assert.ok(next.callback_data.length <= 64);
+});
+
+test('the scheduled-task screen counts phases upward and keeps a way back to the menu', () => {
+  const third = taskScheduled({
+    name: 'phase 3', contractAddress: '0x1234567890abcdef1234567890abcdef12345678',
+    mintTime: '2026-08-20T18:00:00.000Z', phaseNumber: 3,
+  });
+  assert.match(third.text, /Phase 3 armed/);
+  const buttons = flatButtons(third.replyMarkup).map(b => b.callback_data);
+  assert.ok(buttons.includes('flow:phase:4:0x1234567890abcdef1234567890abcdef12345678'));
+  assert.ok(buttons.includes('menu:main'));
 });
