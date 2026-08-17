@@ -643,7 +643,7 @@ function quantityStepPayload(data) {
   const max = Math.max(1, Math.min(Number(data.maxPerWallet) || 1, 100));
   const quick = [...new Set([1, 2, 5, max].filter(value => value <= max))];
   const row = quick.map(value => telegramMenus.button(value === max ? `Max (${max})` : String(value), `flow:mintqty:${value}`));
-  return { text: `How many would you like to mint? (max ${max} per wallet). You can also type an exact number.`, replyMarkup: telegramMenus.keyboard([row, [telegramMenus.button('❌ Cancel', 'flow:cancel:ask')]]), parseMode: 'HTML' };
+  return { text: `How many would you like to mint? (max ${max} per wallet). You can also type an exact number.`, replyMarkup: telegramMenus.keyboard([row, [telegramMenus.button('✏️ Enter manually', 'flow:mintqty:x')], [telegramMenus.button('❌ Cancel', 'flow:cancel:ask')]]), parseMode: 'HTML' };
 }
 
 function renderFlowStep(flow, step, { userId, data = {} } = {}) {
@@ -706,7 +706,7 @@ function renderFlowStep(flow, step, { userId, data = {} } = {}) {
         telegramMenus.button('50%', 'flow:sendamount:50'),
         telegramMenus.button('25%', 'flow:sendamount:25'),
       ];
-      return { text: prompt, replyMarkup: telegramMenus.keyboard([quickRow, [telegramMenus.button('❌ Cancel', 'flow:cancel:ask')]]), parseMode: 'HTML' };
+      return { text: prompt, replyMarkup: telegramMenus.keyboard([quickRow, [telegramMenus.button('✏️ Enter manually', 'flow:sendamount:x')], [telegramMenus.button('❌ Cancel', 'flow:cancel:ask')]]), parseMode: 'HTML' };
     }
     if (step === 'awaiting_destination') {
       return { text: 'Send the destination address.', replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' };
@@ -1655,6 +1655,12 @@ if (BOT_TOKEN) {
       if (flow.flow === 'task_guided') return advanceFromTaskDetails(chatId, messageId, userId, flow);
       return;
     }
+    if (data === 'flow:mintqty:x') {
+      const flow = telegramFlowState.get('telegram', chatId);
+      if (!flow || flow.flow !== 'mint_guided' || flow.step !== 'awaiting_quantity') return;
+      const max = Number(flow.data.maxPerWallet) || 100;
+      return tgEditMenu(chatId, messageId, { text: `Send a whole number from 1 to ${max}.`, replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' });
+    }
     if (data.startsWith('flow:mintqty:')) {
       const quantity = Number(data.slice('flow:mintqty:'.length));
       const flow = telegramFlowState.get('telegram', chatId);
@@ -1721,6 +1727,12 @@ if (BOT_TOKEN) {
       const flowData = { walletLabel: owned.label, chain: owned.chain, ...await sendAmountContext(userId, owned.label, owned.chain) };
       telegramFlowState.advance('telegram', chatId, 'awaiting_amount', flowData);
       return tgEditMenu(chatId, messageId, renderFlowStep('send_guided', 'awaiting_amount', { userId, data: flowData }));
+    }
+    if (data === 'flow:sendamount:x') {
+      const flow = telegramFlowState.get('telegram', chatId);
+      if (!flow || flow.flow !== 'send_guided' || flow.step !== 'awaiting_amount') return;
+      const sym = CHAINS[flow.data.chain]?.sym || 'native currency';
+      return tgEditMenu(chatId, messageId, { text: `Send the exact ${sym} amount to send.`, replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' });
     }
     if (data.startsWith('flow:sendamount:')) {
       const key = data.slice('flow:sendamount:'.length);

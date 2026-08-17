@@ -102,16 +102,30 @@ memory growth from a malformed/oversized response, and `is_retryable_request_err
 
 # Round 2 — additional requirements (current backlog)
 
-## Section L — Custom "X amount" input everywhere ❌
+## Section L — Custom "X amount" input everywhere ✅
 
-Round 1 added fixed quick-pick buttons (send: Max/75/50/25; mint quantity: 1/2/5/max). What's
-missing is an explicit **`X` / custom** button on those same keyboards that switches to manual
+Round 1 added fixed quick-pick buttons (send: Max/75/50/25; mint quantity: 1/2/5/max). What was
+missing was an explicit **`X` / custom** button on those same keyboards that switches to manual
 entry, rather than relying on the user knowing they can just type a number.
 
-- Applies to: send amount, mint quantity, and any other quick-pick keyboard added later
-  (scheduled-mint quantity, sniper caps).
-- Typing a raw number already works today on both steps — this is about making that discoverable
-  as a button, and making the prompt say so.
+- Typing a raw number already worked on both steps before this — the free-text branches in
+  `server.js`'s message handler for `mint_guided`'s `awaiting_quantity` and `send_guided`'s
+  `awaiting_amount` were already live. This was purely a discoverability gap, closed by adding an
+  "✏️ Enter manually" button to each keyboard (`quantityStepPayload` and the send-amount step),
+  mirroring the identical pattern Round 1's `flow:pricemanual` already used for the price step.
+  Tapping it edits the panel to a cancel-only prompt without changing flow state, so the very next
+  text message the user sends is handled exactly as it already was.
+- New callbacks `flow:mintqty:x` / `flow:sendamount:x` are covered by the existing
+  `FLOW_CONTINUATION_PREFIXES` allowlist prefixes (`flow:mintqty:`, `flow:sendamount:`) with no
+  changes needed there.
+- Scoped to what actually exists today: Telegram's mint-quantity and send-amount quick-picks.
+  Scheduled-mint quantity and sniper caps don't have quick-pick keyboards yet (Section R is still
+  ❌), and Discord has no quick-pick buttons to extend (Section I's Max/75/50/25 was Telegram-only;
+  Discord's quantity prompt was already free-text). Extend this when either lands.
+- Verified: `npm run check`, `npm run lint`, and the telegram-focused unit suites
+  (`telegramFlowState`, `telegramMenus`, `telegramPanelState`, `telegramBot`, 40 tests) all pass.
+  No existing test asserted on these keyboards' exact shape, so none needed updating — consistent
+  with `flow:pricemanual` having no dedicated test either.
 
 ## Section M — Automatic contract detection → one-shot mint popup 🟡
 
