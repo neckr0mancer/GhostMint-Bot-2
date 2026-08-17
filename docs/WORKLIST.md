@@ -34,20 +34,42 @@ options" otherwise).
 - **Goal:** pasting a bare address or an OpenSea link on Discord — the same trigger Section Q
   already recognizes — starts a real stateful mint flow with wallet and quantity picking, not just
   a preview. `/mint` with no options should reach the same flow.
-- **Design sketch (from scoping conversation, not yet built):**
-  - Reuse `src/telegram/flowState.js` the way Discord's guided wallet create/import already does
-    (Milestone 15c) — keyed by `('discord', chatId)`, same TTL/sweep behavior, no new store.
-  - Mirror Telegram's `mint_guided` step shape (`awaiting_quantity` → `awaiting_wallet` →
-    `awaiting_price` → `awaiting_confirm`) and its Section M one-shot-popup behavior (skip
-    straight to whichever step is actually needed, no dead "here's the contract" screen), but
-    rendered as Discord embeds + buttons/select-menus instead of Telegram inline keyboards.
-  - Every step still ends by calling the exact same `botCommandService` functions
-    (`detectMintContract`, `resolveMintContractInput`, `mint`) the slash command and Telegram
-    already use — no parallel validation or execution path, per this file's and `ROADMAP.md`'s
-    existing rule for every guided step on every platform.
-  - Natural to bundle with **Section O** (Discord's `menu:mint` button is currently a placeholder
-    pointing at the slash command — this flow is what it should actually open) and **Section S**
-    (same Discord modal/select-menu component patterns needed for guided task-schedule).
+- **Design (revised after a second pass — the first sketch had real gaps, not just nuances):**
+  1. **Shared pure decision core, not a hand-mirrored copy.** `advanceFromDetails`/
+     `advanceFromQuantity`/`advanceFromWalletSelection`/`advanceFromPriceResolved` in `server.js`
+     are today side-effecting (they call `tgUpdate`/`telegramFlowState.advance` directly). Extract
+     the pure "given step + data, what's next" branching (skip wallet-select when there's one
+     wallet, skip quantity when `maxPerWallet <= 1`, skip confirm when `skipConfirm`, etc.) into
+     something both platforms' rendering layers call, so a future change to that branching can't
+     silently drift between Telegram and Discord the way two independently-hand-mirrored copies
+     eventually would.
+  2. **Authorization and visibility, not just storage.** The bare-paste trigger fires from a plain
+     channel message, and plain message replies can't be ephemeral (unlike every other Discord
+     command in this bot, which is ephemeral by design) — so the flow's embed is visible
+     channel-wide. The follow-up wallet/quantity/confirm buttons must therefore (a) reject any
+     click from someone other than the original author and (b) reply to accepted clicks
+     ephemerally, so wallet contents and the in-progress mint stay private even though the
+     triggering message wasn't.
+  3. **Buttons/select-menus/modals only — no free-text steps.** Telegram's flow accepts typed
+     numbers at some steps and needs `isTextStep` gating plus message deletion to disambiguate
+     "flow input" from "just chat." Discord doesn't need that class of problem: quantity's
+     custom-amount entry (Section L's equivalent) uses a modal instead of a follow-up plain
+     message, keeping every step interaction-based.
+  4. **Reuse the existing cancel-confirmation divergence pattern**, not just `flowState.js`'s
+     storage mechanics — the same "navigating away mid-flow prompts before discarding progress"
+     behavior Milestone 15b already built and `discordFlowUX.test.js` already tests for wallet
+     create/import.
+  5. **Test to the higher existing bar.** Telegram's `mint_guided` state machine has essentially no
+     direct unit tests today. Discord's wallet-create/import flow already has real behavioral
+     coverage (`discordFlowUX.test.js`: modal submission, chain selection, cancel-confirmation,
+     asserted end to end). Section AA should match that precedent, not the weaker one.
+  6. **Sequencing:** build the shared decision core and Discord rendering building blocks first,
+     ship this section as its own vertical, then wire Section O's `menu:mint` button and Section
+     S's schedule flow on top as separate follow-ups rather than one bundled change.
+- Every step still ends by calling the exact same `botCommandService` functions
+  (`detectMintContract`, `resolveMintContractInput`, `mint`) the slash command and Telegram already
+  use — no parallel validation or execution path, per this file's and `ROADMAP.md`'s existing rule
+  for every guided step on every platform.
 - Not started. Scope is closer to "give Discord a mint_guided" than a small follow-up fix — sized
   accordingly rather than folded silently into Section Q's commit.
 
