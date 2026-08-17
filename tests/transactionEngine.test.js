@@ -3,6 +3,7 @@ const test = require('node:test');
 const { Transaction, Wallet, keccak256, parseEther, parseUnits } = require('ethers');
 const { createProviderService } = require('../src/transactions/providerService');
 const { createTransactionEngine, TransactionSafetyError } = require('../src/transactions/transactionEngine');
+const { SEADROP_ERROR_INTERFACE } = require('../src/mint/seaDropErrors');
 
 const PRIVATE_KEY = `0x${'42'.repeat(32)}`;
 const signer = new Wallet(PRIVATE_KEY);
@@ -235,6 +236,15 @@ test('simulation setting independently skips or enforces dry-run', async t => {
     await assert.rejects(engine.submit(request), /execution reverted/);
     assert.equal(calls.simulations, 1);
     assert.equal(calls.broadcasts.length, 0);
+  });
+  await t.test('a SeaDrop custom-error revert surfaces its real plain-English reason, not a generic "would revert" message', async () => {
+    // Mirrors the actual shape a bare provider.call() throws for a custom Solidity error (verified
+    // against the installed ethers package's own AbiCoder.getBuiltinCallException): `data` carries
+    // the raw revert bytes, `reason`/`shortMessage` do not decode a custom error on their own.
+    const data = SEADROP_ERROR_INTERFACE.encodeErrorResult('MintQuantityExceedsMaxMintedPerWallet', [7, 5]);
+    const simulationError = Object.assign(new Error('execution reverted (unknown custom error)'), { code: 'CALL_EXCEPTION', data });
+    const { engine, request } = fixture({ simulationError });
+    await assert.rejects(engine.submit(request), /would hold 7, exceeding the 5 allowed per wallet/);
   });
 });
 

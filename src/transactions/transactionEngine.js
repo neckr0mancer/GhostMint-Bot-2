@@ -1,5 +1,6 @@
 const { Wallet, keccak256, parseUnits } = require('ethers');
 const { WalletNonceQueue } = require('./nonceQueue');
+const { describeSeaDropError } = require('../mint/seaDropErrors');
 
 const FINAL_STATES = new Set(['confirmed', 'reverted', 'replaced']);
 
@@ -56,6 +57,15 @@ function createTransactionEngine({
   // wrong or unsupported function signature. Without this, that exception was falling all the way
   // through to a generic "request failed" response instead of a message that explains what happened.
   function explainCallFailure(error) {
+    // A bare provider.call() (no Contract/Interface attached, which is all this engine ever
+    // does) never auto-decodes a custom Solidity error -- ethers can only surface the raw revert
+    // bytes (error.data) for anyone who happens to know that contract's error ABI. SeaDrop is the
+    // one protocol this app has that knowledge for (src/mint/seaDropErrors.js, sourced from
+    // SeaDrop's real error definitions), so try it first; it's purely selector-based and simply
+    // returns null for anything that isn't a recognized SeaDrop error, so trying it against a
+    // non-SeaDrop failure is harmless.
+    const seaDropReason = describeSeaDropError(error?.data);
+    if (seaDropReason) return seaDropReason;
     if (error?.reason) return `Simulating this call failed: ${error.reason}`;
     if (error?.shortMessage) return `Simulating this call failed: ${error.shortMessage}`;
     if (error?.message) return `Simulating this call failed: ${error.message}`;

@@ -15,8 +15,64 @@ shipped).
   shipped 2026-08-17.
 - **Round 5** (Section AB) is a guided watch-rule create/manage flow on both platforms, requested
   directly rather than surfacing from earlier work; shipped 2026-08-17.
+- **Round 6** (Section AC) differentiates SeaDrop's own revert reasons into plain English instead
+  of one generic "would revert" message; shipped 2026-08-17.
 
 Status legend: ✅ Done · 🟡 Partial · ❌ Not started
+
+---
+
+# Round 6 — differentiated SeaDrop revert reasons (2026-08-17)
+
+## Section AC — Decode SeaDrop's own revert reasons into plain English instead of one generic message ✅
+
+Asked directly: a SeaDrop mint failing because the stage hasn't opened, because supply is
+exhausted, or because the wrong price was sent all produced the same generic
+`"Simulating this call failed -- the contract may not implement this function, or the call would
+revert."` from `transactionEngine.js`'s `explainCallFailure`. Root cause (confirmed by reading the
+installed ethers package's own source, `AbiCoder.getBuiltinCallException`): a bare `provider.call()`
+with no `Contract`/`Interface` attached — which is all this engine ever does — never auto-decodes a
+custom Solidity error. Ethers can only decode `Error(string)`/`Panic(uint256)` reverts on its own;
+for anything else it just hands back the raw revert bytes (`error.data`) and a generic
+`"execution reverted (unknown custom error)"` message. Modern contracts, including SeaDrop, use
+custom errors almost exclusively, so this generic path was the common case, not an edge case.
+
+- **`src/mint/seaDropErrors.js`** (new): a real `ethers.Interface` built from SeaDrop's actual
+  custom-error definitions, fetched directly from
+  [`ProjectOpenSea/seadrop`'s `src/lib/SeaDropErrorsAndEvents.sol`](https://github.com/ProjectOpenSea/seadrop/blob/main/src/lib/SeaDropErrorsAndEvents.sol)
+  (MIT licensed) via `gh api` rather than assumed from memory — the same discipline
+  `seaDropRegistry.js` already applies to the mint function signature itself, and the same lesson
+  this file's own Section T–Z notes called out about OSNM-Z's OpenSea integration ("do not write
+  the parser from memory of the docs alone"). Limited to the 7 errors actually reachable through
+  `mintPublic()` (`NotActive`, `MintQuantityCannotBeZero`,
+  `MintQuantityExceedsMaxMintedPerWallet`, `MintQuantityExceedsMaxSupply`,
+  `MintQuantityExceedsMaxTokenSupplyForStage`, `FeeRecipientNotAllowed`, `IncorrectPayment`) —
+  SeaDrop also defines allowlist/signed-mint/admin-configuration errors this app's mint call can
+  never trigger, since it only ever calls `mintPublic` (no allowlist proof, no signature).
+  `describeSeaDropError(data)` decodes the raw revert bytes against that interface and returns a
+  specific plain-English sentence per error (e.g. `NotActive` distinguishes "hasn't opened yet"
+  from "already closed" using the contract's own reported timestamps; `IncorrectPayment` reports
+  both amounts in ETH, not raw wei), or `null` for anything that doesn't match — purely
+  selector-based, so trying it against a non-SeaDrop failure is harmless.
+- **Wired into `explainCallFailure`** as the first thing tried, before the existing
+  `reason`/`shortMessage`/`message` fallback chain (which still handles plain `mint(uint256)`
+  contracts using old-style `require(condition, "string")` reverts correctly on its own).
+- **What this doesn't cover:** a non-SeaDrop contract's own custom errors (no known ABI to decode
+  against — falls through to the existing generic message, honestly, rather than guessing), and
+  the "wallet not eligible" framing from the original ask doesn't map cleanly onto `mintPublic`
+  specifically — public mint has no allowlist by definition (that's a separate SeaDrop function,
+  `mintAllowList`, this app doesn't call). The closest real `mintPublic` equivalent is `NotActive`
+  (stage timing). Genuine on-chain eligibility checks are already handled separately and already
+  had a specific message before this section — see the M8 mint preset `allowlistCheck` feature
+  (`src/mint/allowlistCheckRegistry.js`), which independently produces `"wallet is not eligible for
+  this mint"` before a transaction is even built.
+- Verified: `npm run check`, `npm run lint`, and 8 new tests. `tests/seaDropErrors.test.js` (7
+  tests) round-trips every error through the same `Interface`'s real `encodeErrorResult` rather
+  than hand-typed hex, proving the decode genuinely works rather than just that the code compiles.
+  `tests/transactionEngine.test.js` gained one true end-to-end case: a mocked `provider.call()`
+  failure shaped exactly like a real ethers `CALL_EXCEPTION` (verified against the installed
+  package's own source) reaches `engine.submit()`'s rejection with the fully decoded plain-English
+  message, not the generic one.
 
 ---
 
