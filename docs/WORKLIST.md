@@ -133,6 +133,40 @@ way and are unchanged.
    auto-detection (price, opening time) Telegram and the dashboard have, instead of a raw JSON
    body — likely a modal/select-menu flow similar to Discord's existing wallet create/import.
    Natural to bundle with #1 since both need the same Discord component patterns.
+3. **P&L: OpenSea sales-detection (auto-fill the "sale" side).** As of 2026-08-17, every confirmed
+   mint auto-creates its own `pnl_records` row with real cost + gas (`recordMintActivity`/
+   `autoRecordPnl` in `src/server.js`), but `sale` is always left at 0 — there is still no data
+   source anywhere that knows when/for-how-much a minted NFT actually resold. Deferred rather than
+   guessed at, because:
+   - **No token ID is captured from a mint receipt today.** `transactionEngine.js`'s `inspectChain`
+     only reads `gasUsed`/`gasPrice`/`blockNumber` from the receipt — it never parses
+     `receipt.logs` for the ERC-721 `Transfer(address,address,uint256)` mint event, so there's no
+     `(chain, contractAddress, tokenId)` triple recorded per mint to later ask OpenSea "did this
+     specific token sell?" Needed before anything else here: parse that event, add
+     `token_id`/`contract_address` columns (`activity` has neither today), and a new
+     tracking table (one row per minted token, `last_sale_checked_at`/`sold_at`/`sale_price_wei`,
+     linked back to its `pnl_records` row).
+   - **The existing OpenSea integration (`src/mint/openSeaService.js`) has never called a
+     per-token endpoint** — only collection-level floor-price/metadata (`/api/v2/collections/
+     {slug}` and `/stats`). A sales watcher needs OpenSea's per-NFT events endpoint instead, which
+     this codebase has zero prior usage of to pattern-match against.
+   - **Blocked on verification, not on the key existing.** `OPENSEA_API_KEY` is *not* present in
+     this working copy's `.env` (checked directly — 09:30 Aug 16 file, zero matches for that
+     variable name) even though it's genuinely configured somewhere (this file's own "Inputs
+     already provided" section below says it's set, expiring 2026-08-23, and the Section G/K price
+     fallback above clearly required and used it). Most likely a sync gap between this dev copy's
+     `.env` and wherever the bot actually runs (production/Railway), not a missing credential.
+     Before building the sales-watcher parser: get the real key into this environment's `.env` (or
+     run `npm run opensea:refresh-key`) and do a live one-off call against the real per-NFT events
+     endpoint to confirm its exact response shape — do not write the parser from memory of
+     OpenSea's docs alone, the same discipline the rest of this file's OpenSea work already
+     followed.
+   - Worker skeleton to reuse once unblocked: `src/social/socialWatchWorker.js`'s shape
+     (`setInterval` + re-entrancy guard + `health()` + swallow-and-log failures) is the pattern to
+     copy for a new `salesWatchWorker.js`, mirroring `contract_value_cache`'s "NULL value + non-null
+     `resolved_at` = attempted-but-empty, no row = never attempted" caching convention so a
+     per-token poll loop doesn't hammer OpenSea's free-tier ~600 req/h budget it already shares with
+     floor-price lookups.
 
 ## Verification
 
