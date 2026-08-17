@@ -231,19 +231,19 @@ security posture).
 - Unreadable contract price → OpenSea floor offered as one-tap accept, free-text fallback either
   way, on both `/mint` and `/schedule`.
 - `maxPerWallet > 1` now prompts for quantity instead of hardcoding 1.
-- ⚠️→✅ **Key status update (2026-08-17):** the previous note here said the key was gone entirely
-  (production boot log reported `"openSeaConfigured":false` and it was absent from this dev
-  copy's `.env`). Re-checked same day: this dev copy's `.env` now holds a working key (value
-  intentionally not repeated here — this repo is public; see local `.env`, expires 2026-08-23) —
-  confirmed live against `GET /api/v2/collections/{slug}`, returned `200`. **The gap was never the
-  key itself, it was that Railway's production environment variables never had `OPENSEA_API_KEY`
-  set** — `.env` is git-ignored and never deploys, so a locally-refreshed key doesn't reach
-  production on its own. Action needed: copy the key from local `.env` into Railway's service
-  Variables and redeploy/restart so the next boot log shows `openSeaConfigured:true`.
-  `npm run opensea:refresh-key` hit OpenSea's key-creation rate limit while investigating this
-  (`429`, `retry-after` ~87 min from repeated requests across sessions) — usable again after that
-  window. Since Railway vars are separate from local `.env`, every future refresh needs a manual
-  copy into Railway too unless that gets automated.
+- ✅ **Key status resolved (2026-08-17).** Two earlier notes here turned out to both be wrong in
+  sequence: first that the key was "set, expires 2026-08-23" (it wasn't deployed anywhere),
+  then that it was "genuinely gone" (it was actually valid, just missing from Railway). The real
+  gap was that `OPENSEA_API_KEY` had never been added to Railway's production environment
+  variables — `.env` is git-ignored and never deploys, so a locally-refreshed key doesn't reach
+  production on its own. Fixed: the key now matching local `.env` is set on Railway's
+  `GhostMint-Bot-2` production service, and the current production boot log (deployment
+  `f995edd7`, 2026-08-17T05:58:44Z) confirms `"openSeaConfigured":true`. Value intentionally not
+  repeated in this doc — this repo is public; see local `.env` (expires 2026-08-23,
+  `npm run opensea:refresh-key` renews it — that script hit OpenSea's own key-creation rate limit
+  while investigating this and needed a ~87 min cooldown, unrelated to the key's validity). Since
+  Railway vars are separate from local `.env`, every future refresh still needs a manual copy into
+  Railway unless that gets automated.
 - **Deferred follow-on: P&L OpenSea sales-detection (auto-fill the "sale" side).** Every confirmed
   mint auto-creates its own `pnl_records` row with real cost + gas (`recordMintActivity`/
   `autoRecordPnl` in `src/server.js`), but `sale` is always left at 0 — there is still no data
