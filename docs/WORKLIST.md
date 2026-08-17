@@ -125,6 +125,49 @@ way and are unchanged.
 
 ---
 
+## Section L — Dashboard redesign ⏳ specified, not started
+
+Design work is complete and lives in `docs/REDESIGN_BRIEF.md`,
+`docs/REDESIGN_PROMPT.md`, `docs/REDESIGN_DATA_CONTRACT.md` and the prototype
+`docs/ghostmint-redesign-v3.html`. The redesign itself is presentation-layer only
+(`dashboard/src/**`).
+
+Writing the data contract surfaced work that the redesign **cannot** do because it
+would require `src/**` changes. Each item below was deliberately deferred, with the
+UI built in its honest degraded form in the meantime.
+
+1. **`GET /api/admin/health` is unreachable.** Registered in `src/server.js` after
+   `app.use('/api', …404)`, so it always returns "API route not found". The admin
+   System health panel has no data source. **One-line fix: move the route above the
+   catch-all.** Reproduced; see `PROJECT_REVIEW_2026-08-17.md` §1.3.
+2. **No `GET /api/profile/limits`.** A regular user cannot see their own spend
+   ceiling or how much of today's budget they've used, so the daily-budget meter
+   was cut from the redesign (contract §5.1). Would return
+   `{maxTransactionValueWei, dailySpendingBudgetWei, spentTodayWei, gasCeilingGwei}`.
+   **Blocked on item 3** — do not surface `spentTodayWei` until it's correct.
+3. **`rollingSpendWei` under-counts by the full transaction value.** It sums
+   `COALESCE(actual_network_cost_wei, estimated_cost_wei)`, but the actual column
+   holds gas only, so a confirmed transaction's mint value drops out of the 24h
+   total. The daily budget does not currently hold. Highest-severity item in the
+   review; see `PROJECT_REVIEW_2026-08-17.md` §1.1.
+4. **No dashboard routes for `triggerAudit`, `send`, or `transactionsPage`.** All
+   three exist in `botCommandService` and are reachable from Telegram/Discord only.
+   History → Audit evidence and Wallets → Send both ship as explanatory panels
+   pointing at the bots (contract §5.11, §5.10). `send` is a value-moving path and
+   deserves its own review rather than being added alongside a restyle.
+5. **`pnl_records` has no wallet column**, so per-wallet performance cannot be
+   computed — Performance is account-level in the redesign (contract §5.9). Also
+   `activity` has no chain or mint-value column, so the activity feed shows gas
+   only and derives its chain dot from the explorer URL (contract §5.8). Bundles
+   naturally with item 3 of "Still open" below (OpenSea sales detection).
+6. **No historical balance data anywhere**, so the portfolio 7-day delta and
+   sparkline were cut (contract §5.4). Would need a periodic balance snapshot.
+7. **Admin has no volume metric.** `getAdminOverviewMetrics` returns account counts
+   only — no ETH volume, no mint count. The tile now shows `activeAnyPlatform24h`
+   instead (contract §5.2).
+
+---
+
 ## Still open
 
 1. **Section E — Sniper guided config + contract-open auto-detection.** Largest remaining item;
