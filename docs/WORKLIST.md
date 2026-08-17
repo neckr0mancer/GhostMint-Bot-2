@@ -17,8 +17,78 @@ shipped).
   directly rather than surfacing from earlier work; shipped 2026-08-17.
 - **Round 6** (Section AC) differentiates SeaDrop's own revert reasons into plain English instead
   of one generic "would revert" message; shipped 2026-08-17.
+- **Round 7** (Section AD) is a degen-bot-style refreshable collection info card, both platforms —
+  logged 2026-08-17, not started; splits into a cheap tier and a research-first tier, see below.
 
 Status legend: ✅ Done · 🟡 Partial · ❌ Not started
+
+---
+
+# Round 7 — degen-style collection info card, both platforms (2026-08-17)
+
+## Section AD — Refreshable collection info card with market/holder/risk data, both platforms ❌
+
+Reference: a screenshot of a Discord bot ("Lute Synapse") posting a rich embed for a pasted token
+— contract address in a copyable block, socials, **Market Cap / ATH / Volume**, a **Top Holders**
+breakdown (per-wallet % with medal emoji for the largest few), a risk-scoring block ("Lute
+Shield": **Dev Hold %**, **Bundlers %**, **Insiders %**, **Snipers %**, each flagged
+✅/⚠️), and action buttons (Send, Call, 🔄 Refresh, Copy CA, plus one more). Wanted: the same shape
+for NFT **collections** instead of tokens, on both Telegram and Discord.
+
+This splits cleanly into two tiers by how much is actually known right now vs. how much needs
+research before it can even be scoped:
+
+### Tier 1 — buildable from data this app already has or already fetches ❌
+
+- **Market cap equivalent:** floor price × supply is a real computable number from data
+  `detectMintContract`/`openSeaService` already resolve per contract. Needs a decision on what
+  "supply" means for this card — current minted count, or `maxSupply` — since they diverge for an
+  in-progress mint.
+- **Volume (24h/7d/30d/all-time):** confirmed already available for free. `openSeaService.js`'s
+  `fetchCollectionDetails` already calls `GET /collections/{slug}/stats` — live-checked against
+  that real endpoint just now, and its response includes `total.volume`/`total.sales`/
+  `total.num_owners` and an `intervals` array with `one_day`/`seven_day`/`thirty_day` volume and
+  sales, none of which `getCollectionMetadata` currently reads (only `floor_price`/
+  `floor_price_symbol` are kept from this same response today). This is a parsing change, not a
+  new integration.
+- **Holder count / rough concentration proxy:** `total.num_owners` from that same response, against
+  known supply, gives a coarse "supply per holder" signal cheaply. This is **not** the same as the
+  screenshot's actual **per-wallet Top Holders %** breakdown, which needs real per-address
+  ownership data (see Tier 2) — worth being upfront that this is a weaker substitute, not the same
+  feature.
+- **Refreshable card UI + action buttons:** directly buildable on the existing pattern from
+  Sections M/Q/AA (paste an address or OpenSea link → detection → an interactive panel) — a 🔄
+  Refresh button re-running the same lookup, plus collection-relevant actions in place of
+  Send/Call (most obviously **Mint Now**, **Copy CA**, **View on OpenSea**; "Send"/"Call" don't
+  have obvious 1:1 NFT-collection equivalents and need a decision on what replaces them).
+
+### Tier 2 — needs research before scoping, not just building ❌
+
+- **ATH (all-time-high floor price):** OpenSea's stats endpoint (checked above) has no ATH field —
+  only current `floor_price`. Getting a real ATH means this app starting to persist its own
+  floor-price snapshots over time (the current `contractValueRepository` cache is a point-in-time
+  cache with one `resolvedAt`, not a time series) and computing the max after enough history
+  accumulates — or finding a data provider that already tracks NFT collection ATH, unconfirmed
+  whether one exists at a price point that makes sense here.
+- **Top Holders % breakdown (per-wallet, with the top few highlighted):** needs real per-address
+  ownership data for the collection — who owns how many of the minted tokens — which requires a
+  new data source this app has no integration with today (an NFT-ownership/holders API, or
+  building it from raw `Transfer` event history per contract, which is a much heavier lift). Needs
+  research into what's actually available and at what cost before this can be estimated at all.
+- **"Shield"-style risk scoring (Dev Hold / Bundlers / Insiders / Snipers %):** the hardest piece by
+  far. These are sophisticated on-chain forensic signals — dev/team wallet holdings, wallets that
+  minted in the same bundled transaction, wallets connected to the deployer via funding trails,
+  wallets that minted within the first few blocks via automation — none of which this app computes
+  today, and none of which have an obvious existing data source in this codebase (unlike SeaDrop's
+  errors or OpenSea's price API, there's no known verified source to pull this from yet). Before
+  any of this gets scoped: research whether a third-party NFT-security/analytics API already
+  computes these for a reasonable cost, since building wallet-cluster/funding-graph/mint-timing
+  forensics from raw chain data in-house would be a materially larger undertaking than anything
+  else in this file.
+
+**Not started.** Recommend Tier 1 as its own first pass (real value, everything needed is already
+verified as available) with Tier 2 explicitly deferred pending research, rather than blocking the
+whole card on the hardest, least-defined pieces.
 
 ---
 
