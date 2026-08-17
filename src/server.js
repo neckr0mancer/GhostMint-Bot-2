@@ -1230,10 +1230,23 @@ function tgMenu(chatId, { text, replyMarkup, parseMode }) {
   return bot.sendMessage(chatId, String(text), { reply_markup: replyMarkup, parse_mode: parseMode }).catch(e => log('TG: '+safeError(e)));
 }
 
-function tgEditMenu(chatId, messageId, { text, replyMarkup, parseMode }) {
-  if (!bot || !chatId || !messageId) return tgMenu(chatId, { text, replyMarkup, parseMode });
-  return bot.editMessageText(String(text), { chat_id: chatId, message_id: messageId, reply_markup: replyMarkup, parse_mode: parseMode })
-    .catch(() => tgMenu(chatId, { text, replyMarkup, parseMode }));
+// Every menu-button callback (menu:main, menu:wallets, guided-flow step taps that arrive with a
+// real messageId, etc) renders through this. It used to edit whatever messageId the tap reported
+// with no awareness of telegramPanels' single-tracked-anchor bookkeeping below -- so a tap on a
+// message that had stopped being the tracked anchor (because some other interaction, typically a
+// guided flow's text-driven step which always goes through tgRender, created a newer panel in the
+// meantime) edited that old message in place anyway. The chat then showed two live-looking panels:
+// the one just re-edited, sitting above whatever the user had sent since, and the actual current
+// one further down. Routing anything that isn't the still-current, non-stale anchor through
+// tgRender instead collapses this back to the one panel tgRender already tracks -- tgRender sends
+// a fresh message and deletes the stale anchor itself, so there is never more than one live panel.
+function tgEditMenu(chatId, messageId, payload) {
+  if (!bot || !chatId || !messageId) return tgMenu(chatId, payload);
+  const { anchor } = telegramPanels.read(chatId);
+  if (anchor !== messageId || telegramPanels.shouldMove(chatId)) return tgRender(chatId, payload);
+  return bot.editMessageText(String(payload.text), { chat_id: chatId, message_id: messageId, reply_markup: payload.replyMarkup, parse_mode: payload.parseMode })
+    .then(result => { telegramPanels.noteAnchor(chatId, messageId); return result; })
+    .catch(() => tgRender(chatId, payload));
 }
 
 // ── Telegram anchored-menu rendering ─────────────────────────
