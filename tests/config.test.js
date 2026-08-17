@@ -173,6 +173,14 @@ test('accepts a complete Discord configuration and never exposes its token', () 
   assert.doesNotMatch(result.stdout, new RegExp(token));
 });
 
+// DISCORD_DEV_GUILD_ID is what makes it a *development* bot (one guild for registration and the
+// same guild as a hard restriction); a normal bot serving every server it is in leaves it empty.
+test('accepts a Discord configuration with no dev guild, which is the serve-every-server case', () => {
+  const result = probeConfig({ DISCORD_BOT_TOKEN: 'discord-token', DISCORD_APPLICATION_ID: '123456789012345678' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).summary.discordEnabled, true);
+});
+
 test('rejects partial or malformed Discord configuration', () => {
   const partial = probeConfig({ DISCORD_BOT_TOKEN: 'token-only' });
   assert.notEqual(partial.status, 0);

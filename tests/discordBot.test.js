@@ -140,3 +140,60 @@ test('/gas still reports real figures when the provider has data', async () => {
   await handler(input);
   assert.equal(input.replies[0], 'ethereum: gas 12 Gwei, max fee 20 Gwei\\.');
 });
+
+// The dev-guild pairing: DISCORD_DEV_GUILD_ID both scopes registration to one guild and locks every
+// command to it. Leaving it unset has to flip BOTH halves, or the bot ends up with commands visible
+// everywhere that only work in one place (or vice versa).
+test('start registers globally with no dev guild, and guild-scoped with one', async () => {
+  const { createDiscordBot } = require('../src/discord/discordBot');
+  const calls = [];
+  const fakeRest = { put: async (route, payload) => { calls.push({ route, count: payload.body.length }); } };
+  const fakeClient = { on() {}, login: async () => {}, user: { id: 'bot' }, destroy: async () => {} };
+
+  const open = createDiscordBot({ token: 't', applicationId: '123456789012345678', devGuildId: null,
+    identity: {}, commands: {}, client: fakeClient, rest: fakeRest });
+  await open.start();
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].route, /applications\/123456789012345678\/commands$/);
+  assert.equal(calls[0].route.includes('/guilds/'), false);
+  assert.ok(calls[0].count > 0);
+
+  const dev = createDiscordBot({ token: 't', applicationId: '123456789012345678', devGuildId: '223456789012345678',
+    identity: {}, commands: {}, client: fakeClient, rest: fakeRest });
+  await dev.start();
+  assert.match(calls[1].route, /applications\/123456789012345678\/guilds\/223456789012345678\/commands$/);
+  assert.equal(calls[0].count, calls[1].count);
+});
+
+test('with no dev guild a command from any guild is served, and DMs are too', async () => {
+  const handler = createDiscordInteractionHandler({
+    allowedGuildId: null,
+    identity: { resolveOrCreate: async () => 'user-a' },
+    commands: { gas: async () => ({ safeGasPriceGwei: 1, gasPriceGwei: 2, maxFeePerGasGwei: 3 }) },
+    chains: { ethereum: { name: 'Ethereum' } },
+  });
+  const elsewhere = interaction({ commandName: 'gas' });
+  elsewhere.guildId = 'some-other-guild';
+  await handler(elsewhere);
+  assert.ok(elsewhere.replies.length, 'a command from another guild should be answered');
+
+  const dm = interaction({ commandName: 'gas' });
+  dm.guildId = null;
+  dm.channelId = 'dm-channel';
+  await handler(dm);
+  assert.ok(dm.replies.length, 'a DM should be answered when no dev guild is configured');
+});
+
+test('with a dev guild set, a command from a different guild is still refused', async () => {
+  let resolved = false;
+  const handler = createDiscordInteractionHandler({
+    allowedGuildId: 'guild',
+    identity: { resolveOrCreate: async () => { resolved = true; return 'user-a'; } },
+    commands: { gas: async () => ({ safeGasPriceGwei: 1, gasPriceGwei: 2, maxFeePerGasGwei: 3 }) },
+    chains: { ethereum: { name: 'Ethereum' } },
+  });
+  const outsider = interaction({ commandName: 'gas' });
+  outsider.guildId = 'not-the-dev-guild';
+  await handler(outsider);
+  assert.equal(resolved, false, 'an unauthorized guild must not even resolve an identity');
+});

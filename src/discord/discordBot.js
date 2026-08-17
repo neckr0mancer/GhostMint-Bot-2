@@ -998,14 +998,23 @@ function createDiscordBot({ token, applicationId, devGuildId, identity, commands
   // messageCreate listener (Section AA's paste-to-flow trigger) so a flow started by one is
   // visible to the other -- they'd otherwise be two independent, non-communicating stores.
   const flowState = createFlowStateStore();
-  discordClient.on('interactionCreate', createDiscordInteractionHandler({ identity, commands, allowedGuildId:devGuildId,
+  discordClient.on('interactionCreate', createDiscordInteractionHandler({ identity, commands, allowedGuildId:devGuildId || null,
     securityAudit,rateLimiter,log,isOwner,checkAccountStatus,supportedChains,chains,flowState }));
   discordClient.on('messageCreate', message =>
-    handleMintPasteMessage({ identity, commands, flowState, chains, rateLimiter, checkAccountStatus, allowedGuildId: devGuildId }, message));
+    handleMintPasteMessage({ identity, commands, flowState, chains, rateLimiter, checkAccountStatus, allowedGuildId: devGuildId || null }, message));
   return {
     client: discordClient,
+    // devGuildId set = development bot: commands register to that one guild only (which is instant,
+    // where global registration can take up to an hour to propagate) and allowedGuildId above locks
+    // every command to it. Unset = commands register globally, so the bot serves every server it is
+    // in plus DMs. Registering global commands does NOT remove commands previously registered to a
+    // guild -- Discord keeps the two sets independently and shows both, so switching from a dev
+    // guild to global means clearing that guild's commands or they appear twice.
     async start() {
-      await api.put(Routes.applicationGuildCommands(applicationId, devGuildId), { body: commandDefinitions() });
+      const route = devGuildId
+        ? Routes.applicationGuildCommands(applicationId, devGuildId)
+        : Routes.applicationCommands(applicationId);
+      await api.put(route, { body: commandDefinitions() });
       await discordClient.login(token);
       return discordClient.user;
     },

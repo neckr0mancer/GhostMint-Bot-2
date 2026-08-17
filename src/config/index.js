@@ -268,10 +268,17 @@ function parseTelegram() {
 function parseDiscord() {
   const botToken = optionalString('DISCORD_BOT_TOKEN');
   const applicationId = optionalString('DISCORD_APPLICATION_ID');
+  // Optional, and it does two things at once when set: slash commands register to that one guild
+  // (instant, instead of global registration's propagation delay) AND every command is restricted
+  // to it. That pairing is what makes it a *dev* guild. Leave it empty for a bot that serves every
+  // server it has been added to, plus DMs -- see createDiscordBot's start().
   const devGuildId = optionalString('DISCORD_DEV_GUILD_ID');
-  const values = [botToken, applicationId, devGuildId];
+  const values = [botToken, applicationId];
   if (values.some(Boolean) && !values.every(Boolean)) {
-    throw new ConfigurationError('DISCORD_BOT_TOKEN, DISCORD_APPLICATION_ID, and DISCORD_DEV_GUILD_ID must be configured together');
+    throw new ConfigurationError('DISCORD_BOT_TOKEN and DISCORD_APPLICATION_ID must be configured together');
+  }
+  if (devGuildId && !botToken) {
+    throw new ConfigurationError('DISCORD_DEV_GUILD_ID requires DISCORD_BOT_TOKEN and DISCORD_APPLICATION_ID');
   }
   for (const [name, value] of [['DISCORD_APPLICATION_ID', applicationId], ['DISCORD_DEV_GUILD_ID', devGuildId]]) {
     if (value && !/^\d{17,20}$/.test(value)) throw new ConfigurationError(`${name} must be a valid Discord snowflake`);
