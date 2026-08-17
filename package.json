@@ -28,6 +28,7 @@
     "opensea:refresh-key": "node scripts/refresh-opensea-key.js"
   },
   "dependencies": {
+    "@vitejs/plugin-react": "^6.0.5",
     "axios": "^1.6.0",
     "cors": "^2.8.5",
     "discord.js": "^14.27.0",
@@ -38,12 +39,11 @@
     "pg": "^8.16.3",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
+    "vite": "^8.2.1",
     "ws": "^8.21.3"
   },
   "devDependencies": {
-    "@vitejs/plugin-react": "^6.0.5",
-    "eslint": "^9.39.1",
-    "vite": "^8.2.1"
+    "eslint": "^9.39.1"
   },
   "engines": {
     "node": "24.x"
