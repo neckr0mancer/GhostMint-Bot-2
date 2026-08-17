@@ -62,33 +62,65 @@ research before it can even be scoped:
   Send/Call (most obviously **Mint Now**, **Copy CA**, **View on OpenSea**; "Send"/"Call" don't
   have obvious 1:1 NFT-collection equivalents and need a decision on what replaces them).
 
-### Tier 2 — needs research before scoping, not just building ❌
+### Tier 2 — research complete (2026-08-17); real findings below, nothing built yet ❌
 
-- **ATH (all-time-high floor price):** OpenSea's stats endpoint (checked above) has no ATH field —
-  only current `floor_price`. Getting a real ATH means this app starting to persist its own
-  floor-price snapshots over time (the current `contractValueRepository` cache is a point-in-time
-  cache with one `resolvedAt`, not a time series) and computing the max after enough history
-  accumulates — or finding a data provider that already tracks NFT collection ATH, unconfirmed
-  whether one exists at a price point that makes sense here.
-- **Top Holders % breakdown (per-wallet, with the top few highlighted):** needs real per-address
-  ownership data for the collection — who owns how many of the minted tokens — which requires a
-  new data source this app has no integration with today (an NFT-ownership/holders API, or
-  building it from raw `Transfer` event history per contract, which is a much heavier lift). Needs
-  research into what's actually available and at what cost before this can be estimated at all.
-- **"Shield"-style risk scoring (Dev Hold / Bundlers / Insiders / Snipers %):** the hardest piece by
-  far. These are sophisticated on-chain forensic signals — dev/team wallet holdings, wallets that
-  minted in the same bundled transaction, wallets connected to the deployer via funding trails,
-  wallets that minted within the first few blocks via automation — none of which this app computes
-  today, and none of which have an obvious existing data source in this codebase (unlike SeaDrop's
-  errors or OpenSea's price API, there's no known verified source to pull this from yet). Before
-  any of this gets scoped: research whether a third-party NFT-security/analytics API already
-  computes these for a reasonable cost, since building wallet-cluster/funding-graph/mint-timing
-  forensics from raw chain data in-house would be a materially larger undertaking than anything
-  else in this file.
+- **ATH (all-time-high floor price): no data source exists anywhere, confirmed.** OpenSea's stats
+  endpoint has no ATH field, only current `floor_price` (checked above). Alchemy's `getFloorPrice`
+  is confirmed current-only too (5–15 min cache, no history). The only path is this app starting
+  to persist its own floor-price snapshots over time (the current `contractValueRepository` cache
+  is point-in-time, not a time series) — meaning any ATH this app ever shows would only cover
+  "highest since GhostMint started tracking it," not a collection's real all-time high, unless a
+  specialized paid NFT-analytics dashboard with real historical data turns out to have an
+  affordable API (not checked — a distinct, separate research task if this matters enough to
+  pursue).
+- **Top Holders % breakdown: no via OpenSea, yes via Alchemy (confirmed).** OpenSea's per-asset/
+  ownership endpoints (`/chain/{chain}/contract/{address}/nfts`) live-tested with this app's real
+  key and returned `401 Invalid API key` — confirmed gated behind a higher tier than the free
+  self-issued key `openSeaService.js` uses, unlike the collection-metadata/stats endpoints already
+  in use. **Alchemy's NFT API `getOwnersForContract` does exactly this** (owner address + token
+  balance per owner, i.e. exactly what's needed to compute top-N holder %) — confirmed via current
+  docs, with a real free tier (100k requests/month, 1000 req/min) as of this check. This is a new
+  vendor integration (one new free Alchemy account/key) but a concretely available one, not a dead
+  end.
+- **"Shield"-style risk scoring (Dev Hold / Bundlers / Insiders / Snipers %): no vendor exists for
+  NFTs — confirmed, this is a token/DEX-launch concept, not an NFT one.** Searched specifically;
+  every platform that offers this exact scoring (Trojan, Photon, BullX, GMGN, BonkBot — the same
+  category the screenshot's "Lute" bot belongs to) does it for Solana/EVM **token** launches
+  against AMM liquidity-pool creation, not NFT mints. Nothing surfaced offering it for NFT
+  collections. **But the raw on-chain data to build a scoped version in-house is already
+  reachable with infrastructure this app has today, live-verified**: this app's existing
+  `ETHERSCAN_API_KEY` (already used for gas — `src/gas/etherscanGasService.js`) can pull raw
+  `Transfer` event logs (`module=logs&action=getLogs`) for any contract on every Etherscan V2
+  chain this app supports — tested live against a real contract just now, returned real log data
+  including block timestamp and transaction hash. That reframes the four metrics into very
+  different difficulty levels, not one uniform "hard" bucket:
+  - **Dev Hold — cheap.** Current balance of the deployer/team wallet (found via the contract's
+    creator, itself an Etherscan API lookup) is a single `balanceOf` call.
+  - **Snipers — cheap.** Mint-event block timestamps (already in the log data above) compared
+    against the drop's own known `startTime` (SeaDrop's `PublicDrop.startTime`, which this app
+    already reads) directly identifies wallets that minted within N seconds/blocks of opening —
+    no new data source needed at all.
+  - **Bundlers — cheap, if defined strictly as "same transaction."** Grouping the same mint-event
+    logs by `transactionHash` directly shows multiple recipients minted in one transaction — no
+    additional lookups. (A looser "same funding wallet across several separate transactions"
+    definition, closer to what token scanners actually mean by "bundler," is the expensive
+    version below.)
+  - **Insiders — the genuinely expensive one.** Either tracing each top-holder wallet's own
+    funding transaction backward (who sent it its first ETH, and when, relative to the deployer) —
+    roughly one extra lookup per wallet checked, scaling with how many wallets get analyzed — or
+    decoding *other* minters' calldata to tell a private/allowlist-stage mint from a public one,
+    which needs this app to also know SeaDrop's `mintAllowList`/`mintSigned` signatures (it
+    currently only constructs `mintPublic` calls; reading someone else's differently-shaped mint
+    tx is a different, currently-unbuilt capability).
+- **Net finding:** a scoped version of this section — Dev Hold + Sniper % + strict same-tx
+  Bundler %, using only the Etherscan key this app already has — is realistically buildable without
+  any new vendor account. Real Top Holders % needs one new (free) Alchemy account. True ATH and
+  the funding-trail definition of Insiders remain the two genuinely open-ended pieces.
 
 **Not started.** Recommend Tier 1 as its own first pass (real value, everything needed is already
-verified as available) with Tier 2 explicitly deferred pending research, rather than blocking the
-whole card on the hardest, least-defined pieces.
+verified as available), then a scoped Tier 2 covering Dev Hold/Sniper/same-tx-Bundler (zero new
+accounts) and Top Holders (one new free Alchemy account) as a second pass, leaving true ATH and
+funding-trail Insiders explicitly deferred rather than blocking on them.
 
 ---
 
