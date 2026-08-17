@@ -15,6 +15,7 @@ const {createDashboardAuthService}=require('./dashboard/authService');
 const {createDashboardSessionRepository}=require('./dashboard/sessionRepository');
 const {createDashboardWebSocketHub}=require('./dashboard/webSocketHub');
 const { createEtherscanGasService } = require('./gas/etherscanGasService');
+const { createGasService } = require('./gas/gasService');
 const { createReadinessService } = require('./health/readinessService');
 const { createIdentityService } = require('./identity/identityService');
 const { createPostgresIdentityRepository } = require('./identity/postgresIdentityRepository');
@@ -100,11 +101,14 @@ const providerService = createProviderService({
   timeoutMs: CONFIG.rpcTimeoutMs,
   retries: CONFIG.rpcRetries,
 });
-const gasService = createEtherscanGasService({
+const etherscanGasService = createEtherscanGasService({
   apiKey: CONFIG.etherscanApiKey,
   chains: CHAINS,
   timeoutMs: CONFIG.rpcTimeoutMs,
 });
+// Falls back to the chain's own RPC when Etherscan has no data for it (confirmed true for
+// Robinhood Chain today) -- see src/gas/gasService.js.
+const gasService = createGasService({ etherscanService: etherscanGasService, providerService, chains: CHAINS });
 const mintPresetRepository = createPostgresMintPresetRepository(pool);
 const mintService = createMintService({
   presetRepository: mintPresetRepository,
