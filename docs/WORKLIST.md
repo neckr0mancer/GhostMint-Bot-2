@@ -10,8 +10,46 @@ shipped).
 - **Round 2** (Sections L–S) is the newer batch of requirements, not yet started.
 - **Round 3** (Sections T–Z) is candidate work sourced from studying an external reference project,
   not yet scoped or estimated.
+- **Round 4** (Section AA) is a follow-up requirement raised while shipping Round 2's Section Q,
+  not yet started.
 
 Status legend: ✅ Done · 🟡 Partial · ❌ Not started
+
+---
+
+# Round 4 — Discord guided mint flow (2026-08-17)
+
+## Section AA — Discord guided mint flow via pasted text/link, with real wallet/quantity picking ❌
+
+Section Q (below) added OpenSea-link acceptance to Discord's bare-content detector, but that
+detector is still read-only — it shows contract details and stops. Discord has no equivalent of
+Telegram's `mint_guided` flow, so there's nowhere for a pasted address or link to lead beyond the
+preview: no step-by-step wallet or quantity picking for the ambiguous cases (multiple wallets,
+`maxPerWallet > 1`, unknown price), the exact gap called out while scoping Section Q's Discord
+side. Explicit product decision: build the real guided flow, not the smaller one-shot-command
+fallback that was also on the table (a `!mint <address>` text command auto-executing only when a
+single wallet and known price make it unambiguous, falling back to "use `/mint` with these
+options" otherwise).
+
+- **Goal:** pasting a bare address or an OpenSea link on Discord — the same trigger Section Q
+  already recognizes — starts a real stateful mint flow with wallet and quantity picking, not just
+  a preview. `/mint` with no options should reach the same flow.
+- **Design sketch (from scoping conversation, not yet built):**
+  - Reuse `src/telegram/flowState.js` the way Discord's guided wallet create/import already does
+    (Milestone 15c) — keyed by `('discord', chatId)`, same TTL/sweep behavior, no new store.
+  - Mirror Telegram's `mint_guided` step shape (`awaiting_quantity` → `awaiting_wallet` →
+    `awaiting_price` → `awaiting_confirm`) and its Section M one-shot-popup behavior (skip
+    straight to whichever step is actually needed, no dead "here's the contract" screen), but
+    rendered as Discord embeds + buttons/select-menus instead of Telegram inline keyboards.
+  - Every step still ends by calling the exact same `botCommandService` functions
+    (`detectMintContract`, `resolveMintContractInput`, `mint`) the slash command and Telegram
+    already use — no parallel validation or execution path, per this file's and `ROADMAP.md`'s
+    existing rule for every guided step on every platform.
+  - Natural to bundle with **Section O** (Discord's `menu:mint` button is currently a placeholder
+    pointing at the slash command — this flow is what it should actually open) and **Section S**
+    (same Discord modal/select-menu component patterns needed for guided task-schedule).
+- Not started. Scope is closer to "give Discord a mint_guided" than a small follow-up fix — sized
+  accordingly rather than folded silently into Section Q's commit.
 
 ---
 
@@ -275,6 +313,8 @@ its collection/contract, then continue into the normal contract/mint workflow.
   one direct value-bearing call with no intermediate detection step to hook a resolution into
   without changing that command's shape — a larger, separate decision than "accept a link
   wherever an address already works."
+- That read-only detector also has no step-by-step wallet/quantity picking to hand off to once a
+  contract resolves — **Section AA** (Round 4, below) is the tracked follow-up to build that.
 - ✅ The OpenSea-key blocker noted here previously is resolved (see Section G + K) — production
   has a working `OPENSEA_API_KEY`, so this isn't shipping degraded.
 - Verified: `npm run check`, `npm run lint`, and 26 new/updated tests across
