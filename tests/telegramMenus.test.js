@@ -104,9 +104,9 @@ test('contract details renders every known field and degrades gracefully with no
     contractAddress: '0xdef', chainLabel: 'Base', isSeaDrop: false, priceUnknown: true,
     maxSupply: null, maxPerWallet: null, startTime: null, collection: null, soldOut: false, displayPrice: null,
   });
-  assert.match(minimal.text, /Contract details/);
+  assert.match(minimal.text, /The Deets/);
   assert.match(minimal.text, /Standard mint\(uint256\)/);
-  assert.match(minimal.text, /not exposed by this contract/);
+  assert.match(minimal.text, /not determinable/);
   assert.equal(minimal.text.includes('Max per wallet'), false);
   assert.equal(minimal.text.includes('Opens'), false);
 });
@@ -136,7 +136,7 @@ test('a sold-out collection shows the OpenSea floor price instead of the mint pr
     maxSupply: null, maxPerWallet: null, startTime: null, collection: null,
     soldOut: true, displayPrice: { eth: 0.3, usd: 900, source: 'floor' },
   });
-  assert.match(details.text, /Status: Sold out — floor price 0\.3 ETH \(~\$900\.00\)/);
+  assert.match(details.text, /Status: Sold out, ser\. Floor's sitting at 0\.3 ETH \(~\$900\.00\)/);
   assert.equal(details.text.includes('Price: 0.05 per item'), false);
 });
 
@@ -146,7 +146,7 @@ test('a sold-out collection with a genuine floor price of 0 shows 0, not "unavai
     maxSupply: null, maxPerWallet: null, startTime: null, collection: null,
     soldOut: true, displayPrice: { eth: 0, usd: 0, source: 'floor' },
   });
-  assert.match(details.text, /Status: Sold out — floor price 0 ETH \(~\$0\.00\)/);
+  assert.match(details.text, /Status: Sold out, ser\. Floor's sitting at 0 ETH \(~\$0\.00\)/);
   assert.equal(details.text.includes('unavailable'), false);
 });
 
@@ -156,7 +156,7 @@ test('a sold-out collection with no OpenSea floor data at all says so plainly', 
     maxSupply: null, maxPerWallet: null, startTime: null, collection: null,
     soldOut: true, displayPrice: null,
   });
-  assert.match(details.text, /Status: Sold out — floor price unavailable/);
+  assert.match(details.text, /Status: Sold out, and the floor price ghosted us too/);
 });
 
 test('a missing USD price omits the parenthetical entirely rather than showing $NaN', () => {
@@ -237,7 +237,7 @@ test('gasTolerancePrompt shows the live gas price for context and offers a no-li
 
 test('gasTolerancePrompt says plainly when the live gas price could not be fetched, instead of showing a broken number', () => {
   const prompt = gasTolerancePrompt({ currentGasGwei: null, ceilingGwei: 50 });
-  assert.match(prompt.text, /Current network gas price is unavailable right now/);
+  assert.match(prompt.text, /Current network gas price is MIA right now/);
   assert.equal(prompt.text.includes('null'), false);
 });
 
@@ -263,7 +263,7 @@ test('task confirmation appends a USD equivalent to the price when a displayPric
     mintTime: '2026-08-20T18:00:00.000Z', autoDetectedTime: false, priceETH: 0.1, priceUnknown: false,
     displayPrice: { eth: 0.1, usd: 300, source: 'mint' },
   });
-  assert.match(withUsd.text, /Price: 0\.1 per item \(read from the contract\) \(~\$300\.00\)/);
+  assert.match(withUsd.text, /Price: 0\.1 per item \(straight from the contract\) \(~\$300\.00\)/);
   const withoutUsd = taskConfirmation({
     name: 'drop', contractAddress: '0xabc', chainLabel: 'Ethereum', walletLabel: 'main',
     mintTime: '2026-08-20T18:00:00.000Z', autoDetectedTime: false, priceETH: 0.1, priceUnknown: false,
