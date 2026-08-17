@@ -162,6 +162,101 @@ function walletSelect(wallets, { customId, emptyHint }) {
   return { content: 'Choose a wallet:', components: [select(customId, options, 'Select a wallet'), row([button('⬅️ Back to menu', 'menu:wallets')])] };
 }
 
+// Watch-rule guided create flow -- Discord counterpart to the Telegram menu functions of the same
+// shape, sharing src/social/watchRuleFlowDecision.js for the "what config field is next" core.
+const WATCH_TYPE_META = {
+  twitter_account: { label: 'Twitter — Account' },
+  twitter_keyword: { label: 'Twitter — Keyword' },
+  discord_channel: { label: 'Discord — Channel' },
+  discord_keyword: { label: 'Discord — Keyword' },
+  farcaster_account: { label: 'Farcaster — Account' },
+  farcaster_keyword: { label: 'Farcaster — Keyword' },
+};
+const WATCH_METHOD_META = {
+  official_api: { label: 'Official API', description: "direct platform API using this bot's credentials" },
+  managed_service: { label: 'Managed service', description: 'an operator-selected gateway; no credentials needed' },
+  scraper: { label: 'Scraper URL', description: 'a credential-free HTTP(S) URL you provide' },
+};
+
+function watchTypeSelect() {
+  const options = Object.entries(WATCH_TYPE_META).map(([type, meta]) => ({ label: meta.label, value: type }));
+  return {
+    content: 'What do you want to watch?',
+    components: [select('flow:watchtype:select', options, 'Select what to watch'), row([button('❌ Cancel', 'flow:cancel:ask', 'danger')])],
+  };
+}
+
+function watchMethodSelect() {
+  const options = Object.entries(WATCH_METHOD_META).map(([method, meta]) => ({ label: meta.label, value: method, description: meta.description }));
+  return {
+    content: 'How should this rule get its data?',
+    components: [select('flow:watchmethod:select', options, 'Select a method'), row([button('❌ Cancel', 'flow:cancel:ask', 'danger')])],
+  };
+}
+
+// Collects every remaining config field (at most 2 for any type/method combination today: one
+// type-specific field plus sourceUrl for the scraper method) in a single modal, rather than one
+// modal per field -- Discord modals can only be opened in response to a component interaction,
+// not chained directly off another modal's submission, so one combined modal sidesteps that
+// entirely instead of relying on it. `prompts` is CONFIG_FIELD_PROMPTS from
+// src/social/watchRuleFlowDecision.js, passed in by the caller so this file doesn't need to
+// import across from src/social/ -- mirrors how server.js does the same lookup for Telegram's
+// menus.js.
+function watchConfigModal(fields, prompts) {
+  const rows = fields.slice(0, 5).map(field => {
+    const meta = prompts[field] || { label: field, hint: '' };
+    return row([{
+      type: TEXT_INPUT, custom_id: field, style: TEXT_STYLE.short,
+      label: meta.label.slice(0, 45), placeholder: meta.hint.slice(0, 100), required: true,
+      max_length: field === 'keywords' ? 500 : field === 'sourceUrl' ? 2048 : 100,
+    }]);
+  });
+  return { custom_id: 'flow:watchconfig:submit', title: 'Watch rule details', components: rows };
+}
+
+function watchRuleConfirmation({ name, type, method, config }) {
+  const configLines = Object.entries(config || {})
+    .filter(([, value]) => value !== undefined && (!Array.isArray(value) || value.length))
+    .map(([key, value]) => `${key}: ${Array.isArray(value) ? value.join(', ') : String(value)}`)
+    .join('\n');
+  return {
+    content: `**Confirm watch rule**\nName: ${name}\nWatching: ${WATCH_TYPE_META[type]?.label || type}\nMethod: ${WATCH_METHOD_META[method]?.label || method}\n${configLines}\n\nCreate this rule?`,
+    components: [row([button('✅ Create rule', 'flow:watchconfirm', 'success'), button('❌ Cancel', 'flow:cancel:ask', 'danger')])],
+  };
+}
+
+function watchRulesList(rules) {
+  if (!rules.length) {
+    return { content: 'No social watch rules yet.', components: [row([button('➕ Add a watch rule', 'watch:add:start', 'success')]), row([button('⬅️ Back to menu', 'menu:main')])] };
+  }
+  const options = rules.map(rule => ({ label: `${rule.enabled ? '🟢' : '⚪'} ${rule.name}`.slice(0, 100), value: rule.id }));
+  return {
+    content: 'Your social watch rules:',
+    components: [select('watch:manage:select', options, 'Select a rule to manage'), row([button('➕ Add a watch rule', 'watch:add:start', 'success')]), row([button('⬅️ Back to menu', 'menu:main')])],
+  };
+}
+
+function watchRuleActions(rule) {
+  return {
+    content: `**${rule.name}**\nStatus: ${rule.enabled ? '🟢 enabled' : '⚪ disabled'}\nWatching: ${WATCH_TYPE_META[rule.type]?.label || rule.type}\nMethod: ${WATCH_METHOD_META[rule.method]?.label || rule.method}\nID: \`${rule.id}\``,
+    components: [
+      row([button(rule.enabled ? '⏸ Disable' : '▶️ Re-enable', `watch:toggle:${rule.id}`)]),
+      row([button('🗑️ Remove', `watch:remove:ask:${rule.id}`, 'danger')]),
+      row([button('⬅️ Back to list', 'watch:list')]),
+    ],
+  };
+}
+
+function confirmRemoveWatchRule(rule) {
+  return {
+    content: `Remove watch rule **${rule.name}**? This cannot be undone.`,
+    components: [row([
+      button('✅ Yes, remove it', `watch:remove:do:${rule.id}`, 'danger'),
+      button('❌ No, keep it', `watch:manage:${rule.id}`),
+    ])],
+  };
+}
+
 function confirmCancelPrompt(flowLabel) {
   return {
     content: `You're in the middle of **${flowLabel}**. Leave it and go back to the menu? Your progress will be cleared.`,
@@ -197,4 +292,6 @@ module.exports = {
   button, row, select, mainMenu, walletsMenu, settingsMenu, placeholderMenu,
   chainSelect, walletSelect, confirmCancelPrompt, confirmRemoveWallet, labelModal,
   contractDetailsText, mintQuantitySelect, mintPriceStep, mintConfirmation, numberModal,
+  watchTypeSelect, watchMethodSelect, watchConfigModal, watchRuleConfirmation,
+  watchRulesList, watchRuleActions, confirmRemoveWatchRule,
 };

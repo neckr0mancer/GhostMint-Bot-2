@@ -13,8 +13,68 @@ shipped).
   not yet scoped or estimated.
 - **Round 4** (Section AA) is a follow-up requirement raised while shipping Round 2's Section Q;
   shipped 2026-08-17.
+- **Round 5** (Section AB) is a guided watch-rule create/manage flow on both platforms, requested
+  directly rather than surfacing from earlier work; shipped 2026-08-17.
 
 Status legend: ✅ Done · 🟡 Partial · ❌ Not started
+
+---
+
+# Round 5 — guided watch-rule flow, both platforms (2026-08-17)
+
+## Section AB — Guided social watch-rule create + manage flow on Telegram and Discord ✅
+
+Both platforms' `menu:watch` were plain placeholders pointing at `/watch add|edit|disable|remove|
+list`, which requires typing raw JSON to create a rule (`{"type":"twitter_account","method":
+"official_api","config":{"handle":"..."}}`) and knowing a rule's UUID to disable/remove one.
+Requested directly: a real guided flow on both platforms, comparable in scope to Section AA.
+
+- **Shared decision core** (`src/social/watchRuleFlowDecision.js`): `configFieldsForType(type)`
+  maps each of the 6 watch-rule types to the config field(s) it needs (`handle` for
+  `twitter_account`/`farcaster_account`, `channelId` for `discord_channel`, `keywords` for the
+  three keyword types), plus a shared `CONFIG_FIELD_PROMPTS` label/hint per field the `scraper`
+  method's `sourceUrl` field is appended to. Both platforms' flows call this instead of
+  hand-duplicating which fields a type needs — the Section AA lesson applied up front this time
+  rather than discovered after the fact.
+- **Telegram** (`server.js`, new `watch_guided` flow): name (free text) → type (inline buttons) →
+  method (inline buttons, with a one-line description of what each means) → config field(s) one at
+  a time via `nextConfigField` (free text, reusing the same edit-in-place panel every other
+  Telegram flow uses) → confirm. `menu:watch` now shows a real list (`watchRulesList`) instead of
+  the placeholder; tapping a rule opens Disable/Re-enable/Remove actions
+  (`watchRuleActions`/`confirmRemoveWatchRule`).
+- **Discord** (`discordBot.js`, new `watch_guided` flow): same shape, Discord-idiomatic —
+  name via modal, type and method via select menus, then **one combined modal** for every
+  remaining config field (at most 2: the type's own field plus `sourceUrl` for `scraper`) rather
+  than one modal per field. Deliberate: Discord modals can only be opened in response to a normal
+  component interaction, not chained directly off another modal's submission, so collecting
+  multiple fields in a single modal sidesteps that constraint entirely instead of relying on
+  cross-version support for chained modals. Every step here is reached from an already-ephemeral
+  message (`/menu` or `menu:watch`), exactly like wallet create/import — none of Section AA's
+  public-message/ownership handling was needed, since that was specific to the mint flow's
+  paste-triggered entry point.
+- **Re-enable, not just disable:** `updateWatchRule(id, {enabled: true})` wired to a toggle button
+  alongside Disable — the underlying patch endpoint already supported this, it just had no UI
+  surface on either platform before now.
+- **Explicitly out of scope, not silently dropped:** editing an existing rule's type/method/config
+  after creation stays on the raw `/watch edit <id> <json>` form. Showing current values and
+  routing to the right step per field is a materially different (and larger) shape than "collect
+  these fields once" — list/disable/re-enable/remove covers the rest of the CRUD surface without
+  it. `discord_keyword`'s optional `channelIds` restriction (watch only specific channels) also
+  isn't collected by the guided flow; the rule applies to all channels unless edited by hand.
+- Verified: `npm run check`, `npm run lint`, `npm run check:discord-menu`, and the full relevant
+  suite (148 tests) — `tests/watchRuleFlowDecision.test.js` (5 tests, shared core) and
+  `tests/discordWatchFlow.test.js` (8 tests: full create happy path per type shape, the
+  single-combined-modal behavior for `scraper`, empty-field rejection, list/manage/toggle/remove,
+  cancel-confirmation, and a `ValidationError` surfacing cleanly). No direct Telegram-side test —
+  matches this file's existing precedent that `server.js`'s Telegram flow logic has no test harness
+  today (Section L/M/Q shipped the same way); the shared decision core's own tests cover the
+  branching Telegram and Discord both depend on.
+- Found and fixed in passing, not part of this section's scope: Discord's `/gas` command had no
+  graceful-degradation catch (unlike Telegram's), so any provider failure showed a generic
+  "Command failed safely" instead of a clear per-chain message — fixed separately (`a646a0c`).
+  Etherscan's gas oracle has no data for Robinhood Chain at all (confirmed live against
+  `api.etherscan.io/v2/chainlist`) — a chain-RPC fallback for that was also shipped separately
+  (`b0e0e5d`), not part of this feature.
 
 ---
 
@@ -323,8 +383,12 @@ rest are still placeholder screens that just tell the user to go type a command:
 
 | Surface | Buttons still telling the user to type a command |
 |---|---|
-| Telegram | `menu:snipers`, `menu:watch`, `menu:activity`, `menu:admin` |
-| Discord | `menu:mint`, `menu:tasks`, `menu:snipers`, `menu:watch`, `menu:activity`, `menu:gas`, `menu:admin` |
+| Telegram | `menu:snipers`, `menu:activity`, `menu:admin` |
+| Discord | `menu:mint`, `menu:tasks`, `menu:snipers`, `menu:activity`, `menu:gas`, `menu:admin` |
+
+`menu:watch` is done on both platforms — see **Section AB** below; it went well past "make the
+button call the same function" into a full guided create flow plus list/manage actions, so it's
+tracked as its own section rather than folded into this row.
 
 Discord's menu is substantially further behind than Telegram's — effectively every entry is a
 placeholder there.

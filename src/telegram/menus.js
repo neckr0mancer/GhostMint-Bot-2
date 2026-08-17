@@ -265,6 +265,87 @@ function mintConfirmation({ contractAddress, chainLabel, walletLabels, quantity 
   };
 }
 
+// Watch-rule guided create flow (mirrors src/social/watchRuleFlowDecision.js's step ordering).
+const WATCH_TYPE_META = {
+  twitter_account: { label: '🐦 Twitter — Account', hint: 'watch everything one X/Twitter account posts' },
+  twitter_keyword: { label: '🐦 Twitter — Keyword', hint: 'watch X/Twitter for matching keywords' },
+  discord_channel: { label: '💬 Discord — Channel', hint: 'watch every message in one Discord channel' },
+  discord_keyword: { label: '💬 Discord — Keyword', hint: 'watch Discord for matching keywords' },
+  farcaster_account: { label: '🟣 Farcaster — Account', hint: 'watch everything one Farcaster account casts' },
+  farcaster_keyword: { label: '🟣 Farcaster — Keyword', hint: 'watch Farcaster for matching keywords' },
+};
+const WATCH_METHOD_META = {
+  official_api: { label: '🔑 Official API', hint: 'direct platform API using this bot’s configured credentials' },
+  managed_service: { label: '🌐 Managed service', hint: 'an operator-selected gateway; no credentials needed here' },
+  scraper: { label: '🔗 Scraper URL', hint: 'a credential-free HTTP(S) URL you provide' },
+};
+
+function watchTypeSelect() {
+  const rows = Object.entries(WATCH_TYPE_META).map(([type, meta]) => [button(meta.label, `flow:watchtype:${type}`)]);
+  rows.push([button('❌ Cancel', 'flow:cancel:ask')]);
+  return { text: 'What do you want to watch?', replyMarkup: keyboard(rows), parseMode: 'HTML' };
+}
+
+function watchMethodSelect(type) {
+  const rows = Object.entries(WATCH_METHOD_META).map(([method, meta]) => [button(meta.label, `flow:watchmethod:${method}`)]);
+  rows.push([button('❌ Cancel', 'flow:cancel:ask')]);
+  const typeLabel = WATCH_TYPE_META[type]?.label || type;
+  return { text: `<b>${escapeTelegramHtml(typeLabel)}</b>\n\nHow should this rule get its data?\n${Object.values(WATCH_METHOD_META).map(meta => `• <b>${meta.label}</b> — ${meta.hint}`).join('\n')}`, replyMarkup: keyboard(rows), parseMode: 'HTML' };
+}
+
+function watchConfigPrompt(field, hint) {
+  return { text: `Send the ${escapeTelegramHtml(field)}: ${escapeTelegramHtml(hint)}`, replyMarkup: keyboard([[button('❌ Cancel', 'flow:cancel:ask')]]), parseMode: 'HTML' };
+}
+
+function watchRuleConfirmation({ name, type, method, config }) {
+  const configLines = Object.entries(config || {})
+    .filter(([, value]) => value !== undefined && (!Array.isArray(value) || value.length))
+    .map(([key, value]) => `${key}: ${escapeTelegramHtml(Array.isArray(value) ? value.join(', ') : String(value))}`)
+    .join('\n');
+  return {
+    text: `<b>Confirm watch rule</b>\nName: ${escapeTelegramHtml(name)}\nWatching: ${WATCH_TYPE_META[type]?.label || type}\nMethod: ${WATCH_METHOD_META[method]?.label || method}\n${configLines}\n\nCreate this rule?`,
+    replyMarkup: keyboard([[button('✅ Create rule', 'flow:watchconfirm')], [button('❌ Cancel', 'flow:cancel:ask')]]),
+    parseMode: 'HTML',
+  };
+}
+
+// Real interactive list (replacing the old plain-text-only /watch list output as the menu
+// button's target): tapping a rule opens its actions instead of requiring the user to already
+// know its UUID.
+function watchRulesList(rules) {
+  if (!rules.length) {
+    return { text: 'No social watch rules yet.', replyMarkup: keyboard([[button('➕ Add a watch rule', 'watch:add:start')], [button('⬅️ Back to menu', 'menu:main')]]), parseMode: 'HTML' };
+  }
+  const rows = rules.map(rule => [button(`${rule.enabled ? '🟢' : '⚪'} ${rule.name}`, `watch:manage:${rule.id}`)]);
+  rows.push([button('➕ Add a watch rule', 'watch:add:start')]);
+  rows.push([button('⬅️ Back to menu', 'menu:main')]);
+  return { text: 'Your social watch rules:', replyMarkup: keyboard(rows), parseMode: 'HTML' };
+}
+
+function watchRuleActions(rule) {
+  const rows = [];
+  rows.push([button(rule.enabled ? '⏸ Disable' : '▶️ Re-enable', `watch:toggle:${rule.id}`)]);
+  rows.push([button('🗑️ Remove', `watch:remove:ask:${rule.id}`)]);
+  rows.push([button('⬅️ Back to list', 'watch:list')]);
+  const typeLabel = WATCH_TYPE_META[rule.type]?.label || rule.type;
+  return {
+    text: `<b>${escapeTelegramHtml(rule.name)}</b>\nStatus: ${rule.enabled ? '🟢 enabled' : '⚪ disabled'}\nWatching: ${typeLabel}\nMethod: ${WATCH_METHOD_META[rule.method]?.label || rule.method}\nID: <code>${rule.id}</code>`,
+    replyMarkup: keyboard(rows),
+    parseMode: 'HTML',
+  };
+}
+
+function confirmRemoveWatchRule(rule) {
+  return {
+    text: `Remove watch rule <b>${escapeTelegramHtml(rule.name)}</b>? This cannot be undone.`,
+    replyMarkup: keyboard([
+      [button('✅ Yes, remove it', `watch:remove:do:${rule.id}`)],
+      [button('❌ No, keep it', `watch:manage:${rule.id}`)],
+    ]),
+    parseMode: 'HTML',
+  };
+}
+
 function confirmCancelPrompt(flowLabel) {
   return {
     text: `You're in the middle of <b>${escapeTelegramHtml(flowLabel)}</b>. Leave it and go back to the menu? Your progress will be cleared.`,
@@ -306,6 +387,13 @@ module.exports = {
   exportKeyWarning,
   confirmCancelPrompt,
   confirmRemoveWallet,
+  watchTypeSelect,
+  watchMethodSelect,
+  watchConfigPrompt,
+  watchRuleConfirmation,
+  watchRulesList,
+  watchRuleActions,
+  confirmRemoveWatchRule,
   modeMenu,
   MODE_META,
   gasMenu,

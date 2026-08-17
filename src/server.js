@@ -35,6 +35,7 @@ const { createPriceFeedService } = require('./mint/priceFeedService');
 const { computeSeaDropValueWei } = require('./mint/seaDropCall');
 const { SEADROP_MINT_SIGNATURE } = require('./mint/seaDropRegistry');
 const mintFlowDecision = require('./mint/mintFlowDecision');
+const watchRuleFlowDecision = require('./social/watchRuleFlowDecision');
 const { createSchedulerRepository } = require('./scheduler/schedulerRepository');
 const { createSchedulerWorker } = require('./scheduler/schedulerWorker');
 const { createSocialAdapters } = require('./social/adapters');
@@ -580,7 +581,7 @@ function stateFor(userId) {
 // follow-up pass). None of this bypasses botCommands/validation/the transaction engine — every
 // guided step ends by calling the exact same service function the equivalent slash command uses.
 const telegramFlowState = createFlowStateStore();
-const FLOW_LABELS = { wallet_create: 'creating a wallet', wallet_import: 'importing a wallet', mint_guided: 'minting', send_guided: 'sending funds', export_guided: 'exporting a private key', task_guided: 'scheduling a mint' };
+const FLOW_LABELS = { wallet_create: 'creating a wallet', wallet_import: 'importing a wallet', mint_guided: 'minting', send_guided: 'sending funds', export_guided: 'exporting a private key', task_guided: 'scheduling a mint', watch_guided: 'adding a watch rule' };
 const FLOW_CONTINUATION_PREFIXES = { wallet_create: ['flow:chain:'], wallet_import: ['flow:chain:'],
   mint_guided: ['flow:mintdetailscontinue', 'flow:mintqty:', 'flow:priceaccept', 'flow:pricemanual', 'flow:wallettoggle:', 'flow:walletpick:', 'flow:walletcontinue', 'flow:mintconfirm'],
   send_guided: ['flow:sendwalletpick:', 'flow:sendamount:', 'flow:sendconfirm'],
@@ -589,7 +590,8 @@ const FLOW_CONTINUATION_PREFIXES = { wallet_create: ['flow:chain:'], wallet_impo
   // Continue button are the same component either way; the callback handler branches on
   // flow.flow to decide whether "continue" means "go mint it" or "go schedule it". Also shares
   // flow:priceaccept/flow:pricemanual (Section G's OpenSea-price-accept step) the same way.
-  task_guided: ['flow:mintdetailscontinue', 'flow:priceaccept', 'flow:pricemanual', 'flow:taskwalletpick:', 'flow:taskconfirm'] };
+  task_guided: ['flow:mintdetailscontinue', 'flow:priceaccept', 'flow:pricemanual', 'flow:taskwalletpick:', 'flow:taskconfirm'],
+  watch_guided: ['flow:watchtype:', 'flow:watchmethod:', 'flow:watchconfirm'] };
 
 // Generic one-shot confirmation gate for simple "<command> <id> CONFIRM"-shaped destructive actions
 // (remove wallet, cancel/resume/retry task, remove watch rule) -- replaces typing the literal word
@@ -783,6 +785,16 @@ function renderFlowStep(flow, step, { userId, data = {}, withDetailsHeader = fal
       });
     }
   }
+  if (flow === 'watch_guided') {
+    if (step === 'awaiting_name') return { text: 'Send a name for this watch rule.', replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' };
+    if (step === 'awaiting_type') return telegramMenus.watchTypeSelect();
+    if (step === 'awaiting_method') return telegramMenus.watchMethodSelect(data.type);
+    if (step === 'awaiting_config') {
+      const field = watchRuleFlowDecision.CONFIG_FIELD_PROMPTS[data.currentField];
+      return telegramMenus.watchConfigPrompt(field.label, field.hint);
+    }
+    if (step === 'awaiting_confirm') return telegramMenus.watchRuleConfirmation(data);
+  }
   return telegramMenus.mainMenu({});
 }
 
@@ -942,6 +954,61 @@ async function finishMintExecution(chatId, messageId, userId, flowData) {
     telegramFlowState.clear('telegram', chatId);
     if (error instanceof ValidationError) return tgUpdate(chatId, messageId, { text: escapeTelegramHtml(validationReply(error)), replyMarkup: backToMenu, parseMode: 'HTML' });
     if (error instanceof TransactionSafetyError) return tgUpdate(chatId, messageId, { text: `❌ ${escapeTelegramHtml(error.message)}`, replyMarkup: backToMenu, parseMode: 'HTML' });
+    throw error;
+  }
+}
+
+// ── Watch-rule guided create flow (Telegram side of the "/watch has no button" gap) ──
+// Mirrors the mint flow's shared advanceFrom* shape: each function persists the resulting step
+// and renders it via tgUpdate, which itself falls back to tgRender when there's no messageId to
+// edit in place (a button tap has one, a typed free-text reply doesn't) -- so every one of these
+// works identically whichever kind of input reached it. The actual "what config field comes
+// next" branching lives once in src/social/watchRuleFlowDecision.js, not duplicated here.
+async function startWatchRuleFlow(chatId, messageId, userId) {
+  telegramFlowState.start('telegram', chatId, 'watch_guided', 'awaiting_name', {});
+  return tgUpdate(chatId, messageId, renderFlowStep('watch_guided', 'awaiting_name'));
+}
+
+async function advanceFromWatchName(chatId, messageId, userId, flow, name) {
+  const data = { ...flow.data, name };
+  telegramFlowState.advance('telegram', chatId, 'awaiting_type', data);
+  return tgUpdate(chatId, messageId, renderFlowStep('watch_guided', 'awaiting_type', { data }));
+}
+
+async function advanceFromWatchType(chatId, messageId, userId, flow, type) {
+  const data = { ...flow.data, type };
+  telegramFlowState.advance('telegram', chatId, 'awaiting_method', data);
+  return tgUpdate(chatId, messageId, renderFlowStep('watch_guided', 'awaiting_method', { data }));
+}
+
+async function advanceFromWatchMethod(chatId, messageId, userId, flow, method) {
+  return advanceWatchConfigStep(chatId, messageId, userId, { data: { ...flow.data, method, config: {} } });
+}
+
+// Shared tail for both advanceFromWatchMethod (first config field) and
+// advanceFromWatchConfigValue (every field after) -- decides whether another field is still
+// needed or the flow is ready to confirm.
+async function advanceWatchConfigStep(chatId, messageId, userId, flow) {
+  const { data } = flow;
+  const nextField = watchRuleFlowDecision.nextConfigField(data.type, data.method, data.config);
+  if (!nextField) {
+    telegramFlowState.advance('telegram', chatId, 'awaiting_confirm', data);
+    return tgUpdate(chatId, messageId, renderFlowStep('watch_guided', 'awaiting_confirm', { data }));
+  }
+  const nextData = { ...data, currentField: nextField };
+  telegramFlowState.advance('telegram', chatId, 'awaiting_config', nextData);
+  return tgUpdate(chatId, messageId, renderFlowStep('watch_guided', 'awaiting_config', { data: nextData }));
+}
+
+async function finishWatchRuleCreation(chatId, messageId, userId, flowData) {
+  const backToMenu = telegramMenus.mainMenu({}).replyMarkup;
+  try {
+    const rule = await botCommands.createWatchRule(userId, { name: flowData.name, type: flowData.type, method: flowData.method, config: flowData.config });
+    telegramFlowState.clear('telegram', chatId);
+    return tgUpdate(chatId, messageId, { text: `✅ Watch rule <b>${escapeTelegramHtml(rule.name)}</b> created using ${rule.method}.`, replyMarkup: backToMenu, parseMode: 'HTML' });
+  } catch (error) {
+    telegramFlowState.clear('telegram', chatId);
+    if (error instanceof ValidationError) return tgUpdate(chatId, messageId, { text: escapeTelegramHtml(validationReply(error)), replyMarkup: backToMenu, parseMode: 'HTML' });
     throw error;
   }
 }
@@ -1285,7 +1352,8 @@ async function handleFlowTextMessage(msg) {
     || (flow.flow === 'wallet_import' && (flow.step === 'awaiting_label' || flow.step === 'awaiting_key'))
     || (flow.flow === 'mint_guided' && ['awaiting_contract', 'awaiting_quantity', 'awaiting_price'].includes(flow.step))
     || (flow.flow === 'send_guided' && (flow.step === 'awaiting_amount' || flow.step === 'awaiting_destination'))
-    || (flow.flow === 'task_guided' && ['awaiting_contract', 'awaiting_price', 'awaiting_name', 'awaiting_time'].includes(flow.step));
+    || (flow.flow === 'task_guided' && ['awaiting_contract', 'awaiting_price', 'awaiting_name', 'awaiting_time'].includes(flow.step))
+    || (flow.flow === 'watch_guided' && ['awaiting_name', 'awaiting_config'].includes(flow.step));
   if (!isTextStep) { await tgDeleteUserMessage(msg); tgRender(chatId, { text: 'Please use the buttons above, or tap Cancel.', replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' }); return; }
 
   // Consumed as flow input from here on -- clear it immediately rather than after a successful
@@ -1392,6 +1460,26 @@ async function handleFlowTextMessage(msg) {
     const data = { ...flow.data, mintTime: value };
     telegramFlowState.advance('telegram', chatId, 'awaiting_confirm', data);
     tgRender(chatId, renderFlowStep('task_guided', 'awaiting_confirm', { userId, data }));
+  }
+  if (flow.flow === 'watch_guided' && flow.step === 'awaiting_name') {
+    if (!value || value.length > 100) {
+      tgRender(chatId, { text: 'Name must be 1-100 characters. Try again.', replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' });
+      return;
+    }
+    await advanceFromWatchName(chatId, null, userId, flow, value);
+    return;
+  }
+  if (flow.flow === 'watch_guided' && flow.step === 'awaiting_config') {
+    const field = flow.data.currentField;
+    const parsed = field === 'keywords' ? value.split(',').map(item => item.trim()).filter(Boolean)
+      : field === 'handle' ? value.trim().replace(/^@/, '')
+      : value.trim();
+    if (!parsed.length) {
+      tgRender(chatId, { text: 'That cannot be empty. Try again.', replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' });
+      return;
+    }
+    const data = { ...flow.data, config: { ...flow.data.config, [field]: parsed } };
+    await advanceWatchConfigStep(chatId, null, userId, { data });
   }
 }
 
@@ -1597,7 +1685,35 @@ if (BOT_TOKEN) {
     if (data === 'menu:tasks') return tgEditMenu(chatId, messageId, telegramMenus.tasksMenu());
     if (data === 'menu:schedule') return startTaskScheduleFlow({ chatId, messageId, userId, contractAddressInput: null });
     if (data === 'menu:snipers') return tgEditMenu(chatId, messageId, telegramMenus.placeholderMenu('Snipers', 'Use /snipers to list, /updatesniper &lt;id&gt; &lt;JSON&gt; to edit.'));
-    if (data === 'menu:watch') return tgEditMenu(chatId, messageId, telegramMenus.placeholderMenu('Watch rules', 'Use /watch add|edit|disable|remove|list.'));
+    if (data === 'menu:watch' || data === 'watch:list') {
+      return tgEditMenu(chatId, messageId, telegramMenus.watchRulesList(await botCommands.watchRules(userId)));
+    }
+    if (data === 'watch:add:start') return startWatchRuleFlow(chatId, messageId, userId);
+    if (data.startsWith('watch:manage:')) {
+      const id = data.slice('watch:manage:'.length);
+      const rule = (await botCommands.watchRules(userId)).find(item => item.id === id);
+      if (!rule) return tgEditMenu(chatId, messageId, telegramMenus.watchRulesList(await botCommands.watchRules(userId)));
+      return tgEditMenu(chatId, messageId, telegramMenus.watchRuleActions(rule));
+    }
+    if (data.startsWith('watch:toggle:')) {
+      const id = data.slice('watch:toggle:'.length);
+      const rules = await botCommands.watchRules(userId);
+      const rule = rules.find(item => item.id === id);
+      if (!rule) return tgEditMenu(chatId, messageId, telegramMenus.watchRulesList(rules));
+      const updated = await botCommands.updateWatchRule(userId, id, { enabled: !rule.enabled });
+      return tgEditMenu(chatId, messageId, telegramMenus.watchRuleActions(updated));
+    }
+    if (data.startsWith('watch:remove:ask:')) {
+      const id = data.slice('watch:remove:ask:'.length);
+      const rule = (await botCommands.watchRules(userId)).find(item => item.id === id);
+      if (!rule) return tgEditMenu(chatId, messageId, telegramMenus.watchRulesList(await botCommands.watchRules(userId)));
+      return tgEditMenu(chatId, messageId, telegramMenus.confirmRemoveWatchRule(rule));
+    }
+    if (data.startsWith('watch:remove:do:')) {
+      const id = data.slice('watch:remove:do:'.length);
+      await botCommands.removeWatchRule(userId, id);
+      return tgEditMenu(chatId, messageId, telegramMenus.watchRulesList(await botCommands.watchRules(userId)));
+    }
     if (data === 'menu:activity') return tgEditMenu(chatId, messageId, telegramMenus.placeholderMenu('Activity', 'Use /activity to see recent mint activity.'));
     if (data === 'menu:gas' || data.startsWith('gas:chain:')) {
       const chain = data.startsWith('gas:chain:') ? data.slice('gas:chain:'.length) : 'ethereum';
@@ -1718,6 +1834,23 @@ if (BOT_TOKEN) {
       const flow = telegramFlowState.get('telegram', chatId);
       if (!flow || flow.flow !== 'task_guided') return;
       return finishTaskSchedule(chatId, messageId, userId, flow.data);
+    }
+    if (data.startsWith('flow:watchtype:')) {
+      const type = data.slice('flow:watchtype:'.length);
+      const flow = telegramFlowState.get('telegram', chatId);
+      if (!flow || flow.flow !== 'watch_guided' || flow.step !== 'awaiting_type') return;
+      return advanceFromWatchType(chatId, messageId, userId, flow, type);
+    }
+    if (data.startsWith('flow:watchmethod:')) {
+      const method = data.slice('flow:watchmethod:'.length);
+      const flow = telegramFlowState.get('telegram', chatId);
+      if (!flow || flow.flow !== 'watch_guided' || flow.step !== 'awaiting_method') return;
+      return advanceFromWatchMethod(chatId, messageId, userId, flow, method);
+    }
+    if (data === 'flow:watchconfirm') {
+      const flow = telegramFlowState.get('telegram', chatId);
+      if (!flow || flow.flow !== 'watch_guided') return;
+      return finishWatchRuleCreation(chatId, messageId, userId, flow.data);
     }
     if (data.startsWith('flow:walletpick:')) {
       const label = data.slice('flow:walletpick:'.length);

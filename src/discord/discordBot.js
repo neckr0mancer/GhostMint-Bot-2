@@ -17,6 +17,7 @@ const discordMenus = require('./menus');
 // see src/mint/mintFlowDecision.js for why this exists as one shared module instead of a
 // hand-mirrored copy per platform.
 const mintFlowDecision = require('../mint/mintFlowDecision');
+const watchRuleFlowDecision = require('../social/watchRuleFlowDecision');
 
 function json(value, field = 'input') {
   try {
@@ -141,13 +142,14 @@ function formatRows(rows, empty, mapper) {
 // of Telegram's inline keyboard + plain-text replies. Every guided step still ends by calling the
 // exact same botCommandService function the equivalent slash command already used above -- this
 // changes presentation only, never validation, transaction submission, or governance.
-const FLOW_LABELS = { wallet_create: 'creating a wallet', wallet_import: 'importing a wallet', mint_guided: 'minting' };
+const FLOW_LABELS = { wallet_create: 'creating a wallet', wallet_import: 'importing a wallet', mint_guided: 'minting', watch_guided: 'adding a watch rule' };
 const FLOW_CONTINUATIONS = {
   wallet_create: ['flow:label:submit', 'flow:chain:select'],
   wallet_import: ['flow:label:submit', 'flow:chain:select', 'wallet:import:key-modal', 'flow:key:submit'],
   // Section AA -- every custom_id stays fixed (select-menu VALUES carry the chosen quantity/
   // wallet, never the custom_id itself), so this list needs no dynamic/prefix matching.
   mint_guided: ['flow:mintqty:select', 'flow:mintqty:submit', 'flow:mintwallet:select', 'flow:priceaccept', 'flow:pricemanual', 'flow:mintprice:submit', 'flow:mintconfirm'],
+  watch_guided: ['flow:watchname:submit', 'flow:watchtype:select', 'flow:watchmethod:select', 'flow:watchconfig:submit', 'flow:watchconfirm'],
 };
 
 function renderFlowStep(flow, step, { supportedChains = [], chains = {} } = {}) {
@@ -361,7 +363,7 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, s
       if (data === 'menu:mint') return dcRespond(interaction, discordMenus.placeholderMenu('Mint', 'Use /mint wallet contract quantity price confirm:true.'));
       if (data === 'menu:tasks') return dcRespond(interaction, discordMenus.placeholderMenu('Tasks', 'Use /task create|list|cancel|pause|resume|retry.'));
       if (data === 'menu:snipers') return dcRespond(interaction, discordMenus.placeholderMenu('Snipers', 'Use /sniper create|update|list|status.'));
-      if (data === 'menu:watch') return dcRespond(interaction, discordMenus.placeholderMenu('Watch rules', 'Use /watch add|edit|disable|remove|list.'));
+      // menu:watch is handled further below, alongside the rest of the watch-rule guided flow.
       if (data === 'menu:activity') return dcRespond(interaction, discordMenus.placeholderMenu('Activity', 'Use /activity to see recent mint activity.'));
       if (data === 'menu:gas') return dcRespond(interaction, discordMenus.placeholderMenu('Gas', 'Use /gas chain:<chain> for live fee data.'));
       if (data === 'menu:admin') return dcRespond(interaction, discordMenus.placeholderMenu('Admin', 'Use /admin action confirm:true. Owner-only.'));
@@ -505,6 +507,73 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, s
         return finishMintExecutionDiscord(mintCtx, respond, platformUserId, userId, { ...flow.data, originMessagePublic: false });
       }
 
+      // Watch-rule guided create flow ("/watch has no button" gap) plus the list/manage actions
+      // that go with it. Unlike Section AA's mint flow, every one of these is reached from an
+      // already-ephemeral message (/menu or menu:watch, exactly like wallet create/import), so
+      // there's no public-origin-message complication to handle here.
+      if (data === 'menu:watch' || data === 'watch:list') {
+        return dcRespond(interaction, discordMenus.watchRulesList(await commands.watchRules(userId)));
+      }
+      if (data === 'watch:add:start') {
+        flowState.start('discord', platformUserId, 'watch_guided', 'awaiting_name');
+        return interaction.showModal(discordMenus.labelModal({ customId: 'flow:watchname:submit', title: 'Watch rule name' }));
+      }
+      if (data === 'flow:watchtype:select') {
+        const flow = flowState.get('discord', platformUserId);
+        if (!flow || flow.flow !== 'watch_guided' || flow.step !== 'awaiting_type') return undefined;
+        const type = interaction.values?.[0];
+        flowState.advance('discord', platformUserId, 'awaiting_method', { ...flow.data, type });
+        return dcRespond(interaction, discordMenus.watchMethodSelect());
+      }
+      if (data === 'flow:watchmethod:select') {
+        const flow = flowState.get('discord', platformUserId);
+        if (!flow || flow.flow !== 'watch_guided' || flow.step !== 'awaiting_method') return undefined;
+        const method = interaction.values?.[0];
+        const fields = watchRuleFlowDecision.configFieldsForType(flow.data.type);
+        if (method === 'scraper') fields.push('sourceUrl');
+        flowState.advance('discord', platformUserId, 'awaiting_config', { ...flow.data, method });
+        return interaction.showModal(discordMenus.watchConfigModal(fields, watchRuleFlowDecision.CONFIG_FIELD_PROMPTS));
+      }
+      if (data.startsWith('watch:manage:')) {
+        const id = data === 'watch:manage:select' ? interaction.values?.[0] : data.slice('watch:manage:'.length);
+        const rules = await commands.watchRules(userId);
+        const rule = rules.find(item => item.id === id);
+        return dcRespond(interaction, rule ? discordMenus.watchRuleActions(rule) : discordMenus.watchRulesList(rules));
+      }
+      if (data.startsWith('watch:toggle:')) {
+        const id = data.slice('watch:toggle:'.length);
+        const rules = await commands.watchRules(userId);
+        const rule = rules.find(item => item.id === id);
+        if (!rule) return dcRespond(interaction, discordMenus.watchRulesList(rules));
+        const updated = await commands.updateWatchRule(userId, id, { enabled: !rule.enabled });
+        return dcRespond(interaction, discordMenus.watchRuleActions(updated));
+      }
+      if (data.startsWith('watch:remove:ask:')) {
+        const id = data.slice('watch:remove:ask:'.length);
+        const rules = await commands.watchRules(userId);
+        const rule = rules.find(item => item.id === id);
+        return dcRespond(interaction, rule ? discordMenus.confirmRemoveWatchRule(rule) : discordMenus.watchRulesList(rules));
+      }
+      if (data.startsWith('watch:remove:do:')) {
+        const id = data.slice('watch:remove:do:'.length);
+        await commands.removeWatchRule(userId, id);
+        return dcRespond(interaction, discordMenus.watchRulesList(await commands.watchRules(userId)));
+      }
+      if (data === 'flow:watchconfirm') {
+        const flow = flowState.get('discord', platformUserId);
+        if (!flow || flow.flow !== 'watch_guided' || flow.step !== 'awaiting_confirm') return undefined;
+        try {
+          const rule = await commands.createWatchRule(userId, { name: flow.data.name, type: flow.data.type, method: flow.data.method, config: flow.data.config });
+          flowState.clear('discord', platformUserId);
+          return dcRespond(interaction, { content: `✅ Watch rule **${rule.name}** created using ${rule.method}.`,
+            components: [discordMenus.row([discordMenus.button('⬅️ Back to watch rules', 'watch:list')])] });
+        } catch (error) {
+          flowState.clear('discord', platformUserId);
+          if (error instanceof ValidationError) return dcRespond(interaction, { content: validationReply(error), components: [] });
+          throw error;
+        }
+      }
+
       return undefined;
     } catch (error) {
       if (error instanceof AuthorizationError) {
@@ -615,6 +684,35 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, s
         }
         const decision = mintFlowDecision.afterPriceResolved({ data: flow.data, priceETH });
         await applyMintFlowStep(mintCtx, payload => interaction.reply({ ...payload, ephemeral: true }).catch(() => {}), platformUserId, userId, decision);
+        return;
+      }
+
+      if (data === 'flow:watchname:submit') {
+        if (flow.flow !== 'watch_guided' || flow.step !== 'awaiting_name') { await interaction.reply({ content: 'This step has expired. Open the watch rules menu again.', ephemeral: true }).catch(() => {}); return; }
+        const name = String(interaction.fields.getTextInputValue('value') || '').trim();
+        if (!name || name.length > 100) {
+          await interaction.reply({ content: 'Name must be 1-100 characters. Tap "Add a watch rule" again to retry.', ephemeral: true }).catch(() => {});
+          return;
+        }
+        flowState.advance('discord', platformUserId, 'awaiting_type', { ...flow.data, name });
+        await interaction.reply({ ...discordMenus.watchTypeSelect(), ephemeral: true });
+        return;
+      }
+      if (data === 'flow:watchconfig:submit') {
+        if (flow.flow !== 'watch_guided' || flow.step !== 'awaiting_config') { await interaction.reply({ content: 'This step has expired. Open the watch rules menu again.', ephemeral: true }).catch(() => {}); return; }
+        const fields = watchRuleFlowDecision.configFieldsForType(flow.data.type);
+        if (flow.data.method === 'scraper') fields.push('sourceUrl');
+        const config = {};
+        for (const field of fields) {
+          const raw = String(interaction.fields.getTextInputValue(field) || '').trim();
+          if (!raw) { await interaction.reply({ content: `${field} cannot be empty. Go back and retry that step.`, ephemeral: true }).catch(() => {}); return; }
+          config[field] = field === 'keywords' ? raw.split(',').map(item => item.trim()).filter(Boolean)
+            : field === 'handle' ? raw.replace(/^@/, '')
+            : raw;
+        }
+        const nextData = { ...flow.data, config };
+        flowState.advance('discord', platformUserId, 'awaiting_confirm', nextData);
+        await interaction.reply({ ...discordMenus.watchRuleConfirmation(nextData), ephemeral: true });
         return;
       }
     } catch (error) {
