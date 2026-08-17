@@ -81,7 +81,7 @@ test('a group name containing whitespace is rejected at every group-name entry p
   // A hyphenated name is not itself the problem -- only the space is.
   const okRepository = { isOwner: async () => true, upsertGroup: async value => value };
   await assert.doesNotReject(createGovernanceService(okRepository).upsertGroup('owner-user',
-    { name: 'VIP-Members', maxTransactionValueWei: '1', dailySpendingBudgetWei: '2', gasCeilingGwei: '3', simulationForced: 'forced' }));
+    { name: 'VIP-Members', maxTransactionValueWei: '1', dailySpendingBudgetWei: '2', gasCeilingGwei: '3', simulationForced: 'forced', advancedModesAllowed: 'not-allowed' }));
 });
 
 test('a valid owner grant command succeeds end to end once the syntax and target are correct', async () => {
