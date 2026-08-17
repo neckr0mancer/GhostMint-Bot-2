@@ -225,6 +225,15 @@ function createTransactionEngine({
       if (!policy.ceilingExempt && selectedFee > gasCeilingWei) {
         throw new TransactionSafetyError('GAS_CEILING_EXCEEDED', 'Transaction fee exceeds the configured gas ceiling');
       }
+      // A per-request tolerance (the guided batch-mint flow's gas-tolerance step) rather than a
+      // governance-imposed cap -- applies even when the caller is ceilingExempt, since choosing it
+      // was the caller's own decision for this specific batch, not something governance enforces.
+      if (request.maxGasGwei !== undefined && request.maxGasGwei !== null) {
+        const toleranceWei = parseUnits(String(request.maxGasGwei), 'gwei');
+        if (selectedFee > toleranceWei) {
+          throw new TransactionSafetyError('GAS_TOLERANCE_EXCEEDED', 'Transaction fee exceeds the gas tolerance set for this batch');
+        }
+      }
 
       const feeFields = maxFeePerGasWei !== null && maxFeePerGasWei !== undefined
         ? { maxFeePerGas: maxFeePerGasWei, maxPriorityFeePerGas: maxPriorityFeePerGasWei ?? 0n, type: 2 }

@@ -336,10 +336,11 @@ async function autoRecordPnl({ userId, wallet, quantity, intent }) {
 }
 
 // ── Mint executor ─────────────────────────────────────────
-async function executePreparedMint({ wallet, prepared, chain, triggerSource='manual', gasGwei=null, onPreview }) {
+async function executePreparedMint({ wallet, prepared, chain, triggerSource='manual', gasGwei=null, maxGasGwei=null, onPreview }) {
   if (chain !== prepared.chain) throw new Error('Prepared mint chain mismatch');
   const intent = await mintExecution.executePrepared({ userId: wallet.userId, wallet, prepared, triggerSource,
-    gasPriceWei: gasGwei === null ? undefined : ethers.parseUnits(String(gasGwei), 'gwei'), onPreview });
+    gasPriceWei: gasGwei === null ? undefined : ethers.parseUnits(String(gasGwei), 'gwei'),
+    maxGasGwei: maxGasGwei === null ? undefined : maxGasGwei, onPreview });
   if (intent.state !== 'confirmed') throw new Error(`Transaction ended in ${intent.state} state`);
   log(`Confirmed: ${intent.txHash} (block ${intent.blockNumber})`);
   return intent;
@@ -379,7 +380,7 @@ async function prepareMintCall({ contractAddress, walletAddress, chain, quantity
 
 // Shared quick-mint landing point for every platform: Discord's /mint calls straight into this via
 // botCommands.mint(), and Telegram's guided flow's final step (finishMintExecution) does the same.
-async function executeMint({ wallet, contractAddr, fnName='mint', qty=1, priceETH=0, gasGwei=null, chain, triggerSource='manual', onPreview }) {
+async function executeMint({ wallet, contractAddr, fnName='mint', qty=1, priceETH=0, gasGwei=null, maxGasGwei=null, chain, triggerSource='manual', onPreview }) {
   const request = requestSchemas.mint({
     walletLabel: wallet.label,
     contractAddress: contractAddr,
@@ -387,12 +388,13 @@ async function executeMint({ wallet, contractAddr, fnName='mint', qty=1, priceET
     quantity: qty,
     priceETH,
     gasGwei,
+    maxGasGwei,
     chain,
   }, { supportedChains: CONFIG.supportedChains });
   const prepared = await prepareMintCall({ contractAddress: request.contractAddress,
     walletAddress: wallet.address, chain: request.chain, quantity: request.quantity, priceETH: request.priceETH });
   return executePreparedMint({ wallet, prepared, chain: request.chain, triggerSource,
-    gasGwei: request.gasGwei, onPreview });
+    gasGwei: request.gasGwei, maxGasGwei: request.maxGasGwei, onPreview });
 }
 
 // ── Wallet Sniper / Copy-Mint Engine ─────────────────────────
@@ -583,7 +585,7 @@ function stateFor(userId) {
 const telegramFlowState = createFlowStateStore();
 const FLOW_LABELS = { wallet_create: 'creating a wallet', wallet_import: 'importing a wallet', mint_guided: 'minting', send_guided: 'sending funds', export_guided: 'exporting a private key', task_guided: 'scheduling a mint', watch_guided: 'adding a watch rule' };
 const FLOW_CONTINUATION_PREFIXES = { wallet_create: ['flow:chain:'], wallet_import: ['flow:chain:'],
-  mint_guided: ['flow:mintdetailscontinue', 'flow:detailsrefresh', 'flow:copyca', 'flow:mintqty:', 'flow:priceaccept', 'flow:pricemanual', 'flow:wallettoggle:', 'flow:walletpick:', 'flow:walletcontinue', 'flow:mintconfirm'],
+  mint_guided: ['flow:mintdetailscontinue', 'flow:detailsrefresh', 'flow:copyca', 'flow:mintqty:', 'flow:priceaccept', 'flow:pricemanual', 'flow:wallettoggle:', 'flow:walletpick:', 'flow:walletcontinue', 'flow:gastoleranceaccept', 'flow:gastolerancemanual', 'flow:mintconfirm'],
   send_guided: ['flow:sendwalletpick:', 'flow:sendamount:', 'flow:sendconfirm'],
   export_guided: ['flow:exportwalletpick:', 'flow:exportconfirm'],
   // Shares flow:mintdetailscontinue with mint_guided -- the contract-details screen and its
@@ -694,6 +696,11 @@ function renderFlowStep(flow, step, { userId, data = {} } = {}) {
     }
     if (step === 'awaiting_quantity') return quantityStepPayload(data);
     if (step === 'awaiting_price') return priceStepPayload(data);
+    // /batch only (see mintFlowDecision.afterPriceKnown) -- currentGasGwei/gasCeilingGwei are
+    // resolved live just before this step is rendered (applyMintFlowStep's withGasToleranceContext),
+    // the same "fetch before rendering" pattern startMintFlow already uses for detectMintContract,
+    // so renderFlowStep itself stays synchronous.
+    if (step === 'awaiting_gastolerance') return telegramMenus.gasTolerancePrompt({ currentGasGwei: data.currentGasGwei, ceilingGwei: data.gasCeilingGwei });
     if (step === 'awaiting_confirm') {
       return telegramMenus.mintConfirmation({
         contractAddress: data.contractAddress,
@@ -702,6 +709,7 @@ function renderFlowStep(flow, step, { userId, data = {} } = {}) {
         quantity: data.quantity || 1,
         priceETH: data.priceETH,
         priceUnknown: data.priceUnknown,
+        maxGasGwei: data.maxGasGwei,
       });
     }
   }
@@ -884,10 +892,25 @@ async function startMintFlow({ chatId, messageId, userId, multi, contractAddress
 // outright when the decision was 'execute'. This is the only Telegram-specific tail below -- the
 // actual branching (skip wallet-select for a single wallet, skip quantity when maxPerWallet <= 1,
 // skip confirm when skipConfirm, etc.) lives in exactly one place, not one per platform.
+// Resolves the live network gas price and the account's effective governance gas ceiling right
+// before the gas-tolerance step is shown, the same "resolve before rendering" pattern startMintFlow
+// already uses for detectMintContract -- keeps renderFlowStep itself synchronous rather than
+// threading async through every one of its many call sites for the sake of this one step. A gas
+// lookup failure (e.g. an RPC hiccup) still shows the step with the ceiling alone rather than
+// blocking the flow -- the ceiling itself is always enforced regardless of what's displayed here.
+async function withGasToleranceContext(userId, data) {
+  const [fees, effective] = await Promise.all([
+    botCommands.gas(data.chain).catch(() => null),
+    governanceRepository.getEffectiveGovernance(userId, data.chain),
+  ]);
+  return { ...data, currentGasGwei: fees?.gasPriceGwei ?? null, gasCeilingGwei: effective.gasCeilingGwei };
+}
+
 async function applyMintFlowStep(chatId, messageId, userId, { step, data }) {
   if (step === 'execute') return finishMintExecution(chatId, messageId, userId, data);
-  telegramFlowState.advance('telegram', chatId, step, data);
-  return tgUpdate(chatId, messageId, renderFlowStep('mint_guided', step, { userId, data }));
+  const renderData = step === 'awaiting_gastolerance' ? await withGasToleranceContext(userId, data) : data;
+  telegramFlowState.advance('telegram', chatId, step, renderData);
+  return tgUpdate(chatId, messageId, renderFlowStep('mint_guided', step, { userId, data: renderData }));
 }
 
 // Reached by tapping "🪙 Mint Now" on the Section AD collection info card (startMintFlow's real
@@ -917,6 +940,14 @@ async function advanceFromWalletSelection(chatId, messageId, userId, flow, selec
   return applyMintFlowStep(chatId, messageId, userId, result);
 }
 
+// /batch only -- reached from either the "no extra limit" tap or a typed gwei value. Always lands
+// on confirm (see mintFlowDecision.afterGasToleranceResolved); maxGasGwei rides along in flow data
+// from here on and is what finishMintExecution passes to botCommands.batchMint.
+async function advanceFromGasTolerance(chatId, messageId, userId, flow, maxGasGwei) {
+  const result = mintFlowDecision.afterGasToleranceResolved({ data: flow.data, maxGasGwei });
+  return applyMintFlowStep(chatId, messageId, userId, result);
+}
+
 // Shared by both flows' awaiting_price step (typed amount and the accept-OpenSea-price button):
 // mint_guided goes on to confirm (or straight to execution in degen/skipConfirm mode), while
 // task_guided still needs a name before it can reach its own confirm screen -- that branch is
@@ -937,7 +968,7 @@ async function finishMintExecution(chatId, messageId, userId, flowData) {
     commandRateLimiter.check('telegram', userId, flowData.multi ? 'batch-mint' : 'mint');
     if (flowData.multi) {
       const results = await botCommands.batchMint(userId, { walletLabels: flowData.selectedWallets,
-        contractAddress: flowData.contractAddress, chain: flowData.chain, quantity: flowData.quantity || 1, priceETH: flowData.priceETH });
+        contractAddress: flowData.contractAddress, chain: flowData.chain, quantity: flowData.quantity || 1, priceETH: flowData.priceETH, maxGasGwei: flowData.maxGasGwei });
       telegramFlowState.clear('telegram', chatId);
       return tgUpdate(chatId, messageId, { text: `✅ Batch complete: ${results.length} wallet transaction(s).`, replyMarkup: backToMenu, parseMode: 'HTML' });
     }
@@ -1361,7 +1392,7 @@ async function handleFlowTextMessage(msg) {
   if (flow.pendingCancel) { await tgDeleteUserMessage(msg); tgRender(chatId, telegramMenus.confirmCancelPrompt(FLOW_LABELS[flow.flow] || flow.flow)); return; }
   const isTextStep = (flow.flow === 'wallet_create' && flow.step === 'awaiting_label')
     || (flow.flow === 'wallet_import' && (flow.step === 'awaiting_label' || flow.step === 'awaiting_key'))
-    || (flow.flow === 'mint_guided' && ['awaiting_contract', 'awaiting_quantity', 'awaiting_price'].includes(flow.step))
+    || (flow.flow === 'mint_guided' && ['awaiting_contract', 'awaiting_quantity', 'awaiting_price', 'awaiting_gastolerance'].includes(flow.step))
     || (flow.flow === 'send_guided' && (flow.step === 'awaiting_amount' || flow.step === 'awaiting_destination'))
     || (flow.flow === 'task_guided' && ['awaiting_contract', 'awaiting_price', 'awaiting_name', 'awaiting_time'].includes(flow.step))
     || (flow.flow === 'watch_guided' && ['awaiting_name', 'awaiting_config'].includes(flow.step));
@@ -1429,6 +1460,15 @@ async function handleFlowTextMessage(msg) {
       return;
     }
     await advanceFromPriceResolved(chatId, null, userId, flow, priceETH);
+    return;
+  }
+  if (flow.flow === 'mint_guided' && flow.step === 'awaiting_gastolerance') {
+    const maxGasGwei = Number(value);
+    if (!Number.isFinite(maxGasGwei) || maxGasGwei <= 0) {
+      tgRender(chatId, { text: 'Send a positive number of gwei.', replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' });
+      return;
+    }
+    await advanceFromGasTolerance(chatId, null, userId, flow, maxGasGwei);
     return;
   }
   if (flow.flow === 'send_guided' && flow.step === 'awaiting_amount') {
@@ -1863,6 +1903,16 @@ if (BOT_TOKEN) {
       if (flow.flow !== 'mint_guided' && flow.flow !== 'task_guided') return;
       const sym = CHAINS[flow.data.chain]?.sym || 'native currency';
       return tgEditMenu(chatId, messageId, { text: `Send the price per item in ${sym} (send 0 if it is free).`, replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' });
+    }
+    if (data === 'flow:gastoleranceaccept') {
+      const flow = telegramFlowState.get('telegram', chatId);
+      if (!flow || flow.flow !== 'mint_guided' || flow.step !== 'awaiting_gastolerance') return;
+      return advanceFromGasTolerance(chatId, messageId, userId, flow, null);
+    }
+    if (data === 'flow:gastolerancemanual') {
+      const flow = telegramFlowState.get('telegram', chatId);
+      if (!flow || flow.flow !== 'mint_guided' || flow.step !== 'awaiting_gastolerance') return;
+      return tgEditMenu(chatId, messageId, { text: `Send the gas price cap in gwei (a whole or decimal number, no higher than your account's ceiling of ${flow.data.gasCeilingGwei} gwei).`, replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' });
     }
     if (data.startsWith('flow:taskwalletpick:')) {
       const label = data.slice('flow:taskwalletpick:'.length);
@@ -2436,7 +2486,7 @@ const botCommands = createBotCommandService({
   },
   executeMint: async ({ userId, wallet, request }) => {
     const intent = await executeMint({ wallet, contractAddr: request.contractAddress,
-      qty: request.quantity, priceETH: request.priceETH, gasGwei: request.gasGwei,
+      qty: request.quantity, priceETH: request.priceETH, gasGwei: request.gasGwei, maxGasGwei: request.maxGasGwei,
       chain: request.chain, triggerSource: 'manual' });
     await recordMintActivity({ userId, wallet, quantity: request.quantity, intent, chain: request.chain });
     return intent;

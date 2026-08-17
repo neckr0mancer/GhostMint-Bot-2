@@ -251,6 +251,11 @@ function validateMintRequest(input, context) {
     gasGwei: fee(input.gasGwei ?? input.gas, 'gasGwei'),
     maxFeePerGasGwei: fee(input.maxFeePerGasGwei, 'maxFeePerGasGwei'),
     maxPriorityFeePerGasGwei: fee(input.maxPriorityFeePerGasGwei, 'maxPriorityFeePerGasGwei'),
+    // A per-request ceiling distinct from gasGwei (an exact price override) -- lets a caller (the
+    // guided batch-mint flow's gas-tolerance step) cap what this specific mint is willing to pay
+    // without forcing an exact price, enforced independently of governance's own gasCeilingGwei in
+    // transactionEngine.submit.
+    maxGasGwei: fee(input.maxGasGwei, 'maxGasGwei'),
     chain: chainName(input.chain, context.supportedChains),
   };
 }

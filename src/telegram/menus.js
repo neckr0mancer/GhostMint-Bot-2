@@ -334,13 +334,37 @@ function modeMenu(currentKey, presets, advancedModesAllowed = false) {
   };
 }
 
-function mintConfirmation({ contractAddress, chainLabel, walletLabels, quantity = 1, priceETH, priceUnknown }) {
+function mintConfirmation({ contractAddress, chainLabel, walletLabels, quantity = 1, priceETH, priceUnknown, maxGasGwei }) {
   const priceLine = priceUnknown
     ? 'Price: not exposed by this contract — using the amount you entered above.'
     : `Price: ${priceETH} per item (read from the contract)`;
+  // maxGasGwei only ever appears here for a batch (see afterGasToleranceResolved) -- undefined
+  // means this confirm screen isn't reachable through that step at all (a plain /mint), so the
+  // line is omitted entirely rather than shown as "not set" for a flow that was never asked.
+  const gasLine = maxGasGwei === undefined ? '' : `\nGas tolerance: ${maxGasGwei === null ? 'no extra limit (account ceiling only)' : `up to ${maxGasGwei} gwei`}`;
   return {
-    text: `<b>Confirm mint</b>\nContract: <code>${contractAddress}</code>\nChain: ${chainLabel}\nWallet(s): ${walletLabels.map(escapeTelegramHtml).join(', ')}\nQuantity: ${quantity} each\n${priceLine}\n\nProceed?`,
+    text: `<b>Confirm mint</b>\nContract: <code>${contractAddress}</code>\nChain: ${chainLabel}\nWallet(s): ${walletLabels.map(escapeTelegramHtml).join(', ')}\nQuantity: ${quantity} each\n${priceLine}${gasLine}\n\nProceed?`,
     replyMarkup: keyboard([[button('✅ Confirm', 'flow:mintconfirm')], [button('❌ Cancel', 'flow:cancel:ask')]]),
+    parseMode: 'HTML',
+  };
+}
+
+// Section [gas tolerance] -- /batch's extra step between wallet selection and confirm (see
+// mintFlowDecision.afterPriceKnown): lets the user cap what THIS batch is willing to pay in gas
+// without touching their account's own governance gas ceiling (shown here for context, and never
+// raised by this choice -- only ever tightened further, enforced in transactionEngine.submit
+// alongside the existing ceiling check). Mirrors mintPriceStep's accept/manual two-button shape.
+function gasTolerancePrompt({ currentGasGwei, ceilingGwei }) {
+  const currentLine = currentGasGwei === null || currentGasGwei === undefined
+    ? 'Current network gas price is unavailable right now.'
+    : `Current network gas price: <b>${currentGasGwei} gwei</b>.`;
+  return {
+    text: `<b>Gas tolerance for this batch</b>\n${currentLine}\nYour account's gas ceiling: <b>${ceilingGwei} gwei</b> (this batch will never exceed it).\n\nSet a tighter cap for just this batch? Any wallet whose transaction would exceed it is skipped rather than sent.`,
+    replyMarkup: keyboard([
+      [button(`✅ No extra limit (up to ${ceilingGwei} gwei)`, 'flow:gastoleranceaccept')],
+      [button('✏️ Set a gwei limit', 'flow:gastolerancemanual')],
+      [button('❌ Cancel', 'flow:cancel:ask')],
+    ]),
     parseMode: 'HTML',
   };
 }
@@ -463,6 +487,7 @@ module.exports = {
   contractDetailsText,
   collectionInfoCard,
   mintConfirmation,
+  gasTolerancePrompt,
   sendConfirmation,
   taskConfirmation,
   exportKeyWarning,

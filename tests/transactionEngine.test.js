@@ -134,6 +134,34 @@ test('an owner transaction is exempt from value, gas, and daily ceilings', async
   assert.deepEqual(calls.broadcasts, [0]);
 });
 
+// The guided batch-mint flow's gas-tolerance step (Section [gas tolerance]): a per-request cap
+// distinct from policy.gasCeilingGwei -- the caller's own choice for this specific batch, not a
+// governance-imposed limit.
+test('a per-request maxGasGwei tolerance rejects before broadcast, independently of the governance gas ceiling', async t => {
+  await t.test('tighter than the live fee: rejects even though the governance ceiling would allow it', async () => {
+    const { calls, engine, request } = fixture({ policyOverrides: { gasCeilingGwei: 100 } });
+    await assert.rejects(engine.submit({ ...request, maxGasGwei: 1 }), error => error instanceof TransactionSafetyError && error.code === 'GAS_TOLERANCE_EXCEEDED');
+    assert.equal(calls.broadcasts.length, 0);
+  });
+  await t.test('looser than the live fee: has no effect, transaction proceeds normally', async () => {
+    const { calls, engine, request } = fixture({ policyOverrides: { gasCeilingGwei: 100 } });
+    const result = await engine.submit({ ...request, maxGasGwei: 10 });
+    assert.equal(result.state, 'confirmed');
+    assert.deepEqual(calls.broadcasts, [0]);
+  });
+  await t.test('not provided: no tolerance check at all, only the governance ceiling applies', async () => {
+    const { calls, engine, request } = fixture({ policyOverrides: { gasCeilingGwei: 100 } });
+    const result = await engine.submit(request);
+    assert.equal(result.state, 'confirmed');
+    assert.deepEqual(calls.broadcasts, [0]);
+  });
+  await t.test('applies even to a ceilingExempt (owner) request -- it is the caller\'s own choice for this batch, not something governance grants an exemption from', async () => {
+    const { calls, engine, request } = fixture({ policyOverrides: { ceilingExempt: true, gasCeilingGwei: 1 } });
+    await assert.rejects(engine.submit({ ...request, maxGasGwei: 1 }), error => error instanceof TransactionSafetyError && error.code === 'GAS_TOLERANCE_EXCEEDED');
+    assert.equal(calls.broadcasts.length, 0);
+  });
+});
+
 test('insufficient balance and wrong-chain RPC fail before broadcast', async t => {
   await t.test('balance precheck', async () => {
     const { calls, engine, provider, request } = fixture();

@@ -35,13 +35,11 @@ function afterQuantity({ data, wallets }) {
 
 // Once wallet(s) are picked (auto-selected above, or chosen by the user): price was already
 // resolved back when the contract was detected, so this only needs to decide whether that
-// resolution actually found a price (ask for one by hand) or not (confirm, or execute outright
-// when the caller's transaction mode allows bypass). `data` must already include
-// `selectedWallets`.
+// resolution actually found a price (ask for one by hand) or not (move on to whatever's next).
+// `data` must already include `selectedWallets`.
 function afterWalletSelection({ data }) {
   if (data.priceUnknown) return { step: 'awaiting_price', data };
-  if (data.skipConfirm) return { step: 'execute', data };
-  return { step: 'awaiting_confirm', data };
+  return afterPriceKnown({ data });
 }
 
 // After a price is resolved by hand (typed, or an OpenSea-floor accept). priceUnknown is
@@ -49,9 +47,26 @@ function afterWalletSelection({ data }) {
 // confirm screen to mean "user-supplied, not read from the contract" for display purposes, not
 // "still missing." Preserved exactly as advanceFromPriceResolved already behaved.
 function afterPriceResolved({ data, priceETH }) {
-  const next = { ...data, priceETH, priceUnknown: true };
-  if (data.skipConfirm) return { step: 'execute', data: next };
-  return { step: 'awaiting_confirm', data: next };
+  return afterPriceKnown({ data: { ...data, priceETH, priceUnknown: true } });
 }
 
-module.exports = { afterDetails, afterQuantity, afterWalletSelection, afterPriceResolved };
+// Once the price is settled (known from the contract, or just typed/accepted above): a batch mint
+// (multi) asks for a per-batch gas tolerance next -- a single /mint never does, since a lone
+// transaction's cost is already bounded by the account's own governance gas ceiling and a second
+// prompt would just be a tap that teaches the user nothing. skipConfirm (the /mintnow bypass mode)
+// only ever applies to single mints -- see startMintFlow -- so it's never reachable for a batch
+// here regardless of check order.
+function afterPriceKnown({ data }) {
+  if (data.multi) return { step: 'awaiting_gastolerance', data };
+  if (data.skipConfirm) return { step: 'execute', data };
+  return { step: 'awaiting_confirm', data };
+}
+
+// After a batch's gas tolerance is set (an explicit gwei cap, or "no extra limit" which leaves
+// maxGasGwei unset and relies on the account's own governance gas ceiling same as before this
+// step existed). Always lands on confirm -- skipConfirm never applies to a batch (see above).
+function afterGasToleranceResolved({ data, maxGasGwei }) {
+  return { step: 'awaiting_confirm', data: { ...data, maxGasGwei } };
+}
+
+module.exports = { afterDetails, afterQuantity, afterWalletSelection, afterPriceResolved, afterGasToleranceResolved };

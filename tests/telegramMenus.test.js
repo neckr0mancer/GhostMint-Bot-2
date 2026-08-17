@@ -2,7 +2,8 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const {
   mainMenu, walletsMenu, settingsMenu, tasksMenu, chainPicker, walletPicker,
-  contractDetails, contractDetailsText, collectionInfoCard, taskConfirmation, confirmCancelPrompt, confirmRemoveWallet, placeholderMenu,
+  contractDetails, contractDetailsText, collectionInfoCard, mintConfirmation, gasTolerancePrompt,
+  taskConfirmation, confirmCancelPrompt, confirmRemoveWallet, placeholderMenu,
 } = require('../src/telegram/menus');
 
 function flatButtons(replyMarkup) {
@@ -206,6 +207,38 @@ test('collectionInfoCard omits every stats-derived line when stats is null, and 
   assert.match(withStats.text, /Market cap: 4\.4 ETH \(55\/100 minted\)/);
   assert.match(withStats.text, /Volume: 24h 1\.2 ETH · 7d 5\.5 ETH/);
   assert.equal(withStats.text.includes('30d'), false);
+});
+
+test('mintConfirmation omits the gas tolerance line for a plain /mint, and shows it for a /batch that went through the gas-tolerance step', () => {
+  const plainMint = mintConfirmation({
+    contractAddress: '0xabc', chainLabel: 'Ethereum', walletLabels: ['main'], quantity: 1, priceETH: 0.05, priceUnknown: false,
+  });
+  assert.equal(plainMint.text.includes('Gas tolerance'), false);
+
+  const batchNoLimit = mintConfirmation({
+    contractAddress: '0xabc', chainLabel: 'Ethereum', walletLabels: ['a', 'b'], quantity: 1, priceETH: 0.05, priceUnknown: false, maxGasGwei: null,
+  });
+  assert.match(batchNoLimit.text, /Gas tolerance: no extra limit \(account ceiling only\)/);
+
+  const batchWithLimit = mintConfirmation({
+    contractAddress: '0xabc', chainLabel: 'Ethereum', walletLabels: ['a', 'b'], quantity: 1, priceETH: 0.05, priceUnknown: false, maxGasGwei: 25,
+  });
+  assert.match(batchWithLimit.text, /Gas tolerance: up to 25 gwei/);
+});
+
+test('gasTolerancePrompt shows the live gas price for context and offers a no-limit accept alongside a manual entry', () => {
+  const prompt = gasTolerancePrompt({ currentGasGwei: 8, ceilingGwei: 100 });
+  assert.match(prompt.text, /Current network gas price: <b>8 gwei<\/b>/);
+  assert.match(prompt.text, /Your account's gas ceiling: <b>100 gwei<\/b>/);
+  const buttons = flatButtons(prompt.replyMarkup);
+  assert.deepEqual(buttons.map(b => b.callback_data), ['flow:gastoleranceaccept', 'flow:gastolerancemanual', 'flow:cancel:ask']);
+  assert.match(buttons[0].text, /up to 100 gwei/);
+});
+
+test('gasTolerancePrompt says plainly when the live gas price could not be fetched, instead of showing a broken number', () => {
+  const prompt = gasTolerancePrompt({ currentGasGwei: null, ceilingGwei: 50 });
+  assert.match(prompt.text, /Current network gas price is unavailable right now/);
+  assert.equal(prompt.text.includes('null'), false);
 });
 
 test('task confirmation names the auto-detected opening time distinctly from a manually entered one', () => {

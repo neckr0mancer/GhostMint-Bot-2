@@ -75,10 +75,14 @@ test('negative, NaN, infinite, fractional, and oversized numeric values are reje
     ['gasLimit', { gasLimit: 20_999 }],
     ['gasLimit', { gasLimit: LIMITS.gasLimit + 1 }],
     ['maxFeePerGasGwei', { maxFeePerGasGwei: LIMITS.feeGwei + 1 }],
+    ['maxGasGwei', { maxGasGwei: LIMITS.feeGwei + 1 }],
+    ['maxGasGwei', { maxGasGwei: -1 }],
   ];
   for (const [field, overrides] of cases) {
     rejectsField(() => requestSchemas.mint(validMint(overrides), { supportedChains: CHAINS }), field);
   }
+  assert.equal(requestSchemas.mint(validMint(), { supportedChains: CHAINS }).maxGasGwei, null, 'maxGasGwei is optional and defaults to null, not 0');
+  assert.equal(requestSchemas.mint(validMint({ maxGasGwei: 30 }), { supportedChains: CHAINS }).maxGasGwei, 30);
   rejectsField(() => requestSchemas.sniperCreate({
     label: 'watcher', targetAddress: CONTRACT, chain: 'ethereum', walletLabel: 'Primary',
     fixedValueETH: -1, gasBoostPercent: 20,
@@ -98,6 +102,14 @@ test('negative, NaN, infinite, fractional, and oversized numeric values are reje
   rejectsField(() => requestSchemas.sniperCreate({
     label:'watcher', targetAddress:CONTRACT, chain:'ethereum', walletLabel:'Primary', maxAttempts:21,
   }, { supportedChains:CHAINS }), 'maxAttempts');
+});
+
+test('batch mint validates walletLabels the same schema mint() uses, and carries the guided flow\'s gas tolerance through unchanged', () => {
+  const batch = requestSchemas.batchMint({ ...validMint(), walletLabels: ['a', 'b'], maxGasGwei: 15 }, { supportedChains: CHAINS });
+  assert.deepEqual(batch.walletLabels, ['a', 'b']);
+  assert.equal(batch.maxGasGwei, 15);
+  rejectsField(() => requestSchemas.batchMint({ ...validMint(), walletLabels: [] }, { supportedChains: CHAINS }), 'walletLabels');
+  rejectsField(() => requestSchemas.batchMint({ ...validMint(), walletLabels: ['a', 'a'] }, { supportedChains: CHAINS }), 'walletLabels');
 });
 
 test('addresses, function names, ABI definitions, labels, and label uniqueness are validated', () => {

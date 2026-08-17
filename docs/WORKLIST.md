@@ -20,8 +20,61 @@ shipped).
 - **Round 7** (Section AD) is a degen-bot-style refreshable collection info card, both platforms —
   logged 2026-08-17; splits into a cheap tier and a research-first tier, see below. Tier 1 shipped
   2026-08-17; Tier 2 remains research-only, nothing built.
+- **Round 8** (Section AE) adds a gas-tolerance step to Telegram's guided `/batch` flow, requested
+  directly alongside three other items (FCFS/GTD phase scheduling, a simulation-before-execution
+  question, and repo-privacy); shipped 2026-08-17. The other three were answered without code —
+  see the note at the end of this section.
 
 Status legend: ✅ Done · 🟡 Partial · ❌ Not started
+
+---
+
+# Round 8 — /batch gas-tolerance step (2026-08-17)
+
+## Section AE — Per-batch gas tolerance for the guided /batch flow ✅
+
+Requested as one of four items in the same message: "batch mint should follow the telegram flow
+(/batch -> contract -> select wallets -> gas tolerance -> mint)". Scoped via three follow-up
+questions before building (see the answers baked into the design below), then shipped the same
+session.
+
+- **Scope: Telegram's guided `/batch` only**, confirmed explicitly. Discord's `/batch` is a
+  one-shot slash command with every parameter supplied up front
+  (`/batch wallets contract quantity price chain`) — it never goes through the shared
+  `mintFlowDecision` step machine at all, so there's no guided-flow moment to insert a step into.
+  Discord's paste-triggered guided flow (`startMintGuidedFlow`) also hardcodes `multi:false`, so it
+  can never reach this step either way — nothing there needed touching.
+- **What it is:** a new `awaiting_gastolerance` step in `mintFlowDecision.js`'s shared decision
+  core, reached only when `data.multi` is true, inserted right after the price is settled and
+  right before confirm. A single `/mint` is completely unaffected — `afterPriceKnown` skips
+  straight past it exactly as before this step existed.
+- **What it does:** lets the user cap what *this specific batch* is willing to pay in gas, on top
+  of (never above) the account's existing governance `gasCeilingGwei` — shown for context on the
+  same screen so the user isn't picking blind. Two choices, mirroring the existing price step's
+  accept/manual shape: "✅ No extra limit" (relies on the governance ceiling alone, i.e. unchanged
+  behavior) or "✏️ Set a gwei limit" (typed value). The chosen `maxGasGwei` rides along in flow
+  data and shows on the confirm screen, then reaches `transactionEngine.submit` as an independent
+  check alongside (not instead of) the existing ceiling check — enforced even for a
+  `ceilingExempt` (owner) account, since it's the caller's own choice for this batch, not something
+  governance grants an exemption from. A new `GAS_TOLERANCE_EXCEEDED` error keeps the message
+  distinct from a governance-ceiling rejection.
+- **Known limitation, not fixed by this change:** `botCommandService.batchMint`'s wallet loop
+  aborts the whole batch on the first wallet that throws (gas-tolerance or otherwise), rather than
+  skipping just that wallet and continuing — a pre-existing behavior for any per-wallet failure,
+  not something this feature introduced. Setting a tight tolerance makes hitting it more likely,
+  so it's worth knowing about, but redesigning batch error-resilience was out of the scope that was
+  confirmed for this pass.
+- **The other three items from the same message, answered without code:**
+  - *Simulation before execution* — already true. `transactionEngine.submit` calls
+    `simulateCallSafely` whenever `policy.simulationEnabled` (the default), before broadcast, for
+    every mint including each wallet in a batch.
+  - *FCFS/GTD phase-based scheduling* — scoped to "public-stage only for now": multiple
+    independently-timed **public** mint stages need no new code at all, just separate `/schedule`
+    tasks per known public time. True allowlist-gated GTD/FCFS phases need a merkle proof per
+    wallet per stage that this app doesn't fetch today and has no generic/standard source for
+    (project-specific) — deliberately deferred rather than built partially.
+  - *Repo collaborator-only access* — the repo was public; switched to private
+    (`gh repo edit --visibility private`) on explicit confirmation.
 
 ---
 

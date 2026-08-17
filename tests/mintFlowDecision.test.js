@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { afterDetails, afterQuantity, afterWalletSelection, afterPriceResolved } = require('../src/mint/mintFlowDecision');
+const { afterDetails, afterQuantity, afterWalletSelection, afterPriceResolved, afterGasToleranceResolved } = require('../src/mint/mintFlowDecision');
 
 test('afterDetails asks quantity when maxPerWallet > 1', () => {
   const result = afterDetails({ data: { maxPerWallet: 3 }, wallets: [{ label: 'a' }] });
@@ -54,4 +54,30 @@ test('afterPriceResolved forces priceUnknown back to true for the confirm screen
   const bypassed = afterPriceResolved({ data: { skipConfirm: true }, priceETH: 0.05 });
   assert.equal(bypassed.step, 'execute');
   assert.equal(bypassed.data.priceETH, 0.05);
+});
+
+test('a batch (multi) mint asks for a gas tolerance once the price is known, instead of going straight to confirm -- a single mint never does', () => {
+  const batchViaWalletSelection = afterWalletSelection({ data: { multi: true, priceUnknown: false, skipConfirm: false, selectedWallets: ['a', 'b'] } });
+  assert.equal(batchViaWalletSelection.step, 'awaiting_gastolerance');
+
+  const batchViaPriceResolved = afterPriceResolved({ data: { multi: true, skipConfirm: false }, priceETH: 0.05 });
+  assert.equal(batchViaPriceResolved.step, 'awaiting_gastolerance');
+
+  const singleMint = afterWalletSelection({ data: { multi: false, priceUnknown: false, skipConfirm: false, selectedWallets: ['a'] } });
+  assert.equal(singleMint.step, 'awaiting_confirm');
+});
+
+test('a batch still asks for price first when it\'s unknown -- gas tolerance only comes after the price is settled', () => {
+  const result = afterWalletSelection({ data: { multi: true, priceUnknown: true, selectedWallets: ['a', 'b'] } });
+  assert.equal(result.step, 'awaiting_price');
+});
+
+test('afterGasToleranceResolved always lands on confirm and carries the chosen (or unset) tolerance into flow data', () => {
+  const withLimit = afterGasToleranceResolved({ data: { multi: true, selectedWallets: ['a', 'b'] }, maxGasGwei: 40 });
+  assert.equal(withLimit.step, 'awaiting_confirm');
+  assert.equal(withLimit.data.maxGasGwei, 40);
+
+  const noLimit = afterGasToleranceResolved({ data: { multi: true, selectedWallets: ['a', 'b'] }, maxGasGwei: null });
+  assert.equal(noLimit.step, 'awaiting_confirm');
+  assert.equal(noLimit.data.maxGasGwei, null);
 });
