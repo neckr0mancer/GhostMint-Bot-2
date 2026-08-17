@@ -224,15 +224,23 @@ const MODE_META = {
   safe: { label: 'Normie', hint: 'slowest, safest, network-price gas' },
 };
 
-function modeMenu(currentKey, presets) {
-  const rows = presets.map(preset => {
-    const meta = MODE_META[preset.key] || { label: preset.displayName, hint: '' };
-    return [button(`${preset.key === currentKey ? '✅ ' : ''}${meta.label} — ${meta.hint}`, `mode:pick:${preset.key}`)];
-  });
+// Must match ADVANCED_PRESET_KEYS in src/governance/postgresGovernanceRepository.js -- the
+// backend is the real gate (selectPreset rejects these for an ineligible caller regardless of
+// what's offered here); this list only avoids offering a doomed tap in the first place.
+const GATED_PRESET_KEYS = ['ultra_fast', 'fast'];
+
+function modeMenu(currentKey, presets, advancedModesAllowed = false) {
+  const rows = presets
+    .filter(preset => advancedModesAllowed || !GATED_PRESET_KEYS.includes(preset.key))
+    .map(preset => {
+      const meta = MODE_META[preset.key] || { label: preset.displayName, hint: '' };
+      return [button(`${preset.key === currentKey ? '✅ ' : ''}${meta.label} — ${meta.hint}`, `mode:pick:${preset.key}`)];
+    });
   rows.push([button('⬅️ Back to settings', 'menu:settings')]);
   const currentLabel = MODE_META[currentKey]?.label || 'none selected';
+  const lockedNote = advancedModesAllowed ? '' : '\n\n🔒 Degen and Fast require group or admin access.';
   return {
-    text: `<b>Transaction mode</b>\n\nCurrent: <b>${escapeTelegramHtml(currentLabel)}</b>\n\nControls confirmation prompts and gas aggression for every mint. Ceilings and forced simulation always take precedence regardless of mode.`,
+    text: `<b>Transaction mode</b>\n\nCurrent: <b>${escapeTelegramHtml(currentLabel)}</b>\n\nControls confirmation prompts and gas aggression for every mint. Ceilings and forced simulation always take precedence regardless of mode.${lockedNote}`,
     replyMarkup: keyboard(rows),
     parseMode: 'HTML',
   };

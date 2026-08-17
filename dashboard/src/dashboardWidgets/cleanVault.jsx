@@ -7,8 +7,8 @@ const QUEUE_SCALE=10;
 export function StatusBar({summary,go}){return <div className="dash-statusbar">
   <PageTitle eyebrow="Everything in one view" title="Dashboard" subtitle="A live summary of every tab below - drill into any card for the full picture."/>
   <div className="dash-statusbar-wallet">
-    {summary.wallet
-      ?<><span className="pill">{summary.wallet.chain}</span><strong>{summary.wallet.label}</strong><code>{summary.wallet.address}</code><span>{summary.wallet.balance??'Unavailable'} {summary.wallet.symbol||''}</span></>
+    {summary.wallets.length
+      ?<div className="dash-wallet-chips">{summary.wallets.map(wallet=><span className="dash-wallet-chip" key={wallet.label}><span className="pill">{wallet.chain}</span><strong>{wallet.label}</strong><span>{wallet.balance??'—'} {wallet.symbol||''}</span></span>)}{summary.walletCount>summary.wallets.length&&<span className="dash-wallet-more">+{summary.walletCount-summary.wallets.length} more</span>}</div>
       :<span>No wallets yet</span>}
     <button className="quiet small" onClick={()=>go('Wallets')}>View wallets</button>
     <span className="dash-bell" aria-label={`${summary.pendingConfirmations.length} pending confirmations`}>{summary.pendingConfirmations.length} pending</span>
@@ -22,7 +22,10 @@ export function AlertBanner({summary}){if(!summary.lowBalanceWallets.length)retu
 export function HeroAction({go}){return <section className="panel dash-hero">
   <h2>New Mint</h2>
   <p>Jump straight into the Minting flow with simulation-backed previews.</p>
-  <button onClick={()=>go('Minting')}>New mint</button>
+  <div className="dash-hero-actions">
+    <button onClick={()=>go('Minting')}>New mint</button>
+    <QuickMintToggle go={go}/>
+  </div>
 </section>;}
 
 export function PendingQueue({summary,go}){const percent=Math.min(100,Math.round(summary.pendingConfirmations.length/QUEUE_SCALE*100));return <section className="panel">

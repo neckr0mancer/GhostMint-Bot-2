@@ -1,19 +1,25 @@
-const {randomUUID}=require('node:crypto');
+const {randomBytes,randomUUID}=require('node:crypto');
 const {LinkCodeError}=require('../identity/identityService');
+const {UsernameTakenError}=require('../identity/postgresIdentityRepository');
 const {BotContextError,RateLimitError,requireTextConfirmation}=require('../security/botSecurity');
 const {ValidationError,sendValidationError,requestSchemas}=require('../validation/domain');
 const {AccountBlockedError,AuthorizationError}=require('../governance/governanceService');
 const {GasLookupError}=require('../gas/etherscanGasService');
 const {TransactionSafetyError}=require('../transactions/transactionEngine');
+const {hashSecurityPassword,verifySecurityPassword}=require('../security/securityPassword');
 const SECURITY_HEADERS=Object.freeze({
   'Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' ws: wss:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
   'Cross-Origin-Opener-Policy':'same-origin','Referrer-Policy':'no-referrer','X-Content-Type-Options':'nosniff','X-Frame-Options':'DENY',
 });
+// Computed once so a login attempt against a username that doesn't exist still pays the same
+// scrypt cost as one that does -- without this, response time alone would let an attacker
+// enumerate which usernames are registered before ever guessing a password.
+const DUMMY_SECURITY_PASSWORD_HASH=hashSecurityPassword(randomBytes(32).toString('hex'));
 function noStore(res){res.set('Cache-Control','no-store, private');}
 function publicWallet(value){return {label:value.label,address:value.address,chain:value.chain,balances:value.balances??[],minted:value.minted??0};}
 function jsonSafe(value){return JSON.parse(JSON.stringify(value,(_key,item)=>typeof item==='bigint'?item.toString():item));}
 
-function createDashboardApi({auth,identityRepository,loginRateLimiter,exportKeyRateLimiter,commands,securityAudit={record:async()=>{}},broadcast=()=>{},supportedChains=[],now=()=>Date.now(),checkAccountStatus}) {
+function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLoginRateLimiter,exportKeyRateLimiter,commands,securityAudit={record:async()=>{}},broadcast=()=>{},broadcastToUsers=()=>{},supportedChains=[],now=()=>Date.now(),checkAccountStatus}) {
   const previews=new Map();
   const requireSession=async(req,res,next)=>{try{const session=await auth.authenticate(req.headers.cookie);if(!session)return res.status(401).json({error:'Authentication required'});
       if(typeof checkAccountStatus==='function'){try{await checkAccountStatus(session.userId);}catch(error){if(error instanceof AccountBlockedError)return res.status(403).json({error:error.message,code:error.code,status:error.status});throw error;}}
@@ -31,10 +37,11 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,exportKeyR
   const user=req=>req.dashboardSession.userId;
   const changed=(req,resource)=>broadcast(user(req),{type:`${resource}.changed`});
   const ADMIN_FIELDS=Object.freeze({
-    'group-set':['name','maxWei','dailyWei','gasGwei','simulation'],
+    'group-set':['name','maxWei','dailyWei','gasGwei','simulation','advancedModes'],
     'group-delete':['name'],'assign':['platform','platformUserId','group'],'unassign':['platform','platformUserId'],
     'user-ceilings':['platform','platformUserId','maxWei','dailyWei','gasGwei'],
     'user-ceilings-clear':['platform','platformUserId'],'user-simulation':['platform','platformUserId','simulation'],
+    'user-advanced-modes':['platform','platformUserId','advancedModes'],
     'group-simulation':['group','simulation'],'preset-set':['preset','simulation','confirmations','verification','gasMultiplier'],
     owner:['platform','platformUserId','enabled'],
     ban:['platform','platformUserId','reason'],unban:['platform','platformUserId','reason'],
@@ -69,17 +76,81 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,exportKeyR
     contextId:req.dashboardSession.sessionId,command:`admin:${actionName}`,outcome:'success',reason:'Governance write completed'})).catch(()=>{});}
   async function auditExportKey(req,outcome,reason){await Promise.resolve(securityAudit.record({userId:user(req),platform:'dashboard',
     contextId:req.dashboardSession.sessionId,command:'exportkey',outcome,reason})).catch(()=>{});}
+  async function auditSecurityPassword(req,outcome,reason){await Promise.resolve(securityAudit.record({userId:user(req),platform:'dashboard',
+    contextId:req.dashboardSession.sessionId,command:'securitypassword',outcome,reason})).catch(()=>{});}
+  // No session exists yet at login, so this can't key off req.dashboardSession like the others --
+  // the submitted username (never the password) goes in the audit reason for admin visibility, but
+  // is never echoed back in the HTTP response itself (see loginWithPassword below).
+  async function auditLoginPassword(req,userId,outcome,reason){await Promise.resolve(securityAudit.record({userId,platform:'dashboard',
+    contextId:req.ip||'unknown',command:'login-password',outcome,reason})).catch(()=>{});}
 
   return {securityHeaders(req,res,next){for(const [name,value] of Object.entries(SECURITY_HEADERS))res.set(name,value);if(req.path.startsWith('/api/'))noStore(res);next();},requireSession,requireCsrf,
     login:async(req,res)=>{noStore(res);try{loginRateLimiter.check('dashboard',req.ip||'unknown','login');const session=await auth.login(req.body?.code);res.setHeader('Set-Cookie',auth.sessionCookies(session));res.status(204).end();}
       catch(error){if(error instanceof LinkCodeError)return res.status(401).json({error:'Invalid or expired login code'});if(error instanceof RateLimitError){res.set('Retry-After',String(Math.ceil(error.retryAfterMs/1000)));return res.status(429).json({error:'Too many login attempts'});}throw error;}},
+    // Rate-limited per submitted username (not per IP) so brute-forcing one account can't be spread
+    // across many source addresses. A missing username still runs a scrypt comparison against
+    // DUMMY_SECURITY_PASSWORD_HASH so response time can't be used to enumerate which usernames are
+    // registered, and the response is identical ("Invalid username or password") whether the
+    // username doesn't exist, has no password set, or the password itself is simply wrong.
+    loginWithPassword:async(req,res)=>{noStore(res);
+      let username,password;
+      try{({username,password}=requestSchemas.loginWithPassword(req.body||{}));}
+      catch(error){if(error instanceof ValidationError)return sendValidationError(res,error);throw error;}
+      try{passwordLoginRateLimiter.check('dashboard',username,'login-password');}
+      catch(error){
+        if(error instanceof RateLimitError){await auditLoginPassword(req,null,'rate_limited',`login-password rate limit exceeded for ${username}`);res.set('Retry-After',String(Math.ceil(error.retryAfterMs/1000)));return res.status(429).json({error:'Too many login attempts'});}
+        throw error;
+      }
+      const userId=await identityRepository.findUserIdByUsername(username);
+      const storedHash=userId?await identityRepository.getSecurityPasswordHash(userId):null;
+      const valid=verifySecurityPassword(password,storedHash||DUMMY_SECURITY_PASSWORD_HASH);
+      if(!userId||!storedHash||!valid){
+        await auditLoginPassword(req,userId,'failure',`invalid credentials for ${username}`);
+        return res.status(401).json({error:'Invalid username or password'});
+      }
+      const session=await auth.loginWithUserId(userId);
+      res.setHeader('Set-Cookie',auth.sessionCookies(session));
+      await auditLoginPassword(req,userId,'success',`login for ${username}`);
+      res.status(204).end();
+    },
     logout:async(req,res)=>{noStore(res);await auth.revoke(req.dashboardSession);res.setHeader('Set-Cookie',auth.clearCookies());res.status(204).end();},
     logoutAll:async(req,res)=>{noStore(res);await auth.revokeAll(req.dashboardSession);res.setHeader('Set-Cookie',auth.clearCookies());res.status(204).end();},
-    profile:async(req,res)=>{noStore(res);res.json({userId:user(req),isOwner:commands?.isOwner?await commands.isOwner(user(req)):false,isRootOwner:commands?.isRootOwner?await commands.isRootOwner(user(req)):false,linkedAccounts:await identityRepository.listLinkedAccounts(user(req)),supportedChains,theme:await identityRepository.getTheme(user(req)),displayName:identityRepository.getDisplayName?await identityRepository.getDisplayName(user(req)):null,defaultChain:identityRepository.getDefaultChain?await identityRepository.getDefaultChain(user(req)):null,currentMode:commands?.currentMode?await commands.currentMode(user(req)):null});},
+    profile:async(req,res)=>{noStore(res);res.json({userId:user(req),isOwner:commands?.isOwner?await commands.isOwner(user(req)):false,isRootOwner:commands?.isRootOwner?await commands.isRootOwner(user(req)):false,linkedAccounts:await identityRepository.listLinkedAccounts(user(req)),supportedChains,theme:await identityRepository.getTheme(user(req)),displayName:identityRepository.getDisplayName?await identityRepository.getDisplayName(user(req)):null,defaultChain:identityRepository.getDefaultChain?await identityRepository.getDefaultChain(user(req)):null,securityPasswordSet:identityRepository.getSecurityPasswordHash?Boolean(await identityRepository.getSecurityPasswordHash(user(req))):false,username:identityRepository.getUsername?await identityRepository.getUsername(user(req)):null,currentMode:commands?.currentMode?await commands.currentMode(user(req)):null,advancedModesAllowed:commands?.advancedModesAllowed?await commands.advancedModesAllowed(user(req)):false});},
     updateMode:action(async(req,res)=>{res.json({mode:await commands.selectMode(user(req),req.body.preset)});}),
     updateTheme:action(async(req,res)=>{const {theme}=requestSchemas.themeUpdate(req.body||{});res.json({theme:await identityRepository.setTheme(user(req),theme)});}),
     updateDisplayName:action(async(req,res)=>{const {displayName}=requestSchemas.displayNameUpdate(req.body||{});res.json({displayName:await identityRepository.setDisplayName(user(req),displayName)});}),
     updateDefaultChain:action(async(req,res)=>{const {defaultChain}=requestSchemas.defaultChainUpdate(req.body||{},{supportedChains});res.json({defaultChain:await identityRepository.setDefaultChain(user(req),defaultChain)});}),
+    // Sets or changes the one account password that gates every sensitive dashboard action (see
+    // exportWalletKey below). Changing an existing password requires the current one; setting it for
+    // the first time does not, since there is nothing yet to authenticate against.
+    securityPasswordSet:action(async(req,res)=>{noStore(res);
+      try{exportKeyRateLimiter.check('dashboard',user(req),'securitypassword');}
+      catch(error){
+        if(error instanceof RateLimitError){await auditSecurityPassword(req,'rate_limited','security password rate limit exceeded');res.set('Retry-After',String(Math.ceil(error.retryAfterMs/1000)));return res.status(429).json({error:'Too many attempts'});}
+        throw error;
+      }
+      const {currentPassword,newPassword}=requestSchemas.securityPasswordSet(req.body||{});
+      const existingHash=await identityRepository.getSecurityPasswordHash(user(req));
+      if(existingHash){
+        if(!currentPassword||!verifySecurityPassword(currentPassword,existingHash)){
+          await auditSecurityPassword(req,'failure','incorrect current security password');
+          return res.status(401).json({error:'Current security password is incorrect'});
+        }
+      }
+      await identityRepository.setSecurityPasswordHash(user(req),hashSecurityPassword(newPassword));
+      await auditSecurityPassword(req,'success',existingHash?'security password changed':'security password set');
+      res.json({securityPasswordSet:true});
+    }),
+    // Claiming a username requires an already-set security password -- a username with no password
+    // behind it could never be used to log in, so there is nothing to gain from letting it be set alone.
+    usernameSet:action(async(req,res)=>{noStore(res);
+      const storedHash=await identityRepository.getSecurityPasswordHash(user(req));
+      if(!storedHash)return res.status(400).json({error:'Set a security password first.',code:'SECURITY_PASSWORD_NOT_SET'});
+      const {username}=requestSchemas.usernameSet(req.body||{});
+      try{await identityRepository.setUsername(user(req),username);}
+      catch(error){if(error instanceof UsernameTakenError)return res.status(409).json({error:error.message});throw error;}
+      res.json({username});
+    }),
     gas:action(async(req,res)=>{noStore(res);
       try{res.json(await commands.gas(req.params.chain));}
       catch(error){
@@ -95,23 +166,38 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,exportKeyR
     removeWallet:action(async(req,res)=>{confirmation(req);await commands.removeWallet(user(req),req.params.label);res.status(204).end();}),
     // SEC-01, web half: the raw key never reaches this response -- commands.exportWalletKeystore
     // (botCommandService -> server.js's exportKeystore) decrypts the stored envelope and immediately
-    // re-encrypts it into a standard V3 keystore under the password the browser sent, so only the
-    // encrypted blob ever comes back. Rate limiter is shared with Telegram's /exportkey (same
-    // instance, passed in from server.js) so switching platforms doesn't double the effective rate.
+    // re-encrypts it into a standard V3 keystore under the account's security password, so only the
+    // encrypted blob ever comes back. That password is verified here, against the stored hash,
+    // before it's trusted for anything -- and the same verified value then doubles as the keystore's
+    // own encryption password, so there is exactly one password to remember for this whole flow.
+    // Rate limiter is shared with Telegram's /exportkey (same instance, passed in from server.js) so
+    // switching platforms doesn't double the effective rate.
     exportWalletKey:action(async(req,res)=>{confirmation(req);noStore(res);
       try{exportKeyRateLimiter.check('dashboard',user(req),'exportkey');}
       catch(error){
         if(error instanceof RateLimitError){await auditExportKey(req,'rate_limited','export key rate limit exceeded');res.set('Retry-After',String(Math.ceil(error.retryAfterMs/1000)));return res.status(429).json({error:'Too many export attempts'});}
         throw error;
       }
-      const {keystore}=await commands.exportWalletKeystore(user(req),req.params.label,req.body?.password);
+      const {securityPassword}=requestSchemas.walletExport(req.body||{});
+      const storedHash=await identityRepository.getSecurityPasswordHash(user(req));
+      if(!storedHash){await auditExportKey(req,'failure','no security password set');return res.status(400).json({error:'Set a security password first.',code:'SECURITY_PASSWORD_NOT_SET'});}
+      if(!verifySecurityPassword(securityPassword,storedHash)){await auditExportKey(req,'failure','incorrect security password');return res.status(401).json({error:'Incorrect security password'});}
+      const {keystore}=await commands.exportWalletKeystore(user(req),req.params.label,securityPassword);
       await auditExportKey(req,'success','keystore export delivered');
       res.json({keystore});
     }),
     mintPresets:action(async(req,res)=>res.json(jsonSafe(await commands.mintPresets(user(req))))),
     detectMint:action(async(req,res)=>{noStore(res);res.json(jsonSafe(await commands.detectMintContract(user(req),{contractAddress:req.query.contractAddress,quantity:req.query.quantity})));}),
     previewMint:action(async(req,res)=>{const labels=req.body.walletLabels||[req.body.walletLabel];const entries=[];for(const walletLabel of labels)entries.push(await commands.prepareMint(user(req),{...req.body,walletLabel}));const previewToken=issuePreview(user(req),entries);res.json({previewToken,expiresInSeconds:300,items:entries.map(value=>({wallet:value.wallet,preview:value.prepared.preview,simulation:jsonSafe(value.simulation)}))});}),
-    confirmMint:action(async(req,res)=>{confirmation(req);const value=consumePreview(user(req),req.body.previewToken);const results=[];for(const entry of value.entries)results.push(await commands.submitPreparedMint(user(req),entry));res.status(202).json(jsonSafe({results}));}),
+    // Each wallet in a batch submits independently -- one wallet's insufficient balance or stale
+    // wallet shouldn't cancel the rest, which had already simulated fine and may have nothing wrong
+    // with them at all (same per-entry try/catch shape as importWalletsBatch's batch key import).
+    confirmMint:action(async(req,res)=>{confirmation(req);const value=consumePreview(user(req),req.body.previewToken);const results=[];for(const entry of value.entries){
+      try{results.push({label:entry.wallet.label,status:'success',result:await commands.submitPreparedMint(user(req),entry)});}
+      catch(error){const reason=error instanceof ValidationError?error.issues.map(issue=>`${issue.field} ${issue.message}`).join('; ')
+        :error instanceof TransactionSafetyError?error.message:'Mint failed unexpectedly -- check activity for details.';
+        results.push({label:entry.wallet.label,status:'failed',error:reason});}
+    }res.status(202).json(jsonSafe({results}));}),
     tasks:action(async(req,res)=>res.json(await commands.tasksPage(user(req),req.query))),
     createTask:action(async(req,res)=>{const task=await commands.createTask(user(req),req.body);res.status(201).json(task);}),
     controlTask:action(async(req,res)=>{if(req.body?.action==='cancel')confirmation(req);const result=await commands.controlTask(user(req),req.body?.action,req.params.id);res.json(result);}),
@@ -139,22 +225,39 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,exportKeyR
     resolveConfirmation:action(async(req,res)=>res.json(jsonSafe(await commands.confirmTrigger(user(req),req.params.id,req.body?.decision)))),
     adminOverview:action(async(req,res)=>res.json(jsonSafe(await commands.adminOverview(user(req))))),
     adminEffective:action(async(req,res)=>res.json(jsonSafe(await commands.adminEffective(user(req),req.query)))),
+    adminSecurityAudit:action(async(req,res)=>res.json(jsonSafe(await commands.adminSecurityAudit(user(req),req.query)))),
+    // Same balance-merge-then-sanitize shape as the self-service wallets route (see publicWallet
+    // above) -- the only difference is which userId's wallets get looked up.
+    adminUserWallets:action(async(req,res)=>{const values=await commands.adminUserWallets(user(req),req.params.userId);
+      const settled=await Promise.allSettled(values.map(value=>commands.walletBalance(req.params.userId,value.label)));
+      res.json(settled.map((result,index)=>publicWallet(result.status==='fulfilled'?result.value:values[index])));}),
+    adminUserActivity:action(async(req,res)=>res.json(jsonSafe(await commands.adminUserActivity(user(req),req.params.userId,req.query)))),
+    adminUserTasks:action(async(req,res)=>res.json(jsonSafe(await commands.adminUserTasks(user(req),req.params.userId,req.query)))),
+    adminUserPnl:action(async(req,res)=>res.json(await commands.adminUserPnl(user(req),req.params.userId))),
     adminWrite:action(async(req,res)=>{const actionName=String(req.params.action||'').toLowerCase();
       if(['group-delete','owner','ban','unban','suspend','unsuspend','deactivate','reactivate','merge-account'].includes(actionName))confirmation(req);
       let result;try{result=await commands.admin(user(req),adminInput(actionName,req.body));}
       catch(error){if(error instanceof AuthorizationError||error instanceof ValidationError)throw error;throw new ValidationError({field:'admin',message:error.message});}
-      await auditAdminWrite(req,actionName);changed(req,'admin');res.json({message:result});}),
+      await auditAdminWrite(req,actionName);
+      // Every currently-connected owner sees this, not just whoever made the change -- broadcast(),
+      // used everywhere else in this file, only ever reaches the acting user's own session.
+      const ownerIds=commands.listOwnerUserIds?await commands.listOwnerUserIds():[user(req)];
+      broadcastToUsers(ownerIds,{type:'admin.changed'});
+      res.json({message:result});}),
     error(error,req,res,next){if(res.headersSent)return next(error);res.status(500).json({error:'Request failed safely'});},
   };
 }
 function mountDashboardRoutes(app,api){
   app.post('/api/auth/login',api.login);
+  app.post('/api/auth/login-password',api.loginWithPassword);
   app.post('/api/auth/logout',api.requireSession,api.requireCsrf,api.logout);
   app.post('/api/auth/logout-all',api.requireSession,api.requireCsrf,api.logoutAll);
   app.get('/api/profile',api.requireSession,api.profile);
   app.put('/api/profile/theme',api.requireSession,api.requireCsrf,api.updateTheme);
   app.put('/api/profile/display-name',api.requireSession,api.requireCsrf,api.updateDisplayName);
   app.put('/api/profile/default-chain',api.requireSession,api.requireCsrf,api.updateDefaultChain);
+  app.put('/api/auth/security-password',api.requireSession,api.requireCsrf,api.securityPasswordSet);
+  app.put('/api/auth/username',api.requireSession,api.requireCsrf,api.usernameSet);
   app.put('/api/profile/mode',api.requireSession,api.requireCsrf,api.updateMode);
   app.get('/api/gas/:chain',api.requireSession,api.gas);
   app.get('/api/social-usage',api.requireSession,api.socialUsage);
@@ -196,6 +299,11 @@ function mountDashboardRoutes(app,api){
   app.post('/api/confirmations/:id',api.requireSession,api.requireCsrf,api.resolveConfirmation);
   app.get('/api/admin',api.requireSession,api.adminOverview);
   app.get('/api/admin/effective',api.requireSession,api.adminEffective);
+  app.get('/api/admin/security-audit',api.requireSession,api.adminSecurityAudit);
+  app.get('/api/admin/users/:userId/wallets',api.requireSession,api.adminUserWallets);
+  app.get('/api/admin/users/:userId/activity',api.requireSession,api.adminUserActivity);
+  app.get('/api/admin/users/:userId/tasks',api.requireSession,api.adminUserTasks);
+  app.get('/api/admin/users/:userId/pnl',api.requireSession,api.adminUserPnl);
   app.post('/api/admin/:action',api.requireSession,api.requireCsrf,api.adminWrite);
 }
 module.exports={SECURITY_HEADERS,createDashboardApi,jsonSafe,mountDashboardRoutes,noStore,publicWallet};

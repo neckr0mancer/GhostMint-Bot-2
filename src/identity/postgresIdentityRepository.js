@@ -274,7 +274,42 @@ function createPostgresIdentityRepository(pool) {
       await pool.query('UPDATE users SET default_chain=$2 WHERE user_id=$1', [userId, defaultChain]);
       return defaultChain;
     },
+
+    async getSecurityPasswordHash(userId) {
+      const result = await pool.query('SELECT security_password_hash FROM users WHERE user_id=$1', [userId]);
+      return result.rows[0]?.security_password_hash || null;
+    },
+
+    async setSecurityPasswordHash(userId, hash) {
+      await pool.query('UPDATE users SET security_password_hash=$2 WHERE user_id=$1', [userId, hash]);
+    },
+
+    async getUsername(userId) {
+      const result = await pool.query('SELECT username FROM users WHERE user_id=$1', [userId]);
+      return result.rows[0]?.username || null;
+    },
+
+    async setUsername(userId, value) {
+      try {
+        await pool.query('UPDATE users SET username=$2 WHERE user_id=$1', [userId, value]);
+      } catch (error) {
+        if (error.code === '23505') throw new UsernameTakenError();
+        throw error;
+      }
+    },
+
+    async findUserIdByUsername(value) {
+      const result = await pool.query('SELECT user_id FROM users WHERE username=$1', [value]);
+      return result.rows[0]?.user_id || null;
+    },
   };
 }
 
-module.exports = { createPostgresIdentityRepository };
+class UsernameTakenError extends Error {
+  constructor() {
+    super('That username is already taken');
+    this.name = 'UsernameTakenError';
+  }
+}
+
+module.exports = { UsernameTakenError, createPostgresIdentityRepository };

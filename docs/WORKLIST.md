@@ -135,6 +135,8 @@ its collection/contract, then continue into the normal contract/mint workflow.
   new integration work.
 - Should slot into the same entry points as a bare address (Section M), so pasting a link behaves
   exactly like pasting the contract it refers to.
+- ⚠️ Currently blocked in practice: see the OpenSea key status note under Section G + K below —
+  `openSeaService` calls are degraded until a working `OPENSEA_API_KEY` is confirmed in production.
 
 ## Section R — Sniper guided config + contract-open auto-detection ❌
 
@@ -201,6 +203,14 @@ need the same Discord component patterns.
   1.05×, Normie 1.0×), applied in `transactionEngine.js` to auto-computed fees only — never
   overriding an explicit caller-supplied gas price.
 - Button/dropdown mode selection on Telegram, Discord, and the dashboard.
+- Migration `038_mode_advanced_access_and_default.sql`: the admin Presets editor was still showing
+  the raw `display_name` ("Ultra Fast" etc.) since it rendered the DB value directly with no
+  relabeling — now fixed at the source. Normie (`safe`) is now a real seeded default
+  (`mode_presets.is_default`), resolved in `getEffectiveGovernance` for both display and actual
+  policy enforcement, instead of unset users silently falling back to unrelated chain defaults.
+  Degen and Fast now require `seat_groups.advanced_modes_allowed` or a per-user
+  `user_governance.advanced_modes_allowed` grant — previously any user could select Degen with no
+  gating at all.
 
 ## Section D — Gas per-chain ✅
 
@@ -216,10 +226,41 @@ security posture).
 ## Section G + K — OpenSea price fallback, accept-price, quantity ✅
 
 - `OPENSEA_API_KEY` set via OpenSea's public self-service free-tier endpoint
-  (`POST /api/v2/auth/keys`, no login). Expires ~weekly; `npm run opensea:refresh-key` renews it.
+  (`POST /api/v2/auth/keys`, no login). `npm run opensea:refresh-key` re-requests and rewrites it
+  into `.env` when it lapses.
 - Unreadable contract price → OpenSea floor offered as one-tap accept, free-text fallback either
   way, on both `/mint` and `/schedule`.
 - `maxPerWallet > 1` now prompts for quantity instead of hardcoding 1.
+- ⚠️ **Key status correction (2026-08-17, supersedes earlier "expires 2026-08-23" claim in this
+  file's history):** the 2026-08-17T00:19:48Z production boot log reports
+  `"openSeaConfigured":false`, and `OPENSEA_API_KEY` is absent from this dev copy's `.env` too —
+  the key is genuinely gone, not just unsynced between environments. This silently degrades the
+  mint-price fallback above *in production right now*. Before trusting this section again: run
+  `npm run opensea:refresh-key` (or otherwise obtain a fresh key) and confirm
+  `openSeaConfigured:true` on the next boot.
+- **Deferred follow-on: P&L OpenSea sales-detection (auto-fill the "sale" side).** Every confirmed
+  mint auto-creates its own `pnl_records` row with real cost + gas (`recordMintActivity`/
+  `autoRecordPnl` in `src/server.js`), but `sale` is always left at 0 — there is still no data
+  source that knows when/for-how-much a minted NFT actually resold. Three concrete blockers before
+  picking this up:
+  1. **No token ID is captured from a mint receipt today.** `transactionEngine.js`'s `inspectChain`
+     only reads `gasUsed`/`gasPrice`/`blockNumber` — it never parses `receipt.logs` for the
+     ERC-721 `Transfer(address,address,uint256)` mint event, so there's no
+     `(chain, contractAddress, tokenId)` triple recorded per mint to later ask OpenSea "did this
+     specific token sell?". Needed first: parse that event, add `token_id`/`contract_address`
+     columns (`activity` has neither today), and a new per-minted-token tracking table
+     (`last_sale_checked_at`/`sold_at`/`sale_price_wei`, linked back to its `pnl_records` row).
+  2. **`openSeaService.js` has never called a per-token endpoint** — only collection-level
+     floor-price/metadata (`/api/v2/collections/{slug}` and `/stats`). A sales watcher needs
+     OpenSea's per-NFT events endpoint instead, with zero prior usage here to pattern-match
+     against — confirm its real response shape with a live call before writing a parser from
+     memory of the docs.
+  3. **Blocked on the API key itself** — see the correction above.
+  - Worker skeleton to reuse once unblocked: `src/social/socialWatchWorker.js`'s shape
+    (`setInterval` + re-entrancy guard + `health()` + swallow-and-log failures), mirroring
+    `contract_value_cache`'s "NULL value + non-null `resolved_at` = attempted-but-empty, no row =
+    never attempted" caching convention so a per-token poll loop doesn't hammer OpenSea's
+    free-tier ~600 req/h budget it already shares with floor-price lookups.
 
 ## Section H — Deposit + wallet list ✅
 

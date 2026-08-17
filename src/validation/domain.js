@@ -117,11 +117,25 @@ function walletLabel(value, field = 'walletLabel') {
   return normalized;
 }
 
-// The password a dashboard user picks to encrypt their own exported V3 keystore -- server-side
-// only (see server.js's exportKeystore), never a login/account credential, so there's nothing to
-// check it against; only a minimum length to keep it from being trivially crackable.
-function keystorePassword(value, field = 'password') {
+// The dashboard-only account password gating sensitive browser-side actions (currently: exporting
+// a wallet's keystore, which it also doubles as the keystore's own encryption password for). This
+// only checks shape (length); dashboard/api.js verifies the value itself against the stored hash
+// before either use.
+function securityPassword(value, field = 'securityPassword') {
   return string(value, field, { min: 12, max: 200 });
+}
+
+const USERNAME_PATTERN = /^[a-z][a-z0-9_]{2,31}$/;
+
+// Always normalized to lowercase -- the whole point is a case-insensitive handle, and storing it
+// pre-normalized means the plain UNIQUE constraint on users.username is sufficient (see migration
+// 036) without needing a citext column or a functional index.
+function username(value, field = 'username') {
+  const normalized = string(value, field, { min: 3, max: 32 }).toLowerCase();
+  if (!USERNAME_PATTERN.test(normalized)) {
+    fail(field, 'must start with a letter and contain only lowercase letters, digits, or underscores (3-32 characters)');
+  }
+  return normalized;
 }
 
 function uniqueWalletLabel(value, existingLabels = []) {
@@ -362,7 +376,22 @@ const requestSchemas = Object.freeze({
   mint: validateMintRequest,
   batchMint: validateBatchMint,
   send: validateSendRequest,
-  walletExport: input => ({ password: keystorePassword(input.password) }),
+  walletExport: input => ({ securityPassword: securityPassword(input.securityPassword) }),
+  securityPasswordSet: input => ({
+    currentPassword: input.currentPassword === undefined ? undefined : securityPassword(input.currentPassword, 'currentPassword'),
+    newPassword: securityPassword(input.newPassword, 'newPassword'),
+  }),
+  usernameSet: input => ({ username: username(input.username) }),
+  // Deliberately looser than username()'s charset check and securityPassword's 12-200 length check:
+  // a login attempt with a badly-formatted username or a too-short password must still reach the
+  // same generic "invalid username or password" failure in dashboard/api.js's loginWithPassword, not
+  // a distinct validation error naming which field or rule failed. Just enough shape-checking to
+  // reject empty/non-string input outright; findUserIdByUsername naturally returns null for anything
+  // that was never actually registered as a username.
+  loginWithPassword: input => ({
+    username: string(input.username, 'username', { min: 1, max: 32 }).toLowerCase(),
+    password: string(input.password, 'password', { min: 1, max: 200 }),
+  }),
   taskCreate: validateTaskCreate,
   sniperCreate: validateSniper,
   pnlCreate: validatePnlRecord,

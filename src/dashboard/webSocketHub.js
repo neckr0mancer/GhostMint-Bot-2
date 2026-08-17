@@ -4,7 +4,10 @@ function createDashboardWebSocketHub({auth,log=()=>{}}) {const connections=new M
   function attach(httpServer){server=new WebSocketServer({server:httpServer,path:'/ws',verifyClient:async(info,done)=>{try{const session=await auth.authenticate(info.req.headers.cookie);if(!session)return done(false,401,'Authentication required');info.req.dashboardSession=session;done(true);}catch(error){log(`WebSocket authentication failed safely: ${error.message}`);done(false,401,'Authentication required');}}});
     server.on('connection',(socket,request)=>{add(request.dashboardSession.userId,socket);socket.send(JSON.stringify({type:'connected'}));});return server;}
   function broadcastToUser(userId,message){const payload=JSON.stringify(message);for(const socket of connections.get(userId)||[])if(socket.readyState===socket.OPEN)socket.send(payload);}
+  // For notifying every currently-connected member of a set of users (e.g. every owner) about one
+  // admin's write -- broadcastToUser alone only ever reaches the acting admin's own session.
+  function broadcastToUsers(userIds,message){const payload=JSON.stringify(message);for(const userId of userIds)for(const socket of connections.get(userId)||[])if(socket.readyState===socket.OPEN)socket.send(payload);}
   async function close(){if(!server)return;for(const values of connections.values())for(const socket of values)socket.close(1001,'Server shutdown');await new Promise(resolve=>server.close(()=>resolve()));connections.clear();server=null;}
-  return {attach,broadcastToUser,close};
+  return {attach,broadcastToUser,broadcastToUsers,close};
 }
 module.exports={createDashboardWebSocketHub};

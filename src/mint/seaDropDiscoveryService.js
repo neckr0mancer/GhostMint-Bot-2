@@ -1,11 +1,30 @@
 const axios = require('axios');
 const { TOKEN_ALLOWED_SEADROP_EVENT_INTERFACE } = require('./seaDropRegistry');
 
-// Discovers which SeaDrop core contract a token has configured as allowed to mint it, by reading
-// the token's own AllowedSeaDropUpdated(address[]) event log. Two tiers, both non-throwing:
-//   1. Etherscan's Logs API (indexes full history itself, sidesteps free-RPC "archive node"
-//      rejections) -- skipped entirely when ETHERSCAN_API_KEY isn't configured.
-//   2. One unbounded eth_getLogs call via the configured provider. No chunked/paginated historical
+// OpenSea's official SeaDrop v1.0 core, deployed at this same address via CREATE2 on every chain
+// it supports (confirmed against Etherscan's own "SeaDrop"/OpenSea label and the
+// github.com/ProjectOpenSea/seadrop source link on this address). Checking it directly is a single
+// eth_call with no history to scan -- reliable even for a token whose AllowedSeaDropUpdated event
+// was never emitted (e.g. set once in the constructor and never updated since, which some deployed
+// tokens genuinely do), where log-scanning below can never find anything no matter how well it runs.
+const CANONICAL_SEADROP_CORE = Object.freeze({
+  ethereum: '0x00005EA00Ac477B1030CE78506496e8C2dE24bf5',
+  base: '0x00005EA00Ac477B1030CE78506496e8C2dE24bf5',
+  arbitrum: '0x00005EA00Ac477B1030CE78506496e8C2dE24bf5',
+  polygon: '0x00005EA00Ac477B1030CE78506496e8C2dE24bf5',
+});
+
+// Discovers which SeaDrop core contract a token has configured as allowed to mint it. Three tiers,
+// all non-throwing, tried fastest/most-reliable first:
+//   1. The canonical core directly (see above) -- a token never configured there returns an
+//      all-zero PublicDrop struct rather than reverting (plain Solidity mapping-default behavior),
+//      so startTime/endTime/maxTotalMintableByWallet all being zero is treated as "not actually
+//      configured here" rather than a real free-priced drop (which would still have real timing/
+//      limits even at price 0).
+//   2. Etherscan's Logs API, reading the token's own AllowedSeaDropUpdated(address[]) event log
+//      (indexes full history itself, sidesteps free-RPC "archive node" rejections) -- skipped
+//      entirely when ETHERSCAN_API_KEY isn't configured. Only useful for a non-canonical core.
+//   3. One unbounded eth_getLogs call via the configured provider. No chunked/paginated historical
 //      scanning -- if this fails (rate limit, archive-node rejection, timeout), the drop is simply
 //      "not auto-discoverable", same "unknown is a valid outcome" philosophy as
 //      contractValueResolver.js.
@@ -14,6 +33,15 @@ const { TOKEN_ALLOWED_SEADROP_EVENT_INTERFACE } = require('./seaDropRegistry');
 function createSeaDropDiscoveryService({ providerService, publicDropResolver, chains, apiKey, repository,
   endpoint = 'https://api.etherscan.io/v2/api', http = axios, timeoutMs = 10_000 }) {
   const topic0 = TOKEN_ALLOWED_SEADROP_EVENT_INTERFACE.getEvent('AllowedSeaDropUpdated').topicHash;
+
+  async function viaCanonicalCore(chain, contractAddress) {
+    const address = CANONICAL_SEADROP_CORE[chain];
+    if (!address) return undefined;
+    const publicDrop = await publicDropResolver.getPublicDrop(chain, address, contractAddress);
+    if (!publicDrop) return undefined;
+    if (!publicDrop.startTime && !publicDrop.endTime && !publicDrop.maxTotalMintableByWallet) return undefined;
+    return address;
+  }
 
   function decodeLatestAddress(logs) {
     if (!logs.length) return null;
@@ -55,8 +83,12 @@ function createSeaDropDiscoveryService({ providerService, publicDropResolver, ch
     const cached = await repository.getSeaDrop(chain, contractAddress);
     if (cached) return cached;
 
-    let address = await viaEtherscan(chain, contractAddress);
-    let discoverySource = address ? 'etherscan-logs' : null;
+    let address = await viaCanonicalCore(chain, contractAddress);
+    let discoverySource = address ? 'canonical-core' : null;
+    if (!address) {
+      address = await viaEtherscan(chain, contractAddress);
+      discoverySource = address ? 'etherscan-logs' : null;
+    }
     if (!address) {
       address = await viaRpc(chain, contractAddress);
       discoverySource = address ? 'eth_getLogs' : null;

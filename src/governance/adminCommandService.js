@@ -9,7 +9,7 @@ function createAdminCommandService(governance, identity) {
       switch (action.toLowerCase()) {
         case 'group-set':
           await governance.upsertGroup(callerUserId, { name: args[0], maxTransactionValueWei: args[1],
-            dailySpendingBudgetWei: args[2], gasCeilingGwei: args[3], simulationForced: args[4] });
+            dailySpendingBudgetWei: args[2], gasCeilingGwei: args[3], simulationForced: args[4], advancedModesAllowed: args[5] });
           return `Group ${args[0]} saved.`;
         case 'group-delete':
           await governance.deleteGroup(callerUserId, args[0]); return `Group ${args[0]} deleted.`;
@@ -29,6 +29,9 @@ function createAdminCommandService(governance, identity) {
         case 'user-simulation':
           await governance.setUserSimulation(callerUserId, { platform: args[0], platformUserId: args[1], simulationForced: args[2] });
           return 'User simulation rule saved.';
+        case 'user-advanced-modes':
+          await governance.setUserAdvancedModes(callerUserId, { platform: args[0], platformUserId: args[1], advancedModesAllowed: args[2] });
+          return 'User advanced-mode access saved.';
         case 'group-simulation':
           await governance.setGroupSimulation(callerUserId, { groupName: args[0], simulationForced: args[1] });
           return 'Group simulation rule saved.';

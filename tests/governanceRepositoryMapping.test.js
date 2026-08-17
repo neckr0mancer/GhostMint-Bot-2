@@ -14,6 +14,7 @@ function fakePool(rows) {
 test('listGovernedUsers maps status_reason/suspended_until/status_changed_at to camelCase fields', async () => {
   const suspendedUntil = new Date('2026-09-01T00:00:00Z');
   const statusChangedAt = new Date('2026-08-14T12:00:00Z');
+  const lastActiveAt = new Date('2026-08-16T09:00:00Z');
   const rows = [{
     user_id: 'user-1', is_owner: false, account_status: 'suspended',
     status_reason: 'Repeated failed mint attempts', suspended_until: suspendedUntil,
@@ -21,6 +22,7 @@ test('listGovernedUsers maps status_reason/suspended_until/status_changed_at to 
     group_name: 'standard', max_transaction_value_wei: '1000000000000000000',
     daily_spending_budget_wei: '5000000000000000000', gas_ceiling_gwei: '50',
     simulation_forced: true, selected_preset_key: 'safe', scheduled_removal_at: null,
+    last_active_at: lastActiveAt,
     linked_accounts: [{ platform: 'telegram', platformUserId: '123' }],
   }];
   const repository = createPostgresGovernanceRepository(fakePool(rows));
@@ -33,6 +35,7 @@ test('listGovernedUsers maps status_reason/suspended_until/status_changed_at to 
   assert.equal(user.statusChangedAt, statusChangedAt);
   // gas_ceiling_gwei is coerced to a Number for consistency with the rest of the repository.
   assert.equal(user.gasCeilingGwei, 50);
+  assert.equal(user.lastActiveAt, lastActiveAt);
   assert.deepEqual(user.linkedAccounts, [{ platform: 'telegram', platformUserId: '123' }]);
 });
 
@@ -43,6 +46,7 @@ test('listGovernedUsers leaves status fields null for an active user with no lif
     subscription_active: false, good_standing_override: false, group_name: null,
     max_transaction_value_wei: null, daily_spending_budget_wei: null, gas_ceiling_gwei: null,
     simulation_forced: null, selected_preset_key: null, scheduled_removal_at: null,
+    last_active_at: null,
     linked_accounts: [],
   }];
   const repository = createPostgresGovernanceRepository(fakePool(rows));
@@ -53,6 +57,7 @@ test('listGovernedUsers leaves status fields null for an active user with no lif
   assert.equal(user.suspendedUntil, null);
   assert.equal(user.statusChangedAt, null);
   assert.equal(user.gasCeilingGwei, null);
+  assert.equal(user.lastActiveAt, null);
 });
 
 // Regression test: mapPreset used to check `if (!row) return null`, but `row` is the entire
