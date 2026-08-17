@@ -174,18 +174,21 @@ The editable presets are `Ultra Fast`, `Fast`, `Semi-Safe`, and `Safe`. Their st
 Admin syntax uses precise wei values for monetary ceilings:
 
 ```text
-/admin group-set <name> <maxWei> <dailyWei> <gasGwei> <forced|optional>
+/admin group-set <name> <maxWei> <dailyWei> <gasGwei> <forced|optional> <allowed|not-allowed>
 /admin group-delete <name>
 /admin assign <telegram|discord> <platformUserId> <group>
 /admin unassign <telegram|discord> <platformUserId>
 /admin user-ceilings <platform> <platformUserId> <maxWei> <dailyWei> <gasGwei>
 /admin user-ceilings-clear <platform> <platformUserId>
 /admin user-simulation <platform> <platformUserId> <forced|optional|inherit>
+/admin user-advanced-modes <platform> <platformUserId> <allowed|not-allowed|inherit>
 /admin group-simulation <group> <forced|optional|inherit>
 /admin preset-set <preset> <on|off|blockchain_off> <confirmations> <on|bypass>
 /admin owner <platform> <platformUserId> <on|off>
 /mode <ultra_fast|fast|semi_safe|safe>
 ```
+
+The trailing `<allowed|not-allowed>` on `group-set` and `<allowed|not-allowed|inherit>` on `user-advanced-modes` gate access to the `Ultra Fast`/`Fast` presets (see below) -- group-level and per-user, respectively, the same override precedence as ceilings and simulation-forcing.
 
 Admin commands never bootstrap ownership. Before the first deployment, a database administrator must designate the initial trusted linked user directly, for example with a reviewed one-time `UPDATE users SET is_owner=TRUE WHERE user_id=...`. Thereafter, only an existing owner can add or remove owners, and the last owner cannot be removed.
 

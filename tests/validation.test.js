@@ -184,9 +184,9 @@ test('send requires a positive amount, a valid destination, and has no contract-
 });
 
 test('keystore export password must be at least 12 characters', () => {
-  rejectsField(() => requestSchemas.walletExport({ password: 'short' }), 'password');
-  rejectsField(() => requestSchemas.walletExport({}), 'password');
-  assert.equal(requestSchemas.walletExport({ password: 'a-long-enough-password' }).password, 'a-long-enough-password');
+  rejectsField(() => requestSchemas.walletExport({ securityPassword: 'short' }), 'securityPassword');
+  rejectsField(() => requestSchemas.walletExport({}), 'securityPassword');
+  assert.equal(requestSchemas.walletExport({ securityPassword: 'a-long-enough-password' }).securityPassword, 'a-long-enough-password');
 });
 
 test('transaction policy settings validate editable safety values', () => {

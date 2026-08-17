@@ -31,9 +31,9 @@ integrationTest('group, individual, simulation, owner, and editable-preset prece
     userId = await identity.resolveOrCreate('telegram', `user-${suffix}`);
     await pool.query('UPDATE users SET is_owner=TRUE,is_root_owner=TRUE WHERE user_id=$1', [ownerId]);
     await governance.upsertGroup(ownerId, { name: groupName, maxTransactionValueWei: 100n,
-      dailySpendingBudgetWei: 200n, gasCeilingGwei: 10, simulationForced: 'optional' });
+      dailySpendingBudgetWei: 200n, gasCeilingGwei: 10, simulationForced: 'optional', advancedModesAllowed: 'allowed' });
     await governance.upsertGroup(ownerId, { name: groupName.toLowerCase(), maxTransactionValueWei: 100n,
-      dailySpendingBudgetWei: 200n, gasCeilingGwei: 10, simulationForced: 'optional' });
+      dailySpendingBudgetWei: 200n, gasCeilingGwei: 10, simulationForced: 'optional', advancedModesAllowed: 'allowed' });
     await governance.assignGroup(ownerId, { platform: 'telegram', platformUserId: `user-${suffix}`, groupName });
     await policies.setPolicy({ userId, scopeType: 'wallet', scopeId: '1', settings: {
       simulationEnabled: false, maxTransactionValueWei: 1000n,
