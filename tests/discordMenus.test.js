@@ -42,10 +42,10 @@ test('settings shows the link button to every user and admin console only to own
 });
 
 test('chain select renders one option per supported chain plus a cancel button', () => {
-  const chains = { ethereum: { name: 'Ethereum' }, sepolia: { name: 'Sepolia' } };
-  const picker = chainSelect(['ethereum', 'sepolia'], chains);
+  const chains = { ethereum: { name: 'Ethereum' }, base: { name: 'Base' } };
+  const picker = chainSelect(['ethereum', 'base'], chains);
   const options = selectComponent(picker.components).options;
-  assert.deepEqual(options.map(o => o.value), ['ethereum', 'sepolia']);
+  assert.deepEqual(options.map(o => o.value), ['ethereum', 'base']);
   assert.equal(options[0].label, 'Ethereum');
   const buttons = flatButtons(picker.components);
   assert.deepEqual(buttons.map(b => b.custom_id), ['flow:cancel:ask']);

@@ -9,7 +9,6 @@ const OPENSEA_CHAIN_SLUGS = Object.freeze({
   arbitrum: 'arbitrum',
   polygon: 'matic',
   robinhood: 'robinhood',
-  sepolia: 'sepolia',
 });
 
 // Collection metadata only (name/description/image/floor price) for the "what is this contract"

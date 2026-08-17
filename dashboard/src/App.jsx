@@ -25,7 +25,6 @@ const CHAIN_META={
   arbitrum:{label:'Arbitrum',icon:<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 3 4 20h5l3-7 3 7h5z" fill="#28a0f0"/></svg>},
   polygon:{label:'Polygon',icon:<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 2 21 7v10l-9 5-9-5V7z" fill="#c084fc"/></svg>},
   robinhood:{label:'Robinhood Chain',icon:<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><rect x="3" y="3" width="18" height="18" rx="6" fill="#00C805"/></svg>},
-  sepolia:{label:'Sepolia',icon:<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 2 5 12.5 12 16.5 19 12.5z" fill="#8ea8ff" opacity=".3"/><path d="M12 17.75 5 13.75 12 22 19 13.75z" fill="#8ea8ff" opacity=".55"/></svg>,testnet:true},
 };
 function chainMeta(value){return CHAIN_META[value]||{label:value,icon:null};}
 const CHAIN_CHEVRON_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 9l6 6 6-6"/></svg>;
