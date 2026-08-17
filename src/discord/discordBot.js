@@ -735,7 +735,18 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, s
           else { confirmation(interaction); message = `P&L record #${await commands.deletePnl(userId, interaction.options.getString('id'))} deleted.`; }
           break;
         }
-        case 'gas': { const value = await commands.gas(interaction.options.getString('chain') || 'ethereum'); message = `${value.chain}: gas ${value.gasPriceGwei ?? 'unavailable'} Gwei, max fee ${value.maxFeePerGasGwei ?? 'unavailable'} Gwei.`; break; }
+        case 'gas': {
+          const gasChain = interaction.options.getString('chain') || 'ethereum';
+          // Telegram's /gas already degrades to "unavailable" on a lookup failure (gasMenu with
+          // null fees) instead of showing a raw error -- this matched that instead of falling
+          // through to the generic "Command failed safely" catch-all below, which gave no hint
+          // that the chain itself (not the command) was the problem.
+          const value = await commands.gas(gasChain).catch(() => null);
+          message = value
+            ? `${value.chain}: gas ${value.gasPriceGwei ?? 'unavailable'} Gwei, max fee ${value.maxFeePerGasGwei ?? 'unavailable'} Gwei.`
+            : `${gasChain}: gas data unavailable right now.`;
+          break;
+        }
         case 'sniper': {
           const action = interaction.options.getSubcommand();
           if (action === 'create') { confirmation(interaction);const sniper = await commands.createSniper(userId, json(interaction.options.getString('input'))); message = `Post-confirmation copy sniper **${sniper.label}** created. This is not mempool front-running.`; }

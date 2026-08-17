@@ -120,3 +120,23 @@ test('Discord destructive action requires explicit confirmation before dispatch'
  await createDiscordInteractionHandler({identity:{resolveOrCreate:async()=> 'u'},commands:{removeWallet:async()=>{removed=true;}}})(input);
  assert.equal(removed,false);assert.match(input.replies[0],/confirm/i);
 });
+
+test('/gas degrades to an "unavailable" message instead of a generic failure when the provider has no data for a chain', async () => {
+  const input = interaction({ commandName: 'gas', strings: { chain: 'robinhood' } });
+  const handler = createDiscordInteractionHandler({
+    identity: { resolveOrCreate: async () => 'user-a' },
+    commands: { gas: async () => { throw new Error('Gas lookup is unavailable for that chain'); } },
+  });
+  await handler(input);
+  assert.equal(input.replies[0], 'robinhood: gas data unavailable right now\\.');
+});
+
+test('/gas still reports real figures when the provider has data', async () => {
+  const input = interaction({ commandName: 'gas', strings: { chain: 'ethereum' } });
+  const handler = createDiscordInteractionHandler({
+    identity: { resolveOrCreate: async () => 'user-a' },
+    commands: { gas: async chain => ({ chain, gasPriceGwei: 12, maxFeePerGasGwei: 20 }) },
+  });
+  await handler(input);
+  assert.equal(input.replies[0], 'ethereum: gas 12 Gwei, max fee 20 Gwei\\.');
+});
