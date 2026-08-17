@@ -7,9 +7,96 @@ shipped).
 
 - **Round 1** (Sections A–K) was scoped and implemented on 2026-08-16; 9 of 11 sections shipped in
   commit `423c7c1`. Kept below as the record of what exists.
-- **Round 2** (Sections L–R) is the newer batch of requirements, not yet started.
+- **Round 2** (Sections L–S) is the newer batch of requirements, not yet started.
+- **Round 3** (Sections T–Z) is candidate work sourced from studying an external reference project,
+  not yet scoped or estimated.
 
 Status legend: ✅ Done · 🟡 Partial · ❌ Not started
+
+---
+
+# Round 3 — candidate improvements from studying OSNM-Z (2026-08-17)
+
+`osnm-z-main` — a separate, unrelated Rust CLI for sniping OpenSea-hosted SeaDrop mints
+(single-operator, no multi-user/DB/bot layer) — was found dropped into this repo's working
+directory by mistake and moved out to a sibling directory
+(`C:\Users\hp\Documents\osnm-z-main`, outside this repo). It was reviewed for patterns GhostMint
+could adopt. None of the items below are scoped or estimated; they're candidates only.
+
+## Section T — Extract token IDs from mint receipts ❌
+
+`osnm-z-main/src/nft.rs`'s `extract_minted_assets()` parses `receipt.logs` for the ERC-721
+`Transfer` and ERC-1155 `TransferSingle`/`TransferBatch` events, filtered to `from == 0x0`,
+`to == wallet`, on the target contract, and decodes the minted token ID(s). This is a working,
+tested reference for exactly blocker #1 in this file's own deferred P&L sales-detection note
+under Section G + K: "no token ID is captured from a mint receipt today." Would land in
+`transactionEngine.js`'s `inspectChain`, alongside the existing `gasUsed`/`gasPrice`/`blockNumber`
+read, and unblocks that deferred work.
+
+## Section U — Validate mint calldata before signing, not just before broadcasting ❌
+
+`osnm-z-main/src/opensea.rs`'s `validate_stage_calldata`/`validate_mint_transaction` decode the
+ABI words of any externally supplied calldata (contract address, minter, quantity, selector) and
+cross-check them against what was actually requested, rejecting anything that doesn't match,
+before it's ever signed. Needs confirming whether `src/mint/seaDropCall.js`/`mintCall.js` already
+do the equivalent for GhostMint's own constructed calls — matters most wherever calldata comes
+from an external source (OpenSea price/eligibility lookups) rather than being built entirely
+in-house.
+
+## Section V — Verify bytecode, not just the address, for canonical contracts ❌
+
+`osnm-z-main` pins `MULTICALL3_RUNTIME_HASH`/`AUDITED_EXECUTOR_RUNTIME_HASH` and checks deployed
+bytecode against them before trusting a canonical contract address. `seaDropDiscoveryService.js`
+already checks OpenSea's canonical SeaDrop core address as a discovery tier (commit `32875d6`) —
+needs confirming that also validates the bytecode hash, not just that *something* is deployed at
+that address, since an address-only check is exactly what a spoofed/reorg-substituted contract at
+the same address would defeat.
+
+## Section W — Capture-then-revalidate timing for contract-open sniping ❌
+
+`osnm-z-main/src/multi_mint.rs`'s wake-lead constants (10–15s before a known open time, capture
+nonce/fees/balance once) plus a ~2s pre-submit calldata refresh are the shape this file's own
+Section R plan needs ("poller on `PublicDrop.startTime`"): sleep-until-near, capture state once,
+re-validate right before submit, rather than either constant polling or a single blind shot at a
+guessed timestamp. Feeds directly into Section R's implementation, not a separate feature.
+
+## Section X — Fee-policy as pure, unit-tested functions ❌
+
+`osnm-z-main/src/fee.rs`/`src/domain/fees.rs` cleanly separate an *initial* multiplier from a
+*replacement* (stuck-transaction) bump, both basis-point math with overflow-safe ceiling division,
+plus a bounded max-fee ceiling computed across N retry attempts. Needs checking whether
+`transactionEngine.js` has an equivalent bounded escalation policy for replacing stuck
+scheduled-task transactions, or just applies the mode multiplier once with no replacement bump.
+
+## Section Y — Test that decrypted key material can never leak through Debug/logging ❌
+
+`osnm-z-main/src/wallet_generator.rs`'s test `debug_output_never_contains_generated_private_keys`
+asserts a struct's debug/string formatting can't contain a raw private key. Cheap regression
+insurance worth adding to GhostMint's own test suite for whatever in-memory structure carries a
+decrypted private key during signing, against an accidental future log/error-message leak.
+
+## Section Z — Bounded response reads and selective retry for external HTTP calls ❌
+
+`osnm-z-main/src/opensea.rs`'s `read_limited_body` hard-caps response size to avoid unbounded
+memory growth from a malformed/oversized response, and `is_retryable_request_error` retries only
+429/5xx/408/409/425, failing fast on everything else. Needs confirming `openSeaService.js`/
+`priceFeedService.js` don't retry indiscriminately or buffer unbounded response bodies.
+
+## Considered and explicitly not recommended
+
+- **EIP-7702 sponsored-gas mode + a custom on-chain batch-executor contract**
+  (`osnm-z-main/contracts/src/SponsoredMintExecutor.sol`): transient-storage batch execution,
+  EIP-712 per-wallet signatures, up to 25 wallets sponsored atomically. Requires deploying and
+  auditing a custom contract that transiently holds native value and NFTs — a materially bigger
+  security surface than GhostMint's current model, which deliberately sticks to an audited
+  registry of common mint shapes with no custom contract deployment (`ROADMAP.md`). Powerful, but
+  a scope change, not a borrow.
+- **SIWE-authenticated OpenSea GraphQL access** for per-wallet WL/FCFS eligibility checks against
+  OpenSea's private API: `osnm-z-main/src/opensea.rs` pins a `CAPTURE_REVISION` constant to one
+  specific OpenSea frontend deployment, meaning it silently breaks whenever OpenSea redeploys their
+  site — a fragility their own source acknowledges. GhostMint's current OpenSea usage (public
+  `/collections/{slug}`, `/stats`) is far more stable; leave this alone unless per-wallet
+  WL-eligibility checking becomes an actual product ask.
 
 ---
 
