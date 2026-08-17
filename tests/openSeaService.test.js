@@ -87,3 +87,36 @@ test('an already-cached row is returned immediately without any http calls', asy
   assert.equal(result, cached);
   assert.equal(repository.saved.length, 0);
 });
+
+// Section Q -- resolving an opensea.io collection link's slug to its contract address.
+test('resolveCollectionContract returns the first contract deployed on a chain this app supports', async () => {
+  const http = { get: async url => {
+    if (url.endsWith('/collections/cool-cats')) {
+      return { data: { contracts: [{ address: '0xAAA', chain: 'matic' }, { address: '0xBBB', chain: 'ethereum' }] } };
+    }
+    throw new Error(`unexpected url ${url}`);
+  } };
+  const service = createOpenSeaService({ apiKey: 'test-key', repository: fakeRepository(), http });
+  const result = await service.resolveCollectionContract('cool-cats', ['ethereum', 'base']);
+  assert.deepEqual(result, { chain: 'ethereum', contractAddress: '0xBBB' });
+});
+
+test('resolveCollectionContract returns null when none of the collection\'s chains are supported', async () => {
+  const http = { get: async () => ({ data: { contracts: [{ address: '0xAAA', chain: 'matic' }] } }) };
+  const service = createOpenSeaService({ apiKey: 'test-key', repository: fakeRepository(), http });
+  const result = await service.resolveCollectionContract('cool-cats', ['ethereum']);
+  assert.equal(result, null);
+});
+
+test('resolveCollectionContract returns null without calling http when no API key is configured', async () => {
+  const service = createOpenSeaService({ apiKey: null, repository: fakeRepository(), http: { get: async () => { throw new Error('should not be called'); } } });
+  const result = await service.resolveCollectionContract('cool-cats', ['ethereum']);
+  assert.equal(result, null);
+});
+
+test('resolveCollectionContract returns null (never throws) on a network failure or an unrecognized response shape', async () => {
+  const failing = createOpenSeaService({ apiKey: 'test-key', repository: fakeRepository(), http: { get: async () => { throw new Error('network error'); } } });
+  assert.equal(await failing.resolveCollectionContract('cool-cats', ['ethereum']), null);
+  const malformed = createOpenSeaService({ apiKey: 'test-key', repository: fakeRepository(), http: { get: async () => ({ data: {} }) } });
+  assert.equal(await malformed.resolveCollectionContract('cool-cats', ['ethereum']), null);
+});

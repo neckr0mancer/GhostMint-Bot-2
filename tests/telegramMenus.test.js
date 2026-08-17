@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const {
   mainMenu, walletsMenu, settingsMenu, tasksMenu, chainPicker, walletPicker,
-  contractDetails, taskConfirmation, confirmCancelPrompt, confirmRemoveWallet, placeholderMenu,
+  contractDetails, contractDetailsText, taskConfirmation, confirmCancelPrompt, confirmRemoveWallet, placeholderMenu,
 } = require('../src/telegram/menus');
 
 function flatButtons(replyMarkup) {
@@ -108,6 +108,15 @@ test('contract details renders every known field and degrades gracefully with no
   assert.match(minimal.text, /not exposed by this contract/);
   assert.equal(minimal.text.includes('Max per wallet'), false);
   assert.equal(minimal.text.includes('Opens'), false);
+});
+
+test('contractDetailsText is exactly contractDetails\' text, without the Continue/Cancel keyboard (Section M reuses it as a header on other screens)', () => {
+  const fields = {
+    contractAddress: '0xabc', chainLabel: 'Ethereum', isSeaDrop: true, priceETH: 0.05, priceUnknown: false,
+    maxSupply: 10000, maxPerWallet: 3, startTime: Math.floor(Date.now() / 1000) + 3_600,
+    collection: { name: 'Cool Cats', description: 'A collection' }, soldOut: false, displayPrice: null,
+  };
+  assert.equal(contractDetailsText(fields), contractDetails(fields).text);
 });
 
 test('an already-open SeaDrop opening time renders as "Opened", not "Opens"', () => {

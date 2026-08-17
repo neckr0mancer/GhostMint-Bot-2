@@ -1,4 +1,5 @@
 const { Wallet, formatEther, isAddress, parseEther } = require('ethers');
+const { URL } = require('node:url');
 const { findOwnedWallet, stateForUser } = require('../identity/ownership');
 const { ValidationError, requestSchemas, LIMITS } = require('../validation/domain');
 const { paginate, pagination } = require('../pagination');
@@ -84,6 +85,39 @@ function createBotCommandService(dependencies) {
   // A drop whose price genuinely can't be read returns valueWei:null (never 0), and a SeaDrop core
   // that can't be auto-discovered returns seaDropAddress:null so the dashboard can fall back to a
   // manually-entered one -- "unknown" is always a valid outcome here, never a thrown error.
+  // Section Q: recognizes an opensea.io collection link the same way every entry point that used
+  // to check isAddress(input) directly already recognized a bare contract address -- pasting a
+  // link should behave identically to pasting the contract it refers to. Shared here (rather than
+  // duplicated per platform) since Telegram's server.js and discordBot.js both need it for their
+  // own bare-address/link detection and guided-flow contract-input steps. Slug charset/length
+  // mirror validate_slug in the OSNM-Z reference reviewed for Section T-Z.
+  function parseOpenSeaCollectionSlug(input) {
+    let url;
+    try {
+      url = new URL(String(input).trim());
+    } catch {
+      return null;
+    }
+    if (url.protocol !== 'https:' || !['opensea.io', 'www.opensea.io'].includes(url.hostname)) return null;
+    const segments = url.pathname.split('/').filter(Boolean);
+    const slug = segments[0] === 'collection' ? segments[1] : null;
+    if (!slug || slug.length > 200 || !/^[a-zA-Z0-9_-]+$/.test(slug)) return null;
+    return slug;
+  }
+
+  // Resolves whatever a user pasted -- a contract address or an OpenSea collection link -- to the
+  // contract address detectMintContract already expects. Unrecognized input (including a link
+  // OpenSea couldn't map to a chain this app supports) returns null exactly like an invalid
+  // address always did, so every caller's existing "not a valid address" error path is unchanged.
+  async function resolveMintContractInput(input) {
+    if (isAddress(input)) return input;
+    if (!openSeaService) return null;
+    const slug = parseOpenSeaCollectionSlug(input);
+    if (!slug) return null;
+    const resolved = await openSeaService.resolveCollectionContract(slug, supportedChains);
+    return resolved ? resolved.contractAddress : null;
+  }
+
   async function detectMintContract(userId, input) {
     const contractAddress = String(input.contractAddress || '').trim();
     if (!isAddress(contractAddress)) throw new ValidationError({ field: 'contractAddress', message: 'must be a valid Ethereum address' });
@@ -452,7 +486,7 @@ function createBotCommandService(dependencies) {
 
   return {
     createWallet, importWallet, importWalletsBatch, removeWallet, walletBalance, invalidateBalance, exportWalletKeyRaw, exportWalletKeystore, mint, batchMint, send, createTask, controlTask, addPnl, updatePnl, deletePnl,
-    prepareMint,submitPreparedMint,detectMintContract,mintPresets:userId=>mintService.listPresets(userId),
+    prepareMint,submitPreparedMint,detectMintContract,resolveMintContractInput,parseOpenSeaCollectionSlug,mintPresets:userId=>mintService.listPresets(userId),
     createSniper, updateSniper, removeSniper, gas,
     sniperEvents:userId=>sniperRepository.listRecentForUser(userId),
     wallets: userId => state(userId).wallets,

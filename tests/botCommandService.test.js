@@ -132,3 +132,49 @@ test('invalidateBalance forces the next walletBalance call to re-query the chain
   await service.walletBalance('user-a', 'alpha');
   assert.equal(performCalls, 2);
 });
+
+// Section Q -- accepting opensea.io collection links anywhere a contract address is accepted.
+test('parseOpenSeaCollectionSlug accepts an opensea.io (or www) collection link and rejects everything else', () => {
+  const { service } = fixture();
+  assert.equal(service.parseOpenSeaCollectionSlug('https://opensea.io/collection/cool-cats'), 'cool-cats');
+  assert.equal(service.parseOpenSeaCollectionSlug('https://www.opensea.io/collection/cool-cats'), 'cool-cats');
+  assert.equal(service.parseOpenSeaCollectionSlug('not a url at all'), null);
+  assert.equal(service.parseOpenSeaCollectionSlug('http://opensea.io/collection/cool-cats'), null, 'must be https');
+  assert.equal(service.parseOpenSeaCollectionSlug('https://evil.example/collection/cool-cats'), null, 'must be opensea.io');
+  assert.equal(service.parseOpenSeaCollectionSlug('https://opensea.io/assets/cool-cats/1'), null, 'must be a /collection/ path');
+  assert.equal(service.parseOpenSeaCollectionSlug('https://opensea.io/collection/'), null, 'slug cannot be empty');
+  assert.equal(service.parseOpenSeaCollectionSlug('https://opensea.io/collection/../../etc'), null, 'slug charset is restricted');
+});
+
+test('resolveMintContractInput passes a real address straight through without calling OpenSea', async () => {
+  const address = '0x0000000000000000000000000000000000000001';
+  const { service } = fixture({ openSeaService: { resolveCollectionContract: async () => { throw new Error('should not be called'); } } });
+  assert.equal(await service.resolveMintContractInput(address), address);
+});
+
+test('resolveMintContractInput resolves an OpenSea link through the injected service, scoped to this app\'s supported chains', async () => {
+  const calls = [];
+  const { service } = fixture({
+    supportedChains: ['ethereum'],
+    openSeaService: {
+      resolveCollectionContract: async (slug, supportedChains) => {
+        calls.push([slug, supportedChains]);
+        return { chain: 'ethereum', contractAddress: '0x0000000000000000000000000000000000000099' };
+      },
+    },
+  });
+  const result = await service.resolveMintContractInput('https://opensea.io/collection/cool-cats');
+  assert.equal(result, '0x0000000000000000000000000000000000000099');
+  assert.deepEqual(calls, [['cool-cats', ['ethereum']]]);
+});
+
+test('resolveMintContractInput returns null for a link OpenSea could not resolve, and for non-address/non-link input', async () => {
+  const { service } = fixture({ openSeaService: { resolveCollectionContract: async () => null } });
+  assert.equal(await service.resolveMintContractInput('https://opensea.io/collection/unknown-collection'), null);
+  assert.equal(await service.resolveMintContractInput('not an address or a link'), null);
+});
+
+test('resolveMintContractInput returns null for a link when no OpenSea service is configured', async () => {
+  const { service } = fixture({ openSeaService: null });
+  assert.equal(await service.resolveMintContractInput('https://opensea.io/collection/cool-cats'), null);
+});

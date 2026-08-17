@@ -646,7 +646,7 @@ function quantityStepPayload(data) {
   return { text: `How many would you like to mint? (max ${max} per wallet). You can also type an exact number.`, replyMarkup: telegramMenus.keyboard([row, [telegramMenus.button('✏️ Enter manually', 'flow:mintqty:x')], [telegramMenus.button('❌ Cancel', 'flow:cancel:ask')]]), parseMode: 'HTML' };
 }
 
-function renderFlowStep(flow, step, { userId, data = {} } = {}) {
+function renderFlowStep(flow, step, { userId, data = {}, withDetailsHeader = false } = {}) {
   if (flow === 'wallet_create') {
     if (step === 'awaiting_label') return { text: 'Send the label for your new wallet (letters, numbers, spaces, <code>.</code>, <code>_</code>, <code>-</code>).', replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' };
     if (step === 'awaiting_chain') return telegramMenus.chainPicker(CONFIG.supportedChains, CHAINS);
@@ -657,9 +657,32 @@ function renderFlowStep(flow, step, { userId, data = {} } = {}) {
     if (step === 'awaiting_key') return { text: '⚠️ <b>Not recommended:</b> send the private key now. It passes through Telegram message transit and may remain in chat history or notification previews. Delete your message afterward if you can.', replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' };
   }
   if (flow === 'mint_guided') {
+    // Section M: mint_guided never renders a standalone "here's the contract, tap Continue"
+    // screen (awaiting_details is a transient flow-state name only, per startMintFlow/
+    // advanceFromDetails -- there is no case for it here). withDetailsHeader instead prepends the
+    // same contractDetailsText onto whichever step below turns out to be the flow's actual first
+    // screen, so the detection result reads as the mint interface itself, not a preamble to it.
     if (step === 'awaiting_contract') return { text: 'Send the contract address to mint from.', replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' };
-    if (step === 'awaiting_details') {
-      return telegramMenus.contractDetails({
+    let payload;
+    if (step === 'awaiting_wallet') {
+      const wallets = botCommands.wallets(userId);
+      payload = data.multi
+        ? telegramMenus.walletMultiPicker(wallets, data.selectedWallets || [], { emptyHint: 'No wallets yet. Create one first from the Wallets menu.' })
+        : telegramMenus.walletPicker(wallets, { prefix: 'flow:walletpick', emptyHint: 'No wallets yet. Create one first from the Wallets menu.' });
+    } else if (step === 'awaiting_quantity') payload = quantityStepPayload(data);
+    else if (step === 'awaiting_price') payload = priceStepPayload(data);
+    else if (step === 'awaiting_confirm') {
+      payload = telegramMenus.mintConfirmation({
+        contractAddress: data.contractAddress,
+        chainLabel: CHAINS[data.chain]?.name || data.chain,
+        walletLabels: data.selectedWallets,
+        quantity: data.quantity || 1,
+        priceETH: data.priceETH,
+        priceUnknown: data.priceUnknown,
+      });
+    }
+    if (payload && withDetailsHeader) {
+      return { ...payload, text: `${telegramMenus.contractDetailsText({
         contractAddress: data.contractAddress,
         chainLabel: CHAINS[data.chain]?.name || data.chain,
         isSeaDrop: data.isSeaDrop,
@@ -671,26 +694,9 @@ function renderFlowStep(flow, step, { userId, data = {} } = {}) {
         collection: data.collection,
         soldOut: data.soldOut,
         displayPrice: data.displayPrice,
-      });
+      })}\n\n${payload.text}` };
     }
-    if (step === 'awaiting_wallet') {
-      const wallets = botCommands.wallets(userId);
-      return data.multi
-        ? telegramMenus.walletMultiPicker(wallets, data.selectedWallets || [], { emptyHint: 'No wallets yet. Create one first from the Wallets menu.' })
-        : telegramMenus.walletPicker(wallets, { prefix: 'flow:walletpick', emptyHint: 'No wallets yet. Create one first from the Wallets menu.' });
-    }
-    if (step === 'awaiting_quantity') return quantityStepPayload(data);
-    if (step === 'awaiting_price') return priceStepPayload(data);
-    if (step === 'awaiting_confirm') {
-      return telegramMenus.mintConfirmation({
-        contractAddress: data.contractAddress,
-        chainLabel: CHAINS[data.chain]?.name || data.chain,
-        walletLabels: data.selectedWallets,
-        quantity: data.quantity || 1,
-        priceETH: data.priceETH,
-        priceUnknown: data.priceUnknown,
-      });
-    }
+    if (payload) return payload;
   }
   if (flow === 'send_guided') {
     if (step === 'awaiting_wallet') {
@@ -809,12 +815,13 @@ async function startMintFlow({ chatId, messageId, userId, multi, contractAddress
     telegramFlowState.start('telegram', chatId, 'mint_guided', 'awaiting_contract', { multi, oneShot });
     return send(renderFlowStep('mint_guided', 'awaiting_contract'));
   }
-  if (!ethers.isAddress(contractAddressInput)) {
-    return send({ text: 'That does not look like a valid contract address. Try again with /mint <contract> or /batch <contract>.', replyMarkup: telegramMenus.mainMenu({}).replyMarkup });
+  const contractAddress = await botCommands.resolveMintContractInput(contractAddressInput);
+  if (!contractAddress) {
+    return send({ text: 'That does not look like a valid contract address or OpenSea collection link. Try again with /mint <contract> or /batch <contract>.', replyMarkup: telegramMenus.mainMenu({}).replyMarkup });
   }
   let detected;
   try {
-    detected = await botCommands.detectMintContract(userId, { contractAddress: contractAddressInput, quantity: 1 });
+    detected = await botCommands.detectMintContract(userId, { contractAddress, quantity: 1 });
   } catch (error) {
     if (error instanceof ValidationError) {
       return send({ text: 'Could not find this contract on any supported chain. Double-check the address.', replyMarkup: telegramMenus.mainMenu({}).replyMarkup });
@@ -823,7 +830,7 @@ async function startMintFlow({ chatId, messageId, userId, multi, contractAddress
   }
   const skipConfirm = oneShot && !multi && await isVerificationBypassed(userId, detected.chain);
   const data = {
-    multi, contractAddress: contractAddressInput, chain: detected.chain, selectedWallets: [],
+    multi, contractAddress, chain: detected.chain, selectedWallets: [],
     isSeaDrop: detected.isSeaDrop,
     priceETH: detected.priceKnown ? Number(ethers.formatEther(BigInt(detected.valueWei))) : undefined,
     priceUnknown: !detected.priceKnown,
@@ -838,8 +845,14 @@ async function startMintFlow({ chatId, messageId, userId, multi, contractAddress
       return finishMintExecution(chatId, messageId, userId, { ...data, selectedWallets: [wallets[0].label] });
     }
   }
+  // Section M: no standalone "here's the contract, tap Continue" screen -- start the flow state at
+  // awaiting_details (kept as the state name so cancel-confirmation and existing tests still see a
+  // sensible step), but immediately resolve straight through to whichever screen is actually the
+  // first thing the user needs to act on (quantity, wallet, price, or confirm), with the contract
+  // details prepended to it. advanceFromDetails already contains this exact decision tree for
+  // subsequent taps; reusing it here (rather than duplicating it) is what keeps this one-shot.
   telegramFlowState.start('telegram', chatId, 'mint_guided', 'awaiting_details', data);
-  return send(renderFlowStep('mint_guided', 'awaiting_details', { userId, data }));
+  return advanceFromDetails(chatId, messageId, userId, { data }, true);
 }
 
 // After the user has seen (and tapped through) the contract details, move on to wallet selection.
@@ -848,40 +861,46 @@ async function startMintFlow({ chatId, messageId, userId, multi, contractAddress
 // is the common case, not an edge case.
 // A contract allowing more than 1 per wallet asks how many before wallet selection; a max of 1 (or
 // unknown) has nothing to ask, so it skips straight past this step exactly like it always did.
-async function advanceFromDetails(chatId, messageId, userId, flow) {
+// withDetailsHeader is only ever true on the single initial call made by startMintFlow (Section
+// M) -- every recursive call this function itself makes passes it along unchanged, but every
+// button-tap handler elsewhere calls these functions with it omitted (defaulting false), since by
+// definition a screen reached via a tap is never the flow's first screen. It's a plain call
+// parameter, not flow-state data, specifically so it can never leak into a later render by
+// accident.
+async function advanceFromDetails(chatId, messageId, userId, flow, withDetailsHeader = false) {
   if (Number(flow.data.maxPerWallet) > 1) {
     telegramFlowState.advance('telegram', chatId, 'awaiting_quantity', flow.data);
-    return tgUpdate(chatId, messageId, renderFlowStep('mint_guided', 'awaiting_quantity', { userId, data: flow.data }));
+    return tgUpdate(chatId, messageId, renderFlowStep('mint_guided', 'awaiting_quantity', { userId, data: flow.data, withDetailsHeader }));
   }
-  return advanceFromQuantity(chatId, messageId, userId, flow, 1);
+  return advanceFromQuantity(chatId, messageId, userId, flow, 1, withDetailsHeader);
 }
 
 // After the user has seen (and tapped through) the contract details and picked a quantity, move on
 // to wallet selection. A single wallet has nothing to pick between -- asking anyway is a tap that
 // teaches the user nothing, and /start already creates that one wallet automatically for a
 // brand-new user, so this is the common case, not an edge case.
-async function advanceFromQuantity(chatId, messageId, userId, flow, quantity) {
+async function advanceFromQuantity(chatId, messageId, userId, flow, quantity, withDetailsHeader = false) {
   const data = { ...flow.data, quantity };
   const wallets = botCommands.wallets(userId);
   if (!data.multi && wallets.length === 1) {
-    return advanceFromWalletSelection(chatId, messageId, userId, { data }, [wallets[0].label]);
+    return advanceFromWalletSelection(chatId, messageId, userId, { data }, [wallets[0].label], withDetailsHeader);
   }
   telegramFlowState.advance('telegram', chatId, 'awaiting_wallet', data);
-  return tgUpdate(chatId, messageId, renderFlowStep('mint_guided', 'awaiting_wallet', { userId, data }));
+  return tgUpdate(chatId, messageId, renderFlowStep('mint_guided', 'awaiting_wallet', { userId, data, withDetailsHeader }));
 }
 
 // Once wallet(s) are picked (single tap for /mint, Continue for /batch): price was already
 // resolved back in startMintFlow's details step, so this only needs to decide whether that
 // resolution actually found a price (straight to confirm) or not (ask for one by hand).
-async function advanceFromWalletSelection(chatId, messageId, userId, flow, selectedWallets) {
+async function advanceFromWalletSelection(chatId, messageId, userId, flow, selectedWallets, withDetailsHeader = false) {
   const data = { ...flow.data, selectedWallets };
   if (data.priceUnknown) {
     telegramFlowState.advance('telegram', chatId, 'awaiting_price', data);
-    return tgUpdate(chatId, messageId, renderFlowStep('mint_guided', 'awaiting_price', { userId, data }));
+    return tgUpdate(chatId, messageId, renderFlowStep('mint_guided', 'awaiting_price', { userId, data, withDetailsHeader }));
   }
   if (data.skipConfirm) return finishMintExecution(chatId, messageId, userId, data);
   telegramFlowState.advance('telegram', chatId, 'awaiting_confirm', data);
-  return tgUpdate(chatId, messageId, renderFlowStep('mint_guided', 'awaiting_confirm', { userId, data }));
+  return tgUpdate(chatId, messageId, renderFlowStep('mint_guided', 'awaiting_confirm', { userId, data, withDetailsHeader }));
 }
 
 // Shared by both flows' awaiting_price step (typed amount and the accept-OpenSea-price button):
@@ -1061,12 +1080,13 @@ async function startTaskScheduleFlow({ chatId, messageId, userId, contractAddres
     telegramFlowState.start('telegram', chatId, 'task_guided', 'awaiting_contract', {});
     return send(renderFlowStep('task_guided', 'awaiting_contract'));
   }
-  if (!ethers.isAddress(contractAddressInput)) {
-    return send({ text: 'That does not look like a valid contract address. Try again with /schedule <contract>.', replyMarkup: telegramMenus.mainMenu({}).replyMarkup });
+  const contractAddress = await botCommands.resolveMintContractInput(contractAddressInput);
+  if (!contractAddress) {
+    return send({ text: 'That does not look like a valid contract address or OpenSea collection link. Try again with /schedule <contract>.', replyMarkup: telegramMenus.mainMenu({}).replyMarkup });
   }
   let detected;
   try {
-    detected = await botCommands.detectMintContract(userId, { contractAddress: contractAddressInput, quantity: 1 });
+    detected = await botCommands.detectMintContract(userId, { contractAddress, quantity: 1 });
   } catch (error) {
     if (error instanceof ValidationError) {
       return send({ text: 'Could not find this contract on any supported chain. Double-check the address.', replyMarkup: telegramMenus.mainMenu({}).replyMarkup });
@@ -1075,7 +1095,7 @@ async function startTaskScheduleFlow({ chatId, messageId, userId, contractAddres
   }
   const futureStartTime = detected.startTime && detected.startTime * 1000 > Date.now() ? detected.startTime : null;
   const data = {
-    contractAddress: contractAddressInput, chain: detected.chain, isSeaDrop: detected.isSeaDrop,
+    contractAddress, chain: detected.chain, isSeaDrop: detected.isSeaDrop,
     priceETH: detected.priceKnown ? Number(ethers.formatEther(BigInt(detected.valueWei))) : undefined,
     priceUnknown: !detected.priceKnown,
     maxSupply: detected.maxSupply, maxPerWallet: detected.maxPerWallet,
@@ -1244,12 +1264,16 @@ async function handleFlowTextMessage(msg) {
   const chatId = msg.chat.id;
   const flow = telegramFlowState.get('telegram', chatId);
   if (!flow) {
-    // A bare contract address with no active flow and no leading slash is treated as "show me
-    // this contract" -- the same detection /mint's inline-address form already runs, just reached
-    // without typing the command. Anything that isn't address-shaped is ignored rather than
-    // guessed at, same as before this existed.
+    // A bare contract address, or an opensea.io collection link (Section Q), with no active flow
+    // and no leading slash is treated as "show me this contract" -- the same detection /mint's
+    // inline-address form already runs, just reached without typing the command. Anything that
+    // isn't address- or link-shaped is ignored rather than guessed at, same as before this
+    // existed. The cheap sync check here only decides whether to bother starting the flow at all;
+    // startMintFlow does the real (and for a link, async) resolution either way.
     const trimmed = msg.text.trim();
-    if (ethers.isAddress(trimmed)) await startMintFlow({ chatId, messageId: null, userId, multi: false, contractAddressInput: trimmed });
+    if (ethers.isAddress(trimmed) || botCommands.parseOpenSeaCollectionSlug(trimmed)) {
+      await startMintFlow({ chatId, messageId: null, userId, multi: false, contractAddressInput: trimmed });
+    }
     return;
   }
   if (flow.pendingCancel) { await tgDeleteUserMessage(msg); tgRender(chatId, telegramMenus.confirmCancelPrompt(FLOW_LABELS[flow.flow] || flow.flow)); return; }

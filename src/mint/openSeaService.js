@@ -35,6 +35,35 @@ function createOpenSeaService({ apiKey, repository, baseUrl = 'https://api.opens
     };
   }
 
+  // Section Q: resolves an opensea.io collection link (parsed to a slug by the caller) to its
+  // on-chain contract, so pasting a link behaves exactly like pasting the contract it refers to.
+  // Reverses fetchCollectionSlug's direction using the same /collections/{slug} endpoint
+  // fetchCollectionDetails already calls, since OpenSea's v2 response for a collection includes
+  // every chain it's deployed to -- no new endpoint, just reading a field this file didn't need
+  // before. supportedChains scopes the match to a chain this app can actually mint on; a
+  // multi-chain collection deployed on several of GhostMint's supported chains resolves to
+  // whichever one appears first in OpenSea's own contracts list.
+  async function resolveCollectionContract(slug, supportedChains) {
+    if (!apiKey) return null;
+    let response;
+    try {
+      response = await http.get(`${baseUrl}/collections/${slug}`, { timeout: timeoutMs, headers: { 'x-api-key': apiKey } });
+    } catch {
+      return null;
+    }
+    const contracts = Array.isArray(response.data?.contracts) ? response.data.contracts : [];
+    const reverseChainSlugs = Object.fromEntries(
+      Object.entries(OPENSEA_CHAIN_SLUGS).map(([internalChain, openSeaChain]) => [openSeaChain, internalChain]),
+    );
+    for (const entry of contracts) {
+      const internalChain = reverseChainSlugs[entry?.chain];
+      if (internalChain && supportedChains.includes(internalChain) && typeof entry?.address === 'string') {
+        return { chain: internalChain, contractAddress: entry.address };
+      }
+    }
+    return null;
+  }
+
   async function getCollectionMetadata(chain, contractAddress) {
     const cached = await repository.getOpenSea(chain, contractAddress);
     if (cached) return cached;
@@ -64,7 +93,7 @@ function createOpenSeaService({ apiKey, repository, baseUrl = 'https://api.opens
     return repository.saveOpenSea(chain, contractAddress, metadata);
   }
 
-  return { getCollectionMetadata };
+  return { getCollectionMetadata, resolveCollectionContract };
 }
 
 module.exports = { OPENSEA_CHAIN_SLUGS, createOpenSeaService };

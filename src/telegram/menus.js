@@ -139,7 +139,7 @@ function usdSuffix(usd) {
 // floor of exactly 0, which is a real value here, not "unavailable") -- but priceETH/priceUnknown
 // below are untouched: they always describe what an actual mint transaction would spend, never a
 // secondary-market reference figure.
-function contractDetails({ contractAddress, chainLabel, isSeaDrop, priceETH, priceUnknown, maxSupply, maxPerWallet, startTime, collection, soldOut, displayPrice }) {
+function contractDetailsText({ contractAddress, chainLabel, isSeaDrop, priceETH, priceUnknown, maxSupply, maxPerWallet, startTime, collection, soldOut, displayPrice }) {
   // collection (OpenSea metadata) is untrusted third-party data, not a hardcoded literal -- escape
   // both name and description before they land in the same text as real <b> tags.
   const lines = [collection?.name ? `<b>${escapeTelegramHtml(collection.name)}</b>` : '<b>Contract details</b>', `<code>${contractAddress}</code>`,
@@ -160,8 +160,16 @@ function contractDetails({ contractAddress, chainLabel, isSeaDrop, priceETH, pri
     lines.push(startTime * 1000 > Date.now() ? `Opens: ${opensAt} UTC` : `Opened: ${opensAt} UTC`);
   }
   if (collection?.description) lines.push('', escapeTelegramHtml(collection.description.slice(0, 300)));
+  return lines.join('\n');
+}
+
+// Still used by task_guided's own awaiting_details + Continue step (Section B's schedule flow) --
+// mint_guided no longer shows this as a standalone screen (Section M folds contractDetailsText
+// into whatever the first actionable mint screen turns out to be instead), but the schedule flow
+// is unchanged and still wants a plain details-then-Continue screen.
+function contractDetails(data) {
   return {
-    text: lines.join('\n'),
+    text: contractDetailsText(data),
     replyMarkup: keyboard([[button('▶️ Continue', 'flow:mintdetailscontinue')], [button('❌ Cancel', 'flow:cancel:ask')]]),
     parseMode: 'HTML',
   };
@@ -291,6 +299,7 @@ module.exports = {
   walletPicker,
   walletMultiPicker,
   contractDetails,
+  contractDetailsText,
   mintConfirmation,
   sendConfirmation,
   taskConfirmation,

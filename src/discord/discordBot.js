@@ -581,22 +581,26 @@ function createDiscordBot({ token, applicationId, devGuildId, identity, commands
   const api = rest || new REST({ version: '10' }).setToken(token);
   discordClient.on('interactionCreate', createDiscordInteractionHandler({ identity, commands, allowedGuildId:devGuildId,
     securityAudit,rateLimiter,log,isOwner,checkAccountStatus,supportedChains,chains }));
-  // Telegram counterpart: a bare contract address with no leading slash and no active flow shows
-  // contract details instead of being ignored (see handleFlowTextMessage in src/server.js). Any
-  // other plain message, and anything failing the same guild/channel/account checks every slash
-  // command already enforces, is silently ignored -- this only ever reads, never mutates, so a
-  // failed check is not worth surfacing as an error to a channel that may not even be the bot's.
+  // Telegram counterpart: a bare contract address or opensea.io collection link (Section Q), with
+  // no leading slash and no active flow, shows contract details instead of being ignored (see
+  // handleFlowTextMessage in src/server.js). Any other plain message, and anything failing the
+  // same guild/channel/account checks every slash command already enforces, is silently ignored
+  // -- this only ever reads, never mutates, so a failed check is not worth surfacing as an error
+  // to a channel that may not even be the bot's.
   discordClient.on('messageCreate', async message => {
     try {
       if (!message.author || message.author.bot) return;
       const trimmed = String(message.content || '').trim();
-      if (!/^0x[0-9a-fA-F]{40}$/.test(trimmed)) return;
+      const looksAddressOrLink = /^0x[0-9a-fA-F]{40}$/.test(trimmed) || commands.parseOpenSeaCollectionSlug(trimmed);
+      if (!looksAddressOrLink) return;
       const context = verifyDiscordContext({ user: message.author, guildId: message.guildId, channelId: message.channelId }, devGuildId);
       const userId = await identity.resolveOrCreate('discord', context.platformUserId);
       await checkAccountStatus(userId);
-      const detected = await commands.detectMintContract(userId, { contractAddress: trimmed, quantity: 1 });
+      const contractAddress = await commands.resolveMintContractInput(trimmed);
+      if (!contractAddress) return;
+      const detected = await commands.detectMintContract(userId, { contractAddress, quantity: 1 });
       const payload = discordMenus.contractDetails({
-        contractAddress: trimmed, chainLabel: chains[detected.chain]?.name || detected.chain,
+        contractAddress, chainLabel: chains[detected.chain]?.name || detected.chain,
         isSeaDrop: detected.isSeaDrop,
         priceETH: detected.priceKnown ? formatEther(BigInt(detected.valueWei)) : null,
         priceUnknown: !detected.priceKnown,

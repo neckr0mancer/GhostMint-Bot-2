@@ -127,28 +127,47 @@ entry, rather than relying on the user knowing they can just type a number.
   No existing test asserted on these keyboards' exact shape, so none needed updating — consistent
   with `flow:pricemanual` having no dedicated test either.
 
-## Section M — Automatic contract detection → one-shot mint popup 🟡
+## Section M — Automatic contract detection → one-shot mint popup ✅ (Telegram)
 
-Round 1 got partway: pasting a bare `0x…` address with no command now auto-detects the contract
-and shows the details screen, on Telegram and Discord. What's missing is collapsing the rest of
-the flow into that one popup.
+Round 1 got partway: pasting a bare `0x…` address with no command auto-detected the contract and
+showed a details screen, on Telegram and Discord, with its own separate "▶️ Continue" tap before
+anything else happened.
 
-- Today after detection: details → Continue → (quantity, if max>1) → wallet → (price) → confirm.
-  That's up to five taps.
-- Wanted: the detection result **is** the mint interface — one popup carrying default amount
-  buttons, the `X` custom-amount button from Section L, and Yes/No confirm, completing the mint
-  without leaving it.
-- **Multi-wallet behavior (decided):** show a select-wallet prompt first, then the confirmation
-  after it. So the shape is:
-  - *One wallet* (the common case, already auto-selected today): paste → popup with amount
-    buttons + `X` custom → Yes/No confirm → done.
-  - *Multiple wallets*: paste → popup with amount buttons + `X` custom → select wallet →
-    confirm → done.
-- **Depends on Section N.** The headline case here is "user pastes an address" — i.e. the user
-  types a message — which is exactly when the anchored-panel bug bites. Today pasting an address
-  already renders the details panel *above* the pasted text (the bare-address branch doesn't
-  delete the user's message the way flow steps do). Building M before N means shipping the new
-  popup directly on top of the bug, so N should land first or alongside.
+- **What shipped:** `mint_guided` (Telegram) no longer renders a standalone "here's the contract,
+  tap Continue" screen. `startMintFlow` now resolves straight through to whichever screen is
+  actually the flow's first actionable one — quantity buttons (Section L, if `maxPerWallet > 1`),
+  wallet picker (multiple wallets or `/batch`), the OpenSea-price-accept step (price unknown), or
+  the Yes/No confirm screen directly — with the contract details prepended to it
+  (`telegramMenus.contractDetailsText`, extracted from the old `contractDetails()` so both the
+  merged first screen and task_guided's unchanged details-then-Continue screen share one
+  source of truth for that text).
+  - *One wallet, no quantity choice, known price* (the common case): paste → one merged
+    details+confirm popup → tap Yes → done. **Actually zero intermediate taps**, better than the
+    two-screen shape originally sketched here.
+  - *One wallet, quantity choice needed*: paste → merged details+quantity popup → tap a quantity
+    (or Section L's "✏️ Enter manually") → confirm screen → tap Yes → done.
+  - *Multiple wallets / `/batch`*: paste → merged details+(quantity, if applicable) popup → select
+    wallet(s) → confirm → done, exactly the shape this section originally called for.
+  - Implementation: `advanceFromDetails`/`advanceFromQuantity`/`advanceFromWalletSelection` gained
+    an optional trailing `withDetailsHeader` parameter (default `false`) threaded only through the
+    single initial call chain `startMintFlow` makes — every button-tap-driven call to these same
+    functions omits it, so the header can only ever appear on the flow's actual first render. It's
+    a plain call parameter, never flow-state data, specifically so it can't leak into a later
+    screen by accident.
+- **Multi-wallet behavior (decided, and now implemented as decided):** select-wallet prompt first,
+  then the confirmation after it.
+- **Section N dependency:** resolved — N shipped first, so this was never at risk of building on
+  top of the panel-position bug.
+- **Scope decision — Discord not included.** Discord's bare-address detector
+  (`discordBot.js`'s `messageCreate` listener) is still read-only (shows details, no flow to
+  collapse); Discord's `/mint` is a single-shot slash command with `contract`/`wallet`/`quantity`/
+  `price`/`chain` as direct options, not a multi-step guided flow the way Telegram's is — there is
+  no "up to five taps" sequence on Discord to collapse. Nothing here needed to change on Discord
+  for Section M; see Section Q below for what Discord *did* gain from this pass.
+- Verified: `npm run check`, `npm run lint`, and 107 tests across the telegram/discord/openSea/
+  botCommandService suites all pass, including a new `contractDetailsText`-vs-`contractDetails`
+  parity test. No live-bot manual click-through (would need a real Telegram/Discord session) —
+  flagged here rather than claimed.
 
 ## Section N — Telegram prompts appear above the user's input ✅
 
@@ -226,18 +245,44 @@ address and notify on occurrence/state change.
   state and firing a notification/action. Worth building one watcher abstraction for both rather
   than two.
 
-## Section Q — Accept OpenSea collection links ❌
+## Section Q — Accept OpenSea collection links ✅
 
 Accept `opensea.io` collection URLs anywhere a contract address is accepted, resolve the URL to
 its collection/contract, then continue into the normal contract/mint workflow.
 
-- `openSeaService` already talks to the OpenSea API and can map a collection slug to a contract
-  (`/collections/{slug}` → contract address), so this is mostly URL parsing plus one lookup, not
-  new integration work.
-- Should slot into the same entry points as a bare address (Section M), so pasting a link behaves
-  exactly like pasting the contract it refers to.
-- ⚠️ Currently blocked in practice: see the OpenSea key status note under Section G + K below —
-  `openSeaService` calls are degraded until a working `OPENSEA_API_KEY` is confirmed in production.
+- **Resolution:** `openSeaService.resolveCollectionContract(slug, supportedChains)` calls the same
+  `/collections/{slug}` endpoint `fetchCollectionDetails` already used for metadata, but reads its
+  `contracts: [{address, chain}]` field (never needed before now) and returns the first entry
+  whose OpenSea chain identifier maps back to a chain this app actually supports — a genuinely new
+  lookup direction (slug → contract), not new integration surface, matching what this note
+  originally expected.
+- **Parsing:** `parseOpenSeaCollectionSlug(input)` accepts `https://opensea.io/collection/<slug>`
+  or the `www.` host, requires `https:`, and validates the slug's charset/length (mirroring
+  `validate_slug` in the OSNM-Z reference reviewed for Section T-Z) before it ever reaches a URL
+  path segment. Both this and `resolveMintContractInput` (address passthrough, or link → resolved
+  address, returning `null` for anything else exactly like an invalid address always did) live in
+  `botCommandService.js` — shared there rather than duplicated per platform, since both Telegram's
+  `server.js` and Discord's `discordBot.js` needed the identical logic.
+- **Wired into every entry point that used to check an address directly:** Telegram's
+  `startMintFlow` (`/mint`, `/mintnow`, `/batch`, the guided flow's contract-input step, and the
+  bare-paste detector), `startTaskScheduleFlow` (`/schedule` and its guided contract-input step),
+  and Discord's bare-content `messageCreate` detector. A pasted link now behaves identically to a
+  pasted contract at every one of these, per this section's own "same entry points as Section M"
+  goal.
+- **Scope decision — Discord's `/mint`/`/batch-mint` slash-command `contract` option not
+  included.** That option still requires a raw address; only Discord's read-only bare-content
+  detector gained link support. The slash command takes contract/wallet/quantity/price/chain as
+  one direct value-bearing call with no intermediate detection step to hook a resolution into
+  without changing that command's shape — a larger, separate decision than "accept a link
+  wherever an address already works."
+- ✅ The OpenSea-key blocker noted here previously is resolved (see Section G + K) — production
+  has a working `OPENSEA_API_KEY`, so this isn't shipping degraded.
+- Verified: `npm run check`, `npm run lint`, and 26 new/updated tests across
+  `openSeaService.test.js` (`resolveCollectionContract`: picks a supported chain, returns `null`
+  for an unsupported one / no key / a network failure or malformed response) and
+  `botCommandService.test.js` (`parseOpenSeaCollectionSlug` accept/reject cases,
+  `resolveMintContractInput` passthrough/resolve/unresolvable/no-service-configured), plus the
+  full existing suite (107 tests total) still passing.
 
 ## Section R — Sniper guided config + contract-open auto-detection ❌
 
