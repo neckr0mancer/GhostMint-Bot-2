@@ -299,7 +299,12 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
 /* Systemic rule: any card/panel body text is always followed by breathing
    room before its action row, not just the specific widgets flagged during
    review - applies to every current and future card/panel automatically. */
-.card p,.panel p{margin:.35rem 0}
+/* :where() drops this to zero specificity so ANY prototype rule beats it. .card is one of the
+   19 colliding class names, so at (0,2,0) this was reaching into prototype-owned cards and
+   overriding .emp p{margin:0 auto 13px} -- which is what left the "Nothing scheduled" copy hard
+   left instead of centred, since losing the rule loses the auto margins that centre the 34ch
+   block. Legacy cards keep the breathing room; nothing else targets those paragraphs. */
+:where(.card,.panel) p{margin:.35rem 0}
 .card>.actions,.panel>.actions{margin-top:.75rem}
 
 /* ==========================================================================
