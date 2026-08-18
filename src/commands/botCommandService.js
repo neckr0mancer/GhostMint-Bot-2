@@ -563,6 +563,18 @@ function createBotCommandService(dependencies) {
     listOwnerUserIds:()=>governanceRepository.listOwnerUserIds(),
     adminOverview:userId=>governance.dashboardOverview(userId),
     adminEffective:(userId,input)=>governance.effectiveForLinkedUser(userId,input),
+    // The caller's own ceilings. Chain matters -- gasCeilingGwei comes from that chain's
+    // defaults when neither a user override nor a group sets one -- so an unsupported chain is
+    // rejected here rather than reaching defaultPolicy(), which throws a bare Error for an
+    // unknown chain and would surface as a 500 instead of a validation failure.
+    // async, not a sync throw. Every other command here rejects rather than throws, and the
+    // dashboard's action() wrapper catches from an awaited promise -- a synchronous throw out of
+    // an otherwise-promise-returning API escapes that wrapper and lands on the generic 500
+    // handler, turning a validation failure into a server error.
+    profileLimits:async(userId,chain)=>{
+      if(!supportedChains.includes(chain))throw new ValidationError({field:'chain',message:`must be one of: ${supportedChains.join(', ')}`});
+      return governance.limitsForSelf(userId,chain);
+    },
     // Owner-only cross-user visibility -- every one of these already takes an explicit userId
     // rather than deriving "the caller" internally, so the only thing missing is the owner gate
     // before pointing that userId at someone other than the caller.

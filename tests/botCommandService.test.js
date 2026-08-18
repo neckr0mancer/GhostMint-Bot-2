@@ -178,3 +178,24 @@ test('resolveMintContractInput returns null for a link when no OpenSea service i
   const { service } = fixture({ openSeaService: null });
   assert.equal(await service.resolveMintContractInput('https://opensea.io/collection/cool-cats'), null);
 });
+
+// profileLimits backs the dashboard's daily-budget tile. The chain guard matters because
+// gasCeilingGwei falls through to defaultPolicy(chain), which throws a bare Error for an unknown
+// chain -- that would surface as a 500 instead of a validation failure.
+test('profileLimits rejects an unsupported chain as validation, not a server error', async () => {
+  const { service } = fixture({
+    governance: { limitsForSelf: async () => ({ chain: 'ethereum' }) },
+  });
+  await assert.rejects(() => service.profileLimits('user-a', 'dogecoin'),
+    error => error instanceof ValidationError && error.issues[0].field === 'chain');
+});
+
+test('profileLimits passes a supported chain through to the governance resolver', async () => {
+  const seen = [];
+  const { service } = fixture({
+    governance: { limitsForSelf: async (userId, chain) => { seen.push([userId, chain]); return { chain, ceilingExempt: false }; } },
+  });
+  const result = await service.profileLimits('user-a', 'ethereum');
+  assert.deepEqual(seen, [['user-a', 'ethereum']]);
+  assert.equal(result.chain, 'ethereum');
+});

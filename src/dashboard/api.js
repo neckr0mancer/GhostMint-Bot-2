@@ -120,6 +120,16 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLo
     updateTheme:action(async(req,res)=>{const {theme}=requestSchemas.themeUpdate(req.body||{});res.json({theme:await identityRepository.setTheme(user(req),theme)});}),
     updateDisplayName:action(async(req,res)=>{const {displayName}=requestSchemas.displayNameUpdate(req.body||{});res.json({displayName:await identityRepository.setDisplayName(user(req),displayName)});}),
     updateDefaultChain:action(async(req,res)=>{const {defaultChain}=requestSchemas.defaultChainUpdate(req.body||{},{supportedChains});res.json({defaultChain:await identityRepository.setDefaultChain(user(req),defaultChain)});}),
+    // The caller's own effective ceilings, resolved user override -> group -> chain defaults.
+    // No owner gate: these are the limits already being enforced against this caller.
+    // Chain defaults to the account's saved default, then the first supported chain, because
+    // gasCeilingGwei is per-chain and an unqualified "your gas ceiling" has no meaning.
+    // jsonSafe because maxTransactionValueWei / dailySpendingBudgetWei are BigInt.
+    profileLimits:action(async(req,res)=>{noStore(res);
+      const requested=req.query?.chain
+        ||(identityRepository.getDefaultChain?await identityRepository.getDefaultChain(user(req)):null)
+        ||supportedChains[0];
+      res.json(jsonSafe(await commands.profileLimits(user(req),requested)));}),
     // Sets or changes the one account password that gates every sensitive dashboard action (see
     // exportWalletKey below). Changing an existing password requires the current one; setting it for
     // the first time does not, since there is nothing yet to authenticate against.
@@ -253,6 +263,7 @@ function mountDashboardRoutes(app,api){
   app.post('/api/auth/logout',api.requireSession,api.requireCsrf,api.logout);
   app.post('/api/auth/logout-all',api.requireSession,api.requireCsrf,api.logoutAll);
   app.get('/api/profile',api.requireSession,api.profile);
+  app.get('/api/profile/limits',api.requireSession,api.profileLimits);
   app.put('/api/profile/theme',api.requireSession,api.requireCsrf,api.updateTheme);
   app.put('/api/profile/display-name',api.requireSession,api.requireCsrf,api.updateDisplayName);
   app.put('/api/profile/default-chain',api.requireSession,api.requireCsrf,api.updateDefaultChain);
