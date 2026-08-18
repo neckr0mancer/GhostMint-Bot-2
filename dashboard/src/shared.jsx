@@ -252,7 +252,25 @@ export function Skeleton({rows=3,variant='card'}){
   const shape=SKELETON_SHAPES[variant]||'skeleton-line';
   return <div className="skeleton-lines" aria-hidden="true">{Array.from({length:rows}).map((_,index)=><div className={shape} key={index}/>)}</div>;
 }
-export function Pager({value,page,setPage}){if(!value)return null;return <div className="pager"><button disabled={page<=1} onClick={()=>setPage(page-1)}>Previous</button><span>Page {value.page} of {value.totalPages} | {value.total} total</span><button disabled={page>=value.totalPages} onClick={()=>setPage(page+1)}>Next</button></div>}
+// Prototype .pager (docs/prototype-pages/mint.html:148): a .pinfo count that pushes everything
+// right, then a single-glyph prev, numbered pages with the current one .on, and a single-glyph
+// next. Not "Previous / Page 1 of 3 / Next" -- the numbers are the control, the arrows are the
+// nudge. Window of five keeps a long list from spilling its own row.
+export function Pager({value,page,setPage}){
+  if(!value||!value.totalPages)return null;
+  const total=value.totalPages;
+  const first=Math.max(1,Math.min(page-2,total-4));
+  const numbers=[];
+  for(let n=first;n<=Math.min(total,first+4);n++)numbers.push(n);
+  const shown=Math.min(value.page*value.pageSize,value.total);
+  return <div className="pager">
+    <span className="pinfo">{shown} of {value.total}</span>
+    <button type="button" disabled={page<=1} aria-label="Previous page" onClick={()=>setPage(page-1)}>&lsaquo;</button>
+    {numbers.map(n=><button type="button" key={n} className={n===page?'on':undefined}
+      aria-current={n===page?'page':undefined} onClick={()=>setPage(n)}>{n}</button>)}
+    <button type="button" disabled={page>=total} aria-label="Next page" onClick={()=>setPage(page+1)}>&rsaquo;</button>
+  </div>;
+}
 
 /* ==========================================================================
    New presentational components (brief §5). Presentation only -- none of these

@@ -39,7 +39,7 @@ fastest way to enumerate what is missing.
 | 1.2 | Buttons → `.b` family, sub-tab glow, error `.notice` | DONE, measured identical |
 | 1.3 | Account menu popover (`.acct-pop`) | TODO |
 | 1.4 | Bell → two-tab `.bell-pop` | TODO |
-| 1.5 | Mint page rebuild | **Mint now: DONE** (measured identical). Schedule / Batch / Presets tabs: TODO |
+| 1.5 | Mint page rebuild | **Mint now + Schedule: DONE**. Batch / Presets tabs: TODO |
 | 1.6 | Home empty state / `FirstRun` | DONE — built from `.frun`, gated on `data !== null`, checked light+dark at 375 and 1440 |
 | 1.7 | Four states on every remaining page | TODO |
 | 1.8 | Responsive + light/dark parity sweep | TODO |
@@ -339,3 +339,25 @@ Checked against docs/prototype-pages/mint.html with the account's only wallet de
 | Footnote | "Preview stays visible at all times — a collapsed total is a hidden total." | matches |
 
 The form is shown DISABLED rather than hidden, which is the point of the state.
+
+### Schedule tab — one deliberate deviation, needs a ruling
+
+The prototype (mint.html:145) puts a SINGLE action row after the scheduled list:
+Pause / Resume / Retry / Cancel. That cannot be wired to anything, because the design
+has no selection model — no checkboxes, no active row, nothing to say which scheduled
+mint the buttons would act on.
+
+Built instead as a per-row action row, keeping the prototype's exact classes
+(.b.sm and .b.d.sm), labels and order. Every visual token is the prototype's; only
+the placement differs, and only because the prototype's placement is not operable.
+
+**Ruling needed:** accept per-row, or add a selection model so the single row can
+match the prototype literally? Per-row is what is in the tree today.
+
+### Pager
+
+Rebuilt to the prototype's .pager: a .pinfo "N of M" pushed left, a single-glyph
+prev, numbered buttons with the current one .on, and a single-glyph next. The legacy
+centred "Previous / Page 1 of 3 / Next" is deleted. Windowed to five numbers so a
+long list cannot spill its own row — the prototype only ever shows three pages and
+does not say what fourteen should look like.

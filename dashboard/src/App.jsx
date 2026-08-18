@@ -233,6 +233,13 @@ const WARN_TRIANGLE_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentCol
 const ALERT_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>;
 const BATCH_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>;
 const CLOCK_ICON=<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg>;
+// Schedule-row glyphs, copied from docs/prototype-pages/mint.html:134-140: a clock for a
+// scheduled row, pause bars for a paused one, and a cross (tinted --loss-text at the call site)
+// for a failed one. CLOCK_ICON_LG is the 24px .ri/.chip-ico variant; CLOCK_ICON above is the 13px
+// one the .tokbar uses.
+const CLOCK_ICON_LG=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg>;
+const PAUSE_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><path d="M6 4h4v16H6zM14 4h4v16h-4z"/></svg>;
+const CROSS_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><path d="M18 6 6 18M6 6l12 12"/></svg>;
 const LOCK_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><rect x="4" y="10.5" width="16" height="10.5" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/></svg>;
 function shortHex(value){const v=String(value||"");return v.length>12?`${v.slice(0,6)}…${v.slice(-4)}`:v;}
 function Minting({onSwitchToBatch,onGoWallets}){const wallets=useLoad('/api/wallets',[],'wallets.changed');const limits=useLoad('/api/profile/limits');const [preview,setPreview]=useState(null);const [confirmResults,setConfirmResults]=useState(null);const formRef=useRef(null);const previewRef=useRef(null);const [walletLabel,setWalletLabel]=useState('');const [contractAddress,setContractAddress]=useState('');const [quantity,setQuantity]=useState('1');const [methodSignature,setMethodSignature]=useState('');const [argumentsJson,setArgumentsJson]=useState('');const [priceEth,setPriceEth]=useState('');const [seaDropAddress,setSeaDropAddress]=useState('');const [detectedChain,setDetectedChain]=useState('');const [maxPerWallet,setMaxPerWallet]=useState(null);const [detecting,setDetecting]=useState(false);const lastDetected=useRef('');
@@ -494,7 +501,105 @@ function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSear
   // just-changed value directly since setState hasn't applied yet inside the same onChange handler.
   function autoDetectIfReady(value=contractAddress){const trimmed=value.trim();if(ADDRESS_SHAPE.test(trimmed)&&trimmed!==lastDetected.current)detect(trimmed);}
   function handleContractBlur(){autoDetectIfReady();}
-  async function create(event){event.preventDefault();const form=event.currentTarget;try{const input=Object.fromEntries(new FormData(form));if(!input.priceETH)delete input.priceETH;if(input.mintTime)input.mintTime=new Date(input.mintTime).toISOString();else delete input.mintTime;await api('/api/tasks',{method:'POST',body:JSON.stringify(input)});form.reset();setContractAddress('');setQuantity('1');setPriceETH('');setMintTime('');lastDetected.current='';notify('Task scheduled.',{type:'success'});listing.load();}catch(value){notify(value.message,{type:'error'});}}async function control(id,action){if(action==='cancel'&&!await confirmDialog('Cancel this scheduled task?'))return;try{await api(`/api/tasks/${id}/control`,{method:'POST',body:JSON.stringify({action,confirmation:action==='cancel'?'CONFIRM':undefined})});listing.load();}catch(value){notify(value.message,{type:'error'});}}return <><p className="page-lead">Jobs use the same crash-safe M9 queue consumed by the worker.</p><Notice error={listing.error}/><div className="page-toolbar"><label className="page-search">Find a task<input type="search" value={search} placeholder="Name or wallet…" onChange={e=>{setSearch(e.target.value);setPage(1);}}/></label></div><Form className="form-task" title="Schedule mint" note="Enter a contract and auto-detect its price and opening time, same as Minting. Local browser time is converted to an explicit UTC timestamp before submission." onSubmit={create}><Field name="name" label="Name"/><Select name="walletLabel" label="Wallet" options={wallets.data?.map(x=>x.label)}/><ChainSelect name="chain" label="Chain" options={profile.supportedChains} value={chain} onChange={e=>setChain(e.target.value)}/><div className="field-row"><Field name="contractAddress" label="Contract" placeholder="0x…" value={contractAddress} onChange={e=>{setContractAddress(e.target.value);autoDetectIfReady(e.target.value);}} onBlur={handleContractBlur}/><label>Quantity<input type="number" min="1" max="100" value={quantity} onChange={e=>setQuantity(e.target.value)}/></label></div>{detecting&&<p className="mint-detecting"><span className="spinner spinner-quiet" aria-hidden="true"/>Detecting…</p>}<div className="field-row"><Field name="priceETH" label="Price (ETH)" type="number" step="any" required={false} placeholder="Leave blank to auto-resolve" value={priceETH} onChange={e=>setPriceETH(e.target.value)}/><Field name="mintTime" label="Schedule time" type="datetime-local" required={false} value={mintTime} onChange={e=>setMintTime(e.target.value)}/></div><button className="b p">Schedule durably</button></Form>{listing.data===null?<Skeleton variant="lines" rows={4}/>:<><div className="table-wrap task-table"><table><thead><tr><th>Name</th><th>Wallet</th><th>UTC due</th><th>Status</th><th>Controls</th></tr></thead><tbody>{listing.data.items.map(task=><tr key={task.id}><td data-label="Name">{task.name}</td><td data-label="Wallet">{task.walletLabel}</td><td data-label="UTC due">{new Date(task.mintTime).toISOString()}</td><td data-label="Status"><StatusPill status={task.status}/></td><td data-label="Controls" className="br">{['cancel','pause','resume','retry'].map(action=><button className="b sm" key={action} onClick={()=>control(task.id,action)}>{action}</button>)}</td></tr>)}</tbody></table></div>{listing.data.items.length===0&&<Empty text={search?'No tasks match this search.':'No scheduled tasks yet.'}/>}<Pager value={listing.data} page={page} setPage={setPage}/></>}</>}
+  async function create(event){event.preventDefault();const form=event.currentTarget;try{const input=Object.fromEntries(new FormData(form));if(!input.priceETH)delete input.priceETH;if(input.mintTime)input.mintTime=new Date(input.mintTime).toISOString();else delete input.mintTime;await api('/api/tasks',{method:'POST',body:JSON.stringify(input)});form.reset();setContractAddress('');setQuantity('1');setPriceETH('');setMintTime('');lastDetected.current='';notify('Task scheduled.',{type:'success'});listing.load();}catch(value){notify(value.message,{type:'error'});}}async function control(id,action){if(action==='cancel'&&!await confirmDialog('Cancel this scheduled task?'))return;try{await api(`/api/tasks/${id}/control`,{method:'POST',body:JSON.stringify({action,confirmation:action==='cancel'?'CONFIRM':undefined})});listing.load();}catch(value){notify(value.message,{type:'error'});}}
+  // Prototype docs/prototype-pages/mint.html:111-158. The Schedule tab is a .split: the form on
+  // the left, the "Scheduled" list on the right. The old page-lead, the search toolbar, the chain
+  // select and the table UNDER the form are all gone -- none of them exist in the design, and the
+  // table in particular was the thing the owner asked to have removed.
+  const walletsArrived=wallets.data!==null&&wallets.data!==undefined;
+  const noWallets=walletsArrived&&wallets.data.length===0;
+  const items=listing.data?.items;
+  const pending=items?items.filter(task=>String(task.status).toLowerCase()==='scheduled').length:0;
+  function rowIcon(status){
+    const value=String(status||'').toLowerCase();
+    if(value==='paused')return <div className="ri">{PAUSE_ICON}</div>;
+    if(value==='failed'||value==='error')return <div className="ri" style={{color:'var(--loss-text)'}}>{CROSS_ICON}</div>;
+    return <div className="ri">{CLOCK_ICON_LG}</div>;
+  }
+  function rowPill(status){
+    const value=String(status||'').toLowerCase();
+    const tone=value==='scheduled'?'ok':(value==='failed'||value==='error')?'bad':'nu';
+    return <span className={`p ${tone}`}>{status}</span>;
+  }
+  return <div className="split">
+    <div className="card">
+      <div className="ch"><div className="chip-ico">{CLOCK_ICON_LG}</div><h2>Schedule a mint</h2></div>
+      <form className="g" style={{gap:'11px'}} onSubmit={create}>
+        <label className="fl"><span>Name</span>
+          <input className="in" name="name" required disabled={noWallets} placeholder="e.g. Pudgy Rods public"/></label>
+        <label className="fl"><span>Contract address</span>
+          <input className="in mono" name="contractAddress" required disabled={noWallets} placeholder="0x…"
+            value={contractAddress}
+            onChange={e=>{setContractAddress(e.target.value);autoDetectIfReady(e.target.value);}}
+            onBlur={handleContractBlur}/></label>
+        <div className="nt i">{INFO_ICON}
+          <div>SeaDrop drops expose their own opening time on-chain — it is filled in automatically. A plain <code>mint(uint256)</code> contract has no equivalent, so you set the time yourself.</div></div>
+        <div className="g gm2 g2">
+          <label className="fl"><span>Wallet</span>
+            {noWallets
+              ?<select className="in" disabled><option>No wallets yet</option></select>
+              :<select className="in" name="walletLabel" disabled={!walletsArrived}>
+                <optgroup label="EVM">{(wallets.data||[]).map(entry=><option key={entry.label} value={entry.label}>{entry.label}</option>)}</optgroup>
+              </select>}
+          </label>
+          <label className="fl"><span>Quantity</span>
+            <div className="qty">
+              <input className="in tab" name="quantity" type="number" min={1} max={100} disabled={noWallets}
+                placeholder="Enter quantity (1–100)" value={quantity} onChange={e=>setQuantity(e.target.value)}/>
+              {/* Literal 1 / 2 / 5, per the prototype at mint.html:126. Mint now writes 1 2 3 Max
+                  and Batch writes 1 2 3 -- three forms, three sets, none of them derived. */}
+              <div className="qb">{[1,2,5].map(pick=><button type="button" key={pick} disabled={noWallets}
+                className={String(pick)===String(quantity)?'on':undefined}
+                onClick={()=>setQuantity(String(pick))}>{pick}</button>)}</div>
+            </div></label>
+        </div>
+        <label className="fl"><span>Mint time <span style={{color:'var(--faint)',fontWeight:500}}>· UTC, explicit offset or Z</span></span>
+          <input className="in tab mono" name="mintTime" type="datetime-local" disabled={noWallets}
+            value={mintTime} onChange={e=>setMintTime(e.target.value)}/></label>
+        <input type="hidden" name="chain" value={chain}/>
+        {priceETH?<input type="hidden" name="priceETH" value={priceETH}/>:null}
+        <button className="b p" disabled={noWallets}>Schedule mint</button>
+      </form>
+    </div>
+
+    <div className="g">
+      <div className="card">
+        <div className="ch"><h2>Scheduled</h2><div className="sp"/>
+          {items&&items.length>0&&<span className="p nu">{pending} pending</span>}</div>
+        {listing.error
+          ?<Notice error={{title:'Could not load scheduled mints.',code:listing.status,onRetry:listing.load}}/>
+          :items===undefined||items===null
+            ?<div><div className="sk row"/><div className="sk row"/><div className="sk row"/></div>
+            :items.length===0
+              ?<div className="emp">
+                 <div className="ei">{CLOCK_ICON_LG}</div>
+                 <h3>Nothing scheduled</h3>
+                 <p>A scheduled mint is a database row, not a browser timer — it fires whether or not this tab is open.</p>
+               </div>
+              :<div>
+                 {items.map(task=><div className="r" key={task.id}>
+                   {rowIcon(task.status)}
+                   <div className="rm">
+                     <div className="rt">{task.name}</div>
+                     <div className="rs fold">{task.walletLabel} · {new Date(task.mintTime).toISOString()}</div>
+                   </div>
+                   <div className="rv">{rowPill(task.status)}</div>
+                   {/* DEVIATION, flagged in backlog §4.4: the prototype shows ONE Pause/Resume/
+                       Retry/Cancel row after the list, which cannot be wired to anything because
+                       the design has no selection model. Placed per row instead, keeping the
+                       prototype's exact classes, labels and order. */}
+                   <div className="br">
+                     {['pause','resume','retry'].map(action=><button type="button" key={action} className="b sm"
+                       onClick={()=>control(task.id,action)}>{action[0].toUpperCase()+action.slice(1)}</button>)}
+                     <button type="button" className="b d sm" onClick={()=>control(task.id,'cancel')}>Cancel…</button>
+                   </div>
+                 </div>)}
+                 <Pager value={listing.data} page={page} setPage={setPage}/>
+               </div>}
+      </div>
+    </div>
+  </div>;
+}
 function Activity(){const [page,setPage]=useState(1);const [search,setSearch]=useState('');const listing=useLoad(`/api/activity?page=${page}&pageSize=10&search=${encodeURIComponent(search)}`,[page,search],ACTIVITY_EVENTS);return <><p className="page-lead">Paginated execution history with trigger and verification context where recorded.</p><Notice error={listing.error}/><div className="page-toolbar"><label className="page-search">Find activity<input type="search" value={search} placeholder="Title or wallet…" onChange={e=>{setSearch(e.target.value);setPage(1);}}/></label></div>{listing.data===null?<Skeleton variant="lines" rows={4}/>:<><div className="feed activity-feed">{listing.data.items.map(item=><article className="feed-item" key={item.id}><div><StatusPill status={item.status}/><h2>{item.title}</h2><p>{item.walletLabel||'No wallet'} · {new Date(item.time).toLocaleString()}</p></div><div className="activity-context"><p>Trigger: {item.triggerSource||'legacy/unrecorded'}</p><p>Verification: {item.verificationState||'not applicable'}</p></div></article>)}</div>{listing.data.items.length===0&&<Empty text={search?'No activity matches this search.':'No activity recorded yet.'}/>}<Pager value={listing.data} page={page} setPage={setPage}/></>}</>}
 // Every confirmed mint auto-creates its own record now (see recordMintActivity/autoRecordPnl in
 // src/server.js) with real cost+gas and sale left at 0 until something actually sells -- these
