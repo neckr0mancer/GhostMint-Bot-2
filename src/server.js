@@ -594,7 +594,7 @@ const FLOW_CONTINUATION_PREFIXES = { wallet_create: ['flow:chain:'], wallet_impo
   // flow:priceaccept/flow:pricemanual (Section G's OpenSea-price-accept step) the same way.
   // flow:phase: is deliberately NOT listed: tapping "add phase N" on an older success screen while
   // some other flow is mid-air should raise the usual abandon prompt, not silently replace it.
-  task_guided: ['flow:mintdetailscontinue', 'flow:priceaccept', 'flow:pricemanual', 'flow:phasepriceaccept', 'flow:phasetimeaccept', 'flow:taskname:', 'flow:taskwalletpick:', 'flow:taskconfirm'],
+  task_guided: ['flow:mintdetailscontinue', 'flow:mintqty:', 'flow:priceaccept', 'flow:pricemanual', 'flow:phasepriceaccept', 'flow:phasetimeaccept', 'flow:taskname:', 'flow:taskwalletpick:', 'flow:taskconfirm'],
   watch_guided: ['flow:watchtype:', 'flow:watchmethod:', 'flow:watchconfirm'] };
 
 // Generic one-shot confirmation gate for simple "<command> <id> CONFIRM"-shaped destructive actions
@@ -830,6 +830,7 @@ function renderFlowStep(flow, step, { userId, data = {} } = {}) {
         displayPrice: data.displayPrice,
       });
     }
+    if (step === 'awaiting_quantity') return quantityStepPayload(data);
     if (step === 'awaiting_wallet') {
       return telegramMenus.walletPicker(botCommands.wallets(userId), { prefix: 'flow:taskwalletpick', emptyHint: 'No wallets yet. Create one first from the Wallets menu.' });
     }
@@ -842,6 +843,7 @@ function renderFlowStep(flow, step, { userId, data = {} } = {}) {
         contractAddress: data.contractAddress,
         chainLabel: CHAINS[data.chain]?.name || data.chain,
         walletLabel: data.walletLabel,
+        quantity: data.quantity || 1,
         mintTime: data.mintTime,
         autoDetectedTime: Boolean(!data.phaseNumber && data.startTime && new Date(data.mintTime).getTime() === data.startTime * 1000),
         priceETH: data.priceETH,
@@ -1277,16 +1279,29 @@ async function startTaskScheduleFlow({ chatId, messageId, userId, contractAddres
   return send(renderFlowStep('task_guided', 'awaiting_details', { userId, data }));
 }
 
+// Reached by tapping "Continue" on the details card (both phase 1 and, via the phaseNumber>1
+// path above, every later phase too) -- a contract allowing more than 1 per wallet asks how many
+// first, mirroring mint_guided's afterDetails; a max of 1 (or unknown) skips straight to wallet
+// selection with quantity defaulted to 1, same as before this step existed.
+async function advanceFromTaskDetails(chatId, messageId, userId, flow) {
+  if (Number(flow.data.maxPerWallet) > 1) {
+    telegramFlowState.advance('telegram', chatId, 'awaiting_quantity', flow.data);
+    return tgUpdate(chatId, messageId, renderFlowStep('task_guided', 'awaiting_quantity', { userId, data: flow.data }));
+  }
+  return advanceFromTaskQuantity(chatId, messageId, userId, flow, 1);
+}
+
 // Scheduling is always single-wallet (createTask has no batch concept), so this always shows a
 // picker rather than the mint flow's multi/single branching -- except the auto-select-with-one-
 // wallet shortcut, which still applies.
-async function advanceFromTaskDetails(chatId, messageId, userId, flow) {
+async function advanceFromTaskQuantity(chatId, messageId, userId, flow, quantity) {
+  const data = { ...flow.data, quantity };
   const wallets = botCommands.wallets(userId);
   if (wallets.length === 1) {
-    return advanceFromTaskWallet(chatId, messageId, userId, flow, wallets[0].label);
+    return advanceFromTaskWallet(chatId, messageId, userId, { ...flow, data }, wallets[0].label);
   }
-  telegramFlowState.advance('telegram', chatId, 'awaiting_wallet', flow.data);
-  return tgUpdate(chatId, messageId, renderFlowStep('task_guided', 'awaiting_wallet', { userId, data: flow.data }));
+  telegramFlowState.advance('telegram', chatId, 'awaiting_wallet', data);
+  return tgUpdate(chatId, messageId, renderFlowStep('task_guided', 'awaiting_wallet', { userId, data }));
 }
 
 // After the wallet is picked: a price createTask can't resolve server-side either (Section G) is
@@ -1310,7 +1325,7 @@ async function finishTaskSchedule(chatId, messageId, userId, flowData) {
     commandRateLimiter.check('telegram', userId, 'task');
     const task = await botCommands.createTask(userId, {
       name: flowData.name, walletLabel: flowData.walletLabel, contractAddress: flowData.contractAddress,
-      chain: flowData.chain, quantity: 1, priceETH: flowData.priceETH, mintTime: flowData.mintTime,
+      chain: flowData.chain, quantity: flowData.quantity || 1, priceETH: flowData.priceETH, mintTime: flowData.mintTime,
     });
     telegramFlowState.clear('telegram', chatId);
     return tgUpdate(chatId, messageId, telegramMenus.taskScheduled({
@@ -1471,7 +1486,7 @@ async function handleFlowTextMessage(msg) {
     || (flow.flow === 'wallet_import' && (flow.step === 'awaiting_label' || flow.step === 'awaiting_key'))
     || (flow.flow === 'mint_guided' && ['awaiting_contract', 'awaiting_quantity', 'awaiting_price', 'awaiting_gastolerance'].includes(flow.step))
     || (flow.flow === 'send_guided' && (flow.step === 'awaiting_amount' || flow.step === 'awaiting_destination'))
-    || (flow.flow === 'task_guided' && ['awaiting_contract', 'awaiting_price', 'awaiting_name', 'awaiting_time'].includes(flow.step))
+    || (flow.flow === 'task_guided' && ['awaiting_contract', 'awaiting_quantity', 'awaiting_price', 'awaiting_name', 'awaiting_time'].includes(flow.step))
     || (flow.flow === 'watch_guided' && ['awaiting_name', 'awaiting_config'].includes(flow.step));
   if (!isTextStep) { await tgDeleteUserMessage(msg); tgRender(chatId, { text: 'Please use the buttons above, or tap Cancel.', replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' }); return; }
 
@@ -1520,13 +1535,14 @@ async function handleFlowTextMessage(msg) {
     await startMintFlow({ chatId, messageId: null, userId, multi: flow.data.multi, contractAddressInput: value });
     return;
   }
-  if (flow.flow === 'mint_guided' && flow.step === 'awaiting_quantity') {
+  if ((flow.flow === 'mint_guided' || flow.flow === 'task_guided') && flow.step === 'awaiting_quantity') {
     const quantity = Math.floor(Number(value));
     const max = Number(flow.data.maxPerWallet) || 100;
     if (!Number.isInteger(quantity) || quantity < 1 || quantity > max) {
       tgRender(chatId, { text: `Send a whole number from 1 to ${max}.`, replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' });
       return;
     }
+    if (flow.flow === 'task_guided') { await advanceFromTaskQuantity(chatId, null, userId, flow, quantity); return; }
     await advanceFromQuantity(chatId, null, userId, flow, quantity);
     return;
   }
@@ -1950,14 +1966,15 @@ if (BOT_TOKEN) {
     }
     if (data === 'flow:mintqty:x') {
       const flow = telegramFlowState.get('telegram', chatId);
-      if (!flow || flow.flow !== 'mint_guided' || flow.step !== 'awaiting_quantity') return;
+      if (!flow || (flow.flow !== 'mint_guided' && flow.flow !== 'task_guided') || flow.step !== 'awaiting_quantity') return;
       const max = Number(flow.data.maxPerWallet) || 100;
       return tgEditMenu(chatId, messageId, { text: `Send a whole number from 1 to ${max}.`, replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' });
     }
     if (data.startsWith('flow:mintqty:')) {
       const quantity = Number(data.slice('flow:mintqty:'.length));
       const flow = telegramFlowState.get('telegram', chatId);
-      if (!flow || flow.flow !== 'mint_guided' || flow.step !== 'awaiting_quantity' || !Number.isInteger(quantity) || quantity < 1) return;
+      if (!flow || (flow.flow !== 'mint_guided' && flow.flow !== 'task_guided') || flow.step !== 'awaiting_quantity' || !Number.isInteger(quantity) || quantity < 1) return;
+      if (flow.flow === 'task_guided') return advanceFromTaskQuantity(chatId, messageId, userId, flow, quantity);
       return advanceFromQuantity(chatId, messageId, userId, flow, quantity);
     }
     if (data === 'flow:priceaccept') {

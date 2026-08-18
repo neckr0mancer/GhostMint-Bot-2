@@ -100,6 +100,58 @@ test('a single wallet is auto-selected: tapping Schedule for opening goes straig
   assert.equal(flowState.get('discord', 'paster-1').data.walletLabel, 'main');
 });
 
+test('maxPerWallet > 1 asks for a quantity before naming, and the chosen amount reaches createTask', async () => {
+  const flowState = createFlowStateStore();
+  const created = [];
+  const commands = baseCommands({
+    detectMintContract: async () => ({
+      chain: 'ethereum', isSeaDrop: true, priceKnown: true, valueWei: '1000000000000000000',
+      maxSupply: 100, maxPerWallet: 5, startTime: FUTURE_START, endTime: null, collection: null, soldOut: false, displayPrice: null,
+    }),
+    createTask: async (userId, input) => { created.push({ userId, input }); return { name: input.name, mintTime: input.mintTime }; },
+  });
+  const identity = { resolveOrCreate: async () => 'internal-user' };
+  const ctx = { identity, commands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT };
+
+  const { handler } = await pasteAndTapSchedule(ctx, 'paster-qty');
+  assert.equal(flowState.get('discord', 'paster-qty').step, 'awaiting_quantity');
+
+  const qtySelect = selectInteraction('flow:mintqty:select', ['3'], 'paster-qty');
+  await handler(qtySelect);
+  assert.equal(flowState.get('discord', 'paster-qty').step, 'awaiting_name', 'single wallet auto-selects and moves straight to naming');
+  assert.equal(flowState.get('discord', 'paster-qty').data.quantity, 3);
+
+  await handler(selectInteraction('flow:taskname:select', ['GTD'], 'paster-qty'));
+  const confirm = buttonInteraction('flow:taskconfirm', 'paster-qty');
+  await handler(confirm);
+  assert.equal(created[0].input.quantity, 3);
+});
+
+test('typing a custom quantity via the modal advances to the wallet picker when there is more than one wallet', async () => {
+  const flowState = createFlowStateStore();
+  const commands = baseCommands({
+    wallets: () => [{ label: 'alpha', chain: 'ethereum' }, { label: 'beta', chain: 'ethereum' }],
+    detectMintContract: async () => ({
+      chain: 'ethereum', isSeaDrop: true, priceKnown: true, valueWei: '1000000000000000000',
+      maxSupply: 100, maxPerWallet: 5, startTime: FUTURE_START, endTime: null, collection: null, soldOut: false, displayPrice: null,
+    }),
+  });
+  const identity = { resolveOrCreate: async () => 'internal-user' };
+  const ctx = { identity, commands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT };
+
+  const { handler } = await pasteAndTapSchedule(ctx, 'paster-custom-qty');
+  const custom = selectInteraction('flow:mintqty:select', ['custom'], 'paster-custom-qty');
+  await handler(custom);
+  assert.equal(custom.modal.custom_id, 'flow:mintqty:submit');
+
+  const submit = modalInteraction('flow:mintqty:submit', { value: '4' }, 'paster-custom-qty');
+  await handler(submit);
+  assert.equal(submit.replies[0].ephemeral, true);
+  const flow = flowState.get('discord', 'paster-custom-qty');
+  assert.equal(flow.step, 'awaiting_wallet');
+  assert.equal(flow.data.quantity, 4);
+});
+
 test('more than one wallet shows a wallet select before naming', async () => {
   const flowState = createFlowStateStore();
   const commands = baseCommands({ wallets: () => [{ label: 'alpha', chain: 'ethereum' }, { label: 'beta', chain: 'ethereum' }] });

@@ -83,8 +83,19 @@ function placeholderMenu(title, hint) {
   };
 }
 
+// Telegram bot text can't embed real custom icons inline -- only Unicode renders inline with a
+// button label or a line of text, so this is the closest Telegram gets to the per-chain brand
+// marks src/discord/menus.js now uploads as real application emoji. Same picks as Discord's own
+// pre-upload Unicode fallback, kept here for whichever chain buttons never get an image treatment.
+const CHAIN_EMOJI = { ethereum: '💎', base: '🔵', arbitrum: '🔷', polygon: '🟣', robinhood: '🟢' };
+
+function chainButtonLabel(chain, chains) {
+  const emoji = CHAIN_EMOJI[chain];
+  return `${emoji ? `${emoji} ` : ''}${chains[chain]?.name || chain}`;
+}
+
 function chainPicker(supportedChains, chains, { prefix = 'flow:chain' } = {}) {
-  const rows = supportedChains.map(chain => [button(chains[chain]?.name || chain, `${prefix}:${chain}`)]);
+  const rows = supportedChains.map(chain => [button(chainButtonLabel(chain, chains), `${prefix}:${chain}`)]);
   rows.push([button('❌ Nah, cancel', 'flow:cancel:ask')]);
   return { text: 'Pick your chain, ser:', replyMarkup: keyboard(rows), parseMode: 'HTML' };
 }
@@ -293,7 +304,7 @@ function collectionInfoCard({ contractAddress, chainLabel, chainSym, isSeaDrop, 
 // phaseNumber > 1 means this task is a later stage of a multi-stage drop (Section AF). Its price and
 // time were typed by hand off the project's own announcement -- nothing on-chain describes a stage
 // that isn't live yet -- so the price line must not claim the contract said so.
-function taskConfirmation({ name, contractAddress, chainLabel, walletLabel, mintTime, autoDetectedTime, priceETH, priceUnknown, displayPrice, phaseNumber }) {
+function taskConfirmation({ name, contractAddress, chainLabel, walletLabel, quantity, mintTime, autoDetectedTime, priceETH, priceUnknown, displayPrice, phaseNumber }) {
   const phase = Number(phaseNumber) > 1 ? Number(phaseNumber) : null;
   let priceLine;
   if (phase) priceLine = `Price: ${priceETH} per item (your number for this phase)`;
@@ -304,7 +315,7 @@ function taskConfirmation({ name, contractAddress, chainLabel, walletLabel, mint
     : `Fires: <b>${formatGmtPlus1(mintTime)}</b>`;
   const heading = phase ? `<b>⏰ Confirm phase ${phase}</b>` : '<b>⏰ Confirm scheduled mint</b>';
   return {
-    text: `${heading}\nName: ${escapeTelegramHtml(name)}\nContract: <code>${contractAddress}</code>\nChain: ${chainLabel}\nWallet: ${escapeTelegramHtml(walletLabel)}\nQuantity: 1\n${priceLine}\n${timeLine}\n\nThis is not a reminder — the bot signs and sends the mint itself at that moment, phone in your pocket, you asleep.\n\nLock it in?`,
+    text: `${heading}\nName: ${escapeTelegramHtml(name)}\nContract: <code>${contractAddress}</code>\nChain: ${chainLabel}\nWallet: ${escapeTelegramHtml(walletLabel)}\nQuantity: ${quantity || 1}\n${priceLine}\n${timeLine}\n\nThis is not a reminder — the bot signs and sends the mint itself at that moment, phone in your pocket, you asleep.\n\nLock it in?`,
     replyMarkup: keyboard([[button('✅ Schedule it', 'flow:taskconfirm')], [button('❌ Nah, cancel', 'flow:cancel:ask')]]),
     parseMode: 'HTML',
   };
@@ -340,7 +351,7 @@ function chunk(items, size) {
 }
 
 function gasMenu(chain, fees, supportedChains, chains) {
-  const chainButtons = supportedChains.map(value => button(chains[value]?.name || value, `gas:chain:${value}`));
+  const chainButtons = supportedChains.map(value => button(chainButtonLabel(value, chains), `gas:chain:${value}`));
   const rows = chunk(chainButtons, 3);
   rows.push([button('⬅️ Back to base', 'menu:main')]);
   const readout = fees

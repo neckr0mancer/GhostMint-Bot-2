@@ -43,7 +43,8 @@ test('chain picker renders one button per supported chain plus a cancel option',
   const picker = chainPicker(['ethereum', 'sepolia'], chains);
   const buttons = flatButtons(picker.replyMarkup);
   assert.deepEqual(buttons.map(b => b.callback_data), ['flow:chain:ethereum', 'flow:chain:sepolia', 'flow:cancel:ask']);
-  assert.equal(buttons[0].text, 'Ethereum');
+  assert.equal(buttons[0].text, '💎 Ethereum');
+  assert.equal(buttons[1].text, 'Sepolia', 'a chain with no Unicode pick in CHAIN_EMOJI falls back to a bare label');
 });
 
 test('wallet picker shows an empty-state menu instead of an empty keyboard', () => {

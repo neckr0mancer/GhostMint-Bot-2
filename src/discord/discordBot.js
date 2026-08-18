@@ -176,9 +176,12 @@ const FLOW_CONTINUATIONS = {
   // wallet, never the custom_id itself), so this list needs no dynamic/prefix matching.
   mint_guided: ['flow:mintdetailscontinue', 'flow:detailsrefresh', 'flow:copyca', 'flow:schedulesuggest', 'flow:mintqty:select', 'flow:mintqty:submit', 'flow:mintwallet:select', 'flow:priceaccept', 'flow:pricemanual', 'flow:mintprice:submit', 'flow:mintconfirm'],
   // Section AF follow-up: Discord's mini schedule flow (Section S's full guided flow remains
-  // unbuilt) -- a fixed 4-step chain, wallet select -> name select -> optional custom-name modal
-  // -> confirm, with no dynamic values in any of its own custom_ids.
-  task_guided: ['flow:taskwallet:select', 'flow:taskname:select', 'flow:taskname:submit', 'flow:taskconfirm'],
+  // unbuilt) -- a fixed chain, optional quantity select/modal (only when maxPerWallet > 1) ->
+  // wallet select -> name select -> optional custom-name modal -> confirm, with no dynamic values
+  // in any of its own custom_ids. Shares flow:mintqty:select/submit with mint_guided -- the
+  // quantity picker is the same component either way (see mintFlowRenderPayload's counterpart in
+  // discordBot.js), and the callback handler branches on flow.flow.
+  task_guided: ['flow:taskwallet:select', 'flow:mintqty:select', 'flow:mintqty:submit', 'flow:taskname:select', 'flow:taskname:submit', 'flow:taskconfirm'],
   watch_guided: ['flow:watchname:submit', 'flow:watchtype:select', 'flow:watchmethod:select', 'flow:watchconfig:submit', 'flow:watchconfirm'],
 };
 
@@ -245,7 +248,7 @@ function mintFlowRenderPayload(step, data, { wallets = [], chains = {} } = {}) {
   // superseded on Telegram.
   if (step === 'awaiting_details') {
     return discordMenus.collectionInfoCard({
-      contractAddress: data.contractAddress, chainLabel: chains[data.chain]?.name || data.chain,
+      contractAddress: data.contractAddress, chain: data.chain, chainLabel: chains[data.chain]?.name || data.chain,
       chainSym: chains[data.chain]?.sym, isSeaDrop: data.isSeaDrop, priceETH: data.priceETH, priceUnknown: data.priceUnknown,
       maxSupply: data.maxSupply, maxPerWallet: data.maxPerWallet, startTime: data.startTime,
       collection: data.collection, soldOut: data.soldOut, displayPrice: data.displayPrice,
@@ -317,6 +320,22 @@ async function finishMintExecutionDiscord(ctx, respond, platformUserId, userId, 
   }
 }
 
+// Reached once a quantity is settled (chosen via the select, typed in the custom-amount modal, or
+// defaulted to 1 when maxPerWallet doesn't allow more) -- task_guided has no batch/multi concept
+// and no public origin message to neutralize (unlike mint_guided's paste trigger), so this only
+// ever needs to decide between auto-selecting the sole wallet and showing a picker, mirroring
+// Telegram's advanceFromTaskQuantity.
+function advanceFromTaskQuantity(ctx, respond, platformUserId, userId, taskData) {
+  const { commands, flowState } = ctx;
+  const wallets = commands.wallets(userId);
+  if (wallets.length === 1) {
+    flowState.start('discord', platformUserId, 'task_guided', 'awaiting_name', { ...taskData, walletLabel: wallets[0].label });
+    return respond(discordMenus.taskNameQuickPicks());
+  }
+  flowState.start('discord', platformUserId, 'task_guided', 'awaiting_wallet', taskData);
+  return respond(discordMenus.walletSelect(wallets, { customId: 'flow:taskwallet:select', emptyHint: 'No wallets yet. Create one first from the Wallets menu.' }));
+}
+
 // Section AF follow-up -- Discord's mini schedule flow. Mirrors finishMintExecutionDiscord's rate-
 // limit handling: a rate limit leaves the flow intact so the user can just retry once it clears,
 // every other outcome (success or failure) clears it.
@@ -327,7 +346,7 @@ async function finishTaskScheduleDiscord(ctx, respond, platformUserId, userId, f
     rateLimiter.check('discord', userId, 'task');
     const task = await commands.createTask(userId, {
       name: flowData.name, walletLabel: flowData.walletLabel, contractAddress: flowData.contractAddress,
-      chain: flowData.chain, quantity: 1, priceETH: flowData.priceETH, mintTime: flowData.mintTime,
+      chain: flowData.chain, quantity: flowData.quantity || 1, priceETH: flowData.priceETH, mintTime: flowData.mintTime,
     });
     flowState.clear('discord', platformUserId);
     return respond({ content: `✅ Scheduled **${escapeDiscord(task.name)}** to fire at \`${discordMenus.formatGmtPlus1(task.mintTime)}\`.`, components: backToMenu });
@@ -548,10 +567,10 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
       }
       if (data === 'flow:mintqty:select') {
         const flow = flowState.get('discord', platformUserId);
-        if (!flow || flow.flow !== 'mint_guided' || flow.step !== 'awaiting_quantity') return notYourMintPrompt(interaction);
+        if (!flow || (flow.flow !== 'mint_guided' && flow.flow !== 'task_guided') || flow.step !== 'awaiting_quantity') return notYourMintPrompt(interaction);
         const chosen = interaction.values?.[0];
         if (chosen === 'custom') {
-          if (flow.data.originMessagePublic) {
+          if (flow.flow === 'mint_guided' && flow.data.originMessagePublic) {
             neutralizeMintOriginMessage(interaction);
             flowState.advance('discord', platformUserId, flow.step, { originMessagePublic: false });
           }
@@ -559,6 +578,9 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         }
         const quantity = Number(chosen);
         if (!Number.isInteger(quantity) || quantity < 1) return undefined;
+        if (flow.flow === 'task_guided') {
+          return advanceFromTaskQuantity(mintCtx, payload => dcRespond(interaction, payload), platformUserId, userId, { ...flow.data, quantity });
+        }
         const wentEphemeral = Boolean(flow.data.originMessagePublic);
         if (wentEphemeral) neutralizeMintOriginMessage(interaction);
         const wallets = commands.wallets(userId);
@@ -637,15 +659,13 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         const taskData = {
           contractAddress: flow.data.contractAddress, chain: detected.chain,
           priceETH: Number(formatEther(BigInt(detected.valueWei))), priceUnknown: false,
-          mintTime: new Date(futureStartTime * 1000).toISOString(),
+          mintTime: new Date(futureStartTime * 1000).toISOString(), maxPerWallet: detected.maxPerWallet,
         };
-        const wallets = commands.wallets(userId);
-        if (wallets.length === 1) {
-          flowState.start('discord', platformUserId, 'task_guided', 'awaiting_name', { ...taskData, walletLabel: wallets[0].label });
-          return respond(discordMenus.taskNameQuickPicks());
+        if (Number(detected.maxPerWallet) > 1) {
+          flowState.start('discord', platformUserId, 'task_guided', 'awaiting_quantity', taskData);
+          return respond(discordMenus.mintQuantitySelect(taskData));
         }
-        flowState.start('discord', platformUserId, 'task_guided', 'awaiting_wallet', taskData);
-        return respond(discordMenus.walletSelect(wallets, { customId: 'flow:taskwallet:select', emptyHint: 'No wallets yet. Create one first from the Wallets menu.' }));
+        return advanceFromTaskQuantity(mintCtx, respond, platformUserId, userId, { ...taskData, quantity: 1 });
       }
       if (data === 'flow:taskwallet:select') {
         const flow = flowState.get('discord', platformUserId);
@@ -667,7 +687,7 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         flowState.advance('discord', platformUserId, 'awaiting_confirm', taskData);
         return dcRespond(interaction, discordMenus.taskConfirmation({
           name: taskData.name, contractAddress: taskData.contractAddress, chainLabel: chains[taskData.chain]?.name || taskData.chain,
-          walletLabel: taskData.walletLabel, mintTime: taskData.mintTime, priceETH: taskData.priceETH, priceUnknown: taskData.priceUnknown,
+          walletLabel: taskData.walletLabel, quantity: taskData.quantity || 1, mintTime: taskData.mintTime, priceETH: taskData.priceETH, priceUnknown: taskData.priceUnknown,
         }));
       }
       if (data === 'flow:taskconfirm') {
@@ -831,11 +851,15 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
       // is its own fresh interaction that can only reply, never update the (by now already
       // neutralized -- see flow:mintqty:select/flow:pricemanual) public origin message.
       if (data === 'flow:mintqty:submit') {
-        if (flow.flow !== 'mint_guided' || flow.step !== 'awaiting_quantity') { await interaction.reply({ content: 'This step has expired. Paste the address or link again.', ephemeral: true }).catch(() => {}); return; }
+        if ((flow.flow !== 'mint_guided' && flow.flow !== 'task_guided') || flow.step !== 'awaiting_quantity') { await interaction.reply({ content: 'This step has expired. Paste the address or link again.', ephemeral: true }).catch(() => {}); return; }
         const quantity = Math.floor(Number(String(interaction.fields.getTextInputValue('value') || '').trim()));
         const max = Number(flow.data.maxPerWallet) || 100;
         if (!Number.isInteger(quantity) || quantity < 1 || quantity > max) {
           await interaction.reply({ content: `Send a whole number from 1 to ${max}. Tap the quantity prompt again to retry.`, ephemeral: true }).catch(() => {});
+          return;
+        }
+        if (flow.flow === 'task_guided') {
+          await advanceFromTaskQuantity(mintCtx, payload => interaction.reply({ ...payload, ephemeral: true }).catch(() => {}), platformUserId, userId, { ...flow.data, quantity });
           return;
         }
         const wallets = commands.wallets(userId);
@@ -865,7 +889,7 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         flowState.advance('discord', platformUserId, 'awaiting_confirm', taskData);
         await interaction.reply({ ...discordMenus.taskConfirmation({
           name: taskData.name, contractAddress: taskData.contractAddress, chainLabel: chains[taskData.chain]?.name || taskData.chain,
-          walletLabel: taskData.walletLabel, mintTime: taskData.mintTime, priceETH: taskData.priceETH, priceUnknown: taskData.priceUnknown,
+          walletLabel: taskData.walletLabel, quantity: taskData.quantity || 1, mintTime: taskData.mintTime, priceETH: taskData.priceETH, priceUnknown: taskData.priceUnknown,
         }), ephemeral: true });
         return;
       }

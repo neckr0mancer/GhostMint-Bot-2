@@ -46,13 +46,13 @@ function mainMenu({ isOwner = false } = {}) {
 // callers attach whatever's actionable for the moment (Section AA's guided-flow screens prepend
 // this as a header; nothing else needs it standalone anymore now that the bare-content detector
 // starts the real flow instead of a static preview).
-function contractDetailsText({ contractAddress, chainLabel, isSeaDrop, priceETH, priceUnknown, maxSupply, maxPerWallet, startTime, collection, soldOut, displayPrice }) {
+function contractDetailsText({ contractAddress, chain, chainLabel, isSeaDrop, priceETH, priceUnknown, maxSupply, maxPerWallet, startTime, collection, soldOut, displayPrice }) {
   // Blank lines below group the card into identity / price / limits bands instead of one flat
   // run-on list -- mirrors src/telegram/menus.js's contractDetailsText.
   const lines = [
     collection?.name ? `**${collection.name}**` : '**Contract details**',
     `\`${contractAddress}\``,
-    `Chain: ${chainLabel} · ${isSeaDrop ? 'SeaDrop drop' : 'Standard mint(uint256)'}`,
+    `${chainEmojiTag(chain)}Chain: ${chainLabel} · ${isSeaDrop ? 'SeaDrop drop' : 'Standard mint(uint256)'}`,
     '',
   ];
   if (soldOut) {
@@ -97,14 +97,14 @@ function formatGmtPlus1(value) {
 // simply omitted rather than shown as a placeholder when a field is unavailable. openSeaUrl is
 // built by discordBot.js (from OPENSEA_CHAIN_SLUGS), not here, so this module stays free of a
 // cross-directory import into src/mint/ -- null omits the button entirely.
-function collectionInfoCard({ contractAddress, chainLabel, chainSym, isSeaDrop, priceETH, priceUnknown, maxSupply, maxPerWallet, startTime, collection, soldOut, displayPrice, stats, openSeaUrl }) {
+function collectionInfoCard({ contractAddress, chain, chainLabel, chainSym, isSeaDrop, priceETH, priceUnknown, maxSupply, maxPerWallet, startTime, collection, soldOut, displayPrice, stats, openSeaUrl }) {
   const sym = chainSym || 'ETH';
   // Blank lines below group the card into identity / price / stats / limits / description bands --
   // mirrors src/telegram/menus.js's collectionInfoCard.
   const lines = [
     collection?.name ? `**${collection.name}**` : '**Contract details**',
     `\`${contractAddress}\``,
-    `Chain: ${chainLabel} · ${isSeaDrop ? 'SeaDrop drop' : 'Standard mint(uint256)'}`,
+    `${chainEmojiTag(chain)}Chain: ${chainLabel} · ${isSeaDrop ? 'SeaDrop drop' : 'Standard mint(uint256)'}`,
     '',
   ];
 
@@ -232,12 +232,12 @@ function taskNameQuickPicks() {
   };
 }
 
-function taskConfirmation({ name, contractAddress, chainLabel, walletLabel, mintTime, priceETH, priceUnknown }) {
+function taskConfirmation({ name, contractAddress, chainLabel, walletLabel, quantity, mintTime, priceETH, priceUnknown }) {
   const priceLine = priceUnknown
     ? 'Price: not exposed by this contract'
     : `Price: ${priceETH} per item (read from the contract)`;
   return {
-    content: `**Confirm scheduled mint**\nName: ${name}\nContract: \`${contractAddress}\`\nChain: ${chainLabel}\nWallet: ${walletLabel}\nQuantity: 1\n${priceLine}\nFires: **${formatGmtPlus1(mintTime)}**\n\nThis is not a reminder -- the bot signs and sends the mint itself at that moment.\n\nProceed?`,
+    content: `**Confirm scheduled mint**\nName: ${name}\nContract: \`${contractAddress}\`\nChain: ${chainLabel}\nWallet: ${walletLabel}\nQuantity: ${quantity || 1}\n${priceLine}\nFires: **${formatGmtPlus1(mintTime)}**\n\nThis is not a reminder -- the bot signs and sends the mint itself at that moment.\n\nProceed?`,
     components: [row([button('✅ Schedule it', 'flow:taskconfirm', 'success'), button('❌ Cancel', 'flow:cancel:ask', 'danger')])],
   };
 }
@@ -281,14 +281,28 @@ function placeholderMenu(title, hint) {
   return { content: `**${title}**\n${hint}`, components: [row([button('⬅️ Back to menu', 'menu:main')])] };
 }
 
-// Discord select-menu options carry a real emoji field (rendered as a small icon beside the
-// label, not text) -- unlike command/option names, which the API forbids emoji in entirely.
-const CHAIN_EMOJI = { ethereum: '💎', base: '🔵', arbitrum: '🔷', polygon: '🟣', robinhood: '🟢' };
+// Real per-chain brand marks, uploaded once as application emojis (bot-wide -- usable in any guild
+// the bot is in, unlike a per-server emoji upload). {id, name} is exactly the shape Discord's
+// component `emoji` field wants for a custom emoji (a plain unicode char would go in `name` alone,
+// but a custom one needs both). CHAIN_EMOJI_TAG below derives the inline `<:name:id>` form for
+// embedding the same icon directly in message content, next to a "Chain: X" line.
+const CHAIN_EMOJI = {
+  ethereum: { id: '1539151972245049435', name: 'ethereum' },
+  base: { id: '1539151974250061904', name: 'base' },
+  arbitrum: { id: '1539151976586018848', name: 'arbitrum' },
+  polygon: { id: '1539151979220181113', name: 'polygon' },
+  robinhood: { id: '1539151981182976020', name: 'robinhood' },
+};
+
+function chainEmojiTag(chain) {
+  const emoji = CHAIN_EMOJI[chain];
+  return emoji ? `<:${emoji.name}:${emoji.id}> ` : '';
+}
 
 function chainSelect(supportedChains, chains, { customId = 'flow:chain:select' } = {}) {
   const options = supportedChains.map(chain => ({
     label: chains[chain]?.name || chain, value: chain,
-    emoji: CHAIN_EMOJI[chain] ? { name: CHAIN_EMOJI[chain] } : undefined,
+    emoji: CHAIN_EMOJI[chain] || undefined,
   }));
   return {
     content: 'Choose a chain:',
@@ -298,7 +312,7 @@ function chainSelect(supportedChains, chains, { customId = 'flow:chain:select' }
 
 function walletSelect(wallets, { customId, emptyHint }) {
   if (!wallets.length) return placeholderMenu('Wallets', emptyHint);
-  const options = wallets.map(w => ({ label: `${w.label} (${w.chain})`, value: w.label }));
+  const options = wallets.map(w => ({ label: `${w.label} (${w.chain})`, value: w.label, emoji: CHAIN_EMOJI[w.chain] || undefined }));
   return { content: 'Choose a wallet:', components: [select(customId, options, 'Select a wallet'), row([button('⬅️ Back to menu', 'menu:wallets')])] };
 }
 
