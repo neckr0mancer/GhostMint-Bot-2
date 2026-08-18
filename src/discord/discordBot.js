@@ -34,16 +34,31 @@ function confirmation(interaction) {
   }
 }
 
-function commandDefinitions() {
+// Chain/target-type options below are small, fixed sets known at registration time -- Discord
+// shows these as a native dropdown instead of a free-text field the user has to type correctly by
+// hand, the same way /mode and /social-usage's period already do. chainChoices is built from the
+// actual configured supportedChains (not a hardcoded list) so it can never drift from what the
+// deployment actually supports; an empty list (no chains/supportedChains passed) degrades to a
+// plain free-text field rather than an error, matching this app's usual "missing input degrades,
+// never throws" convention.
+function commandDefinitions({ supportedChains = [], chains = {} } = {}) {
+  const chainChoices = supportedChains.map(chain => ({ name: chains[chain]?.name || chain, value: chain }));
+  const chainOption = (o, { required = false, description = 'Supported chain' } = {}) => {
+    o.setName('chain').setDescription(description).setRequired(required);
+    if (chainChoices.length) o.addChoices(...chainChoices);
+    return o;
+  };
+  const targetTypeOption = o => o.setName('type').setDescription('Target type (sniper or social_rule)').setRequired(true)
+    .addChoices({ name: 'Sniper', value: 'sniper' }, { name: 'Social Rule', value: 'social_rule' });
   const commands = [];
   commands.push(new SlashCommandBuilder().setName('menu').setDescription('Open the interactive GhostMint menu'));
   commands.push(new SlashCommandBuilder().setName('wallet').setDescription('👛 Manage your wallets')
     .addSubcommand(c => c.setName('create').setDescription('Recommended: generate and securely store a new wallet')
       .addStringOption(o => o.setName('label').setDescription('Unique wallet label').setRequired(true))
-      .addStringOption(o => o.setName('chain').setDescription('Supported chain').setRequired(true)))
+      .addStringOption(o => chainOption(o, { required: true })))
     .addSubcommand(c => c.setName('import').setDescription("Not recommended: your private key passes through Discord's messaging systems")
       .addStringOption(o => o.setName('label').setDescription('Unique wallet label').setRequired(true))
-      .addStringOption(o => o.setName('chain').setDescription('Supported chain').setRequired(true))
+      .addStringOption(o => chainOption(o, { required: true }))
       .addStringOption(o => o.setName('private-key').setDescription('Existing key; may be exposed in platform transit or client history').setRequired(true)))
     .addSubcommand(c => c.setName('list').setDescription('List your wallets'))
     .addSubcommand(c => c.setName('balance').setDescription('Check wallet balance across every supported chain')
@@ -53,7 +68,7 @@ function commandDefinitions() {
       .addBooleanOption(o => o.setName('confirm').setDescription('Confirm permanent removal').setRequired(true)))
     .addSubcommand(c => c.setName('batch-import').setDescription('Owner only: import many private keys at once')
       .addStringOption(o => o.setName('private-keys').setDescription('Comma-separated private keys').setRequired(true))
-      .addStringOption(o => o.setName('chain').setDescription('Supported chain').setRequired(true))
+      .addStringOption(o => chainOption(o, { required: true }))
       .addBooleanOption(o => o.setName('confirm').setDescription('Confirm batch import of multiple private keys').setRequired(true))
       .addStringOption(o => o.setName('label-prefix').setDescription('Label prefix; wallets are named prefix-1, prefix-2, ...'))));
   commands.push(new SlashCommandBuilder().setName('deposit').setDescription('💰 Get a wallet address to fund')
@@ -65,13 +80,13 @@ function commandDefinitions() {
     // Not required: price is read from the contract when possible (mintPrice/price/cost/etc.).
     // Only needed if the contract doesn't expose a recognized price getter.
     .addNumberOption(o => o.setName('price').setDescription('Native price per item (only if the contract does not expose one)').setMinValue(0))
-    .addStringOption(o => o.setName('chain').setDescription('Chain (defaults to wallet chain)')));
+    .addStringOption(o => chainOption(o, { description: 'Chain (defaults to wallet chain)' })));
   commands.push(new SlashCommandBuilder().setName('batch-mint').setDescription('⚡ Mint from multiple wallets')
     .addStringOption(o => o.setName('wallets').setDescription('Comma-separated wallet labels').setRequired(true))
     .addStringOption(o => o.setName('contract').setDescription('Contract address').setRequired(true))
     .addIntegerOption(o => o.setName('quantity').setDescription('Quantity per wallet').setMinValue(1).setRequired(true))
     .addNumberOption(o => o.setName('price').setDescription('Native price per item').setMinValue(0).setRequired(true))
-    .addStringOption(o => o.setName('chain').setDescription('Chain').setRequired(true)));
+    .addStringOption(o => chainOption(o, { required: true })));
   commands.push(new SlashCommandBuilder().setName('task').setDescription('🗓️ Manage durable scheduled mints')
     .addSubcommand(c => c.setName('create').setDescription('Create a UTC scheduled mint')
       .addStringOption(o => o.setName('input').setDescription('Validated task JSON; mintTime must include Z/offset').setRequired(true))
@@ -88,7 +103,7 @@ function commandDefinitions() {
     .addSubcommand(c => c.setName('add').setDescription('Add a P&L record').addStringOption(o => o.setName('input').setDescription('Record JSON').setRequired(true)))
     .addSubcommand(c => c.setName('delete').setDescription('Delete a P&L record').addStringOption(o => o.setName('id').setDescription('Record UUID').setRequired(true)).addBooleanOption(o => o.setName('confirm').setDescription('Confirm deletion').setRequired(true))));
   commands.push(new SlashCommandBuilder().setName('gas').setDescription('⛽ Show live chain fee data')
-    .addStringOption(o => o.setName('chain').setDescription('Supported chain')));
+    .addStringOption(o => chainOption(o)));
   commands.push(new SlashCommandBuilder().setName('sniper').setDescription('🎯 Manage post-confirmation copy snipers (not mempool front-running)')
     .addSubcommand(c => c.setName('create').setDescription('Create post-confirmation copy sniper').addStringOption(o => o.setName('input').setDescription('Validated sniper JSON').setRequired(true)).addBooleanOption(o=>o.setName('confirm').setDescription('Confirm automated copy configuration').setRequired(true)))
     .addSubcommand(c => c.setName('update').setDescription('Update post-confirmation copy sniper').addStringOption(o => o.setName('id').setDescription('Sniper UUID').setRequired(true)).addStringOption(o => o.setName('patch').setDescription('Validated patch JSON').setRequired(true)).addBooleanOption(o=>o.setName('confirm').setDescription('Confirm automated copy configuration change').setRequired(true)))
@@ -118,11 +133,11 @@ function commandDefinitions() {
       { name:'📅 Today', value:'today' }, { name:'📆 This month', value:'month' })));
   commands.push(new SlashCommandBuilder().setName('target-policy').setDescription('Configure per-target trigger and verification behavior')
     .addSubcommand(c=>c.setName('set').setDescription('Set target policy from JSON').addStringOption(o=>o.setName('input').setDescription('Target policy JSON').setRequired(true)).addBooleanOption(o=>o.setName('confirm').setDescription('Confirm trigger policy change').setRequired(true)))
-    .addSubcommand(c=>c.setName('show').setDescription('Show target policy').addStringOption(o=>o.setName('type').setDescription('Target type (sniper or social_rule)').setRequired(true)).addStringOption(o=>o.setName('id').setDescription('Target UUID').setRequired(true)))
-    .addSubcommand(c=>c.setName('bypass').setDescription('Request highest-risk social verification bypass').addStringOption(o=>o.setName('type').setDescription('Target type (sniper or social_rule)').setRequired(true)).addStringOption(o=>o.setName('id').setDescription('Target UUID').setRequired(true)).addBooleanOption(o=>o.setName('dont-ask-again').setDescription('Skip future warnings for this target only')))
+    .addSubcommand(c=>c.setName('show').setDescription('Show target policy').addStringOption(o=>targetTypeOption(o)).addStringOption(o=>o.setName('id').setDescription('Target UUID').setRequired(true)))
+    .addSubcommand(c=>c.setName('bypass').setDescription('Request highest-risk social verification bypass').addStringOption(o=>targetTypeOption(o)).addStringOption(o=>o.setName('id').setDescription('Target UUID').setRequired(true)).addBooleanOption(o=>o.setName('dont-ask-again').setDescription('Skip future warnings for this target only')))
     .addSubcommand(c=>c.setName('confirm-bypass').setDescription('Explicitly confirm bypass warning').addStringOption(o=>o.setName('challenge').setDescription('Challenge UUID').setRequired(true)).addStringOption(o=>o.setName('confirmation').setDescription('Must be CONFIRM').setRequired(true)))
     .addSubcommand(c=>c.setName('preset').setDescription('Apply a mode preset starting point').addStringOption(o=>o.setName('input').setDescription('Target and preset JSON').setRequired(true)).addBooleanOption(o=>o.setName('confirm').setDescription('Confirm target preset change').setRequired(true)))
-    .addSubcommand(c=>c.setName('reset').setDescription('Reset target policy and bypass acknowledgement').addStringOption(o=>o.setName('type').setDescription('Target type (sniper or social_rule)').setRequired(true)).addStringOption(o=>o.setName('id').setDescription('Target UUID').setRequired(true)).addBooleanOption(o=>o.setName('confirm').setDescription('Confirm policy reset').setRequired(true))));
+    .addSubcommand(c=>c.setName('reset').setDescription('Reset target policy and bypass acknowledgement').addStringOption(o=>targetTypeOption(o)).addStringOption(o=>o.setName('id').setDescription('Target UUID').setRequired(true)).addBooleanOption(o=>o.setName('confirm').setDescription('Confirm policy reset').setRequired(true))));
   commands.push(new SlashCommandBuilder().setName('confirm-trigger').setDescription('Approve or reject a pending triggered mint')
     .addStringOption(o=>o.setName('request').setDescription('Confirmation request UUID').setRequired(true))
     .addStringOption(o=>o.setName('confirmation').setDescription('Must be CONFIRM or REJECT').setRequired(true)));
@@ -1032,7 +1047,7 @@ function createDiscordBot({ token, applicationId, devGuildId, allowedChannelIds=
       const route = devGuildId
         ? Routes.applicationGuildCommands(applicationId, devGuildId)
         : Routes.applicationCommands(applicationId);
-      await api.put(route, { body: commandDefinitions() });
+      await api.put(route, { body: commandDefinitions({ supportedChains, chains }) });
       if (!devGuildId) await clearLeftoverGuildCommands({ api, applicationId, log });
       await discordClient.login(token);
       return discordClient.user;

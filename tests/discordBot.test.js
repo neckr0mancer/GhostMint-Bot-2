@@ -35,6 +35,55 @@ test('Discord command definitions include the complete Milestone 10a surface', (
   assert.equal(linkCode.required, true, 'Discord must never be able to generate a link code, only consume one');
 });
 
+test('every chain option offers the actual configured chains as a picker instead of free text', () => {
+  const supportedChains = ['ethereum', 'base'];
+  const chains = { ethereum: { name: 'Ethereum' }, base: { name: 'Base' } };
+  const definitions = commandDefinitions({ supportedChains, chains });
+  const expectedChoices = [{ name: 'Ethereum', value: 'ethereum' }, { name: 'Base', value: 'base' }];
+  const namesAndValues = choices => choices.map(({ name, value }) => ({ name, value }));
+
+  const wallet = definitions.find(command => command.name === 'wallet');
+  for (const sub of ['create', 'import', 'batch-import']) {
+    const chainOption = wallet.options.find(option => option.name === sub).options.find(option => option.name === 'chain');
+    assert.deepEqual(namesAndValues(chainOption.choices), expectedChoices, `wallet ${sub} chain choices`);
+    assert.equal(chainOption.required, true, `wallet ${sub} chain must stay required`);
+  }
+
+  const mint = definitions.find(command => command.name === 'mint');
+  const mintChain = mint.options.find(option => option.name === 'chain');
+  assert.deepEqual(namesAndValues(mintChain.choices), expectedChoices);
+  assert.equal(mintChain.required, false, 'mint chain stays optional -- it defaults to the wallet chain');
+  assert.match(mintChain.description, /defaults to wallet chain/);
+
+  const batchMint = definitions.find(command => command.name === 'batch-mint');
+  const batchMintChain = batchMint.options.find(option => option.name === 'chain');
+  assert.deepEqual(namesAndValues(batchMintChain.choices), expectedChoices);
+  assert.equal(batchMintChain.required, true);
+
+  const gas = definitions.find(command => command.name === 'gas');
+  const gasChain = gas.options.find(option => option.name === 'chain');
+  assert.deepEqual(namesAndValues(gasChain.choices), expectedChoices);
+  assert.equal(gasChain.required, false, 'gas chain stays optional -- it defaults to ethereum at dispatch time');
+});
+
+test('a chain option degrades to plain free text, not an error, when no chains are passed in', () => {
+  const definitions = commandDefinitions();
+  const gas = definitions.find(command => command.name === 'gas');
+  const gasChain = gas.options.find(option => option.name === 'chain');
+  assert.equal(gasChain.choices, undefined);
+});
+
+test('target-policy type is always sniper-or-social_rule choices, independent of chain config', () => {
+  const definitions = commandDefinitions();
+  const targetPolicy = definitions.find(command => command.name === 'target-policy');
+  const expectedChoices = [{ name: 'Sniper', value: 'sniper' }, { name: 'Social Rule', value: 'social_rule' }];
+  for (const sub of ['show', 'bypass', 'reset']) {
+    const typeOption = targetPolicy.options.find(option => option.name === sub).options.find(option => option.name === 'type');
+    assert.deepEqual(typeOption.choices.map(({ name, value }) => ({ name, value })), expectedChoices, `target-policy ${sub} type choices`);
+    assert.equal(typeOption.required, true);
+  }
+});
+
 test('Discord /link without a code cannot generate one and does not touch identity resolution', async () => {
   let generated = false;
   const input = interaction({ commandName: 'link', strings: {} });
