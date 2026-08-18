@@ -64,3 +64,23 @@ test('graceful shutdown stops both bots, workers, watchers, HTTP, and database o
  await Promise.all([shutdown('SIGTERM'),shutdown('SIGINT')]);
  assert.deepEqual(calls.sort(),['discord','http','pool','scheduler','social','telegram','watchers'].sort());
 });
+
+test('a channel allowlist narrows guild channels without touching DMs or other guilds', () => {
+  const allowed = { allowedChannelIds: ['111111111111111111'] };
+  // In an allowed channel: fine, regardless of which guild it is.
+  assert.equal(verifyDiscordContext({ user: { id: 'u' }, guildId: 'g', channelId: '111111111111111111' }, null, allowed).platformUserId, 'u');
+  // Any other guild channel is refused.
+  assert.throws(() => verifyDiscordContext({ user: { id: 'u' }, guildId: 'g', channelId: '222222222222222222' }, null, allowed), BotContextError);
+  // A DM has no guildId and must stay reachable -- it is the private surface a wallet bot belongs on.
+  assert.equal(verifyDiscordContext({ user: { id: 'u' }, guildId: null, channelId: 'dm' }, null, allowed).platformUserId, 'u');
+  // Empty or absent list means no channel filtering at all.
+  assert.equal(verifyDiscordContext({ user: { id: 'u' }, guildId: 'g', channelId: 'anything' }, null, { allowedChannelIds: [] }).platformUserId, 'u');
+  assert.equal(verifyDiscordContext({ user: { id: 'u' }, guildId: 'g', channelId: 'anything' }, null).platformUserId, 'u');
+});
+
+test('the channel allowlist composes with a dev guild rather than replacing it', () => {
+  const opts = { allowedChannelIds: ['111111111111111111'] };
+  // Right channel but wrong guild is still refused by the guild rule.
+  assert.throws(() => verifyDiscordContext({ user: { id: 'u' }, guildId: 'other', channelId: '111111111111111111' }, 'dev-guild', opts), BotContextError);
+  assert.equal(verifyDiscordContext({ user: { id: 'u' }, guildId: 'dev-guild', channelId: '111111111111111111' }, 'dev-guild', opts).contextId, 'dev-guild:111111111111111111');
+});

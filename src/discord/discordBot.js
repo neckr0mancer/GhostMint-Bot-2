@@ -182,7 +182,7 @@ function componentErrorMessage(error) {
   if (error instanceof AccountBlockedError) return escapeDiscord(`⛔ Your account is ${error.status}${error.reason ? `: ${error.reason}` : ''}. Contact the project owner if you believe this is a mistake.`);
   if (error instanceof AuthorizationError) return 'Owner access required.';
   if (error instanceof RateLimitError) return `Too many sensitive commands. Retry in ${Math.ceil(error.retryAfterMs / 1000)} seconds.`;
-  if (error instanceof BotContextError) return 'Command rejected: use the authorized development guild and channel.';
+  if (error instanceof BotContextError) return 'Command rejected: this bot is not enabled here. Use an allowed channel, or DM it directly.';
   if (error instanceof LinkCodeError || error instanceof ProofResolutionError || error instanceof TransactionSafetyError) return escapeDiscord(error.message);
   return 'Action failed safely. Please try again.';
 }
@@ -323,7 +323,7 @@ async function startMintGuidedFlow(ctx, respond, platformUserId, userId, contrac
   return respond(mintFlowRenderPayload('awaiting_details', data, { chains }));
 }
 
-function createDiscordInteractionHandler({ identity, commands, allowedGuildId, securityAudit={record:async()=>{}},
+function createDiscordInteractionHandler({ identity, commands, allowedGuildId, allowedChannelIds=null, securityAudit={record:async()=>{}},
   rateLimiter=createCommandRateLimiter(), log = () => {}, isOwner, checkAccountStatus, supportedChains=[], chains={},
   flowState=createFlowStateStore() }) {
   const audit=value=>Promise.resolve(securityAudit.record(value)).catch(error=>log(`Security audit write failed: ${error.message}`));
@@ -338,7 +338,7 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, s
     let context, userId = null;
     const data = interaction.customId || '';
     try {
-      context = verifyDiscordContext(interaction, allowedGuildId);
+      context = verifyDiscordContext(interaction, allowedGuildId, { allowedChannelIds });
       userId = await identity.resolveOrCreate('discord', context.platformUserId);
       await enforceAccountStatus(userId);
       const platformUserId = context.platformUserId;
@@ -643,7 +643,7 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, s
     let context;
     const data = interaction.customId || '';
     try {
-      context = verifyDiscordContext(interaction, allowedGuildId);
+      context = verifyDiscordContext(interaction, allowedGuildId, { allowedChannelIds });
       const platformUserId = context.platformUserId;
 
       if (data === 'link:code:submit') {
@@ -774,7 +774,7 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, s
     // error, since an autocomplete request isn't a command the user consciously submitted.
     if (interaction.isAutocomplete?.()) {
       try {
-        const context = verifyDiscordContext(interaction, allowedGuildId);
+        const context = verifyDiscordContext(interaction, allowedGuildId, { allowedChannelIds });
         const userId = await identity.resolveOrCreate('discord', context.platformUserId);
         const focused = interaction.options.getFocused(true);
         const choices = (focused.name === 'label' || focused.name === 'wallet') ? commands.wallets(userId).map(w => w.label) : [];
@@ -789,7 +789,7 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, s
     if (!interaction.isChatInputCommand?.()) return;
     let context,userId=null;
     try {
-      context=verifyDiscordContext(interaction,allowedGuildId);
+      context=verifyDiscordContext(interaction, allowedGuildId, { allowedChannelIds });
       const activeFlow = flowState.get('discord', context.platformUserId);
       if (activeFlow) {
         flowState.markPendingCancel('discord', context.platformUserId);
@@ -947,7 +947,7 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, s
       else if (error instanceof RateLimitError) { message=`Too many sensitive commands. Retry in ${Math.ceil(error.retryAfterMs/1000)} seconds.`;
         await audit({userId,platform:'discord',platformUserId:context?.platformUserId,
           contextId:context?.contextId,command:commandName(interaction.commandName),outcome:'rate_limited',reason:error.message}); }
-      else if (error instanceof BotContextError) { message='Command rejected: use the authorized development guild and channel.';
+      else if (error instanceof BotContextError) { message='Command rejected: this bot is not enabled here. Use an allowed channel, or DM it directly.';
         await audit({platform:'discord',platformUserId:interaction.user?.id,
           contextId:`${interaction.guildId||''}:${interaction.channelId||''}`,command:commandName(interaction.commandName),
           outcome:'invalid_context',reason:error.message}); }
@@ -967,13 +967,13 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, s
 // other plain message, and anything failing the same guild/channel/account checks every slash
 // command already enforces, is silently ignored -- a failed check here is never worth surfacing
 // as an error to a channel that may not even be the bot's.
-async function handleMintPasteMessage({ identity, commands, flowState, chains, rateLimiter, checkAccountStatus, allowedGuildId }, message) {
+async function handleMintPasteMessage({ identity, commands, flowState, chains, rateLimiter, checkAccountStatus, allowedGuildId, allowedChannelIds=null }, message) {
   try {
     if (!message.author || message.author.bot) return;
     const trimmed = String(message.content || '').trim();
     const looksAddressOrLink = /^0x[0-9a-fA-F]{40}$/.test(trimmed) || commands.parseOpenSeaCollectionSlug(trimmed);
     if (!looksAddressOrLink) return;
-    const context = verifyDiscordContext({ user: message.author, guildId: message.guildId, channelId: message.channelId }, allowedGuildId);
+    const context = verifyDiscordContext({ user: message.author, guildId: message.guildId, channelId: message.channelId }, allowedGuildId, { allowedChannelIds });
     const userId = await identity.resolveOrCreate('discord', context.platformUserId);
     if (typeof checkAccountStatus === 'function') await checkAccountStatus(userId);
     const platformUserId = context.platformUserId;
@@ -990,7 +990,25 @@ async function handleMintPasteMessage({ identity, commands, flowState, chains, r
   } catch { /* not address-shaped, unauthorized context, blocked account, or lookup failure -- ignore */ }
 }
 
-function createDiscordBot({ token, applicationId, devGuildId, identity, commands, securityAudit, rateLimiter, log, client, rest, isOwner, checkAccountStatus, supportedChains, chains }) {
+// Global registration does not replace commands previously registered to a guild -- Discord keeps
+// the two sets independently and renders both, so a guild left over from a DISCORD_DEV_GUILD_ID
+// that has since been removed would show every command twice. One idempotent empty write per guild
+// clears that. Best-effort by design: a bot that cannot tidy old commands should still start.
+async function clearLeftoverGuildCommands({ api, applicationId, log }) {
+  try {
+    const guilds = await api.get(Routes.userGuilds());
+    for (const guild of guilds) {
+      const existing = await api.get(Routes.applicationGuildCommands(applicationId, guild.id)).catch(() => []);
+      if (!existing.length) continue;
+      await api.put(Routes.applicationGuildCommands(applicationId, guild.id), { body: [] });
+      log(`Cleared ${existing.length} stale guild-scoped commands from ${guild.id}`);
+    }
+  } catch (error) {
+    log(`Could not clear stale guild-scoped commands: ${error.message}`);
+  }
+}
+
+function createDiscordBot({ token, applicationId, devGuildId, allowedChannelIds=null, identity, commands, securityAudit, rateLimiter, log = () => {}, client, rest, isOwner, checkAccountStatus, supportedChains, chains }) {
   const discordClient = client || new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.DirectMessages,
     GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent] });
   const api = rest || new REST({ version: '10' }).setToken(token);
@@ -998,10 +1016,10 @@ function createDiscordBot({ token, applicationId, devGuildId, identity, commands
   // messageCreate listener (Section AA's paste-to-flow trigger) so a flow started by one is
   // visible to the other -- they'd otherwise be two independent, non-communicating stores.
   const flowState = createFlowStateStore();
-  discordClient.on('interactionCreate', createDiscordInteractionHandler({ identity, commands, allowedGuildId:devGuildId || null,
+  discordClient.on('interactionCreate', createDiscordInteractionHandler({ identity, commands, allowedGuildId:devGuildId || null, allowedChannelIds,
     securityAudit,rateLimiter,log,isOwner,checkAccountStatus,supportedChains,chains,flowState }));
   discordClient.on('messageCreate', message =>
-    handleMintPasteMessage({ identity, commands, flowState, chains, rateLimiter, checkAccountStatus, allowedGuildId: devGuildId || null }, message));
+    handleMintPasteMessage({ identity, commands, flowState, chains, rateLimiter, checkAccountStatus, allowedGuildId: devGuildId || null, allowedChannelIds }, message));
   return {
     client: discordClient,
     // devGuildId set = development bot: commands register to that one guild only (which is instant,
@@ -1015,6 +1033,7 @@ function createDiscordBot({ token, applicationId, devGuildId, identity, commands
         ? Routes.applicationGuildCommands(applicationId, devGuildId)
         : Routes.applicationCommands(applicationId);
       await api.put(route, { body: commandDefinitions() });
+      if (!devGuildId) await clearLeftoverGuildCommands({ api, applicationId, log });
       await discordClient.login(token);
       return discordClient.user;
     },

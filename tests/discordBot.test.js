@@ -197,3 +197,52 @@ test('with a dev guild set, a command from a different guild is still refused', 
   await handler(outsider);
   assert.equal(resolved, false, 'an unauthorized guild must not even resolve an identity');
 });
+
+test('a channel allowlist stops a command in an unlisted channel before identity resolution', async () => {
+  let resolved = false;
+  const build = allowedChannelIds => createDiscordInteractionHandler({
+    allowedGuildId: null, allowedChannelIds,
+    identity: { resolveOrCreate: async () => { resolved = true; return 'user-a'; } },
+    commands: { gas: async () => ({ safeGasPriceGwei: 1, gasPriceGwei: 2, maxFeePerGasGwei: 3 }) },
+    chains: { ethereum: { name: 'Ethereum' } },
+  });
+
+  const wrong = interaction({ commandName: 'gas' });
+  wrong.channelId = 'not-the-one';
+  await build(['111111111111111111'])(wrong);
+  assert.equal(resolved, false, 'an unlisted channel must not even resolve an identity');
+  assert.match(JSON.stringify(wrong.replies[0]), /not enabled here/, 'the user is told why, not left in silence');
+
+  const right = interaction({ commandName: 'gas' });
+  right.channelId = '111111111111111111';
+  await build(['111111111111111111'])(right);
+  assert.ok(right.replies.length, 'the listed channel is served');
+});
+
+test('running global clears leftover guild-scoped commands, and running a dev guild does not', async () => {
+  const { createDiscordBot } = require('../src/discord/discordBot');
+  const fakeClient = { on() {}, login: async () => {}, user: { id: 'bot' }, destroy: async () => {} };
+  const build = (devGuildId, guildCommands) => {
+    const puts = [];
+    const rest = {
+      put: async (route, payload) => { puts.push({ route, count: payload.body.length }); },
+      get: async route => {
+        if (route.endsWith('/users/@me/guilds')) return [{ id: 'g-stale' }, { id: 'g-clean' }];
+        return route.includes('g-stale') ? guildCommands : [];
+      },
+    };
+    return { bot: createDiscordBot({ token: 't', applicationId: '123456789012345678', devGuildId,
+      identity: {}, commands: {}, client: fakeClient, rest }), puts };
+  };
+
+  const global = build(null, [{ name: 'wallet' }, { name: 'mint' }]);
+  await global.bot.start();
+  const cleared = global.puts.filter(p => p.count === 0 && p.route.includes('g-stale'));
+  assert.equal(cleared.length, 1, 'the guild holding stale commands is cleared exactly once');
+  assert.equal(global.puts.some(p => p.route.includes('g-clean')), false, 'a guild with none is left alone');
+
+  const dev = build('223456789012345678', [{ name: 'wallet' }]);
+  await dev.bot.start();
+  assert.equal(dev.puts.length, 1, 'a dev-guild bot registers and sweeps nothing');
+  assert.ok(dev.puts[0].count > 0);
+});

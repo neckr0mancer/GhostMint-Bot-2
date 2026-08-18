@@ -265,6 +265,8 @@ function parseTelegram() {
   return { botToken: optionalString('TELEGRAM_BOT_TOKEN') };
 }
 
+const SNOWFLAKE = /^d{17,20}$/;
+
 function parseDiscord() {
   const botToken = optionalString('DISCORD_BOT_TOKEN');
   const applicationId = optionalString('DISCORD_APPLICATION_ID');
@@ -283,7 +285,18 @@ function parseDiscord() {
   for (const [name, value] of [['DISCORD_APPLICATION_ID', applicationId], ['DISCORD_DEV_GUILD_ID', devGuildId]]) {
     if (value && !/^\d{17,20}$/.test(value)) throw new ConfigurationError(`${name} must be a valid Discord snowflake`);
   }
-  return { botToken, applicationId, devGuildId };
+  // Independent of the dev guild: this narrows which channels the bot answers in without pinning
+  // it to a single server. Empty means every channel it can see. DMs are never filtered by it.
+  const channelIds = (optionalString('DISCORD_CHANNEL_IDS') || '')
+    .split(',').map(value => value.trim()).filter(Boolean);
+  for (const value of channelIds) {
+    if (!SNOWFLAKE.test(value)) throw new ConfigurationError(
+      'DISCORD_CHANNEL_IDS must be a comma-separated list of Discord snowflakes');
+  }
+  if (channelIds.length && !botToken) {
+    throw new ConfigurationError('DISCORD_CHANNEL_IDS requires DISCORD_BOT_TOKEN and DISCORD_APPLICATION_ID');
+  }
+  return { botToken, applicationId, devGuildId, channelIds };
 }
 
 function parseSocialAdapters() {
@@ -333,6 +346,7 @@ const CONFIG = Object.freeze({
   discordBotToken: discord.botToken,
   discordApplicationId: discord.applicationId,
   discordDevGuildId: discord.devGuildId,
+  discordChannelIds: discord.channelIds,
   socialOfficialApiUrl: socialAdapters.officialApiEndpoint,
   socialOfficialApiToken: socialAdapters.officialApiToken,
   socialManagedServiceUrl: socialAdapters.managedServiceEndpoint,

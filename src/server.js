@@ -810,7 +810,7 @@ function renderFlowStep(flow, step, { userId, data = {} } = {}) {
         chainLabel: CHAINS[data.chain]?.name || data.chain,
         walletLabel: data.walletLabel,
         mintTime: data.mintTime,
-        autoDetectedTime: Boolean(data.startTime && new Date(data.mintTime).getTime() === data.startTime * 1000),
+        autoDetectedTime: Boolean(!data.phaseNumber && data.startTime && new Date(data.mintTime).getTime() === data.startTime * 1000),
         priceETH: data.priceETH,
         priceUnknown: data.priceUnknown,
         displayPrice: data.displayPrice,
@@ -1290,7 +1290,12 @@ async function finishTaskSchedule(chatId, messageId, userId, flowData) {
     }));
   } catch (error) {
     if (error instanceof RateLimitError) {
-      return tgUpdate(chatId, messageId, { text: `Too many sensitive commands. Retry in ${Math.ceil(error.retryAfterMs / 1000)} seconds.`, replyMarkup: backToMenu, parseMode: 'HTML' });
+      const retryIn = Math.ceil(error.retryAfterMs / 1000);
+      const confirm = renderFlowStep('task_guided', 'awaiting_confirm', { userId, data: flowData });
+      return tgUpdate(chatId, messageId, { ...confirm,
+        text: `⏳ Easy — ${retryIn}s of cooldown before the next one. Nothing was lost; hit Schedule again once it clears.
+
+${confirm.text}` });
     }
     telegramFlowState.clear('telegram', chatId);
     if (error instanceof ValidationError) return tgUpdate(chatId, messageId, { text: escapeTelegramHtml(validationReply(error)), replyMarkup: backToMenu, parseMode: 'HTML' });
@@ -2421,7 +2426,8 @@ send /mint with a contract address to get going.`;
       // The contract line matters more since Section AF: staging a multi-phase drop is now a normal
       // thing to do, so several of these rows routinely share one contract (and one user can be
       // staging two drops at once) -- name alone stopped being enough to tell them apart.
-      return `⏱ <b>${escapeTelegramHtml(t.name)}</b> [${t.status}]\nContract: <code>${t.contract}</code>\nWallet: ${escapeTelegramHtml(t.walletLabel)}\nQty: ${t.qty} | Price: ${t.price>0?t.price+' ETH':'Free'}\nDue (UTC): <b>${new Date(t.mintTime).toISOString()}</b>${ms>0?`\nFires in: <b>${fmtCD(ms)}</b>`:''}\nID: <code>${t.id}</code>`;
+      const shortName = t.name.length > 40 ? `${t.name.slice(0, 39)}…` : t.name;
+      return `⏱ <b>${escapeTelegramHtml(shortName)}</b> [${t.status}]\nContract: <code>${t.contract}</code>\nWallet: ${escapeTelegramHtml(t.walletLabel)}\nQty: ${t.qty} | Price: ${t.price>0?t.price+' ETH':'Free'}\nDue (UTC): <b>${new Date(t.mintTime).toISOString()}</b>${ms>0?`\nFires in: <b>${fmtCD(ms)}</b>`:''}\nID: <code>${t.id}</code>`;
     }).join('\n\n');
     tgRender(msg.chat.id, { text: `⏱ <b>Tasks (page ${page.page}/${page.totalPages}, ${page.total} total)</b>\n\n${list}`, parseMode: 'HTML' });
   }));
@@ -2580,6 +2586,7 @@ const dashboardApi=createDashboardApi({auth:dashboardAuth,identityRepository,com
 if (CONFIG.discordBotToken) {
   discordBot = createDiscordBot({ token: CONFIG.discordBotToken,
     applicationId: CONFIG.discordApplicationId, devGuildId: CONFIG.discordDevGuildId,
+    allowedChannelIds: CONFIG.discordChannelIds,
     identity, commands: botCommands, securityAudit:botSecurityRepository,rateLimiter:commandRateLimiter,log,
     isOwner: userId => governanceRepository.isOwner(userId),
     checkAccountStatus: userId => governance.checkAccountStatus(userId),
