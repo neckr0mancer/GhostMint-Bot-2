@@ -116,6 +116,84 @@ THE PROTOTYPE IS THE TARGET — restated 2026-08-18 after a build drifted from i
 
   Where prototype and brief conflict, ASK. Do not silently pick the brief.
 
+RULE 1 — NOTHING THAT IS NOT IN THE PROTOTYPE (stated 2026-08-18, after a review
+found legacy buttons, a legacy error panel and a glowing active sub-tab still on
+screen alongside ported chrome):
+
+  Take EVERYTHING from the prototype: colours, buttons, inputs, icons, headers,
+  dropdowns, panels, empty states, error states, and anything not listed here.
+  Do not design. Do not invent a variant. Do not keep a legacy control because
+  it "already works" — if the prototype has a counterpart, the counterpart wins.
+
+  Specifically banned: the old accent-filled `button` look anywhere the prototype
+  uses .b / .b.p / .b.g / .b.d / .b.sm; any active-state GLOW (the prototype's
+  active sub-tab is `background:var(--surface)` + `box-shadow:var(--shadow)`, a
+  dark drop shadow, never an accent halo).
+
+  If something in this app has no prototype counterpart at all, do not style it
+  from imagination — restyle it in the prototype's language and mark it visibly
+  as not-yet-designed, per the paragraph above.
+
+RULE 1b — "EXACTLY" MEANS EVERY AXIS (restated 2026-08-18, third time of asking):
+
+  text · size · border width · border radius · padding · gap · font-size/weight ·
+  the responsive transition from wide to tablet to phone · light AND dark ·
+  populated AND loading AND empty AND error.
+
+  A unit is done when all of those match, not when it looks close. The prototype
+  marks its own states inline -- .of populated, .ol loading, .oe empty, .ox error --
+  so grepping a prototype page for "oe" and "ox" enumerates exactly what is owed.
+
+  The itemised checklist this produces is docs/REDESIGN_FIDELITY_BACKLOG.md. Read
+  it with this file; it records every point the owner has raised, the prototype
+  element each one maps to, and the decisions still outstanding.
+
+RULE 1c — RE-READ THE PROTOTYPE PAGE BEFORE YOU TOUCH THAT PAGE (2026-08-18, after
+shipping quantity quick-picks of "1 2 5 10" when the prototype plainly says "1 2 3 Max"):
+
+  Open docs/prototype-pages/<page>.html and read the section you are about to change,
+  every time, immediately before changing it. Not the brief, not your memory of the
+  prototype, not a similar section on another page. The file.
+
+  THE REASONING, which matters more than the rule: the owner designed this prototype
+  themselves. Every value in it is a decision that has already been made. When a
+  detail looks arbitrary, that is a signal you have not understood it yet, NOT
+  licence to substitute something reasonable. The quantity picks are literally
+  different on each of the three forms -- "1 2 3 Max" on Mint now, "1 2 5" on
+  Schedule, "1 2 3" on Batch -- because the caps differ. Deriving them from a
+  variable looked smarter and was wrong on all three.
+
+  A "sensible default" invented at the keyboard is the single most common way this
+  work drifts, and every one of them costs the owner another round of review.
+
+RULE 1d — DOCUMENT THE REASONING, NOT JUST THE INSTRUCTION (2026-08-18):
+
+  When the owner gives an instruction, write down WHY it exists alongside what it
+  says. A bare directive gets followed literally and then misapplied at the first
+  case it does not literally cover; the reasoning generalises, the directive does
+  not. Every entry in docs/REDESIGN_FIDELITY_BACKLOG.md carries its rationale for
+  this reason, and §10 collects the principles behind all of them.
+
+  The owner should never have to say the same thing twice. If they do, the fault is
+  that the first time was recorded as a rule instead of as an understanding.
+
+RULE 2 — ALL FOUR STATES, EVERY TIME (stated 2026-08-18, after a wallet was
+deleted and Home showed no first-run panel because only the populated state had
+ever been built):
+
+  Every page and every card ships POPULATED, LOADING, EMPTY and ERROR. A unit is
+  not done when the populated state renders. Verify all four before reporting,
+  and say which of the four you actually saw.
+
+  The states must be LIVE, not one-way: empty -> populated when the user creates
+  the thing, and populated -> empty when the user deletes the last one. Gate on
+  `data !== null` so loading never renders as empty, and use ?? not truthiness so
+  0 / 0.000000 ETH / 0% render as themselves.
+
+  The prototype's own harness has Populated/Loading/Empty/Error toggles and
+  docs/prototype-pages/states.html is the extracted reference. Build against
+  those four renderings, not against the populated one plus an assumption.
+
 House rules for this whole session:
 
 - Work ONE phase at a time. Never start the next phase unprompted, even after
