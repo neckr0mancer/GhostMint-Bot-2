@@ -53,6 +53,7 @@ const { createSniperService } = require('./sniper/sniperService');
 const { createAdminCommandService } = require('./governance/adminCommandService');
 const { AccountBlockedError, AuthorizationError, createGovernanceService } = require('./governance/governanceService');
 const { createPostgresGovernanceRepository } = require('./governance/postgresGovernanceRepository');
+const { formatAdminOverview } = require('./governance/adminOverviewFormat');
 const { createKeyEncryption } = require('./security/keyEncryption');
 const { createRedactor } = require('./security/redaction');
 const { BotContextError, RateLimitError, commandName, createCommandRateLimiter,
@@ -1884,7 +1885,7 @@ if (BOT_TOKEN) {
     if (data === 'menu:exportkey') return startExportKeyFlow({ chatId, messageId, userId });
     if (data === 'menu:tasks') return tgEditMenu(chatId, messageId, telegramMenus.tasksMenu());
     if (data === 'menu:schedule') return startTaskScheduleFlow({ chatId, messageId, userId, contractAddressInput: null });
-    if (data === 'menu:snipers') return tgEditMenu(chatId, messageId, telegramMenus.placeholderMenu('Snipers', 'Use /snipers to list, /updatesniper &lt;id&gt; &lt;JSON&gt; to edit.'));
+    if (data === 'menu:snipers') return tgEditMenu(chatId, messageId, telegramMenus.sniperMenu(botCommands.snipers(userId)));
     if (data === 'menu:watch' || data === 'watch:list') {
       return tgEditMenu(chatId, messageId, telegramMenus.watchRulesList(await botCommands.watchRules(userId)));
     }
@@ -1914,7 +1915,14 @@ if (BOT_TOKEN) {
       await botCommands.removeWatchRule(userId, id);
       return tgEditMenu(chatId, messageId, telegramMenus.watchRulesList(await botCommands.watchRules(userId)));
     }
-    if (data === 'menu:activity') return tgEditMenu(chatId, messageId, telegramMenus.placeholderMenu('Activity', 'Use /activity to see recent mint activity.'));
+    if (data === 'menu:activity') {
+      const page = await botCommands.activityPage(userId, { page: 1 });
+      return tgEditMenu(chatId, messageId, telegramMenus.activityMenu(page));
+    }
+    if (data.startsWith('activity:page:')) {
+      const page = await botCommands.activityPage(userId, { page: Number(data.slice('activity:page:'.length)) || 1 });
+      return tgEditMenu(chatId, messageId, telegramMenus.activityMenu(page));
+    }
     if (data === 'menu:gas' || data.startsWith('gas:chain:')) {
       const chain = data.startsWith('gas:chain:') ? data.slice('gas:chain:'.length) : 'ethereum';
       let fees = null;
@@ -1937,7 +1945,10 @@ if (BOT_TOKEN) {
       });
       return tgEditMenu(chatId, messageId, { text: `Switch to <b>${escapeTelegramHtml(meta.label)}</b> (${escapeTelegramHtml(meta.hint)})? This changes behavior for every mint on every platform until you switch again.`, replyMarkup: confirmationKeyboard(), parseMode: 'HTML' });
     }
-    if (data === 'menu:admin') return tgEditMenu(chatId, messageId, telegramMenus.placeholderMenu('Admin', 'Use /admin &lt;action&gt; CONFIRM. Owner-only.'));
+    if (data === 'menu:admin') {
+      const overview = await botCommands.adminOverview(userId);
+      return tgEditMenu(chatId, messageId, telegramMenus.adminOverviewMenu(formatAdminOverview(overview)));
+    }
 
     if (data === 'link:generate') {
       const link = await identity.createLinkCode(userId);

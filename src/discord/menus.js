@@ -364,6 +364,55 @@ function activityMenu(page) {
   };
 }
 
+// Section O -- performs the same lookup /task list already does, same Prev/Next paging shape as
+// activityMenu above.
+function tasksMenu(page) {
+  const lines = page.items.length
+    ? page.items.map(task => `**${task.name}** [${task.status}] — ${formatGmtPlus1(task.mintTime)} — ${task.id}`).join('\n')
+    : 'No scheduled tasks.';
+  const nav = [];
+  if (page.page > 1) nav.push(button('◀️ Prev', `tasks:page:${page.page - 1}`));
+  if (page.page < page.totalPages) nav.push(button('▶️ Next', `tasks:page:${page.page + 1}`));
+  const rows = nav.length ? [row(nav)] : [];
+  rows.push(row([button('🗓️ Schedule mint', 'menu:mint'), button('⬅️ Back to menu', 'menu:main')]));
+  return {
+    content: `🗓️ **Tasks** (page ${page.page}/${page.totalPages}, ${page.total} total)\n${lines}`,
+    components: rows,
+  };
+}
+
+// Section O -- performs the same lookup /sniper list already does, matching its exact list format
+// (Post-confirmation copying disclaimer included) rather than replying "use /sniper list".
+function snipersMenu(snipers) {
+  const lines = snipers.length
+    ? snipers.map(item => `**${item.label}** [${item.active ? 'active' : 'inactive'}] — ${item.id}`).join('\n')
+    : 'No matching snipers.';
+  return {
+    content: `🎯 Post-confirmation copying only; not mempool front-running.\n${lines}`,
+    components: [row([button('⬅️ Back to menu', 'menu:main')])],
+  };
+}
+
+// Section O -- /admin itself is a write-only dispatcher over 20+ owner actions with no single
+// "the" read to mirror, so this instead surfaces governance.dashboardOverview (already built and
+// already owner-gated -- the same data the web dashboard's own admin page shows), mirroring
+// Telegram's counterpart. Per-user detail and preset tuning stay on the dashboard/text commands;
+// this is a summary. Wei figures arrive already formatted to ETH strings (see
+// governance/adminOverviewFormat.js), same shared formatting Telegram's adminOverviewMenu uses.
+function adminOverviewMenu({ metrics, groups }) {
+  const groupLines = groups.length
+    ? groups.map(g => `• **${g.name}** — gas ≤${g.gasCeilingGwei ?? 'no ceiling'} gwei, tx ≤${g.maxTransactionValueEth ?? 'no ceiling'}, daily ≤${g.dailySpendingBudgetEth ?? 'no ceiling'}`).join('\n')
+    : 'No groups configured yet.';
+  return {
+    content: `🛡️ **Admin overview**\n`
+      + `Users: ${metrics.totalUsers} total · ${metrics.activeAnyPlatform24h} active in 24h · ${metrics.owners} owner${metrics.owners === 1 ? '' : 's'} (${metrics.rootOwners} root)\n`
+      + `Groups: ${metrics.groups} · Linked accounts: ${metrics.linkedAccounts}\n\n`
+      + `**Groups**\n${groupLines}\n\n`
+      + `Per-user detail and every other action: \`/admin action:<action> confirm:true\`.`,
+    components: [row([button('⬅️ Back to menu', 'menu:main')])],
+  };
+}
+
 function walletSelect(wallets, { customId, emptyHint }) {
   if (!wallets.length) return placeholderMenu('Wallets', emptyHint);
   const options = wallets.map(w => ({ label: `${w.label} (${w.chain})`, value: w.label, emoji: CHAIN_EMOJI[w.chain] || undefined }));
@@ -488,7 +537,7 @@ function labelModal({ customId, title, placeholder = '', style = 'short', maxLen
 
 module.exports = {
   button, row, select, mainMenu, walletsMenu, settingsMenu, placeholderMenu,
-  chainSelect, walletSelect, confirmRemoveWallet, labelModal, gasMenu, activityMenu,
+  chainSelect, walletSelect, confirmRemoveWallet, labelModal, gasMenu, activityMenu, tasksMenu, snipersMenu, adminOverviewMenu,
   contractDetailsText, collectionInfoCard, mintQuantitySelect, mintPriceStep, mintConfirmation, numberModal,
   taskNameQuickPicks, taskConfirmation,
   watchTypeSelect, watchMethodSelect, watchConfigModal, watchRuleConfirmation,

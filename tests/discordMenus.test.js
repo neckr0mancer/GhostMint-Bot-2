@@ -3,7 +3,7 @@ const test = require('node:test');
 const {
   mainMenu, walletsMenu, settingsMenu, chainSelect, walletSelect,
   confirmRemoveWallet, placeholderMenu, labelModal, collectionInfoCard,
-  taskNameQuickPicks, taskConfirmation,
+  taskNameQuickPicks, taskConfirmation, tasksMenu, snipersMenu, adminOverviewMenu,
 } = require('../src/discord/menus');
 
 function flatButtons(components) {
@@ -190,4 +190,53 @@ test('label modal embeds a single required text input under the given title', ()
 test('label modal respects a custom max length for longer fields like private keys', () => {
   const modal = labelModal({ customId: 'flow:key:submit', title: 'Private key', maxLength: 256 });
   assert.equal(modal.components[0].components[0].max_length, 256);
+});
+
+// Section O -- Discord counterparts to menu:tasks/menu:snipers/menu:admin performing the same
+// lookups /task list, /sniper list, and the dashboard's admin overview already do, instead of
+// replying "use /task ..." etc. Mirrors the coverage bar tests/telegramMenus.test.js sets for the
+// same three buttons on the other platform.
+
+test('tasksMenu lists each task and offers Next but not Prev on page 1', () => {
+  const page = tasksMenu({ page: 1, totalPages: 2, total: 3, items: [{ name: 'GTD', status: 'scheduled', mintTime: '2026-08-20T18:00:00.000Z', id: 'task-1' }] });
+  assert.match(page.content, /GTD.*scheduled/);
+  const buttons = flatButtons(page.components).map(b => b.custom_id);
+  assert.ok(!buttons.includes('tasks:page:0'));
+  assert.ok(buttons.includes('tasks:page:2'));
+  assert.ok(buttons.includes('menu:mint'), 'offers a way to schedule a mint from the same screen');
+});
+
+test('tasksMenu says so plainly when there are no scheduled tasks', () => {
+  const page = tasksMenu({ page: 1, totalPages: 1, total: 0, items: [] });
+  assert.match(page.content, /No scheduled tasks/);
+});
+
+test('snipersMenu matches /sniper list\'s exact format and disclaimer', () => {
+  const list = snipersMenu([{ label: 'Copy Cool Cats', active: true, id: 'sniper-1' }, { label: 'Old one', active: false, id: 'sniper-2' }]);
+  assert.match(list.content, /Post-confirmation copying only; not mempool front-running/);
+  assert.match(list.content, /\*\*Copy Cool Cats\*\* \[active\] — sniper-1/);
+  assert.match(list.content, /\*\*Old one\*\* \[inactive\] — sniper-2/);
+
+  const empty = snipersMenu([]);
+  assert.match(empty.content, /No matching snipers/);
+});
+
+test('adminOverviewMenu shows metrics and per-group ceilings, wording "no ceiling" for a null value', () => {
+  const overview = adminOverviewMenu({
+    metrics: { totalUsers: 10, activeAnyPlatform24h: 4, owners: 2, rootOwners: 1, groups: 2, linkedAccounts: 6 },
+    groups: [
+      { name: 'Standard', gasCeilingGwei: 50, maxTransactionValueEth: '0.5', dailySpendingBudgetEth: '2.0' },
+      { name: 'Unlimited', gasCeilingGwei: null, maxTransactionValueEth: null, dailySpendingBudgetEth: null },
+    ],
+  });
+  assert.match(overview.content, /10 total/);
+  assert.match(overview.content, /2 owners \(1 root\)/);
+  assert.match(overview.content, /Standard.*gas ≤50 gwei, tx ≤0\.5, daily ≤2\.0/);
+  assert.match(overview.content, /Unlimited.*no ceiling.*no ceiling.*no ceiling/);
+});
+
+test('adminOverviewMenu says so plainly when no groups are configured yet', () => {
+  const overview = adminOverviewMenu({ metrics: { totalUsers: 1, activeAnyPlatform24h: 0, owners: 1, rootOwners: 1, groups: 0, linkedAccounts: 0 }, groups: [] });
+  assert.match(overview.content, /No groups configured yet/);
+  assert.match(overview.content, /1 owner \(1 root\)/, 'singular "owner" when the count is exactly 1');
 });

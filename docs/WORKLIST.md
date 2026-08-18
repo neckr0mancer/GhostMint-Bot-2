@@ -718,25 +718,31 @@ unit-tested store (11 tests), mirroring how `flowState.js` separates sequencing 
 Writing the tests caught a real ordering bug in the first implementation: the size sweep ran
 before the insert, so a store one entry below its threshold never swept at all.
 
-## Section O — Button ⇄ command parity ⚠️ (Discord's mint/activity/gas shipped)
+## Section O — Button ⇄ command parity ✅
 
 Every UI button must do exactly what its `/` command does, sharing the same code path rather than
 a parallel implementation. Round 1 fixed two of these (Telegram's Gas and Transaction mode buttons
-now act directly, calling the same `botCommands.gas()` / `selectMode()` the commands use). A
-follow-up shipped three more of Discord's placeholders the same way: `menu:gas` now performs the
-lookup directly (`discordMenus.gasMenu`, mirroring Telegram's `gasMenu` shape — Safe/Standard/Fast
-readout plus chain-switch buttons, `gas:chain:<chain>`), `menu:activity` shows page 1 directly via
-the same `botCommands.activityPage()` `/activity` uses (`discordMenus.activityMenu`, with
-Prev/Next paging buttons `activity:page:<n>`), and `menu:mint` opens a modal for the one field a
-mint genuinely can't avoid being free text — the contract address — then routes through the same
-`startMintGuidedFlow` a bare paste and `/mint`'s under-specified path already use, rather than a
-separate implementation. The rest are still placeholder screens that just tell the user to go type
-a command:
+now act directly, calling the same `botCommands.gas()` / `selectMode()` the commands use). Two
+follow-ups closed out the rest:
 
-| Surface | Buttons still telling the user to type a command |
-|---|---|
-| Telegram | `menu:snipers`, `menu:activity`, `menu:admin` |
-| Discord | `menu:tasks`, `menu:snipers`, `menu:admin` |
+- `menu:gas` (Discord) now performs the lookup directly (`discordMenus.gasMenu`, mirroring
+  Telegram's `gasMenu` shape — Safe/Standard/Fast readout plus chain-switch buttons,
+  `gas:chain:<chain>`).
+- `menu:activity` (both platforms) shows page 1 directly via the same `botCommands.activityPage()`
+  `/activity` uses, with Prev/Next paging buttons (`activity:page:<n>`).
+- `menu:mint` (Discord) opens a modal for the one field a mint genuinely can't avoid being free
+  text — the contract address — then routes through the same `startMintGuidedFlow` a bare paste and
+  `/mint`'s under-specified path already use, rather than a separate implementation.
+- `menu:tasks` (Discord) and `menu:snipers` (both platforms) now list directly via the same
+  `botCommands.tasksPage()` / `botCommands.snipers()` calls `/task list` and `/sniper list`/
+  `/snipers` already use (Telegram's `menu:tasks` already had a real "Schedule mint" action from
+  Round 1, so it was never on the placeholder list).
+- `menu:admin` (both platforms) is the one exception to "mirror the command exactly": `/admin`
+  itself is a write-only dispatcher over 20+ owner actions with no single read to mirror, so this
+  instead surfaces `governance.dashboardOverview` (already built for the web dashboard, already
+  owner-gated) as a metrics + per-group-ceiling summary —
+  `src/governance/adminOverviewFormat.js` is the one shared wei→ETH formatter both platforms'
+  renderers use, so they can't drift on how a null ceiling ("no ceiling") is worded.
 
 `menu:watch` is done on both platforms — see **Section AB** below; it went well past "make the
 button call the same function" into a full guided create flow plus list/manage actions, so it's
@@ -841,8 +847,10 @@ need the same Discord component patterns.
 - ~~**Section N:** which of the three fixes?~~ **Answered:** re-anchor. Shipped — M is unblocked.
 - ~~**Section M:** multi-wallet behavior?~~ **Answered:** select-wallet prompt first, then
   confirmation.
-- **Section O:** confirm the Gas/mode reading above — "don't make the user type the command,"
-  not "use a different data source."
+- ~~**Section O:** confirm the Gas/mode reading above~~ **Went unanswered — built on the stated
+  interpretation** ("don't make the user type the command," not "use a different data source"),
+  flagged at the time for correction if wrong. Section O has since shipped in full on that reading;
+  revisit if it turns out to have been the wrong call.
 
 ---
 

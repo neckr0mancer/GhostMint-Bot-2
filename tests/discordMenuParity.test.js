@@ -2,10 +2,11 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const { createDiscordInteractionHandler } = require('../src/discord/discordBot');
 
-// Section O -- Discord's menu:mint/menu:activity/menu:gas buttons used to just reply "use /mint"
-// etc instead of performing the action, the last three of the six Discord entries on WORKLIST.md's
-// parity table (menu:tasks/menu:snipers/menu:admin are still open, out of scope here). Mirrors the
-// mock shape established by tests/discordWalletFlow.test.js.
+// Section O -- Discord's menu:mint/menu:activity/menu:gas/menu:tasks/menu:snipers/menu:admin
+// buttons used to just reply "use /mint" etc instead of performing the action; this file now
+// covers all six, closing out Discord's side of Section O (only menu:admin has no single "the"
+// read to mirror -- it surfaces governance.dashboardOverview instead, see adminOverviewFormat.js).
+// Mirrors the mock shape established by tests/discordWalletFlow.test.js.
 
 function baseInteraction(userId) {
   const state = {
@@ -45,6 +46,13 @@ function fixture(overrides = {}) {
       gas: async chain => ({ chain, safeGasPriceGwei: 10, gasPriceGwei: 12, maxFeePerGasGwei: 20 }),
       activityPage: async (userId, { page }) => ({ page, totalPages: 2, total: 3,
         items: page === 1 ? [{ status: 'success', title: 'Cool Cats', walletLabel: 'main' }] : [{ status: 'fail', title: 'Bad Apes', walletLabel: 'main' }] }),
+      tasksPage: async (userId, { page }) => ({ page, totalPages: 2, total: 3,
+        items: page === 1 ? [{ name: 'GTD', status: 'scheduled', mintTime: '2026-08-20T18:00:00.000Z', id: 'task-1' }] : [{ name: 'FCFS', status: 'scheduled', mintTime: '2026-08-20T19:00:00.000Z', id: 'task-2' }] }),
+      snipers: () => [{ label: 'Copy Cool Cats', active: true, id: 'sniper-1' }],
+      adminOverview: async () => ({
+        metrics: { totalUsers: 10, activeAnyPlatform24h: 4, owners: 2, rootOwners: 1, groups: 1, linkedAccounts: 6 },
+        groups: [{ name: 'Standard', gasCeilingGwei: 50, maxTransactionValueWei: '500000000000000000', dailySpendingBudgetWei: '2000000000000000000' }],
+      }),
       parseOpenSeaCollectionSlug: () => null,
       resolveMintContractInput: async input => (/^0x[0-9a-fA-F]{40}$/.test(input) ? input : null),
       detectMintContract: async () => ({
@@ -122,4 +130,44 @@ test('submitting menu:mint:submit with an unresolvable contract says so instead 
   const submit = modalInteraction('menu:mint:submit', { value: 'not-a-contract' });
   await handler(submit);
   assert.match(submit.replies[0].content, /Could not find this contract/);
+});
+
+test('menu:tasks performs the same lookup /task list uses instead of replying "use /task"', async () => {
+  const { handler } = fixture();
+  const tap = buttonInteraction('menu:tasks');
+  await handler(tap);
+  assert.match(tap.updates[0].content, /GTD.*scheduled/);
+  const buttons = tap.updates[0].components.flatMap(r => r.components).map(b => b.custom_id);
+  assert.ok(buttons.includes('tasks:page:2'));
+});
+
+test('tasks:page:2 pages forward through the same tasksPage call', async () => {
+  const { handler } = fixture();
+  const tap = buttonInteraction('tasks:page:2');
+  await handler(tap);
+  assert.match(tap.updates[0].content, /FCFS.*scheduled/);
+});
+
+test('menu:snipers performs the same lookup /sniper list uses instead of replying "use /sniper"', async () => {
+  const { handler } = fixture();
+  const tap = buttonInteraction('menu:snipers');
+  await handler(tap);
+  assert.match(tap.updates[0].content, /Post-confirmation copying only/);
+  assert.match(tap.updates[0].content, /Copy Cool Cats/);
+});
+
+test('menu:admin shows the real governance overview instead of replying "use /admin"', async () => {
+  const { handler } = fixture();
+  const tap = buttonInteraction('menu:admin');
+  await handler(tap);
+  assert.match(tap.updates[0].content, /10 total/);
+  assert.match(tap.updates[0].content, /Standard.*gas ≤50 gwei/);
+});
+
+test('menu:admin surfaces "Owner access required" for a non-owner instead of a raw error, same as /admin', async () => {
+  const { AuthorizationError } = require('../src/governance/governanceService');
+  const { handler } = fixture({ commands: { adminOverview: async () => { throw new AuthorizationError(); } } });
+  const tap = buttonInteraction('menu:admin');
+  await handler(tap);
+  assert.equal(tap.updates[0].content, 'Owner access required.');
 });

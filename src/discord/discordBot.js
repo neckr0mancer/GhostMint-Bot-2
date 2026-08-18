@@ -3,6 +3,7 @@ const {
 } = require('discord.js');
 const { formatEther } = require('ethers');
 const { AccountBlockedError, AuthorizationError } = require('../governance/governanceService');
+const { formatAdminOverview } = require('../governance/adminOverviewFormat');
 const { LinkCodeError } = require('../identity/identityService');
 const { ProofResolutionError } = require('../mint/proofResolver');
 const { OPENSEA_CHAIN_SLUGS } = require('../mint/openSeaService');
@@ -453,8 +454,15 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
       // keys). Submitting routes through startMintGuidedFlow below -- the exact same auto-detecting
       // card /mint's own under-specified path and a bare paste already use, not a separate path.
       if (data === 'menu:mint') return interaction.showModal(discordMenus.labelModal({ customId: 'menu:mint:submit', title: 'Contract address to mint', maxLength: 200 }));
-      if (data === 'menu:tasks') return dcRespond(interaction, discordMenus.placeholderMenu('Tasks', 'Use /task create|list|cancel|pause|resume|retry.'));
-      if (data === 'menu:snipers') return dcRespond(interaction, discordMenus.placeholderMenu('Snipers', 'Use /sniper create|update|list|status.'));
+      if (data === 'menu:tasks') {
+        const page = await commands.tasksPage(userId, { page: 1 });
+        return dcRespond(interaction, discordMenus.tasksMenu(page));
+      }
+      if (data.startsWith('tasks:page:')) {
+        const page = await commands.tasksPage(userId, { page: Number(data.slice('tasks:page:'.length)) || 1 });
+        return dcRespond(interaction, discordMenus.tasksMenu(page));
+      }
+      if (data === 'menu:snipers') return dcRespond(interaction, discordMenus.snipersMenu(commands.snipers(userId)));
       // menu:watch is handled further below, alongside the rest of the watch-rule guided flow.
       if (data === 'menu:activity') {
         const page = await commands.activityPage(userId, { page: 1 });
@@ -469,7 +477,10 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         const fees = await commands.gas(gasChain).catch(() => null);
         return dcRespond(interaction, discordMenus.gasMenu({ chain: gasChain, fees, supportedChains, chains }));
       }
-      if (data === 'menu:admin') return dcRespond(interaction, discordMenus.placeholderMenu('Admin', 'Use /admin action confirm:true. Owner-only.'));
+      if (data === 'menu:admin') {
+        const overview = await commands.adminOverview(userId);
+        return dcRespond(interaction, discordMenus.adminOverviewMenu(formatAdminOverview(overview)));
+      }
 
       if (data === 'link:enter') {
         return interaction.showModal(discordMenus.labelModal({ customId: 'link:code:submit', title: 'Link code from Telegram' }));
