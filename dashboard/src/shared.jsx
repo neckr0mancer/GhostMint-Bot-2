@@ -128,7 +128,8 @@ export function GroupedChainOptions({options=[],labelFor=value=>value}){return <
 </>;}
 
 export function csrf(){return document.cookie.split(';').map(value=>value.trim()).find(value=>value.startsWith('ghostmint_csrf='))?.split('=').slice(1).join('=')||'';}
-export async function api(path,options={}){const response=await fetch(path,{...options,headers:{'Content-Type':'application/json',...(options.method&&options.method!=='GET'?{'X-CSRF-Token':decodeURIComponent(csrf())}:{})}});const body=response.status===204?null:await response.json().catch(()=>({}));if(!response.ok){const error=new Error(body?.issues?.map(item=>`${item.field} ${item.message}`).join('; ')||body?.error||'Request failed');error.status=response.status;error.code=body?.code;throw error;}return body;}
+export async function api(path,options={}){const response=await fetch(path,{...options,headers:{'Content-Type':'application/json',...(options.method&&options.method!=='GET'?{'X-CSRF-Token':decodeURIComponent(csrf())}:{})}});const body=response.status===204?null:await response.json().catch(()=>({}));if(!response.ok){const error=new Error(body?.issues?.map(item=>`${item.field} ${item.message}`).join('; ')||body?.error||'Request failed');error.status=response.status;error.code=body?.code;// The per-field issues are kept ON the error, not just flattened into its message. The prototype's validation state (.in.bad + .fielderr under the offending field) needs to know WHICH field failed; without this it could never fire, and both Mint now and Schedule were silently falling back to a toast.
+  error.issues=body?.issues;throw error;}return body;}
 
 // Triggers a client-side file save (used for the exported wallet keystore) via the standard
 // Blob-URL-plus-synthetic-<a>-click pattern -- content never leaves the browser except through the
@@ -208,6 +209,29 @@ export function FirstRun({step=1,go}){
       </div>
     </div>
   </div>;
+}
+// Quantity quick-picks. The prototype writes three different literal sets -- "1 2 3 Max" on Mint
+// now, "1 2 5" on Schedule, "1 2 3" on Batch -- because each form has a different cap. The owner
+// asked for the RULE behind those literals rather than the literals themselves (2026-08-18), so
+// the ladder is derived from the cap and every form shares it:
+//
+//   1 and 2 always, then the largest round step at or below half the cap, then Max.
+//
+//   cap   3 -> 1, 2, 3, Max      (identical to the prototype's Mint now)
+//   cap   5 -> 1, 2, 5, Max
+//   cap  10 -> 1, 2, 5, Max
+//   cap 100 -> 1, 2, 50, Max
+//
+// If that third step would collide with 1 or 2 the cap itself is used, which is what keeps small
+// caps sensible instead of rendering "1, 2, 2". This is a DELIBERATE, owner-approved departure
+// from the prototype's hardcoded values -- see REDESIGN_FIDELITY_BACKLOG.md §13.
+const QUANTITY_LADDER=[1,2,3,5,10,25,50,100];
+export function quantityPicks(max){
+  const cap=Number(max)>0?Math.floor(Number(max)):1;
+  if(cap<=2)return Array.from({length:cap},(_,index)=>index+1);
+  const candidate=[...QUANTITY_LADDER].reverse().find(value=>value<=cap/2);
+  const third=candidate&&candidate>2?candidate:cap;
+  return [...new Set([1,2,third])].filter(value=>value<=cap);
 }
 export function relativeTime(at){const seconds=Math.max(0,Math.floor((Date.now()-at)/1000));if(seconds<5)return 'just now';if(seconds<60)return `${seconds}s ago`;const minutes=Math.floor(seconds/60);if(minutes<60)return `${minutes}m ago`;const hours=Math.floor(minutes/60);if(hours<24)return `${hours}h ago`;return `${Math.floor(hours/24)}d ago`;}
 // Carries the contract address (and whatever else was already typed) from Quick Mint's "Advanced

@@ -1,7 +1,7 @@
 /* global clearInterval, clearTimeout, CustomEvent, FormData, localStorage, setInterval, setTimeout, URLSearchParams */
 import React,{useCallback,useEffect,useRef,useState} from 'react';
 import Admin from './Admin.jsx';
-import {ACTIVITY_EVENTS,api,Ledger,NumberField,SectionCard,confirmDialog,ConfirmHost,consumePendingMintPrefill,CopyButton,csrf,downloadFile,Empty,EVM_CHAINS,Field,Form,getNotificationLog,notify,Notice,PageTitle,Pager,promptDialog,relativeTime,Select,Skeleton,StatusPill,SubTabs,subscribeNotificationLog,ToastHost,useLoad,useLiveSocket,setPendingMintPrefill} from './shared.jsx';
+import {ACTIVITY_EVENTS,api,Ledger,NumberField,SectionCard,confirmDialog,ConfirmHost,consumePendingMintPrefill,CopyButton,csrf,downloadFile,Empty,EVM_CHAINS,Field,Form,getNotificationLog,notify,Notice,PageTitle,Pager,promptDialog,relativeTime,Select,Skeleton,StatusPill,SubTabs,subscribeNotificationLog,ToastHost,useLoad,useLiveSocket,setPendingMintPrefill,quantityPicks} from './shared.jsx';
 import Dashboard from './Dashboard.jsx';
 // Phase 4, unit 1 of 5 (brief §2). The 11->5 merge lands one page at a time so any single merge
 // can be reverted alone. Mint = Minting + Tasks is done; Automation, Wallets+P&L and History are
@@ -347,11 +347,10 @@ function Minting({onSwitchToBatch,onGoWallets}){const wallets=useLoad('/api/wall
   const walletsArrived=wallets.data!==null&&wallets.data!==undefined;
   const noWallets=walletsArrived&&wallets.data.length===0;
   const pageError=wallets.error?{title:'Could not load your wallets.',detail:'Request failed safely — nothing was changed.',code:wallets.status,onRetry:wallets.load}:mintError;
-  // Literal, per docs/prototype-pages/mint.html:33 -- "1 2 3 Max". Not derived from
-  // maxPerWallet: Schedule writes "1 2 5" and Batch writes "1 2 3", so each form carries its own
-  // set by design. Max resolves to the detected per-wallet cap, or the input ceiling if none.
-  const quickPicks=[1,2,3];
+  // Derived from the cap by the shared rule (shared.jsx quantityPicks). At a cap of 3 this
+  // returns exactly the prototype's "1 2 3"; at 10 it returns "1 2 5". Backlog §13.
   const maxPick=maxPerWallet||100;
+  const quickPicks=quantityPicks(maxPick);
   const ceilingWei=limits.data?.dailySpendingBudgetWei;
   return <>
     {/* Prototype mint.html: a .nt.w banner above the form when no wallet exists. The form stays
@@ -476,6 +475,12 @@ function Minting({onSwitchToBatch,onGoWallets}){const wallets=useLoad('/api/wall
 }
 
 function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSearch]=useState('');const listing=useLoad(`/api/tasks?page=${page}&pageSize=10&search=${encodeURIComponent(search)}`,[page,search],'tasks.changed');const wallets=useLoad('/api/wallets',[],'wallets.changed');const [chain,setChain]=useState(profile.defaultChain||profile.supportedChains[0]);const [contractAddress,setContractAddress]=useState('');const [quantity,setQuantity]=useState('1');const [priceETH,setPriceETH]=useState('');const [mintTime,setMintTime]=useState('');const [detecting,setDetecting]=useState(false);const lastDetected=useRef('');
+  // The prototype's Schedule form has no price field, because it assumes the contract can be
+  // priced automatically. Some cannot -- the server then rejects with a priceETH issue and there
+  // is nowhere to type one, which left the form unsubmittable for those contracts. So the field
+  // appears ONLY once that has happened, carrying the server's own message in the prototype's
+  // .fielderr. A gap in the design rather than a departure from it; see backlog §14.
+  const [priceIssue,setPriceIssue]=useState(null);
   // Mirrors Minting's auto-detect: a scheduled mint needs the same price/opening-time knowledge an
   // immediate mint does, so this reuses the identical /api/mints/detect endpoint rather than making
   // the user look those up by hand. Price and time stay editable afterward -- detection pre-fills,
@@ -505,7 +510,7 @@ function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSear
   // just-changed value directly since setState hasn't applied yet inside the same onChange handler.
   function autoDetectIfReady(value=contractAddress){const trimmed=value.trim();if(ADDRESS_SHAPE.test(trimmed)&&trimmed!==lastDetected.current)detect(trimmed);}
   function handleContractBlur(){autoDetectIfReady();}
-  async function create(event){event.preventDefault();const form=event.currentTarget;try{const input=Object.fromEntries(new FormData(form));if(!input.priceETH)delete input.priceETH;if(input.mintTime)input.mintTime=new Date(input.mintTime).toISOString();else delete input.mintTime;await api('/api/tasks',{method:'POST',body:JSON.stringify(input)});form.reset();setContractAddress('');setQuantity('1');setPriceETH('');setMintTime('');lastDetected.current='';notify('Task scheduled.',{type:'success'});listing.load();}catch(value){notify(value.message,{type:'error'});}}async function control(id,action){if(action==='cancel'&&!await confirmDialog('Delete this scheduled mint? It will not fire, and this cannot be undone.'))return;try{await api(`/api/tasks/${id}/control`,{method:'POST',body:JSON.stringify({action,confirmation:action==='cancel'?'CONFIRM':undefined})});listing.load();}catch(value){notify(value.message,{type:'error'});}}
+  async function create(event){event.preventDefault();const form=event.currentTarget;try{const input=Object.fromEntries(new FormData(form));if(!input.priceETH)delete input.priceETH;if(input.mintTime)input.mintTime=new Date(input.mintTime).toISOString();else delete input.mintTime;await api('/api/tasks',{method:'POST',body:JSON.stringify(input)});setPriceIssue(null);form.reset();setContractAddress('');setQuantity('1');setPriceETH('');setMintTime('');lastDetected.current='';notify('Task scheduled.',{type:'success'});listing.load();}catch(value){const issue=value.issues?.find(entry=>entry.field==='priceETH');if(issue)setPriceIssue(issue.message);notify(value.message,{type:'error'});}}async function control(id,action){if(action==='cancel'&&!await confirmDialog('Delete this scheduled mint? It will not fire, and this cannot be undone.'))return;try{await api(`/api/tasks/${id}/control`,{method:'POST',body:JSON.stringify({action,confirmation:action==='cancel'?'CONFIRM':undefined})});listing.load();}catch(value){notify(value.message,{type:'error'});}}
   // Prototype docs/prototype-pages/mint.html:111-158. The Schedule tab is a .split: the form on
   // the left, the "Scheduled" list on the right. The old page-lead, the search toolbar, the chain
   // select and the table UNDER the form are all gone -- none of them exist in the design, and the
@@ -564,18 +569,25 @@ function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSear
             <div className="qty">
               <input className="in tab" name="quantity" type="number" min={1} max={100} disabled={noWallets}
                 placeholder="Enter quantity (1–100)" value={quantity} onChange={e=>setQuantity(e.target.value)}/>
-              {/* Literal 1 / 2 / 5, per the prototype at mint.html:126. Mint now writes 1 2 3 Max
-                  and Batch writes 1 2 3 -- three forms, three sets, none of them derived. */}
-              <div className="qb">{[1,2,5].map(pick=><button type="button" key={pick} disabled={noWallets}
+              {/* Shared rule against this form's cap of 100 -> 1, 2, 50, Max. Backlog §13. */}
+              <div className="qb">{quantityPicks(100).map(pick=><button type="button" key={pick} disabled={noWallets}
                 className={String(pick)===String(quantity)?'on':undefined}
-                onClick={()=>setQuantity(String(pick))}>{pick}</button>)}</div>
+                onClick={()=>setQuantity(String(pick))}>{pick}</button>)}
+                <button type="button" disabled={noWallets}
+                  className={String(quantity)==='100'?'on':undefined}
+                  onClick={()=>setQuantity('100')}>Max</button></div>
             </div></label>
         </div>
         <label className="fl"><span>Mint time <span style={{color:'var(--faint)',fontWeight:500}}>· UTC, explicit offset or Z</span></span>
           <input className="in tab mono" name="mintTime" type="datetime-local" disabled={noWallets}
             value={mintTime} onChange={e=>setMintTime(e.target.value)}/></label>
+        {priceIssue
+          ?<label className="fl"><span>Price per mint <span style={{color:'var(--faint)',fontWeight:500}}>· ETH</span></span>
+             <input className="in tab bad" name="priceETH" type="number" step="any" min="0" required
+               placeholder="e.g. 0.08" value={priceETH} onChange={e=>setPriceETH(e.target.value)}/>
+             <div className="fielderr">{ALERT_ICON}{priceIssue}</div></label>
+          :priceETH?<input type="hidden" name="priceETH" value={priceETH}/>:null}
         <input type="hidden" name="chain" value={chain}/>
-        {priceETH?<input type="hidden" name="priceETH" value={priceETH}/>:null}
         <button className="b p" disabled={noWallets}>Schedule mint</button>
       </form>
     </div>
@@ -937,10 +949,13 @@ function MintBatch({onGoWallets}){
           <div className="qty">
             <input className="in tab" type="number" min={1} max={3} disabled={noWallets}
               placeholder="Enter quantity (1–3)" value={quantity} onChange={e=>setQuantity(e.target.value)}/>
-            {/* Literal 1 / 2 / 3, per mint.html:177. Mint now writes "1 2 3 Max", Schedule "1 2 5". */}
-            <div className="qb">{[1,2,3].map(pick=><button type="button" key={pick} disabled={noWallets}
+            {/* Shared rule against this form's cap of 3 -> 1, 2, 3, Max. Backlog §13. */}
+            <div className="qb">{quantityPicks(3).map(pick=><button type="button" key={pick} disabled={noWallets}
               className={String(pick)===String(quantity)?'on':undefined}
-              onClick={()=>setQuantity(String(pick))}>{pick}</button>)}</div>
+              onClick={()=>setQuantity(String(pick))}>{pick}</button>)}
+              <button type="button" disabled={noWallets}
+                className={String(quantity)==='3'?'on':undefined}
+                onClick={()=>setQuantity('3')}>Max</button></div>
           </div></label>
         <button className="b p" disabled={busy||!selected.length}>Simulate all {selected.length||0}</button>
       </form>

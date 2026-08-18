@@ -439,3 +439,45 @@ it** — a hardcoded list here silently goes stale when the server's list change
 
 Quantity quick-picks, for the third time, are per-form literals: Mint now `1 2 3 Max`,
 Schedule `1 2 5`, Batch `1 2 3`. Each site carries a comment saying so.
+
+## 13. Quantity quick-picks — the rule, replacing the prototype's literals
+
+The prototype hardcodes three different sets: `1 2 3 Max` (Mint now, cap 3),
+`1 2 5` (Schedule, cap 100), `1 2 3` (Batch, cap 3). The owner's read on 2026-08-18
+was that Schedule's set does not follow from its cap, and asked for the RULE instead
+of the literals — "should we make it automatic, so it senses the max quantity?"
+
+**Agreed rule** (`quantityPicks` in `shared.jsx`, used by all three forms):
+
+> 1 and 2 always, then the largest round step at or below half the cap, then Max.
+> If that third step collides with 1 or 2, use the cap itself.
+
+| cap | picks | note |
+|---|---|---|
+| 3 | 1, 2, 3, Max | identical to the prototype's Mint now |
+| 5 | 1, 2, 5, Max | owner's "maybe one, two, the max is five" |
+| 10 | 1, 2, 5, Max | owner's "if it's ten, maybe one, two, five, max" |
+| 100 | 1, 2, 50, Max | Schedule |
+
+This is a **deliberate, owner-approved departure** from RULE 1c for this one control:
+the derived values reproduce the prototype exactly where its cap is 3, and only
+differ where the prototype's literals did not follow their own cap.
+
+## 14. Schedule's price field — covering a case the prototype does not
+
+The prototype's Schedule form has no price input, because it assumes every contract
+can be priced automatically. Some cannot: the server rejects with
+`priceETH: could not be determined from this contract; please provide it`, and with
+no field there was nowhere to type one — the form was unsubmittable for those
+contracts. Confirmed live, not reasoned about.
+
+The field now appears **only after that rejection**, carrying the server's own
+message in the prototype's `.in.bad` + `.fielderr` treatment. A gap in the design
+rather than a departure from it, but flagged for a ruling.
+
+**Found alongside it:** `api()` in `shared.jsx` flattened validation issues into the
+error message and never attached them to the error, so `error.issues` was always
+undefined. The prototype's per-field validation state could therefore never fire
+anywhere — Mint now's quantity `.fielderr` included. `api()` now keeps `issues` on
+the error. This is worth remembering: a state can be fully built, correctly styled,
+and still be unreachable because nothing upstream supplies its trigger.
