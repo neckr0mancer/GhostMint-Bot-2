@@ -329,6 +329,23 @@ that adds ETH to MATIC.
 > any non-ETH holdings. Skip `balance === null` entries (RPC failure) rather than
 > treating them as zero, and say so: "2 chains unavailable".
 
+**Verified against production 2026-08-17** (dev proxy → `ghostmint-bot-2-production`,
+signed in as a root owner). The six-chain claim above is `src/config`'s *maximum*,
+not what this deployment runs. Live, `GET /api/profile` returns
+`supportedChains: ["ethereum","sepolia","robinhood"]` — **three chains, and all
+three carry `symbol: "ETH"`.** No Polygon, so **no MATIC, so no currency mixing
+in production today.**
+
+This does **not** change the recommendation. Keep the `symbol === 'ETH'` filter:
+it is driven by config, a chain can be added by an env change without touching the
+dashboard, and a filter that is currently a no-op is the correct defensive shape.
+What it does change is the emphasis — **the `balance === null` case is the one that
+actually bites here, not the mixing.** The live wallet returns
+`ethereum=null, sepolia=null, robinhood="0.0"`: two of three chains are failing at
+the RPC and the headline ETH total is derived from a single chain. Build and verify
+the "N chains unavailable" line as a first-class state, not an edge case — on this
+deployment it is the *normal* render.
+
 ### 5.4 Portfolio 7-day delta and sparkline
 
 No historical balance data exists anywhere — no snapshot table, no time series.

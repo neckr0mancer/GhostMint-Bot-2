@@ -1,0 +1,131 @@
+<section class="pg" id="p-auto">
+      <div class="hd"><div class="hd-t"><p class="eb">Automation</p><h1>Automation</h1></div>
+        <button class="b p">New trigger</button></div>
+      <div class="subtabs" id="attabs">
+        <button class="on" data-at="all">All</button><button data-at="snp">Snipers</button>
+        <button data-at="soc">Social rules <span class="was">was Watch Rules</span></button>
+        <button data-at="pol">Policies <span class="was">was Target Policies</span></button>
+      </div>
+
+      <!-- Snipers / Social rules are filters over the same list; Policies is the editor + challenge -->
+      <div class="atp" id="at-snp"><div class="nt i" style="margin-bottom:12px">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
+        <div>Showing wallet-copy snipers only — same cards as <b>All</b>, filtered client-side over data the server already scoped to you.</div></div></div>
+      <div class="atp" id="at-soc"><div class="nt i" style="margin-bottom:12px">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
+        <div>Showing social watch rules only — same cards as <b>All</b>, filtered client-side.</div></div></div>
+
+      <div class="atp" id="at-pol">
+        <div class="split">
+          <div class="card">
+            <div class="ch"><h2>Copy 0x8f2a…1d90 · policy</h2></div>
+            <div class="g gm2 g2" style="margin-bottom:11px">
+              <label class="fl"><span>Blockchain trigger</span><select class="in"><option>Auto</option><option>Manual</option></select></label>
+              <label class="fl"><span>Social trigger</span><select class="in"><option>Manual</option><option>Auto</option></select></label>
+              <label class="fl"><span>Wallet</span><select class="in"><option>Trading</option><option>Primary</option></select></label>
+              <label class="fl"><span>Mint preset</span><select class="in"><option>Azuki drop</option></select></label>
+            </div>
+            <div class="nt i"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
+              <div>A target policy cannot contain spend or gas ceilings. Those stay with the transaction engine and your governance tier.</div></div>
+            <div class="br" style="margin-top:11px"><button class="b p sm">Save policy</button><button class="b g sm">Reset…</button></div>
+          </div>
+          <div class="g">
+            <div class="sober"><div class="sh">Human verification</div>
+              <table class="led">
+                <tr><td>Current</td><td>On</td></tr>
+                <tr><td>Blockchain-auto</td><td>Does not force verification</td></tr>
+                <tr><td>Social-auto</td><td>Verification on by default</td></tr>
+                <tr class="tot"><td>Bypass</td><td>Requires an explicit challenge</td></tr>
+              </table></div>
+            <!-- Bypass challenge: POST /api/targets/:id/bypass -> {challengeId,warning},
+                 then POST /api/targets/bypass/confirm with confirmation:"CONFIRM" exactly. -->
+            <div class="chal">
+              <div class="chal-h"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>Highest-risk configuration</div>
+              <div class="chal-b">
+                <p>Matching social triggers will execute <b>immediately, with no manual check</b>. Funds can move without you seeing the transaction first.</p>
+                <div class="cid mono">Challenge 7f2a-91c4 · expires in 4:38</div>
+                <label class="fl" style="margin-bottom:11px"><span>Type <b>CONFIRM</b> exactly to enable</span><input class="in mono" placeholder="CONFIRM"></label>
+                <label style="display:flex;gap:8px;align-items:flex-start;font-size:12px;color:var(--muted);margin-bottom:12px">
+                  <input type="checkbox" style="min-height:auto;width:16px;height:16px;margin-top:2px">
+                  <span>Don't ask again <b>for this target only</b>. Reset or removal clears this.</span></label>
+                <div class="br"><button class="b d sm">Enable bypass</button><button class="b g sm">Cancel</button></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="atp on" id="at-all">
+      <div class="sfrow of"><div class="sf">
+        <svg class="si" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <input type="search" placeholder="Target, address, chain…"><button class="sx" aria-label="Clear search">×</button></div></div>
+
+      <div class="g g2 of" data-reorder="auto">
+        <div class="blk">
+          <button class="dragh" title="Move up · arrow keys to reorder" aria-label="Reorder this trigger"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg></button>
+          <div class="card col" data-open="0" style="border-color:var(--loss)">
+            <button class="colh"><span class="p bad">Failing</span><span class="cti">@zeneca_33</span><span class="ctv">4 failed polls</span>
+              <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg></button>
+            <div class="colb">
+              <div class="ch"><span class="p bad"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 9v4M12 17h.01"/></svg>Failing</span>
+                <div class="sp"></div><span class="cw">Twitter</span></div>
+              <h3 style="font-size:14.5px;margin-bottom:2px">@zeneca_33</h3>
+              <p style="font-size:12px;color:var(--muted);margin-bottom:11px">Keyword · scraper · 4 consecutive failures</p>
+              <div class="sober" style="margin-bottom:11px"><div class="sh">Policy · inline</div>
+                <table class="led"><tr><td>Social trigger</td><td>Manual</td></tr>
+                  <tr><td>Human verification</td><td>On</td></tr><tr><td>Wallet</td><td>Trading</td></tr></table></div>
+              <div class="br"><button class="b sm">Edit</button><button class="b g sm">Disable</button></div>
+            </div>
+          </div>
+        </div>
+        <div class="blk">
+          <button class="dragh" title="Move up · arrow keys to reorder" aria-label="Reorder this trigger"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg></button>
+          <div class="card col" data-open="0">
+            <button class="colh"><span class="p ok">Active</span><span class="cti">Copy 0x8f2a…1d90</span><span class="ctv">0.140/0.200</span>
+              <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg></button>
+            <div class="colb">
+              <div class="ch"><span class="p ok"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.7" stroke-linecap="round"><path d="M5 13l4 4L19 7"/></svg>Active</span>
+                <div class="sp"></div><span class="chain"><i style="background:#627eea"></i>Ethereum</span></div>
+              <h3 style="font-size:14.5px;margin-bottom:2px">Copy 0x8f2a…1d90</h3>
+              <p style="font-size:12px;color:var(--muted);margin-bottom:11px">Post-confirmation · 12 conf. · 7 copies today</p>
+              <div class="sober" style="margin-bottom:11px"><div class="sh">Policy · inline</div>
+                <table class="led"><tr><td>Blockchain trigger</td><td>Auto</td></tr>
+                  <tr><td>Human verification</td><td><span style="color:var(--warn-text)">Bypassed</span></td></tr>
+                  <tr><td>Max copied value</td><td>0.050000 ETH</td></tr>
+                  <tr><td>Daily cap used</td><td>0.140 / 0.200</td></tr></table></div>
+              <div class="meter" style="margin-bottom:11px"><i class="warn" style="width:70%"></i></div>
+              <div class="br"><button class="b sm">Edit</button><button class="b g sm">Pause</button></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- EMPTY: two explainer cards, one CTA each -->
+      <div class="g g2 oe">
+        <div class="card">
+          <div class="ch"><div class="chip-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg></div><h2>Copy snipers</h2></div>
+          <p style="font-size:12.5px;color:var(--muted);margin-bottom:12px">Watch a wallet. When it mints something and that transaction confirms, GhostMint copies the same call from one of yours — with your own value, gas and daily caps.</p>
+          <button class="b p sm">Create a sniper</button>
+        </div>
+        <div class="card">
+          <div class="ch"><div class="chip-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h10"/></svg></div><h2>Social watch rules</h2></div>
+          <p style="font-size:12.5px;color:var(--muted);margin-bottom:12px">Watch an X, Discord or Farcaster account or keyword. When a contract address appears, it becomes a trigger — manual by default, so nothing spends without you.</p>
+          <button class="b p sm">Create a watch rule</button>
+        </div>
+      </div>
+
+      <div class="ol"><div class="sk row"></div><div class="sk row"></div><div class="sk row"></div><div class="sk row"></div></div>
+      <div class="notice ox"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>
+        <div class="nb"><b>Could not load your triggers.</b> Existing automation is unaffected and still running on the server.
+          <code>500 · Request failed safely</code>
+          <div class="br" style="margin-top:9px"><button class="b sm">Retry</button></div></div></div>
+      </div>
+
+      <!-- disclosure stays visible in EVERY state, including zero triggers and errors -->
+      <div class="nt w" style="margin-top:12px">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>
+        <div><b>Copying is post-confirmation, not mempool front-running.</b></div></div>
+    </section>
+
+    <!-- ══════════ WALLETS ══════════ -->
+    

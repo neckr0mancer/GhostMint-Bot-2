@@ -1,0 +1,407 @@
+<section class="pg" id="p-states">
+      <div class="hd"><div class="hd-t"><p class="eb">Specification</p><h1>Full-page states</h1>
+        <p class="sub">Three states that replace the page rather than a card. Each is reached before any data is fetched, so none of them has a loading or empty variant.</p></div></div>
+
+      <div class="g">
+        <!-- 403 {error, code:'ACCOUNT_BLOCKED', status} from requireSession -->
+        <div class="card">
+          <div class="ch"><span class="p bad">403 · ACCOUNT_BLOCKED</span><div class="sp"></div>
+            <span style="font-size:11px;color:var(--faint)">every route, before any data</span></div>
+          <div class="frun" style="background:radial-gradient(120% 100% at 50% 0%,color-mix(in srgb,var(--loss) 10%,transparent) 0%,transparent 62%),var(--surface);border-color:var(--loss)">
+            <div style="width:44px;height:44px;border-radius:50%;margin-bottom:12px;background:var(--loss);color:#fff;display:grid;place-items:center">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M5.6 5.6l12.8 12.8"/></svg></div>
+            <h2>Your account is suspended.</h2>
+            <p>Reason given by the owner: <b>repeated failed automation attempts</b>. Suspension lifts automatically on <b>2026-08-20</b>.</p>
+            <div class="sober" style="margin-bottom:14px"><div class="sh">What this means</div>
+              <table class="led">
+                <tr><td>Dashboard</td><td>Blocked</td></tr>
+                <tr><td>Telegram &amp; Discord</td><td>Blocked</td></tr>
+                <tr><td>Scheduled mints</td><td>Will not fire</td></tr>
+                <tr><td>Snipers</td><td>Skipped, not retried</td></tr>
+                <tr class="tot"><td>Your wallets and keys</td><td>Untouched</td></tr>
+              </table></div>
+            <p style="font-size:12px;color:var(--muted);margin-bottom:0">Contact the project owner if you believe this is a mistake. Nothing has been deleted.</p>
+          </div>
+          <div class="nt i" style="margin-top:11px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
+            <div><b>Not dismissible, not a toast, not a banner over a working page.</b> The status is enforced server-side at the single identity choke point, so every surface is blocked at once. Deactivated and banned use the same panel with different copy — banned has no auto-lift date.</div></div>
+        </div>
+
+        <!-- 403 {error:'Owner access required'} — the existing AdminDenied -->
+        <div class="card">
+          <div class="ch"><span class="p wn">403 · Owner access required</span><div class="sp"></div>
+            <span style="font-size:11px;color:var(--faint)">admin routes only</span></div>
+          <div class="unav">
+            <div class="ei"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 3l7 3v5c0 5-3 8.5-7 10-4-1.5-7-5-7-10V6z"/><path d="M9.5 12l1.8 1.8L15 10"/></svg></div>
+            <h3>Owner access required</h3>
+            <p>This area manages other people's accounts, ceilings and owner status. Your account isn't an owner.</p>
+            <button class="b sm" data-go="home">Back to Home</button>
+          </div>
+          <div class="nt i" style="margin-top:11px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
+            <div>Behaviour is unchanged from today's <code>AdminDenied</code>. The rail's Admin item is still shown — hiding it would make a legitimate owner think the app was broken after a permission change. <b>Owner-gated sub-tabs are different</b>: History → Security log and Settings → API usage are hidden entirely, because a regular user has no reason to know they exist.</div></div>
+        </div>
+
+        <!-- 401 — session expired mid-use -->
+        <div class="card">
+          <div class="ch"><span class="p nu">401 · Authentication required</span><div class="sp"></div>
+            <span style="font-size:11px;color:var(--faint)">8h idle / 7d absolute</span></div>
+          <div class="unav">
+            <div class="ei"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg></div>
+            <h3>Your session expired</h3>
+            <p>Sessions last 8 hours idle, and 7 days maximum however active you are. Sign in again — you'll come straight back to this page.</p>
+            <button class="b p sm">Sign in again</button>
+          </div>
+          <div class="nt i" style="margin-top:11px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
+            <div>Preserve the intended route across the re-login so a user who was mid-task lands back where they were, not on Home. A <code>403 Invalid CSRF token</code> uses the same panel with "Reload the page" instead.</div></div>
+        </div>
+      </div>
+    </section>
+
+    <div class="foot">Static prototype · no live data. Desktop/Mobile and Populated/Loading/Empty/Error toggles are top-left.</div>
+    </div>
+  </div>
+
+  <!-- ════════ MOBILE BOTTOM BAR ════════ -->
+  <nav class="bbar">
+    <button aria-current="page" data-go="home">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.8V20h14V9.8"/></svg>Home</button>
+    <button data-go="mint">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4.5 13H11l-1 9 8.5-11H12l1-9Z"/></svg>Mint</button>
+    <button data-go="auto">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>Auto</button>
+    <button data-go="wallets">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="18" height="13" rx="2.5"/><path d="M3 10h18"/></svg>Wallets</button>
+    <button id="moreb">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg>More</button>
+  </nav>
+
+  <div class="sheet-bd" id="sheetbd"></div>
+  <div class="sheet" id="sheet">
+    <button class="grabb" id="grabb" aria-label="Close menu"><i></i></button>
+    <div class="sheet-grid">
+      <button data-go="history"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg>History</button>
+      <button data-go="account"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="8" r="3.6"/><path d="M4.5 20c.8-4 3.8-6 7.5-6s6.7 2 7.5 6"/></svg>Account</button>
+      <button data-go="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2"/></svg>Settings</button>
+      <button data-go="admin"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M12 3l7 3v5c0 5-3 8.5-7 10-4-1.5-7-5-7-10V6z"/></svg>Admin</button>
+      <button data-go="states"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M5.6 5.6l12.8 12.8"/></svg>Auth states</button>
+      <button id="cmdm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>Search</button>
+    </div>
+  </div>
+
+  <!-- ════════ ACCOUNT MENU ════════ -->
+  <div class="acct-pop" id="acctpop">
+    <div class="acct-h"><div class="an">deon</div><div class="ai mono">user 4f9c…21ab</div></div>
+    <button class="acct-i" data-go="settings">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M13 2 4.5 13H11l-1 9 8.5-11H12l1-9Z"/></svg>
+      <span class="sp">Transaction mode</span><span class="mchip">Normie</span></button>
+    <button class="acct-i" data-go="account">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="8" r="3.6"/><path d="M4.5 20c.8-4 3.8-6 7.5-6s6.7 2 7.5 6"/></svg>
+      <span class="sp">Account</span></button>
+    <button class="acct-i" data-go="settings">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2"/></svg>
+      <span class="sp">Settings</span></button>
+    <div class="acct-tog"><span class="sp">Appearance</span>
+      <div class="tmode">
+        <button data-t="ghost-mint-light" title="Light" aria-label="Light theme"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.2 4.2l1.4 1.4M18.4 18.4l1.4 1.4M1 12h2M21 12h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></svg></button>
+        <button data-t="ghost-mint" class="on" title="Dark" aria-label="Dark theme"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a7 7 0 0 0 10.5 10.5z"/></svg></button>
+      </div></div>
+    <button class="acct-i danger">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M15 17l5-5-5-5M20 12H9M11 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h5"/></svg>
+      <span class="sp">Log out</span></button>
+  </div>
+
+  <!-- ════════ BELL ════════ -->
+  <div class="bell-pop" id="bellpop">
+    <div class="bell-h"><h3>Notifications</h3></div>
+    <div class="bell-tabs">
+      <button class="on" data-bt="0">Needs you <span class="cnt hot" style="margin-left:3px">2</span></button>
+      <button data-bt="1">Recent</button>
+    </div>
+    <div class="bell-body">
+      <div class="bell-sec bp">Pending confirmations · durable <span class="cnt hot">2</span></div>
+      <div class="bell-i bp"><span class="bell-d" style="background:var(--warn)"></span>
+        <div class="bell-m"><div class="bm">Approve social-triggered mint</div>
+          <div class="bs">@zeneca_33 → 0x9f21…8c04 · expires in 7m</div>
+          <div class="br" style="margin-top:7px"><button class="b p sm">Approve</button><button class="b g sm">Reject</button></div></div></div>
+      <div class="bell-i bp"><span class="bell-d" style="background:var(--loss)"></span>
+        <div class="bell-m"><div class="bm">Bypass challenge</div>
+          <div class="bs">Copy 0x8f2a…1d90 · type CONFIRM to enable</div>
+          <div class="br" style="margin-top:7px"><button class="b sm">Open challenge</button></div></div></div>
+
+      <div class="bell-sec br2" style="display:none">Recent · session scratchpad</div>
+      <div class="bell-i br2" style="display:none"><span class="bell-d" style="background:var(--gain)"></span>
+        <div class="bell-m"><div class="bm">Mint confirmed · Azuki Elementals</div><div class="bs">2m ago</div></div>
+        <span class="bell-cat">Money</span></div>
+      <div class="bell-i br2" style="display:none"><span class="bell-d" style="background:var(--accent)"></span>
+        <div class="bell-m"><div class="bm">Sniper copied 0x8f2a…1d90</div><div class="bs">18m ago</div></div>
+        <span class="bell-cat">Auto</span></div>
+      <div class="bell-i br2" style="display:none"><span class="bell-d" style="background:var(--warn)"></span>
+        <div class="bell-m"><div class="bm">New browser session started</div><div class="bs">2h ago</div></div>
+        <span class="bell-cat">Security</span></div>
+    </div>
+    <div class="bell-act"><p style="font-size:11px;color:var(--faint)">The badge counts pending confirmations only. Recent is a capped session scratchpad — never an inbox.</p></div>
+  </div>
+
+  <div class="toasts" id="toasts"></div>
+</div>
+</div>
+</div>
+</div>
+
+<!-- ════════ COMMAND PALETTE ════════ -->
+<div class="cmd-bd" id="cmdbd">
+  <div class="cmd">
+    <div class="cmd-in">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      <input id="cmdi" placeholder="Try “P&amp;L”, “watch rules”, “ban”…" autocomplete="off">
+    </div>
+    <div class="cmd-list" id="cmdlist"></div>
+  </div>
+</div>
+
+<script>
+var $=function(s,r){return (r||document).querySelector(s);};
+var $$=function(s,r){return Array.prototype.slice.call((r||document).querySelectorAll(s));};
+
+/* ---------- routing ---------- */
+function go(id){
+  $$('.pg').forEach(function(p){p.classList.remove('on');});
+  var el=document.getElementById('p-'+id); if(el)el.classList.add('on');
+  $$('.nav[data-go],.bbar button[data-go]').forEach(function(n){
+    if(n.dataset.go===id)n.setAttribute('aria-current','page'); else n.removeAttribute('aria-current');
+  });
+  closeSheet();closeCmd();closeAcct();$('#bellpop').classList.remove('on');
+  $$('.scroll').forEach(function(s){s.scrollTop=0;});window.scrollTo(0,0);
+}
+/* Jump straight to a sub-tab: data-jump="<subtabsGroupId>:<tabValue>".
+   Used by the Mint page's batch cross-link and by the command palette's Actions,
+   so a merged page's deeper tabs are reachable in one step instead of two. */
+function jumpTo(spec){
+  if(!spec)return;
+  var parts=spec.split(':'),group=document.getElementById(parts[0]);
+  if(!group)return;
+  var btn=$$('button',group).filter(function(b){
+    return Object.keys(b.dataset).some(function(k){return b.dataset[k]===parts[1];});
+  })[0];
+  if(!btn)return;
+  btn.click();
+  if(btn.scrollIntoView)btn.scrollIntoView({block:'nearest',inline:'center'});
+}
+
+document.addEventListener('click',function(e){
+  var t=e.target.closest('[data-go]'); if(t){go(t.dataset.go);}
+  var j=e.target.closest('[data-jump]'); if(j){jumpTo(j.dataset.jump);}
+  var th=e.target.closest('[data-t]');
+  if(th){
+    document.documentElement.dataset.theme=th.dataset.t;
+    $$('.tmode button').forEach(function(b){b.classList.toggle('on',b.dataset.t===th.dataset.t);});
+  }
+});
+
+/* ---------- harness: viewport + populated/empty ---------- */
+var stage=$('#stage'),app=$('#app');
+function setView(v){
+  stage.dataset.view=v;
+  if(v==='mobile')app.setAttribute('data-m',''); else app.removeAttribute('data-m');
+  $('#vd').classList.toggle('on',v==='desktop');$('#vm').classList.toggle('on',v==='mobile');
+}
+$('#vd').onclick=function(){setView('desktop');};
+$('#vm').onclick=function(){setView('mobile');};
+if(window.innerWidth<900)setView('mobile');
+
+var STATES={sf:'full',sl:'loading',se:'empty',sx2:'error'};
+function setState(s){
+  app.dataset.state=s;
+  Object.keys(STATES).forEach(function(id){$('#'+id).classList.toggle('on',STATES[id]===s);});
+}
+Object.keys(STATES).forEach(function(id){$('#'+id).onclick=function(){setState(STATES[id]);};});
+
+/* ---------- collapsible cards (mobile only) ---------- */
+$$('.col').forEach(function(card){
+  var head=card.querySelector('.colh'),body=card.querySelector('.colb');
+  if(!head||!body)return;
+  if(!body.id)body.id='colb-'+Math.random().toString(36).slice(2,9);
+  head.setAttribute('aria-controls',body.id);
+  head.setAttribute('aria-expanded',card.dataset.open==='1'?'true':'false');
+  head.onclick=function(){
+    var open=card.dataset.open==='1';
+    card.dataset.open=open?'0':'1';
+    head.setAttribute('aria-expanded',open?'false':'true');
+  };
+});
+
+/* ---------- reorder: handle click moves up, arrow keys move either way ---------- */
+function moveBlock(handle,dir){
+  var blk=handle.closest('.blk'),parent=blk&&blk.parentElement;
+  if(!parent)return;
+  var sibs=$$('.blk',parent),i=sibs.indexOf(blk);
+  if(dir<0&&i>0)parent.insertBefore(blk,sibs[i-1]);
+  else if(dir>0&&i<sibs.length-1)parent.insertBefore(sibs[i+1],blk);
+  handle.focus();
+}
+$$('.dragh').forEach(function(h){
+  h.onclick=function(e){e.stopPropagation();moveBlock(h,-1);};
+  h.onkeydown=function(e){
+    if(e.key==='ArrowUp'){e.preventDefault();moveBlock(h,-1);}
+    if(e.key==='ArrowDown'){e.preventDefault();moveBlock(h,1);}
+  };
+});
+
+/* ---------- more sheet ---------- */
+var sheet=$('#sheet'),sbd=$('#sheetbd');
+function openSheet(){sheet.classList.add('on');sbd.classList.add('on');}
+function closeSheet(){sheet.classList.remove('on');sbd.classList.remove('on');}
+$('#moreb').onclick=openSheet;
+sbd.onclick=closeSheet;
+$('#grabb').onclick=closeSheet;
+
+/* ---------- bell ---------- */
+var bell=$('#bellpop'),bellbtn=$('#bellbtn');
+bellbtn.onclick=function(e){
+  e.stopPropagation();closeAcct();
+  var on=bell.classList.toggle('on');
+  bellbtn.setAttribute('aria-expanded',on?'true':'false');
+};
+$$('.bell-tabs button').forEach(function(b){
+  b.onclick=function(){
+    $$('.bell-tabs button').forEach(function(x){x.classList.remove('on');});
+    b.classList.add('on');
+    var pending=b.dataset.bt==='0';
+    $$('.bell-body .bp').forEach(function(el){el.style.display=pending?'':'none';});
+    $$('.bell-body .br2').forEach(function(el){el.style.display=pending?'none':'';});
+  };
+});
+
+/* ---------- account menu ---------- */
+var acct=$('#acctpop'),avbtn=$('#avbtn');
+function closeAcct(){acct.classList.remove('on');avbtn.setAttribute('aria-expanded','false');}
+avbtn.onclick=function(e){
+  e.stopPropagation();bell.classList.remove('on');bellbtn.setAttribute('aria-expanded','false');
+  var on=acct.classList.toggle('on');
+  avbtn.setAttribute('aria-expanded',on?'true':'false');
+};
+document.addEventListener('click',function(e){
+  if(!bell.contains(e.target)&&!e.target.closest('#bellbtn')){bell.classList.remove('on');bellbtn.setAttribute('aria-expanded','false');}
+  if(!acct.contains(e.target)&&!e.target.closest('#avbtn'))closeAcct();
+});
+
+/* ---------- sub-tabs (generic + admin + settings panels) ---------- */
+$$('.subtabs').forEach(function(g){
+  g.querySelectorAll('button').forEach(function(b){
+    b.addEventListener('click',function(){
+      g.querySelectorAll('button').forEach(function(x){x.classList.remove('on');});
+      b.classList.add('on');
+      [['ad','.adp'],['st','.stp'],['mt','.mtp'],['at','.atp'],['wl','.wlp'],['hs','.hsp']]
+        .forEach(function(pair){
+          var key=b.dataset[pair[0]];if(!key)return;
+          $$(pair[1]).forEach(function(p){p.classList.remove('on');});
+          var target=document.getElementById(pair[0]+'-'+key);if(target)target.classList.add('on');
+        });
+    });
+  });
+});
+$$('.seg,.qb').forEach(function(g){
+  g.querySelectorAll('button').forEach(function(b){
+    b.onclick=function(){g.querySelectorAll('button').forEach(function(x){x.classList.remove('on');});b.classList.add('on');};
+  });
+});
+
+/* ---------- search clear ---------- */
+$$('.sf').forEach(function(f){
+  var input=f.querySelector('input'),x=f.querySelector('.sx');
+  if(!input||!x)return;
+  function sync(){x.style.display=input.value?'grid':'none';}
+  sync();input.oninput=sync;
+  x.onclick=function(){input.value='';sync();input.focus();};
+});
+
+/* ---------- command palette ---------- */
+var CMDS=[
+  {g:'Pages',n:'Home',go:'home'},{g:'Pages',n:'Mint',go:'mint'},{g:'Pages',n:'Automation',go:'auto'},
+  {g:'Pages',n:'Wallets',go:'wallets'},{g:'Pages',n:'History',go:'history'},{g:'Pages',n:'Admin',go:'admin'},
+  {g:'Pages',n:'Account',go:'account'},{g:'Pages',n:'Settings',go:'settings'},
+  {g:'Moved',n:'P&L',go:'wallets',h:'Wallets → Performance',k:'pnl profit loss'},
+  {g:'Moved',n:'Tasks',go:'mint',h:'Mint → Schedule',k:'scheduled task'},
+  {g:'Moved',n:'Watch Rules',go:'auto',h:'Automation → Social rules',k:'watch social twitter'},
+  {g:'Moved',n:'Target Policies',go:'auto',h:'Automation → Policies',k:'policy bypass target'},
+  {g:'Actions',n:'Mint now',go:'mint',k:'buy'},{g:'Actions',n:'Create wallet',go:'wallets',k:'new wallet'},
+  {g:'Actions',n:'Batch mint',go:'mint',jump:'mnttabs:bat',h:'Mint → Batch',k:'batch bulk multiple wallets'},
+  {g:'Actions',n:'Batch wallet import',go:'admin',jump:'adtabs:bi',h:'Admin → Batch import',k:'batch bulk import keys'},
+  {g:'Actions',n:'Schedule a mint',go:'mint',jump:'mnttabs:sch',h:'Mint → Schedule',k:'later task'},
+  {g:'Actions',n:'Export a keystore',go:'wallets',jump:'wltabs:exp',h:'Wallets → Export',k:'key backup'},
+  {g:'Actions',n:'Transaction mode',go:'settings',k:'degen fast normie cautious mode'},
+  {g:'Actions',n:'Ban a user',go:'admin',jump:'adtabs:uc',h:'Admin → Users & ceilings',k:'ban suspend deactivate'},
+  {g:'Actions',n:'System health',go:'admin',jump:'adtabs:sh',h:'Admin → System health',k:'health status'},
+  {g:'Reference',n:'Full-page auth states',go:'states',h:'Blocked · Denied · Expired',k:'403 401 blocked banned suspended denied session expired'},
+  {g:'Wallets',n:'Primary — 2.410 ETH',go:'wallets',h:'0x7a3f…9c21'},
+  {g:'Wallets',n:'Trading — 1.664 ETH',go:'wallets',h:'0x11bd…4e08'}
+];
+var cmdbd=$('#cmdbd'),cmdi=$('#cmdi'),cmdlist=$('#cmdlist');
+function renderCmd(q){
+  q=(q||'').toLowerCase();
+  var hits=CMDS.filter(function(c){
+    return !q||c.n.toLowerCase().indexOf(q)>-1||(c.k||'').indexOf(q)>-1||(c.h||'').toLowerCase().indexOf(q)>-1;});
+  if(!hits.length){cmdlist.innerHTML='<div class="cmd-g">No matches</div>';return;}
+  var html='',lastG='';
+  hits.forEach(function(c,i){
+    if(c.g!==lastG){html+='<div class="cmd-g">'+c.g+'</div>';lastG=c.g;}
+    html+='<button class="cmd-i'+(i===0?' sel':'')+'" data-go="'+c.go+'"'+(c.jump?' data-jump="'+c.jump+'"':'')+'>'
+      +'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>'
+      +'<span class="cmd-n">'+c.n+'</span>'+(c.h?'<span class="cmd-h">'+c.h+'</span>':'')+'</button>';
+  });
+  cmdlist.innerHTML=html;
+}
+function openCmd(){cmdbd.classList.add('on');cmdi.value='';renderCmd('');setTimeout(function(){cmdi.focus();},30);}
+function closeCmd(){cmdbd.classList.remove('on');}
+$('#opencmd').onclick=openCmd;
+$('#cmdm').onclick=openCmd;
+cmdi.oninput=function(){renderCmd(cmdi.value);};
+cmdbd.onclick=function(e){if(e.target===cmdbd)closeCmd();};
+document.addEventListener('keydown',function(e){
+  if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='k'){e.preventDefault();openCmd();}
+  if(e.key==='Escape'){closeCmd();closeSheet();closeAcct();bell.classList.remove('on');bellbtn.setAttribute('aria-expanded','false');}
+});
+
+/* ---------- toast demo ---------- */
+var TOASTS=[
+  {c:'s',t:'Mint confirmed',s:'Azuki Elementals · 0.084 ETH',k:'Money'},
+  {c:'w',t:'Watch rule failing',s:'@zeneca_33 · 4 failed polls',k:'Automation'},
+  {c:'i',t:'Address copied',s:'Interface feedback only',k:null}
+];
+var ti=0;
+function pushToast(){
+  var d=TOASTS[ti++%TOASTS.length],host=$('#toasts');
+  var ic=d.c==='s'?'<path d="M5 13l4 4L19 7"/>':d.c==='w'?'<path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/>':'<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/>';
+  var el=document.createElement('div');
+  el.className='toast '+d.c;
+  el.innerHTML='<svg class="ti" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round">'+ic+'</svg>'
+    +'<div class="tt"><b>'+d.t+'</b><span>'+d.s+'</span>'+(d.k?'<span class="keep">↳ kept in bell · '+d.k+'</span>':'')+'</div>'
+    +'<button class="tx" aria-label="Dismiss">×</button>';
+  el.querySelector('.tx').onclick=function(){el.remove();};
+  host.appendChild(el);
+  setTimeout(function(){el.remove();},5200);
+}
+setTimeout(pushToast,1200);setTimeout(pushToast,3400);setTimeout(pushToast,5600);
+
+/* ---------- P&L bars ---------- */
+// Mostly negative on purpose: autoRecordPnl writes sale:0, so an unsold mint is a loss.
+// The positive days are records where a sale price was entered by hand. See data contract §5.5.
+var V=[-.012,-.004,.086,-.009,-.021,-.006,-.014,.052,-.008,-.003,
+       -.018,-.011,.041,-.007,-.024,-.005,-.016,-.009,.038,-.012,
+       -.006,-.019,-.008,.044,-.013,-.005,-.022,-.010,.031,-.015];
+function drawBars(id,series){
+  var g=$('#'+id);if(!g)return;
+  var W=620,MID=56,n=series.length,gap=2,bw=(W-(n-1)*gap)/n;
+  var max=Math.max.apply(null,series.map(Math.abs)),h='';
+  series.forEach(function(v,i){
+    var x=i*(bw+gap),ht=Math.max(2,Math.abs(v)/max*(MID-8)),y=v>=0?MID-ht:MID;
+    h+='<rect x="'+x.toFixed(2)+'" y="'+y.toFixed(2)+'" width="'+bw.toFixed(2)+'" height="'+ht.toFixed(2)
+      +'" rx="3" fill="'+(v>=0?'var(--gain)':'var(--loss)')+'"><title>Day '+(i+1)+': '
+      +(v>=0?'+':'−')+Math.abs(v).toFixed(3)+' ETH</title></rect>';
+  });
+  g.innerHTML=h;
+}
+drawBars('bars',V);
+drawBars('bars2',V);
+</script>
+</body>
+</html>

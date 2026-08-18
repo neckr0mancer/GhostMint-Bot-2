@@ -1,21 +1,76 @@
-/* global clearTimeout, CustomEvent, FormData, localStorage, setTimeout */
+/* global clearInterval, clearTimeout, CustomEvent, FormData, localStorage, setInterval, setTimeout, URLSearchParams */
 import React,{useCallback,useEffect,useRef,useState} from 'react';
 import Admin from './Admin.jsx';
-import {ACTIVITY_EVENTS,api,confirmDialog,ConfirmHost,consumePendingMintPrefill,CopyButton,csrf,downloadFile,Empty,EVM_CHAINS,Field,Form,getNotificationLog,notify,Notice,PageTitle,Pager,promptDialog,relativeTime,Select,Skeleton,StatusPill,subscribeNotificationLog,ToastHost,useLoad,useLiveSocket} from './shared.jsx';
+import {ACTIVITY_EVENTS,api,Ledger,NumberField,SectionCard,confirmDialog,ConfirmHost,consumePendingMintPrefill,CopyButton,csrf,downloadFile,Empty,EVM_CHAINS,Field,Form,getNotificationLog,notify,Notice,PageTitle,Pager,promptDialog,relativeTime,Select,Skeleton,StatusPill,SubTabs,subscribeNotificationLog,ToastHost,useLoad,useLiveSocket} from './shared.jsx';
 import Dashboard from './Dashboard.jsx';
-const PAGES=['Dashboard','Wallets','Minting','Tasks','Snipers','Watch Rules','Target Policies','Activity','P&L','Settings','Account'];
+// Phase 4, unit 1 of 5 (brief §2). The 11->5 merge lands one page at a time so any single merge
+// can be reverted alone. Mint = Minting + Tasks is done; Automation, Wallets+P&L and History are
+// still their own pages and stay fully routable until their own unit lands, so nothing is ever
+// unreachable mid-migration.
+// Order, labels and grouping are the prototype's, not the old app's: Operate holds the five
+// places you work, the footer holds the three account-level ones.
+const PAGES=['Home','Mint','Automation','Wallets','History','Settings','Account'];
 // Plain History API routing (no router dependency): each page maps to a real /dashboard/<slug>
 // URL so a reload lands back where you were instead of always resetting to Dashboard. The server
 // already serves index.html for every /dashboard/* path (src/server.js), so this needs no backend
 // route changes.
-const PAGE_SLUGS={Dashboard:'',Wallets:'wallets',Minting:'minting',Tasks:'tasks',Snipers:'snipers','Watch Rules':'watch-rules','Target Policies':'target-policies',Activity:'activity','P&L':'pnl',Settings:'settings',Account:'account'};
+const PAGE_SLUGS={Home:'',Mint:'mint',Automation:'automation',Wallets:'wallets',History:'history',Settings:'settings',Account:'account'};
 const SLUG_PAGES=Object.fromEntries(Object.entries(PAGE_SLUGS).map(([page,slug])=>[slug,page]));
-function pageFromLocation(){const segment=window.location.pathname.replace(/^\/dashboard\/?/,'').replace(/\/+$/,'');return SLUG_PAGES[segment]||'Dashboard';}
+// A bookmark that worked yesterday works tomorrow (brief §2, "Non-negotiable on routing"). A
+// retired slug resolves to its new page WITH the right sub-tab pre-selected, so /dashboard/tasks
+// lands on Mint's Schedule tab rather than dumping the user on Mint now and making them hunt for
+// what moved. The URL is rewritten rather than left showing the dead slug, so what gets
+// re-bookmarked is the new location.
+const RETIRED_SLUGS={
+  minting:{page:'Mint',tab:'now'},
+  tasks:{page:'Mint',tab:'schedule'},
+  snipers:{page:'Automation',tab:'snipers'},
+  'watch-rules':{page:'Automation',tab:'social'},
+  'target-policies':{page:'Automation',tab:'policies'},
+  pnl:{page:'Wallets',tab:'performance'},
+  activity:{page:'History',tab:'activity'},
+};
+// The same redirect, for in-app go() calls rather than URLs. ~14 call sites across the four
+// legacy theme widget packs, the mobile FAB and Home still say go('Minting') / go('Tasks') --
+// with those names gone from PAGE_SLUGS and VIEWS, each would have produced /dashboard/undefined
+// and a blank page. Aliasing inside go() fixes every one of them at a single point INCLUDING the
+// three secondary theme packs, which brief §9.1-D15 says to carry unmodified. Each later merge
+// unit adds its own aliases here rather than editing call sites it does not otherwise own.
+const PAGE_ALIASES={
+  Minting:{page:'Mint',tab:'now'},Tasks:{page:'Mint',tab:'schedule'},
+  Snipers:{page:'Automation',tab:'snipers'},'Watch Rules':{page:'Automation',tab:'social'},
+  'Target Policies':{page:'Automation',tab:'policies'},'P&L':{page:'Wallets',tab:'performance'},Activity:{page:'History',tab:'activity'},
+};
+// The sub-tab lives in ?tab= rather than a path segment: it is view state within one page, and a
+// query param keeps SLUG_PAGES a flat one-level map instead of needing nested route parsing.
+function pageFromLocation(){
+  const path=window.location.pathname.replace(/^\/dashboard\/?/,'').replace(/\/+$/,'');
+  const query=new URLSearchParams(window.location.search);
+  const tab=query.get('tab')||null;
+  const target=query.get('target')||null;
+  // Deep links carry an id as a second segment (/dashboard/target-policies/:id). Split it off so
+  // the slug still resolves, and carry the id through as ?target= so the bookmark keeps working
+  // rather than 404ing into Dashboard (brief §2, "including deep links").
+  const [segment,deepId]=path.split('/');
+  const retired=RETIRED_SLUGS[segment];
+  if(retired)return {page:retired.page,tab:retired.tab,target:deepId||target,redirected:true};
+  return {page:SLUG_PAGES[segment]||'Home',tab,target,redirected:false};
+}
+function pathFor(page,tab,target){
+  const query=new URLSearchParams();
+  if(tab)query.set('tab',tab);
+  if(target)query.set('target',target);
+  const search=query.toString();
+  return `/dashboard/${PAGE_SLUGS[page]}${search?`?${search}`:''}`;
+}
 // The collapsible rail's expanded/collapsed state is a standing layout preference (like an editor's
 // sidebar), not per-session UI state -- persisted in localStorage so it survives a reload, shared
 // between the regular dashboard and the admin shell since it's visually the same rail.
 const RAIL_EXPANDED_KEY='ghostmint-rail-expanded';
-function readRailExpanded(){try{return localStorage.getItem(RAIL_EXPANDED_KEY)==='true';}catch{return false;}}
+// Pinned expanded while the design is being matched to the prototype. The collapsed rail is a
+// second layout that would have to be kept identical too, and it is not the state the prototype
+// shows. Restore the stored preference once the expanded rail matches.
+function readRailExpanded(){return true;}
 function writeRailExpanded(value){try{localStorage.setItem(RAIL_EXPANDED_KEY,String(value));}catch{/* private browsing or storage disabled -- falls back to session-only */}}
 const RAIL_THEMES=new Set(['ghost-mint','ghost-mint-light']);
 const THEME_OPTIONS=[{value:'ghost-mint',label:'Ghost Mint'},{value:'ghost-mint-light',label:'Ghost Mint Light'},{value:'clean-vault',label:'Clean Vault'},{value:'neon-arcade',label:'Neon Arcade'},{value:'quiet-ledger',label:'Quiet Ledger'}];
@@ -33,13 +88,15 @@ const SOLANA_ICON=<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><p
 const BOLT_PATH="M13 2 4 14h6l-1 8 9-12h-6z";
 const ICON_PROPS={viewBox:"0 0 24 24",fill:"none",stroke:"currentColor",strokeWidth:"1.8",strokeLinecap:"round",strokeLinejoin:"round",xmlns:"http://www.w3.org/2000/svg"};
 const NAV_ICONS={
-  Dashboard:<svg {...ICON_PROPS}><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>,
+  Home:<svg {...ICON_PROPS}><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>,
   Wallets:<svg {...ICON_PROPS}><rect x="3" y="6" width="18" height="13" rx="2.5"/><path d="M3 10h18"/><circle cx="16.5" cy="14.5" r="1" fill="currentColor" stroke="none"/></svg>,
-  Minting:<svg {...ICON_PROPS}><path d={BOLT_PATH}/></svg>,
+  Mint:<svg {...ICON_PROPS}><path d={BOLT_PATH}/></svg>,
   Tasks:<svg {...ICON_PROPS}><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg>,
+  Automation:<svg {...ICON_PROPS}><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>,
   Snipers:<svg {...ICON_PROPS}><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>,
   'Watch Rules':<svg {...ICON_PROPS}><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.5"/></svg>,
   'Target Policies':<svg {...ICON_PROPS}><path d="M12 2 4 5v6c0 5 3.4 8.7 8 9 4.6-.3 8-4 8-9V5z"/></svg>,
+  History:<svg {...ICON_PROPS}><path d="M2 12h4l2 7 4-14 2 7h8"/></svg>,
   Activity:<svg {...ICON_PROPS}><path d="M2 12h4l2 7 4-14 2 7h8"/></svg>,
   'P&L':<svg {...ICON_PROPS}><path d="M5 19v-6M12 19V8M19 19v-10"/></svg>,
   Settings:<svg {...ICON_PROPS}><circle cx="12" cy="12" r="3.2"/><path d="M12 3v2.5M12 18.5V21M4.5 7.5l2.2 1.3M17.3 15.2l2.2 1.3M3 12h2.5M18.5 12H21M4.5 16.5l2.2-1.3M17.3 8.8l2.2-1.3"/></svg>,
@@ -78,26 +135,31 @@ async function promptSetSecurityPassword({isChange,onProfileChange}){
     return true;
   }catch(value){notify(value.message,{type:'error'});return false;}
 }
-function Wallets({profile,onProfileChange}){const {data:wallets,error,load}=useLoad('/api/wallets',[],'wallets.changed');const [createChain,setCreateChain]=useState('evm');const [importChain,setImportChain]=useState('evm');const [importMethod,setImportMethod]=useState('privateKey');const [query,setQuery]=useState('');async function submit(event,path){event.preventDefault();const form=event.currentTarget;const values=Object.fromEntries(new FormData(form));try{await api(path,{method:'POST',body:JSON.stringify(values)});form.reset();notify('Wallet saved securely.',{type:'success'});load();}catch(value){notify(value.message,{type:'error'});}}async function remove(label){if(!await confirmDialog(`Remove wallet ${label}? This cannot be undone.`))return;try{await api(`/api/wallets/${encodeURIComponent(label)}`,{method:'DELETE',body:JSON.stringify({confirmation:'CONFIRM'})});load();}catch(value){notify(value.message,{type:'error'});}}
-  // The server never returns a raw private key to the browser -- it re-encrypts the stored key
-  // server-side into a standard V3 keystore, encrypted under the account's own security password
-  // (set once via promptSetSecurityPassword, reused for every export) rather than a fresh one chosen
-  // per export, so there is exactly one password to remember for every sensitive action.
-  async function exportKey(label){
-    if(!profile.securityPasswordSet){
-      if(!await confirmDialog('Exporting a key needs a security password first. It will then be required for this and every future sensitive action. Set it now?'))return;
-      if(!await promptSetSecurityPassword({isChange:false,onProfileChange}))return;
-    }
-    if(!await confirmDialog(`Export the encrypted keystore for ${label}? Your security password will encrypt it.`))return;
-    const securityPassword=await promptDialog('Enter your security password.',{placeholder:'Security password',masked:true});
-    if(!securityPassword)return;
-    try{
-      const {keystore}=await api(`/api/wallets/${encodeURIComponent(label)}/export`,{method:'POST',body:JSON.stringify({securityPassword,confirmation:'CONFIRM'})});
-      downloadFile(`${label}-keystore.json`,keystore);
-      notify('Encrypted keystore downloaded. Store it and your security password separately and securely.',{type:'success'});
-    }catch(value){notify(value.message,{type:'error'});}
+// Module-level so both the Holdings tab's per-wallet action and the Export tab share ONE
+// implementation. Two copies of a key-export flow is exactly the kind of divergence that ends
+// with one of them missing a confirmation step.
+//
+// The server never returns a raw private key to the browser -- it re-encrypts the stored key
+// server-side into a standard V3 keystore, encrypted under the account's own security password
+// (set once via promptSetSecurityPassword, reused for every export) rather than a fresh one chosen
+// per export, so there is exactly one password to remember for every sensitive action.
+async function exportWalletKeystore(label,{profile,onProfileChange}){
+  if(!profile.securityPasswordSet){
+    if(!await confirmDialog('Exporting a key needs a security password first. It will then be required for this and every future sensitive action. Set it now?'))return;
+    if(!await promptSetSecurityPassword({isChange:false,onProfileChange}))return;
   }
-  const normalized=query.trim().toLowerCase();const filtered=wallets?(normalized?wallets.filter(wallet=>[wallet.label,wallet.address,wallet.chain].filter(Boolean).some(value=>String(value).toLowerCase().includes(normalized))):wallets):[];return <><PageTitle eyebrow="Core operations" title="Wallets" subtitle="Create server-side encrypted wallets, check balances, and manage imports."/><Notice error={error}/><div className="page-toolbar"><label className="page-search">Find a wallet<input type="search" value={query} placeholder="Label, address, chain…" onChange={e=>setQuery(e.target.value)}/></label></div>{wallets===null?<Skeleton/>:<div className="card-grid wallet-grid">{filtered.map(wallet=><article className="card" key={wallet.label}><div><span className="pill">{wallet.chain}</span><h2>{wallet.label}</h2></div><div className="user-card-identity"><code>{wallet.address}</code><CopyButton value={wallet.address} label="Copy wallet address"/></div><div className="wallet-balances">{wallet.balances?.length?wallet.balances.map(b=><div className="wallet-balance-row" key={b.chain}><span>{chainMeta(b.chain).label}</span><strong>{b.balance??'Unavailable'} {b.symbol}</strong></div>):<div className="wallet-balance-row">Unavailable</div>}</div><div className="actions"><button className="small quiet" onClick={()=>exportKey(wallet.label)}>Export key</button><button className="small danger" onClick={()=>remove(wallet.label)}>Remove</button></div></article>)}{filtered.length===0&&<Empty text={normalized?'No wallets match this search.':'No wallets yet. Create the recommended server-side wallet below.'}/>}</div>}<div className="form-grid wallet-forms"><Form className="form-wallet-create" title="Create wallet" note="Recommended - the private key is generated, encrypted, and never returned." onSubmit={e=>submit(e,'/api/wallets/create')}><Field name="label" label="Label" placeholder="$1 and a dream"/><WalletChainSelect name="chain" label="Chain" value={createChain} onChange={e=>setCreateChain(e.target.value)}/><button>Create securely</button></Form><Form className="form-wallet-import" title="Import wallet" warning="Not recommended: your key or seed phrase crosses browser memory and network transit. Use HTTPS; it is encrypted immediately and never returned." onSubmit={e=>submit(e,'/api/wallets/import')}><Field name="label" label="Label" placeholder="$1 and a dream"/><WalletChainSelect name="chain" label="Chain" value={importChain} onChange={e=>setImportChain(e.target.value)}/><div className="method-toggle"><span>Import using</span><div className="segmented" role="radiogroup" aria-label="Import method"><button type="button" aria-pressed={importMethod==='privateKey'} className={importMethod==='privateKey'?'active':''} onClick={()=>setImportMethod('privateKey')}>Private key</button><button type="button" aria-pressed={importMethod==='seedPhrase'} className={importMethod==='seedPhrase'?'active':''} onClick={()=>setImportMethod('seedPhrase')}>Seed phrase</button></div></div><input type="hidden" name="importMethod" value={importMethod}/>{importMethod==='privateKey'?<Field name="privateKey" label="Private key" type="password" autoComplete="off"/>:<label>Seed phrase (12-24 words)<textarea className="compact" name="seedPhrase" required autoComplete="off" placeholder="witch collapse practice feed shame open despair creek road again ice least"/></label>}<button className="quiet">Import over HTTPS</button></Form></div></>}
+  if(!await confirmDialog(`Export the encrypted keystore for ${label}? Your security password will encrypt it.`))return;
+  const securityPassword=await promptDialog('Enter your security password.',{placeholder:'Security password',masked:true});
+  if(!securityPassword)return;
+  try{
+    const {keystore}=await api(`/api/wallets/${encodeURIComponent(label)}/export`,{method:'POST',body:JSON.stringify({securityPassword,confirmation:'CONFIRM'})});
+    downloadFile(`${label}-keystore.json`,keystore);
+    notify('Encrypted keystore downloaded. Store it and your security password separately and securely.',{type:'success'});
+  }catch(value){notify(value.message,{type:'error'});}
+}
+function Wallets({profile,onProfileChange}){const {data:wallets,error,load}=useLoad('/api/wallets',[],'wallets.changed');const [createChain,setCreateChain]=useState('evm');const [importChain,setImportChain]=useState('evm');const [importMethod,setImportMethod]=useState('privateKey');const [query,setQuery]=useState('');async function submit(event,path){event.preventDefault();const form=event.currentTarget;const values=Object.fromEntries(new FormData(form));try{await api(path,{method:'POST',body:JSON.stringify(values)});form.reset();notify('Wallet saved securely.',{type:'success'});load();}catch(value){notify(value.message,{type:'error'});}}async function remove(label){if(!await confirmDialog(`Remove wallet ${label}? This cannot be undone.`))return;try{await api(`/api/wallets/${encodeURIComponent(label)}`,{method:'DELETE',body:JSON.stringify({confirmation:'CONFIRM'})});load();}catch(value){notify(value.message,{type:'error'});}}
+  const exportKey=label=>exportWalletKeystore(label,{profile,onProfileChange});
+  const normalized=query.trim().toLowerCase();const filtered=wallets?(normalized?wallets.filter(wallet=>[wallet.label,wallet.address,wallet.chain].filter(Boolean).some(value=>String(value).toLowerCase().includes(normalized))):wallets):[];return <><p className="page-lead">Create server-side encrypted wallets, check balances, and manage imports.</p><Notice error={error}/><div className="page-toolbar"><label className="page-search">Find a wallet<input type="search" value={query} placeholder="Label, address, chain…" onChange={e=>setQuery(e.target.value)}/></label></div>{wallets===null?<Skeleton/>:<div className="card-grid wallet-grid">{filtered.map(wallet=><article className="card" key={wallet.label}><div><span className="pill">{wallet.chain}</span><h2>{wallet.label}</h2></div><div className="user-card-identity"><code>{wallet.address}</code><CopyButton value={wallet.address} label="Copy wallet address"/></div><div className="wallet-balances">{wallet.balances?.length?wallet.balances.map(b=><div className="wallet-balance-row" key={b.chain}><span>{chainMeta(b.chain).label}</span><strong>{b.balance??'Unavailable'} {b.symbol}</strong></div>):<div className="wallet-balance-row">Unavailable</div>}</div><div className="actions"><button className="small quiet" onClick={()=>exportKey(wallet.label)}>Export key</button><button className="small danger" onClick={()=>remove(wallet.label)}>Remove</button></div></article>)}{filtered.length===0&&<Empty text={normalized?'No wallets match this search.':'No wallets yet. Create the recommended server-side wallet below.'}/>}</div>}<div className="form-grid wallet-forms"><Form className="form-wallet-create" title="Create wallet" note="Recommended - the private key is generated, encrypted, and never returned." onSubmit={e=>submit(e,'/api/wallets/create')}><Field name="label" label="Label" placeholder="$1 and a dream"/><WalletChainSelect name="chain" label="Chain" value={createChain} onChange={e=>setCreateChain(e.target.value)}/><button>Create securely</button></Form><Form className="form-wallet-import" title="Import wallet" warning="Not recommended: your key or seed phrase crosses browser memory and network transit. Use HTTPS; it is encrypted immediately and never returned." onSubmit={e=>submit(e,'/api/wallets/import')}><Field name="label" label="Label" placeholder="$1 and a dream"/><WalletChainSelect name="chain" label="Chain" value={importChain} onChange={e=>setImportChain(e.target.value)}/><div className="method-toggle"><span>Import using</span><div className="segmented" role="radiogroup" aria-label="Import method"><button type="button" aria-pressed={importMethod==='privateKey'} className={importMethod==='privateKey'?'active':''} onClick={()=>setImportMethod('privateKey')}>Private key</button><button type="button" aria-pressed={importMethod==='seedPhrase'} className={importMethod==='seedPhrase'?'active':''} onClick={()=>setImportMethod('seedPhrase')}>Seed phrase</button></div></div><input type="hidden" name="importMethod" value={importMethod}/>{importMethod==='privateKey'?<Field name="privateKey" label="Private key" type="password" autoComplete="off"/>:<label>Seed phrase (12-24 words)<textarea className="compact" name="seedPhrase" required autoComplete="off" placeholder="witch collapse practice feed shame open despair creek road again ice least"/></label>}<button className="quiet">Import over HTTPS</button></Form></div></>}
 const SEADROP_SIGNATURE='mintPublic(address,address,address,uint256)';
 const ADDRESS_SHAPE=/^0x[0-9a-fA-F]{40}$/;
 function weiToEthDisplay(wei){
@@ -129,7 +191,11 @@ function ethToWei(eth){
 // that themselves. There is deliberately no manual "Detect" button: pasting a contract address and
 // tabbing away is enough, and changing the quantity re-runs it the same way (see
 // handleAutoDetectBlur).
-function Minting(){const wallets=useLoad('/api/wallets',[],'wallets.changed');const presets=useLoad('/api/mint-presets');const [preview,setPreview]=useState(null);const [confirmResults,setConfirmResults]=useState(null);const formRef=useRef(null);const previewRef=useRef(null);const [walletLabel,setWalletLabel]=useState('');const [contractAddress,setContractAddress]=useState('');const [quantity,setQuantity]=useState('1');const [methodSignature,setMethodSignature]=useState('');const [argumentsJson,setArgumentsJson]=useState('');const [priceEth,setPriceEth]=useState('0');const [seaDropAddress,setSeaDropAddress]=useState('');const [detectedChain,setDetectedChain]=useState('');const [maxPerWallet,setMaxPerWallet]=useState(null);const [detecting,setDetecting]=useState(false);const [advancedOpen,setAdvancedOpen]=useState(false);const lastDetected=useRef('');
+const CONTRACT_ICON=<svg {...ICON_PROPS}><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 9h6v6H9z"/></svg>;
+const LEDGER_ICON=<svg {...ICON_PROPS}><rect x="4" y="3" width="16" height="18" rx="1.5"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>;
+const INFO_ICON=<svg {...ICON_PROPS}><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>;
+function shortHex(value){const v=String(value||"");return v.length>12?`${v.slice(0,6)}…${v.slice(-4)}`:v;}
+function Minting({onSwitchToBatch}){const wallets=useLoad('/api/wallets',[],'wallets.changed');const presets=useLoad('/api/mint-presets');const [preview,setPreview]=useState(null);const [confirmResults,setConfirmResults]=useState(null);const formRef=useRef(null);const previewRef=useRef(null);const [walletLabel,setWalletLabel]=useState('');const [contractAddress,setContractAddress]=useState('');const [quantity,setQuantity]=useState('1');const [methodSignature,setMethodSignature]=useState('');const [argumentsJson,setArgumentsJson]=useState('');const [priceEth,setPriceEth]=useState('0');const [seaDropAddress,setSeaDropAddress]=useState('');const [detectedChain,setDetectedChain]=useState('');const [maxPerWallet,setMaxPerWallet]=useState(null);const [detecting,setDetecting]=useState(false);const [advancedOpen,setAdvancedOpen]=useState(false);const lastDetected=useRef('');
   useEffect(()=>{if(!walletLabel&&wallets.data?.length)setWalletLabel(wallets.data[0].label);},[wallets.data]);
   // Picks up whatever Quick Mint already had typed in (see Dashboard.jsx's goToFullMint) so landing
   // here isn't a dead end with an empty contract field -- detects immediately rather than waiting
@@ -183,7 +249,7 @@ function Minting(){const wallets=useLoad('/api/wallets',[],'wallets.changed');co
   function autoDetectIfReady(value=contractAddress,quantityValue=quantity){const trimmed=value.trim();if(ADDRESS_SHAPE.test(trimmed)&&`${trimmed}:${quantityValue}`!==lastDetected.current)detect(trimmed,quantityValue);}
   function handleAutoDetectBlur(){autoDetectIfReady();}
   function resetDetectedFields(){setContractAddress('');setQuantity('1');setMethodSignature('');setArgumentsJson('');setPriceEth('0');setSeaDropAddress('');setDetectedChain('');setMaxPerWallet(null);lastDetected.current='';}
-  async function inspect(event){event.preventDefault();formRef.current=event.currentTarget;const raw=Object.fromEntries(new FormData(event.currentTarget));try{const valueWei=ethToWei(raw.priceEth);if(valueWei===null){notify('Price (ETH) must be a plain non-negative number -- 0.01 for example, or 0 if the mint is free.',{type:'error'});return;}const batch=raw.walletLabels?.split(/[,\n]+/).map(x=>x.trim()).filter(Boolean);const input={walletLabel:raw.walletLabel,walletLabels:batch?.length?batch:undefined,presetName:raw.presetName||undefined,contractAddress:raw.contractAddress||undefined,methodSignature:raw.methodSignature||undefined,seaDropAddress:raw.seaDropAddress||undefined,arguments:raw.arguments?JSON.parse(raw.arguments):[],valueWei:valueWei.toString(),chain:detectedChain||undefined};setPreview(await api('/api/mints/preview',{method:'POST',body:JSON.stringify(input)}));setConfirmResults(null);notify('Simulation passed -- review the details below and confirm to broadcast.',{type:'success'});previewRef.current?.scrollIntoView({behavior:'smooth',block:'start'});}catch(value){notify(value.message,{type:'error'});}}
+  async function inspect(event){event?.preventDefault?.();const raw={walletLabel,presetName:undefined,contractAddress,methodSignature,seaDropAddress,arguments:argumentsJson,priceEth};try{const valueWei=ethToWei(raw.priceEth);if(valueWei===null){notify('Price (ETH) must be a plain non-negative number -- 0.01 for example, or 0 if the mint is free.',{type:'error'});return;}const batch=raw.walletLabels?.split(/[,\n]+/).map(x=>x.trim()).filter(Boolean);const input={walletLabel:raw.walletLabel,walletLabels:batch?.length?batch:undefined,presetName:raw.presetName||undefined,contractAddress:raw.contractAddress||undefined,methodSignature:raw.methodSignature||undefined,seaDropAddress:raw.seaDropAddress||undefined,arguments:raw.arguments?JSON.parse(raw.arguments):[],valueWei:valueWei.toString(),chain:detectedChain||undefined};setPreview(await api('/api/mints/preview',{method:'POST',body:JSON.stringify(input)}));setConfirmResults(null);notify('Simulation passed -- review the details below and confirm to broadcast.',{type:'success'});previewRef.current?.scrollIntoView({behavior:'smooth',block:'start'});}catch(value){notify(value.message,{type:'error'});}}
   // Each wallet in the batch is annotated with its own outcome (see confirmResults, rendered per
   // item below) rather than one pass/fail for the whole batch -- a failure on one wallet no longer
   // hides whether the others actually went through.
@@ -194,7 +260,95 @@ function Minting(){const wallets=useLoad('/api/wallets',[],'wallets.changed');co
     if(succeeded===total){notify(total>1?`All ${total} mints submitted.`:'Mint submitted.',{type:'success'});setPreview(null);setConfirmResults(null);formRef.current?.reset();resetDetectedFields();}
     else{setConfirmResults(Object.fromEntries(response.results.map(entry=>[entry.label,entry])));notify(succeeded===0?'Mint failed -- see the reason below.':`${succeeded}/${total} mints submitted -- see details below for the rest.`,{type:succeeded===0?'error':'info'});}
   }catch(value){notify(value.message,{type:'error'});}}
-  return <><PageTitle eyebrow="Auto-detected" title="Minting" subtitle="Enter a contract and quantity -- price, method, and the real call target are found automatically."/><Form className="form-mint" title="Mint" note="Choose one wallet, or enter comma-separated wallet labels for a batch. Saved presets share the same path." onSubmit={inspect}><div className="field-row"><Select name="walletLabel" label="Wallet" options={wallets.data?.map(x=>x.label)} value={walletLabel} onChange={e=>setWalletLabel(e.target.value)}/><Select name="presetName" label="Saved preset (optional)" optional options={presets.data?.map(x=>x.name)}/></div><label className="field-full">Batch wallet labels (optional)<textarea name="walletLabels" placeholder={'wallet-1\nwallet-2\nwallet-3'}/></label><div className="field-row"><Field name="contractAddress" label="Contract (when not using preset)" required={false} value={contractAddress} onChange={e=>{setContractAddress(e.target.value);autoDetectIfReady(e.target.value,quantity);}} onBlur={handleAutoDetectBlur}/><label>{maxPerWallet?`Quantity (max ${maxPerWallet} per wallet)`:'Quantity'}<input type="number" min="1" max={maxPerWallet||100} value={quantity} onChange={e=>{setQuantity(e.target.value);autoDetectIfReady(contractAddress,e.target.value);}} onBlur={handleAutoDetectBlur}/></label></div>{detecting&&<p className="mint-detecting"><span className="spinner spinner-quiet" aria-hidden="true"/>Detecting…</p>}{!detecting&&methodSignature&&<p className="mint-detected-summary">Detected <code>{methodSignature}</code>{detectedChain&&` on ${detectedChain}`}{priceEth&&priceEth!=='0'&&` · ${priceEth} ETH total`}{seaDropAddress&&<> · SeaDrop core <code>{seaDropAddress}</code></>}</p>}<details className="mint-advanced" open={advancedOpen} onToggle={e=>setAdvancedOpen(e.target.open)}><summary>Advanced: edit detected calldata directly</summary><div className="field-row"><Field name="methodSignature" label="Method signature" placeholder="mint(uint256)" required={false} value={methodSignature} onChange={e=>setMethodSignature(e.target.value)}/><Field name="arguments" label="Arguments JSON" placeholder='[1]' required={false} value={argumentsJson} onChange={e=>setArgumentsJson(e.target.value)}/><Field name="priceEth" label="Price (ETH)" placeholder="0 if free" type="number" step="any" min="0" value={priceEth} onChange={e=>setPriceEth(e.target.value)}/></div>{methodSignature===SEADROP_SIGNATURE&&<Field name="seaDropAddress" label="SeaDrop core address" placeholder="0x… (auto-filled by auto-detect)" required={false} value={seaDropAddress} onChange={e=>setSeaDropAddress(e.target.value)}/>}</details><button>Validate and simulate</button></Form>{preview&&<section className="panel mint-preview" ref={previewRef}><h2>Simulation passed</h2>{preview.items.map(item=>{const result=confirmResults?.[item.wallet.label];return <div className="preview" key={item.wallet.label}><strong>{item.wallet.label}</strong><div className="user-card-identity"><p>{item.preview.contractAddress}</p><CopyButton value={item.preview.contractAddress} label="Copy contract address"/></div>{item.preview.callTarget&&item.preview.callTarget!==item.preview.contractAddress&&<div className="user-card-identity"><p>Call target: {item.preview.callTarget}</p><CopyButton value={item.preview.callTarget} label="Copy call target address"/></div>}<p>{item.preview.methodSignature} | value {item.preview.nativeValue}</p><ul>{item.preview.arguments.map(arg=><li key={arg.name}>{arg.name}: <code>{String(arg.value)}</code></li>)}</ul><p>Estimated total: {item.simulation.estimatedCostWei} wei | Gas: {item.simulation.gasLimit}</p>{result&&<p className={result.status==='success'?'ok':'warning'}>{result.status==='success'?'✅ Submitted successfully.':`❌ Failed: ${result.error}`}</p>}</div>;})}{!confirmResults&&<button className="quiet" onClick={confirmMint}>Confirm and broadcast</button>}{confirmResults&&<p>Run Validate and simulate again to retry any failed wallets.</p>}</section>}</>;}
+  const detected=Boolean(methodSignature);
+  const item=preview?.items?.[0];
+  const totalDebitWei=item?item.simulation.estimatedCostWei:null;
+  return <>
+    <div className="split mint-split">
+      <div className="mint-col">
+        <SectionCard title="Contract" icon={CONTRACT_ICON}>
+          <div className="fields">
+            <label>Contract address
+              <input className="mono" placeholder="0x… paste a contract address" value={contractAddress}
+                onChange={e=>{setContractAddress(e.target.value);autoDetectIfReady(e.target.value,quantity);}}
+                onBlur={handleAutoDetectBlur}/>
+            </label>
+            {detecting&&<p className="mint-detecting"><span className="spinner spinner-quiet" aria-hidden="true"/>Detecting…</p>}
+            {/* The detected banner is the prototype's one-line summary of everything auto-detection
+                found, so the user can sanity-check the target before simulating. */}
+            {!detecting&&detected&&<div className="inline-note">
+              <span className="inline-note-icon" aria-hidden="true">{INFO_ICON}</span>
+              <div>Detected <b>{methodSignature===SEADROP_SIGNATURE?'SeaDrop drop':'contract'}</b>
+                {detectedChain&&<> · {detectedChain}</>}
+                {priceEth&&priceEth!=='0'?<> · {priceEth} ETH</>:<> · free</>}
+                {maxPerWallet?<> · max {maxPerWallet}/wallet</>:null}
+              </div>
+            </div>}
+            <div className="field-row">
+              <Select name="walletLabel" label="Wallet" options={wallets.data?.map(x=>x.label)} value={walletLabel} onChange={e=>setWalletLabel(e.target.value)}/>
+              <Select name="presetName" label="Saved preset (optional)" optional options={presets.data?.map(x=>x.name)}/>
+            </div>
+            {/* Quantity is the prototype's paired control: a real number input WITH quick-picks,
+                not buttons alone. Typing updates which button reads as active. */}
+            <NumberField label={maxPerWallet?`Quantity · max ${maxPerWallet}`:'Quantity'}
+              value={quantity} min={1} max={maxPerWallet||100}
+              quick={maxPerWallet?[1,2,maxPerWallet]:[1,2,5,10]}
+              onChange={value=>{setQuantity(value);autoDetectIfReady(contractAddress,value);}}/>
+            <label>Price per mint <span className="field-hint">· auto-detected</span>
+              <input className="tab" type="number" step="any" min="0" value={priceEth}
+                placeholder="e.g. 0.08 — leave blank to use detected price"
+                onChange={e=>setPriceEth(e.target.value)}/>
+            </label>
+            <details className="mint-advanced" open={advancedOpen} onToggle={e=>setAdvancedOpen(e.target.open)}>
+              <summary>Advanced: edit detected calldata directly</summary>
+              <div className="field-row">
+                <Field name="methodSignature" label="Method signature" placeholder="mint(uint256)" required={false} value={methodSignature} onChange={e=>setMethodSignature(e.target.value)}/>
+                <Field name="arguments" label="Arguments JSON" placeholder="[1]" required={false} value={argumentsJson} onChange={e=>setArgumentsJson(e.target.value)}/>
+              </div>
+              {methodSignature===SEADROP_SIGNATURE&&<Field name="seaDropAddress" label="SeaDrop core address" placeholder="0x… (auto-filled by auto-detect)" required={false} value={seaDropAddress} onChange={e=>setSeaDropAddress(e.target.value)}/>}
+            </details>
+            {/* Batch was buried as a sub-tab and nobody found it. Cross-linked from here, where
+                the intent actually arises. */}
+            <div className="inline-note">
+              <span className="inline-note-icon" aria-hidden="true">{INFO_ICON}</span>
+              <div>Minting from more than one wallet? <b>Batch</b> simulates and submits each wallet
+                independently, so one failure doesn&apos;t cancel the rest.
+                <div className="inline-note-actions"><button type="button" className="small" onClick={()=>onSwitchToBatch?.()}>Switch to batch</button></div>
+              </div>
+            </div>
+            <button type="button" onClick={inspect} disabled={!contractAddress.trim()}>Validate and simulate</button>
+          </div>
+        </SectionCard>
+      </div>
+
+      <div className="mint-col">
+        {preview&&<PreviewExpiry preview={preview} onExpire={()=>{setPreview(null);notify('That simulation expired before it was confirmed. Nothing was submitted — simulate again.',{type:'info'});}}/>}
+        {/* Register 1 (brief §1): the money surface is a plain ledger -- label left, figure right,
+            tabular numerals, no decoration. "Not run" rather than zeros pretending to be a quote. */}
+        <SectionCard title="Transaction preview" icon={LEDGER_ICON}>
+          <Ledger rows={[
+            {label:'Contract',value:item?shortHex(item.preview.contractAddress):'—',mono:true},
+            {label:'Method',value:item?item.preview.methodSignature:'—',mono:true},
+            {label:'Chain',value:detectedChain||'—'},
+            {label:'Quantity',value:quantity||'—'},
+            {label:'Mint price',value:item?`${item.preview.nativeValue} wei`:'0.000000 ETH'},
+            {label:'Est. gas',value:item?`${item.simulation.gasLimit} gas`:'0.000000 ETH'},
+            {label:'Simulation',value:item?'Passed':'Not run',tone:item?'gain':undefined},
+          ]} total={{label:'Total debit',value:totalDebitWei?`${totalDebitWei} wei`:'0.000000 ETH'}}/>
+          {item&&!confirmResults&&<button className="quiet panel-cta" onClick={confirmMint}>Confirm and broadcast</button>}
+          {confirmResults&&<p className="card-note">Run Validate and simulate again to retry any failed wallets.</p>}
+        </SectionCard>
+        {preview&&preview.items.map(entry=>{
+          const result=confirmResults?.[entry.wallet.label];
+          return result?<p key={entry.wallet.label} className={result.status==='success'?'ok':'warning'}>
+            {result.status==='success'?`✅ ${entry.wallet.label} submitted.`:`❌ ${entry.wallet.label}: ${result.error}`}
+          </p>:null;
+        })}
+      </div>
+    </div>
+  </>;
+}
+
 function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSearch]=useState('');const listing=useLoad(`/api/tasks?page=${page}&pageSize=10&search=${encodeURIComponent(search)}`,[page,search],'tasks.changed');const wallets=useLoad('/api/wallets',[],'wallets.changed');const [chain,setChain]=useState(profile.defaultChain||profile.supportedChains[0]);const [contractAddress,setContractAddress]=useState('');const [quantity,setQuantity]=useState('1');const [priceETH,setPriceETH]=useState('');const [mintTime,setMintTime]=useState('');const [detecting,setDetecting]=useState(false);const lastDetected=useRef('');
   // Mirrors Minting's auto-detect: a scheduled mint needs the same price/opening-time knowledge an
   // immediate mint does, so this reuses the identical /api/mints/detect endpoint rather than making
@@ -225,8 +379,8 @@ function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSear
   // just-changed value directly since setState hasn't applied yet inside the same onChange handler.
   function autoDetectIfReady(value=contractAddress){const trimmed=value.trim();if(ADDRESS_SHAPE.test(trimmed)&&trimmed!==lastDetected.current)detect(trimmed);}
   function handleContractBlur(){autoDetectIfReady();}
-  async function create(event){event.preventDefault();const form=event.currentTarget;try{const input=Object.fromEntries(new FormData(form));if(!input.priceETH)delete input.priceETH;if(input.mintTime)input.mintTime=new Date(input.mintTime).toISOString();else delete input.mintTime;await api('/api/tasks',{method:'POST',body:JSON.stringify(input)});form.reset();setContractAddress('');setQuantity('1');setPriceETH('');setMintTime('');lastDetected.current='';notify('Task scheduled.',{type:'success'});listing.load();}catch(value){notify(value.message,{type:'error'});}}async function control(id,action){if(action==='cancel'&&!await confirmDialog('Cancel this scheduled task?'))return;try{await api(`/api/tasks/${id}/control`,{method:'POST',body:JSON.stringify({action,confirmation:action==='cancel'?'CONFIRM':undefined})});listing.load();}catch(value){notify(value.message,{type:'error'});}}return <><PageTitle eyebrow="Durable UTC scheduler" title="Scheduled tasks" subtitle="Jobs use the same crash-safe M9 queue consumed by the worker."/><Notice error={listing.error}/><div className="page-toolbar"><label className="page-search">Find a task<input type="search" value={search} placeholder="Name or wallet…" onChange={e=>{setSearch(e.target.value);setPage(1);}}/></label></div><Form className="form-task" title="Schedule mint" note="Enter a contract and auto-detect its price and opening time, same as Minting. Local browser time is converted to an explicit UTC timestamp before submission." onSubmit={create}><Field name="name" label="Name"/><Select name="walletLabel" label="Wallet" options={wallets.data?.map(x=>x.label)}/><ChainSelect name="chain" label="Chain" options={profile.supportedChains} value={chain} onChange={e=>setChain(e.target.value)}/><div className="field-row"><Field name="contractAddress" label="Contract" placeholder="0x…" value={contractAddress} onChange={e=>{setContractAddress(e.target.value);autoDetectIfReady(e.target.value);}} onBlur={handleContractBlur}/><label>Quantity<input type="number" min="1" max="100" value={quantity} onChange={e=>setQuantity(e.target.value)}/></label></div>{detecting&&<p className="mint-detecting"><span className="spinner spinner-quiet" aria-hidden="true"/>Detecting…</p>}<div className="field-row"><Field name="priceETH" label="Price (ETH)" type="number" step="any" required={false} placeholder="Leave blank to auto-resolve" value={priceETH} onChange={e=>setPriceETH(e.target.value)}/><Field name="mintTime" label="Schedule time" type="datetime-local" required={false} value={mintTime} onChange={e=>setMintTime(e.target.value)}/></div><button>Schedule durably</button></Form>{listing.data===null?<Skeleton variant="lines" rows={4}/>:<><div className="table-wrap task-table"><table><thead><tr><th>Name</th><th>Wallet</th><th>UTC due</th><th>Status</th><th>Controls</th></tr></thead><tbody>{listing.data.items.map(task=><tr key={task.id}><td data-label="Name">{task.name}</td><td data-label="Wallet">{task.walletLabel}</td><td data-label="UTC due">{new Date(task.mintTime).toISOString()}</td><td data-label="Status"><StatusPill status={task.status}/></td><td data-label="Controls" className="actions">{['cancel','pause','resume','retry'].map(action=><button className="small" key={action} onClick={()=>control(task.id,action)}>{action}</button>)}</td></tr>)}</tbody></table></div>{listing.data.items.length===0&&<Empty text={search?'No tasks match this search.':'No scheduled tasks yet.'}/>}<Pager value={listing.data} page={page} setPage={setPage}/></>}</>}
-function Activity(){const [page,setPage]=useState(1);const [search,setSearch]=useState('');const listing=useLoad(`/api/activity?page=${page}&pageSize=10&search=${encodeURIComponent(search)}`,[page,search],ACTIVITY_EVENTS);return <><PageTitle eyebrow="User-scoped history" title="Activity" subtitle="Paginated execution history with trigger and verification context where recorded."/><Notice error={listing.error}/><div className="page-toolbar"><label className="page-search">Find activity<input type="search" value={search} placeholder="Title or wallet…" onChange={e=>{setSearch(e.target.value);setPage(1);}}/></label></div>{listing.data===null?<Skeleton variant="lines" rows={4}/>:<><div className="feed activity-feed">{listing.data.items.map(item=><article className="feed-item" key={item.id}><div><StatusPill status={item.status}/><h2>{item.title}</h2><p>{item.walletLabel||'No wallet'} · {new Date(item.time).toLocaleString()}</p></div><div className="activity-context"><p>Trigger: {item.triggerSource||'legacy/unrecorded'}</p><p>Verification: {item.verificationState||'not applicable'}</p></div></article>)}</div>{listing.data.items.length===0&&<Empty text={search?'No activity matches this search.':'No activity recorded yet.'}/>}<Pager value={listing.data} page={page} setPage={setPage}/></>}</>}
+  async function create(event){event.preventDefault();const form=event.currentTarget;try{const input=Object.fromEntries(new FormData(form));if(!input.priceETH)delete input.priceETH;if(input.mintTime)input.mintTime=new Date(input.mintTime).toISOString();else delete input.mintTime;await api('/api/tasks',{method:'POST',body:JSON.stringify(input)});form.reset();setContractAddress('');setQuantity('1');setPriceETH('');setMintTime('');lastDetected.current='';notify('Task scheduled.',{type:'success'});listing.load();}catch(value){notify(value.message,{type:'error'});}}async function control(id,action){if(action==='cancel'&&!await confirmDialog('Cancel this scheduled task?'))return;try{await api(`/api/tasks/${id}/control`,{method:'POST',body:JSON.stringify({action,confirmation:action==='cancel'?'CONFIRM':undefined})});listing.load();}catch(value){notify(value.message,{type:'error'});}}return <><p className="page-lead">Jobs use the same crash-safe M9 queue consumed by the worker.</p><Notice error={listing.error}/><div className="page-toolbar"><label className="page-search">Find a task<input type="search" value={search} placeholder="Name or wallet…" onChange={e=>{setSearch(e.target.value);setPage(1);}}/></label></div><Form className="form-task" title="Schedule mint" note="Enter a contract and auto-detect its price and opening time, same as Minting. Local browser time is converted to an explicit UTC timestamp before submission." onSubmit={create}><Field name="name" label="Name"/><Select name="walletLabel" label="Wallet" options={wallets.data?.map(x=>x.label)}/><ChainSelect name="chain" label="Chain" options={profile.supportedChains} value={chain} onChange={e=>setChain(e.target.value)}/><div className="field-row"><Field name="contractAddress" label="Contract" placeholder="0x…" value={contractAddress} onChange={e=>{setContractAddress(e.target.value);autoDetectIfReady(e.target.value);}} onBlur={handleContractBlur}/><label>Quantity<input type="number" min="1" max="100" value={quantity} onChange={e=>setQuantity(e.target.value)}/></label></div>{detecting&&<p className="mint-detecting"><span className="spinner spinner-quiet" aria-hidden="true"/>Detecting…</p>}<div className="field-row"><Field name="priceETH" label="Price (ETH)" type="number" step="any" required={false} placeholder="Leave blank to auto-resolve" value={priceETH} onChange={e=>setPriceETH(e.target.value)}/><Field name="mintTime" label="Schedule time" type="datetime-local" required={false} value={mintTime} onChange={e=>setMintTime(e.target.value)}/></div><button>Schedule durably</button></Form>{listing.data===null?<Skeleton variant="lines" rows={4}/>:<><div className="table-wrap task-table"><table><thead><tr><th>Name</th><th>Wallet</th><th>UTC due</th><th>Status</th><th>Controls</th></tr></thead><tbody>{listing.data.items.map(task=><tr key={task.id}><td data-label="Name">{task.name}</td><td data-label="Wallet">{task.walletLabel}</td><td data-label="UTC due">{new Date(task.mintTime).toISOString()}</td><td data-label="Status"><StatusPill status={task.status}/></td><td data-label="Controls" className="actions">{['cancel','pause','resume','retry'].map(action=><button className="small" key={action} onClick={()=>control(task.id,action)}>{action}</button>)}</td></tr>)}</tbody></table></div>{listing.data.items.length===0&&<Empty text={search?'No tasks match this search.':'No scheduled tasks yet.'}/>}<Pager value={listing.data} page={page} setPage={setPage}/></>}</>}
+function Activity(){const [page,setPage]=useState(1);const [search,setSearch]=useState('');const listing=useLoad(`/api/activity?page=${page}&pageSize=10&search=${encodeURIComponent(search)}`,[page,search],ACTIVITY_EVENTS);return <><p className="page-lead">Paginated execution history with trigger and verification context where recorded.</p><Notice error={listing.error}/><div className="page-toolbar"><label className="page-search">Find activity<input type="search" value={search} placeholder="Title or wallet…" onChange={e=>{setSearch(e.target.value);setPage(1);}}/></label></div>{listing.data===null?<Skeleton variant="lines" rows={4}/>:<><div className="feed activity-feed">{listing.data.items.map(item=><article className="feed-item" key={item.id}><div><StatusPill status={item.status}/><h2>{item.title}</h2><p>{item.walletLabel||'No wallet'} · {new Date(item.time).toLocaleString()}</p></div><div className="activity-context"><p>Trigger: {item.triggerSource||'legacy/unrecorded'}</p><p>Verification: {item.verificationState||'not applicable'}</p></div></article>)}</div>{listing.data.items.length===0&&<Empty text={search?'No activity matches this search.':'No activity recorded yet.'}/>}<Pager value={listing.data} page={page} setPage={setPage}/></>}</>}
 // Every confirmed mint auto-creates its own record now (see recordMintActivity/autoRecordPnl in
 // src/server.js) with real cost+gas and sale left at 0 until something actually sells -- these
 // rollups are computed straight from that same already-loaded list, not a separate fetch, since
@@ -235,12 +389,32 @@ const PNL_PERIODS=[['day','Today',86400000],['week','7 days',7*86400000],['month
 function summarizePnlPeriod(records,windowMs){const cutoff=Date.now()-windowMs;const inWindow=records.filter(item=>item.t>=cutoff);
   return {count:inWindow.length,cost:inWindow.reduce((sum,item)=>sum+Number(item.cost),0),sale:inWindow.reduce((sum,item)=>sum+Number(item.sale),0),
     gas:inWindow.reduce((sum,item)=>sum+Number(item.gas),0),net:inWindow.reduce((sum,item)=>sum+Number(item.net),0)};}
-function Pnl(){const listing=useLoad('/api/pnl',[],'pnl.changed');const [editing,setEditing]=useState(null);const [query,setQuery]=useState('');async function save(event){event.preventDefault();const form=event.currentTarget;const wasEditing=editing;const body=JSON.stringify(Object.fromEntries(new FormData(form)));try{await api(wasEditing?`/api/pnl/${wasEditing}`:'/api/pnl',{method:wasEditing?'PUT':'POST',body});setEditing(null);form.reset();notify(wasEditing?'Record updated.':'Record added.',{type:'success'});listing.load();}catch(value){notify(value.message,{type:'error'});}}async function remove(id){if(!await confirmDialog('Delete this P&L record?'))return;try{await api(`/api/pnl/${id}`,{method:'DELETE',body:JSON.stringify({confirmation:'CONFIRM'})});listing.load();}catch(value){notify(value.message,{type:'error'});}}const current=listing.data?.find(x=>x.id===editing);const normalized=query.trim().toLowerCase();const filtered=listing.data?(normalized?listing.data.filter(item=>String(item.nm||'').toLowerCase().includes(normalized)):listing.data):null;return <><PageTitle eyebrow="Durable UUID records" title="P&L" subtitle="Cost and gas are recorded automatically on every confirmed mint; sale stays editable below once something actually sells."/><Notice error={listing.error}/>{listing.data&&<div className="card-grid pnl-summary-grid">{PNL_PERIODS.map(([key,label,windowMs])=>{const summary=summarizePnlPeriod(listing.data,windowMs);return <article className="card pnl-summary-card" key={key}><span className="eyebrow">{label}</span><strong className={summary.net<0?'net-loss':'net-gain'}>Net {summary.net>0?'+':''}{summary.net.toFixed(4)}</strong><p>{summary.count} record{summary.count===1?'':'s'} · Cost {summary.cost.toFixed(4)} · Sale {summary.sale.toFixed(4)} · Gas {summary.gas.toFixed(4)}</p></article>;})}</div>}<div className="page-toolbar"><label className="page-search">Find a record<input type="search" value={query} placeholder="Name…" onChange={e=>setQuery(e.target.value)}/></label></div><Form className="form-pnl" key={editing||'new'} title={editing?'Edit record':'Add record'} note="Auto-created records can be edited here too -- fill in Sale once an NFT actually resells." onSubmit={save}><Field name="name" label="Name" defaultValue={current?.nm}/><Field name="cost" label="Cost" type="number" step="any" defaultValue={current?.cost??0}/><Field name="sale" label="Sale" type="number" step="any" defaultValue={current?.sale??0}/><Field name="gas" label="Gas" type="number" step="any" defaultValue={current?.gas??0}/><button>{editing?'Save changes':'Add record'}</button>{editing&&<button type="button" className="quiet" onClick={()=>setEditing(null)}>Cancel edit</button>}</Form>{listing.data===null?<Skeleton/>:<div className="card-grid pnl-grid">{filtered.map(item=><article className="card" key={item.id}><h2>{item.nm}</h2><p>Cost {item.cost} · Sale {item.sale} · Gas {item.gas}</p><strong className={Number(item.net)<0?'net-loss':'net-gain'}>Net {Number(item.net)>0?'+':''}{item.net}</strong><div className="actions"><button className="small quiet" onClick={()=>setEditing(item.id)}>Edit</button><button className="small danger" onClick={()=>remove(item.id)}>Delete</button></div></article>)}{filtered.length===0&&<Empty text={normalized?'No P&L records match this search.':'No P&L records yet.'}/>}</div>}</>}
+function Pnl(){const listing=useLoad('/api/pnl',[],'pnl.changed');const [editing,setEditing]=useState(null);const [query,setQuery]=useState('');async function save(event){event.preventDefault();const form=event.currentTarget;const wasEditing=editing;const body=JSON.stringify(Object.fromEntries(new FormData(form)));try{await api(wasEditing?`/api/pnl/${wasEditing}`:'/api/pnl',{method:wasEditing?'PUT':'POST',body});setEditing(null);form.reset();notify(wasEditing?'Record updated.':'Record added.',{type:'success'});listing.load();}catch(value){notify(value.message,{type:'error'});}}async function remove(id){if(!await confirmDialog('Delete this P&L record?'))return;try{await api(`/api/pnl/${id}`,{method:'DELETE',body:JSON.stringify({confirmation:'CONFIRM'})});listing.load();}catch(value){notify(value.message,{type:'error'});}}const current=listing.data?.find(x=>x.id===editing);const normalized=query.trim().toLowerCase();const filtered=listing.data?(normalized?listing.data.filter(item=>String(item.nm||'').toLowerCase().includes(normalized)):listing.data):null;return <><p className="page-lead">Cost and gas are recorded automatically on every confirmed mint; sale stays editable below once something actually sells.</p><Notice error={listing.error}/>{listing.data&&<div className="card-grid pnl-summary-grid">{PNL_PERIODS.map(([key,label,windowMs])=>{const summary=summarizePnlPeriod(listing.data,windowMs);return <article className="card pnl-summary-card" key={key}><span className="eyebrow">{label}</span><strong className={summary.net<0?'net-loss':'net-gain'}>Net {summary.net>0?'+':''}{summary.net.toFixed(4)}</strong><p>{summary.count} record{summary.count===1?'':'s'} · Cost {summary.cost.toFixed(4)} · Sale {summary.sale.toFixed(4)} · Gas {summary.gas.toFixed(4)}</p></article>;})}</div>}<div className="page-toolbar"><label className="page-search">Find a record<input type="search" value={query} placeholder="Name…" onChange={e=>setQuery(e.target.value)}/></label></div><Form className="form-pnl" key={editing||'new'} title={editing?'Edit record':'Add record'} note="Auto-created records can be edited here too -- fill in Sale once an NFT actually resells." onSubmit={save}><Field name="name" label="Name" defaultValue={current?.nm}/><Field name="cost" label="Cost" type="number" step="any" defaultValue={current?.cost??0}/><Field name="sale" label="Sale" type="number" step="any" defaultValue={current?.sale??0}/><Field name="gas" label="Gas" type="number" step="any" defaultValue={current?.gas??0}/><button>{editing?'Save changes':'Add record'}</button>{editing&&<button type="button" className="quiet" onClick={()=>setEditing(null)}>Cancel edit</button>}</Form>{listing.data===null?<Skeleton/>:<div className="card-grid pnl-grid">{filtered.map(item=><article className="card" key={item.id}><h2>{item.nm}</h2><p>Cost {item.cost} · Sale {item.sale} · Gas {item.gas}</p><strong className={Number(item.net)<0?'net-loss':'net-gain'}>Net {Number(item.net)>0?'+':''}{item.net}</strong><div className="actions"><button className="small quiet" onClick={()=>setEditing(item.id)}>Edit</button><button className="small danger" onClick={()=>remove(item.id)}>Delete</button></div></article>)}{filtered.length===0&&<Empty text={normalized?'No P&L records match this search.':'No P&L records yet.'}/>}</div>}</>}
 function jsonForm(event){event.preventDefault();const form=event.currentTarget;return {form,value:JSON.parse(new FormData(form).get('json'))};}
-function Snipers(){const listing=useLoad('/api/snipers',[],'snipers.changed');const [editing,setEditing]=useState(null);const [query,setQuery]=useState('');async function save(event){try{const {form,value}=jsonForm(event);const wasEditing=editing;await api(editing?`/api/snipers/${editing}`:'/api/snipers',{method:editing?'PUT':'POST',body:JSON.stringify(value)});form.reset();setEditing(null);notify(wasEditing?'Sniper updated.':'Sniper created.',{type:'success'});listing.load();}catch(value){notify(value.message,{type:'error'});}}async function remove(id){if(!await confirmDialog('Remove this post-confirmation copy sniper?'))return;try{await api(`/api/snipers/${id}`,{method:'DELETE',body:JSON.stringify({confirmation:'CONFIRM'})});listing.load();}catch(value){notify(value.message,{type:'error'});}}const normalized=query.trim().toLowerCase();const filtered=listing.data?{...listing.data,items:normalized?listing.data.items.filter(item=>[item.label,item.chain,item.walletLabel].filter(Boolean).some(value=>String(value).toLowerCase().includes(normalized))):listing.data.items}:null;return <><PageTitle eyebrow="Post-confirmation copying" title="Snipers" subtitle="Copies confirmed wallet transactions after their confirmation threshold. This is not mempool front-running."/><Notice error={listing.error}/><div className="page-toolbar"><label className="page-search">Find a sniper<input type="search" value={query} placeholder="Label, chain, wallet…" onChange={e=>setQuery(e.target.value)}/></label></div><Form className="form-json" title={editing?'Edit sniper patch':'Create sniper'} note="The same M10 validation and M7a ceilings used by Telegram and Discord apply here." onSubmit={save}><label>Configuration JSON<textarea name="json" required defaultValue={editing?'{}':'{"label":"copy","targetAddress":"0x0000000000000000000000000000000000000001","chain":"ethereum","walletLabel":"wallet","maxValueETH":0.01,"maxGasGwei":50,"dailySpendingCapETH":0.05,"cooldownMs":60000,"maxAttempts":3}'}/></label><button>{editing?'Apply validated patch':'Create sniper'}</button></Form>{listing.data===null?<Skeleton/>:<div className="card-grid sniper-grid">{filtered.items.map(item=>{const recent=listing.data.events.filter(event=>event.sniperId===item.id)[0];return <article className="card" key={item.id}><StatusPill status={recent?.state||'no events'}/><h2>{item.label}</h2><p className="warning">Post-confirmation copy; not front-running.</p><p>{item.chain} · wallet {item.walletLabel}</p><p>Max {item.maxValueETH} ETH · Gas {item.maxGasGwei} gwei · Daily {item.dailySpendingCapETH} ETH</p><p>Cooldown {item.cooldownMs} ms · Attempts {item.maxAttempts}</p><p>Allow: {item.contractAllowlist.join(', ')||'any'}<br/>Deny: {item.contractDenylist.join(', ')||'none'}</p><div className="actions"><button className="small quiet" onClick={()=>setEditing(item.id)}>Edit</button><button className="small danger" onClick={()=>remove(item.id)}>Remove</button></div></article>})}{filtered.items.length===0&&<Empty text={normalized?'No snipers match this search.':'No snipers yet. Create one above to start post-confirmation copying.'}/>}</div>}</>}
-function WatchRules(){const listing=useLoad('/api/watch-rules',[],'watchrules.changed');const [editing,setEditing]=useState(null);const [query,setQuery]=useState('');async function save(event){try{const {form,value}=jsonForm(event);const wasEditing=editing;await api(editing?`/api/watch-rules/${editing}`:'/api/watch-rules',{method:editing?'PUT':'POST',body:JSON.stringify(value)});form.reset();setEditing(null);notify(wasEditing?'Watch rule updated.':'Watch rule created.',{type:'success'});listing.load();}catch(value){notify(value.message,{type:'error'});}}async function action(id,name){try{await api(`/api/watch-rules/${id}${name==='disable'?'/disable':''}`,{method:name==='remove'?'DELETE':'POST',body:JSON.stringify(name==='remove'?{confirmation:'CONFIRM'}:{})});listing.load();}catch(value){notify(value.message,{type:'error'});}}const normalized=query.trim().toLowerCase();const filtered=listing.data?{...listing.data,items:normalized?listing.data.items.filter(item=>[item.name,item.type,item.method].filter(Boolean).some(value=>String(value).toLowerCase().includes(normalized))):listing.data.items}:null;return <><PageTitle eyebrow="Social-trigger detection" title="Watch Rules" subtitle="Manage adapter-backed Twitter/X and Discord source monitoring."/><Notice error={listing.error}/><div className="page-toolbar"><label className="page-search">Find a watch rule<input type="search" value={query} placeholder="Name, type, method…" onChange={e=>setQuery(e.target.value)}/></label></div><Form className="form-json" title={editing?'Edit watch rule patch':'Create watch rule'} onSubmit={save}><label>Configuration JSON<textarea name="json" required defaultValue={editing?'{}':'{"name":"announcements","type":"discord_channel","method":"scraper","config":{"channelId":"123","keywords":["mint"],"sourceUrl":"https://example.com/feed"}}'}/></label><button>{editing?'Apply validated patch':'Create rule'}</button></Form>{listing.data===null?<Skeleton/>:<div className="card-grid watch-grid">{filtered.items.map(item=>{const events=listing.data.events.filter(event=>event.matchedRuleIds.includes(item.id)).slice(0,3);return <article className="card" key={item.id}><StatusPill status={item.enabled?'enabled':'disabled'}/><h2>{item.name}</h2><p>{item.type} · {item.method}</p><p className={item.consecutiveFailures?'warning':''}>Adapter health: {item.consecutiveFailures?`failing (${item.consecutiveFailures} consecutive)`:'healthy'} </p>{events.map(event=><p key={event.id}><code>{event.address}</code><br/>{new Date(event.detectedAt).toLocaleString()}</p>)}<div className="actions"><button className="small quiet" onClick={()=>setEditing(item.id)}>Edit</button><button className="small quiet" onClick={()=>action(item.id,'disable')}>Disable</button><button className="small danger" onClick={async()=>{if(await confirmDialog('Remove this watch rule?'))action(item.id,'remove');}}>Remove</button></div></article>})}{filtered.items.length===0&&<Empty text={normalized?'No watch rules match this search.':'No watch rules yet. Create one above to start social-trigger detection.'}/>}</div>}</>}
-function PolicyEditor({target,onChanged}){const details=useLoad(`/api/targets/${target.id}?type=${target.type}`,[target.id,target.type]);const presets=useLoad('/api/mode-presets');const [challenge,setChallenge]=useState(null);async function update(event){event.preventDefault();const value=Object.fromEntries(new FormData(event.currentTarget));try{await api(`/api/targets/${target.id}`,{method:'PUT',body:JSON.stringify({...value,targetType:target.type})});notify('Policy saved.',{type:'success'});details.load();onChanged?.();}catch(x){notify(x.message,{type:'error'});}}async function bypass(event){event.preventDefault();try{setChallenge(await api(`/api/targets/${target.id}/bypass`,{method:'POST',body:JSON.stringify({targetType:target.type,dontAskAgain:new FormData(event.currentTarget).get('dontAskAgain')==='on'})}));}catch(x){notify(x.message,{type:'error'});}}async function confirmBypass(event){event.preventDefault();try{await api('/api/targets/bypass/confirm',{method:'POST',body:JSON.stringify({challengeId:challenge.challengeId,confirmation:new FormData(event.currentTarget).get('confirmation')})});setChallenge(null);notify('Bypass confirmed.',{type:'success'});details.load();}catch(x){notify(x.message,{type:'error'});}}async function preset(key){try{const result=await api(`/api/targets/${target.id}/preset`,{method:'POST',body:JSON.stringify({targetType:target.type,presetKey:key})});if(result.requiresConfirmation)setChallenge(result);else notify('Preset applied.',{type:'success'});details.load();}catch(x){notify(x.message,{type:'error'});}}const value=details.data;return <article className="panel"><h2>{target.label}</h2><Notice error={details.error}/>{value&&<><p>Effective ceiling (read only): {value.governance.maxTransactionValueWei} wei/tx, {value.governance.dailySpendingBudgetWei} wei/day, {value.governance.gasCeilingGwei} gwei gas.</p><Form title="Trigger behavior" onSubmit={update}><input type="hidden" name="targetType" value={target.type}/><Select name="blockchainTrigger" label="Blockchain trigger" options={['auto','manual']} defaultValue={value.policy.blockchainTrigger}/><Select name="socialTrigger" label="Social trigger" options={['auto','manual']} defaultValue={value.policy.socialTrigger}/><Select name="humanVerification" label="Verification" options={['on']} defaultValue="on"/><button>Save policy</button></Form><div className="actions">{presets.data?.map(p=><button className="small" key={p.key} onClick={()=>preset(p.key)}>{p.displayName}</button>)}</div><form className="bypass" onSubmit={bypass}><label><input type="checkbox" name="dontAskAgain"/> Don&apos;t ask again for this target only</label><button className="danger">Request bypass</button></form>{challenge?.requiresConfirmation&&<form className="warning-box" onSubmit={confirmBypass}><strong>{challenge.warning}</strong><p>Type CONFIRM exactly to enable the highest-risk configuration.</p><input name="confirmation" autoComplete="off"/><button className="danger">Confirm bypass</button></form>}</>}</article>}
-function TargetPolicies(){const snipers=useLoad('/api/snipers',[],'snipers.changed');const rules=useLoad('/api/watch-rules',[],'watchrules.changed');const targets=[...(snipers.data?.items||[]).map(x=>({id:x.id,label:x.label,type:'sniper'})),...(rules.data?.items||[]).map(x=>({id:x.id,label:x.name,type:'social_rule'}))];return <><PageTitle eyebrow="Per-target safety" title="Target Policies" subtitle="Trigger modes, verification, presets, and read-only effective governance ceilings."/><div className="policy-grid">{targets.map(target=><PolicyEditor key={`${target.type}:${target.id}`} target={target}/>)}</div></>}
+// policyFor: which card has its policy expanded. A policy configures an existing target, so it
+// now lives ON that target's card rather than on a page of its own (brief §2). Same PolicyEditor,
+// same routes, new place -- including the bypass challenge, which keeps its explicit CONFIRM step.
+function Snipers(){const listing=useLoad('/api/snipers',[],'snipers.changed');const [editing,setEditing]=useState(null);const [query,setQuery]=useState('');const [policyFor,setPolicyFor]=useState(null);async function save(event){try{const {form,value}=jsonForm(event);const wasEditing=editing;await api(editing?`/api/snipers/${editing}`:'/api/snipers',{method:editing?'PUT':'POST',body:JSON.stringify(value)});form.reset();setEditing(null);notify(wasEditing?'Sniper updated.':'Sniper created.',{type:'success'});listing.load();}catch(value){notify(value.message,{type:'error'});}}async function remove(id){if(!await confirmDialog('Remove this post-confirmation copy sniper?'))return;try{await api(`/api/snipers/${id}`,{method:'DELETE',body:JSON.stringify({confirmation:'CONFIRM'})});listing.load();}catch(value){notify(value.message,{type:'error'});}}const normalized=query.trim().toLowerCase();const filtered=listing.data?{...listing.data,items:normalized?listing.data.items.filter(item=>[item.label,item.chain,item.walletLabel].filter(Boolean).some(value=>String(value).toLowerCase().includes(normalized))):listing.data.items}:null;return <><p className="page-lead">Copies confirmed wallet transactions after their confirmation threshold. This is not mempool front-running.</p><Notice error={listing.error}/><div className="page-toolbar"><label className="page-search">Find a sniper<input type="search" value={query} placeholder="Label, chain, wallet…" onChange={e=>setQuery(e.target.value)}/></label></div><Form className="form-json" title={editing?'Edit sniper patch':'Create sniper'} note="The same M10 validation and M7a ceilings used by Telegram and Discord apply here." onSubmit={save}><label>Configuration JSON<textarea name="json" required defaultValue={editing?'{}':'{"label":"copy","targetAddress":"0x0000000000000000000000000000000000000001","chain":"ethereum","walletLabel":"wallet","maxValueETH":0.01,"maxGasGwei":50,"dailySpendingCapETH":0.05,"cooldownMs":60000,"maxAttempts":3}'}/></label><button>{editing?'Apply validated patch':'Create sniper'}</button></Form>{listing.data===null?<Skeleton/>:<div className="card-grid sniper-grid">{filtered.items.map(item=>{const recent=listing.data.events.filter(event=>event.sniperId===item.id)[0];return <article className="card" key={item.id}><StatusPill status={recent?.state||'no events'}/><h2>{item.label}</h2><p className="warning">Post-confirmation copy; not front-running.</p><p>{item.chain} · wallet {item.walletLabel}</p><p>Max {item.maxValueETH} ETH · Gas {item.maxGasGwei} gwei · Daily {item.dailySpendingCapETH} ETH</p><p>Cooldown {item.cooldownMs} ms · Attempts {item.maxAttempts}</p><p>Allow: {item.contractAllowlist.join(', ')||'any'}<br/>Deny: {item.contractDenylist.join(', ')||'none'}</p><div className="actions"><button className="small quiet" onClick={()=>setEditing(item.id)}>Edit</button><button className="small quiet" aria-expanded={policyFor===item.id} onClick={()=>setPolicyFor(policyFor===item.id?null:item.id)}>{policyFor===item.id?'Hide policy':'Policy'}</button><button className="small danger" onClick={()=>remove(item.id)}>Remove</button></div>{policyFor===item.id&&<PolicyEditor target={{id:item.id,label:item.label,type:'sniper'}}/>}</article>})}{filtered.items.length===0&&<Empty text={normalized?'No snipers match this search.':'No snipers yet. Create one above to start post-confirmation copying.'}/>}</div>}</>}
+function WatchRules(){const listing=useLoad('/api/watch-rules',[],'watchrules.changed');const [editing,setEditing]=useState(null);const [query,setQuery]=useState('');const [policyFor,setPolicyFor]=useState(null);async function save(event){try{const {form,value}=jsonForm(event);const wasEditing=editing;await api(editing?`/api/watch-rules/${editing}`:'/api/watch-rules',{method:editing?'PUT':'POST',body:JSON.stringify(value)});form.reset();setEditing(null);notify(wasEditing?'Watch rule updated.':'Watch rule created.',{type:'success'});listing.load();}catch(value){notify(value.message,{type:'error'});}}async function action(id,name){try{await api(`/api/watch-rules/${id}${name==='disable'?'/disable':''}`,{method:name==='remove'?'DELETE':'POST',body:JSON.stringify(name==='remove'?{confirmation:'CONFIRM'}:{})});listing.load();}catch(value){notify(value.message,{type:'error'});}}const normalized=query.trim().toLowerCase();const filtered=listing.data?{...listing.data,items:normalized?listing.data.items.filter(item=>[item.name,item.type,item.method].filter(Boolean).some(value=>String(value).toLowerCase().includes(normalized))):listing.data.items}:null;return <><p className="page-lead">Manage adapter-backed Twitter/X and Discord source monitoring.</p><Notice error={listing.error}/><div className="page-toolbar"><label className="page-search">Find a watch rule<input type="search" value={query} placeholder="Name, type, method…" onChange={e=>setQuery(e.target.value)}/></label></div><Form className="form-json" title={editing?'Edit watch rule patch':'Create watch rule'} onSubmit={save}><label>Configuration JSON<textarea name="json" required defaultValue={editing?'{}':'{"name":"announcements","type":"discord_channel","method":"scraper","config":{"channelId":"123","keywords":["mint"],"sourceUrl":"https://example.com/feed"}}'}/></label><button>{editing?'Apply validated patch':'Create rule'}</button></Form>{listing.data===null?<Skeleton/>:<div className="card-grid watch-grid">{filtered.items.map(item=>{const events=listing.data.events.filter(event=>event.matchedRuleIds.includes(item.id)).slice(0,3);return <article className="card" key={item.id}><StatusPill status={item.enabled?'enabled':'disabled'}/><h2>{item.name}</h2><p>{item.type} · {item.method}</p><p className={item.consecutiveFailures?'warning':''}>Adapter health: {item.consecutiveFailures?`failing (${item.consecutiveFailures} consecutive)`:'healthy'} </p>{events.map(event=><p key={event.id}><code>{event.address}</code><br/>{new Date(event.detectedAt).toLocaleString()}</p>)}<div className="actions"><button className="small quiet" onClick={()=>setEditing(item.id)}>Edit</button><button className="small quiet" onClick={()=>action(item.id,'disable')}>Disable</button><button className="small quiet" aria-expanded={policyFor===item.id} onClick={()=>setPolicyFor(policyFor===item.id?null:item.id)}>{policyFor===item.id?'Hide policy':'Policy'}</button><button className="small danger" onClick={async()=>{if(await confirmDialog('Remove this watch rule?'))action(item.id,'remove');}}>Remove</button></div>{policyFor===item.id&&<PolicyEditor target={{id:item.id,label:item.name,type:'social_rule'}}/>}</article>})}{filtered.items.length===0&&<Empty text={normalized?'No watch rules match this search.':'No watch rules yet. Create one above to start social-trigger detection.'}/>}</div>}</>}
+function PolicyEditor({target,onChanged,highlighted}){const details=useLoad(`/api/targets/${target.id}?type=${target.type}`,[target.id,target.type]);const presets=useLoad('/api/mode-presets');const [challenge,setChallenge]=useState(null);async function update(event){event.preventDefault();const value=Object.fromEntries(new FormData(event.currentTarget));try{await api(`/api/targets/${target.id}`,{method:'PUT',body:JSON.stringify({...value,targetType:target.type})});notify('Policy saved.',{type:'success'});details.load();onChanged?.();}catch(x){notify(x.message,{type:'error'});}}async function bypass(event){event.preventDefault();try{setChallenge(await api(`/api/targets/${target.id}/bypass`,{method:'POST',body:JSON.stringify({targetType:target.type,dontAskAgain:new FormData(event.currentTarget).get('dontAskAgain')==='on'})}));}catch(x){notify(x.message,{type:'error'});}}async function confirmBypass(event){event.preventDefault();try{await api('/api/targets/bypass/confirm',{method:'POST',body:JSON.stringify({challengeId:challenge.challengeId,confirmation:new FormData(event.currentTarget).get('confirmation')})});setChallenge(null);notify('Bypass confirmed.',{type:'success'});details.load();}catch(x){notify(x.message,{type:'error'});}}async function preset(key){try{const result=await api(`/api/targets/${target.id}/preset`,{method:'POST',body:JSON.stringify({targetType:target.type,presetKey:key})});if(result.requiresConfirmation)setChallenge(result);else notify('Preset applied.',{type:'success'});details.load();}catch(x){notify(x.message,{type:'error'});}}const value=details.data;return <article className={`panel${highlighted?' policy-highlighted':''}`}><h2>{target.label}</h2><Notice error={details.error}/>{value&&<><p>Effective ceiling (read only): {value.governance.maxTransactionValueWei} wei/tx, {value.governance.dailySpendingBudgetWei} wei/day, {value.governance.gasCeilingGwei} gwei gas.</p><Form title="Trigger behavior" onSubmit={update}><input type="hidden" name="targetType" value={target.type}/><Select name="blockchainTrigger" label="Blockchain trigger" options={['auto','manual']} defaultValue={value.policy.blockchainTrigger}/><Select name="socialTrigger" label="Social trigger" options={['auto','manual']} defaultValue={value.policy.socialTrigger}/><Select name="humanVerification" label="Verification" options={['on']} defaultValue="on"/><button>Save policy</button></Form><div className="actions">{presets.data?.map(p=><button className="small" key={p.key} onClick={()=>preset(p.key)}>{p.displayName}</button>)}</div><form className="bypass" onSubmit={bypass}><label><input type="checkbox" name="dontAskAgain"/> Don&apos;t ask again for this target only</label><button className="danger">Request bypass</button></form>{challenge?.requiresConfirmation&&<form className="warning-box" onSubmit={confirmBypass}><strong>{challenge.warning}</strong><p>Type CONFIRM exactly to enable the highest-risk configuration.</p><input name="confirmation" autoComplete="off"/><button className="danger">Confirm bypass</button></form>}</>}</article>}
+// `target` arrives from a /dashboard/target-policies/:id deep link, rewritten to
+// ?target=:id. A bookmark that pointed at one policy still lands on that policy: the matching
+// card is rendered first and marked, rather than the user being dropped into an unordered grid
+// and left to find it. An id that no longer exists degrades to the plain list.
+function TargetPolicies({target}){
+  const snipers=useLoad('/api/snipers',[],'snipers.changed');
+  const rules=useLoad('/api/watch-rules',[],'watchrules.changed');
+  const all=[...(snipers.data?.items||[]).map(x=>({id:x.id,label:x.label,type:'sniper'})),...(rules.data?.items||[]).map(x=>({id:x.id,label:x.name,type:'social_rule'}))];
+  const targets=target?[...all.filter(item=>item.id===target),...all.filter(item=>item.id!==target)]:all;
+  const missing=Boolean(target)&&!all.some(item=>item.id===target)&&snipers.data!==null&&rules.data!==null;
+  return <>
+    <p className="eyebrow">Per-target safety — trigger modes, verification, presets, and read-only effective governance ceilings.</p>
+    {missing&&<Notice error={`No target matches ${target}. It may have been removed. Showing all targets instead.`}/>}
+    {snipers.data!==null&&rules.data!==null&&all.length===0
+      &&<Empty text="No triggers yet. Create a sniper or a social rule first — a policy configures an existing target, it does not create one."/>}
+    <div className="policy-grid">{targets.map(item=><PolicyEditor key={`${item.type}:${item.id}`} target={item} highlighted={item.id===target}/>)}</div>
+  </>;
+}
 const BELL_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>;
 // The bell surfaces two different things: pending confirmations (actionable, drive the badge
 // count) and a short recent-notifications log (informational, sourced from the same notify() log
@@ -388,50 +562,518 @@ function Login({onLogin}){
     {error&&<p className="error" role="alert">{error}</p>}
   </form></main>;
 }
-const VIEWS={Dashboard,Wallets,Minting,Tasks,Snipers,'Watch Rules':WatchRules,'Target Policies':TargetPolicies,Activity,'P&L':Pnl,Settings,Account};
-const MORE_PAGES=['Tasks','Snipers','Watch Rules','Target Policies','P&L','Settings'];
-const BOTTOM_BAR_PAGES=['Dashboard','Wallets','Activity'];
+// Mint = Minting + Tasks (brief §2): "mint now" and "mint at 14:00" are one intent with a time
+// field. The two originals are rendered UNCHANGED inside their tabs -- same components, same
+// hooks, same routes with the same params. This merge is navigation, not a rewrite, which is what
+// keeps it revertible on its own.
+//
+// `Schedule · was Tasks` carries the retired page name in muted text (brief §2.1, mechanism 1) so
+// somebody who knew the old IA can still find it. Drop the "was" labels after a release.
+// The preview token's real lifetime, surfaced. /api/mints/preview issues a token valid for 300
+// seconds (issuePreview in src/dashboard/api.js) and /api/mints/confirm consumes it exactly once;
+// past that the confirm fails with "invalid or expired", which previously arrived as a mystery
+// error after the user had already committed to broadcasting.
+//
+// On expiry the preview is DISCARDED rather than left on screen with a dead button: a stale
+// simulation is not evidence about current gas or a still-open mint, and re-simulating is the
+// correct action, not retrying a confirm that cannot succeed.
+const PREVIEW_TTL_SECONDS=300;
+function PreviewExpiry({preview,onExpire}){
+  const [remaining,setRemaining]=useState(PREVIEW_TTL_SECONDS);
+  useEffect(()=>{
+    setRemaining(PREVIEW_TTL_SECONDS);
+    const timer=setInterval(()=>setRemaining(value=>{
+      if(value<=1){clearInterval(timer);onExpire();return 0;}
+      return value-1;
+    }),1000);
+    return()=>clearInterval(timer);
+  },[preview?.previewToken]);
+  if(remaining<=0)return null;
+  const minutes=Math.floor(remaining/60);
+  const seconds=remaining%60;
+  return <p className={`preview-expiry${remaining<=60?' preview-expiry-soon':''}`} role="status">
+    This simulation expires in <strong className="tab">{minutes}:{String(seconds).padStart(2,'0')}</strong>
+    {remaining<=60?' — confirm now or simulate again.':'. After that it must be simulated again.'}
+  </p>;
+}
+
+// Batch. Its own panel rather than the free-text "Batch wallet labels" textarea buried in the
+// Mint now form, which required typing labels exactly right with no confirmation you had.
+// /api/mints/preview and /api/mints/confirm are the SAME routes Mint now uses, with walletLabels
+// instead of walletLabel -- no new API surface.
+//
+// Each wallet reports its OWN outcome. confirm never throws on a single wallet's failure, so one
+// bad wallet must not read as a failed batch: results are per row, and a partial success says so.
+function MintBatch(){
+  const wallets=useLoad('/api/wallets',[],'wallets.changed');
+  const [selected,setSelected]=useState([]);
+  const [contractAddress,setContractAddress]=useState('');
+  const [quantity,setQuantity]=useState('1');
+  const [priceEth,setPriceEth]=useState('0');
+  const [preview,setPreview]=useState(null);
+  const [results,setResults]=useState(null);
+  const [busy,setBusy]=useState(false);
+  function toggle(label){setSelected(current=>current.includes(label)?current.filter(item=>item!==label):[...current,label]);}
+  async function simulate(event){
+    event.preventDefault();
+    if(!selected.length){notify('Select at least one wallet.',{type:'error'});return;}
+    const valueWei=ethToWei(priceEth);
+    if(valueWei===null){notify('Price (ETH) must be a plain non-negative number.',{type:'error'});return;}
+    setBusy(true);
+    try{
+      setPreview(await api('/api/mints/preview',{method:'POST',body:JSON.stringify({
+        walletLabels:selected,contractAddress:contractAddress.trim(),arguments:[],valueWei:valueWei.toString()})}));
+      setResults(null);
+      notify(`Simulation passed for ${selected.length} wallets — review and confirm.`,{type:'success'});
+    }catch(value){notify(value.message,{type:'error'});}
+    finally{setBusy(false);}
+  }
+  async function confirmBatch(){
+    if(!await confirmDialog(`Broadcast this mint from ${selected.length} wallets? Each is submitted independently.`))return;
+    setBusy(true);
+    try{
+      const response=await api('/api/mints/confirm',{method:'POST',body:JSON.stringify({previewToken:preview.previewToken,confirmation:'CONFIRM'})});
+      setResults(response.results);
+      const failed=response.results.filter(item=>item.status!=='success').length;
+      notify(failed?`${response.results.length-failed} of ${response.results.length} submitted; ${failed} failed.`:'All wallets submitted.',{type:failed?'error':'success'});
+    }catch(value){notify(value.message,{type:'error'});}
+    finally{setBusy(false);}
+  }
+  return <>
+    <p className="eyebrow">Simulates and submits each wallet independently, so one failure never cancels the rest.</p>
+    <Form className="form-mint" title="Batch mint" busy={busy}
+      note="Select the wallets, then simulate. Every selected wallet is previewed before anything is broadcast." onSubmit={simulate}>
+      <div className="field-full">
+        <span className="batch-legend">Wallets {selected.length>0&&<span className="pill">{selected.length} selected</span>}</span>
+        {wallets.data===null?<Skeleton variant="lines" rows={3}/>
+          :wallets.data.length===0?<Empty text="No wallets yet. Create one first."/>
+            :<div className="batch-wallets">{wallets.data.map(wallet=>
+              <label className="batch-wallet" key={wallet.label}>
+                <input type="checkbox" checked={selected.includes(wallet.label)} onChange={()=>toggle(wallet.label)}/>
+                <span>{wallet.label}</span>
+                <span className="batch-wallet-balance tab">{wallet.balance===null||wallet.balance===undefined?'—':`${Number(wallet.balance).toFixed(3)} ETH`}</span>
+              </label>)}</div>}
+      </div>
+      <Field label="Contract address" placeholder="0x…" value={contractAddress} onChange={event=>setContractAddress(event.target.value)}/>
+      <div className="field-row">
+        <Field label="Quantity per wallet" type="number" min="1" value={quantity} onChange={event=>setQuantity(event.target.value)}/>
+        <Field label="Price per mint (ETH)" type="number" step="any" min="0" placeholder="0 if free" value={priceEth} onChange={event=>setPriceEth(event.target.value)}/>
+      </div>
+      <button disabled={busy||!selected.length}>Simulate {selected.length||''} {selected.length===1?'wallet':'wallets'}</button>
+    </Form>
+    {preview&&<section className="panel mint-preview">
+      <h2>Simulation passed</h2>
+      <PreviewExpiry preview={preview} onExpire={()=>setPreview(null)}/>
+      {preview.items.map(item=>{
+        const result=results?.find(entry=>entry.walletLabel===item.wallet.label);
+        return <div className="preview" key={item.wallet.label}>
+          <strong>{item.wallet.label}</strong>
+          <p>Estimated total: {item.simulation.estimatedCostWei} wei | Gas: {item.simulation.gasLimit}</p>
+          {result&&<p className={result.status==='success'?'ok':'warning'}>{result.status==='success'?'✅ Submitted.':`❌ Failed: ${result.error}`}</p>}
+        </div>;
+      })}
+      {!results&&<button className="quiet" disabled={busy} onClick={confirmBatch}>Confirm and broadcast</button>}
+      {results&&<p>Simulate again to retry any failed wallets.</p>}
+    </section>}
+  </>;
+}
+
+// Presets: the saved mint configurations, plus the method registry they resolve against. Read-only
+// here -- presets are created from the bots, and adding a create form would be a new write path,
+// not a restyle.
+function MintPresets(){
+  const presets=useLoad('/api/mint-presets');
+  return <>
+    <p className="eyebrow">Saved contract + method combinations, reusable from the Mint now form&apos;s &ldquo;Saved preset&rdquo; field.</p>
+    <Notice error={presets.error}/>
+    {presets.data===null?<Skeleton rows={3}/>
+      :presets.data.length===0?<Empty text="No saved presets yet. Presets are created from the Telegram and Discord bots with /preset, then appear here and in the Mint now form."/>
+        :<div className="card-grid">{presets.data.map(preset=><article className="card" key={preset.name}>
+          <h2>{preset.name}</h2>
+          <div className="user-card-identity"><p className="mono">{preset.contractAddress}</p><CopyButton value={preset.contractAddress} label="Copy contract address"/></div>
+          <p><code>{preset.methodSignature}</code></p>
+          {preset.chain&&<p>{preset.chain}</p>}
+        </article>)}</div>}
+  </>;
+}
+
+const MINT_TABS=[
+  {id:'now',label:'Mint now'},
+  {id:'schedule',label:'Schedule',was:'Tasks'},
+  {id:'batch',label:'Batch'},
+  {id:'presets',label:'Presets'},
+];
+function Mint({profile,go,tab,onTab}){
+  // Falls back to 'now' for an unknown ?tab= rather than rendering an empty page -- a stale or
+  // hand-edited tab value should land somewhere useful, not nowhere.
+  const active=MINT_TABS.some(item=>item.id===tab)?tab:'now';
+  return <>
+    <div className="page-head"><div className="page-head-text"><p className="eyebrow">Mint</p><h1>Mint</h1></div></div>
+    <SubTabs tabs={MINT_TABS} active={active} onChange={onTab} label="Mint sections"/>
+    {active==='now'&&<Minting/>}
+    {active==='schedule'&&<Tasks profile={profile} go={go}/>}
+    {active==='batch'&&<MintBatch/>}
+    {active==='presets'&&<MintPresets/>}
+  </>;
+}
+// Automation = Snipers + Watch Rules + Target Policies (brief §2). A sniper and a watch rule are
+// the same shape -- a source that listens and a mint it can fire -- and a policy has no
+// independent existence, so it belongs on its target rather than on a page of its own.
+//
+// As in unit 1, the three originals render UNCHANGED inside their tabs: same components, same
+// hooks, same routes with the same params. No API call changes.
+const AUTOMATION_TABS=[
+  {id:'snipers',label:'Snipers'},
+  {id:'social',label:'Social rules',was:'Watch Rules'},
+  {id:'policies',label:'Policies',was:'Target Policies'},
+];
+function Automation({tab,onTab,target}){
+  const active=AUTOMATION_TABS.some(item=>item.id===tab)?tab:'snipers';
+  return <>
+    <div className="page-head"><div className="page-head-text"><p className="eyebrow">Automation</p><h1>Automation</h1></div></div>
+    {/* The post-confirmation disclosure is page-level and unconditional -- it must be visible
+        even with zero triggers configured, because it describes what this page's feature IS,
+        not what any particular row is doing. Previously it only appeared on sniper cards, so an
+        empty Snipers page disclosed nothing at all. */}
+    <p className="notice notice-warning" role="note">
+      Snipers copy <strong>confirmed</strong> wallet transactions after their confirmation
+      threshold. This is not mempool front-running, and nothing here submits before a transaction
+      the target made has already confirmed on chain.
+    </p>
+    <SubTabs tabs={AUTOMATION_TABS} active={active} onChange={onTab} label="Automation sections"/>
+    {active==='snipers'&&<Snipers/>}
+    {active==='social'&&<WatchRules/>}
+    {active==='policies'&&<TargetPolicies target={target}/>}
+  </>;
+}
+// Wallets = Wallets + P&L (brief §2). On its own page P&L was a table the user had to mentally
+// join back to their wallets.
+//
+// Performance is ACCOUNT-level, not per-wallet, and the tab says so: pnl_records has no wallet
+// column (contract §5.9), so a per-wallet split cannot be computed and must not be implied.
+// Send ships as an explanatory panel, not a form. No dashboard route exists for it (contract
+// §5.10) and adding one is a value-moving path that deserves its own review rather than a slot
+// in a restyle. So this says plainly where sending DOES work today instead of rendering a
+// disabled form that looks like a bug, or worse, one that looks live and silently fails.
+function WalletSend(){
+  return <div className="panel">
+    <h2>Sending is available from the bots, not the dashboard yet</h2>
+    <p>The conversational send flow — pick a wallet, enter a destination and an amount, confirm
+      against your spending ceiling — runs on Telegram and Discord today. Use <code>/send</code>
+      on either platform.</p>
+    <p>It is deliberately not duplicated here yet. Moving value is the one path where a second,
+      differently-built implementation could disagree with the first, so it gets its own review
+      rather than arriving alongside a visual change.</p>
+  </div>;
+}
+
+// Export. The raw private key NEVER reaches the browser: the server re-encrypts the stored key
+// into a standard V3 keystore under the account's security password, and only that encrypted
+// blob is returned. This panel deliberately restates that, because "export key" reasonably
+// sounds like it hands over the key itself.
+function WalletExport({profile,onProfileChange}){
+  const wallets=useLoad('/api/wallets',[],'wallets.changed');
+  return <>
+    <div className="panel">
+      <h2>Encrypted keystore export</h2>
+      <p>The raw private key is never sent to your browser. The server re-encrypts it into a
+        standard V3 keystore file using your security password, and only that encrypted file is
+        downloaded.</p>
+      <p className="warning">Store the keystore and your security password separately. Together
+        they are the wallet; either one alone is not.</p>
+      {!profile.securityPasswordSet&&<p className="notice notice-warning">Set a security password
+        first — exporting needs one, and it then gates every future sensitive action.</p>}
+    </div>
+    {wallets.data===null?<Skeleton rows={2}/>
+      :wallets.data.length===0?<Empty text="No wallets to export yet."/>
+        :<div className="card-grid">{wallets.data.map(wallet=><article className="card" key={wallet.label}>
+          <h2>{wallet.label}</h2>
+          <div className="user-card-identity"><p className="mono">{wallet.address}</p><CopyButton value={wallet.address} label="Copy wallet address"/></div>
+          <div className="actions"><button className="small quiet" onClick={()=>exportWalletKeystore(wallet.label,{profile,onProfileChange})}>Export keystore</button></div>
+        </article>)}</div>}
+  </>;
+}
+
+const WALLET_TABS=[
+  {id:'balances',label:'Balances'},
+  {id:'performance',label:'Performance',was:'P&L'},
+  {id:'send',label:'Send'},
+  {id:'export',label:'Export'},
+];
+function WalletsPage({profile,onProfileChange,tab,onTab}){
+  const active=WALLET_TABS.some(item=>item.id===tab)?tab:'balances';
+  return <>
+    <div className="page-head"><div className="page-head-text"><p className="eyebrow">Wallets</p><h1>Wallets</h1></div></div>
+    <SubTabs tabs={WALLET_TABS} active={active} onChange={onTab} label="Wallet sections"/>
+    {active==='balances'&&<Wallets profile={profile} onProfileChange={onProfileChange}/>}
+    {active==='performance'&&<><p className="notice notice-warning" role="note">
+      Performance is <strong>account-level</strong>, across every wallet together. Per-wallet
+      cost and return cannot be shown: P&amp;L records carry no wallet, so splitting the totals
+      would mean inventing an attribution the data does not support.
+    </p><Pnl/></>}
+    {active==='send'&&<WalletSend/>}
+    {active==='export'&&<WalletExport profile={profile} onProfileChange={onProfileChange}/>}
+  </>;
+}
+// History = Activity + the audit surfaces (brief §2). Activity is a mutable feed; audit is
+// append-only evidence. They become sibling tabs rather than one being reskinned as the other,
+// which is the separation GHOSTMINT_UI_RULES.md requires.
+//
+// Security log is OWNER-ONLY and the tab is HIDDEN, not disabled, for a regular account:
+// /api/admin/security-audit is owner-gated server-side, so rendering the tab for a non-owner
+// would 403 on load. Offering a control that cannot work is worse than not offering it
+// (contract §6.1).
+function SecurityLogTab(){
+  const listing=useLoad('/api/admin/security-audit?limit=200');
+  return <>
+    <p className="eyebrow">Recent authorization outcomes across Telegram, Discord and the dashboard — successes, rejections and failures.</p>
+    <Notice error={listing.error}/>
+    {listing.data===null?<Skeleton variant="lines" rows={6}/>
+      :listing.data.length===0?<Empty text="No security events recorded yet."/>
+        :<div className="table-wrap"><table>
+          <thead><tr><th>When</th><th>Platform</th><th>Command</th><th>Outcome</th><th>Reason</th></tr></thead>
+          <tbody>{listing.data.map(row=><tr key={row.auditId}>
+            <td>{new Date(row.attemptedAt).toLocaleString()}</td>
+            <td>{row.platform}{row.platformUserId?`:${row.platformUserId}`:''}</td>
+            <td>{row.command}</td><td><StatusPill status={row.outcome}/></td><td>{row.reason}</td>
+          </tr>)}</tbody></table></div>}
+  </>;
+}
+function History({profile,tab,onTab}){
+  // Built from profile.isOwner so the tab list itself differs -- a non-owner never sees a tab
+  // they cannot open, and `active` falls back to Activity if a stale ?tab=security is bookmarked
+  // by someone who has since lost owner access.
+  const tabs=[
+    {id:'activity',label:'Activity'},
+    {id:'audit',label:'Audit evidence'},
+    ...(profile.isOwner?[{id:'security',label:'Security log'}]:[]),
+  ];
+  const active=tabs.some(item=>item.id===tab)?tab:'activity';
+  return <>
+    <div className="page-head"><div className="page-head-text"><p className="eyebrow">History</p><h1>History</h1></div></div>
+    <SubTabs tabs={tabs} active={active} onChange={onTab} label="History sections"/>
+    {active==='activity'&&<Activity/>}
+    {active==='audit'&&<div className="panel">
+      <h2>Audit evidence is not available on the dashboard yet</h2>
+      {/* Honest unavailable state, not a placeholder pretending to be a feature: triggerAudit
+          exists in botCommandService but has no dashboard route (contract §5.11). Routing it is
+          a src/** change with its own review, so this says where the data IS reachable today
+          rather than rendering an empty table that looks like "no evidence exists". */}
+      <p>Every automated trigger records append-only evidence — what was detected, which rule
+        matched, and what was submitted as a result. That record exists and is intact.</p>
+      <p>It is currently reachable only from the bots: run <code>/triggeraudit</code> in Telegram
+        or Discord. There is no dashboard route for it yet, and this panel deliberately shows
+        nothing rather than an empty table that would read as &ldquo;no evidence recorded&rdquo;.</p>
+    </div>}
+    {active==='security'&&<SecurityLogTab/>}
+  </>;
+}
+/* ==========================================================================
+   Command palette (brief §2.2) — unit 5 of Phase 4.
+
+   HARD CONSTRAINT, and the reason this component holds no api() call at all:
+   THE PALETTE NAVIGATES ONLY. It never mutates, never submits a form, never
+   triggers a transaction. Every entry below resolves to a go() call — a route
+   plus pre-selected state — and the user performs the actual action on the page
+   it lands on. "Mint now" goes TO the mint form; it does not mint. If you are
+   ever tempted to wire an action handler in here, that is the line.
+
+   The Moved group is what makes the 11->5 merge safe: someone who types "P&L"
+   out of habit lands in the right place AND is shown where it now lives, so the
+   next search is unnecessary.
+   ========================================================================== */
+const PALETTE_PAGES=[
+  {label:'Home',page:'Home'},
+  {label:'Mint',page:'Mint'},
+  {label:'Automation',page:'Automation'},
+  {label:'Wallets',page:'Wallets'},
+  {label:'History',page:'History'},
+  {label:'Settings',page:'Settings'},
+  {label:'Account',page:'Account'},
+];
+const PALETTE_MOVED=[
+  {label:'Minting',page:'Mint',tab:'now',where:'Mint → Mint now'},
+  {label:'Tasks',page:'Mint',tab:'schedule',where:'Mint → Schedule'},
+  {label:'Snipers',page:'Automation',tab:'snipers',where:'Automation → Snipers'},
+  {label:'Watch Rules',page:'Automation',tab:'social',where:'Automation → Social rules'},
+  {label:'Target Policies',page:'Automation',tab:'policies',where:'Automation → Policies'},
+  {label:'P&L',page:'Wallets',tab:'performance',where:'Wallets → Performance'},
+  {label:'Activity',page:'History',tab:'activity',where:'History → Activity'},
+];
+const PALETTE_ACTIONS=[
+  {label:'Mint now',page:'Mint',tab:'now',where:'Go to the mint form'},
+  {label:'Schedule a mint',page:'Mint',tab:'schedule',where:'Go to the schedule form'},
+  {label:'Create a wallet',page:'Wallets',tab:'balances',where:'Go to wallet creation'},
+  {label:'Create a sniper',page:'Automation',tab:'snipers',where:'Go to sniper creation'},
+  {label:'Create a social rule',page:'Automation',tab:'social',where:'Go to watch-rule creation'},
+  {label:'View performance',page:'Wallets',tab:'performance',where:'Go to account P&L'},
+];
+function CommandPalette({open,onClose,go,profile,wallets}){
+  const [query,setQuery]=useState('');
+  const [active,setActive]=useState(0);
+  const inputRef=useRef(null);
+  useEffect(()=>{if(open){setQuery('');setActive(0);inputRef.current?.focus();}},[open]);
+  const term=query.trim().toLowerCase();
+  const match=label=>!term||label.toLowerCase().includes(term);
+  const groups=[];
+  const pages=PALETTE_PAGES.filter(item=>match(item.label))
+    // Admin is owner-only everywhere else; the palette must not advertise a door that opens
+    // onto AdminDenied for a regular account.
+    .concat(profile.isOwner&&match('Admin')?[{label:'Admin',href:'/dashboard/admin'}]:[]);
+  if(pages.length)groups.push({name:'Pages',items:pages});
+  const moved=PALETTE_MOVED.filter(item=>match(item.label));
+  if(moved.length)groups.push({name:'Moved',items:moved});
+  const actions=PALETTE_ACTIONS.filter(item=>match(item.label));
+  if(actions.length)groups.push({name:'Actions',items:actions});
+  const walletHits=(wallets||[]).filter(wallet=>match(wallet.label)||match(wallet.address||''))
+    .slice(0,5).map(wallet=>({label:wallet.label,where:wallet.address,page:'Wallets',tab:'balances'}));
+  if(walletHits.length)groups.push({name:'Wallets',items:walletHits});
+  const flat=groups.flatMap(group=>group.items);
+  const clamped=Math.min(active,Math.max(0,flat.length-1));
+  function choose(item){
+    if(!item)return;
+    onClose();
+    // An href entry is a real document navigation (the admin shell is a separate mount), not a
+    // go() route -- still navigation, still no mutation.
+    if(item.href){window.location.href=item.href;return;}
+    go(item.page,item.tab||null);
+  }
+  function onKeyDown(event){
+    if(event.key==='Escape'){event.preventDefault();onClose();}
+    else if(event.key==='ArrowDown'){event.preventDefault();setActive(index=>Math.min(flat.length-1,index+1));}
+    else if(event.key==='ArrowUp'){event.preventDefault();setActive(index=>Math.max(0,index-1));}
+    else if(event.key==='Enter'){event.preventDefault();choose(flat[clamped]);}
+  }
+  if(!open)return null;
+  let cursor=-1;
+  return <div className="palette-backdrop" onClick={onClose}>
+    <div className="palette" role="dialog" aria-modal="true" aria-label="Command palette" onClick={event=>event.stopPropagation()}>
+      <input ref={inputRef} type="search" className="palette-input" placeholder="Jump to a page, or search what moved…"
+        value={query} onChange={event=>{setQuery(event.target.value);setActive(0);}} onKeyDown={onKeyDown}
+        aria-label="Search pages and actions"/>
+      <div className="palette-results" role="listbox">
+        {flat.length===0&&<p className="palette-empty">Nothing matches “{query}”.</p>}
+        {groups.map(group=><div className="palette-group" key={group.name}>
+          <div className="palette-group-name">{group.name}</div>
+          {group.items.map(item=>{cursor+=1;const index=cursor;return <button type="button" key={`${group.name}:${item.label}`}
+            role="option" aria-selected={index===clamped}
+            className={`palette-item${index===clamped?' active':''}`}
+            onMouseEnter={()=>setActive(index)} onClick={()=>choose(item)}>
+            <span className="palette-item-label">{item.label}</span>
+            {item.where&&<span className="palette-item-where">{item.where}</span>}
+          </button>;})}
+        </div>)}
+      </div>
+      <div className="palette-foot">↑↓ to move · Enter to open · Esc to close</div>
+    </div>
+  </div>;
+}
+const VIEWS={Home:Dashboard,Mint,Automation,Wallets:WalletsPage,History,Settings,Account};
+const MORE_PAGES=['Automation','Settings'];
+const BOTTOM_BAR_PAGES=['Home','Wallets','History'];
 const MORE_ICON=<svg {...ICON_PROPS} fill="currentColor" stroke="none"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg>;
 const CHEVRON_LEFT=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 6l-6 6 6 6"/></svg>;
 const CHEVRON_RIGHT=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 6l6 6-6 6"/></svg>;
-function BottomBar({page,go,onOpenMore,moreOpen}){const moreActive=moreOpen||(!BOTTOM_BAR_PAGES.includes(page)&&page!=='Minting'&&page!=='Account');return <nav className="mobile-bottombar" aria-label="Primary">
+function BottomBar({page,go,onOpenMore,moreOpen}){const moreActive=moreOpen||(!BOTTOM_BAR_PAGES.includes(page)&&page!=='Mint'&&page!=='Account');return <nav className="mobile-bottombar" aria-label="Primary">
   {BOTTOM_BAR_PAGES.slice(0,2).map(item=><button key={item} type="button" aria-current={page===item?'page':undefined} onClick={()=>go(item)}><span className="nav-icon" aria-hidden="true">{NAV_ICONS[item]}</span><span className="nav-label">{item}</span></button>)}
   <span className="bottombar-fab-gap" aria-hidden="true"/>
   {BOTTOM_BAR_PAGES.slice(2).map(item=><button key={item} type="button" aria-current={page===item?'page':undefined} onClick={()=>go(item)}><span className="nav-icon" aria-hidden="true">{NAV_ICONS[item]}</span><span className="nav-label">{item}</span></button>)}
   <button type="button" aria-current={moreActive?'page':undefined} onClick={onOpenMore}><span className="nav-icon" aria-hidden="true">{MORE_ICON}</span><span className="nav-label">More</span></button>
-  <button type="button" className={`bottombar-fab${page==='Minting'?' active':''}`} onClick={()=>go('Minting')}><span className="fab-circle" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><path d={BOLT_PATH}/></svg></span><span className="nav-label">Mint</span></button>
+  <button type="button" className={`bottombar-fab${page==='Mint'?' active':''}`} onClick={()=>go('Mint')}><span className="fab-circle" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><path d={BOLT_PATH}/></svg></span><span className="nav-label">Mint</span></button>
 </nav>;}
 function MoreSheet({open,page,go,onClose}){return <>{open&&<div className="sheet-backdrop" onClick={onClose}/>}<div className={`more-sheet${open?' open':''}`} role="dialog" aria-modal="true" aria-label="More" aria-hidden={!open}>
   <button type="button" className="sheet-handle" aria-label="Close" onClick={onClose}/>
   <h2>More</h2>
   <div className="sheet-grid">{MORE_PAGES.map(item=><button type="button" key={item} aria-current={page===item?'page':undefined} onClick={()=>go(item)}><span className="nav-icon" aria-hidden="true">{NAV_ICONS[item]}</span><span className="nav-label">{item}</span></button>)}</div>
 </div></>;}
-const TOP_RAIL_PAGES=PAGES.filter(item=>item!=='Settings'&&item!=='Account');
-const BOTTOM_RAIL_PAGES=['Settings','Account'];
+const TOP_RAIL_PAGES=['Home','Mint','Automation','Wallets','History'];
+const BOTTOM_RAIL_PAGES=['Account'];
 function NavList({items,page,go,className}){return <nav aria-label="Dashboard" className={className}><ul>{items.map(item=><li key={item}><button aria-current={page===item?'page':undefined} onClick={()=>go(item)}><span className="nav-icon" aria-hidden="true">{NAV_ICONS[item]}</span><span className="nav-label">{item}</span></button></li>)}</ul></nav>;}
-function Shell({profile,onLogout,onProfileChange}){const [page,setPage]=useState(pageFromLocation());const live=useLiveSocket();const [navOpen,setNavOpen]=useState(false);const [moreOpen,setMoreOpen]=useState(false);const [railExpanded,setRailExpandedState]=useState(readRailExpanded);function setRailExpanded(next){setRailExpandedState(value=>{const resolved=typeof next==='function'?next(value):next;writeRailExpanded(resolved);return resolved;});}const [theme,setTheme]=useState(profile.theme||'ghost-mint');useEffect(()=>{document.documentElement.dataset.theme=theme;},[theme]);useEffect(()=>{function onPopState(){setPage(pageFromLocation());}window.addEventListener('popstate',onPopState);return()=>window.removeEventListener('popstate',onPopState);},[]);useEffect(()=>{function onMessage(event){if(event.detail?.type==='identity.changed')api('/api/profile').then(onProfileChange).catch(()=>{});}window.addEventListener('ghostmint-ws',onMessage);return()=>window.removeEventListener('ghostmint-ws',onMessage);},[onProfileChange]);async function changeTheme(next){const previous=theme;setTheme(next);try{await api('/api/profile/theme',{method:'PUT',body:JSON.stringify({theme:next})});}catch{setTheme(previous);}}const View=VIEWS[page];const isRail=RAIL_THEMES.has(theme);const viewProfile=profile.theme===theme?profile:{...profile,theme};function go(item){const path=`/dashboard/${PAGE_SLUGS[item]}`;if(window.location.pathname!==path)window.history.pushState(null,'',path);setPage(item);setNavOpen(false);setMoreOpen(false);window.scrollTo({top:0});}
+function Shell({profile,onLogout,onProfileChange}){const [route,setRoute]=useState(pageFromLocation);const {page,tab,target}=route;const live=useLiveSocket();
+  // A retired slug is rewritten in place with replaceState, not pushState: the dead URL must not
+  // become a history entry, or Back from the new page would land on the old slug and redirect
+  // straight forward again, trapping the user.
+  useEffect(()=>{if(route.redirected)window.history.replaceState(null,'',pathFor(route.page,route.tab,route.target));},[]);
+  // Command palette (brief §2.2). The wallet list feeds its Wallets group; it is already loaded
+  // and cached by useLoad, so opening the palette costs no extra request.
+  const [paletteOpen,setPaletteOpen]=useState(false);
+  const paletteWallets=useLoad('/api/wallets',[],'wallets.changed');
+  useEffect(()=>{
+    function onKey(event){
+      // metaKey for macOS, ctrlKey elsewhere. Prevented so the browser's own Ctrl+K
+      // (focus-address-bar in several browsers) does not steal it.
+      if((event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==='k'){event.preventDefault();setPaletteOpen(value=>!value);}
+    }
+    window.addEventListener('keydown',onKey);
+    return()=>window.removeEventListener('keydown',onKey);
+  },[]);const [navOpen,setNavOpen]=useState(false);const [moreOpen,setMoreOpen]=useState(false);const [railExpanded,setRailExpandedState]=useState(readRailExpanded);function setRailExpanded(next){setRailExpandedState(value=>{const resolved=typeof next==='function'?next(value):next;writeRailExpanded(resolved);return resolved;});}const [theme,setTheme]=useState(profile.theme||'ghost-mint');useEffect(()=>{document.documentElement.dataset.theme=theme;},[theme]);useEffect(()=>{function onPopState(){setRoute(pageFromLocation());}window.addEventListener('popstate',onPopState);return()=>window.removeEventListener('popstate',onPopState);},[]);useEffect(()=>{function onMessage(event){if(event.detail?.type==='identity.changed')api('/api/profile').then(onProfileChange).catch(()=>{});}window.addEventListener('ghostmint-ws',onMessage);return()=>window.removeEventListener('ghostmint-ws',onMessage);},[onProfileChange]);async function changeTheme(next){const previous=theme;setTheme(next);try{await api('/api/profile/theme',{method:'PUT',body:JSON.stringify({theme:next})});}catch{setTheme(previous);}}const View=VIEWS[page];const isRail=RAIL_THEMES.has(theme);const viewProfile=profile.theme===theme?profile:{...profile,theme};// go(page) still behaves exactly as before for all ~40 existing callers; the optional second
+  // argument is what lets a redirect, a nav item or (in unit 5) the command palette land on a
+  // specific sub-tab. Compared against pathname+search rather than pathname alone, so switching
+  // tabs on the same page is a real history entry -- Back from Schedule returns to Mint now
+  // instead of leaving the page entirely.
+  function go(item,nextTab=null){
+    const alias=PAGE_ALIASES[item];
+    const page=alias?alias.page:item;
+    const tabValue=alias&&nextTab===null?alias.tab:nextTab;
+    const path=pathFor(page,tabValue);
+    if(`${window.location.pathname}${window.location.search}`!==path)window.history.pushState(null,'',path);
+    setRoute({page,tab:tabValue,redirected:false});setNavOpen(false);setMoreOpen(false);window.scrollTo({top:0});
+  }
   const brandMark=<span className="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d={BOLT_PATH} fill="currentColor"/></svg></span>;
   if(isRail)return <div className={`shell rail-shell${moreOpen?' more-open':''}`} data-rail={railExpanded?'expanded':'collapsed'}>
     <ConfirmHost/>
     <ToastHost/>
     <header className="rail-mobile-header">
       <a className="brand" href="/dashboard/">{brandMark}GhostMint</a>
+      <button type="button" className="search-trigger" aria-label="Search pages and actions" onClick={()=>setPaletteOpen(true)}>
+        <span className="search-trigger-icon" aria-hidden="true"><svg {...ICON_PROPS}><circle cx="10.5" cy="10.5" r="6"/><path d="M15 15l5.5 5.5"/></svg></span>
+        <span className="search-trigger-label">Search…</span>
+        <kbd className="search-trigger-key" aria-hidden="true">⌘K</kbd>
+      </button>
       <div className="header-right"><NotificationBell/><button type="button" className="header-avatar" aria-current={page==='Account'?'page':undefined} aria-label="Account" onClick={()=>go('Account')}>{NAV_ICONS.Account}</button></div>
     </header>
     <aside>
-      <div className="rail-top"><a className="brand" href="/dashboard/">{brandMark}<span className="nav-label">GhostMint</span></a></div>
+      {/* The brand is a real link AND routes in-app: middle-click/open-in-new-tab keep working,
+          a plain click routes without a full document reload. */}
+      <div className="rail-top"><a className="brand" href="/dashboard/" onClick={event=>{event.preventDefault();go('Home');}}>{brandMark}<span className="nav-label">GhostMint</span></a></div>
+      <div className="rail-group-label">Operate</div>
       <NavList items={TOP_RAIL_PAGES} page={page} go={go} className="rail-main-nav"/>
-      <NavList items={BOTTOM_RAIL_PAGES} page={page} go={go} className="rail-bottom-nav"/>
+      {/* Footer order is the prototype's: Admin, Account, Settings, above a rule. Admin is a real
+          <a href> not a go() -- the admin shell is a separate mount with its own routing -- and
+          is owner-only, since a regular account following it lands on AdminDenied. */}
+      <nav className="rail-bottom-nav" aria-label="Account">
+        <ul>
+          {profile.isOwner&&<li><a className="admin-rail-link" href="/dashboard/admin"><span className="nav-icon" aria-hidden="true">{NAV_ICONS.Admin}</span><span className="nav-label">Admin</span></a></li>}
+          {BOTTOM_RAIL_PAGES.map(item=><li key={item}><button aria-current={page===item?'page':undefined} onClick={()=>go(item)}><span className="nav-icon" aria-hidden="true">{NAV_ICONS[item]}</span><span className="nav-label">{item}</span></button></li>)}
+        </ul>
+      </nav>
     </aside>
     <button type="button" className="rail-edge-toggle" aria-label={railExpanded?'Collapse sidebar':'Expand sidebar'} onClick={()=>setRailExpanded(value=>!value)}>{railExpanded?CHEVRON_LEFT:CHEVRON_RIGHT}</button>
-    <div className="notification-bell-desktop"><NotificationBell/></div>
-    <main className="content" tabIndex="-1"><View profile={viewProfile} go={go} onThemeChange={changeTheme} onLogout={onLogout} onProfileChange={onProfileChange}/></main>
+    {/* Desktop top bar (brief §4.5): search trigger, spacer, live chip, bell, avatar. There was
+        no desktop top bar at all before this -- the bell floated fixed in the corner and the
+        search trigger had nowhere to live above 700px. The avatar is still a LINK here; turning
+        it into the account menu (mode chip, appearance toggle, log out) is Phase 6. */}
+    <header className="rail-topbar">
+      <button type="button" className="search-trigger" aria-label="Search pages and actions" onClick={()=>setPaletteOpen(true)}>
+        <span className="search-trigger-icon" aria-hidden="true"><svg {...ICON_PROPS}><circle cx="10.5" cy="10.5" r="6"/><path d="M15 15l5.5 5.5"/></svg></span>
+        <span className="search-trigger-label">Search…</span>
+        <kbd className="search-trigger-key" aria-hidden="true">⌘K</kbd>
+      </button>
+      <div className="rail-topbar-right">
+        <span className="status-pill"><span className={`status-dot${live?' live':''}`} aria-hidden="true"/><span aria-live="polite">{live?'Live':'Connecting'}</span></span>
+        <NotificationBell/>
+        <button type="button" className="header-avatar" aria-current={page==='Account'?'page':undefined} aria-label="Account" onClick={()=>go('Account')}>{NAV_ICONS.Account}</button>
+      </div>
+    </header>
+    <main className="content" tabIndex="-1"><View profile={viewProfile} go={go} tab={tab} target={target} onTab={next=>go(page,next)} onThemeChange={changeTheme} onLogout={onLogout} onProfileChange={onProfileChange}/></main>
     <BottomBar page={page} go={go} moreOpen={moreOpen} onOpenMore={()=>setMoreOpen(value=>!value)}/>
     <MoreSheet open={moreOpen} page={page} go={go} onClose={()=>setMoreOpen(false)}/>
+    <CommandPalette open={paletteOpen} onClose={()=>setPaletteOpen(false)} go={go} profile={profile} wallets={paletteWallets.data}/>
   </div>;
   return <div className={`shell${navOpen?' nav-open':''}`}>
     <ConfirmHost/>
     <ToastHost/>
+    <CommandPalette open={paletteOpen} onClose={()=>setPaletteOpen(false)} go={go} profile={profile} wallets={paletteWallets.data}/>
   <header>
     <div className="header-left"><button className="hamburger" type="button" aria-label="Toggle navigation" aria-expanded={navOpen} onClick={()=>setNavOpen(open=>!open)}><span/><span/><span/></button><a className="brand" href="/dashboard/">{brandMark}GhostMint</a></div>
     <div className="header-right">
@@ -442,7 +1084,7 @@ function Shell({profile,onLogout,onProfileChange}){const [page,setPage]=useState
   </header>
   {navOpen&&<div className="backdrop" onClick={()=>setNavOpen(false)}/>}
   <aside><NavList items={PAGES} page={page} go={go}/></aside>
-  <main className="content" tabIndex="-1"><View profile={viewProfile} go={go} onThemeChange={changeTheme} onLogout={onLogout} onProfileChange={onProfileChange}/></main>
+  <main className="content" tabIndex="-1"><View profile={viewProfile} go={go} tab={tab} target={target} onTab={next=>go(page,next)} onThemeChange={changeTheme} onLogout={onLogout} onProfileChange={onProfileChange}/></main>
   </div>;}
 function AdminDenied(){return <main className="login-page"><div className="login-card"><p className="eyebrow">Restricted</p><h1>Admin access required</h1><p>This account is not an owner. Return to the dashboard to continue.</p><a className="admin-link quiet" href="/dashboard/">Return to dashboard</a></div></main>;}
 const ADMIN_SECTIONS=[

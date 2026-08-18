@@ -65,7 +65,7 @@ code{font-family:ui-monospace,'SF Mono',Consolas,monospace;font-size:.9em}
 .nav-icon svg{width:1.1rem;height:1.1rem;display:block}
 .shell nav button[aria-current=page] .nav-icon{box-shadow:0 0 0 2px var(--accent-soft),var(--icon-badge-shadow);transform:scale(1.04)}
 
-.content{grid-area:content;padding:clamp(1.5rem,4vw,3.25rem);outline:none;overflow:hidden}
+.content{grid-area:content;padding:var(--page-pad);outline:none;overflow:hidden}
 .backdrop{display:none}
 
 .admin-shell{grid-template-columns:13.125rem minmax(0,1fr);grid-template-rows:1fr;grid-template-areas:'aside content';min-height:100vh}
@@ -91,8 +91,8 @@ code{font-family:ui-monospace,'SF Mono',Consolas,monospace;font-size:.9em}
    Typography / page title
    ========================================================================== */
 .eyebrow{text-transform:uppercase;letter-spacing:.16em;color:var(--accent-2);font-size:.72rem;font-weight:800}
-.page-title{margin-bottom:2rem;animation:fadeIn var(--normal) var(--ease)}
-.page-title h1{font-size:clamp(1.9rem,4vw,3.2rem);margin:.25rem 0 .5rem;letter-spacing:-.02em;font-weight:800}
+.page-title{margin-bottom:1.1rem;animation:fadeIn var(--normal) var(--ease)}
+.page-title h1{font-size:var(--h1-size);margin:.25rem 0 .5rem;letter-spacing:-.02em;font-weight:800}
 .page-title>p:last-child{color:var(--text-muted);max-width:44rem;line-height:1.5}
 
 /* ==========================================================================
@@ -102,14 +102,14 @@ code{font-family:ui-monospace,'SF Mono',Consolas,monospace;font-size:.9em}
   background:linear-gradient(180deg,var(--surface-2),var(--surface));box-shadow:var(--shadow-sm);
   transition:border-color var(--fast) var(--ease),box-shadow var(--fast) var(--ease),transform var(--fast) var(--ease)}
 .card:hover{border-color:var(--border-strong);box-shadow:var(--shadow);transform:translateY(-2px)}
-.card,.panel{padding:1.4rem}
+.card,.panel{padding:var(--card-pad)}
 .card h2,.panel h2,.feed-item h2{margin:.25rem 0 .6rem;font-size:1.05rem;font-weight:700}
 .card code,.preview p{overflow-wrap:anywhere;color:var(--text-muted)}
 .card strong{display:block;margin:1rem 0;font-size:1.15rem}
 .wallet-balances{display:grid;gap:.3rem;margin:.85rem 0}
 .wallet-balance-row{display:flex;align-items:baseline;justify-content:space-between;gap:.75rem;font-size:.82rem;color:var(--text-muted)}
 .wallet-balance-row strong{display:inline;margin:0;font-size:.92rem;color:var(--text)}
-.card-grid,.form-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,20rem),1fr));gap:1rem;margin:1.1rem 0}
+.card-grid,.form-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,20rem),1fr));gap:var(--grid-gap);margin:1.1rem 0}
 .pnl-summary-grid{grid-template-columns:repeat(auto-fit,minmax(min(100%,11rem),1fr))}
 .pnl-summary-card{gap:.3rem}
 .pnl-summary-card strong{font-size:1.3rem}
@@ -138,7 +138,7 @@ code{font-family:ui-monospace,'SF Mono',Consolas,monospace;font-size:.9em}
 
 /* Themed confirm()/prompt() replacement -- sits above everything else (including the user detail
    overlay below), matching how a native dialog would always be the topmost, most urgent thing. */
-.confirm-modal-backdrop{position:fixed;inset:0;z-index:95;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:1rem;animation:fadeIn var(--fast) var(--ease)}
+.confirm-modal-backdrop{position:fixed;inset:0;z-index:95;background:var(--scrim);display:flex;align-items:center;justify-content:center;padding:1rem;animation:fadeIn var(--fast) var(--ease)}
 .confirm-modal{width:min(26rem,100%);background:linear-gradient(180deg,var(--surface-2),var(--surface));border:1px solid var(--border-strong);border-radius:var(--radius-lg);box-shadow:var(--shadow-lg);padding:1.5rem}
 .confirm-modal p{margin:0 0 1.1rem;line-height:1.5}
 .confirm-modal input{width:100%;padding:.75rem .85rem;border:1px solid var(--border-strong);border-radius:var(--radius-sm);background:var(--surface-deep);color:var(--text);font-size:.95rem;margin-bottom:1.1rem}
@@ -167,7 +167,7 @@ code{font-family:ui-monospace,'SF Mono',Consolas,monospace;font-size:.9em}
 .toast-dismiss:hover{background:var(--surface-hover);color:var(--text)}
 
 /* Admin user detail overlay + inline card quick actions */
-.user-detail-backdrop{position:fixed;inset:0;z-index:80;background:rgba(0,0,0,.55);display:flex;align-items:flex-start;justify-content:center;padding:4vh 1rem;overflow:auto}
+.user-detail-backdrop{position:fixed;inset:0;z-index:80;background:var(--scrim);display:flex;align-items:flex-start;justify-content:center;padding:4vh 1rem;overflow:auto}
 .user-detail-panel{position:relative;width:min(34rem,100%);background:var(--surface);border:1px solid var(--border-strong);border-radius:var(--radius-lg);box-shadow:var(--shadow-lg);padding:1.5rem}
 .user-detail-close{position:absolute;top:1rem;right:1rem}
 .user-detail-panel h2{margin:0 0 .2rem}
@@ -278,9 +278,13 @@ button:disabled{opacity:.45;cursor:not-allowed;box-shadow:none}
 .quiet:hover:not(:disabled){filter:none;background:var(--surface-hover);color:var(--text)}
 .admin-link{display:inline-block;padding:.75rem 1.1rem;border-radius:var(--radius-sm);font-weight:700;font-size:.92rem;
   text-decoration:none;min-height:var(--tap-min);transition:background var(--fast) var(--ease),color var(--fast) var(--ease)}
-.danger{background:linear-gradient(135deg,var(--danger),color-mix(in srgb,var(--danger) 65%,black));color:#fff}
+.danger{background:linear-gradient(135deg,var(--danger),color-mix(in srgb,var(--danger) 65%,black));color:var(--danger-contrast)}
 .danger:hover:not(:disabled){filter:brightness(1.12)}
 .small{padding:.45rem .7rem;font-size:.8rem;border-radius:.5rem;min-height:auto}
+/* GHOSTMINT_UI_RULES.md: .small buttons (card Edit/Remove/Disable, the task row's
+   cancel/pause/resume/retry) stay visually compact on desktop but must not fall under the tap
+   floor on mobile. Deliberately not theme-scoped -- a finger is the same size in every theme. */
+@media(max-width:700px){.small{min-height:var(--tap-min)}}
 .actions{display:flex;gap:.4rem;flex-wrap:wrap}
 /* Systemic rule: any card/panel body text is always followed by breathing
    room before its action row, not just the specific widgets flagged during
@@ -346,7 +350,7 @@ button:disabled{opacity:.45;cursor:not-allowed;box-shadow:none}
    ========================================================================== */
 .table-wrap{overflow:auto;margin-top:1rem;border:1px solid var(--border);border-radius:var(--radius)}
 table{width:100%;border-collapse:collapse;background:var(--surface)}
-th,td{text-align:left;padding:.85rem 1rem;border-bottom:1px solid var(--border);white-space:nowrap;font-size:.9rem}
+th,td{text-align:left;padding:var(--row-pad) 1rem;border-bottom:1px solid var(--border);white-space:nowrap;font-size:.9rem}
 th{color:var(--text-muted);font-weight:700;font-size:.76rem;text-transform:uppercase;letter-spacing:.04em;
   background:var(--surface-deep)}
 tbody tr{transition:background var(--fast) var(--ease)}
@@ -355,7 +359,7 @@ tbody tr:last-child td{border-bottom:0}
 
 .pager{display:flex;align-items:center;justify-content:center;gap:1rem;margin:1.5rem 0;color:var(--text-muted);font-size:.88rem}
 
-.feed{display:grid;gap:.8rem}
+.feed{display:grid;gap:var(--grid-gap)}
 .feed-item{display:flex;justify-content:space-between;gap:1.5rem;padding:1.1rem 1.3rem;flex-wrap:wrap}
 .feed-item p{margin:.3rem 0;color:var(--text-muted);font-size:.88rem}
 .preview{padding:1rem 0;border-top:1px solid var(--border)}
@@ -418,7 +422,7 @@ tbody tr:last-child td{border-bottom:0}
    Dashboard overview (new compulsory landing page, pinned above Wallets)
    ========================================================================== */
 .dashboard-greeting{margin:0 0 .75rem;font-size:1.1rem;font-weight:600;color:var(--text)}
-.dashboard-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,18rem),1fr));gap:1rem;margin-top:1.5rem}
+.dashboard-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,18rem),1fr));gap:var(--grid-gap);margin-top:1.1rem}
 .dash-statusbar{margin-bottom:0}
 .dash-statusbar-wallet{display:flex;flex-wrap:wrap;align-items:center;gap:.75rem;padding:1rem 1.3rem;
   width:fit-content;max-width:100%;
@@ -438,7 +442,7 @@ tbody tr:last-child td{border-bottom:0}
 .dash-stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(7rem,1fr));gap:.75rem;margin:1rem 0}
 .dash-stat-grid-2col{grid-template-columns:1fr 1fr}
 .dash-stat-grid div{display:grid;gap:.2rem;padding:.85rem;border-radius:var(--radius-sm);background:var(--surface-2);border:1px solid var(--border)}
-.dash-stat-grid strong{font-size:1.3rem}
+.dash-stat-grid strong{font-size:var(--stat-value)}
 .dash-stat-grid strong.stat-accent{color:var(--accent)}
 .dash-stat-grid strong.stat-accent-2{color:var(--accent-2)}
 .dash-stat-grid span{color:var(--text-muted);font-size:.78rem;text-transform:uppercase;letter-spacing:.03em}
@@ -526,6 +530,10 @@ tbody tr:last-child td{border-bottom:0}
   box-shadow:none;justify-content:flex-start;transition:border-color var(--fast) var(--ease),box-shadow var(--fast) var(--ease)}
 .theme-option:hover:not(:disabled){filter:none;border-color:var(--accent)}
 .theme-option.active{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+/* The only literal colours left in this file, and deliberately so: these swatches PREVIEW a
+   specific theme in the picker, so they must render that theme's palette regardless of which
+   theme is currently active. Tokenising them would make every swatch show the same colour --
+   the one theme the user is already looking at -- which defeats the control entirely. */
 .theme-swatch{width:1.9rem;height:1.9rem;border-radius:.45rem;flex-shrink:0;display:grid;place-items:center;
   border:1px solid rgba(0,0,0,.15)}
 .theme-swatch-accent{width:.6rem;height:.6rem;border-radius:50%}
@@ -564,7 +572,10 @@ tbody tr:last-child td{border-bottom:0}
 .shell .rail-mobile-header{display:none}
 html[data-theme="ghost-mint"] .rail-shell,
 html[data-theme="ghost-mint-light"] .rail-shell{
-  grid-template-columns:4.5rem minmax(0,1fr);grid-template-rows:1fr;grid-template-areas:'aside content';
+  /* Two rows now: the top bar spans the content column only, so the rail stays full-height and
+     the brand keeps its own corner rather than being cut in half by a bar across the whole app. */
+  grid-template-columns:4.5rem minmax(0,1fr);grid-template-rows:auto 1fr;
+  grid-template-areas:'aside topbar' 'aside content';
   min-height:100vh;transition:grid-template-columns var(--normal) var(--ease)}
 html[data-theme="ghost-mint"] .rail-shell[data-rail="expanded"],
 html[data-theme="ghost-mint-light"] .rail-shell[data-rail="expanded"]{
@@ -628,18 +639,15 @@ html[data-theme="ghost-mint"] .notification-bell-desktop,
 html[data-theme="ghost-mint-light"] .notification-bell-desktop{
   display:block;position:fixed;top:1rem;right:1.25rem;z-index:30}
 
-/* Tighter spacing for this theme pair — dense, not decorative */
-html[data-theme="ghost-mint"] .content,html[data-theme="ghost-mint-light"] .content{
-  padding:clamp(1.1rem,2.5vw,2rem)}
-html[data-theme="ghost-mint"] .page-title,html[data-theme="ghost-mint-light"] .page-title{
-  margin-bottom:1.2rem}
-html[data-theme="ghost-mint"] .card,html[data-theme="ghost-mint"] .panel,
-html[data-theme="ghost-mint-light"] .card,html[data-theme="ghost-mint-light"] .panel{
-  padding:1.1rem}
+/* Tighter spacing for this theme pair — dense, not decorative.
+   Most of this block is gone as of the token pass: it was a per-theme attempt at exactly the
+   density brief §3.4 now specifies globally, and while it existed it silently OUTRANKED the
+   tokens (--card-pad resolved to 15px but rendered at 17.6px, because `html[data-theme=…] .card`
+   beats `.card`). The base rules in this file read --card-pad / --page-pad / --grid-gap and those
+   are now the single source of truth. Only .dash-hero keeps a local value, because it is one
+   feature panel that is deliberately roomier than an ordinary card, not a density default. */
 html[data-theme="ghost-mint"] .dash-hero,html[data-theme="ghost-mint-light"] .dash-hero{
   padding:1.2rem}
-html[data-theme="ghost-mint"] .dashboard-grid,html[data-theme="ghost-mint-light"] .dashboard-grid{
-  margin-top:1rem}
 html[data-theme="ghost-mint"] .dash-statusbar-wallet,html[data-theme="ghost-mint-light"] .dash-statusbar-wallet{
   padding:.7rem 1rem}
 
@@ -710,16 +718,16 @@ html[data-theme="ghost-mint"] .dash-hero button,html[data-theme="ghost-mint-ligh
     align-items:center;gap:.2rem;color:var(--accent);font-size:.625rem;font-weight:700}
   html[data-theme="ghost-mint"] .fab-circle,html[data-theme="ghost-mint-light"] .fab-circle{
     width:3.75rem;height:3.75rem;border-radius:50%;background:var(--accent);border:4px solid var(--bg);
-    display:grid;place-items:center;box-shadow:0 8px 18px -4px #0006;color:var(--accent-contrast)}
+    display:grid;place-items:center;box-shadow:var(--lift);color:var(--accent-contrast)}
   html[data-theme="ghost-mint"] .fab-circle svg,html[data-theme="ghost-mint-light"] .fab-circle svg{width:1.6rem;height:1.6rem}
   html[data-theme="ghost-mint"] .bottombar-fab.active .fab-circle,html[data-theme="ghost-mint-light"] .bottombar-fab.active .fab-circle{
     box-shadow:0 6px 14px -2px var(--accent)}
   html[data-theme="ghost-mint"] .sheet-backdrop,html[data-theme="ghost-mint-light"] .sheet-backdrop{
-    display:block;position:fixed;inset:0;background:#000000a0;z-index:45;animation:fadeIn var(--fast) var(--ease)}
+    display:block;position:fixed;inset:0;background:var(--scrim);z-index:45;animation:fadeIn var(--fast) var(--ease)}
   html[data-theme="ghost-mint"] .more-sheet,html[data-theme="ghost-mint-light"] .more-sheet{
     display:flex;flex-direction:column;position:fixed;left:0;right:0;bottom:0;z-index:46;
     padding:.625rem 1.1rem 1.5rem;border-top:1px solid var(--border);border-radius:1.25rem 1.25rem 0 0;
-    background:var(--surface-deep);box-shadow:0 -12px 30px -10px #000a;
+    background:var(--surface-deep);box-shadow:var(--shadow-lg);
     transform:translateY(100%);transition:transform var(--normal) var(--ease);max-height:58vh;overflow:auto}
   html[data-theme="ghost-mint"] .more-sheet.open,html[data-theme="ghost-mint-light"] .more-sheet.open{transform:translateY(0)}
   html[data-theme="ghost-mint"] .sheet-handle,html[data-theme="ghost-mint-light"] .sheet-handle{
@@ -764,9 +772,9 @@ html[data-theme="ghost-mint"] .dash-hero button,html[data-theme="ghost-mint-ligh
   .shell aside{position:fixed;top:4.5rem;left:0;bottom:0;width:min(80vw,18rem);border-right:1px solid var(--border);
     overflow:auto;transform:translateX(-100%);transition:transform var(--normal) var(--ease);z-index:40;background:var(--surface-deep)}
   .shell.nav-open aside{transform:translateX(0)}
-  .content{padding:1.25rem}
+  .content{padding:var(--page-pad)}
   .feed-item{display:block}
-  .backdrop{display:block;position:fixed;inset:4.5rem 0 0 0;background:#000000a0;z-index:30;animation:fadeIn var(--fast) var(--ease)}
+  .backdrop{display:block;position:fixed;inset:4.5rem 0 0 0;background:var(--scrim);z-index:30;animation:fadeIn var(--fast) var(--ease)}
 }
 
 /* ==========================================================================
@@ -775,11 +783,14 @@ html[data-theme="ghost-mint"] .dash-hero button,html[data-theme="ghost-mint-ligh
    overrides bring the real page content onto the handoff's compact type,
    field, card, table, and column rhythm for dark and light Ghost Mint only.
    ========================================================================== */
+/* Width and max-width are layout and stay; the padding and the h1 size are density and now come
+   from the tokens. Both used to be hardcoded here and, being theme-scoped, outranked the base
+   rule — .content rendered at 28px/32px against a --page-pad of 20px, and the h1 at 24px against
+   a --h1-size of 23px. */
 :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .rail-shell .content{
-  width:100%;max-width:80rem;padding:1.75rem 2rem}
-:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .page-title{margin-bottom:1.25rem}
+  width:100%;max-width:80rem;padding:var(--page-pad)}
 :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .page-title h1{
-  margin:.125rem 0 .375rem;font-size:1.5rem;line-height:1.15;letter-spacing:-.015em}
+  margin:.125rem 0 .375rem;font-size:var(--h1-size);line-height:1.15;letter-spacing:-.015em}
 :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .page-title>p:last-child{
   max-width:35rem;font-size:.84rem;line-height:1.45}
 :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .eyebrow{
@@ -787,7 +798,7 @@ html[data-theme="ghost-mint"] .dash-hero button,html[data-theme="ghost-mint-ligh
 
 :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .card-grid,
 :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .form-grid{
-  gap:.875rem;margin:1.125rem 0}
+  gap:var(--grid-gap);margin:1.125rem 0}
 :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .wallet-grid{
   grid-template-columns:repeat(3,minmax(0,1fr));margin-bottom:1.375rem}
 :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .wallet-forms{
@@ -976,9 +987,11 @@ html[data-theme="ghost-mint"] .dash-hero button,html[data-theme="ghost-mint-ligh
 
 @media(max-width:700px){
   :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .rail-shell .content{
-    max-width:none;padding:1rem 1rem 6.75rem}
+    max-width:none;padding:var(--page-pad) var(--page-pad) 6.75rem}
   :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .page-title{margin-bottom:1rem}
-  :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .page-title h1{font-size:1.375rem}
+  /* h1 sizing is a token now (--h1-size, 23px desktop / 20px mobile via the viewport override in
+     themes.css), so the per-theme mobile override that used to live here is gone -- one source of
+     truth rather than a component rule racing the token. */
   :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .page-title>p:last-child{font-size:.78rem}
   :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .wallet-grid,
   :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .wallet-forms,
@@ -1055,3 +1068,376 @@ html[data-theme="ghost-mint"] .dash-hero button,html[data-theme="ghost-mint-ligh
   .admin-owner-layout{grid-template-columns:1fr}
   .settings-usage-tables{grid-template-columns:1fr}
 }
+
+/* ==========================================================================
+   Phase 2 — shared component family (brief §5)
+   Presentational only. Every colour here is a token; the data marks (--gain /
+   --loss / --warn) are deliberately NOT the status colours, so a chart bar and
+   a status pill can never be mistaken for one another.
+   ========================================================================== */
+
+/* Numeric utilities. Figures that sit in a column must not jitter as digits change. */
+.tab{font-variant-numeric:tabular-nums}
+.mono{font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace}
+
+/* --- SectionCard --- */
+.section-head{display:flex;align-items:center;gap:.55rem;margin-bottom:.7rem}
+.section-head h2{margin:0;font-size:.98rem;font-weight:700}
+.section-icon{display:grid;place-items:center;width:1.625rem;height:1.625rem;flex:none;
+  border-radius:.5rem;background:var(--accent-soft);color:var(--accent)}
+.section-icon svg{width:.95rem;height:.95rem}
+.section-actions{margin-left:auto;display:flex;align-items:center;gap:.4rem}
+
+/* --- StatTile --- */
+.tiles{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:var(--grid-gap)}
+.tile{position:relative;overflow:hidden;padding:var(--card-pad);border:1px solid var(--border);
+  border-radius:var(--radius);background:var(--surface)}
+.tile::before{content:'';position:absolute;inset:0 0 auto;height:3.5rem;background:var(--sheen);pointer-events:none}
+.tile-label{position:relative;color:var(--text-muted);font-size:.7rem;font-weight:700;
+  letter-spacing:.04em;text-transform:uppercase}
+.tile-value{position:relative;margin-top:.3rem;font-size:var(--stat-value);font-weight:700;letter-spacing:-.02em}
+.tile-value small{margin-left:.25rem;font-size:.62em;font-weight:600;color:var(--text-muted)}
+.tile-gain{color:var(--gain-text)}
+.tile-loss{color:var(--loss-text)}
+.tile-warn{color:var(--warn-text)}
+.tile-meta{position:relative;margin-top:.2rem;color:var(--text-faint);font-size:.72rem}
+.tile .spark{position:absolute;right:0;bottom:0;width:44%;height:1.9rem;opacity:.85}
+
+/* --- Ledger (register 1) --- */
+.ledger{margin:0;border-top:1px solid var(--border)}
+.ledger-row{display:grid;grid-template-columns:46% minmax(0,1fr);align-items:baseline;gap:.75rem;
+  padding:var(--row-pad) 0;border-bottom:1px solid var(--border)}
+.ledger-row dt{color:var(--text-muted);font-size:.78rem}
+.ledger-value{margin:0;text-align:right;font-size:.8rem;font-weight:600;color:var(--text)}
+.ledger-gain{color:var(--gain-text)}
+.ledger-loss{color:var(--loss-text)}
+.ledger-warn{color:var(--warn-text)}
+.ledger-total{border-bottom:0;border-top:1px solid var(--border-strong)}
+/* The total row deliberately does NOT set a colour on its value. It used to, as
+   `.ledger-total .ledger-value{color:var(--text)}` -- two classes, which outranks the one-class
+   .ledger-loss / .ledger-gain tone and silently repainted every total back to plain text. The
+   total row is precisely where a net loss appears, so that bug ate the red on the one figure
+   most worth colouring. The base .ledger-value already supplies --text, so this only needs the
+   weight. Caught by rendering it, not by reading it. */
+.ledger-total dt{font-weight:700;color:var(--text)}
+.ledger-total .ledger-value{font-weight:700}
+
+/* --- Celebrate (register 4, the one warm surface) --- */
+.celebrate{padding:var(--card-pad);border:1px solid var(--accent-line);border-radius:var(--radius);
+  background:linear-gradient(135deg,var(--accent-soft),transparent 70%)}
+.celebrate strong{display:block;font-size:1rem}
+.celebrate p{margin-top:.2rem;color:var(--text-muted);font-size:.8rem}
+
+/* --- SearchField --- */
+.search-field-control{position:relative;display:block}
+.search-field-control input{width:100%;padding-right:2.5rem}
+/* The clear control keeps a full 44px hit box via padding even when the field itself is 40px on
+   mobile (brief §3.2.1 / §9.1-D3) -- the box you must hit precisely never shrinks. */
+.search-clear{position:absolute;top:50%;right:0;transform:translateY(-50%);display:grid;place-items:center;
+  width:2.75rem;height:2.75rem;min-height:0;padding:0;border:0;background:none;border-radius:.5rem;
+  color:var(--text-faint);font-size:1.05rem;line-height:1}
+.search-clear:hover{color:var(--text)}
+
+/* --- SubTabs --- */
+.subtabs{display:flex;gap:.25rem;margin-bottom:.9rem;border-bottom:1px solid var(--border)}
+.subtab{display:flex;align-items:baseline;gap:.35rem;padding:.5rem .7rem;border:0;border-bottom:2px solid transparent;
+  background:none;color:var(--text-muted);font-size:.85rem;font-weight:600;white-space:nowrap;min-height:var(--tap-min)}
+.subtab:hover{color:var(--text)}
+.subtab.active{color:var(--accent);border-bottom-color:var(--accent)}
+.subtab-was{color:var(--text-faint);font-size:.68rem;font-weight:500}
+
+/* --- Sparkline --- */
+.spark{display:block}
+.spark-accent path{stroke:var(--accent)}
+.spark-gain path{stroke:var(--gain)}
+.spark-loss path{stroke:var(--loss)}
+
+/* --- Meter --- */
+.meter{height:3px;border-radius:2px;background:var(--surface-4);overflow:hidden;margin-top:.4rem}
+.meter i{display:block;height:100%;background:var(--accent);border-radius:2px}
+.meter-warn i{background:var(--warn)}
+
+/* --- NumberField --- */
+.numfield{display:flex;align-items:flex-end;gap:.5rem}
+.numfield-label{display:grid;gap:.35rem;flex:1;min-width:0;color:var(--text-muted);font-size:.72rem;font-weight:700}
+.numfield-quick{display:flex;gap:.3rem;flex:none}
+.numfield-quick .active{border-color:var(--accent);color:var(--accent);background:var(--accent-soft)}
+
+/* --- Notice, block variant --- */
+.notice-block{display:block}
+.notice-head{display:flex;align-items:center;gap:.5rem}
+/* The status code is rendered, not swallowed: "it said 429" is the most useful thing a user can
+   report back, and brief §3.8 requires it be visible rather than console-only. */
+.notice-code{margin-left:auto;padding:.05rem .35rem;border-radius:.3rem;background:var(--surface-4);
+  color:var(--text-muted);font-family:ui-monospace,Consolas,monospace;font-size:.7rem}
+.notice-detail{margin-top:.3rem;font-size:.8rem;opacity:.9}
+.notice-retry{margin-top:.55rem}
+
+/* --- Skeleton variants --- */
+.skeleton-row,.skeleton-big,.skeleton-chart{border:1px solid var(--border);
+  background:linear-gradient(90deg,var(--surface),var(--surface-hover),var(--surface));
+  background-size:40rem 100%;animation:shimmer 1.4s infinite linear}
+.skeleton-row{height:2.5rem;border-radius:.5rem}
+.skeleton-big{height:2rem;width:60%;border-radius:.4rem}
+.skeleton-chart{height:9rem;border-radius:var(--radius)}
+
+@media(max-width:700px){
+  /* Stat tiles are 2-up on mobile, never 1-up -- four numbers must not cost four screens. */
+  .tiles{grid-template-columns:repeat(2,minmax(0,1fr))}
+  /* Sub-tab rows scroll rather than wrap, so a five-tab page keeps one tab row. */
+  .subtabs{overflow-x:auto;scrollbar-width:none}
+  .subtabs::-webkit-scrollbar{display:none}
+  /* 40px, full width. A DELIBERATE documented exception to the 44px rule (brief §9.1-D3): a text
+     input is a region you tap into and then type, not a discrete target you must hit precisely.
+     40px still clears WCAG 2.2 AA's 24px minimum, and the one precise target in the control --
+     the clear button -- keeps its full 44px above. Do not "fix" this back to 44px. */
+  .search-field{max-width:none;width:100%}
+  .search-field-control input{min-height:40px}
+  /* The input gets its own full-width row and the quick buttons divide the width beneath it.
+     Sharing a row squeezes the input to nothing and overflows the buttons. */
+  .numfield{flex-direction:column;align-items:stretch;gap:.4rem}
+  .numfield-quick{width:100%}
+  .numfield-quick button{flex:1}
+  .ledger-row{grid-template-columns:52% minmax(0,1fr);padding:6px 0}
+  .ledger-row dt{font-size:.75rem}
+  .ledger-value{font-size:.75rem}
+  /* Sparklines are decorative and go first when space is scarce -- but they survive in stat
+     tiles, where they occupy an otherwise dead corner. */
+  .section-card .spark{display:none}
+}
+
+/* ==========================================================================
+   Phase 3 — Home (brief §3.3 richness, §4 chart; contract §3)
+
+   SCOPE NOTE: the phase prompt scopes Phase 3 to "Dashboard.jsx and
+   dashboardWidgets/* only", but new markup needs styling and this file is where
+   component CSS lives -- the same shape Phase 2 took when it added the shared
+   family's styles here. Only additive rules below; nothing above is edited.
+
+   The collapse/reorder chrome the prototype draws around these cards (.blk,
+   .dragh, .col) is Phase 8's work and is deliberately absent here.
+   ========================================================================== */
+
+.home-split{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(0,1fr);gap:var(--grid-gap);align-items:start}
+.home-col{display:grid;gap:var(--grid-gap);align-content:start;min-width:0}
+.tiles{margin-bottom:var(--grid-gap)}
+
+/* --- Rows (activity, wallets) --- */
+.row{display:flex;align-items:center;gap:.6rem;padding:var(--row-pad) 0;border-bottom:1px solid var(--border)}
+.row:last-child{border-bottom:0}
+.row-icon{display:grid;place-items:center;width:1.5rem;height:1.5rem;flex:none;border-radius:.45rem;background:var(--surface-3)}
+.row-icon svg{width:.85rem;height:.85rem}
+.row-icon-gain{color:var(--gain-text)}
+.row-icon-loss{color:var(--loss-text)}
+.row-main{min-width:0;flex:1}
+.row-title{font-size:.83rem;font-weight:600;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row-sub{margin-top:.1rem;color:var(--text-faint);font-size:.72rem;display:flex;align-items:center;gap:.25rem;flex-wrap:wrap}
+.row-value{flex:none;font-size:.8rem;font-weight:600;color:var(--text);text-align:right}
+.row-value-label{margin-right:.3rem;color:var(--text-faint);font-size:.62rem;font-weight:600;text-transform:uppercase}
+.row-value-warn{color:var(--warn-text)}
+
+/* --- Chain identity dot (brief §3.3) ---
+   The dot is an aid, never the identity: the chain NAME is always rendered beside it, so this
+   never becomes status-by-colour-alone. */
+.chain-tag{display:inline-flex;align-items:center;gap:.28rem;white-space:nowrap}
+.chain-tag i{width:.44rem;height:.44rem;border-radius:50%;flex:none}
+
+/* --- Countdown ring (brief §3.3) --- */
+.ring{display:flex;align-items:center;gap:.75rem}
+.ring svg{width:3.25rem;height:3.25rem;flex:none}
+.ring-time{font-size:1.25rem;font-weight:700;letter-spacing:-.01em}
+.ring-sub{margin-top:.05rem;color:var(--text-muted);font-size:.78rem}
+.ring-meta{margin-top:.35rem}
+
+/* --- P&L chart (brief §4) ---
+   Height is fixed rather than aspect-driven: preserveAspectRatio="none" means the viewBox
+   stretches, and a percentage height would let the bars' apparent magnitude change with the
+   column width. */
+.pnl-chart{display:block;width:100%;height:7rem}
+.chart-legend{display:flex;flex-wrap:wrap;gap:.75rem;margin-top:.5rem;color:var(--text-muted);font-size:.7rem}
+.chart-legend span{display:inline-flex;align-items:center;gap:.3rem}
+.chart-legend .swatch{width:.55rem;height:.55rem;border-radius:.15rem;flex:none}
+.card-note{margin-top:.5rem;color:var(--text-faint);font-size:.7rem}
+.card-more{margin-top:.5rem}
+
+/* --- Segmented control (P&L window) --- */
+.segmented{display:inline-flex;gap:.15rem;padding:.15rem;border:1px solid var(--border);border-radius:.5rem;background:var(--surface-3)}
+.segmented button{min-height:0;padding:.2rem .5rem;border:0;background:none;color:var(--text-muted);font-size:.72rem;font-weight:600}
+.segmented button.active{background:var(--surface);color:var(--accent);border-radius:.35rem}
+
+/* --- Celebrate extras (register 4) --- */
+.streak{margin-top:.5rem;font-size:.78rem;font-weight:600}
+.celebrate-actions{display:flex;flex-wrap:wrap;gap:.4rem;margin-top:.7rem}
+
+/* --- Inline alert note --- */
+.alert-note{display:flex;gap:.6rem;padding:var(--card-pad);border:1px solid var(--border);
+  border-left:3px solid var(--warn);border-radius:var(--radius);background:var(--surface);font-size:.8rem}
+.alert-icon{flex:none;color:var(--warn-text)}
+.alert-icon svg{width:1.05rem;height:1.05rem}
+.alert-actions{margin-top:.5rem}
+
+/* --- Chips (pending queue) --- */
+.chip-row{display:flex;flex-wrap:wrap;gap:.35rem}
+.chip{padding:.25rem .55rem;border:1px solid var(--border);border-radius:999px;
+  background:var(--surface-3);color:var(--text-muted);font-size:.72rem;font-weight:600}
+
+/* --- Empty state as a screen, not a sentence (brief §3.7) --- */
+.empty-state{padding:1.25rem .75rem;text-align:center}
+.empty-icon{display:grid;place-items:center;width:2.25rem;height:2.25rem;margin:0 auto .55rem;
+  border-radius:.6rem;background:var(--surface-3);color:var(--text-faint)}
+.empty-icon svg{width:1.15rem;height:1.15rem}
+.empty-state h3{font-size:.88rem;font-weight:700}
+.empty-state p{margin:.3rem auto 0;max-width:34ch;color:var(--text-muted);font-size:.76rem;line-height:1.45}
+.empty-state button,.empty-state .button{margin-top:.7rem}
+
+@media(max-width:700px){
+  /* Single column below 700px -- but the stat tiles stay 2-up, which the Phase 2 block above
+     already enforces. Four numbers must not cost four screens. */
+  .home-split{grid-template-columns:minmax(0,1fr)}
+  .ring svg{width:2.75rem;height:2.75rem}
+  .ring-time{font-size:1.1rem}
+  .pnl-chart{height:5.5rem}
+  .row{padding:6px 0}
+  .row-title{font-size:.8rem}
+  .empty-state{padding:1rem .5rem}
+}
+
+/* An anchor that must read as a button. Kept as a real <a href> rather than a <button> +
+   window.open so middle-click, "copy link" and "open in new tab" all still work on a link out
+   to a block explorer -- the styling follows the element's role, the semantics follow the
+   action. Mirrors the base button rule; .admin-link is the same idea scoped to the admin shell. */
+.link-button{display:inline-flex;align-items:center;justify-content:center;padding:.4rem .7rem;
+  border-radius:var(--radius-sm);background:var(--accent);color:var(--accent-contrast);
+  font-weight:700;font-size:.8rem;text-decoration:none;min-height:var(--tap-min);
+  box-shadow:var(--shadow-sm);transition:filter var(--fast) var(--ease)}
+.link-button:hover{filter:brightness(1.1)}
+
+/* Phase 4 unit 2 — the policy a deep link asked for. Ordered first in the grid, and marked so
+   the eye lands on it: arriving from a bookmark to one specific policy and being shown an
+   unordered grid of every policy is the failure this avoids. */
+.policy-highlighted{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent-line)}
+
+/* --- Command palette (brief §2.2) — Phase 4 unit 5 --- */
+.palette-backdrop{position:fixed;inset:0;z-index:60;display:flex;justify-content:center;
+  padding:12vh 1rem 1rem;background:var(--scrim)}
+.palette{width:min(34rem,100%);max-height:70vh;display:flex;flex-direction:column;overflow:hidden;
+  border:1px solid var(--border-strong);border-radius:var(--radius);background:var(--surface);box-shadow:var(--lift)}
+.palette-input{width:100%;padding:.85rem 1rem;border:0;border-bottom:1px solid var(--border);
+  background:none;color:var(--text);font-size:.95rem}
+.palette-input:focus{outline:none}
+.palette-results{overflow-y:auto;padding:.35rem}
+.palette-group-name{padding:.5rem .65rem .25rem;color:var(--text-faint);font-size:.66rem;
+  font-weight:700;letter-spacing:.06em;text-transform:uppercase}
+.palette-item{display:flex;align-items:baseline;gap:.6rem;width:100%;padding:.5rem .65rem;
+  border:0;border-radius:.45rem;background:none;color:var(--text);text-align:left;
+  font-size:.85rem;font-weight:600;min-height:var(--tap-min);box-shadow:none}
+.palette-item.active{background:var(--surface-hover);color:var(--accent)}
+.palette-item-where{margin-left:auto;color:var(--text-faint);font-size:.72rem;font-weight:500;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.palette-empty{padding:1rem .65rem;color:var(--text-muted);font-size:.82rem}
+.palette-foot{padding:.5rem .8rem;border-top:1px solid var(--border);color:var(--text-faint);font-size:.7rem}
+@media(max-width:700px){
+  .palette-backdrop{padding:4vh .75rem .75rem}
+  .palette{max-height:82vh}
+  /* The where-line wraps under the label instead of competing for one row at 375px. */
+  .palette-item{flex-wrap:wrap;gap:.15rem}
+  .palette-item-where{margin-left:0;width:100%}
+}
+
+/* --- Top-bar search trigger (brief §4.5) — pulled forward from Phase 6 ---
+   The palette's click affordance. ⌘K alone is undiscoverable: a keyboard shortcut nobody is told
+   about is a feature only its author can use, so the shortcut is printed on the control itself. */
+.search-trigger{display:flex;align-items:center;gap:.45rem;flex:1;min-width:0;max-width:22rem;
+  margin:0 .6rem;padding:.4rem .6rem;border:1px solid var(--border);border-radius:.55rem;
+  background:var(--surface-2);color:var(--text-faint);font-size:.8rem;font-weight:500;
+  box-shadow:none;min-height:var(--tap-min)}
+.search-trigger:hover{background:var(--surface-hover);color:var(--text-muted);filter:none}
+.search-trigger-icon svg{width:.95rem;height:.95rem;display:block}
+.search-trigger-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.search-trigger-key{margin-left:auto;padding:.1rem .3rem;border:1px solid var(--border);
+  border-radius:.3rem;background:var(--surface-4);color:var(--text-faint);
+  font-family:ui-monospace,Consolas,monospace;font-size:.66rem}
+@media(max-width:700px){
+  /* The shortcut hint is desktop-only -- there is no ⌘K on a phone, so printing it is noise. */
+  .search-trigger{max-width:none;margin:0 .4rem}
+  .search-trigger-key{display:none}
+}
+
+/* --- Batch wallet picker (Phase 4, Mint → Batch) --- */
+.batch-legend{display:flex;align-items:center;gap:.4rem;margin-bottom:.4rem;
+  color:var(--text-muted);font-size:.72rem;font-weight:700;letter-spacing:.04em;text-transform:uppercase}
+.batch-wallets{display:grid;gap:.3rem;max-height:14rem;overflow-y:auto;padding:.3rem;
+  border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface-2)}
+.batch-wallet{display:flex;align-items:center;gap:.55rem;padding:.45rem .55rem;border-radius:.4rem;
+  font-size:.83rem;min-height:var(--tap-min);cursor:pointer}
+.batch-wallet:hover{background:var(--surface-hover)}
+.batch-wallet input{width:auto;margin:0;flex:none}
+.batch-wallet-balance{margin-left:auto;color:var(--text-faint);font-size:.76rem}
+
+/* --- Preview expiry countdown (Phase 4) ---
+   Amber, not red: an unexpired simulation is not an error state. It turns urgent only inside the
+   final minute, which is when the distinction actually matters. */
+.preview-expiry{margin-bottom:.6rem;padding:.45rem .6rem;border-radius:.4rem;
+  background:var(--surface-3);color:var(--text-muted);font-size:.78rem}
+.preview-expiry-soon{color:var(--warn-text);background:color-mix(in srgb,var(--warn) 12%,transparent)}
+
+
+/* --- Desktop top bar (brief §4.5) ---
+   Hidden below 700px, where the existing .rail-mobile-header already carries the same controls. */
+html[data-theme="ghost-mint"] .rail-topbar,
+html[data-theme="ghost-mint-light"] .rail-topbar{
+  grid-area:topbar;display:flex;align-items:center;gap:.6rem;
+  padding:.55rem var(--page-pad);border-bottom:1px solid var(--border);background:var(--surface)}
+.rail-topbar{display:none}
+.rail-topbar-right{margin-left:auto;display:flex;align-items:center;gap:.5rem}
+/* The bell no longer floats fixed in the corner -- it lives in the bar with everything else. */
+html[data-theme="ghost-mint"] .rail-topbar .notification-bell-desktop,
+html[data-theme="ghost-mint-light"] .rail-topbar .notification-bell-desktop{position:static;display:block}
+@media(max-width:700px){
+  html[data-theme="ghost-mint"] .rail-topbar,
+  html[data-theme="ghost-mint-light"] .rail-topbar{display:none}
+  html[data-theme="ghost-mint"] .rail-shell,
+  html[data-theme="ghost-mint-light"] .rail-shell{grid-template-rows:1fr;grid-template-areas:'content'}
+}
+
+/* A merged page's <h1> comes from the merged page itself; the absorbed component contributes a
+   lead line under the sub-tab row, not a second title. Two h1s on one page is both a visual
+   mistake and an accessibility one. */
+.page-lead{margin-bottom:.9rem;color:var(--text-muted);font-size:.83rem;line-height:1.5;max-width:70ch}
+
+/* --- Prototype page header: eyebrow + h1, with actions on the right --- */
+.page-head{display:flex;align-items:flex-start;gap:1rem;margin-bottom:1rem}
+.page-head-text{min-width:0}
+.page-head-text h1{margin:.1rem 0 0;font-size:var(--h1-size);font-weight:800;letter-spacing:-.02em}
+.page-head-actions{margin-left:auto;display:flex;gap:.4rem;flex:none}
+/* --- Rail group label + footer rule (prototype) --- */
+.rail-group-label{padding:.75rem .9rem .3rem;color:var(--text-faint);font-size:.64rem;
+  font-weight:700;letter-spacing:.08em;text-transform:uppercase}
+html[data-theme="ghost-mint"] .rail-shell[data-rail="collapsed"] .rail-group-label,
+html[data-theme="ghost-mint-light"] .rail-shell[data-rail="collapsed"] .rail-group-label{
+  /* A word cannot fit a 4.5rem rail; the rule below still carries the grouping. */
+  overflow:hidden;text-indent:-999px;padding-top:.6rem;padding-bottom:0}
+html[data-theme="ghost-mint"] .rail-bottom-nav,
+html[data-theme="ghost-mint-light"] .rail-bottom-nav{
+  margin-top:auto;border-top:1px solid var(--border);padding-top:.4rem}
+@media(max-width:700px){.page-head{flex-direction:column;gap:.6rem}.page-head-actions{margin-left:0;width:100%}.page-head-actions button{flex:1}}
+
+/* --- Mint now, prototype layout (#mt-now) --- */
+.mint-split{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);gap:var(--grid-gap);align-items:start}
+.mint-col{display:grid;gap:var(--grid-gap);align-content:start;min-width:0}
+.field-hint{color:var(--text-faint);font-weight:500}
+/* The detected/cross-link banner. Informational, so it borders on accent rather than warn --
+   it is telling you what was found, not warning you about it. */
+.inline-note{display:flex;gap:.55rem;padding:.6rem .7rem;border:1px solid var(--border);
+  border-left:3px solid var(--accent);border-radius:var(--radius-sm);background:var(--surface-2);
+  font-size:.8rem;line-height:1.45}
+.inline-note-icon{flex:none;color:var(--accent)}
+.inline-note-icon svg{width:1rem;height:1rem;display:block}
+.inline-note-actions{margin-top:.5rem}
+@media(max-width:700px){.mint-split{grid-template-columns:minmax(0,1fr)}}
+/* .fields is a multi-column grid by default (it serves the wide admin forms). Inside the Mint
+   column it must be a single stack, or Wallet/Price/Advanced land side by side in a narrow
+   column and the form reads as scattered rather than sequential. */
+.mint-col .fields{grid-template-columns:minmax(0,1fr);gap:.7rem}
+.mint-col .field-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.7rem}
+.mint-col .fields>button{justify-self:start}

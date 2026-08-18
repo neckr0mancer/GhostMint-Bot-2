@@ -1,0 +1,207 @@
+/* global clearInterval, setInterval */
+import React,{useEffect,useState} from 'react';
+
+/* ==========================================================================
+   Home page presentational parts (brief §3.3, §4; contract §3).
+
+   A separate module from helpers.jsx deliberately. helpers.jsx holds QuickMint,
+   which every one of the five theme widget packs imports; nothing in here is
+   imported by the three secondary themes, so this file cannot regress them.
+   Presentation only -- nothing here fetches or mutates.
+   ========================================================================== */
+
+const ICON=({d,...props})=><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+  strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}>{d}</svg>;
+
+export const ICONS={
+  check:<ICON d={<path d="M5 13l4 4L19 7"/>}/>,
+  cross:<ICON d={<path d="M18 6 6 18M6 6l12 12"/>}/>,
+  chart:<ICON d={<path d="M3 17l5-6 4 3 5-8"/>}/>,
+  clock:<ICON d={<><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></>}/>,
+  wallet:<ICON d={<><rect x="3" y="6" width="18" height="13" rx="2.5"/><path d="M3 10h18"/></>}/>,
+  alert:<ICON d={<><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></>}/>,
+  queue:<ICON d={<><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></>}/>,
+};
+
+/* --- Chain identity (brief §3.3) -----------------------------------------
+   The activity table has no chain column (contract §5.8), so the dot is derived
+   from the row's block-explorer URL. sepolia.etherscan.io contains "etherscan.io",
+   so the testnet host MUST be tested before the mainnet one -- reversing these two
+   entries silently relabels every Sepolia row as Ethereum. */
+const EXPLORER_CHAINS=[
+  ['sepolia.etherscan.io','sepolia'],
+  ['etherscan.io','ethereum'],
+  ['basescan.org','base'],
+  ['arbiscan.io','arbitrum'],
+  ['polygonscan.com','polygon'],
+  ['robinhoodchain','robinhood'],
+];
+export const CHAIN_LOOK={
+  ethereum:{label:'Ethereum',color:'#627eea'},
+  base:{label:'Base',color:'#0052ff'},
+  arbitrum:{label:'Arbitrum',color:'#12aaff'},
+  polygon:{label:'Polygon',color:'#8247e5'},
+  robinhood:{label:'Robinhood',color:'#00c805'},
+  sepolia:{label:'Sepolia',color:'#8f9aa6'},
+};
+export function chainFromExplorer(explorer){
+  if(!explorer)return null;
+  const value=String(explorer).toLowerCase();
+  const hit=EXPLORER_CHAINS.find(([host])=>value.includes(host));
+  return hit?hit[1]:null;
+}
+export function ChainDot({chain}){
+  const look=CHAIN_LOOK[chain];
+  if(!look)return null;
+  // The name is rendered as text alongside the dot, never colour alone -- the dot is an
+  // identity aid, not the identity itself.
+  return <span className="chain-tag"><i style={{background:look.color}} aria-hidden="true"/>{look.label}</span>;
+}
+
+/* --- Formatting ---------------------------------------------------------- */
+// null/undefined are rejected BEFORE Number(), because Number(null) is 0 and 0 is finite -- so
+// the obvious one-liner renders a missing ceiling as "0.000", i.e. "you may spend nothing",
+// when the truth is "there is no ceiling". On a money surface those must never look alike.
+export function formatEth(value,digits=3){
+  if(value===null||value===undefined)return '—';
+  const parsed=Number(value);
+  return Number.isFinite(parsed)?parsed.toFixed(digits):'—';
+}
+// A signed figure always carries its sign character, because colour is the secondary channel
+// and must never be the only thing distinguishing a gain from a loss (brief §4, condition 2).
+// U+2212 MINUS SIGN, not a hyphen: it aligns with digit width in a tabular-nums column.
+export function formatSigned(value,digits=3){
+  const parsed=Number(value);
+  if(!Number.isFinite(parsed))return '—';
+  const fixed=Math.abs(parsed).toFixed(digits);
+  if(Number(fixed)===0)return `0.${'0'.repeat(digits)}`;
+  return `${parsed<0?'−':'+'}${fixed}`;
+}
+export function shortAddress(address){
+  const value=String(address||'');
+  return value.length>12?`${value.slice(0,6)}…${value.slice(-4)}`:value;
+}
+export function weiToEth(wei){
+  if(wei===null||wei===undefined)return null;
+  try{return Number(BigInt(wei))/1e18;}catch{const parsed=Number(wei);return Number.isFinite(parsed)?parsed/1e18:null;}
+}
+
+/* --- Countdown ring (brief §3.3) -----------------------------------------
+   Re-renders on a 1s interval only while a future target exists; the effect tears the
+   timer down as soon as the target passes or unmounts, so an idle Home holds no timer. */
+const RING_CIRCUMFERENCE=2*Math.PI*17;
+export function CountdownRing({target,title,meta}){
+  const [now,setNow]=useState(()=>Date.now());
+  useEffect(()=>{
+    if(!target)return undefined;
+    const timer=setInterval(()=>setNow(Date.now()),1000);
+    return()=>clearInterval(timer);
+  },[target]);
+  const targetMs=target?new Date(target).getTime():NaN;
+  if(!Number.isFinite(targetMs))return null;
+  const remaining=Math.max(0,targetMs-now);
+  const totalSeconds=Math.floor(remaining/1000);
+  const hours=Math.floor(totalSeconds/3600);
+  const minutes=Math.floor((totalSeconds%3600)/60);
+  const seconds=totalSeconds%60;
+  const clock=hours>0?`${hours}:${String(minutes).padStart(2,'0')}:${String(seconds).padStart(2,'0')}`
+    :`${String(minutes).padStart(2,'0')}:${String(seconds).padStart(2,'0')}`;
+  // The arc fills over the final hour. A drop scheduled days out would otherwise sit at a
+  // full ring for days, which reads as "no progress" rather than "not soon".
+  const windowMs=60*60*1000;
+  const progress=Math.min(1,Math.max(0,1-remaining/windowMs));
+  return <div className="ring">
+    <svg viewBox="0 0 40 40" aria-hidden="true">
+      <circle cx="20" cy="20" r="17" fill="none" stroke="var(--surface-4)" strokeWidth="4"/>
+      <circle cx="20" cy="20" r="17" fill="none" stroke="var(--accent)" strokeWidth="4" strokeLinecap="round"
+        strokeDasharray={RING_CIRCUMFERENCE} strokeDashoffset={RING_CIRCUMFERENCE*(1-progress)}
+        transform="rotate(-90 20 20)"/>
+    </svg>
+    <div>
+      <div className="ring-time tab">{remaining===0?'due now':clock}</div>
+      <div className="ring-sub">{title}</div>
+      {meta&&<div className="ring-meta"><span className="pill">{meta}</span></div>}
+    </div>
+  </div>;
+}
+
+/* --- P&L chart (brief §4) -------------------------------------------------
+   The one real data-viz surface. Inline SVG, no charting library, single measure,
+   one axis, diverging by sign. All five of §4's conditions are load-bearing:
+   direction from the baseline and the +/- character are the PRIMARY channel and
+   colour is secondary, because green/red alone fails colourblind separation
+   (ΔE 6.1 deutan). Do not "simplify" this into colour-only bars. */
+const CHART_WIDTH=620;
+const CHART_HEIGHT=112;
+const BAR_GAP=2;
+const BAR_RADIUS=4;
+
+// Only the data-end is rounded; the baseline end stays square so the bar reads as anchored to
+// the axis rather than floating. rx on a <rect> would round all four corners, hence a path.
+function barPath(x,width,baseline,end,radius){
+  const height=Math.abs(end-baseline);
+  const r=Math.max(0,Math.min(radius,height,width/2));
+  const up=end<baseline;
+  const tip=up?baseline-height:baseline+height;
+  const inner=up?tip+r:tip-r;
+  return `M ${x} ${baseline} L ${x} ${inner} Q ${x} ${tip} ${x+r} ${tip} L ${x+width-r} ${tip} Q ${x+width} ${tip} ${x+width} ${inner} L ${x+width} ${baseline} Z`;
+}
+
+export function PnlChart({days=[]}){
+  if(!days.length)return null;
+  const magnitudes=days.map(day=>Math.abs(day.net));
+  const peak=Math.max(...magnitudes,0);
+  const baseline=CHART_HEIGHT/2;
+  const slot=CHART_WIDTH/days.length;
+  const width=Math.max(1,slot-BAR_GAP);
+  const total=days.reduce((sum,day)=>sum+day.net,0);
+  // A flat all-zero series would divide by zero; render every bar at the baseline instead.
+  const scale=peak>0?(CHART_HEIGHT/2-4)/peak:0;
+  return <>
+    <svg className="pnl-chart" viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`} preserveAspectRatio="none" role="img"
+      aria-label={`Daily net profit and loss across ${days.length} ${days.length===1?'day':'days'}. Net ${formatSigned(total)} ETH.`}>
+      <line x1="0" y1={baseline} x2={CHART_WIDTH} y2={baseline} stroke="var(--border-strong)" strokeWidth="1"/>
+      <g>
+        {days.map(day=>{
+          const end=baseline-day.net*scale;
+          const isLoss=day.net<0;
+          return <path key={day.day} d={barPath(day.index*slot,width,baseline,end,BAR_RADIUS)}
+            fill={isLoss?'var(--loss)':'var(--gain)'}>
+            <title>{`${day.day}: ${formatSigned(day.net)} ETH`}</title>
+          </path>;
+        })}
+      </g>
+    </svg>
+    <div className="chart-legend">
+      <span><i className="swatch" style={{background:'var(--gain)'}} aria-hidden="true"/> Gain · above baseline · <b>+</b></span>
+      <span><i className="swatch" style={{background:'var(--loss)'}} aria-hidden="true"/> Loss · below baseline · <b>−</b></span>
+    </div>
+  </>;
+}
+
+/* --- Rows ---------------------------------------------------------------- */
+export function Row({icon,tone,title,sub,value,valueLabel,valueTone}){
+  return <div className="row">
+    {icon&&<div className={`row-icon${tone?` row-icon-${tone}`:''}`}>{icon}</div>}
+    <div className="row-main">
+      <div className="row-title">{title}</div>
+      {sub&&<div className="row-sub">{sub}</div>}
+    </div>
+    {value!==undefined&&<div className={`row-value tab${valueTone?` row-value-${valueTone}`:''}`}>
+      {valueLabel&&<span className="row-value-label">{valueLabel}</span>}{value}
+    </div>}
+  </div>;
+}
+
+/* --- Empty state (brief §3.7) --------------------------------------------
+   An empty state is a screen, not a sentence: icon, what this surface is for, and the one
+   action that ends the emptiness. Rendered only once data has actually arrived -- the caller
+   gates on `data !== null`, never on `length === 0` alone. */
+export function EmptyState({icon,title,children,action}){
+  return <div className="empty-state">
+    {icon&&<div className="empty-icon">{icon}</div>}
+    <h3>{title}</h3>
+    {children&&<p>{children}</p>}
+    {action}
+  </div>;
+}

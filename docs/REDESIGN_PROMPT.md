@@ -31,19 +31,34 @@ Before any redesign work, run the full suite on a clean tree and record the resu
 
 Report the exact pass/fail counts and the name of every failing test.
 
-Expected as of 2026-08-17: the non-integration suite is GREEN — 360 pass, 0 fail.
-Five stale tests were fixed on 2026-08-17 (brief §9.2-O1, now closed) and those
-fixes are uncommitted in your working tree:
+RECORDED BASELINE — re-measured 2026-08-18, on branch redesign/dashboard with
+Phases 1 and 2 in the tree: the non-integration suite is GREEN at
 
-  tests/validation.test.js      walletExport field renamed password -> securityPassword
-  tests/governance.test.js      upsertGroup now requires advancedModesAllowed
-  tests/dashboardAdmin.test.js  5 group-set bodies needed advancedModes, AND the
-                                fixture never wired broadcastToUsers, which
-                                adminWrite actually calls
+  474 pass, 0 fail, 0 skipped   (49 files, ~22s, --test-concurrency=1)
 
-Commit those three files FIRST, on their own, before starting the redesign branch.
-They are test-only, touch no src/**, and keeping them separate means the redesign
-diff stays clean.
+That is the number every later phase compares against. Reproduce it with the
+49 non-integration files, not a bare `node --test`, which also collects the
+DB-bound files below:
+
+  node --test --test-concurrency=1 $(ls tests/*.test.js | grep -v integration | grep -v smoke)
+
+Two earlier corrections are folded in, both already committed — do NOT redo them:
+
+  - The five stale tests this document once told you to commit first (brief
+    §9.2-O1) shipped in commit 908e09e. The working tree is clean of them.
+  - tests/chainGrouping.test.js was left red by commit 3ebaa62, which dropped
+    `sepolia` from EVM_CHAINS but updated only tests/discordMenus.test.js. Its
+    assertion now compares EVM_CHAINS against the NON-TESTNET keys of
+    CHAIN_DEFINITIONS, plus a companion test asserting no testnet is ever
+    selectable. Sepolia stays in CHAIN_DEFINITIONS for the Milestone 14
+    acceptance run; it is deliberately not user-selectable.
+
+This document previously recorded 360 pass. That figure predated Rounds 4-9 and
+is superseded by the 474 above.
+
+KNOWN FLAKE: tests/dashboardAdmin.test.js binds an ephemeral port with listen(0) and
+occasionally draws one undici refuses, failing with "fetch failed / bad port". It is
+environmental -- re-run the file before treating it as a regression.
 
 tests/smoke.test.js and the *.integration.test.js files need a reachable database
 and will fail with EAI_AGAIN if you run them somewhere the DB is not routable.
@@ -82,6 +97,24 @@ THE SINGLE MOST IMPORTANT RULE IN THIS SESSION:
 
   Where the prototype and the data contract disagree, THE CONTRACT WINS. The
   prototype shows some figures aspirationally; the contract says which.
+
+THE PROTOTYPE IS THE TARGET — restated 2026-08-18 after a build drifted from it.
+
+  docs/ghostmint-redesign-v3.html is not a mood board. It is the spec for
+  LAYOUT, LABELS, ORDER and STRUCTURE. Open it and match it element for element:
+  the rail's "Operate" group and its Home/Mint/Automation/Wallets/History order,
+  the ruled footer, the page header shape (eyebrow + h1, no subtitle paragraph),
+  the tab NAMES ("Balances", not "Holdings"), the card order in each column.
+
+  The contract still wins on WHICH NUMBER a tile shows and where it comes from.
+  It does not override how the page is arranged or what a control is called.
+
+  If a form exists in this app but has no counterpart in the prototype, do NOT
+  ship the old form untouched. Restyle it to the prototype's form language and
+  mark it visibly as not-yet-designed, so it reads as a known gap rather than as
+  something that was missed.
+
+  Where prototype and brief conflict, ASK. Do not silently pick the brief.
 
 House rules for this whole session:
 

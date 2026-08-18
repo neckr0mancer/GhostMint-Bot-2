@@ -1,5 +1,5 @@
-/* global Blob, CustomEvent, navigator, URL, WebSocket, setTimeout */
-import React,{useCallback,useEffect,useState} from 'react';
+/* global Blob, clearTimeout, CustomEvent, navigator, URL, WebSocket, setTimeout */
+import React,{useCallback,useEffect,useRef,useState} from 'react';
 
 export const ACTIVITY_EVENTS=['snipers.changed','tasks.changed','watchrules.changed','wallets.changed'];
 
@@ -141,13 +141,32 @@ export function downloadFile(filename,content,mimeType='application/json'){
   document.body.appendChild(link);link.click();document.body.removeChild(link);
   URL.revokeObjectURL(url);
 }
-export function useLoad(path,dependencies=[],wsEvents){const [data,setData]=useState(null);const [error,setError]=useState('');const load=useCallback(()=>{setError('');return api(path).then(setData).catch(value=>setError(value.message));},[path,...dependencies]);useEffect(()=>{load();},[load]);useEffect(()=>{if(!wsEvents)return;const watched=[].concat(wsEvents);const listener=event=>{if(watched.includes(event.detail?.type))load();};window.addEventListener('ghostmint-ws',listener);return()=>window.removeEventListener('ghostmint-ws',listener);},[load,wsEvents]);return {data,error,load};}
+// `status` carries api()'s HTTP status alongside the message so a failure surface can render the
+// code (brief §3.8 requires it visible: "it said 429" is the single most useful thing a user can
+// report back). It was being discarded here -- api() sets .status on the thrown Error, and this
+// catch kept only .message, so no caller could ever show it.
+export function useLoad(path,dependencies=[],wsEvents){const [data,setData]=useState(null);const [error,setError]=useState('');const [status,setStatus]=useState(null);const load=useCallback(()=>{setError('');setStatus(null);return api(path).then(setData).catch(value=>{setError(value.message);setStatus(value.status??null);});},[path,...dependencies]);useEffect(()=>{load();},[load]);useEffect(()=>{if(!wsEvents)return;const watched=[].concat(wsEvents);const listener=event=>{if(watched.includes(event.detail?.type))load();};window.addEventListener('ghostmint-ws',listener);return()=>window.removeEventListener('ghostmint-ws',listener);},[load,wsEvents]);return {data,error,status,load};}
 // Opens the one live-update socket for the whole session (shared by both the regular dashboard
 // shell and the admin shell, which previously never opened one at all -- so admin pages had no live
 // listener). Every server-side change is broadcast as a 'ghostmint-ws' window CustomEvent; useLoad's
 // wsEvents param subscribes a given resource to specific event types.
 export function useLiveSocket(){const [live,setLive]=useState(false);useEffect(()=>{const protocol=window.location.protocol==='https:'?'wss:':'ws:';const socket=new WebSocket(`${protocol}//${window.location.host}/ws`);socket.onmessage=event=>{const message=JSON.parse(event.data);if(message.type==='connected')setLive(true);window.dispatchEvent(new CustomEvent('ghostmint-ws',{detail:message}));};socket.onclose=()=>setLive(false);return()=>socket.close();},[]);return live;}
-export function Notice({error,ok}){return <>{error&&<p className="notice error" role="alert">{error}</p>}{ok&&<p className="notice ok" role="status">{ok}</p>}</>}
+// Two shapes, deliberately. `error` as a STRING keeps the original one-line notice every existing
+// caller passes (useLoad's error is always a string). `error` as an OBJECT renders the richer
+// failure surface brief §3.8 requires on a money surface: what failed, what was NOT changed, the
+// status code shown visibly, and a Retry. The status code is rendered rather than swallowed
+// because "it said 429" is the single most useful thing a user can tell you.
+export function Notice({error,ok}){
+  if(error&&typeof error==='object'){
+    const {title,detail,code,onRetry}=error;
+    return <div className="notice error notice-block" role="alert">
+      <div className="notice-head"><strong>{title||'Something failed'}</strong>{code!==undefined&&code!==null&&<span className="notice-code">{code}</span>}</div>
+      {detail&&<p className="notice-detail">{detail}</p>}
+      {onRetry&&<button type="button" className="small quiet notice-retry" onClick={onRetry}>Retry</button>}
+    </div>;
+  }
+  return <>{error&&<p className="notice error" role="alert">{error}</p>}{ok&&<p className="notice ok" role="status">{ok}</p>}</>;
+}
 export function relativeTime(at){const seconds=Math.max(0,Math.floor((Date.now()-at)/1000));if(seconds<5)return 'just now';if(seconds<60)return `${seconds}s ago`;const minutes=Math.floor(seconds/60);if(minutes<60)return `${minutes}m ago`;const hours=Math.floor(minutes/60);if(hours<24)return `${hours}h ago`;return `${Math.floor(hours/24)}d ago`;}
 // Carries the contract address (and whatever else was already typed) from Quick Mint's "Advanced
 // options" hand-off into the full Minting page, so the field it lands on isn't empty and detection
@@ -161,7 +180,16 @@ export function consumePendingMintPrefill(){const value=pendingMintPrefill;pendi
 // separately in App.jsx and Admin.jsx (and not available to Dashboard.jsx at all, since it can't
 // import from App.jsx without a cycle), which is how Quick Mint ended up with its own raw
 // <label><input> markup instead of matching the rest of the app.
-export function Form({title,note,warning,onSubmit,children,className=''}){return <form className={`panel form ${className}`.trim()} onSubmit={onSubmit}><h2>{title}</h2>{note&&<p>{note}</p>}{warning&&<p className="warning">{warning}</p>}<div className="fields">{children}</div></form>}
+// `busy` is the in-flight lock GHOSTMINT_UI_RULES.md requires of every mutating form. It defaults
+// to false so all 19 existing callers keep their exact current behaviour.
+//
+// The <fieldset> goes INSIDE .fields rather than around it, which looks arbitrary and is not:
+// styles.css has two direct-child selectors (`.admin-owner-layout>.panel>.fields`), and while
+// `fieldset{display:contents}` removes the element from the LAYOUT tree, CSS selectors match the
+// DOM tree -- so wrapping .fields would silently break the admin owner grid. Nesting it inward
+// keeps .fields a direct child of the form, and display:contents lets the real controls go on
+// participating in the .fields grid exactly as before.
+export function Form({title,note,warning,onSubmit,children,className='',busy=false}){return <form className={`panel form ${className}`.trim()} onSubmit={onSubmit} aria-busy={busy||undefined}><h2>{title}</h2>{note&&<p>{note}</p>}{warning&&<p className="warning">{warning}</p>}<div className="fields"><fieldset disabled={busy}>{children}</fieldset></div></form>}
 export function Field({label,required=true,...props}){return <label>{label}<input required={required} {...props}/></label>}
 export function Select({label,options=[],optional=false,...props}){return <label>{label}<select required={!optional} {...props}>{optional&&<option value="">None</option>}{options?.map(value=><option key={value} value={value}>{value}</option>)}</select></label>}
 export function statusClass(status){const value=String(status||'').toLowerCase();
@@ -172,7 +200,160 @@ export function statusClass(status){const value=String(status||'').toLowerCase()
 export function StatusPill({status}){return <span className={`pill ${statusClass(status)}`}>{status}</span>}
 export function PageTitle({eyebrow,title,subtitle}){return <div className="page-title"><p className="eyebrow">{eyebrow}</p><h1>{title}</h1><p>{subtitle}</p></div>}
 export function Empty({text}){return <div className="panel"><p>{text}</p></div>}
-export function Skeleton({rows=3,variant='card'}){return variant==='card'
-  ?<div className="skeleton-grid" aria-hidden="true">{Array.from({length:rows}).map((_,index)=><div className="skeleton-card" key={index}/>)}</div>
-  :<div className="skeleton-lines" aria-hidden="true">{Array.from({length:rows}).map((_,index)=><div className="skeleton-line" key={index}/>)}</div>}
+// 'card' and 'lines' are the original two and keep their exact markup; the rest are the shapes the
+// prototype draws under its Loading toggle. A skeleton must echo the SHAPE of what is coming --
+// a big-value tile that loads into three text lines reads as a layout jump, not as loading.
+const SKELETON_SHAPES={line:'skeleton-line',row:'skeleton-row','big-value':'skeleton-big',chart:'skeleton-chart'};
+export function Skeleton({rows=3,variant='card'}){
+  if(variant==='card')return <div className="skeleton-grid" aria-hidden="true">{Array.from({length:rows}).map((_,index)=><div className="skeleton-card" key={index}/>)}</div>;
+  if(variant==='lines')return <div className="skeleton-lines" aria-hidden="true">{Array.from({length:rows}).map((_,index)=><div className="skeleton-line" key={index}/>)}</div>;
+  const shape=SKELETON_SHAPES[variant]||'skeleton-line';
+  return <div className="skeleton-lines" aria-hidden="true">{Array.from({length:rows}).map((_,index)=><div className={shape} key={index}/>)}</div>;
+}
 export function Pager({value,page,setPage}){if(!value)return null;return <div className="pager"><button disabled={page<=1} onClick={()=>setPage(page-1)}>Previous</button><span>Page {value.page} of {value.totalPages} | {value.total} total</span><button disabled={page>=value.totalPages} onClick={()=>setPage(page+1)}>Next</button></div>}
+
+/* ==========================================================================
+   New presentational components (brief §5). Presentation only -- none of these
+   fetch, mutate, or hold anything but their own display state.
+   ========================================================================== */
+
+// The card every .panel becomes. Head slot carries an optional accent-tinted icon chip and an
+// actions slot, so a card header never has to be hand-assembled per page again.
+export function SectionCard({title,icon,actions,children,className=''}){
+  return <section className={`panel section-card ${className}`.trim()}>
+    {(title||actions)&&<div className="section-head">
+      {icon&&<span className="section-icon" aria-hidden="true">{icon}</span>}
+      {title&&<h2>{title}</h2>}
+      {actions&&<div className="section-actions">{actions}</div>}
+    </div>}
+    {children}
+  </section>;
+}
+
+// Label / value / meta, with room in the bottom-right corner for a Sparkline or Meter. `value` is
+// rendered as given -- callers format it -- so a real 0 arrives here as "0" and prints as "0".
+export function StatTile({label,value,unit,meta,tone,children}){
+  return <div className="tile">
+    <div className="tile-label">{label}</div>
+    <div className={`tile-value tab${tone?` tile-${tone}`:''}`}>{value}{unit&&<small>{unit}</small>}</div>
+    {meta&&<div className="tile-meta">{meta}</div>}
+    {children}
+  </div>;
+}
+
+// The register-1 table: label left, figure right, tabular-nums, hairline rules, no decoration.
+// Rows are {label, value, mono?, tone?}; `total` is an optional emphasised final row.
+export function Ledger({rows=[],total,className=''}){
+  return <dl className={`ledger ${className}`.trim()}>
+    {rows.map((row,index)=><div className="ledger-row" key={row.label??index}>
+      <dt>{row.label}</dt>
+      <dd className={`ledger-value tab${row.mono?' mono':''}${row.tone?` ledger-${row.tone}`:''}`}>{row.value}</dd>
+    </div>)}
+    {total&&<div className="ledger-row ledger-total">
+      <dt>{total.label}</dt><dd className="ledger-value tab">{total.value}</dd>
+    </div>}
+  </dl>;
+}
+
+// Register 4, and the only component allowed to be warm. Renders after a confirmed outcome only.
+export function Celebrate({title,detail,children}){
+  return <div className="celebrate" role="status"><strong>{title}</strong>{detail&&<p>{detail}</p>}{children}</div>;
+}
+
+// Consolidates the .page-search pattern and finally adds the themed in-input clear the UI rules
+// have required all along -- shown only when there is text, clears the query only, and returns
+// focus to the input so typing continues uninterrupted.
+//
+// onChange receives the VALUE, not the event: every existing call site does e.target.value at the
+// callsite, and this is a new component with no callers yet, so it gets the cleaner contract.
+export function SearchField({label,value='',onChange,placeholder='Label, address, chain…',id,name}){
+  const inputRef=useRef(null);
+  function clear(){onChange('');inputRef.current?.focus();}
+  return <label className="page-search search-field">{label}
+    <span className="search-field-control">
+      <input ref={inputRef} id={id} name={name} type="search" value={value} placeholder={placeholder}
+        onChange={event=>onChange(event.target.value)}/>
+      {value!==''&&<button type="button" className="search-clear" aria-label="Clear search" onClick={clear}>×</button>}
+    </span>
+  </label>;
+}
+
+// In-page tab row for merged content. `was` renders the retired page name in muted text so a user
+// who knew the old IA can still find it (brief §2.1).
+export function SubTabs({tabs=[],active,onChange,label='Sections'}){
+  return <div className="subtabs" role="tablist" aria-label={label}>
+    {tabs.map(tab=><button key={tab.id} type="button" role="tab" aria-selected={active===tab.id}
+      className={`subtab${active===tab.id?' active':''}`} onClick={()=>onChange(tab.id)}>
+      <span>{tab.label}</span>{tab.was&&<span className="subtab-was">was {tab.was}</span>}
+    </button>)}
+  </div>;
+}
+
+// Decorative trend only -- no axes, no labels, no tooltip. If a value needs to be READ it is not a
+// sparkline, it is a chart. Hidden from assistive tech for exactly that reason.
+export function Sparkline({points=[],tone='accent',width=100,height=30}){
+  if(!Array.isArray(points)||points.length<2)return null;
+  const min=Math.min(...points);
+  const max=Math.max(...points);
+  const span=(max-min)||1;
+  const path=points.map((point,index)=>`${(index/(points.length-1))*width} ${height-((point-min)/span)*height}`).join(' L ');
+  return <svg className={`spark spark-${tone}`} viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" aria-hidden="true">
+    <path d={`M ${path}`} fill="none" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+  </svg>;
+}
+
+// 3px bar for anything with a ceiling. Guards max<=0 so a missing ceiling renders empty rather
+// than NaN%, and clamps so an over-budget value pins at full instead of overflowing its trough.
+export function Meter({value=0,max=1,warn}){
+  const ratio=Number(max)>0?Number(value)/Number(max):0;
+  const percent=Math.min(100,Math.max(0,ratio*100));
+  const warned=warn!==undefined&&warn!==null&&Number(value)>=Number(warn);
+  return <div className={`meter${warned?' meter-warn':''}`} role="progressbar"
+    aria-valuenow={Number(value)} aria-valuemin={0} aria-valuemax={Number(max)}>
+    <i style={{width:`${percent}%`}}/>
+  </div>;
+}
+
+// Bounded numeric entry (brief §5). The quick buttons ASSIST the input, they never replace it:
+// typing updates which button reads as active, clicking a button fills the input. Mobile layout
+// puts the input on its own full-width row with the buttons in a flex row beneath -- they must
+// not share a row, which is the current defect on the Minting page.
+export function NumberField({label,value='',onChange,min=1,max=100,quick,placeholder,name,id}){
+  const ceiling=Number(max)||100;
+  const options=(quick&&quick.length?quick:[1,2,5,ceiling])
+    .filter(option=>option>=Number(min)&&option<=ceiling)
+    .filter((option,index,all)=>all.indexOf(option)===index);
+  return <div className="numfield">
+    <label className="numfield-label">{label}
+      <input type="number" id={id} name={name} min={min} max={ceiling} value={value}
+        placeholder={placeholder||`Enter a number (${min}–${ceiling})`}
+        onChange={event=>onChange(event.target.value)}/>
+    </label>
+    {options.length>0&&<div className="numfield-quick">
+      {options.map(option=><button key={option} type="button"
+        className={`small${String(value)===String(option)?' active':''}`}
+        onClick={()=>onChange(String(option))}>{option===ceiling?`Max ${option}`:option}</button>)}
+    </div>}
+  </div>;
+}
+
+// Rate-limit countdown for the 429 surfaces (login, key export, security password).
+//
+// CAVEAT, and it is a real one: the server sends Retry-After as a HEADER, and api() throws an
+// Error carrying only .status and .code -- it never reads response.headers. Surfacing the true
+// value needs a one-line change in api(), which Phase 2 is explicitly forbidden from touching.
+// So start() takes the seconds if a caller can supply them and otherwise falls back to 60, and
+// the moment api() does expose the header this works unchanged.
+export function useRetryAfter(fallbackSeconds=60){
+  const [seconds,setSeconds]=useState(0);
+  useEffect(()=>{
+    if(seconds<=0)return undefined;
+    const timer=setTimeout(()=>setSeconds(current=>current-1),1000);
+    return()=>clearTimeout(timer);
+  },[seconds]);
+  const start=useCallback(retryAfter=>{
+    const parsed=Number(retryAfter);
+    setSeconds(Number.isFinite(parsed)&&parsed>0?Math.ceil(parsed):fallbackSeconds);
+  },[fallbackSeconds]);
+  return {seconds,blocked:seconds>0,start};
+}
