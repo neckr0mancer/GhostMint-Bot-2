@@ -102,3 +102,23 @@ test('probeTotalMinted returns null when no candidate getter resolves, without t
   const resolver = createContractValueResolver({ providerService, repository });
   assert.equal(await resolver.probeTotalMinted('ethereum', CONTRACT), null);
 });
+
+// SeaDrop's PublicDrop struct has no supply-cap field, so detectMintContract's SeaDrop branch
+// calls this instead of resolve() for maxSupply -- must be live and bypass the repository for the
+// same cache-collision reason probeTotalMinted does (a SeaDrop-only save may already have written a
+// row with max_total_supply left NULL, which resolve() would then treat as cached forever).
+test('probeMaxSupply resolves live and ignores the repository entirely, even when a cached row already exists', async () => {
+  const providerService = fakeProviderService({ maxSupply: 8_888n });
+  const repository = fakeRepository({ price: null, maxSupply: null, maxPerWallet: null, totalMinted: null, resolvedAt: new Date() });
+  const resolver = createContractValueResolver({ providerService, repository });
+  const result = await resolver.probeMaxSupply('ethereum', CONTRACT);
+  assert.deepEqual(result, { value: '8888', source: 'maxSupply' });
+  assert.equal(repository.saved.length, 0, 'must never write to the shared cache row');
+});
+
+test('probeMaxSupply returns null when no candidate getter resolves, without throwing', async () => {
+  const providerService = fakeProviderService({});
+  const repository = fakeRepository();
+  const resolver = createContractValueResolver({ providerService, repository });
+  assert.equal(await resolver.probeMaxSupply('ethereum', CONTRACT), null);
+});

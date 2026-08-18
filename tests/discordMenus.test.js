@@ -95,6 +95,24 @@ test('collectionInfoCard renders the mint_guided flow\'s real first screen: Mint
   assert.equal(buttons.find(b => b.url)?.label, '🔗 OpenSea');
 });
 
+test('collectionInfoCard says the floor could not be determined (not "unavailable") when sold out with no OpenSea data, and drops Max per wallet', () => {
+  const card = collectionInfoCard({
+    contractAddress: '0xabc', chainLabel: 'Ethereum', chainSym: 'ETH', isSeaDrop: true, priceETH: 0.05, priceUnknown: false,
+    maxSupply: 5000, maxPerWallet: 3, startTime: null, collection: null, soldOut: true, displayPrice: null, stats: null, openSeaUrl: null,
+  });
+  assert.match(card.content, /Status: Sold out\. Floor price couldn't be determined from this contract\./);
+  assert.equal(card.content.includes('Max per wallet'), false);
+  assert.match(card.content, /Max supply: 5000/);
+});
+
+test('collectionInfoCard shows the real floor once sold out, when OpenSea has it', () => {
+  const card = collectionInfoCard({
+    contractAddress: '0xabc', chainLabel: 'Ethereum', chainSym: 'ETH', isSeaDrop: true, priceETH: 0.05, priceUnknown: false,
+    maxSupply: 100, maxPerWallet: 1, startTime: null, collection: null, soldOut: true, displayPrice: { eth: 0.3, usd: null, source: 'floor' }, stats: null, openSeaUrl: null,
+  });
+  assert.match(card.content, /Status: Sold out — floor 0\.3 ETH/);
+});
+
 test('collectionInfoCard suggests scheduling only when the detected opening time is still in the future', () => {
   const future = Math.floor(Date.now() / 1000) + 3_600;
   const past = Math.floor(Date.now() / 1000) - 3_600;

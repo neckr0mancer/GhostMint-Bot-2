@@ -220,6 +220,12 @@ function componentErrorMessage(error) {
 }
 
 function dcRespond(interaction, payload) {
+  // A component interaction that already deferred (interaction.deferUpdate(), used by a handler
+  // doing slow work -- an RPC balance check, a live contract re-detection -- before it has anything
+  // to show) can no longer be answered via update()/reply(): Discord already considers it
+  // acknowledged, and calling either again throws "already acknowledged". editReply() is the only
+  // valid follow-up once deferred, for a deferred reply or a deferred update alike.
+  if (interaction.deferred || interaction.replied) return interaction.editReply(payload).catch(() => {});
   if (typeof interaction.update === 'function') {
     return interaction.update(payload).catch(() => (typeof interaction.reply === 'function' ? interaction.reply({ ...payload, ephemeral: true }).catch(() => {}) : undefined));
   }
@@ -372,13 +378,18 @@ async function finishTaskScheduleDiscord(ctx, respond, platformUserId, userId, f
 // path below, whose response is already ephemeral from interaction.deferReply -- there is no
 // public origin message to neutralize, and treating it as one would try to reply a second time to
 // an interaction that already replied.
-async function startMintGuidedFlow(ctx, respond, platformUserId, userId, contractAddressInput, { originMessagePublic = true } = {}) {
+// includeStats defaults to false -- the full OpenSea floor/holders/volume table is reserved for
+// /info's explicit, no-mint-intent lookup; a plain paste and /mint's own under-specified path get
+// the leaner card (still real live price/timing/sold-out status, just without the stats table).
+// Carried into flow data so flow:detailsrefresh knows whether to keep re-requesting stats on this
+// same flow or stay lean, without needing to know which entry point originally started it.
+async function startMintGuidedFlow(ctx, respond, platformUserId, userId, contractAddressInput, { originMessagePublic = true, includeStats = false } = {}) {
   const { commands, flowState, chains } = ctx;
   const contractAddress = await commands.resolveMintContractInput(contractAddressInput);
   if (!contractAddress) return undefined;
   let detected;
   try {
-    detected = await commands.detectMintContract(userId, { contractAddress, quantity: 1, includeStats: true });
+    detected = await commands.detectMintContract(userId, { contractAddress, quantity: 1, includeStats });
   } catch (error) {
     if (error instanceof ValidationError) return undefined;
     throw error;
@@ -391,7 +402,7 @@ async function startMintGuidedFlow(ctx, respond, platformUserId, userId, contrac
     maxSupply: detected.maxSupply, maxPerWallet: detected.maxPerWallet,
     startTime: detected.startTime, endTime: detected.endTime, collection: detected.collection,
     soldOut: detected.soldOut, displayPrice: detected.displayPrice,
-    stats: detected.stats,
+    stats: detected.stats, includeStats,
     openSeaUrl: OPENSEA_CHAIN_SLUGS[detected.chain] ? `https://opensea.io/assets/${OPENSEA_CHAIN_SLUGS[detected.chain]}/${contractAddress}` : null,
     skipConfirm: false,
     originMessagePublic,
@@ -436,12 +447,28 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
       if (data === 'menu:main') return dcRespond(interaction, discordMenus.mainMenu({ isOwner: await ownerFlag(userId) }));
       if (data === 'menu:wallets') return dcRespond(interaction, discordMenus.walletsMenu());
       if (data === 'menu:settings') return dcRespond(interaction, discordMenus.settingsMenu({ isOwner: await ownerFlag(userId) }));
-      if (data === 'menu:mint') return dcRespond(interaction, discordMenus.placeholderMenu('Mint', 'Use /mint wallet contract quantity price confirm:true.'));
+      // Section O -- the one genuinely free-text field a mint needs (a contract address) has
+      // nothing to pick from a list, so this opens a modal rather than a select/button, same as
+      // every other unavoidably-free-text field elsewhere in this file (wallet labels, private
+      // keys). Submitting routes through startMintGuidedFlow below -- the exact same auto-detecting
+      // card /mint's own under-specified path and a bare paste already use, not a separate path.
+      if (data === 'menu:mint') return interaction.showModal(discordMenus.labelModal({ customId: 'menu:mint:submit', title: 'Contract address to mint', maxLength: 200 }));
       if (data === 'menu:tasks') return dcRespond(interaction, discordMenus.placeholderMenu('Tasks', 'Use /task create|list|cancel|pause|resume|retry.'));
       if (data === 'menu:snipers') return dcRespond(interaction, discordMenus.placeholderMenu('Snipers', 'Use /sniper create|update|list|status.'));
       // menu:watch is handled further below, alongside the rest of the watch-rule guided flow.
-      if (data === 'menu:activity') return dcRespond(interaction, discordMenus.placeholderMenu('Activity', 'Use /activity to see recent mint activity.'));
-      if (data === 'menu:gas') return dcRespond(interaction, discordMenus.placeholderMenu('Gas', 'Use /gas chain:<chain> for live fee data.'));
+      if (data === 'menu:activity') {
+        const page = await commands.activityPage(userId, { page: 1 });
+        return dcRespond(interaction, discordMenus.activityMenu(page));
+      }
+      if (data.startsWith('activity:page:')) {
+        const page = await commands.activityPage(userId, { page: Number(data.slice('activity:page:'.length)) || 1 });
+        return dcRespond(interaction, discordMenus.activityMenu(page));
+      }
+      if (data === 'menu:gas' || data.startsWith('gas:chain:')) {
+        const gasChain = data.startsWith('gas:chain:') ? data.slice('gas:chain:'.length) : 'ethereum';
+        const fees = await commands.gas(gasChain).catch(() => null);
+        return dcRespond(interaction, discordMenus.gasMenu({ chain: gasChain, fees, supportedChains, chains }));
+      }
       if (data === 'menu:admin') return dcRespond(interaction, discordMenus.placeholderMenu('Admin', 'Use /admin action confirm:true. Owner-only.'));
 
       if (data === 'link:enter') {
@@ -499,8 +526,17 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
       }
       if (data === 'wallet:balance:select') {
         const label = interaction.values?.[0];
+        // Checks every supported chain in parallel (see botCommandService.walletBalance) -- a
+        // single slow/degraded RPC can still push this past Discord's 3s component-ack window, so
+        // this must defer immediately rather than run the check before responding at all (the
+        // previous shape here, which is what actually produced "the application did not respond").
+        await interaction.deferUpdate();
         const result = await commands.walletBalance(userId, label);
-        return dcRespond(interaction, { content: `**${result.label}**\nBalance: ${result.balance} ${result.symbol}`,
+        // result.balance/.symbol never existed on this shape (it's result.balances, one entry per
+        // chain) -- this button always showed "Balance: undefined undefined" underneath the
+        // timeout. Reuses the exact formatting /wallet balance already uses.
+        const lines = result.balances.map(b => `${chains[b.chain]?.name || b.chain}: ${b.balance ?? 'unavailable'} ${b.symbol || ''}`).join('\n');
+        return dcRespond(interaction, { content: `**${result.label}**\n${lines}`,
           components: [discordMenus.row([discordMenus.button('⬅️ Back to wallets', 'menu:wallets')])] });
       }
 
@@ -540,7 +576,7 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         if (!flow || flow.flow !== 'mint_guided' || flow.step !== 'awaiting_details') return notYourMintPrompt(interaction);
         let detected;
         try {
-          detected = await commands.detectMintContract(userId, { contractAddress: flow.data.contractAddress, quantity: 1, includeStats: true });
+          detected = await commands.detectMintContract(userId, { contractAddress: flow.data.contractAddress, quantity: 1, includeStats: Boolean(flow.data.includeStats) });
         } catch {
           return dcRespond(interaction, mintFlowRenderPayload('awaiting_details', flow.data, { chains })); // transient failure -- leave last-known values, still ack the tap
         }
@@ -805,6 +841,23 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         return;
       }
 
+      if (data === 'menu:mint:submit') {
+        // Section O -- menu:mint's modal. Not part of a guided flow (no flowState.start happened
+        // when the modal opened), so this is handled here alongside link:code:submit rather than
+        // past the flow-required check below. Routes through the exact same startMintGuidedFlow a
+        // bare paste and /mint's under-specified path already use -- originMessagePublic:false
+        // since a modal reply is already ephemeral, same reasoning as /mint's own modal-adjacent
+        // paths.
+        const userId = await identity.resolveOrCreate('discord', platformUserId);
+        await enforceAccountStatus(userId);
+        const contractAddressInput = String(interaction.fields.getTextInputValue('value') || '').trim();
+        const started = await startMintGuidedFlow(mintCtx, payload => interaction.reply({ ...payload, ephemeral: true }).catch(() => {}),
+          platformUserId, userId, contractAddressInput, { originMessagePublic: false });
+        if (started !== undefined) return;
+        await interaction.reply({ content: 'Could not find this contract on any supported chain. Double-check the address.', ephemeral: true }).catch(() => {});
+        return;
+      }
+
       const userId = await identity.resolveOrCreate('discord', platformUserId);
       await enforceAccountStatus(userId);
       const flow = flowState.get('discord', platformUserId);
@@ -1032,7 +1085,7 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         }
         case 'info': {
           const started = await startMintGuidedFlow(mintCtx, payload => interaction.editReply(payload),
-            context.platformUserId, userId, interaction.options.getString('contract'), { originMessagePublic: false });
+            context.platformUserId, userId, interaction.options.getString('contract'), { originMessagePublic: false, includeStats: true });
           if (started !== undefined) return;
           message = 'Could not find this contract on any supported chain. Double-check the address.';
           break;

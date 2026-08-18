@@ -718,24 +718,29 @@ unit-tested store (11 tests), mirroring how `flowState.js` separates sequencing 
 Writing the tests caught a real ordering bug in the first implementation: the size sweep ran
 before the insert, so a store one entry below its threshold never swept at all.
 
-## Section O — Button ⇄ command parity ❌
+## Section O — Button ⇄ command parity ⚠️ (Discord's mint/activity/gas shipped)
 
 Every UI button must do exactly what its `/` command does, sharing the same code path rather than
 a parallel implementation. Round 1 fixed two of these (Telegram's Gas and Transaction mode buttons
-now act directly, calling the same `botCommands.gas()` / `selectMode()` the commands use). The
-rest are still placeholder screens that just tell the user to go type a command:
+now act directly, calling the same `botCommands.gas()` / `selectMode()` the commands use). A
+follow-up shipped three more of Discord's placeholders the same way: `menu:gas` now performs the
+lookup directly (`discordMenus.gasMenu`, mirroring Telegram's `gasMenu` shape — Safe/Standard/Fast
+readout plus chain-switch buttons, `gas:chain:<chain>`), `menu:activity` shows page 1 directly via
+the same `botCommands.activityPage()` `/activity` uses (`discordMenus.activityMenu`, with
+Prev/Next paging buttons `activity:page:<n>`), and `menu:mint` opens a modal for the one field a
+mint genuinely can't avoid being free text — the contract address — then routes through the same
+`startMintGuidedFlow` a bare paste and `/mint`'s under-specified path already use, rather than a
+separate implementation. The rest are still placeholder screens that just tell the user to go type
+a command:
 
 | Surface | Buttons still telling the user to type a command |
 |---|---|
 | Telegram | `menu:snipers`, `menu:activity`, `menu:admin` |
-| Discord | `menu:mint`, `menu:tasks`, `menu:snipers`, `menu:activity`, `menu:gas`, `menu:admin` |
+| Discord | `menu:tasks`, `menu:snipers`, `menu:admin` |
 
 `menu:watch` is done on both platforms — see **Section AB** below; it went well past "make the
 button call the same function" into a full guided create flow plus list/manage actions, so it's
 tracked as its own section rather than folded into this row.
-
-Discord's menu is substantially further behind than Telegram's — effectively every entry is a
-placeholder there.
 
 **On the Gas / Transaction-mode wording:** the requirements say these buttons "should not
 prompt/use the equivalent command" but also "must remain consistent with the command-based

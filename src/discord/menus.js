@@ -12,8 +12,10 @@ const TEXT_INPUT = 4;
 const BUTTON_STYLE = { primary: 1, secondary: 2, success: 3, danger: 4 };
 const TEXT_STYLE = { short: 1, paragraph: 2 };
 
-function button(label, customId, style = 'secondary') {
-  return { type: BUTTON, style: BUTTON_STYLE[style] || BUTTON_STYLE.secondary, custom_id: customId, label };
+function button(label, customId, style = 'secondary', emoji) {
+  const value = { type: BUTTON, style: BUTTON_STYLE[style] || BUTTON_STYLE.secondary, custom_id: customId, label };
+  if (emoji) value.emoji = emoji;
+  return value;
 }
 
 // A link-style button (style 5) opens directly in the user's browser and carries `url` instead of
@@ -56,12 +58,16 @@ function contractDetailsText({ contractAddress, chain, chainLabel, isSeaDrop, pr
     '',
   ];
   if (soldOut) {
-    lines.push(displayPrice ? `Status: Sold out — floor price ${displayPrice.eth} ETH` : 'Status: Sold out — floor price unavailable');
+    lines.push(displayPrice ? `Status: Sold out — floor price ${displayPrice.eth} ETH` : "Status: Sold out. Floor price couldn't be determined from this contract.");
   } else {
     lines.push(priceUnknown ? 'Price: not exposed by this contract' : `Price: ${priceETH} per item`);
   }
   const limits = [];
-  if (maxPerWallet !== null && maxPerWallet !== undefined) limits.push(`Max per wallet: ${maxPerWallet}`);
+  // Once sold out there's nothing left to mint -- a per-wallet mint cap has nothing left to apply
+  // to (trading moves to secondary from here), so it drops off rather than sitting there as a
+  // number that's no longer actionable. Max supply stays: unlike the cap, it's a permanent fact
+  // about the collection's final size, not a mint-time-only concept.
+  if (!soldOut && maxPerWallet !== null && maxPerWallet !== undefined) limits.push(`Max per wallet: ${maxPerWallet}`);
   if (maxSupply !== null && maxSupply !== undefined) limits.push(`Max supply: ${maxSupply}`);
   if (startTime) {
     const opensAt = formatGmtPlus1(startTime * 1000);
@@ -109,7 +115,7 @@ function collectionInfoCard({ contractAddress, chain, chainLabel, chainSym, isSe
   ];
 
   if (soldOut) {
-    lines.push(displayPrice ? `Status: Sold out — floor ${displayPrice.eth} ${sym}` : 'Status: Sold out — floor price unavailable');
+    lines.push(displayPrice ? `Status: Sold out — floor ${displayPrice.eth} ${sym}` : "Status: Sold out. Floor price couldn't be determined from this contract.");
   } else {
     lines.push(priceUnknown ? 'Mint price: not exposed by this contract' : `Mint price: ${priceETH} ${sym} per item`);
   }
@@ -139,7 +145,11 @@ function collectionInfoCard({ contractAddress, chain, chainLabel, chainSym, isSe
   }
 
   const limits = [];
-  if (maxPerWallet !== null && maxPerWallet !== undefined) limits.push(`Max per wallet: ${maxPerWallet}`);
+  // Once sold out there's nothing left to mint -- a per-wallet mint cap has nothing left to apply
+  // to (trading moves to secondary from here), so it drops off rather than sitting there as a
+  // number that's no longer actionable. Max supply stays: unlike the cap, it's a permanent fact
+  // about the collection's final size, not a mint-time-only concept.
+  if (!soldOut && maxPerWallet !== null && maxPerWallet !== undefined) limits.push(`Max per wallet: ${maxPerWallet}`);
   if (maxSupply !== null && maxSupply !== undefined) limits.push(`Max supply: ${maxSupply}`);
   // Not live yet: "Mint Now" would just revert against a stage that hasn't opened, so scheduling is
   // offered as its own action right here rather than only reachable after a failed attempt.
@@ -310,6 +320,50 @@ function chainSelect(supportedChains, chains, { customId = 'flow:chain:select' }
   };
 }
 
+// Groups chain-switch buttons 5-per-row -- Discord's own hard cap on buttons in a single action
+// row (not a stylistic choice the way Telegram's 3-per-row chunking is), so this stays correct if
+// a 6th chain is ever added instead of silently erroring the whole interaction.
+function chunk(items, size) {
+  const rows = [];
+  for (let index = 0; index < items.length; index += size) rows.push(items.slice(index, index + size));
+  return rows;
+}
+
+// Section O -- Discord counterpart to Telegram's already-shipped gasMenu (Round 1): the button
+// performs the same botCommands.gas() lookup the /gas command uses and shows the result directly,
+// rather than replying "use /gas chain:<chain>".
+function gasMenu({ chain, fees, supportedChains, chains }) {
+  const chainButtons = supportedChains.map(value =>
+    button(chains[value]?.name || value, `gas:chain:${value}`, value === chain ? 'success' : 'secondary', CHAIN_EMOJI[value]));
+  const rows = chunk(chainButtons, 5).map(row_ => row(row_));
+  rows.push(row([button('⬅️ Back to menu', 'menu:main')]));
+  const readout = fees
+    ? `Safe: **${fees.safeGasPriceGwei ?? 'unavailable'}** Gwei\nStandard: **${fees.gasPriceGwei ?? 'unavailable'}** Gwei\nFast: **${fees.maxFeePerGasGwei ?? 'unavailable'}** Gwei`
+    : "Couldn't fetch gas prices for this chain right now.";
+  return {
+    content: `⛽ **Gas check: ${chains[chain]?.name || chain}**\n${readout}`,
+    components: rows,
+  };
+}
+
+// Section O -- Discord counterpart to the activity half of Telegram's already-shipped parity
+// buttons: performs the same botCommands.activityPage() call /activity uses instead of telling the
+// user to go type the command. No Prev button on page 1; no Next once the last page is reached.
+function activityMenu(page) {
+  const lines = page.items.length
+    ? page.items.map(item => `${item.status}: ${item.title} — ${item.walletLabel}`).join('\n')
+    : 'No activity yet.';
+  const nav = [];
+  if (page.page > 1) nav.push(button('◀️ Prev', `activity:page:${page.page - 1}`));
+  if (page.page < page.totalPages) nav.push(button('▶️ Next', `activity:page:${page.page + 1}`));
+  const rows = nav.length ? [row(nav)] : [];
+  rows.push(row([button('⬅️ Back to menu', 'menu:main')]));
+  return {
+    content: `📊 **Activity** (page ${page.page}/${page.totalPages}, ${page.total} total)\n${lines}`,
+    components: rows,
+  };
+}
+
 function walletSelect(wallets, { customId, emptyHint }) {
   if (!wallets.length) return placeholderMenu('Wallets', emptyHint);
   const options = wallets.map(w => ({ label: `${w.label} (${w.chain})`, value: w.label, emoji: CHAIN_EMOJI[w.chain] || undefined }));
@@ -434,7 +488,7 @@ function labelModal({ customId, title, placeholder = '', style = 'short', maxLen
 
 module.exports = {
   button, row, select, mainMenu, walletsMenu, settingsMenu, placeholderMenu,
-  chainSelect, walletSelect, confirmRemoveWallet, labelModal,
+  chainSelect, walletSelect, confirmRemoveWallet, labelModal, gasMenu, activityMenu,
   contractDetailsText, collectionInfoCard, mintQuantitySelect, mintPriceStep, mintConfirmation, numberModal,
   taskNameQuickPicks, taskConfirmation,
   watchTypeSelect, watchMethodSelect, watchConfigModal, watchRuleConfirmation,

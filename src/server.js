@@ -235,6 +235,27 @@ const schedulerWorker = createSchedulerWorker({
     await governance.checkAccountStatus(task.userId);
     const wallet = DB.wallets.find(item => item.userId === task.userId && item.label === task.walletLabel);
     if (!wallet) throw new ValidationError({ field:'walletLabel', message:'was not found' });
+    // Phase-drift preflight: the schedule was set against whatever SeaDrop's PublicDrop said at
+    // scheduling time (or a hand-typed phase-2+ price/time -- Section AF, since nothing on-chain
+    // describes a stage that isn't live yet). If the project has since moved the live window --
+    // delayed it, cut it short, replaced it with the next phase -- blindly broadcasting either
+    // wastes real gas on a doomed revert (simulation-off transaction modes) or surfaces a generic
+    // on-chain revert instead of the real story (simulation-on modes). Read live, not from
+    // seaDropDiscoveryService's cached snapshot, since the whole point is catching drift since that
+    // snapshot was taken; a non-SeaDrop contract has no on-chain window concept to check at all.
+    const seaDrop = await seaDropDiscoveryService.resolve(wallet.chain, task.contract);
+    if (seaDrop.address) {
+      const livePublicDrop = await seaDropPublicDropResolver.getPublicDrop(wallet.chain, seaDrop.address, task.contract);
+      if (livePublicDrop) {
+        const nowSec = Math.floor(Date.now() / 1000);
+        if (nowSec < livePublicDrop.startTime || (livePublicDrop.endTime && nowSec > livePublicDrop.endTime)) {
+          const from = new Date(livePublicDrop.startTime * 1000).toISOString();
+          const to = livePublicDrop.endTime ? new Date(livePublicDrop.endTime * 1000).toISOString() : 'no end set';
+          throw new TransactionSafetyError('SCHEDULE_DRIFT',
+            `This drop's live mint window no longer matches what you scheduled -- it currently runs ${from} to ${to}, which does not include right now. The project likely changed their schedule; check the contract and reschedule if needed.`);
+        }
+      }
+    }
     const request = requestSchemas.mint({ walletLabel:wallet.label, contractAddress:task.contract,
       functionName:task.fn || 'mint', quantity:task.qty, priceETH:task.price || 0,
       gasGwei:task.gas, chain:wallet.chain }, { supportedChains:CONFIG.supportedChains });
@@ -259,7 +280,13 @@ const schedulerWorker = createSchedulerWorker({
     if (['failure','failed'].includes(event.outcome)) {
       if (wallet) await logActivity(event.task.userId, 'fail', `Scheduled mint failed: ${event.task.name}`,
         wallet.label, event.intent?.txHash || null, CHAINS[wallet.chain],{triggerSource:'scheduled'});
-      await notifyUser(event.task.userId, `❌ Scheduled mint <b>${escapeTelegramHtml(event.task.name)}</b> failed.`);
+      // event.error is only set for a thrown-before-broadcast failure (ValidationError, the
+      // drift-check TransactionSafetyError above, etc), not a transaction that broadcast and then
+      // reverted (settleFromIntent's 'failure' path carries event.intent instead) -- showing the
+      // real reason here instead of a bare "failed" is what makes the drift check's own message
+      // ever reach the user rather than being computed and thrown away.
+      const reason = event.error?.message ? `\n${escapeTelegramHtml(event.error.message)}` : '';
+      await notifyUser(event.task.userId, `❌ Scheduled mint <b>${escapeTelegramHtml(event.task.name)}</b> failed.${reason}`);
     }
   },
   log,
@@ -351,19 +378,24 @@ async function executePreparedMint({ wallet, prepared, chain, triggerSource='man
 // previously executeTask duplicated this inline with a hardcoded 'mint(uint256)' signature, which
 // meant a scheduled mint of a SeaDrop drop sent 0-value plain calldata to a contract that doesn't
 // implement that signature at all (SeaDrop tokens route through a separate core contract; see
-// seaDropCall.js). SeaDrop's live on-chain price is used when available so a task scheduled before
-// the drop's public price was known still mints at the real price, not a stale/zero stored value.
+// seaDropCall.js). seaDropDiscoveryService.resolve() caches its whole result (address + PublicDrop
+// snapshot) forever once the core address is found -- fine for the address, which essentially never
+// changes, but wrong for PublicDrop's price/timing, which the project can update at any time. Reads
+// PublicDrop fresh here every call (seaDropPublicDropResolver never caches) so a scheduled task
+// firing well after the contract was first pasted/detected still mints at whatever price and window
+// are really live right now, not whatever was live back when it was first resolved.
 async function prepareMintCall({ contractAddress, walletAddress, chain, quantity, priceETH }) {
   const seaDrop = await seaDropDiscoveryService.resolve(chain, contractAddress);
   if (seaDrop.address) {
+    const livePublicDrop = await seaDropPublicDropResolver.getPublicDrop(chain, seaDrop.address, contractAddress);
     return mintService.prepare({
       contractAddress,
       methodSignature: SEADROP_MINT_SIGNATURE,
       seaDropAddress: seaDrop.address,
       arguments: [seaDrop.feeRecipient, '$wallet', quantity],
       walletAddress,
-      valueWei: seaDrop.publicDrop
-        ? computeSeaDropValueWei({ mintPriceWei: seaDrop.publicDrop.mintPriceWei, quantity })
+      valueWei: livePublicDrop
+        ? computeSeaDropValueWei({ mintPriceWei: livePublicDrop.mintPriceWei, quantity })
         : ethers.parseEther(String(priceETH)) * BigInt(quantity),
       chain,
     });
@@ -886,7 +918,13 @@ function retryStepForField(error) {
 // Degen/Fast mode preset required -- but a missing wallet pick or unresolvable price is still
 // asked for, same as /mint. With exactly one wallet and a known price -- the common case -- this
 // reaches execution with zero taps.
-async function startMintFlow({ chatId, messageId, userId, multi, contractAddressInput, oneShot = false }) {
+// includeStats is false for every entry point except /info -- the full OpenSea floor/holders/
+// volume table (and the live re-fetch cost of computing it) is reserved for the explicit,
+// no-mint-intent lookup command; a plain paste, /mint, /mintnow, and /batch all get the leaner
+// card (still the real live price/timing/sold-out status, just without the stats table). Carried
+// into flow data so flow:detailsrefresh knows whether to keep re-requesting stats on this same
+// flow or stay lean, without needing to know which command originally started it.
+async function startMintFlow({ chatId, messageId, userId, multi, contractAddressInput, oneShot = false, includeStats = false }) {
   const send = payload => tgUpdate(chatId, messageId, payload);
   if (!contractAddressInput) {
     telegramFlowState.start('telegram', chatId, 'mint_guided', 'awaiting_contract', { multi, oneShot });
@@ -898,7 +936,7 @@ async function startMintFlow({ chatId, messageId, userId, multi, contractAddress
   }
   let detected;
   try {
-    detected = await botCommands.detectMintContract(userId, { contractAddress, quantity: 1, includeStats: true });
+    detected = await botCommands.detectMintContract(userId, { contractAddress, quantity: 1, includeStats });
   } catch (error) {
     if (error instanceof ValidationError) {
       return send({ text: 'Could not find this contract on any supported chain. Double-check the address.', replyMarkup: telegramMenus.mainMenu({}).replyMarkup });
@@ -918,7 +956,7 @@ async function startMintFlow({ chatId, messageId, userId, multi, contractAddress
     maxSupply: detected.maxSupply, maxPerWallet: detected.maxPerWallet,
     startTime: detected.startTime, endTime: detected.endTime, collection: detected.collection,
     soldOut: detected.soldOut, displayPrice: detected.displayPrice,
-    stats: detected.stats,
+    stats: detected.stats, includeStats,
     openSeaUrl: OPENSEA_CHAIN_SLUGS[detected.chain] ? `https://opensea.io/assets/${OPENSEA_CHAIN_SLUGS[detected.chain]}/${contractAddress}` : null,
     skipConfirm,
   };
@@ -1362,13 +1400,26 @@ function tgMenu(chatId, { text, replyMarkup, parseMode }) {
 // one further down. Routing anything that isn't the still-current, non-stale anchor through
 // tgRender instead collapses this back to the one panel tgRender already tracks -- tgRender sends
 // a fresh message and deletes the stale anchor itself, so there is never more than one live panel.
+// Telegram's editMessageText rejects an edit whose text and reply_markup are byte-identical to
+// what's already showing ("Bad Request: message is not modified") -- a real, frequent case for
+// this bot specifically: tapping Refresh re-fetches live data that often genuinely hasn't changed
+// since the last view. That is already the correct end state, not a failure, so callers below must
+// not treat it the same as a genuine edit failure (message too old, deleted, etc), which is what
+// used to send a brand-new duplicate message purely because the old one didn't need changing.
+function isMessageNotModifiedError(error) {
+  return typeof error?.message === 'string' && error.message.includes('message is not modified');
+}
+
 function tgEditMenu(chatId, messageId, payload) {
   if (!bot || !chatId || !messageId) return tgMenu(chatId, payload);
   const { anchor } = telegramPanels.read(chatId);
   if (anchor !== messageId || telegramPanels.shouldMove(chatId)) return tgRender(chatId, payload);
   return bot.editMessageText(String(payload.text), { chat_id: chatId, message_id: messageId, reply_markup: payload.replyMarkup, parse_mode: payload.parseMode })
     .then(result => { telegramPanels.noteAnchor(chatId, messageId); return result; })
-    .catch(() => tgRender(chatId, payload));
+    .catch(error => {
+      if (isMessageNotModifiedError(error)) { telegramPanels.noteAnchor(chatId, messageId); return null; }
+      return tgRender(chatId, payload);
+    });
 }
 
 // ── Telegram anchored-menu rendering ─────────────────────────
@@ -1388,7 +1439,11 @@ async function tgEditRaw(chatId, messageId, { text, replyMarkup, parseMode }) {
   if (!bot || !chatId || !messageId) return null;
   try {
     return await bot.editMessageText(String(text), { chat_id: chatId, message_id: messageId, reply_markup: replyMarkup, parse_mode: parseMode });
-  } catch {
+  } catch (error) {
+    // Same "already showing this exact content" case as tgEditMenu -- a truthy result (not the
+    // real Telegram response, which editMessageText has no use for here beyond its truthiness)
+    // so tgRender's caller sees this as handled rather than falling through to a duplicate send.
+    if (isMessageNotModifiedError(error)) return true;
     return null;
   }
 }
@@ -1469,26 +1524,35 @@ async function handleFlowTextMessage(msg) {
   } catch { return; }
   const chatId = msg.chat.id;
   const flow = telegramFlowState.get('telegram', chatId);
-  if (!flow) {
-    // A bare contract address, or an opensea.io collection link (Section Q), with no active flow
-    // and no leading slash is treated as "show me this contract" -- the same detection /mint's
-    // inline-address form already runs, just reached without typing the command. Anything that
-    // isn't address- or link-shaped is ignored rather than guessed at, same as before this
-    // existed. The cheap sync check here only decides whether to bother starting the flow at all;
-    // startMintFlow does the real (and for a link, async) resolution either way.
-    const trimmed = msg.text.trim();
-    if (ethers.isAddress(trimmed) || botCommands.parseOpenSeaCollectionSlug(trimmed)) {
-      await startMintFlow({ chatId, messageId: null, userId, multi: false, contractAddressInput: trimmed });
-    }
-    return;
-  }
-  const isTextStep = (flow.flow === 'wallet_create' && flow.step === 'awaiting_label')
+  const isTextStep = Boolean(flow) && (
+    (flow.flow === 'wallet_create' && flow.step === 'awaiting_label')
     || (flow.flow === 'wallet_import' && (flow.step === 'awaiting_label' || flow.step === 'awaiting_key'))
     || (flow.flow === 'mint_guided' && ['awaiting_contract', 'awaiting_quantity', 'awaiting_price', 'awaiting_gastolerance'].includes(flow.step))
     || (flow.flow === 'send_guided' && (flow.step === 'awaiting_amount' || flow.step === 'awaiting_destination'))
     || (flow.flow === 'task_guided' && ['awaiting_contract', 'awaiting_quantity', 'awaiting_price', 'awaiting_name', 'awaiting_time'].includes(flow.step))
-    || (flow.flow === 'watch_guided' && ['awaiting_name', 'awaiting_config'].includes(flow.step));
-  if (!isTextStep) { await tgDeleteUserMessage(msg); tgRender(chatId, { text: 'Please use the buttons above, or tap Cancel.', replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' }); return; }
+    || (flow.flow === 'watch_guided' && ['awaiting_name', 'awaiting_config'].includes(flow.step))
+  );
+  if (!flow || !isTextStep) {
+    // A bare contract address, or an opensea.io collection link (Section Q), wins over whatever
+    // else was active -- matches Discord's handleMintPasteMessage, which checks this before caring
+    // what flow (if any) is in progress at all. Previously this only fired with NO flow active:
+    // pasting a fresh address while, say, the mint_guided card was showing (awaiting a button tap,
+    // not text -- awaiting_details isn't in isTextStep's list) just got "please use the buttons
+    // above", silently discarding the new address instead of ever starting its flow. A step that
+    // genuinely expects free-text input matching this shape (send_guided's awaiting_destination,
+    // mint_guided's own awaiting_contract) is excluded via isTextStep above, so this never steals
+    // input a flow is actually waiting on.
+    const trimmed = msg.text.trim();
+    if (ethers.isAddress(trimmed) || botCommands.parseOpenSeaCollectionSlug(trimmed)) {
+      if (flow) telegramFlowState.clear('telegram', chatId);
+      await startMintFlow({ chatId, messageId: null, userId, multi: false, contractAddressInput: trimmed });
+      return;
+    }
+    if (!flow) return;
+    await tgDeleteUserMessage(msg);
+    tgRender(chatId, { text: 'Please use the buttons above, or tap Cancel.', replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' });
+    return;
+  }
 
   // Consumed as flow input from here on -- clear it immediately rather than after a successful
   // outcome, so a private key or any other sensitive reply never lingers in chat history even if
@@ -1940,7 +2004,7 @@ if (BOT_TOKEN) {
       if (!flow || flow.flow !== 'mint_guided' || flow.step !== 'awaiting_details') return;
       let detected;
       try {
-        detected = await botCommands.detectMintContract(userId, { contractAddress: flow.data.contractAddress, quantity: 1, includeStats: true });
+        detected = await botCommands.detectMintContract(userId, { contractAddress: flow.data.contractAddress, quantity: 1, includeStats: Boolean(flow.data.includeStats) });
       } catch {
         return; // Transient lookup failure -- leave the card showing its last-known values.
       }
@@ -2266,12 +2330,13 @@ send /mint with a contract address to get going.`;
     await startMintFlow({ chatId: msg.chat.id, messageId: null, userId, multi: false, contractAddressInput: match[1] || null, oneShot: true });
   }));
 
-  // Read-only lookup: shows exactly the same collection card /mint's own awaiting_details step
-  // does (price, stats, supply, opening time), useful for checking a collection without any
-  // mint-intent implied -- Mint Now still works from the card if the user decides to go ahead,
-  // reusing the same guided flow rather than a separate, duplicated code path.
+  // Read-only lookup: shows the same collection card /mint's own awaiting_details step does, plus
+  // the full stats table (floor/holders/volume) that a plain paste/mint no longer requests --
+  // /info is the one place that richer, no-mint-intent view still lives. Mint Now still works from
+  // the card if the user decides to go ahead, reusing the same guided flow rather than a separate,
+  // duplicated code path.
   bot.onText(/^\/info(?:@\w+)?(?:\s+(\S+))?$/, withTelegramUser(async (msg, match, userId) => {
-    await startMintFlow({ chatId: msg.chat.id, messageId: null, userId, multi: false, contractAddressInput: match[1] || null });
+    await startMintFlow({ chatId: msg.chat.id, messageId: null, userId, multi: false, contractAddressInput: match[1] || null, includeStats: true });
   }));
 
   bot.onText(/^\/batch(?:@\w+)?(?:\s+(\S+))?$/, withTelegramUser(async (msg, match, userId) => {

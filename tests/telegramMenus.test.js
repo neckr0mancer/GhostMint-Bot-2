@@ -130,7 +130,7 @@ test('a sold-out collection shows the OpenSea floor price instead of the mint pr
     maxSupply: null, maxPerWallet: null, startTime: null, collection: null,
     soldOut: true, displayPrice: { eth: 0.3, usd: 900, source: 'floor' },
   });
-  assert.match(details.text, /Status: Sold out, ser\. Floor's sitting at 0\.3 ETH \(~\$900\.00\)/);
+  assert.match(details.text, /Status: Sold out\. Floor's sitting at 0\.3 ETH \(~\$900\.00\)/);
   assert.equal(details.text.includes('Price: 0.05 per item'), false);
 });
 
@@ -140,17 +140,27 @@ test('a sold-out collection with a genuine floor price of 0 shows 0, not "unavai
     maxSupply: null, maxPerWallet: null, startTime: null, collection: null,
     soldOut: true, displayPrice: { eth: 0, usd: 0, source: 'floor' },
   });
-  assert.match(details.text, /Status: Sold out, ser\. Floor's sitting at 0 ETH \(~\$0\.00\)/);
+  assert.match(details.text, /Status: Sold out\. Floor's sitting at 0 ETH \(~\$0\.00\)/);
   assert.equal(details.text.includes('unavailable'), false);
 });
 
-test('a sold-out collection with no OpenSea floor data at all says so plainly', () => {
+test('a sold-out collection with no OpenSea floor data at all says the floor could not be determined, not "ghosted us"', () => {
   const details = contractDetails({
     contractAddress: '0xabc', chainLabel: 'Ethereum', isSeaDrop: true, priceETH: 0.05, priceUnknown: false,
     maxSupply: null, maxPerWallet: null, startTime: null, collection: null,
     soldOut: true, displayPrice: null,
   });
-  assert.match(details.text, /Status: Sold out, and the floor price ghosted us too/);
+  assert.match(details.text, /Status: Sold out\. Floor price couldn't be determined from this contract\./);
+});
+
+test('a sold-out collection omits Max per wallet -- there is nothing left to mint, only Max supply (a permanent fact) still shows', () => {
+  const details = contractDetails({
+    contractAddress: '0xabc', chainLabel: 'Ethereum', isSeaDrop: true, priceETH: 0.05, priceUnknown: false,
+    maxSupply: 5000, maxPerWallet: 3, startTime: null, collection: null,
+    soldOut: true, displayPrice: null,
+  });
+  assert.equal(details.text.includes('Max per wallet'), false);
+  assert.match(details.text, /Max supply: 5000/);
 });
 
 test('a missing USD price omits the parenthetical entirely rather than showing $NaN', () => {

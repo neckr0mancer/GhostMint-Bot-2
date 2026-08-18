@@ -109,7 +109,8 @@ test('mint() still requires a manual price when neither resolver finds anything'
 
 test('detectMintContract tries SeaDrop first and returns a SeaDrop-shaped result when a core is found, including opening time and OpenSea metadata', async () => {
   const { service } = commandServiceFixture({
-    contractValueResolver: { resolve: async () => { throw new Error('should not be reached -- SeaDrop was found first'); } },
+    contractValueResolver: { resolve: async () => { throw new Error('should not be reached -- SeaDrop was found first'); },
+      probeMaxSupply: async () => ({ value: '10000', source: 'maxSupply' }) },
     seaDropDiscoveryService: { resolve: async () => ({ address: SEADROP, publicDrop: { mintPriceWei: '1000', maxTotalMintableByWallet: 5, startTime: 1_700_000_000, endTime: 1_700_100_000 }, feeRecipient: FEE_RECIPIENT }) },
     openSeaService: { getCollectionMetadata: async () => ({ name: 'Cool Cats', floorPrice: 0.5 }) },
   });
@@ -120,6 +121,10 @@ test('detectMintContract tries SeaDrop first and returns a SeaDrop-shaped result
   assert.equal(result.priceKnown, true);
   assert.equal(result.valueWei, '2000');
   assert.equal(result.maxPerWallet, 5);
+  // SeaDrop's PublicDrop struct has no supply-cap field -- probed separately from the token
+  // contract itself (Section AD Tier 1 follow-up: this used to be hardcoded null for every
+  // SeaDrop drop, silently dropping "Max supply" from the collection card).
+  assert.equal(result.maxSupply, 10000);
   assert.equal(result.startTime, 1_700_000_000);
   assert.equal(result.endTime, 1_700_100_000);
   assert.deepEqual(result.collection, { name: 'Cool Cats', floorPrice: 0.5 });
@@ -145,7 +150,7 @@ test('detectMintContract falls back to the plain mint(uint256) assumption when n
 test('detectMintContract shows the mint price as displayPrice while a SeaDrop drop is still open', async () => {
   const futureEndTime = Math.floor(Date.now() / 1000) + 3_600;
   const { service } = commandServiceFixture({
-    contractValueResolver: { resolve: async () => { throw new Error('should not be reached'); } },
+    contractValueResolver: { resolve: async () => { throw new Error('should not be reached'); }, probeMaxSupply: async () => null },
     seaDropDiscoveryService: { resolve: async () => ({ address: SEADROP, publicDrop: { mintPriceWei: '1000000000000000000', endTime: futureEndTime }, feeRecipient: FEE_RECIPIENT }) },
     openSeaService: { getCollectionMetadata: async () => ({ floorPrice: 5 }) },
   });
@@ -157,7 +162,7 @@ test('detectMintContract shows the mint price as displayPrice while a SeaDrop dr
 test('detectMintContract switches displayPrice to the OpenSea floor once a SeaDrop drop\'s endTime has passed', async () => {
   const pastEndTime = Math.floor(Date.now() / 1000) - 3_600;
   const { service } = commandServiceFixture({
-    contractValueResolver: { resolve: async () => { throw new Error('should not be reached'); } },
+    contractValueResolver: { resolve: async () => { throw new Error('should not be reached'); }, probeMaxSupply: async () => null },
     seaDropDiscoveryService: { resolve: async () => ({ address: SEADROP, publicDrop: { mintPriceWei: '1000000000000000000', endTime: pastEndTime }, feeRecipient: FEE_RECIPIENT }) },
     openSeaService: { getCollectionMetadata: async () => ({ floorPrice: 2.5 }) },
   });
@@ -244,11 +249,17 @@ test('detectMintContract never fails just because no openSeaService is wired in'
 // both the SeaDrop and plain-mint branches.
 test('detectMintContract omits stats entirely when includeStats is not set, for both branches', async () => {
   const seaDropResult = await commandServiceFixture({
-    contractValueResolver: { resolve: async () => { throw new Error('should not be reached'); }, probeTotalMinted: async () => { throw new Error('must not be called without includeStats'); } },
+    // probeMaxSupply is unconditional (unlike probeTotalMinted/getCollectionStats below) -- the
+    // card's "Max supply" limits line needs it even on a plain paste with no includeStats, same as
+    // the plain-mint branch's contractValueResolver.resolve() already runs unconditionally.
+    contractValueResolver: { resolve: async () => { throw new Error('should not be reached'); },
+      probeTotalMinted: async () => { throw new Error('must not be called without includeStats'); },
+      probeMaxSupply: async () => ({ value: '5000', source: 'maxSupply' }) },
     seaDropDiscoveryService: { resolve: async () => ({ address: SEADROP, publicDrop: { mintPriceWei: '1000' }, feeRecipient: FEE_RECIPIENT }) },
     openSeaService: { getCollectionMetadata: async () => null, getCollectionStats: async () => { throw new Error('must not be called without includeStats'); } },
   }).service.detectMintContract('user-a', { contractAddress: CONTRACT, quantity: 1 });
   assert.equal(seaDropResult.stats, null);
+  assert.equal(seaDropResult.maxSupply, 5000);
 
   const plainResult = await commandServiceFixture({
     contractValueResolver: { resolve: async () => ({ price: { value: '500' }, maxSupply: null, maxPerWallet: null }), probeTotalMinted: async () => { throw new Error('must not be called without includeStats'); } },
@@ -259,7 +270,8 @@ test('detectMintContract omits stats entirely when includeStats is not set, for 
 
 test('detectMintContract computes live stats and market cap (floor x current minted supply) when includeStats is set, for a SeaDrop drop', async () => {
   const { service } = commandServiceFixture({
-    contractValueResolver: { resolve: async () => { throw new Error('should not be reached -- SeaDrop was found first'); }, probeTotalMinted: async () => ({ value: '4000', source: 'totalSupply' }) },
+    contractValueResolver: { resolve: async () => { throw new Error('should not be reached -- SeaDrop was found first'); },
+      probeTotalMinted: async () => ({ value: '4000', source: 'totalSupply' }), probeMaxSupply: async () => null },
     seaDropDiscoveryService: { resolve: async () => ({ address: SEADROP, publicDrop: { mintPriceWei: '1000' }, feeRecipient: FEE_RECIPIENT }) },
     openSeaService: {
       getCollectionMetadata: async () => ({ name: 'Cool Cats' }),

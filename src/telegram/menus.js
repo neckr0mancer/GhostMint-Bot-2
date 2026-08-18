@@ -171,15 +171,19 @@ function contractDetailsText({ contractAddress, chainLabel, isSeaDrop, priceETH,
   ];
   if (soldOut) {
     lines.push(displayPrice
-      ? `Status: Sold out, ser. Floor's sitting at ${displayPrice.eth} ETH${usdSuffix(displayPrice.usd)}`
-      : 'Status: Sold out, and the floor price ghosted us too');
+      ? `Status: Sold out. Floor's sitting at ${displayPrice.eth} ETH${usdSuffix(displayPrice.usd)}`
+      : "Status: Sold out. Floor price couldn't be determined from this contract.");
   } else {
     lines.push(priceUnknown
       ? "Price: not determinable from this contract, so you'll enter it yourself"
       : `Price: ${priceETH} per item${displayPrice ? usdSuffix(displayPrice.usd) : ''}`);
   }
   const limits = [];
-  if (maxPerWallet !== null && maxPerWallet !== undefined) limits.push(`Max per wallet: ${maxPerWallet}`);
+  // Once sold out there's nothing left to mint -- a per-wallet mint cap has nothing left to apply
+  // to (trading moves to secondary from here), so it drops off rather than sitting there as a
+  // number that's no longer actionable. Max supply stays: unlike the cap, it's a permanent fact
+  // about the collection's final size, not a mint-time-only concept.
+  if (!soldOut && maxPerWallet !== null && maxPerWallet !== undefined) limits.push(`Max per wallet: ${maxPerWallet}`);
   if (maxSupply !== null && maxSupply !== undefined) limits.push(`Max supply: ${maxSupply}`);
   if (startTime) {
     const opensAt = formatGmtPlus1(startTime * 1000);
@@ -243,8 +247,8 @@ function collectionInfoCard({ contractAddress, chainLabel, chainSym, isSeaDrop, 
 
   if (soldOut) {
     lines.push(displayPrice
-      ? `Status: Sold out, ser. Floor's at ${displayPrice.eth} ${sym}${usdSuffix(displayPrice.usd)}`
-      : 'Status: Sold out, and the floor price ghosted us');
+      ? `Status: Sold out. Floor's at ${displayPrice.eth} ${sym}${usdSuffix(displayPrice.usd)}`
+      : "Status: Sold out. Floor price couldn't be determined from this contract.");
   } else {
     lines.push(priceUnknown ? "Mint price: not exposed by this contract. You're flying manual" : `Mint price: ${priceETH} ${sym} per item`);
   }
@@ -275,7 +279,11 @@ function collectionInfoCard({ contractAddress, chainLabel, chainSym, isSeaDrop, 
   }
 
   const limits = [];
-  if (maxPerWallet !== null && maxPerWallet !== undefined) limits.push(`Max per wallet: ${maxPerWallet}`);
+  // Once sold out there's nothing left to mint -- a per-wallet mint cap has nothing left to apply
+  // to (trading moves to secondary from here), so it drops off rather than sitting there as a
+  // number that's no longer actionable. Max supply stays: unlike the cap, it's a permanent fact
+  // about the collection's final size, not a mint-time-only concept.
+  if (!soldOut && maxPerWallet !== null && maxPerWallet !== undefined) limits.push(`Max per wallet: ${maxPerWallet}`);
   if (maxSupply !== null && maxSupply !== undefined) limits.push(`Max supply: ${maxSupply}`);
   // Not live yet: "Mint Now" would just revert against a stage that hasn't opened, so scheduling is
   // offered as its own action right here rather than only reachable after a failed attempt.
