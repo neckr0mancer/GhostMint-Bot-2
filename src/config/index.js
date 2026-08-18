@@ -38,7 +38,10 @@ const CHAIN_DEFINITIONS = Object.freeze({
     name: 'Polygon',
     chainId: 137,
     envName: 'POLYGON_RPC',
-    defaultRpc: 'https://polygon-rpc.com',
+    // polygon-rpc.com started returning "API key disabled, tenant disabled" (403) for anonymous
+    // requests -- confirmed live 2026-08-18, no longer usable as a free public default. Same
+    // PublicNode family already used for the ethereum default above, confirmed live working.
+    defaultRpc: 'https://polygon.publicnode.com',
     sym: 'MATIC',
     ex: 'https://polygonscan.com/tx/',
     isTestnet: false,
