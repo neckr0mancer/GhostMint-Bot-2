@@ -103,6 +103,39 @@ const NAV_ICONS={
   Account:<svg {...ICON_PROPS}><circle cx="12" cy="8.5" r="3.2"/><path d="M5 20c1.2-3.5 4-5.2 7-5.2s5.8 1.7 7 5.2"/></svg>,
   Admin:<svg {...ICON_PROPS}><circle cx="12" cy="12" r="3.2"/><path d="M12 3v2.5M12 18.5V21M4.5 7.5l2.2 1.3M17.3 15.2l2.2 1.3M3 12h2.5M18.5 12H21M4.5 16.5l2.2-1.3M17.3 8.8l2.2-1.3"/></svg>,
 };
+/* ── Ported shell chrome (docs/prototype-pages/_rail.html) ────────────────────────────────────
+   These are the prototype's own icons, copied path-for-path, at its stroke-width of 1.9 and under
+   its .ico class. They are deliberately NOT reused from NAV_ICONS above: that set is drawn at 1.8
+   inside a filled .nav-icon badge, which is the look this pass replaces. NAV_ICONS stays because
+   the admin shell, the bottom bar and the More sheet still render it. */
+const RAIL_ICON_PROPS={className:"ico",viewBox:"0 0 24 24",fill:"none",stroke:"currentColor",strokeWidth:"1.9",strokeLinecap:"round",strokeLinejoin:"round",xmlns:"http://www.w3.org/2000/svg"};
+const RAIL_ICONS={
+  Home:<svg {...RAIL_ICON_PROPS}><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.8V20h14V9.8"/></svg>,
+  Mint:<svg {...RAIL_ICON_PROPS}><path d="M13 2 4.5 13H11l-1 9 8.5-11H12l1-9Z"/></svg>,
+  Automation:<svg {...RAIL_ICON_PROPS}><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9 7 7M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1"/></svg>,
+  Wallets:<svg {...RAIL_ICON_PROPS}><rect x="3" y="6" width="18" height="13" rx="2.5"/><path d="M3 10h18M16.5 14.5h.01"/></svg>,
+  History:<svg {...RAIL_ICON_PROPS}><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg>,
+  Admin:<svg {...RAIL_ICON_PROPS}><path d="M12 3l7 3v5c0 5-3 8.5-7 10-4-1.5-7-5-7-10V6z"/></svg>,
+  Account:<svg {...RAIL_ICON_PROPS}><circle cx="12" cy="8" r="3.6"/><path d="M4.5 20c.8-4 3.8-6 7.5-6s6.7 2 7.5 6"/></svg>,
+  Settings:<svg {...RAIL_ICON_PROPS}><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-2.7 1.1V21a2 2 0 1 1-4 0v-.1A1.6 1.6 0 0 0 7 19.4a1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.6 1.6 0 0 0 3 14.1H3a2 2 0 0 1 0-4h.1A1.6 1.6 0 0 0 4.6 7a1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.6 1.6 0 0 0 9.9 3H10a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 2.7 1.1l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0 1.1 2.7H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1.3z"/></svg>,
+};
+const CMDK_ICON=<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" xmlns="http://www.w3.org/2000/svg"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>;
+// prototype.css expresses "mobile" as .app[data-m], set by the prototype's own Desktop/Mobile
+// harness toggle rather than by a media query, so the real app has to supply the attribute. 700px
+// is this app's existing mobile breakpoint -- the one .mobile-bottombar and .more-sheet already
+// use -- so the rail, the bottom bar and the sheet all still change over on the same line.
+const MOBILE_QUERY="(max-width:700px)";
+function useIsMobile(){
+  const [mobile,setMobile]=useState(()=>typeof window!=="undefined"&&window.matchMedia(MOBILE_QUERY).matches);
+  useEffect(()=>{
+    const mq=window.matchMedia(MOBILE_QUERY);
+    const onChange=event=>setMobile(event.matches);
+    mq.addEventListener("change",onChange);
+    setMobile(mq.matches);
+    return()=>mq.removeEventListener("change",onChange);
+  },[]);
+  return mobile;
+}
 function ChainSelect({name,label,options,value,onChange}){const [open,setOpen]=useState(false);const [activeIndex,setActiveIndex]=useState(0);const rootRef=useRef(null);const panelRef=useRef(null);const meta=chainMeta(value);const evmOptions=(options||[]).filter(option=>EVM_CHAINS.includes(option));useEffect(()=>{if(!open)return;function onDocClick(event){if(rootRef.current&&!rootRef.current.contains(event.target))setOpen(false);}function onKey(event){if(event.key==='Escape')setOpen(false);}document.addEventListener('mousedown',onDocClick);document.addEventListener('keydown',onKey);return()=>{document.removeEventListener('mousedown',onDocClick);document.removeEventListener('keydown',onKey);};},[open]);useEffect(()=>{if(open)panelRef.current?.focus();},[open]);function choose(next){onChange({target:{name,value:next}});setOpen(false);}function openList(){setActiveIndex(Math.max(0,evmOptions.indexOf(value)));setOpen(true);}function onTriggerKeyDown(event){if(event.key==='ArrowDown'||event.key==='Enter'||event.key===' '){event.preventDefault();openList();}}function onListKeyDown(event){if(event.key==='ArrowDown'){event.preventDefault();setActiveIndex(index=>Math.min(evmOptions.length-1,index+1));}else if(event.key==='ArrowUp'){event.preventDefault();setActiveIndex(index=>Math.max(0,index-1));}else if(event.key==='Enter'||event.key===' '){event.preventDefault();choose(evmOptions[activeIndex]);}else if(event.key==='Escape'){event.preventDefault();setOpen(false);}else if(event.key==='Tab'){setOpen(false);}}return <div className="chain-select">{label}<div className="chain-select-control" ref={rootRef}><input type="hidden" name={name} value={value}/><button type="button" className="chain-select-trigger" aria-haspopup="listbox" aria-expanded={open} aria-label={label} onClick={()=>open?setOpen(false):openList()} onKeyDown={onTriggerKeyDown}><span className="chain-icon" aria-hidden="true">{meta.icon}</span><span className="chain-select-value">{meta.label}</span>{meta.testnet&&<span className="chain-select-tag">Testnet</span>}<span className="chain-select-chevron" aria-hidden="true">{CHAIN_CHEVRON_ICON}</span></button>{open&&<ul className="chain-select-panel" role="listbox" aria-label={label} tabIndex="-1" ref={panelRef} onKeyDown={onListKeyDown}><li className="chain-select-group-label" role="presentation">EVM</li>{evmOptions.map((option,index)=>{const optionMeta=chainMeta(option);return <li key={option} role="option" aria-selected={option===value} className={`chain-select-option${option===value?' selected':''}${index===activeIndex?' active':''}`} onMouseEnter={()=>setActiveIndex(index)} onClick={()=>choose(option)}><span className="chain-icon" aria-hidden="true">{optionMeta.icon}</span><span>{optionMeta.label}</span><span className="chain-select-option-end">{optionMeta.testnet&&<span className="chain-select-tag">Testnet</span>}{option===value&&<span className="chain-select-option-check" aria-hidden="true">{CHAIN_CHECK_ICON}</span>}</span></li>;})}<li className="chain-select-group-label" role="presentation">Other networks</li><li className="chain-select-option disabled" role="option" aria-disabled="true" aria-selected="false"><span className="chain-icon" aria-hidden="true">{SOLANA_ICON}</span><span>Solana</span><span className="chain-select-option-end"><span className="chain-select-tag">Coming soon</span></span></li></ul>}</div></div>;}
 // Wallet create/import only need to distinguish the chain family (EVM vs Solana), not a specific
 // EVM chain -- one address already works on every EVM chain, so wallets store DEFAULT_EVM_CHAIN
@@ -159,7 +192,7 @@ async function exportWalletKeystore(label,{profile,onProfileChange}){
 }
 function Wallets({profile,onProfileChange}){const {data:wallets,error,load}=useLoad('/api/wallets',[],'wallets.changed');const [createChain,setCreateChain]=useState('evm');const [importChain,setImportChain]=useState('evm');const [importMethod,setImportMethod]=useState('privateKey');const [query,setQuery]=useState('');async function submit(event,path){event.preventDefault();const form=event.currentTarget;const values=Object.fromEntries(new FormData(form));try{await api(path,{method:'POST',body:JSON.stringify(values)});form.reset();notify('Wallet saved securely.',{type:'success'});load();}catch(value){notify(value.message,{type:'error'});}}async function remove(label){if(!await confirmDialog(`Remove wallet ${label}? This cannot be undone.`))return;try{await api(`/api/wallets/${encodeURIComponent(label)}`,{method:'DELETE',body:JSON.stringify({confirmation:'CONFIRM'})});load();}catch(value){notify(value.message,{type:'error'});}}
   const exportKey=label=>exportWalletKeystore(label,{profile,onProfileChange});
-  const normalized=query.trim().toLowerCase();const filtered=wallets?(normalized?wallets.filter(wallet=>[wallet.label,wallet.address,wallet.chain].filter(Boolean).some(value=>String(value).toLowerCase().includes(normalized))):wallets):[];return <><p className="page-lead">Create server-side encrypted wallets, check balances, and manage imports.</p><Notice error={error}/><div className="page-toolbar"><label className="page-search">Find a wallet<input type="search" value={query} placeholder="Label, address, chain…" onChange={e=>setQuery(e.target.value)}/></label></div>{wallets===null?<Skeleton/>:<div className="card-grid wallet-grid">{filtered.map(wallet=><article className="card" key={wallet.label}><div><span className="pill">{wallet.chain}</span><h2>{wallet.label}</h2></div><div className="user-card-identity"><code>{wallet.address}</code><CopyButton value={wallet.address} label="Copy wallet address"/></div><div className="wallet-balances">{wallet.balances?.length?wallet.balances.map(b=><div className="wallet-balance-row" key={b.chain}><span>{chainMeta(b.chain).label}</span><strong>{b.balance??'Unavailable'} {b.symbol}</strong></div>):<div className="wallet-balance-row">Unavailable</div>}</div><div className="actions"><button className="small quiet" onClick={()=>exportKey(wallet.label)}>Export key</button><button className="small danger" onClick={()=>remove(wallet.label)}>Remove</button></div></article>)}{filtered.length===0&&<Empty text={normalized?'No wallets match this search.':'No wallets yet. Create the recommended server-side wallet below.'}/>}</div>}<div className="form-grid wallet-forms"><Form className="form-wallet-create" title="Create wallet" note="Recommended - the private key is generated, encrypted, and never returned." onSubmit={e=>submit(e,'/api/wallets/create')}><Field name="label" label="Label" placeholder="$1 and a dream"/><WalletChainSelect name="chain" label="Chain" value={createChain} onChange={e=>setCreateChain(e.target.value)}/><button>Create securely</button></Form><Form className="form-wallet-import" title="Import wallet" warning="Not recommended: your key or seed phrase crosses browser memory and network transit. Use HTTPS; it is encrypted immediately and never returned." onSubmit={e=>submit(e,'/api/wallets/import')}><Field name="label" label="Label" placeholder="$1 and a dream"/><WalletChainSelect name="chain" label="Chain" value={importChain} onChange={e=>setImportChain(e.target.value)}/><div className="method-toggle"><span>Import using</span><div className="segmented" role="radiogroup" aria-label="Import method"><button type="button" aria-pressed={importMethod==='privateKey'} className={importMethod==='privateKey'?'active':''} onClick={()=>setImportMethod('privateKey')}>Private key</button><button type="button" aria-pressed={importMethod==='seedPhrase'} className={importMethod==='seedPhrase'?'active':''} onClick={()=>setImportMethod('seedPhrase')}>Seed phrase</button></div></div><input type="hidden" name="importMethod" value={importMethod}/>{importMethod==='privateKey'?<Field name="privateKey" label="Private key" type="password" autoComplete="off"/>:<label>Seed phrase (12-24 words)<textarea className="compact" name="seedPhrase" required autoComplete="off" placeholder="witch collapse practice feed shame open despair creek road again ice least"/></label>}<button className="quiet">Import over HTTPS</button></Form></div></>}
+  const normalized=query.trim().toLowerCase();const filtered=wallets?(normalized?wallets.filter(wallet=>[wallet.label,wallet.address,wallet.chain].filter(Boolean).some(value=>String(value).toLowerCase().includes(normalized))):wallets):[];return <><p className="page-lead">Create server-side encrypted wallets, check balances, and manage imports.</p><Notice error={error}/><div className="page-toolbar"><label className="page-search">Find a wallet<input type="search" value={query} placeholder="Label, address, chain…" onChange={e=>setQuery(e.target.value)}/></label></div>{wallets===null?<Skeleton/>:<div className="card-grid wallet-grid">{filtered.map(wallet=><article className="card" key={wallet.label}><div><span className="pill">{wallet.chain}</span><h2>{wallet.label}</h2></div><div className="user-card-identity"><code>{wallet.address}</code><CopyButton value={wallet.address} label="Copy wallet address"/></div><div className="wallet-balances">{wallet.balances?.length?wallet.balances.map(b=><div className="wallet-balance-row" key={b.chain}><span>{chainMeta(b.chain).label}</span><strong>{b.balance??'Unavailable'} {b.symbol}</strong></div>):<div className="wallet-balance-row">Unavailable</div>}</div><div className="br"><button className="b g sm" onClick={()=>exportKey(wallet.label)}>Export key</button><button className="b d sm" onClick={()=>remove(wallet.label)}>Remove</button></div></article>)}{filtered.length===0&&<Empty text={normalized?'No wallets match this search.':'No wallets yet. Create the recommended server-side wallet below.'}/>}</div>}<div className="form-grid wallet-forms"><Form className="form-wallet-create" title="Create wallet" note="Recommended - the private key is generated, encrypted, and never returned." onSubmit={e=>submit(e,'/api/wallets/create')}><Field name="label" label="Label" placeholder="$1 and a dream"/><WalletChainSelect name="chain" label="Chain" value={createChain} onChange={e=>setCreateChain(e.target.value)}/><button className="b p">Create securely</button></Form><Form className="form-wallet-import" title="Import wallet" warning="Not recommended: your key or seed phrase crosses browser memory and network transit. Use HTTPS; it is encrypted immediately and never returned." onSubmit={e=>submit(e,'/api/wallets/import')}><Field name="label" label="Label" placeholder="$1 and a dream"/><WalletChainSelect name="chain" label="Chain" value={importChain} onChange={e=>setImportChain(e.target.value)}/><div className="method-toggle"><span>Import using</span><div className="seg" role="radiogroup" aria-label="Import method"><button type="button" aria-pressed={importMethod==='privateKey'} className={importMethod==='privateKey'?'on':undefined} onClick={()=>setImportMethod('privateKey')}>Private key</button><button type="button" aria-pressed={importMethod==='seedPhrase'} className={importMethod==='seedPhrase'?'on':undefined} onClick={()=>setImportMethod('seedPhrase')}>Seed phrase</button></div></div><input type="hidden" name="importMethod" value={importMethod}/>{importMethod==='privateKey'?<Field name="privateKey" label="Private key" type="password" autoComplete="off"/>:<label>Seed phrase (12-24 words)<textarea className="compact" name="seedPhrase" required autoComplete="off" placeholder="witch collapse practice feed shame open despair creek road again ice least"/></label>}<button className="b g">Import over HTTPS</button></Form></div></>}
 const SEADROP_SIGNATURE='mintPublic(address,address,address,uint256)';
 const ADDRESS_SHAPE=/^0x[0-9a-fA-F]{40}$/;
 function weiToEthDisplay(wei){
@@ -194,8 +227,23 @@ function ethToWei(eth){
 const CONTRACT_ICON=<svg {...ICON_PROPS}><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 9h6v6H9z"/></svg>;
 const LEDGER_ICON=<svg {...ICON_PROPS}><rect x="4" y="3" width="16" height="18" rx="1.5"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>;
 const INFO_ICON=<svg {...ICON_PROPS}><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>;
+// The prototype's own glyphs, copied path-for-path from docs/prototype-pages/mint.html so the
+// notices, field errors and the preview header carry the same marks as the design.
+const WARN_TRIANGLE_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>;
+const ALERT_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>;
+const BATCH_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>;
+const CLOCK_ICON=<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg>;
+const LOCK_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><rect x="4" y="10.5" width="16" height="10.5" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/></svg>;
 function shortHex(value){const v=String(value||"");return v.length>12?`${v.slice(0,6)}…${v.slice(-4)}`:v;}
-function Minting({onSwitchToBatch}){const wallets=useLoad('/api/wallets',[],'wallets.changed');const presets=useLoad('/api/mint-presets');const [preview,setPreview]=useState(null);const [confirmResults,setConfirmResults]=useState(null);const formRef=useRef(null);const previewRef=useRef(null);const [walletLabel,setWalletLabel]=useState('');const [contractAddress,setContractAddress]=useState('');const [quantity,setQuantity]=useState('1');const [methodSignature,setMethodSignature]=useState('');const [argumentsJson,setArgumentsJson]=useState('');const [priceEth,setPriceEth]=useState('0');const [seaDropAddress,setSeaDropAddress]=useState('');const [detectedChain,setDetectedChain]=useState('');const [maxPerWallet,setMaxPerWallet]=useState(null);const [detecting,setDetecting]=useState(false);const [advancedOpen,setAdvancedOpen]=useState(false);const lastDetected=useRef('');
+function Minting({onSwitchToBatch,onGoWallets}){const wallets=useLoad('/api/wallets',[],'wallets.changed');const limits=useLoad('/api/profile/limits');const [preview,setPreview]=useState(null);const [confirmResults,setConfirmResults]=useState(null);const formRef=useRef(null);const previewRef=useRef(null);const [walletLabel,setWalletLabel]=useState('');const [contractAddress,setContractAddress]=useState('');const [quantity,setQuantity]=useState('1');const [methodSignature,setMethodSignature]=useState('');const [argumentsJson,setArgumentsJson]=useState('');const [priceEth,setPriceEth]=useState('');const [seaDropAddress,setSeaDropAddress]=useState('');const [detectedChain,setDetectedChain]=useState('');const [maxPerWallet,setMaxPerWallet]=useState(null);const [detecting,setDetecting]=useState(false);const lastDetected=useRef('');
+  // Simulation is no longer user-triggered (backlog §7.2): the prototype has no "Validate and
+  // simulate" control, only a Re-simulate on an expired quote, so the first simulation runs on its
+  // own. Debounced, because otherwise typing an address would fire one /api/mints/preview per
+  // keystroke and each call issues a 300s preview token.
+  const [simulating,setSimulating]=useState(false);
+  const [mintError,setMintError]=useState(null);
+  const [quantityIssue,setQuantityIssue]=useState(null);
+  const simulateTimer=useRef(null);
   useEffect(()=>{if(!walletLabel&&wallets.data?.length)setWalletLabel(wallets.data[0].label);},[wallets.data]);
   // Picks up whatever Quick Mint already had typed in (see Dashboard.jsx's goToFullMint) so landing
   // here isn't a dead end with an empty contract field -- detects immediately rather than waiting
@@ -236,7 +284,7 @@ function Minting({onSwitchToBatch}){const wallets=useLoad('/api/wallets',[],'wal
       // stuck facing a required-but-hidden field, rather than quietly clearing it to something that
       // reads as optional (see the "never let an unresolved price look free" note this mirrors).
       if(result.priceKnown){setPriceEth(weiToEthDisplay(result.valueWei));notify(`Detected ${label} on ${result.chain} — price read from the contract.`,{type:'success'});}
-      else{setPriceEth('');setAdvancedOpen(true);notify(`Detected ${label} on ${result.chain}, but this contract doesn't expose a recognized price function. Enter the price per NFT in ETH below — enter 0 if it's free.`,{type:'info'});}
+      else{setPriceEth('');notify(`Detected ${label} on ${result.chain}, but this contract doesn't expose a recognized price function. Enter the price per NFT in ETH below — enter 0 if it's free.`,{type:'info'});}
     }catch(value){notify(value.message,{type:'error'});}
     finally{setDetecting(false);}
   }
@@ -249,7 +297,26 @@ function Minting({onSwitchToBatch}){const wallets=useLoad('/api/wallets',[],'wal
   function autoDetectIfReady(value=contractAddress,quantityValue=quantity){const trimmed=value.trim();if(ADDRESS_SHAPE.test(trimmed)&&`${trimmed}:${quantityValue}`!==lastDetected.current)detect(trimmed,quantityValue);}
   function handleAutoDetectBlur(){autoDetectIfReady();}
   function resetDetectedFields(){setContractAddress('');setQuantity('1');setMethodSignature('');setArgumentsJson('');setPriceEth('0');setSeaDropAddress('');setDetectedChain('');setMaxPerWallet(null);lastDetected.current='';}
-  async function inspect(event){event?.preventDefault?.();const raw={walletLabel,presetName:undefined,contractAddress,methodSignature,seaDropAddress,arguments:argumentsJson,priceEth};try{const valueWei=ethToWei(raw.priceEth);if(valueWei===null){notify('Price (ETH) must be a plain non-negative number -- 0.01 for example, or 0 if the mint is free.',{type:'error'});return;}const batch=raw.walletLabels?.split(/[,\n]+/).map(x=>x.trim()).filter(Boolean);const input={walletLabel:raw.walletLabel,walletLabels:batch?.length?batch:undefined,presetName:raw.presetName||undefined,contractAddress:raw.contractAddress||undefined,methodSignature:raw.methodSignature||undefined,seaDropAddress:raw.seaDropAddress||undefined,arguments:raw.arguments?JSON.parse(raw.arguments):[],valueWei:valueWei.toString(),chain:detectedChain||undefined};setPreview(await api('/api/mints/preview',{method:'POST',body:JSON.stringify(input)}));setConfirmResults(null);notify('Simulation passed -- review the details below and confirm to broadcast.',{type:'success'});previewRef.current?.scrollIntoView({behavior:'smooth',block:'start'});}catch(value){notify(value.message,{type:'error'});}}
+  // Auto-simulate driver (backlog §7.2). Fires 600ms after the inputs settle, and only when the
+  // form could actually produce a preview: a detected contract, a chosen wallet, a quantity.
+  // Clears any previous quote first so a stale total can never sit under fresh inputs.
+  useEffect(()=>{
+    clearTimeout(simulateTimer.current);
+    if(!methodSignature||!walletLabel||!quantity||detecting)return;
+    simulateTimer.current=setTimeout(()=>{inspect();},600);
+    return()=>clearTimeout(simulateTimer.current);
+  },[methodSignature,argumentsJson,seaDropAddress,walletLabel,quantity,priceEth,detectedChain,detecting]);
+  useEffect(()=>()=>clearTimeout(simulateTimer.current),[]);
+  async function inspect(event){event?.preventDefault?.();const raw={walletLabel,presetName:undefined,contractAddress,methodSignature,seaDropAddress,arguments:argumentsJson,priceEth};try{const valueWei=ethToWei(raw.priceEth);if(valueWei===null){notify('Price (ETH) must be a plain non-negative number -- 0.01 for example, or 0 if the mint is free.',{type:'error'});return;}const batch=raw.walletLabels?.split(/[,\n]+/).map(x=>x.trim()).filter(Boolean);const input={walletLabel:raw.walletLabel,walletLabels:batch?.length?batch:undefined,presetName:raw.presetName||undefined,contractAddress:raw.contractAddress||undefined,methodSignature:raw.methodSignature||undefined,seaDropAddress:raw.seaDropAddress||undefined,arguments:raw.arguments?JSON.parse(raw.arguments):[],valueWei:valueWei.toString(),chain:detectedChain||undefined};setSimulating(true);setMintError(null);setQuantityIssue(null);
+    setPreview(await api('/api/mints/preview',{method:'POST',body:JSON.stringify(input)}));setConfirmResults(null);
+  }catch(value){
+    setPreview(null);
+    // A field-scoped validation issue belongs on the field (.in.bad + .fielderr), everything else
+    // is a money-surface failure and gets the .notice panel -- never a toast alone.
+    const issue=value.issues?.find(entry=>entry.field==='quantity');
+    if(issue)setQuantityIssue(issue.message);
+    else setMintError({title:value.message||'Could not simulate this mint.',detail:'Nothing was broadcast.',code:value.status,onRetry:()=>inspect()});
+  }finally{setSimulating(false);}}
   // Each wallet in the batch is annotated with its own outcome (see confirmResults, rendered per
   // item below) rather than one pass/fail for the whole batch -- a failure on one wallet no longer
   // hides whether the others actually went through.
@@ -263,87 +330,135 @@ function Minting({onSwitchToBatch}){const wallets=useLoad('/api/wallets',[],'wal
   const detected=Boolean(methodSignature);
   const item=preview?.items?.[0];
   const totalDebitWei=item?item.simulation.estimatedCostWei:null;
+  // The prototype's four states for this page, resolved once so every element below reads the
+  // same answer. EMPTY is "no wallet exists" -- the prototype shows the form DISABLED in that
+  // state rather than hiding it, so you can see what minting looks like before you have one.
+  const walletsArrived=wallets.data!==null&&wallets.data!==undefined;
+  const noWallets=walletsArrived&&wallets.data.length===0;
+  const pageError=wallets.error?{title:'Could not load your wallets.',detail:'Request failed safely — nothing was changed.',code:wallets.status,onRetry:wallets.load}:mintError;
+  // Literal, per docs/prototype-pages/mint.html:33 -- "1 2 3 Max". Not derived from
+  // maxPerWallet: Schedule writes "1 2 5" and Batch writes "1 2 3", so each form carries its own
+  // set by design. Max resolves to the detected per-wallet cap, or the input ceiling if none.
+  const quickPicks=[1,2,3];
+  const maxPick=maxPerWallet||100;
+  const ceilingWei=limits.data?.dailySpendingBudgetWei;
   return <>
-    <div className="split mint-split">
-      <div className="mint-col">
-        <SectionCard title="Contract" icon={CONTRACT_ICON}>
-          <div className="fields">
-            <label>Contract address
-              <input className="mono" placeholder="0x… paste a contract address" value={contractAddress}
-                onChange={e=>{setContractAddress(e.target.value);autoDetectIfReady(e.target.value,quantity);}}
-                onBlur={handleAutoDetectBlur}/>
+    {/* Prototype mint.html: a .nt.w banner above the form when no wallet exists. The form stays
+        VISIBLE and disabled underneath -- "shown disabled so you can see what minting looks like". */}
+    {noWallets&&<div className="nt w" style={{marginBottom:'12px'}}>
+      {WARN_TRIANGLE_ICON}
+      <div><b>Create a wallet before minting.</b> The form below is shown disabled so you can see what minting looks like.
+        <div style={{marginTop:'8px'}}><button type="button" className="b sm" onClick={()=>onGoWallets?.()}>Create a wallet</button></div></div>
+    </div>}
+    <div className="split">
+      <div className="card">
+        <div className="ch"><div className="chip-ico">{CONTRACT_ICON}</div><h2>Contract</h2></div>
+        <div className="g" style={{gap:'11px'}}>
+          <label className="fl"><span>Contract address</span>
+            <input className={`in mono${detected?' ok':''}`} disabled={noWallets}
+              placeholder="0x… paste a contract address" value={contractAddress}
+              onChange={e=>{setContractAddress(e.target.value);autoDetectIfReady(e.target.value,quantity);}}
+              onBlur={handleAutoDetectBlur}/>
+          </label>
+          {/* Detection summary, the prototype's .nt.i one-liner. */}
+          {!detecting&&detected&&<div className="nt i">{INFO_ICON}
+            <div>Detected <b>{methodSignature===SEADROP_SIGNATURE?'SeaDrop drop':'contract'}</b>
+              {detectedChain&&<> · {detectedChain}</>}
+              {priceEth&&priceEth!=='0'?<> · {priceEth} ETH</>:<> · free</>}
+              {maxPerWallet?<> · max {maxPerWallet}/wallet</>:null}
+            </div></div>}
+          <div className="g gm2 g2">
+            <label className="fl"><span>Wallet</span>
+              {/* Grouped exactly as the prototype: an EVM optgroup of real wallets, and a Solana
+                  group carrying one disabled option so the roadmap is visible without implying
+                  it works. Empty state is a single disabled "No wallets yet". */}
+              {noWallets
+                ?<select className="in" disabled><option>No wallets yet</option></select>
+                :<select className="in" value={walletLabel} disabled={!walletsArrived}
+                    onChange={e=>setWalletLabel(e.target.value)}>
+                    <optgroup label="EVM">
+                      {(wallets.data||[]).map(entry=><option key={entry.label} value={entry.label}>{entry.label}</option>)}
+                    </optgroup>
+                    <optgroup label="Solana"><option disabled>Solana (not yet supported)</option></optgroup>
+                  </select>}
             </label>
-            {detecting&&<p className="mint-detecting"><span className="spinner spinner-quiet" aria-hidden="true"/>Detecting…</p>}
-            {/* The detected banner is the prototype's one-line summary of everything auto-detection
-                found, so the user can sanity-check the target before simulating. */}
-            {!detecting&&detected&&<div className="inline-note">
-              <span className="inline-note-icon" aria-hidden="true">{INFO_ICON}</span>
-              <div>Detected <b>{methodSignature===SEADROP_SIGNATURE?'SeaDrop drop':'contract'}</b>
-                {detectedChain&&<> · {detectedChain}</>}
-                {priceEth&&priceEth!=='0'?<> · {priceEth} ETH</>:<> · free</>}
-                {maxPerWallet?<> · max {maxPerWallet}/wallet</>:null}
+            <label className="fl"><span>Quantity{maxPerWallet?<span style={{color:'var(--faint)',fontWeight:500}}> · max {maxPerWallet}</span>:null}</span>
+              <div className="qty">
+                <input className={`in tab${quantityIssue?' bad':''}`} type="number" min={1} max={maxPerWallet||100}
+                  disabled={noWallets} placeholder={`Enter quantity (1–${maxPerWallet||100})`} value={quantity}
+                  onChange={e=>{setQuantity(e.target.value);autoDetectIfReady(contractAddress,e.target.value);}}/>
+                <div className="qb">
+                  {quickPicks.map(pick=><button type="button" key={pick} disabled={noWallets}
+                    className={String(pick)===String(quantity)?'on':undefined}
+                    onClick={()=>{setQuantity(String(pick));autoDetectIfReady(contractAddress,String(pick));}}>{pick}</button>)}
+                  <button type="button" disabled={noWallets}
+                    className={String(maxPick)===String(quantity)?'on':undefined}
+                    onClick={()=>{setQuantity(String(maxPick));autoDetectIfReady(contractAddress,String(maxPick));}}>Max</button>
+                </div>
               </div>
-            </div>}
-            <div className="field-row">
-              <Select name="walletLabel" label="Wallet" options={wallets.data?.map(x=>x.label)} value={walletLabel} onChange={e=>setWalletLabel(e.target.value)}/>
-              <Select name="presetName" label="Saved preset (optional)" optional options={presets.data?.map(x=>x.name)}/>
-            </div>
-            {/* Quantity is the prototype's paired control: a real number input WITH quick-picks,
-                not buttons alone. Typing updates which button reads as active. */}
-            <NumberField label={maxPerWallet?`Quantity · max ${maxPerWallet}`:'Quantity'}
-              value={quantity} min={1} max={maxPerWallet||100}
-              quick={maxPerWallet?[1,2,maxPerWallet]:[1,2,5,10]}
-              onChange={value=>{setQuantity(value);autoDetectIfReady(contractAddress,value);}}/>
-            <label>Price per mint <span className="field-hint">· auto-detected</span>
-              <input className="tab" type="number" step="any" min="0" value={priceEth}
-                placeholder="e.g. 0.08 — leave blank to use detected price"
-                onChange={e=>setPriceEth(e.target.value)}/>
+              {/* Server-side validation surfaces as .in.bad + .fielderr, per the prototype's .ox. */}
+              {quantityIssue&&<div className="fielderr">{ALERT_ICON}{quantityIssue}</div>}
             </label>
-            <details className="mint-advanced" open={advancedOpen} onToggle={e=>setAdvancedOpen(e.target.open)}>
-              <summary>Advanced: edit detected calldata directly</summary>
-              <div className="field-row">
-                <Field name="methodSignature" label="Method signature" placeholder="mint(uint256)" required={false} value={methodSignature} onChange={e=>setMethodSignature(e.target.value)}/>
-                <Field name="arguments" label="Arguments JSON" placeholder="[1]" required={false} value={argumentsJson} onChange={e=>setArgumentsJson(e.target.value)}/>
-              </div>
-              {methodSignature===SEADROP_SIGNATURE&&<Field name="seaDropAddress" label="SeaDrop core address" placeholder="0x… (auto-filled by auto-detect)" required={false} value={seaDropAddress} onChange={e=>setSeaDropAddress(e.target.value)}/>}
-            </details>
-            {/* Batch was buried as a sub-tab and nobody found it. Cross-linked from here, where
-                the intent actually arises. */}
-            <div className="inline-note">
-              <span className="inline-note-icon" aria-hidden="true">{INFO_ICON}</span>
-              <div>Minting from more than one wallet? <b>Batch</b> simulates and submits each wallet
-                independently, so one failure doesn&apos;t cancel the rest.
-                <div className="inline-note-actions"><button type="button" className="small" onClick={()=>onSwitchToBatch?.()}>Switch to batch</button></div>
-              </div>
-            </div>
-            <button type="button" onClick={inspect} disabled={!contractAddress.trim()}>Validate and simulate</button>
           </div>
-        </SectionCard>
+          <label className="fl"><span>Price per mint <span style={{color:'var(--faint)',fontWeight:500}}>· auto-detected</span></span>
+            <input className="in tab" type="number" step="any" min="0" value={priceEth} disabled={noWallets}
+              placeholder={detected?'e.g. 0.08 — leave blank to use detected price':'Detected once a contract is entered'}
+              onChange={e=>setPriceEth(e.target.value)}/>
+          </label>
+          {/* Batch cross-link -- the prototype keeps this on the single-wallet form, where the
+              intent actually arises, rather than leaving Batch buried as a sub-tab. */}
+          <div className="nt i">{BATCH_ICON}
+            <div>Minting from more than one wallet? <b>Batch</b> simulates and submits each wallet independently, so one failure doesn&apos;t cancel the rest.
+              <div style={{marginTop:'8px'}}><button type="button" className="b sm" onClick={()=>onSwitchToBatch?.()}>Switch to batch</button></div></div></div>
+        </div>
       </div>
 
-      <div className="mint-col">
-        {preview&&<PreviewExpiry preview={preview} onExpire={()=>{setPreview(null);notify('That simulation expired before it was confirmed. Nothing was submitted — simulate again.',{type:'info'});}}/>}
-        {/* Register 1 (brief §1): the money surface is a plain ledger -- label left, figure right,
-            tabular numerals, no decoration. "Not run" rather than zeros pretending to be a quote. */}
-        <SectionCard title="Transaction preview" icon={LEDGER_ICON}>
-          <Ledger rows={[
-            {label:'Contract',value:item?shortHex(item.preview.contractAddress):'—',mono:true},
-            {label:'Method',value:item?item.preview.methodSignature:'—',mono:true},
-            {label:'Chain',value:detectedChain||'—'},
-            {label:'Quantity',value:quantity||'—'},
-            {label:'Mint price',value:item?`${item.preview.nativeValue} wei`:'0.000000 ETH'},
-            {label:'Est. gas',value:item?`${item.simulation.gasLimit} gas`:'0.000000 ETH'},
-            {label:'Simulation',value:item?'Passed':'Not run',tone:item?'gain':undefined},
-          ]} total={{label:'Total debit',value:totalDebitWei?`${totalDebitWei} wei`:'0.000000 ETH'}}/>
-          {item&&!confirmResults&&<button className="quiet panel-cta" onClick={confirmMint}>Confirm and broadcast</button>}
-          {confirmResults&&<p className="card-note">Run Validate and simulate again to retry any failed wallets.</p>}
-        </SectionCard>
-        {preview&&preview.items.map(entry=>{
-          const result=confirmResults?.[entry.wallet.label];
-          return result?<p key={entry.wallet.label} className={result.status==='success'?'ok':'warning'}>
-            {result.status==='success'?`✅ ${entry.wallet.label} submitted.`:`❌ ${entry.wallet.label}: ${result.error}`}
-          </p>:null;
-        })}
+      <div className="g">
+        {preview&&<PreviewExpiry preview={preview} onExpire={()=>{setPreview(null);notify('That simulation expired before it was confirmed. Nothing was submitted — simulate again.',{type:'error'});}} onResimulate={inspect}/>}
+        <div className="sober">
+          <div className="sh">{LOCK_ICON}Transaction preview</div>
+          {/* Register 1: label left, figure right, tabular numerals. The EMPTY state renders the
+              same rows with em dashes and 0.000000 ETH rather than collapsing -- the prototype's
+              note is that "a collapsed total is a hidden total". */}
+          <table className="led">
+            <tbody>
+              <tr><td>Contract</td><td className="mono">{item?shortHex(item.preview.contractAddress):'—'}</td></tr>
+              <tr><td>Method</td><td className="mono">{item?item.preview.methodSignature:'—'}</td></tr>
+              <tr><td>Chain</td><td>{detectedChain||'—'}</td></tr>
+              <tr><td>Quantity</td><td>{item?quantity:'—'}</td></tr>
+              <tr><td>Mint price</td><td>{item?`${weiToEthDisplay(item.preview.nativeValue)} ETH`:'0.000000 ETH'}</td></tr>
+              <tr><td>Est. gas</td><td>{item?`${weiToEthDisplay(item.simulation.estimatedGasCostWei??0)} ETH`:'0.000000 ETH'}</td></tr>
+              <tr><td>Simulation</td><td>{simulating?'Running…':item?'Passed':'Not run'}</td></tr>
+              <tr className="tot"><td>Total debit</td><td>{totalDebitWei?`${weiToEthDisplay(totalDebitWei)} ETH`:'0.000000 ETH'}</td></tr>
+            </tbody>
+          </table>
+        </div>
+        {/* Prototype mint.html:85 -- while /api/mints/preview is in flight the column shows
+            skeletons, not a half-filled ledger. Three row bars and a 60% line, exactly. */}
+        {simulating&&<div>
+          <div className="sk row"/><div className="sk row"/><div className="sk row"/><div className="sk l w60"/>
+        </div>}
+        {/* Ceiling only -- no meter and no "used" figure, because nothing exposes rolling spend
+            (data contract §5.1). */}
+        {ceilingWei!==undefined&&<div className="card tight">
+          <div style={{display:'flex',alignItems:'center',gap:'8px',fontSize:'11.5px',color:'var(--muted)'}}>
+            <span>Your daily ceiling</span><span className="sp"/>
+            <b className="tab" style={{color:'var(--text)'}}>{weiToEthDisplay(ceilingWei)} ETH</b></div>
+        </div>}
+        {pageError&&<Notice error={pageError}/>}
+        {/* One CTA per state, all .big.bl, copy verbatim from the prototype. */}
+        {noWallets
+          ?<button type="button" className="b big bl" disabled>Create a wallet to mint</button>
+          :simulating
+            ?<button type="button" className="b big bl" disabled>Simulating…</button>
+            :pageError
+              ?<button type="button" className="b big bl" disabled>Cannot mint · see above</button>
+              :<button type="button" className="b p big bl" disabled={!item} onClick={confirmMint}>
+                 {item?`Confirm and mint · ${weiToEthDisplay(totalDebitWei)} ETH`:'Confirm and mint'}</button>}
+        <p style={{fontSize:'11px',color:'var(--faint)',textAlign:'center'}}>
+          {noWallets
+            ?'Preview stays visible at all times — a collapsed total is a hidden total.'
+            :'Broadcast is irreversible. Intent persisted before send.'}</p>
       </div>
     </div>
   </>;
@@ -379,7 +494,7 @@ function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSear
   // just-changed value directly since setState hasn't applied yet inside the same onChange handler.
   function autoDetectIfReady(value=contractAddress){const trimmed=value.trim();if(ADDRESS_SHAPE.test(trimmed)&&trimmed!==lastDetected.current)detect(trimmed);}
   function handleContractBlur(){autoDetectIfReady();}
-  async function create(event){event.preventDefault();const form=event.currentTarget;try{const input=Object.fromEntries(new FormData(form));if(!input.priceETH)delete input.priceETH;if(input.mintTime)input.mintTime=new Date(input.mintTime).toISOString();else delete input.mintTime;await api('/api/tasks',{method:'POST',body:JSON.stringify(input)});form.reset();setContractAddress('');setQuantity('1');setPriceETH('');setMintTime('');lastDetected.current='';notify('Task scheduled.',{type:'success'});listing.load();}catch(value){notify(value.message,{type:'error'});}}async function control(id,action){if(action==='cancel'&&!await confirmDialog('Cancel this scheduled task?'))return;try{await api(`/api/tasks/${id}/control`,{method:'POST',body:JSON.stringify({action,confirmation:action==='cancel'?'CONFIRM':undefined})});listing.load();}catch(value){notify(value.message,{type:'error'});}}return <><p className="page-lead">Jobs use the same crash-safe M9 queue consumed by the worker.</p><Notice error={listing.error}/><div className="page-toolbar"><label className="page-search">Find a task<input type="search" value={search} placeholder="Name or wallet…" onChange={e=>{setSearch(e.target.value);setPage(1);}}/></label></div><Form className="form-task" title="Schedule mint" note="Enter a contract and auto-detect its price and opening time, same as Minting. Local browser time is converted to an explicit UTC timestamp before submission." onSubmit={create}><Field name="name" label="Name"/><Select name="walletLabel" label="Wallet" options={wallets.data?.map(x=>x.label)}/><ChainSelect name="chain" label="Chain" options={profile.supportedChains} value={chain} onChange={e=>setChain(e.target.value)}/><div className="field-row"><Field name="contractAddress" label="Contract" placeholder="0x…" value={contractAddress} onChange={e=>{setContractAddress(e.target.value);autoDetectIfReady(e.target.value);}} onBlur={handleContractBlur}/><label>Quantity<input type="number" min="1" max="100" value={quantity} onChange={e=>setQuantity(e.target.value)}/></label></div>{detecting&&<p className="mint-detecting"><span className="spinner spinner-quiet" aria-hidden="true"/>Detecting…</p>}<div className="field-row"><Field name="priceETH" label="Price (ETH)" type="number" step="any" required={false} placeholder="Leave blank to auto-resolve" value={priceETH} onChange={e=>setPriceETH(e.target.value)}/><Field name="mintTime" label="Schedule time" type="datetime-local" required={false} value={mintTime} onChange={e=>setMintTime(e.target.value)}/></div><button>Schedule durably</button></Form>{listing.data===null?<Skeleton variant="lines" rows={4}/>:<><div className="table-wrap task-table"><table><thead><tr><th>Name</th><th>Wallet</th><th>UTC due</th><th>Status</th><th>Controls</th></tr></thead><tbody>{listing.data.items.map(task=><tr key={task.id}><td data-label="Name">{task.name}</td><td data-label="Wallet">{task.walletLabel}</td><td data-label="UTC due">{new Date(task.mintTime).toISOString()}</td><td data-label="Status"><StatusPill status={task.status}/></td><td data-label="Controls" className="actions">{['cancel','pause','resume','retry'].map(action=><button className="small" key={action} onClick={()=>control(task.id,action)}>{action}</button>)}</td></tr>)}</tbody></table></div>{listing.data.items.length===0&&<Empty text={search?'No tasks match this search.':'No scheduled tasks yet.'}/>}<Pager value={listing.data} page={page} setPage={setPage}/></>}</>}
+  async function create(event){event.preventDefault();const form=event.currentTarget;try{const input=Object.fromEntries(new FormData(form));if(!input.priceETH)delete input.priceETH;if(input.mintTime)input.mintTime=new Date(input.mintTime).toISOString();else delete input.mintTime;await api('/api/tasks',{method:'POST',body:JSON.stringify(input)});form.reset();setContractAddress('');setQuantity('1');setPriceETH('');setMintTime('');lastDetected.current='';notify('Task scheduled.',{type:'success'});listing.load();}catch(value){notify(value.message,{type:'error'});}}async function control(id,action){if(action==='cancel'&&!await confirmDialog('Cancel this scheduled task?'))return;try{await api(`/api/tasks/${id}/control`,{method:'POST',body:JSON.stringify({action,confirmation:action==='cancel'?'CONFIRM':undefined})});listing.load();}catch(value){notify(value.message,{type:'error'});}}return <><p className="page-lead">Jobs use the same crash-safe M9 queue consumed by the worker.</p><Notice error={listing.error}/><div className="page-toolbar"><label className="page-search">Find a task<input type="search" value={search} placeholder="Name or wallet…" onChange={e=>{setSearch(e.target.value);setPage(1);}}/></label></div><Form className="form-task" title="Schedule mint" note="Enter a contract and auto-detect its price and opening time, same as Minting. Local browser time is converted to an explicit UTC timestamp before submission." onSubmit={create}><Field name="name" label="Name"/><Select name="walletLabel" label="Wallet" options={wallets.data?.map(x=>x.label)}/><ChainSelect name="chain" label="Chain" options={profile.supportedChains} value={chain} onChange={e=>setChain(e.target.value)}/><div className="field-row"><Field name="contractAddress" label="Contract" placeholder="0x…" value={contractAddress} onChange={e=>{setContractAddress(e.target.value);autoDetectIfReady(e.target.value);}} onBlur={handleContractBlur}/><label>Quantity<input type="number" min="1" max="100" value={quantity} onChange={e=>setQuantity(e.target.value)}/></label></div>{detecting&&<p className="mint-detecting"><span className="spinner spinner-quiet" aria-hidden="true"/>Detecting…</p>}<div className="field-row"><Field name="priceETH" label="Price (ETH)" type="number" step="any" required={false} placeholder="Leave blank to auto-resolve" value={priceETH} onChange={e=>setPriceETH(e.target.value)}/><Field name="mintTime" label="Schedule time" type="datetime-local" required={false} value={mintTime} onChange={e=>setMintTime(e.target.value)}/></div><button className="b p">Schedule durably</button></Form>{listing.data===null?<Skeleton variant="lines" rows={4}/>:<><div className="table-wrap task-table"><table><thead><tr><th>Name</th><th>Wallet</th><th>UTC due</th><th>Status</th><th>Controls</th></tr></thead><tbody>{listing.data.items.map(task=><tr key={task.id}><td data-label="Name">{task.name}</td><td data-label="Wallet">{task.walletLabel}</td><td data-label="UTC due">{new Date(task.mintTime).toISOString()}</td><td data-label="Status"><StatusPill status={task.status}/></td><td data-label="Controls" className="br">{['cancel','pause','resume','retry'].map(action=><button className="b sm" key={action} onClick={()=>control(task.id,action)}>{action}</button>)}</td></tr>)}</tbody></table></div>{listing.data.items.length===0&&<Empty text={search?'No tasks match this search.':'No scheduled tasks yet.'}/>}<Pager value={listing.data} page={page} setPage={setPage}/></>}</>}
 function Activity(){const [page,setPage]=useState(1);const [search,setSearch]=useState('');const listing=useLoad(`/api/activity?page=${page}&pageSize=10&search=${encodeURIComponent(search)}`,[page,search],ACTIVITY_EVENTS);return <><p className="page-lead">Paginated execution history with trigger and verification context where recorded.</p><Notice error={listing.error}/><div className="page-toolbar"><label className="page-search">Find activity<input type="search" value={search} placeholder="Title or wallet…" onChange={e=>{setSearch(e.target.value);setPage(1);}}/></label></div>{listing.data===null?<Skeleton variant="lines" rows={4}/>:<><div className="feed activity-feed">{listing.data.items.map(item=><article className="feed-item" key={item.id}><div><StatusPill status={item.status}/><h2>{item.title}</h2><p>{item.walletLabel||'No wallet'} · {new Date(item.time).toLocaleString()}</p></div><div className="activity-context"><p>Trigger: {item.triggerSource||'legacy/unrecorded'}</p><p>Verification: {item.verificationState||'not applicable'}</p></div></article>)}</div>{listing.data.items.length===0&&<Empty text={search?'No activity matches this search.':'No activity recorded yet.'}/>}<Pager value={listing.data} page={page} setPage={setPage}/></>}</>}
 // Every confirmed mint auto-creates its own record now (see recordMintActivity/autoRecordPnl in
 // src/server.js) with real cost+gas and sale left at 0 until something actually sells -- these
@@ -389,14 +504,14 @@ const PNL_PERIODS=[['day','Today',86400000],['week','7 days',7*86400000],['month
 function summarizePnlPeriod(records,windowMs){const cutoff=Date.now()-windowMs;const inWindow=records.filter(item=>item.t>=cutoff);
   return {count:inWindow.length,cost:inWindow.reduce((sum,item)=>sum+Number(item.cost),0),sale:inWindow.reduce((sum,item)=>sum+Number(item.sale),0),
     gas:inWindow.reduce((sum,item)=>sum+Number(item.gas),0),net:inWindow.reduce((sum,item)=>sum+Number(item.net),0)};}
-function Pnl(){const listing=useLoad('/api/pnl',[],'pnl.changed');const [editing,setEditing]=useState(null);const [query,setQuery]=useState('');async function save(event){event.preventDefault();const form=event.currentTarget;const wasEditing=editing;const body=JSON.stringify(Object.fromEntries(new FormData(form)));try{await api(wasEditing?`/api/pnl/${wasEditing}`:'/api/pnl',{method:wasEditing?'PUT':'POST',body});setEditing(null);form.reset();notify(wasEditing?'Record updated.':'Record added.',{type:'success'});listing.load();}catch(value){notify(value.message,{type:'error'});}}async function remove(id){if(!await confirmDialog('Delete this P&L record?'))return;try{await api(`/api/pnl/${id}`,{method:'DELETE',body:JSON.stringify({confirmation:'CONFIRM'})});listing.load();}catch(value){notify(value.message,{type:'error'});}}const current=listing.data?.find(x=>x.id===editing);const normalized=query.trim().toLowerCase();const filtered=listing.data?(normalized?listing.data.filter(item=>String(item.nm||'').toLowerCase().includes(normalized)):listing.data):null;return <><p className="page-lead">Cost and gas are recorded automatically on every confirmed mint; sale stays editable below once something actually sells.</p><Notice error={listing.error}/>{listing.data&&<div className="card-grid pnl-summary-grid">{PNL_PERIODS.map(([key,label,windowMs])=>{const summary=summarizePnlPeriod(listing.data,windowMs);return <article className="card pnl-summary-card" key={key}><span className="eyebrow">{label}</span><strong className={summary.net<0?'net-loss':'net-gain'}>Net {summary.net>0?'+':''}{summary.net.toFixed(4)}</strong><p>{summary.count} record{summary.count===1?'':'s'} · Cost {summary.cost.toFixed(4)} · Sale {summary.sale.toFixed(4)} · Gas {summary.gas.toFixed(4)}</p></article>;})}</div>}<div className="page-toolbar"><label className="page-search">Find a record<input type="search" value={query} placeholder="Name…" onChange={e=>setQuery(e.target.value)}/></label></div><Form className="form-pnl" key={editing||'new'} title={editing?'Edit record':'Add record'} note="Auto-created records can be edited here too -- fill in Sale once an NFT actually resells." onSubmit={save}><Field name="name" label="Name" defaultValue={current?.nm}/><Field name="cost" label="Cost" type="number" step="any" defaultValue={current?.cost??0}/><Field name="sale" label="Sale" type="number" step="any" defaultValue={current?.sale??0}/><Field name="gas" label="Gas" type="number" step="any" defaultValue={current?.gas??0}/><button>{editing?'Save changes':'Add record'}</button>{editing&&<button type="button" className="quiet" onClick={()=>setEditing(null)}>Cancel edit</button>}</Form>{listing.data===null?<Skeleton/>:<div className="card-grid pnl-grid">{filtered.map(item=><article className="card" key={item.id}><h2>{item.nm}</h2><p>Cost {item.cost} · Sale {item.sale} · Gas {item.gas}</p><strong className={Number(item.net)<0?'net-loss':'net-gain'}>Net {Number(item.net)>0?'+':''}{item.net}</strong><div className="actions"><button className="small quiet" onClick={()=>setEditing(item.id)}>Edit</button><button className="small danger" onClick={()=>remove(item.id)}>Delete</button></div></article>)}{filtered.length===0&&<Empty text={normalized?'No P&L records match this search.':'No P&L records yet.'}/>}</div>}</>}
+function Pnl(){const listing=useLoad('/api/pnl',[],'pnl.changed');const [editing,setEditing]=useState(null);const [query,setQuery]=useState('');async function save(event){event.preventDefault();const form=event.currentTarget;const wasEditing=editing;const body=JSON.stringify(Object.fromEntries(new FormData(form)));try{await api(wasEditing?`/api/pnl/${wasEditing}`:'/api/pnl',{method:wasEditing?'PUT':'POST',body});setEditing(null);form.reset();notify(wasEditing?'Record updated.':'Record added.',{type:'success'});listing.load();}catch(value){notify(value.message,{type:'error'});}}async function remove(id){if(!await confirmDialog('Delete this P&L record?'))return;try{await api(`/api/pnl/${id}`,{method:'DELETE',body:JSON.stringify({confirmation:'CONFIRM'})});listing.load();}catch(value){notify(value.message,{type:'error'});}}const current=listing.data?.find(x=>x.id===editing);const normalized=query.trim().toLowerCase();const filtered=listing.data?(normalized?listing.data.filter(item=>String(item.nm||'').toLowerCase().includes(normalized)):listing.data):null;return <><p className="page-lead">Cost and gas are recorded automatically on every confirmed mint; sale stays editable below once something actually sells.</p><Notice error={listing.error}/>{listing.data&&<div className="card-grid pnl-summary-grid">{PNL_PERIODS.map(([key,label,windowMs])=>{const summary=summarizePnlPeriod(listing.data,windowMs);return <article className="card pnl-summary-card" key={key}><span className="eyebrow">{label}</span><strong className={summary.net<0?'net-loss':'net-gain'}>Net {summary.net>0?'+':''}{summary.net.toFixed(4)}</strong><p>{summary.count} record{summary.count===1?'':'s'} · Cost {summary.cost.toFixed(4)} · Sale {summary.sale.toFixed(4)} · Gas {summary.gas.toFixed(4)}</p></article>;})}</div>}<div className="page-toolbar"><label className="page-search">Find a record<input type="search" value={query} placeholder="Name…" onChange={e=>setQuery(e.target.value)}/></label></div><Form className="form-pnl" key={editing||'new'} title={editing?'Edit record':'Add record'} note="Auto-created records can be edited here too -- fill in Sale once an NFT actually resells." onSubmit={save}><Field name="name" label="Name" defaultValue={current?.nm}/><Field name="cost" label="Cost" type="number" step="any" defaultValue={current?.cost??0}/><Field name="sale" label="Sale" type="number" step="any" defaultValue={current?.sale??0}/><Field name="gas" label="Gas" type="number" step="any" defaultValue={current?.gas??0}/><button className="b p">{editing?'Save changes':'Add record'}</button>{editing&&<button type="button" className="b g" onClick={()=>setEditing(null)}>Cancel edit</button>}</Form>{listing.data===null?<Skeleton/>:<div className="card-grid pnl-grid">{filtered.map(item=><article className="card" key={item.id}><h2>{item.nm}</h2><p>Cost {item.cost} · Sale {item.sale} · Gas {item.gas}</p><strong className={Number(item.net)<0?'net-loss':'net-gain'}>Net {Number(item.net)>0?'+':''}{item.net}</strong><div className="br"><button className="b g sm" onClick={()=>setEditing(item.id)}>Edit</button><button className="b d sm" onClick={()=>remove(item.id)}>Delete</button></div></article>)}{filtered.length===0&&<Empty text={normalized?'No P&L records match this search.':'No P&L records yet.'}/>}</div>}</>}
 function jsonForm(event){event.preventDefault();const form=event.currentTarget;return {form,value:JSON.parse(new FormData(form).get('json'))};}
 // policyFor: which card has its policy expanded. A policy configures an existing target, so it
 // now lives ON that target's card rather than on a page of its own (brief §2). Same PolicyEditor,
 // same routes, new place -- including the bypass challenge, which keeps its explicit CONFIRM step.
-function Snipers(){const listing=useLoad('/api/snipers',[],'snipers.changed');const [editing,setEditing]=useState(null);const [query,setQuery]=useState('');const [policyFor,setPolicyFor]=useState(null);async function save(event){try{const {form,value}=jsonForm(event);const wasEditing=editing;await api(editing?`/api/snipers/${editing}`:'/api/snipers',{method:editing?'PUT':'POST',body:JSON.stringify(value)});form.reset();setEditing(null);notify(wasEditing?'Sniper updated.':'Sniper created.',{type:'success'});listing.load();}catch(value){notify(value.message,{type:'error'});}}async function remove(id){if(!await confirmDialog('Remove this post-confirmation copy sniper?'))return;try{await api(`/api/snipers/${id}`,{method:'DELETE',body:JSON.stringify({confirmation:'CONFIRM'})});listing.load();}catch(value){notify(value.message,{type:'error'});}}const normalized=query.trim().toLowerCase();const filtered=listing.data?{...listing.data,items:normalized?listing.data.items.filter(item=>[item.label,item.chain,item.walletLabel].filter(Boolean).some(value=>String(value).toLowerCase().includes(normalized))):listing.data.items}:null;return <><p className="page-lead">Copies confirmed wallet transactions after their confirmation threshold. This is not mempool front-running.</p><Notice error={listing.error}/><div className="page-toolbar"><label className="page-search">Find a sniper<input type="search" value={query} placeholder="Label, chain, wallet…" onChange={e=>setQuery(e.target.value)}/></label></div><Form className="form-json" title={editing?'Edit sniper patch':'Create sniper'} note="The same M10 validation and M7a ceilings used by Telegram and Discord apply here." onSubmit={save}><label>Configuration JSON<textarea name="json" required defaultValue={editing?'{}':'{"label":"copy","targetAddress":"0x0000000000000000000000000000000000000001","chain":"ethereum","walletLabel":"wallet","maxValueETH":0.01,"maxGasGwei":50,"dailySpendingCapETH":0.05,"cooldownMs":60000,"maxAttempts":3}'}/></label><button>{editing?'Apply validated patch':'Create sniper'}</button></Form>{listing.data===null?<Skeleton/>:<div className="card-grid sniper-grid">{filtered.items.map(item=>{const recent=listing.data.events.filter(event=>event.sniperId===item.id)[0];return <article className="card" key={item.id}><StatusPill status={recent?.state||'no events'}/><h2>{item.label}</h2><p className="warning">Post-confirmation copy; not front-running.</p><p>{item.chain} · wallet {item.walletLabel}</p><p>Max {item.maxValueETH} ETH · Gas {item.maxGasGwei} gwei · Daily {item.dailySpendingCapETH} ETH</p><p>Cooldown {item.cooldownMs} ms · Attempts {item.maxAttempts}</p><p>Allow: {item.contractAllowlist.join(', ')||'any'}<br/>Deny: {item.contractDenylist.join(', ')||'none'}</p><div className="actions"><button className="small quiet" onClick={()=>setEditing(item.id)}>Edit</button><button className="small quiet" aria-expanded={policyFor===item.id} onClick={()=>setPolicyFor(policyFor===item.id?null:item.id)}>{policyFor===item.id?'Hide policy':'Policy'}</button><button className="small danger" onClick={()=>remove(item.id)}>Remove</button></div>{policyFor===item.id&&<PolicyEditor target={{id:item.id,label:item.label,type:'sniper'}}/>}</article>})}{filtered.items.length===0&&<Empty text={normalized?'No snipers match this search.':'No snipers yet. Create one above to start post-confirmation copying.'}/>}</div>}</>}
-function WatchRules(){const listing=useLoad('/api/watch-rules',[],'watchrules.changed');const [editing,setEditing]=useState(null);const [query,setQuery]=useState('');const [policyFor,setPolicyFor]=useState(null);async function save(event){try{const {form,value}=jsonForm(event);const wasEditing=editing;await api(editing?`/api/watch-rules/${editing}`:'/api/watch-rules',{method:editing?'PUT':'POST',body:JSON.stringify(value)});form.reset();setEditing(null);notify(wasEditing?'Watch rule updated.':'Watch rule created.',{type:'success'});listing.load();}catch(value){notify(value.message,{type:'error'});}}async function action(id,name){try{await api(`/api/watch-rules/${id}${name==='disable'?'/disable':''}`,{method:name==='remove'?'DELETE':'POST',body:JSON.stringify(name==='remove'?{confirmation:'CONFIRM'}:{})});listing.load();}catch(value){notify(value.message,{type:'error'});}}const normalized=query.trim().toLowerCase();const filtered=listing.data?{...listing.data,items:normalized?listing.data.items.filter(item=>[item.name,item.type,item.method].filter(Boolean).some(value=>String(value).toLowerCase().includes(normalized))):listing.data.items}:null;return <><p className="page-lead">Manage adapter-backed Twitter/X and Discord source monitoring.</p><Notice error={listing.error}/><div className="page-toolbar"><label className="page-search">Find a watch rule<input type="search" value={query} placeholder="Name, type, method…" onChange={e=>setQuery(e.target.value)}/></label></div><Form className="form-json" title={editing?'Edit watch rule patch':'Create watch rule'} onSubmit={save}><label>Configuration JSON<textarea name="json" required defaultValue={editing?'{}':'{"name":"announcements","type":"discord_channel","method":"scraper","config":{"channelId":"123","keywords":["mint"],"sourceUrl":"https://example.com/feed"}}'}/></label><button>{editing?'Apply validated patch':'Create rule'}</button></Form>{listing.data===null?<Skeleton/>:<div className="card-grid watch-grid">{filtered.items.map(item=>{const events=listing.data.events.filter(event=>event.matchedRuleIds.includes(item.id)).slice(0,3);return <article className="card" key={item.id}><StatusPill status={item.enabled?'enabled':'disabled'}/><h2>{item.name}</h2><p>{item.type} · {item.method}</p><p className={item.consecutiveFailures?'warning':''}>Adapter health: {item.consecutiveFailures?`failing (${item.consecutiveFailures} consecutive)`:'healthy'} </p>{events.map(event=><p key={event.id}><code>{event.address}</code><br/>{new Date(event.detectedAt).toLocaleString()}</p>)}<div className="actions"><button className="small quiet" onClick={()=>setEditing(item.id)}>Edit</button><button className="small quiet" onClick={()=>action(item.id,'disable')}>Disable</button><button className="small quiet" aria-expanded={policyFor===item.id} onClick={()=>setPolicyFor(policyFor===item.id?null:item.id)}>{policyFor===item.id?'Hide policy':'Policy'}</button><button className="small danger" onClick={async()=>{if(await confirmDialog('Remove this watch rule?'))action(item.id,'remove');}}>Remove</button></div>{policyFor===item.id&&<PolicyEditor target={{id:item.id,label:item.name,type:'social_rule'}}/>}</article>})}{filtered.items.length===0&&<Empty text={normalized?'No watch rules match this search.':'No watch rules yet. Create one above to start social-trigger detection.'}/>}</div>}</>}
-function PolicyEditor({target,onChanged,highlighted}){const details=useLoad(`/api/targets/${target.id}?type=${target.type}`,[target.id,target.type]);const presets=useLoad('/api/mode-presets');const [challenge,setChallenge]=useState(null);async function update(event){event.preventDefault();const value=Object.fromEntries(new FormData(event.currentTarget));try{await api(`/api/targets/${target.id}`,{method:'PUT',body:JSON.stringify({...value,targetType:target.type})});notify('Policy saved.',{type:'success'});details.load();onChanged?.();}catch(x){notify(x.message,{type:'error'});}}async function bypass(event){event.preventDefault();try{setChallenge(await api(`/api/targets/${target.id}/bypass`,{method:'POST',body:JSON.stringify({targetType:target.type,dontAskAgain:new FormData(event.currentTarget).get('dontAskAgain')==='on'})}));}catch(x){notify(x.message,{type:'error'});}}async function confirmBypass(event){event.preventDefault();try{await api('/api/targets/bypass/confirm',{method:'POST',body:JSON.stringify({challengeId:challenge.challengeId,confirmation:new FormData(event.currentTarget).get('confirmation')})});setChallenge(null);notify('Bypass confirmed.',{type:'success'});details.load();}catch(x){notify(x.message,{type:'error'});}}async function preset(key){try{const result=await api(`/api/targets/${target.id}/preset`,{method:'POST',body:JSON.stringify({targetType:target.type,presetKey:key})});if(result.requiresConfirmation)setChallenge(result);else notify('Preset applied.',{type:'success'});details.load();}catch(x){notify(x.message,{type:'error'});}}const value=details.data;return <article className={`panel${highlighted?' policy-highlighted':''}`}><h2>{target.label}</h2><Notice error={details.error}/>{value&&<><p>Effective ceiling (read only): {value.governance.maxTransactionValueWei} wei/tx, {value.governance.dailySpendingBudgetWei} wei/day, {value.governance.gasCeilingGwei} gwei gas.</p><Form title="Trigger behavior" onSubmit={update}><input type="hidden" name="targetType" value={target.type}/><Select name="blockchainTrigger" label="Blockchain trigger" options={['auto','manual']} defaultValue={value.policy.blockchainTrigger}/><Select name="socialTrigger" label="Social trigger" options={['auto','manual']} defaultValue={value.policy.socialTrigger}/><Select name="humanVerification" label="Verification" options={['on']} defaultValue="on"/><button>Save policy</button></Form><div className="actions">{presets.data?.map(p=><button className="small" key={p.key} onClick={()=>preset(p.key)}>{p.displayName}</button>)}</div><form className="bypass" onSubmit={bypass}><label><input type="checkbox" name="dontAskAgain"/> Don&apos;t ask again for this target only</label><button className="danger">Request bypass</button></form>{challenge?.requiresConfirmation&&<form className="warning-box" onSubmit={confirmBypass}><strong>{challenge.warning}</strong><p>Type CONFIRM exactly to enable the highest-risk configuration.</p><input name="confirmation" autoComplete="off"/><button className="danger">Confirm bypass</button></form>}</>}</article>}
+function Snipers(){const listing=useLoad('/api/snipers',[],'snipers.changed');const [editing,setEditing]=useState(null);const [query,setQuery]=useState('');const [policyFor,setPolicyFor]=useState(null);async function save(event){try{const {form,value}=jsonForm(event);const wasEditing=editing;await api(editing?`/api/snipers/${editing}`:'/api/snipers',{method:editing?'PUT':'POST',body:JSON.stringify(value)});form.reset();setEditing(null);notify(wasEditing?'Sniper updated.':'Sniper created.',{type:'success'});listing.load();}catch(value){notify(value.message,{type:'error'});}}async function remove(id){if(!await confirmDialog('Remove this post-confirmation copy sniper?'))return;try{await api(`/api/snipers/${id}`,{method:'DELETE',body:JSON.stringify({confirmation:'CONFIRM'})});listing.load();}catch(value){notify(value.message,{type:'error'});}}const normalized=query.trim().toLowerCase();const filtered=listing.data?{...listing.data,items:normalized?listing.data.items.filter(item=>[item.label,item.chain,item.walletLabel].filter(Boolean).some(value=>String(value).toLowerCase().includes(normalized))):listing.data.items}:null;return <><p className="page-lead">Copies confirmed wallet transactions after their confirmation threshold. This is not mempool front-running.</p><Notice error={listing.error}/><div className="page-toolbar"><label className="page-search">Find a sniper<input type="search" value={query} placeholder="Label, chain, wallet…" onChange={e=>setQuery(e.target.value)}/></label></div><Form className="form-json" title={editing?'Edit sniper patch':'Create sniper'} note="The same M10 validation and M7a ceilings used by Telegram and Discord apply here." onSubmit={save}><label>Configuration JSON<textarea name="json" required defaultValue={editing?'{}':'{"label":"copy","targetAddress":"0x0000000000000000000000000000000000000001","chain":"ethereum","walletLabel":"wallet","maxValueETH":0.01,"maxGasGwei":50,"dailySpendingCapETH":0.05,"cooldownMs":60000,"maxAttempts":3}'}/></label><button className="b p">{editing?'Apply validated patch':'Create sniper'}</button></Form>{listing.data===null?<Skeleton/>:<div className="card-grid sniper-grid">{filtered.items.map(item=>{const recent=listing.data.events.filter(event=>event.sniperId===item.id)[0];return <article className="card" key={item.id}><StatusPill status={recent?.state||'no events'}/><h2>{item.label}</h2><p className="warning">Post-confirmation copy; not front-running.</p><p>{item.chain} · wallet {item.walletLabel}</p><p>Max {item.maxValueETH} ETH · Gas {item.maxGasGwei} gwei · Daily {item.dailySpendingCapETH} ETH</p><p>Cooldown {item.cooldownMs} ms · Attempts {item.maxAttempts}</p><p>Allow: {item.contractAllowlist.join(', ')||'any'}<br/>Deny: {item.contractDenylist.join(', ')||'none'}</p><div className="br"><button className="b g sm" onClick={()=>setEditing(item.id)}>Edit</button><button className="b g sm" aria-expanded={policyFor===item.id} onClick={()=>setPolicyFor(policyFor===item.id?null:item.id)}>{policyFor===item.id?'Hide policy':'Policy'}</button><button className="b d sm" onClick={()=>remove(item.id)}>Remove</button></div>{policyFor===item.id&&<PolicyEditor target={{id:item.id,label:item.label,type:'sniper'}}/>}</article>})}{filtered.items.length===0&&<Empty text={normalized?'No snipers match this search.':'No snipers yet. Create one above to start post-confirmation copying.'}/>}</div>}</>}
+function WatchRules(){const listing=useLoad('/api/watch-rules',[],'watchrules.changed');const [editing,setEditing]=useState(null);const [query,setQuery]=useState('');const [policyFor,setPolicyFor]=useState(null);async function save(event){try{const {form,value}=jsonForm(event);const wasEditing=editing;await api(editing?`/api/watch-rules/${editing}`:'/api/watch-rules',{method:editing?'PUT':'POST',body:JSON.stringify(value)});form.reset();setEditing(null);notify(wasEditing?'Watch rule updated.':'Watch rule created.',{type:'success'});listing.load();}catch(value){notify(value.message,{type:'error'});}}async function action(id,name){try{await api(`/api/watch-rules/${id}${name==='disable'?'/disable':''}`,{method:name==='remove'?'DELETE':'POST',body:JSON.stringify(name==='remove'?{confirmation:'CONFIRM'}:{})});listing.load();}catch(value){notify(value.message,{type:'error'});}}const normalized=query.trim().toLowerCase();const filtered=listing.data?{...listing.data,items:normalized?listing.data.items.filter(item=>[item.name,item.type,item.method].filter(Boolean).some(value=>String(value).toLowerCase().includes(normalized))):listing.data.items}:null;return <><p className="page-lead">Manage adapter-backed Twitter/X and Discord source monitoring.</p><Notice error={listing.error}/><div className="page-toolbar"><label className="page-search">Find a watch rule<input type="search" value={query} placeholder="Name, type, method…" onChange={e=>setQuery(e.target.value)}/></label></div><Form className="form-json" title={editing?'Edit watch rule patch':'Create watch rule'} onSubmit={save}><label>Configuration JSON<textarea name="json" required defaultValue={editing?'{}':'{"name":"announcements","type":"discord_channel","method":"scraper","config":{"channelId":"123","keywords":["mint"],"sourceUrl":"https://example.com/feed"}}'}/></label><button className="b p">{editing?'Apply validated patch':'Create rule'}</button></Form>{listing.data===null?<Skeleton/>:<div className="card-grid watch-grid">{filtered.items.map(item=>{const events=listing.data.events.filter(event=>event.matchedRuleIds.includes(item.id)).slice(0,3);return <article className="card" key={item.id}><StatusPill status={item.enabled?'enabled':'disabled'}/><h2>{item.name}</h2><p>{item.type} · {item.method}</p><p className={item.consecutiveFailures?'warning':''}>Adapter health: {item.consecutiveFailures?`failing (${item.consecutiveFailures} consecutive)`:'healthy'} </p>{events.map(event=><p key={event.id}><code>{event.address}</code><br/>{new Date(event.detectedAt).toLocaleString()}</p>)}<div className="br"><button className="b g sm" onClick={()=>setEditing(item.id)}>Edit</button><button className="b g sm" onClick={()=>action(item.id,'disable')}>Disable</button><button className="b g sm" aria-expanded={policyFor===item.id} onClick={()=>setPolicyFor(policyFor===item.id?null:item.id)}>{policyFor===item.id?'Hide policy':'Policy'}</button><button className="b d sm" onClick={async()=>{if(await confirmDialog('Remove this watch rule?'))action(item.id,'remove');}}>Remove</button></div>{policyFor===item.id&&<PolicyEditor target={{id:item.id,label:item.name,type:'social_rule'}}/>}</article>})}{filtered.items.length===0&&<Empty text={normalized?'No watch rules match this search.':'No watch rules yet. Create one above to start social-trigger detection.'}/>}</div>}</>}
+function PolicyEditor({target,onChanged,highlighted}){const details=useLoad(`/api/targets/${target.id}?type=${target.type}`,[target.id,target.type]);const presets=useLoad('/api/mode-presets');const [challenge,setChallenge]=useState(null);async function update(event){event.preventDefault();const value=Object.fromEntries(new FormData(event.currentTarget));try{await api(`/api/targets/${target.id}`,{method:'PUT',body:JSON.stringify({...value,targetType:target.type})});notify('Policy saved.',{type:'success'});details.load();onChanged?.();}catch(x){notify(x.message,{type:'error'});}}async function bypass(event){event.preventDefault();try{setChallenge(await api(`/api/targets/${target.id}/bypass`,{method:'POST',body:JSON.stringify({targetType:target.type,dontAskAgain:new FormData(event.currentTarget).get('dontAskAgain')==='on'})}));}catch(x){notify(x.message,{type:'error'});}}async function confirmBypass(event){event.preventDefault();try{await api('/api/targets/bypass/confirm',{method:'POST',body:JSON.stringify({challengeId:challenge.challengeId,confirmation:new FormData(event.currentTarget).get('confirmation')})});setChallenge(null);notify('Bypass confirmed.',{type:'success'});details.load();}catch(x){notify(x.message,{type:'error'});}}async function preset(key){try{const result=await api(`/api/targets/${target.id}/preset`,{method:'POST',body:JSON.stringify({targetType:target.type,presetKey:key})});if(result.requiresConfirmation)setChallenge(result);else notify('Preset applied.',{type:'success'});details.load();}catch(x){notify(x.message,{type:'error'});}}const value=details.data;return <article className={`panel${highlighted?' policy-highlighted':''}`}><h2>{target.label}</h2><Notice error={details.error}/>{value&&<><p>Effective ceiling (read only): {value.governance.maxTransactionValueWei} wei/tx, {value.governance.dailySpendingBudgetWei} wei/day, {value.governance.gasCeilingGwei} gwei gas.</p><Form title="Trigger behavior" onSubmit={update}><input type="hidden" name="targetType" value={target.type}/><Select name="blockchainTrigger" label="Blockchain trigger" options={['auto','manual']} defaultValue={value.policy.blockchainTrigger}/><Select name="socialTrigger" label="Social trigger" options={['auto','manual']} defaultValue={value.policy.socialTrigger}/><Select name="humanVerification" label="Verification" options={['on']} defaultValue="on"/><button className="b p">Save policy</button></Form><div className="br">{presets.data?.map(p=><button className="b sm" key={p.key} onClick={()=>preset(p.key)}>{p.displayName}</button>)}</div><form className="bypass" onSubmit={bypass}><label><input type="checkbox" name="dontAskAgain"/> Don&apos;t ask again for this target only</label><button className="b d">Request bypass</button></form>{challenge?.requiresConfirmation&&<form className="warning-box" onSubmit={confirmBypass}><strong>{challenge.warning}</strong><p>Type CONFIRM exactly to enable the highest-risk configuration.</p><input name="confirmation" autoComplete="off"/><button className="b d">Confirm bypass</button></form>}</>}</article>}
 // `target` arrives from a /dashboard/target-policies/:id deep link, rewritten to
 // ?target=:id. A bookmark that pointed at one policy still lands on that policy: the matching
 // card is rendered first and marked, rather than the user being dropped into an unordered grid
@@ -415,7 +530,7 @@ function TargetPolicies({target}){
     <div className="policy-grid">{targets.map(item=><PolicyEditor key={`${item.type}:${item.id}`} target={item} highlighted={item.id===target}/>)}</div>
   </>;
 }
-const BELL_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>;
+const BELL_ICON=<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M18 8A6 6 0 1 0 6 8c0 7-3 8-3 8h18s-3-1-3-8"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>;
 // The bell surfaces two different things: pending confirmations (actionable, drive the badge
 // count) and a short recent-notifications log (informational, sourced from the same notify() log
 // the toast host reads -- so anything a toast reported is still checkable here after it auto-dismisses).
@@ -440,11 +555,11 @@ function NotificationBell(){const [items,setItems]=useState([]);const [open,setO
   function dismissAutoPreview(){setAutoPreview(null);clearTimeout(autoPreviewTimer.current);}
   function toggleBell(){if(autoPreview){dismissAutoPreview();return;}setOpen(value=>!value);}
   return <div className="notification-bell">
-    <button type="button" className="bell-trigger" aria-label={`${items.length} pending confirmations`} aria-expanded={open} onClick={toggleBell}>{BELL_ICON}{items.length>0&&<span className="bell-count">{items.length}</span>}</button>
+    <button type="button" className="ib" aria-label={`${items.length} pending confirmations`} aria-expanded={open} onClick={toggleBell}>{BELL_ICON}{items.length>0&&<span className="badge">{items.length}</span>}</button>
     {open&&<div className="bell-backdrop" onClick={()=>setOpen(false)}/>}
     {open&&<div className="bell-dropdown" role="dialog" aria-label="Notifications">
       <h2>Pending confirmations</h2>
-      {items.length===0?<p className="bell-empty">Nothing pending confirmation right now.</p>:items.map(item=><article className="preview" key={item.id}><strong>{item.triggerSource} | {item.targetType}:{item.targetId}</strong><p className="user-card-identity">{item.preview?.contractAddress}{item.preview?.contractAddress&&<CopyButton value={item.preview.contractAddress} label="Copy contract address"/>} | {item.preview?.methodSignature}</p>{item.preview?.arguments?.map(arg=><p key={arg.name}>{arg.name}: <code>{String(arg.value)}</code></p>)}<div className="actions"><button onClick={()=>resolve(item.id,'CONFIRM')}>Approve</button><button className="danger" onClick={()=>resolve(item.id,'REJECT')}>Reject</button></div></article>)}
+      {items.length===0?<p className="bell-empty">Nothing pending confirmation right now.</p>:items.map(item=><article className="preview" key={item.id}><strong>{item.triggerSource} | {item.targetType}:{item.targetId}</strong><p className="user-card-identity">{item.preview?.contractAddress}{item.preview?.contractAddress&&<CopyButton value={item.preview.contractAddress} label="Copy contract address"/>} | {item.preview?.methodSignature}</p>{item.preview?.arguments?.map(arg=><p key={arg.name}>{arg.name}: <code>{String(arg.value)}</code></p>)}<div className="br"><button className="b p" onClick={()=>resolve(item.id,'CONFIRM')}>Approve</button><button className="b d" onClick={()=>resolve(item.id,'REJECT')}>Reject</button></div></article>)}
       <h2 className="bell-section">Recent notifications</h2>
       {log.length===0?<p className="bell-empty">Nothing recent.</p>:<ul className="bell-log">{log.map(entry=><li key={entry.id} className={`bell-log-item bell-log-${entry.type}`}><span className="bell-log-dot" aria-hidden="true"/><span className="bell-log-message">{entry.message}</span><span className="bell-log-time">{relativeTime(entry.at)}</span></li>)}</ul>}
     </div>}
@@ -469,7 +584,7 @@ async function promptSetUsername({isChange,onProfileChange}){
     return true;
   }catch(error){notify(error.message,{type:'error'});return false;}
 }
-function Account({profile,onLogout,onProfileChange}){const [linking,setLinking]=useState(null);async function generate(){try{setLinking(await api('/api/auth/link-code',{method:'POST',body:JSON.stringify({})}));}catch(value){notify(value.message,{type:'error'});}}return <><PageTitle eyebrow="Identity" title="Account" subtitle="One account, shared across Telegram, Discord, and this dashboard."/><div className="card-grid">{profile.linkedAccounts.map(account=><article className="card" key={account.platform}><span className="pill">{account.platform}</span><div className="user-card-identity"><h2>{account.platformUserId}</h2><CopyButton value={account.platformUserId} label="Copy platform user ID"/></div></article>)}</div><div className="panel"><h2>Connect another platform</h2><p>Generate a five-minute, single-use code, then run <code>/link code:&lt;code&gt;</code> in Discord (or <code>/link</code> generates the same kind of code directly from Telegram) to connect it to this same account instead of creating a separate one.</p><button className="panel-cta" onClick={generate}>Generate link code</button>{linking&&<div className="link-code-result"><strong>{linking.code}</strong><p>Expires at {new Date(linking.expiresAt).toLocaleTimeString()}</p></div>}</div><div className="panel"><h2>Login credentials</h2><p>A username and security password together let you sign in with a password instead of a Telegram/Discord code. The same password also gates sensitive actions like exporting a wallet key.</p><div className="account-credential-row"><span>Username</span><strong>{profile.username||'Not set'}</strong><button className="quiet small" disabled={!profile.securityPasswordSet} onClick={()=>promptSetUsername({isChange:Boolean(profile.username),onProfileChange})}>{profile.username?'Change':'Set'}</button></div><div className="account-credential-row"><span>Security password</span><strong>{profile.securityPasswordSet?'Set':'Not set'}</strong><button className="quiet small" onClick={()=>promptSetSecurityPassword({isChange:profile.securityPasswordSet,onProfileChange})}>{profile.securityPasswordSet?'Change':'Set'}</button></div>{!profile.securityPasswordSet&&<p className="notice notice-warning">Set a security password first -- a username needs one to be useful for signing in.</p>}</div>{profile.isOwner&&<div className="panel"><h2>Admin</h2><p>Owner-only controls for groups, ceilings, presets, and platform-wide governance live on a separate screen.</p><a className="quiet admin-link panel-cta" href="/dashboard/admin">Open admin dashboard</a></div>}<div className="panel"><h2>Session</h2><p>Signed in {profile.linkedAccounts.map(item=>item.platform).join(' + ')||'as a linked user'}.</p><button className="quiet panel-cta" onClick={onLogout}>Log out</button></div></>}
+function Account({profile,onLogout,onProfileChange}){const [linking,setLinking]=useState(null);async function generate(){try{setLinking(await api('/api/auth/link-code',{method:'POST',body:JSON.stringify({})}));}catch(value){notify(value.message,{type:'error'});}}return <><PageTitle eyebrow="Identity" title="Account" subtitle="One account, shared across Telegram, Discord, and this dashboard."/><div className="card-grid">{profile.linkedAccounts.map(account=><article className="card" key={account.platform}><span className="pill">{account.platform}</span><div className="user-card-identity"><h2>{account.platformUserId}</h2><CopyButton value={account.platformUserId} label="Copy platform user ID"/></div></article>)}</div><div className="panel"><h2>Connect another platform</h2><p>Generate a five-minute, single-use code, then run <code>/link code:&lt;code&gt;</code> in Discord (or <code>/link</code> generates the same kind of code directly from Telegram) to connect it to this same account instead of creating a separate one.</p><button className="panel-cta" onClick={generate}>Generate link code</button>{linking&&<div className="link-code-result"><strong>{linking.code}</strong><p>Expires at {new Date(linking.expiresAt).toLocaleTimeString()}</p></div>}</div><div className="panel"><h2>Login credentials</h2><p>A username and security password together let you sign in with a password instead of a Telegram/Discord code. The same password also gates sensitive actions like exporting a wallet key.</p><div className="account-credential-row"><span>Username</span><strong>{profile.username||'Not set'}</strong><button className="b g sm" disabled={!profile.securityPasswordSet} onClick={()=>promptSetUsername({isChange:Boolean(profile.username),onProfileChange})}>{profile.username?'Change':'Set'}</button></div><div className="account-credential-row"><span>Security password</span><strong>{profile.securityPasswordSet?'Set':'Not set'}</strong><button className="b g sm" onClick={()=>promptSetSecurityPassword({isChange:profile.securityPasswordSet,onProfileChange})}>{profile.securityPasswordSet?'Change':'Set'}</button></div>{!profile.securityPasswordSet&&<p className="notice notice-warning">Set a security password first -- a username needs one to be useful for signing in.</p>}</div>{profile.isOwner&&<div className="panel"><h2>Admin</h2><p>Owner-only controls for groups, ceilings, presets, and platform-wide governance live on a separate screen.</p><a className="b g admin-link panel-cta" href="/dashboard/admin">Open admin dashboard</a></div>}<div className="panel"><h2>Session</h2><p>Signed in {profile.linkedAccounts.map(item=>item.platform).join(' + ')||'as a linked user'}.</p><button className="b g panel-cta" onClick={onLogout}>Log out</button></div></>}
 const SUN_ICON=<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.2 4.2l1.4 1.4M18.4 18.4l1.4 1.4M1 12h2M21 12h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" fill="none"/></svg>;
 const MOON_ICON=<svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a7 7 0 0 0 10.5 10.5z"/></svg>;
 const PRIMARY_THEMES=[{value:'ghost-mint-light',label:'Light',icon:SUN_ICON},{value:'ghost-mint',label:'Dark',icon:MOON_ICON}];
@@ -513,7 +628,7 @@ function TransactionModePanel({profile}){
   }
   return <div className="panel settings-mode">
     <div className="settings-panel-heading"><div><p className="eyebrow">Speed vs. safety</p><h2>Transaction mode</h2></div>
-      <button type="button" className="quiet small" disabled={busy||!defaultKey||current===defaultKey} onClick={resetToDefault}>Reset to default</button>
+      <button type="button" className="b g sm" disabled={busy||!defaultKey||current===defaultKey} onClick={resetToDefault}>Reset to default</button>
     </div>
     <p>Controls confirmation prompts and gas aggression for every mint on every platform. Ceilings and forced simulation (Section 7a governance) always take precedence regardless of mode.</p>
     {presets.data===null?<Skeleton variant="lines" rows={1}/>:<div className="card-grid mode-grid">{presets.data.map(preset=>{
@@ -528,8 +643,8 @@ function TransactionModePanel({profile}){
   </div>;
 }
 const USAGE_PERIODS=[['today','Today'],['day','24 hours'],['week','7 days'],['month','Month']];
-function ApiUsagePanel(){const [period,setPeriod]=useState('month');const {data,error}=useLoad(`/api/social-usage?period=${period}`,[period]);return <div className="panel settings-usage"><div className="settings-panel-heading"><div><p className="eyebrow">Owner reporting</p><h2>Social API usage</h2></div><div className="segmented usage-period" role="radiogroup" aria-label="Usage period">{USAGE_PERIODS.map(([value,label])=><button type="button" key={value} className={period===value?'active':''} aria-pressed={period===value} onClick={()=>setPeriod(value)}>{label}</button>)}</div></div><p>Observed adapter requests, provider-reported consumption, and current pricing estimates.</p><Notice error={error}/>{data===null?<Skeleton variant="lines" rows={4}/>:<><div className="usage-stats"><div><span>Total requests</span><strong>{data.requests}</strong></div><div><span>Reported cost</span><strong>${data.reportedCostUsd.toFixed(4)}</strong></div><div><span>Reported credits</span><strong>{data.reportedCredits.toFixed(2)}</strong></div><div><span>Pay-per-use estimate</span><strong>${data.payPerUseEstimateUsd.toFixed(2)}</strong></div><div><span>Projected monthly</span><strong>{Math.round(data.projectedMonthlyRequests).toLocaleString()}</strong></div></div><div className="settings-usage-tables"><div className="table-wrap"><table><thead><tr><th>Rule</th><th>Method</th><th>Type</th><th>Requests</th></tr></thead><tbody>{data.rows.map(row=><tr key={`${row.ruleId}-${row.method}-${row.requestType}`}><td>{row.ruleName}</td><td>{row.method}</td><td>{row.requestType}</td><td>{row.requests}</td></tr>)}</tbody></table>{data.rows.length===0&&<Empty text="No social adapter requests recorded for this period."/>}</div><div className="table-wrap"><table><thead><tr><th>Managed tier</th><th>Break-even reads</th><th>Break-even posts</th></tr></thead><tbody>{data.breakEvenRequests.map(tier=><tr key={tier.price}><td>${tier.price}/mo</td><td>{tier.atReadRate.toLocaleString()}</td><td>{tier.atPostRate.toLocaleString()}</td></tr>)}</tbody></table></div></div></>}</div>}
-function Settings({profile,onThemeChange}){const secondaryActive=SECONDARY_THEMES.some(option=>option.value===profile.theme);return <><PageTitle eyebrow="Preferences" title="Settings" subtitle="Display, network defaults, live gas information, and owner reporting."/><div className="settings-layout"><div className="panel settings-appearance"><div className="settings-panel-heading"><div><p className="eyebrow">Display</p><h2>Appearance</h2></div><div className="segmented theme-picker" role="radiogroup" aria-label="Dashboard appearance">{PRIMARY_THEMES.map(option=><button type="button" key={option.value} aria-pressed={profile.theme===option.value} className={profile.theme===option.value?'active':''} onClick={()=>onThemeChange(option.value)}><span className="theme-picker-icon" aria-hidden="true">{option.icon}</span>{option.label}</button>)}</div></div><details className="settings-more-themes" open={secondaryActive}><summary>More themes</summary><div className="theme-grid" role="radiogroup" aria-label="More dashboard themes">{SECONDARY_THEMES.map(option=><button type="button" key={option.value} aria-pressed={profile.theme===option.value} className={`theme-option${profile.theme===option.value?' active':''}`} onClick={()=>onThemeChange(option.value)}><ThemeSwatch value={option.value}/><span className="theme-option-label">{option.label}</span></button>)}</div></details></div><DefaultChainPanel profile={profile}/><TransactionModePanel profile={profile}/><GasPanel profile={profile}/>{profile.isOwner&&<ApiUsagePanel/>}</div></>}
+function ApiUsagePanel(){const [period,setPeriod]=useState('month');const {data,error}=useLoad(`/api/social-usage?period=${period}`,[period]);return <div className="panel settings-usage"><div className="settings-panel-heading"><div><p className="eyebrow">Owner reporting</p><h2>Social API usage</h2></div><div className="seg usage-period" role="radiogroup" aria-label="Usage period">{USAGE_PERIODS.map(([value,label])=><button type="button" key={value} className={period===value?'on':undefined} aria-pressed={period===value} onClick={()=>setPeriod(value)}>{label}</button>)}</div></div><p>Observed adapter requests, provider-reported consumption, and current pricing estimates.</p><Notice error={error}/>{data===null?<Skeleton variant="lines" rows={4}/>:<><div className="usage-stats"><div><span>Total requests</span><strong>{data.requests}</strong></div><div><span>Reported cost</span><strong>${data.reportedCostUsd.toFixed(4)}</strong></div><div><span>Reported credits</span><strong>{data.reportedCredits.toFixed(2)}</strong></div><div><span>Pay-per-use estimate</span><strong>${data.payPerUseEstimateUsd.toFixed(2)}</strong></div><div><span>Projected monthly</span><strong>{Math.round(data.projectedMonthlyRequests).toLocaleString()}</strong></div></div><div className="settings-usage-tables"><div className="table-wrap"><table><thead><tr><th>Rule</th><th>Method</th><th>Type</th><th>Requests</th></tr></thead><tbody>{data.rows.map(row=><tr key={`${row.ruleId}-${row.method}-${row.requestType}`}><td>{row.ruleName}</td><td>{row.method}</td><td>{row.requestType}</td><td>{row.requests}</td></tr>)}</tbody></table>{data.rows.length===0&&<Empty text="No social adapter requests recorded for this period."/>}</div><div className="table-wrap"><table><thead><tr><th>Managed tier</th><th>Break-even reads</th><th>Break-even posts</th></tr></thead><tbody>{data.breakEvenRequests.map(tier=><tr key={tier.price}><td>${tier.price}/mo</td><td>{tier.atReadRate.toLocaleString()}</td><td>{tier.atPostRate.toLocaleString()}</td></tr>)}</tbody></table></div></div></>}</div>}
+function Settings({profile,onThemeChange}){const secondaryActive=SECONDARY_THEMES.some(option=>option.value===profile.theme);return <><PageTitle eyebrow="Preferences" title="Settings" subtitle="Display, network defaults, live gas information, and owner reporting."/><div className="settings-layout"><div className="panel settings-appearance"><div className="settings-panel-heading"><div><p className="eyebrow">Display</p><h2>Appearance</h2></div><div className="seg theme-picker" role="radiogroup" aria-label="Dashboard appearance">{PRIMARY_THEMES.map(option=><button type="button" key={option.value} aria-pressed={profile.theme===option.value} className={profile.theme===option.value?'on':undefined} onClick={()=>onThemeChange(option.value)}><span className="theme-picker-icon" aria-hidden="true">{option.icon}</span>{option.label}</button>)}</div></div><details className="settings-more-themes" open={secondaryActive}><summary>More themes</summary><div className="theme-grid" role="radiogroup" aria-label="More dashboard themes">{SECONDARY_THEMES.map(option=><button type="button" key={option.value} aria-pressed={profile.theme===option.value} className={`theme-option${profile.theme===option.value?' active':''}`} onClick={()=>onThemeChange(option.value)}><ThemeSwatch value={option.value}/><span className="theme-option-label">{option.label}</span></button>)}</div></details></div><DefaultChainPanel profile={profile}/><TransactionModePanel profile={profile}/><GasPanel profile={profile}/>{profile.isOwner&&<ApiUsagePanel/>}</div></>}
 function Login({onLogin}){
   const [mode,setMode]=useState('code');
   const [code,setCode]=useState('');
@@ -543,9 +658,9 @@ function Login({onLogin}){
   return <main className="login-page"><form className="login-card" onSubmit={mode==='code'?submitCode:submitPassword}>
     <span className="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d={BOLT_PATH} fill="currentColor"/></svg></span>
     <p className="eyebrow">Linked identity access</p><h1>GhostMint</h1>
-    <div className="segmented login-mode-toggle" role="radiogroup" aria-label="Sign-in method">
-      <button type="button" aria-pressed={mode==='code'} className={mode==='code'?'active':''} onClick={()=>chooseMode('code')}>Authentication code</button>
-      <button type="button" aria-pressed={mode==='password'} className={mode==='password'?'active':''} onClick={()=>chooseMode('password')}>Username &amp; password</button>
+    <div className="seg login-mode-toggle" role="radiogroup" aria-label="Sign-in method">
+      <button type="button" aria-pressed={mode==='code'} className={mode==='code'?'on':undefined} onClick={()=>chooseMode('code')}>Authentication code</button>
+      <button type="button" aria-pressed={mode==='password'} className={mode==='password'?'on':undefined} onClick={()=>chooseMode('password')}>Username &amp; password</button>
     </div>
     {mode==='code'?<>
       <p>Generate a five-minute code with <code>/link</code> in Telegram, then enter it here. (Discord's <code>/link</code> only consumes a code generated on Telegram — it can't generate one.)</p>
@@ -558,7 +673,7 @@ function Login({onLogin}){
       <label htmlFor="login-password">Password</label>
       <input id="login-password" type="password" value={password} onChange={event=>setPassword(event.target.value)} autoComplete="current-password" required maxLength="200"/>
     </>}
-    <button disabled={busy}>{busy?'Signing in...':'Sign in securely'}</button>
+    <button className="b p" disabled={busy}>{busy?'Signing in...':'Sign in securely'}</button>
     {error&&<p className="error" role="alert">{error}</p>}
   </form></main>;
 }
@@ -578,7 +693,7 @@ function Login({onLogin}){
 // simulation is not evidence about current gas or a still-open mint, and re-simulating is the
 // correct action, not retrying a confirm that cannot succeed.
 const PREVIEW_TTL_SECONDS=300;
-function PreviewExpiry({preview,onExpire}){
+function PreviewExpiry({preview,onExpire,onResimulate}){
   const [remaining,setRemaining]=useState(PREVIEW_TTL_SECONDS);
   useEffect(()=>{
     setRemaining(PREVIEW_TTL_SECONDS);
@@ -591,10 +706,16 @@ function PreviewExpiry({preview,onExpire}){
   if(remaining<=0)return null;
   const minutes=Math.floor(remaining/60);
   const seconds=remaining%60;
-  return <p className={`preview-expiry${remaining<=60?' preview-expiry-soon':''}`} role="status">
-    This simulation expires in <strong className="tab">{minutes}:{String(seconds).padStart(2,'0')}</strong>
-    {remaining<=60?' — confirm now or simulate again.':'. After that it must be simulated again.'}
-  </p>;
+  // Prototype .tokbar: label, spacer, then the countdown in .tk. Its .warn variant swaps the
+  // label for "Quote expired — re-simulate before confirming" and carries a Re-simulate button --
+  // the only simulate control the prototype has anywhere.
+  return <div className={`tokbar${remaining<=60?' warn':''}`} role="status">
+    {CLOCK_ICON}
+    {remaining<=60
+      ?<><span>Quote expires in</span><span className="sp"/><span className="tk">{minutes}:{String(seconds).padStart(2,'0')}</span>
+        <button type="button" className="b sm" onClick={()=>onResimulate?.()}>Re-simulate</button></>
+      :<><span>Simulated quote expires in</span><span className="sp"/><span className="tk">{minutes}:{String(seconds).padStart(2,'0')}</span></>}
+  </div>;
 }
 
 // Batch. Its own panel rather than the free-text "Batch wallet labels" textarea buried in the
@@ -659,7 +780,7 @@ function MintBatch(){
         <Field label="Quantity per wallet" type="number" min="1" value={quantity} onChange={event=>setQuantity(event.target.value)}/>
         <Field label="Price per mint (ETH)" type="number" step="any" min="0" placeholder="0 if free" value={priceEth} onChange={event=>setPriceEth(event.target.value)}/>
       </div>
-      <button disabled={busy||!selected.length}>Simulate {selected.length||''} {selected.length===1?'wallet':'wallets'}</button>
+      <button className="b p" disabled={busy||!selected.length}>Simulate {selected.length||''} {selected.length===1?'wallet':'wallets'}</button>
     </Form>
     {preview&&<section className="panel mint-preview">
       <h2>Simulation passed</h2>
@@ -672,7 +793,7 @@ function MintBatch(){
           {result&&<p className={result.status==='success'?'ok':'warning'}>{result.status==='success'?'✅ Submitted.':`❌ Failed: ${result.error}`}</p>}
         </div>;
       })}
-      {!results&&<button className="quiet" disabled={busy} onClick={confirmBatch}>Confirm and broadcast</button>}
+      {!results&&<button className="b g" disabled={busy} onClick={confirmBatch}>Confirm and broadcast</button>}
       {results&&<p>Simulate again to retry any failed wallets.</p>}
     </section>}
   </>;
@@ -710,7 +831,7 @@ function Mint({profile,go,tab,onTab}){
   return <>
     <div className="page-head"><div className="page-head-text"><p className="eyebrow">Mint</p><h1>Mint</h1></div></div>
     <SubTabs tabs={MINT_TABS} active={active} onChange={onTab} label="Mint sections"/>
-    {active==='now'&&<Minting/>}
+    {active==='now'&&<Minting onSwitchToBatch={()=>onTab('batch')} onGoWallets={()=>go('Wallets')}/>}
     {active==='schedule'&&<Tasks profile={profile} go={go}/>}
     {active==='batch'&&<MintBatch/>}
     {active==='presets'&&<MintPresets/>}
@@ -789,7 +910,7 @@ function WalletExport({profile,onProfileChange}){
         :<div className="card-grid">{wallets.data.map(wallet=><article className="card" key={wallet.label}>
           <h2>{wallet.label}</h2>
           <div className="user-card-identity"><p className="mono">{wallet.address}</p><CopyButton value={wallet.address} label="Copy wallet address"/></div>
-          <div className="actions"><button className="small quiet" onClick={()=>exportWalletKeystore(wallet.label,{profile,onProfileChange})}>Export keystore</button></div>
+          <div className="br"><button className="b g sm" onClick={()=>exportWalletKeystore(wallet.label,{profile,onProfileChange})}>Export keystore</button></div>
         </article>)}</div>}
   </>;
 }
@@ -987,6 +1108,9 @@ function MoreSheet({open,page,go,onClose}){return <>{open&&<div className="sheet
   <div className="sheet-grid">{MORE_PAGES.map(item=><button type="button" key={item} aria-current={page===item?'page':undefined} onClick={()=>go(item)}><span className="nav-icon" aria-hidden="true">{NAV_ICONS[item]}</span><span className="nav-label">{item}</span></button>)}</div>
 </div></>;}
 const TOP_RAIL_PAGES=['Home','Mint','Automation','Wallets','History'];
+// The prototype's .railfoot is Admin, Account, Settings, in that order. Settings had no rail entry
+// at all before this pass -- on desktop it was reachable only by URL.
+const RAIL_FOOTER_PAGES=['Account','Settings'];
 const BOTTOM_RAIL_PAGES=['Account'];
 function NavList({items,page,go,className}){return <nav aria-label="Dashboard" className={className}><ul>{items.map(item=><li key={item}><button aria-current={page===item?'page':undefined} onClick={()=>go(item)}><span className="nav-icon" aria-hidden="true">{NAV_ICONS[item]}</span><span className="nav-label">{item}</span></button></li>)}</ul></nav>;}
 function Shell({profile,onLogout,onProfileChange}){const [route,setRoute]=useState(pageFromLocation);const {page,tab,target}=route;const live=useLiveSocket();
@@ -1006,7 +1130,11 @@ function Shell({profile,onLogout,onProfileChange}){const [route,setRoute]=useSta
     }
     window.addEventListener('keydown',onKey);
     return()=>window.removeEventListener('keydown',onKey);
-  },[]);const [navOpen,setNavOpen]=useState(false);const [moreOpen,setMoreOpen]=useState(false);const [railExpanded,setRailExpandedState]=useState(readRailExpanded);function setRailExpanded(next){setRailExpandedState(value=>{const resolved=typeof next==='function'?next(value):next;writeRailExpanded(resolved);return resolved;});}const [theme,setTheme]=useState(profile.theme||'ghost-mint');useEffect(()=>{document.documentElement.dataset.theme=theme;},[theme]);useEffect(()=>{function onPopState(){setRoute(pageFromLocation());}window.addEventListener('popstate',onPopState);return()=>window.removeEventListener('popstate',onPopState);},[]);useEffect(()=>{function onMessage(event){if(event.detail?.type==='identity.changed')api('/api/profile').then(onProfileChange).catch(()=>{});}window.addEventListener('ghostmint-ws',onMessage);return()=>window.removeEventListener('ghostmint-ws',onMessage);},[onProfileChange]);async function changeTheme(next){const previous=theme;setTheme(next);try{await api('/api/profile/theme',{method:'PUT',body:JSON.stringify({theme:next})});}catch{setTheme(previous);}}const View=VIEWS[page];const isRail=RAIL_THEMES.has(theme);const viewProfile=profile.theme===theme?profile:{...profile,theme};// go(page) still behaves exactly as before for all ~40 existing callers; the optional second
+  },[]);const [navOpen,setNavOpen]=useState(false);const [moreOpen,setMoreOpen]=useState(false);const mobile=useIsMobile();const [theme,setTheme]=useState(profile.theme||'ghost-mint');useEffect(()=>{document.documentElement.dataset.theme=theme;},[theme]);useEffect(()=>{function onPopState(){setRoute(pageFromLocation());}window.addEventListener('popstate',onPopState);return()=>window.removeEventListener('popstate',onPopState);},[]);useEffect(()=>{function onMessage(event){if(event.detail?.type==='identity.changed')api('/api/profile').then(onProfileChange).catch(()=>{});}window.addEventListener('ghostmint-ws',onMessage);return()=>window.removeEventListener('ghostmint-ws',onMessage);},[onProfileChange]);async function changeTheme(next){const previous=theme;setTheme(next);try{await api('/api/profile/theme',{method:'PUT',body:JSON.stringify({theme:next})});}catch{setTheme(previous);}}const View=VIEWS[page];const isRail=RAIL_THEMES.has(theme);const viewProfile=profile.theme===theme?profile:{...profile,theme};
+  // The prototype's .av carries a single letter ("D" for deon). Nothing in /api/profile is
+  // guaranteed non-empty, so this falls through displayName -> username -> userId and only then
+  // to a neutral glyph, rather than rendering an empty circle.
+  const avatarInitial=(profile.displayName||profile.username||profile.userId||'?').trim().charAt(0).toUpperCase()||'?';// go(page) still behaves exactly as before for all ~40 existing callers; the optional second
   // argument is what lets a redirect, a nav item or (in unit 5) the command palette land on a
   // specific sub-tab. Compared against pathname+search rather than pathname alone, so switching
   // tabs on the same page is a real history entry -- Back from Schedule returns to Mint now
@@ -1019,57 +1147,54 @@ function Shell({profile,onLogout,onProfileChange}){const [route,setRoute]=useSta
     if(`${window.location.pathname}${window.location.search}`!==path)window.history.pushState(null,'',path);
     setRoute({page,tab:tabValue,redirected:false});setNavOpen(false);setMoreOpen(false);window.scrollTo({top:0});
   }
-  const brandMark=<span className="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d={BOLT_PATH} fill="currentColor"/></svg></span>;
-  if(isRail)return <div className={`shell rail-shell${moreOpen?' more-open':''}`} data-rail={railExpanded?'expanded':'collapsed'}>
+  // Ported verbatim from docs/prototype-pages/_rail.html and the prototype's .top bar. The root is
+  // .app, NOT .shell/.rail-shell: dropping those two class names is what stops every `.shell ...`
+  // and `.rail-shell ...` rule in styles.css from reaching this subtree, so prototype.css owns the
+  // chrome outright without those rules having to be deleted out from under the admin shell, which
+  // still renders them. .app is prototype.css's own grid (auto 1fr), and [data-m] is its mobile
+  // switch -- the rail hides itself there and .bbar/.more-sheet take over.
+  if(isRail)return <div className="app" data-m={mobile?'':undefined}>
     <ConfirmHost/>
     <ToastHost/>
-    <header className="rail-mobile-header">
-      <a className="brand" href="/dashboard/">{brandMark}GhostMint</a>
-      <button type="button" className="search-trigger" aria-label="Search pages and actions" onClick={()=>setPaletteOpen(true)}>
-        <span className="search-trigger-icon" aria-hidden="true"><svg {...ICON_PROPS}><circle cx="10.5" cy="10.5" r="6"/><path d="M15 15l5.5 5.5"/></svg></span>
-        <span className="search-trigger-label">Search…</span>
-        <kbd className="search-trigger-key" aria-hidden="true">⌘K</kbd>
-      </button>
-      <div className="header-right"><NotificationBell/><button type="button" className="header-avatar" aria-current={page==='Account'?'page':undefined} aria-label="Account" onClick={()=>go('Account')}>{NAV_ICONS.Account}</button></div>
-    </header>
-    <aside>
-      {/* The brand is a real link AND routes in-app: middle-click/open-in-new-tab keep working,
-          a plain click routes without a full document reload. */}
-      <div className="rail-top"><a className="brand" href="/dashboard/" onClick={event=>{event.preventDefault();go('Home');}}>{brandMark}<span className="nav-label">GhostMint</span></a></div>
-      <div className="rail-group-label">Operate</div>
-      <NavList items={TOP_RAIL_PAGES} page={page} go={go} className="rail-main-nav"/>
-      {/* Footer order is the prototype's: Admin, Account, Settings, above a rule. Admin is a real
-          <a href> not a go() -- the admin shell is a separate mount with its own routing -- and
-          is owner-only, since a regular account following it lands on AdminDenied. */}
-      <nav className="rail-bottom-nav" aria-label="Account">
-        <ul>
-          {profile.isOwner&&<li><a className="admin-rail-link" href="/dashboard/admin"><span className="nav-icon" aria-hidden="true">{NAV_ICONS.Admin}</span><span className="nav-label">Admin</span></a></li>}
-          {BOTTOM_RAIL_PAGES.map(item=><li key={item}><button aria-current={page===item?'page':undefined} onClick={()=>go(item)}><span className="nav-icon" aria-hidden="true">{NAV_ICONS[item]}</span><span className="nav-label">{item}</span></button></li>)}
-        </ul>
-      </nav>
-    </aside>
-    <button type="button" className="rail-edge-toggle" aria-label={railExpanded?'Collapse sidebar':'Expand sidebar'} onClick={()=>setRailExpanded(value=>!value)}>{railExpanded?CHEVRON_LEFT:CHEVRON_RIGHT}</button>
-    {/* Desktop top bar (brief §4.5): search trigger, spacer, live chip, bell, avatar. There was
-        no desktop top bar at all before this -- the bell floated fixed in the corner and the
-        search trigger had nowhere to live above 700px. The avatar is still a LINK here; turning
-        it into the account menu (mode chip, appearance toggle, log out) is Phase 6. */}
-    <header className="rail-topbar">
-      <button type="button" className="search-trigger" aria-label="Search pages and actions" onClick={()=>setPaletteOpen(true)}>
-        <span className="search-trigger-icon" aria-hidden="true"><svg {...ICON_PROPS}><circle cx="10.5" cy="10.5" r="6"/><path d="M15 15l5.5 5.5"/></svg></span>
-        <span className="search-trigger-label">Search…</span>
-        <kbd className="search-trigger-key" aria-hidden="true">⌘K</kbd>
-      </button>
-      <div className="rail-topbar-right">
-        <span className="status-pill"><span className={`status-dot${live?' live':''}`} aria-hidden="true"/><span aria-live="polite">{live?'Live':'Connecting'}</span></span>
-        <NotificationBell/>
-        <button type="button" className="header-avatar" aria-current={page==='Account'?'page':undefined} aria-label="Account" onClick={()=>go('Account')}>{NAV_ICONS.Account}</button>
+    {/* The prototype's rail is a flex column whose nav buttons are DIRECT children -- wrapping them
+        in a <nav><ul> would make them one flex item and collapse the 2px gap, so the landmark goes
+        on the aside itself instead. Two ARIA attributes, no structural change. */}
+    <aside className="rail" role="navigation" aria-label="Dashboard">
+      <div className="brand"><div className="brand-mark">G</div><div className="brand-name">GhostMint</div></div>
+      <div className="grp">Operate</div>
+      {TOP_RAIL_PAGES.map(item=><button type="button" className="nav" key={item} aria-current={page===item?'page':undefined} onClick={()=>go(item)}>
+        {RAIL_ICONS[item]}<span className="nav-l">{item}</span></button>)}
+      <div className="railfoot">
+        {/* Admin is unconditional here, matching both the prototype and the data contract §6's
+            note that hiding it "makes a legitimate owner think the app broke after a permission
+            change"; a non-owner who follows it still lands on AdminDenied. It is a full document
+            navigation because the admin shell is a separate mount with its own routing. */}
+        <button type="button" className="nav" onClick={()=>{window.location.href='/dashboard/admin';}}>
+          {RAIL_ICONS.Admin}<span className="nav-l">Admin</span></button>
+        {RAIL_FOOTER_PAGES.map(item=><button type="button" className="nav" key={item} aria-current={page===item?'page':undefined} onClick={()=>go(item)}>
+          {RAIL_ICONS[item]}<span className="nav-l">{item}</span></button>)}
       </div>
-    </header>
-    <main className="content" tabIndex="-1"><View profile={viewProfile} go={go} tab={tab} target={target} onTab={next=>go(page,next)} onThemeChange={changeTheme} onLogout={onLogout} onProfileChange={onProfileChange}/></main>
+    </aside>
+    <div className="body">
+      <div className="top">
+        <button type="button" className="cmdk" onClick={()=>setPaletteOpen(true)}>
+          {CMDK_ICON}<span>Search or jump to…</span><kbd>⌘K</kbd>
+        </button>
+        <div className="sp"/>
+        {/* .dot is painted var(--gain) by prototype.css. While the socket is still connecting that
+            would assert a live link that isn't there, so the dot drops to --faint until it is --
+            an inline style, which is how the prototype itself expresses one-off colour. */}
+        <div className="livechip"><span className="dot" style={live?undefined:{background:'var(--faint)'}}/> <span aria-live="polite">{live?'Live':'Connecting'}</span></div>
+        <NotificationBell/>
+        <button type="button" className="av" aria-current={page==='Account'?'page':undefined} aria-label="Account" onClick={()=>go('Account')}>{avatarInitial}</button>
+      </div>
+      <main className="wrap" tabIndex="-1"><View profile={viewProfile} go={go} tab={tab} target={target} onTab={next=>go(page,next)} onThemeChange={changeTheme} onLogout={onLogout} onProfileChange={onProfileChange}/></main>
+    </div>
     <BottomBar page={page} go={go} moreOpen={moreOpen} onOpenMore={()=>setMoreOpen(value=>!value)}/>
     <MoreSheet open={moreOpen} page={page} go={go} onClose={()=>setMoreOpen(false)}/>
     <CommandPalette open={paletteOpen} onClose={()=>setPaletteOpen(false)} go={go} profile={profile} wallets={paletteWallets.data}/>
   </div>;
+  const brandMark=<span className="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d={BOLT_PATH} fill="currentColor"/></svg></span>;
   return <div className={`shell${navOpen?' nav-open':''}`}>
     <ConfirmHost/>
     <ToastHost/>
@@ -1079,14 +1204,14 @@ function Shell({profile,onLogout,onProfileChange}){const [route,setRoute]=useSta
     <div className="header-right">
       <span className="identity">{profile.linkedAccounts.map(item=>item.platform).join(' + ')||'Linked user'}{profile.isOwner?<span className="owner-badge"> | Owner</span>:null}<span className="status-pill"><span className={`status-dot${live?' live':''}`} aria-hidden="true"/><span aria-live="polite">{live?'Live':'Connecting'}</span></span></span>
       <NotificationBell/>
-      <button className="quiet" onClick={onLogout}>Log out</button>
+      <button className="b g" onClick={onLogout}>Log out</button>
     </div>
   </header>
   {navOpen&&<div className="backdrop" onClick={()=>setNavOpen(false)}/>}
   <aside><NavList items={PAGES} page={page} go={go}/></aside>
   <main className="content" tabIndex="-1"><View profile={viewProfile} go={go} tab={tab} target={target} onTab={next=>go(page,next)} onThemeChange={changeTheme} onLogout={onLogout} onProfileChange={onProfileChange}/></main>
   </div>;}
-function AdminDenied(){return <main className="login-page"><div className="login-card"><p className="eyebrow">Restricted</p><h1>Admin access required</h1><p>This account is not an owner. Return to the dashboard to continue.</p><a className="admin-link quiet" href="/dashboard/">Return to dashboard</a></div></main>;}
+function AdminDenied(){return <main className="login-page"><div className="login-card"><p className="eyebrow">Restricted</p><h1>Admin access required</h1><p>This account is not an owner. Return to the dashboard to continue.</p><a className="b g admin-link" href="/dashboard/">Return to dashboard</a></div></main>;}
 const ADMIN_SECTIONS=[
   {id:'Overview',label:'Overview',icon:NAV_ICONS.Dashboard},
   {id:'Groups',label:'Groups',icon:<svg {...ICON_PROPS}><circle cx="9" cy="9" r="2.8"/><circle cx="16" cy="10" r="2.2"/><path d="M4 19c.6-3 2.6-4.7 5-4.7s4.4 1.7 5 4.7M14.5 14.6c2 .3 3.4 1.7 3.9 4.4"/></svg>},
@@ -1105,7 +1230,7 @@ const ADMIN_MOBILE_PRIMARY=['Overview','Groups','Users'];
 const ADMIN_MOBILE_MORE=['Effective','Presets','Owners','Wallets','Audit','Health'];
 function AdminNav({page,go}){return <nav aria-label="Admin sections" className="rail-main-nav"><ul>{ADMIN_SECTIONS.map(section=><li key={section.id}><button aria-current={page===section.id?'page':undefined} onClick={()=>go(section.id)}><span className="nav-icon" aria-hidden="true">{section.icon}</span><span className="nav-label">{section.label}</span></button></li>)}</ul></nav>}
 function AdminBottomBar({page,go,moreOpen,onOpenMore}){return <nav className="mobile-bottombar admin-mobile-bottombar" aria-label="Admin primary">{ADMIN_MOBILE_PRIMARY.map(id=>{const item=ADMIN_SECTIONS.find(section=>section.id===id);return <button key={id} type="button" aria-current={page===id?'page':undefined} onClick={()=>go(id)}><span className="nav-icon" aria-hidden="true">{item.icon}</span><span className="nav-label">{item.label}</span></button>})}<button type="button" aria-current={moreOpen||ADMIN_MOBILE_MORE.includes(page)?'page':undefined} onClick={onOpenMore}><span className="nav-icon" aria-hidden="true">{MORE_ICON}</span><span className="nav-label">More</span></button></nav>}
-function AdminMoreSheet({open,page,go,onClose,onLogout}){return <>{open&&<div className="sheet-backdrop" onClick={onClose}/>}<div className={`more-sheet admin-more-sheet${open?' open':''}`} role="dialog" aria-modal="true" aria-label="More admin pages" aria-hidden={!open}><button type="button" className="sheet-handle" aria-label="Close" onClick={onClose}/><h2>More admin pages</h2><div className="sheet-grid">{ADMIN_MOBILE_MORE.map(id=>{const item=ADMIN_SECTIONS.find(section=>section.id===id);return <button type="button" key={id} aria-current={page===id?'page':undefined} onClick={()=>go(id)}><span className="nav-icon" aria-hidden="true">{item.icon}</span><span className="nav-label">{item.label}</span></button>})}</div><div className="admin-sheet-actions"><a className="quiet admin-link" href="/dashboard/">Back to user dashboard</a><button className="quiet" onClick={onLogout}>Log out</button></div></div></>}
+function AdminMoreSheet({open,page,go,onClose,onLogout}){return <>{open&&<div className="sheet-backdrop" onClick={onClose}/>}<div className={`more-sheet admin-more-sheet${open?' open':''}`} role="dialog" aria-modal="true" aria-label="More admin pages" aria-hidden={!open}><button type="button" className="sheet-handle" aria-label="Close" onClick={onClose}/><h2>More admin pages</h2><div className="sheet-grid">{ADMIN_MOBILE_MORE.map(id=>{const item=ADMIN_SECTIONS.find(section=>section.id===id);return <button type="button" key={id} aria-current={page===id?'page':undefined} onClick={()=>go(id)}><span className="nav-icon" aria-hidden="true">{item.icon}</span><span className="nav-label">{item.label}</span></button>})}</div><div className="admin-sheet-actions"><a className="b g admin-link" href="/dashboard/">Back to user dashboard</a><button className="b g" onClick={onLogout}>Log out</button></div></div></>}
 function ScrollTop(){const [visible,setVisible]=useState(false);useEffect(()=>{const update=()=>setVisible(window.scrollY>480);update();window.addEventListener('scroll',update,{passive:true});return()=>window.removeEventListener('scroll',update);},[]);return visible?<button type="button" className="scroll-top" aria-label="Scroll to top" onClick={()=>window.scrollTo({top:0,behavior:'smooth'})}>↑</button>:null;}
 function AdminShell({profile,onLogout}){const theme=profile.theme||'ghost-mint';const [page,setPage]=useState(adminSectionFromLocation());const [moreOpen,setMoreOpen]=useState(false);const [railExpanded,setRailExpandedState]=useState(readRailExpanded);function setRailExpanded(next){setRailExpandedState(value=>{const resolved=typeof next==='function'?next(value):next;writeRailExpanded(resolved);return resolved;});}const live=useLiveSocket();
   // Transient (not URL-based, unlike the section itself) -- which of the 4 user-related stat

@@ -36,8 +36,8 @@ export function ConfirmHost(){
       <p>{request.message}</p>
       {request.type==='prompt'&&<input autoFocus type={request.masked?'password':'text'} autoComplete="off" value={value} placeholder={request.placeholder} onChange={event=>setValue(event.target.value)} onKeyDown={event=>{if(event.key==='Enter'){event.preventDefault();confirmChoice();}}}/>}
       <div className="confirm-modal-actions">
-        <button type="button" className="quiet" onClick={cancelChoice}>Cancel</button>
-        <button type="button" onClick={confirmChoice}>{request.type==='prompt'?'OK':'Confirm'}</button>
+        <button type="button" className="b g" onClick={cancelChoice}>Cancel</button>
+        <button type="button" className="b p" onClick={confirmChoice}>{request.type==='prompt'?'OK':'Confirm'}</button>
       </div>
     </div>
   </div>;
@@ -156,16 +156,58 @@ export function useLiveSocket(){const [live,setLive]=useState(false);useEffect((
 // failure surface brief §3.8 requires on a money surface: what failed, what was NOT changed, the
 // status code shown visibly, and a Retry. The status code is rendered rather than swallowed
 // because "it said 429" is the single most useful thing a user can tell you.
+// Prototype .notice (docs/prototype-pages/mint.html, auto.html, admin.html): a flex row of
+// warning glyph + .nb body, where the title is a <b> (block, via prototype.css), the detail is
+// plain text and the status code is a <code> at the end -- NOT a coloured heading with a chip.
+// The prototype's .notice is inherently the error treatment; informational and warning notes are
+// a different component there (.nt.i / .nt.w / .nt.e), which is what the string variants map to.
+const NOTICE_GLYPH=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>;
 export function Notice({error,ok}){
   if(error&&typeof error==='object'){
     const {title,detail,code,onRetry}=error;
-    return <div className="notice error notice-block" role="alert">
-      <div className="notice-head"><strong>{title||'Something failed'}</strong>{code!==undefined&&code!==null&&<span className="notice-code">{code}</span>}</div>
-      {detail&&<p className="notice-detail">{detail}</p>}
-      {onRetry&&<button type="button" className="small quiet notice-retry" onClick={onRetry}>Retry</button>}
+    return <div className="notice" role="alert">
+      {NOTICE_GLYPH}
+      <div className="nb"><b>{title||'Something failed'}</b>
+        {detail&&<>{detail} </>}
+        {code!==undefined&&code!==null&&<code>{code}</code>}
+        {onRetry&&<div className="br" style={{marginTop:'9px'}}><button type="button" className="b sm" onClick={onRetry}>Retry</button></div>}
+      </div>
     </div>;
   }
-  return <>{error&&<p className="notice error" role="alert">{error}</p>}{ok&&<p className="notice ok" role="status">{ok}</p>}</>;
+  return <>
+    {error&&<div className="nt e" role="alert">{NOTICE_GLYPH}<div className="nb">{error}</div></div>}
+    {ok&&<div className="nt i" role="status">{NOTICE_GLYPH}<div className="nb">{ok}</div></div>}
+  </>;
+}
+// FirstRun -- the prototype's .frun panel (docs/prototype-pages/home.html). Copy, step order
+// and button classes are verbatim; .frun / .steps / .step / .sn / .st / .sd all already exist in
+// prototype.css, so this component adds markup only. The "now" step is the first one the user
+// has not completed, so the panel keeps working as they progress rather than being a static card:
+//   no wallet        -> step 1
+//   wallet, no funds -> step 2
+//   funded, no mints -> step 3
+export function FirstRun({step=1,go}){
+  const steps=[
+    {n:1,title:'Create a wallet',detail:'Generated and encrypted on the server. You get the address, never the key.'},
+    {n:2,title:'Fund it',detail:'Send ETH to the address. Works on Ethereum, Base, Arbitrum and Polygon.'},
+    {n:3,title:'Paste a contract and mint',detail:'Price, supply and per-wallet limits are detected for you.'},
+  ];
+  return <div className="g" style={{marginBottom:'11px'}}>
+    <div className="frun">
+      <h2>Let&rsquo;s get you minting.</h2>
+      <p>Nothing here yet &mdash; that&rsquo;s expected. GhostMint generates and encrypts the key server-side, so you never handle it.</p>
+      <div className="steps">
+        {steps.map(item=><div key={item.n} className={item.n===step?'step now':'step'}>
+          <span className="sn">{item.n}</span>
+          <div><div className="st">{item.title}</div><div className="sd">{item.detail}</div></div>
+        </div>)}
+      </div>
+      <div className="br">
+        <button type="button" className="b p" onClick={()=>go('Wallets')}>Create my first wallet</button>
+        <button type="button" className="b g" onClick={()=>go('Settings')}>How it works</button>
+      </div>
+    </div>
+  </div>;
 }
 export function relativeTime(at){const seconds=Math.max(0,Math.floor((Date.now()-at)/1000));if(seconds<5)return 'just now';if(seconds<60)return `${seconds}s ago`;const minutes=Math.floor(seconds/60);if(minutes<60)return `${minutes}m ago`;const hours=Math.floor(minutes/60);if(hours<24)return `${hours}h ago`;return `${Math.floor(hours/24)}d ago`;}
 // Carries the contract address (and whatever else was already typed) from Quick Mint's "Advanced
@@ -283,8 +325,8 @@ export function SearchField({label,value='',onChange,placeholder='Label, address
 export function SubTabs({tabs=[],active,onChange,label='Sections'}){
   return <div className="subtabs" role="tablist" aria-label={label}>
     {tabs.map(tab=><button key={tab.id} type="button" role="tab" aria-selected={active===tab.id}
-      className={`subtab${active===tab.id?' active':''}`} onClick={()=>onChange(tab.id)}>
-      <span>{tab.label}</span>{tab.was&&<span className="subtab-was">was {tab.was}</span>}
+      className={active===tab.id?'on':undefined} onClick={()=>onChange(tab.id)}>
+      <span>{tab.label}</span>{tab.was&&<span className="was">was {tab.was}</span>}
     </button>)}
   </div>;
 }

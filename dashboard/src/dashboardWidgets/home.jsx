@@ -1,5 +1,5 @@
 import React from 'react';
-import {Celebrate,Meter,Notice,SectionCard,Skeleton,Sparkline,StatTile} from '../shared.jsx';
+import {Celebrate,FirstRun,Meter,Notice,SectionCard,Skeleton,Sparkline,StatTile} from '../shared.jsx';
 import {ChainDot,chainFromExplorer,CountdownRing,EmptyState,formatEth,formatSigned,ICONS,PnlChart,Row,shortAddress,weiToEth} from './homeParts.jsx';
 
 /* ==========================================================================
@@ -68,6 +68,7 @@ function Tiles({summary,sources,pnl30}){
       tone={pnlState==='ready'&&pnl30.net<0?'loss':pnlState==='ready'&&pnl30.net>0?'gain':undefined}
       meta={pnlState==='error'?'Could not load'
         :pnlState==='loading'?'Loading…'
+        :pnl30.mints===0?'0 mints'
         :`${pnl30.mints} ${pnl30.mints===1?'mint':'mints'} · no sales recorded`}>
       {pnlState==='ready'&&pnl30.days.length>1
         &&<Sparkline points={pnl30.days.map(day=>day.net)} tone={pnl30.net<0?'loss':'gain'}/>}
@@ -85,18 +86,25 @@ function Tiles({summary,sources,pnl30}){
       meta={budgetState==='error'?'Could not load'
         :budgetState==='loading'?'Loading…'
         :limits.ceilingExempt?'Owner — exempt from ceilings'
+        // Empty state copy is the prototype's, verbatim (docs/prototype-pages/home.html, the
+        // "Daily budget" tile's .tm.oe). The ceiling is real and shown in BOTH states -- it is a
+        // limit you already have, not a balance you accrue -- so the empty variant changes only
+        // the meta line, never the value. Backlog §5.
+        :summary.walletCount===0?'Applies once you mint'
         :`Per transaction ${formatEth(weiToEth(limits.maxTransactionValueWei),3)} ETH · gas ${limits.gasCeilingGwei} gwei`}/>
 
     {/* Scope is in the LABEL, not just the tooltip: stats() is not routed, so this is one page
         of activity, and an unqualified "Success rate" would misstate the denominator (§5.6). */}
     <StatTile label={`Success · last ${summary.successScopeSize||20}`}
-      value={activityState==='ready'?(summary.successRate===null?'—':summary.successRate):'—'}
-      unit={activityState==='ready'&&summary.successRate!==null?'%':undefined}
+      value={activityState!=='ready'?'—'
+        :summary.successScopeSize===0?0
+        :summary.successRate===null?'—':summary.successRate}
+      unit={activityState==='ready'&&(summary.successScopeSize===0||summary.successRate!==null)?'%':undefined}
       meta={activityState==='error'?'Could not load'
         :activityState==='loading'?'Loading…'
         :summary.successScopeSize===0?'No mints yet':`${summary.successCount} of ${summary.successScopeSize} confirmed`}>
-      {activityState==='ready'&&summary.successRate!==null
-        &&<Meter value={summary.successRate} max={100}/>}
+      {activityState==='ready'&&(summary.successScopeSize===0||summary.successRate!==null)
+        &&<Meter value={summary.successRate??0} max={100}/>}
     </StatTile>
   </div>;
 }
@@ -112,7 +120,7 @@ function CelebrateCard({summary,go}){
     <div className="celebrate-actions">
       {item.explorer&&item.txHash&&<a className="link-button" href={`${item.explorer}${item.txHash}`}
         target="_blank" rel="noreferrer noopener">View transaction</a>}
-      <button type="button" className="small quiet" onClick={()=>go('Activity')}>All activity</button>
+      <button type="button" className="b g sm" onClick={()=>go('Activity')}>All activity</button>
     </div>
   </Celebrate>;
 }
@@ -120,15 +128,15 @@ function CelebrateCard({summary,go}){
 const PNL_WINDOWS=[{id:30,label:'30d'},{id:90,label:'90d'},{id:null,label:'All'}];
 
 function PnlCard({summary,sources,pnlView,pnlWindow,onPnlWindow,go}){
-  const windows=<div className="segmented" role="group" aria-label="P&L window">
+  const windows=<div className="seg" role="group" aria-label="P&L window">
     {PNL_WINDOWS.map(option=><button key={option.label} type="button"
-      className={`small${pnlWindow===option.id?' active':''}`}
+      className={pnlWindow===option.id?'on':undefined}
       aria-pressed={pnlWindow===option.id} onClick={()=>onPnlWindow(option.id)}>{option.label}</button>)}
   </div>;
   return <SectionCard title="P&L by day" icon={ICONS.chart} actions={windows}>
     <CardBody source={sources.pnl} skeleton="chart" rows={1}
       empty={pnlView.days.length===0?<EmptyState icon={ICONS.chart} title="No profit or loss yet"
-        action={<button type="button" className="small" onClick={()=>go('Mint')}>Go to Mint</button>}>
+        action={<button type="button" className="b sm" onClick={()=>go('Mint')}>Go to Mint</button>}>
         Once you mint, each day&apos;s net lands here — cost and gas from the confirmed receipt, nothing guessed.
       </EmptyState>:null}>
       <PnlChart days={pnlView.days}/>
@@ -139,10 +147,10 @@ function PnlCard({summary,sources,pnlView,pnlWindow,onPnlWindow,go}){
 
 function ActivityCard({summary,sources,go}){
   return <SectionCard title="Recent activity" icon={ICONS.clock}
-    actions={<button type="button" className="small quiet" onClick={()=>go('Activity')}>View all</button>}>
+    actions={<button type="button" className="b g sm" onClick={()=>go('Activity')}>View all</button>}>
     <CardBody source={sources.activity} skeleton="row" rows={3}
       empty={summary.activityItems.length===0?<EmptyState icon={ICONS.clock} title="Nothing yet"
-        action={<button type="button" className="small" onClick={()=>go('Mint')}>Go to Mint</button>}>
+        action={<button type="button" className="b sm" onClick={()=>go('Mint')}>Go to Mint</button>}>
         Your first mint will appear here, with its transaction hash and real gas cost.
       </EmptyState>:null}>
       {summary.activityItems.map(item=>{
@@ -164,10 +172,10 @@ function ActivityCard({summary,sources,go}){
 /* --- Right column --------------------------------------------------------- */
 function NextDropCard({summary,sources,go}){
   return <SectionCard title="Next scheduled mint" icon={ICONS.clock}
-    actions={<button type="button" className="small quiet" onClick={()=>go('Mint','schedule')}>Schedule</button>}>
+    actions={<button type="button" className="b g sm" onClick={()=>go('Mint','schedule')}>Schedule</button>}>
     <CardBody source={sources.tasks} skeleton="big-value" rows={1}
       empty={!summary.nextTask?<EmptyState icon={ICONS.clock} title="Nothing scheduled"
-        action={<button type="button" className="small" onClick={()=>go('Mint','schedule')}>Schedule a mint</button>}>
+        action={<button type="button" className="b sm" onClick={()=>go('Mint','schedule')}>Schedule a mint</button>}>
         A scheduled mint submits itself at the time you set — it is not a reminder.
       </EmptyState>:null}>
       {summary.nextTask&&<CountdownRing target={summary.nextTask.mintTime}
@@ -184,12 +192,12 @@ function AlertsCard({summary,go}){
     key:'watch',
     body:<><b>{summary.failingWatchRules.length} watch {summary.failingWatchRules.length===1?'rule':'rules'} failing.</b>{' '}
       {summary.failingWatchRules.slice(0,2).map(rule=>rule.label||rule.handle||rule.id).join(', ')}</>,
-    action:<button type="button" className="small" onClick={()=>go('Automation','social')}>Review</button>,
+    action:<button type="button" className="b sm" onClick={()=>go('Automation','social')}>Review</button>,
   });
   if(summary.lowBalanceWallets.length)alerts.push({
     key:'balance',
     body:<><b>Low balance.</b> {summary.lowBalanceWallets.map(wallet=>wallet.label).join(', ')} — top up before minting.</>,
-    action:<button type="button" className="small" onClick={()=>go('Wallets')}>Wallets</button>,
+    action:<button type="button" className="b sm" onClick={()=>go('Wallets')}>Wallets</button>,
   });
   if(!alerts.length)return null;
   return <>{alerts.map(alert=><div className="alert-note" role="alert" key={alert.key}>
@@ -202,7 +210,7 @@ const TRIGGER_LABELS={'blockchain-triggered':'sniper','social-triggered':'social
 
 function QueueCard({summary,sources,go}){
   return <SectionCard title="Pending queue" icon={ICONS.queue}
-    actions={<button type="button" className="small quiet" onClick={()=>go('Activity')}>Activity</button>}>
+    actions={<button type="button" className="b g sm" onClick={()=>go('Activity')}>Activity</button>}>
     <CardBody source={sources.confirmations} skeleton="row" rows={2}
       empty={summary.pendingConfirmations.length===0?<EmptyState icon={ICONS.queue} title="Nothing pending">
         Triggers that need your confirmation before they execute will wait here.
@@ -215,10 +223,10 @@ function QueueCard({summary,sources,go}){
 
 function WalletsCard({summary,sources,go}){
   return <SectionCard title="Wallets" icon={ICONS.wallet}
-    actions={<button type="button" className="small quiet" onClick={()=>go('Wallets')}>Manage</button>}>
+    actions={<button type="button" className="b g sm" onClick={()=>go('Wallets')}>Manage</button>}>
     <CardBody source={sources.wallets} skeleton="row" rows={3}
       empty={summary.walletCount===0?<EmptyState icon={ICONS.wallet} title="No wallets yet"
-        action={<button type="button" className="small" onClick={()=>go('Wallets')}>Create wallet</button>}>
+        action={<button type="button" className="b sm" onClick={()=>go('Wallets')}>Create wallet</button>}>
         Create the recommended server-side wallet — the key is generated and encrypted before it ever exists in the open.
       </EmptyState>:null}>
       {summary.walletRows.map(wallet=><Row key={wallet.label} title={wallet.label}
@@ -226,7 +234,7 @@ function WalletsCard({summary,sources,go}){
         value={wallet.ethBalance===null?'—':formatEth(wallet.ethBalance)}
         valueTone={wallet.ethBalance!==null&&wallet.ethBalance<0.01?'warn':undefined}/>)}
       {summary.walletCount>summary.walletRows.length
-        &&<button type="button" className="small quiet card-more" onClick={()=>go('Wallets')}>
+        &&<button type="button" className="b g sm card-more" onClick={()=>go('Wallets')}>
           +{summary.walletCount-summary.walletRows.length} more
         </button>}
     </CardBody>
@@ -239,6 +247,15 @@ export default function Home({summary,sources,go,greeting,pnlView,pnl30,pnlWindo
   // Only genuinely failed sources are listed, and every card keeps its own inline error too, so
   // a single failing endpoint does not blank the page (contract §7.1).
   const failed=Object.entries(sources).filter(([,source])=>source.error);
+  // RULE 2: empty is not loading. FirstRun renders only once the wallets fetch has actually
+  // ARRIVED and come back empty -- `data !== null` -- so a slow request shows skeletons, never
+  // "let's get you minting" to someone who already has three wallets. It also hides itself while
+  // that fetch is errored, because a failed load is not evidence of an empty account.
+  const walletsArrived=sources.wallets?.data!==null&&sources.wallets?.data!==undefined&&!sources.wallets?.error;
+  const firstRun=walletsArrived&&summary.walletCount===0;
+  // Which step is "now": no wallet -> 1, wallet but nothing funded -> 2, funded but never minted
+  // -> 3. Uses ?? so a real 0 balance counts as arrived-and-zero rather than falsy-and-missing.
+  const firstRunStep=summary.walletCount===0?1:(summary.portfolio.eth??0)<=0?2:3;
   return <>
     {/* The prototype's header: "Command centre" eyebrow, the GREETING as the h1 (not the word
         "Home"), and Mint now sitting to its right. The page is named in the rail; repeating it
@@ -247,11 +264,17 @@ export default function Home({summary,sources,go,greeting,pnlView,pnl30,pnlWindo
       <div className="page-head-text">
         <p className="eyebrow">Command centre</p>
         <h1>{greeting}</h1>
+        {/* Prototype: <p class="sub oe"> -- empty state only, verbatim copy. */}
+        {firstRun&&<p className="sub">Three steps and you&rsquo;ll have minted your first NFT.</p>}
       </div>
-      <div className="page-head-actions">
-        <button type="button" onClick={()=>go('Mint')}>Mint now</button>
-      </div>
+      {/* Prototype home.html: the header action is .of -- it only exists once there is
+          something to mint FROM. On first run the sub line replaces it instead. */}
+      {!firstRun&&<div className="page-head-actions">
+        <button type="button" className="b p" onClick={()=>go('Mint')}>Mint now</button>
+      </div>}
     </div>
+
+    {firstRun&&<FirstRun step={firstRunStep} go={go}/>}
 
     <Tiles summary={summary} sources={sources} pnl30={pnl30}/>
 

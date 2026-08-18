@@ -5,6 +5,22 @@
    variables; it does not define theme colors itself.
    ========================================================================== */
 @import './themes.css';
+/* prototype.css is imported HERE, between themes.css and this file's own rules, and the position
+   is load-bearing in both directions (see docs/REDESIGN_PROMPT.md, "the collision finding"):
+
+   - AFTER themes.css, so the prototype's five `html[data-theme=...]` blocks win for every token
+     they declare. That is the point of adopting them: prototype.css paints its chrome from
+     --surface / --border / --radius / --shadow, and those resolve to the prototype's values only
+     if its blocks come last. It brings --muted, --faint and --accent-ink in with it. themes.css
+     keeps sole ownership of every token the prototype does not declare (--bg-glow,
+     --surface-hover, --text-muted, --card-pad, the density scale...), which unmigrated pages read.
+   - BEFORE this file's own rules, so that where a class name is declared in both -- 19 of them:
+     brand brand-mark card danger meter mono notice ok pager ring row sheet-grid spark streak
+     subtabs tab tile tiles toast -- the rule in THIS file still wins on equal specificity.
+     Unmigrated pages keep the look they have today, and a surface transfers to prototype.css at
+     the moment its rule is deleted from this file: one page at a time, never both stylesheets
+     owning one surface. */
+@import './prototype.css';
 *{box-sizing:border-box}
 html{transition:background-color var(--normal) var(--ease)}
 body{margin:0;min-width:320px;background:var(--bg-glow);-webkit-font-smoothing:antialiased;transition:background var(--normal) var(--ease),color var(--normal) var(--ease)}
@@ -32,11 +48,18 @@ code{font-family:ui-monospace,'SF Mono',Consolas,monospace;font-size:.9em}
   padding:0 1.5rem;border-bottom:1px solid var(--border);background:var(--header-bg);backdrop-filter:blur(10px);
   position:sticky;top:0;z-index:20}
 .header-left{display:flex;align-items:center;gap:.75rem}
-.brand{display:flex;align-items:center;gap:.55rem;font-size:1.2rem;color:var(--text);text-decoration:none;font-weight:800;letter-spacing:-.01em}
-.brand-mark{width:1.9rem;height:1.9rem;border-radius:.6rem;display:grid;place-items:center;flex-shrink:0;
+/* .brand / .brand-mark are two of the 19 names declared in both stylesheets, and the rail
+   surrenders them to prototype.css in this pass. They are SCOPED rather than deleted because two
+   surfaces that have not migrated yet still render this markup: the admin shell (.shell
+   .rail-shell .admin-shell) and the sign-in card, whose brand-mark holds an <svg> that prototype
+   .brand-mark -- a 28px grid box sized for the letter "G" -- has no rule to size. Scoping ends
+   this file's ownership of the rail's brand without breaking either, since the ported rail root
+   is .app and matches neither selector. Delete outright when admin and login land. */
+.shell .brand,.login-card .brand{display:flex;align-items:center;gap:.55rem;font-size:1.2rem;color:var(--text);text-decoration:none;font-weight:800;letter-spacing:-.01em}
+.shell .brand-mark,.login-card .brand-mark{width:1.9rem;height:1.9rem;border-radius:.6rem;display:grid;place-items:center;flex-shrink:0;
   background:var(--icon-badge-bg);border:var(--icon-badge-border);box-shadow:var(--icon-badge-shadow);color:var(--icon-badge-fg);
   transition:box-shadow var(--fast) var(--ease)}
-.brand-mark svg{width:1.1rem;height:1.1rem}
+.shell .brand-mark svg,.login-card .brand-mark svg{width:1.1rem;height:1.1rem}
 .header-right{display:flex;align-items:center;gap:1rem}
 .identity{display:flex;align-items:center;gap:.6rem;color:var(--text-muted);font-size:.88rem}
 .identity .owner-badge{color:var(--warning);font-weight:700}
@@ -260,32 +283,19 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
 
 /* Private key / seed phrase toggle */
 .method-toggle{display:grid;gap:.45rem;font-weight:700;font-size:.88rem;color:var(--text-muted)}
-.segmented{display:flex;gap:.4rem;background:var(--surface-deep);padding:.25rem;border-radius:var(--radius-sm);border:1px solid var(--border-strong)}
-.segmented button{flex:1;background:transparent;color:var(--text-muted);font-weight:600;padding:.55rem;border:0;
-  border-radius:.4rem;box-shadow:none;transition:background var(--fast) var(--ease),color var(--fast) var(--ease)}
-.segmented button.active{background:var(--accent);color:var(--accent-contrast)}
 
 /* ==========================================================================
    Buttons
    ========================================================================== */
-button{padding:.75rem 1.1rem;border:0;border-radius:var(--radius-sm);background:var(--accent);color:var(--accent-contrast);
-  font-weight:700;font-size:.92rem;cursor:pointer;box-shadow:var(--shadow-sm);min-height:var(--tap-min);
-  transition:filter var(--fast) var(--ease),transform var(--fast) var(--ease),box-shadow var(--fast) var(--ease)}
-button:hover:not(:disabled){filter:brightness(1.1);box-shadow:0 6px 18px -6px color-mix(in srgb,var(--accent) 44%,transparent)}
-button:active:not(:disabled){transform:translateY(1px)}
-button:disabled{opacity:.45;cursor:not-allowed;box-shadow:none}
-.quiet{background:var(--surface-2);color:var(--text-muted);box-shadow:none}
-.quiet:hover:not(:disabled){filter:none;background:var(--surface-hover);color:var(--text)}
+
+/* The bare-element collision that used to need a :where() boundary here is GONE: styles.css no
+   longer declares a `button` rule at all, so prototype.css .b / .b.p / .b.g / .b.d / .b.sm owns
+   every button in the app outright. Kept as a note because the reasoning is worth not re-deriving:
+   the 23-class collision list in docs/REDESIGN_PROMPT.md omitted the element-level overlap
+   (body, button, input, select, textarea, h1-h3, *), and while both files declared `button`
+   neither import order was safe -- one file always repainted the other half of the app. */
 .admin-link{display:inline-block;padding:.75rem 1.1rem;border-radius:var(--radius-sm);font-weight:700;font-size:.92rem;
   text-decoration:none;min-height:var(--tap-min);transition:background var(--fast) var(--ease),color var(--fast) var(--ease)}
-.danger{background:linear-gradient(135deg,var(--danger),color-mix(in srgb,var(--danger) 65%,black));color:var(--danger-contrast)}
-.danger:hover:not(:disabled){filter:brightness(1.12)}
-.small{padding:.45rem .7rem;font-size:.8rem;border-radius:.5rem;min-height:auto}
-/* GHOSTMINT_UI_RULES.md: .small buttons (card Edit/Remove/Disable, the task row's
-   cancel/pause/resume/retry) stay visually compact on desktop but must not fall under the tap
-   floor on mobile. Deliberately not theme-scoped -- a finger is the same size in every theme. */
-@media(max-width:700px){.small{min-height:var(--tap-min)}}
-.actions{display:flex;gap:.4rem;flex-wrap:wrap}
 /* Systemic rule: any card/panel body text is always followed by breathing
    room before its action row, not just the specific widgets flagged during
    review - applies to every current and future card/panel automatically. */
@@ -295,12 +305,8 @@ button:disabled{opacity:.45;cursor:not-allowed;box-shadow:none}
 /* ==========================================================================
    Alerts / notices
    ========================================================================== */
-.notice{display:flex;align-items:flex-start;gap:.6rem;padding:.85rem 1rem;border-radius:var(--radius-sm);
-  background:var(--surface-2);border:1px solid var(--border);margin-bottom:1rem;animation:fadeIn var(--fast) var(--ease);
-  font-size:.9rem;line-height:1.5}
-.notice.error{background:var(--danger-soft);border-color:color-mix(in srgb,var(--danger) 30%,transparent);color:var(--danger)}
-.notice.ok{background:var(--success-soft);border-color:color-mix(in srgb,var(--success) 30%,transparent);color:var(--success)}
-.notice.notice-warning{background:var(--warning-soft);border-color:color-mix(in srgb,var(--warning) 30%,transparent);color:var(--warning)}
+/* .notice and its variants now come from prototype.css (.notice for the error panel, .nt.i/.w/.e
+   for informational and warning notes). Only the bare .error / .ok text colours stay here. */
 .error{color:var(--danger)}
 .ok{color:var(--success)}
 .warning{color:var(--warning);border-left:3px solid var(--warning);padding-left:.85rem;font-size:.88rem;line-height:1.5}
@@ -349,8 +355,12 @@ button:disabled{opacity:.45;cursor:not-allowed;box-shadow:none}
    Tables / lists
    ========================================================================== */
 .table-wrap{overflow:auto;margin-top:1rem;border:1px solid var(--border);border-radius:var(--radius)}
-table{width:100%;border-collapse:collapse;background:var(--surface)}
-th,td{text-align:left;padding:var(--row-pad) 1rem;border-bottom:1px solid var(--border);white-space:nowrap;font-size:.9rem}
+table:not(.led){width:100%;border-collapse:collapse;background:var(--surface)}
+/* Scoped off .led, which prototype.css owns. An INHERITED font-size always loses to a rule that
+   targets the element directly, so a bare `td` rule silently overrode .led's 12.5px with .9rem
+   (12.8px) -- the same class of element-level leak as the `button` collision, and just as
+   invisible in a diff. Legacy tables keep these rules until their pages migrate. */
+table:not(.led) th,table:not(.led) td{text-align:left;padding:var(--row-pad) 1rem;border-bottom:1px solid var(--border);white-space:nowrap;font-size:.9rem}
 th{color:var(--text-muted);font-weight:700;font-size:.76rem;text-transform:uppercase;letter-spacing:.04em;
   background:var(--surface-deep)}
 tbody tr{transition:background var(--fast) var(--ease)}
@@ -376,13 +386,11 @@ tbody tr:last-child td{border-bottom:0}
    Notification bell (replaces the old always-expanded confirmations panel)
    ========================================================================== */
 .notification-bell{position:relative}
-.bell-trigger{position:relative;width:2.2rem;height:2.2rem;padding:0;border-radius:50%;display:grid;place-items:center;
-  background:var(--surface-2);color:var(--text-muted);box-shadow:none}
-.bell-trigger:hover:not(:disabled){filter:none;background:var(--surface-hover);color:var(--text)}
-.bell-trigger svg{width:1.05rem;height:1.05rem}
-.bell-count{position:absolute;top:-.2rem;right:-.2rem;min-width:1.05rem;height:1.05rem;padding:0 .25rem;
-  border-radius:999px;background:var(--warning);color:var(--accent-contrast);font-size:.62rem;font-weight:800;
-  display:grid;place-items:center;line-height:1}
+/* The bell TRIGGER is top-bar chrome and moves to prototype.css's .ib + .badge in this pass;
+   .bell-trigger / .bell-count are deleted rather than scoped because nothing renders them any
+   more. NotificationBell is shared with the admin shell, so admin's bell adopts the prototype
+   trigger at the same time -- chrome only, and the dropdown below is untouched. The two-tab
+   .bell-pop rewrite is Phase 7 and is NOT part of this pass; .bell-dropdown still owns the panel. */
 .bell-backdrop{position:fixed;inset:0;z-index:49;background:transparent}
 .bell-dropdown{position:absolute;top:calc(100% + .6rem);right:0;z-index:50;width:min(22rem,90vw);max-height:70vh;overflow:auto;
   padding:1rem 1.1rem;border-radius:var(--radius-lg);border:1px solid var(--border-strong);
@@ -691,9 +699,6 @@ html[data-theme="ghost-mint"] .dash-hero button,html[data-theme="ghost-mint-ligh
     position:sticky;top:0;z-index:20}
   html[data-theme="ghost-mint"] .rail-mobile-header .brand-mark,html[data-theme="ghost-mint-light"] .rail-mobile-header .brand-mark{width:1.9rem;height:1.9rem}
   html[data-theme="ghost-mint"] .content,html[data-theme="ghost-mint-light"] .content{padding-bottom:6.5rem}
-  html[data-theme="ghost-mint"] .rail-mobile-header .bell-trigger,html[data-theme="ghost-mint-light"] .rail-mobile-header .bell-trigger{
-    width:1.875rem;height:1.875rem;background:var(--surface-hover)}
-  html[data-theme="ghost-mint"] .rail-mobile-header .bell-trigger svg,html[data-theme="ghost-mint-light"] .rail-mobile-header .bell-trigger svg{width:.9rem;height:.9rem}
   html[data-theme="ghost-mint"] .rail-mobile-header .bell-dropdown,html[data-theme="ghost-mint-light"] .rail-mobile-header .bell-dropdown{
     width:min(20rem,88vw)}
   html[data-theme="ghost-mint"] .header-avatar,html[data-theme="ghost-mint-light"] .header-avatar{
@@ -881,8 +886,8 @@ html[data-theme="ghost-mint"] .dash-hero button,html[data-theme="ghost-mint-ligh
 
 :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .table-wrap{
   margin-top:1.125rem;border-radius:.875rem}
-:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) th,
-:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) td{
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) table:not(.led) th,
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) table:not(.led) td{
   padding:.75rem 1rem;font-size:.8rem}
 :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) th{
   font-size:.68rem;background:var(--surface)}
@@ -1138,13 +1143,6 @@ html[data-theme="ghost-mint"] .dash-hero button,html[data-theme="ghost-mint-ligh
   color:var(--text-faint);font-size:1.05rem;line-height:1}
 .search-clear:hover{color:var(--text)}
 
-/* --- SubTabs --- */
-.subtabs{display:flex;gap:.25rem;margin-bottom:.9rem;border-bottom:1px solid var(--border)}
-.subtab{display:flex;align-items:baseline;gap:.35rem;padding:.5rem .7rem;border:0;border-bottom:2px solid transparent;
-  background:none;color:var(--text-muted);font-size:.85rem;font-weight:600;white-space:nowrap;min-height:var(--tap-min)}
-.subtab:hover{color:var(--text)}
-.subtab.active{color:var(--accent);border-bottom-color:var(--accent)}
-.subtab-was{color:var(--text-faint);font-size:.68rem;font-weight:500}
 
 /* --- Sparkline --- */
 .spark{display:block}
@@ -1162,16 +1160,6 @@ html[data-theme="ghost-mint"] .dash-hero button,html[data-theme="ghost-mint-ligh
 .numfield-label{display:grid;gap:.35rem;flex:1;min-width:0;color:var(--text-muted);font-size:.72rem;font-weight:700}
 .numfield-quick{display:flex;gap:.3rem;flex:none}
 .numfield-quick .active{border-color:var(--accent);color:var(--accent);background:var(--accent-soft)}
-
-/* --- Notice, block variant --- */
-.notice-block{display:block}
-.notice-head{display:flex;align-items:center;gap:.5rem}
-/* The status code is rendered, not swallowed: "it said 429" is the most useful thing a user can
-   report back, and brief §3.8 requires it be visible rather than console-only. */
-.notice-code{margin-left:auto;padding:.05rem .35rem;border-radius:.3rem;background:var(--surface-4);
-  color:var(--text-muted);font-family:ui-monospace,Consolas,monospace;font-size:.7rem}
-.notice-detail{margin-top:.3rem;font-size:.8rem;opacity:.9}
-.notice-retry{margin-top:.55rem}
 
 /* --- Skeleton variants --- */
 .skeleton-row,.skeleton-big,.skeleton-chart{border:1px solid var(--border);
@@ -1260,10 +1248,6 @@ html[data-theme="ghost-mint"] .dash-hero button,html[data-theme="ghost-mint-ligh
 .card-note{margin-top:.5rem;color:var(--text-faint);font-size:.7rem}
 .card-more{margin-top:.5rem}
 
-/* --- Segmented control (P&L window) --- */
-.segmented{display:inline-flex;gap:.15rem;padding:.15rem;border:1px solid var(--border);border-radius:.5rem;background:var(--surface-3)}
-.segmented button{min-height:0;padding:.2rem .5rem;border:0;background:none;color:var(--text-muted);font-size:.72rem;font-weight:600}
-.segmented button.active{background:var(--surface);color:var(--accent);border-radius:.35rem}
 
 /* --- Celebrate extras (register 4) --- */
 .streak{margin-top:.5rem;font-size:.78rem;font-weight:600}
@@ -1344,25 +1328,6 @@ html[data-theme="ghost-mint"] .dash-hero button,html[data-theme="ghost-mint-ligh
   .palette-item-where{margin-left:0;width:100%}
 }
 
-/* --- Top-bar search trigger (brief §4.5) — pulled forward from Phase 6 ---
-   The palette's click affordance. ⌘K alone is undiscoverable: a keyboard shortcut nobody is told
-   about is a feature only its author can use, so the shortcut is printed on the control itself. */
-.search-trigger{display:flex;align-items:center;gap:.45rem;flex:1;min-width:0;max-width:22rem;
-  margin:0 .6rem;padding:.4rem .6rem;border:1px solid var(--border);border-radius:.55rem;
-  background:var(--surface-2);color:var(--text-faint);font-size:.8rem;font-weight:500;
-  box-shadow:none;min-height:var(--tap-min)}
-.search-trigger:hover{background:var(--surface-hover);color:var(--text-muted);filter:none}
-.search-trigger-icon svg{width:.95rem;height:.95rem;display:block}
-.search-trigger-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.search-trigger-key{margin-left:auto;padding:.1rem .3rem;border:1px solid var(--border);
-  border-radius:.3rem;background:var(--surface-4);color:var(--text-faint);
-  font-family:ui-monospace,Consolas,monospace;font-size:.66rem}
-@media(max-width:700px){
-  /* The shortcut hint is desktop-only -- there is no ⌘K on a phone, so printing it is noise. */
-  .search-trigger{max-width:none;margin:0 .4rem}
-  .search-trigger-key{display:none}
-}
-
 /* --- Batch wallet picker (Phase 4, Mint → Batch) --- */
 .batch-legend{display:flex;align-items:center;gap:.4rem;margin-bottom:.4rem;
   color:var(--text-muted);font-size:.72rem;font-weight:700;letter-spacing:.04em;text-transform:uppercase}
@@ -1381,24 +1346,6 @@ html[data-theme="ghost-mint"] .dash-hero button,html[data-theme="ghost-mint-ligh
   background:var(--surface-3);color:var(--text-muted);font-size:.78rem}
 .preview-expiry-soon{color:var(--warn-text);background:color-mix(in srgb,var(--warn) 12%,transparent)}
 
-
-/* --- Desktop top bar (brief §4.5) ---
-   Hidden below 700px, where the existing .rail-mobile-header already carries the same controls. */
-html[data-theme="ghost-mint"] .rail-topbar,
-html[data-theme="ghost-mint-light"] .rail-topbar{
-  grid-area:topbar;display:flex;align-items:center;gap:.6rem;
-  padding:.55rem var(--page-pad);border-bottom:1px solid var(--border);background:var(--surface)}
-.rail-topbar{display:none}
-.rail-topbar-right{margin-left:auto;display:flex;align-items:center;gap:.5rem}
-/* The bell no longer floats fixed in the corner -- it lives in the bar with everything else. */
-html[data-theme="ghost-mint"] .rail-topbar .notification-bell-desktop,
-html[data-theme="ghost-mint-light"] .rail-topbar .notification-bell-desktop{position:static;display:block}
-@media(max-width:700px){
-  html[data-theme="ghost-mint"] .rail-topbar,
-  html[data-theme="ghost-mint-light"] .rail-topbar{display:none}
-  html[data-theme="ghost-mint"] .rail-shell,
-  html[data-theme="ghost-mint-light"] .rail-shell{grid-template-rows:1fr;grid-template-areas:'content'}
-}
 
 /* A merged page's <h1> comes from the merged page itself; the absorbed component contributes a
    lead line under the sub-tab row, not a second title. Two h1s on one page is both a visual
