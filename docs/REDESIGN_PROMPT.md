@@ -759,3 +759,49 @@ failure mode, not a feature.
 The fourth, new in v2, is **Phase 8b** growing beyond two `localStorage` keys.
 Order and rail state, nothing else. If a third key appears, something has been
 misfiled as a layout preference.
+
+---
+
+## Rebuild — starting state (2026-08-18)
+
+Phases 1-4 are committed (`09aab3d`, `3a066ee`) with **behaviour done and design
+fidelity unfinished**. The restyle-toward-the-prototype approach produced
+approximations that never converged. The rebuild inverts it: take the prototype's
+markup and stylesheet as given, then bind data into them.
+
+On disk already:
+
+- `dashboard/src/prototype.css` — the prototype's stylesheet, extracted verbatim.
+  207 classes, 28 tokens, 8 media queries. **Do not hand-edit.**
+- `docs/prototype-pages/*.html` — each page extracted verbatim, plus `_rail.html`.
+  Build against these, not against a description of them.
+
+### The collision finding — read before importing anything
+
+`prototype.css` and `styles.css` **cannot both be loaded**. 23 class names collide,
+and they are load-bearing on both sides:
+
+  blk brand brand-mark card col danger dragh g meter mono notice ok pager ring
+  row sheet-grid spark streak subtabs tab tile tiles toast
+
+`.card`, `.tile`, `.row`, `.notice`, `.g` and `.tab` mean different things in each.
+Importing prototype.css alongside the current stylesheet silently repaints half the
+app with the other file's rules, and which one wins depends on import order — the
+worst possible failure mode, because it looks almost right.
+
+Three tokens exist only in the prototype and must be added when its blocks are
+adopted: `--muted`, `--faint`, `--accent-ink`.
+
+### Therefore, migrate a page at a time, never both stylesheets at once
+
+1. Adopt prototype.css as the ONLY stylesheet for the shell chrome (rail + top bar),
+   porting `_rail.html`'s markup exactly. Fixes search / live chip / bell / avatar
+   in one move, since they stop being reconstructions.
+2. Then Mint, then Wallets, then Home — each from its own `docs/prototype-pages/`
+   file, deleting the corresponding rules from styles.css as each page lands.
+3. Bind the existing data in last. That behaviour is built and tested (477 tests):
+   useLoad, summarize(), /api/profile/limits, the redirects, the palette.
+
+Secondary themes (Clean Vault, Neon Arcade, Quiet Ledger) are released from scope
+by decision on 2026-08-18. Their blocks stay in themes.css and in git history and
+can be restored if one is ever promoted. Light and Dark are the target.
