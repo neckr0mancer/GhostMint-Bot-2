@@ -33,16 +33,6 @@ test('advance on a chat with no flow is a no-op', () => {
   assert.equal(store.advance('telegram', 'chat-1', 'anything'), null);
 });
 
-test('pending-cancel toggles independently of the flow step', () => {
-  const store = createFlowStateStore();
-  store.start('telegram', 'chat-1', 'wallet_create', 'awaiting_label');
-  const marked = store.markPendingCancel('telegram', 'chat-1');
-  assert.equal(marked.pendingCancel, true);
-  const cleared = store.clearPendingCancel('telegram', 'chat-1');
-  assert.equal(cleared.pendingCancel, false);
-  assert.equal(cleared.step, 'awaiting_label');
-});
-
 test('clear fully removes the flow, leaving nothing behind', () => {
   const store = createFlowStateStore();
   store.start('telegram', 'chat-1', 'wallet_create', 'awaiting_label');
@@ -63,13 +53,13 @@ test('a flow older than the TTL is treated as gone and is swept from the store',
   assert.equal(store.advance('telegram', 'chat-1', 'x'), null);
 });
 
-// Regression test: advance/markPendingCancel/clearPendingCancel used to read the map directly
-// without checking expiry themselves, trusting that a caller had already called get() (which does
-// check) first. Every real call site happens to follow that order, but the store didn't enforce it
-// itself -- calling advance() on an expired entry with no prior get() would have silently resurrected
-// a flow that should have been gone. This calls advance() first, with no preceding get(), to prove
-// expiry is self-enforced rather than borrowed from caller discipline.
-test('advance (and the pending-cancel toggles) refuse an expired flow even without a prior get()', () => {
+// Regression test: advance() used to read the map directly without checking expiry itself,
+// trusting that a caller had already called get() (which does check) first. Every real call site
+// happens to follow that order, but the store didn't enforce it itself -- calling advance() on an
+// expired entry with no prior get() would have silently resurrected a flow that should have been
+// gone. This calls advance() first, with no preceding get(), to prove expiry is self-enforced
+// rather than borrowed from caller discipline.
+test('advance refuses an expired flow even without a prior get()', () => {
   let now = 0;
   const store = createFlowStateStore({ ttlMs: 1_000, now: () => now });
   store.start('telegram', 'chat-1', 'wallet_create', 'awaiting_label');
@@ -77,11 +67,6 @@ test('advance (and the pending-cancel toggles) refuse an expired flow even witho
   assert.equal(store.advance('telegram', 'chat-1', 'awaiting_chain'), null,
     'advance must not resurrect an expired flow just because get() was never called on it');
   assert.equal(store.get('telegram', 'chat-1'), null, 'the expired entry must actually be gone, not merely rejected');
-
-  store.start('telegram', 'chat-2', 'wallet_import', 'awaiting_label');
-  now = 3_000;
-  assert.equal(store.markPendingCancel('telegram', 'chat-2'), null);
-  assert.equal(store.clearPendingCancel('telegram', 'chat-2'), null);
 });
 
 // Regression test: `flows` only shed an entry via clear() or a get() call that happened to land on

@@ -3,7 +3,7 @@ const test = require('node:test');
 const {
   mainMenu, walletsMenu, settingsMenu, tasksMenu, chainPicker, walletPicker,
   contractDetails, contractDetailsText, collectionInfoCard, mintConfirmation, gasTolerancePrompt,
-  taskConfirmation, taskScheduled, confirmCancelPrompt, confirmRemoveWallet, placeholderMenu,
+  taskConfirmation, taskScheduled, confirmRemoveWallet, placeholderMenu,
 } = require('../src/telegram/menus');
 
 function flatButtons(replyMarkup) {
@@ -57,13 +57,6 @@ test('wallet picker lists each wallet with a prefixed callback and its chain in 
   const buttons = flatButtons(picker.replyMarkup);
   assert.deepEqual(buttons.map(b => b.callback_data), ['wallet:balance:main', 'wallet:balance:spare', 'menu:wallets']);
   assert.match(buttons[0].text, /main.*ethereum/);
-});
-
-test('the cancel-confirmation prompt names the in-progress flow and offers both outcomes', () => {
-  const prompt = confirmCancelPrompt('wallet creation');
-  assert.match(prompt.text, /wallet creation/);
-  const buttons = flatButtons(prompt.replyMarkup);
-  assert.deepEqual(buttons.map(b => b.callback_data), ['flow:cancel:confirm', 'flow:cancel:resume']);
 });
 
 test('the remove-wallet confirmation embeds the exact label being removed', () => {

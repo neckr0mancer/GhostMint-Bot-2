@@ -872,14 +872,6 @@ function retryStepForField(error) {
   return null;
 }
 
-// A user's currently-selected transaction-mode preset (Section C / Milestone 7a) is the only
-// place "skip confirmation" is configured -- /mintnow reads it rather than having its own
-// separate bypass toggle, so degen-mode behavior stays consistent everywhere it applies.
-async function isVerificationBypassed(userId, chain) {
-  const effective = await governanceRepository.getEffectiveGovernance(userId, chain);
-  return effective.preset?.humanVerification === 'bypass';
-}
-
 // Entry point for /mint, /mintnow, /batch, and the "Mint" menu button. With no contract address
 // yet, starts the guided flow at awaiting_contract. With one (typed inline, or sent as the
 // awaiting_contract reply), runs the same full detection the dashboard's auto-detect uses (chain,
@@ -888,10 +880,10 @@ async function isVerificationBypassed(userId, chain) {
 // single picks exactly one (mint).
 //
 // oneShot (/mintnow only) means "skip confirmation," not "skip asking for things that aren't
-// known yet" -- it only takes effect once the user has actually opted into a bypass-verification
-// mode preset (isVerificationBypassed), and even then only the redundant final confirm tap is
-// skipped: a missing wallet pick or unresolvable price is still asked for, same as /mint. With
-// exactly one wallet and a known price -- the common case -- this reaches execution with zero taps.
+// known yet": typing /mintnow is itself the user's explicit opt-in, unconditional -- no separate
+// Degen/Fast mode preset required -- but a missing wallet pick or unresolvable price is still
+// asked for, same as /mint. With exactly one wallet and a known price -- the common case -- this
+// reaches execution with zero taps.
 async function startMintFlow({ chatId, messageId, userId, multi, contractAddressInput, oneShot = false }) {
   const send = payload => tgUpdate(chatId, messageId, payload);
   if (!contractAddressInput) {
@@ -911,7 +903,11 @@ async function startMintFlow({ chatId, messageId, userId, multi, contractAddress
     }
     throw error;
   }
-  const skipConfirm = oneShot && !multi && await isVerificationBypassed(userId, detected.chain);
+  // /mintnow is the user's own explicit "skip confirmation" -- typing this command already
+  // expresses that intent, so it no longer also requires a Degen/Fast transaction-mode preset.
+  // Every other safety layer (governance ceilings, simulation, gas ceiling) is unaffected: those
+  // live in transactionEngine.js and apply regardless of this confirm-screen skip.
+  const skipConfirm = oneShot && !multi;
   const data = {
     multi, contractAddress, chain: detected.chain, selectedWallets: [],
     isSeaDrop: detected.isSeaDrop,
@@ -1471,7 +1467,6 @@ async function handleFlowTextMessage(msg) {
     }
     return;
   }
-  if (flow.pendingCancel) { await tgDeleteUserMessage(msg); tgRender(chatId, telegramMenus.confirmCancelPrompt(FLOW_LABELS[flow.flow] || flow.flow)); return; }
   const isTextStep = (flow.flow === 'wallet_create' && flow.step === 'awaiting_label')
     || (flow.flow === 'wallet_import' && (flow.step === 'awaiting_label' || flow.step === 'awaiting_key'))
     || (flow.flow === 'mint_guided' && ['awaiting_contract', 'awaiting_quantity', 'awaiting_price', 'awaiting_gastolerance'].includes(flow.step))
@@ -1635,24 +1630,18 @@ function withTelegramCallback(handler) {
 
       const data = query.data || '';
       const activeFlow = telegramFlowState.get('telegram', chatId);
-      const isCancelControl = data === 'flow:cancel:confirm' || data === 'flow:cancel:resume'
-        || data === 'confirm:pending' || data === 'cancel:pending';
-      if (activeFlow && !isCancelControl) {
+      const isPendingControl = data === 'confirm:pending' || data === 'cancel:pending';
+      // A tap that doesn't belong to whatever flow is currently active implicitly abandons it and
+      // proceeds with the new action -- no confirmation needed, trimmed per user feedback. The
+      // explicit Cancel button (flow:cancel:ask) is handled the same way below: straight to the
+      // main menu, no "are you sure" step first.
+      if (activeFlow && !isPendingControl && data !== 'flow:cancel:ask') {
         const allowed = FLOW_CONTINUATION_PREFIXES[activeFlow.flow] || [];
-        if (!allowed.some(prefix => data.startsWith(prefix))) {
-          telegramFlowState.markPendingCancel('telegram', chatId);
-          await tgEditMenu(chatId, messageId, telegramMenus.confirmCancelPrompt(FLOW_LABELS[activeFlow.flow] || activeFlow.flow));
-          return;
-        }
+        if (!allowed.some(prefix => data.startsWith(prefix))) telegramFlowState.clear('telegram', chatId);
       }
-      if (data === 'flow:cancel:confirm') {
+      if (data === 'flow:cancel:ask') {
         telegramFlowState.clear('telegram', chatId);
         await tgEditMenu(chatId, messageId, telegramMenus.mainMenu({ isOwner: await governanceRepository.isOwner(userId) }));
-        return;
-      }
-      if (data === 'flow:cancel:resume') {
-        const flow = telegramFlowState.clearPendingCancel('telegram', chatId);
-        await tgEditMenu(chatId, messageId, flow ? renderFlowStep(flow.flow, flow.step, { userId, data: flow.data }) : telegramMenus.mainMenu({ isOwner: await governanceRepository.isOwner(userId) }));
         return;
       }
       if (data === 'confirm:pending' || data === 'cancel:pending') {
@@ -1712,12 +1701,9 @@ function withTelegramUser(handler) {
       context=verifyTelegramContext(msg);
       userId=await identity.resolveOrCreate('telegram',context.platformUserId);
       await governance.checkAccountStatus(userId);
-      const activeFlow=telegramFlowState.get('telegram',context.contextId);
-      if(activeFlow) {
-        telegramFlowState.markPendingCancel('telegram',context.contextId);
-        await tgRender(msg.chat.id, telegramMenus.confirmCancelPrompt(FLOW_LABELS[activeFlow.flow]||activeFlow.flow));
-        return;
-      }
+      // Running a different command mid-flow implicitly abandons whatever was in progress -- no
+      // confirmation needed, trimmed per user feedback.
+      if(telegramFlowState.get('telegram',context.contextId)) telegramFlowState.clear('telegram',context.contextId);
       const command=commandName(msg.text||msg.caption);
       if(['mintnow','mintcall','mintpreset','admin','watch','confirmtrigger','targetpolicy','updatesniper','importwallet'].includes(command)) {
         commandRateLimiter.check('telegram',userId,command);
@@ -1771,6 +1757,7 @@ if (BOT_TOKEN) {
   bot.setMyCommands([
     { command: 'start', description: 'Open the main menu' },
     { command: 'mint', description: 'Mint from a contract' },
+    { command: 'info', description: 'Look up a contract without minting' },
     { command: 'send', description: 'Send funds to an address' },
     { command: 'wallets', description: 'List your wallets' },
     { command: 'address', description: 'Get your wallet address' },
@@ -2254,12 +2241,20 @@ send /mint with a contract address to get going.`;
   }));
 
   // /mintnow is /mint with oneShot:true: once the contract, a single wallet, and the price are all
-  // resolvable AND the caller has opted into a bypass-verification transaction mode (Section C), it
-  // reaches execution with zero taps -- "mint immediately without asking questions." Anything the
-  // system genuinely can't resolve (multiple wallets, an unreadable price) is still asked for, and
-  // without bypass mode selected it behaves exactly like /mint, never a silent no-op.
+  // resolvable, it reaches execution with zero taps -- "mint immediately without asking questions."
+  // Anything the system genuinely can't resolve (multiple wallets, an unreadable price) is still
+  // asked for, never a silent no-op. Unconditional: typing this command is itself the user's
+  // explicit opt-in, no separate transaction-mode preset required (see startMintFlow).
   bot.onText(/^\/mintnow(?:@\w+)?(?:\s+(\S+))?$/, withTelegramUser(async (msg, match, userId) => {
     await startMintFlow({ chatId: msg.chat.id, messageId: null, userId, multi: false, contractAddressInput: match[1] || null, oneShot: true });
+  }));
+
+  // Read-only lookup: shows exactly the same collection card /mint's own awaiting_details step
+  // does (price, stats, supply, opening time), useful for checking a collection without any
+  // mint-intent implied -- Mint Now still works from the card if the user decides to go ahead,
+  // reusing the same guided flow rather than a separate, duplicated code path.
+  bot.onText(/^\/info(?:@\w+)?(?:\s+(\S+))?$/, withTelegramUser(async (msg, match, userId) => {
+    await startMintFlow({ chatId: msg.chat.id, messageId: null, userId, multi: false, contractAddressInput: match[1] || null });
   }));
 
   bot.onText(/^\/batch(?:@\w+)?(?:\s+(\S+))?$/, withTelegramUser(async (msg, match, userId) => {

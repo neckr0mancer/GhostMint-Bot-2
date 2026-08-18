@@ -512,17 +512,6 @@ function confirmRemoveWatchRule(rule) {
   };
 }
 
-function confirmCancelPrompt(flowLabel) {
-  return {
-    text: `You're mid-<b>${escapeTelegramHtml(flowLabel)}</b>. Bail and head back to base? Your progress gets wiped, no take-backs.`,
-    replyMarkup: keyboard([
-      [button('✅ Yes, cancel and go back', 'flow:cancel:confirm')],
-      [button('↩️ No, keep going', 'flow:cancel:resume')],
-    ]),
-    parseMode: 'HTML',
-  };
-}
-
 function confirmRemoveWallet(label) {
   return {
     text: `Remove wallet <b>${escapeTelegramHtml(label)}</b>? This is permanent, no undo button.`,
@@ -554,7 +543,6 @@ module.exports = {
   taskConfirmation,
   taskScheduled,
   exportKeyWarning,
-  confirmCancelPrompt,
   confirmRemoveWallet,
   watchTypeSelect,
   watchMethodSelect,

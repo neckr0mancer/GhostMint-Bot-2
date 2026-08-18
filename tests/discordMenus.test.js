@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const {
   mainMenu, walletsMenu, settingsMenu, chainSelect, walletSelect,
-  confirmCancelPrompt, confirmRemoveWallet, placeholderMenu, labelModal, collectionInfoCard,
+  confirmRemoveWallet, placeholderMenu, labelModal, collectionInfoCard,
   taskNameQuickPicks, taskConfirmation,
 } = require('../src/discord/menus');
 
@@ -64,13 +64,6 @@ test('wallet select lists each wallet as an option with its chain in the label',
   assert.deepEqual(options.map(o => o.value), ['main', 'spare']);
   assert.match(options[0].label, /main.*ethereum/);
   assert.equal(selectComponent(picker.components).custom_id, 'wallet:balance:select');
-});
-
-test('the cancel-confirmation prompt names the in-progress flow and offers both outcomes', () => {
-  const prompt = confirmCancelPrompt('wallet creation');
-  assert.match(prompt.content, /wallet creation/);
-  const buttons = flatButtons(prompt.components);
-  assert.deepEqual(buttons.map(b => b.custom_id), ['flow:cancel:confirm', 'flow:cancel:resume']);
 });
 
 test('the remove-wallet confirmation embeds the exact label being removed', () => {

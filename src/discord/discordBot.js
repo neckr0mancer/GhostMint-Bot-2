@@ -73,14 +73,24 @@ function commandDefinitions({ supportedChains = [], chains = {} } = {}) {
       .addStringOption(o => o.setName('label-prefix').setDescription('Label prefix; wallets are named prefix-1, prefix-2, ...'))));
   commands.push(new SlashCommandBuilder().setName('deposit').setDescription('💰 Get a wallet address to fund')
     .addStringOption(o => o.setName('label').setDescription('Wallet label (optional if you have only one)').setAutocomplete(true)));
+  // Only contract is required -- wallet/quantity used to be mandatory too, which meant this could
+  // never auto-detect which chain the contract actually lives on (it silently defaulted to the
+  // wallet's own home chain instead, and SeaDrop discovery against the wrong chain is exactly what
+  // produced the confusing "priceETH could not be determined" error). Omitting wallet or quantity
+  // now routes through the same auto-detecting collection card the paste flow already uses (see
+  // the 'mint' case below) instead of attempting a one-shot mint with a guessed chain.
   commands.push(new SlashCommandBuilder().setName('mint').setDescription('⚡ Execute a supported mint')
-    .addStringOption(o => o.setName('wallet').setDescription('Wallet label').setRequired(true).setAutocomplete(true))
     .addStringOption(o => o.setName('contract').setDescription('Contract address').setRequired(true))
-    .addIntegerOption(o => o.setName('quantity').setDescription('Quantity').setMinValue(1).setRequired(true))
+    .addStringOption(o => o.setName('wallet').setDescription('Wallet label (omit to see the collection card first)').setAutocomplete(true))
+    .addIntegerOption(o => o.setName('quantity').setDescription('Quantity (omit to see the collection card first)').setMinValue(1))
     // Not required: price is read from the contract when possible (mintPrice/price/cost/etc.).
     // Only needed if the contract doesn't expose a recognized price getter.
     .addNumberOption(o => o.setName('price').setDescription('Native price per item (only if the contract does not expose one)').setMinValue(0))
-    .addStringOption(o => chainOption(o, { description: 'Chain (defaults to wallet chain)' })));
+    .addStringOption(o => chainOption(o, { description: 'Chain (auto-detected when omitted)' })));
+  // Read-only lookup: shows the same collection card as an under-specified /mint, with no
+  // mint-intent implied. Mint Now still works from the card if the user decides to go ahead.
+  commands.push(new SlashCommandBuilder().setName('info').setDescription('🔍 Look up a contract without minting')
+    .addStringOption(o => o.setName('contract').setDescription('Contract address').setRequired(true)));
   commands.push(new SlashCommandBuilder().setName('batch-mint').setDescription('⚡ Mint from multiple wallets')
     .addStringOption(o => o.setName('wallets').setDescription('Comma-separated wallet labels').setRequired(true))
     .addStringOption(o => o.setName('contract').setDescription('Contract address').setRequired(true))
@@ -338,7 +348,12 @@ async function finishTaskScheduleDiscord(ctx, respond, platformUserId, userId, f
 // below reuses. skipConfirm is always false here -- Telegram's own bare-paste trigger never
 // bypasses confirmation either; that's /mintnow-specific and out of scope for a plain paste on
 // either platform.
-async function startMintGuidedFlow(ctx, respond, platformUserId, userId, contractAddressInput) {
+// originMessagePublic defaults to true (the paste-detection trigger: a public message.reply that
+// needs neutralizing on the owner's first touch) but is false for /mint's own under-specified-args
+// path below, whose response is already ephemeral from interaction.deferReply -- there is no
+// public origin message to neutralize, and treating it as one would try to reply a second time to
+// an interaction that already replied.
+async function startMintGuidedFlow(ctx, respond, platformUserId, userId, contractAddressInput, { originMessagePublic = true } = {}) {
   const { commands, flowState, chains } = ctx;
   const contractAddress = await commands.resolveMintContractInput(contractAddressInput);
   if (!contractAddress) return undefined;
@@ -360,7 +375,7 @@ async function startMintGuidedFlow(ctx, respond, platformUserId, userId, contrac
     stats: detected.stats,
     openSeaUrl: OPENSEA_CHAIN_SLUGS[detected.chain] ? `https://opensea.io/assets/${OPENSEA_CHAIN_SLUGS[detected.chain]}/${contractAddress}` : null,
     skipConfirm: false,
-    originMessagePublic: true,
+    originMessagePublic,
   };
   flowState.start('discord', platformUserId, 'mint_guided', 'awaiting_details', data);
   return respond(mintFlowRenderPayload('awaiting_details', data, { chains }));
@@ -386,24 +401,17 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
       await enforceAccountStatus(userId);
       const platformUserId = context.platformUserId;
 
+      // A tap that doesn't belong to whatever flow is currently active implicitly abandons it and
+      // proceeds with the new action -- no confirmation needed, trimmed per user feedback. The
+      // explicit Cancel button (flow:cancel:ask) is handled the same way: straight to the main
+      // menu, no "are you sure" step first.
       const activeFlow = flowState.get('discord', platformUserId);
-      const isCancelControl = data === 'flow:cancel:confirm' || data === 'flow:cancel:resume' || data === 'flow:cancel:ask';
-      if (activeFlow && !isCancelControl && !(FLOW_CONTINUATIONS[activeFlow.flow] || []).includes(data)) {
-        flowState.markPendingCancel('discord', platformUserId);
-        return dcRespond(interaction, discordMenus.confirmCancelPrompt(FLOW_LABELS[activeFlow.flow] || activeFlow.flow));
+      if (activeFlow && data !== 'flow:cancel:ask' && !(FLOW_CONTINUATIONS[activeFlow.flow] || []).includes(data)) {
+        flowState.clear('discord', platformUserId);
       }
-
       if (data === 'flow:cancel:ask') {
-        const flow = flowState.markPendingCancel('discord', platformUserId);
-        return dcRespond(interaction, discordMenus.confirmCancelPrompt(FLOW_LABELS[flow?.flow] || 'this flow'));
-      }
-      if (data === 'flow:cancel:confirm') {
         flowState.clear('discord', platformUserId);
         return dcRespond(interaction, discordMenus.mainMenu({ isOwner: await ownerFlag(userId) }));
-      }
-      if (data === 'flow:cancel:resume') {
-        const flow = flowState.clearPendingCancel('discord', platformUserId);
-        return dcRespond(interaction, flow ? renderFlowStep(flow.flow, flow.step, { supportedChains, chains }) : discordMenus.mainMenu({ isOwner: await ownerFlag(userId) }));
       }
 
       if (data === 'menu:main') return dcRespond(interaction, discordMenus.mainMenu({ isOwner: await ownerFlag(userId) }));
@@ -781,7 +789,6 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
       await enforceAccountStatus(userId);
       const flow = flowState.get('discord', platformUserId);
       if (!flow) { await interaction.reply({ content: 'This step has expired. Open the Wallets menu again.', ephemeral: true }).catch(() => {}); return; }
-      if (flow.pendingCancel) { await interaction.reply({ ...discordMenus.confirmCancelPrompt(FLOW_LABELS[flow.flow] || flow.flow), ephemeral: true }).catch(() => {}); return; }
 
       if (data === 'flow:label:submit') {
         const value = String(interaction.fields.getTextInputValue('value') || '').trim();
@@ -920,12 +927,9 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
     let context,userId=null;
     try {
       context=verifyDiscordContext(interaction, allowedGuildId, { allowedChannelIds });
-      const activeFlow = flowState.get('discord', context.platformUserId);
-      if (activeFlow) {
-        flowState.markPendingCancel('discord', context.platformUserId);
-        await interaction.reply({ ...discordMenus.confirmCancelPrompt(FLOW_LABELS[activeFlow.flow] || activeFlow.flow), ephemeral: true });
-        return;
-      }
+      // Running a different command mid-flow implicitly abandons whatever was in progress -- no
+      // confirmation needed, trimmed per user feedback.
+      if (flowState.get('discord', context.platformUserId)) flowState.clear('discord', context.platformUserId);
       await interaction.deferReply({ ephemeral: true });
       const discordId = context.platformUserId;
       if (interaction.commandName === 'link') {
@@ -987,8 +991,27 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
           break;
         }
         case 'mint': {
-          const result = await commands.mint(userId, { walletLabel: interaction.options.getString('wallet'), contractAddress: interaction.options.getString('contract'), quantity: interaction.options.getInteger('quantity'), priceETH: interaction.options.getNumber('price'), chain: interaction.options.getString('chain') });
+          const walletLabel = interaction.options.getString('wallet');
+          const quantity = interaction.options.getInteger('quantity');
+          if (!walletLabel || quantity === null) {
+            // Under-specified: auto-detect which chain the contract actually lives on and show the
+            // collection card, same as pasting the address, rather than guessing the wallet's own
+            // home chain (see startMintGuidedFlow's originMessagePublic note on why false here).
+            const started = await startMintGuidedFlow(mintCtx, payload => interaction.editReply(payload),
+              context.platformUserId, userId, interaction.options.getString('contract'), { originMessagePublic: false });
+            if (started !== undefined) return;
+            message = 'Could not find this contract on any supported chain. Double-check the address.';
+            break;
+          }
+          const result = await commands.mint(userId, { walletLabel, contractAddress: interaction.options.getString('contract'), quantity, priceETH: interaction.options.getNumber('price'), chain: interaction.options.getString('chain') });
           message = `Mint ${result.state}: ${result.txHash || result.intentId}`; break;
+        }
+        case 'info': {
+          const started = await startMintGuidedFlow(mintCtx, payload => interaction.editReply(payload),
+            context.platformUserId, userId, interaction.options.getString('contract'), { originMessagePublic: false });
+          if (started !== undefined) return;
+          message = 'Could not find this contract on any supported chain. Double-check the address.';
+          break;
         }
         case 'batch-mint': {
           const results = await commands.batchMint(userId, { walletLabels: interaction.options.getString('wallets').split(',').map(v => v.trim()), contractAddress: interaction.options.getString('contract'), quantity: interaction.options.getInteger('quantity'), priceETH: interaction.options.getNumber('price'), chain: interaction.options.getString('chain') });
@@ -1108,14 +1131,9 @@ async function handleMintPasteMessage({ identity, commands, flowState, chains, r
     if (typeof checkAccountStatus === 'function') await checkAccountStatus(userId);
     const platformUserId = context.platformUserId;
     // Mirrors the mid-flow divergence handling every slash command and component already gets: a
-    // second paste while a flow (mint or otherwise) is already in progress asks before discarding
-    // it, rather than silently starting over or silently doing nothing.
-    const existingFlow = flowState.get('discord', platformUserId);
-    if (existingFlow) {
-      flowState.markPendingCancel('discord', platformUserId);
-      await message.reply(discordMenus.confirmCancelPrompt(FLOW_LABELS[existingFlow.flow] || existingFlow.flow)).catch(() => {});
-      return;
-    }
+    // second paste while a flow (mint or otherwise) is already in progress implicitly abandons it
+    // and starts fresh with the new address -- no confirmation needed, trimmed per user feedback.
+    if (flowState.get('discord', platformUserId)) flowState.clear('discord', platformUserId);
     await startMintGuidedFlow({ commands, flowState, chains, rateLimiter }, payload => message.reply(payload).catch(() => {}), platformUserId, userId, trimmed);
   } catch { /* not address-shaped, unauthorized context, blocked account, or lookup failure -- ignore */ }
 }

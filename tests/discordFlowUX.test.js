@@ -111,47 +111,31 @@ test('selecting a chain completes wallet creation through the shared botCommandS
   assert.match(after.updates[0].content, /Mint/);
 });
 
-test('navigating to a different menu mid-flow prompts for cancel confirmation instead of silently switching', async () => {
+test('navigating to a different menu mid-flow silently abandons it and switches immediately, no confirmation', async () => {
   const handler = createDiscordInteractionHandler({ identity: { resolveOrCreate: async () => 'internal-user' }, commands: {} });
   await handler(buttonInteraction('wallet:create:start', 'flow-user-4'));
   const divert = buttonInteraction('menu:mint', 'flow-user-4');
   await handler(divert);
-  assert.match(divert.updates[0].content, /creating a wallet/);
-  assert.deepEqual(divert.updates[0].components[0].components.map(b => b.custom_id), ['flow:cancel:confirm', 'flow:cancel:resume']);
+  assert.match(divert.updates[0].content, /Mint/);
+
+  // the abandoned flow must actually be gone -- a follow-up tap that only makes sense mid-wallet-
+  // creation (submitting the label modal) must not still be honored.
+  const stray = modalInteraction('flow:label:submit', { value: 'late' }, 'flow-user-4');
+  await handler(stray);
+  assert.match(stray.replies[0].content, /expired/);
 });
 
-test('confirming the cancel fully clears the flow and returns to the main menu', async () => {
+test('a slash command issued mid-flow silently abandons the flow and runs normally, no confirmation', async () => {
   const handler = createDiscordInteractionHandler({ identity: { resolveOrCreate: async () => 'internal-user' }, commands: {} });
-  await handler(buttonInteraction('wallet:create:start', 'flow-user-5'));
-  await handler(buttonInteraction('menu:mint', 'flow-user-5'));
-  const confirm = buttonInteraction('flow:cancel:confirm', 'flow-user-5');
-  await handler(confirm);
-  assert.match(confirm.updates[0].content, /GhostMint/);
-  const afterCancel = buttonInteraction('menu:wallets', 'flow-user-5');
-  await handler(afterCancel);
-  assert.match(afterCancel.updates[0].content, /Wallets/);
-});
-
-test('choosing to keep going resumes the exact step the flow was on', async () => {
-  const handler = createDiscordInteractionHandler({
-    identity: { resolveOrCreate: async () => 'internal-user' }, commands: {},
-    supportedChains: ['ethereum'], chains: { ethereum: { name: 'Ethereum' } },
-  });
-  await handler(buttonInteraction('wallet:create:start', 'flow-user-6'));
-  await handler(modalInteraction('flow:label:submit', { value: 'resumed' }, 'flow-user-6'));
-  await handler(buttonInteraction('menu:mint', 'flow-user-6'));
-  const resume = buttonInteraction('flow:cancel:resume', 'flow-user-6');
-  await handler(resume);
-  assert.match(resume.updates[0].content, /Choose a chain/);
-});
-
-test('a slash command issued mid-flow is intercepted with a cancel-confirmation prompt instead of running', async () => {
-  const handler = createDiscordInteractionHandler({ identity: { resolveOrCreate: async () => 'internal-user' }, commands: { wallets: () => [] } });
   await handler(buttonInteraction('wallet:create:start', 'flow-user-7'));
-  const slash = chatInteraction('wallet', 'flow-user-7');
+  const slash = chatInteraction('menu', 'flow-user-7');
   await handler(slash);
-  assert.equal(slash.deferred, false);
-  assert.match(slash.replies[0].content, /creating a wallet/);
+  assert.equal(slash.deferred, true, 'the command actually ran (deferred+replied), not intercepted');
+  assert.match(slash.replies[0].content, /GhostMint/);
+
+  const stray = modalInteraction('flow:label:submit', { value: 'late' }, 'flow-user-7');
+  await handler(stray);
+  assert.match(stray.replies[0].content, /expired/);
 });
 
 test('the remove-wallet select flow requires an explicit confirmation before permanently removing it', async () => {

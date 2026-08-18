@@ -48,41 +48,22 @@ function createFlowStateStore({ ttlMs = DEFAULT_TTL_MS, now = () => Date.now(), 
       return activeEntry(platform, chatId);
     },
 
-    // Starts or replaces a flow outright (no confirmation) — used once the user has already
-    // agreed to abandon whatever was there before, or when starting fresh.
+    // Starts or replaces a flow outright -- used both for a genuinely fresh flow and for
+    // implicitly abandoning whatever was there before (mid-flow divergence no longer asks for
+    // confirmation first; the caller just clears, then starts the new one).
     start(platform, chatId, flow, step, data = {}) {
       sweepIfLarge();
-      const value = { flow, step, data, updatedAt: now(), pendingCancel: false };
+      const value = { flow, step, data, updatedAt: now() };
       flows.set(key(platform, chatId), value);
       return value;
     },
 
-    // Advances the current flow to a new step without asking for confirmation (normal forward
-    // progress within the same guided flow).
+    // Advances the current flow to a new step (normal forward progress within the same guided flow).
     advance(platform, chatId, step, data) {
       const existing = activeEntry(platform, chatId);
       if (!existing) return null;
       existing.step = step;
       if (data !== undefined) existing.data = { ...existing.data, ...data };
-      existing.updatedAt = now();
-      existing.pendingCancel = false;
-      return existing;
-    },
-
-    // Marks the current flow as "about to be abandoned" so the next explicit confirm/resume
-    // action is unambiguous even if further unrelated messages arrive in between.
-    markPendingCancel(platform, chatId) {
-      const existing = activeEntry(platform, chatId);
-      if (!existing) return null;
-      existing.pendingCancel = true;
-      existing.updatedAt = now();
-      return existing;
-    },
-
-    clearPendingCancel(platform, chatId) {
-      const existing = activeEntry(platform, chatId);
-      if (!existing) return null;
-      existing.pendingCancel = false;
       existing.updatedAt = now();
       return existing;
     },

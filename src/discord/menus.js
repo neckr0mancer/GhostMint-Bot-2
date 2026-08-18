@@ -397,16 +397,6 @@ function confirmRemoveWatchRule(rule) {
   };
 }
 
-function confirmCancelPrompt(flowLabel) {
-  return {
-    content: `You're in the middle of **${flowLabel}**. Leave it and go back to the menu? Your progress will be cleared.`,
-    components: [row([
-      button('✅ Yes, cancel and go back', 'flow:cancel:confirm', 'danger'),
-      button('↩️ No, keep going', 'flow:cancel:resume', 'secondary'),
-    ])],
-  };
-}
-
 function confirmRemoveWallet(label) {
   return {
     content: `Remove wallet **${label}**? This cannot be undone.`,
@@ -430,7 +420,7 @@ function labelModal({ customId, title, placeholder = '', style = 'short', maxLen
 
 module.exports = {
   button, row, select, mainMenu, walletsMenu, settingsMenu, placeholderMenu,
-  chainSelect, walletSelect, confirmCancelPrompt, confirmRemoveWallet, labelModal,
+  chainSelect, walletSelect, confirmRemoveWallet, labelModal,
   contractDetailsText, collectionInfoCard, mintQuantitySelect, mintPriceStep, mintConfirmation, numberModal,
   taskNameQuickPicks, taskConfirmation,
   watchTypeSelect, watchMethodSelect, watchConfigModal, watchRuleConfirmation,

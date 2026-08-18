@@ -23,7 +23,7 @@ function interaction({ commandName, userId = 'discord-user', subcommand = null, 
 test('Discord command definitions include the complete Milestone 10a surface', () => {
   const definitions = commandDefinitions();
   const names = definitions.map(command => command.name);
-  assert.deepEqual(names, ['menu', 'wallet', 'deposit', 'mint', 'batch-mint', 'task', 'activity', 'pnl', 'gas', 'sniper', 'mode', 'admin', 'link', 'watch', 'social-usage', 'target-policy', 'confirm-trigger', 'trigger-audit', 'pending', 'transactions']);
+  assert.deepEqual(names, ['menu', 'wallet', 'deposit', 'mint', 'info', 'batch-mint', 'task', 'activity', 'pnl', 'gas', 'sniper', 'mode', 'admin', 'link', 'watch', 'social-usage', 'target-policy', 'confirm-trigger', 'trigger-audit', 'pending', 'transactions']);
   const wallet = definitions.find(command => command.name === 'wallet');
   const create = wallet.options.find(option => option.name === 'create');
   const imported = wallet.options.find(option => option.name === 'import');
@@ -52,8 +52,8 @@ test('every chain option offers the actual configured chains as a picker instead
   const mint = definitions.find(command => command.name === 'mint');
   const mintChain = mint.options.find(option => option.name === 'chain');
   assert.deepEqual(namesAndValues(mintChain.choices), expectedChoices);
-  assert.equal(mintChain.required, false, 'mint chain stays optional -- it defaults to the wallet chain');
-  assert.match(mintChain.description, /defaults to wallet chain/);
+  assert.equal(mintChain.required, false, 'mint chain stays optional -- auto-detected when omitted');
+  assert.match(mintChain.description, /auto-detected/);
 
   const batchMint = definitions.find(command => command.name === 'batch-mint');
   const batchMintChain = batchMint.options.find(option => option.name === 'chain');
