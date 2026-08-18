@@ -265,7 +265,7 @@ function parseTelegram() {
   return { botToken: optionalString('TELEGRAM_BOT_TOKEN') };
 }
 
-const SNOWFLAKE = /^d{17,20}$/;
+const SNOWFLAKE = /^\d{17,20}$/;
 
 function parseDiscord() {
   const botToken = optionalString('DISCORD_BOT_TOKEN');
