@@ -892,8 +892,6 @@ html[data-theme="ghost-mint"] .dash-hero button,html[data-theme="ghost-mint-ligh
   padding:.75rem 1rem;font-size:.8rem}
 :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) th{
   font-size:.68rem;background:var(--surface)}
-:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .pager{
-  gap:1rem;margin:1.25rem 0;font-size:.8rem}
 :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .activity-feed{gap:.625rem}
 :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .activity-feed .feed-item{
   padding:1rem 1.125rem}

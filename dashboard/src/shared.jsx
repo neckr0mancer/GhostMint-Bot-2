@@ -257,7 +257,9 @@ export function Skeleton({rows=3,variant='card'}){
 // next. Not "Previous / Page 1 of 3 / Next" -- the numbers are the control, the arrows are the
 // nudge. Window of five keeps a long list from spilling its own row.
 export function Pager({value,page,setPage}){
-  if(!value||!value.totalPages)return null;
+  // Nothing to page through, nothing to say. A pager over an empty or single-page list is
+  // noise: its whole job is to report what is being truncated, and neither case truncates.
+  if(!value||!value.total||value.totalPages<=1)return null;
   const total=value.totalPages;
   const first=Math.max(1,Math.min(page-2,total-4));
   const numbers=[];

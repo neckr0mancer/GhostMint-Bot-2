@@ -501,7 +501,7 @@ function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSear
   // just-changed value directly since setState hasn't applied yet inside the same onChange handler.
   function autoDetectIfReady(value=contractAddress){const trimmed=value.trim();if(ADDRESS_SHAPE.test(trimmed)&&trimmed!==lastDetected.current)detect(trimmed);}
   function handleContractBlur(){autoDetectIfReady();}
-  async function create(event){event.preventDefault();const form=event.currentTarget;try{const input=Object.fromEntries(new FormData(form));if(!input.priceETH)delete input.priceETH;if(input.mintTime)input.mintTime=new Date(input.mintTime).toISOString();else delete input.mintTime;await api('/api/tasks',{method:'POST',body:JSON.stringify(input)});form.reset();setContractAddress('');setQuantity('1');setPriceETH('');setMintTime('');lastDetected.current='';notify('Task scheduled.',{type:'success'});listing.load();}catch(value){notify(value.message,{type:'error'});}}async function control(id,action){if(action==='cancel'&&!await confirmDialog('Cancel this scheduled task?'))return;try{await api(`/api/tasks/${id}/control`,{method:'POST',body:JSON.stringify({action,confirmation:action==='cancel'?'CONFIRM':undefined})});listing.load();}catch(value){notify(value.message,{type:'error'});}}
+  async function create(event){event.preventDefault();const form=event.currentTarget;try{const input=Object.fromEntries(new FormData(form));if(!input.priceETH)delete input.priceETH;if(input.mintTime)input.mintTime=new Date(input.mintTime).toISOString();else delete input.mintTime;await api('/api/tasks',{method:'POST',body:JSON.stringify(input)});form.reset();setContractAddress('');setQuantity('1');setPriceETH('');setMintTime('');lastDetected.current='';notify('Task scheduled.',{type:'success'});listing.load();}catch(value){notify(value.message,{type:'error'});}}async function control(id,action){if(action==='cancel'&&!await confirmDialog('Delete this scheduled mint? It will not fire, and this cannot be undone.'))return;try{await api(`/api/tasks/${id}/control`,{method:'POST',body:JSON.stringify({action,confirmation:action==='cancel'?'CONFIRM':undefined})});listing.load();}catch(value){notify(value.message,{type:'error'});}}
   // Prototype docs/prototype-pages/mint.html:111-158. The Schedule tab is a .split: the form on
   // the left, the "Scheduled" list on the right. The old page-lead, the search toolbar, the chain
   // select and the table UNDER the form are all gone -- none of them exist in the design, and the
@@ -509,12 +509,26 @@ function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSear
   const walletsArrived=wallets.data!==null&&wallets.data!==undefined;
   const noWallets=walletsArrived&&wallets.data.length===0;
   const items=listing.data?.items;
-  const pending=items?items.filter(task=>String(task.status).toLowerCase()==='scheduled').length:0;
+  // The prototype's chip reads "2 pending" above THREE rows -- Scheduled, Paused, Failed. So
+  // "pending" means not-yet-fired: a paused mint still counts, a failed one does not. Counting
+  // only status==="scheduled" would have printed 1 against the same three rows.
+  const PENDING_STATUSES=new Set(['scheduled','paused','pending','queued']);
+  const pending=items?items.filter(task=>PENDING_STATUSES.has(String(task.status).toLowerCase())).length:0;
   function rowIcon(status){
     const value=String(status||'').toLowerCase();
     if(value==='paused')return <div className="ri">{PAUSE_ICON}</div>;
     if(value==='failed'||value==='error')return <div className="ri" style={{color:'var(--loss-text)'}}>{CROSS_ICON}</div>;
     return <div className="ri">{CLOCK_ICON_LG}</div>;
+  }
+  // Pause applies while a mint is still going to fire; Resume only to a paused one; Retry only
+  // to one that has already failed. Cancel is always available and is handled separately, since it
+  // is destructive and carries its own confirmation.
+  function actionsFor(status){
+    const value=String(status||'').toLowerCase();
+    if(value==='paused')return ['resume'];
+    if(value==='failed'||value==='error')return ['retry'];
+    if(PENDING_STATUSES.has(value))return ['pause'];
+    return [];
   }
   function rowPill(status){
     const value=String(status||'').toLowerCase();
@@ -584,12 +598,13 @@ function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSear
                      <div className="rs fold">{task.walletLabel} · {new Date(task.mintTime).toISOString()}</div>
                    </div>
                    <div className="rv">{rowPill(task.status)}</div>
-                   {/* DEVIATION, flagged in backlog §4.4: the prototype shows ONE Pause/Resume/
-                       Retry/Cancel row after the list, which cannot be wired to anything because
-                       the design has no selection model. Placed per row instead, keeping the
-                       prototype's exact classes, labels and order. */}
+                   {/* Per row, and only the actions that apply to THIS row's status: Pause a
+                       scheduled mint, Resume a paused one, Retry a failed one, Cancel any of them.
+                       The prototype lists all four together because it is a static legend of what
+                       exists, not four live controls bound to one row. Cancel keeps the ellipsis
+                       because it opens a confirmation -- it deletes the schedule. */}
                    <div className="br">
-                     {['pause','resume','retry'].map(action=><button type="button" key={action} className="b sm"
+                     {actionsFor(task.status).map(action=><button type="button" key={action} className="b sm"
                        onClick={()=>control(task.id,action)}>{action[0].toUpperCase()+action.slice(1)}</button>)}
                      <button type="button" className="b d sm" onClick={()=>control(task.id,'cancel')}>Cancel…</button>
                    </div>

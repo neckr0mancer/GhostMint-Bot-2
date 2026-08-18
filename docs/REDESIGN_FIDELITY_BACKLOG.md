@@ -361,3 +361,55 @@ prev, numbered buttons with the current one .on, and a single-glyph next. The le
 centred "Previous / Page 1 of 3 / Next" is deleted. Windowed to five numbers so a
 long list cannot spill its own row — the prototype only ever shows three pages and
 does not say what fourteen should look like.
+
+## 11. Scheduled-mint semantics, and the pagination rule for the WHOLE project
+
+Stated by the owner 2026-08-18, reading their own prototype back. Recorded because
+the reasoning generalises well beyond this one card.
+
+### 11.1 "2 pending" above three rows
+
+The prototype's Scheduled card shows a `.p.nu` chip reading **2 pending** above
+THREE rows: one Scheduled, one Paused, one Failed. The arithmetic is the spec:
+
+- **Pending = not yet fired.** Scheduled counts. Paused counts — it is suspended,
+  not finished. Failed does NOT count; it is terminal.
+- Counting only `status === 'scheduled'` prints 1 against those same three rows,
+  which is how the first implementation got it wrong.
+
+Implemented as a `PENDING_STATUSES` set so the rule is stated once and named.
+
+### 11.2 What each control means
+
+- **Pause** — suspend a mint that is still going to fire.
+- **Resume** — un-suspend a paused one.
+- **Retry** — re-attempt one that has already failed.
+- **Cancel** — delete the schedule entirely. Destructive, so it carries its own
+  confirmation ("Delete this scheduled mint? It will not fire, and this cannot be
+  undone."), and keeps the prototype's ellipsis, which is what an ellipsis on a
+  button means: this opens something before it acts.
+
+Each row therefore shows only the action that applies to ITS status, plus Cancel.
+The prototype lists all four together because it is a static legend of what exists,
+not four live controls bound to one row. This supersedes the deviation logged in
+§4.4 — the owner has confirmed the controls act on individual schedules.
+
+### 11.3 Pagination — applies to every list in the project
+
+From "three of 14 ... if I click the right arrow, it should show me the fourth one,
+and so on. Please apply this logic, not just for this page, but for the whole
+project including the navigation."
+
+- `.pinfo` reads **"N of M"** where N is how many rows have been shown UP TO AND
+  INCLUDING the current page, and M is the total across all pages. On page 1 of a
+  3-per-page list of 14 that is "3 of 14"; on page 2, "6 of 14".
+- The right arrow advances to the next page — item 4 onwards in that example. The
+  numbered buttons jump directly, current one `.on`.
+- **Every paginated surface uses the one shared `Pager`.** Tasks and Activity
+  already did; the admin Users table had a hand-rolled "Previous / Page X of Y /
+  Next" and has been converted. Any new list must use the shared component rather
+  than growing its own, so this behaviour cannot drift apart again.
+
+The general principle, which is the part worth keeping: **a truncated list must say
+what it is truncating.** "3 of 14" tells the user 11 more exist; "Page 1 of 5" makes
+them do the arithmetic, and a bare list tells them nothing at all.
