@@ -47,19 +47,27 @@ function mainMenu({ isOwner = false } = {}) {
 // this as a header; nothing else needs it standalone anymore now that the bare-content detector
 // starts the real flow instead of a static preview).
 function contractDetailsText({ contractAddress, chainLabel, isSeaDrop, priceETH, priceUnknown, maxSupply, maxPerWallet, startTime, collection, soldOut, displayPrice }) {
-  const lines = [collection?.name ? `**${collection.name}**` : '**Contract details**', `\`${contractAddress}\``,
-    `Chain: ${chainLabel}`, `Type: ${isSeaDrop ? 'SeaDrop drop' : 'Standard mint(uint256)'}`];
+  // Blank lines below group the card into identity / price / limits bands instead of one flat
+  // run-on list -- mirrors src/telegram/menus.js's contractDetailsText.
+  const lines = [
+    collection?.name ? `**${collection.name}**` : '**Contract details**',
+    `\`${contractAddress}\``,
+    `Chain: ${chainLabel} · ${isSeaDrop ? 'SeaDrop drop' : 'Standard mint(uint256)'}`,
+    '',
+  ];
   if (soldOut) {
     lines.push(displayPrice ? `Status: Sold out — floor price ${displayPrice.eth} ETH` : 'Status: Sold out — floor price unavailable');
   } else {
     lines.push(priceUnknown ? 'Price: not exposed by this contract' : `Price: ${priceETH} per item`);
   }
-  if (maxPerWallet !== null && maxPerWallet !== undefined) lines.push(`Max per wallet: ${maxPerWallet}`);
-  if (maxSupply !== null && maxSupply !== undefined) lines.push(`Max supply: ${maxSupply}`);
+  const limits = [];
+  if (maxPerWallet !== null && maxPerWallet !== undefined) limits.push(`Max per wallet: ${maxPerWallet}`);
+  if (maxSupply !== null && maxSupply !== undefined) limits.push(`Max supply: ${maxSupply}`);
   if (startTime) {
-    const opensAt = new Date(startTime * 1000).toISOString();
-    lines.push(startTime * 1000 > Date.now() ? `Opens: ${opensAt} UTC` : `Opened: ${opensAt} UTC`);
+    const opensAt = formatGmtPlus1(startTime * 1000);
+    limits.push(startTime * 1000 > Date.now() ? `Opens: ${opensAt}` : `Opened: ${opensAt}`);
   }
+  if (limits.length) lines.push('', ...limits);
   return lines.join('\n');
 }
 
@@ -68,6 +76,17 @@ function contractDetailsText({ contractAddress, chainLabel, isSeaDrop, priceETH,
 function formatEthAmount(value, sym) {
   if (value === null || value === undefined) return null;
   return `${Math.round(value * 10_000) / 10_000} ${sym || 'ETH'}`;
+}
+
+// Fixed UTC+1 offset for display only -- deliberately not a DST-aware zone, so this never drifts
+// between GMT+1 and GMT+2 across the year. Every stored/scheduled instant (task.mintTime, the
+// scheduler's own clock, startTime from the contract) stays true UTC; this only reformats what the
+// user reads on screen, so shifting it can never change when a mint actually fires. Mirrors
+// src/telegram/menus.js's formatGmtPlus1.
+function formatGmtPlus1(value) {
+  const date = value instanceof Date ? value : new Date(value);
+  const shifted = new Date(date.getTime() + 60 * 60 * 1000);
+  return `${shifted.toISOString().slice(0, 19).replace('T', ' ')} GMT+1`;
 }
 
 // Section AD Tier 1 -- Discord counterpart to Telegram's collectionInfoCard: market cap, live
@@ -80,10 +99,13 @@ function formatEthAmount(value, sym) {
 // cross-directory import into src/mint/ -- null omits the button entirely.
 function collectionInfoCard({ contractAddress, chainLabel, chainSym, isSeaDrop, priceETH, priceUnknown, maxSupply, maxPerWallet, startTime, collection, soldOut, displayPrice, stats, openSeaUrl }) {
   const sym = chainSym || 'ETH';
+  // Blank lines below group the card into identity / price / stats / limits / description bands --
+  // mirrors src/telegram/menus.js's collectionInfoCard.
   const lines = [
     collection?.name ? `**${collection.name}**` : '**Contract details**',
     `\`${contractAddress}\``,
     `Chain: ${chainLabel} · ${isSeaDrop ? 'SeaDrop drop' : 'Standard mint(uint256)'}`,
+    '',
   ];
 
   if (soldOut) {
@@ -92,43 +114,51 @@ function collectionInfoCard({ contractAddress, chainLabel, chainSym, isSeaDrop, 
     lines.push(priceUnknown ? 'Mint price: not exposed by this contract' : `Mint price: ${priceETH} ${sym} per item`);
   }
 
+  // Real column alignment needs a monospace run, which Discord only gives inside a fenced code
+  // block -- padEnd against the widest label in THIS card's actual rows, not a fixed width, so a
+  // card with just "Floor" isn't dragging three columns of dead padding. Market cap is deliberately
+  // not a row here: stats.marketCap is floor price * totalMinted, a derived number that dresses up
+  // the same floor price already shown above as if it were a second, independent metric.
   if (stats) {
+    const statRows = [];
     const floor = formatEthAmount(stats.floorPrice, stats.floorPriceSymbol || sym);
-    if (floor) lines.push(`Floor: ${floor}${stats.numOwners !== null ? ` · ${stats.numOwners} holders` : ''}`);
-    const marketCap = formatEthAmount(stats.marketCap, sym);
-    if (marketCap) {
-      const mintedNote = maxSupply ? `${stats.totalMinted}/${maxSupply} minted`
-        : stats.totalMinted !== null ? `${stats.totalMinted} minted` : '';
-      lines.push(`Market cap: ${marketCap}${mintedNote ? ` (${mintedNote})` : ''}`);
+    if (floor) statRows.push(['Floor', floor]);
+    if (stats.numOwners !== null && stats.numOwners !== undefined) statRows.push(['Holders', String(stats.numOwners)]);
+    if (stats.totalMinted !== null && stats.totalMinted !== undefined) {
+      statRows.push(['Minted', maxSupply ? `${stats.totalMinted}/${maxSupply}` : String(stats.totalMinted)]);
     }
     const volume = stats.volume || {};
-    const volumeParts = [];
-    if (volume.oneDay !== null && volume.oneDay !== undefined) volumeParts.push(`24h ${formatEthAmount(volume.oneDay, sym)}`);
-    if (volume.sevenDay !== null && volume.sevenDay !== undefined) volumeParts.push(`7d ${formatEthAmount(volume.sevenDay, sym)}`);
-    if (volume.thirtyDay !== null && volume.thirtyDay !== undefined) volumeParts.push(`30d ${formatEthAmount(volume.thirtyDay, sym)}`);
-    if (volumeParts.length) lines.push(`Volume: ${volumeParts.join(' · ')}`);
+    if (volume.oneDay !== null && volume.oneDay !== undefined) statRows.push(['24h volume', formatEthAmount(volume.oneDay, sym)]);
+    if (volume.sevenDay !== null && volume.sevenDay !== undefined) statRows.push(['7d volume', formatEthAmount(volume.sevenDay, sym)]);
+    if (volume.thirtyDay !== null && volume.thirtyDay !== undefined) statRows.push(['30d volume', formatEthAmount(volume.thirtyDay, sym)]);
+    if (statRows.length) {
+      const labelWidth = Math.max(...statRows.map(([label]) => label.length));
+      const table = statRows.map(([label, value]) => `${label.padEnd(labelWidth)}  ${value}`).join('\n');
+      lines.push('', '**Stats**', `\`\`\`\n${table}\n\`\`\``);
+    }
   }
 
-  if (maxPerWallet !== null && maxPerWallet !== undefined) lines.push(`Max per wallet: ${maxPerWallet}`);
-  if (maxSupply !== null && maxSupply !== undefined) lines.push(`Max supply: ${maxSupply}`);
+  const limits = [];
+  if (maxPerWallet !== null && maxPerWallet !== undefined) limits.push(`Max per wallet: ${maxPerWallet}`);
+  if (maxSupply !== null && maxSupply !== undefined) limits.push(`Max supply: ${maxSupply}`);
+  // Not live yet: "Mint Now" would just revert against a stage that hasn't opened, so scheduling is
+  // offered as its own action right here rather than only reachable after a failed attempt.
+  const opensInFuture = Boolean(startTime && startTime * 1000 > Date.now());
   if (startTime) {
-    const opensAt = new Date(startTime * 1000).toISOString();
-    lines.push(startTime * 1000 > Date.now() ? `Opens: ${opensAt} UTC` : `Opened: ${opensAt} UTC`);
+    const opensAt = formatGmtPlus1(startTime * 1000);
+    limits.push(opensInFuture ? `Opens: ${opensAt}` : `Opened: ${opensAt}`);
   }
+  if (limits.length) lines.push('', ...limits);
   if (collection?.description) lines.push('', collection.description.slice(0, 300));
 
   const utilityRow = [button('🔄 Refresh', 'flow:detailsrefresh')];
   if (openSeaUrl) utilityRow.push(urlButton('🔗 OpenSea', openSeaUrl));
 
-  return {
-    content: lines.join('\n'),
-    components: [
-      row([button('🪙 Mint Now', 'flow:mintdetailscontinue', 'success')]),
-      row(utilityRow),
-      row([button('📋 Copy CA', 'flow:copyca')]),
-      row([button('❌ Cancel', 'flow:cancel:ask', 'danger')]),
-    ],
-  };
+  const rows = [row([button('🪙 Mint Now', 'flow:mintdetailscontinue', 'success')])];
+  if (opensInFuture) rows.push(row([button('📅 Schedule for opening', 'flow:schedulesuggest')]));
+  rows.push(row(utilityRow), row([button('📋 Copy CA', 'flow:copyca')]), row([button('❌ Cancel', 'flow:cancel:ask', 'danger')]));
+
+  return { content: lines.join('\n'), components: rows };
 }
 
 // Section AA -- Discord counterpart to Telegram's quantityStepPayload/Section L. A select menu
@@ -174,6 +204,41 @@ function mintConfirmation({ contractAddress, chainLabel, walletLabels, quantity 
   return {
     content: `**Confirm mint**\nContract: \`${contractAddress}\`\nChain: ${chainLabel}\nWallet(s): ${walletLabels.join(', ')}\nQuantity: ${quantity} each\n${priceLine}\n\nProceed?`,
     components: [row([button('✅ Confirm', 'flow:mintconfirm', 'success'), button('❌ Cancel', 'flow:cancel:ask', 'danger')])],
+  };
+}
+
+// Section AF follow-up -- Discord's mini schedule flow, triggered from the collection card's
+// "Schedule for opening" action when a future startTime is detected. Unlike Telegram's full
+// task_guided flow (Section S -- Discord guided task-schedule -- remains unbuilt), this only ever
+// creates one task per tap: pasting the same contract again and tapping the button again is how a
+// second phase gets scheduled here, there is no dedicated "add phase" continuation yet.
+//
+// A select menu (not button rows), same shape as mintQuantitySelect's quick-values-plus-custom
+// pattern -- FLOW_CONTINUATIONS in discordBot.js matches exact custom_ids, and a select keeps this
+// at one fixed custom_id with the choice carried in .values instead of needing one continuation
+// entry per label. SeaDrop has no stage-type field anywhere in its protocol, only a bare
+// dropStageIndex integer -- these labels are never a verified on-chain fact, just a naming
+// shortcut, same caveat as Telegram's TASK_NAME_QUICK_PICKS in src/server.js.
+function taskNameQuickPicks() {
+  const options = [
+    { label: '🔒 GTD', value: 'GTD' },
+    { label: '🏃 FCFS', value: 'FCFS' },
+    { label: '🌐 PUBLIC', value: 'PUBLIC' },
+    { label: '✏️ Custom name', value: 'custom' },
+  ];
+  return {
+    content: "Name this scheduled mint. The common phase labels below are just a shortcut -- unverified, since nothing on-chain says which stage is which -- a custom name works just as well.",
+    components: [select('flow:taskname:select', options, 'Select a name'), row([button('❌ Cancel', 'flow:cancel:ask', 'danger')])],
+  };
+}
+
+function taskConfirmation({ name, contractAddress, chainLabel, walletLabel, mintTime, priceETH, priceUnknown }) {
+  const priceLine = priceUnknown
+    ? 'Price: not exposed by this contract'
+    : `Price: ${priceETH} per item (read from the contract)`;
+  return {
+    content: `**Confirm scheduled mint**\nName: ${name}\nContract: \`${contractAddress}\`\nChain: ${chainLabel}\nWallet: ${walletLabel}\nQuantity: 1\n${priceLine}\nFires: **${formatGmtPlus1(mintTime)}**\n\nThis is not a reminder -- the bot signs and sends the mint itself at that moment.\n\nProceed?`,
+    components: [row([button('✅ Schedule it', 'flow:taskconfirm', 'success'), button('❌ Cancel', 'flow:cancel:ask', 'danger')])],
   };
 }
 
@@ -367,6 +432,8 @@ module.exports = {
   button, row, select, mainMenu, walletsMenu, settingsMenu, placeholderMenu,
   chainSelect, walletSelect, confirmCancelPrompt, confirmRemoveWallet, labelModal,
   contractDetailsText, collectionInfoCard, mintQuantitySelect, mintPriceStep, mintConfirmation, numberModal,
+  taskNameQuickPicks, taskConfirmation,
   watchTypeSelect, watchMethodSelect, watchConfigModal, watchRuleConfirmation,
   watchRulesList, watchRuleActions, confirmRemoveWatchRule,
+  formatGmtPlus1,
 };

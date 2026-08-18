@@ -158,13 +158,17 @@ function formatRows(rows, empty, mapper) {
 // of Telegram's inline keyboard + plain-text replies. Every guided step still ends by calling the
 // exact same botCommandService function the equivalent slash command already used above -- this
 // changes presentation only, never validation, transaction submission, or governance.
-const FLOW_LABELS = { wallet_create: 'creating a wallet', wallet_import: 'importing a wallet', mint_guided: 'minting', watch_guided: 'adding a watch rule' };
+const FLOW_LABELS = { wallet_create: 'creating a wallet', wallet_import: 'importing a wallet', mint_guided: 'minting', task_guided: 'scheduling a mint', watch_guided: 'adding a watch rule' };
 const FLOW_CONTINUATIONS = {
   wallet_create: ['flow:label:submit', 'flow:chain:select'],
   wallet_import: ['flow:label:submit', 'flow:chain:select', 'wallet:import:key-modal', 'flow:key:submit'],
   // Section AA -- every custom_id stays fixed (select-menu VALUES carry the chosen quantity/
   // wallet, never the custom_id itself), so this list needs no dynamic/prefix matching.
-  mint_guided: ['flow:mintdetailscontinue', 'flow:detailsrefresh', 'flow:copyca', 'flow:mintqty:select', 'flow:mintqty:submit', 'flow:mintwallet:select', 'flow:priceaccept', 'flow:pricemanual', 'flow:mintprice:submit', 'flow:mintconfirm'],
+  mint_guided: ['flow:mintdetailscontinue', 'flow:detailsrefresh', 'flow:copyca', 'flow:schedulesuggest', 'flow:mintqty:select', 'flow:mintqty:submit', 'flow:mintwallet:select', 'flow:priceaccept', 'flow:pricemanual', 'flow:mintprice:submit', 'flow:mintconfirm'],
+  // Section AF follow-up: Discord's mini schedule flow (Section S's full guided flow remains
+  // unbuilt) -- a fixed 4-step chain, wallet select -> name select -> optional custom-name modal
+  // -> confirm, with no dynamic values in any of its own custom_ids.
+  task_guided: ['flow:taskwallet:select', 'flow:taskname:select', 'flow:taskname:submit', 'flow:taskconfirm'],
   watch_guided: ['flow:watchname:submit', 'flow:watchtype:select', 'flow:watchmethod:select', 'flow:watchconfig:submit', 'flow:watchconfirm'],
 };
 
@@ -299,6 +303,30 @@ async function finishMintExecutionDiscord(ctx, respond, platformUserId, userId, 
     flowState.clear('discord', platformUserId);
     if (error instanceof ValidationError) return respond({ content: escapeDiscord(validationReply(error)), components: backToMenu });
     if (error instanceof TransactionSafetyError) return respond({ content: `❌ ${escapeDiscord(error.message)}`, components: backToMenu });
+    throw error;
+  }
+}
+
+// Section AF follow-up -- Discord's mini schedule flow. Mirrors finishMintExecutionDiscord's rate-
+// limit handling: a rate limit leaves the flow intact so the user can just retry once it clears,
+// every other outcome (success or failure) clears it.
+async function finishTaskScheduleDiscord(ctx, respond, platformUserId, userId, flowData) {
+  const { commands, flowState, rateLimiter } = ctx;
+  const backToMenu = [discordMenus.row([discordMenus.button('⬅️ Back to menu', 'menu:main')])];
+  try {
+    rateLimiter.check('discord', userId, 'task');
+    const task = await commands.createTask(userId, {
+      name: flowData.name, walletLabel: flowData.walletLabel, contractAddress: flowData.contractAddress,
+      chain: flowData.chain, quantity: 1, priceETH: flowData.priceETH, mintTime: flowData.mintTime,
+    });
+    flowState.clear('discord', platformUserId);
+    return respond({ content: `✅ Scheduled **${escapeDiscord(task.name)}** to fire at \`${discordMenus.formatGmtPlus1(task.mintTime)}\`.`, components: backToMenu });
+  } catch (error) {
+    if (error instanceof RateLimitError) {
+      return respond({ content: `Too many sensitive commands. Retry in ${Math.ceil(error.retryAfterMs / 1000)} seconds.`, components: backToMenu });
+    }
+    flowState.clear('discord', platformUserId);
+    if (error instanceof ValidationError) return respond({ content: escapeDiscord(validationReply(error)), components: backToMenu });
     throw error;
   }
 }
@@ -568,6 +596,78 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         return finishMintExecutionDiscord(mintCtx, respond, platformUserId, userId, { ...flow.data, originMessagePublic: false });
       }
 
+      // Section AF follow-up -- Discord's mini schedule flow, branching off the collection card's
+      // "Schedule for opening" action (only ever shown there, so only ever reached from
+      // mint_guided's awaiting_details step with a genuinely future startTime already confirmed).
+      // Re-detects rather than trusting mint_guided's own flow data: whichever stage is live by the
+      // time this tap actually happens is what should be scheduled, not whatever was true when the
+      // card first rendered, same reasoning as Telegram's startTaskScheduleFlow. Section S (a full
+      // Discord guided task-schedule flow) remains unbuilt -- this only ever creates one task per
+      // tap; pasting the same contract again and tapping the button again is how a second phase
+      // gets scheduled here.
+      if (data === 'flow:schedulesuggest') {
+        const flow = flowState.get('discord', platformUserId);
+        if (!flow || flow.flow !== 'mint_guided' || flow.step !== 'awaiting_details') return notYourMintPrompt(interaction);
+        if (!flow.data.startTime || flow.data.startTime * 1000 <= Date.now()) return notYourMintPrompt(interaction);
+        const wentEphemeral = Boolean(flow.data.originMessagePublic);
+        if (wentEphemeral) neutralizeMintOriginMessage(interaction);
+        const respond = payload => (wentEphemeral ? interaction.reply({ ...payload, ephemeral: true }).catch(() => {}) : dcRespond(interaction, payload));
+        const backToMenu = [discordMenus.row([discordMenus.button('⬅️ Back to menu', 'menu:main')])];
+        let detected;
+        try {
+          detected = await commands.detectMintContract(userId, { contractAddress: flow.data.contractAddress, quantity: 1 });
+        } catch {
+          return respond({ content: 'Could not re-check this contract right now. Paste the address again to retry.', components: backToMenu });
+        }
+        const futureStartTime = detected.startTime && detected.startTime * 1000 > Date.now() ? detected.startTime : null;
+        if (!detected.priceKnown || !futureStartTime) {
+          // Shouldn't happen (a future startTime only ever exists alongside a resolved SeaDrop
+          // PublicDrop, which is also where the price comes from) -- degrade honestly rather than
+          // proceed with a guess if the contract's state changed underneath this tap.
+          return respond({ content: "This contract's price or opening time couldn't be confirmed just now. Use `/task create` to schedule it by hand instead.", components: backToMenu });
+        }
+        const taskData = {
+          contractAddress: flow.data.contractAddress, chain: detected.chain,
+          priceETH: Number(formatEther(BigInt(detected.valueWei))), priceUnknown: false,
+          mintTime: new Date(futureStartTime * 1000).toISOString(),
+        };
+        const wallets = commands.wallets(userId);
+        if (wallets.length === 1) {
+          flowState.start('discord', platformUserId, 'task_guided', 'awaiting_name', { ...taskData, walletLabel: wallets[0].label });
+          return respond(discordMenus.taskNameQuickPicks());
+        }
+        flowState.start('discord', platformUserId, 'task_guided', 'awaiting_wallet', taskData);
+        return respond(discordMenus.walletSelect(wallets, { customId: 'flow:taskwallet:select', emptyHint: 'No wallets yet. Create one first from the Wallets menu.' }));
+      }
+      if (data === 'flow:taskwallet:select') {
+        const flow = flowState.get('discord', platformUserId);
+        if (!flow || flow.flow !== 'task_guided' || flow.step !== 'awaiting_wallet') return notYourMintPrompt(interaction);
+        const label = interaction.values?.[0];
+        if (!label) return undefined;
+        flowState.advance('discord', platformUserId, 'awaiting_name', { ...flow.data, walletLabel: label });
+        return dcRespond(interaction, discordMenus.taskNameQuickPicks());
+      }
+      if (data === 'flow:taskname:select') {
+        const flow = flowState.get('discord', platformUserId);
+        if (!flow || flow.flow !== 'task_guided' || flow.step !== 'awaiting_name') return notYourMintPrompt(interaction);
+        const chosen = interaction.values?.[0];
+        if (chosen === 'custom') {
+          return interaction.showModal(discordMenus.labelModal({ customId: 'flow:taskname:submit', title: 'Phase name', maxLength: 100 }));
+        }
+        if (!['GTD', 'FCFS', 'PUBLIC'].includes(chosen)) return undefined;
+        const taskData = { ...flow.data, name: chosen };
+        flowState.advance('discord', platformUserId, 'awaiting_confirm', taskData);
+        return dcRespond(interaction, discordMenus.taskConfirmation({
+          name: taskData.name, contractAddress: taskData.contractAddress, chainLabel: chains[taskData.chain]?.name || taskData.chain,
+          walletLabel: taskData.walletLabel, mintTime: taskData.mintTime, priceETH: taskData.priceETH, priceUnknown: taskData.priceUnknown,
+        }));
+      }
+      if (data === 'flow:taskconfirm') {
+        const flow = flowState.get('discord', platformUserId);
+        if (!flow || flow.flow !== 'task_guided' || flow.step !== 'awaiting_confirm') return notYourMintPrompt(interaction);
+        return finishTaskScheduleDiscord(mintCtx, payload => dcRespond(interaction, payload), platformUserId, userId, flow.data);
+      }
+
       // Watch-rule guided create flow ("/watch has no button" gap) plus the list/manage actions
       // that go with it. Unlike Section AA's mint flow, every one of these is reached from an
       // already-ephemeral message (/menu or menu:watch, exactly like wallet create/import), so
@@ -747,6 +847,21 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         await applyMintFlowStep(mintCtx, payload => interaction.reply({ ...payload, ephemeral: true }).catch(() => {}), platformUserId, userId, decision);
         return;
       }
+      if (data === 'flow:taskname:submit') {
+        if (flow.flow !== 'task_guided' || flow.step !== 'awaiting_name') { await interaction.reply({ content: 'This step has expired. Tap "Schedule for opening" on the collection card again.', ephemeral: true }).catch(() => {}); return; }
+        const name = String(interaction.fields.getTextInputValue('value') || '').trim();
+        if (!name || name.length > 100) {
+          await interaction.reply({ content: 'Name must be 1-100 characters. Tap the name step again to retry.', ephemeral: true }).catch(() => {});
+          return;
+        }
+        const taskData = { ...flow.data, name };
+        flowState.advance('discord', platformUserId, 'awaiting_confirm', taskData);
+        await interaction.reply({ ...discordMenus.taskConfirmation({
+          name: taskData.name, contractAddress: taskData.contractAddress, chainLabel: chains[taskData.chain]?.name || taskData.chain,
+          walletLabel: taskData.walletLabel, mintTime: taskData.mintTime, priceETH: taskData.priceETH, priceUnknown: taskData.priceUnknown,
+        }), ephemeral: true });
+        return;
+      }
 
       if (data === 'flow:watchname:submit') {
         if (flow.flow !== 'watch_guided' || flow.step !== 'awaiting_name') { await interaction.reply({ content: 'This step has expired. Open the watch rules menu again.', ephemeral: true }).catch(() => {}); return; }
@@ -881,8 +996,8 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         }
         case 'task': {
           const action = interaction.options.getSubcommand();
-          if (action === 'create') { confirmation(interaction); const task = await commands.createTask(userId, json(interaction.options.getString('input'))); message = `Task **${task.name}** scheduled for ${new Date(task.mintTime).toISOString()} UTC (ID: ${task.id}).`; }
-          else if (action === 'list') { const page=await commands.tasksPage(userId,{page:interaction.options.getInteger('page')||1}); message=`${formatRows(page.items,'No scheduled tasks.',task=>`**${task.name}** [${task.status}] — ${new Date(task.mintTime).toISOString()} — ${task.id}`)}\nPage ${page.page}/${page.totalPages} (${page.total} total)`; }
+          if (action === 'create') { confirmation(interaction); const task = await commands.createTask(userId, json(interaction.options.getString('input'))); message = `Task **${task.name}** scheduled for ${discordMenus.formatGmtPlus1(task.mintTime)} (ID: ${task.id}).`; }
+          else if (action === 'list') { const page=await commands.tasksPage(userId,{page:interaction.options.getInteger('page')||1}); message=`${formatRows(page.items,'No scheduled tasks.',task=>`**${task.name}** [${task.status}] — ${discordMenus.formatGmtPlus1(task.mintTime)} — ${task.id}`)}\nPage ${page.page}/${page.totalPages} (${page.total} total)`; }
           else { if (['cancel', 'resume', 'retry'].includes(action)) confirmation(interaction); const task = await commands.controlTask(userId, action, interaction.options.getString('id')); message = `Task **${task.name}** is now ${task.status}.`; }
           break;
         }

@@ -186,14 +186,34 @@ test('collectionInfoCard renders the mint_guided flow\'s real first screen: Mint
   assert.equal(buttons.find(b => b.url)?.text, '🔗 OpenSea');
 });
 
-test('collectionInfoCard omits every stats-derived line when stats is null, and shows floor/market cap/volume when it is not', () => {
+test('collectionInfoCard suggests scheduling only when the detected opening time is still in the future', () => {
+  const future = Math.floor(Date.now() / 1000) + 3_600;
+  const past = Math.floor(Date.now() / 1000) - 3_600;
+
+  const notYetOpen = collectionInfoCard({
+    contractAddress: '0xabc', chainLabel: 'Ethereum', chainSym: 'ETH', isSeaDrop: true, priceETH: 0.05, priceUnknown: false,
+    maxSupply: 100, maxPerWallet: 1, startTime: future, collection: null, soldOut: false, displayPrice: null, stats: null, openSeaUrl: null,
+  });
+  assert.deepEqual(flatButtons(notYetOpen.replyMarkup).map(b => b.callback_data),
+    ['flow:mintdetailscontinue', 'flow:schedulesuggest:0xabc', 'flow:detailsrefresh', 'flow:copyca', 'flow:cancel:ask']);
+  assert.match(notYetOpen.text, /Opens:/);
+
+  const alreadyOpen = collectionInfoCard({
+    contractAddress: '0xabc', chainLabel: 'Ethereum', chainSym: 'ETH', isSeaDrop: true, priceETH: 0.05, priceUnknown: false,
+    maxSupply: 100, maxPerWallet: 1, startTime: past, collection: null, soldOut: false, displayPrice: null, stats: null, openSeaUrl: null,
+  });
+  assert.equal(flatButtons(alreadyOpen.replyMarkup).some(b => b.callback_data?.startsWith('flow:schedulesuggest:')), false);
+  assert.match(alreadyOpen.text, /Opened:/);
+});
+
+test('collectionInfoCard omits the stats table entirely when stats is null, and renders an aligned floor/holders/minted/volume table -- never a market cap -- when it is not', () => {
   const noStats = collectionInfoCard({
     contractAddress: '0xabc', chainLabel: 'Ethereum', chainSym: 'ETH', isSeaDrop: false, priceETH: 0.05, priceUnknown: false,
     maxSupply: 100, maxPerWallet: 1, startTime: null, collection: null, soldOut: false, displayPrice: null, stats: null, openSeaUrl: null,
   });
-  assert.equal(noStats.text.includes('Floor:'), false);
-  assert.equal(noStats.text.includes('Market cap:'), false);
-  assert.equal(noStats.text.includes('Volume:'), false);
+  assert.equal(noStats.text.includes('📈'), false);
+  assert.equal(noStats.text.includes('<pre>'), false);
+  assert.equal(noStats.text.includes('Floor'), false);
 
   const withStats = collectionInfoCard({
     contractAddress: '0xabc', chainLabel: 'Ethereum', chainSym: 'ETH', isSeaDrop: false, priceETH: 0.05, priceUnknown: false,
@@ -203,10 +223,13 @@ test('collectionInfoCard omits every stats-derived line when stats is null, and 
       marketCap: 4.4, volume: { oneDay: 1.2, sevenDay: 5.5, thirtyDay: null, allTime: 20 },
     },
   });
-  assert.match(withStats.text, /Floor: 0\.08 ETH · 42 holders/);
-  assert.match(withStats.text, /Market cap: 4\.4 ETH \(55\/100 minted\)/);
-  assert.match(withStats.text, /Volume: 24h 1\.2 ETH · 7d 5\.5 ETH/);
+  assert.match(withStats.text, /<pre>[\s\S]*Floor\s+0\.08 ETH[\s\S]*<\/pre>/);
+  assert.match(withStats.text, /Holders\s+42/);
+  assert.match(withStats.text, /Minted\s+55\/100/);
+  assert.match(withStats.text, /24h volume\s+1\.2 ETH/);
+  assert.match(withStats.text, /7d volume\s+5\.5 ETH/);
   assert.equal(withStats.text.includes('30d'), false);
+  assert.equal(withStats.text.includes('Market cap'), false);
 });
 
 test('mintConfirmation omits the gas tolerance line for a plain /mint, and shows it for a /batch that went through the gas-tolerance step', () => {

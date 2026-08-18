@@ -1,0 +1,250 @@
+const assert = require('node:assert/strict');
+const test = require('node:test');
+const { createDiscordInteractionHandler, handleMintPasteMessage } = require('../src/discord/discordBot');
+const { createFlowStateStore } = require('../src/telegram/flowState');
+const { RateLimitError } = require('../src/security/botSecurity');
+
+// Section AF follow-up: Discord's mini schedule flow, branching off the collection card's
+// "Schedule for opening" action (only ever shown when a future startTime is detected). Section S
+// (a full Discord guided task-schedule flow) remains unbuilt -- this is deliberately scoped to a
+// single task creation per tap, not a repeatable multi-phase flow the way Telegram's Section AF
+// shape 1 is. Mirrors the mock shape established by tests/discordMintFlow.test.js.
+
+function mockMessage(content, userId = 'paster') {
+  return {
+    author: { id: userId, bot: false }, guildId: 'guild', channelId: 'channel', content,
+    replies: [],
+    async reply(payload) { this.replies.push(payload); return { id: 'origin-message' }; },
+  };
+}
+
+function baseInteraction(userId) {
+  const state = {
+    user: { id: userId }, guildId: 'guild', channelId: 'channel',
+    updates: [], replies: [], modal: null, messageEdits: [],
+    message: { edit(payload) { state.messageEdits.push(payload); return Promise.resolve(); } },
+    isChatInputCommand: () => false, isButton: () => false, isStringSelectMenu: () => false, isModalSubmit: () => false,
+    async update(payload) { this.updates.push(payload); },
+    async reply(payload) { this.replies.push(payload); },
+    async showModal(payload) { this.modal = payload; },
+  };
+  return state;
+}
+
+function buttonInteraction(customId, userId = 'discord-user') {
+  const i = baseInteraction(userId);
+  i.customId = customId;
+  i.isButton = () => true;
+  return i;
+}
+
+function selectInteraction(customId, values, userId = 'discord-user') {
+  const i = baseInteraction(userId);
+  i.customId = customId;
+  i.values = values;
+  i.isStringSelectMenu = () => true;
+  return i;
+}
+
+function modalInteraction(customId, fields, userId = 'discord-user') {
+  const i = baseInteraction(userId);
+  i.customId = customId;
+  i.isModalSubmit = () => true;
+  i.fields = { getTextInputValue: name => fields[name] };
+  return i;
+}
+
+const CHAINS = { ethereum: { name: 'Ethereum', sym: 'ETH' } };
+const NO_LIMIT = { check: () => {} };
+const FUTURE_START = Math.floor(Date.now() / 1000) + 3_600;
+const FUTURE_ISO = new Date(FUTURE_START * 1000).toISOString();
+
+function baseCommands(overrides = {}) {
+  return {
+    parseOpenSeaCollectionSlug: () => null,
+    resolveMintContractInput: async input => (/^0x[0-9a-fA-F]{40}$/.test(input) ? input : null),
+    detectMintContract: async () => ({
+      chain: 'ethereum', isSeaDrop: true, priceKnown: true, valueWei: '1000000000000000000',
+      maxSupply: 100, maxPerWallet: 1, startTime: FUTURE_START, endTime: null, collection: null, soldOut: false, displayPrice: null,
+    }),
+    wallets: () => [{ label: 'main', chain: 'ethereum' }],
+    createTask: async () => ({ name: 'GTD', mintTime: FUTURE_ISO }),
+    ...overrides,
+  };
+}
+
+async function pasteAndTapSchedule(ctx, userId = 'paster') {
+  const message = mockMessage('0x0000000000000000000000000000000000000001', userId);
+  await handleMintPasteMessage(ctx, message);
+  const handler = createDiscordInteractionHandler(ctx);
+  const tap = buttonInteraction('flow:schedulesuggest', userId);
+  await handler(tap);
+  return { message, handler, tap };
+}
+
+test('a single wallet is auto-selected: tapping Schedule for opening goes straight to naming', async () => {
+  const flowState = createFlowStateStore();
+  const commands = baseCommands();
+  const identity = { resolveOrCreate: async () => 'internal-user' };
+  const ctx = { identity, commands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT };
+
+  const { message, tap } = await pasteAndTapSchedule(ctx, 'paster-1');
+  assert.match(message.replies[0].content, /Opens:/);
+  assert.equal(tap.messageEdits.length, 1, 'the public origin message must be neutralized on first touch');
+  assert.equal(tap.replies.length, 1);
+  assert.equal(tap.replies[0].ephemeral, true);
+  const options = tap.replies[0].components[0].components[0].options;
+  assert.deepEqual(options.map(o => o.value), ['GTD', 'FCFS', 'PUBLIC', 'custom']);
+  assert.equal(flowState.get('discord', 'paster-1').flow, 'task_guided');
+  assert.equal(flowState.get('discord', 'paster-1').step, 'awaiting_name');
+  assert.equal(flowState.get('discord', 'paster-1').data.walletLabel, 'main');
+});
+
+test('more than one wallet shows a wallet select before naming', async () => {
+  const flowState = createFlowStateStore();
+  const commands = baseCommands({ wallets: () => [{ label: 'alpha', chain: 'ethereum' }, { label: 'beta', chain: 'ethereum' }] });
+  const identity = { resolveOrCreate: async () => 'internal-user' };
+  const ctx = { identity, commands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT };
+
+  const { tap, handler } = await pasteAndTapSchedule(ctx, 'paster-2');
+  assert.equal(flowState.get('discord', 'paster-2').step, 'awaiting_wallet');
+  const walletOptions = tap.replies[0].components[0].components[0].options;
+  assert.deepEqual(walletOptions.map(o => o.value), ['alpha', 'beta']);
+
+  const pick = selectInteraction('flow:taskwallet:select', ['beta'], 'paster-2');
+  await handler(pick);
+  assert.equal(pick.updates.length, 1, 'already ephemeral by this point -- updates in place');
+  assert.equal(flowState.get('discord', 'paster-2').step, 'awaiting_name');
+  assert.equal(flowState.get('discord', 'paster-2').data.walletLabel, 'beta');
+});
+
+test('full happy path: schedule suggestion -> name quick-pick -> confirm -> task created and flow cleared', async () => {
+  const flowState = createFlowStateStore();
+  const created = [];
+  const commands = baseCommands({
+    createTask: async (userId, input) => { created.push({ userId, input }); return { name: input.name, mintTime: input.mintTime }; },
+  });
+  const identity = { resolveOrCreate: async () => 'internal-user' };
+  const ctx = { identity, commands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT };
+
+  const { handler } = await pasteAndTapSchedule(ctx, 'paster-3');
+
+  const namePick = selectInteraction('flow:taskname:select', ['GTD'], 'paster-3');
+  await handler(namePick);
+  assert.equal(namePick.updates.length, 1);
+  assert.match(namePick.updates[0].content, /Confirm scheduled mint/);
+  assert.match(namePick.updates[0].content, /GTD/);
+  assert.match(namePick.updates[0].content, /not a reminder/);
+  assert.equal(flowState.get('discord', 'paster-3').step, 'awaiting_confirm');
+
+  const confirm = buttonInteraction('flow:taskconfirm', 'paster-3');
+  await handler(confirm);
+  assert.equal(created.length, 1);
+  assert.equal(created[0].userId, 'internal-user');
+  assert.equal(created[0].input.name, 'GTD');
+  assert.equal(created[0].input.walletLabel, 'main');
+  assert.equal(created[0].input.contractAddress, '0x0000000000000000000000000000000000000001');
+  assert.equal(created[0].input.mintTime, FUTURE_ISO);
+  assert.equal(created[0].input.priceETH, 1);
+  assert.match(confirm.updates[0].content, /Scheduled/);
+  assert.equal(flowState.get('discord', 'paster-3'), null);
+});
+
+test('picking "custom" opens a modal; submitting it reaches the same confirm screen', async () => {
+  const flowState = createFlowStateStore();
+  const commands = baseCommands();
+  const identity = { resolveOrCreate: async () => 'internal-user' };
+  const ctx = { identity, commands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT };
+
+  const { handler } = await pasteAndTapSchedule(ctx, 'paster-4');
+  const custom = selectInteraction('flow:taskname:select', ['custom'], 'paster-4');
+  await handler(custom);
+  assert.equal(custom.modal.custom_id, 'flow:taskname:submit');
+
+  const submit = modalInteraction('flow:taskname:submit', { value: 'FCFS wave 2' }, 'paster-4');
+  await handler(submit);
+  assert.equal(submit.replies[0].ephemeral, true);
+  assert.match(submit.replies[0].content, /Confirm scheduled mint/);
+  assert.match(submit.replies[0].content, /FCFS wave 2/);
+  assert.equal(flowState.get('discord', 'paster-4').data.name, 'FCFS wave 2');
+});
+
+test('an empty or oversized custom name is rejected without advancing the flow', async () => {
+  const flowState = createFlowStateStore();
+  const commands = baseCommands();
+  const identity = { resolveOrCreate: async () => 'internal-user' };
+  const ctx = { identity, commands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT };
+
+  const { handler } = await pasteAndTapSchedule(ctx, 'paster-5');
+  await handler(selectInteraction('flow:taskname:select', ['custom'], 'paster-5'));
+  const submit = modalInteraction('flow:taskname:submit', { value: '' }, 'paster-5');
+  await handler(submit);
+  assert.match(submit.replies[0].content, /1-100 characters/);
+  assert.equal(flowState.get('discord', 'paster-5').step, 'awaiting_name');
+});
+
+test('a rate limit on confirm keeps the flow intact instead of discarding it', async () => {
+  const flowState = createFlowStateStore();
+  const commands = baseCommands();
+  const identity = { resolveOrCreate: async () => 'internal-user' };
+  const rateLimiter = { check: () => { throw new RateLimitError(5000); } };
+  const ctx = { identity, commands, flowState, chains: CHAINS, rateLimiter };
+
+  const { handler } = await pasteAndTapSchedule(ctx, 'paster-6');
+  await handler(selectInteraction('flow:taskname:select', ['GTD'], 'paster-6'));
+  const confirm = buttonInteraction('flow:taskconfirm', 'paster-6');
+  await handler(confirm);
+  assert.match(confirm.updates[0].content, /Too many sensitive commands/);
+  assert.equal(flowState.get('discord', 'paster-6').flow, 'task_guided');
+});
+
+test('a transient re-detection failure degrades to a retry message instead of crashing the flow', async () => {
+  const flowState = createFlowStateStore();
+  const commands = baseCommands();
+  const identity = { resolveOrCreate: async () => 'internal-user' };
+  const message = mockMessage('0x0000000000000000000000000000000000000001', 'paster-7');
+  await handleMintPasteMessage({ identity, commands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT }, message);
+
+  const failingCommands = { ...commands, detectMintContract: async () => { throw new Error('rpc down'); } };
+  const handler = createDiscordInteractionHandler({ identity, commands: failingCommands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT });
+  const tap = buttonInteraction('flow:schedulesuggest', 'paster-7');
+  await handler(tap);
+  assert.match(tap.replies[0].content, /Could not re-check/);
+  assert.equal(flowState.get('discord', 'paster-7').flow, 'mint_guided', 'the original mint flow is left in place, not silently cleared');
+});
+
+test('re-detecting a contract that has since gone live degrades to a clear message instead of scheduling a stale time', async () => {
+  const flowState = createFlowStateStore();
+  const commands = baseCommands();
+  const identity = { resolveOrCreate: async () => 'internal-user' };
+  const message = mockMessage('0x0000000000000000000000000000000000000001', 'paster-8');
+  await handleMintPasteMessage({ identity, commands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT }, message);
+
+  // The card's own flow.data still shows the original future startTime (that guard passes) --
+  // this exercises the re-detect inside the handler finding the stage has gone live since.
+  const wentLiveCommands = { ...commands, detectMintContract: async () => ({ ...(await commands.detectMintContract()), startTime: Math.floor(Date.now() / 1000) - 60 }) };
+  const handler = createDiscordInteractionHandler({ identity, commands: wentLiveCommands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT });
+  const tap = buttonInteraction('flow:schedulesuggest', 'paster-8');
+  await handler(tap);
+  assert.match(tap.replies[0].content, /couldn't be confirmed/);
+  assert.equal(flowState.get('discord', 'paster-8').flow, 'mint_guided', 'stays on the original mint flow rather than half-starting task_guided');
+});
+
+test('a different user\'s click on the flow\'s public message is rejected ephemerally and never touches the original flow', async () => {
+  const flowState = createFlowStateStore();
+  const commands = baseCommands();
+  const identity = { resolveOrCreate: async () => 'internal-user' };
+  const ctx = { identity, commands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT };
+  const message = mockMessage('0x0000000000000000000000000000000000000001', 'owner-1');
+  await handleMintPasteMessage(ctx, message);
+
+  const handler = createDiscordInteractionHandler(ctx);
+  const strangerTap = buttonInteraction('flow:schedulesuggest', 'stranger-1');
+  await handler(strangerTap);
+  assert.match(strangerTap.replies[0].content, /isn't your mint prompt/);
+  assert.equal(strangerTap.messageEdits.length, 0, 'a stranger\'s click must not neutralize the owner\'s message');
+
+  const ownerTap = buttonInteraction('flow:schedulesuggest', 'owner-1');
+  await handler(ownerTap);
+  assert.equal(ownerTap.messageEdits.length, 1, 'the real owner can still continue normally afterward');
+});

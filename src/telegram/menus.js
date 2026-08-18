@@ -149,8 +149,15 @@ function usdSuffix(usd) {
 function contractDetailsText({ contractAddress, chainLabel, isSeaDrop, priceETH, priceUnknown, maxSupply, maxPerWallet, startTime, collection, soldOut, displayPrice }) {
   // collection (OpenSea metadata) is untrusted third-party data, not a hardcoded literal -- escape
   // both name and description before they land in the same text as real <b> tags.
-  const lines = [collection?.name ? `<b>${escapeTelegramHtml(collection.name)}</b>` : '<b>📜 The Deets</b>', `<code>${contractAddress}</code>`,
-    `Chain: ${chainLabel}`, `Type: ${isSeaDrop ? 'SeaDrop drop' : 'Standard mint(uint256)'}`];
+  // Blank lines below group the card into identity / price / limits / description bands instead of
+  // one flat run-on list -- Telegram has no layout primitives beyond line breaks, so spacing IS the
+  // only alignment tool available here.
+  const lines = [
+    collection?.name ? `<b>${escapeTelegramHtml(collection.name)}</b>` : '<b>📜 The Deets</b>',
+    `<code>${contractAddress}</code>`,
+    `Chain: ${chainLabel} · ${isSeaDrop ? 'SeaDrop drop' : 'Standard mint(uint256)'}`,
+    '',
+  ];
   if (soldOut) {
     lines.push(displayPrice
       ? `Status: Sold out, ser. Floor's sitting at ${displayPrice.eth} ETH${usdSuffix(displayPrice.usd)}`
@@ -160,12 +167,14 @@ function contractDetailsText({ contractAddress, chainLabel, isSeaDrop, priceETH,
       ? "Price: not determinable from this contract, so you'll enter it yourself"
       : `Price: ${priceETH} per item${displayPrice ? usdSuffix(displayPrice.usd) : ''}`);
   }
-  if (maxPerWallet !== null && maxPerWallet !== undefined) lines.push(`Max per wallet: ${maxPerWallet}`);
-  if (maxSupply !== null && maxSupply !== undefined) lines.push(`Max supply: ${maxSupply}`);
+  const limits = [];
+  if (maxPerWallet !== null && maxPerWallet !== undefined) limits.push(`Max per wallet: ${maxPerWallet}`);
+  if (maxSupply !== null && maxSupply !== undefined) limits.push(`Max supply: ${maxSupply}`);
   if (startTime) {
-    const opensAt = new Date(startTime * 1000).toISOString();
-    lines.push(startTime * 1000 > Date.now() ? `Opens: ${opensAt} UTC` : `Opened: ${opensAt} UTC`);
+    const opensAt = formatGmtPlus1(startTime * 1000);
+    limits.push(startTime * 1000 > Date.now() ? `Opens: ${opensAt}` : `Opened: ${opensAt}`);
   }
+  if (limits.length) lines.push('', ...limits);
   if (collection?.description) lines.push('', escapeTelegramHtml(collection.description.slice(0, 300)));
   return lines.join('\n');
 }
@@ -189,6 +198,16 @@ function formatEthAmount(value, sym) {
   return `${Math.round(value * 10_000) / 10_000} ${sym || 'ETH'}`;
 }
 
+// Fixed UTC+1 offset for display only -- deliberately not a DST-aware zone, so this never drifts
+// between GMT+1 and GMT+2 across the year. Every stored/scheduled instant (task.mintTime, the
+// scheduler's own clock, startTime from the contract) stays true UTC; this only reformats what the
+// user reads on screen, so shifting it can never change when a mint actually fires.
+function formatGmtPlus1(value) {
+  const date = value instanceof Date ? value : new Date(value);
+  const shifted = new Date(date.getTime() + 60 * 60 * 1000);
+  return `${shifted.toISOString().slice(0, 19).replace('T', ' ')} GMT+1`;
+}
+
 // Section AD Tier 1: the collection info card mint_guided's first screen renders instead of the
 // old merged-details-header (Section M) -- market cap, live floor, and volume alongside the
 // existing mint-specific fields, with "🪙 Mint Now" as one of several actions (Refresh, Copy CA,
@@ -201,10 +220,14 @@ function formatEthAmount(value, sym) {
 // entirely rather than linking to a chain OpenSea doesn't index.
 function collectionInfoCard({ contractAddress, chainLabel, chainSym, isSeaDrop, priceETH, priceUnknown, maxSupply, maxPerWallet, startTime, collection, soldOut, displayPrice, stats, openSeaUrl }) {
   const sym = chainSym || 'ETH';
+  // Blank lines below group the card into identity / price / stats / limits / description bands --
+  // Telegram has no layout primitives beyond line breaks, so spacing IS the only alignment tool
+  // available here.
   const lines = [
     collection?.name ? `<b>${escapeTelegramHtml(collection.name)}</b>` : '<b>📜 The Deets</b>',
     `<code>${contractAddress}</code>`,
     `Chain: ${chainLabel} · ${isSeaDrop ? 'SeaDrop drop' : 'Standard mint(uint256)'}`,
+    '',
   ];
 
   if (soldOut) {
@@ -215,42 +238,54 @@ function collectionInfoCard({ contractAddress, chainLabel, chainSym, isSeaDrop, 
     lines.push(priceUnknown ? "Mint price: not exposed by this contract. You're flying manual" : `Mint price: ${priceETH} ${sym} per item`);
   }
 
+  // Real column alignment (not just eyeballed spaces) needs a monospace run, which Telegram only
+  // gives inside <pre> -- padEnd against the widest label in THIS card's actual rows, not a fixed
+  // width, so a card with just "Floor" doesn't carry three columns of dead padding.
+  // Market cap is deliberately not a row here: stats.marketCap is floor price * totalMinted, a
+  // derived number that dresses up the same floor price already shown above as if it were a
+  // second, independent metric. Floor stays the one number that matters.
   if (stats) {
+    const statRows = [];
     const floor = formatEthAmount(stats.floorPrice, stats.floorPriceSymbol || sym);
-    if (floor) lines.push(`Floor: ${floor}${stats.numOwners !== null ? ` · ${stats.numOwners} holders` : ''}`);
-    const marketCap = formatEthAmount(stats.marketCap, sym);
-    if (marketCap) {
-      const mintedNote = maxSupply ? `${stats.totalMinted}/${maxSupply} minted`
-        : stats.totalMinted !== null ? `${stats.totalMinted} minted` : '';
-      lines.push(`Market cap: ${marketCap}${mintedNote ? ` (${mintedNote})` : ''}`);
+    if (floor) statRows.push(['Floor', floor]);
+    if (stats.numOwners !== null && stats.numOwners !== undefined) statRows.push(['Holders', String(stats.numOwners)]);
+    if (stats.totalMinted !== null && stats.totalMinted !== undefined) {
+      statRows.push(['Minted', maxSupply ? `${stats.totalMinted}/${maxSupply}` : String(stats.totalMinted)]);
     }
     const volume = stats.volume || {};
-    const volumeParts = [];
-    if (volume.oneDay !== null && volume.oneDay !== undefined) volumeParts.push(`24h ${formatEthAmount(volume.oneDay, sym)}`);
-    if (volume.sevenDay !== null && volume.sevenDay !== undefined) volumeParts.push(`7d ${formatEthAmount(volume.sevenDay, sym)}`);
-    if (volume.thirtyDay !== null && volume.thirtyDay !== undefined) volumeParts.push(`30d ${formatEthAmount(volume.thirtyDay, sym)}`);
-    if (volumeParts.length) lines.push(`Volume: ${volumeParts.join(' · ')}`);
+    if (volume.oneDay !== null && volume.oneDay !== undefined) statRows.push(['24h volume', formatEthAmount(volume.oneDay, sym)]);
+    if (volume.sevenDay !== null && volume.sevenDay !== undefined) statRows.push(['7d volume', formatEthAmount(volume.sevenDay, sym)]);
+    if (volume.thirtyDay !== null && volume.thirtyDay !== undefined) statRows.push(['30d volume', formatEthAmount(volume.thirtyDay, sym)]);
+    if (statRows.length) {
+      const labelWidth = Math.max(...statRows.map(([label]) => label.length));
+      const table = statRows.map(([label, value]) => `${label.padEnd(labelWidth)}  ${value}`).join('\n');
+      lines.push('', '📈 <b>Stats</b>', `<pre>${table}</pre>`);
+    }
   }
 
-  if (maxPerWallet !== null && maxPerWallet !== undefined) lines.push(`Max per wallet: ${maxPerWallet}`);
-  if (maxSupply !== null && maxSupply !== undefined) lines.push(`Max supply: ${maxSupply}`);
+  const limits = [];
+  if (maxPerWallet !== null && maxPerWallet !== undefined) limits.push(`Max per wallet: ${maxPerWallet}`);
+  if (maxSupply !== null && maxSupply !== undefined) limits.push(`Max supply: ${maxSupply}`);
+  // Not live yet: "Mint Now" would just revert against a stage that hasn't opened, so scheduling is
+  // offered as its own action right here rather than only reachable after a failed attempt.
+  const opensInFuture = Boolean(startTime && startTime * 1000 > Date.now());
   if (startTime) {
-    const opensAt = new Date(startTime * 1000).toISOString();
-    lines.push(startTime * 1000 > Date.now() ? `Opens: ${opensAt} UTC` : `Opened: ${opensAt} UTC`);
+    const opensAt = formatGmtPlus1(startTime * 1000);
+    limits.push(opensInFuture ? `Opens: ${opensAt}` : `Opened: ${opensAt}`);
   }
+  if (limits.length) lines.push('', ...limits);
   if (collection?.description) lines.push('', escapeTelegramHtml(collection.description.slice(0, 300)));
 
   const utilityRow = [button('🔄 Refresh', 'flow:detailsrefresh')];
   if (openSeaUrl) utilityRow.push(urlButton('🔗 OpenSea', openSeaUrl));
 
+  const rows = [[button('🪙 Ape In Now', 'flow:mintdetailscontinue')]];
+  if (opensInFuture) rows.push([button('📅 Schedule for opening', `flow:schedulesuggest:${contractAddress}`)]);
+  rows.push(utilityRow, [button('📋 Copy CA', 'flow:copyca')], [button('❌ Nah, cancel', 'flow:cancel:ask')]);
+
   return {
     text: lines.join('\n'),
-    replyMarkup: keyboard([
-      [button('🪙 Ape In Now', 'flow:mintdetailscontinue')],
-      utilityRow,
-      [button('📋 Copy CA', 'flow:copyca')],
-      [button('❌ Nah, cancel', 'flow:cancel:ask')],
-    ]),
+    replyMarkup: keyboard(rows),
     parseMode: 'HTML',
   };
 }
@@ -265,8 +300,8 @@ function taskConfirmation({ name, contractAddress, chainLabel, walletLabel, mint
   else if (priceUnknown) priceLine = 'Price: not exposed by this contract. Using the amount you punched in above.';
   else priceLine = `Price: ${priceETH} per item (straight from the contract)${displayPrice ? usdSuffix(displayPrice.usd) : ''}`;
   const timeLine = autoDetectedTime
-    ? `Fires (UTC): <b>${escapeTelegramHtml(mintTime)}</b> (this contract's own opening time)`
-    : `Fires (UTC): <b>${escapeTelegramHtml(mintTime)}</b>`;
+    ? `Fires: <b>${formatGmtPlus1(mintTime)}</b> (this contract's own opening time)`
+    : `Fires: <b>${formatGmtPlus1(mintTime)}</b>`;
   const heading = phase ? `<b>⏰ Confirm phase ${phase}</b>` : '<b>⏰ Confirm scheduled mint</b>';
   return {
     text: `${heading}\nName: ${escapeTelegramHtml(name)}\nContract: <code>${contractAddress}</code>\nChain: ${chainLabel}\nWallet: ${escapeTelegramHtml(walletLabel)}\nQuantity: 1\n${priceLine}\n${timeLine}\n\nThis is not a reminder — the bot signs and sends the mint itself at that moment, phone in your pocket, you asleep.\n\nLock it in?`,
@@ -286,7 +321,7 @@ function taskScheduled({ name, contractAddress, mintTime, phaseNumber }) {
     ? `✅ Phase ${phase} armed: <b>${escapeTelegramHtml(name)}</b>`
     : `✅ Locked in: <b>${escapeTelegramHtml(name)}</b>`;
   return {
-    text: `${armed}\nFires (UTC): <b>${escapeTelegramHtml(mintTime)}</b>\n\nGot another public stage on this drop? Different time, different price — stack one task per stage and the bot works down the list. Allowlist/GTD stages need a per-wallet proof this bot can't fetch yet, so those aren't schedulable.`,
+    text: `${armed}\nFires: <b>${formatGmtPlus1(mintTime)}</b>\n\nGot another public stage on this drop? Different time, different price — stack one task per stage and the bot works down the list. Allowlist/GTD stages need a per-wallet proof this bot can't fetch yet, so those aren't schedulable.`,
     replyMarkup: keyboard([
       [button(`➕ Add phase ${phase + 1}`, `flow:phase:${phase + 1}:${contractAddress}`)],
       [button('🗓️ See all tasks', 'menu:tasks')],
@@ -531,4 +566,5 @@ module.exports = {
   modeMenu,
   MODE_META,
   gasMenu,
+  formatGmtPlus1,
 };

@@ -122,7 +122,7 @@ test('flow:detailsrefresh re-fetches live stats and updates the card in place wi
   const ctx = { identity, commands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT };
   const message = mockMessage('0x0000000000000000000000000000000000000001', 'paster-11');
   await handleMintPasteMessage(ctx, message);
-  assert.equal(message.replies[0].content.includes('Floor:'), false);
+  assert.equal(message.replies[0].content.includes('Floor'), false);
 
   const handler = createDiscordInteractionHandler(ctx);
   const refresh = buttonInteraction('flow:detailsrefresh', 'paster-11');
@@ -131,7 +131,8 @@ test('flow:detailsrefresh re-fetches live stats and updates the card in place wi
   assert.equal(refresh.messageEdits.length, 0, 'refresh must not neutralize the public origin message');
   assert.equal(refresh.replies.length, 0);
   assert.equal(refresh.updates.length, 1);
-  assert.match(refresh.updates[0].content, /Floor: 0\.09 ETH · 7 holders/);
+  assert.match(refresh.updates[0].content, /Floor\s+0\.09 ETH/);
+  assert.match(refresh.updates[0].content, /Holders\s+7/);
   assert.equal(flowState.get('discord', 'paster-11').step, 'awaiting_details');
 });
 
