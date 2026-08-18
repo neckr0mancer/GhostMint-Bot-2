@@ -1,7 +1,7 @@
 /* global clearInterval, clearTimeout, CustomEvent, FormData, localStorage, setInterval, setTimeout, URLSearchParams */
 import React,{useCallback,useEffect,useRef,useState} from 'react';
 import Admin from './Admin.jsx';
-import {ACTIVITY_EVENTS,api,Ledger,NumberField,SectionCard,confirmDialog,ConfirmHost,consumePendingMintPrefill,CopyButton,csrf,downloadFile,Empty,EVM_CHAINS,Field,Form,getNotificationLog,notify,Notice,PageTitle,Pager,promptDialog,relativeTime,Select,Skeleton,StatusPill,SubTabs,subscribeNotificationLog,ToastHost,useLoad,useLiveSocket} from './shared.jsx';
+import {ACTIVITY_EVENTS,api,Ledger,NumberField,SectionCard,confirmDialog,ConfirmHost,consumePendingMintPrefill,CopyButton,csrf,downloadFile,Empty,EVM_CHAINS,Field,Form,getNotificationLog,notify,Notice,PageTitle,Pager,promptDialog,relativeTime,Select,Skeleton,StatusPill,SubTabs,subscribeNotificationLog,ToastHost,useLoad,useLiveSocket,setPendingMintPrefill} from './shared.jsx';
 import Dashboard from './Dashboard.jsx';
 // Phase 4, unit 1 of 5 (brief §2). The 11->5 merge lands one page at a time so any single merge
 // can be reverted alone. Mint = Minting + Tasks is done; Automation, Wallets+P&L and History are
@@ -239,6 +239,10 @@ const CLOCK_ICON=<svg width="13" height="13" viewBox="0 0 24 24" fill="none" str
 // one the .tokbar uses.
 const CLOCK_ICON_LG=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg>;
 const PAUSE_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><path d="M6 4h4v16H6zM14 4h4v16h-4z"/></svg>;
+// Empty-state glyphs, from the prototype: a nested square for "No presets saved"
+// (mint.html:215) and a wallet for "No wallets to batch" (mint.html:192).
+const PRESET_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><path d="M5 5h14v14H5z"/><path d="M9 9h6v6H9z"/></svg>;
+const WALLET_EMPTY_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><rect x="3" y="6" width="18" height="13" rx="2.5"/></svg>;
 const CROSS_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><path d="M18 6 6 18M6 6l12 12"/></svg>;
 const LOCK_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><rect x="4" y="10.5" width="16" height="10.5" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/></svg>;
 function shortHex(value){const v=String(value||"");return v.length>12?`${v.slice(0,6)}…${v.slice(-4)}`:v;}
@@ -845,7 +849,7 @@ function PreviewExpiry({preview,onExpire,onResimulate}){
 //
 // Each wallet reports its OWN outcome. confirm never throws on a single wallet's failure, so one
 // bad wallet must not read as a failed batch: results are per row, and a partial success says so.
-function MintBatch(){
+function MintBatch({onGoWallets}){
   const wallets=useLoad('/api/wallets',[],'wallets.changed');
   const [selected,setSelected]=useState([]);
   const [contractAddress,setContractAddress]=useState('');
@@ -854,12 +858,27 @@ function MintBatch(){
   const [preview,setPreview]=useState(null);
   const [results,setResults]=useState(null);
   const [busy,setBusy]=useState(false);
+  // The prototype batch form carries no price field (mint.html:161-181), so the price is detected
+  // from the contract exactly as Mint now does it. lastDetected guards against re-detecting the
+  // same address on every keystroke.
+  const [detectedPrice,setDetectedPrice]=useState(null);
+  const lastDetected=useRef("");
+  async function detectPrice(address){
+    const trimmed=address.trim();
+    if(!ADDRESS_SHAPE.test(trimmed)||trimmed===lastDetected.current)return;
+    lastDetected.current=trimmed;
+    try{
+      const result=await api(`/api/mints/detect?contractAddress=${encodeURIComponent(trimmed)}&quantity=${encodeURIComponent(quantity)}`);
+      setDetectedPrice(result.priceKnown?weiToEthDisplay(result.valueWei):"0");
+    }catch{setDetectedPrice(null);}
+  }
+  function autoDetectIfReady(value){detectPrice(value);}
   function toggle(label){setSelected(current=>current.includes(label)?current.filter(item=>item!==label):[...current,label]);}
   async function simulate(event){
     event.preventDefault();
     if(!selected.length){notify('Select at least one wallet.',{type:'error'});return;}
-    const valueWei=ethToWei(priceEth);
-    if(valueWei===null){notify('Price (ETH) must be a plain non-negative number.',{type:'error'});return;}
+    const valueWei=ethToWei(detectedPrice??"0");
+    if(valueWei===null){notify('Could not resolve a price for this contract — check the address.',{type:'error'});return;}
     setBusy(true);
     try{
       setPreview(await api('/api/mints/preview',{method:'POST',body:JSON.stringify({
@@ -880,62 +899,154 @@ function MintBatch(){
     }catch(value){notify(value.message,{type:'error'});}
     finally{setBusy(false);}
   }
-  return <>
-    <p className="eyebrow">Simulates and submits each wallet independently, so one failure never cancels the rest.</p>
-    <Form className="form-mint" title="Batch mint" busy={busy}
-      note="Select the wallets, then simulate. Every selected wallet is previewed before anything is broadcast." onSubmit={simulate}>
-      <div className="field-full">
-        <span className="batch-legend">Wallets {selected.length>0&&<span className="pill">{selected.length} selected</span>}</span>
-        {wallets.data===null?<Skeleton variant="lines" rows={3}/>
-          :wallets.data.length===0?<Empty text="No wallets yet. Create one first."/>
-            :<div className="batch-wallets">{wallets.data.map(wallet=>
-              <label className="batch-wallet" key={wallet.label}>
-                <input type="checkbox" checked={selected.includes(wallet.label)} onChange={()=>toggle(wallet.label)}/>
-                <span>{wallet.label}</span>
-                <span className="batch-wallet-balance tab">{wallet.balance===null||wallet.balance===undefined?'—':`${Number(wallet.balance).toFixed(3)} ETH`}</span>
-              </label>)}</div>}
-      </div>
-      <Field label="Contract address" placeholder="0x…" value={contractAddress} onChange={event=>setContractAddress(event.target.value)}/>
-      <div className="field-row">
-        <Field label="Quantity per wallet" type="number" min="1" value={quantity} onChange={event=>setQuantity(event.target.value)}/>
-        <Field label="Price per mint (ETH)" type="number" step="any" min="0" placeholder="0 if free" value={priceEth} onChange={event=>setPriceEth(event.target.value)}/>
-      </div>
-      <button className="b p" disabled={busy||!selected.length}>Simulate {selected.length||''} {selected.length===1?'wallet':'wallets'}</button>
-    </Form>
-    {preview&&<section className="panel mint-preview">
-      <h2>Simulation passed</h2>
-      <PreviewExpiry preview={preview} onExpire={()=>setPreview(null)}/>
-      {preview.items.map(item=>{
-        const result=results?.find(entry=>entry.walletLabel===item.wallet.label);
-        return <div className="preview" key={item.wallet.label}>
-          <strong>{item.wallet.label}</strong>
-          <p>Estimated total: {item.simulation.estimatedCostWei} wei | Gas: {item.simulation.gasLimit}</p>
-          {result&&<p className={result.status==='success'?'ok':'warning'}>{result.status==='success'?'✅ Submitted.':`❌ Failed: ${result.error}`}</p>}
-        </div>;
-      })}
-      {!results&&<button className="b g" disabled={busy} onClick={confirmBatch}>Confirm and broadcast</button>}
-      {results&&<p>Simulate again to retry any failed wallets.</p>}
-    </section>}
-  </>;
+  // Prototype docs/prototype-pages/mint.html:161-197. .split -- the Batch mint form left, the
+  // independence note and result panel right. The prototype's form has three fields only:
+  // Contract address, the wallet checkbox list, and Quantity per wallet. There is no price field,
+  // so the price comes from detection, exactly as it does on Mint now.
+  const walletsArrived=wallets.data!==null&&wallets.data!==undefined;
+  const noWallets=walletsArrived&&wallets.data.length<2;
+  const resultCount=results?results.length:0;
+  const succeeded=results?results.filter(entry=>entry.status==='success').length:0;
+  return <div className="split">
+    <div className="card">
+      <div className="ch"><div className="chip-ico">{BATCH_ICON}</div><h2>Batch mint</h2></div>
+      <form className="g" style={{gap:'11px'}} onSubmit={simulate}>
+        <label className="fl"><span>Contract address</span>
+          <input className={`in mono${detectedPrice?' ok':''}`} disabled={noWallets} placeholder="0x…"
+            value={contractAddress}
+            onChange={e=>{setContractAddress(e.target.value);autoDetectIfReady(e.target.value);}}/></label>
+        <label className="fl"><span>Wallets <span style={{color:'var(--faint)',fontWeight:500}}>· up to 100 unique</span></span>
+          {!walletsArrived
+            ?<div><div className="sk row"/><div className="sk row"/></div>
+            :<div className="g" style={{gap:'6px'}}>
+              {wallets.data.map(wallet=>{
+                // The prototype tints a wallet whose balance will not cover the mint in
+                // --warn-text, so the row that is going to fail is legible before you submit.
+                const low=wallet.balance!==null&&wallet.balance!==undefined&&Number(wallet.balance)<=0;
+                return <label key={wallet.label}
+                  style={{display:'flex',gap:'8px',alignItems:'center',fontSize:'12.5px',
+                    color:low?'var(--warn-text)':undefined}}>
+                  <input type="checkbox" style={{minHeight:'auto',width:'16px',height:'16px'}}
+                    checked={selected.includes(wallet.label)} onChange={()=>toggle(wallet.label)}/>
+                  {wallet.label} — {wallet.balance===null||wallet.balance===undefined?'—':`${Number(wallet.balance).toFixed(3)} ETH`}
+                </label>;
+              })}
+            </div>}
+        </label>
+        <label className="fl"><span>Quantity per wallet</span>
+          <div className="qty">
+            <input className="in tab" type="number" min={1} max={3} disabled={noWallets}
+              placeholder="Enter quantity (1–3)" value={quantity} onChange={e=>setQuantity(e.target.value)}/>
+            {/* Literal 1 / 2 / 3, per mint.html:177. Mint now writes "1 2 3 Max", Schedule "1 2 5". */}
+            <div className="qb">{[1,2,3].map(pick=><button type="button" key={pick} disabled={noWallets}
+              className={String(pick)===String(quantity)?'on':undefined}
+              onClick={()=>setQuantity(String(pick))}>{pick}</button>)}</div>
+          </div></label>
+        <button className="b p" disabled={busy||!selected.length}>Simulate all {selected.length||0}</button>
+      </form>
+    </div>
+
+    <div className="g">
+      <div className="nt i">{INFO_ICON}
+        <div>Each wallet is simulated and submitted <b>independently</b>. One wallet failing does not cancel the others.</div></div>
+      {busy
+        ?<div><div className="sk row"/><div className="sk row"/><div className="sk row"/></div>
+        :noWallets
+          ?<div className="emp">
+             <div className="ei">{WALLET_EMPTY_ICON}</div>
+             <h3>No wallets to batch</h3>
+             <p>Batch minting needs at least two wallets. Create them first.</p>
+             <button type="button" className="b p sm" onClick={()=>onGoWallets?.()}>Create a wallet</button>
+           </div>
+          :results
+            ?<div className="card">
+               <div className="ch"><h2>Result</h2><div className="sp"/>
+                 <span className={`p ${succeeded===resultCount?'ok':'wn'}`}>{succeeded} of {resultCount} succeeded</span></div>
+               {results.map(entry=><div className="bres" key={entry.walletLabel||entry.label}>
+                 <span className={`p ${entry.status==='success'?'ok':'bad'}`}>{entry.status==='success'?'Confirmed':'Failed'}</span>
+                 <span className="bl2">{entry.walletLabel||entry.label}</span>
+                 <span className={entry.status==='success'?'be mono':'be'}>
+                   {entry.status==='success'?shortHex(entry.transactionHash||''):entry.error}</span>
+               </div>)}
+               <p style={{fontSize:'11px',color:'var(--faint)',marginTop:'9px'}}>
+                 {succeeded} {succeeded===1?'transaction was':'transactions were'} broadcast.
+                 {resultCount-succeeded>0?` The ${resultCount-succeeded===1?'other':'others'} never left the server.`:''}</p>
+             </div>
+            :preview
+              ?<div className="g">
+                 <PreviewExpiry preview={preview} onExpire={()=>setPreview(null)} onResimulate={simulate}/>
+                 <div className="sober">
+                   <div className="sh">{LOCK_ICON}Simulation passed</div>
+                   <table className="led"><tbody>
+                     {preview.items.map(item=><tr key={item.wallet.label}>
+                       <td>{item.wallet.label}</td>
+                       <td>{weiToEthDisplay(item.simulation.estimatedCostWei)} ETH</td></tr>)}
+                     <tr className="tot"><td>Wallets</td><td>{preview.items.length}</td></tr>
+                   </tbody></table>
+                 </div>
+                 <button type="button" className="b p big bl" disabled={busy} onClick={confirmBatch}>
+                   Confirm and mint · {preview.items.length} {preview.items.length===1?'wallet':'wallets'}</button>
+               </div>
+              :null}
+    </div>
+  </div>;
 }
 
 // Presets: the saved mint configurations, plus the method registry they resolve against. Read-only
 // here -- presets are created from the bots, and adding a create form would be a new write path,
 // not a restyle.
-function MintPresets(){
+// Prototype docs/prototype-pages/mint.html:200-232: a .split of "Saved presets" and "Method
+// registry". The registry list is static in the design and static here; nothing exposes the
+// server's signature table to the dashboard, so it is a reference panel, not live data (noted in
+// the backlog so it gets bound if a route ever appears).
+const METHOD_REGISTRY=[
+  ['mint()','ERC-721'],
+  ['mint(uint256)','ERC-721'],
+  ['mint(address,uint256)','ERC-721'],
+  ['mint(uint256,bytes32[])','proof'],
+  ['mint(uint256,bytes)','signature'],
+];
+function MintPresets({onUsePreset}){
   const presets=useLoad('/api/mint-presets');
-  return <>
-    <p className="eyebrow">Saved contract + method combinations, reusable from the Mint now form&apos;s &ldquo;Saved preset&rdquo; field.</p>
-    <Notice error={presets.error}/>
-    {presets.data===null?<Skeleton rows={3}/>
-      :presets.data.length===0?<Empty text="No saved presets yet. Presets are created from the Telegram and Discord bots with /preset, then appear here and in the Mint now form."/>
-        :<div className="card-grid">{presets.data.map(preset=><article className="card" key={preset.name}>
-          <h2>{preset.name}</h2>
-          <div className="user-card-identity"><p className="mono">{preset.contractAddress}</p><CopyButton value={preset.contractAddress} label="Copy contract address"/></div>
-          <p><code>{preset.methodSignature}</code></p>
-          {preset.chain&&<p>{preset.chain}</p>}
-        </article>)}</div>}
-  </>;
+  const items=presets.data;
+  return <div className="split">
+    <div className="card">
+      <div className="ch"><h2>Saved presets</h2><div className="sp"/>
+        {items&&items.length>0&&<span className="p nu">{items.length}</span>}</div>
+      {presets.error
+        ?<Notice error={{title:'Could not load saved presets.',code:presets.status,onRetry:presets.load}}/>
+        :items===null||items===undefined
+          ?<div><div className="sk row"/><div className="sk row"/></div>
+          :items.length===0
+            ?<div className="emp">
+               <div className="ei">{PRESET_ICON}</div>
+               <h3>No presets saved</h3>
+               <p>A preset stores a contract, method and arguments so a repeat mint is one tap.</p>
+             </div>
+            :<div>{items.map(preset=><div className="r" key={preset.name}>
+                <div className="rm">
+                  <div className="rt">{preset.name}</div>
+                  <div className="rs mono fold">{preset.methodSignature} · {shortHex(preset.contractAddress)}</div>
+                </div>
+                <div className="rv"><button type="button" className="b g sm"
+                  onClick={()=>onUsePreset?.(preset)}>Use</button></div>
+              </div>)}</div>}
+    </div>
+    <div className="card">
+      <div className="ch"><h2>Method registry</h2></div>
+      <p style={{fontSize:'12.5px',color:'var(--muted)',marginBottom:'11px'}}>Only audited signatures can be encoded. Arbitrary ABI fragments and raw calldata are rejected.</p>
+      <div className="sober">
+        <div className="sh">Supported signatures</div>
+        <table className="led">
+          <tbody>
+            {METHOD_REGISTRY.map(([signature,kind])=><tr key={signature}>
+              <td className="mono">{signature}</td><td>{kind}</td></tr>)}
+            <tr className="tot"><td>+4 more</td><td>1155 / SeaDrop</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>;
 }
 
 const MINT_TABS=[
@@ -953,8 +1064,8 @@ function Mint({profile,go,tab,onTab}){
     <SubTabs tabs={MINT_TABS} active={active} onChange={onTab} label="Mint sections"/>
     {active==='now'&&<Minting onSwitchToBatch={()=>onTab('batch')} onGoWallets={()=>go('Wallets')}/>}
     {active==='schedule'&&<Tasks profile={profile} go={go}/>}
-    {active==='batch'&&<MintBatch/>}
-    {active==='presets'&&<MintPresets/>}
+    {active==='batch'&&<MintBatch onGoWallets={()=>go('Wallets')}/>}
+    {active==='presets'&&<MintPresets onUsePreset={preset=>{setPendingMintPrefill({contractAddress:preset.contractAddress});onTab('now');}}/>}
   </>;
 }
 // Automation = Snipers + Watch Rules + Target Policies (brief §2). A sniper and a watch rule are

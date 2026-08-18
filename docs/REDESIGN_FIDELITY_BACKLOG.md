@@ -39,7 +39,7 @@ fastest way to enumerate what is missing.
 | 1.2 | Buttons → `.b` family, sub-tab glow, error `.notice` | DONE, measured identical |
 | 1.3 | Account menu popover (`.acct-pop`) | TODO |
 | 1.4 | Bell → two-tab `.bell-pop` | TODO |
-| 1.5 | Mint page rebuild | **Mint now + Schedule: DONE**. Batch / Presets tabs: TODO |
+| 1.5 | Mint page rebuild | **DONE — all four tabs** (Mint now, Schedule, Batch, Presets) |
 | 1.6 | Home empty state / `FirstRun` | DONE — built from `.frun`, gated on `data !== null`, checked light+dark at 375 and 1440 |
 | 1.7 | Four states on every remaining page | TODO |
 | 1.8 | Responsive + light/dark parity sweep | TODO |
@@ -413,3 +413,29 @@ project including the navigation."
 The general principle, which is the part worth keeping: **a truncated list must say
 what it is truncating.** "3 of 14" tells the user 11 more exist; "Page 1 of 5" makes
 them do the arithmetic, and a bare list tells them nothing at all.
+
+## 12. Batch and Presets — notes from the rebuild
+
+**Batch has no price field.** The prototype's form is three fields only: Contract
+address, the wallet checkbox list, Quantity per wallet (mint.html:161-181). The app
+had a "Price per mint (ETH)" input; removing it to match meant the price has to come
+from somewhere, so it is detected from the contract exactly as Mint now does it.
+Same endpoint, same address-shape guard, same no-visible-trigger behaviour.
+
+**Low-balance wallets are tinted.** The prototype colours a wallet row that cannot
+cover the mint in `--warn-text`, so the row that is going to fail is legible before
+you submit rather than after.
+
+**Presets "Use" now does something.** The old Mint-now form had a "Saved preset"
+select that was dead code — `inspect()` hardcoded `presetName: undefined`, so its
+value was discarded before the request. The select is gone (the prototype has no
+such field) and the prototype's `Use` button on each preset row carries the intent
+instead: it prefills the Mint now form and switches to that tab.
+
+**The method registry is a static list.** The prototype hardcodes its supported
+signatures, and nothing exposes the server's real signature table to the dashboard,
+so this is a reference panel rather than live data. **If a route is ever added, bind
+it** — a hardcoded list here silently goes stale when the server's list changes.
+
+Quantity quick-picks, for the third time, are per-form literals: Mint now `1 2 3 Max`,
+Schedule `1 2 5`, Batch `1 2 3`. Each site carries a comment saying so.
