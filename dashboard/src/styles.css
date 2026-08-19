@@ -1400,3 +1400,10 @@ html[data-theme="ghost-mint-light"] .rail-bottom-nav{
 .mint-col .fields{grid-template-columns:minmax(0,1fr);gap:.7rem}
 .mint-col .field-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.7rem}
 .mint-col .fields>button{justify-self:start}
+
+/* Same containing-block correction the bell needed: the prototype anchors .acct-pop to the app
+   shell (top:52px;right:14px), but here it hangs off the avatar so it can close on outside click
+   without a portal. Geometry only -- colours, radius and borders stay prototype.css's. */
+.account-menu{position:relative;display:flex}
+.account-menu .acct-pop{top:calc(100% + 8px);right:0;width:min(268px,calc(100vw - 28px))}
+@media(max-width:700px){.account-menu .acct-pop{position:fixed;top:54px;right:13px;left:auto;width:min(268px,calc(100vw - 26px))}}

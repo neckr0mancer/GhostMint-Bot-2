@@ -1615,6 +1615,66 @@ const TOP_RAIL_PAGES=['Home','Mint','Automation','Wallets','History'];
 const RAIL_FOOTER_PAGES=['Account','Settings'];
 const BOTTOM_RAIL_PAGES=['Account'];
 function NavList({items,page,go,className}){return <nav aria-label="Dashboard" className={className}><ul>{items.map(item=><li key={item}><button aria-current={page===item?'page':undefined} onClick={()=>go(item)}><span className="nav-icon" aria-hidden="true">{NAV_ICONS[item]}</span><span className="nav-label">{item}</span></button></li>)}</ul></nav>;}
+// Prototype .acct-pop (ghostmint-redesign-v3.html), backlog §2. The avatar used to route straight
+// to the Account page, which the backlog says explicitly it must NOT: it opens this.
+//
+// Only Light and Dark appear in the appearance toggle. The three secondary themes (clean-vault,
+// neon-arcade, quiet-ledger) live in Settings and are deliberately absent here -- backlog §2 is
+// explicit, and a two-state control that can silently be in a third state would be lying about
+// which one is on. Hence neither button is marked .on while a secondary theme is active.
+const ACCT_ICONS={
+  mode:<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round"><path d="M13 2 4.5 13H11l-1 9 8.5-11H12l1-9Z"/></svg>,
+  account:<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round"><circle cx="12" cy="8" r="3.6"/><path d="M4.5 20c.8-4 3.8-6 7.5-6s6.7 2 7.5 6"/></svg>,
+  settings:<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round"><circle cx="12" cy="12" r="3"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2"/></svg>,
+  logout:<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round"><path d="M15 17l5-5-5-5M20 12H9M11 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h5"/></svg>,
+  light:<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.2 4.2l1.4 1.4M18.4 18.4l1.4 1.4M1 12h2M21 12h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" fill="none"/></svg>,
+  dark:<svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a7 7 0 0 0 10.5 10.5z"/></svg>,
+};
+function AccountMenu({profile,theme,initial,go,onChangeTheme,onLogout}){
+  const [open,setOpen]=useState(false);
+  useEffect(()=>{
+    if(!open)return;
+    const close=event=>{if(!event.target.closest?.('.account-menu'))setOpen(false);};
+    const onKey=event=>{if(event.key==='Escape')setOpen(false);};
+    document.addEventListener('click',close);document.addEventListener('keydown',onKey);
+    return()=>{document.removeEventListener('click',close);document.removeEventListener('keydown',onKey);};
+  },[open]);
+  function choose(action){setOpen(false);action();}
+  // The prototype prints "user 4f9c…21ab": the account's own id, elided. It is the one identifier
+  // that is the same on Telegram, Discord and here, which is what makes it worth showing at all.
+  const id=String(profile.userId||'');
+  const shortId=id.length>12?id.slice(0,4)+'…'+id.slice(-4):id;
+  const mode=profile.currentMode?.displayName||profile.currentMode?.key||null;
+  return <div className="account-menu">
+    <button type="button" className="av" aria-haspopup="menu" aria-expanded={open}
+      aria-label="Account menu" onClick={()=>setOpen(value=>!value)}>{initial}</button>
+    {open&&<div className="acct-pop on" role="menu" aria-label="Account">
+      <div className="acct-h">
+        <div className="an">{profile.displayName||profile.username||'GhostMint user'}</div>
+        {shortId&&<div className="ai mono">user {shortId}</div>}
+      </div>
+      <button type="button" className="acct-i" role="menuitem" onClick={()=>choose(()=>go('Settings'))}>
+        {ACCT_ICONS.mode}<span className="sp">Transaction mode</span>
+        {/* Having chosen no mode yet is a real state; the prototype only ever draws a chosen one. */}
+        {mode&&<span className="mchip">{mode}</span>}</button>
+      <button type="button" className="acct-i" role="menuitem" onClick={()=>choose(()=>go('Account'))}>
+        {ACCT_ICONS.account}<span className="sp">Account</span></button>
+      <button type="button" className="acct-i" role="menuitem" onClick={()=>choose(()=>go('Settings'))}>
+        {ACCT_ICONS.settings}<span className="sp">Settings</span></button>
+      <div className="acct-tog"><span className="sp">Appearance</span>
+        <div className="tmode">
+          <button type="button" className={theme==='ghost-mint-light'?'on':undefined} title="Light"
+            aria-label="Light theme" aria-pressed={theme==='ghost-mint-light'}
+            onClick={()=>onChangeTheme('ghost-mint-light')}>{ACCT_ICONS.light}</button>
+          <button type="button" className={theme==='ghost-mint'?'on':undefined} title="Dark"
+            aria-label="Dark theme" aria-pressed={theme==='ghost-mint'}
+            onClick={()=>onChangeTheme('ghost-mint')}>{ACCT_ICONS.dark}</button>
+        </div></div>
+      <button type="button" className="acct-i danger" role="menuitem"
+        onClick={()=>choose(onLogout)}>{ACCT_ICONS.logout}<span className="sp">Log out</span></button>
+    </div>}
+  </div>;
+}
 function Shell({profile,onLogout,onProfileChange}){const [route,setRoute]=useState(pageFromLocation);const {page,tab,target}=route;const live=useLiveSocket();
   // A retired slug is rewritten in place with replaceState, not pushState: the dead URL must not
   // become a history entry, or Back from the new page would land on the old slug and redirect
@@ -1688,7 +1748,8 @@ function Shell({profile,onLogout,onProfileChange}){const [route,setRoute]=useSta
             an inline style, which is how the prototype itself expresses one-off colour. */}
         <div className="livechip"><span className="dot" style={live?undefined:{background:'var(--faint)'}}/> <span aria-live="polite">{live?'Live':'Connecting'}</span></div>
         <NotificationBell/>
-        <button type="button" className="av" aria-current={page==='Account'?'page':undefined} aria-label="Account" onClick={()=>go('Account')}>{avatarInitial}</button>
+        <AccountMenu profile={viewProfile} theme={theme} initial={avatarInitial} go={go}
+          onChangeTheme={changeTheme} onLogout={onLogout}/>
       </div>
       <main className="wrap" tabIndex="-1"><View profile={viewProfile} go={go} tab={tab} target={target} onTab={next=>go(page,next)} onThemeChange={changeTheme} onLogout={onLogout} onProfileChange={onProfileChange}/></main>
     </div>

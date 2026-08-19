@@ -11,15 +11,16 @@ selection, pager jumps).
 
 ## 1. The next task
 
-**Build the account menu (`.acct-pop`) and the two-tab bell (`.bell-pop`).**
+**Shell chrome is DONE.** The bell (`.bell-pop`, §3) and the account menu (`.acct-pop`, §2) both
+landed 2026-08-19, verified in the DOM against the spec rather than by eye.
 
-They are the last two shell-chrome items. Both are fully specified — markup, copy,
-class names, order — in `REDESIGN_FIDELITY_BACKLOG.md` §2 and §3. Do not re-derive
-them from the prototype's HTML; the backlog already did that. Do open the prototype
-anyway to check sizes and states (RULE 1c below).
+**Next: backlog §1.7** — the four states (populated / loading / empty / error) on the pages that
+still lack them: Automation, Wallets, History, Account, Settings, Admin. Then §1.8, the responsive
+and light/dark sweep.
 
-After those: backlog §1.7 (four states on the remaining pages: Automation, Wallets,
-History, Account, Settings, Admin) and §1.8 (responsive + light/dark sweep).
+Two known gaps carried forward, both data rather than design: the bell's **Bypass challenge** row
+has no list endpoint to read from, and `.bell-cat` category chips are opt-in per `notify()` call
+site so most Recent rows show none. Both are written up in §3.
 
 ## 2. The four rules, in one line each
 

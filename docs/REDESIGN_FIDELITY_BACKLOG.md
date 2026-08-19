@@ -60,6 +60,20 @@ popover containing, in this order:
 Only Light and Dark appear in the toggle — the three secondary themes are out of
 scope and must not be offered here.
 
+**Built 2026-08-19.** Order verified against the spec in the DOM:
+`.acct-h` → Transaction mode (`.mchip`) → Account → Settings → `.acct-tog` → `.acct-i.danger`.
+Computed values match the prototype: 268px wide, surface background, 13px radius, header on
+surface-2, id in `.ai.mono`. Verified working, not just rendered: the light/dark pair writes
+`data-theme` and persists through `PUT /api/profile/theme`, an outside click and Escape close it,
+and choosing Account routes to `/dashboard/account` and closes the menu.
+
+Two judgement calls worth knowing:
+- **Neither toggle button is `.on` while a secondary theme is active.** clean-vault, neon-arcade
+  and quiet-ledger are reachable from Settings, and marking Light or Dark as current while one of
+  those is applied would be a two-state control lying about a third state.
+- **The `.mchip` is omitted when no transaction mode is set.** The prototype only ever draws a
+  chosen mode; inventing a placeholder would read as a selection the account has not made.
+
 ## 3. Bell — `.bell-pop` (prototype)
 
 Not "Pending confirmations" + "Recent notifications". It is:
