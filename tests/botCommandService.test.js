@@ -24,7 +24,7 @@ function fixture(extraDependencies = {}) {
     getState: () => state,
     ...extraDependencies,
   });
-  return { calls, service };
+  return { calls, service, state };
 }
 
 test('shared wallet commands cannot read or remove another Discord user wallet', async () => {
@@ -99,6 +99,38 @@ test('a task control action outside the four is rejected before the repository i
     });
   }
   assert.deepEqual(touched, []);
+});
+
+test('the pending task count spans the whole collection, not the page in view', async () => {
+  // The chip above the Scheduled list reads "N pending". Counting it from the returned page made
+  // it change as the user paged -- 22 tasks at pageSize 10 read 10, then 2, against a true 14.
+  const tasks = Array.from({ length: 22 }, (_, index) => ({
+    userId: 'user-a', id: `task-${index}`, name: `job-${index}`, walletLabel: 'alpha',
+    status: index < 14 ? ['scheduled', 'retry', 'claimed', 'paused'][index % 4] : 'cancelled',
+  }));
+  const { service, state } = fixture();
+  state.tasks.push(...tasks);
+  // No listPageForUser on the stub repository, so this is the in-memory fallback path.
+  for (const page of [1, 2, 3]) {
+    const result = await service.tasksPage('user-a', { page, pageSize: 10 });
+    assert.equal(result.pending, 14, `page ${page} should report the collection's pending count`);
+    assert.equal(result.total, 22);
+  }
+  // Under a search, pending narrows with total so the two describe one set.
+  const searched = await service.tasksPage('user-a', { page: 1, pageSize: 10, search: 'job-1' });
+  assert.equal(searched.total, 11);
+  assert.equal(searched.pending, tasks.filter(task => task.name.includes('job-1')
+    && task.status !== 'cancelled').length);
+});
+
+test('a repository-supplied pending count is passed through untouched', async () => {
+  // The SQL path counts pending itself; pageFrom must forward it rather than recompute from items.
+  const repository = { listPageForUser: async () => ({ items: [{ id: 'a' }], total: 22, pending: 14 }) };
+  const { service } = fixture({ schedulerRepository: repository });
+  const result = await service.tasksPage('user-a', { page: 2, pageSize: 10 });
+  assert.equal(result.pending, 14);
+  assert.equal(result.total, 22);
+  assert.equal(result.totalPages, 3);
 });
 
 test('send validates the request and hands off to executeSend with the resolved wallet', async () => {

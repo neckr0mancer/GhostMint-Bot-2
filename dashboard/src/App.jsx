@@ -523,13 +523,19 @@ function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSear
   // The prototype's chip reads "2 pending" above THREE rows -- Scheduled, Paused, Failed. So
   // "pending" means not-yet-fired: a paused mint still counts, a failed one does not. Counting
   // only status==="scheduled" would have printed 1 against the same three rows.
-  // These are the statuses src/scheduler/schedulerRepository.js:71 itself counts as active, and
-  // "pending" means exactly that: not yet fired. 'retry' is a task the worker will attempt again
-  // and 'claimed' is one it is holding a lease on -- both are still coming, so both count. The
-  // earlier list guessed at 'pending'/'queued', which this schema never produces, while missing
-  // the two that it does.
+  // "N pending" is a property of the WHOLE collection, so the server counts it --
+  // schedulerRepository.listPageForUser, over the same WHERE as total. Counting it here from
+  // `items` counted one page wearing a collection's label: with 22 tasks at pageSize 10 the chip
+  // read 10 on page 1 and 2 on page 2, against a true 14.
+  //
+  // The fallback is not defensive padding, it is load-bearing today: dashboard/vite.config.js
+  // proxies /api to the deployed instance, so until this ships there the response has no
+  // `pending` field at all. Falling back to the page count keeps the old wrong number rather than
+  // rendering "undefined pending", and it self-corrects the moment the server catches up.
   const PENDING_STATUSES=new Set(['scheduled','retry','claimed','paused']);
-  const pending=items?items.filter(task=>PENDING_STATUSES.has(String(task.status).toLowerCase())).length:0;
+  const pending=typeof listing.data?.pending==='number'
+    ?listing.data.pending
+    :items?items.filter(task=>PENDING_STATUSES.has(String(task.status).toLowerCase())).length:0;
   function rowIcon(status){
     const value=String(status||'').toLowerCase();
     if(value==='paused')return <div className="ri">{PAUSE_ICON}</div>;

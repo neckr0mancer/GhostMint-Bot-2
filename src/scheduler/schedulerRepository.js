@@ -1,3 +1,10 @@
+// A task that has not fired yet: queued, mid-retry, leased by a worker, or suspended. Everything
+// else (succeeded, failed, cancelled) is finished. Named once because two separate counts need it
+// and they must not drift -- countActive answers "how much work does this deployment have", while
+// listPageForUser's pending answers the same question for one user's list.
+const PENDING_STATUSES = Object.freeze(['scheduled', 'retry', 'claimed', 'paused']);
+const PENDING_SQL_LIST = PENDING_STATUSES.map(status => `'${status}'`).join(',');
+
 function time(value) { return value === null ? null : new Date(value).getTime(); }
 
 function mapTask(row) {
@@ -61,14 +68,18 @@ function createSchedulerRepository(pool) {
       const mainParams=term?[userId,limit,offset,term]:[userId,limit,offset];
       const countWhere=term?'WHERE user_id=$1 AND (name ILIKE $2 OR wallet_label ILIKE $2)':'WHERE user_id=$1';
       const countParams=term?[userId,term]:[userId];
-      const [rows,count]=await Promise.all([pool.query(`SELECT * FROM mint_tasks ${mainWhere}
+      // pending is deliberately scoped to the same WHERE as total, so the two numbers always
+      // describe one set: "N pending" of "M total" stays coherent under a search.
+      const [rows,count,pending]=await Promise.all([pool.query(`SELECT * FROM mint_tasks ${mainWhere}
         ORDER BY mint_time,id LIMIT $2 OFFSET $3`,mainParams),
-      pool.query(`SELECT COUNT(*)::INTEGER AS total FROM mint_tasks ${countWhere}`,countParams)]);
-      return {items:rows.rows.map(mapTask),total:count.rows[0].total};
+      pool.query(`SELECT COUNT(*)::INTEGER AS total FROM mint_tasks ${countWhere}`,countParams),
+      pool.query(`SELECT COUNT(*)::INTEGER AS pending FROM mint_tasks ${countWhere}
+        AND status IN (${PENDING_SQL_LIST})`,countParams)]);
+      return {items:rows.rows.map(mapTask),total:count.rows[0].total,pending:pending.rows[0].pending};
     },
 
     async countActive() {
-      const result = await pool.query("SELECT COUNT(*)::INTEGER AS count FROM mint_tasks WHERE status IN ('scheduled','retry','claimed','paused')");
+      const result = await pool.query(`SELECT COUNT(*)::INTEGER AS count FROM mint_tasks WHERE status IN (${PENDING_SQL_LIST})`);
       return result.rows[0].count;
     },
 
@@ -158,4 +169,4 @@ function createSchedulerRepository(pool) {
   };
 }
 
-module.exports = { createSchedulerRepository, mapTask };
+module.exports = { PENDING_STATUSES, createSchedulerRepository, mapTask };

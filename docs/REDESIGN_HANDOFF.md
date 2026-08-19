@@ -102,8 +102,9 @@ Done, measured against the prototype: shell chrome (rail + top bar) · buttons a
 `FirstRun` and tile copy · the Mint page, all four tabs · the pager, app-wide,
 now verified across three real pages rather than one.
 
-**Known gap, deliberately left:** the Scheduled card's "N pending" chip counts only
-the page in view. Backlog §11.4 has the measurements and why the fix is server-side.
+The Scheduled card's "N pending" chip is now counted server-side (backlog §11.4). Until
+that deploys, the dev proxy serves production's response, which has no `pending` field —
+App.jsx falls back to the page count, so the chip reads low locally. That is expected.
 
 Not done: account menu, bell, and every page other than Home and Mint.
 

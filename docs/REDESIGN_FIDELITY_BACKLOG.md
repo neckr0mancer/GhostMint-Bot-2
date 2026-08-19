@@ -463,7 +463,7 @@ The general principle, which is the part worth keeping: **a truncated list must 
 what it is truncating.** "3 of 14" tells the user 11 more exist; "Page 1 of 5" makes
 them do the arithmetic, and a bare list tells them nothing at all.
 
-### 11.4 Known gap — the "N pending" chip counts one page
+### 11.4 The "N pending" chip counted one page. FIXED 2026-08-19
 
 Measured 2026-08-19 with 22 tasks (14 scheduled, 8 cancelled) at pageSize 10:
 
@@ -476,10 +476,26 @@ The count is computed from `listing.data.items`, which is only the page in view,
 changes as the user pages. It was invisible until this session because the account had
 never held more than one page of schedules — the bug was always there, the data was not.
 
-Not fixed here: the honest fix is server-side (return a pending total alongside
-`{page,pageSize,total,totalPages,items}`), and reshaping an endpoint does not belong in
-a UI-fidelity commit. Counting client-side would also break past the pageSize cap of 50.
-Raised as its own task. **Check Activity for the same trap.**
+Fixed server-side: `listPageForUser` counts pending in the same round trip as `total`,
+over the **same WHERE clause**, so the two numbers always describe one set — under a
+search, "N pending" narrows with it. `pageFrom` stays generic: it forwards any extra
+total a repository returns, and takes a `counts` function for the in-memory fallback
+path, which is handed every matching row rather than the ten being returned.
+
+The status list now lives once, as `PENDING_STATUSES` in `schedulerRepository.js`, shared
+by `countActive` and the per-user count so they cannot drift.
+
+**The client keeps a fallback, and it is load-bearing rather than defensive.**
+`dashboard/vite.config.js` proxies `/api` to the deployed instance, so until this ships
+the response has no `pending` field. App.jsx falls back to the page count — the old
+wrong number, which beats rendering "undefined pending" — and self-corrects the moment
+the server catches up. Verified live: the chip still reads "10 pending" against
+production today, with no undefined leaking through.
+
+**Activity was checked and is clean** — it renders items and a pager with no aggregate
+over the collection. Its only count is `items.length===0` for the empty state, which is
+a per-page question and correctly answered per page. The Scheduled chip was the only
+instance of the trap.
 
 ## 12. Batch and Presets — notes from the rebuild
 
