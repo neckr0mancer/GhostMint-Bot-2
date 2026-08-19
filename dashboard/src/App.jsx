@@ -1403,7 +1403,7 @@ function MintBatch({onGoWallets}){
 // another page to check a signature would abandon a half-filled preset.
 const METHOD_PREVIEW_COUNT=5;
 function MintPresets({onUsePreset}){
-  const presets=useLoad('/api/mint-presets');
+  const presets=useLoad('/api/mint-presets',[],'presets.changed');
   const methods=useLoad('/api/mint-methods');
   const [showAllMethods,setShowAllMethods]=useState(false);
   const items=presets.data;

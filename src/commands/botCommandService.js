@@ -594,8 +594,12 @@ function createBotCommandService(dependencies) {
     // resolving the wallet the same way, rather than a second copy of the rules.
     saveMintPreset:async(userId,input)=>{
       const owned=wallet(userId,input.walletLabel);
-      return mintService.savePreset(userId,{...input,walletAddress:owned.address,
+      const saved=await mintService.savePreset(userId,{...input,walletAddress:owned.address,
         chain:input.chain||owned.chain,valueWei:input.valueWei??'0'});
+      // Every other list announces its own writes; presets did not, so one saved from Telegram
+      // sat invisible on an open dashboard until the page was revisited.
+      broadcast(userId,'presets');
+      return saved;
     },
     createSniper, updateSniper, removeSniper, gas,
     sniperEvents:userId=>sniperRepository.listRecentForUser(userId),

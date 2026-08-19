@@ -1092,3 +1092,39 @@ an empty proof could never mint.
 **Known gap:** `useLoad('/api/mint-presets')` subscribes to no websocket event, so a preset created
 elsewhere (or by the bot) does not appear until the page is revisited. Every other list has an
 event; this one was missed.
+
+### 13.15 Presets event, token merge, and expiry history — 2026-08-19
+
+**Presets now announce themselves.** `saveMintPreset` calls `broadcast(userId,'presets')` and the
+client subscribes to `presets.changed`. Every other list already did this; presets were the one
+write nobody told anyone about, so a preset saved from Telegram sat invisible on an open dashboard.
+
+**The two faint tokens are now one.** `--text-faint` is an alias of `prototype.css`'s `--faint`
+rather than a second colour. They were separate names for "quiet text" that had already drifted
+into different values — which is exactly how half the WCAG failures in §13.10 survived the first
+fix, the corrected token moving one set while the other stayed failing at identical ratios.
+Re-swept after the merge: 882 elements, zero failures in all five themes.
+
+**Preset support across platforms, checked rather than assumed:**
+
+| platform | mint presets |
+|---|---|
+| Telegram | `/mintpreset save`, `/mintpreset <name>`, `/mintpresets` — but only `/mintpresets` is registered in the command menu, so saving is effectively undiscoverable |
+| Discord | **none at all.** Its "preset" commands are *transaction-mode* presets and *target-policy* presets — a different concept entirely |
+| Dashboard | list + Use, and now POST (§13.11) |
+
+Discord being unable to save or use a mint preset is a genuine parity gap, and the kind
+`mintFlowDecision`/`watchRuleFlowDecision` exist to prevent elsewhere.
+
+**Expired mints now reach history.** Expiry is derived from the clock, so nothing was ever written
+when it happened: a failure at least left a history row, a missed window left nothing, and the
+badge count was the only place it ever showed. A 60s sweep claims newly-expired tasks and writes
+one activity row each, plus a Telegram line and a live refresh.
+
+Two deliberate choices:
+- **A column, not memory.** `expired_logged_at` (migration 040). A duplicated warning is noise; a
+  duplicated HISTORY row is a permanent lie about how many times something happened, and an
+  in-memory marker would produce one on every restart. The claim is a single atomic UPDATE
+  ... RETURNING, so two workers cannot both record the same expiry.
+- **The task is not altered.** A failed mint stays failed and stays retryable, exactly as the owner
+  asked; the sweep only records that its window has gone.

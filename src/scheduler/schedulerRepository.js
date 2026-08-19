@@ -135,6 +135,21 @@ function createSchedulerRepository(pool) {
       return {items:rows.rows.map(mapTask),total:total.rows[0].total,counts};
     },
 
+    // Claims newly-expired tasks and marks them in the SAME statement, so the row can only be
+    // returned once even if two workers sweep at the same moment. The caller writes history for
+    // whatever it gets back.
+    async claimNewlyExpired(limit = 50) {
+      const result = await pool.query(`UPDATE mint_tasks SET expired_logged_at=NOW()
+        WHERE id IN (
+          SELECT id FROM mint_tasks
+          WHERE expired_logged_at IS NULL
+            AND status IN (${sqlStatusList(EXPIRABLE_STATUSES)})
+            AND mint_time < ${EXPIRY_GRACE_SQL}
+          ORDER BY mint_time LIMIT $1
+        ) RETURNING *`, [limit]);
+      return result.rows.map(mapTask);
+    },
+
     async countActive() {
       const result = await pool.query(`SELECT COUNT(*)::INTEGER AS count FROM mint_tasks WHERE status IN (${sqlStatusList(ACTIVE_STATUSES)})`);
       return result.rows[0].count;

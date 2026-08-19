@@ -334,6 +334,35 @@ const LOW_BALANCE_SWEEP_MS = 60 * 1000;
 const lowBalanceWarned = new Set();
 const PENDING_FOR_WARNING = new Set(['scheduled', 'retry', 'claimed']);
 
+// An expired scheduled mint is something that happened TO the user and then quietly vanished:
+// expiry is derived from the clock, so nothing is written when it occurs. A failure at least leaves
+// a history row; a missed window left nothing at all, and the count on the badge is the only place
+// it ever showed. This writes it to history exactly once -- the claim is atomic in SQL, so a
+// restart or a second worker cannot duplicate the row.
+//
+// The task itself is deliberately NOT altered. A failed mint stays failed and stays retryable;
+// this only records that its window has now gone.
+async function expiredHistorySweep() {
+  let recorded = 0;
+  try {
+    const expired = await schedulerRepository.claimNewlyExpired();
+    for (const task of expired) {
+      const wallet = DB.wallets.find(item => item.userId === task.userId && item.label === task.walletLabel);
+      const why = task.status === 'paused' ? 'paused past its mint time' : (task.lastError || 'no reason recorded');
+      await logActivity(task.userId, 'fail', `Scheduled mint expired: ${task.name}`,
+        task.walletLabel, null, wallet ? CHAINS[wallet.chain] : null, { triggerSource: 'scheduled' });
+      await notifyUser(task.userId,
+        `⌛ Scheduled mint <b>${escapeTelegramHtml(task.name)}</b> expired — ${escapeTelegramHtml(why)}`);
+      dashboardWebSockets.broadcastToUser(task.userId, { type: 'tasks.changed' });
+      dashboardWebSockets.broadcastToUser(task.userId, { type: 'activity.changed' });
+      recorded += 1;
+    }
+  } catch (error) {
+    log(`Expired-history sweep failed: ${safeError(error)}`);
+  }
+  return recorded;
+}
+
 async function lowBalanceSweep(now = Date.now()) {
   const due = DB.tasks.filter(task =>
     PENDING_FOR_WARNING.has(String(task.status || '').toLowerCase())
@@ -2885,6 +2914,8 @@ async function start() {
   }
   schedulerWorker.start();
   setInterval(()=>{lowBalanceSweep().catch(error=>log(`Low-balance sweep error: ${safeError(error)}`));},LOW_BALANCE_SWEEP_MS).unref?.();
+  setInterval(()=>{expiredHistorySweep().catch(error=>log(`Expired-history sweep error: ${safeError(error)}`));},LOW_BALANCE_SWEEP_MS).unref?.();
+  log('Started expired-mint history sweep');
   log(`Started low-balance pre-flight (${LOW_BALANCE_LEAD_MS/60000}m lead)`);
   socialWatchWorker.start();
   retentionWorker.start();
