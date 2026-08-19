@@ -132,21 +132,43 @@
           </div>
           <div class="g">
             <div class="card">
-              <div class="ch"><h2>Scheduled</h2><div class="sp"></div><span class="p nu of">2 pending</span></div>
+              <div class="ch"><h2>Scheduled</h2><div class="sp"></div></div>
+              <!-- Status filter. One bucket at a time, pending by default. Each chip keeps its own
+                   tone and its own count; the active one is marked by weight + an inset ring, since
+                   colour is already carrying the state's meaning. Owner's ruling 2026-08-19. -->
+              <div class="fils of" role="group" aria-label="Filter scheduled mints by state">
+                <button class="p ok fil on" aria-pressed="true">2 pending</button>
+                <button class="p nu fil" aria-pressed="false">1 paused</button>
+                <button class="p bad fil" aria-pressed="false">1 failed</button>
+                <button class="p nu fil" aria-pressed="false">3 cancelled</button>
+                <button class="p nu fil" aria-pressed="false">8 done</button>
+              </div>
               <div class="of">
-                <div class="r"><div class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg></div>
+                <!-- The ROW is the control: click to select, click again to drop it. No checkbox --
+                     selection reads as a highlight (.r.on). The first row picked fixes what the
+                     selection is; rows offering a different set of actions go .r.off and cannot
+                     join it, so Pause can never half-apply across a mixed pair. -->
+                <div class="r on" role="button" tabindex="0" aria-pressed="true"><div class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg></div>
                   <div class="rm"><div class="rt">Pudgy Rods public</div><div class="rs fold">Primary · fires in 42m · 2026-08-20T18:00:00Z</div></div>
                   <div class="rv"><span class="p ok">Scheduled</span></div></div>
-                <div class="r"><div class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 4h4v16H6zM14 4h4v16h-4z"/></svg></div>
+                <div class="r" role="button" tabindex="0" aria-pressed="false"><div class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg></div>
+                  <div class="rm"><div class="rt">Azuki Elementals</div><div class="rs fold">Primary · fires in 3h 10m · 2026-08-20T21:10:00Z</div></div>
+                  <div class="rv"><span class="p ok">Scheduled</span></div></div>
+                <div class="r off" role="button" tabindex="-1" aria-disabled="true"><div class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 4h4v16H6zM14 4h4v16h-4z"/></svg></div>
                   <div class="rm"><div class="rt">Base Gods wave 2</div><div class="rs fold">Trading · paused</div></div>
                   <div class="rv"><span class="p nu">Paused</span></div></div>
-                <div class="r"><div class="ri" style="color:var(--loss-text)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></div>
+                <div class="r off" role="button" tabindex="-1" aria-disabled="true"><div class="ri" style="color:var(--loss-text)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></div>
                   <div class="rm"><div class="rt">Unknown drop</div><div class="rs fold">attempt 3 of 3 · sale not active</div></div>
                   <div class="rv"><span class="p bad">Failed</span></div></div>
                 <div class="br" style="margin-top:11px"><button class="b sm">Pause</button><button class="b sm">Resume</button><button class="b sm">Retry</button><button class="b d sm">Cancel…</button></div>
                 <!-- Pager: /api/tasks returns {page,pageSize,total,totalPages,items} -->
+                <!-- Jump-to-first/last appear only past THREE pages; below that every page is
+                     already one click away. Disabled at the ends rather than hidden, so the row
+                     does not reflow under the cursor. -->
                 <div class="pager"><span class="pinfo">3 of 14</span>
-                  <button disabled>‹</button><button class="on">1</button><button>2</button><button>3</button><button>›</button></div>
+                  <button disabled aria-label="First page">«</button><button disabled>‹</button>
+                  <button class="on">1</button><button>2</button><button>3</button><button>4</button>
+                  <button>›</button><button aria-label="Last page">»</button></div>
               </div>
               <div class="ol"><div class="sk row"></div><div class="sk row"></div><div class="sk row"></div></div>
               <div class="emp oe"><div class="ei"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg></div>

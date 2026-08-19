@@ -8,7 +8,7 @@ const { detectContractChain } = require('../mint/chainDetector');
 const { computeSeaDropValueWei } = require('../mint/seaDropCall');
 const { SEADROP_MINT_SIGNATURE } = require('../mint/seaDropRegistry');
 const { createWalletBalanceCache } = require('./walletBalanceCache');
-const { PENDING_STATUSES } = require('../scheduler/schedulerRepository');
+const { BUCKET_OF_STATUS, TASK_BUCKETS, TASK_BUCKET_NAMES } = require('../scheduler/schedulerRepository');
 
 // The four controls a scheduled mint accepts, each with the past participle its error message
 // needs. `${action}d` got half of them wrong -- "canceld" and "retryd" both reached the user
@@ -528,15 +528,23 @@ function createBotCommandService(dependencies) {
     return {targetType,targetId,label:target.label||target.name,chain,policy,governance};
   }
 
-  // `counts` computes collection-wide totals that a single page cannot: it is handed every row
-  // matching the query, not the ten being returned. The repository path gets the same thing for
-  // free, since any extra key the repository returns alongside {items,total} is forwarded as-is.
-  // Anything derived from `items` alone would be a per-page number wearing a collection's label.
-  async function pageFrom(repositoryMethod,fallback,userId,input,searchFields,counts) {const p=pagination(input);const search=typeof input?.search==='string'?input.search.trim():'';if(repositoryMethod){const {items,total,...extra}=await repositoryMethod(userId,{limit:p.pageSize,offset:p.offset,search});return {...p,total,totalPages:Math.max(1,Math.ceil(total/p.pageSize)),items,...extra};}const source=fallback();const items=search&&searchFields?source.filter(item=>searchFields.some(field=>String(item[field]||'').toLowerCase().includes(search.toLowerCase()))):source;return {...paginate(items,p),...(counts?counts(items):{})};}
-  // The chip above the Scheduled list reads "N pending" over the WHOLE collection, so it cannot be
-  // counted from a page. Same statuses the scheduler itself calls active.
-  const PENDING_SET=new Set(PENDING_STATUSES);
-  const countPendingTasks=tasks=>({pending:tasks.filter(task=>PENDING_SET.has(String(task.status).toLowerCase())).length});
+  // Two hooks, and the ORDER between them is the whole point.
+  //   counts  -- collection-wide totals a single page cannot produce. Handed every row matching
+  //             the search, BEFORE any status filter, so each filter chip keeps showing its real
+  //             number while a different chip is the active one.
+  //   refine  -- the status filter itself. Applied after counts, before paginate, so the pager
+  //             pages through the filtered set rather than the whole collection.
+  // The repository path gets both for free: it receives `status` and returns its own counts, and
+  // any extra key alongside {items,total} is forwarded untouched.
+  async function pageFrom(repositoryMethod,fallback,userId,input,searchFields,{counts,refine}={}) {const p=pagination(input);const search=typeof input?.search==='string'?input.search.trim():'';if(repositoryMethod){const {items,total,...extra}=await repositoryMethod(userId,{limit:p.pageSize,offset:p.offset,search,status:input?.status});return {...p,total,totalPages:Math.max(1,Math.ceil(total/p.pageSize)),items,...extra};}const source=fallback();const matched=search&&searchFields?source.filter(item=>searchFields.some(field=>String(item[field]||'').toLowerCase().includes(search.toLowerCase()))):source;const extra=counts?counts(matched):{};const items=refine?refine(matched,input):matched;return {...paginate(items,p),...extra};}
+  // The in-memory mirror of what listPageForUser does in SQL, for the fallback path. Every status
+  // lands in exactly one bucket, so these five sum to the collection total.
+  const bucketOfTask=task=>BUCKET_OF_STATUS[String(task.status||'').toLowerCase()]||null;
+  const countTaskBuckets=tasks=>{const counts=Object.fromEntries(TASK_BUCKET_NAMES.map(name=>[name,0]));
+    for(const task of tasks){const name=bucketOfTask(task);if(name)counts[name]+=1;}return {counts};};
+  const filterTaskBucket=(tasks,input)=>{const bucket=input?.status;
+    return Object.hasOwn(TASK_BUCKETS,bucket)?tasks.filter(task=>bucketOfTask(task)===bucket):tasks;};
+  const TASK_PAGE_HOOKS={counts:countTaskBuckets,refine:filterTaskBucket};
 
   async function stats(userId) {const rows=sniperRepository?.statsForUser?await sniperRepository.statsForUser(userId):[];
     const sniperEvents=rows.flatMap(row=>Array.from({length:row.count},()=>({state:row.state})));
@@ -549,7 +557,7 @@ function createBotCommandService(dependencies) {
     sniperEvents:userId=>sniperRepository.listRecentForUser(userId),
     wallets: userId => state(userId).wallets,
     tasks: userId => schedulerRepository.listForUser(userId),
-    tasksPage:(userId,input)=>pageFrom(schedulerRepository.listPageForUser?.bind(schedulerRepository),()=>state(userId).tasks,userId,input,['name','walletLabel'],countPendingTasks),
+    tasksPage:(userId,input)=>pageFrom(schedulerRepository.listPageForUser?.bind(schedulerRepository),()=>state(userId).tasks,userId,input,['name','walletLabel'],TASK_PAGE_HOOKS),
     activity: userId => state(userId).activity.slice(0, 10),
     activityPage:(userId,input)=>pageFrom(storage.listActivityPage?.bind(storage),()=>state(userId).activity,userId,input,['title','walletLabel']),
     pnl: userId => state(userId).pnl,
@@ -609,7 +617,7 @@ function createBotCommandService(dependencies) {
     adminUserActivity:async(callerUserId,targetUserId,input)=>{await governance.requireOwner(callerUserId);
       return pageFrom(storage.listActivityPage?.bind(storage),()=>state(targetUserId).activity,targetUserId,input,['title','walletLabel']);},
     adminUserTasks:async(callerUserId,targetUserId,input)=>{await governance.requireOwner(callerUserId);
-      return pageFrom(schedulerRepository.listPageForUser?.bind(schedulerRepository),()=>state(targetUserId).tasks,targetUserId,input,['name','walletLabel'],countPendingTasks);},
+      return pageFrom(schedulerRepository.listPageForUser?.bind(schedulerRepository),()=>state(targetUserId).tasks,targetUserId,input,['name','walletLabel'],TASK_PAGE_HOOKS);},
     adminUserPnl:async(callerUserId,targetUserId)=>{await governance.requireOwner(callerUserId);return state(targetUserId).pnl;},
     adminSecurityAudit:async(callerUserId,input)=>{await governance.requireOwner(callerUserId);return botSecurityRepository.listRecent(input);},
     linkCode:userId=>identity.createLinkCode(userId),

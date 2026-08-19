@@ -474,7 +474,7 @@ function Minting({onSwitchToBatch,onGoWallets}){const wallets=useLoad('/api/wall
   </>;
 }
 
-function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSearch]=useState('');const listing=useLoad(`/api/tasks?page=${page}&pageSize=10&search=${encodeURIComponent(search)}`,[page,search],'tasks.changed');const wallets=useLoad('/api/wallets',[],'wallets.changed');const [chain,setChain]=useState(profile.defaultChain||profile.supportedChains[0]);const [contractAddress,setContractAddress]=useState('');const [quantity,setQuantity]=useState('1');const [priceETH,setPriceETH]=useState('');const [mintTime,setMintTime]=useState('');const [detecting,setDetecting]=useState(false);const lastDetected=useRef('');
+function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSearch]=useState('');const [bucket,setBucket]=useState('pending');const listing=useLoad(`/api/tasks?page=${page}&pageSize=10&status=${bucket}&search=${encodeURIComponent(search)}`,[page,bucket,search],'tasks.changed');const wallets=useLoad('/api/wallets',[],'wallets.changed');const [chain,setChain]=useState(profile.defaultChain||profile.supportedChains[0]);const [contractAddress,setContractAddress]=useState('');const [quantity,setQuantity]=useState('1');const [priceETH,setPriceETH]=useState('');const [mintTime,setMintTime]=useState('');const [detecting,setDetecting]=useState(false);const lastDetected=useRef('');
   // The prototype's Schedule form has no price field, because it assumes the contract can be
   // priced automatically. Some cannot -- the server then rejects with a priceETH issue and there
   // is nowhere to type one, which left the form unsubmittable for those contracts. So the field
@@ -523,25 +523,33 @@ function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSear
   // The prototype's chip reads "2 pending" above THREE rows -- Scheduled, Paused, Failed. So
   // "pending" means not-yet-fired: a paused mint still counts, a failed one does not. Counting
   // only status==="scheduled" would have printed 1 against the same three rows.
-  // "N pending" is a property of the WHOLE collection, so the server counts it --
-  // schedulerRepository.listPageForUser, over the same WHERE as total. Counting it here from
-  // `items` counted one page wearing a collection's label: with 22 tasks at pageSize 10 the chip
-  // read 10 on page 1 and 2 on page 2, against a true 14.
-  //
-  // The fallback is not defensive padding, it is load-bearing today: dashboard/vite.config.js
-  // proxies /api to the deployed instance, so until this ships there the response has no
-  // `pending` field at all. Falling back to the page count keeps the old wrong number rather than
-  // rendering "undefined pending", and it self-corrects the moment the server catches up.
-  const PENDING_STATUSES=new Set(['scheduled','retry','claimed','paused']);
-  const pending=typeof listing.data?.pending==='number'
-    ?listing.data.pending
-    :items?items.filter(task=>PENDING_STATUSES.has(String(task.status).toLowerCase())).length:0;
+  // The five buckets partition every status the schema allows, so a row is always reachable under
+  // exactly one filter. 'done' is not in the owner's original four -- without it a mint that
+  // actually fired would be invisible under all of them. Mirrors TASK_BUCKETS in
+  // src/scheduler/schedulerRepository.js; the server does the filtering and the counting.
+  const BUCKETS=[['pending','Pending'],['paused','Paused'],['failed','Failed'],
+    ['cancelled','Cancelled'],['done','Done']];
+  const BUCKET_STATUSES={pending:['scheduled','claimed','retry'],paused:['paused'],
+    failed:['failed'],cancelled:['cancelled'],done:['succeeded']};
+  // Counts come from the server because they describe the whole collection, not this page. The
+  // fallback is load-bearing rather than defensive: dashboard/vite.config.js proxies /api to the
+  // deployed instance, so until this ships the response carries no counts at all. Counting the
+  // page keeps a wrong-but-plausible number instead of rendering "undefined", and it corrects
+  // itself the moment the server catches up.
+  const counts=listing.data?.counts||(items?Object.fromEntries(BUCKETS.map(([key])=>
+    [key,items.filter(task=>BUCKET_STATUSES[key].includes(String(task.status).toLowerCase())).length]))
+    :Object.fromEntries(BUCKETS.map(([key])=>[key,0])));
+  // Tone follows meaning, not novelty. Failed is the only one that went wrong on its own, so it is
+  // the only red: cancelled is something the user chose, and colouring a deliberate act like an
+  // error teaches people to ignore red. Owner's ruling 2026-08-19.
+  const BUCKET_TONE={pending:'ok',paused:'nu',failed:'bad',cancelled:'nu',done:'nu'};
   function rowIcon(status){
     const value=String(status||'').toLowerCase();
     if(value==='paused')return <div className="ri">{PAUSE_ICON}</div>;
     if(value==='failed'||value==='error')return <div className="ri" style={{color:'var(--loss-text)'}}>{CROSS_ICON}</div>;
     return <div className="ri">{CLOCK_ICON_LG}</div>;
   }
+  function selectBucket(next){setBucket(next);setPage(1);setSelectedIds([]);}
   // The server is the authority on which control a status accepts, so this mirrors the WHERE
   // clauses in src/scheduler/schedulerRepository.js (pause/resume/retry/cancel, lines 137-155)
   // rather than reasoning about it independently. Cancel used to be treated as always available;
@@ -554,19 +562,28 @@ function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSear
     failed:['retry'],
   };
   function actionsFor(status){return ACTIONS_BY_STATUS[String(status||'').toLowerCase()]||[];}
-  // Everything below acts on what is BOTH selected and on the page in view. Paging clears the
-  // selection anyway (see the Pager), but intersecting here as well is what stops a control from
-  // ever being enabled with nothing behind it -- a button that looks live and silently does
-  // nothing is worse than a disabled one.
+  // Selection is scoped to the page in view -- it clears on paging and on changing filter -- and
+  // intersecting here as well is what stops a control being enabled with nothing behind it.
   const selected=(items||[]).filter(task=>selectedIds.includes(task.id));
-  // An action is offered when at least one selected schedule can take it, and then runs against
-  // exactly those -- selecting a paused and a failed mint together and pressing Retry retries the
-  // failed one and leaves the paused one alone, rather than erroring on the pair.
+  // The FIRST row selected fixes what the selection IS: only rows offering exactly the same set
+  // of actions can join it. Mixing was previously allowed, with an action quietly applying to the
+  // subset that could take it -- press Cancel on a scheduled row and a cancelled one together and
+  // one changes while the other silently does not, with nothing on screen saying so. The owner
+  // ruled that out: "I cannot select a scheduled item, then also select another one, and it now
+  // be cancelled." Rows that cannot join are left inert rather than hidden, so the list does not
+  // reshuffle under the cursor as a selection is built.
+  const selectionKey=selected.length?actionsFor(selected[0].status).join('+'):null;
+  const canSelect=task=>selectionKey===null||actionsFor(task.status).join('+')===selectionKey;
+  function chooseRow(task){if(canSelect(task))toggleSelected(task.id);}
+  // Because the selection is homogeneous, "this action is offered" and "this action will run
+  // against every selected row" are now the same statement -- which is what makes the button
+  // labels honest.
   function selectionSupports(action){
-    return selected.some(task=>actionsFor(task.status).includes(action));
+    return selected.length>0&&actionsFor(selected[0].status).includes(action);
   }
   async function controlSelected(action){
-    const targets=selected.filter(task=>actionsFor(task.status).includes(action));
+    if(!selectionSupports(action))return;
+    const targets=selected;
     if(!targets.length)return;
     if(action==='cancel'&&!await confirmDialog(targets.length===1
       ?'Cancel this scheduled mint? It will not fire, and this cannot be undone.'
@@ -575,10 +592,13 @@ function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSear
     setSelectedIds([]);
     listing.load();
   }
-  function rowPill(status){
+  function bucketOf(status){
     const value=String(status||'').toLowerCase();
-    const tone=value==='scheduled'?'ok':(value==='failed'||value==='error')?'bad':'nu';
-    return <span className={`p ${tone}`}>{status}</span>;
+    return BUCKETS.find(([key])=>BUCKET_STATUSES[key].includes(value))?.[0]||null;
+  }
+  function rowPill(status){
+    const key=bucketOf(status);
+    return <span className={`p ${key?BUCKET_TONE[key]:'nu'}`}>{status}</span>;
   }
   return <div className="split">
     <div className="card">
@@ -630,8 +650,19 @@ function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSear
 
     <div className="g">
       <div className="card">
-        <div className="ch"><h2>Scheduled</h2><div className="sp"/>
-          {items&&items.length>0&&<span className="p nu">{pending} pending</span>}</div>
+        <div className="ch"><h2>Scheduled</h2><div className="sp"/></div>
+        {/* The prototype's single static "2 pending" chip, made into the filter the owner asked
+            for. One bucket is shown at a time -- pending by default -- because the four states
+            answer different questions and interleaving them made the list unreadable. Each chip
+            carries its own count, which is why the server scopes counts to the search but NOT to
+            the active filter: a chip reading 0 only because it is not the current view would be
+            worse than no chip. */}
+        <div className="fils" role="group" aria-label="Filter scheduled mints by state">
+          {BUCKETS.map(([key,label])=><button type="button" key={key}
+            className={`p ${BUCKET_TONE[key]} fil${bucket===key?' on':''}`}
+            aria-pressed={bucket===key} onClick={()=>selectBucket(key)}>
+            {counts[key]??0} {label.toLowerCase()}</button>)}
+        </div>
         {listing.error
           ?<Notice error={{title:'Could not load scheduled mints.',code:listing.status,onRetry:listing.load}}/>
           :items===undefined||items===null
@@ -639,31 +670,40 @@ function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSear
             :items.length===0
               ?<div className="emp">
                  <div className="ei">{CLOCK_ICON_LG}</div>
-                 <h3>Nothing scheduled</h3>
-                 <p>A scheduled mint is a database row, not a browser timer — it fires whether or not this tab is open.</p>
+                 {/* The prototype's empty state assumed an unfiltered list. With a filter applied,
+                     "Nothing scheduled" would be a lie about the collection rather than a fact
+                     about the view, so the filtered case says which view is empty. */}
+                 {bucket==='pending'
+                   ?<><h3>Nothing scheduled</h3>
+                     <p>A scheduled mint is a database row, not a browser timer — it fires whether or not this tab is open.</p></>
+                   :<><h3>No {BUCKETS.find(([key])=>key===bucket)?.[1].toLowerCase()} mints</h3>
+                     <p>Nothing here right now. Other states may still have mints — the counts above show which.</p></>}
                </div>
               :<div>
-                 {/* Rows are SELECTABLE, and the four controls sit in ONE .br beneath the list,
-                     exactly where the prototype puts them (mint.html:145). That placement only
-                     works if something says WHICH schedule the buttons act on, so each row
-                     carries the same checkbox treatment the prototype already uses on Batch's
-                     wallet list (mint.html:171) and on Automation (auto.html:49) -- borrowed from
-                     its own vocabulary rather than inventing a selected-row style it does not
-                     define. min-height:auto is not decoration: prototype.css:83 sets a
-                     var(--tap-min) floor on every bare input, which is why the prototype's own
-                     checkboxes carry it too. flex:none is the one addition, and only because .r is
-                     a flex row where the prototype's checkboxes sit in a label. Backlog §4.4. */}
-                 {items.map(task=><div className="r" key={task.id}>
-                   <input type="checkbox" style={{minHeight:'auto',width:'16px',height:'16px',flex:'none'}}
-                     aria-label={`Select ${task.name}`}
-                     checked={selectedIds.includes(task.id)} onChange={()=>toggleSelected(task.id)}/>
-                   {rowIcon(task.status)}
-                   <div className="rm">
-                     <div className="rt">{task.name}</div>
-                     <div className="rs fold">{task.walletLabel} · {new Date(task.mintTime).toISOString()}</div>
-                   </div>
-                   <div className="rv">{rowPill(task.status)}</div>
-                 </div>)}
+                 {/* The whole row is the control: click to select, click again to drop it. The
+                     checkboxes that were here are gone at the owner's instruction -- selection now
+                     reads as a highlight on the row itself (.r.on), which is why the row carries
+                     role="button" and aria-pressed rather than hiding an input inside it.
+                     A row that cannot join the current selection gets .r.off and is not focusable,
+                     so the rule is visible before it is discovered by clicking. */}
+                 {items.map(task=>{
+                   const chosen=selectedIds.includes(task.id);
+                   const selectable=canSelect(task);
+                   return <div key={task.id}
+                     className={`r${chosen?' on':''}${selectable?'':' off'}`}
+                     role="button" tabIndex={selectable?0:-1}
+                     aria-pressed={chosen} aria-disabled={selectable?undefined:true}
+                     onClick={()=>chooseRow(task)}
+                     onKeyDown={event=>{if(event.key==='Enter'||event.key===' '){
+                       event.preventDefault();chooseRow(task);}}}>
+                     {rowIcon(task.status)}
+                     <div className="rm">
+                       <div className="rt">{task.name}</div>
+                       <div className="rs fold">{task.walletLabel} · {new Date(task.mintTime).toISOString()}</div>
+                     </div>
+                     <div className="rv">{rowPill(task.status)}</div>
+                   </div>;
+                 })}
                  {/* All four always present, as the prototype draws them; the ones that cannot
                      apply to the current selection are disabled rather than hidden, so the row
                      does not reflow as the selection changes. .b[disabled] is the prototype's

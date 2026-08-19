@@ -104,33 +104,80 @@ test('a task control action outside the four is rejected before the repository i
 test('the pending task count spans the whole collection, not the page in view', async () => {
   // The chip above the Scheduled list reads "N pending". Counting it from the returned page made
   // it change as the user paged -- 22 tasks at pageSize 10 read 10, then 2, against a true 14.
+  // Note paused is NOT pending here: it is suspended, not queued, and has its own filter
+  // (backlog §11.1, re-ruled 2026-08-19).
   const tasks = Array.from({ length: 22 }, (_, index) => ({
     userId: 'user-a', id: `task-${index}`, name: `job-${index}`, walletLabel: 'alpha',
-    status: index < 14 ? ['scheduled', 'retry', 'claimed', 'paused'][index % 4] : 'cancelled',
+    status: index < 14 ? ['scheduled', 'retry', 'claimed'][index % 3] : 'cancelled',
   }));
   const { service, state } = fixture();
   state.tasks.push(...tasks);
   // No listPageForUser on the stub repository, so this is the in-memory fallback path.
   for (const page of [1, 2, 3]) {
     const result = await service.tasksPage('user-a', { page, pageSize: 10 });
-    assert.equal(result.pending, 14, `page ${page} should report the collection's pending count`);
+    assert.equal(result.counts.pending, 14, `page ${page} should report the collection's pending count`);
     assert.equal(result.total, 22);
   }
-  // Under a search, pending narrows with total so the two describe one set.
+  // Under a search, the counts narrow with total so the two describe one set.
   const searched = await service.tasksPage('user-a', { page: 1, pageSize: 10, search: 'job-1' });
   assert.equal(searched.total, 11);
-  assert.equal(searched.pending, tasks.filter(task => task.name.includes('job-1')
+  assert.equal(searched.counts.pending, tasks.filter(task => task.name.includes('job-1')
     && task.status !== 'cancelled').length);
 });
 
-test('a repository-supplied pending count is passed through untouched', async () => {
-  // The SQL path counts pending itself; pageFrom must forward it rather than recompute from items.
-  const repository = { listPageForUser: async () => ({ items: [{ id: 'a' }], total: 22, pending: 14 }) };
+test('repository-supplied counts are passed through untouched, and the filter reaches it', async () => {
+  // The SQL path counts and filters itself; pageFrom must forward the result rather than recompute
+  // from items, and must hand the status down so the repository can apply it.
+  const seen = [];
+  const repository = { listPageForUser: async (userId, options) => { seen.push(options);
+    return { items: [{ id: 'a' }], total: 22, counts: { pending: 14, paused: 2, failed: 1, cancelled: 5, done: 0 } }; } };
   const { service } = fixture({ schedulerRepository: repository });
-  const result = await service.tasksPage('user-a', { page: 2, pageSize: 10 });
-  assert.equal(result.pending, 14);
+  const result = await service.tasksPage('user-a', { page: 2, pageSize: 10, status: 'failed' });
+  assert.equal(seen[0].status, 'failed', 'the status filter must reach the repository');
+  assert.equal(seen[0].limit, 10);
+  assert.equal(seen[0].offset, 10);
+  assert.deepEqual(result.counts, { pending: 14, paused: 2, failed: 1, cancelled: 5, done: 0 });
   assert.equal(result.total, 22);
   assert.equal(result.totalPages, 3);
+});
+
+test('the five status buckets partition every status the schema allows', async () => {
+  // The DB constrains status to exactly these seven (migrations/011_durable_scheduler.sql:30).
+  // If a bucket ever stops covering one, rows in that status become unreachable in the UI --
+  // which is why 'succeeded' has a bucket of its own rather than being left out.
+  const SCHEMA_STATUSES = ['scheduled', 'claimed', 'retry', 'paused', 'cancelled', 'succeeded', 'failed'];
+  const tasks = SCHEMA_STATUSES.map((status, index) => ({
+    userId: 'user-a', id: `task-${index}`, name: `job-${index}`, walletLabel: 'alpha', status }));
+  const { service, state } = fixture();
+  state.tasks.push(...tasks);
+  const all = await service.tasksPage('user-a', { page: 1, pageSize: 50 });
+  assert.equal(Object.values(all.counts).reduce((sum, value) => sum + value, 0), SCHEMA_STATUSES.length,
+    'every status must land in exactly one bucket');
+  assert.deepEqual(all.counts, { pending: 3, paused: 1, failed: 1, cancelled: 1, done: 1 });
+});
+
+test('a status filter narrows the rows and the total, but never the counts', async () => {
+  const mix = ['scheduled', 'claimed', 'retry', 'paused', 'paused', 'failed', 'cancelled', 'succeeded'];
+  const tasks = Array.from({ length: 24 }, (_, index) => ({
+    userId: 'user-a', id: `task-${index}`, name: `job-${index}`, walletLabel: 'alpha',
+    status: mix[index % mix.length] }));
+  const { service, state } = fixture();
+  state.tasks.push(...tasks);
+  const unfiltered = await service.tasksPage('user-a', { page: 1, pageSize: 10 });
+  assert.equal(unfiltered.total, 24);
+  const BUCKETS = { pending: ['scheduled', 'claimed', 'retry'], paused: ['paused'],
+    failed: ['failed'], cancelled: ['cancelled'], done: ['succeeded'] };
+  for (const [bucket, statuses] of Object.entries(BUCKETS)) {
+    const page = await service.tasksPage('user-a', { page: 1, pageSize: 50, status: bucket });
+    assert.deepEqual([...new Set(page.items.map(task => task.status))].sort(), [...statuses].sort(),
+      `${bucket} must return only its own statuses`);
+    assert.equal(page.total, tasks.filter(task => statuses.includes(task.status)).length);
+    // The chips have to keep reporting the whole collection while one of them is active.
+    assert.deepEqual(page.counts, unfiltered.counts, `counts must not move when filtering to ${bucket}`);
+  }
+  // An unrecognised bucket filters nothing rather than silently emptying the list.
+  const bogus = await service.tasksPage('user-a', { page: 1, pageSize: 50, status: 'nonsense' });
+  assert.equal(bogus.total, 24);
 });
 
 test('send validates the request and hands off to executeSend with the resolved wallet', async () => {

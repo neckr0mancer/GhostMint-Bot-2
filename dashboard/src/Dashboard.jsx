@@ -124,10 +124,16 @@ function summarize({wallets,tasks,snipers,watchRules,activity,pnl,confirmations}
   const {decorated,ethTotal,unavailable,other}=summarizeWallets(walletList);
   const lowBalanceWallets=decorated.filter(wallet=>wallet.ethBalance!==null&&wallet.ethBalance<LOW_BALANCE_THRESHOLD);
   const taskItems=tasks.data?.items||[];
-  // Earliest FUTURE mint time. Sorting every mintTime and taking the first returned tasks whose
-  // time had already passed, which cannot be counted down to.
+  // Earliest future mint time among the ones that are actually still coming. Filtering on time
+  // ALONE meant pausing or cancelling the next mint left this tile counting down to it anyway --
+  // a timer for something that will never fire. The request is scoped to status=pending, and the
+  // status is re-checked here because the two can disagree for a moment: a pause arrives over the
+  // socket before the refetch lands.
   const now=Date.now();
-  const upcoming=taskItems.filter(task=>task.mintTime&&new Date(task.mintTime).getTime()>now)
+  const STILL_COMING=new Set(['scheduled','claimed','retry']);
+  const upcoming=taskItems
+    .filter(task=>task.mintTime&&new Date(task.mintTime).getTime()>now
+      &&STILL_COMING.has(String(task.status||'').toLowerCase()))
     .sort((a,b)=>new Date(a.mintTime).getTime()-new Date(b.mintTime).getTime());
   const nextTask=upcoming[0]||null;
   const watchRuleItems=watchRules.data?.items||[];
@@ -166,7 +172,10 @@ function summarize({wallets,tasks,snipers,watchRules,activity,pnl,confirmations}
 
 export default function Dashboard({profile,go,onProfileChange}){
   const wallets=useLoad('/api/wallets',[],'wallets.changed');
-  const tasks=useLoad('/api/tasks?page=1&pageSize=5',[],'tasks.changed');
+  // status=pending so the five rows this asks for are five CANDIDATES, not five rows that might
+  // all be cancelled. Ordered by mint_time, so the next one due is in here unless five pending
+  // mints are simultaneously overdue -- a state the worker clears within seconds.
+  const tasks=useLoad('/api/tasks?page=1&pageSize=5&status=pending',[],'tasks.changed');
   const snipers=useLoad('/api/snipers',[],'snipers.changed');
   const watchRules=useLoad('/api/watch-rules',[],'watchrules.changed');
   const activity=useLoad(`/api/activity?page=1&pageSize=${ACTIVITY_PAGE_SIZE}`,[],['snipers.changed','tasks.changed','watchrules.changed','wallets.changed']);

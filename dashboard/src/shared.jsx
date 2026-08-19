@@ -289,12 +289,23 @@ export function Pager({value,page,setPage}){
   const numbers=[];
   for(let n=first;n<=Math.min(total,first+4);n++)numbers.push(n);
   const shown=Math.min(value.page*value.pageSize,value.total);
+  // Jump-to-end arrows appear only past three pages. Below that every page is already one click
+  // away on a numbered button, so a second pair of arrows would be four controls doing the work
+  // of none. Owner's rule, 2026-08-19.
+  const jumps=total>3;
+  // Disabled rather than hidden at the ends, matching the single arrows and .pager button[disabled]
+  // (prototype.css:145). A control that vanishes moves everything beside it, so the row would
+  // reflow under the cursor as you reach the last page -- the reason the ends stay occupied.
   return <div className="pager">
     <span className="pinfo">{shown} of {value.total}</span>
+    {jumps&&<button type="button" disabled={page<=1} aria-label="First page"
+      onClick={()=>setPage(1)}>&laquo;</button>}
     <button type="button" disabled={page<=1} aria-label="Previous page" onClick={()=>setPage(page-1)}>&lsaquo;</button>
     {numbers.map(n=><button type="button" key={n} className={n===page?'on':undefined}
       aria-current={n===page?'page':undefined} onClick={()=>setPage(n)}>{n}</button>)}
     <button type="button" disabled={page>=total} aria-label="Next page" onClick={()=>setPage(page+1)}>&rsaquo;</button>
+    {jumps&&<button type="button" disabled={page>=total} aria-label="Last page"
+      onClick={()=>setPage(total)}>&raquo;</button>}
   </div>;
 }
 

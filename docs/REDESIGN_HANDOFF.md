@@ -4,7 +4,8 @@
 work stopped, what to do next, and how to run and verify. Everything else is
 reference you can reach from here.
 
-Last updated: 2026-08-19, after the Schedule tab's action row was corrected.
+Last updated: 2026-08-19, after the Schedule tab's second owner pass (filters, row
+selection, pager jumps).
 
 ---
 
@@ -102,9 +103,17 @@ Done, measured against the prototype: shell chrome (rail + top bar) · buttons a
 `FirstRun` and tile copy · the Mint page, all four tabs · the pager, app-wide,
 now verified across three real pages rather than one.
 
-The Scheduled card's "N pending" chip is now counted server-side (backlog §11.4). Until
-that deploys, the dev proxy serves production's response, which has no `pending` field —
-App.jsx falls back to the page count, so the chip reads low locally. That is expected.
+**The Schedule card had a second owner pass on 2026-08-19 — backlog §11.0 has the seven
+rulings.** Checkboxes are gone (selection is a row highlight), a selection must be
+homogeneous, "N pending" became a five-way status filter, and the pager gained « / ».
+`mint.html` was updated to match, so it is still the design source.
+
+**What you cannot see locally.** The dev proxy serves production's API, which does not
+yet have the status filter or the bucket counts. So on localhost the filter chips render
+and switch, but the list does not actually narrow, and the counts come from App.jsx's
+fallback (page-derived, therefore low). Both self-correct on deploy. Do not read either
+as a bug — verify server behaviour through `tests/botCommandService.test.js` instead,
+which exercises the real filtering.
 
 Not done: account menu, bell, and every page other than Home and Mint.
 

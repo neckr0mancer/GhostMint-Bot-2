@@ -386,17 +386,62 @@ does not say what fourteen should look like.
 Stated by the owner 2026-08-18, reading their own prototype back. Recorded because
 the reasoning generalises well beyond this one card.
 
+### 11.0 Owner rulings, 2026-08-19 — the Schedule card, second pass
+
+Read against the built page. These SUPERSEDE parts of §11.1 and §10 below, and the
+prototype (`mint.html`) has been updated to match rather than left behind — otherwise
+rule 1 turns into a trap, and the next session "corrects" the app back to a design the
+owner has already moved past.
+
+1. **No checkboxes.** Selection is a highlight on the row itself (`.r.on`); the row
+   carries `role="button"` and `aria-pressed`. Multi-select still applies.
+2. **A selection is homogeneous.** The first row picked fixes the action set; only rows
+   offering exactly the same actions can join. Mixing was previously allowed with the
+   action applying to whichever subset could take it — one row changing while another
+   silently did not. Owner: "I cannot select a scheduled item, then also select another
+   one, and it now be cancelled ... I don't think that should be allowed."
+3. **Selection stays per page**, on the owner's decision after asking for a
+   recommendation. Cancel can therefore never act on a row that is off screen, and no
+   selection counter is needed because everything selected is visible.
+4. **"N pending" became a filter**, one bucket at a time, pending by default.
+5. **Pending EXCLUDES paused.** See §11.1 — this reverses the earlier ruling.
+6. **Failed is red; cancelled is not.** Failed went wrong on its own; cancelled is
+   something the user chose. Coluring a deliberate act like an error teaches people to
+   ignore red, and this account's list is mostly cancelled test rows.
+7. **Pager gains « and »**, only past three pages, disabled at the ends like the
+   single arrows.
+
 ### 11.1 "2 pending" above three rows
 
 The prototype's Scheduled card shows a `.p.nu` chip reading **2 pending** above
 THREE rows: one Scheduled, one Paused, one Failed. The arithmetic is the spec:
 
-- **Pending = not yet fired.** Scheduled counts. Paused counts — it is suspended,
-  not finished. Failed does NOT count; it is terminal.
+- **Pending = not yet fired.** Scheduled counts. Failed does NOT count; it is terminal.
 - Counting only `status === 'scheduled'` prints 1 against those same three rows,
   which is how the first implementation got it wrong.
 
-Implemented as a `PENDING_STATUSES` set so the rule is stated once and named.
+**Paused: reversed 2026-08-19.** This section originally counted paused as pending
+("suspended, not finished"). The owner reversed it when specifying the filters: pending
+means "scheduled items that have not been cancelled or failed or paused". The reasoning
+holds up — with paused as its own filter, counting it under pending too would put one
+row in two buckets, and the five counts would no longer sum to the total.
+
+Statuses now group into five buckets that **partition** all seven the schema allows
+(`TASK_BUCKETS`, schedulerRepository.js):
+
+| bucket | statuses |
+|---|---|
+| pending | `scheduled`, `claimed`, `retry` |
+| paused | `paused` |
+| failed | `failed` |
+| cancelled | `cancelled` |
+| done | `succeeded` |
+
+`done` is not one of the owner's four. Without it, a mint that actually fired would be
+reachable under no filter at all — the partition is the point, not the tidiness.
+
+Separately, `ACTIVE_STATUSES` (pending + paused) still backs `countActive`, which
+answers a different question: what work this deployment owns, not what is queued.
 
 ### 11.2 What each control means
 
