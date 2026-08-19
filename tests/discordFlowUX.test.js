@@ -108,10 +108,15 @@ test('every ordinary button defers before identity resolution runs, not after', 
 // have been pre-deferred, or Discord rejects the modal call as "already acknowledged".
 test('a button that opens a modal is never pre-deferred', async () => {
   const handler = createDiscordInteractionHandler({ identity: { resolveOrCreate: async () => 'user-a' }, commands: {} });
-  const btn = buttonInteraction('menu:mint');
-  await handler(btn);
-  assert.equal(btn.deferred, false);
-  assert.equal(btn.modal.custom_id, 'menu:mint:submit');
+  // menu:mint now asks single-or-batch first, so the modal openers are its two answers. The
+  // invariant is unchanged and still worth guarding: whatever opens a modal must not be deferred,
+  // because a deferred interaction can no longer show one.
+  for (const [id, expected] of [['menu:mint:single', 'menu:mint:submit'], ['menu:mint:batch', 'menu:mint:batch:submit']]) {
+    const btn = buttonInteraction(id);
+    await handler(btn);
+    assert.equal(btn.deferred, false, `${id} must not be pre-deferred`);
+    assert.equal(btn.modal.custom_id, expected);
+  }
 });
 
 test('the create-wallet button starts a guided flow and shows a label modal', async () => {

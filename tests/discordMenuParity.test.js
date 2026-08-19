@@ -118,11 +118,21 @@ test('activity:page:2 pages forward and offers Prev but not Next once on the las
   assert.deepEqual(customIds, ['activity:page:1']);
 });
 
-test('menu:mint opens a modal for the contract address instead of replying "use /mint"', async () => {
+test('menu:mint offers single or batch, and each opens a contract modal rather than replying "use /mint"', async () => {
   const { handler } = fixture();
   const tap = buttonInteraction('menu:mint');
   await handler(tap);
-  assert.equal(tap.modal.custom_id, 'menu:mint:submit');
+  const payload = [...tap.updates, ...tap.replies].pop();
+  const ids = (payload.components || []).flatMap(r => (r.components || []).map(c => c.custom_id));
+  assert.ok(ids.includes('menu:mint:single'), 'offers a single mint');
+  assert.ok(ids.includes('menu:mint:batch'), 'offers a batch mint — previously reachable only by knowing /batch-mint existed');
+  // Each answer still opens a modal, which is the behaviour this test has always guarded.
+  const single = buttonInteraction('menu:mint:single');
+  await handler(single);
+  assert.equal(single.modal.custom_id, 'menu:mint:submit');
+  const batch = buttonInteraction('menu:mint:batch');
+  await handler(batch);
+  assert.equal(batch.modal.custom_id, 'menu:mint:batch:submit');
 });
 
 test('submitting menu:mint:submit with a valid contract reaches the same collection card /mint and pasting already use', async () => {

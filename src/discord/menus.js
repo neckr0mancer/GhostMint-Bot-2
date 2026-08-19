@@ -293,6 +293,21 @@ function numberModal({ customId, title, placeholder = '' }) {
   };
 }
 
+// Tapping Mint used to go straight to a contract modal and then a SINGLE-wallet flow, so batch
+// minting was reachable only by knowing the /batch-mint slash command existed. The guided batch
+// flow was already built (multi:true -> wallet multi-select -> quantity -> price -> confirm); it
+// simply had no button. This is that button.
+function mintModeMenu() {
+  return {
+    content: '## Mint\nMint from one wallet, or the same drop from several at once.',
+    components: [
+      row([button('⚡ Single mint', 'menu:mint:single', 'primary')]),
+      row([button('🗂️ Batch mint', 'menu:mint:batch')]),
+      row([button('⬅️ Back to menu', 'menu:main')]),
+    ],
+  };
+}
+
 function walletsMenu() {
   return {
     content: '## Wallets\nGenerating a new wallet server-side is recommended over importing an existing key.',
@@ -576,7 +591,7 @@ function labelModal({ customId, title, placeholder = '', style = 'short', maxLen
 }
 
 module.exports = {
-  button, row, select, mainMenu, walletsMenu, settingsMenu, placeholderMenu,
+  button, row, select, mainMenu, mintModeMenu, walletsMenu, settingsMenu, placeholderMenu,
   chainSelect, walletSelect, walletMultiSelect, confirmRemoveWallet, labelModal, gasMenu, activityMenu, tasksMenu, snipersMenu, adminOverviewMenu,
   contractDetailsText, collectionInfoCard, mintQuantitySelect, mintPriceStep, gasTolerancePrompt, mintConfirmation, numberModal,
   taskNameQuickPicks, taskConfirmation,
