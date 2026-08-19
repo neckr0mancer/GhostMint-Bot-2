@@ -705,6 +705,36 @@ themes; it is near-black only in ghost-mint and neon-arcade, where a white tick 
 pink would be the less legible of the two. The owner asked for a white check on green — this
 delivers that intent everywhere it is the readable choice, and defers to the theme where it is not.
 
+## 11.6 Failures that explain themselves, 2026-08-19
+
+Owner: "there should always be a reason why that the user can understand", and every notification
+about something retryable, resumable or reviewable should carry the control to do it.
+
+**1. The address is checked when you SCHEDULE, not when it fires.** `createTask` reads
+`eth_getCode` on the target chain and refuses an address with no contract on it. A scheduled mint
+runs unattended, possibly days later, so creation is the only moment the user is present to be
+told. An unreachable provider is deliberately NOT a rejection — blocking because our own RPC
+blipped would be worse than the typo being guarded against.
+
+**2. The reason travels.** The scheduler knew why a mint failed and threw it away, sending the
+word "failed" to Telegram and nothing at all to the dashboard. It now carries `lastError` into
+the Telegram message, the schedule row (§11.5) and a `task.failed` websocket event.
+
+**3. Notifications carry their action.** `notify()` takes `{label, run}`; the bell renders it as
+a button and disables it while in flight. A failed mint offers **Retry**, which goes through the
+same `/control` endpoint the Schedule tab uses — so the server status guards still apply and a
+mint that is no longer retryable is refused identically. A low balance offers **Top up wallet**.
+
+**4. Low-balance pre-flight.** A sweep every 60s looks 5 minutes ahead and compares the wallet
+against the mint value. Compared against **value only, not value + gas**, making it a lower bound:
+falling short of it is certain failure, so it never cries wolf. Clearing it can still fail on gas,
+which is the failure notification's job. Warned ids live in memory, not a new column — a restart
+can re-warn once, which is cheaper than a migration and harmless in a way that a missed warning
+is not.
+
+**Not unit-tested:** the sweep lives in `server.js` and is not exported, so it is covered only by
+the contract-check test and by reading. Worth extracting if it grows.
+
 ## 12. Batch and Presets — notes from the rebuild
 
 **Batch has no price field.** The prototype's form is three fields only: Contract

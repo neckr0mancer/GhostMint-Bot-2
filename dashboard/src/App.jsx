@@ -900,6 +900,36 @@ const BELL_ICON=<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stro
 // count) and a short recent-notifications log (informational, sourced from the same notify() log
 // the toast host reads -- so anything a toast reported is still checkable here after it auto-dismisses).
 function NotificationBell(){const [items,setItems]=useState([]);const [open,setOpen]=useState(false);const [log,setLog]=useState(getNotificationLog());const [autoPreview,setAutoPreview]=useState(null);const seenIds=useRef(new Set(getNotificationLog().map(entry=>entry.id)));const autoPreviewTimer=useRef(null);const load=useCallback(()=>api('/api/confirmations').then(setItems).catch(x=>notify(x.message,{type:'error'})),[]);useEffect(()=>{load();const listener=event=>{const message=event.detail;if(message.type==='confirmation.pending')setItems(current=>[message.request,...current.filter(x=>x.id!==message.request.id)]);if(message.type==='confirmation.resolved')setItems(current=>current.filter(x=>x.id!==message.requestId));};window.addEventListener('ghostmint-ws',listener);return()=>window.removeEventListener('ghostmint-ws',listener);},[load]);
+  // Server-side outcomes become actionable notifications here. The scheduler already knew a mint
+  // had failed and why; until now that only reached Telegram, so on the dashboard a scheduled
+  // mint just quietly changed colour in a list you had to already be looking at.
+  //
+  // Each one carries the control the owner asked for: a failure retries, a low balance opens the
+  // wallet that is short. Retry goes through the same /control endpoint the Schedule tab uses, so
+  // the server's own status guards still apply -- a mint that is no longer retryable is refused
+  // here exactly as it would be there.
+  useEffect(()=>{
+    function onMessage(event){
+      const message=event.detail;
+      if(message?.type==='task.failed'){
+        notify(`${message.name} failed — ${message.reason}`,{type:'error',category:'auto',timeoutMs:9000,
+          action:{label:'Retry',run:async()=>{
+            await api(`/api/tasks/${message.taskId}/control`,{method:'POST',body:JSON.stringify({action:'retry'})});
+            notify(`${message.name} queued for another attempt.`,{type:'success',category:'auto'});
+          }}});
+      }
+      if(message?.type==='task.lowBalance'){
+        notify(`${message.name} mints in ${message.minutes}m and ${message.walletLabel} is short by ${message.shortByEth} ETH.`,
+          {type:'error',category:'money',timeoutMs:12000,
+           action:{label:'Top up wallet',run:async()=>{window.location.href='/dashboard/wallets';}}});
+      }
+      if(message?.type==='task.succeeded'){
+        notify(`${message.name} minted.`,{type:'success',category:'money'});
+      }
+    }
+    window.addEventListener('ghostmint-ws',onMessage);
+    return()=>window.removeEventListener('ghostmint-ws',onMessage);
+  },[]);
   // New notifications pop a compact preview off the bell itself (not the full dropdown) for a few
   // seconds, so you don't have to open the list to notice something just happened. Suppressed while
   // the full dropdown is already open, since the new entry is already visible there.
@@ -924,6 +954,13 @@ function NotificationBell(){const [items,setItems]=useState([]);const [open,setO
   // is the capped session log the toasts also write to. The footer says exactly that, because the
   // distinction is the whole point of the design -- Recent is a scratchpad, never an inbox.
   const [tab,setTab]=useState('needs');
+  const [runningAction,setRunningAction]=useState(null);
+  async function runEntryAction(entry){
+    if(!entry.action||runningAction)return;
+    setRunningAction(entry.id);
+    try{await entry.action.run();}catch(error){notify(error.message,{type:'error'});}
+    finally{setRunningAction(null);}
+  }
   const CATEGORY_LABELS={money:'Money',auto:'Auto',security:'Security'};
   const DOT_FOR_TYPE={success:'var(--gain)',error:'var(--loss)',info:'var(--accent)'};
   return <div className="notification-bell">
@@ -971,6 +1008,11 @@ function NotificationBell(){const [items,setItems]=useState([]);const [open,setO
                   <div className="bell-m">
                     <div className="bm">{entry.message}</div>
                     <div className="bs">{relativeTime(entry.at)}</div>
+                    {/* The whole point of the owner's rule: act where you read it. */}
+                    {entry.action&&<div className="br" style={{marginTop:'7px'}}>
+                      <button type="button" className="b sm" disabled={runningAction===entry.id}
+                        onClick={()=>runEntryAction(entry)}>
+                        {runningAction===entry.id?'Working…':entry.action.label}</button></div>}
                   </div>
                   {/* Only entries whose call site declared a domain get a chip -- see notify(). */}
                   {entry.category&&CATEGORY_LABELS[entry.category]&&

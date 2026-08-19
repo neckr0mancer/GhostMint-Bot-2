@@ -67,12 +67,16 @@ export function getNotificationLog(){return notificationLog;}
 // wearing the wrong domain is worse than one wearing none, and a keyword sniffer would be wrong
 // silently. Call sites that know their domain pass it; the rest render no chip.
 export const NOTIFICATION_CATEGORIES=Object.freeze({money:'Money',auto:'Auto',security:'Security'});
-export function notify(message,{type='info',timeoutMs=5000,category}={}){
+// `action` is the owner's rule generalised: any notification about something that can be retried,
+// resumed or reviewed carries the control to do it, so reading the notification and acting on it
+// are the same gesture rather than a trip back to the page it came from. Shape is
+// {label, run} -- run() may be async, and the bell disables the button while it is in flight.
+export function notify(message,{type='info',timeoutMs=5000,category,action}={}){
   if(!message)return null;
   const id=++toastSeq;
   toastItems=[...toastItems,{id,message,type,leaving:false}];
   publishToasts();
-  notificationLog=[{id,message,type,category,at:Date.now()},...notificationLog].slice(0,NOTIFICATION_LOG_LIMIT);
+  notificationLog=[{id,message,type,category,action,at:Date.now()},...notificationLog].slice(0,NOTIFICATION_LOG_LIMIT);
   publishNotificationLog();
   if(timeoutMs>0)setTimeout(()=>dismissToast(id),timeoutMs);
   return id;

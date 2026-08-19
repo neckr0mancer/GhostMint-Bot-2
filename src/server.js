@@ -257,14 +257,76 @@ const schedulerWorker = createSchedulerWorker({
       await notifyUser(event.task.userId, `✅ Scheduled mint <b>${escapeTelegramHtml(event.task.name)}</b> confirmed.`);
     }
     if (['failure','failed'].includes(event.outcome)) {
+      // A failure the user cannot see the reason for is a failure they cannot act on. The reason
+      // has always existed on the error; it was thrown away here and replaced with the word
+      // 'failed' on every channel.
+      const reason = safeError(event.error || '') || 'no reason recorded';
       if (wallet) await logActivity(event.task.userId, 'fail', `Scheduled mint failed: ${event.task.name}`,
         wallet.label, event.intent?.txHash || null, CHAINS[wallet.chain],{triggerSource:'scheduled'});
-      await notifyUser(event.task.userId, `❌ Scheduled mint <b>${escapeTelegramHtml(event.task.name)}</b> failed.`);
+      await notifyUser(event.task.userId,
+        `❌ Scheduled mint <b>${escapeTelegramHtml(event.task.name)}</b> failed.
+${escapeTelegramHtml(reason)}`);
+      // Carries the id so the dashboard can offer Retry on the notification itself rather than
+      // sending the user back to the Schedule tab to find the row.
+      dashboardWebSockets.broadcastToUser(event.task.userId, {type:'task.failed',
+        taskId:event.task.id, name:event.task.name, reason});
+    }
+    if (event.outcome === 'success') {
+      dashboardWebSockets.broadcastToUser(event.task.userId, {type:'task.succeeded',
+        taskId:event.task.id, name:event.task.name});
     }
   },
   log,
   sanitizeError:safeError,
 });
+
+// ── Low-balance pre-flight ────────────────────────────────
+// A scheduled mint that fails for insufficient funds fails at the one moment nobody is watching.
+// This looks ahead instead: shortly before a mint is due, compare the wallet's balance against what
+// the mint will cost and say so while there is still time to top up.
+//
+// Deliberately compares against the mint VALUE only (price × quantity), not value + gas. That makes
+// it a lower bound: falling short of it is certain failure, so the warning is never a false alarm.
+// A wallet that clears this bar can still fail on gas, which is the failure notification's job.
+//
+// Warned ids are held in memory rather than a new column. A restart can therefore re-warn a task
+// once, which is a far cheaper cost than a migration on the hot path -- and re-warning is harmless
+// where missing a warning is not.
+const LOW_BALANCE_LEAD_MS = 5 * 60 * 1000;
+const LOW_BALANCE_SWEEP_MS = 60 * 1000;
+const lowBalanceWarned = new Set();
+const PENDING_FOR_WARNING = new Set(['scheduled', 'retry', 'claimed']);
+
+async function lowBalanceSweep(now = Date.now()) {
+  const due = DB.tasks.filter(task =>
+    PENDING_FOR_WARNING.has(String(task.status || '').toLowerCase())
+    && typeof task.mintTime === 'number'
+    && task.mintTime > now
+    && task.mintTime - now <= LOW_BALANCE_LEAD_MS
+    && !lowBalanceWarned.has(task.id));
+  for (const task of due) {
+    try {
+      const wallet = DB.wallets.find(item => item.userId === task.userId && item.label === task.walletLabel);
+      if (!wallet) continue;
+      const needed = ethers.parseEther(String((Number(task.price) || 0) * (Number(task.qty) || 1)));
+      if (needed <= 0n) { lowBalanceWarned.add(task.id); continue; }
+      const balance = await providerService.perform(wallet.chain, 'lowBalanceCheck',
+        provider => provider.getBalance(wallet.address));
+      lowBalanceWarned.add(task.id);
+      if (balance >= needed) continue;
+      const short = ethers.formatEther(needed - balance);
+      const minutes = Math.max(1, Math.round((task.mintTime - now) / 60000));
+      await notifyUser(task.userId,
+        `⚠️ <b>${escapeTelegramHtml(task.name)}</b> mints in ${minutes}m and <b>${escapeTelegramHtml(wallet.label)}</b> is short by ${escapeTelegramHtml(short)} ETH.`);
+      dashboardWebSockets.broadcastToUser(task.userId, { type: 'task.lowBalance', taskId: task.id,
+        name: task.name, walletLabel: wallet.label, shortByEth: short, minutes });
+    } catch (error) {
+      // A pre-flight warning must never be able to disturb the mint it is warning about.
+      log(`Low-balance sweep failed for task ${task.id}: ${safeError(error)}`);
+    }
+  }
+  return due.length;
+}
 
 // ── Activity ──────────────────────────────────────────────
 async function logActivity(userId, status, title, walletLabel, txHash, chain,context={}) {
@@ -2590,6 +2652,8 @@ async function start() {
     }
   }
   schedulerWorker.start();
+  setInterval(()=>{lowBalanceSweep().catch(error=>log(`Low-balance sweep error: ${safeError(error)}`));},LOW_BALANCE_SWEEP_MS).unref?.();
+  log(`Started low-balance pre-flight (${LOW_BALANCE_LEAD_MS/60000}m lead)`);
   socialWatchWorker.start();
   retentionWorker.start();
   log('Started social watch-rule worker');

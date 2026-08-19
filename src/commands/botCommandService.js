@@ -380,10 +380,34 @@ function createBotCommandService(dependencies) {
   // mirrors mint()'s own owned.chain fallback rather than doing independent auto-detection here;
   // a guided flow that wants full chain auto-detection from a bare contract address (the way
   // startMintFlow does) resolves it upstream and passes chain in explicitly, same as it does for mint().
+  // A scheduled mint fires unattended, possibly days later, so the moment it is CREATED is the
+  // only moment the user is present to be told the address is wrong. Checking for deployed
+  // bytecode here means a typo or a fake address is refused while they can still fix it, instead
+  // of becoming a failure at 3am that reads "execution reverted".
+  //
+  // eth_getCode only -- read-only, sends nothing, costs nothing. An address with no code is not a
+  // contract and can never be minted from. An UNREACHABLE provider is deliberately NOT treated as
+  // a bad address: refusing to schedule because an RPC blipped would be worse than the problem.
+  async function assertContractExists(contractAddress, chain) {
+    let code = null;
+    try {
+      code = await providerService.perform(chain, 'scheduleContractCheck',
+        provider => provider.getCode(contractAddress));
+    } catch {
+      return; // provider unreachable -- schedule anyway rather than block on our own outage
+    }
+    if (code === '0x' || code === '0x0') {
+      throw new ValidationError({ field: 'contractAddress',
+        message: `has no contract deployed on ${chain} -- check the address and the chain` });
+    }
+  }
+
   async function createTask(userId, input) {
     const owned = wallet(userId, input.walletLabel);
     const chain = input.chain || owned.chain;
-    const withPrice = await resolvePriceIfMissing({ ...input, contractAddress: input.contractAddress ?? input.contract }, chain);
+    const target = input.contractAddress ?? input.contract;
+    if (target) await assertContractExists(target, chain);
+    const withPrice = await resolvePriceIfMissing({ ...input, contractAddress: target }, chain);
     const withMintTime = await resolveMintTimeIfMissing(withPrice, chain);
     const validated = requestSchemas.taskCreate({ ...withMintTime, chain }, { supportedChains, now: Date.now() });
     const task = { userId, id: validated.id, name: validated.name, walletLabel: validated.walletLabel,

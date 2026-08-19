@@ -208,6 +208,35 @@ test('a status filter narrows the rows and the total, but never the counts', asy
   assert.equal(bogus.total, 24);
 });
 
+test('scheduling refuses an address with no contract on it, but not an RPC outage', async () => {
+  // A scheduled mint fires unattended, so creation is the only moment the user is there to be
+  // told the address is wrong. Checking then turns a 3am "execution reverted" into a form error.
+  const future = new Date(Date.now() + 86_400_000).toISOString();
+  const input = { name:'drop', walletLabel:'alpha', contractAddress:'0x'+'a'.repeat(40),
+    quantity:1, priceETH:0.01, chain:'ethereum', mintTime:future };
+
+  const empty = fixture({ providerService:{ perform:async(chain,op,fn)=>fn({ getCode:async()=>'0x', call:async()=>'0x' }) } });
+  await assert.rejects(empty.service.createTask('user-a', input), error => {
+    assert.ok(error instanceof ValidationError);
+    assert.equal(error.issues[0].field, 'contractAddress');
+    assert.match(error.issues[0].message, /no contract deployed/);
+    return true;
+  });
+
+  // Deployed bytecode -> scheduled.
+  const saved = [];
+  const real = fixture({ storage:{ saveTask:async task=>{ saved.push(task); return true; } },
+    providerService:{ perform:async(chain,op,fn)=>fn({ getCode:async()=>'0x60806040', call:async()=>'0x' }) } });
+  const task = await real.service.createTask('user-a', input);
+  assert.equal(task.contract.toLowerCase(), input.contractAddress.toLowerCase());
+
+  // An unreachable provider must NOT block scheduling: refusing because OUR rpc blipped would be
+  // worse than the problem being guarded against.
+  const down = fixture({ storage:{ saveTask:async()=>true },
+    providerService:{ perform:async()=>{ throw new Error('RPC unreachable'); } } });
+  const anyway = await down.service.createTask('user-a', input);
+  assert.equal(anyway.name, 'drop');
+});
 test('send validates the request and hands off to executeSend with the resolved wallet', async () => {
   const calls = [];
   const state = { wallets: [{ userId: 'user-a', label: 'alpha', address: '0x0000000000000000000000000000000000000001', chain: 'ethereum' }], tasks: [], activity: [], pnl: [], snipers: [] };
