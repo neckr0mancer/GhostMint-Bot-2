@@ -658,6 +658,53 @@ shell's already-loaded `profile` — so their prototype `.split.ol` / `.notice.o
 trigger yet. Worth deciding whether those pages should fetch independently or inherit the shell's
 states before building anything there.
 
+## 11.6 Account and Settings states — RULED: they inherit the shell's
+
+The owner delegated this one, asking for a security- and time-conscious call. **Neither page gets
+its own fetch.**
+
+- **Security.** `/api/profile` carries the identity surface — username, whether a security
+  password exists, owner flag, every linked platform account. Re-requesting it per page multiplies
+  where that data travels and is cached, for information the shell already holds. Fewer requests
+  carrying identity is strictly better.
+- **Speed.** The shell has already resolved it. A second fetch adds latency and a skeleton flash
+  for data sitting in memory — slower, and visibly so.
+- **Honesty.** A page-level `.ol` for data that is never actually pending is theatre: it either
+  never appears, or appears falsely. The prototype's `.split.ol` / `.notice.ox` on these two
+  pages describe the SHELL's behaviour, which already exists — it does not render a page until the
+  profile resolves, and a profile failure is a shell-level failure.
+
+This is not a gap left open. Settings' four states are real where real fetches exist: GasPanel
+(`/api/gas/:chain`) and ApiUsagePanel (`/api/social-usage`) each own loading, empty and error,
+and both gained a Retry in §11.5. Account's only request (`/api/auth/link-code`) is on-demand
+behind a button and has no page-load state to show.
+
+## 11.7 Batch — two findings, one of which was not a bug
+
+**The disabled contract field is the empty state, working.** Batch needs at least two wallets;
+this account has one, so the form renders disabled with "No wallets to batch" beside it. Backlog
+§4.4 records the intent: "the form is shown DISABLED rather than hidden, which is the point of the
+state." Nothing to fix — but worth noting the owner read it as a broken field, which is a fair
+reading when the explanation sits in a panel to the right.
+
+**The balance beside each wallet was a real bug.** `/api/wallets` returns `balances` — an array
+of `{chain,balance,symbol}` — and never a scalar `balance`. The row read `wallet.balance`, so
+every wallet printed "—", and the low-balance check `Number(wallet.balance)<=0` was comparing
+against `undefined` and therefore **always false**: the `--warn-text` tint the prototype uses to
+mark a wallet that cannot cover the mint could never fire. Both fixed by resolving the balance for
+the wallet's own chain; the amber tint now shows on the 0.000 ETH test wallet.
+
+## 11.8 Checkboxes — styled (owner's ruling 2026-08-19)
+
+The bare platform checkbox was the last control rendering in the OS's style beside a fully themed
+UI. Now `appearance:none`, a 5px rounded square, accent fill when checked, tick drawn as a
+rotated border.
+
+The tick uses `--accent-ink` rather than a literal white. That token IS white in the three light
+themes; it is near-black only in ghost-mint and neon-arcade, where a white tick on mint or hot
+pink would be the less legible of the two. The owner asked for a white check on green — this
+delivers that intent everywhere it is the readable choice, and defers to the theme where it is not.
+
 ## 12. Batch and Presets — notes from the rebuild
 
 **Batch has no price field.** The prototype's form is three fields only: Contract

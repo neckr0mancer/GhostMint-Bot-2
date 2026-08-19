@@ -653,3 +653,21 @@ h3{font-size:12.5px;font-weight:650}
 .app[data-m] .g.gm2{grid-template-columns:repeat(2,1fr)}
 .app[data-m] .sfrow{margin-bottom:10px}
 @media(max-width:900px){.app .split,.app .g3,.app .g4{grid-template-columns:1fr}}
+
+/* ---- Checkboxes (owner's ruling 2026-08-19) ----
+   The bare platform checkbox was the one control still rendering in the OS's own style next to a
+   fully themed UI. appearance:none removes it entirely so every theme gets the same shape.
+   The tick uses --accent-ink rather than a hard-coded white: that token IS white in the three
+   light themes, and near-black only in ghost-mint and neon-arcade, where white on mint/pink would
+   be the less legible of the two. Same intent -- a clear tick on an accent fill -- resolved per
+   theme instead of assumed. */
+input[type="checkbox"]{appearance:none;-webkit-appearance:none;width:16px;height:16px;min-height:auto;
+  flex:none;border:1.5px solid var(--border-strong);border-radius:5px;background:var(--surface-2);
+  display:inline-grid;place-content:center;cursor:pointer;transition:background .12s ease,border-color .12s ease}
+input[type="checkbox"]:hover:not(:disabled){border-color:var(--faint)}
+input[type="checkbox"]:checked{background:var(--accent);border-color:var(--accent)}
+input[type="checkbox"]:checked::after{content:"";width:9px;height:5px;
+  border:2px solid var(--accent-ink);border-top:0;border-right:0;
+  transform:rotate(-45deg) translateY(-1px)}
+input[type="checkbox"]:disabled{opacity:.45;cursor:not-allowed}
+@media(prefers-reduced-motion:reduce){input[type="checkbox"]{transition:none}}

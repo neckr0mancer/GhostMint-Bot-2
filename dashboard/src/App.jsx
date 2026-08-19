@@ -1118,6 +1118,16 @@ function PreviewExpiry({preview,onExpire,onResimulate}){
 //
 // Each wallet reports its OWN outcome. confirm never throws on a single wallet's failure, so one
 // bad wallet must not read as a failed batch: results are per row, and a partial success says so.
+// /api/wallets returns balances PER CHAIN, never a scalar `balance`. Reading wallet.balance meant
+// this list always printed "—" for every wallet and, worse, the low-balance tint could never fire
+// -- which is precisely the row the prototype colours --warn-text so a wallet that cannot cover
+// the mint is legible before you submit.
+function nativeBalance(wallet){
+  const rows=wallet?.balances||[];
+  const match=rows.find(entry=>entry.chain===wallet.chain)||rows[0];
+  if(!match||match.balance===null||match.balance===undefined)return null;
+  return {amount:Number(match.balance),symbol:match.symbol||'ETH'};
+}
 function MintBatch({onGoWallets}){
   const wallets=useLoad('/api/wallets',[],'wallets.changed');
   const [selected,setSelected]=useState([]);
@@ -1191,13 +1201,14 @@ function MintBatch({onGoWallets}){
               {wallets.data.map(wallet=>{
                 // The prototype tints a wallet whose balance will not cover the mint in
                 // --warn-text, so the row that is going to fail is legible before you submit.
-                const low=wallet.balance!==null&&wallet.balance!==undefined&&Number(wallet.balance)<=0;
+                const balance=nativeBalance(wallet);
+                const low=balance!==null&&balance.amount<=0;
                 return <label key={wallet.label}
                   style={{display:'flex',gap:'8px',alignItems:'center',fontSize:'12.5px',
                     color:low?'var(--warn-text)':undefined}}>
                   <input type="checkbox" style={{minHeight:'auto',width:'16px',height:'16px'}}
                     checked={selected.includes(wallet.label)} onChange={()=>toggle(wallet.label)}/>
-                  {wallet.label} — {wallet.balance===null||wallet.balance===undefined?'—':`${Number(wallet.balance).toFixed(3)} ETH`}
+                  {wallet.label} — {balance?`${balance.amount.toFixed(3)} ${balance.symbol}`:'balance unavailable'}
                 </label>;
               })}
             </div>}
