@@ -1,0 +1,291 @@
+<section class="pg" id="p-admin">
+      <div class="abn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3l7 3v5c0 5-3 8.5-7 10-4-1.5-7-5-7-10V6z"/></svg>
+        <span><b>Owner mode.</b> Actions here affect other users' accounts and ceilings.</span>
+        <span class="sp"></span><span class="p wn">Root owner</span></div>
+      <div class="hd"><div class="hd-t"><p class="eb">Administration</p><h1>Admin</h1></div></div>
+      <div class="subtabs" id="adtabs">
+        <button class="on" data-ad="ov">Overview</button><button data-ad="gr">Groups</button>
+        <button data-ad="uc">Users &amp; ceilings</button><button data-ad="el">Effective lookup</button>
+        <button data-ad="mp">Mode presets</button><button data-ad="oa">Owner access</button>
+        <button data-ad="bi">Batch import</button><button data-ad="al">Audit log</button>
+        <button data-ad="sh">System health</button>
+      </div>
+
+      <!-- Overview -->
+      <div class="adp on" id="ad-ov">
+        <!-- "Volume · 24h" replaced with Active · 24h: getAdminOverviewMetrics returns no
+             ETH volume and no mint count (data contract §5.2). -->
+        <div class="tiles">
+          <div class="tile"><div class="tl">Users</div>
+            <div class="tv tab of">38</div><div class="sk big ol"></div><div class="tv tab zero ox">—</div>
+            <div class="tm of">4 suspended · 1 banned</div><div class="sk l w60 ol"></div><div class="tm ox" style="color:var(--loss-text)">Could not load</div></div>
+          <div class="tile"><div class="tl">Groups</div>
+            <div class="tv tab of">3</div><div class="sk big ol"></div><div class="tv tab zero ox">—</div>
+            <div class="tm of">Standard · VIP · Team</div><div class="sk l w60 ol"></div><div class="tm ox" style="color:var(--loss-text)">Could not load</div></div>
+          <div class="tile"><div class="tl">Active · 24h</div>
+            <div class="tv tab of">17</div><div class="sk big ol"></div><div class="tv tab zero ox">—</div>
+            <div class="tm of">of 38 accounts</div><div class="sk l w60 ol"></div><div class="tm ox" style="color:var(--loss-text)">Could not load</div></div>
+          <div class="tile"><div class="tl">Owners</div>
+            <div class="tv tab of">2</div><div class="sk big ol"></div><div class="tv tab zero ox">—</div>
+            <div class="tm of">1 root</div><div class="sk l w60 ol"></div><div class="tm ox" style="color:var(--loss-text)">Could not load</div></div>
+        </div>
+        <div class="notice ox" style="margin-bottom:11px">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>
+          <div class="nb"><b>Could not load governance data.</b> No ceiling, group or account status was changed — this is a read failure only.
+            <code>500 · Request failed safely</code>
+            <div class="br" style="margin-top:9px"><button class="b sm">Retry</button></div></div></div>
+        <div class="split">
+          <div class="card col" data-open="1">
+            <button class="colh"><span class="p nu">38</span><span class="cti">Users</span>
+              <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg></button>
+            <div class="colb">
+              <div class="ch"><h2>Users</h2><div class="sp"></div>
+                <div class="sf" style="max-width:190px"><svg class="si" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+                  <input type="search" placeholder="User, ID, group…"><button class="sx" aria-label="Clear search">×</button></div></div>
+              <div class="r"><div class="ri" style="background:var(--accent-soft);color:var(--accent)">D</div>
+                <div class="rm"><div class="rt">deon <span class="p wn" style="margin-left:4px">Root</span></div>
+                  <div class="rs fold">VIP · Telegram + Discord · 23 mints</div></div>
+                <div class="rv"><button class="b g sm">Manage</button></div></div>
+              <div class="r"><div class="ri">O</div>
+                <div class="rm"><div class="rt">Odosa <span class="p nu" style="margin-left:4px">Owner</span></div>
+                  <div class="rs fold">VIP · Discord · 8 mints</div></div>
+                <div class="rv"><button class="b g sm">Manage</button></div></div>
+              <div class="r"><div class="ri">M</div>
+                <div class="rm"><div class="rt">mira.eth</div><div class="rs fold">Standard · Telegram · 2 mints</div></div>
+                <div class="rv"><button class="b g sm">Manage</button></div></div>
+              <div class="r"><div class="ri" style="color:var(--loss-text)">K</div>
+                <div class="rm"><div class="rt">kzo <span class="p bad" style="margin-left:4px">Suspended</span></div>
+                  <div class="rs fold">Standard · until 2026-08-20 · "repeated failures"</div></div>
+                <div class="rv"><button class="b g sm">Manage</button></div></div>
+              <p class="of" style="font-size:11px;color:var(--faint);margin-top:9px">Right-click a row for quick actions. Destructive actions name the exact account.</p>
+              <div class="ol"><div class="sk row"></div><div class="sk row"></div><div class="sk row"></div><div class="sk row"></div></div>
+              <div class="emp ox" style="padding:18px 12px"><div class="ei"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg></div>
+                <h3>User list unavailable</h3><p>Accounts are unaffected. Retry above.</p></div>
+            </div>
+          </div>
+          <div class="g">
+            <div class="card col" data-open="0">
+              <button class="colh"><span class="p wn">1 degraded</span><span class="cti">System health</span>
+                <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg></button>
+              <div class="colb">
+                <div class="ch"><div class="chip-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 12h4l2-7 4 14 2-7h6"/></svg></div><h2>System health</h2></div>
+                <div class="hrow"><span class="p ok">Up</span><span class="hn">Database</span><span class="hl">8ms</span></div>
+                <div class="hrow"><span class="p ok">Up</span><span class="hn">Telegram</span><span class="hl">polling</span></div>
+                <div class="hrow"><span class="p ok">Up</span><span class="hn">Discord</span><span class="hl">connected</span></div>
+                <div class="hrow"><span class="p wn">Degraded</span><span class="hn">OpenSea</span><span class="hl">no key</span></div>
+                <div class="hrow"><span class="p ok">Up</span><span class="hn">Scheduler</span><span class="hl">2 due</span></div>
+                <div class="hrow"><span class="p ok">Up</span><span class="hn">Social watcher</span><span class="hl">1 failing</span></div>
+              </div>
+            </div>
+            <div class="sober of">
+              <div class="sh">Group ceilings</div>
+              <table class="led">
+                <tr><td>Standard · max tx</td><td>0.100000 ETH</td></tr>
+                <tr><td>Standard · daily</td><td>0.250000 ETH</td></tr>
+                <tr><td>VIP · max tx</td><td>0.500000 ETH</td></tr>
+                <tr><td>VIP · daily</td><td>2.000000 ETH</td></tr>
+                <tr class="tot"><td>Simulation</td><td>Forced</td></tr>
+              </table>
+            </div>
+            <div class="card ol"><div class="sk l w40"></div><div class="sk row"></div><div class="sk row"></div></div>
+            <!-- Groups genuinely can be empty; users then fall back to the conservative default -->
+            <div class="card oe"><div class="emp" style="padding:20px 12px">
+              <div class="ei"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="9" cy="8" r="3"/><circle cx="17" cy="9" r="2.4"/><path d="M3 19c.7-3.2 3-5 6-5s5.3 1.8 6 5"/></svg></div>
+              <h3>No groups yet</h3>
+              <p>Every user falls back to the conservative default ceiling — 0.1 ETH per transaction, 0.25 ETH per day — until you create one.</p>
+              <button class="b p sm" data-jump="adtabs:gr">Create a group</button></div></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Groups -->
+      <div class="adp" id="ad-gr">
+        <div class="split">
+          <div class="g">
+            <div class="card"><div class="ch"><h2>Standard</h2><div class="sp"></div><span class="p nu">31 members</span></div>
+              <div class="sober"><div class="sh">Ceilings · money</div>
+                <table class="led"><tr><td>Max transaction</td><td>0.100000 ETH</td></tr>
+                  <tr><td>Daily budget</td><td>0.250000 ETH</td></tr><tr><td>Gas ceiling</td><td>200 gwei</td></tr>
+                  <tr><td>Simulation</td><td>Forced</td></tr><tr><td>Advanced modes</td><td>Not allowed</td></tr>
+                  <tr class="tot"><td>Retention</td><td>90 days</td></tr></table></div>
+              <div class="br" style="margin-top:11px"><button class="b sm">Edit</button><button class="b g sm">Retention policy</button></div></div>
+            <div class="card"><div class="ch"><h2>VIP</h2><div class="sp"></div><span class="p nu">6 members</span></div>
+              <div class="sober"><div class="sh">Ceilings · money</div>
+                <table class="led"><tr><td>Max transaction</td><td>0.500000 ETH</td></tr>
+                  <tr><td>Daily budget</td><td>2.000000 ETH</td></tr><tr><td>Gas ceiling</td><td>400 gwei</td></tr>
+                  <tr><td>Simulation</td><td>Optional</td></tr><tr><td>Advanced modes</td><td>Allowed</td></tr>
+                  <tr class="tot"><td>Retention</td><td>Off</td></tr></table></div>
+              <div class="br" style="margin-top:11px"><button class="b sm">Edit</button><button class="b g sm">Retention policy</button></div></div>
+          </div>
+          <div class="card">
+            <div class="ch"><h2>Create or edit a group</h2></div>
+            <div class="g" style="gap:11px">
+              <label class="fl"><span>Name</span><input class="in" placeholder="Single token — hyphens, not spaces"></label>
+              <div class="nt i"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
+                <div>Group names are one positional token in the shared admin command syntax. A space would shift every field after it, so <b>VIP Members</b> is rejected — use <b>VIP-Members</b>.</div></div>
+              <div class="g gm2 g2">
+                <label class="fl"><span>Max transaction (wei)</span><input class="in tab mono" placeholder="100000000000000000"></label>
+                <label class="fl"><span>Daily budget (wei)</span><input class="in tab mono" placeholder="250000000000000000"></label>
+                <label class="fl"><span>Gas ceiling (gwei)</span><input class="in tab" placeholder="200"></label>
+                <label class="fl"><span>Simulation</span><select class="in"><option>Forced</option><option>Optional</option></select></label>
+              </div>
+              <label class="fl"><span>Advanced modes (Degen / Fast)</span><select class="in"><option>Not allowed</option><option>Allowed</option></select></label>
+              <div class="br"><button class="b p sm">Save group</button><button class="b d sm">Delete…</button></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Users & ceilings -->
+      <div class="adp" id="ad-uc">
+        <div class="sfrow"><div class="sf">
+          <svg class="si" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+          <input type="search" placeholder="User, platform ID, group…"><button class="sx" aria-label="Clear search">×</button></div>
+          <div class="seg"><button class="on">All</button><button>Active</button><button>Blocked</button></div></div>
+        <div class="card col" data-open="1">
+          <button class="colh"><span class="p nu">4 shown</span><span class="cti">Users &amp; ceilings</span>
+            <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg></button>
+          <div class="colb">
+            <div class="r"><div class="ri" style="background:var(--accent-soft);color:var(--accent)">D</div>
+              <div class="rm"><div class="rt">deon <span class="p wn" style="margin-left:4px">Root owner</span></div><div class="rs fold">VIP · Telegram + Discord · 23 mints</div></div>
+              <div class="rv"><span class="p nu">Exempt</span></div></div>
+            <div class="r"><div class="ri">M</div>
+              <div class="rm"><div class="rt">mira.eth <span class="p ok" style="margin-left:4px">Active</span></div><div class="rs fold">Standard · Telegram · 2 mints</div></div>
+              <div class="rv"><button class="b g sm">Ceilings</button></div></div>
+            <div class="r"><div class="ri" style="color:var(--loss-text)">K</div>
+              <div class="rm"><div class="rt">kzo <span class="p bad" style="margin-left:4px">Suspended</span></div><div class="rs fold">until 2026-08-20 · "repeated failures"</div></div>
+              <div class="rv"><button class="b g sm">Ceilings</button></div></div>
+            <div class="r"><div class="ri">J</div>
+              <div class="rm"><div class="rt">jinx <span class="p nu" style="margin-left:4px">Deactivated</span></div><div class="rs fold">Standard · Discord · 0 mints</div></div>
+              <div class="rv"><button class="b g sm">Ceilings</button></div></div>
+          </div>
+        </div>
+        <div class="split" style="margin-top:11px">
+          <div class="sober"><div class="sh">mira.eth · per-user overrides</div>
+            <table class="led">
+              <tr><td>Max transaction</td><td>Inherits group · 0.100000 ETH</td></tr>
+              <tr><td>Daily budget</td><td>Inherits group · 0.250000 ETH</td></tr>
+              <tr><td>Gas ceiling</td><td>150 gwei <span class="p nu" style="margin-left:5px">override</span></td></tr>
+              <tr><td>Simulation</td><td>Inherit</td></tr>
+              <tr class="tot"><td>Advanced modes</td><td>Not allowed</td></tr>
+            </table></div>
+          <div class="card"><div class="ch"><h2>Account status</h2></div>
+            <p style="font-size:12px;color:var(--muted);margin-bottom:11px">Ban is permanent until lifted. Suspend can be time-boxed. Deactivate is a soft delete — wallets and their encrypted keys stay intact and reversible.</p>
+            <label class="fl" style="margin-bottom:10px"><span>Reason (required, audited)</span><input class="in" placeholder="Stated to the user"></label>
+            <div class="br"><button class="b sm">Suspend…</button><button class="b sm">Deactivate…</button><button class="b d sm">Ban…</button></div>
+            <p style="font-size:11px;color:var(--faint);margin-top:9px">Every confirm names the exact account. An owner can't be blocked — remove owner status first.</p></div>
+        </div>
+      </div>
+
+      <!-- Audit log -->
+      <div class="adp" id="ad-al">
+        <div class="sfrow"><div class="sf">
+          <svg class="si" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+          <input type="search" placeholder="Command, platform, outcome…"><button class="sx" aria-label="Clear search">×</button></div>
+          <div class="seg"><button class="on">All</button><button>Denied</button><button>Rate limited</button></div></div>
+        <div class="nt i" style="margin-bottom:11px">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
+          <div>Append-only evidence. Read-only — there are no actions on this screen by design.</div></div>
+        <div class="card">
+          <div class="r"><div class="rm"><div class="rt">exportkey <span class="p ok" style="margin-left:4px">success</span></div><div class="rs mono fold">dashboard · deon · key export delivered · 12:04:18Z</div></div><div class="rv mono" style="font-size:11px">2m</div></div>
+          <div class="r"><div class="rm"><div class="rt">login-password <span class="p bad" style="margin-left:4px">failure</span></div><div class="rs mono fold">dashboard · invalid credentials for 0xdeon · 11:58:02Z</div></div><div class="rv mono" style="font-size:11px">8m</div></div>
+          <div class="r"><div class="rm"><div class="rt">admin:ban <span class="p ok" style="margin-left:4px">success</span></div><div class="rs mono fold">dashboard · governance write completed · 09:41:55Z</div></div><div class="rv mono" style="font-size:11px">2h</div></div>
+          <div class="r"><div class="rm"><div class="rt">mintnow <span class="p wn" style="margin-left:4px">rate_limited</span></div><div class="rs mono fold">telegram · 6821…4417 · 09:12:30Z</div></div><div class="rv mono" style="font-size:11px">3h</div></div>
+          <div class="r"><div class="rm"><div class="rt">admin <span class="p bad" style="margin-left:4px">unauthorized</span></div><div class="rs mono fold">discord · 3391…8802 · owner access required · 08:55:11Z</div></div><div class="rv mono" style="font-size:11px">3h</div></div>
+        </div>
+      </div>
+
+      <!-- The five specified-but-not-mocked tabs (brief §9.1-D8) -->
+      <div class="adp" id="ad-el"><div class="spec">
+        <div class="reg">Register 1 · builds against Groups</div>
+        <h3>Effective lookup</h3>
+        <p>Answers "why is this user's ceiling 0.1?" — a form plus a result ledger that shows the resolved policy <b>and which layer each value came from</b>.</p>
+        <ul><li>Form: platform, platform user ID, chain</li>
+          <li>Result <code>Ledger</code>: max transaction, daily budget, gas ceiling, simulation, confirmations, active preset</li>
+          <li>Each row annotated <em>user override</em> / <em>group</em> / <em>default</em></li>
+          <li>An owner renders as "Exempt", never as a number</li></ul>
+        <p style="margin:0">Layout pattern: the Groups tab's form-left / register-1-ledger-right split.</p>
+      </div></div>
+
+      <div class="adp" id="ad-mp"><div class="spec">
+        <div class="reg">Register 1 · builds against Groups</div>
+        <h3>Mode presets</h3>
+        <p>Four preset cards — Degen, Fast, Cautious, Normie — each editable by an owner.</p>
+        <ul><li>Per card: simulation mode, confirmation count, human verification, gas multiplier, <code>is_default</code> marker</li>
+          <li>Edit form is register 1 — these values change what every user's transaction costs</li>
+          <li>Display names come from <code>mode_presets.display_name</code>. Do not relabel client-side — migration 038 fixed them at the source</li>
+          <li>Exactly one preset can be default; the unique partial index enforces it</li></ul>
+        <p style="margin:0">Layout pattern: Groups' card-per-record plus register-1 edit form.</p>
+      </div></div>
+
+      <div class="adp" id="ad-oa"><div class="spec">
+        <div class="reg">Register 1 · builds against Users &amp; ceilings</div>
+        <h3>Owner access</h3>
+        <p>The most dangerous screen in the product. No colour decoration at all.</p>
+        <ul><li>List of owners and root owners with tier pills</li>
+          <li>Grant / revoke form, each action confirming with the exact account named</li>
+          <li>Invariants stated in plain text on the page: the last owner cannot be removed; there is a maximum of 2 root owners; only a root owner can grant or revoke owner</li></ul>
+        <p style="margin:0">Layout pattern: Users &amp; ceilings' list plus guarded action form.</p>
+      </div></div>
+
+      <!-- ── BATCH IMPORT — real panel. One of only two batch surfaces in the product. ── -->
+      <div class="adp" id="ad-bi">
+        <div class="split">
+          <div class="card">
+            <div class="ch"><div class="chip-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3v12M8 11l4 4 4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg></div><h2>Batch wallet import</h2>
+              <div class="sp"></div><span class="p wn">Owner only</span></div>
+            <div class="nt w" style="margin-bottom:12px">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>
+              <div><b>Every key you paste here crosses browser memory and network transit.</b> Each is encrypted the moment it arrives and never returned — but a wallet created server-side never has that exposure at all. Prefer creating wallets unless you are migrating existing ones.</div></div>
+            <div class="g" style="gap:11px">
+              <label class="fl"><span>Private keys <span style="color:var(--faint);font-weight:500">· one per line, up to 100</span></span>
+                <textarea class="in mono" rows="5" placeholder="0x…&#10;0x…&#10;0x…" style="resize:vertical;line-height:1.5"></textarea></label>
+              <div class="g gm2 g2">
+                <label class="fl"><span>Chain</span><select class="in"><optgroup label="EVM"><option>Ethereum</option><option>Base</option><option>Arbitrum</option><option>Polygon</option></optgroup></select></label>
+                <label class="fl"><span>Label prefix</span><input class="in" value="imported" placeholder="imported"></label>
+              </div>
+              <p style="font-size:11px;color:var(--faint)">Labels are generated as <code>prefix-1</code>, <code>prefix-2</code>… and de-duplicated against wallets you already have.</p>
+              <label class="fl"><span>Type <b>CONFIRM</b> to proceed</span><input class="in mono" placeholder="CONFIRM"></label>
+              <button class="b d">Import 3 keys</button>
+            </div>
+          </div>
+          <div class="g">
+            <!-- POST /api/wallets/batch-import -> {results:[{index,status,label?,address?,error?}]} -->
+            <div class="card of">
+              <div class="ch"><h2>Result</h2><div class="sp"></div><span class="p wn">2 of 3 imported</span></div>
+              <div class="bres"><span class="p ok">Imported</span><span class="bl2">imported-1</span><span class="be mono">0x3f8c…b214</span></div>
+              <div class="bres"><span class="p ok">Imported</span><span class="bl2">imported-2</span><span class="be mono">0x77a1…9ecd</span></div>
+              <div class="bres"><span class="p bad">Failed</span><span class="bl2">key 3</span><span class="be">privateKey must be a 32-byte hex value</span></div>
+              <p style="font-size:11px;color:var(--faint);margin-top:9px">One bad key never sinks the batch — each is imported through the same validation and encryption a single import uses. <b>No key is ever echoed back, not even truncated.</b></p>
+            </div>
+            <div class="ol"><div class="sk row"></div><div class="sk row"></div><div class="sk row"></div></div>
+            <div class="emp oe"><div class="ei"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 3v12M8 11l4 4 4-4"/></svg></div>
+              <h3>Nothing imported yet</h3><p>Paste keys on the left. Results appear here, one row per key.</p></div>
+            <div class="notice ox"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>
+              <div class="nb"><b>Import rejected.</b> Nothing was saved. <code>400 · privateKeys must contain 1-100 private keys</code></div></div>
+            <div class="sober">
+              <div class="sh">What batch import is not</div>
+              <table class="led">
+                <tr><td>Bulk send</td><td>Not available</td></tr>
+                <tr><td>Bulk wallet delete</td><td>Not available</td></tr>
+                <tr><td>Bulk task cancel</td><td>Not available</td></tr>
+                <tr class="tot"><td>Batch surfaces total</td><td>2</td></tr>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="adp" id="ad-sh"><div class="spec">
+        <div class="reg">Register 3 · builds against Overview's health panel</div>
+        <h3>System health</h3>
+        <p>The Overview panel promoted to a full page: one labelled row per dependency, each with a status pill and a latency or detail figure.</p>
+        <ul><li>Database, Telegram, Discord, OpenSea, scheduler, social watcher</li>
+          <li>Status is text + colour, never colour alone</li></ul>
+        <div class="nt w" style="margin:0"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>
+          <div><b>Known broken dependency.</b> <code>GET /api/admin/health</code> is registered after the <code>/api</code> 404 catch-all in <code>server.js</code>, so it always 404s. Build the panel against the shape it will return and render its error state honestly — the route fix is a <code>src/**</code> change and out of scope (brief §9.2-O5).</div></div>
+      </div></div>
+    </section>
+
+    <!-- ══════════ ACCOUNT ══════════ -->
+    

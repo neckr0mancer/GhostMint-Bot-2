@@ -6,6 +6,14 @@ mints all live under `src/`; the dashboard frontend is under `dashboard/`.
 
 ## Where things stand
 
+**Mid-flight right now: the dashboard redesign, on branch `redesign/dashboard`.**
+If that is what you are picking up, read [`docs/REDESIGN_HANDOFF.md`](docs/REDESIGN_HANDOFF.md)
+FIRST and nothing else — it names the next task, the rules, how to run and verify,
+and what test data already exists. It is written so "continue from the last task" is
+enough of a brief.
+
+
+
 **[`docs/WORKLIST.md`](docs/WORKLIST.md) is the living backlog and status tracker — always read it
 first.** It's a chronological log of every feature Round (A, B, C... AA, AB...), what shipped,
 what's partial, and what's next. `git log --oneline -20` corroborates recent work; commit messages

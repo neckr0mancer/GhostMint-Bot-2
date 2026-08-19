@@ -1,0 +1,262 @@
+<section class="pg" id="p-mint">
+      <div class="hd"><div class="hd-t"><p class="eb">Mint</p><h1>Mint</h1></div></div>
+      <div class="subtabs" id="mnttabs">
+        <button class="on" data-mt="now">Mint now</button>
+        <button data-mt="sch">Schedule <span class="was">was Tasks</span></button>
+        <button data-mt="bat">Batch</button><button data-mt="pre">Presets</button>
+      </div>
+
+      <div class="nt w oe" style="margin-bottom:12px">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>
+        <div><b>Create a wallet before minting.</b> The form below is shown disabled so you can see what minting looks like.
+          <div style="margin-top:8px"><button class="b sm" data-go="wallets">Create a wallet</button></div></div>
+      </div>
+
+      <div class="mtp on" id="mt-now">
+      <div class="split">
+        <div class="card">
+          <div class="ch"><div class="chip-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 9h6v6H9z"/></svg></div><h2>Contract</h2></div>
+          <div class="g" style="gap:11px">
+            <label class="fl"><span>Contract address</span>
+              <input class="in ok mono of" value="0xED5AF388653567Af2F388E6224dC7C4b3241C544">
+              <input class="in mono oe" disabled placeholder="0x… paste a contract address"></label>
+            <div class="nt i of">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
+              <div>Detected <b>Azuki Elementals</b> · SeaDrop · open · 0.08 ETH · max 3/wallet</div></div>
+            <div class="g gm2 g2">
+              <label class="fl"><span>Wallet</span>
+                <select class="in of"><optgroup label="EVM"><option>Primary — 2.410 ETH</option><option>Trading — 1.664 ETH</option></optgroup><optgroup label="Solana"><option disabled>Solana (not yet supported)</option></optgroup></select>
+                <select class="in oe" disabled><option>No wallets yet</option></select></label>
+              <label class="fl"><span>Quantity <span style="color:var(--faint);font-weight:500">· max 3</span></span>
+                <div class="qty">
+                  <input class="in tab" type="number" min="1" max="3" placeholder="Enter quantity (1–3)" value="1">
+                  <div class="qb"><button class="on">1</button><button>2</button><button>3</button><button>Max</button></div>
+                </div></label>
+            </div>
+            <label class="fl"><span>Price per mint <span style="color:var(--faint);font-weight:500">· auto-detected</span></span>
+              <input class="in tab of" placeholder="e.g. 0.08 — leave blank to use detected price" value="0.08">
+              <input class="in tab oe" disabled placeholder="Detected once a contract is entered"></label>
+            <!-- Batch was buried as a third sub-tab and nobody found it. Cross-link from the
+                 single-wallet form, where the intent actually arises. -->
+            <div class="nt i">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
+              <div>Minting from more than one wallet? <b>Batch</b> simulates and submits each wallet independently, so one failure doesn't cancel the rest.
+                <div style="margin-top:8px"><button class="b sm" data-jump="mnttabs:bat">Switch to batch</button></div></div></div>
+            <!-- VALIDATION ERROR: server returns {issues:[{field,message}]} -->
+            <div class="ox">
+              <label class="fl"><span>Quantity <span style="color:var(--faint);font-weight:500">· max 3</span></span>
+                <input class="in tab bad" type="number" value="9">
+                <div class="fielderr"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>
+                  quantity must be between 1 and 3</div></label>
+            </div>
+          </div>
+        </div>
+
+        <div class="g">
+          <!-- Preview token: /api/mints/preview issues one, valid 300s, consumed once
+               by /api/mints/confirm. Data contract §4 — this was missing from v2. -->
+          <div class="tokbar of"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg>
+            <span>Simulated quote expires in</span><span class="sp"></span><span class="tk">4:12</span></div>
+          <div class="tokbar warn ox"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg>
+            <span>Quote expired — re-simulate before confirming</span><span class="sp"></span><button class="b sm">Re-simulate</button></div>
+          <div class="sober">
+            <div class="sh"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><rect x="4" y="10.5" width="16" height="10.5" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/></svg>Transaction preview</div>
+            <table class="led of">
+              <tr><td>Contract</td><td class="mono">0xED5A…C544</td></tr>
+              <tr><td>Method</td><td class="mono">mintPublic(…)</td></tr>
+              <tr><td>Chain</td><td>Ethereum · 12 conf.</td></tr>
+              <tr><td>Quantity</td><td>1</td></tr>
+              <tr><td>Mint price</td><td>0.080000 ETH</td></tr>
+              <tr><td>Est. gas (23 gwei)</td><td>0.004140 ETH</td></tr>
+              <tr><td>Simulation</td><td>Passed</td></tr>
+              <tr class="tot"><td>Total debit</td><td>0.084140 ETH</td></tr>
+            </table>
+            <table class="led oe">
+              <tr><td>Contract</td><td class="mono">—</td></tr>
+              <tr><td>Method</td><td class="mono">—</td></tr>
+              <tr><td>Chain</td><td>—</td></tr>
+              <tr><td>Quantity</td><td>—</td></tr>
+              <tr><td>Mint price</td><td>0.000000 ETH</td></tr>
+              <tr><td>Est. gas</td><td>0.000000 ETH</td></tr>
+              <tr><td>Simulation</td><td>Not run</td></tr>
+              <tr class="tot"><td>Total debit</td><td>0.000000 ETH</td></tr>
+            </table>
+          </div>
+          <!-- LOADING: preview in flight -->
+          <div class="ol"><div class="sk row"></div><div class="sk row"></div><div class="sk row"></div><div class="sk l w60"></div></div>
+
+          <!-- Daily-budget meter removed: no endpoint exposes spend-so-far.
+               Ceiling only, per data contract §5.1. -->
+          <div class="card tight of">
+            <div style="display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--muted)">
+              <span>Your daily ceiling</span><span class="sp"></span><b class="tab" style="color:var(--text)">0.250000 ETH</b></div>
+          </div>
+
+          <!-- TransactionSafetyError: 400 with a code. Money surface -> Notice, never a toast alone. -->
+          <div class="notice ox">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>
+            <div class="nb"><b>Wallet balance is below the estimated transaction cost.</b>
+              Nothing was broadcast. Fund <b>Primary</b> or lower the quantity.
+              <code>400 · INSUFFICIENT_BALANCE</code></div></div>
+
+          <button class="b p big bl of">Confirm and mint · 0.084140 ETH</button>
+          <button class="b big bl ol" disabled>Simulating…</button>
+          <button class="b big bl oe" disabled>Create a wallet to mint</button>
+          <button class="b big bl ox" disabled>Cannot mint · see above</button>
+          <p class="of" style="font-size:11px;color:var(--faint);text-align:center">Broadcast is irreversible. Intent persisted before send.</p>
+          <p class="oe" style="font-size:11px;color:var(--faint);text-align:center">Preview stays visible at all times — a collapsed total is a hidden total.</p>
+        </div>
+      </div>
+      </div>
+
+      <!-- ── SCHEDULE (was Tasks) ── -->
+      <div class="mtp" id="mt-sch">
+        <div class="split">
+          <div class="card">
+            <div class="ch"><div class="chip-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg></div><h2>Schedule a mint</h2></div>
+            <div class="g" style="gap:11px">
+              <label class="fl"><span>Name</span><input class="in" placeholder="e.g. Pudgy Rods public"></label>
+              <label class="fl"><span>Contract address</span><input class="in mono" placeholder="0x…"></label>
+              <div class="nt i"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
+                <div>SeaDrop drops expose their own opening time on-chain — it is filled in automatically. A plain <code>mint(uint256)</code> contract has no equivalent, so you set the time yourself.</div></div>
+              <div class="g gm2 g2">
+                <label class="fl"><span>Wallet</span><select class="in"><optgroup label="EVM"><option>Primary — 2.410 ETH</option></optgroup></select></label>
+                <label class="fl"><span>Quantity</span>
+                  <div class="qty"><input class="in tab" type="number" min="1" max="100" placeholder="Enter quantity (1–100)" value="1">
+                    <div class="qb"><button class="on">1</button><button>2</button><button>5</button></div></div></label>
+              </div>
+              <label class="fl"><span>Mint time <span style="color:var(--faint);font-weight:500">· UTC, explicit offset or Z</span></span>
+                <input class="in tab mono" value="2026-08-20T18:00:00Z"></label>
+              <button class="b p">Schedule mint</button>
+            </div>
+          </div>
+          <div class="g">
+            <div class="card">
+              <!-- Status filter, on the title line where the static "2 pending" chip used to sit.
+                   Collapsed to the ONE chip that is applied; pressing it opens the rest beneath.
+                   .ch does not wrap, so six chips inline would overflow the header or push the list
+                   down a row. "All" sends no filter at all. Owner's ruling 2026-08-19. -->
+              <div class="ch"><h2>Scheduled</h2><div class="sp"></div>
+                <div class="fils open">
+                  <button class="p ok fil on" aria-haspopup="listbox" aria-expanded="true">2 pending<span class="fil-caret">▾</span></button>
+                  <div class="fil-pop" role="listbox" aria-label="Filter by state">
+                    <button class="p nu fil" role="option" aria-selected="false">14 all</button>
+                    <button class="p ok fil on" role="option" aria-selected="true">2 pending</button>
+                    <button class="p info fil" role="option" aria-selected="false">1 paused</button>
+                    <button class="p bad fil" role="option" aria-selected="false">1 failed</button>
+                    <button class="p idle fil" role="option" aria-selected="false">3 cancelled</button>
+                    <button class="p ac fil" role="option" aria-selected="false">7 successful</button>
+                  </div>
+                </div>
+              </div>
+              <div class="of">
+                <!-- The ROW is the control: click to select, click again to drop it. No checkbox --
+                     selection reads as a highlight (.r.on). The first row picked fixes what the
+                     selection is; rows offering a different set of actions go .r.off and cannot
+                     join it, so Pause can never half-apply across a mixed pair. -->
+                <div class="r on" role="button" tabindex="0" aria-pressed="true"><div class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg></div>
+                  <div class="rm"><div class="rt">Pudgy Rods public</div><div class="rs fold">Primary · fires in 42m · 2026-08-20T18:00:00Z</div></div>
+                  <div class="rv"><span class="p ok">Scheduled</span></div></div>
+                <div class="r" role="button" tabindex="0" aria-pressed="false"><div class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg></div>
+                  <div class="rm"><div class="rt">Azuki Elementals</div><div class="rs fold">Primary · fires in 3h 10m · 2026-08-20T21:10:00Z</div></div>
+                  <div class="rv"><span class="p ok">Scheduled</span></div></div>
+                <div class="r off" role="button" tabindex="-1" aria-disabled="true"><div class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 4h4v16H6zM14 4h4v16h-4z"/></svg></div>
+                  <div class="rm"><div class="rt">Base Gods wave 2</div><div class="rs fold">Trading · paused</div></div>
+                  <div class="rv"><span class="p info">Paused</span></div></div>
+                <div class="r off" role="button" tabindex="-1" aria-disabled="true"><div class="ri" style="color:var(--loss-text)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></div>
+                  <div class="rm"><div class="rt">Unknown drop</div><div class="rs fold">attempt 3 of 3 · sale not active</div></div>
+                  <div class="rv"><span class="p bad">Failed</span></div></div>
+                <div class="br" style="margin-top:11px"><button class="b sm">Pause</button><button class="b sm">Resume</button><button class="b sm">Retry</button><button class="b d sm">Cancel…</button></div>
+                <!-- Pager: /api/tasks returns {page,pageSize,total,totalPages,items} -->
+                <!-- THREE numbers, sliding: pages 1-3 read "1 2 3", and the fourth appears only by
+                     stepping onto it ("2 3 4"). Jump-to-first/last appear only past three pages.
+                     All four arrows disable at the ends rather than hiding, so the row does not
+                     reflow under the cursor. -->
+                <div class="pager"><span class="pinfo">3 of 14</span>
+                  <button disabled aria-label="First page">«</button><button disabled>‹</button>
+                  <button class="on">1</button><button>2</button><button>3</button>
+                  <button>›</button><button aria-label="Last page">»</button></div>
+              </div>
+              <div class="ol"><div class="sk row"></div><div class="sk row"></div><div class="sk row"></div></div>
+              <div class="emp oe"><div class="ei"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg></div>
+                <h3>Nothing scheduled</h3><p>A scheduled mint is a database row, not a browser timer — it fires whether or not this tab is open.</p></div>
+              <div class="notice ox"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>
+                <div class="nb"><b>Could not load scheduled mints.</b><code>500 · Request failed safely</code>
+                  <div class="br" style="margin-top:9px"><button class="b sm">Retry</button></div></div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── BATCH ── -->
+      <div class="mtp" id="mt-bat">
+        <div class="split">
+          <div class="card">
+            <div class="ch"><div class="chip-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg></div><h2>Batch mint</h2></div>
+            <div class="g" style="gap:11px">
+              <label class="fl"><span>Contract address</span><input class="in ok mono" value="0xED5AF388653567Af2F388E6224dC7C4b3241C544"></label>
+              <label class="fl"><span>Wallets <span style="color:var(--faint);font-weight:500">· up to 100 unique</span></span>
+                <div class="g" style="gap:6px">
+                  <label style="display:flex;gap:8px;align-items:center;font-size:12.5px"><input type="checkbox" checked style="min-height:auto;width:16px;height:16px"> Primary — 2.410 ETH</label>
+                  <label style="display:flex;gap:8px;align-items:center;font-size:12.5px"><input type="checkbox" checked style="min-height:auto;width:16px;height:16px"> Trading — 1.664 ETH</label>
+                  <label style="display:flex;gap:8px;align-items:center;font-size:12.5px;color:var(--warn-text)"><input type="checkbox" checked style="min-height:auto;width:16px;height:16px"> Cold — 0.008 ETH</label>
+                </div></label>
+              <label class="fl"><span>Quantity per wallet</span>
+                <div class="qty"><input class="in tab" type="number" min="1" max="3" placeholder="Enter quantity (1–3)" value="1">
+                  <div class="qb"><button class="on">1</button><button>2</button><button>3</button></div></div></label>
+              <button class="b p">Simulate all 3</button>
+            </div>
+          </div>
+          <div class="g">
+            <div class="nt i"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
+              <div>Each wallet is simulated and submitted <b>independently</b>. One wallet failing does not cancel the others.</div></div>
+            <!-- /api/mints/confirm returns 202 {results:[{label,status,result|error}]} — partial failure is normal -->
+            <div class="card of">
+              <div class="ch"><h2>Result</h2><div class="sp"></div><span class="p wn">2 of 3 succeeded</span></div>
+              <div class="bres"><span class="p ok">Confirmed</span><span class="bl2">Primary</span><span class="be mono">0x4c8a…22f1</span></div>
+              <div class="bres"><span class="p ok">Confirmed</span><span class="bl2">Trading</span><span class="be mono">0x91de…07ac</span></div>
+              <div class="bres"><span class="p bad">Failed</span><span class="bl2">Cold</span><span class="be">Wallet balance is below the estimated transaction cost</span></div>
+              <p style="font-size:11px;color:var(--faint);margin-top:9px">Two transactions were broadcast. The third never left the server.</p>
+            </div>
+            <div class="ol"><div class="sk row"></div><div class="sk row"></div><div class="sk row"></div></div>
+            <div class="emp oe"><div class="ei"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="6" width="18" height="13" rx="2.5"/></svg></div>
+              <h3>No wallets to batch</h3><p>Batch minting needs at least two wallets. Create them first.</p>
+              <button class="b p sm" data-go="wallets">Create a wallet</button></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── PRESETS ── -->
+      <div class="mtp" id="mt-pre">
+        <div class="split">
+          <div class="card">
+            <div class="ch"><h2>Saved presets</h2><div class="sp"></div><span class="p nu of">2</span></div>
+            <div class="of">
+              <div class="r"><div class="rm"><div class="rt">Azuki drop</div><div class="rs mono fold">mint(address,uint256) · 0xED5A…C544</div></div>
+                <div class="rv"><button class="b g sm">Use</button></div></div>
+              <div class="r"><div class="rm"><div class="rt">Allowlist claim</div><div class="rs mono fold">mint(uint256,bytes32[]) · proof from URL</div></div>
+                <div class="rv"><button class="b g sm">Use</button></div></div>
+            </div>
+            <div class="ol"><div class="sk row"></div><div class="sk row"></div></div>
+            <div class="emp oe"><div class="ei"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M5 5h14v14H5z"/><path d="M9 9h6v6H9z"/></svg></div>
+              <h3>No presets saved</h3><p>A preset stores a contract, method and arguments so a repeat mint is one tap.</p></div>
+          </div>
+          <div class="card">
+            <div class="ch"><h2>Method registry</h2></div>
+            <p style="font-size:12.5px;color:var(--muted);margin-bottom:11px">Only audited signatures can be encoded. Arbitrary ABI fragments and raw calldata are rejected.</p>
+            <div class="sober"><div class="sh">Supported signatures</div>
+              <table class="led">
+                <tr><td class="mono">mint()</td><td>ERC-721</td></tr>
+                <tr><td class="mono">mint(uint256)</td><td>ERC-721</td></tr>
+                <tr><td class="mono">mint(address,uint256)</td><td>ERC-721</td></tr>
+                <tr><td class="mono">mint(uint256,bytes32[])</td><td>proof</td></tr>
+                <tr><td class="mono">mint(uint256,bytes)</td><td>signature</td></tr>
+                <tr class="tot"><td>+4 more</td><td>1155 / SeaDrop</td></tr>
+              </table></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══════════ AUTOMATION ══════════ -->
+    

@@ -8,6 +8,16 @@ const { detectContractChain } = require('../mint/chainDetector');
 const { computeSeaDropValueWei } = require('../mint/seaDropCall');
 const { SEADROP_MINT_SIGNATURE } = require('../mint/seaDropRegistry');
 const { createWalletBalanceCache } = require('./walletBalanceCache');
+const { EXPIRY_GRACE_MS, TASK_BUCKETS, TASK_BUCKET_NAMES, bucketFor } = require('../scheduler/schedulerRepository');
+
+// The four controls a scheduled mint accepts, each with the past participle its error message
+// needs. `${action}d` got half of them wrong -- "canceld" and "retryd" both reached the user
+// verbatim in the dashboard's error toast. "cancelled" carries the double l the rest of the
+// codebase uses, including the status value the scheduler writes (schedulerRepository.js:138).
+// This also serves as the ALLOWLIST for controlTask: see the note there.
+const TASK_CONTROLS = Object.freeze({
+  cancel: 'cancelled', pause: 'paused', resume: 'resumed', retry: 'retried',
+});
 
 function createBotCommandService(dependencies) {
   const { storage, schedulerRepository, providerService, governance, adminCommands, sniperService,
@@ -374,10 +384,34 @@ function createBotCommandService(dependencies) {
   // mirrors mint()'s own owned.chain fallback rather than doing independent auto-detection here;
   // a guided flow that wants full chain auto-detection from a bare contract address (the way
   // startMintFlow does) resolves it upstream and passes chain in explicitly, same as it does for mint().
+  // A scheduled mint fires unattended, possibly days later, so the moment it is CREATED is the
+  // only moment the user is present to be told the address is wrong. Checking for deployed
+  // bytecode here means a typo or a fake address is refused while they can still fix it, instead
+  // of becoming a failure at 3am that reads "execution reverted".
+  //
+  // eth_getCode only -- read-only, sends nothing, costs nothing. An address with no code is not a
+  // contract and can never be minted from. An UNREACHABLE provider is deliberately NOT treated as
+  // a bad address: refusing to schedule because an RPC blipped would be worse than the problem.
+  async function assertContractExists(contractAddress, chain) {
+    let code = null;
+    try {
+      code = await providerService.perform(chain, 'scheduleContractCheck',
+        provider => provider.getCode(contractAddress));
+    } catch {
+      return; // provider unreachable -- schedule anyway rather than block on our own outage
+    }
+    if (code === '0x' || code === '0x0') {
+      throw new ValidationError({ field: 'contractAddress',
+        message: `has no contract deployed on ${chain} -- check the address and the chain` });
+    }
+  }
+
   async function createTask(userId, input) {
     const owned = wallet(userId, input.walletLabel);
     const chain = input.chain || owned.chain;
-    const withPrice = await resolvePriceIfMissing({ ...input, contractAddress: input.contractAddress ?? input.contract }, chain);
+    const target = input.contractAddress ?? input.contract;
+    if (target) await assertContractExists(target, chain);
+    const withPrice = await resolvePriceIfMissing({ ...input, contractAddress: target }, chain);
     const withMintTime = await resolveMintTimeIfMissing(withPrice, chain);
     const validated = requestSchemas.taskCreate({ ...withMintTime, chain }, { supportedChains, now: Date.now() });
     const task = { userId, id: validated.id, name: validated.name, walletLabel: validated.walletLabel,
@@ -392,12 +426,21 @@ function createBotCommandService(dependencies) {
   }
 
   async function controlTask(userId, action, id) {
+    // `action` arrives straight off a request body (src/dashboard/api.js:213) and is dispatched as
+    // schedulerRepository[action](...), so before this guard ANY method on the repository could be
+    // reached -- complete, fail, attachIntent, recoverWithoutExecution -- called with the wrong
+    // arguments. Nothing corrupted data (complete's UPDATE matched no rows and returned false),
+    // but fail threw on destructuring and surfaced as a 500, and nothing stopped the call being
+    // made at all. Telegram and Discord always pass literals; only the dashboard route is open.
+    if (!Object.hasOwn(TASK_CONTROLS, action)) {
+      throw new ValidationError({ field: 'action', message: 'must be one of cancel, pause, resume, retry' });
+    }
     const validated = requestSchemas.taskDeletion({ id });
     const now = Date.now();
     const task = action === 'resume' || action === 'retry'
       ? await schedulerRepository[action](userId, validated.id, now)
       : await schedulerRepository[action](userId, validated.id);
-    if (!task) throw new ValidationError({ field: 'id', message: `was not found or cannot be ${action}d` });
+    if (!task) throw new ValidationError({ field: 'id', message: `was not found or cannot be ${TASK_CONTROLS[action]}` });
     const cached = getState().tasks.find(item => item.userId === userId && item.id === task.id);
     if (cached) Object.assign(cached, task);
     broadcast(userId, 'tasks');
@@ -513,7 +556,29 @@ function createBotCommandService(dependencies) {
     return {targetType,targetId,label:target.label||target.name,chain,policy,governance};
   }
 
-  async function pageFrom(repositoryMethod,fallback,userId,input,searchFields) {const p=pagination(input);const search=typeof input?.search==='string'?input.search.trim():'';if(repositoryMethod){const result=await repositoryMethod(userId,{limit:p.pageSize,offset:p.offset,search});return {...p,total:result.total,totalPages:Math.max(1,Math.ceil(result.total/p.pageSize)),items:result.items};}const source=fallback();const items=search&&searchFields?source.filter(item=>searchFields.some(field=>String(item[field]||'').toLowerCase().includes(search.toLowerCase()))):source;return paginate(items,p);}
+  // Two hooks, and the ORDER between them is the whole point.
+  //   counts  -- collection-wide totals a single page cannot produce. Handed every row matching
+  //             the search, BEFORE any status filter, so each filter chip keeps showing its real
+  //             number while a different chip is the active one.
+  //   refine  -- the status filter itself. Applied after counts, before paginate, so the pager
+  //             pages through the filtered set rather than the whole collection.
+  // The repository path gets both for free: it receives `status` and returns its own counts, and
+  // any extra key alongside {items,total} is forwarded untouched.
+  async function pageFrom(repositoryMethod,fallback,userId,input,searchFields,{counts,refine}={}) {const p=pagination(input);const search=typeof input?.search==='string'?input.search.trim():'';if(repositoryMethod){const {items,total,...extra}=await repositoryMethod(userId,{limit:p.pageSize,offset:p.offset,search,status:input?.status});return {...p,total,totalPages:Math.max(1,Math.ceil(total/p.pageSize)),items,...extra};}const source=fallback();const matched=search&&searchFields?source.filter(item=>searchFields.some(field=>String(item[field]||'').toLowerCase().includes(search.toLowerCase()))):source;const extra=counts?counts(matched):{};const items=refine?refine(matched,input):matched;return {...paginate(items,p),...extra};}
+  // The in-memory mirror of what listPageForUser does in SQL, for the fallback path. Every status
+  // lands in exactly one bucket, so these five sum to the collection total.
+  // Same rule the SQL applies, on in-memory rows: expiry needs the mint time as well as the
+  // status, so bucketing on status alone would leave the expired bucket permanently empty here
+  // while the deployed path filled it.
+  const bucketOfTask=task=>{
+    const at=task?.mintTime?new Date(task.mintTime).getTime():NaN;
+    return bucketFor(task?.status,Number.isFinite(at)&&at<Date.now()-EXPIRY_GRACE_MS);
+  };
+  const countTaskBuckets=tasks=>{const counts=Object.fromEntries(TASK_BUCKET_NAMES.map(name=>[name,0]));
+    for(const task of tasks){const name=bucketOfTask(task);if(name)counts[name]+=1;}return {counts};};
+  const filterTaskBucket=(tasks,input)=>{const bucket=input?.status;
+    return TASK_BUCKET_NAMES.includes(bucket)?tasks.filter(task=>bucketOfTask(task)===bucket):tasks;};
+  const TASK_PAGE_HOOKS={counts:countTaskBuckets,refine:filterTaskBucket};
 
   async function stats(userId) {const rows=sniperRepository?.statsForUser?await sniperRepository.statsForUser(userId):[];
     const sniperEvents=rows.flatMap(row=>Array.from({length:row.count},()=>({state:row.state})));
@@ -526,7 +591,7 @@ function createBotCommandService(dependencies) {
     sniperEvents:userId=>sniperRepository.listRecentForUser(userId),
     wallets: userId => state(userId).wallets,
     tasks: userId => schedulerRepository.listForUser(userId),
-    tasksPage:(userId,input)=>pageFrom(schedulerRepository.listPageForUser?.bind(schedulerRepository),()=>state(userId).tasks,userId,input,['name','walletLabel']),
+    tasksPage:(userId,input)=>pageFrom(schedulerRepository.listPageForUser?.bind(schedulerRepository),()=>state(userId).tasks,userId,input,['name','walletLabel'],TASK_PAGE_HOOKS),
     activity: userId => state(userId).activity.slice(0, 10),
     activityPage:(userId,input)=>pageFrom(storage.listActivityPage?.bind(storage),()=>state(userId).activity,userId,input,['title','walletLabel']),
     pnl: userId => state(userId).pnl,
@@ -571,6 +636,18 @@ function createBotCommandService(dependencies) {
     listOwnerUserIds:()=>governanceRepository.listOwnerUserIds(),
     adminOverview:userId=>governance.dashboardOverview(userId),
     adminEffective:(userId,input)=>governance.effectiveForLinkedUser(userId,input),
+    // The caller's own ceilings. Chain matters -- gasCeilingGwei comes from that chain's
+    // defaults when neither a user override nor a group sets one -- so an unsupported chain is
+    // rejected here rather than reaching defaultPolicy(), which throws a bare Error for an
+    // unknown chain and would surface as a 500 instead of a validation failure.
+    // async, not a sync throw. Every other command here rejects rather than throws, and the
+    // dashboard's action() wrapper catches from an awaited promise -- a synchronous throw out of
+    // an otherwise-promise-returning API escapes that wrapper and lands on the generic 500
+    // handler, turning a validation failure into a server error.
+    profileLimits:async(userId,chain)=>{
+      if(!supportedChains.includes(chain))throw new ValidationError({field:'chain',message:`must be one of: ${supportedChains.join(', ')}`});
+      return governance.limitsForSelf(userId,chain);
+    },
     // Owner-only cross-user visibility -- every one of these already takes an explicit userId
     // rather than deriving "the caller" internally, so the only thing missing is the owner gate
     // before pointing that userId at someone other than the caller.
@@ -578,9 +655,12 @@ function createBotCommandService(dependencies) {
     adminUserActivity:async(callerUserId,targetUserId,input)=>{await governance.requireOwner(callerUserId);
       return pageFrom(storage.listActivityPage?.bind(storage),()=>state(targetUserId).activity,targetUserId,input,['title','walletLabel']);},
     adminUserTasks:async(callerUserId,targetUserId,input)=>{await governance.requireOwner(callerUserId);
-      return pageFrom(schedulerRepository.listPageForUser?.bind(schedulerRepository),()=>state(targetUserId).tasks,targetUserId,input,['name','walletLabel']);},
+      return pageFrom(schedulerRepository.listPageForUser?.bind(schedulerRepository),()=>state(targetUserId).tasks,targetUserId,input,['name','walletLabel'],TASK_PAGE_HOOKS);},
     adminUserPnl:async(callerUserId,targetUserId)=>{await governance.requireOwner(callerUserId);return state(targetUserId).pnl;},
     adminSecurityAudit:async(callerUserId,input)=>{await governance.requireOwner(callerUserId);return botSecurityRepository.listRecent(input);},
+    // The personal view. Deliberately NOT owner-gated and deliberately not able to widen: userId is
+    // taken from the session, never from the query, so there is no parameter to tamper with.
+    securityAudit:(userId,input)=>botSecurityRepository.listRecent({...input,userId}),
     linkCode:userId=>identity.createLinkCode(userId),
   };
 }

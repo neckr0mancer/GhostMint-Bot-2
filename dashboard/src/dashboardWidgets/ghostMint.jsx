@@ -8,7 +8,7 @@ export function StatusBar({summary,go}){return <div className="dash-statusbar">
     {summary.wallets.length
       ?<div className="dash-wallet-chips">{summary.wallets.map(wallet=><span className="dash-wallet-chip" key={wallet.label}><span className="pill">{wallet.chain}</span><strong>{wallet.label}</strong><span>{wallet.balance??'—'} {wallet.symbol||''}</span></span>)}{summary.walletCount>summary.wallets.length&&<span className="dash-wallet-more">+{summary.walletCount-summary.wallets.length} more</span>}</div>
       :<span>No wallets yet</span>}
-    <button className="quiet small" onClick={()=>go('Wallets')}>View wallets</button>
+    <button className="b g sm" onClick={()=>go('Wallets')}>View wallets</button>
     <span className="dash-bell" aria-label={`${summary.pendingConfirmations.length} pending confirmations`}>&#128276; {summary.pendingConfirmations.length}</span>
   </div>
 </div>;}
@@ -21,7 +21,7 @@ export function HeroAction({go}){return <section className="panel dash-hero glow
   <h2>Mint Now</h2>
   <p>Jump straight into the Minting flow with simulation-backed previews.</p>
   <div className="dash-hero-actions">
-    <button onClick={()=>go('Minting')}>Mint now</button>
+    <button className="b p" onClick={()=>go('Minting')}>Mint now</button>
     <QuickMintToggle go={go}/>
   </div>
 </section>;}
@@ -33,7 +33,7 @@ export function PendingQueue({summary,go}){return <section className="panel glow
   {summary.pendingConfirmations.length===0
     ?<Empty text="Nothing pending confirmation right now."/>
     :<div className="dash-chip-row">{summary.pendingConfirmations.map(item=><span className={`dash-chip pulse ${triggerChipClass(item.triggerSource)}`} key={item.id}>{TRIGGER_LABELS[item.triggerSource]||item.triggerSource||'trigger'}: {item.targetType}</span>)}</div>}
-  <button className="quiet small panel-cta" onClick={()=>go('Activity')}>View activity</button>
+  <button className="b g sm panel-cta" onClick={()=>go('Activity')}>View activity</button>
 </section>;}
 
 export function StatsStrip({summary,go}){return <section className="panel glow dash-stats">
@@ -44,21 +44,21 @@ export function StatsStrip({summary,go}){return <section className="panel glow d
     <div><strong>{formatAmount(summary.totalGasSpent)}</strong><span>Gas spent</span></div>
     <div><strong className="stat-accent-2">{formatAmount(summary.netPnl)}</strong><span>Net P&amp;L</span></div>
   </div>
-  <button className="quiet small panel-cta" onClick={()=>go('P&L')}>View P&amp;L</button>
+  <button className="b g sm panel-cta" onClick={()=>go('P&L')}>View P&amp;L</button>
 </section>;}
 
 export function TasksSnipersSummary({summary,go}){return <section className="panel glow dash-tasks-snipers">
   <h2>Tasks &amp; snipers</h2>
   <p>{summary.tasksTotal} active tasks {summary.nextTaskTime?`- next run ${formatWhen(summary.nextTaskTime)}`:''}</p>
   <p>{summary.sniperCount} active snipers</p>
-  <div className="actions panel-cta"><button className="small" onClick={()=>go('Tasks')}>View tasks</button><button className="small" onClick={()=>go('Snipers')}>View snipers</button></div>
+  <div className="br panel-cta"><button className="b sm" onClick={()=>go('Tasks')}>View tasks</button><button className="b sm" onClick={()=>go('Snipers')}>View snipers</button></div>
 </section>;}
 
 export function WatchTargetSummary({summary,go}){return <section className="panel glow dash-watch-target">
   <h2>Watch rules &amp; target policies</h2>
   <p>{summary.watchRules.active} of {summary.watchRules.total} watch rules enabled</p>
   <p>{summary.targetsTotal} targets under policy management{summary.watchRules.needingAttention?<span className="warning"> - {summary.watchRules.needingAttention} need attention</span>:null}</p>
-  <div className="actions panel-cta"><button className="small" onClick={()=>go('Watch Rules')}>View watch rules</button><button className="small" onClick={()=>go('Target Policies')}>View target policies</button></div>
+  <div className="br panel-cta"><button className="b sm" onClick={()=>go('Watch Rules')}>View watch rules</button><button className="b sm" onClick={()=>go('Target Policies')}>View target policies</button></div>
 </section>;}
 
 export function ActivityFeed({summary,go}){return <section className="panel glow dash-activity">
@@ -66,7 +66,7 @@ export function ActivityFeed({summary,go}){return <section className="panel glow
   {summary.activityItems.length===0
     ?<Empty text="No activity recorded yet."/>
     :<div className="feed">{summary.activityItems.map(item=><article className="feed-item" key={item.id}><div><StatusPill status={item.status}/><h2>{item.title}</h2><p>{formatWhen(item.time)}</p></div></article>)}</div>}
-  <button className="quiet small panel-cta" onClick={()=>go('Activity')}>View all activity</button>
+  <button className="b g sm panel-cta" onClick={()=>go('Activity')}>View all activity</button>
 </section>;}
 
 export default {StatusBar,AlertBanner,HeroAction,PendingQueue,StatsStrip,TasksSnipersSummary,WatchTargetSummary,ActivityFeed};

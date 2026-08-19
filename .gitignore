@@ -13,3 +13,5 @@ public/dashboard/
 .DS_Store
 Thumbs.db
 pwd.txt
+PROJECT_REVIEW_*.md
+.tmp-review/

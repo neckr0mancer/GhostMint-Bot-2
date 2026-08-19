@@ -305,6 +305,29 @@ function createGovernanceService(repository) {
       return {groups,users,presets,metrics};
     },
 
+    // A caller's OWN effective ceilings. Deliberately NOT owner-gated: this is the same
+    // getEffectiveGovernance resolution enforceSniperGovernance (botCommandService) already runs
+    // against the calling user on every sniper create, so a user reading the limits that are
+    // already being enforced against them is not privileged information -- it is the rule they
+    // are being held to. effectiveForLinkedUser below stays owner-gated because it reads
+    // SOMEONE ELSE'S limits, which is a different question.
+    //
+    // spentTodayWei is deliberately absent. rollingSpendWei sums
+    // COALESCE(actual_network_cost_wei, estimated_cost_wei) and the actual column holds gas only,
+    // so a confirmed transaction's mint value drops out of the 24h total -- the figure is wrong
+    // in the user's favour. Returning it here would put a known-wrong number on a money surface.
+    // Add it once that under-count is fixed (PROJECT_REVIEW §1.1).
+    async limitsForSelf(userId,chain) {
+      const effective=await repository.getEffectiveGovernance(userId,chain);
+      if(effective.isOwner)return {chain,isOwner:true,ceilingExempt:true,maxTransactionValueWei:null,
+        dailySpendingBudgetWei:null,gasCeilingGwei:null,simulationForced:effective.simulationForced};
+      return {chain,isOwner:false,ceilingExempt:false,
+        maxTransactionValueWei:effective.maxTransactionValueWei,
+        dailySpendingBudgetWei:effective.dailySpendingBudgetWei,
+        gasCeilingGwei:effective.gasCeilingGwei,
+        simulationForced:effective.simulationForced};
+    },
+
     async effectiveForLinkedUser(callerUserId,input) {
       await requireOwner(callerUserId);
       const userId=await targetUser(input.platform,input.platformUserId);

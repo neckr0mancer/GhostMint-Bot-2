@@ -28,8 +28,72 @@ shipped).
   multi-phase scheduling on Telegram) shipped 2026-08-18, together with the scheduled-mint
   confirmation copy fix flagged in the same section; shape 2 (allowlist phases via a hand-entered
   merkle proof) remains deliberately unbuilt.
+- **Round 10** (Section AG) is the dashboard redesign — design complete, build well underway on
+  `redesign/dashboard`. Shell chrome, the Mint page (all four tabs) and the four-state pass are
+  done; see `docs/REDESIGN_HANDOFF.md` for what is next. It began scoped to `dashboard/**` alone,
+  but now also carries server-side work in `botCommandService`/`server.js` for the schedule status
+  filters, failure reasons and the low-balance pre-flight.
 
 Status legend: ✅ Done · 🟡 Partial · ❌ Not started
+
+---
+
+# Round 10 — dashboard redesign (2026-08-17)
+
+## Section AG — Dashboard redesign ⏳ specified, not started
+
+Design work is complete and lives in `docs/REDESIGN_BRIEF.md`, `docs/REDESIGN_PROMPT.md`,
+`docs/REDESIGN_DATA_CONTRACT.md` and the prototype `docs/ghostmint-redesign-v3.html`. The redesign
+itself is presentation-layer only (`dashboard/src/**`) — no route, request/response shape, or
+validation schema changes.
+
+Writing the data contract surfaced work the redesign **cannot** do, because it would require
+`src/**` changes. Each item below was deliberately deferred, with the UI built in its honest
+degraded form in the meantime.
+
+1. **`GET /api/admin/health` is unreachable.** Registered in `src/server.js` after
+   `app.use('/api', …404)`, so it always returns "API route not found". The admin System health
+   panel has no data source. **One-line fix: move the route above the catch-all.** Reproduced; see
+   `PROJECT_REVIEW_2026-08-17.md` §1.3.
+2. **No `GET /api/profile/limits`.** A regular user cannot see their own spend ceiling or how much
+   of today's budget they've used, so the daily-budget meter was cut from the redesign (contract
+   §5.1). Would return
+   `{maxTransactionValueWei, dailySpendingBudgetWei, spentTodayWei, gasCeilingGwei}`.
+   **Blocked on item 3** — do not surface `spentTodayWei` until it is correct.
+3. **`rollingSpendWei` under-counts by the full transaction value.** It sums
+   `COALESCE(actual_network_cost_wei, estimated_cost_wei)`, but the actual column holds gas only,
+   so a confirmed transaction's mint value drops out of the 24h total. The daily budget does not
+   currently hold. Highest-severity item in the review; see `PROJECT_REVIEW_2026-08-17.md` §1.1.
+4. **No dashboard routes for `triggerAudit`, `send`, or `transactionsPage`.** All three exist in
+   `botCommandService` and are reachable from Telegram/Discord only. History → Audit evidence and
+   Wallets → Send both ship as explanatory panels pointing at the bots (contract §5.11, §5.10).
+   `send` is a value-moving path and deserves its own review rather than being added alongside a
+   restyle.
+5. **`pnl_records` has no wallet column**, so per-wallet performance cannot be computed —
+   Performance is account-level in the redesign (contract §5.9). Also `activity` has no chain or
+   mint-value column, so the activity feed shows gas only and derives its chain dot from the
+   explorer URL (contract §5.8). Bundles naturally with Section T (extract token IDs from mint
+   receipts), which is the same missing-provenance problem seen from the bot side.
+6. **No historical balance data anywhere**, so the portfolio 7-day delta and sparkline were cut
+   (contract §5.4). Would need a periodic balance snapshot.
+7. **Admin has no volume metric.** `getAdminOverviewMetrics` returns account counts only — no ETH
+   volume, no mint count. The tile now shows `activeAnyPlatform24h` instead (contract §5.2).
+
+Two further items were settled while auditing the live deployment on 2026-08-17:
+
+8. **The mobile layout exists in only two of the five themes.** `.mobile-bottombar` and
+   `.more-sheet` are `display:none` globally and re-enabled only under `ghost-mint` /
+   `ghost-mint-light`; `App.jsx`'s `RAIL_THEMES` holds the same two. Clean Vault, Neon Arcade and
+   Quiet Ledger therefore have no bottom bar, no More sheet, and no mobile grid collapse — and
+   Admin has no mobile nav at all in those three. The redesign deliberately targets Light and Dark
+   only (brief §9.1-D15); restoring the other three is logged as brief §9.2-O10.
+9. **Railway's `SUPPORTED_CHAINS` does not match this repo's documented list.** `CLAUDE.md` records
+   `ethereum, base, arbitrum, polygon, robinhood`, but production's `GET /api/profile` returns
+   `["ethereum","sepolia","robinhood"]` — Sepolia still present, `base`/`arbitrum`/`polygon`
+   absent. `SUPPORTED_CHAINS` is read from the environment at boot, so Section AF's removal of
+   Sepolia from user-facing surfaces will **not** take effect in production until that Railway
+   environment variable is updated. Verified live 2026-08-17 via a dev proxy against
+   `ghostmint-bot-2-production`.
 
 ---
 

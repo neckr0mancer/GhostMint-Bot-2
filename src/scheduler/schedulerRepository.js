@@ -1,3 +1,56 @@
+// The seven statuses the schema allows (migrations/011_durable_scheduler.sql:30), grouped into the
+// buckets the dashboard filters by. Every status belongs to EXACTLY ONE bucket, which is the point:
+// the counts sum to the total, no row is counted twice, and no row can become unreachable because
+// no filter claims it. 'succeeded' has its own bucket for that last reason -- a mint that fired is
+// still a row the user may want to look at.
+const TASK_BUCKETS = Object.freeze({
+  pending: ['scheduled', 'claimed', 'retry'],
+  paused: ['paused'],
+  failed: ['failed'],
+  cancelled: ['cancelled'],
+  succeeded: ['succeeded'],
+});
+const TASK_BUCKET_NAMES = Object.freeze(['pending', 'paused', 'failed', 'expired', 'cancelled', 'succeeded']);
+// `expired` is the one bucket that is not a status. It is a paused or failed mint whose mint time
+// has already gone: the drop is over, so Resume and Retry would only re-run something that cannot
+// succeed. It TAKES PRECEDENCE over paused and failed, which keeps the buckets a partition -- a
+// row is in exactly one, and the counts still sum to the total.
+//
+// Deliberately not applied to 'scheduled': an overdue scheduled mint is merely late, and the
+// worker claims it within seconds. Nor to 'cancelled', which is a decision the user made rather
+// than a window they missed, and saying "expired" would lose that.
+const EXPIRABLE_STATUSES = Object.freeze(['paused', 'failed']);
+// Expiry is not "the mint time has passed" -- a mint FAILS because its time arrived, so that test
+// is true for essentially every failure and would leave the failed bucket permanently empty with
+// everything piled into expired. It is "the time passed long enough ago that acting is pointless".
+// Inside the grace a failure is worth retrying (a flaky RPC, a wallet you can top up); past it the
+// drop is over and Retry would only re-run something that cannot succeed.
+const EXPIRY_GRACE_MS = 60 * 60 * 1000;
+const EXPIRY_GRACE_SQL = "NOW() - INTERVAL '1 hour'";
+function bucketFor(status, isExpired) {
+  const value = String(status || '').toLowerCase();
+  if (isExpired && EXPIRABLE_STATUSES.includes(value)) return 'expired';
+  return TASK_BUCKET_NAMES.find(name => TASK_BUCKETS[name]?.includes(value)) || null;
+}
+const BUCKET_OF_STATUS = Object.freeze(Object.fromEntries(
+  Object.keys(TASK_BUCKETS).flatMap(name => TASK_BUCKETS[name].map(status => [status, name]))));
+// Work this deployment still owns. Deliberately NOT the same as the `pending` bucket: paused is
+// active (the row survives, the worker just will not fire it) but is not pending (it is suspended,
+// not queued). Backlog §11.1, re-ruled 2026-08-19 -- the owner wants the two separable in the UI,
+// so they cannot share one list here either.
+const ACTIVE_STATUSES = Object.freeze([...TASK_BUCKETS.pending, ...TASK_BUCKETS.paused]);
+const sqlStatusList = statuses => statuses.map(status => `'${status}'`).join(',');
+// One WHERE fragment per bucket. Everything here is built from the frozen constants above --
+// no caller input reaches these strings, so they stay literals rather than parameters.
+const BUCKET_PREDICATES = Object.freeze({
+  pending: `status IN (${sqlStatusList(TASK_BUCKETS.pending)})`,
+  paused: `status='paused' AND mint_time >= ${EXPIRY_GRACE_SQL}`,
+  failed: `status='failed' AND mint_time >= ${EXPIRY_GRACE_SQL}`,
+  expired: `status IN (${sqlStatusList(EXPIRABLE_STATUSES)}) AND mint_time < ${EXPIRY_GRACE_SQL}`,
+  cancelled: `status='cancelled'`,
+  succeeded: `status='succeeded'`,
+});
+
 function time(value) { return value === null ? null : new Date(value).getTime(); }
 
 function mapTask(row) {
@@ -55,20 +108,35 @@ function createSchedulerRepository(pool) {
       const result = await pool.query('SELECT * FROM mint_tasks WHERE user_id=$1 ORDER BY mint_time', [userId]);
       return result.rows.map(mapTask);
     },
-    async listPageForUser(userId,{limit,offset,search}) {
-      const term=search?`%${search}%`:null;
-      const mainWhere=term?'WHERE user_id=$1 AND (name ILIKE $4 OR wallet_label ILIKE $4)':'WHERE user_id=$1';
-      const mainParams=term?[userId,limit,offset,term]:[userId,limit,offset];
-      const countWhere=term?'WHERE user_id=$1 AND (name ILIKE $2 OR wallet_label ILIKE $2)':'WHERE user_id=$1';
-      const countParams=term?[userId,term]:[userId];
-      const [rows,count]=await Promise.all([pool.query(`SELECT * FROM mint_tasks ${mainWhere}
-        ORDER BY mint_time,id LIMIT $2 OFFSET $3`,mainParams),
-      pool.query(`SELECT COUNT(*)::INTEGER AS total FROM mint_tasks ${countWhere}`,countParams)]);
-      return {items:rows.rows.map(mapTask),total:count.rows[0].total};
+    async listPageForUser(userId,{limit,offset,search,status}={}) {
+      // Two scopes, and the difference matters. `counts` is scoped to the SEARCH only, so every
+      // filter chip keeps showing its real number while one of them is applied -- a chip that read
+      // 0 because its own filter is not the active one would be useless. `total` is scoped to the
+      // search AND the status filter, because that is what the pager is paging through.
+      const predicate=BUCKET_PREDICATES[status]||null;
+      const filters=['user_id=$1'];const params=[userId];
+      if(search){params.push(`%${search}%`);
+        filters.push(`(name ILIKE $${params.length} OR wallet_label ILIKE $${params.length})`);}
+      const countWhere=`WHERE ${filters.join(' AND ')}`;
+      const countParams=[...params];
+      if(predicate)filters.push(predicate);
+      const listWhere=`WHERE ${filters.join(' AND ')}`;
+      const listParams=[...params,limit,offset];
+      const [rows,total,grouped]=await Promise.all([
+        pool.query(`SELECT * FROM mint_tasks ${listWhere}
+          ORDER BY mint_time,id LIMIT $${params.length+1} OFFSET $${params.length+2}`,listParams),
+        pool.query(`SELECT COUNT(*)::INTEGER AS total FROM mint_tasks ${listWhere}`,params),
+        // One grouped count rather than one query per bucket. Grouped by status AND by whether the
+        // mint time has gone, because 'expired' needs both to be decided.
+        pool.query(`SELECT status, (mint_time < ${EXPIRY_GRACE_SQL}) AS expired, COUNT(*)::INTEGER AS total
+          FROM mint_tasks ${countWhere} GROUP BY status, expired`,countParams)]);
+      const counts=Object.fromEntries(TASK_BUCKET_NAMES.map(name=>[name,0]));
+      for(const row of grouped.rows){const name=bucketFor(row.status,row.expired);if(name)counts[name]+=row.total;}
+      return {items:rows.rows.map(mapTask),total:total.rows[0].total,counts};
     },
 
     async countActive() {
-      const result = await pool.query("SELECT COUNT(*)::INTEGER AS count FROM mint_tasks WHERE status IN ('scheduled','retry','claimed','paused')");
+      const result = await pool.query(`SELECT COUNT(*)::INTEGER AS count FROM mint_tasks WHERE status IN (${sqlStatusList(ACTIVE_STATUSES)})`);
       return result.rows[0].count;
     },
 
@@ -158,4 +226,5 @@ function createSchedulerRepository(pool) {
   };
 }
 
-module.exports = { createSchedulerRepository, mapTask };
+module.exports = { ACTIVE_STATUSES, BUCKET_OF_STATUS, BUCKET_PREDICATES, EXPIRABLE_STATUSES, EXPIRY_GRACE_MS,
+  TASK_BUCKETS, TASK_BUCKET_NAMES, bucketFor, createSchedulerRepository, mapTask };

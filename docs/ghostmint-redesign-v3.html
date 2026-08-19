@@ -1,0 +1,2441 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="ghost-mint">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GhostMint — Redesign v3</title>
+<style>
+/* ═══════════════ TOKENS ═══════════════ */
+html[data-theme="ghost-mint"]{
+  color-scheme:dark;
+  --bg:#070908; --surface:#0e1211; --surface-2:#141918; --surface-3:#1a201e; --surface-4:#212927;
+  --border:#1e2523; --border-strong:#2b3532;
+  --text:#f0f4f2; --muted:#96a19b; --faint:#68716c;
+  --accent:#2dd4a7; --accent-ink:#04120d; --accent-soft:#2dd4a71c; --accent-line:#2dd4a740;
+  --gain:#1eaa85; --loss:#e0455c; --warn:#c98500;
+  --gain-text:#3fe0b4; --loss-text:#ff8095; --warn-text:#f0b74a;
+  --radius:13px; --radius-sm:9px; --radius-lg:18px;
+  --shadow:0 8px 24px -14px #000d;
+  --lift:0 12px 28px -16px #000f;
+  --grid:#19201e;
+  --sheen:linear-gradient(180deg,#ffffff08,transparent 60%);
+  --tap-min:44px;
+}
+html[data-theme="ghost-mint-light"]{
+  color-scheme:light;
+  --bg:#f6f7f5; --surface:#ffffff; --surface-2:#fbfbfa; --surface-3:#f1f2ef; --surface-4:#e8eae6;
+  --border:#e3e5e0; --border-strong:#cbcec7;
+  --text:#101512; --muted:#59605a; --faint:#878e88;
+  --accent:#0f7a5c; --accent-ink:#ffffff; --accent-soft:#0f7a5c12; --accent-line:#0f7a5c38;
+  --gain:#0f7a53; --loss:#c0384f; --warn:#96620a;
+  --gain-text:#0d6b49; --loss-text:#ab2f45; --warn-text:#855609;
+  --radius:11px; --radius-sm:8px; --radius-lg:15px;
+  --shadow:0 1px 2px #0000000d;
+  --lift:0 6px 18px -10px #00000024;
+  --grid:#ebece8; --sheen:none; --tap-min:44px;
+}
+html[data-theme="clean-vault"]{
+  color-scheme:light;
+  --bg:#fafafa; --surface:#ffffff; --surface-2:#f7f7f9; --surface-3:#f0f0f3; --surface-4:#e7e7ec;
+  --border:#e4e4e9; --border-strong:#c9c9d2;
+  --text:#14141a; --muted:#55555f; --faint:#8a8a94;
+  --accent:#2563eb; --accent-ink:#ffffff; --accent-soft:#2563eb12; --accent-line:#2563eb38;
+  --gain:#0f7a53; --loss:#c0384f; --warn:#96620a;
+  --gain-text:#0d6b49; --loss-text:#ab2f45; --warn-text:#855609;
+  --radius:8px; --radius-sm:6px; --radius-lg:11px;
+  --shadow:none; --lift:0 4px 14px -8px #00000020;
+  --grid:#eeeef1; --sheen:none; --tap-min:44px;
+}
+html[data-theme="neon-arcade"]{
+  color-scheme:dark;
+  --bg:#06040b; --surface:#100a1c; --surface-2:#170f26; --surface-3:#1e1433; --surface-4:#271a41;
+  --border:#32204a; --border-strong:#ff2e9355;
+  --text:#f5f0ff; --muted:#b3a3d8; --faint:#7a6b9e;
+  --accent:#ff2e93; --accent-ink:#0a0212; --accent-soft:#ff2e9320; --accent-line:#ff2e9366;
+  --gain:#1eaa85; --loss:#e0455c; --warn:#c98500;
+  --gain-text:#39ffb0; --loss-text:#ff6d84; --warn-text:#ffd23f;
+  --radius:15px; --radius-sm:10px; --radius-lg:22px;
+  --shadow:0 0 30px -16px #ff2e9377; --lift:0 0 44px -16px #ff2e9399;
+  --grid:#241738;
+  --sheen:linear-gradient(180deg,#ff2e930f,transparent 55%);
+  --tap-min:44px;
+}
+html[data-theme="quiet-ledger"]{
+  color-scheme:light;
+  --bg:#ffffff; --surface:#ffffff; --surface-2:#f5f6f8; --surface-3:#eceef1; --surface-4:#e2e5e9;
+  --border:#d3d7de; --border-strong:#a3aab6;
+  --text:#0f1b2d; --muted:#3e4c63; --faint:#5b6678;
+  --accent:#0d5288; --accent-ink:#ffffff; --accent-soft:#0d528812; --accent-line:#0d528840;
+  --gain:#0f7a3d; --loss:#b3261e; --warn:#8a5a00;
+  --gain-text:#0c6733; --loss-text:#98201a; --warn-text:#7a5000;
+  --radius:6px; --radius-sm:5px; --radius-lg:8px;
+  --shadow:0 1px 3px #00000014; --lift:0 3px 8px #0000001a;
+  --grid:#e6e9ed; --sheen:none; --tap-min:48px;
+}
+
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+  background:#000;color:var(--text);font-size:14px;line-height:1.45;-webkit-font-smoothing:antialiased}
+button{font:inherit;color:inherit;background:none;border:none;cursor:pointer;min-height:var(--tap-min)}
+input,select,textarea{font:inherit;min-height:var(--tap-min)}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.tab{font-variant-numeric:tabular-nums}
+.mono{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace}
+
+/* ═══ VIEWPORT + STATE HARNESS (prototype only) ═══ */
+.harness{position:fixed;top:0;left:0;right:0;height:48px;background:#0a0a0a;border-bottom:1px solid #1e1e1e;
+  display:flex;align-items:center;gap:10px;padding:0 16px;z-index:9999;color:#888;font-size:12px;overflow-x:auto}
+.harness b{color:#eee;font-weight:600;white-space:nowrap}
+.harness .seg2{display:inline-flex;background:#141414;border:1px solid #262626;border-radius:8px;padding:3px;gap:2px;flex:none}
+.harness .seg2 button{padding:5px 12px;border-radius:5px;font-size:12px;color:#888;min-height:28px;white-space:nowrap}
+.harness .seg2 button.on{background:#262626;color:#fff}
+.harness .hint{white-space:nowrap}
+.stage{padding-top:48px;min-height:100vh;background:#000;display:flex;justify-content:center}
+.stage[data-view="desktop"]{background:var(--bg)}
+.stage[data-view="mobile"]{padding:68px 20px 40px;align-items:flex-start}
+.frame{width:100%;background:var(--bg)}
+.stage[data-view="mobile"] .frame{width:390px;height:812px;border-radius:34px;overflow:hidden;
+  border:9px solid #1a1a1a;box-shadow:0 30px 70px -20px #000,0 0 0 1px #333;position:relative}
+.scroll{height:100%;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch}
+.stage[data-view="desktop"] .scroll{height:auto;overflow:visible}
+
+/* State switch — .of=populated, .ol=loading, .oe=empty, .ox=error */
+.app[data-state="full"]    .oe,.app[data-state="full"]    .ol,.app[data-state="full"]    .ox{display:none!important}
+.app[data-state="loading"] .of,.app[data-state="loading"] .oe,.app[data-state="loading"] .ox,.app[data-state="loading"] .od{display:none!important}
+.app[data-state="empty"]   .of,.app[data-state="empty"]   .ol,.app[data-state="empty"]   .ox{display:none!important}
+.app[data-state="error"]   .of,.app[data-state="error"]   .oe,.app[data-state="error"]   .ol,.app[data-state="error"]   .od{display:none!important}
+/* .od = "data arrived" — visible when populated OR empty, hidden while loading or errored.
+   For surfaces that are never genuinely empty (Account, Settings) but still have a fetch. */
+
+/* ---- Skeleton (loading) ---- */
+.sk{background:var(--surface-3);border-radius:6px;position:relative;overflow:hidden}
+.sk::after{content:"";position:absolute;inset:0;transform:translateX(-100%);
+  background:linear-gradient(90deg,transparent,color-mix(in srgb,var(--text) 7%,transparent),transparent);
+  animation:shim 1.4s infinite}
+@keyframes shim{100%{transform:translateX(100%)}}
+@media(prefers-reduced-motion:reduce){.sk::after{animation:none}}
+.sk.l{height:11px;margin-bottom:8px}
+.sk.l.w40{width:40%}.sk.l.w60{width:60%}.sk.l.w80{width:80%}
+.sk.big{height:23px;width:55%;margin-bottom:9px}
+.sk.row{height:38px;margin-bottom:8px;border-radius:var(--radius-sm)}
+.sk.chart{height:112px;border-radius:var(--radius-sm)}
+.app[data-m] .sk.chart{height:78px}
+
+/* ---- Notice / error ---- */
+.notice{display:flex;gap:9px;padding:11px 13px;border-radius:var(--radius);font-size:12.5px;line-height:1.5;
+  border:1px solid var(--loss);background:color-mix(in srgb,var(--loss) 8%,transparent);color:var(--text)}
+.notice svg{width:15px;height:15px;flex:none;margin-top:1px;color:var(--loss-text)}
+.notice .nb{flex:1}
+.notice b{display:block;margin-bottom:2px}
+.notice code{font-size:11px;color:var(--muted)}
+.fielderr{font-size:11.5px;color:var(--loss-text);margin-top:5px;display:flex;align-items:center;gap:5px}
+.fielderr svg{width:12px;height:12px;flex:none}
+.in.bad{border-color:var(--loss)}
+.in.bad:focus{box-shadow:0 0 0 3px color-mix(in srgb,var(--loss) 20%,transparent)}
+
+/* ---- Pager ---- */
+.pager{display:flex;align-items:center;gap:7px;margin-top:12px;flex-wrap:wrap}
+.pager .pinfo{font-size:11.5px;color:var(--faint);margin-right:auto;font-variant-numeric:tabular-nums}
+.pager button{min-width:34px;padding:5px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);
+  background:var(--surface-2);color:var(--muted);font-size:12px;font-weight:650;min-height:34px}
+.pager button.on{border-color:var(--accent);background:var(--accent-soft);color:var(--text)}
+.pager button[disabled]{opacity:.45;cursor:not-allowed}
+
+/* ---- Preview token countdown ---- */
+.tokbar{display:flex;align-items:center;gap:8px;padding:7px 11px;border-radius:var(--radius-sm);
+  background:var(--surface-3);border:1px solid var(--border);font-size:11.5px;color:var(--muted)}
+.tokbar .tk{font-variant-numeric:tabular-nums;font-weight:700;color:var(--text)}
+.tokbar.warn{border-color:var(--warn);color:var(--warn-text)}
+
+/* ---- Batch results ---- */
+.bres{display:flex;align-items:center;gap:9px;padding:8px 0;border-bottom:1px solid var(--border);font-size:12.5px}
+.bres:last-child{border-bottom:none}
+.bres .bl2{flex:1;font-weight:650}
+.bres .be{font-size:11px;color:var(--loss-text);flex:2;text-align:right}
+
+/* ---- Bypass challenge (register 1, highest risk) ---- */
+.chal{border:1px solid var(--loss);border-radius:var(--radius);overflow:hidden;background:var(--surface-2)}
+.chal-h{padding:10px 13px;background:color-mix(in srgb,var(--loss) 12%,transparent);
+  border-bottom:1px solid var(--loss);display:flex;align-items:center;gap:8px;
+  font-size:10px;text-transform:uppercase;letter-spacing:.09em;font-weight:800;color:var(--loss-text)}
+.chal-h svg{width:13px;height:13px}
+.chal-b{padding:13px}
+.chal-b p{font-size:12.5px;color:var(--text);margin-bottom:11px;line-height:1.55}
+.chal-b .cid{font-size:11px;color:var(--faint);margin-bottom:11px}
+
+/* ---- Unavailable panel (routed nowhere / owner-gated) ---- */
+.unav{text-align:center;padding:26px 16px;border:1px dashed var(--border-strong);border-radius:var(--radius);background:var(--surface-2)}
+.unav .ei{width:40px;height:40px;border-radius:11px;margin:0 auto 10px;background:var(--surface-3);
+  color:var(--faint);display:grid;place-items:center}
+.unav .ei svg{width:19px;height:19px}
+.unav h3{font-size:13px;margin-bottom:4px}
+.unav p{font-size:12px;color:var(--muted);max-width:40ch;margin:0 auto 11px}
+
+/* ═══ APP SHELL ═══ */
+.app{display:grid;grid-template-columns:auto 1fr;min-height:100%}
+.app[data-m]{grid-template-columns:1fr}
+
+/* ---- Rail ---- */
+.rail{width:222px;background:var(--surface);border-right:1px solid var(--border);
+  display:flex;flex-direction:column;padding:14px 10px;gap:2px;position:sticky;top:0;height:100vh}
+.app[data-m] .rail{display:none}
+.brand{display:flex;align-items:center;gap:9px;padding:4px 8px 14px;min-height:auto}
+.brand-mark{width:28px;height:28px;border-radius:8px;flex:none;background:var(--accent);
+  color:var(--accent-ink);display:grid;place-items:center;font-weight:800;font-size:14px}
+.brand-name{font-weight:700;letter-spacing:-.02em;font-size:14.5px}
+.grp{font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:var(--faint);padding:12px 9px 5px;font-weight:700}
+.nav{display:flex;align-items:center;gap:10px;width:100%;padding:8px 9px;border-radius:var(--radius-sm);
+  color:var(--muted);font-weight:500;font-size:13px;text-align:left;position:relative;transition:background 150ms,color 150ms}
+.nav:hover{background:var(--surface-3);color:var(--text)}
+.nav[aria-current="page"]{background:var(--accent-soft);color:var(--text);font-weight:600}
+.nav[aria-current="page"]::before{content:"";position:absolute;left:-10px;top:50%;transform:translateY(-50%);
+  width:3px;height:17px;border-radius:0 3px 3px 0;background:var(--accent)}
+.nav[aria-current="page"] .ico{color:var(--accent)}
+.ico{width:16px;height:16px;flex:none;color:var(--faint)}
+.nav-l{flex:1}
+.cnt{font-size:10.5px;font-weight:700;padding:1px 6px;border-radius:20px;background:var(--surface-4);
+  color:var(--muted);min-width:19px;text-align:center}
+.cnt.hot{background:var(--loss);color:#fff}
+.railfoot{margin-top:auto;border-top:1px solid var(--border);padding-top:9px;display:grid;gap:2px}
+
+/* ---- Top bar (theme toggle REMOVED — brief D6) ---- */
+.top{display:flex;align-items:center;gap:8px;padding:10px 20px;border-bottom:1px solid var(--border);
+  background:var(--surface);position:sticky;top:0;z-index:40;min-height:57px}
+.app[data-m] .top{padding:9px 13px;gap:7px}
+.cmdk{display:flex;align-items:center;gap:8px;flex:1;max-width:340px;padding:7px 11px;
+  border-radius:var(--radius-sm);background:var(--surface-2);border:1px solid var(--border);
+  color:var(--faint);font-size:12.5px;min-height:36px}
+.cmdk:hover{border-color:var(--border-strong);color:var(--muted)}
+.cmdk span{flex:1;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cmdk kbd{font-family:inherit;font-size:10.5px;padding:1px 5px;border-radius:4px;
+  background:var(--surface-4);border:1px solid var(--border-strong);color:var(--faint)}
+.app[data-m] .cmdk{max-width:none;min-height:34px;padding:6px 10px}
+.app[data-m] .cmdk kbd{display:none}
+.sp{flex:1}
+.livechip{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--muted);
+  padding:4px 10px;border:1px solid var(--border);border-radius:20px}
+.app[data-m] .livechip{display:none}
+.dot{width:6px;height:6px;border-radius:50%;background:var(--gain);flex:none}
+@media(prefers-reduced-motion:no-preference){
+  .dot{animation:pl 2.4s ease-in-out infinite}
+  @keyframes pl{0%,100%{opacity:1}50%{opacity:.3}}
+}
+.ib{width:34px;height:34px;min-height:34px;border-radius:var(--radius-sm);display:grid;place-items:center;
+  color:var(--muted);position:relative;flex:none}
+.ib:hover{background:var(--surface-3);color:var(--text)}
+.ib .badge{position:absolute;top:4px;right:4px;width:15px;height:15px;border-radius:50%;
+  background:var(--loss);color:#fff;font-size:9px;font-weight:800;display:grid;place-items:center;border:2px solid var(--surface)}
+.av{width:32px;height:32px;min-height:32px;border-radius:50%;background:var(--accent-soft);
+  border:1px solid var(--accent-line);display:grid;place-items:center;font-size:11.5px;
+  font-weight:800;color:var(--accent);flex:none}
+
+/* ---- Account menu (new — brief §4.5) ---- */
+.acct-pop{position:absolute;top:52px;right:14px;width:min(268px,calc(100% - 28px));z-index:8600;
+  background:var(--surface);border:1px solid var(--border-strong);border-radius:var(--radius);
+  box-shadow:var(--lift);overflow:hidden;display:none}
+.acct-pop.on{display:block}
+.app[data-m] .acct-pop{top:54px;right:13px}
+.acct-h{padding:12px 13px;border-bottom:1px solid var(--border);background:var(--surface-2)}
+.acct-h .an{font-size:13px;font-weight:700}
+.acct-h .ai{font-size:10.5px;color:var(--faint);margin-top:2px}
+.acct-i{display:flex;align-items:center;gap:9px;width:100%;padding:9px 13px;font-size:12.5px;
+  color:var(--muted);text-align:left;border-bottom:1px solid var(--border)}
+.acct-i:hover{background:var(--surface-3);color:var(--text)}
+.acct-i svg{width:15px;height:15px;color:var(--faint);flex:none}
+.acct-i .sp{flex:1}
+.acct-i .mchip{font-size:10px;font-weight:700;padding:1px 7px;border-radius:20px;
+  background:var(--surface-3);border:1px solid var(--border);color:var(--muted)}
+.acct-tog{display:flex;align-items:center;gap:9px;padding:9px 13px;border-bottom:1px solid var(--border);font-size:12.5px;color:var(--muted)}
+.acct-tog .sp{flex:1}
+.tmode{display:inline-flex;background:var(--surface-2);border:1px solid var(--border);border-radius:20px;padding:2px;gap:1px}
+.tmode button{width:30px;height:26px;min-height:26px;border-radius:20px;display:grid;place-items:center;color:var(--faint)}
+.tmode button svg{width:13px;height:13px}
+.tmode button.on{background:var(--surface-4);color:var(--accent)}
+.acct-i.danger{color:var(--loss-text);border-bottom:none}
+
+/* ---- Content ---- */
+.body{display:flex;flex-direction:column;min-width:0}
+.wrap{padding:20px;max-width:1280px;width:100%;margin:0 auto}
+.app[data-m] .wrap{padding:13px 13px 92px}
+.pg{display:none}.pg.on{display:block}
+
+.hd{margin-bottom:16px;display:flex;align-items:flex-end;gap:14px;flex-wrap:wrap}
+.app[data-m] .hd{margin-bottom:12px}
+.hd-t{flex:1;min-width:180px}
+.eb{font-size:10px;text-transform:uppercase;letter-spacing:.11em;color:var(--accent);font-weight:800;margin-bottom:5px}
+h1{font-size:23px;font-weight:700;letter-spacing:-.026em;line-height:1.15}
+.app[data-m] h1{font-size:20px}
+.sub{color:var(--muted);font-size:13px;margin-top:4px;max-width:64ch}
+.app[data-m] .sub{font-size:12px}
+h2{font-size:14px;font-weight:650;letter-spacing:-.01em}
+h3{font-size:12.5px;font-weight:650}
+
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+  padding:15px;position:relative;background-image:var(--sheen)}
+.app[data-m] .card{padding:12px}
+.card.tight{padding:12px}
+.app[data-m] .card.tight{padding:10px}
+.ch{display:flex;align-items:center;gap:9px;margin-bottom:12px}
+.app[data-m] .ch{margin-bottom:10px}
+.ch .sp{flex:1}
+.chip-ico{width:26px;height:26px;border-radius:7px;flex:none;display:grid;place-items:center;
+  background:var(--accent-soft);color:var(--accent)}
+.chip-ico svg{width:14px;height:14px}
+.g{display:grid;gap:11px}
+.app[data-m] .g{gap:9px}
+.g2{grid-template-columns:repeat(2,1fr)}
+.g3{grid-template-columns:repeat(3,1fr)}
+.g4{grid-template-columns:repeat(4,1fr)}
+.split{display:grid;grid-template-columns:1.6fr 1fr;gap:11px;align-items:start}
+
+/* ---- Stat tiles: 4-up desktop, 2-up mobile (never 1-up) ---- */
+.tiles{display:grid;grid-template-columns:repeat(4,1fr);gap:11px;margin-bottom:11px}
+.app[data-m] .tiles{grid-template-columns:repeat(2,1fr);gap:9px;margin-bottom:9px}
+.tile{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+  padding:12px 13px;position:relative;overflow:hidden;background-image:var(--sheen)}
+.app[data-m] .tile{padding:10px 11px}
+.tl{font-size:9.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--faint);font-weight:700;
+  margin-bottom:7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tv{font-size:23px;font-weight:750;letter-spacing:-.035em;line-height:1}
+.app[data-m] .tv{font-size:19px}
+.tv small{font-size:11.5px;font-weight:600;color:var(--muted);margin-left:2px;letter-spacing:0}
+.tv.zero{color:var(--faint)}
+.tm{display:flex;align-items:center;gap:4px;margin-top:6px;font-size:11px;color:var(--faint)}
+.app[data-m] .tm{font-size:10px;margin-top:5px}
+.dl{display:inline-flex;align-items:center;gap:2px;font-weight:700}
+.dl.up{color:var(--gain-text)}.dl.down{color:var(--loss-text)}
+.spark{position:absolute;right:0;bottom:0;width:62%;height:30px;opacity:.5;pointer-events:none}
+.meter{height:3px;border-radius:3px;background:var(--surface-4);margin-top:8px;overflow:hidden}
+.meter i{display:block;height:100%;border-radius:3px;background:var(--accent)}
+.meter i.warn{background:var(--warn)}
+
+/* ---- Sober register (money) ---- */
+.sober{background:var(--surface-2);border:1px solid var(--border-strong);border-radius:var(--radius);overflow:hidden}
+.sh{padding:9px 13px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:7px;
+  font-size:10px;text-transform:uppercase;letter-spacing:.09em;font-weight:800;color:var(--muted);background:var(--surface-3)}
+.sh svg{width:12px;height:12px}
+.app[data-m] .sh{padding:7px 11px}
+.led{width:100%;border-collapse:collapse;font-size:12.5px}
+.led td{padding:7px 13px;border-bottom:1px solid var(--border)}
+.led tr:last-child td{border-bottom:none}
+.led td:first-child{color:var(--muted);width:46%}
+.led td:last-child{text-align:right;font-weight:650;font-variant-numeric:tabular-nums}
+.led tr.tot td{background:var(--surface-3);font-weight:800;border-top:1px solid var(--border-strong)}
+.app[data-m] .led{font-size:12px}
+.app[data-m] .led td{padding:6px 11px}
+.app[data-m] .led td:first-child{width:52%}
+
+/* ---- Playful register ---- */
+.cel{background:radial-gradient(130% 110% at 50% 0%,var(--accent-soft) 0%,transparent 60%),var(--surface);
+  border:1px solid var(--accent-line);border-radius:var(--radius);padding:20px 16px;text-align:center}
+.app[data-m] .cel{padding:15px 12px}
+.cel-b{width:44px;height:44px;border-radius:50%;margin:0 auto 10px;background:var(--accent);
+  color:var(--accent-ink);display:grid;place-items:center;box-shadow:0 0 0 6px var(--accent-soft)}
+.cel h3{font-size:17px;font-weight:780;letter-spacing:-.024em;margin-bottom:4px}
+.cel p{color:var(--muted);font-size:12.5px;max-width:38ch;margin:0 auto}
+.streak{display:inline-flex;align-items:center;gap:6px;margin-top:12px;padding:5px 11px;border-radius:20px;
+  background:var(--accent-soft);border:1px solid var(--accent-line);font-size:12px;font-weight:700}
+
+/* ---- Buttons ---- */
+.b{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:8px 13px;
+  border-radius:var(--radius-sm);font-size:13px;font-weight:650;transition:120ms;
+  background:var(--surface-3);border:1px solid var(--border-strong);color:var(--text)}
+.b:hover{border-color:var(--faint);transform:translateY(-1px)}
+.b.p{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+.b.p:hover{filter:brightness(1.1)}
+.b.g{background:transparent;border-color:var(--border)}
+.b.d{background:var(--loss);color:#fff;border-color:var(--loss)}
+.b.sm{padding:5px 10px;font-size:12px}
+.b.big{padding:11px 18px;font-size:14px}
+.b.bl{width:100%}
+.b[disabled]{color:var(--faint);border-color:var(--border);background:var(--surface-2);cursor:not-allowed;transform:none}
+.br{display:flex;gap:7px;flex-wrap:wrap}
+@media(prefers-reduced-motion:reduce){.b:hover{transform:none}}
+
+/* ---- Pills / chips ---- */
+.p{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:20px;font-size:11px;
+  font-weight:700;border:1px solid;white-space:nowrap;min-height:auto}
+.p svg{width:10px;height:10px}
+.p.ok{color:var(--gain-text);border-color:var(--gain);background:color-mix(in srgb,var(--gain) 13%,transparent)}
+.p.bad{color:var(--loss-text);border-color:var(--loss);background:color-mix(in srgb,var(--loss) 13%,transparent)}
+.p.wn{color:var(--warn-text);border-color:var(--warn);background:color-mix(in srgb,var(--warn) 13%,transparent)}
+.p.nu{color:var(--muted);border-color:var(--border-strong);background:var(--surface-3)}
+.cw{padding:3px 9px;border-radius:20px;font-size:11.5px;font-weight:600;border:1px solid var(--border);
+  color:var(--muted);background:var(--surface-2);min-height:auto}
+.chain{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:650;color:var(--muted)}
+.chain i{width:7px;height:7px;border-radius:50%;display:inline-block}
+
+/* ---- Rows ---- */
+.r{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--border)}
+.app[data-m] .r{padding:8px 0;gap:9px}
+.r:last-child{border-bottom:none}
+.ri{width:28px;height:28px;border-radius:8px;flex:none;display:grid;place-items:center;
+  background:var(--surface-3);color:var(--muted)}
+.ri svg{width:14px;height:14px}
+.rm{flex:1;min-width:0}
+.rt{font-size:12.8px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rs{font-size:11px;color:var(--faint);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* mobile drops the secondary meta line — it folds into the expanded state instead */
+.app[data-m] .rs.fold{display:none}
+.rv{text-align:right;font-size:12.5px;font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap}
+
+/* ---- Sub-tabs ---- */
+.subtabs{display:flex;gap:2px;background:var(--surface-2);border:1px solid var(--border);
+  border-radius:var(--radius-sm);padding:3px;margin-bottom:14px;overflow-x:auto;scrollbar-width:none}
+.subtabs::-webkit-scrollbar{display:none}
+.app[data-m] .subtabs{margin-bottom:11px}
+.subtabs button{padding:6px 13px;border-radius:6px;font-size:12.5px;font-weight:650;color:var(--muted);
+  min-height:32px;white-space:nowrap}
+.subtabs button.on{background:var(--surface);color:var(--text);box-shadow:var(--shadow)}
+.subtabs button .was{font-size:9.5px;opacity:.6;margin-left:4px;font-weight:600}
+
+/* ---- Search — 40px + full width on mobile (brief §3.2.1 / D3) ---- */
+.sfrow{display:flex;gap:9px;margin-bottom:12px}
+.sf{position:relative;flex:1;min-width:0;max-width:320px}
+.sf input{width:100%;padding:8px 34px 8px 31px;border-radius:var(--radius-sm);background:var(--surface-2);
+  border:1px solid var(--border);color:var(--text);font-size:12.5px}
+.sf input::placeholder{color:var(--faint)}
+.sf .si{position:absolute;left:10px;top:50%;transform:translateY(-50%);width:14px;height:14px;
+  color:var(--faint);pointer-events:none}
+/* clear control keeps a 44px hit box via padding even when the field is 40px */
+.sf .sx{position:absolute;right:0;top:50%;transform:translateY(-50%);width:34px;height:34px;min-height:34px;
+  border-radius:5px;display:grid;place-items:center;color:var(--faint);font-size:15px}
+.sf .sx::after{content:"";position:absolute;inset:-5px}
+.sf .sx:hover{color:var(--text)}
+.app[data-m] .sf{max-width:none}
+.app[data-m] .sf input{min-height:40px;height:40px;padding-top:0;padding-bottom:0;font-size:13px}
+
+/* ---- Inputs ---- */
+.fl{display:block}
+.fl>span{display:block;font-size:11.5px;color:var(--muted);margin-bottom:5px;font-weight:650}
+.in{width:100%;padding:9px 11px;border-radius:var(--radius-sm);background:var(--surface-2);
+  border:1px solid var(--border);color:var(--text);font-size:13px}
+.in:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.in.ok{border-color:var(--accent)}
+.in[disabled]{color:var(--faint);background:var(--surface-3);cursor:not-allowed}
+/* quantity: side-by-side on desktop, STACKED on mobile (was the defect) */
+.qty{display:flex;gap:6px;align-items:stretch}
+.qty .in{flex:1;min-width:0}
+.qb{display:flex;gap:4px}
+.qb button{padding:0 10px;border-radius:var(--radius-sm);border:1px solid var(--border);
+  background:var(--surface-2);color:var(--muted);font-size:12px;font-weight:650;min-height:auto}
+.qb button.on{border-color:var(--accent);background:var(--accent-soft);color:var(--text)}
+.app[data-m] .qty{flex-direction:column;gap:7px}
+.app[data-m] .qb{width:100%}
+.app[data-m] .qb button{flex:1;min-height:var(--tap-min)}
+
+/* ---- Seg ---- */
+.seg{display:inline-flex;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:2px;gap:1px}
+.seg button{padding:5px 11px;border-radius:6px;font-size:12px;font-weight:650;color:var(--muted);min-height:29px}
+.seg button.on{background:var(--surface);color:var(--text);box-shadow:var(--shadow)}
+
+/* ---- Notes ---- */
+.nt{display:flex;gap:9px;padding:11px 13px;border-radius:var(--radius);border:1px solid;font-size:12.5px;line-height:1.5}
+.app[data-m] .nt{padding:10px 11px;font-size:12px}
+.nt svg{width:15px;height:15px;flex:none;margin-top:1px}
+.nt.i{border-color:var(--border-strong);background:var(--surface-2);color:var(--muted)}
+.nt.w{border-color:var(--warn);background:color-mix(in srgb,var(--warn) 8%,transparent);color:var(--text)}
+.nt.e{border-color:var(--loss);background:color-mix(in srgb,var(--loss) 8%,transparent);color:var(--text)}
+.nt b{color:var(--text)}
+
+/* ---- Countdown ring ---- */
+.ring{display:flex;align-items:center;gap:13px}
+.ring svg{width:58px;height:58px;flex:none;transform:rotate(-90deg)}
+.app[data-m] .ring svg{width:50px;height:50px}
+.ring-t{font-size:19px;font-weight:750;letter-spacing:-.03em;font-variant-numeric:tabular-nums}
+.ring-s{font-size:11.5px;color:var(--muted);margin-top:2px}
+
+/* ---- Chart ---- */
+.chart{width:100%;height:112px;display:block}
+.app[data-m] .chart{height:78px}
+.lgnd{font-size:10.5px;color:var(--faint);margin-top:7px;display:flex;gap:12px;flex-wrap:wrap}
+.lgnd span{display:inline-flex;align-items:center;gap:4px}
+.sw{width:8px;height:8px;border-radius:2px;display:inline-block}
+
+/* ═══ COLLAPSIBLE CARDS — MOBILE ONLY (brief §3.5 / D1) ═══ */
+.colh{display:none}
+.app[data-m] .col>.colh{display:flex;align-items:center;gap:8px;width:100%;text-align:left;
+  padding:10px 12px;margin:-12px -12px 0;border-radius:var(--radius) var(--radius) 0 0;min-height:var(--tap-min)}
+.app[data-m] .col[data-open="0"]>.colh{margin-bottom:-12px;border-radius:var(--radius)}
+.colh .cti{flex:1;min-width:0;font-size:12.8px;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.colh .ctv{font-size:12px;font-weight:700;font-variant-numeric:tabular-nums;color:var(--muted);white-space:nowrap}
+.colh .chev{width:15px;height:15px;flex:none;color:var(--faint);transition:transform 180ms}
+.app[data-m] .col[data-open="1"]>.colh .chev{transform:rotate(180deg)}
+.app[data-m] .col[data-open="0"]>.colb{display:none}
+.app[data-m] .col[data-open="1"]>.colb{padding-top:11px;border-top:1px solid var(--border);margin-top:10px}
+@media(prefers-reduced-motion:reduce){.colh .chev{transition:none}}
+
+/* ═══ REORDER HANDLES (brief §3.6 / D2) ═══ */
+.blk{position:relative}
+.dragh{position:absolute;top:8px;right:8px;z-index:5;width:26px;height:26px;min-height:26px;
+  border-radius:6px;display:grid;place-items:center;color:var(--faint);opacity:0;transition:opacity 120ms}
+.blk:hover .dragh,.dragh:focus-visible{opacity:1;background:var(--surface-3);color:var(--text)}
+.app[data-m] .dragh{opacity:.55}
+.dragh svg{width:13px;height:13px}
+.pinned{font-size:9.5px;color:var(--faint);text-transform:uppercase;letter-spacing:.08em;font-weight:700}
+@media(prefers-reduced-motion:reduce){.dragh{transition:none}}
+
+/* ═══ FIRST-RUN / EMPTY (brief §3.7) ═══ */
+.frun{background:radial-gradient(120% 100% at 50% 0%,var(--accent-soft) 0%,transparent 62%),var(--surface);
+  border:1px solid var(--accent-line);border-radius:var(--radius);padding:22px 18px}
+.app[data-m] .frun{padding:16px 13px}
+.frun h2{font-size:17px;font-weight:780;letter-spacing:-.024em;margin-bottom:5px}
+.frun p{color:var(--muted);font-size:12.5px;max-width:52ch;margin-bottom:14px}
+.steps{display:grid;gap:9px;margin-bottom:15px}
+.step{display:flex;align-items:flex-start;gap:10px;font-size:12.5px}
+.step .sn{width:21px;height:21px;border-radius:50%;flex:none;display:grid;place-items:center;font-size:10.5px;
+  font-weight:800;background:var(--surface-3);color:var(--muted);border:1px solid var(--border)}
+.step.now .sn{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+.step .st{font-weight:650}
+.step .sd{color:var(--faint);font-size:11.5px;margin-top:1px}
+.addr{display:flex;align-items:center;gap:8px;padding:9px 11px;border-radius:var(--radius-sm);
+  background:var(--surface-2);border:1px solid var(--border);margin-bottom:12px}
+.addr code{flex:1;min-width:0;font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)}
+.emp{text-align:center;padding:30px 16px}
+.app[data-m] .emp{padding:22px 12px}
+.emp .ei{width:44px;height:44px;border-radius:12px;margin:0 auto 11px;background:var(--surface-3);
+  color:var(--faint);display:grid;place-items:center}
+.emp .ei svg{width:21px;height:21px}
+.emp h3{font-size:13.5px;margin-bottom:4px}
+.emp p{font-size:12.5px;color:var(--muted);max-width:34ch;margin:0 auto 13px}
+
+/* ═══ MOBILE BOTTOM BAR ═══ */
+.bbar{display:none}
+.app[data-m] .bbar{display:grid;grid-template-columns:repeat(5,1fr);position:absolute;bottom:0;left:0;right:0;z-index:60;
+  background:color-mix(in srgb,var(--surface) 94%,transparent);backdrop-filter:blur(14px);
+  border-top:1px solid var(--border);padding:6px 4px calc(6px + env(safe-area-inset-bottom,10px))}
+.bbar button{display:flex;flex-direction:column;align-items:center;gap:3px;padding:5px 2px;color:var(--faint);
+  font-size:9.5px;font-weight:650;border-radius:9px;min-height:var(--tap-min)}
+.bbar button svg{width:19px;height:19px}
+.bbar button[aria-current="page"]{color:var(--accent)}
+
+/* ---- More sheet ---- */
+.sheet-bd{position:absolute;inset:0;background:#0009;z-index:70;display:none}
+.sheet-bd.on{display:block}
+.sheet{position:absolute;left:0;right:0;bottom:0;z-index:80;background:var(--surface);
+  border-top:1px solid var(--border-strong);border-radius:20px 20px 0 0;
+  padding:8px 14px calc(16px + env(safe-area-inset-bottom,10px));
+  transform:translateY(100%);transition:transform 220ms cubic-bezier(.4,0,.2,1)}
+.sheet.on{transform:translateY(0)}
+@media(prefers-reduced-motion:reduce){.sheet{transition:none}}
+.grabb{display:block;width:100%;min-height:28px;padding:0;background:none}
+.grabb i{display:block;width:36px;height:4px;border-radius:4px;background:var(--border-strong);margin:6px auto 10px}
+.sheet-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.sheet-grid button{display:flex;flex-direction:column;align-items:center;gap:6px;padding:13px 6px;
+  border-radius:var(--radius);background:var(--surface-2);border:1px solid var(--border);
+  font-size:11px;font-weight:650;color:var(--muted)}
+.sheet-grid button svg{width:18px;height:18px;color:var(--faint)}
+
+/* ═══ COMMAND PALETTE ═══ */
+.cmd-bd{position:fixed;inset:0;background:#000a;backdrop-filter:blur(3px);z-index:9000;display:none;
+  align-items:flex-start;justify-content:center;padding-top:12vh}
+.stage[data-view="mobile"] .cmd-bd{position:absolute;padding-top:60px}
+.cmd-bd.on{display:flex}
+.cmd{width:min(540px,92vw);background:var(--surface);border:1px solid var(--border-strong);
+  border-radius:var(--radius-lg);box-shadow:0 30px 70px -20px #000;overflow:hidden}
+.cmd-in{display:flex;align-items:center;gap:10px;padding:13px 15px;border-bottom:1px solid var(--border)}
+.cmd-in svg{width:16px;height:16px;color:var(--faint);flex:none}
+.cmd-in input{flex:1;background:none;border:none;outline:none;color:var(--text);font-size:14.5px}
+.cmd-list{max-height:340px;overflow-y:auto;padding:6px}
+.cmd-g{font-size:9.5px;text-transform:uppercase;letter-spacing:.09em;color:var(--faint);font-weight:800;padding:9px 10px 5px}
+.cmd-i{display:flex;align-items:center;gap:10px;width:100%;padding:8px 10px;border-radius:var(--radius-sm);
+  text-align:left;font-size:13px;color:var(--muted);min-height:38px}
+.cmd-i:hover,.cmd-i.sel{background:var(--accent-soft);color:var(--text)}
+.cmd-i svg{width:15px;height:15px;color:var(--faint);flex:none}
+.cmd-i .cmd-n{flex:1}
+.cmd-i .cmd-h{font-size:10.5px;color:var(--faint);background:var(--surface-3);padding:2px 7px;border-radius:20px}
+
+/* ═══ NOTIFICATIONS ═══ */
+.toasts{position:absolute;right:14px;bottom:14px;z-index:8000;display:flex;flex-direction:column;gap:8px;
+  width:min(320px,calc(100% - 28px))}
+.stage[data-view="desktop"] .toasts{position:fixed}
+.app[data-m] .toasts{bottom:78px;left:13px;right:13px;width:auto}
+.toast{display:flex;align-items:flex-start;gap:9px;padding:11px 12px;border-radius:var(--radius);
+  background:var(--surface);border:1px solid var(--border-strong);box-shadow:var(--lift);font-size:12.5px;
+  animation:tin 240ms cubic-bezier(.4,0,.2,1)}
+@keyframes tin{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+@media(prefers-reduced-motion:reduce){.toast{animation:none}}
+.toast .ti{width:17px;height:17px;flex:none;margin-top:1px}
+.toast.s .ti{color:var(--gain-text)} .toast.e .ti{color:var(--loss-text)}
+.toast.w .ti{color:var(--warn-text)} .toast.i .ti{color:var(--muted)}
+.toast .tt{flex:1}.toast .tt b{display:block;font-weight:700;margin-bottom:1px}
+.toast .tt span{color:var(--muted);font-size:11.5px}
+.toast .tx{width:24px;height:24px;min-height:24px;border-radius:5px;color:var(--faint);display:grid;place-items:center;flex:none}
+.toast .keep{font-size:9.5px;color:var(--accent);font-weight:700;margin-top:4px;display:block}
+
+.bell-pop{position:absolute;top:52px;right:14px;width:min(360px,calc(100% - 28px));z-index:8500;
+  background:var(--surface);border:1px solid var(--border-strong);border-radius:var(--radius);
+  box-shadow:var(--lift);overflow:hidden;display:none}
+.bell-pop.on{display:block}
+.app[data-m] .bell-pop{left:13px;right:13px;width:auto;top:54px}
+.bell-h{display:flex;align-items:center;gap:8px;padding:11px 13px;border-bottom:1px solid var(--border)}
+.bell-h h3{flex:1;font-size:13px}
+.bell-tabs{display:flex;gap:2px;padding:7px 8px;border-bottom:1px solid var(--border);background:var(--surface-2)}
+.bell-tabs button{flex:1;padding:5px 8px;border-radius:6px;font-size:11.5px;font-weight:700;color:var(--muted);min-height:30px}
+.bell-tabs button.on{background:var(--surface);color:var(--text);box-shadow:var(--shadow)}
+.bell-body{max-height:300px;overflow-y:auto}
+.bell-sec{font-size:9.5px;text-transform:uppercase;letter-spacing:.09em;color:var(--faint);font-weight:800;
+  padding:10px 13px 5px;display:flex;align-items:center;gap:6px}
+.bell-sec .cnt{margin-left:auto}
+.bell-i{display:flex;gap:9px;padding:9px 13px;border-bottom:1px solid var(--border)}
+.bell-i:last-child{border-bottom:none}
+.bell-d{width:7px;height:7px;border-radius:50%;flex:none;margin-top:5px}
+.bell-m{flex:1;min-width:0}
+.bell-m .bm{font-size:12.5px;font-weight:600}
+.bell-m .bs{font-size:11px;color:var(--faint);margin-top:2px}
+.bell-cat{font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:.06em;padding:1px 6px;
+  border-radius:20px;background:var(--surface-3);color:var(--muted);border:1px solid var(--border);
+  align-self:flex-start;margin-top:1px}
+.bell-act{padding:11px 13px;border-top:1px solid var(--border);background:var(--surface-2)}
+
+/* ---- Admin ---- */
+.abn{display:flex;align-items:center;gap:9px;padding:8px 13px;border-radius:var(--radius-sm);
+  border:1px solid var(--warn);background:color-mix(in srgb,var(--warn) 9%,transparent);
+  font-size:12px;color:var(--text);margin-bottom:14px;flex-wrap:wrap}
+.abn svg{width:14px;height:14px;color:var(--warn-text);flex:none}
+.hrow{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--border)}
+.hrow:last-child{border-bottom:none}
+.hrow .hn{flex:1;font-size:12.8px;font-weight:600}
+.hrow .hl{font-size:11px;color:var(--faint);font-variant-numeric:tabular-nums}
+.spec{border:1px dashed var(--border-strong);border-radius:var(--radius);padding:15px;background:var(--surface-2)}
+.spec h3{font-size:13px;margin-bottom:6px}
+.spec p{font-size:12px;color:var(--muted);margin-bottom:9px}
+.spec ul{margin:0 0 9px 16px;font-size:12px;color:var(--muted)}
+.spec li{margin-bottom:3px}
+.spec .reg{font-size:10px;text-transform:uppercase;letter-spacing:.08em;font-weight:800;color:var(--accent)}
+.adp,.stp,.mtp,.atp,.wlp,.hsp{display:none}
+.adp.on,.stp.on,.mtp.on,.atp.on,.wlp.on,.hsp.on{display:block}
+
+.foot{margin-top:26px;padding-top:14px;border-top:1px solid var(--border);color:var(--faint);font-size:11.5px}
+
+/* ═══ RESPONSIVE ═══ */
+.app[data-m] .split,.app[data-m] .g2,.app[data-m] .g3,.app[data-m] .g4{grid-template-columns:1fr}
+.app[data-m] .g.gm2{grid-template-columns:repeat(2,1fr)}
+.app[data-m] .sfrow{margin-bottom:10px}
+@media(max-width:900px){.app .split,.app .g3,.app .g4{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+
+<div class="harness">
+  <b>GhostMint v3</b>
+  <div class="seg2"><button id="vd" class="on">Desktop</button><button id="vm">Mobile</button></div>
+  <div class="seg2"><button id="sf" class="on">Populated</button><button id="sl">Loading</button><button id="se">Empty</button><button id="sx2">Error</button></div>
+  <span class="hint">⌘K · bell · avatar menu · tap card headers on mobile to fold</span>
+</div>
+
+<div class="stage" id="stage" data-view="desktop">
+<div class="frame">
+<div class="scroll">
+<div class="app" id="app" data-state="full">
+
+  <!-- ════════ RAIL ════════ -->
+  <aside class="rail">
+    <div class="brand"><div class="brand-mark">G</div><div class="brand-name">GhostMint</div></div>
+    <div class="grp">Operate</div>
+    <button class="nav" aria-current="page" data-go="home">
+      <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.8V20h14V9.8"/></svg>
+      <span class="nav-l">Home</span></button>
+    <button class="nav" data-go="mint">
+      <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4.5 13H11l-1 9 8.5-11H12l1-9Z"/></svg>
+      <span class="nav-l">Mint</span><span class="cnt of">2</span></button>
+    <button class="nav" data-go="auto">
+      <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9 7 7M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1"/></svg>
+      <span class="nav-l">Automation</span><span class="cnt hot of">1</span></button>
+    <button class="nav" data-go="wallets">
+      <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="18" height="13" rx="2.5"/><path d="M3 10h18M16.5 14.5h.01"/></svg>
+      <span class="nav-l">Wallets</span></button>
+    <button class="nav" data-go="history">
+      <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg>
+      <span class="nav-l">History</span></button>
+    <div class="railfoot">
+      <button class="nav" data-go="admin">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 5-3 8.5-7 10-4-1.5-7-5-7-10V6z"/></svg>
+        <span class="nav-l">Admin</span></button>
+      <button class="nav" data-go="account">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.6"/><path d="M4.5 20c.8-4 3.8-6 7.5-6s6.7 2 7.5 6"/></svg>
+        <span class="nav-l">Account</span></button>
+      <button class="nav" data-go="settings">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-2.7 1.1V21a2 2 0 1 1-4 0v-.1A1.6 1.6 0 0 0 7 19.4a1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.6 1.6 0 0 0 3 14.1H3a2 2 0 0 1 0-4h.1A1.6 1.6 0 0 0 4.6 7a1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.6 1.6 0 0 0 9.9 3H10a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 2.7 1.1l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0 1.1 2.7H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1.3z"/></svg>
+        <span class="nav-l">Settings</span></button>
+    </div>
+  </aside>
+
+  <div class="body">
+    <!-- ════════ TOP BAR — no breadcrumb, no theme toggle (D6) ════════ -->
+    <div class="top">
+      <button class="cmdk" id="opencmd">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <span>Search or jump to…</span><kbd>⌘K</kbd>
+      </button>
+      <div class="sp"></div>
+      <div class="livechip"><span class="dot"></span> Live</div>
+      <button class="ib" id="bellbtn" aria-label="Notifications" aria-expanded="false">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 1 0 6 8c0 7-3 8-3 8h18s-3-1-3-8"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
+        <span class="badge of">2</span>
+      </button>
+      <button class="av" id="avbtn" aria-label="Account menu" aria-expanded="false">D</button>
+    </div>
+
+    <div class="wrap">
+
+    <!-- ══════════ HOME ══════════ -->
+    <section class="pg on" id="p-home">
+      <div class="hd"><div class="hd-t">
+        <p class="eb">Command centre</p><h1>Good evening, deon.</h1>
+        <p class="sub oe">Three steps and you'll have minted your first NFT.</p>
+      </div>
+      <div class="br of"><button class="b p" data-go="mint">Mint now</button></div></div>
+
+      <!-- FIRST RUN (empty) -->
+      <div class="oe g" style="margin-bottom:11px">
+        <div class="frun">
+          <h2>Let's get you minting.</h2>
+          <p>Nothing here yet — that's expected. GhostMint generates and encrypts the key server-side, so you never handle it.</p>
+          <div class="steps">
+            <div class="step now"><span class="sn">1</span><div><div class="st">Create a wallet</div><div class="sd">Generated and encrypted on the server. You get the address, never the key.</div></div></div>
+            <div class="step"><span class="sn">2</span><div><div class="st">Fund it</div><div class="sd">Send ETH to the address. Works on Ethereum, Base, Arbitrum and Polygon.</div></div></div>
+            <div class="step"><span class="sn">3</span><div><div class="st">Paste a contract and mint</div><div class="sd">Price, supply and per-wallet limits are detected for you.</div></div></div>
+          </div>
+          <div class="br"><button class="b p" data-go="wallets">Create my first wallet</button><button class="b g" data-go="settings">How it works</button></div>
+        </div>
+      </div>
+
+      <!-- Stat tiles: pinned, and they render in BOTH states — zero is a value -->
+      <!-- Tiles corrected against REDESIGN_DATA_CONTRACT.md §5.1-§5.6:
+           no 7d delta or portfolio sparkline (no historical balance data exists),
+           no "used" figure on the budget (no endpoint), success rate labelled by scope. -->
+      <div class="tiles">
+        <div class="tile">
+          <div class="tl">Portfolio · ETH</div>
+          <div class="tv tab of">4.082<small>ETH</small></div>
+          <div class="tv tab zero oe">0.000<small>ETH</small></div>
+          <div class="sk big ol"></div>
+          <div class="tv tab zero ox">—</div>
+          <div class="tm of">3 wallets · 2 chains unavailable</div>
+          <div class="tm oe">No wallets yet</div>
+          <div class="sk l w60 ol"></div>
+          <div class="tm ox" style="color:var(--loss-text)">Could not load</div>
+        </div>
+        <div class="tile">
+          <div class="tl">Net P&amp;L · 30d</div>
+          <div class="tv tab of" style="color:var(--loss-text)">−0.208<small>ETH</small></div>
+          <div class="tv tab zero oe">0.000<small>ETH</small></div>
+          <div class="sk big ol"></div>
+          <div class="tv tab zero ox">—</div>
+          <div class="tm of">23 mints · no sales recorded</div>
+          <div class="tm oe">0 mints</div>
+          <div class="sk l w60 ol"></div>
+          <div class="tm ox" style="color:var(--loss-text)">Could not load</div>
+          <svg class="spark of" viewBox="0 0 100 30" preserveAspectRatio="none"><path d="M0 6 L14 9 L28 8 L42 13 L56 15 L70 14 L84 20 L100 23" fill="none" stroke="var(--loss)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </div>
+        <div class="tile">
+          <div class="tl">Daily budget</div>
+          <div class="tv tab of">0.25<small>ETH ceiling</small></div>
+          <div class="tv tab of" style="display:none"></div>
+          <div class="tv tab zero oe">0.25<small>ETH ceiling</small></div>
+          <div class="sk big ol"></div>
+          <div class="tv tab zero ox">—</div>
+          <div class="tm of">Spend-so-far not yet exposed</div>
+          <div class="tm oe">Applies once you mint</div>
+          <div class="sk l w60 ol"></div>
+          <div class="tm ox" style="color:var(--loss-text)">Could not load</div>
+        </div>
+        <div class="tile">
+          <div class="tl">Success · last 20</div>
+          <div class="tv tab of">91<small>%</small></div>
+          <div class="tv tab zero oe">0<small>%</small></div>
+          <div class="sk big ol"></div>
+          <div class="tv tab zero ox">—</div>
+          <div class="tm of">18 of 20 confirmed</div>
+          <div class="tm oe">No mints yet</div>
+          <div class="sk l w60 ol"></div>
+          <div class="tm ox" style="color:var(--loss-text)">Could not load</div>
+          <div class="meter of"><i style="width:91%"></i></div>
+          <div class="meter oe"><i style="width:0%"></i></div>
+        </div>
+      </div>
+
+      <!-- ERROR STATE: page-level fetch failure -->
+      <div class="notice ox" style="margin-bottom:11px">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>
+        <div class="nb"><b>Could not load your dashboard.</b>
+          Request failed safely — nothing was changed. <code>500 · Request failed safely</code>
+          <div class="br" style="margin-top:9px"><button class="b sm">Retry</button></div></div></div>
+
+      <div class="split" id="home-stack">
+        <div class="g" data-reorder="home-left">
+          <div class="blk of">
+            <button class="dragh" title="Move up · arrow keys to reorder" aria-label="Reorder this section"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg></button>
+            <div class="cel">
+              <div class="cel-b"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l4 4L19 7"/></svg></div>
+              <h3>Sniped it. 4s after open.</h3>
+              <p>Azuki Elementals #3821 → <b>Primary</b> for 0.08.</p>
+              <!-- streak = consecutive `status==='success'` from newest in /api/activity;
+                   hidden entirely below 2, never rendered as "1 in a row" (data contract §5.7) -->
+              <div class="streak">🔥 6 in a row</div>
+              <div class="br" style="justify-content:center;margin-top:13px"><button class="b sm">Etherscan</button><button class="b g sm">Dismiss</button></div>
+            </div>
+          </div>
+
+          <div class="blk">
+            <button class="dragh" title="Move up · arrow keys to reorder" aria-label="Reorder this section"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg></button>
+            <div class="card col" data-open="0">
+              <button class="colh"><span class="p nu of">30d</span><span class="p nu oe">No data</span><span class="cti">P&amp;L by day</span><span class="ctv of">+0.617</span><span class="ctv oe">0.000</span>
+                <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg></button>
+              <div class="colb">
+                <div class="ch">
+                  <div class="chip-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 17l5-6 4 3 5-8"/></svg></div>
+                  <h2>P&amp;L by day</h2><div class="sp"></div>
+                  <div class="seg of"><button class="on">30d</button><button>90d</button><button>All</button></div>
+                </div>
+                <div class="of">
+                  <svg class="chart" viewBox="0 0 620 112" preserveAspectRatio="none" role="img" aria-label="Daily net profit and loss over 30 days. Net positive 0.617 ETH.">
+                    <line x1="0" y1="56" x2="620" y2="56" stroke="var(--border-strong)" stroke-width="1"/><g id="bars"></g>
+                  </svg>
+                  <div class="lgnd">
+                    <span><i class="sw" style="background:var(--gain)"></i> Gain · above baseline · <b>+</b></span>
+                    <span><i class="sw" style="background:var(--loss)"></i> Loss · below baseline · <b>−</b></span>
+                  </div>
+                </div>
+                <div class="ol"><div class="sk chart"></div><div class="sk l w40" style="margin-top:9px"></div></div>
+                <div class="emp oe" style="padding:20px 12px">
+                  <div class="ei"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 17l5-6 4 3 5-8"/></svg></div>
+                  <h3>No profit or loss yet</h3>
+                  <p>Once you mint, each day's net lands here — cost and gas from the confirmed receipt, nothing guessed.</p>
+                </div>
+                <p class="of" style="font-size:11px;color:var(--faint);margin-top:8px">Sale proceeds are entered manually — a mint with no recorded sale shows as a loss.</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="blk">
+            <button class="dragh" title="Move up · arrow keys to reorder" aria-label="Reorder this section"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg></button>
+            <div class="card col" data-open="1">
+              <button class="colh"><span class="p nu of">3 today</span><span class="p nu oe">None</span><span class="cti">Recent activity</span>
+                <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg></button>
+              <div class="colb">
+                <div class="ch"><h2>Recent activity</h2><div class="sp"></div><button class="b g sm" data-go="history">View all</button></div>
+                <!-- value column is actual_network_cost_wei = GAS ONLY, labelled as such
+                     (data contract §5.8); chain dot derived from the row's explorer URL -->
+                <div class="of">
+                  <div class="r"><div class="ri" style="color:var(--gain-text)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M5 13l4 4L19 7"/></svg></div>
+                    <div class="rm"><div class="rt">Azuki Elementals</div><div class="rs fold">Primary · <span class="chain"><i style="background:#627eea"></i>Ethereum</span> · 2m</div></div>
+                    <div class="rv"><span style="font-size:10px;color:var(--faint);font-weight:600">gas</span> 0.004140</div></div>
+                  <div class="r"><div class="ri" style="color:var(--gain-text)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M5 13l4 4L19 7"/></svg></div>
+                    <div class="rm"><div class="rt">Base Gods</div><div class="rs fold">Trading · <span class="chain"><i style="background:#0052ff"></i>Base</span> · 1h</div></div>
+                    <div class="rv"><span style="font-size:10px;color:var(--faint);font-weight:600">gas</span> 0.000180</div></div>
+                  <div class="r"><div class="ri" style="color:var(--loss-text)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></div>
+                    <div class="rm"><div class="rt">Unknown drop · reverted</div><div class="rs fold">sale not active · 3h</div></div>
+                    <div class="rv"><span style="font-size:10px;color:var(--faint);font-weight:600">gas</span> 0.004010</div></div>
+                </div>
+                <div class="ol"><div class="sk row"></div><div class="sk row"></div><div class="sk row"></div></div>
+                <div class="emp oe" style="padding:20px 12px">
+                  <div class="ei"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg></div>
+                  <h3>Nothing yet</h3>
+                  <p>Your first mint will appear here, with its transaction hash and real gas cost.</p>
+                  <button class="b sm" data-go="mint">Go to Mint</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="g" data-reorder="home-right">
+          <div class="blk of">
+            <button class="dragh" title="Move up · arrow keys to reorder" aria-label="Reorder this section"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg></button>
+            <div class="card tight">
+              <div class="ring">
+                <svg viewBox="0 0 40 40"><circle cx="20" cy="20" r="17" fill="none" stroke="var(--surface-4)" stroke-width="4"/><circle cx="20" cy="20" r="17" fill="none" stroke="var(--accent)" stroke-width="4" stroke-linecap="round" stroke-dasharray="107" stroke-dashoffset="41"/></svg>
+                <div><div class="ring-t">42:11</div><div class="ring-s">Pudgy Rods opens</div>
+                  <div style="margin-top:6px"><span class="p nu">Primary · 0.05 ETH</span></div></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="nt w of">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>
+            <div><b>1 watch rule failing.</b> @zeneca_33 · 4 failed polls.
+              <div style="margin-top:8px"><button class="b sm" data-go="auto">Review</button></div></div>
+          </div>
+
+          <div class="blk">
+            <button class="dragh" title="Move up · arrow keys to reorder" aria-label="Reorder this section"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg></button>
+            <div class="card col" data-open="0">
+              <button class="colh"><span class="p ok of">3 funded</span><span class="p wn oe">None</span><span class="cti">Wallets</span><span class="ctv of">4.082</span><span class="ctv oe">0.000</span>
+                <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg></button>
+              <div class="colb">
+                <div class="ch"><h2>Wallets</h2><div class="sp"></div><button class="b g sm" data-go="wallets">Manage</button></div>
+                <div class="of">
+                  <div class="r"><div class="rm"><div class="rt">Primary</div><div class="rs mono fold">0x7a3f…9c21</div></div><div class="rv">2.410</div></div>
+                  <div class="r"><div class="rm"><div class="rt">Trading</div><div class="rs mono fold">0x11bd…4e08</div></div><div class="rv">1.664</div></div>
+                  <div class="r"><div class="rm"><div class="rt">Cold</div><div class="rs mono fold">0x9e42…7f13</div></div><div class="rv" style="color:var(--warn-text)">0.008</div></div>
+                </div>
+                <div class="ol"><div class="sk row"></div><div class="sk row"></div><div class="sk row"></div></div>
+                <div class="emp oe" style="padding:20px 12px">
+                  <div class="ei"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="6" width="18" height="13" rx="2.5"/><path d="M3 10h18"/></svg></div>
+                  <h3>No wallets yet</h3>
+                  <p>Create the recommended server-side wallet — the key is generated and encrypted before it ever exists in the open.</p>
+                  <button class="b p sm" data-go="wallets">Create wallet</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══════════ MINT ══════════ -->
+    <section class="pg" id="p-mint">
+      <div class="hd"><div class="hd-t"><p class="eb">Mint</p><h1>Mint</h1></div></div>
+      <div class="subtabs" id="mnttabs">
+        <button class="on" data-mt="now">Mint now</button>
+        <button data-mt="sch">Schedule <span class="was">was Tasks</span></button>
+        <button data-mt="bat">Batch</button><button data-mt="pre">Presets</button>
+      </div>
+
+      <div class="nt w oe" style="margin-bottom:12px">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>
+        <div><b>Create a wallet before minting.</b> The form below is shown disabled so you can see what minting looks like.
+          <div style="margin-top:8px"><button class="b sm" data-go="wallets">Create a wallet</button></div></div>
+      </div>
+
+      <div class="mtp on" id="mt-now">
+      <div class="split">
+        <div class="card">
+          <div class="ch"><div class="chip-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 9h6v6H9z"/></svg></div><h2>Contract</h2></div>
+          <div class="g" style="gap:11px">
+            <label class="fl"><span>Contract address</span>
+              <input class="in ok mono of" value="0xED5AF388653567Af2F388E6224dC7C4b3241C544">
+              <input class="in mono oe" disabled placeholder="0x… paste a contract address"></label>
+            <div class="nt i of">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
+              <div>Detected <b>Azuki Elementals</b> · SeaDrop · open · 0.08 ETH · max 3/wallet</div></div>
+            <div class="g gm2 g2">
+              <label class="fl"><span>Wallet</span>
+                <select class="in of"><optgroup label="EVM"><option>Primary — 2.410 ETH</option><option>Trading — 1.664 ETH</option></optgroup><optgroup label="Solana"><option disabled>Solana (not yet supported)</option></optgroup></select>
+                <select class="in oe" disabled><option>No wallets yet</option></select></label>
+              <label class="fl"><span>Quantity <span style="color:var(--faint);font-weight:500">· max 3</span></span>
+                <div class="qty">
+                  <input class="in tab" type="number" min="1" max="3" placeholder="Enter quantity (1–3)" value="1">
+                  <div class="qb"><button class="on">1</button><button>2</button><button>3</button><button>Max</button></div>
+                </div></label>
+            </div>
+            <label class="fl"><span>Price per mint <span style="color:var(--faint);font-weight:500">· auto-detected</span></span>
+              <input class="in tab of" placeholder="e.g. 0.08 — leave blank to use detected price" value="0.08">
+              <input class="in tab oe" disabled placeholder="Detected once a contract is entered"></label>
+            <!-- Batch was buried as a third sub-tab and nobody found it. Cross-link from the
+                 single-wallet form, where the intent actually arises. -->
+            <div class="nt i">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
+              <div>Minting from more than one wallet? <b>Batch</b> simulates and submits each wallet independently, so one failure doesn't cancel the rest.
+                <div style="margin-top:8px"><button class="b sm" data-jump="mnttabs:bat">Switch to batch</button></div></div></div>
+            <!-- VALIDATION ERROR: server returns {issues:[{field,message}]} -->
+            <div class="ox">
+              <label class="fl"><span>Quantity <span style="color:var(--faint);font-weight:500">· max 3</span></span>
+                <input class="in tab bad" type="number" value="9">
+                <div class="fielderr"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>
+                  quantity must be between 1 and 3</div></label>
+            </div>
+          </div>
+        </div>
+
+        <div class="g">
+          <!-- Preview token: /api/mints/preview issues one, valid 300s, consumed once
+               by /api/mints/confirm. Data contract §4 — this was missing from v2. -->
+          <div class="tokbar of"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg>
+            <span>Simulated quote expires in</span><span class="sp"></span><span class="tk">4:12</span></div>
+          <div class="tokbar warn ox"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg>
+            <span>Quote expired — re-simulate before confirming</span><span class="sp"></span><button class="b sm">Re-simulate</button></div>
+          <div class="sober">
+            <div class="sh"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><rect x="4" y="10.5" width="16" height="10.5" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/></svg>Transaction preview</div>
+            <table class="led of">
+              <tr><td>Contract</td><td class="mono">0xED5A…C544</td></tr>
+              <tr><td>Method</td><td class="mono">mintPublic(…)</td></tr>
+              <tr><td>Chain</td><td>Ethereum · 12 conf.</td></tr>
+              <tr><td>Quantity</td><td>1</td></tr>
+              <tr><td>Mint price</td><td>0.080000 ETH</td></tr>
+              <tr><td>Est. gas (23 gwei)</td><td>0.004140 ETH</td></tr>
+              <tr><td>Simulation</td><td>Passed</td></tr>
+              <tr class="tot"><td>Total debit</td><td>0.084140 ETH</td></tr>
+            </table>
+            <table class="led oe">
+              <tr><td>Contract</td><td class="mono">—</td></tr>
+              <tr><td>Method</td><td class="mono">—</td></tr>
+              <tr><td>Chain</td><td>—</td></tr>
+              <tr><td>Quantity</td><td>—</td></tr>
+              <tr><td>Mint price</td><td>0.000000 ETH</td></tr>
+              <tr><td>Est. gas</td><td>0.000000 ETH</td></tr>
+              <tr><td>Simulation</td><td>Not run</td></tr>
+              <tr class="tot"><td>Total debit</td><td>0.000000 ETH</td></tr>
+            </table>
+          </div>
+          <!-- LOADING: preview in flight -->
+          <div class="ol"><div class="sk row"></div><div class="sk row"></div><div class="sk row"></div><div class="sk l w60"></div></div>
+
+          <!-- Daily-budget meter removed: no endpoint exposes spend-so-far.
+               Ceiling only, per data contract §5.1. -->
+          <div class="card tight of">
+            <div style="display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--muted)">
+              <span>Your daily ceiling</span><span class="sp"></span><b class="tab" style="color:var(--text)">0.250000 ETH</b></div>
+          </div>
+
+          <!-- TransactionSafetyError: 400 with a code. Money surface -> Notice, never a toast alone. -->
+          <div class="notice ox">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>
+            <div class="nb"><b>Wallet balance is below the estimated transaction cost.</b>
+              Nothing was broadcast. Fund <b>Primary</b> or lower the quantity.
+              <code>400 · INSUFFICIENT_BALANCE</code></div></div>
+
+          <button class="b p big bl of">Confirm and mint · 0.084140 ETH</button>
+          <button class="b big bl ol" disabled>Simulating…</button>
+          <button class="b big bl oe" disabled>Create a wallet to mint</button>
+          <button class="b big bl ox" disabled>Cannot mint · see above</button>
+          <p class="of" style="font-size:11px;color:var(--faint);text-align:center">Broadcast is irreversible. Intent persisted before send.</p>
+          <p class="oe" style="font-size:11px;color:var(--faint);text-align:center">Preview stays visible at all times — a collapsed total is a hidden total.</p>
+        </div>
+      </div>
+      </div>
+
+      <!-- ── SCHEDULE (was Tasks) ── -->
+      <div class="mtp" id="mt-sch">
+        <div class="split">
+          <div class="card">
+            <div class="ch"><div class="chip-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg></div><h2>Schedule a mint</h2></div>
+            <div class="g" style="gap:11px">
+              <label class="fl"><span>Name</span><input class="in" placeholder="e.g. Pudgy Rods public"></label>
+              <label class="fl"><span>Contract address</span><input class="in mono" placeholder="0x…"></label>
+              <div class="nt i"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
+                <div>SeaDrop drops expose their own opening time on-chain — it is filled in automatically. A plain <code>mint(uint256)</code> contract has no equivalent, so you set the time yourself.</div></div>
+              <div class="g gm2 g2">
+                <label class="fl"><span>Wallet</span><select class="in"><optgroup label="EVM"><option>Primary — 2.410 ETH</option></optgroup></select></label>
+                <label class="fl"><span>Quantity</span>
+                  <div class="qty"><input class="in tab" type="number" min="1" max="100" placeholder="Enter quantity (1–100)" value="1">
+                    <div class="qb"><button class="on">1</button><button>2</button><button>5</button></div></div></label>
+              </div>
+              <label class="fl"><span>Mint time <span style="color:var(--faint);font-weight:500">· UTC, explicit offset or Z</span></span>
+                <input class="in tab mono" value="2026-08-20T18:00:00Z"></label>
+              <button class="b p">Schedule mint</button>
+            </div>
+          </div>
+          <div class="g">
+            <div class="card">
+              <div class="ch"><h2>Scheduled</h2><div class="sp"></div><span class="p nu of">2 pending</span></div>
+              <div class="of">
+                <div class="r"><div class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg></div>
+                  <div class="rm"><div class="rt">Pudgy Rods public</div><div class="rs fold">Primary · fires in 42m · 2026-08-20T18:00:00Z</div></div>
+                  <div class="rv"><span class="p ok">Scheduled</span></div></div>
+                <div class="r"><div class="ri"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 4h4v16H6zM14 4h4v16h-4z"/></svg></div>
+                  <div class="rm"><div class="rt">Base Gods wave 2</div><div class="rs fold">Trading · paused</div></div>
+                  <div class="rv"><span class="p nu">Paused</span></div></div>
+                <div class="r"><div class="ri" style="color:var(--loss-text)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></div>
+                  <div class="rm"><div class="rt">Unknown drop</div><div class="rs fold">attempt 3 of 3 · sale not active</div></div>
+                  <div class="rv"><span class="p bad">Failed</span></div></div>
+                <div class="br" style="margin-top:11px"><button class="b sm">Pause</button><button class="b sm">Resume</button><button class="b sm">Retry</button><button class="b d sm">Cancel…</button></div>
+                <!-- Pager: /api/tasks returns {page,pageSize,total,totalPages,items} -->
+                <div class="pager"><span class="pinfo">3 of 14</span>
+                  <button disabled>‹</button><button class="on">1</button><button>2</button><button>3</button><button>›</button></div>
+              </div>
+              <div class="ol"><div class="sk row"></div><div class="sk row"></div><div class="sk row"></div></div>
+              <div class="emp oe"><div class="ei"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg></div>
+                <h3>Nothing scheduled</h3><p>A scheduled mint is a database row, not a browser timer — it fires whether or not this tab is open.</p></div>
+              <div class="notice ox"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>
+                <div class="nb"><b>Could not load scheduled mints.</b><code>500 · Request failed safely</code>
+                  <div class="br" style="margin-top:9px"><button class="b sm">Retry</button></div></div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── BATCH ── -->
+      <div class="mtp" id="mt-bat">
+        <div class="split">
+          <div class="card">
+            <div class="ch"><div class="chip-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg></div><h2>Batch mint</h2></div>
+            <div class="g" style="gap:11px">
+              <label class="fl"><span>Contract address</span><input class="in ok mono" value="0xED5AF388653567Af2F388E6224dC7C4b3241C544"></label>
+              <label class="fl"><span>Wallets <span style="color:var(--faint);font-weight:500">· up to 100 unique</span></span>
+                <div class="g" style="gap:6px">
+                  <label style="display:flex;gap:8px;align-items:center;font-size:12.5px"><input type="checkbox" checked style="min-height:auto;width:16px;height:16px"> Primary — 2.410 ETH</label>
+                  <label style="display:flex;gap:8px;align-items:center;font-size:12.5px"><input type="checkbox" checked style="min-height:auto;width:16px;height:16px"> Trading — 1.664 ETH</label>
+                  <label style="display:flex;gap:8px;align-items:center;font-size:12.5px;color:var(--warn-text)"><input type="checkbox" checked style="min-height:auto;width:16px;height:16px"> Cold — 0.008 ETH</label>
+                </div></label>
+              <label class="fl"><span>Quantity per wallet</span>
+                <div class="qty"><input class="in tab" type="number" min="1" max="3" placeholder="Enter quantity (1–3)" value="1">
+                  <div class="qb"><button class="on">1</button><button>2</button><button>3</button></div></div></label>
+              <button class="b p">Simulate all 3</button>
+            </div>
+          </div>
+          <div class="g">
+            <div class="nt i"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
+              <div>Each wallet is simulated and submitted <b>independently</b>. One wallet failing does not cancel the others.</div></div>
+            <!-- /api/mints/confirm returns 202 {results:[{label,status,result|error}]} — partial failure is normal -->
+            <div class="card of">
+              <div class="ch"><h2>Result</h2><div class="sp"></div><span class="p wn">2 of 3 succeeded</span></div>
+              <div class="bres"><span class="p ok">Confirmed</span><span class="bl2">Primary</span><span class="be mono">0x4c8a…22f1</span></div>
+              <div class="bres"><span class="p ok">Confirmed</span><span class="bl2">Trading</span><span class="be mono">0x91de…07ac</span></div>
+              <div class="bres"><span class="p bad">Failed</span><span class="bl2">Cold</span><span class="be">Wallet balance is below the estimated transaction cost</span></div>
+              <p style="font-size:11px;color:var(--faint);margin-top:9px">Two transactions were broadcast. The third never left the server.</p>
+            </div>
+            <div class="ol"><div class="sk row"></div><div class="sk row"></div><div class="sk row"></div></div>
+            <div class="emp oe"><div class="ei"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="6" width="18" height="13" rx="2.5"/></svg></div>
+              <h3>No wallets to batch</h3><p>Batch minting needs at least two wallets. Create them first.</p>
+              <button class="b p sm" data-go="wallets">Create a wallet</button></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── PRESETS ── -->
+      <div class="mtp" id="mt-pre">
+        <div class="split">
+          <div class="card">
+            <div class="ch"><h2>Saved presets</h2><div class="sp"></div><span class="p nu of">2</span></div>
+            <div class="of">
+              <div class="r"><div class="rm"><div class="rt">Azuki drop</div><div class="rs mono fold">mint(address,uint256) · 0xED5A…C544</div></div>
+                <div class="rv"><button class="b g sm">Use</button></div></div>
+              <div class="r"><div class="rm"><div class="rt">Allowlist claim</div><div class="rs mono fold">mint(uint256,bytes32[]) · proof from URL</div></div>
+                <div class="rv"><button class="b g sm">Use</button></div></div>
+            </div>
+            <div class="ol"><div class="sk row"></div><div class="sk row"></div></div>
+            <div class="emp oe"><div class="ei"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M5 5h14v14H5z"/><path d="M9 9h6v6H9z"/></svg></div>
+              <h3>No presets saved</h3><p>A preset stores a contract, method and arguments so a repeat mint is one tap.</p></div>
+          </div>
+          <div class="card">
+            <div class="ch"><h2>Method registry</h2></div>
+            <p style="font-size:12.5px;color:var(--muted);margin-bottom:11px">Only audited signatures can be encoded. Arbitrary ABI fragments and raw calldata are rejected.</p>
+            <div class="sober"><div class="sh">Supported signatures</div>
+              <table class="led">
+                <tr><td class="mono">mint()</td><td>ERC-721</td></tr>
+                <tr><td class="mono">mint(uint256)</td><td>ERC-721</td></tr>
+                <tr><td class="mono">mint(address,uint256)</td><td>ERC-721</td></tr>
+                <tr><td class="mono">mint(uint256,bytes32[])</td><td>proof</td></tr>
+                <tr><td class="mono">mint(uint256,bytes)</td><td>signature</td></tr>
+                <tr class="tot"><td>+4 more</td><td>1155 / SeaDrop</td></tr>
+              </table></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══════════ AUTOMATION ══════════ -->
+    <section class="pg" id="p-auto">
+      <div class="hd"><div class="hd-t"><p class="eb">Automation</p><h1>Automation</h1></div>
+        <button class="b p">New trigger</button></div>
+      <div class="subtabs" id="attabs">
+        <button class="on" data-at="all">All</button><button data-at="snp">Snipers</button>
+        <button data-at="soc">Social rules <span class="was">was Watch Rules</span></button>
+        <button data-at="pol">Policies <span class="was">was Target Policies</span></button>
+      </div>
+
+      <!-- Snipers / Social rules are filters over the same list; Policies is the editor + challenge -->
+      <div class="atp" id="at-snp"><div class="nt i" style="margin-bottom:12px">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
+        <div>Showing wallet-copy snipers only — same cards as <b>All</b>, filtered client-side over data the server already scoped to you.</div></div></div>
+      <div class="atp" id="at-soc"><div class="nt i" style="margin-bottom:12px">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
+        <div>Showing social watch rules only — same cards as <b>All</b>, filtered client-side.</div></div></div>
+
+      <div class="atp" id="at-pol">
+        <div class="split">
+          <div class="card">
+            <div class="ch"><h2>Copy 0x8f2a…1d90 · policy</h2></div>
+            <div class="g gm2 g2" style="margin-bottom:11px">
+              <label class="fl"><span>Blockchain trigger</span><select class="in"><option>Auto</option><option>Manual</option></select></label>
+              <label class="fl"><span>Social trigger</span><select class="in"><option>Manual</option><option>Auto</option></select></label>
+              <label class="fl"><span>Wallet</span><select class="in"><option>Trading</option><option>Primary</option></select></label>
+              <label class="fl"><span>Mint preset</span><select class="in"><option>Azuki drop</option></select></label>
+            </div>
+            <div class="nt i"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
+              <div>A target policy cannot contain spend or gas ceilings. Those stay with the transaction engine and your governance tier.</div></div>
+            <div class="br" style="margin-top:11px"><button class="b p sm">Save policy</button><button class="b g sm">Reset…</button></div>
+          </div>
+          <div class="g">
+            <div class="sober"><div class="sh">Human verification</div>
+              <table class="led">
+                <tr><td>Current</td><td>On</td></tr>
+                <tr><td>Blockchain-auto</td><td>Does not force verification</td></tr>
+                <tr><td>Social-auto</td><td>Verification on by default</td></tr>
+                <tr class="tot"><td>Bypass</td><td>Requires an explicit challenge</td></tr>
+              </table></div>
+            <!-- Bypass challenge: POST /api/targets/:id/bypass -> {challengeId,warning},
+                 then POST /api/targets/bypass/confirm with confirmation:"CONFIRM" exactly. -->
+            <div class="chal">
+              <div class="chal-h"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>Highest-risk configuration</div>
+              <div class="chal-b">
+                <p>Matching social triggers will execute <b>immediately, with no manual check</b>. Funds can move without you seeing the transaction first.</p>
+                <div class="cid mono">Challenge 7f2a-91c4 · expires in 4:38</div>
+                <label class="fl" style="margin-bottom:11px"><span>Type <b>CONFIRM</b> exactly to enable</span><input class="in mono" placeholder="CONFIRM"></label>
+                <label style="display:flex;gap:8px;align-items:flex-start;font-size:12px;color:var(--muted);margin-bottom:12px">
+                  <input type="checkbox" style="min-height:auto;width:16px;height:16px;margin-top:2px">
+                  <span>Don't ask again <b>for this target only</b>. Reset or removal clears this.</span></label>
+                <div class="br"><button class="b d sm">Enable bypass</button><button class="b g sm">Cancel</button></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="atp on" id="at-all">
+      <div class="sfrow of"><div class="sf">
+        <svg class="si" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <input type="search" placeholder="Target, address, chain…"><button class="sx" aria-label="Clear search">×</button></div></div>
+
+      <div class="g g2 of" data-reorder="auto">
+        <div class="blk">
+          <button class="dragh" title="Move up · arrow keys to reorder" aria-label="Reorder this trigger"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg></button>
+          <div class="card col" data-open="0" style="border-color:var(--loss)">
+            <button class="colh"><span class="p bad">Failing</span><span class="cti">@zeneca_33</span><span class="ctv">4 failed polls</span>
+              <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg></button>
+            <div class="colb">
+              <div class="ch"><span class="p bad"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 9v4M12 17h.01"/></svg>Failing</span>
+                <div class="sp"></div><span class="cw">Twitter</span></div>
+              <h3 style="font-size:14.5px;margin-bottom:2px">@zeneca_33</h3>
+              <p style="font-size:12px;color:var(--muted);margin-bottom:11px">Keyword · scraper · 4 consecutive failures</p>
+              <div class="sober" style="margin-bottom:11px"><div class="sh">Policy · inline</div>
+                <table class="led"><tr><td>Social trigger</td><td>Manual</td></tr>
+                  <tr><td>Human verification</td><td>On</td></tr><tr><td>Wallet</td><td>Trading</td></tr></table></div>
+              <div class="br"><button class="b sm">Edit</button><button class="b g sm">Disable</button></div>
+            </div>
+          </div>
+        </div>
+        <div class="blk">
+          <button class="dragh" title="Move up · arrow keys to reorder" aria-label="Reorder this trigger"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg></button>
+          <div class="card col" data-open="0">
+            <button class="colh"><span class="p ok">Active</span><span class="cti">Copy 0x8f2a…1d90</span><span class="ctv">0.140/0.200</span>
+              <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg></button>
+            <div class="colb">
+              <div class="ch"><span class="p ok"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.7" stroke-linecap="round"><path d="M5 13l4 4L19 7"/></svg>Active</span>
+                <div class="sp"></div><span class="chain"><i style="background:#627eea"></i>Ethereum</span></div>
+              <h3 style="font-size:14.5px;margin-bottom:2px">Copy 0x8f2a…1d90</h3>
+              <p style="font-size:12px;color:var(--muted);margin-bottom:11px">Post-confirmation · 12 conf. · 7 copies today</p>
+              <div class="sober" style="margin-bottom:11px"><div class="sh">Policy · inline</div>
+                <table class="led"><tr><td>Blockchain trigger</td><td>Auto</td></tr>
+                  <tr><td>Human verification</td><td><span style="color:var(--warn-text)">Bypassed</span></td></tr>
+                  <tr><td>Max copied value</td><td>0.050000 ETH</td></tr>
+                  <tr><td>Daily cap used</td><td>0.140 / 0.200</td></tr></table></div>
+              <div class="meter" style="margin-bottom:11px"><i class="warn" style="width:70%"></i></div>
+              <div class="br"><button class="b sm">Edit</button><button class="b g sm">Pause</button></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- EMPTY: two explainer cards, one CTA each -->
+      <div class="g g2 oe">
+        <div class="card">
+          <div class="ch"><div class="chip-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg></div><h2>Copy snipers</h2></div>
+          <p style="font-size:12.5px;color:var(--muted);margin-bottom:12px">Watch a wallet. When it mints something and that transaction confirms, GhostMint copies the same call from one of yours — with your own value, gas and daily caps.</p>
+          <button class="b p sm">Create a sniper</button>
+        </div>
+        <div class="card">
+          <div class="ch"><div class="chip-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h10"/></svg></div><h2>Social watch rules</h2></div>
+          <p style="font-size:12.5px;color:var(--muted);margin-bottom:12px">Watch an X, Discord or Farcaster account or keyword. When a contract address appears, it becomes a trigger — manual by default, so nothing spends without you.</p>
+          <button class="b p sm">Create a watch rule</button>
+        </div>
+      </div>
+
+      <div class="ol"><div class="sk row"></div><div class="sk row"></div><div class="sk row"></div><div class="sk row"></div></div>
+      <div class="notice ox"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>
+        <div class="nb"><b>Could not load your triggers.</b> Existing automation is unaffected and still running on the server.
+          <code>500 · Request failed safely</code>
+          <div class="br" style="margin-top:9px"><button class="b sm">Retry</button></div></div></div>
+      </div>
+
+      <!-- disclosure stays visible in EVERY state, including zero triggers and errors -->
+      <div class="nt w" style="margin-top:12px">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>
+        <div><b>Copying is post-confirmation, not mempool front-running.</b></div></div>
+    </section>
+
+    <!-- ══════════ WALLETS ══════════ -->
+    <section class="pg" id="p-wallets">
+      <div class="hd"><div class="hd-t"><p class="eb">Wallets</p><h1>Wallets</h1></div>
+        <button class="b p of">Create wallet</button></div>
+      <div class="subtabs" id="wltabs">
+        <button class="on" data-wl="bal">Balances</button>
+        <button data-wl="perf">Performance <span class="was">was P&amp;L</span></button>
+        <button data-wl="snd">Send</button><button data-wl="exp">Export</button>
+      </div>
+
+      <!-- ── PERFORMANCE (account-level: pnl_records has no wallet column, contract §5.9) ── -->
+      <div class="wlp" id="wl-perf">
+        <div class="nt i" style="margin-bottom:12px">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
+          <div>Performance is <b>account-level</b>. P&amp;L records carry no wallet, so cost and gas can't yet be split per wallet — only <b>minted</b> can, and it's on each wallet card.</div></div>
+        <div class="split">
+          <div class="card">
+            <div class="ch"><h2>Net by day</h2><div class="sp"></div>
+              <div class="seg"><button class="on">30d</button><button>90d</button><button>All</button></div></div>
+            <div class="of">
+              <svg class="chart" viewBox="0 0 620 112" preserveAspectRatio="none" role="img" aria-label="Daily net over 30 days. Net negative 0.208 ETH.">
+                <line x1="0" y1="56" x2="620" y2="56" stroke="var(--border-strong)" stroke-width="1"/><g id="bars2"></g></svg>
+              <div class="lgnd">
+                <span><i class="sw" style="background:var(--gain)"></i> Gain · above baseline · <b>+</b></span>
+                <span><i class="sw" style="background:var(--loss)"></i> Loss · below baseline · <b>−</b></span></div>
+              <p style="font-size:11px;color:var(--faint);margin-top:8px">Sale proceeds are entered manually — a mint with no recorded sale shows as a loss.</p>
+            </div>
+            <div class="ol"><div class="sk chart"></div></div>
+            <div class="emp oe"><div class="ei"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 17l5-6 4 3 5-8"/></svg></div>
+              <h3>No records yet</h3><p>Every confirmed mint creates a record with its real cost and gas.</p></div>
+          </div>
+          <div class="g">
+            <div class="sober"><div class="sh">Totals · 30 days</div>
+              <table class="led">
+                <tr><td>Mints</td><td>23</td></tr>
+                <tr><td>Cost</td><td>0.996000 ETH</td></tr>
+                <tr><td>Gas</td><td>0.208000 ETH</td></tr>
+                <tr><td>Sale proceeds</td><td>0.000000 ETH</td></tr>
+                <tr class="tot"><td>Net</td><td style="color:var(--loss-text)">−1.204000 ETH</td></tr>
+              </table></div>
+            <div class="card tight"><div class="ch"><h2>Records</h2><div class="sp"></div><button class="b g sm">Add manually</button></div>
+              <p style="font-size:12px;color:var(--muted)">Edit a record to enter what a token actually resold for. Until then its net is cost + gas as a loss.</p></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── SEND (no dashboard route today — contract §5.10) ── -->
+      <div class="wlp" id="wl-snd">
+        <div class="unav">
+          <div class="ei"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M21 4 3 11l7 3 3 7z"/></svg></div>
+          <h3>Sending is available from Telegram</h3>
+          <p>There is no dashboard send route yet. <code>/send</code> on Telegram walks through wallet, amount, destination and a confirm screen, using the same spend caps and gas ceiling.</p>
+          <button class="b sm">How sending works</button>
+        </div>
+        <div class="nt i" style="margin-top:12px">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
+          <div>Deliberate: a value-moving path gets its own review rather than arriving inside a restyle.</div></div>
+      </div>
+
+      <!-- ── EXPORT ── -->
+      <div class="wlp" id="wl-exp">
+        <div class="split">
+          <div class="card">
+            <div class="ch"><div class="chip-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="4" y="10.5" width="16" height="10.5" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/></svg></div><h2>Export a keystore</h2></div>
+            <div class="nt w" style="margin-bottom:12px">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>
+              <div><b>The raw key never reaches your browser.</b> The server decrypts the stored envelope and immediately re-encrypts it as a standard V3 keystore under your security password. Only that encrypted file is downloaded.</div></div>
+            <div class="g" style="gap:11px">
+              <label class="fl"><span>Wallet</span><select class="in"><option>Primary</option><option>Trading</option><option>Cold</option></select></label>
+              <label class="fl"><span>Security password</span><input class="in" type="password" placeholder="Your account security password"></label>
+              <label class="fl"><span>Type <b>CONFIRM</b> to proceed</span><input class="in mono" placeholder="CONFIRM"></label>
+              <button class="b d">Export keystore</button>
+              <p style="font-size:11px;color:var(--faint)">Limited to 2 exports per hour, shared with Telegram. Every attempt is written to the security audit log.</p>
+            </div>
+          </div>
+          <div class="g">
+            <div class="notice ox"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>
+              <div class="nb"><b>Too many export attempts.</b> Try again in 46 minutes.<code>429 · Retry-After: 2760</code></div></div>
+            <div class="sober"><div class="sh">Export policy</div>
+              <table class="led">
+                <tr><td>Rate limit</td><td>2 per hour</td></tr>
+                <tr><td>Shared with</td><td>Telegram /exportkey</td></tr>
+                <tr><td>Requires</td><td>Security password</td></tr>
+                <tr class="tot"><td>Audited</td><td>Always</td></tr>
+              </table></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="wlp on" id="wl-bal">
+      <div class="sfrow of"><div class="sf">
+        <svg class="si" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <input type="search" placeholder="Label, address, chain…"><button class="sx" aria-label="Clear search">×</button></div></div>
+
+      <!-- EMPTY: create form promoted to full width -->
+      <div class="oe g">
+        <div class="frun">
+          <h2>Create your first wallet</h2>
+          <p>GhostMint generates the private key on the server, encrypts it immediately with AES-256-GCM, and returns only the public address. The key is never sent to your browser.</p>
+          <div class="g gm2 g2" style="margin-bottom:13px">
+            <label class="fl"><span>Label</span><input class="in" placeholder="e.g. Primary"></label>
+            <label class="fl"><span>Chain</span><select class="in"><optgroup label="EVM"><option>Ethereum</option><option>Base</option><option>Arbitrum</option><option>Polygon</option></optgroup></select></label>
+          </div>
+          <button class="b p">Create securely</button>
+        </div>
+        <div class="card">
+          <div class="ch"><h2>Import an existing wallet</h2><div class="sp"></div><span class="p wn">Not recommended</span></div>
+          <p style="font-size:12.5px;color:var(--muted);margin-bottom:12px">Your key or seed phrase crosses browser memory and network transit. It is encrypted the moment it arrives and never returned — but creating a wallet above avoids the exposure entirely.</p>
+          <button class="b g sm">Import over HTTPS</button>
+        </div>
+      </div>
+
+      <div class="g g3 of" data-reorder="wallets">
+        <div class="blk">
+          <button class="dragh" title="Move up · arrow keys to reorder" aria-label="Reorder this wallet"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg></button>
+          <div class="card col" data-open="1">
+            <button class="colh"><span class="p ok">Funded</span><span class="cti">Primary</span><span class="ctv">2.410</span>
+              <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg></button>
+            <div class="colb">
+              <div class="ch"><h2>Primary</h2><div class="sp"></div><span class="p ok">Funded</span></div>
+              <div class="tv tab" style="margin-bottom:3px">2.410<small>ETH</small></div>
+              <p class="mono" style="font-size:11px;color:var(--faint);margin-bottom:11px">0x7a3f…9c21</p>
+              <div class="sober"><div class="sh">Performance · 30d</div>
+                <table class="led"><tr><td>Minted</td><td>14</td></tr><tr><td>Cost</td><td>0.712000 ETH</td></tr>
+                  <tr><td>Gas</td><td>0.131000 ETH</td></tr>
+                  <tr class="tot"><td>Net</td><td style="color:var(--gain-text)">+0.418000 ETH</td></tr></table></div>
+            </div>
+          </div>
+        </div>
+        <div class="blk">
+          <button class="dragh" title="Move up · arrow keys to reorder" aria-label="Reorder this wallet"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg></button>
+          <div class="card col" data-open="0">
+            <button class="colh"><span class="p ok">Funded</span><span class="cti">Trading</span><span class="ctv">1.664</span>
+              <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg></button>
+            <div class="colb">
+              <div class="ch"><h2>Trading</h2><div class="sp"></div><span class="p ok">Funded</span></div>
+              <div class="tv tab" style="margin-bottom:3px">1.664<small>ETH</small></div>
+              <p class="mono" style="font-size:11px;color:var(--faint);margin-bottom:11px">0x11bd…4e08</p>
+              <div class="sober"><div class="sh">Performance · 30d</div>
+                <table class="led"><tr><td>Minted</td><td>9</td></tr><tr><td>Cost</td><td>0.284000 ETH</td></tr>
+                  <tr><td>Gas</td><td>0.077000 ETH</td></tr>
+                  <tr class="tot"><td>Net</td><td style="color:var(--gain-text)">+0.199000 ETH</td></tr></table></div>
+            </div>
+          </div>
+        </div>
+        <!-- UNFUNDED: the most common real state -->
+        <div class="blk">
+          <button class="dragh" title="Move up · arrow keys to reorder" aria-label="Reorder this wallet"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg></button>
+          <div class="card col" data-open="0" style="border-color:var(--warn)">
+            <button class="colh"><span class="p wn">Unfunded</span><span class="cti">Cold</span><span class="ctv">0.008</span>
+              <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg></button>
+            <div class="colb">
+              <div class="ch"><h2>Cold</h2><div class="sp"></div><span class="p wn">Low</span></div>
+              <div class="tv tab" style="margin-bottom:3px;color:var(--warn-text)">0.008<small>ETH</small></div>
+              <div class="addr"><code class="mono">0x9e42…7f13</code><button class="b sm">Copy</button></div>
+              <div class="sober"><div class="sh">Performance · 30d</div>
+                <table class="led"><tr><td>Minted</td><td>0</td></tr><tr><td>Cost</td><td>0.000000 ETH</td></tr>
+                  <tr><td>Gas</td><td>0.000000 ETH</td></tr>
+                  <tr class="tot"><td>Net</td><td>0.000000 ETH</td></tr></table></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="g g3 ol"><div class="card"><div class="sk big"></div><div class="sk l w80"></div><div class="sk row"></div></div>
+        <div class="card"><div class="sk big"></div><div class="sk l w80"></div><div class="sk row"></div></div>
+        <div class="card"><div class="sk big"></div><div class="sk l w80"></div><div class="sk row"></div></div></div>
+      <div class="notice ox"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>
+        <div class="nb"><b>Could not load wallets.</b> Your wallets and their keys are unaffected — this is a read failure only.
+          <code>500 · Request failed safely</code>
+          <div class="br" style="margin-top:9px"><button class="b sm">Retry</button></div></div></div>
+      <p class="of" style="font-size:11.5px;color:var(--faint);margin-top:10px">Zero renders as <b>0.000000</b>, never blank — the <code>??</code>-not-truthiness rule, shown on Cold. A chain whose RPC failed shows <b>Unavailable</b>, which is not the same as zero.</p>
+      </div>
+    </section>
+
+    <!-- ══════════ HISTORY ══════════ -->
+    <section class="pg" id="p-history">
+      <div class="hd"><div class="hd-t"><p class="eb">History</p><h1>History</h1></div></div>
+      <div class="subtabs" id="hstabs">
+        <button class="on" data-hs="act">Activity</button>
+        <button data-hs="aud">Audit evidence</button>
+        <button data-hs="sec">Security log <span class="was">owner only</span></button></div>
+
+      <!-- ── AUDIT EVIDENCE: trigger_execution_audit is not routed to the dashboard (contract §5.11).
+           Kept visible rather than hidden — the audit trail's existence is a safety property. ── -->
+      <div class="hsp" id="hs-aud">
+        <div class="unav">
+          <div class="ei"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg></div>
+          <h3>Trigger audit is available from Telegram and Discord</h3>
+          <p>Every automated execution appends a durable row recording its source, target, verification state, transaction hash and outcome. A dashboard view is planned.</p>
+          <p class="mono" style="font-size:11px">Telegram <b>/triggeraudit</b> · Discord <b>/trigger-audit</b></p>
+        </div>
+      </div>
+
+      <!-- ── SECURITY LOG: owner-only endpoint. Hidden entirely for non-owners; this is the owner view. ── -->
+      <div class="hsp" id="hs-sec">
+        <div class="abn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3l7 3v5c0 5-3 8.5-7 10-4-1.5-7-5-7-10V6z"/></svg>
+          <span><b>Owner view.</b> This tab is hidden for regular accounts — the endpoint behind it is owner-gated.</span></div>
+        <div class="card">
+          <div class="r"><div class="rm"><div class="rt">login-password <span class="p bad" style="margin-left:4px">failure</span></div><div class="rs mono fold">dashboard · invalid credentials · 11:58:02Z</div></div><div class="rv mono" style="font-size:11px">8m</div></div>
+          <div class="r"><div class="rm"><div class="rt">exportkey <span class="p ok" style="margin-left:4px">success</span></div><div class="rs mono fold">telegram · 6821…4417 · 09:20:41Z</div></div><div class="rv mono" style="font-size:11px">3h</div></div>
+          <div class="r"><div class="rm"><div class="rt">mintnow <span class="p wn" style="margin-left:4px">rate_limited</span></div><div class="rs mono fold">telegram · 6821…4417 · 09:12:30Z</div></div><div class="rv mono" style="font-size:11px">3h</div></div>
+          <div class="pager"><span class="pinfo">3 of 61</span><button disabled>‹</button><button class="on">1</button><button>2</button><button>›</button></div>
+        </div>
+      </div>
+
+      <div class="hsp on" id="hs-act">
+      <div class="card col" data-open="0">
+        <button class="colh"><span class="p nu">Filter</span><span class="cti">Search &amp; filters</span><span class="ctv of">248 records</span><span class="ctv oe">0 records</span>
+          <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg></button>
+        <div class="colb">
+          <div class="ch"><div class="sf"><svg class="si" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+            <input type="search" placeholder="Contract, hash, wallet…"><button class="sx" aria-label="Clear search">×</button></div>
+            <div class="sp"></div><span class="of" style="font-size:11px;color:var(--faint)">248 records</span></div>
+        </div>
+      </div>
+      <div class="card of" style="margin-top:11px">
+        <div class="r"><div class="rm"><div class="rt">Azuki Elementals</div><div class="rs mono fold">0x4c8a…22f1 · Primary · 2m</div></div><div class="rv"><span class="p ok">Confirmed</span></div></div>
+        <div class="r"><div class="rm"><div class="rt">Base Gods</div><div class="rs mono fold">0x91de…07ac · Trading · 1h</div></div><div class="rv"><span class="p ok">Confirmed</span></div></div>
+        <div class="r"><div class="rm"><div class="rt">Unknown drop</div><div class="rs mono fold">0x33b7…d5e2 · Primary · 3h</div></div><div class="rv"><span class="p bad">Reverted</span></div></div>
+        <div class="r"><div class="rm"><div class="rt">Sniper copy skipped · reorg</div><div class="rs mono fold">source 0x8f2a…1d90 · 5h</div></div><div class="rv"><span class="p wn">Skipped</span></div></div>
+      </div>
+      <div class="card of" style="margin-top:11px;padding-top:6px">
+        <div class="pager"><span class="pinfo">4 of 248</span>
+          <button disabled>‹</button><button class="on">1</button><button>2</button><button>3</button><button>…</button><button>62</button><button>›</button></div>
+      </div>
+      <div class="card ol" style="margin-top:11px"><div class="sk row"></div><div class="sk row"></div><div class="sk row"></div><div class="sk row"></div></div>
+      <div class="card oe" style="margin-top:11px">
+        <div class="emp">
+          <div class="ei"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg></div>
+          <h3>Nothing yet</h3>
+          <p>Your first mint will appear here. An empty audit log is evidence that nothing has happened — not an error.</p>
+          <button class="b p sm" data-go="mint">Go to Mint</button>
+        </div>
+      </div>
+      <div class="notice ox" style="margin-top:11px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>
+        <div class="nb"><b>Could not load activity.</b><code>500 · Request failed safely</code>
+          <div class="br" style="margin-top:9px"><button class="b sm">Retry</button></div></div></div>
+      </div>
+    </section>
+
+    <!-- ══════════ ADMIN ══════════ -->
+    <section class="pg" id="p-admin">
+      <div class="abn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3l7 3v5c0 5-3 8.5-7 10-4-1.5-7-5-7-10V6z"/></svg>
+        <span><b>Owner mode.</b> Actions here affect other users' accounts and ceilings.</span>
+        <span class="sp"></span><span class="p wn">Root owner</span></div>
+      <div class="hd"><div class="hd-t"><p class="eb">Administration</p><h1>Admin</h1></div></div>
+      <div class="subtabs" id="adtabs">
+        <button class="on" data-ad="ov">Overview</button><button data-ad="gr">Groups</button>
+        <button data-ad="uc">Users &amp; ceilings</button><button data-ad="el">Effective lookup</button>
+        <button data-ad="mp">Mode presets</button><button data-ad="oa">Owner access</button>
+        <button data-ad="bi">Batch import</button><button data-ad="al">Audit log</button>
+        <button data-ad="sh">System health</button>
+      </div>
+
+      <!-- Overview -->
+      <div class="adp on" id="ad-ov">
+        <!-- "Volume · 24h" replaced with Active · 24h: getAdminOverviewMetrics returns no
+             ETH volume and no mint count (data contract §5.2). -->
+        <div class="tiles">
+          <div class="tile"><div class="tl">Users</div>
+            <div class="tv tab of">38</div><div class="sk big ol"></div><div class="tv tab zero ox">—</div>
+            <div class="tm of">4 suspended · 1 banned</div><div class="sk l w60 ol"></div><div class="tm ox" style="color:var(--loss-text)">Could not load</div></div>
+          <div class="tile"><div class="tl">Groups</div>
+            <div class="tv tab of">3</div><div class="sk big ol"></div><div class="tv tab zero ox">—</div>
+            <div class="tm of">Standard · VIP · Team</div><div class="sk l w60 ol"></div><div class="tm ox" style="color:var(--loss-text)">Could not load</div></div>
+          <div class="tile"><div class="tl">Active · 24h</div>
+            <div class="tv tab of">17</div><div class="sk big ol"></div><div class="tv tab zero ox">—</div>
+            <div class="tm of">of 38 accounts</div><div class="sk l w60 ol"></div><div class="tm ox" style="color:var(--loss-text)">Could not load</div></div>
+          <div class="tile"><div class="tl">Owners</div>
+            <div class="tv tab of">2</div><div class="sk big ol"></div><div class="tv tab zero ox">—</div>
+            <div class="tm of">1 root</div><div class="sk l w60 ol"></div><div class="tm ox" style="color:var(--loss-text)">Could not load</div></div>
+        </div>
+        <div class="notice ox" style="margin-bottom:11px">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>
+          <div class="nb"><b>Could not load governance data.</b> No ceiling, group or account status was changed — this is a read failure only.
+            <code>500 · Request failed safely</code>
+            <div class="br" style="margin-top:9px"><button class="b sm">Retry</button></div></div></div>
+        <div class="split">
+          <div class="card col" data-open="1">
+            <button class="colh"><span class="p nu">38</span><span class="cti">Users</span>
+              <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg></button>
+            <div class="colb">
+              <div class="ch"><h2>Users</h2><div class="sp"></div>
+                <div class="sf" style="max-width:190px"><svg class="si" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+                  <input type="search" placeholder="User, ID, group…"><button class="sx" aria-label="Clear search">×</button></div></div>
+              <div class="r"><div class="ri" style="background:var(--accent-soft);color:var(--accent)">D</div>
+                <div class="rm"><div class="rt">deon <span class="p wn" style="margin-left:4px">Root</span></div>
+                  <div class="rs fold">VIP · Telegram + Discord · 23 mints</div></div>
+                <div class="rv"><button class="b g sm">Manage</button></div></div>
+              <div class="r"><div class="ri">O</div>
+                <div class="rm"><div class="rt">Odosa <span class="p nu" style="margin-left:4px">Owner</span></div>
+                  <div class="rs fold">VIP · Discord · 8 mints</div></div>
+                <div class="rv"><button class="b g sm">Manage</button></div></div>
+              <div class="r"><div class="ri">M</div>
+                <div class="rm"><div class="rt">mira.eth</div><div class="rs fold">Standard · Telegram · 2 mints</div></div>
+                <div class="rv"><button class="b g sm">Manage</button></div></div>
+              <div class="r"><div class="ri" style="color:var(--loss-text)">K</div>
+                <div class="rm"><div class="rt">kzo <span class="p bad" style="margin-left:4px">Suspended</span></div>
+                  <div class="rs fold">Standard · until 2026-08-20 · "repeated failures"</div></div>
+                <div class="rv"><button class="b g sm">Manage</button></div></div>
+              <p class="of" style="font-size:11px;color:var(--faint);margin-top:9px">Right-click a row for quick actions. Destructive actions name the exact account.</p>
+              <div class="ol"><div class="sk row"></div><div class="sk row"></div><div class="sk row"></div><div class="sk row"></div></div>
+              <div class="emp ox" style="padding:18px 12px"><div class="ei"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg></div>
+                <h3>User list unavailable</h3><p>Accounts are unaffected. Retry above.</p></div>
+            </div>
+          </div>
+          <div class="g">
+            <div class="card col" data-open="0">
+              <button class="colh"><span class="p wn">1 degraded</span><span class="cti">System health</span>
+                <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg></button>
+              <div class="colb">
+                <div class="ch"><div class="chip-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 12h4l2-7 4 14 2-7h6"/></svg></div><h2>System health</h2></div>
+                <div class="hrow"><span class="p ok">Up</span><span class="hn">Database</span><span class="hl">8ms</span></div>
+                <div class="hrow"><span class="p ok">Up</span><span class="hn">Telegram</span><span class="hl">polling</span></div>
+                <div class="hrow"><span class="p ok">Up</span><span class="hn">Discord</span><span class="hl">connected</span></div>
+                <div class="hrow"><span class="p wn">Degraded</span><span class="hn">OpenSea</span><span class="hl">no key</span></div>
+                <div class="hrow"><span class="p ok">Up</span><span class="hn">Scheduler</span><span class="hl">2 due</span></div>
+                <div class="hrow"><span class="p ok">Up</span><span class="hn">Social watcher</span><span class="hl">1 failing</span></div>
+              </div>
+            </div>
+            <div class="sober of">
+              <div class="sh">Group ceilings</div>
+              <table class="led">
+                <tr><td>Standard · max tx</td><td>0.100000 ETH</td></tr>
+                <tr><td>Standard · daily</td><td>0.250000 ETH</td></tr>
+                <tr><td>VIP · max tx</td><td>0.500000 ETH</td></tr>
+                <tr><td>VIP · daily</td><td>2.000000 ETH</td></tr>
+                <tr class="tot"><td>Simulation</td><td>Forced</td></tr>
+              </table>
+            </div>
+            <div class="card ol"><div class="sk l w40"></div><div class="sk row"></div><div class="sk row"></div></div>
+            <!-- Groups genuinely can be empty; users then fall back to the conservative default -->
+            <div class="card oe"><div class="emp" style="padding:20px 12px">
+              <div class="ei"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="9" cy="8" r="3"/><circle cx="17" cy="9" r="2.4"/><path d="M3 19c.7-3.2 3-5 6-5s5.3 1.8 6 5"/></svg></div>
+              <h3>No groups yet</h3>
+              <p>Every user falls back to the conservative default ceiling — 0.1 ETH per transaction, 0.25 ETH per day — until you create one.</p>
+              <button class="b p sm" data-jump="adtabs:gr">Create a group</button></div></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Groups -->
+      <div class="adp" id="ad-gr">
+        <div class="split">
+          <div class="g">
+            <div class="card"><div class="ch"><h2>Standard</h2><div class="sp"></div><span class="p nu">31 members</span></div>
+              <div class="sober"><div class="sh">Ceilings · money</div>
+                <table class="led"><tr><td>Max transaction</td><td>0.100000 ETH</td></tr>
+                  <tr><td>Daily budget</td><td>0.250000 ETH</td></tr><tr><td>Gas ceiling</td><td>200 gwei</td></tr>
+                  <tr><td>Simulation</td><td>Forced</td></tr><tr><td>Advanced modes</td><td>Not allowed</td></tr>
+                  <tr class="tot"><td>Retention</td><td>90 days</td></tr></table></div>
+              <div class="br" style="margin-top:11px"><button class="b sm">Edit</button><button class="b g sm">Retention policy</button></div></div>
+            <div class="card"><div class="ch"><h2>VIP</h2><div class="sp"></div><span class="p nu">6 members</span></div>
+              <div class="sober"><div class="sh">Ceilings · money</div>
+                <table class="led"><tr><td>Max transaction</td><td>0.500000 ETH</td></tr>
+                  <tr><td>Daily budget</td><td>2.000000 ETH</td></tr><tr><td>Gas ceiling</td><td>400 gwei</td></tr>
+                  <tr><td>Simulation</td><td>Optional</td></tr><tr><td>Advanced modes</td><td>Allowed</td></tr>
+                  <tr class="tot"><td>Retention</td><td>Off</td></tr></table></div>
+              <div class="br" style="margin-top:11px"><button class="b sm">Edit</button><button class="b g sm">Retention policy</button></div></div>
+          </div>
+          <div class="card">
+            <div class="ch"><h2>Create or edit a group</h2></div>
+            <div class="g" style="gap:11px">
+              <label class="fl"><span>Name</span><input class="in" placeholder="Single token — hyphens, not spaces"></label>
+              <div class="nt i"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
+                <div>Group names are one positional token in the shared admin command syntax. A space would shift every field after it, so <b>VIP Members</b> is rejected — use <b>VIP-Members</b>.</div></div>
+              <div class="g gm2 g2">
+                <label class="fl"><span>Max transaction (wei)</span><input class="in tab mono" placeholder="100000000000000000"></label>
+                <label class="fl"><span>Daily budget (wei)</span><input class="in tab mono" placeholder="250000000000000000"></label>
+                <label class="fl"><span>Gas ceiling (gwei)</span><input class="in tab" placeholder="200"></label>
+                <label class="fl"><span>Simulation</span><select class="in"><option>Forced</option><option>Optional</option></select></label>
+              </div>
+              <label class="fl"><span>Advanced modes (Degen / Fast)</span><select class="in"><option>Not allowed</option><option>Allowed</option></select></label>
+              <div class="br"><button class="b p sm">Save group</button><button class="b d sm">Delete…</button></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Users & ceilings -->
+      <div class="adp" id="ad-uc">
+        <div class="sfrow"><div class="sf">
+          <svg class="si" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+          <input type="search" placeholder="User, platform ID, group…"><button class="sx" aria-label="Clear search">×</button></div>
+          <div class="seg"><button class="on">All</button><button>Active</button><button>Blocked</button></div></div>
+        <div class="card col" data-open="1">
+          <button class="colh"><span class="p nu">4 shown</span><span class="cti">Users &amp; ceilings</span>
+            <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg></button>
+          <div class="colb">
+            <div class="r"><div class="ri" style="background:var(--accent-soft);color:var(--accent)">D</div>
+              <div class="rm"><div class="rt">deon <span class="p wn" style="margin-left:4px">Root owner</span></div><div class="rs fold">VIP · Telegram + Discord · 23 mints</div></div>
+              <div class="rv"><span class="p nu">Exempt</span></div></div>
+            <div class="r"><div class="ri">M</div>
+              <div class="rm"><div class="rt">mira.eth <span class="p ok" style="margin-left:4px">Active</span></div><div class="rs fold">Standard · Telegram · 2 mints</div></div>
+              <div class="rv"><button class="b g sm">Ceilings</button></div></div>
+            <div class="r"><div class="ri" style="color:var(--loss-text)">K</div>
+              <div class="rm"><div class="rt">kzo <span class="p bad" style="margin-left:4px">Suspended</span></div><div class="rs fold">until 2026-08-20 · "repeated failures"</div></div>
+              <div class="rv"><button class="b g sm">Ceilings</button></div></div>
+            <div class="r"><div class="ri">J</div>
+              <div class="rm"><div class="rt">jinx <span class="p nu" style="margin-left:4px">Deactivated</span></div><div class="rs fold">Standard · Discord · 0 mints</div></div>
+              <div class="rv"><button class="b g sm">Ceilings</button></div></div>
+          </div>
+        </div>
+        <div class="split" style="margin-top:11px">
+          <div class="sober"><div class="sh">mira.eth · per-user overrides</div>
+            <table class="led">
+              <tr><td>Max transaction</td><td>Inherits group · 0.100000 ETH</td></tr>
+              <tr><td>Daily budget</td><td>Inherits group · 0.250000 ETH</td></tr>
+              <tr><td>Gas ceiling</td><td>150 gwei <span class="p nu" style="margin-left:5px">override</span></td></tr>
+              <tr><td>Simulation</td><td>Inherit</td></tr>
+              <tr class="tot"><td>Advanced modes</td><td>Not allowed</td></tr>
+            </table></div>
+          <div class="card"><div class="ch"><h2>Account status</h2></div>
+            <p style="font-size:12px;color:var(--muted);margin-bottom:11px">Ban is permanent until lifted. Suspend can be time-boxed. Deactivate is a soft delete — wallets and their encrypted keys stay intact and reversible.</p>
+            <label class="fl" style="margin-bottom:10px"><span>Reason (required, audited)</span><input class="in" placeholder="Stated to the user"></label>
+            <div class="br"><button class="b sm">Suspend…</button><button class="b sm">Deactivate…</button><button class="b d sm">Ban…</button></div>
+            <p style="font-size:11px;color:var(--faint);margin-top:9px">Every confirm names the exact account. An owner can't be blocked — remove owner status first.</p></div>
+        </div>
+      </div>
+
+      <!-- Audit log -->
+      <div class="adp" id="ad-al">
+        <div class="sfrow"><div class="sf">
+          <svg class="si" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+          <input type="search" placeholder="Command, platform, outcome…"><button class="sx" aria-label="Clear search">×</button></div>
+          <div class="seg"><button class="on">All</button><button>Denied</button><button>Rate limited</button></div></div>
+        <div class="nt i" style="margin-bottom:11px">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
+          <div>Append-only evidence. Read-only — there are no actions on this screen by design.</div></div>
+        <div class="card">
+          <div class="r"><div class="rm"><div class="rt">exportkey <span class="p ok" style="margin-left:4px">success</span></div><div class="rs mono fold">dashboard · deon · key export delivered · 12:04:18Z</div></div><div class="rv mono" style="font-size:11px">2m</div></div>
+          <div class="r"><div class="rm"><div class="rt">login-password <span class="p bad" style="margin-left:4px">failure</span></div><div class="rs mono fold">dashboard · invalid credentials for 0xdeon · 11:58:02Z</div></div><div class="rv mono" style="font-size:11px">8m</div></div>
+          <div class="r"><div class="rm"><div class="rt">admin:ban <span class="p ok" style="margin-left:4px">success</span></div><div class="rs mono fold">dashboard · governance write completed · 09:41:55Z</div></div><div class="rv mono" style="font-size:11px">2h</div></div>
+          <div class="r"><div class="rm"><div class="rt">mintnow <span class="p wn" style="margin-left:4px">rate_limited</span></div><div class="rs mono fold">telegram · 6821…4417 · 09:12:30Z</div></div><div class="rv mono" style="font-size:11px">3h</div></div>
+          <div class="r"><div class="rm"><div class="rt">admin <span class="p bad" style="margin-left:4px">unauthorized</span></div><div class="rs mono fold">discord · 3391…8802 · owner access required · 08:55:11Z</div></div><div class="rv mono" style="font-size:11px">3h</div></div>
+        </div>
+      </div>
+
+      <!-- The five specified-but-not-mocked tabs (brief §9.1-D8) -->
+      <div class="adp" id="ad-el"><div class="spec">
+        <div class="reg">Register 1 · builds against Groups</div>
+        <h3>Effective lookup</h3>
+        <p>Answers "why is this user's ceiling 0.1?" — a form plus a result ledger that shows the resolved policy <b>and which layer each value came from</b>.</p>
+        <ul><li>Form: platform, platform user ID, chain</li>
+          <li>Result <code>Ledger</code>: max transaction, daily budget, gas ceiling, simulation, confirmations, active preset</li>
+          <li>Each row annotated <em>user override</em> / <em>group</em> / <em>default</em></li>
+          <li>An owner renders as "Exempt", never as a number</li></ul>
+        <p style="margin:0">Layout pattern: the Groups tab's form-left / register-1-ledger-right split.</p>
+      </div></div>
+
+      <div class="adp" id="ad-mp"><div class="spec">
+        <div class="reg">Register 1 · builds against Groups</div>
+        <h3>Mode presets</h3>
+        <p>Four preset cards — Degen, Fast, Cautious, Normie — each editable by an owner.</p>
+        <ul><li>Per card: simulation mode, confirmation count, human verification, gas multiplier, <code>is_default</code> marker</li>
+          <li>Edit form is register 1 — these values change what every user's transaction costs</li>
+          <li>Display names come from <code>mode_presets.display_name</code>. Do not relabel client-side — migration 038 fixed them at the source</li>
+          <li>Exactly one preset can be default; the unique partial index enforces it</li></ul>
+        <p style="margin:0">Layout pattern: Groups' card-per-record plus register-1 edit form.</p>
+      </div></div>
+
+      <div class="adp" id="ad-oa"><div class="spec">
+        <div class="reg">Register 1 · builds against Users &amp; ceilings</div>
+        <h3>Owner access</h3>
+        <p>The most dangerous screen in the product. No colour decoration at all.</p>
+        <ul><li>List of owners and root owners with tier pills</li>
+          <li>Grant / revoke form, each action confirming with the exact account named</li>
+          <li>Invariants stated in plain text on the page: the last owner cannot be removed; there is a maximum of 2 root owners; only a root owner can grant or revoke owner</li></ul>
+        <p style="margin:0">Layout pattern: Users &amp; ceilings' list plus guarded action form.</p>
+      </div></div>
+
+      <!-- ── BATCH IMPORT — real panel. One of only two batch surfaces in the product. ── -->
+      <div class="adp" id="ad-bi">
+        <div class="split">
+          <div class="card">
+            <div class="ch"><div class="chip-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3v12M8 11l4 4 4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg></div><h2>Batch wallet import</h2>
+              <div class="sp"></div><span class="p wn">Owner only</span></div>
+            <div class="nt w" style="margin-bottom:12px">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>
+              <div><b>Every key you paste here crosses browser memory and network transit.</b> Each is encrypted the moment it arrives and never returned — but a wallet created server-side never has that exposure at all. Prefer creating wallets unless you are migrating existing ones.</div></div>
+            <div class="g" style="gap:11px">
+              <label class="fl"><span>Private keys <span style="color:var(--faint);font-weight:500">· one per line, up to 100</span></span>
+                <textarea class="in mono" rows="5" placeholder="0x…&#10;0x…&#10;0x…" style="resize:vertical;line-height:1.5"></textarea></label>
+              <div class="g gm2 g2">
+                <label class="fl"><span>Chain</span><select class="in"><optgroup label="EVM"><option>Ethereum</option><option>Base</option><option>Arbitrum</option><option>Polygon</option></optgroup></select></label>
+                <label class="fl"><span>Label prefix</span><input class="in" value="imported" placeholder="imported"></label>
+              </div>
+              <p style="font-size:11px;color:var(--faint)">Labels are generated as <code>prefix-1</code>, <code>prefix-2</code>… and de-duplicated against wallets you already have.</p>
+              <label class="fl"><span>Type <b>CONFIRM</b> to proceed</span><input class="in mono" placeholder="CONFIRM"></label>
+              <button class="b d">Import 3 keys</button>
+            </div>
+          </div>
+          <div class="g">
+            <!-- POST /api/wallets/batch-import -> {results:[{index,status,label?,address?,error?}]} -->
+            <div class="card of">
+              <div class="ch"><h2>Result</h2><div class="sp"></div><span class="p wn">2 of 3 imported</span></div>
+              <div class="bres"><span class="p ok">Imported</span><span class="bl2">imported-1</span><span class="be mono">0x3f8c…b214</span></div>
+              <div class="bres"><span class="p ok">Imported</span><span class="bl2">imported-2</span><span class="be mono">0x77a1…9ecd</span></div>
+              <div class="bres"><span class="p bad">Failed</span><span class="bl2">key 3</span><span class="be">privateKey must be a 32-byte hex value</span></div>
+              <p style="font-size:11px;color:var(--faint);margin-top:9px">One bad key never sinks the batch — each is imported through the same validation and encryption a single import uses. <b>No key is ever echoed back, not even truncated.</b></p>
+            </div>
+            <div class="ol"><div class="sk row"></div><div class="sk row"></div><div class="sk row"></div></div>
+            <div class="emp oe"><div class="ei"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 3v12M8 11l4 4 4-4"/></svg></div>
+              <h3>Nothing imported yet</h3><p>Paste keys on the left. Results appear here, one row per key.</p></div>
+            <div class="notice ox"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>
+              <div class="nb"><b>Import rejected.</b> Nothing was saved. <code>400 · privateKeys must contain 1-100 private keys</code></div></div>
+            <div class="sober">
+              <div class="sh">What batch import is not</div>
+              <table class="led">
+                <tr><td>Bulk send</td><td>Not available</td></tr>
+                <tr><td>Bulk wallet delete</td><td>Not available</td></tr>
+                <tr><td>Bulk task cancel</td><td>Not available</td></tr>
+                <tr class="tot"><td>Batch surfaces total</td><td>2</td></tr>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="adp" id="ad-sh"><div class="spec">
+        <div class="reg">Register 3 · builds against Overview's health panel</div>
+        <h3>System health</h3>
+        <p>The Overview panel promoted to a full page: one labelled row per dependency, each with a status pill and a latency or detail figure.</p>
+        <ul><li>Database, Telegram, Discord, OpenSea, scheduler, social watcher</li>
+          <li>Status is text + colour, never colour alone</li></ul>
+        <div class="nt w" style="margin:0"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>
+          <div><b>Known broken dependency.</b> <code>GET /api/admin/health</code> is registered after the <code>/api</code> 404 catch-all in <code>server.js</code>, so it always 404s. Build the panel against the shape it will return and render its error state honestly — the route fix is a <code>src/**</code> change and out of scope (brief §9.2-O5).</div></div>
+      </div></div>
+    </section>
+
+    <!-- ══════════ ACCOUNT ══════════ -->
+    <section class="pg" id="p-account">
+      <div class="hd"><div class="hd-t"><p class="eb">Identity</p><h1>Account</h1>
+        <p class="sub">One internal account. Telegram, Discord and this browser are all linked identities of it.</p></div></div>
+      <div class="subtabs"><button class="on">Identity</button><button>Security</button><button>Linked platforms</button><button>Sessions</button></div>
+
+      <div class="notice ox" style="margin-bottom:11px">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>
+        <div class="nb"><b>Could not load your profile.</b> You are still signed in and nothing was changed.
+          <code>500 · Request failed safely</code>
+          <div class="br" style="margin-top:9px"><button class="b sm">Retry</button></div></div></div>
+
+      <div class="split ol">
+        <div class="g">
+          <div class="card"><div class="sk l w40"></div><div class="sk row"></div><div class="sk row"></div><div class="sk row"></div></div>
+          <div class="card"><div class="sk l w40"></div><div class="sk row"></div><div class="sk row"></div></div>
+        </div>
+        <div class="g">
+          <div class="card"><div class="sk l w60"></div><div class="sk row"></div><div class="sk row"></div><div class="sk row"></div></div>
+          <div class="card"><div class="sk l w40"></div><div class="sk row"></div></div>
+        </div>
+      </div>
+
+      <!-- .od = "data arrived": visible when populated OR empty, hidden while loading or errored.
+           Account is never truly empty — a signed-in user always has a profile and one
+           linked identity — so it uses .od rather than .of. -->
+      <div class="split od">
+        <div class="g">
+          <div class="card col" data-open="1">
+            <button class="colh"><span class="p nu">Profile</span><span class="cti">Identity</span>
+              <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg></button>
+            <div class="colb">
+              <div class="ch"><div class="chip-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="8" r="3.6"/><path d="M4.5 20c.8-4 3.8-6 7.5-6s6.7 2 7.5 6"/></svg></div><h2>Profile</h2></div>
+              <div class="g gm2 g2">
+                <label class="fl"><span>Display name</span><input class="in" value="deon"></label>
+                <label class="fl"><span>Username</span><input class="in" value="0xdeon" placeholder="For username + password login"></label>
+                <label class="fl"><span>Default chain</span><select class="in"><optgroup label="EVM"><option>Ethereum</option><option>Base</option></optgroup></select></label>
+              </div>
+              <!-- Transaction mode MOVED to Settings (brief D7) — a link, not a duplicate control -->
+              <div class="nt i" style="margin-top:11px">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
+                <div>Transaction mode is currently <b>Normie</b>. It changes gas multiplier, simulation and human verification, so it lives in
+                  <button class="b sm" style="margin-left:5px" data-go="settings">Settings → Transaction mode</button></div></div>
+              <div class="br" style="margin-top:12px"><button class="b p sm">Save</button></div>
+            </div>
+          </div>
+
+          <div class="card col" data-open="0">
+            <button class="colh"><span class="p ok">2 linked</span><span class="cti">Linked platforms</span>
+              <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg></button>
+            <div class="colb">
+              <div class="ch"><div class="chip-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="4" y="10.5" width="16" height="10.5" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/></svg></div><h2>Linked platforms</h2></div>
+              <div class="r"><div class="ri" style="color:#229ed9"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M21 4 3 11l5 2 2 6 3-4 5 4z"/></svg></div>
+                <div class="rm"><div class="rt">Telegram</div><div class="rs mono fold">6821…4417 · linked 4 Aug</div></div>
+                <div class="rv"><span class="p ok">Primary</span></div></div>
+              <div class="r"><div class="ri" style="color:#5865f2"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="9.5" cy="11.5" r="1.6"/><circle cx="14.5" cy="11.5" r="1.6"/><path d="M19 6a15 15 0 0 0-4-1c-2-1-6-1-8 0a15 15 0 0 0-4 1c-2 3-2.5 6-2.5 9a15 15 0 0 0 4.5 2l1-1.5a11 11 0 0 0 10 0l1 1.5a15 15 0 0 0 4.5-2c0-3-.5-6-2.5-9" fill="none" stroke="currentColor" stroke-width="1.6"/></svg></div>
+                <div class="rm"><div class="rt">Discord</div><div class="rs mono fold">3391…8802 · linked 6 Aug</div></div>
+                <div class="rv"><button class="b g sm">Unlink</button></div></div>
+              <div class="nt i" style="margin-top:11px">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
+                <div>Only Telegram can <b>generate</b> a link code. Discord and this dashboard can only consume one.</div></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="g">
+          <div class="sober">
+            <div class="sh"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><rect x="4" y="10.5" width="16" height="10.5" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/></svg>Security</div>
+            <table class="led">
+              <tr><td>Security password</td><td>Set</td></tr>
+              <tr><td>Username login</td><td>Enabled</td></tr>
+              <tr><td>Active sessions</td><td>2</td></tr>
+              <tr><td>Session expiry</td><td>7 days absolute</td></tr>
+              <tr><td>Last key export</td><td>never</td></tr>
+              <tr class="tot"><td>Account status</td><td>Active</td></tr>
+            </table>
+          </div>
+          <div class="card tight">
+            <div class="ch"><h2>This session</h2></div>
+            <p style="font-size:12px;color:var(--muted);margin-bottom:11px">Chrome · Windows · started 2h ago</p>
+            <div class="br"><button class="b sm">Log out</button><button class="b d sm">Log out everywhere</button></div>
+          </div>
+          <div class="emp">
+            <div class="ei"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></div>
+            <h3>No third platform linked</h3>
+            <p>Generate a code from Telegram to link another account.</p>
+            <button class="b sm">How linking works</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══════════ SETTINGS ══════════ -->
+    <section class="pg" id="p-settings">
+      <div class="hd"><div class="hd-t"><p class="eb">Settings</p><h1>Settings</h1></div></div>
+      <div class="subtabs" id="settabs">
+        <button class="on" data-st="ap">Appearance</button><button data-st="tm">Transaction mode</button>
+        <button data-st="ga">Gas</button><button data-st="no">Notifications</button>
+        <button data-st="au">API usage <span class="was">owner only</span></button>
+      </div>
+
+      <!-- Appearance -->
+      <div class="stp on" id="st-ap">
+        <div class="split">
+          <div class="card">
+            <div class="ch"><h2>Appearance</h2></div>
+            <p style="font-size:12px;color:var(--muted);margin-bottom:11px">Light and dark are the primary choice. Everything else is an optional style.</p>
+            <div class="g gm2 g2" style="margin-bottom:14px">
+              <button class="card tight" style="text-align:left;border-color:var(--border)" data-t="ghost-mint-light">
+                <div style="height:36px;border-radius:7px;background:#f6f7f5;border:1px solid #e3e5e0;margin-bottom:8px;position:relative">
+                  <span style="position:absolute;left:6px;top:6px;width:24px;height:5px;border-radius:3px;background:#0f7a5c"></span>
+                  <span style="position:absolute;left:6px;top:15px;width:40px;height:4px;border-radius:3px;background:#cbcec7"></span></div>
+                <div style="font-size:12.5px;font-weight:700">Light</div></button>
+              <button class="card tight" style="text-align:left;border-color:var(--accent)" data-t="ghost-mint">
+                <div style="height:36px;border-radius:7px;background:#0e1211;border:1px solid #2b3532;margin-bottom:8px;position:relative">
+                  <span style="position:absolute;left:6px;top:6px;width:24px;height:5px;border-radius:3px;background:#2dd4a7"></span>
+                  <span style="position:absolute;left:6px;top:15px;width:40px;height:4px;border-radius:3px;background:#2b3532"></span></div>
+                <div style="font-size:12.5px;font-weight:700">Dark</div></button>
+            </div>
+            <div style="font-size:10px;text-transform:uppercase;letter-spacing:.09em;color:var(--faint);font-weight:800;margin-bottom:9px">More styles · optional</div>
+            <div class="g gm2 g3">
+              <button class="card tight" style="text-align:left" data-t="clean-vault">
+                <div style="height:26px;border-radius:6px;background:#fff;border:1px solid #e4e4e9;margin-bottom:6px"><span style="display:block;margin:6px;width:20px;height:4px;border-radius:3px;background:#2563eb"></span></div>
+                <div style="font-size:11.5px;font-weight:650">Clean Vault</div></button>
+              <button class="card tight" style="text-align:left" data-t="neon-arcade">
+                <div style="height:26px;border-radius:6px;background:#100a1c;border:1px solid #32204a;margin-bottom:6px"><span style="display:block;margin:6px;width:20px;height:4px;border-radius:3px;background:#ff2e93"></span></div>
+                <div style="font-size:11.5px;font-weight:650">Neon Arcade</div></button>
+              <button class="card tight" style="text-align:left" data-t="quiet-ledger">
+                <div style="height:26px;border-radius:6px;background:#fff;border:1px solid #d3d7de;margin-bottom:6px"><span style="display:block;margin:6px;width:20px;height:4px;border-radius:3px;background:#0d5288"></span></div>
+                <div style="font-size:11.5px;font-weight:650">Quiet Ledger</div></button>
+            </div>
+          </div>
+          <div class="card">
+            <div class="ch"><h2>Layout</h2></div>
+            <p style="font-size:12px;color:var(--muted);margin-bottom:12px">Home, Automation and Wallets remember the order you arrange their sections in. Reset clears that for every page.</p>
+            <div class="r"><div class="rm"><div class="rt">Section order</div><div class="rs">Customised on Home</div></div><div class="rv"><button class="b g sm">Reset layout</button></div></div>
+            <div class="r"><div class="rm"><div class="rt">Sidebar</div><div class="rs">Expanded</div></div><div class="rv"><span class="p nu">Remembered</span></div></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Transaction mode — NEW, register 1 -->
+      <div class="stp" id="st-tm">
+        <div class="nt i" style="margin-bottom:12px">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
+          <div>This changes what every transaction costs and whether it is simulated before broadcast. Ceilings set by an owner always win — a mode can never raise your spending limits.</div></div>
+        <div class="split ol">
+          <div class="g g2 gm2">
+            <div class="card tight"><div class="sk l w40"></div><div class="sk l w80"></div></div>
+            <div class="card tight"><div class="sk l w40"></div><div class="sk l w80"></div></div>
+            <div class="card tight"><div class="sk l w40"></div><div class="sk l w80"></div></div>
+            <div class="card tight"><div class="sk l w40"></div><div class="sk l w80"></div></div>
+          </div>
+          <div class="g"><div class="card"><div class="sk l w60"></div><div class="sk row"></div><div class="sk row"></div><div class="sk row"></div></div></div>
+        </div>
+        <div class="notice ox">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>
+          <div class="nb"><b>Could not load transaction modes.</b> Your active mode is unchanged and still applies to every transaction.
+            <code>500 · Request failed safely</code>
+            <div class="br" style="margin-top:9px"><button class="b sm">Retry</button></div></div></div>
+        <div class="split od">
+          <div class="g g2 gm2">
+            <button class="card tight" style="text-align:left;opacity:.6" disabled>
+              <div class="ch" style="margin-bottom:7px"><h3>Degen</h3><div class="sp"></div>
+                <span class="p nu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>Locked</span></div>
+              <p style="font-size:11.5px;color:var(--muted)">1.5× network gas · 1 confirmation · verification bypassed</p>
+              <p style="font-size:11px;color:var(--warn-text);margin-top:7px">Requires group access or an owner grant.</p></button>
+            <button class="card tight" style="text-align:left;opacity:.6" disabled>
+              <div class="ch" style="margin-bottom:7px"><h3>Fast</h3><div class="sp"></div>
+                <span class="p nu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>Locked</span></div>
+              <p style="font-size:11.5px;color:var(--muted)">1.2× network gas · blockchain triggers skip simulation</p>
+              <p style="font-size:11px;color:var(--warn-text);margin-top:7px">Requires group access or an owner grant.</p></button>
+            <button class="card tight" style="text-align:left">
+              <div class="ch" style="margin-bottom:7px"><h3>Cautious</h3><div class="sp"></div></div>
+              <p style="font-size:11.5px;color:var(--muted)">1.05× network gas · always simulates · verification on</p></button>
+            <button class="card tight" style="text-align:left;border-color:var(--accent)">
+              <div class="ch" style="margin-bottom:7px"><h3>Normie</h3><div class="sp"></div>
+                <span class="p ok">Active</span></div>
+              <p style="font-size:11.5px;color:var(--muted)">Network gas price · always simulates · verification on</p>
+              <p style="font-size:11px;color:var(--faint);margin-top:7px">Default for every new account.</p></button>
+          </div>
+          <div class="g">
+            <div class="sober"><div class="sh">Effect of Normie · Ethereum</div>
+              <table class="led">
+                <tr><td>Gas multiplier</td><td>1.00× network</td></tr>
+                <tr><td>Simulation</td><td>Always</td></tr>
+                <tr><td>Confirmations</td><td>12</td></tr>
+                <tr><td>Human verification</td><td>On</td></tr>
+                <tr><td>Max transaction</td><td>0.100000 ETH</td></tr>
+                <tr class="tot"><td>Daily budget</td><td>0.250000 ETH</td></tr>
+              </table></div>
+            <button class="b p bl" disabled>Normie is already active</button>
+            <p style="font-size:11px;color:var(--faint);text-align:center">Switching modes asks you to confirm first.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="stp" id="st-ga">
+        <div class="card"><div class="ch"><h2>Gas</h2><div class="sp"></div>
+          <div class="seg"><button class="on">Ethereum</button><button>Base</button><button>Polygon</button></div></div>
+          <!-- Gas has no empty state: it either resolves or 503s. The missing-key case is an
+               ERROR (503 MISSING_API_KEY), not an empty — that was miscategorised in the first pass. -->
+          <div class="g g3 gm2 od">
+            <div class="tile"><div class="tl">Safe</div><div class="tv tab">18<small>gwei</small></div><div class="tm">~3 min</div></div>
+            <div class="tile"><div class="tl">Standard</div><div class="tv tab">23<small>gwei</small></div><div class="tm">~45 s</div></div>
+            <div class="tile"><div class="tl">Fast</div><div class="tv tab">31<small>gwei</small></div><div class="tm">~15 s</div></div>
+          </div>
+          <div class="g g3 gm2 ol">
+            <div class="tile"><div class="sk l w60"></div><div class="sk big"></div></div>
+            <div class="tile"><div class="sk l w60"></div><div class="sk big"></div></div>
+            <div class="tile"><div class="sk l w60"></div><div class="sk big"></div></div>
+          </div>
+          <!-- 503 is expected, not alarming: an inline unavailable note, not a red error banner -->
+          <div class="nt w ox"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>
+            <div><b>Live gas is unavailable.</b> No Etherscan API key is configured. Minting is unaffected — fees are read from the RPC provider at transaction time, not from here.
+              <div style="font-size:11px;color:var(--faint);margin-top:6px">503 · MISSING_API_KEY</div></div></div>
+        </div>
+      </div>
+
+      <div class="stp" id="st-no">
+        <div class="card">
+          <div class="ch"><h2>Notification routing</h2></div>
+          <p style="font-size:12px;color:var(--muted);margin-bottom:12px">Which events are kept in the bell after their toast disappears. Read-only — the rule is fixed so new features can't quietly turn the bell into an inbox.</p>
+          <div class="r"><div class="rm"><div class="rt">Money</div><div class="rs fold">Mints, sends, budget warnings</div></div><div class="rv"><span class="p ok">Always kept</span></div></div>
+          <div class="r"><div class="rm"><div class="rt">Automation</div><div class="rs fold">Sniper fired, watch rule failing</div></div><div class="rv"><span class="p ok">Kept</span></div></div>
+          <div class="r"><div class="rm"><div class="rt">Security</div><div class="rs fold">Logins, key export, owner actions</div></div><div class="rv"><span class="p ok">Always kept</span></div></div>
+          <div class="r"><div class="rm"><div class="rt">System</div><div class="rs fold">Connection, sync status</div></div><div class="rv"><span class="p nu">Toast only</span></div></div>
+          <div class="r"><div class="rm"><div class="rt">Interface</div><div class="rs fold">Copied, saved, form feedback</div></div><div class="rv"><span class="p nu">Toast only</span></div></div>
+        </div>
+      </div>
+
+      <div class="stp" id="st-au">
+        <!-- socialUsageService.summary() calls requireOwner on its first line, so this whole
+             tab is owner-only and must be hidden for regular accounts (contract §6.2). -->
+        <div class="abn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3l7 3v5c0 5-3 8.5-7 10-4-1.5-7-5-7-10V6z"/></svg>
+          <span><b>Owner view.</b> Usage spans every user's watch rules, so this tab is hidden for regular accounts.</span></div>
+        <div class="card"><div class="ch"><h2>Social API usage</h2><div class="sp"></div><div class="seg"><button class="on">This month</button><button>Today</button></div></div>
+          <div class="of">
+            <div class="r"><div class="rm"><div class="rt">Official API</div><div class="rs fold">412 reads · $0.005 each</div></div><div class="rv">$2.06</div></div>
+            <div class="r"><div class="rm"><div class="rt">Scraper</div><div class="rs fold">1,180 requests · no provider cost</div></div><div class="rv">$0.00</div></div>
+            <div class="r"><div class="rm"><div class="rt">Managed service</div><div class="rs fold">not configured</div></div><div class="rv">—</div></div>
+          </div>
+          <div class="emp oe" style="padding:22px 12px">
+            <div class="ei"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 17l5-6 4 3 5-8"/></svg></div>
+            <h3>No adapter requests yet</h3><p>Usage appears here once a social watch rule starts polling.</p>
+            <button class="b sm" data-go="auto">Create a watch rule</button></div>
+          <p style="font-size:11px;color:var(--faint);margin-top:9px">Estimates for planning, not billing records.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══════════ AUTH / FULL-PAGE STATES ══════════
+         These are not per-card data states — they replace the whole page, and none of
+         them had a visual target before. ACCOUNT_BLOCKED in particular comes back from
+         requireSession on EVERY route, so it blocks the entire dashboard. -->
+    <section class="pg" id="p-states">
+      <div class="hd"><div class="hd-t"><p class="eb">Specification</p><h1>Full-page states</h1>
+        <p class="sub">Three states that replace the page rather than a card. Each is reached before any data is fetched, so none of them has a loading or empty variant.</p></div></div>
+
+      <div class="g">
+        <!-- 403 {error, code:'ACCOUNT_BLOCKED', status} from requireSession -->
+        <div class="card">
+          <div class="ch"><span class="p bad">403 · ACCOUNT_BLOCKED</span><div class="sp"></div>
+            <span style="font-size:11px;color:var(--faint)">every route, before any data</span></div>
+          <div class="frun" style="background:radial-gradient(120% 100% at 50% 0%,color-mix(in srgb,var(--loss) 10%,transparent) 0%,transparent 62%),var(--surface);border-color:var(--loss)">
+            <div style="width:44px;height:44px;border-radius:50%;margin-bottom:12px;background:var(--loss);color:#fff;display:grid;place-items:center">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M5.6 5.6l12.8 12.8"/></svg></div>
+            <h2>Your account is suspended.</h2>
+            <p>Reason given by the owner: <b>repeated failed automation attempts</b>. Suspension lifts automatically on <b>2026-08-20</b>.</p>
+            <div class="sober" style="margin-bottom:14px"><div class="sh">What this means</div>
+              <table class="led">
+                <tr><td>Dashboard</td><td>Blocked</td></tr>
+                <tr><td>Telegram &amp; Discord</td><td>Blocked</td></tr>
+                <tr><td>Scheduled mints</td><td>Will not fire</td></tr>
+                <tr><td>Snipers</td><td>Skipped, not retried</td></tr>
+                <tr class="tot"><td>Your wallets and keys</td><td>Untouched</td></tr>
+              </table></div>
+            <p style="font-size:12px;color:var(--muted);margin-bottom:0">Contact the project owner if you believe this is a mistake. Nothing has been deleted.</p>
+          </div>
+          <div class="nt i" style="margin-top:11px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
+            <div><b>Not dismissible, not a toast, not a banner over a working page.</b> The status is enforced server-side at the single identity choke point, so every surface is blocked at once. Deactivated and banned use the same panel with different copy — banned has no auto-lift date.</div></div>
+        </div>
+
+        <!-- 403 {error:'Owner access required'} — the existing AdminDenied -->
+        <div class="card">
+          <div class="ch"><span class="p wn">403 · Owner access required</span><div class="sp"></div>
+            <span style="font-size:11px;color:var(--faint)">admin routes only</span></div>
+          <div class="unav">
+            <div class="ei"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 3l7 3v5c0 5-3 8.5-7 10-4-1.5-7-5-7-10V6z"/><path d="M9.5 12l1.8 1.8L15 10"/></svg></div>
+            <h3>Owner access required</h3>
+            <p>This area manages other people's accounts, ceilings and owner status. Your account isn't an owner.</p>
+            <button class="b sm" data-go="home">Back to Home</button>
+          </div>
+          <div class="nt i" style="margin-top:11px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
+            <div>Behaviour is unchanged from today's <code>AdminDenied</code>. The rail's Admin item is still shown — hiding it would make a legitimate owner think the app was broken after a permission change. <b>Owner-gated sub-tabs are different</b>: History → Security log and Settings → API usage are hidden entirely, because a regular user has no reason to know they exist.</div></div>
+        </div>
+
+        <!-- 401 — session expired mid-use -->
+        <div class="card">
+          <div class="ch"><span class="p nu">401 · Authentication required</span><div class="sp"></div>
+            <span style="font-size:11px;color:var(--faint)">8h idle / 7d absolute</span></div>
+          <div class="unav">
+            <div class="ei"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg></div>
+            <h3>Your session expired</h3>
+            <p>Sessions last 8 hours idle, and 7 days maximum however active you are. Sign in again — you'll come straight back to this page.</p>
+            <button class="b p sm">Sign in again</button>
+          </div>
+          <div class="nt i" style="margin-top:11px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
+            <div>Preserve the intended route across the re-login so a user who was mid-task lands back where they were, not on Home. A <code>403 Invalid CSRF token</code> uses the same panel with "Reload the page" instead.</div></div>
+        </div>
+      </div>
+    </section>
+
+    <div class="foot">Static prototype · no live data. Desktop/Mobile and Populated/Loading/Empty/Error toggles are top-left.</div>
+    </div>
+  </div>
+
+  <!-- ════════ MOBILE BOTTOM BAR ════════ -->
+  <nav class="bbar">
+    <button aria-current="page" data-go="home">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.8V20h14V9.8"/></svg>Home</button>
+    <button data-go="mint">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4.5 13H11l-1 9 8.5-11H12l1-9Z"/></svg>Mint</button>
+    <button data-go="auto">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>Auto</button>
+    <button data-go="wallets">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="18" height="13" rx="2.5"/><path d="M3 10h18"/></svg>Wallets</button>
+    <button id="moreb">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg>More</button>
+  </nav>
+
+  <div class="sheet-bd" id="sheetbd"></div>
+  <div class="sheet" id="sheet">
+    <button class="grabb" id="grabb" aria-label="Close menu"><i></i></button>
+    <div class="sheet-grid">
+      <button data-go="history"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg>History</button>
+      <button data-go="account"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="8" r="3.6"/><path d="M4.5 20c.8-4 3.8-6 7.5-6s6.7 2 7.5 6"/></svg>Account</button>
+      <button data-go="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2"/></svg>Settings</button>
+      <button data-go="admin"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M12 3l7 3v5c0 5-3 8.5-7 10-4-1.5-7-5-7-10V6z"/></svg>Admin</button>
+      <button data-go="states"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M5.6 5.6l12.8 12.8"/></svg>Auth states</button>
+      <button id="cmdm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>Search</button>
+    </div>
+  </div>
+
+  <!-- ════════ ACCOUNT MENU ════════ -->
+  <div class="acct-pop" id="acctpop">
+    <div class="acct-h"><div class="an">deon</div><div class="ai mono">user 4f9c…21ab</div></div>
+    <button class="acct-i" data-go="settings">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M13 2 4.5 13H11l-1 9 8.5-11H12l1-9Z"/></svg>
+      <span class="sp">Transaction mode</span><span class="mchip">Normie</span></button>
+    <button class="acct-i" data-go="account">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="8" r="3.6"/><path d="M4.5 20c.8-4 3.8-6 7.5-6s6.7 2 7.5 6"/></svg>
+      <span class="sp">Account</span></button>
+    <button class="acct-i" data-go="settings">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2"/></svg>
+      <span class="sp">Settings</span></button>
+    <div class="acct-tog"><span class="sp">Appearance</span>
+      <div class="tmode">
+        <button data-t="ghost-mint-light" title="Light" aria-label="Light theme"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.2 4.2l1.4 1.4M18.4 18.4l1.4 1.4M1 12h2M21 12h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></svg></button>
+        <button data-t="ghost-mint" class="on" title="Dark" aria-label="Dark theme"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a7 7 0 0 0 10.5 10.5z"/></svg></button>
+      </div></div>
+    <button class="acct-i danger">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M15 17l5-5-5-5M20 12H9M11 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h5"/></svg>
+      <span class="sp">Log out</span></button>
+  </div>
+
+  <!-- ════════ BELL ════════ -->
+  <div class="bell-pop" id="bellpop">
+    <div class="bell-h"><h3>Notifications</h3></div>
+    <div class="bell-tabs">
+      <button class="on" data-bt="0">Needs you <span class="cnt hot" style="margin-left:3px">2</span></button>
+      <button data-bt="1">Recent</button>
+    </div>
+    <div class="bell-body">
+      <div class="bell-sec bp">Pending confirmations · durable <span class="cnt hot">2</span></div>
+      <div class="bell-i bp"><span class="bell-d" style="background:var(--warn)"></span>
+        <div class="bell-m"><div class="bm">Approve social-triggered mint</div>
+          <div class="bs">@zeneca_33 → 0x9f21…8c04 · expires in 7m</div>
+          <div class="br" style="margin-top:7px"><button class="b p sm">Approve</button><button class="b g sm">Reject</button></div></div></div>
+      <div class="bell-i bp"><span class="bell-d" style="background:var(--loss)"></span>
+        <div class="bell-m"><div class="bm">Bypass challenge</div>
+          <div class="bs">Copy 0x8f2a…1d90 · type CONFIRM to enable</div>
+          <div class="br" style="margin-top:7px"><button class="b sm">Open challenge</button></div></div></div>
+
+      <div class="bell-sec br2" style="display:none">Recent · session scratchpad</div>
+      <div class="bell-i br2" style="display:none"><span class="bell-d" style="background:var(--gain)"></span>
+        <div class="bell-m"><div class="bm">Mint confirmed · Azuki Elementals</div><div class="bs">2m ago</div></div>
+        <span class="bell-cat">Money</span></div>
+      <div class="bell-i br2" style="display:none"><span class="bell-d" style="background:var(--accent)"></span>
+        <div class="bell-m"><div class="bm">Sniper copied 0x8f2a…1d90</div><div class="bs">18m ago</div></div>
+        <span class="bell-cat">Auto</span></div>
+      <div class="bell-i br2" style="display:none"><span class="bell-d" style="background:var(--warn)"></span>
+        <div class="bell-m"><div class="bm">New browser session started</div><div class="bs">2h ago</div></div>
+        <span class="bell-cat">Security</span></div>
+    </div>
+    <div class="bell-act"><p style="font-size:11px;color:var(--faint)">The badge counts pending confirmations only. Recent is a capped session scratchpad — never an inbox.</p></div>
+  </div>
+
+  <div class="toasts" id="toasts"></div>
+</div>
+</div>
+</div>
+</div>
+
+<!-- ════════ COMMAND PALETTE ════════ -->
+<div class="cmd-bd" id="cmdbd">
+  <div class="cmd">
+    <div class="cmd-in">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      <input id="cmdi" placeholder="Try “P&amp;L”, “watch rules”, “ban”…" autocomplete="off">
+    </div>
+    <div class="cmd-list" id="cmdlist"></div>
+  </div>
+</div>
+
+<script>
+var $=function(s,r){return (r||document).querySelector(s);};
+var $$=function(s,r){return Array.prototype.slice.call((r||document).querySelectorAll(s));};
+
+/* ---------- routing ---------- */
+function go(id){
+  $$('.pg').forEach(function(p){p.classList.remove('on');});
+  var el=document.getElementById('p-'+id); if(el)el.classList.add('on');
+  $$('.nav[data-go],.bbar button[data-go]').forEach(function(n){
+    if(n.dataset.go===id)n.setAttribute('aria-current','page'); else n.removeAttribute('aria-current');
+  });
+  closeSheet();closeCmd();closeAcct();$('#bellpop').classList.remove('on');
+  $$('.scroll').forEach(function(s){s.scrollTop=0;});window.scrollTo(0,0);
+}
+/* Jump straight to a sub-tab: data-jump="<subtabsGroupId>:<tabValue>".
+   Used by the Mint page's batch cross-link and by the command palette's Actions,
+   so a merged page's deeper tabs are reachable in one step instead of two. */
+function jumpTo(spec){
+  if(!spec)return;
+  var parts=spec.split(':'),group=document.getElementById(parts[0]);
+  if(!group)return;
+  var btn=$$('button',group).filter(function(b){
+    return Object.keys(b.dataset).some(function(k){return b.dataset[k]===parts[1];});
+  })[0];
+  if(!btn)return;
+  btn.click();
+  if(btn.scrollIntoView)btn.scrollIntoView({block:'nearest',inline:'center'});
+}
+
+document.addEventListener('click',function(e){
+  var t=e.target.closest('[data-go]'); if(t){go(t.dataset.go);}
+  var j=e.target.closest('[data-jump]'); if(j){jumpTo(j.dataset.jump);}
+  var th=e.target.closest('[data-t]');
+  if(th){
+    document.documentElement.dataset.theme=th.dataset.t;
+    $$('.tmode button').forEach(function(b){b.classList.toggle('on',b.dataset.t===th.dataset.t);});
+  }
+});
+
+/* ---------- harness: viewport + populated/empty ---------- */
+var stage=$('#stage'),app=$('#app');
+function setView(v){
+  stage.dataset.view=v;
+  if(v==='mobile')app.setAttribute('data-m',''); else app.removeAttribute('data-m');
+  $('#vd').classList.toggle('on',v==='desktop');$('#vm').classList.toggle('on',v==='mobile');
+}
+$('#vd').onclick=function(){setView('desktop');};
+$('#vm').onclick=function(){setView('mobile');};
+if(window.innerWidth<900)setView('mobile');
+
+var STATES={sf:'full',sl:'loading',se:'empty',sx2:'error'};
+function setState(s){
+  app.dataset.state=s;
+  Object.keys(STATES).forEach(function(id){$('#'+id).classList.toggle('on',STATES[id]===s);});
+}
+Object.keys(STATES).forEach(function(id){$('#'+id).onclick=function(){setState(STATES[id]);};});
+
+/* ---------- collapsible cards (mobile only) ---------- */
+$$('.col').forEach(function(card){
+  var head=card.querySelector('.colh'),body=card.querySelector('.colb');
+  if(!head||!body)return;
+  if(!body.id)body.id='colb-'+Math.random().toString(36).slice(2,9);
+  head.setAttribute('aria-controls',body.id);
+  head.setAttribute('aria-expanded',card.dataset.open==='1'?'true':'false');
+  head.onclick=function(){
+    var open=card.dataset.open==='1';
+    card.dataset.open=open?'0':'1';
+    head.setAttribute('aria-expanded',open?'false':'true');
+  };
+});
+
+/* ---------- reorder: handle click moves up, arrow keys move either way ---------- */
+function moveBlock(handle,dir){
+  var blk=handle.closest('.blk'),parent=blk&&blk.parentElement;
+  if(!parent)return;
+  var sibs=$$('.blk',parent),i=sibs.indexOf(blk);
+  if(dir<0&&i>0)parent.insertBefore(blk,sibs[i-1]);
+  else if(dir>0&&i<sibs.length-1)parent.insertBefore(sibs[i+1],blk);
+  handle.focus();
+}
+$$('.dragh').forEach(function(h){
+  h.onclick=function(e){e.stopPropagation();moveBlock(h,-1);};
+  h.onkeydown=function(e){
+    if(e.key==='ArrowUp'){e.preventDefault();moveBlock(h,-1);}
+    if(e.key==='ArrowDown'){e.preventDefault();moveBlock(h,1);}
+  };
+});
+
+/* ---------- more sheet ---------- */
+var sheet=$('#sheet'),sbd=$('#sheetbd');
+function openSheet(){sheet.classList.add('on');sbd.classList.add('on');}
+function closeSheet(){sheet.classList.remove('on');sbd.classList.remove('on');}
+$('#moreb').onclick=openSheet;
+sbd.onclick=closeSheet;
+$('#grabb').onclick=closeSheet;
+
+/* ---------- bell ---------- */
+var bell=$('#bellpop'),bellbtn=$('#bellbtn');
+bellbtn.onclick=function(e){
+  e.stopPropagation();closeAcct();
+  var on=bell.classList.toggle('on');
+  bellbtn.setAttribute('aria-expanded',on?'true':'false');
+};
+$$('.bell-tabs button').forEach(function(b){
+  b.onclick=function(){
+    $$('.bell-tabs button').forEach(function(x){x.classList.remove('on');});
+    b.classList.add('on');
+    var pending=b.dataset.bt==='0';
+    $$('.bell-body .bp').forEach(function(el){el.style.display=pending?'':'none';});
+    $$('.bell-body .br2').forEach(function(el){el.style.display=pending?'none':'';});
+  };
+});
+
+/* ---------- account menu ---------- */
+var acct=$('#acctpop'),avbtn=$('#avbtn');
+function closeAcct(){acct.classList.remove('on');avbtn.setAttribute('aria-expanded','false');}
+avbtn.onclick=function(e){
+  e.stopPropagation();bell.classList.remove('on');bellbtn.setAttribute('aria-expanded','false');
+  var on=acct.classList.toggle('on');
+  avbtn.setAttribute('aria-expanded',on?'true':'false');
+};
+document.addEventListener('click',function(e){
+  if(!bell.contains(e.target)&&!e.target.closest('#bellbtn')){bell.classList.remove('on');bellbtn.setAttribute('aria-expanded','false');}
+  if(!acct.contains(e.target)&&!e.target.closest('#avbtn'))closeAcct();
+});
+
+/* ---------- sub-tabs (generic + admin + settings panels) ---------- */
+$$('.subtabs').forEach(function(g){
+  g.querySelectorAll('button').forEach(function(b){
+    b.addEventListener('click',function(){
+      g.querySelectorAll('button').forEach(function(x){x.classList.remove('on');});
+      b.classList.add('on');
+      [['ad','.adp'],['st','.stp'],['mt','.mtp'],['at','.atp'],['wl','.wlp'],['hs','.hsp']]
+        .forEach(function(pair){
+          var key=b.dataset[pair[0]];if(!key)return;
+          $$(pair[1]).forEach(function(p){p.classList.remove('on');});
+          var target=document.getElementById(pair[0]+'-'+key);if(target)target.classList.add('on');
+        });
+    });
+  });
+});
+$$('.seg,.qb').forEach(function(g){
+  g.querySelectorAll('button').forEach(function(b){
+    b.onclick=function(){g.querySelectorAll('button').forEach(function(x){x.classList.remove('on');});b.classList.add('on');};
+  });
+});
+
+/* ---------- search clear ---------- */
+$$('.sf').forEach(function(f){
+  var input=f.querySelector('input'),x=f.querySelector('.sx');
+  if(!input||!x)return;
+  function sync(){x.style.display=input.value?'grid':'none';}
+  sync();input.oninput=sync;
+  x.onclick=function(){input.value='';sync();input.focus();};
+});
+
+/* ---------- command palette ---------- */
+var CMDS=[
+  {g:'Pages',n:'Home',go:'home'},{g:'Pages',n:'Mint',go:'mint'},{g:'Pages',n:'Automation',go:'auto'},
+  {g:'Pages',n:'Wallets',go:'wallets'},{g:'Pages',n:'History',go:'history'},{g:'Pages',n:'Admin',go:'admin'},
+  {g:'Pages',n:'Account',go:'account'},{g:'Pages',n:'Settings',go:'settings'},
+  {g:'Moved',n:'P&L',go:'wallets',h:'Wallets → Performance',k:'pnl profit loss'},
+  {g:'Moved',n:'Tasks',go:'mint',h:'Mint → Schedule',k:'scheduled task'},
+  {g:'Moved',n:'Watch Rules',go:'auto',h:'Automation → Social rules',k:'watch social twitter'},
+  {g:'Moved',n:'Target Policies',go:'auto',h:'Automation → Policies',k:'policy bypass target'},
+  {g:'Actions',n:'Mint now',go:'mint',k:'buy'},{g:'Actions',n:'Create wallet',go:'wallets',k:'new wallet'},
+  {g:'Actions',n:'Batch mint',go:'mint',jump:'mnttabs:bat',h:'Mint → Batch',k:'batch bulk multiple wallets'},
+  {g:'Actions',n:'Batch wallet import',go:'admin',jump:'adtabs:bi',h:'Admin → Batch import',k:'batch bulk import keys'},
+  {g:'Actions',n:'Schedule a mint',go:'mint',jump:'mnttabs:sch',h:'Mint → Schedule',k:'later task'},
+  {g:'Actions',n:'Export a keystore',go:'wallets',jump:'wltabs:exp',h:'Wallets → Export',k:'key backup'},
+  {g:'Actions',n:'Transaction mode',go:'settings',k:'degen fast normie cautious mode'},
+  {g:'Actions',n:'Ban a user',go:'admin',jump:'adtabs:uc',h:'Admin → Users & ceilings',k:'ban suspend deactivate'},
+  {g:'Actions',n:'System health',go:'admin',jump:'adtabs:sh',h:'Admin → System health',k:'health status'},
+  {g:'Reference',n:'Full-page auth states',go:'states',h:'Blocked · Denied · Expired',k:'403 401 blocked banned suspended denied session expired'},
+  {g:'Wallets',n:'Primary — 2.410 ETH',go:'wallets',h:'0x7a3f…9c21'},
+  {g:'Wallets',n:'Trading — 1.664 ETH',go:'wallets',h:'0x11bd…4e08'}
+];
+var cmdbd=$('#cmdbd'),cmdi=$('#cmdi'),cmdlist=$('#cmdlist');
+function renderCmd(q){
+  q=(q||'').toLowerCase();
+  var hits=CMDS.filter(function(c){
+    return !q||c.n.toLowerCase().indexOf(q)>-1||(c.k||'').indexOf(q)>-1||(c.h||'').toLowerCase().indexOf(q)>-1;});
+  if(!hits.length){cmdlist.innerHTML='<div class="cmd-g">No matches</div>';return;}
+  var html='',lastG='';
+  hits.forEach(function(c,i){
+    if(c.g!==lastG){html+='<div class="cmd-g">'+c.g+'</div>';lastG=c.g;}
+    html+='<button class="cmd-i'+(i===0?' sel':'')+'" data-go="'+c.go+'"'+(c.jump?' data-jump="'+c.jump+'"':'')+'>'
+      +'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>'
+      +'<span class="cmd-n">'+c.n+'</span>'+(c.h?'<span class="cmd-h">'+c.h+'</span>':'')+'</button>';
+  });
+  cmdlist.innerHTML=html;
+}
+function openCmd(){cmdbd.classList.add('on');cmdi.value='';renderCmd('');setTimeout(function(){cmdi.focus();},30);}
+function closeCmd(){cmdbd.classList.remove('on');}
+$('#opencmd').onclick=openCmd;
+$('#cmdm').onclick=openCmd;
+cmdi.oninput=function(){renderCmd(cmdi.value);};
+cmdbd.onclick=function(e){if(e.target===cmdbd)closeCmd();};
+document.addEventListener('keydown',function(e){
+  if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='k'){e.preventDefault();openCmd();}
+  if(e.key==='Escape'){closeCmd();closeSheet();closeAcct();bell.classList.remove('on');bellbtn.setAttribute('aria-expanded','false');}
+});
+
+/* ---------- toast demo ---------- */
+var TOASTS=[
+  {c:'s',t:'Mint confirmed',s:'Azuki Elementals · 0.084 ETH',k:'Money'},
+  {c:'w',t:'Watch rule failing',s:'@zeneca_33 · 4 failed polls',k:'Automation'},
+  {c:'i',t:'Address copied',s:'Interface feedback only',k:null}
+];
+var ti=0;
+function pushToast(){
+  var d=TOASTS[ti++%TOASTS.length],host=$('#toasts');
+  var ic=d.c==='s'?'<path d="M5 13l4 4L19 7"/>':d.c==='w'?'<path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/>':'<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/>';
+  var el=document.createElement('div');
+  el.className='toast '+d.c;
+  el.innerHTML='<svg class="ti" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round">'+ic+'</svg>'
+    +'<div class="tt"><b>'+d.t+'</b><span>'+d.s+'</span>'+(d.k?'<span class="keep">↳ kept in bell · '+d.k+'</span>':'')+'</div>'
+    +'<button class="tx" aria-label="Dismiss">×</button>';
+  el.querySelector('.tx').onclick=function(){el.remove();};
+  host.appendChild(el);
+  setTimeout(function(){el.remove();},5200);
+}
+setTimeout(pushToast,1200);setTimeout(pushToast,3400);setTimeout(pushToast,5600);
+
+/* ---------- P&L bars ---------- */
+// Mostly negative on purpose: autoRecordPnl writes sale:0, so an unsold mint is a loss.
+// The positive days are records where a sale price was entered by hand. See data contract §5.5.
+var V=[-.012,-.004,.086,-.009,-.021,-.006,-.014,.052,-.008,-.003,
+       -.018,-.011,.041,-.007,-.024,-.005,-.016,-.009,.038,-.012,
+       -.006,-.019,-.008,.044,-.013,-.005,-.022,-.010,.031,-.015];
+function drawBars(id,series){
+  var g=$('#'+id);if(!g)return;
+  var W=620,MID=56,n=series.length,gap=2,bw=(W-(n-1)*gap)/n;
+  var max=Math.max.apply(null,series.map(Math.abs)),h='';
+  series.forEach(function(v,i){
+    var x=i*(bw+gap),ht=Math.max(2,Math.abs(v)/max*(MID-8)),y=v>=0?MID-ht:MID;
+    h+='<rect x="'+x.toFixed(2)+'" y="'+y.toFixed(2)+'" width="'+bw.toFixed(2)+'" height="'+ht.toFixed(2)
+      +'" rx="3" fill="'+(v>=0?'var(--gain)':'var(--loss)')+'"><title>Day '+(i+1)+': '
+      +(v>=0?'+':'−')+Math.abs(v).toFixed(3)+' ETH</title></rect>';
+  });
+  g.innerHTML=h;
+}
+drawBars('bars',V);
+drawBars('bars2',V);
+</script>
+</body>
+</html>

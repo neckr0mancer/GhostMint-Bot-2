@@ -1,0 +1,163 @@
+<section class="pg" id="p-settings">
+      <div class="hd"><div class="hd-t"><p class="eb">Settings</p><h1>Settings</h1></div></div>
+      <div class="subtabs" id="settabs">
+        <button class="on" data-st="ap">Appearance</button><button data-st="tm">Transaction mode</button>
+        <button data-st="ga">Gas</button><button data-st="no">Notifications</button>
+        <button data-st="au">API usage <span class="was">owner only</span></button>
+      </div>
+
+      <!-- Appearance -->
+      <div class="stp on" id="st-ap">
+        <div class="split">
+          <div class="card">
+            <div class="ch"><h2>Appearance</h2></div>
+            <p style="font-size:12px;color:var(--muted);margin-bottom:11px">Light and dark are the primary choice. Everything else is an optional style.</p>
+            <div class="g gm2 g2" style="margin-bottom:14px">
+              <button class="card tight" style="text-align:left;border-color:var(--border)" data-t="ghost-mint-light">
+                <div style="height:36px;border-radius:7px;background:#f6f7f5;border:1px solid #e3e5e0;margin-bottom:8px;position:relative">
+                  <span style="position:absolute;left:6px;top:6px;width:24px;height:5px;border-radius:3px;background:#0f7a5c"></span>
+                  <span style="position:absolute;left:6px;top:15px;width:40px;height:4px;border-radius:3px;background:#cbcec7"></span></div>
+                <div style="font-size:12.5px;font-weight:700">Light</div></button>
+              <button class="card tight" style="text-align:left;border-color:var(--accent)" data-t="ghost-mint">
+                <div style="height:36px;border-radius:7px;background:#0e1211;border:1px solid #2b3532;margin-bottom:8px;position:relative">
+                  <span style="position:absolute;left:6px;top:6px;width:24px;height:5px;border-radius:3px;background:#2dd4a7"></span>
+                  <span style="position:absolute;left:6px;top:15px;width:40px;height:4px;border-radius:3px;background:#2b3532"></span></div>
+                <div style="font-size:12.5px;font-weight:700">Dark</div></button>
+            </div>
+            <div style="font-size:10px;text-transform:uppercase;letter-spacing:.09em;color:var(--faint);font-weight:800;margin-bottom:9px">More styles · optional</div>
+            <div class="g gm2 g3">
+              <button class="card tight" style="text-align:left" data-t="clean-vault">
+                <div style="height:26px;border-radius:6px;background:#fff;border:1px solid #e4e4e9;margin-bottom:6px"><span style="display:block;margin:6px;width:20px;height:4px;border-radius:3px;background:#2563eb"></span></div>
+                <div style="font-size:11.5px;font-weight:650">Clean Vault</div></button>
+              <button class="card tight" style="text-align:left" data-t="neon-arcade">
+                <div style="height:26px;border-radius:6px;background:#100a1c;border:1px solid #32204a;margin-bottom:6px"><span style="display:block;margin:6px;width:20px;height:4px;border-radius:3px;background:#ff2e93"></span></div>
+                <div style="font-size:11.5px;font-weight:650">Neon Arcade</div></button>
+              <button class="card tight" style="text-align:left" data-t="quiet-ledger">
+                <div style="height:26px;border-radius:6px;background:#fff;border:1px solid #d3d7de;margin-bottom:6px"><span style="display:block;margin:6px;width:20px;height:4px;border-radius:3px;background:#0d5288"></span></div>
+                <div style="font-size:11.5px;font-weight:650">Quiet Ledger</div></button>
+            </div>
+          </div>
+          <div class="card">
+            <div class="ch"><h2>Layout</h2></div>
+            <p style="font-size:12px;color:var(--muted);margin-bottom:12px">Home, Automation and Wallets remember the order you arrange their sections in. Reset clears that for every page.</p>
+            <div class="r"><div class="rm"><div class="rt">Section order</div><div class="rs">Customised on Home</div></div><div class="rv"><button class="b g sm">Reset layout</button></div></div>
+            <div class="r"><div class="rm"><div class="rt">Sidebar</div><div class="rs">Expanded</div></div><div class="rv"><span class="p nu">Remembered</span></div></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Transaction mode — NEW, register 1 -->
+      <div class="stp" id="st-tm">
+        <div class="nt i" style="margin-bottom:12px">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
+          <div>This changes what every transaction costs and whether it is simulated before broadcast. Ceilings set by an owner always win — a mode can never raise your spending limits.</div></div>
+        <div class="split ol">
+          <div class="g g2 gm2">
+            <div class="card tight"><div class="sk l w40"></div><div class="sk l w80"></div></div>
+            <div class="card tight"><div class="sk l w40"></div><div class="sk l w80"></div></div>
+            <div class="card tight"><div class="sk l w40"></div><div class="sk l w80"></div></div>
+            <div class="card tight"><div class="sk l w40"></div><div class="sk l w80"></div></div>
+          </div>
+          <div class="g"><div class="card"><div class="sk l w60"></div><div class="sk row"></div><div class="sk row"></div><div class="sk row"></div></div></div>
+        </div>
+        <div class="notice ox">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>
+          <div class="nb"><b>Could not load transaction modes.</b> Your active mode is unchanged and still applies to every transaction.
+            <code>500 · Request failed safely</code>
+            <div class="br" style="margin-top:9px"><button class="b sm">Retry</button></div></div></div>
+        <div class="split od">
+          <div class="g g2 gm2">
+            <button class="card tight" style="text-align:left;opacity:.6" disabled>
+              <div class="ch" style="margin-bottom:7px"><h3>Degen</h3><div class="sp"></div>
+                <span class="p nu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>Locked</span></div>
+              <p style="font-size:11.5px;color:var(--muted)">1.5× network gas · 1 confirmation · verification bypassed</p>
+              <p style="font-size:11px;color:var(--warn-text);margin-top:7px">Requires group access or an owner grant.</p></button>
+            <button class="card tight" style="text-align:left;opacity:.6" disabled>
+              <div class="ch" style="margin-bottom:7px"><h3>Fast</h3><div class="sp"></div>
+                <span class="p nu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>Locked</span></div>
+              <p style="font-size:11.5px;color:var(--muted)">1.2× network gas · blockchain triggers skip simulation</p>
+              <p style="font-size:11px;color:var(--warn-text);margin-top:7px">Requires group access or an owner grant.</p></button>
+            <button class="card tight" style="text-align:left">
+              <div class="ch" style="margin-bottom:7px"><h3>Cautious</h3><div class="sp"></div></div>
+              <p style="font-size:11.5px;color:var(--muted)">1.05× network gas · always simulates · verification on</p></button>
+            <button class="card tight" style="text-align:left;border-color:var(--accent)">
+              <div class="ch" style="margin-bottom:7px"><h3>Normie</h3><div class="sp"></div>
+                <span class="p ok">Active</span></div>
+              <p style="font-size:11.5px;color:var(--muted)">Network gas price · always simulates · verification on</p>
+              <p style="font-size:11px;color:var(--faint);margin-top:7px">Default for every new account.</p></button>
+          </div>
+          <div class="g">
+            <div class="sober"><div class="sh">Effect of Normie · Ethereum</div>
+              <table class="led">
+                <tr><td>Gas multiplier</td><td>1.00× network</td></tr>
+                <tr><td>Simulation</td><td>Always</td></tr>
+                <tr><td>Confirmations</td><td>12</td></tr>
+                <tr><td>Human verification</td><td>On</td></tr>
+                <tr><td>Max transaction</td><td>0.100000 ETH</td></tr>
+                <tr class="tot"><td>Daily budget</td><td>0.250000 ETH</td></tr>
+              </table></div>
+            <button class="b p bl" disabled>Normie is already active</button>
+            <p style="font-size:11px;color:var(--faint);text-align:center">Switching modes asks you to confirm first.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="stp" id="st-ga">
+        <div class="card"><div class="ch"><h2>Gas</h2><div class="sp"></div>
+          <div class="seg"><button class="on">Ethereum</button><button>Base</button><button>Polygon</button></div></div>
+          <!-- Gas has no empty state: it either resolves or 503s. The missing-key case is an
+               ERROR (503 MISSING_API_KEY), not an empty — that was miscategorised in the first pass. -->
+          <div class="g g3 gm2 od">
+            <div class="tile"><div class="tl">Safe</div><div class="tv tab">18<small>gwei</small></div><div class="tm">~3 min</div></div>
+            <div class="tile"><div class="tl">Standard</div><div class="tv tab">23<small>gwei</small></div><div class="tm">~45 s</div></div>
+            <div class="tile"><div class="tl">Fast</div><div class="tv tab">31<small>gwei</small></div><div class="tm">~15 s</div></div>
+          </div>
+          <div class="g g3 gm2 ol">
+            <div class="tile"><div class="sk l w60"></div><div class="sk big"></div></div>
+            <div class="tile"><div class="sk l w60"></div><div class="sk big"></div></div>
+            <div class="tile"><div class="sk l w60"></div><div class="sk big"></div></div>
+          </div>
+          <!-- 503 is expected, not alarming: an inline unavailable note, not a red error banner -->
+          <div class="nt w ox"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>
+            <div><b>Live gas is unavailable.</b> No Etherscan API key is configured. Minting is unaffected — fees are read from the RPC provider at transaction time, not from here.
+              <div style="font-size:11px;color:var(--faint);margin-top:6px">503 · MISSING_API_KEY</div></div></div>
+        </div>
+      </div>
+
+      <div class="stp" id="st-no">
+        <div class="card">
+          <div class="ch"><h2>Notification routing</h2></div>
+          <p style="font-size:12px;color:var(--muted);margin-bottom:12px">Which events are kept in the bell after their toast disappears. Read-only — the rule is fixed so new features can't quietly turn the bell into an inbox.</p>
+          <div class="r"><div class="rm"><div class="rt">Money</div><div class="rs fold">Mints, sends, budget warnings</div></div><div class="rv"><span class="p ok">Always kept</span></div></div>
+          <div class="r"><div class="rm"><div class="rt">Automation</div><div class="rs fold">Sniper fired, watch rule failing</div></div><div class="rv"><span class="p ok">Kept</span></div></div>
+          <div class="r"><div class="rm"><div class="rt">Security</div><div class="rs fold">Logins, key export, owner actions</div></div><div class="rv"><span class="p ok">Always kept</span></div></div>
+          <div class="r"><div class="rm"><div class="rt">System</div><div class="rs fold">Connection, sync status</div></div><div class="rv"><span class="p nu">Toast only</span></div></div>
+          <div class="r"><div class="rm"><div class="rt">Interface</div><div class="rs fold">Copied, saved, form feedback</div></div><div class="rv"><span class="p nu">Toast only</span></div></div>
+        </div>
+      </div>
+
+      <div class="stp" id="st-au">
+        <!-- socialUsageService.summary() calls requireOwner on its first line, so this whole
+             tab is owner-only and must be hidden for regular accounts (contract §6.2). -->
+        <div class="abn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3l7 3v5c0 5-3 8.5-7 10-4-1.5-7-5-7-10V6z"/></svg>
+          <span><b>Owner view.</b> Usage spans every user's watch rules, so this tab is hidden for regular accounts.</span></div>
+        <div class="card"><div class="ch"><h2>Social API usage</h2><div class="sp"></div><div class="seg"><button class="on">This month</button><button>Today</button></div></div>
+          <div class="of">
+            <div class="r"><div class="rm"><div class="rt">Official API</div><div class="rs fold">412 reads · $0.005 each</div></div><div class="rv">$2.06</div></div>
+            <div class="r"><div class="rm"><div class="rt">Scraper</div><div class="rs fold">1,180 requests · no provider cost</div></div><div class="rv">$0.00</div></div>
+            <div class="r"><div class="rm"><div class="rt">Managed service</div><div class="rs fold">not configured</div></div><div class="rv">—</div></div>
+          </div>
+          <div class="emp oe" style="padding:22px 12px">
+            <div class="ei"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 17l5-6 4 3 5-8"/></svg></div>
+            <h3>No adapter requests yet</h3><p>Usage appears here once a social watch rule starts polling.</p>
+            <button class="b sm" data-go="auto">Create a watch rule</button></div>
+          <p style="font-size:11px;color:var(--faint);margin-top:9px">Estimates for planning, not billing records.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══════════ AUTH / FULL-PAGE STATES ══════════
+         These are not per-card data states — they replace the whole page, and none of
+         them had a visual target before. ACCOUNT_BLOCKED in particular comes back from
+         requireSession on EVERY route, so it blocks the entire dashboard. -->
+    

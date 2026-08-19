@@ -39,10 +39,49 @@
   --icon-badge-border:none;
   --icon-badge-shadow:none;
   --icon-badge-fg:#0a0c0b;
-  --tap-min:auto;
+  /* GHOSTMINT_UI_RULES.md requires 44px as the shared default, widened per theme but never
+     dropped. This was `auto` in :root and in four of the five theme blocks, which meant the
+     `var(--tap-min,44px)` fallback in styles.css never fired -- the variable *was* defined,
+     just to a value that imposes no minimum at all. */
+  --tap-min:44px;
   --admin-banner-bg:#171c1e;
   --admin-banner-border:#2e3338;
   --admin-banner-text:#e8a33d;
+  /* Data-mark and elevation tokens (brief §3). Deliberately separate from --success/--danger:
+     those are status colours for pills and state, these are stepped for the chart surface, so a
+     status colour can never impersonate a data series. The dark values below are the ones
+     validated against a dark surface (lightness band, chroma floor, normal-vision separation
+     ΔE 17.2, 3:1 contrast) -- each theme picks values that hold on its OWN surface rather than
+     inheriting these. */
+  --surface-3:#1f2528;
+  --surface-4:#262d31;
+  --gain:#1eaa85;
+  --loss:#e0455c;
+  --warn:#c98500;
+  --gain-text:#3fe0b4;
+  --loss-text:#ff8095;
+  --warn-text:#f0b74a;
+  --grid:#1e2225;
+  --sheen:linear-gradient(180deg,#ffffff08,transparent 60%);
+  --lift:0 12px 28px -16px #000f;
+  --accent-line:#2dd4a740;
+  /* Density (brief §3.4). Theme-independent, so declared once here and never overridden per
+     theme -- only per viewport, at the bottom of this file. Values are the brief's px targets:
+     card 15, gap 11, row 9, h1 23, page 20, stat value 23. */
+  --card-pad:.9375rem;
+  --grid-gap:.6875rem;
+  --row-pad:.5625rem;
+  --h1-size:1.4375rem;
+  --page-pad:1.25rem;
+  --stat-value:1.4375rem;
+  /* Two additions beyond brief §3's eleven, both to retire a hardcoded literal in styles.css
+     rather than to serve a new component. Declared only here: a scrim is dark on every theme
+     including the light ones (that is what a scrim is), and white is the correct foreground on
+     every theme's --danger, so neither wants a per-theme override. --accent-contrast could not
+     be reused for the latter: it is #0a0c0b on the dark themes, i.e. black text on a red
+     button. */
+  --scrim:#000000a0;
+  --danger-contrast:#ffffff;
   --space-1:.25rem;
   --space-2:.5rem;
   --space-3:.75rem;
@@ -94,10 +133,22 @@ html[data-theme="ghost-mint"]{
   --icon-badge-border:none;
   --icon-badge-shadow:none;
   --icon-badge-fg:#0a0c0b;
-  --tap-min:auto;
+  --tap-min:44px;
   --admin-banner-bg:#171c1e;
   --admin-banner-border:#2e3338;
   --admin-banner-text:#e8a33d;
+  --surface-3:#1f2528;
+  --surface-4:#262d31;
+  --gain:#1eaa85;
+  --loss:#e0455c;
+  --warn:#c98500;
+  --gain-text:#3fe0b4;
+  --loss-text:#ff8095;
+  --warn-text:#f0b74a;
+  --grid:#1e2225;
+  --sheen:linear-gradient(180deg,#ffffff08,transparent 60%);
+  --lift:0 12px 28px -16px #000f;
+  --accent-line:#2dd4a740;
 }
 
 /* Ghost Mint Light — same mint + amber identity, light surfaces. Pure token
@@ -136,10 +187,25 @@ html[data-theme="ghost-mint-light"]{
   --icon-badge-border:none;
   --icon-badge-shadow:none;
   --icon-badge-fg:#ffffff;
-  --tap-min:auto;
+  --tap-min:44px;
   --admin-banner-bg:#eef7f2;
   --admin-banner-border:#cfe9dc;
   --admin-banner-text:#177a5c;
+  /* Light surfaces invert the "-text" logic: the plain mark is the lighter, larger-area fill and
+     the -text step goes DARKER, because contrast on white runs the other way. The dark theme's
+     values would fail outright here -- #3fe0b4 on #ffffff is roughly 1.7:1. */
+  --surface-3:#ece9e1;
+  --surface-4:#e3dfd4;
+  --gain:#0f7a53;
+  --loss:#b02a44;
+  --warn:#96620a;
+  --gain-text:#0d6b49;
+  --loss-text:#9d2440;
+  --warn-text:#855609;
+  --grid:#ebe8e1;
+  --sheen:none;
+  --lift:0 6px 18px -10px #00000024;
+  --accent-line:#1f9d7638;
 }
 
 /* Clean Vault (Option B) — light, minimal, fintech-style */
@@ -177,10 +243,25 @@ html[data-theme="clean-vault"]{
   --icon-badge-border:1px solid var(--border-strong);
   --icon-badge-shadow:none;
   --icon-badge-fg:var(--text-muted);
-  --tap-min:auto;
+  --tap-min:44px;
   --admin-banner-bg:#eff6ff;
   --admin-banner-border:#bfdbfe;
   --admin-banner-text:#1e3a8a;
+  /* Secondary theme -- carried, not designed (brief §9.1-D15). These are the prototype's
+     validated values for this surface, so the theme stays coherent and nothing renders as an
+     invalid var(), but it gets no per-phase design pass. */
+  --surface-3:#f0f0f3;
+  --surface-4:#e7e7ec;
+  --gain:#0f7a53;
+  --loss:#c0384f;
+  --warn:#96620a;
+  --gain-text:#0d6b49;
+  --loss-text:#ab2f45;
+  --warn-text:#855609;
+  --grid:#eeeef1;
+  --sheen:none;
+  --lift:0 4px 14px -8px #00000020;
+  --accent-line:#2563eb38;
 }
 
 /* Neon Arcade (Option C) — bold, gamified, high-energy */
@@ -221,10 +302,25 @@ html[data-theme="neon-arcade"]{
   --icon-badge-border:none;
   --icon-badge-shadow:0 0 16px -2px #ff2e93cc;
   --icon-badge-fg:#ffffff;
-  --tap-min:auto;
+  --tap-min:44px;
   --admin-banner-bg:linear-gradient(135deg,#2b0510,#050505);
   --admin-banner-border:#ff2e9366;
   --admin-banner-text:#ff7fc0;
+  /* Secondary theme -- carried, not designed (brief §9.1-D15). Note the data marks stay the
+     muted validated pair rather than this theme's neon --success/--danger: a chart drawn in
+     #39ff9e/#ff3366 vibrates against the purple surface and stops being readable as data. */
+  --surface-3:#251a3d;
+  --surface-4:#2e2249;
+  --gain:#1eaa85;
+  --loss:#e0455c;
+  --warn:#c98500;
+  --gain-text:#39ffb0;
+  --loss-text:#ff6d84;
+  --warn-text:#ffd23f;
+  --grid:#241738;
+  --sheen:linear-gradient(180deg,#ff2e930f,transparent 55%);
+  --lift:0 0 44px -16px #ff2e9399;
+  --accent-line:#ff2e9366;
 }
 
 /* Quiet Ledger (Option D) — ultra-simple, accessibility-first */
@@ -262,8 +358,40 @@ html[data-theme="quiet-ledger"]{
   --icon-badge-border:1px solid var(--border-strong);
   --icon-badge-shadow:none;
   --icon-badge-fg:var(--text);
+  /* The one theme that already set a real tap target, and the only one that keeps its own value
+     -- the rule is a floor of 44px, widened per theme but never dropped. */
   --tap-min:48px;
   --admin-banner-bg:#f4f5f7;
   --admin-banner-border:#aeb4bf;
   --admin-banner-text:#0f1b2d;
+  /* Secondary theme -- carried, not designed (brief §9.1-D15). The prototype set this theme's
+     data marks equal to its --success/--danger/--warning, which brief §3 explicitly forbids;
+     these are stepped one shade off instead so a status pill and a chart bar are never the same
+     colour. Both steps stay well clear of 4.5:1 on white, which this accessibility-first theme
+     is the whole reason for. */
+  --surface-3:#eceef1;
+  --surface-4:#e2e5e9;
+  --gain:#0c6b36;
+  --loss:#9e2118;
+  --warn:#7a5000;
+  --gain-text:#0a5a2d;
+  --loss-text:#86190f;
+  --warn-text:#664200;
+  --grid:#e6e9ed;
+  --sheen:none;
+  --lift:0 3px 8px #0000001a;
+  --accent-line:#0f5fa840;
+}
+
+/* Density overrides (brief §3.4). Theme-independent and viewport-only -- the tokens themselves
+   live in :root above. Kept unscoped by theme deliberately: even the three themes the redesign
+   does not target should get the tighter mobile rhythm rather than desktop's padding on a
+   phone. */
+@media(max-width:700px){
+  :root{
+    --card-pad:.75rem;
+    --h1-size:1.25rem;
+    --page-pad:.8125rem;
+    --stat-value:1.1875rem;
+  }
 }
