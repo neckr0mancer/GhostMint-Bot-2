@@ -23,7 +23,7 @@ function interaction({ commandName, userId = 'discord-user', subcommand = null, 
 test('Discord command definitions include the complete Milestone 10a surface', () => {
   const definitions = commandDefinitions();
   const names = definitions.map(command => command.name);
-  assert.deepEqual(names, ['menu', 'start', 'wallet', 'deposit', 'mint', 'info', 'batch-mint', 'task', 'activity', 'pnl', 'gas', 'sniper', 'mode', 'admin', 'link', 'watch', 'social-usage', 'target-policy', 'confirm-trigger', 'trigger-audit', 'pending', 'transactions']);
+  assert.deepEqual(names, ['menu', 'start', 'wallet', 'deposit', 'mint', 'info', 'mintnow', 'batch-mint', 'task', 'activity', 'pnl', 'gas', 'sniper', 'mode', 'admin', 'link', 'watch', 'social-usage', 'target-policy', 'confirm-trigger', 'trigger-audit', 'pending', 'transactions']);
   const wallet = definitions.find(command => command.name === 'wallet');
   const create = wallet.options.find(option => option.name === 'create');
   const imported = wallet.options.find(option => option.name === 'import');
@@ -151,6 +151,42 @@ test('Discord wallet creation returns only a funding address and import explains
   assert.doesNotMatch(createdInteraction.replies[0], /private-key|0x111111/);
   assert.match(importedInteraction.replies[0], /not recommended/i);
   assert.match(importedInteraction.replies[0], /transit.*history|history.*transit/i);
+});
+
+// A fully-specified /mint or /batch-mint (wallet+quantity/price also given) skips
+// startMintGuidedFlow entirely, which is the only other place that resolves an OpenSea link into a
+// contract address -- without its own resolution step, pasting a link into these would fail
+// ethereumAddress() validation even though the same link works fine through the under-specified
+// (guided-card) path.
+test('a fully-specified /mint resolves an OpenSea link the same way the under-specified path already does', async () => {
+  const minted = [];
+  const input = interaction({ commandName: 'mint', strings: { wallet: 'main', contract: 'https://opensea.io/collection/cool-cats' }, integers: { quantity: 2 } });
+  const handler = createDiscordInteractionHandler({
+    identity: { resolveOrCreate: async () => 'user-a' },
+    commands: {
+      resolveMintContractInput: async input2 => (input2.startsWith('https://opensea.io') ? '0x0000000000000000000000000000000000000009' : null),
+      mint: async (userId, value) => { minted.push({ userId, value }); return { state: 'confirmed', txHash: '0xabc' }; },
+    },
+  });
+  await handler(input);
+  assert.equal(minted.length, 1);
+  assert.equal(minted[0].value.contractAddress, '0x0000000000000000000000000000000000000009');
+  assert.match(input.replies[0], /Mint confirmed/);
+});
+
+test('a fully-specified /batch-mint resolves an OpenSea link the same way', async () => {
+  const batched = [];
+  const input = interaction({ commandName: 'batch-mint', strings: { wallets: 'main,spare', contract: 'https://opensea.io/collection/cool-cats' }, integers: { quantity: 1 }, numbers: { price: 0.01 } });
+  const handler = createDiscordInteractionHandler({
+    identity: { resolveOrCreate: async () => 'user-a' },
+    commands: {
+      resolveMintContractInput: async input2 => (input2.startsWith('https://opensea.io') ? '0x0000000000000000000000000000000000000009' : null),
+      batchMint: async (userId, value) => { batched.push({ userId, value }); return [{ txHash: '0x1' }]; },
+    },
+  });
+  await handler(input);
+  assert.equal(batched.length, 1);
+  assert.equal(batched[0].value.contractAddress, '0x0000000000000000000000000000000000000009');
 });
 
 test('every normal Discord command resolves the sender identity before dispatch', async () => {

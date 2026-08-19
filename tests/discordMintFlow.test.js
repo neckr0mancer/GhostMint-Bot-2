@@ -197,6 +197,85 @@ test('full batch-mint happy path: selecting more than one wallet in one tap reac
   assert.match(confirm.updates[0].content, /Batch complete: 2 wallet transaction/);
 });
 
+// Item 16: /mintnow mirrors Telegram's oneShot -- skips the details card, quantity step, price
+// step, and confirm screen entirely. A single wallet mints with zero extra taps.
+test('/mintnow with a single wallet mints immediately, no extra taps, using the contract-known price', async () => {
+  const flowState = createFlowStateStore();
+  const mints = [];
+  const commands = baseCommands({
+    mint: async (userId, input) => { mints.push({ userId, input }); return { state: 'confirmed', txHash: '0xnow1' }; },
+  });
+  const ctx = { identity: { resolveOrCreate: async () => 'internal-user' }, commands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT };
+  const handler = createDiscordInteractionHandler(ctx);
+  const slash = chatInteraction('mintnow', 'now-1', { contract: '0x0000000000000000000000000000000000000001' });
+  await handler(slash);
+  assert.equal(slash.deferred, true);
+  assert.equal(mints.length, 1);
+  assert.equal(mints[0].input.walletLabel, 'main');
+  assert.equal(mints[0].input.priceETH, 1);
+  assert.match(slash.replies[0].content, /Mint confirmed/);
+  assert.equal(flowState.get('discord', 'now-1'), null);
+});
+
+// Per the user's explicit spec: if price isn't determinable from the contract, /mintnow still
+// mints immediately rather than stopping to ask -- it accepts whatever price the contract itself
+// asks for at execution time (prepareMintCall re-reads it live), sending 0 as the placeholder.
+test('/mintnow with an unknown price still mints immediately using 0, instead of asking', async () => {
+  const flowState = createFlowStateStore();
+  const mints = [];
+  const commands = baseCommands({
+    detectMintContract: async () => ({
+      chain: 'ethereum', isSeaDrop: false, priceKnown: false, valueWei: '0',
+      maxSupply: 100, maxPerWallet: 1, startTime: null, endTime: null, collection: null, soldOut: false, displayPrice: null,
+    }),
+    mint: async (userId, input) => { mints.push({ userId, input }); return { state: 'confirmed', txHash: '0xnow2' }; },
+  });
+  const ctx = { identity: { resolveOrCreate: async () => 'internal-user' }, commands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT };
+  const handler = createDiscordInteractionHandler(ctx);
+  const slash = chatInteraction('mintnow', 'now-2', { contract: '0x0000000000000000000000000000000000000001' });
+  await handler(slash);
+  assert.equal(mints.length, 1);
+  assert.equal(mints[0].input.priceETH, 0);
+  assert.match(slash.replies[0].content, /Mint confirmed/);
+});
+
+test('/mintnow with multiple wallets asks which one (single-select, not the batch multi-select), then mints immediately with no confirm step', async () => {
+  const flowState = createFlowStateStore();
+  const mints = [];
+  const commands = baseCommands({
+    wallets: () => [{ label: 'alpha', chain: 'ethereum' }, { label: 'beta', chain: 'ethereum' }],
+    mint: async (userId, input) => { mints.push({ userId, input }); return { state: 'confirmed', txHash: '0xnow3' }; },
+  });
+  const ctx = { identity: { resolveOrCreate: async () => 'internal-user' }, commands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT };
+  const handler = createDiscordInteractionHandler(ctx);
+  const slash = chatInteraction('mintnow', 'now-3', { contract: '0x0000000000000000000000000000000000000001' });
+  await handler(slash);
+  assert.equal(mints.length, 0, 'must not mint before a wallet is chosen');
+  const picker = slash.replies[0].components[0].components[0];
+  assert.equal(picker.custom_id, 'flow:mintwallet:select');
+  assert.equal(picker.max_values, undefined, 'must be the plain single-select, not the batch multi-select');
+  assert.deepEqual(picker.options.map(o => o.value), ['alpha', 'beta']);
+  assert.equal(flowState.get('discord', 'now-3').step, 'awaiting_wallet');
+
+  const select = selectInteraction('flow:mintwallet:select', ['beta'], 'now-3');
+  await handler(select);
+  assert.equal(mints.length, 1);
+  assert.equal(mints[0].input.walletLabel, 'beta');
+  assert.match(select.updates[0].content, /Mint confirmed/);
+  assert.equal(flowState.get('discord', 'now-3'), null);
+});
+
+test('/mintnow with an unresolvable contract degrades to a clear error and starts no flow', async () => {
+  const flowState = createFlowStateStore();
+  const commands = baseCommands({ resolveMintContractInput: async () => null });
+  const ctx = { identity: { resolveOrCreate: async () => 'internal-user' }, commands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT };
+  const handler = createDiscordInteractionHandler(ctx);
+  const slash = chatInteraction('mintnow', 'now-4', { contract: 'not-a-contract' });
+  await handler(slash);
+  assert.match(slash.replies[0], /Could not find this contract on any supported chain/);
+  assert.equal(flowState.get('discord', 'now-4'), null);
+});
+
 // The full OpenSea floor/holders/volume table is reserved for /info's explicit, no-mint-intent
 // lookup -- a plain paste and /mint's own under-specified path get the leaner card (still real
 // live price/timing/sold-out status), matching Telegram's own startMintFlow(includeStats).

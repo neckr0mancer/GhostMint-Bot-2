@@ -96,6 +96,11 @@ function commandDefinitions({ supportedChains = [], chains = {} } = {}) {
   // mint-intent implied. Mint Now still works from the card if the user decides to go ahead.
   commands.push(new SlashCommandBuilder().setName('info').setDescription('🔍 Look up a contract without minting')
     .addStringOption(o => o.setName('contract').setDescription('Contract address').setRequired(true)));
+  // Mirrors Telegram's /mintnow: typing the command is itself the explicit skip-confirmation
+  // opt-in. Immediate, single-wallet, quantity 1 -- no card, no price-entry step, no confirm
+  // screen; only asks a question at all if there's more than one wallet to pick from.
+  commands.push(new SlashCommandBuilder().setName('mintnow').setDescription('🔥 Mint immediately, no confirmation')
+    .addStringOption(o => o.setName('contract').setDescription('Contract address').setRequired(true)));
   // Only contract is required -- wallets/quantity used to be mandatory free-text too, forcing
   // wallet labels to be typed by hand with no picker at all. Omitting wallets (or quantity) now
   // routes through the same guided card /mint's own under-specified path uses, just with multi:true
@@ -438,6 +443,42 @@ async function startMintGuidedFlow(ctx, respond, platformUserId, userId, contrac
   };
   flowState.start('discord', platformUserId, 'mint_guided', 'awaiting_details', data);
   return respond(mintFlowRenderPayload('awaiting_details', data, { chains }));
+}
+
+// Entry point for /mintnow: skips the details card, quantity step, price-entry step, and confirm
+// screen entirely -- typing the command is itself the explicit skip-confirmation opt-in, mirroring
+// Telegram's oneShot. Quantity is always 1 (mintnow is a single quick mint, not a batch/quantity-
+// picking flow -- /mint's guided card is there for more control). If the contract exposes a real
+// price it's used; if not, priceETH is left at 0 and priceUnknown is forced to false so the shared
+// decision core (mintFlowDecision.afterWalletSelection/afterPriceKnown) goes straight to execution
+// instead of asking. This isn't really "guessing" for the common SeaDrop case: prepareMintCall
+// already re-reads the live on-chain price at execution time regardless of what's passed here. For
+// a plain contract with no price getter at all, this sends 0 and lets the contract's own revert
+// (surfaced through the existing simulation/error decoding) be the honest answer if that's wrong,
+// rather than blocking on a price nobody -- user or contract -- can actually supply up front.
+async function startMintNowFlow(ctx, respond, platformUserId, userId, contractAddressInput) {
+  const { commands, flowState, chains } = ctx;
+  const contractAddress = await commands.resolveMintContractInput(contractAddressInput);
+  if (!contractAddress) return undefined;
+  let detected;
+  try {
+    detected = await commands.detectMintContract(userId, { contractAddress, quantity: 1 });
+  } catch (error) {
+    if (error instanceof ValidationError) return undefined;
+    throw error;
+  }
+  const data = {
+    multi: false, contractAddress, chain: detected.chain, selectedWallets: [],
+    isSeaDrop: detected.isSeaDrop,
+    priceETH: detected.priceKnown ? Number(formatEther(BigInt(detected.valueWei))) : 0,
+    priceUnknown: false, quantity: 1, skipConfirm: true, originMessagePublic: false,
+  };
+  const wallets = commands.wallets(userId);
+  if (wallets.length === 1) {
+    return finishMintExecutionDiscord(ctx, respond, platformUserId, userId, { ...data, selectedWallets: [wallets[0].label] });
+  }
+  flowState.start('discord', platformUserId, 'mint_guided', 'awaiting_wallet', data);
+  return respond(discordMenus.walletSelect(wallets, { customId: 'flow:mintwallet:select', emptyHint: 'No wallets yet. Create one first from the Wallets menu.' }));
 }
 
 function createDiscordInteractionHandler({ identity, commands, allowedGuildId, allowedChannelIds=null, securityAudit={record:async()=>{}},
@@ -1130,7 +1171,7 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
       }
       userId = await identity.resolveOrCreate('discord', discordId);
       await enforceAccountStatus(userId);
-      if(['wallet','mint','batch-mint','admin','watch','sniper','confirm-trigger','target-policy'].includes(interaction.commandName)) {
+      if(['wallet','mint','mintnow','batch-mint','admin','watch','sniper','confirm-trigger','target-policy'].includes(interaction.commandName)) {
         rateLimiter.check('discord',userId,interaction.commandName);
       }
       let message;
@@ -1210,12 +1251,27 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
             message = 'Could not find this contract on any supported chain. Double-check the address.';
             break;
           }
-          const result = await commands.mint(userId, { walletLabel, contractAddress: interaction.options.getString('contract'), quantity, priceETH: interaction.options.getNumber('price'), chain: interaction.options.getString('chain') });
+          // Fully specified (wallet+quantity both given) skips startMintGuidedFlow entirely, which
+          // is the only other place that resolves an OpenSea link -- resolve it here too, or
+          // pasting a link into a fully-specified /mint would fail validation (ethereumAddress()
+          // rejects anything that isn't a literal 0x address) even though the same link works fine
+          // through the under-specified path above. Falls back to the raw input on a resolution
+          // miss so the existing "must be a valid Ethereum address" message still fires normally.
+          const rawContract = interaction.options.getString('contract');
+          const contractAddress = await commands.resolveMintContractInput(rawContract) || rawContract;
+          const result = await commands.mint(userId, { walletLabel, contractAddress, quantity, priceETH: interaction.options.getNumber('price'), chain: interaction.options.getString('chain') });
           message = `Mint ${result.state}: ${result.txHash || result.intentId}`; break;
         }
         case 'info': {
           const started = await startMintGuidedFlow(mintCtx, payload => interaction.editReply(payload),
             context.platformUserId, userId, interaction.options.getString('contract'), { originMessagePublic: false, includeStats: true });
+          if (started !== undefined) return;
+          message = 'Could not find this contract on any supported chain. Double-check the address.';
+          break;
+        }
+        case 'mintnow': {
+          const started = await startMintNowFlow(mintCtx, payload => interaction.editReply(payload),
+            context.platformUserId, userId, interaction.options.getString('contract'));
           if (started !== undefined) return;
           message = 'Could not find this contract on any supported chain. Double-check the address.';
           break;
@@ -1233,7 +1289,10 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
             message = 'Could not find this contract on any supported chain. Double-check the address.';
             break;
           }
-          const results = await commands.batchMint(userId, { walletLabels: walletsInput.split(',').map(v => v.trim()), contractAddress: interaction.options.getString('contract'), quantity, priceETH: price, chain: interaction.options.getString('chain') });
+          // Same OpenSea-link resolution as /mint's fully-specified branch above, same reason.
+          const rawContract = interaction.options.getString('contract');
+          const contractAddress = await commands.resolveMintContractInput(rawContract) || rawContract;
+          const results = await commands.batchMint(userId, { walletLabels: walletsInput.split(',').map(v => v.trim()), contractAddress, quantity, priceETH: price, chain: interaction.options.getString('chain') });
           message = `Batch complete: ${results.length} wallet transaction(s).`; break;
         }
         case 'task': {
