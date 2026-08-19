@@ -308,6 +308,30 @@ function mintModeMenu() {
   };
 }
 
+// Batch import's collection card. Keys accumulate one modal at a time -- the "+ another" the owner
+// asked for -- and the modal takes a PARAGRAPH, so somebody holding twenty keys pastes them in one
+// go rather than tapping twenty times. That combination covers both halves of the request without
+// a "how many?" step, which would only add a number to get wrong before you start.
+//
+// The keys themselves are never echoed back. Discord keeps message history, and a card that
+// repeated what you just typed would put every key back on screen for anyone shoulder-surfing.
+function batchImportMenu({ count = 0, chainLabel = '' } = {}) {
+  const ready = count > 0;
+  return {
+    content: `## Batch import${chainLabel ? ` · ${chainLabel}` : ''}\n`
+      + (ready
+        ? `**${count}** key${count === 1 ? '' : 's'} ready to import. Add more, or import what you have.`
+        : 'Add your first private key. You can paste several at once, one per line.')
+      + "\n\n⚠️ Not recommended: keys pass through Discord's messaging systems and may remain in client history.",
+    components: [
+      row([button(ready ? '➕ Add more keys' : '🔑 Add keys', 'wallet:batch-import:add', 'danger')]),
+      row([
+        button(ready ? `✅ Import ${count}` : '✅ Import', 'wallet:batch-import:confirm', 'success', !ready),
+        button('❌ Cancel', 'flow:cancel:ask', 'secondary'),
+      ]),
+    ],
+  };
+}
 function walletsMenu() {
   return {
     content: '## Wallets\nGenerating a new wallet server-side is recommended over importing an existing key.',
@@ -315,6 +339,7 @@ function walletsMenu() {
       row([button('📋 List wallets', 'wallet:list')]),
       row([button('➕ Create wallet', 'wallet:create:start', 'success')]),
       row([button('📥 Import wallet', 'wallet:import:start')]),
+      row([button('📥📥 Batch import', 'wallet:batch-import:start')]),
       row([button('💰 Check balance', 'wallet:balance:pick')]),
       row([button('🗑️ Remove wallet', 'wallet:remove:pick', 'danger')]),
       row([button('⬅️ Back to menu', 'menu:main')]),
@@ -591,7 +616,7 @@ function labelModal({ customId, title, placeholder = '', style = 'short', maxLen
 }
 
 module.exports = {
-  button, row, select, mainMenu, mintModeMenu, walletsMenu, settingsMenu, placeholderMenu,
+  button, row, select, mainMenu, mintModeMenu, batchImportMenu, walletsMenu, settingsMenu, placeholderMenu,
   chainSelect, walletSelect, walletMultiSelect, confirmRemoveWallet, labelModal, gasMenu, activityMenu, tasksMenu, snipersMenu, adminOverviewMenu,
   contractDetailsText, collectionInfoCard, mintQuantitySelect, mintPriceStep, gasTolerancePrompt, mintConfirmation, numberModal,
   taskNameQuickPicks, taskConfirmation,
