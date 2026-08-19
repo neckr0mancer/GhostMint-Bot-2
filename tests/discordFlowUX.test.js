@@ -8,14 +8,24 @@ const { createFlowStateStore } = require('../src/telegram/flowState');
 // on top of the already-tested slash commands.
 
 function baseInteraction(userId) {
-  return {
+  const state = {
     user: { id: userId }, guildId: 'guild', channelId: 'channel',
-    updates: [], replies: [], modal: null,
+    updates: [], replies: [], modal: null, deferred: false, replied: false, deferredMode: null,
     isChatInputCommand: () => false, isButton: () => false, isStringSelectMenu: () => false, isModalSubmit: () => false,
     async update(payload) { this.updates.push(payload); },
-    async reply(payload) { this.replies.push(payload); },
+    async reply(payload) { this.replied = true; this.replies.push(payload); },
     async showModal(payload) { this.modal = payload; },
+    // handleComponent defers every tap up front except the ones reserved for showModal (see
+    // willShowModal in discordBot.js) -- editReply() routes to whichever array matches what the
+    // real Discord client would show (deferUpdate -> the original message, i.e. updates;
+    // deferReply -> a fresh reply, i.e. replies), and followUp() always posts an additional
+    // ephemeral message for the public-origin-message-to-ephemeral transition.
+    async deferUpdate() { this.deferred = true; this.deferredMode = 'update'; },
+    async deferReply(options) { this.deferred = true; this.deferredMode = 'reply'; this.deferOptions = options; },
+    async editReply(payload) { (this.deferredMode === 'update' ? this.updates : this.replies).push(payload); },
+    async followUp(payload) { this.replies.push(payload); },
   };
+  return state;
 }
 
 function buttonInteraction(customId, userId = 'discord-user') {
@@ -68,8 +78,40 @@ test('clicking Wallets edits the message in place with the wallets submenu', asy
   const handler = createDiscordInteractionHandler({ identity: { resolveOrCreate: async () => 'user-a' }, commands: {} });
   const btn = buttonInteraction('menu:wallets');
   await handler(btn);
+  // Deferred via deferUpdate() (edits the original message), then answered via editReply() -- the
+  // same eventual visual effect as a bare update() would have had, just acknowledged up front.
+  assert.equal(btn.deferred, true);
   assert.equal(btn.updates.length, 1);
   assert.match(btn.updates[0].content, /Wallets/);
+});
+
+// The real bug this guards against: "GHOST_1.0 didn't respond in time" was seen even on
+// menu:wallets, which does no RPC/DB work of its own -- identity.resolveOrCreate (a DB round trip
+// every handler runs before its own branch) was apparently slow enough on its own, some of the
+// time, to occasionally blow Discord's 3s component-ack window. handleComponent now defers every
+// tap unconditionally, before identity resolution even runs, rather than only deferring the
+// specific handlers already known to do slow work.
+test('every ordinary button defers before identity resolution runs, not after', async () => {
+  const order = [];
+  const handler = createDiscordInteractionHandler({
+    identity: { resolveOrCreate: async () => { order.push('resolve'); return 'user-a'; } },
+    commands: {},
+  });
+  const btn = buttonInteraction('menu:wallets');
+  const originalDefer = btn.deferUpdate.bind(btn);
+  btn.deferUpdate = async () => { order.push('defer'); return originalDefer(); };
+  await handler(btn);
+  assert.deepEqual(order, ['defer', 'resolve']);
+});
+
+// showModal() is mutually exclusive with defer/reply -- a handler that opens a modal must never
+// have been pre-deferred, or Discord rejects the modal call as "already acknowledged".
+test('a button that opens a modal is never pre-deferred', async () => {
+  const handler = createDiscordInteractionHandler({ identity: { resolveOrCreate: async () => 'user-a' }, commands: {} });
+  const btn = buttonInteraction('menu:mint');
+  await handler(btn);
+  assert.equal(btn.deferred, false);
+  assert.equal(btn.modal.custom_id, 'menu:mint:submit');
 });
 
 test('the create-wallet button starts a guided flow and shows a label modal', async () => {
@@ -150,7 +192,7 @@ test('the remove-wallet select flow requires an explicit confirmation before per
   await handler(buttonInteraction('wallet:remove:pick', 'flow-user-8'));
   const select = selectInteraction('wallet:remove:select', ['cold'], 'flow-user-8');
   await handler(select);
-  assert.match(select.updates[0].content, /Remove wallet \*\*cold\*\*/);
+  assert.match(select.updates[0].content, /Remove wallet cold\?/);
   assert.equal(removed, null);
   const confirm = buttonInteraction('wallet:remove:do:cold', 'flow-user-8');
   await handler(confirm);

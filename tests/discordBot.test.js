@@ -23,16 +23,53 @@ function interaction({ commandName, userId = 'discord-user', subcommand = null, 
 test('Discord command definitions include the complete Milestone 10a surface', () => {
   const definitions = commandDefinitions();
   const names = definitions.map(command => command.name);
-  assert.deepEqual(names, ['menu', 'wallet', 'deposit', 'mint', 'info', 'batch-mint', 'task', 'activity', 'pnl', 'gas', 'sniper', 'mode', 'admin', 'link', 'watch', 'social-usage', 'target-policy', 'confirm-trigger', 'trigger-audit', 'pending', 'transactions']);
+  assert.deepEqual(names, ['menu', 'start', 'wallet', 'deposit', 'mint', 'info', 'batch-mint', 'task', 'activity', 'pnl', 'gas', 'sniper', 'mode', 'admin', 'link', 'watch', 'social-usage', 'target-policy', 'confirm-trigger', 'trigger-audit', 'pending', 'transactions']);
   const wallet = definitions.find(command => command.name === 'wallet');
   const create = wallet.options.find(option => option.name === 'create');
   const imported = wallet.options.find(option => option.name === 'import');
   assert.doesNotMatch(JSON.stringify(create), /private-key/);
-  assert.match(imported.description, /Not recommended/);
+  assert.match(imported.description, /Import wallet/);
+  assert.match(imported.description, /not recommended/i);
   assert.match(imported.options.find(option => option.name === 'private-key').description, /transit|history/);
   const link = definitions.find(command => command.name === 'link');
   const linkCode = link.options.find(option => option.name === 'code');
   assert.equal(linkCode.required, true, 'Discord must never be able to generate a link code, only consume one');
+});
+
+test('/start auto-creates a first wallet for a brand-new user and shows the welcome text plus the main menu', async () => {
+  const created = [];
+  const input = interaction({ commandName: 'start', userId: 'discord-new' });
+  const handler = createDiscordInteractionHandler({
+    identity: { resolveOrCreate: async () => 'user-new' },
+    supportedChains: ['ethereum'],
+    commands: {
+      wallets: userId => (created.some(c => c.userId === userId) ? [{ label: 'wallet-1', address: '0x1', chain: 'ethereum' }] : []),
+      createWallet: async (userId, input2) => { created.push({ userId, ...input2 }); return { label: 'wallet-1', address: '0x1', chain: 'ethereum' }; },
+    },
+  });
+  await handler(input);
+  assert.equal(created.length, 1);
+  assert.equal(created[0].chain, 'ethereum');
+  assert.match(input.replies[0].content, /gm\. i mint things/);
+  assert.match(input.replies[0].content, /Wallet created: wallet-1/);
+  assert.ok(input.replies[0].components.some(row => row.components.some(c => c.custom_id === 'menu:wallets')), 'the real main menu panel, not just the welcome text');
+});
+
+test('/start does not auto-create a second wallet for a returning user, but still shows the welcome text', async () => {
+  const created = [];
+  const input = interaction({ commandName: 'start', userId: 'discord-existing' });
+  const handler = createDiscordInteractionHandler({
+    identity: { resolveOrCreate: async () => 'user-existing' },
+    supportedChains: ['ethereum'],
+    commands: {
+      wallets: () => [{ label: 'main', address: '0xabc', chain: 'ethereum' }],
+      createWallet: async (userId, input2) => { created.push({ userId, ...input2 }); return { label: 'wallet-1', address: '0x1', chain: 'ethereum' }; },
+    },
+  });
+  await handler(input);
+  assert.equal(created.length, 0);
+  assert.match(input.replies[0].content, /gm\. i mint things/);
+  assert.equal(input.replies[0].content.includes('Wallet created'), false);
 });
 
 test('every chain option offers the actual configured chains as a picker instead of free text', () => {
@@ -58,7 +95,7 @@ test('every chain option offers the actual configured chains as a picker instead
   const batchMint = definitions.find(command => command.name === 'batch-mint');
   const batchMintChain = batchMint.options.find(option => option.name === 'chain');
   assert.deepEqual(namesAndValues(batchMintChain.choices), expectedChoices);
-  assert.equal(batchMintChain.required, true);
+  assert.equal(batchMintChain.required, false, 'batch-mint chain stays optional -- auto-detected when omitted, same as /mint');
 
   const gas = definitions.find(command => command.name === 'gas');
   const gasChain = gas.options.find(option => option.name === 'chain');

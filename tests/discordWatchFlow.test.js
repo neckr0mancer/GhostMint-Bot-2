@@ -10,14 +10,23 @@ const { ValidationError } = require('../src/validation/domain');
 // shape, not discordMintFlow.test.js's extended one.
 
 function baseInteraction(userId) {
-  return {
+  const state = {
     user: { id: userId }, guildId: 'guild', channelId: 'channel',
-    updates: [], replies: [], modal: null,
+    updates: [], replies: [], modal: null, deferred: false, replied: false, deferredMode: null,
     isChatInputCommand: () => false, isButton: () => false, isStringSelectMenu: () => false, isModalSubmit: () => false,
     async update(payload) { this.updates.push(payload); },
-    async reply(payload) { this.replies.push(payload); },
+    async reply(payload) { this.replied = true; this.replies.push(payload); },
     async showModal(payload) { this.modal = payload; },
+    // handleComponent defers every tap up front except the ones reserved for showModal (see
+    // willShowModal in discordBot.js) -- editReply() routes to whichever array matches what the
+    // real Discord client would show (deferUpdate -> the original message, i.e. updates;
+    // deferReply -> a fresh reply, i.e. replies).
+    async deferUpdate() { this.deferred = true; this.deferredMode = 'update'; },
+    async deferReply(options) { this.deferred = true; this.deferredMode = 'reply'; this.deferOptions = options; },
+    async editReply(payload) { (this.deferredMode === 'update' ? this.updates : this.replies).push(payload); },
+    async followUp(payload) { this.replies.push(payload); },
   };
+  return state;
 }
 
 function buttonInteraction(customId, userId = 'discord-user') {
@@ -184,7 +193,7 @@ test('the rule list lets you manage, disable/re-enable, and remove a rule with c
 
   const removeAsk = buttonInteraction('watch:remove:ask:rule-9', 'user-5');
   await handler(removeAsk);
-  assert.match(removeAsk.updates[0].content, /Remove watch rule \*\*Existing rule\*\*/);
+  assert.match(removeAsk.updates[0].content, /Remove watch rule Existing rule\?/);
   assert.equal(rules.length, 1, 'nothing removed yet -- confirmation only');
 
   const removeDo = buttonInteraction('watch:remove:do:rule-9', 'user-5');

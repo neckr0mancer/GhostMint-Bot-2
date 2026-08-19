@@ -214,8 +214,8 @@ test('tasksMenu says so plainly when there are no scheduled tasks', () => {
 test('snipersMenu matches /sniper list\'s exact format and disclaimer', () => {
   const list = snipersMenu([{ label: 'Copy Cool Cats', active: true, id: 'sniper-1' }, { label: 'Old one', active: false, id: 'sniper-2' }]);
   assert.match(list.content, /Post-confirmation copying only; not mempool front-running/);
-  assert.match(list.content, /\*\*Copy Cool Cats\*\* \[active\] — sniper-1/);
-  assert.match(list.content, /\*\*Old one\*\* \[inactive\] — sniper-2/);
+  assert.match(list.content, /Copy Cool Cats \[active\] — sniper-1/);
+  assert.match(list.content, /Old one \[inactive\] — sniper-2/);
 
   const empty = snipersMenu([]);
   assert.match(empty.content, /No matching snipers/);

@@ -29,8 +29,11 @@ function row(components) {
   return { type: ROW, components };
 }
 
-function select(customId, options, placeholder) {
-  return row([{ type: SELECT, custom_id: customId, placeholder, options }]);
+function select(customId, options, placeholder, { minValues, maxValues } = {}) {
+  const component = { type: SELECT, custom_id: customId, placeholder, options };
+  if (minValues !== undefined) component.min_values = minValues;
+  if (maxValues !== undefined) component.max_values = maxValues;
+  return row([component]);
 }
 
 function mainMenu({ isOwner = false } = {}) {
@@ -41,7 +44,7 @@ function mainMenu({ isOwner = false } = {}) {
     row([button('⛽ Gas', 'menu:gas'), button('⚙️ Settings', 'menu:settings')]),
   ];
   if (isOwner) rows.push(row([button('🛡️ Admin', 'menu:admin')]));
-  return { content: '**GhostMint**\nChoose a section below, or use a slash command directly if you already know it.', components: rows };
+  return { content: '## GhostMint\nChoose a section below, or use a slash command directly if you already know it.', components: rows };
 }
 
 // Discord counterpart to Telegram's contractDetailsText (src/telegram/menus.js). Pure text only --
@@ -52,7 +55,7 @@ function contractDetailsText({ contractAddress, chain, chainLabel, isSeaDrop, pr
   // Blank lines below group the card into identity / price / limits bands instead of one flat
   // run-on list -- mirrors src/telegram/menus.js's contractDetailsText.
   const lines = [
-    collection?.name ? `**${collection.name}**` : '**Contract details**',
+    collection?.name ? `## ${collection.name}` : '## Contract details',
     `\`${contractAddress}\``,
     `${chainEmojiTag(chain)}Chain: ${chainLabel} · ${isSeaDrop ? 'SeaDrop drop' : 'Standard mint(uint256)'}`,
     '',
@@ -108,7 +111,7 @@ function collectionInfoCard({ contractAddress, chain, chainLabel, chainSym, isSe
   // Blank lines below group the card into identity / price / stats / limits / description bands --
   // mirrors src/telegram/menus.js's collectionInfoCard.
   const lines = [
-    collection?.name ? `**${collection.name}**` : '**Contract details**',
+    collection?.name ? `## ${collection.name}` : '## Contract details',
     `\`${contractAddress}\``,
     `${chainEmojiTag(chain)}Chain: ${chainLabel} · ${isSeaDrop ? 'SeaDrop drop' : 'Standard mint(uint256)'}`,
     '',
@@ -140,7 +143,7 @@ function collectionInfoCard({ contractAddress, chain, chainLabel, chainSym, isSe
     if (statRows.length) {
       const labelWidth = Math.max(...statRows.map(([label]) => label.length));
       const table = statRows.map(([label, value]) => `${label.padEnd(labelWidth)}  ${value}`).join('\n');
-      lines.push('', '**Stats**', `\`\`\`\n${table}\n\`\`\``);
+      lines.push('', '### Stats', `\`\`\`\n${table}\n\`\`\``);
     }
   }
 
@@ -193,7 +196,7 @@ function mintPriceStep({ chainSym, displayPrice }) {
   const sym = chainSym || 'native currency';
   if (displayPrice) {
     return {
-      content: `This contract does not expose a recognized price function. OpenSea suggests a floor price of **${displayPrice.eth} ${sym}**. Use this as the mint price, or enter one yourself?`,
+      content: `This contract does not expose a recognized price function. OpenSea suggests a floor price of ${displayPrice.eth} ${sym}. Use this as the mint price, or enter one yourself?`,
       components: [
         row([button(`✅ Use ${displayPrice.eth} ${sym}`, 'flow:priceaccept', 'success'), button('✏️ Enter manually', 'flow:pricemanual')]),
         row([button('❌ Cancel', 'flow:cancel:ask', 'danger')]),
@@ -206,13 +209,37 @@ function mintPriceStep({ chainSym, displayPrice }) {
   };
 }
 
+// Section AA/O -- Discord counterpart to Telegram's gasTolerancePrompt (Round 8, Section AE was
+// scoped to Telegram's guided /batch only at the time -- Discord's /batch-mint had no guided flow
+// at all back then, so this step was never reachable there until the wallet multi-select follow-up
+// exposed the same shared mintFlowDecision.afterPriceKnown path Telegram already used). Lets the
+// user cap what this batch is willing to pay in gas without touching their account's own governance
+// ceiling (shown here for context, never raised by this choice).
+function gasTolerancePrompt({ currentGasGwei, ceilingGwei }) {
+  const currentLine = currentGasGwei === null || currentGasGwei === undefined
+    ? 'Current network gas price is unavailable right now.'
+    : `Current network gas price: ${currentGasGwei} gwei.`;
+  return {
+    content: `⛽ Gas tolerance for this batch\n${currentLine}\nYour account's gas ceiling: ${ceilingGwei} gwei (this batch will never blow past it).\n\nWant a tighter cap just for this batch? Any wallet whose tx would exceed it gets skipped, not sent.`,
+    components: [
+      row([button(`✅ No extra limit (up to ${ceilingGwei} gwei)`, 'flow:gastoleranceaccept', 'success')]),
+      row([button('✏️ Set my own gwei cap', 'flow:gastolerancemanual')]),
+      row([button('❌ Cancel', 'flow:cancel:ask', 'danger')]),
+    ],
+  };
+}
+
 // Section AA -- Discord counterpart to Telegram's mintConfirmation.
-function mintConfirmation({ contractAddress, chainLabel, walletLabels, quantity = 1, priceETH, priceUnknown }) {
+function mintConfirmation({ contractAddress, chainLabel, walletLabels, quantity = 1, priceETH, priceUnknown, maxGasGwei }) {
   const priceLine = priceUnknown
     ? 'Price: not exposed by this contract — using the amount you entered above.'
     : `Price: ${priceETH} per item (read from the contract)`;
+  // maxGasGwei only ever appears here for a batch (see afterGasToleranceResolved) -- undefined
+  // means this confirm screen isn't reachable through that step at all (a plain /mint), so the
+  // line is omitted entirely rather than shown as "not set" for a flow that was never asked.
+  const gasLine = maxGasGwei === undefined ? '' : `\nGas tolerance: ${maxGasGwei === null ? 'no extra limit (account ceiling only)' : `up to ${maxGasGwei} gwei`}`;
   return {
-    content: `**Confirm mint**\nContract: \`${contractAddress}\`\nChain: ${chainLabel}\nWallet(s): ${walletLabels.join(', ')}\nQuantity: ${quantity} each\n${priceLine}\n\nProceed?`,
+    content: `## Confirm mint\nContract: \`${contractAddress}\`\nChain: ${chainLabel}\nWallet(s): ${walletLabels.join(', ')}\nQuantity: ${quantity} each\n${priceLine}${gasLine}\n\nProceed?`,
     components: [row([button('✅ Confirm', 'flow:mintconfirm', 'success'), button('❌ Cancel', 'flow:cancel:ask', 'danger')])],
   };
 }
@@ -247,7 +274,7 @@ function taskConfirmation({ name, contractAddress, chainLabel, walletLabel, quan
     ? 'Price: not exposed by this contract'
     : `Price: ${priceETH} per item (read from the contract)`;
   return {
-    content: `**Confirm scheduled mint**\nName: ${name}\nContract: \`${contractAddress}\`\nChain: ${chainLabel}\nWallet: ${walletLabel}\nQuantity: ${quantity || 1}\n${priceLine}\nFires: **${formatGmtPlus1(mintTime)}**\n\nThis is not a reminder -- the bot signs and sends the mint itself at that moment.\n\nProceed?`,
+    content: `## Confirm scheduled mint\nName: ${name}\nContract: \`${contractAddress}\`\nChain: ${chainLabel}\nWallet: ${walletLabel}\nQuantity: ${quantity || 1}\n${priceLine}\nFires: ${formatGmtPlus1(mintTime)}\n\nThis is not a reminder -- the bot signs and sends the mint itself at that moment.\n\nProceed?`,
     components: [row([button('✅ Schedule it', 'flow:taskconfirm', 'success'), button('❌ Cancel', 'flow:cancel:ask', 'danger')])],
   };
 }
@@ -268,7 +295,7 @@ function numberModal({ customId, title, placeholder = '' }) {
 
 function walletsMenu() {
   return {
-    content: '**Wallets**\nGenerating a new wallet server-side is recommended over importing an existing key.',
+    content: '## Wallets\nGenerating a new wallet server-side is recommended over importing an existing key.',
     components: [
       row([button('📋 List wallets', 'wallet:list')]),
       row([button('➕ Create wallet', 'wallet:create:start', 'success')]),
@@ -284,11 +311,11 @@ function settingsMenu({ isOwner = false } = {}) {
   const rows = [row([button('🔗 Enter a link code from Telegram', 'link:enter')])];
   if (isOwner) rows.push(row([button('🛡️ Admin console', 'menu:admin')]));
   rows.push(row([button('⬅️ Back to menu', 'menu:main')]));
-  return { content: '**Settings**', components: rows };
+  return { content: '## Settings', components: rows };
 }
 
 function placeholderMenu(title, hint) {
-  return { content: `**${title}**\n${hint}`, components: [row([button('⬅️ Back to menu', 'menu:main')])] };
+  return { content: `## ${title}\n${hint}`, components: [row([button('⬅️ Back to menu', 'menu:main')])] };
 }
 
 // Real per-chain brand marks, uploaded once as application emojis (bot-wide -- usable in any guild
@@ -338,10 +365,10 @@ function gasMenu({ chain, fees, supportedChains, chains }) {
   const rows = chunk(chainButtons, 5).map(row_ => row(row_));
   rows.push(row([button('⬅️ Back to menu', 'menu:main')]));
   const readout = fees
-    ? `Safe: **${fees.safeGasPriceGwei ?? 'unavailable'}** Gwei\nStandard: **${fees.gasPriceGwei ?? 'unavailable'}** Gwei\nFast: **${fees.maxFeePerGasGwei ?? 'unavailable'}** Gwei`
+    ? `Safe: ${fees.safeGasPriceGwei ?? 'unavailable'} Gwei\nStandard: ${fees.gasPriceGwei ?? 'unavailable'} Gwei\nFast: ${fees.maxFeePerGasGwei ?? 'unavailable'} Gwei`
     : "Couldn't fetch gas prices for this chain right now.";
   return {
-    content: `⛽ **Gas check: ${chains[chain]?.name || chain}**\n${readout}`,
+    content: `## ⛽ Gas check: ${chains[chain]?.name || chain}\n${readout}`,
     components: rows,
   };
 }
@@ -359,7 +386,7 @@ function activityMenu(page) {
   const rows = nav.length ? [row(nav)] : [];
   rows.push(row([button('⬅️ Back to menu', 'menu:main')]));
   return {
-    content: `📊 **Activity** (page ${page.page}/${page.totalPages}, ${page.total} total)\n${lines}`,
+    content: `## 📊 Activity (page ${page.page}/${page.totalPages}, ${page.total} total)\n${lines}`,
     components: rows,
   };
 }
@@ -368,7 +395,7 @@ function activityMenu(page) {
 // activityMenu above.
 function tasksMenu(page) {
   const lines = page.items.length
-    ? page.items.map(task => `**${task.name}** [${task.status}] — ${formatGmtPlus1(task.mintTime)} — ${task.id}`).join('\n')
+    ? page.items.map(task => `${task.name} [${task.status}] — ${formatGmtPlus1(task.mintTime)} — ${task.id}`).join('\n')
     : 'No scheduled tasks.';
   const nav = [];
   if (page.page > 1) nav.push(button('◀️ Prev', `tasks:page:${page.page - 1}`));
@@ -376,7 +403,7 @@ function tasksMenu(page) {
   const rows = nav.length ? [row(nav)] : [];
   rows.push(row([button('🗓️ Schedule mint', 'menu:mint'), button('⬅️ Back to menu', 'menu:main')]));
   return {
-    content: `🗓️ **Tasks** (page ${page.page}/${page.totalPages}, ${page.total} total)\n${lines}`,
+    content: `## 🗓️ Tasks (page ${page.page}/${page.totalPages}, ${page.total} total)\n${lines}`,
     components: rows,
   };
 }
@@ -385,7 +412,7 @@ function tasksMenu(page) {
 // (Post-confirmation copying disclaimer included) rather than replying "use /sniper list".
 function snipersMenu(snipers) {
   const lines = snipers.length
-    ? snipers.map(item => `**${item.label}** [${item.active ? 'active' : 'inactive'}] — ${item.id}`).join('\n')
+    ? snipers.map(item => `${item.label} [${item.active ? 'active' : 'inactive'}] — ${item.id}`).join('\n')
     : 'No matching snipers.';
   return {
     content: `🎯 Post-confirmation copying only; not mempool front-running.\n${lines}`,
@@ -401,13 +428,13 @@ function snipersMenu(snipers) {
 // governance/adminOverviewFormat.js), same shared formatting Telegram's adminOverviewMenu uses.
 function adminOverviewMenu({ metrics, groups }) {
   const groupLines = groups.length
-    ? groups.map(g => `• **${g.name}** — gas ≤${g.gasCeilingGwei ?? 'no ceiling'} gwei, tx ≤${g.maxTransactionValueEth ?? 'no ceiling'}, daily ≤${g.dailySpendingBudgetEth ?? 'no ceiling'}`).join('\n')
+    ? groups.map(g => `• ${g.name} — gas ≤${g.gasCeilingGwei ?? 'no ceiling'} gwei, tx ≤${g.maxTransactionValueEth ?? 'no ceiling'}, daily ≤${g.dailySpendingBudgetEth ?? 'no ceiling'}`).join('\n')
     : 'No groups configured yet.';
   return {
-    content: `🛡️ **Admin overview**\n`
+    content: `## 🛡️ Admin overview\n`
       + `Users: ${metrics.totalUsers} total · ${metrics.activeAnyPlatform24h} active in 24h · ${metrics.owners} owner${metrics.owners === 1 ? '' : 's'} (${metrics.rootOwners} root)\n`
       + `Groups: ${metrics.groups} · Linked accounts: ${metrics.linkedAccounts}\n\n`
-      + `**Groups**\n${groupLines}\n\n`
+      + `### Groups\n${groupLines}\n\n`
       + `Per-user detail and every other action: \`/admin action:<action> confirm:true\`.`,
     components: [row([button('⬅️ Back to menu', 'menu:main')])],
   };
@@ -417,6 +444,19 @@ function walletSelect(wallets, { customId, emptyHint }) {
   if (!wallets.length) return placeholderMenu('Wallets', emptyHint);
   const options = wallets.map(w => ({ label: `${w.label} (${w.chain})`, value: w.label, emoji: CHAIN_EMOJI[w.chain] || undefined }));
   return { content: 'Choose a wallet:', components: [select(customId, options, 'Select a wallet'), row([button('⬅️ Back to menu', 'menu:wallets')])] };
+}
+
+// Batch mint (multi:true) needs more than one wallet -- Discord's select menu supports true
+// multi-select in one component (min_values/max_values), unlike Telegram's toggle-then-Continue
+// button list (no equivalent component exists there), so this is a single tap-to-submit select
+// rather than a dedicated multi-step picker.
+function walletMultiSelect(wallets, { customId, emptyHint }) {
+  if (!wallets.length) return placeholderMenu('Wallets', emptyHint);
+  const options = wallets.map(w => ({ label: `${w.label} (${w.chain})`, value: w.label, emoji: CHAIN_EMOJI[w.chain] || undefined }));
+  return {
+    content: 'Choose every wallet to include in this batch:',
+    components: [select(customId, options, 'Select one or more wallets', { minValues: 1, maxValues: wallets.length }), row([button('❌ Cancel', 'flow:cancel:ask', 'danger')])],
+  };
 }
 
 // Watch-rule guided create flow -- Discord counterpart to the Telegram menu functions of the same
@@ -477,7 +517,7 @@ function watchRuleConfirmation({ name, type, method, config }) {
     .map(([key, value]) => `${key}: ${Array.isArray(value) ? value.join(', ') : String(value)}`)
     .join('\n');
   return {
-    content: `**Confirm watch rule**\nName: ${name}\nWatching: ${WATCH_TYPE_META[type]?.label || type}\nMethod: ${WATCH_METHOD_META[method]?.label || method}\n${configLines}\n\nCreate this rule?`,
+    content: `## Confirm watch rule\nName: ${name}\nWatching: ${WATCH_TYPE_META[type]?.label || type}\nMethod: ${WATCH_METHOD_META[method]?.label || method}\n${configLines}\n\nCreate this rule?`,
     components: [row([button('✅ Create rule', 'flow:watchconfirm', 'success'), button('❌ Cancel', 'flow:cancel:ask', 'danger')])],
   };
 }
@@ -495,7 +535,7 @@ function watchRulesList(rules) {
 
 function watchRuleActions(rule) {
   return {
-    content: `**${rule.name}**\nStatus: ${rule.enabled ? '🟢 enabled' : '⚪ disabled'}\nWatching: ${WATCH_TYPE_META[rule.type]?.label || rule.type}\nMethod: ${WATCH_METHOD_META[rule.method]?.label || rule.method}\nID: \`${rule.id}\``,
+    content: `## ${rule.name}\nStatus: ${rule.enabled ? '🟢 enabled' : '⚪ disabled'}\nWatching: ${WATCH_TYPE_META[rule.type]?.label || rule.type}\nMethod: ${WATCH_METHOD_META[rule.method]?.label || rule.method}\nID: \`${rule.id}\``,
     components: [
       row([button(rule.enabled ? '⏸ Disable' : '▶️ Re-enable', `watch:toggle:${rule.id}`)]),
       row([button('🗑️ Remove', `watch:remove:ask:${rule.id}`, 'danger')]),
@@ -506,7 +546,7 @@ function watchRuleActions(rule) {
 
 function confirmRemoveWatchRule(rule) {
   return {
-    content: `Remove watch rule **${rule.name}**? This cannot be undone.`,
+    content: `Remove watch rule ${rule.name}? This cannot be undone.`,
     components: [row([
       button('✅ Yes, remove it', `watch:remove:do:${rule.id}`, 'danger'),
       button('❌ No, keep it', `watch:manage:${rule.id}`),
@@ -516,7 +556,7 @@ function confirmRemoveWatchRule(rule) {
 
 function confirmRemoveWallet(label) {
   return {
-    content: `Remove wallet **${label}**? This cannot be undone.`,
+    content: `Remove wallet ${label}? This cannot be undone.`,
     components: [row([
       button('✅ Yes, remove it', `wallet:remove:do:${label}`, 'danger'),
       button('❌ No, keep it', 'menu:wallets'),
@@ -537,8 +577,8 @@ function labelModal({ customId, title, placeholder = '', style = 'short', maxLen
 
 module.exports = {
   button, row, select, mainMenu, walletsMenu, settingsMenu, placeholderMenu,
-  chainSelect, walletSelect, confirmRemoveWallet, labelModal, gasMenu, activityMenu, tasksMenu, snipersMenu, adminOverviewMenu,
-  contractDetailsText, collectionInfoCard, mintQuantitySelect, mintPriceStep, mintConfirmation, numberModal,
+  chainSelect, walletSelect, walletMultiSelect, confirmRemoveWallet, labelModal, gasMenu, activityMenu, tasksMenu, snipersMenu, adminOverviewMenu,
+  contractDetailsText, collectionInfoCard, mintQuantitySelect, mintPriceStep, gasTolerancePrompt, mintConfirmation, numberModal,
   taskNameQuickPicks, taskConfirmation,
   watchTypeSelect, watchMethodSelect, watchConfigModal, watchRuleConfirmation,
   watchRulesList, watchRuleActions, confirmRemoveWatchRule,

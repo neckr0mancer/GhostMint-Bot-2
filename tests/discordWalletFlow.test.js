@@ -60,7 +60,7 @@ test('wallet:balance:select defers before the multi-chain balance check, then ed
   assert.equal(select.deferred, true, 'must acknowledge before the slow RPC check, not after it');
   assert.equal(select.updates.length, 0, 'a deferred interaction must never also call update()');
   assert.equal(select.editReplies.length, 1);
-  assert.match(select.editReplies[0].content, /\*\*main\*\*/);
+  assert.match(select.editReplies[0].content, /## main/);
 });
 
 test('wallet:balance:select formats every chain from result.balances, not a nonexistent result.balance field', async () => {
@@ -82,10 +82,14 @@ test('a slow balance check that eventually rejects still resolves via the deferr
   assert.match(select.editReplies[0].content, /failed safely/i);
 });
 
-test('wallet:balance:pick still responds immediately (no defer needed -- just renders the picker)', async () => {
+test('wallet:balance:pick still renders the picker promptly, via the same blanket up-front defer every tap now gets', async () => {
   const { handler } = fixture();
   const pick = buttonInteraction('wallet:balance:pick');
   await handler(pick);
-  assert.equal(pick.deferred, false);
-  assert.equal(pick.updates.length, 1);
+  // handleComponent defers every component tap unconditionally now (except the modal-reserved
+  // exceptions in willShowModal) -- identity resolution alone was slow enough on its own to
+  // occasionally blow Discord's 3s ack window even for taps like this one that do no RPC work,
+  // hence the blanket defer rather than only deferring known-slow handlers one at a time.
+  assert.equal(pick.deferred, true);
+  assert.equal(pick.editReplies.length, 1);
 });

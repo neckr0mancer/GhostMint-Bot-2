@@ -11,11 +11,19 @@ const { createDiscordInteractionHandler } = require('../src/discord/discordBot')
 function baseInteraction(userId) {
   const state = {
     user: { id: userId }, guildId: 'guild', channelId: 'channel',
-    updates: [], replies: [], modal: null,
+    updates: [], replies: [], modal: null, deferred: false, replied: false, deferredMode: null,
     isChatInputCommand: () => false, isButton: () => false, isStringSelectMenu: () => false, isModalSubmit: () => false,
     async update(payload) { this.updates.push(payload); },
-    async reply(payload) { this.replies.push(payload); },
+    async reply(payload) { this.replied = true; this.replies.push(payload); },
     async showModal(payload) { this.modal = payload; },
+    // handleComponent defers every tap up front except the ones reserved for showModal (see
+    // willShowModal in discordBot.js) -- editReply() routes to whichever array matches what the
+    // real Discord client would show (deferUpdate -> the original message, i.e. updates;
+    // deferReply -> a fresh reply, i.e. replies).
+    async deferUpdate() { this.deferred = true; this.deferredMode = 'update'; },
+    async deferReply(options) { this.deferred = true; this.deferredMode = 'reply'; this.deferOptions = options; },
+    async editReply(payload) { (this.deferredMode === 'update' ? this.updates : this.replies).push(payload); },
+    async followUp(payload) { this.replies.push(payload); },
   };
   return state;
 }

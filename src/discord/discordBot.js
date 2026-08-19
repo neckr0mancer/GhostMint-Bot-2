@@ -53,11 +53,15 @@ function commandDefinitions({ supportedChains = [], chains = {} } = {}) {
     .addChoices({ name: 'Sniper', value: 'sniper' }, { name: 'Social Rule', value: 'social_rule' });
   const commands = [];
   commands.push(new SlashCommandBuilder().setName('menu').setDescription('Open the interactive GhostMint menu'));
+  // Telegram counterpart to /start: same welcome text, same first-wallet auto-create, same main
+  // menu panel underneath -- a brand-new Discord user had no equivalent first-touch experience at
+  // all before this (only /menu, which skips the welcome/auto-create and just shows the bare panel).
+  commands.push(new SlashCommandBuilder().setName('start').setDescription('👻 Get started -- auto-creates your first wallet and opens the main menu'));
   commands.push(new SlashCommandBuilder().setName('wallet').setDescription('👛 Manage your wallets')
     .addSubcommand(c => c.setName('create').setDescription('Recommended: generate and securely store a new wallet')
       .addStringOption(o => o.setName('label').setDescription('Unique wallet label').setRequired(true))
       .addStringOption(o => chainOption(o, { required: true })))
-    .addSubcommand(c => c.setName('import').setDescription("Not recommended: your private key passes through Discord's messaging systems")
+    .addSubcommand(c => c.setName('import').setDescription("Import wallet -- not recommended: your private key passes through Discord's messaging systems")
       .addStringOption(o => o.setName('label').setDescription('Unique wallet label').setRequired(true))
       .addStringOption(o => chainOption(o, { required: true }))
       .addStringOption(o => o.setName('private-key').setDescription('Existing key; may be exposed in platform transit or client history').setRequired(true)))
@@ -67,7 +71,7 @@ function commandDefinitions({ supportedChains = [], chains = {} } = {}) {
     .addSubcommand(c => c.setName('remove').setDescription('Permanently remove a wallet')
       .addStringOption(o => o.setName('label').setDescription('Wallet label').setRequired(true).setAutocomplete(true))
       .addBooleanOption(o => o.setName('confirm').setDescription('Confirm permanent removal').setRequired(true)))
-    .addSubcommand(c => c.setName('batch-import').setDescription('Owner only: import many private keys at once')
+    .addSubcommand(c => c.setName('batch-import').setDescription('Import many private keys at once')
       .addStringOption(o => o.setName('private-keys').setDescription('Comma-separated private keys').setRequired(true))
       .addStringOption(o => chainOption(o, { required: true }))
       .addBooleanOption(o => o.setName('confirm').setDescription('Confirm batch import of multiple private keys').setRequired(true))
@@ -92,12 +96,16 @@ function commandDefinitions({ supportedChains = [], chains = {} } = {}) {
   // mint-intent implied. Mint Now still works from the card if the user decides to go ahead.
   commands.push(new SlashCommandBuilder().setName('info').setDescription('🔍 Look up a contract without minting')
     .addStringOption(o => o.setName('contract').setDescription('Contract address').setRequired(true)));
+  // Only contract is required -- wallets/quantity used to be mandatory free-text too, forcing
+  // wallet labels to be typed by hand with no picker at all. Omitting wallets (or quantity) now
+  // routes through the same guided card /mint's own under-specified path uses, just with multi:true
+  // so the wallet step becomes a real multi-select instead of a single pick.
   commands.push(new SlashCommandBuilder().setName('batch-mint').setDescription('⚡ Mint from multiple wallets')
-    .addStringOption(o => o.setName('wallets').setDescription('Comma-separated wallet labels').setRequired(true))
     .addStringOption(o => o.setName('contract').setDescription('Contract address').setRequired(true))
-    .addIntegerOption(o => o.setName('quantity').setDescription('Quantity per wallet').setMinValue(1).setRequired(true))
-    .addNumberOption(o => o.setName('price').setDescription('Native price per item').setMinValue(0).setRequired(true))
-    .addStringOption(o => chainOption(o, { required: true })));
+    .addStringOption(o => o.setName('wallets').setDescription('Comma-separated wallet labels (omit to pick from a list)'))
+    .addIntegerOption(o => o.setName('quantity').setDescription('Quantity per wallet (omit to see the collection card first)').setMinValue(1))
+    .addNumberOption(o => o.setName('price').setDescription('Native price per item (only if the contract does not expose one)').setMinValue(0))
+    .addStringOption(o => chainOption(o, { description: 'Chain (auto-detected when omitted)' })));
   commands.push(new SlashCommandBuilder().setName('task').setDescription('🗓️ Manage durable scheduled mints')
     .addSubcommand(c => c.setName('create').setDescription('Create a UTC scheduled mint')
       .addStringOption(o => o.setName('input').setDescription('Validated task JSON; mintTime must include Z/offset').setRequired(true))
@@ -175,7 +183,7 @@ const FLOW_CONTINUATIONS = {
   wallet_import: ['flow:label:submit', 'flow:chain:select', 'wallet:import:key-modal', 'flow:key:submit'],
   // Section AA -- every custom_id stays fixed (select-menu VALUES carry the chosen quantity/
   // wallet, never the custom_id itself), so this list needs no dynamic/prefix matching.
-  mint_guided: ['flow:mintdetailscontinue', 'flow:detailsrefresh', 'flow:copyca', 'flow:schedulesuggest', 'flow:mintqty:select', 'flow:mintqty:submit', 'flow:mintwallet:select', 'flow:priceaccept', 'flow:pricemanual', 'flow:mintprice:submit', 'flow:mintconfirm'],
+  mint_guided: ['flow:mintdetailscontinue', 'flow:detailsrefresh', 'flow:copyca', 'flow:schedulesuggest', 'flow:mintqty:select', 'flow:mintqty:submit', 'flow:mintwallet:select', 'flow:mintwalletmulti:select', 'flow:priceaccept', 'flow:pricemanual', 'flow:mintprice:submit', 'flow:gastoleranceaccept', 'flow:gastolerancemanual', 'flow:gastolerance:submit', 'flow:mintconfirm'],
   // Section AF follow-up: Discord's mini schedule flow (Section S's full guided flow remains
   // unbuilt) -- a fixed chain, optional quantity select/modal (only when maxPerWallet > 1) ->
   // wallet select -> name select -> optional custom-name modal -> confirm, with no dynamic values
@@ -192,7 +200,7 @@ function renderFlowStep(flow, step, { supportedChains = [], chains = {} } = {}) 
   }
   if (flow === 'wallet_import' && step === 'awaiting_key') {
     return {
-      content: "⚠️ **Not recommended:** your private key passes through Discord's messaging systems and may remain in client history or notification previews. Tap below to enter it, or cancel.",
+      content: "⚠️ Not recommended: your private key passes through Discord's messaging systems and may remain in client history or notification previews. Tap below to enter it, or cancel.",
       components: [discordMenus.row([
         discordMenus.button('🔑 Enter private key', 'wallet:import:key-modal', 'danger'),
         discordMenus.button('❌ Cancel', 'flow:cancel:ask', 'secondary'),
@@ -264,13 +272,21 @@ function mintFlowRenderPayload(step, data, { wallets = [], chains = {} } = {}) {
   }
   if (step === 'awaiting_quantity') return discordMenus.mintQuantitySelect(data);
   if (step === 'awaiting_wallet') {
-    return discordMenus.walletSelect(wallets, { customId: 'flow:mintwallet:select', emptyHint: 'No wallets yet. Create one first from the Wallets menu.' });
+    return data.multi
+      ? discordMenus.walletMultiSelect(wallets, { customId: 'flow:mintwalletmulti:select', emptyHint: 'No wallets yet. Create one first from the Wallets menu.' })
+      : discordMenus.walletSelect(wallets, { customId: 'flow:mintwallet:select', emptyHint: 'No wallets yet. Create one first from the Wallets menu.' });
   }
   if (step === 'awaiting_price') return discordMenus.mintPriceStep({ chainSym: chains[data.chain]?.sym, displayPrice: data.displayPrice });
+  // /batch-mint only (see mintFlowDecision.afterPriceKnown) -- currentGasGwei/gasCeilingGwei are
+  // resolved live just before this step is rendered (applyMintFlowStep's withGasToleranceContext
+  // below), the same "fetch before rendering" pattern Telegram's own gas-tolerance step already
+  // uses in server.js.
+  if (step === 'awaiting_gastolerance') return discordMenus.gasTolerancePrompt({ currentGasGwei: data.currentGasGwei, ceilingGwei: data.gasCeilingGwei });
   if (step === 'awaiting_confirm') {
     return discordMenus.mintConfirmation({
       contractAddress: data.contractAddress, chainLabel: chains[data.chain]?.name || data.chain,
       walletLabels: data.selectedWallets, quantity: data.quantity || 1, priceETH: data.priceETH, priceUnknown: data.priceUnknown,
+      maxGasGwei: data.maxGasGwei,
     });
   }
   return undefined;
@@ -290,12 +306,24 @@ function neutralizeMintOriginMessage(interaction) {
 // message reply for the flow's opening screen, an interaction reply/update for every step after)
 // so this stays delivery-agnostic. `ctx` bundles the handful of dependencies both createDiscordBot
 // (the messageCreate trigger) and createDiscordInteractionHandler (every later step) already have.
+// /batch-mint only -- resolved live just before the gas-tolerance step is rendered, mirroring
+// Telegram's withGasToleranceContext in server.js exactly (live network gas price alongside the
+// account's own effective ceiling, never the other way around).
+async function withGasToleranceContext(commands, userId, data) {
+  const [fees, gasCeilingGwei] = await Promise.all([
+    commands.gas(data.chain).catch(() => null),
+    commands.gasCeiling(userId, data.chain),
+  ]);
+  return { ...data, currentGasGwei: fees?.gasPriceGwei ?? null, gasCeilingGwei };
+}
+
 async function applyMintFlowStep(ctx, respond, platformUserId, userId, { step, data }) {
   const { commands, flowState, chains } = ctx;
   if (step === 'execute') return finishMintExecutionDiscord(ctx, respond, platformUserId, userId, data);
   const wallets = step === 'awaiting_wallet' ? commands.wallets(userId) : [];
-  flowState.advance('discord', platformUserId, step, data);
-  return respond(mintFlowRenderPayload(step, data, { wallets, chains }));
+  const renderData = step === 'awaiting_gastolerance' ? await withGasToleranceContext(commands, userId, data) : data;
+  flowState.advance('discord', platformUserId, step, renderData);
+  return respond(mintFlowRenderPayload(step, renderData, { wallets, chains }));
 }
 
 // Mirrors server.js's finishMintExecution exactly: a rate limit leaves the flow intact (so the
@@ -308,7 +336,7 @@ async function finishMintExecutionDiscord(ctx, respond, platformUserId, userId, 
     rateLimiter.check('discord', userId, flowData.multi ? 'batch-mint' : 'mint');
     if (flowData.multi) {
       const results = await commands.batchMint(userId, { walletLabels: flowData.selectedWallets,
-        contractAddress: flowData.contractAddress, chain: flowData.chain, quantity: flowData.quantity || 1, priceETH: flowData.priceETH });
+        contractAddress: flowData.contractAddress, chain: flowData.chain, quantity: flowData.quantity || 1, priceETH: flowData.priceETH, maxGasGwei: flowData.maxGasGwei });
       flowState.clear('discord', platformUserId);
       return respond({ content: `✅ Batch complete: ${results.length} wallet transaction(s).`, components: backToMenu });
     }
@@ -356,7 +384,7 @@ async function finishTaskScheduleDiscord(ctx, respond, platformUserId, userId, f
       chain: flowData.chain, quantity: flowData.quantity || 1, priceETH: flowData.priceETH, mintTime: flowData.mintTime,
     });
     flowState.clear('discord', platformUserId);
-    return respond({ content: `✅ Scheduled **${escapeDiscord(task.name)}** to fire at \`${discordMenus.formatGmtPlus1(task.mintTime)}\`.`, components: backToMenu });
+    return respond({ content: `✅ Scheduled ${escapeDiscord(task.name)} to fire at \`${discordMenus.formatGmtPlus1(task.mintTime)}\`.`, components: backToMenu });
   } catch (error) {
     if (error instanceof RateLimitError) {
       return respond({ content: `Too many sensitive commands. Retry in ${Math.ceil(error.retryAfterMs / 1000)} seconds.`, components: backToMenu });
@@ -384,7 +412,7 @@ async function finishTaskScheduleDiscord(ctx, respond, platformUserId, userId, f
 // the leaner card (still real live price/timing/sold-out status, just without the stats table).
 // Carried into flow data so flow:detailsrefresh knows whether to keep re-requesting stats on this
 // same flow or stay lean, without needing to know which entry point originally started it.
-async function startMintGuidedFlow(ctx, respond, platformUserId, userId, contractAddressInput, { originMessagePublic = true, includeStats = false } = {}) {
+async function startMintGuidedFlow(ctx, respond, platformUserId, userId, contractAddressInput, { originMessagePublic = true, includeStats = false, multi = false } = {}) {
   const { commands, flowState, chains } = ctx;
   const contractAddress = await commands.resolveMintContractInput(contractAddressInput);
   if (!contractAddress) return undefined;
@@ -396,7 +424,7 @@ async function startMintGuidedFlow(ctx, respond, platformUserId, userId, contrac
     throw error;
   }
   const data = {
-    multi: false, contractAddress, chain: detected.chain, selectedWallets: [],
+    multi, contractAddress, chain: detected.chain, selectedWallets: [],
     isSeaDrop: detected.isSeaDrop,
     priceETH: detected.priceKnown ? Number(formatEther(BigInt(detected.valueWei))) : undefined,
     priceUnknown: !detected.priceKnown,
@@ -421,13 +449,40 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
   // Section AA: shared bundle applyMintFlowStep/finishMintExecutionDiscord/startMintGuidedFlow
   // need, so every call site below passes the same four dependencies instead of re-listing them.
   const mintCtx = { commands, flowState, chains, rateLimiter };
-  const notYourMintPrompt = interaction => interaction.reply({ content: "This isn't your mint prompt. Paste your own address or link to start one.", ephemeral: true }).catch(() => {});
+  // Deferred (or already-replied) is the common case now that handleComponent defers up front --
+  // followUp() posts a fresh ephemeral message without needing a prior reply(). The one exception
+  // is a modal-reserved tap (see willShowModal) that turns out to be stale/not-mine: no ack ever
+  // happened for it, so this has to fall back to a genuine first reply() instead.
+  const notYourMintPrompt = interaction => (interaction.deferred || interaction.replied
+    ? interaction.followUp({ content: "This isn't your mint prompt. Paste your own address or link to start one.", ephemeral: true })
+    : interaction.reply({ content: "This isn't your mint prompt. Paste your own address or link to start one.", ephemeral: true })
+  ).catch(() => {});
+
+  // Every custom_id that opens a modal, determined synchronously from data (and, for the two
+  // conditional ones, the already-available interaction.values) -- showModal() is mutually
+  // exclusive with defer/reply, so handleComponent's blanket up-front defer below must skip these
+  // or every one of them would throw "already acknowledged" the moment it tried to open its modal.
+  const MODAL_CUSTOM_IDS = new Set(['menu:mint', 'link:enter', 'wallet:create:start', 'wallet:import:start', 'wallet:import:key-modal', 'flow:pricemanual', 'flow:gastolerancemanual', 'watch:add:start', 'flow:watchmethod:select']);
+  function willShowModal(data, interaction) {
+    if (MODAL_CUSTOM_IDS.has(data)) return true;
+    if (data === 'flow:mintqty:select' && interaction.values?.[0] === 'custom') return true;
+    if (data === 'flow:taskname:select' && interaction.values?.[0] === 'custom') return true;
+    return false;
+  }
 
   async function handleComponent(interaction) {
     let context, userId = null;
     const data = interaction.customId || '';
     try {
       context = verifyDiscordContext(interaction, allowedGuildId, { allowedChannelIds });
+      // Acknowledge before any DB/RPC work at all -- Discord gives only 3s to acknowledge a
+      // component interaction, and identity resolution (a DB round trip) alone can eat into that
+      // on a slow connection, before any handler-specific work even begins ("didn't respond in
+      // time" was being seen even on menu:wallets, which does no slow work of its own). Every
+      // handler below already goes through dcRespond (defer-aware: routes to editReply once
+      // deferred) or its own followUp() for the public-origin-message-to-ephemeral transition, so
+      // deferring unconditionally here is safe for everything except the modal-opening exceptions.
+      if (!willShowModal(data, interaction)) await interaction.deferUpdate();
       userId = await identity.resolveOrCreate('discord', context.platformUserId);
       await enforceAccountStatus(userId);
       const platformUserId = context.platformUserId;
@@ -489,7 +544,7 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
       if (data === 'wallet:list') {
         const wallets = commands.wallets(userId);
         if (!wallets.length) return dcRespond(interaction, discordMenus.placeholderMenu('Wallets', 'No wallets yet. Go back and tap Create wallet.'));
-        const list = wallets.map((w,i) => `${i+1}. **${w.label}** — \`${w.address.slice(0,6)}...${w.address.slice(-4)}\` · ${chains[w.chain]?.name || w.chain} · minted: ${w.minted||0}`).join('\n');
+        const list = wallets.map((w,i) => `${i+1}. ${w.label} — \`${w.address.slice(0,6)}...${w.address.slice(-4)}\` · ${chains[w.chain]?.name || w.chain} · minted: ${w.minted||0}`).join('\n');
         return dcRespond(interaction, { content: escapeDiscord(`Wallets (${wallets.length})\n${list}`),
           components: [discordMenus.row([discordMenus.button('⬅️ Back to wallets', 'menu:wallets')])] });
       }
@@ -514,7 +569,7 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
           try {
             const wallet = await commands.createWallet(userId, { label: flow.data.label, chain });
             flowState.clear('discord', platformUserId);
-            return dcRespond(interaction, { content: `✅ Wallet **${wallet.label}** generated securely.\nAddress: \`${wallet.address}\`\nChain: ${wallet.chain}\n\nFund this address to use it. The private key was encrypted at creation and never leaves the server.`,
+            return dcRespond(interaction, { content: `✅ Wallet ${wallet.label} generated securely.\nAddress: \`${wallet.address}\`\nChain: ${wallet.chain}\n\nFund this address to use it. The private key was encrypted at creation and never leaves the server.`,
               components: [discordMenus.row([discordMenus.button('⬅️ Back to wallets', 'menu:wallets')])] });
           } catch (error) {
             flowState.clear('discord', platformUserId);
@@ -538,16 +593,14 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
       if (data === 'wallet:balance:select') {
         const label = interaction.values?.[0];
         // Checks every supported chain in parallel (see botCommandService.walletBalance) -- a
-        // single slow/degraded RPC can still push this past Discord's 3s component-ack window, so
-        // this must defer immediately rather than run the check before responding at all (the
-        // previous shape here, which is what actually produced "the application did not respond").
-        await interaction.deferUpdate();
+        // single slow/degraded RPC can still push this past Discord's 3s component-ack window;
+        // handleComponent's own up-front defer above is what stops this from timing out.
         const result = await commands.walletBalance(userId, label);
         // result.balance/.symbol never existed on this shape (it's result.balances, one entry per
         // chain) -- this button always showed "Balance: undefined undefined" underneath the
         // timeout. Reuses the exact formatting /wallet balance already uses.
         const lines = result.balances.map(b => `${chains[b.chain]?.name || b.chain}: ${b.balance ?? 'unavailable'} ${b.symbol || ''}`).join('\n');
-        return dcRespond(interaction, { content: `**${result.label}**\n${lines}`,
+        return dcRespond(interaction, { content: `## ${result.label}\n${lines}`,
           components: [discordMenus.row([discordMenus.button('⬅️ Back to wallets', 'menu:wallets')])] });
       }
 
@@ -560,7 +613,7 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
       if (data.startsWith('wallet:remove:do:')) {
         const label = data.slice('wallet:remove:do:'.length);
         await commands.removeWallet(userId, label);
-        return dcRespond(interaction, { content: `🗑️ Wallet **${label}** removed.`,
+        return dcRespond(interaction, { content: `🗑️ Wallet ${label} removed.`,
           components: [discordMenus.row([discordMenus.button('⬅️ Back to wallets', 'menu:wallets')])] });
       }
 
@@ -579,7 +632,7 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         if (wentEphemeral) neutralizeMintOriginMessage(interaction);
         const wallets = commands.wallets(userId);
         const decision = mintFlowDecision.afterDetails({ data: { ...flow.data, originMessagePublic: false }, wallets });
-        const respond = payload => (wentEphemeral ? interaction.reply({ ...payload, ephemeral: true }).catch(() => {}) : dcRespond(interaction, payload));
+        const respond = payload => (wentEphemeral ? interaction.followUp({ ...payload, ephemeral: true }).catch(() => {}) : dcRespond(interaction, payload));
         return applyMintFlowStep(mintCtx, respond, platformUserId, userId, decision);
       }
       if (data === 'flow:detailsrefresh') {
@@ -607,10 +660,10 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
       if (data === 'flow:copyca') {
         const flow = flowState.get('discord', platformUserId);
         if (!flow || flow.flow !== 'mint_guided' || !flow.data.contractAddress) return notYourMintPrompt(interaction);
-        // A plain ephemeral reply, not an update -- purely a copy-friendly echo of the address
+        // A plain ephemeral follow-up, not an update -- purely a copy-friendly echo of the address
         // already shown on the card, so tapping it never touches the flow's own public/ephemeral
         // state or its progression.
-        return interaction.reply({ content: `\`${flow.data.contractAddress}\``, ephemeral: true }).catch(() => {});
+        return interaction.followUp({ content: `\`${flow.data.contractAddress}\``, ephemeral: true }).catch(() => {});
       }
       if (data === 'flow:mintqty:select') {
         const flow = flowState.get('discord', platformUserId);
@@ -632,7 +685,7 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         if (wentEphemeral) neutralizeMintOriginMessage(interaction);
         const wallets = commands.wallets(userId);
         const decision = mintFlowDecision.afterQuantity({ data: { ...flow.data, originMessagePublic: false, quantity }, wallets });
-        const respond = payload => (wentEphemeral ? interaction.reply({ ...payload, ephemeral: true }).catch(() => {}) : dcRespond(interaction, payload));
+        const respond = payload => (wentEphemeral ? interaction.followUp({ ...payload, ephemeral: true }).catch(() => {}) : dcRespond(interaction, payload));
         return applyMintFlowStep(mintCtx, respond, platformUserId, userId, decision);
       }
       if (data === 'flow:mintwallet:select') {
@@ -643,7 +696,22 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         const wentEphemeral = Boolean(flow.data.originMessagePublic);
         if (wentEphemeral) neutralizeMintOriginMessage(interaction);
         const decision = mintFlowDecision.afterWalletSelection({ data: { ...flow.data, originMessagePublic: false, selectedWallets: [label] } });
-        const respond = payload => (wentEphemeral ? interaction.reply({ ...payload, ephemeral: true }).catch(() => {}) : dcRespond(interaction, payload));
+        const respond = payload => (wentEphemeral ? interaction.followUp({ ...payload, ephemeral: true }).catch(() => {}) : dcRespond(interaction, payload));
+        return applyMintFlowStep(mintCtx, respond, platformUserId, userId, decision);
+      }
+      // A batch mint (multi:true) needs more than one wallet in one tap -- Discord's native select
+      // menu supports min_values/max_values for exactly this, unlike Telegram's toggle-then-Continue
+      // button list (no such component exists there), so this is a single interaction carrying every
+      // chosen label in interaction.values instead of a dedicated Continue step.
+      if (data === 'flow:mintwalletmulti:select') {
+        const flow = flowState.get('discord', platformUserId);
+        if (!flow || flow.flow !== 'mint_guided' || flow.step !== 'awaiting_wallet') return notYourMintPrompt(interaction);
+        const labels = interaction.values || [];
+        if (!labels.length) return undefined;
+        const wentEphemeral = Boolean(flow.data.originMessagePublic);
+        if (wentEphemeral) neutralizeMintOriginMessage(interaction);
+        const decision = mintFlowDecision.afterWalletSelection({ data: { ...flow.data, originMessagePublic: false, selectedWallets: labels } });
+        const respond = payload => (wentEphemeral ? interaction.followUp({ ...payload, ephemeral: true }).catch(() => {}) : dcRespond(interaction, payload));
         return applyMintFlowStep(mintCtx, respond, platformUserId, userId, decision);
       }
       if (data === 'flow:priceaccept') {
@@ -652,7 +720,7 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         const wentEphemeral = Boolean(flow.data.originMessagePublic);
         if (wentEphemeral) neutralizeMintOriginMessage(interaction);
         const decision = mintFlowDecision.afterPriceResolved({ data: { ...flow.data, originMessagePublic: false }, priceETH: flow.data.displayPrice.eth });
-        const respond = payload => (wentEphemeral ? interaction.reply({ ...payload, ephemeral: true }).catch(() => {}) : dcRespond(interaction, payload));
+        const respond = payload => (wentEphemeral ? interaction.followUp({ ...payload, ephemeral: true }).catch(() => {}) : dcRespond(interaction, payload));
         return applyMintFlowStep(mintCtx, respond, platformUserId, userId, decision);
       }
       if (data === 'flow:pricemanual') {
@@ -664,12 +732,30 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         }
         return interaction.showModal(discordMenus.numberModal({ customId: 'flow:mintprice:submit', title: 'Price per item (0 if free)', placeholder: '0.01' }));
       }
+      // /batch-mint only -- always already ephemeral by this step (wallet selection, earlier in
+      // this same flow, already neutralized any public origin message), so no wentEphemeral dance.
+      if (data === 'flow:gastoleranceaccept') {
+        const flow = flowState.get('discord', platformUserId);
+        if (!flow || flow.flow !== 'mint_guided' || flow.step !== 'awaiting_gastolerance') return notYourMintPrompt(interaction);
+        const decision = mintFlowDecision.afterGasToleranceResolved({ data: flow.data, maxGasGwei: null });
+        return applyMintFlowStep(mintCtx, payload => dcRespond(interaction, payload), platformUserId, userId, decision);
+      }
+      if (data === 'flow:gastolerancemanual') {
+        const flow = flowState.get('discord', platformUserId);
+        if (!flow || flow.flow !== 'mint_guided' || flow.step !== 'awaiting_gastolerance') return notYourMintPrompt(interaction);
+        return interaction.showModal(discordMenus.numberModal({ customId: 'flow:gastolerance:submit', title: `Gwei cap (max ${flow.data.gasCeilingGwei})`, placeholder: '30' }));
+      }
       if (data === 'flow:mintconfirm') {
         const flow = flowState.get('discord', platformUserId);
         if (!flow || flow.flow !== 'mint_guided' || flow.step !== 'awaiting_confirm') return notYourMintPrompt(interaction);
         const wentEphemeral = Boolean(flow.data.originMessagePublic);
         if (wentEphemeral) neutralizeMintOriginMessage(interaction);
-        const respond = payload => (wentEphemeral ? interaction.reply({ ...payload, ephemeral: true }).catch(() => {}) : dcRespond(interaction, payload));
+        // Simulation + broadcast routinely takes longer than Discord's 3s component-ack window --
+        // handleComponent's own up-front defer above is what stops this from showing "the
+        // application did not respond" while the mint itself still goes through underneath
+        // (finishMintExecutionDiscord's own commands.mint()/batchMint() call keeps running
+        // server-side regardless of whether the reply lands in time).
+        const respond = payload => (wentEphemeral ? interaction.followUp({ ...payload, ephemeral: true }).catch(() => {}) : dcRespond(interaction, payload));
         return finishMintExecutionDiscord(mintCtx, respond, platformUserId, userId, { ...flow.data, originMessagePublic: false });
       }
 
@@ -688,7 +774,9 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         if (!flow.data.startTime || flow.data.startTime * 1000 <= Date.now()) return notYourMintPrompt(interaction);
         const wentEphemeral = Boolean(flow.data.originMessagePublic);
         if (wentEphemeral) neutralizeMintOriginMessage(interaction);
-        const respond = payload => (wentEphemeral ? interaction.reply({ ...payload, ephemeral: true }).catch(() => {}) : dcRespond(interaction, payload));
+        // Re-detection is a real RPC round trip -- routinely slower than Discord's 3s component-ack
+        // window; handleComponent's own up-front defer above is what stops this from timing out.
+        const respond = payload => (wentEphemeral ? interaction.followUp({ ...payload, ephemeral: true }).catch(() => {}) : dcRespond(interaction, payload));
         const backToMenu = [discordMenus.row([discordMenus.button('⬅️ Back to menu', 'menu:main')])];
         let detected;
         try {
@@ -801,7 +889,7 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         try {
           const rule = await commands.createWatchRule(userId, { name: flow.data.name, type: flow.data.type, method: flow.data.method, config: flow.data.config });
           flowState.clear('discord', platformUserId);
-          return dcRespond(interaction, { content: `✅ Watch rule **${rule.name}** created using ${rule.method}.`,
+          return dcRespond(interaction, { content: `✅ Watch rule ${rule.name} created using ${rule.method}.`,
             components: [discordMenus.row([discordMenus.button('⬅️ Back to watch rules', 'watch:list')])] });
         } catch (error) {
           flowState.clear('discord', platformUserId);
@@ -887,7 +975,7 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
           rateLimiter.check('discord', userId, 'importwallet');
           const wallet = await commands.importWallet(userId, { label: flow.data.label, chain: flow.data.chain, privateKey: value });
           flowState.clear('discord', platformUserId);
-          await interaction.reply({ content: `✅ Wallet **${wallet.label}** imported at \`${wallet.address}\`.\n⚠️ Not recommended going forward: prefer Create wallet for new wallets.`,
+          await interaction.reply({ content: `✅ Wallet ${wallet.label} imported at \`${wallet.address}\`.\n⚠️ Not recommended going forward: prefer Create wallet for new wallets.`,
             components: [discordMenus.row([discordMenus.button('⬅️ Back to wallets', 'menu:wallets')])], ephemeral: true });
         } catch (error) {
           if (error instanceof ValidationError) {
@@ -939,6 +1027,17 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
           return;
         }
         const decision = mintFlowDecision.afterPriceResolved({ data: flow.data, priceETH });
+        await applyMintFlowStep(mintCtx, payload => interaction.reply({ ...payload, ephemeral: true }).catch(() => {}), platformUserId, userId, decision);
+        return;
+      }
+      if (data === 'flow:gastolerance:submit') {
+        if (flow.flow !== 'mint_guided' || flow.step !== 'awaiting_gastolerance') { await interaction.reply({ content: 'This step has expired. Paste the address or link again.', ephemeral: true }).catch(() => {}); return; }
+        const maxGasGwei = Number(String(interaction.fields.getTextInputValue('value') || '').trim());
+        if (!Number.isFinite(maxGasGwei) || maxGasGwei <= 0) {
+          await interaction.reply({ content: 'Send a positive number of gwei. Tap the gas tolerance prompt again to retry.', ephemeral: true }).catch(() => {});
+          return;
+        }
+        const decision = mintFlowDecision.afterGasToleranceResolved({ data: flow.data, maxGasGwei });
         await applyMintFlowStep(mintCtx, payload => interaction.reply({ ...payload, ephemeral: true }).catch(() => {}), platformUserId, userId, decision);
         return;
       }
@@ -1040,28 +1139,48 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
           await interaction.editReply(discordMenus.mainMenu({ isOwner: await ownerFlag(userId) }));
           return;
         }
+        // Telegram counterpart to /start: same welcome text, same first-wallet auto-create, same
+        // main menu panel underneath. Always shows the welcome text (not just on the very first
+        // use, matching /start's own repeat-safe behavior on Telegram) -- only the auto-create is
+        // gated to "no wallets yet".
+        case 'start': {
+          const hadNoWallets = commands.wallets(userId).length === 0;
+          if (hadNoWallets) {
+            try { await commands.createWallet(userId, { label: 'wallet-1', chain: supportedChains[0] }); }
+            catch (error) { log(`Auto wallet creation on /start failed: ${error?.message || 'unknown error'}`); }
+          }
+          const menu = discordMenus.mainMenu({ isOwner: await ownerFlag(userId) });
+          const created = hadNoWallets ? commands.wallets(userId)[0] : null;
+          const welcome = 'gm. i mint things.\n\nHere\'s the short version:\n\n'
+            + '/mint -- mint from a contract\n/batch-mint -- mint across multiple wallets\n'
+            + '/deposit -- get your wallet address\n/wallet -- manage your wallets\n/menu -- this again\n\n'
+            + 'Paste a contract address to get going.';
+          const createdLine = created ? `\n\nWallet created: ${created.label} -- \`${created.address}\`` : '';
+          await interaction.editReply({ content: `${welcome}${createdLine}\n\n${menu.content}`, components: menu.components });
+          return;
+        }
         case 'deposit': {
           const wallets = commands.wallets(userId);
           if (!wallets.length) { message = 'No wallets yet. Use `/wallet create` first.'; break; }
           const label = interaction.options.getString('label');
           const target = label ? wallets.find(w => w.label === label) : (wallets.length === 1 ? wallets[0] : null);
-          if (!target) { message = `You have multiple wallets -- specify one: ${wallets.map(w => `**${w.label}**`).join(', ')}.`; break; }
-          message = `Send funds to **${target.label}**: \`${target.address}\`. This address works on any EVM chain (${target.chain} is its home chain here).`;
+          if (!target) { message = `You have multiple wallets -- specify one: ${wallets.map(w => w.label).join(', ')}.`; break; }
+          message = `Send funds to ${target.label}: \`${target.address}\`. This address works on any EVM chain (${target.chain} is its home chain here).`;
           break;
         }
         case 'wallet': {
           const action = interaction.options.getSubcommand();
           if (action === 'create') {
             const value = await commands.createWallet(userId, { label: interaction.options.getString('label'), chain: interaction.options.getString('chain') });
-            message = `Wallet **${value.label}** generated securely: \`${value.address}\` (${value.chain}). Fund this public address to use it. The private key was encrypted at creation and is never returned through Discord.`;
+            message = `Wallet ${value.label} generated securely: \`${value.address}\` (${value.chain}). Fund this public address to use it. The private key was encrypted at creation and is never returned through Discord.`;
           } else if (action === 'import') {
             const value = await commands.importWallet(userId, { label: interaction.options.getString('label'), chain: interaction.options.getString('chain'), privateKey: interaction.options.getString('private-key') });
-            message = `Wallet **${value.label}** imported: \`${value.address}\`. ⚠️ Import through Discord is not recommended because the key passed through platform message transit and may remain in client history or notification previews. Prefer generated wallets; a future HTTPS dashboard will provide a safer import path.`;
-          } else if (action === 'list') message = formatRows(commands.wallets(userId), 'No wallets yet.', item => `**${item.label}** — \`${item.address}\` — ${item.chain}`);
+            message = `Wallet ${value.label} imported: \`${value.address}\`. ⚠️ Import through Discord is not recommended because the key passed through platform message transit and may remain in client history or notification previews. Prefer generated wallets; a future HTTPS dashboard will provide a safer import path.`;
+          } else if (action === 'list') message = formatRows(commands.wallets(userId), 'No wallets yet.', item => `${item.label} — \`${item.address}\` — ${item.chain}`);
           else if (action === 'balance') {
             const value = await commands.walletBalance(userId, interaction.options.getString('label'));
             const lines = value.balances.map(b => `${chains[b.chain]?.name || b.chain}: ${b.balance ?? 'unavailable'} ${b.symbol || ''}`).join('\n');
-            message = `**${value.label}**\n${lines}`;
+            message = `## ${value.label}\n${lines}`;
           }
           else if (action === 'batch-import') {
             confirmation(interaction);
@@ -1071,11 +1190,11 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
             const succeeded = results.filter(r => r.status === 'success');
             const failed = results.filter(r => r.status === 'failed');
             const lines = [`Batch import: ${succeeded.length} succeeded, ${failed.length} failed.`,
-              ...succeeded.map(r => `✅ **${r.label}** — \`${r.address}\``),
+              ...succeeded.map(r => `✅ ${r.label} — \`${r.address}\``),
               ...failed.map(r => `❌ #${r.index + 1}: ${r.error}`)];
             message = lines.join('\n').slice(0, 1900);
           }
-          else if (action === 'remove') { confirmation(interaction); message = `Wallet **${await commands.removeWallet(userId, interaction.options.getString('label'))}** removed.`; }
+          else if (action === 'remove') { confirmation(interaction); message = `Wallet ${await commands.removeWallet(userId, interaction.options.getString('label'))} removed.`; }
           break;
         }
         case 'mint': {
@@ -1102,20 +1221,32 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
           break;
         }
         case 'batch-mint': {
-          const results = await commands.batchMint(userId, { walletLabels: interaction.options.getString('wallets').split(',').map(v => v.trim()), contractAddress: interaction.options.getString('contract'), quantity: interaction.options.getInteger('quantity'), priceETH: interaction.options.getNumber('price'), chain: interaction.options.getString('chain') });
+          const walletsInput = interaction.options.getString('wallets');
+          const quantity = interaction.options.getInteger('quantity');
+          const price = interaction.options.getNumber('price');
+          if (!walletsInput || quantity === null || price === null) {
+            // Under-specified: same auto-detecting collection card /mint's own under-specified path
+            // uses, just with multi:true so the wallet step becomes a real multi-select.
+            const started = await startMintGuidedFlow(mintCtx, payload => interaction.editReply(payload),
+              context.platformUserId, userId, interaction.options.getString('contract'), { originMessagePublic: false, multi: true });
+            if (started !== undefined) return;
+            message = 'Could not find this contract on any supported chain. Double-check the address.';
+            break;
+          }
+          const results = await commands.batchMint(userId, { walletLabels: walletsInput.split(',').map(v => v.trim()), contractAddress: interaction.options.getString('contract'), quantity, priceETH: price, chain: interaction.options.getString('chain') });
           message = `Batch complete: ${results.length} wallet transaction(s).`; break;
         }
         case 'task': {
           const action = interaction.options.getSubcommand();
-          if (action === 'create') { confirmation(interaction); const task = await commands.createTask(userId, json(interaction.options.getString('input'))); message = `Task **${task.name}** scheduled for ${discordMenus.formatGmtPlus1(task.mintTime)} (ID: ${task.id}).`; }
-          else if (action === 'list') { const page=await commands.tasksPage(userId,{page:interaction.options.getInteger('page')||1}); message=`${formatRows(page.items,'No scheduled tasks.',task=>`**${task.name}** [${task.status}] — ${discordMenus.formatGmtPlus1(task.mintTime)} — ${task.id}`)}\nPage ${page.page}/${page.totalPages} (${page.total} total)`; }
-          else { if (['cancel', 'resume', 'retry'].includes(action)) confirmation(interaction); const task = await commands.controlTask(userId, action, interaction.options.getString('id')); message = `Task **${task.name}** is now ${task.status}.`; }
+          if (action === 'create') { confirmation(interaction); const task = await commands.createTask(userId, json(interaction.options.getString('input'))); message = `Task ${task.name} scheduled for ${discordMenus.formatGmtPlus1(task.mintTime)} (ID: ${task.id}).`; }
+          else if (action === 'list') { const page=await commands.tasksPage(userId,{page:interaction.options.getInteger('page')||1}); message=`${formatRows(page.items,'No scheduled tasks.',task=>`${task.name} [${task.status}] — ${discordMenus.formatGmtPlus1(task.mintTime)} — ${task.id}`)}\nPage ${page.page}/${page.totalPages} (${page.total} total)`; }
+          else { if (['cancel', 'resume', 'retry'].includes(action)) confirmation(interaction); const task = await commands.controlTask(userId, action, interaction.options.getString('id')); message = `Task ${task.name} is now ${task.status}.`; }
           break;
         }
         case 'activity': { const page=await commands.activityPage(userId,{page:interaction.options.getInteger('page')||1}); message=`${formatRows(page.items,'No activity yet.',item=>`${item.status}: ${item.title} — ${item.walletLabel}`)}\nPage ${page.page}/${page.totalPages} (${page.total} total)`; break; }
         case 'pnl': {
           const action = interaction.options.getSubcommand();
-          if (action === 'list') message = formatRows(commands.pnl(userId), 'No P&L records.', item => `#${item.id} **${item.nm}** — net ${item.net}`);
+          if (action === 'list') message = formatRows(commands.pnl(userId), 'No P&L records.', item => `#${item.id} ${item.nm} — net ${item.net}`);
           else if (action === 'add') { const record = await commands.addPnl(userId, json(interaction.options.getString('input'))); message = `P&L record #${record.id} saved.`; }
           else { confirmation(interaction); message = `P&L record #${await commands.deletePnl(userId, interaction.options.getString('id'))} deleted.`; }
           break;
@@ -1134,20 +1265,20 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         }
         case 'sniper': {
           const action = interaction.options.getSubcommand();
-          if (action === 'create') { confirmation(interaction);const sniper = await commands.createSniper(userId, json(interaction.options.getString('input'))); message = `Post-confirmation copy sniper **${sniper.label}** created. This is not mempool front-running.`; }
-          else if (action === 'update') { confirmation(interaction);const sniper = await commands.updateSniper(userId, interaction.options.getString('id'), json(interaction.options.getString('patch'))); message = `Post-confirmation copy sniper **${sniper.label}** updated.`; }
-          else { const values = commands.snipers(userId); const selected = action === 'status' ? values.filter(item => item.id === interaction.options.getString('id')) : values; message = `Post-confirmation copying only; not mempool front-running.\n${formatRows(selected, 'No matching snipers.', item => `**${item.label}** [${item.active ? 'active' : 'inactive'}] — ${item.id}`)}`; }
+          if (action === 'create') { confirmation(interaction);const sniper = await commands.createSniper(userId, json(interaction.options.getString('input'))); message = `Post-confirmation copy sniper ${sniper.label} created. This is not mempool front-running.`; }
+          else if (action === 'update') { confirmation(interaction);const sniper = await commands.updateSniper(userId, interaction.options.getString('id'), json(interaction.options.getString('patch'))); message = `Post-confirmation copy sniper ${sniper.label} updated.`; }
+          else { const values = commands.snipers(userId); const selected = action === 'status' ? values.filter(item => item.id === interaction.options.getString('id')) : values; message = `Post-confirmation copying only; not mempool front-running.\n${formatRows(selected, 'No matching snipers.', item => `${item.label} [${item.active ? 'active' : 'inactive'}] — ${item.id}`)}`; }
           break;
         }
-        case 'mode': confirmation(interaction);message = `Transaction mode set to **${await commands.selectMode(userId, interaction.options.getString('preset'))}**.`; break;
+        case 'mode': confirmation(interaction);message = `Transaction mode set to ${await commands.selectMode(userId, interaction.options.getString('preset'))}.`; break;
         case 'admin': confirmation(interaction);message = await commands.admin(userId, interaction.options.getString('action')); break;
         case 'watch': {
           const action = interaction.options.getSubcommand();
-          if (action === 'add') { const rule = await commands.createWatchRule(userId, json(interaction.options.getString('input'))); message = `Social watch rule **${rule.name}** created with ${rule.method}.`; }
-          else if (action === 'edit') { const rule = await commands.updateWatchRule(userId, interaction.options.getString('id'), json(interaction.options.getString('patch'))); message = `Social watch rule **${rule.name}** updated; ${rule.method} adapter selected.`; }
-          else if (action === 'disable') { const rule = await commands.disableWatchRule(userId, interaction.options.getString('id')); message = `Social watch rule **${rule.name}** disabled.`; }
+          if (action === 'add') { const rule = await commands.createWatchRule(userId, json(interaction.options.getString('input'))); message = `Social watch rule ${rule.name} created with ${rule.method}.`; }
+          else if (action === 'edit') { const rule = await commands.updateWatchRule(userId, interaction.options.getString('id'), json(interaction.options.getString('patch'))); message = `Social watch rule ${rule.name} updated; ${rule.method} adapter selected.`; }
+          else if (action === 'disable') { const rule = await commands.disableWatchRule(userId, interaction.options.getString('id')); message = `Social watch rule ${rule.name} disabled.`; }
           else if (action === 'remove') { confirmation(interaction); const id = await commands.removeWatchRule(userId, interaction.options.getString('id')); message = `Social watch rule ${id} removed.`; }
-          else message = formatRows(await commands.watchRules(userId), 'No social watch rules.', rule => `**${rule.name}** [${rule.enabled ? 'enabled' : 'disabled'}] — ${rule.type} via ${rule.method} — ${rule.id}`);
+          else message = formatRows(await commands.watchRules(userId), 'No social watch rules.', rule => `${rule.name} [${rule.enabled ? 'enabled' : 'disabled'}] — ${rule.type} via ${rule.method} — ${rule.id}`);
           break;
         }
         case 'social-usage': {

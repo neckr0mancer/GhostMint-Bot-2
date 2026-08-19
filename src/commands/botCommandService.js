@@ -257,7 +257,6 @@ function createBotCommandService(dependencies) {
   // auto-generated (labelPrefix-N, deduped against both existing wallets and labels already
   // claimed earlier in this same batch) since the caller supplies only keys, not one label per key.
   async function importWalletsBatch(userId, { privateKeys, chain, labelPrefix }) {
-    await governance.requireOwner(userId);
     if (!Array.isArray(privateKeys) || privateKeys.length < 1 || privateKeys.length > LIMITS.batchWalletImport) {
       throw new ValidationError({ field: 'privateKeys', message: `must contain 1-${LIMITS.batchWalletImport} private keys` });
     }
@@ -563,6 +562,10 @@ function createBotCommandService(dependencies) {
     stats,
     selectMode: (userId, preset) => governance.selectPreset(userId, preset),
     admin: (userId, input) => adminCommands.execute(userId, input),
+    // Discord's batch-mint gas-tolerance step (mirrors Telegram's withGasToleranceContext in
+    // server.js) needs the account's own effective gas ceiling for context, without needing
+    // discordBot.js to take a direct dependency on governanceRepository.
+    gasCeiling: async (userId, chain) => (await governanceRepository.getEffectiveGovernance(userId, chain)).gasCeilingGwei,
     isOwner:userId=>governanceRepository.isOwner(userId),
     isRootOwner:userId=>governanceRepository.isRootOwner(userId),
     listOwnerUserIds:()=>governanceRepository.listOwnerUserIds(),

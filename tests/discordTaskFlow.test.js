@@ -21,12 +21,24 @@ function mockMessage(content, userId = 'paster') {
 function baseInteraction(userId) {
   const state = {
     user: { id: userId }, guildId: 'guild', channelId: 'channel',
-    updates: [], replies: [], modal: null, messageEdits: [],
+    updates: [], replies: [], modal: null, messageEdits: [], deferred: false, deferredMode: null,
     message: { edit(payload) { state.messageEdits.push(payload); return Promise.resolve(); } },
     isChatInputCommand: () => false, isButton: () => false, isStringSelectMenu: () => false, isModalSubmit: () => false,
     async update(payload) { this.updates.push(payload); },
     async reply(payload) { this.replies.push(payload); },
     async showModal(payload) { this.modal = payload; },
+    // A deferred component interaction can only be answered via editReply() -- deferUpdate() edits
+    // the original message in place (same visual effect as update()), deferReply() posts/edits a
+    // fresh reply (same as reply()), so editReply() routes to whichever array matches what the real
+    // Discord client would actually show, keeping every existing .updates[0]/.replies[0] assertion
+    // valid for handlers that now defer before their slow work (flow:taskconfirm, schedulesuggest).
+    async deferUpdate() { this.deferred = true; this.deferredMode = 'update'; },
+    async deferReply(options) { this.deferred = true; this.deferredMode = 'reply'; this.deferOptions = options; },
+    async editReply(payload) { (this.deferredMode === 'update' ? this.updates : this.replies).push(payload); },
+    // Always posts an additional message, regardless of deferredMode -- the public-origin-message
+    // -> ephemeral transition uses this now that handleComponent defers every tap up front (see
+    // willShowModal in discordBot.js).
+    async followUp(payload) { this.replies.push(payload); },
   };
   return state;
 }
@@ -92,6 +104,11 @@ test('a single wallet is auto-selected: tapping Schedule for opening goes straig
   assert.match(message.replies[0].content, /Opens:/);
   assert.equal(tap.messageEdits.length, 1, 'the public origin message must be neutralized on first touch');
   assert.equal(tap.replies.length, 1);
+  // The public-origin-message -> ephemeral transition posts via followUp({ephemeral:true}), not a
+  // fresh reply() -- handleComponent's own blanket up-front defer (see willShowModal in
+  // discordBot.js) already acknowledged this interaction before flow:schedulesuggest's handler
+  // even started its live re-detection.
+  assert.equal(tap.deferred, true);
   assert.equal(tap.replies[0].ephemeral, true);
   const options = tap.replies[0].components[0].components[0].options;
   assert.deepEqual(options.map(o => o.value), ['GTD', 'FCFS', 'PUBLIC', 'custom']);

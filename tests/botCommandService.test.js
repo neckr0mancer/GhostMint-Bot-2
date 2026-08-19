@@ -52,6 +52,21 @@ test('wallet import remains available through the separate fallback operation', 
   assert.deepEqual(calls.find(call => call[0] === 'encrypt'), ['encrypt', privateKey]);
 });
 
+// Batch wallet import used to require governance.requireOwner(userId) before anything else --
+// removed per explicit request, since single-key import was already available to every user and
+// there's no reason importing several keys in one call needed a higher bar than importing one at a
+// time. governance is a bare {} here (as every other fixture in this file already uses): if the
+// owner check were still present, calling .requireOwner on it would throw immediately.
+test('batch wallet import is available to every user, not owner-gated', async () => {
+  const { calls, service } = fixture();
+  const results = await service.importWalletsBatch('user-a', {
+    privateKeys: [`0x${'11'.repeat(32)}`, `0x${'22'.repeat(32)}`], chain: 'ethereum', labelPrefix: 'batch',
+  });
+  assert.equal(results.length, 2);
+  assert.ok(results.every(r => r.status === 'success'));
+  assert.equal(calls.filter(call => call[0] === 'addWallet').length, 2);
+});
+
 test('shared task controls always pass the resolved internal user ID to the repository', async () => {
   const { calls, service } = fixture();
   const id = '123e4567-e89b-42d3-a456-426614174000';

@@ -28,12 +28,24 @@ function mockMessage(content, userId = 'paster') {
 function baseInteraction(userId) {
   const state = {
     user: { id: userId }, guildId: 'guild', channelId: 'channel',
-    updates: [], replies: [], modal: null, messageEdits: [],
+    updates: [], replies: [], modal: null, messageEdits: [], deferred: false, deferredMode: null,
     message: { edit(payload) { state.messageEdits.push(payload); return Promise.resolve(); } },
     isChatInputCommand: () => false, isButton: () => false, isStringSelectMenu: () => false, isModalSubmit: () => false,
     async update(payload) { this.updates.push(payload); },
     async reply(payload) { this.replies.push(payload); },
     async showModal(payload) { this.modal = payload; },
+    // A deferred component interaction can only be answered via editReply() -- deferUpdate() edits
+    // the original message in place (same visual effect as update()), deferReply() posts/edits a
+    // fresh reply (same as reply()), so editReply() routes to whichever array matches what the real
+    // Discord client would actually show, keeping every existing .updates[0]/.replies[0] assertion
+    // valid for handlers that now defer before their slow work (flow:mintconfirm etc).
+    async deferUpdate() { this.deferred = true; this.deferredMode = 'update'; },
+    async deferReply(options) { this.deferred = true; this.deferredMode = 'reply'; this.deferOptions = options; },
+    async editReply(payload) { (this.deferredMode === 'update' ? this.updates : this.replies).push(payload); },
+    // Always posts an additional message, regardless of deferredMode -- the public-origin-message
+    // -> ephemeral transition (flow:mintdetailscontinue etc) uses this now that handleComponent
+    // defers every tap up front (see willShowModal in discordBot.js).
+    async followUp(payload) { this.replies.push(payload); },
   };
   return state;
 }
@@ -87,6 +99,8 @@ function baseCommands(overrides = {}) {
     wallets: () => [{ label: 'main', chain: 'ethereum' }],
     mint: async () => ({ state: 'confirmed', txHash: '0xabc' }),
     batchMint: async () => [],
+    gas: async chain => ({ chain, gasPriceGwei: 12 }),
+    gasCeiling: async () => 50,
     ...overrides,
   };
 }
@@ -113,6 +127,74 @@ test('/info shows the same collection card as a paste, with no mint intent impli
   assert.match(slash.replies[0].content, /Contract details|SeaDrop|Standard mint/);
   assert.deepEqual(slash.replies[0].components[0].components.map(b => b.custom_id), ['flow:mintdetailscontinue']);
   assert.equal(flowState.get('discord', 'looker-1').flow, 'mint_guided');
+});
+
+// Section O -- /batch-mint used to require every wallet label typed as a comma-separated string
+// with no picker at all. wallets/quantity/price are now all optional, same shape as /mint's own
+// under-specified path, but with multi:true so the wallet step becomes a real multi-select.
+test('an under-specified /batch-mint (no wallets) starts the guided flow with multi:true', async () => {
+  const flowState = createFlowStateStore();
+  const commands = baseCommands();
+  const ctx = { identity: { resolveOrCreate: async () => 'internal-user' }, commands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT };
+  const handler = createDiscordInteractionHandler(ctx);
+  const slash = chatInteraction('batch-mint', 'batcher-1', { contract: '0x0000000000000000000000000000000000000001' });
+  await handler(slash);
+  assert.equal(slash.deferred, true);
+  assert.match(slash.replies[0].content, /Contract details|SeaDrop|Standard mint/);
+  assert.equal(flowState.get('discord', 'batcher-1').data.multi, true);
+});
+
+test('multi:true reaches a genuine multi-select (min 1, max = wallet count) at the wallet step, not a single-select', async () => {
+  const flowState = createFlowStateStore();
+  const commands = baseCommands({
+    wallets: () => [{ label: 'alpha', chain: 'ethereum' }, { label: 'beta', chain: 'ethereum' }, { label: 'gamma', chain: 'ethereum' }],
+  });
+  const ctx = { identity: { resolveOrCreate: async () => 'internal-user' }, commands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT };
+  const handler = createDiscordInteractionHandler(ctx);
+  const slash = chatInteraction('batch-mint', 'batcher-2', { contract: '0x0000000000000000000000000000000000000001' });
+  await handler(slash);
+  const mintNow = buttonInteraction('flow:mintdetailscontinue', 'batcher-2');
+  await handler(mintNow);
+  // originMessagePublic is already false for /batch-mint's under-specified path (a slash command
+  // reply is already ephemeral, same as /mint's own under-specified path) -- updates in place via
+  // dcRespond/editReply, not a fresh followUp.
+  const select = mintNow.updates[0].components[0].components[0];
+  assert.equal(select.custom_id, 'flow:mintwalletmulti:select');
+  assert.equal(select.min_values, 1);
+  assert.equal(select.max_values, 3);
+  assert.deepEqual(select.options.map(o => o.value), ['alpha', 'beta', 'gamma']);
+});
+
+test('full batch-mint happy path: selecting more than one wallet in one tap reaches confirm with every wallet, and batchMint receives all of them', async () => {
+  const flowState = createFlowStateStore();
+  const batches = [];
+  const commands = baseCommands({
+    wallets: () => [{ label: 'alpha', chain: 'ethereum' }, { label: 'beta', chain: 'ethereum' }, { label: 'gamma', chain: 'ethereum' }],
+    batchMint: async (userId, input) => { batches.push({ userId, input }); return [{ txHash: '0x1' }, { txHash: '0x2' }]; },
+  });
+  const ctx = { identity: { resolveOrCreate: async () => 'internal-user' }, commands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT };
+  const handler = createDiscordInteractionHandler(ctx);
+
+  const slash = chatInteraction('batch-mint', 'batcher-3', { contract: '0x0000000000000000000000000000000000000001' });
+  await handler(slash);
+  await handler(buttonInteraction('flow:mintdetailscontinue', 'batcher-3'));
+
+  const select = selectInteraction('flow:mintwalletmulti:select', ['alpha', 'gamma'], 'batcher-3');
+  await handler(select);
+  assert.match(select.updates[0].content, /Gas tolerance for this batch/);
+  // A batch mint asks for a gas tolerance before confirm -- a plain single mint never does.
+  assert.equal(flowState.get('discord', 'batcher-3').step, 'awaiting_gastolerance');
+
+  const noLimit = buttonInteraction('flow:gastoleranceaccept', 'batcher-3');
+  await handler(noLimit);
+  assert.match(noLimit.updates[0].content, /Confirm mint/);
+  assert.match(noLimit.updates[0].content, /alpha, gamma/);
+
+  const confirm = buttonInteraction('flow:mintconfirm', 'batcher-3');
+  await handler(confirm);
+  assert.equal(batches.length, 1);
+  assert.deepEqual(batches[0].input.walletLabels, ['alpha', 'gamma']);
+  assert.match(confirm.updates[0].content, /Batch complete: 2 wallet transaction/);
 });
 
 // The full OpenSea floor/holders/volume table is reserved for /info's explicit, no-mint-intent
@@ -318,6 +400,27 @@ test('full happy path: paste -> details card -> Mint Now -> quantity select -> w
   const stray = buttonInteraction('flow:mintconfirm', 'paster-1');
   await handler(stray);
   assert.match(stray.replies[0].content, /isn't your mint prompt/);
+});
+
+// The real bug this guards against: flow:mintconfirm used to call finishMintExecutionDiscord (a
+// simulate-then-broadcast round trip, routinely slower than Discord's 3s component-ack window)
+// before ever acknowledging the interaction -- producing Discord's own "the application did not
+// respond" even though the mint itself kept running and completed underneath. Deferring first
+// (this test's whole point) is what fixes that.
+test('flow:mintconfirm defers before executing the mint, so a slow mint still lands on the deferred reply', async () => {
+  const flowState = createFlowStateStore();
+  const commands = baseCommands({ mint: async () => ({ state: 'confirmed', txHash: '0xslow' }) });
+  const identity = { resolveOrCreate: async () => 'internal-user' };
+  const ctx = { identity, commands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT };
+  const message = mockMessage('0x0000000000000000000000000000000000000001', 'paster-slow');
+  await handleMintPasteMessage(ctx, message);
+
+  const handler = createDiscordInteractionHandler(ctx);
+  await handler(buttonInteraction('flow:mintdetailscontinue', 'paster-slow'));
+  const confirm = buttonInteraction('flow:mintconfirm', 'paster-slow');
+  await handler(confirm);
+  assert.equal(confirm.deferred, true, 'must acknowledge before the slow simulate+broadcast call, not after it');
+  assert.match(confirm.updates[0].content, /Mint confirmed/);
 });
 
 test('a different user\'s click on the flow\'s public message is rejected ephemerally and never touches the original flow', async () => {
