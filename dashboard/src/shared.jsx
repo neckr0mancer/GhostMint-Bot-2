@@ -168,6 +168,16 @@ export function useLiveSocket(){const [live,setLive]=useState(false);useEffect((
 // The prototype's .notice is inherently the error treatment; informational and warning notes are
 // a different component there (.nt.i / .nt.w / .nt.e), which is what the string variants map to.
 const NOTICE_GLYPH=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>;
+// Every prototype page draws the SAME error shape (.notice.ox): a bold sentence naming what
+// failed, the status code and "Request failed safely" together in a <code>, and a Retry button.
+// Built here rather than at each call site because there are eight of them and they had already
+// drifted -- every one passed a bare string, so none of them offered the Retry at all, which is
+// the part that turns an error state from a dead end into something the user can act on.
+export function loadError(listing,title){
+  if(!listing?.error)return null;
+  return {title,onRetry:listing.load,
+    code:listing.status?listing.status+' · Request failed safely':'Request failed safely'};
+}
 export function Notice({error,ok}){
   if(error&&typeof error==='object'){
     const {title,detail,code,onRetry}=error;

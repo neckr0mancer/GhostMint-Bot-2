@@ -631,6 +631,33 @@ over the collection. Its only count is `items.length===0` for the empty state, w
 a per-page question and correctly answered per page. The Scheduled chip was the only
 instance of the trap.
 
+## 11.5 §1.7 first pass — the error state, everywhere
+
+Audited all eight data surfaces before touching anything. Loading and empty were already present
+on every one; **error was present but inert on all of them** — each passed a bare string to
+`Notice`, which renders the plain `.nt.e` text branch and, crucially, **no Retry**. Every
+prototype page draws a Retry in its `.notice.ox` (one per page, eight in total), so the app had
+the state but not the way out of it.
+
+Fixed once, in `loadError(listing,title)` in shared.jsx, rather than eight times: `useLoad`
+already returns `{data,error,status,load}`, so the helper has everything to build the prototype's
+shape — bold sentence, `<code>${status} · Request failed safely</code>`, Retry wired to `load`.
+Copy per page is taken from the prototype where it exists ("Could not load wallets.",
+"Could not load activity.", "Could not load your triggers.", "Could not load governance data.").
+
+Verified **live and in both directions**, not by reading the wiring: `/api/wallets` was forced to
+500 once, the error state rendered "Could not load wallets." / `500 · Request failed safely` with
+a Retry, and pressing Retry cleared the notice and restored the cards.
+
+Two sites are deliberately not on the helper: Minting's `pageError`, which already composes its
+own object with a retry and merges a second error source, and GasPanel, which holds a plain string
+and its own loader rather than a `useLoad`.
+
+**Still owed on §1.7:** Account and Settings own no fetch of their own — both render from the
+shell's already-loaded `profile` — so their prototype `.split.ol` / `.notice.ox` have no
+trigger yet. Worth deciding whether those pages should fetch independently or inherit the shell's
+states before building anything there.
+
 ## 12. Batch and Presets — notes from the rebuild
 
 **Batch has no price field.** The prototype's form is three fields only: Contract
