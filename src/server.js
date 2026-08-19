@@ -300,10 +300,17 @@ ${escapeTelegramHtml(detail)}` : '';
       // design, so it gets the on-chain wording rather than an empty string.
       dashboardWebSockets.broadcastToUser(event.task.userId, {type:'task.failed',
         taskId:event.task.id, name:event.task.name, reason: detail || 'transaction reverted on chain'});
+      // task.failed is the NOTIFICATION. This is the LIST refresh, and they are not the same thing:
+      // every schedule list, status count and nav badge listens for tasks.changed, and nothing was
+      // sending it from here. So a scheduled mint could fire, fail, and the dashboard would still
+      // show it as pending until the user navigated away and back -- on the one screen whose whole
+      // claim is that it is live.
+      dashboardWebSockets.broadcastToUser(event.task.userId, {type:'tasks.changed'});
     }
     if (event.outcome === 'success') {
       dashboardWebSockets.broadcastToUser(event.task.userId, {type:'task.succeeded',
         taskId:event.task.id, name:event.task.name});
+      dashboardWebSockets.broadcastToUser(event.task.userId, {type:'tasks.changed'});
     }
   },
   log,

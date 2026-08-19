@@ -1247,7 +1247,17 @@ function MintBatch({onGoWallets}){
         walletLabels:selected,contractAddress:contractAddress.trim(),arguments:[],valueWei:valueWei.toString()})}));
       setResults(null);
       notify(`Simulation passed for ${selected.length} wallets — review and confirm.`,{type:'success'});
-    }catch(value){notify(value.message,{type:'error'});}
+    }catch(value){
+      // The server's own words here are "methodSignature is not one of the supported mint
+      // signatures", which is true and useless to whoever pasted the address. It happens for a
+      // whole class of real drops -- SeaDrop ones -- because buildMintCall only encodes the
+      // audited plain-mint signatures, so batch genuinely cannot do them. Say THAT, and say what
+      // still works, rather than naming a field the user never filled in.
+      const unsupported=(value.issues||[]).some(issue=>issue.field==='methodSignature');
+      notify(unsupported
+        ?'This contract uses a mint method batch cannot encode (SeaDrop drops are the usual case). Mint now handles it one wallet at a time.'
+        :value.message,{type:'error',timeoutMs:unsupported?12000:5000});
+    }
     finally{setBusy(false);}
   }
   async function confirmBatch(){
@@ -1784,7 +1794,17 @@ function useNavBadges(){
   const rules=useLoad('/api/watch-rules',[],'watchrules.changed');
   const snipers=useLoad('/api/snipers',[],'snipers.changed');
   const counts=tasks.data?.counts;
+  // Mint counts schedules that have STOPPED and want a decision. It escalates to the red .cnt.hot
+  // only when one of them actually failed -- paused and expired are states you can live with,
+  // a failure is one that broke on its own.
+  //
+  // Note this is NOT what the untouched prototype draws. There the Mint badge reads 2 and its
+  // Scheduled chip also reads "2 pending", so in that frame the badge is the QUEUED count. That
+  // reading does not survive contact with real data: this account has 11 queued mints, so the
+  // badge would sit at 11 permanently and stop carrying information. A badge that is always on is
+  // wallpaper. Owner asked what could turn it red, which only makes sense under this reading.
   const mint=counts?(counts.paused||0)+(counts.failed||0)+(counts.expired||0):0;
+  const mintFailing=Boolean(counts&&(counts.failed||0)>0);
   const failingRules=(rules.data?.items||[]).filter(rule=>Number(rule.consecutiveFailures)>0).length;
   // A sniper is failing when its most recent event failed -- an old failure it has since recovered
   // from is history, not an alert.
@@ -1793,7 +1813,8 @@ function useNavBadges(){
     const latest=events.find(event=>event.sniperId===sniper.id);
     return latest&&['failed','error','skipped'].includes(String(latest.state||'').toLowerCase());
   }).length;
-  return {Mint:mint,Automation:failingRules+failingSnipers};
+  return {Mint:mint,Automation:failingRules+failingSnipers,
+    hot:{Mint:mintFailing,Automation:true}};
 }
 const TOP_RAIL_PAGES=['Home','Mint','Automation','Wallets','History'];
 // The prototype's .railfoot is Admin, Account, Settings, in that order. Settings had no rail entry
@@ -1912,11 +1933,12 @@ function Shell({profile,onLogout,onProfileChange}){const navBadges=useNavBadges(
       <div className="grp">Operate</div>
       {TOP_RAIL_PAGES.map(item=>{
         const badge=navBadges[item]||0;
+        const hot=Boolean(navBadges.hot?.[item]);
         return <button type="button" className="nav" key={item}
           aria-current={page===item?'page':undefined} onClick={()=>go(item)}>
           {RAIL_ICONS[item]}<span className="nav-l">{item}</span>
-          {badge>0&&<span className={`cnt${item==='Automation'?' hot':''}`}
-            aria-label={`${badge} ${item==='Automation'?'failing':'needing attention'}`}>{badge}</span>}
+          {badge>0&&<span className={`cnt${hot?' hot':''}`}
+            aria-label={`${badge} ${hot?'failing':'needing attention'}`}>{badge}</span>}
         </button>;
       })}
       <div className="railfoot">

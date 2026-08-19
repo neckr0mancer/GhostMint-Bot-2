@@ -998,3 +998,51 @@ this one is counted.
 
 **Also verified incidentally:** the Mint rail badge renders `1` in neutral grey against the one
 expired schedule — the badge added in this pass, working on real data.
+
+### 13.12 Mint page populated and tested — 2026-08-19
+
+**Badges, both states proven on real data.**
+
+| state | data | badge |
+|---|---|---|
+| neutral | 2 paused + 1 expired | `3`, `--surface-4` on `--muted` |
+| red | a real mint failed | `4`, `--loss` on white, `aria-label="4 failing"` |
+
+The red case was produced by arming a real scheduled mint two minutes out against an empty wallet
+and letting it fail on its own ("Simulating this call failed: insufficient funds"), not by faking
+a status.
+
+**Mint's badge counts what has STOPPED, and escalates only on failure.** This is a deliberate
+departure from the untouched prototype, where the Mint badge reads `2` and the Scheduled chip also
+reads `2 pending` — i.e. there the badge is the QUEUED count. That reading does not survive real
+data: this account has 9 queued mints, so the badge would sit permanently at 9 and stop carrying
+information. A badge that is always on is wallpaper. Owner asked what would turn it red, which only
+has an answer under this reading.
+
+**BUG found and fixed: the dashboard never learned a scheduled mint had fired.** The scheduler
+broadcast `task.failed` (the notification) but nothing ever sent `tasks.changed` (the list
+refresh), and every schedule list, status count and nav badge listens for the latter. So a mint
+could fire, fail, and the page would still show it pending until the user navigated away and back —
+on the one screen whose whole claim is that it is live. Caught because the badge stayed at `3`
+while the API already said `failed: 1`.
+
+**Batch, run end to end for the first time** (a second wallet now exists).
+
+- The selection gate works exactly as specified: 0 or 1 wallet leaves the contract field
+  `readOnly` with the placeholder "Select 2 wallets first" and the message beneath; the second
+  selection unlocks the field, clears the message, and enables "Simulate all 2".
+- **Batch cannot mint SeaDrop drops.** `POST /api/mints/preview` returns 400
+  `methodSignature is not one of the supported mint signatures`, because `buildMintCall` only
+  encodes the audited plain-mint signatures and SeaDrop is not among them — the same reason
+  SeaDrop cannot be saved as a preset. This is a real product limit, not a UI defect.
+- The message the user got was the server's own field text, which is accurate and useless to
+  whoever pasted the address. It now names the actual situation and the way round it.
+
+**The prototype gives Batch no error state.** Its panel defines only `.ol` and `.emp.oe` — no
+`.ox`. So the toast is the design's only failure channel here, and a persistent panel would be
+invention. Worth an owner ruling, since §1.7 asks for four states everywhere and the prototype
+draws three on this one surface.
+
+**Presets remain unpopulated.** `POST /api/mint-presets` now exists (§13.11) but is not deployed,
+and the dev server proxies to production, so presets still cannot be created from here until it
+ships.
