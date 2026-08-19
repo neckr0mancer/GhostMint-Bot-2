@@ -144,7 +144,7 @@ test('an under-specified /batch-mint (no wallets) starts the guided flow with mu
   assert.equal(flowState.get('discord', 'batcher-1').data.multi, true);
 });
 
-test('multi:true reaches a genuine multi-select (min 1, max = wallet count) at the wallet step, not a single-select', async () => {
+test('multi:true reaches a genuine multi-select (min 2, max = wallet count) at the wallet step, not a single-select', async () => {
   const flowState = createFlowStateStore();
   const commands = baseCommands({
     wallets: () => [{ label: 'alpha', chain: 'ethereum' }, { label: 'beta', chain: 'ethereum' }, { label: 'gamma', chain: 'ethereum' }],
@@ -160,7 +160,8 @@ test('multi:true reaches a genuine multi-select (min 1, max = wallet count) at t
   // dcRespond/editReply, not a fresh followUp.
   const select = mintNow.updates[0].components[0].components[0];
   assert.equal(select.custom_id, 'flow:mintwalletmulti:select');
-  assert.equal(select.min_values, 1);
+  // 2, not 1: a batch of one is a single mint, so the select itself refuses to submit one.
+  assert.equal(select.min_values, require('../src/validation/domain').MIN_BATCH_WALLETS);
   assert.equal(select.max_values, 3);
   assert.deepEqual(select.options.map(o => o.value), ['alpha', 'beta', 'gamma']);
 });

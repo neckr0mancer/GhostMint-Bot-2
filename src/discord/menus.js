@@ -5,7 +5,7 @@
 // interaction.reply/update/showModal, so this stays fully unit-testable without loading
 // discord.js, and discordBot.js (the composition root) is responsible only for wiring.
 
-const { LIMITS } = require('../validation/domain');
+const { LIMITS, MIN_BATCH_WALLETS } = require('../validation/domain');
 
 const ROW = 1;
 const BUTTON = 2;
@@ -499,10 +499,17 @@ function walletSelect(wallets, { customId, emptyHint }) {
 // rather than a dedicated multi-step picker.
 function walletMultiSelect(wallets, { customId, emptyHint }) {
   if (!wallets.length) return placeholderMenu('Wallets', emptyHint);
+  if (wallets.length < MIN_BATCH_WALLETS) {
+    return {
+      content: `## Batch mint needs ${MIN_BATCH_WALLETS} wallets
+You have ${wallets.length}. A batch of one is just a single mint -- use that instead, or add another wallet first.`,
+      components: [row([button('🎯 Single mint instead', 'menu:mint:single', 'success'), button('➕ Add a wallet', 'wallet:create:start'), button('⬅️ Back', 'menu:main')])],
+    };
+  }
   const options = wallets.map(w => ({ label: `${w.label} (${w.chain})`, value: w.label, emoji: CHAIN_EMOJI[w.chain] || undefined }));
   return {
     content: 'Choose every wallet to include in this batch:',
-    components: [select(customId, options, 'Select one or more wallets', { minValues: 1, maxValues: wallets.length }), row([button('❌ Cancel', 'flow:cancel:ask', 'danger')])],
+    components: [select(customId, options, `Select at least ${MIN_BATCH_WALLETS} wallets`, { minValues: MIN_BATCH_WALLETS, maxValues: wallets.length }), row([button('❌ Cancel', 'flow:cancel:ask', 'danger')])],
   };
 }
 

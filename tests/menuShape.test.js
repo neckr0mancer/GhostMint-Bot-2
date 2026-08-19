@@ -71,3 +71,32 @@ test('wallet list output stays inside one row and keeps a way back', () => {
   const back = menus.row([menus.button('⬅️ Back to wallets', 'menu:wallets')]);
   assert.equal(back.components.length, 1);
 });
+
+// A batch of one is a single mint. Enforced in the schema so all three surfaces agree, and gated
+// in each picker so the user is told rather than hitting a validation error at submit.
+test('batch mint requires at least two wallets, and says so rather than failing at submit', () => {
+  const { MIN_BATCH_WALLETS } = require('../src/validation/domain');
+  assert.equal(MIN_BATCH_WALLETS, 2);
+
+  const tg = require('../src/telegram/menus');
+  const dc = require('../src/discord/menus');
+  const two = [{ label: 'a', chain: 'ethereum' }, { label: 'b', chain: 'base' }];
+
+  const ids = selected => tg.walletMultiPicker(two, selected, {}).replyMarkup.inline_keyboard.flat().map(b => b.callback_data);
+  assert.equal(ids(['a']).includes('flow:walletcontinue'), false, 'one wallet cannot continue a batch');
+  assert.ok(ids(['a', 'b']).includes('flow:walletcontinue'), 'two can');
+
+  // Discord's select would otherwise be built with min_values greater than max_values, which
+  // Discord rejects outright -- the flow would dead-end with nothing on screen.
+  const solo = dc.walletMultiSelect([{ label: 'solo', chain: 'ethereum' }], { customId: 'x', emptyHint: 'none' });
+  assert.match(solo.content, /needs 2 wallets/);
+  assert.equal((solo.components[0].components[0] || {}).type, 2, 'buttons, not a broken select');
+  const pair = dc.walletMultiSelect(two, { customId: 'x', emptyHint: 'none' }).components[0].components[0];
+  assert.ok(pair.min_values <= pair.max_values, 'min_values must never exceed max_values');
+  assert.equal(pair.min_values, MIN_BATCH_WALLETS);
+
+  const tgSolo = tg.walletMultiPicker([{ label: 'solo', chain: 'ethereum' }], [], {});
+  assert.match(tgSolo.text, /needs 2 wallets/);
+  assert.ok(tgSolo.replyMarkup.inline_keyboard.flat().some(b => b.callback_data === 'menu:mint:single'),
+    'offers the single mint that actually fits what they have');
+});

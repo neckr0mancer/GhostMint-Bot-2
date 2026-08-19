@@ -8,7 +8,7 @@
 // before being interpolated next to a real tag so it can never break or inject into the markup.
 
 const { escapeTelegramHtml } = require('../security/botSecurity');
-const { LIMITS } = require('../validation/domain');
+const { LIMITS, MIN_BATCH_WALLETS } = require('../validation/domain');
 
 function button(text, callbackData) {
   return { text, callback_data: callbackData };
@@ -151,12 +151,25 @@ function walletPicker(wallets, { prefix, emptyHint }) {
 // updated checkmark), Continue only appears once at least one wallet is selected.
 function walletMultiPicker(wallets, selectedLabels, { emptyHint }) {
   if (!wallets.length) return placeholderMenu('Wallets', emptyHint);
+  if (wallets.length < MIN_BATCH_WALLETS) {
+    return {
+      text: `<b>Batch mint needs ${MIN_BATCH_WALLETS} wallets</b>
+
+You have ${wallets.length}. A batch of one is just a single mint — use that instead, or add another wallet first.`,
+      replyMarkup: keyboard([
+        [button('🎯 Single mint instead', 'menu:mint:single')],
+        [button('➕ Create wallet', 'wallet:create:start')],
+        [button('⬅️ Back to base', 'menu:main')],
+      ]),
+      parseMode: 'HTML',
+    };
+  }
   const rows = wallets.map(wallet => {
     const checked = selectedLabels.includes(wallet.label);
     return [button(`${checked ? '✅' : '⬜'} ${wallet.label} (${wallet.chain})`, `flow:wallettoggle:${wallet.label}`)];
   });
-  if (selectedLabels.length) {
-    rows.push([button(`▶️ Squad's set, continue with ${selectedLabels.length} wallet${selectedLabels.length === 1 ? '' : 's'}`, 'flow:walletcontinue')]);
+  if (selectedLabels.length >= MIN_BATCH_WALLETS) {
+    rows.push([button(`▶️ Squad's set, continue with ${selectedLabels.length} wallets`, 'flow:walletcontinue')]);
   }
   rows.push([button('❌ Nah, cancel', 'flow:cancel:ask')]);
   return { text: 'Tap every wallet you want in this batch, then hit Continue:', replyMarkup: keyboard(rows), parseMode: 'HTML' };
