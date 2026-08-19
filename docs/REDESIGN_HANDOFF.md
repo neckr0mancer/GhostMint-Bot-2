@@ -4,7 +4,7 @@
 work stopped, what to do next, and how to run and verify. Everything else is
 reference you can reach from here.
 
-Last updated: 2026-08-18, after the Mint page (all four tabs) landed.
+Last updated: 2026-08-19, after the Schedule tab's action row was corrected.
 
 ---
 
@@ -69,8 +69,25 @@ screenshots: `button`, `td`, `.pager`, `.card p`. See backlog §9 for the patter
 The owner has authorised creating placeholder wallets, schedules, presets and
 batches to exercise populated / empty / loading / error states.
 
-Currently on the account: wallet **`test-placeholder`**, schedule
-**`test-schedule-1`**. Delete them when finished.
+Currently on the account: wallet **`test-placeholder`** (0.000 ETH), and **22
+schedules** — `test-schedule-1..22` (12, still `scheduled`) and `test-pager-*`
+(10, all `cancelled`). The 22 exist to give the pager three pages; keep them if you
+need to exercise pagination, they cost nothing.
+
+**Two things worth knowing before you make more:**
+
+- **There is no delete.** Cancel sets `status='cancelled'` and the row stays in the
+  list forever (schedulerRepository.js:137). Nothing in the dashboard removes a
+  schedule, so test rows are permanent. Make them deliberately.
+- **A scheduled mint fires unattended.** The `test-schedule-*` rows have mint times
+  within days of 2026-08-19 and are still live. They point at a wallet holding
+  0.000 ETH so they will fail rather than spend, but set new ones years out
+  (`2030-…`; the schema allows up to 5) rather than relying on that.
+
+Creating one through the form takes two submits: the server rejects Azuki
+(`0xED5AF388653567Af2F388E6224dC7C4b3241C544`) for a missing price, the `.fielderr`
+price field appears, and the second submit carries it. That is backlog §14's
+documented deviation, working as designed.
 
 Create through the app's own forms rather than `fetch`, for two reasons: the CSRF
 token is not readable from JS, and going through the form exercises the real path.
@@ -82,7 +99,11 @@ safe; `/api/mints/confirm` spends real money and is irreversible.
 
 Done, measured against the prototype: shell chrome (rail + top bar) · buttons app-wide
 (`.b` family) · sub-tabs and seg controls · the `.notice` error panel · Home's
-`FirstRun` and tile copy · the Mint page, all four tabs · the pager, app-wide.
+`FirstRun` and tile copy · the Mint page, all four tabs · the pager, app-wide,
+now verified across three real pages rather than one.
+
+**Known gap, deliberately left:** the Scheduled card's "N pending" chip counts only
+the page in view. Backlog §11.4 has the measurements and why the fix is server-side.
 
 Not done: account menu, bell, and every page other than Home and Mint.
 
