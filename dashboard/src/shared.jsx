@@ -285,9 +285,13 @@ export function Pager({value,page,setPage}){
   // noise: its whole job is to report what is being truncated, and neither case truncates.
   if(!value||!value.total||value.totalPages<=1)return null;
   const total=value.totalPages;
-  const first=Math.max(1,Math.min(page-2,total-4));
+  // THREE numbers, sliding. The window keeps the current page as its LAST entry once you are past
+  // page 3, so pages 1-3 read "1 2 3" and stepping to 4 reads "2 3 4" -- the fourth number appears
+  // by arriving at it, not by sitting there in advance. Owner's rule, 2026-08-19.
+  const WINDOW=3;
+  const first=Math.max(1,Math.min(page-(WINDOW-1),total-(WINDOW-1)));
   const numbers=[];
-  for(let n=first;n<=Math.min(total,first+4);n++)numbers.push(n);
+  for(let n=first;n<=Math.min(total,first+WINDOW-1);n++)numbers.push(n);
   const shown=Math.min(value.page*value.pageSize,value.total);
   // Jump-to-end arrows appear only past three pages. Below that every page is already one click
   // away on a numbered button, so a second pair of arrows would be four controls doing the work

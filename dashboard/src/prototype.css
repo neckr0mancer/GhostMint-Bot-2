@@ -366,11 +366,18 @@ h3{font-size:12.5px;font-weight:650}
 /* Status filters (Schedule). Pills that are also buttons: each keeps its own tone so the row reads
    as a legend of states, and the ACTIVE one is marked by weight and an inset ring rather than by
    colour -- colour is already carrying the state's meaning and cannot carry selection too. */
-.fils{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 10px}
-.p.fil{min-height:auto;cursor:pointer;opacity:.6;font:inherit;font-size:11px;font-weight:700}
-.p.fil:hover{opacity:.85}
-.p.fil.on{opacity:1;font-weight:800;box-shadow:inset 0 0 0 1px currentColor}
-.app[data-m] .fils{gap:5px}
+/* Collapsed to a single chip on the card's title line; the alternatives open beneath it. Same
+   shape as the prototype's other popovers, so it is that vocabulary rather than a new one. */
+.fils{position:relative;display:flex;align-items:center;flex:none}
+.p.fil{min-height:auto;cursor:pointer;font:inherit;font-size:11px;font-weight:700;gap:4px}
+.p.fil:hover{filter:brightness(1.15)}
+.p.fil.on{font-weight:800;box-shadow:inset 0 0 0 1px currentColor}
+.fil-caret{font-size:8px;line-height:1;opacity:.75}
+.fil-pop{position:absolute;top:calc(100% + 6px);right:0;z-index:40;display:flex;flex-direction:column;
+  gap:5px;padding:7px;min-width:136px;border-radius:var(--radius-sm);background:var(--surface-2);
+  border:1px solid var(--border-strong);box-shadow:var(--shadow)}
+.fil-pop .p.fil{width:100%;justify-content:flex-start}
+.app[data-m] .fil-pop{min-width:150px}
 .cw{padding:3px 9px;border-radius:20px;font-size:11.5px;font-weight:600;border:1px solid var(--border);
   color:var(--muted);background:var(--surface-2);min-height:auto}
 .chain{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:650;color:var(--muted)}

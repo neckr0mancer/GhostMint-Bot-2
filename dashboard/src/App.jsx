@@ -474,7 +474,7 @@ function Minting({onSwitchToBatch,onGoWallets}){const wallets=useLoad('/api/wall
   </>;
 }
 
-function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSearch]=useState('');const [bucket,setBucket]=useState('pending');const listing=useLoad(`/api/tasks?page=${page}&pageSize=10&status=${bucket}&search=${encodeURIComponent(search)}`,[page,bucket,search],'tasks.changed');const wallets=useLoad('/api/wallets',[],'wallets.changed');const [chain,setChain]=useState(profile.defaultChain||profile.supportedChains[0]);const [contractAddress,setContractAddress]=useState('');const [quantity,setQuantity]=useState('1');const [priceETH,setPriceETH]=useState('');const [mintTime,setMintTime]=useState('');const [detecting,setDetecting]=useState(false);const lastDetected=useRef('');
+function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSearch]=useState('');const [bucket,setBucket]=useState('pending');const [filtersOpen,setFiltersOpen]=useState(false);const listing=useLoad(`/api/tasks?page=${page}&pageSize=10&status=${bucket}&search=${encodeURIComponent(search)}`,[page,bucket,search],'tasks.changed');const wallets=useLoad('/api/wallets',[],'wallets.changed');const [chain,setChain]=useState(profile.defaultChain||profile.supportedChains[0]);const [contractAddress,setContractAddress]=useState('');const [quantity,setQuantity]=useState('1');const [priceETH,setPriceETH]=useState('');const [mintTime,setMintTime]=useState('');const [detecting,setDetecting]=useState(false);const lastDetected=useRef('');
   // The prototype's Schedule form has no price field, because it assumes the contract can be
   // priced automatically. Some cannot -- the server then rejects with a priceETH issue and there
   // is nowhere to type one, which left the form unsubmittable for those contracts. So the field
@@ -527,7 +527,10 @@ function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSear
   // exactly one filter. 'done' is not in the owner's original four -- without it a mint that
   // actually fired would be invisible under all of them. Mirrors TASK_BUCKETS in
   // src/scheduler/schedulerRepository.js; the server does the filtering and the counting.
-  const BUCKETS=[['pending','Pending'],['paused','Paused'],['failed','Failed'],
+  // 'all' is a view, not a status -- it sends no filter at all. Ordered by lifecycle (waiting ->
+  // suspended -> broke -> abandoned -> finished) rather than by the order they were dictated,
+  // because that is the order someone reads a queue in.
+  const BUCKETS=[['all','All'],['pending','Pending'],['paused','Paused'],['failed','Failed'],
     ['cancelled','Cancelled'],['done','Done']];
   const BUCKET_STATUSES={pending:['scheduled','claimed','retry'],paused:['paused'],
     failed:['failed'],cancelled:['cancelled'],done:['succeeded']};
@@ -536,20 +539,33 @@ function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSear
   // deployed instance, so until this ships the response carries no counts at all. Counting the
   // page keeps a wrong-but-plausible number instead of rendering "undefined", and it corrects
   // itself the moment the server catches up.
-  const counts=listing.data?.counts||(items?Object.fromEntries(BUCKETS.map(([key])=>
+  const rawCounts=listing.data?.counts||(items?Object.fromEntries(Object.keys(BUCKET_STATUSES).map(key=>
     [key,items.filter(task=>BUCKET_STATUSES[key].includes(String(task.status).toLowerCase())).length]))
-    :Object.fromEntries(BUCKETS.map(([key])=>[key,0])));
+    :Object.fromEntries(Object.keys(BUCKET_STATUSES).map(key=>[key,0])));
+  const counts={...rawCounts,all:Object.values(rawCounts).reduce((sum,value)=>sum+value,0)};
   // Tone follows meaning, not novelty. Failed is the only one that went wrong on its own, so it is
   // the only red: cancelled is something the user chose, and colouring a deliberate act like an
   // error teaches people to ignore red. Owner's ruling 2026-08-19.
-  const BUCKET_TONE={pending:'ok',paused:'nu',failed:'bad',cancelled:'nu',done:'nu'};
+  const BUCKET_TONE={all:'nu',pending:'ok',paused:'nu',failed:'bad',cancelled:'nu',done:'nu'};
   function rowIcon(status){
     const value=String(status||'').toLowerCase();
     if(value==='paused')return <div className="ri">{PAUSE_ICON}</div>;
     if(value==='failed'||value==='error')return <div className="ri" style={{color:'var(--loss-text)'}}>{CROSS_ICON}</div>;
     return <div className="ri">{CLOCK_ICON_LG}</div>;
   }
-  function selectBucket(next){setBucket(next);setPage(1);setSelectedIds([]);}
+  function selectBucket(next){setBucket(next);setPage(1);setSelectedIds([]);setFiltersOpen(false);}
+  // Collapsed, the control is ONE chip: the filter currently applied. Pressing it opens the rest,
+  // pressing one of those applies it and closes again. The owner asked for the states not to sit
+  // on screen all at once -- six permanent chips is a legend nobody reads, and it pushed the list
+  // down a line. Escape and any outside click close it, so it never traps focus in the header.
+  useEffect(()=>{
+    if(!filtersOpen)return;
+    const close=event=>{if(!event.target.closest?.('.fils'))setFiltersOpen(false);};
+    const onKey=event=>{if(event.key==='Escape')setFiltersOpen(false);};
+    document.addEventListener('click',close);
+    document.addEventListener('keydown',onKey);
+    return()=>{document.removeEventListener('click',close);document.removeEventListener('keydown',onKey);};
+  },[filtersOpen]);
   // The server is the authority on which control a status accepts, so this mirrors the WHERE
   // clauses in src/scheduler/schedulerRepository.js (pause/resume/retry/cancel, lines 137-155)
   // rather than reasoning about it independently. Cancel used to be treated as always available;
@@ -594,7 +610,9 @@ function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSear
   }
   function bucketOf(status){
     const value=String(status||'').toLowerCase();
-    return BUCKETS.find(([key])=>BUCKET_STATUSES[key].includes(value))?.[0]||null;
+    // Iterate the STATUS map, not BUCKETS -- BUCKETS carries 'all', which is a view rather than
+    // a set of statuses and has no entry here.
+    return Object.keys(BUCKET_STATUSES).find(key=>BUCKET_STATUSES[key].includes(value))||null;
   }
   function rowPill(status){
     const key=bucketOf(status);
@@ -650,18 +668,31 @@ function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSear
 
     <div className="g">
       <div className="card">
-        <div className="ch"><h2>Scheduled</h2><div className="sp"/></div>
-        {/* The prototype's single static "2 pending" chip, made into the filter the owner asked
-            for. One bucket is shown at a time -- pending by default -- because the four states
-            answer different questions and interleaving them made the list unreadable. Each chip
-            carries its own count, which is why the server scopes counts to the search but NOT to
-            the active filter: a chip reading 0 only because it is not the current view would be
-            worse than no chip. */}
-        <div className="fils" role="group" aria-label="Filter scheduled mints by state">
-          {BUCKETS.map(([key,label])=><button type="button" key={key}
-            className={`p ${BUCKET_TONE[key]} fil${bucket===key?' on':''}`}
-            aria-pressed={bucket===key} onClick={()=>selectBucket(key)}>
-            {counts[key]??0} {label.toLowerCase()}</button>)}
+        {/* The prototype's static "2 pending" chip, now the filter. It stays ON THE TITLE LINE
+            where that chip was, and stays a SINGLE chip until pressed -- see selectBucket's note.
+            Each chip carries its own count, which is why the server scopes counts to the search
+            but NOT to the active filter: a chip reading 0 only because it is not the current view
+            would be worse than no chip at all. */}
+        <div className="ch"><h2>Scheduled</h2><div className="sp"/>
+          <div className={`fils${filtersOpen?' open':''}`}>
+            {/* The trigger never leaves the title line -- it IS the chip that used to live here,
+                now reading whichever filter is applied. The alternatives open beneath it rather
+                than expanding inline, because .ch does not wrap (prototype.css:281) and six chips
+                would either overflow the header or force the list down a row. */}
+            <button type="button" className={`p ${BUCKET_TONE[bucket]} fil on`}
+              aria-haspopup="listbox" aria-expanded={filtersOpen}
+              onClick={()=>setFiltersOpen(open=>!open)}>
+              {counts[bucket]??0} {(BUCKETS.find(([key])=>key===bucket)?.[1]||'').toLowerCase()}
+              <span className="fil-caret" aria-hidden="true">▾</span>
+            </button>
+            {filtersOpen&&<div className="fil-pop" role="listbox" aria-label="Filter by state">
+              {BUCKETS.map(([key,label])=><button type="button" key={key} role="option"
+                aria-selected={bucket===key}
+                className={`p ${BUCKET_TONE[key]} fil${bucket===key?' on':''}`}
+                onClick={()=>selectBucket(key)}>
+                {counts[key]??0} {label.toLowerCase()}</button>)}
+            </div>}
+          </div>
         </div>
         {listing.error
           ?<Notice error={{title:'Could not load scheduled mints.',code:listing.status,onRetry:listing.load}}/>
@@ -673,7 +704,7 @@ function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSear
                  {/* The prototype's empty state assumed an unfiltered list. With a filter applied,
                      "Nothing scheduled" would be a lie about the collection rather than a fact
                      about the view, so the filtered case says which view is empty. */}
-                 {bucket==='pending'
+                 {bucket==='pending'||bucket==='all'
                    ?<><h3>Nothing scheduled</h3>
                      <p>A scheduled mint is a database row, not a browser timer — it fires whether or not this tab is open.</p></>
                    :<><h3>No {BUCKETS.find(([key])=>key===bucket)?.[1].toLowerCase()} mints</h3>

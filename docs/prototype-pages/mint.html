@@ -132,16 +132,22 @@
           </div>
           <div class="g">
             <div class="card">
-              <div class="ch"><h2>Scheduled</h2><div class="sp"></div></div>
-              <!-- Status filter. One bucket at a time, pending by default. Each chip keeps its own
-                   tone and its own count; the active one is marked by weight + an inset ring, since
-                   colour is already carrying the state's meaning. Owner's ruling 2026-08-19. -->
-              <div class="fils of" role="group" aria-label="Filter scheduled mints by state">
-                <button class="p ok fil on" aria-pressed="true">2 pending</button>
-                <button class="p nu fil" aria-pressed="false">1 paused</button>
-                <button class="p bad fil" aria-pressed="false">1 failed</button>
-                <button class="p nu fil" aria-pressed="false">3 cancelled</button>
-                <button class="p nu fil" aria-pressed="false">8 done</button>
+              <!-- Status filter, on the title line where the static "2 pending" chip used to sit.
+                   Collapsed to the ONE chip that is applied; pressing it opens the rest beneath.
+                   .ch does not wrap, so six chips inline would overflow the header or push the list
+                   down a row. "All" sends no filter at all. Owner's ruling 2026-08-19. -->
+              <div class="ch"><h2>Scheduled</h2><div class="sp"></div>
+                <div class="fils open">
+                  <button class="p ok fil on" aria-haspopup="listbox" aria-expanded="true">2 pending<span class="fil-caret">▾</span></button>
+                  <div class="fil-pop" role="listbox" aria-label="Filter by state">
+                    <button class="p nu fil" role="option" aria-selected="false">14 all</button>
+                    <button class="p ok fil on" role="option" aria-selected="true">2 pending</button>
+                    <button class="p nu fil" role="option" aria-selected="false">1 paused</button>
+                    <button class="p bad fil" role="option" aria-selected="false">1 failed</button>
+                    <button class="p nu fil" role="option" aria-selected="false">3 cancelled</button>
+                    <button class="p nu fil" role="option" aria-selected="false">7 done</button>
+                  </div>
+                </div>
               </div>
               <div class="of">
                 <!-- The ROW is the control: click to select, click again to drop it. No checkbox --
@@ -162,12 +168,13 @@
                   <div class="rv"><span class="p bad">Failed</span></div></div>
                 <div class="br" style="margin-top:11px"><button class="b sm">Pause</button><button class="b sm">Resume</button><button class="b sm">Retry</button><button class="b d sm">Cancel…</button></div>
                 <!-- Pager: /api/tasks returns {page,pageSize,total,totalPages,items} -->
-                <!-- Jump-to-first/last appear only past THREE pages; below that every page is
-                     already one click away. Disabled at the ends rather than hidden, so the row
-                     does not reflow under the cursor. -->
+                <!-- THREE numbers, sliding: pages 1-3 read "1 2 3", and the fourth appears only by
+                     stepping onto it ("2 3 4"). Jump-to-first/last appear only past three pages.
+                     All four arrows disable at the ends rather than hiding, so the row does not
+                     reflow under the cursor. -->
                 <div class="pager"><span class="pinfo">3 of 14</span>
                   <button disabled aria-label="First page">«</button><button disabled>‹</button>
-                  <button class="on">1</button><button>2</button><button>3</button><button>4</button>
+                  <button class="on">1</button><button>2</button><button>3</button>
                   <button>›</button><button aria-label="Last page">»</button></div>
               </div>
               <div class="ol"><div class="sk row"></div><div class="sk row"></div><div class="sk row"></div></div>
