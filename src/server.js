@@ -2016,7 +2016,46 @@ if (BOT_TOKEN) {
     if (data === 'menu:mint') return startMintFlow({ chatId, messageId, userId, multi: false, contractAddressInput: null });
     if (data === 'menu:send') return startSendFlow({ chatId, messageId, userId });
     if (data === 'menu:exportkey') return startExportKeyFlow({ chatId, messageId, userId });
-    if (data === 'menu:tasks') return tgEditMenu(chatId, messageId, telegramMenus.tasksMenu());
+    if (data === 'menu:tasks') {
+      const page = await botCommands.tasksPage(userId, { page: 1 });
+      return tgEditMenu(chatId, messageId, telegramMenus.tasksMenu(page));
+    }
+    if (data.startsWith('task:page:')) {
+      const page = await botCommands.tasksPage(userId, { page: Number(data.slice('task:page:'.length)) || 1 });
+      return tgEditMenu(chatId, messageId, telegramMenus.tasksMenu(page));
+    }
+    if (data.startsWith('task:manage:')) {
+      const id = data.slice('task:manage:'.length);
+      const task = (await botCommands.tasks(userId)).find(item => item.id === id);
+      if (!task) return tgEditMenu(chatId, messageId, telegramMenus.tasksMenu(await botCommands.tasksPage(userId, { page: 1 })));
+      return tgEditMenu(chatId, messageId, telegramMenus.taskActions(task));
+    }
+    if (data.startsWith('task:cancel:ask:')) {
+      const id = data.slice('task:cancel:ask:'.length);
+      const task = (await botCommands.tasks(userId)).find(item => item.id === id);
+      if (!task) return tgEditMenu(chatId, messageId, telegramMenus.tasksMenu(await botCommands.tasksPage(userId, { page: 1 })));
+      return tgEditMenu(chatId, messageId, telegramMenus.confirmCancelTask(task));
+    }
+    // Cancel/pause/resume/retry each land back on the detail screen -- controlTask throws
+    // ValidationError for a task no longer in the status the action requires (e.g. someone else's
+    // scheduler worker already claimed it), which the existing outer error handling below already
+    // turns into a clear message rather than a crash.
+    if (data.startsWith('task:cancel:do:')) {
+      const task = await botCommands.controlTask(userId, 'cancel', data.slice('task:cancel:do:'.length));
+      return tgEditMenu(chatId, messageId, telegramMenus.taskActions(task));
+    }
+    if (data.startsWith('task:pause:')) {
+      const task = await botCommands.controlTask(userId, 'pause', data.slice('task:pause:'.length));
+      return tgEditMenu(chatId, messageId, telegramMenus.taskActions(task));
+    }
+    if (data.startsWith('task:resume:')) {
+      const task = await botCommands.controlTask(userId, 'resume', data.slice('task:resume:'.length));
+      return tgEditMenu(chatId, messageId, telegramMenus.taskActions(task));
+    }
+    if (data.startsWith('task:retry:')) {
+      const task = await botCommands.controlTask(userId, 'retry', data.slice('task:retry:'.length));
+      return tgEditMenu(chatId, messageId, telegramMenus.taskActions(task));
+    }
     if (data === 'menu:schedule') return startTaskScheduleFlow({ chatId, messageId, userId, contractAddressInput: null });
     if (data === 'menu:snipers') return tgEditMenu(chatId, messageId, telegramMenus.sniperMenu(botCommands.snipers(userId)));
     if (data === 'menu:watch' || data === 'watch:list') {
