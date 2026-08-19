@@ -968,3 +968,33 @@ than a look being altered.
 
 **Still owed:** the two parallel tokens should become one. Two names for "quiet text" is how they
 drifted apart in the first place, and nothing stops them drifting again.
+
+### 13.11 Presets page — three states verified, one blocked
+
+| state | result |
+|---|---|
+| empty | **verbatim match** — "No presets saved" / "A preset stores a contract, method and arguments so a repeat mint is one tap." |
+| loading | `.sk` skeleton rows, no list |
+| error | "Could not load saved presets." + status + Retry |
+| populated | **BLOCKED — cannot be reached from here** |
+
+**Why populated is blocked.** A preset can only be created by `/mintpreset save <json>` on Telegram
+(`server.js:2492`). There is no dashboard route — `/api/mint-presets` is GET-only — and no Discord
+equivalent. Writing to the database directly is also out: `DATABASE_URL` points at
+`postgres.railway.internal`, which resolves only inside Railway's network.
+
+That is not an oversight in the redesign: the prototype's Presets tab is deliberately read-only
+(list + Use + registry, no form). But it does mean **the dashboard can display presets it can never
+create**, which is worth a decision — either a create route, or accept that presets are authored
+from the bots.
+
+**Method registry, now bound to the real table.** It reads `/api/mint-methods` rather than the
+hardcoded five, and "+N more" is a control that expands in place. Verified: expands to all ten
+(nine mint signatures plus SeaDrop) with correct standards, flips to "Show fewer", collapses back.
+
+Note the count legitimately differs from the prototype's caption: it drew "+4 more" beside its own
+five, the real registry has ten, so the app shows "+5 more". The prototype's number was a drawing;
+this one is counted.
+
+**Also verified incidentally:** the Mint rail badge renders `1` in neutral grey against the one
+expired schedule — the badge added in this pass, working on real data.

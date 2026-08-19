@@ -1405,7 +1405,7 @@ function MintPresets({onUsePreset}){
       <div className="ch"><h2>Saved presets</h2><div className="sp"/>
         {items&&items.length>0&&<span className="p nu">{items.length}</span>}</div>
       {presets.error
-        ?<Notice error={{title:'Could not load saved presets.',code:presets.status,onRetry:presets.load}}/>
+        ?<Notice error={loadError(presets,'Could not load saved presets.')}/>
         :items===null||items===undefined
           ?<div><div className="sk row"/><div className="sk row"/></div>
           :items.length===0
