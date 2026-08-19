@@ -655,6 +655,9 @@ function createBotCommandService(dependencies) {
       return pageFrom(schedulerRepository.listPageForUser?.bind(schedulerRepository),()=>state(targetUserId).tasks,targetUserId,input,['name','walletLabel'],TASK_PAGE_HOOKS);},
     adminUserPnl:async(callerUserId,targetUserId)=>{await governance.requireOwner(callerUserId);return state(targetUserId).pnl;},
     adminSecurityAudit:async(callerUserId,input)=>{await governance.requireOwner(callerUserId);return botSecurityRepository.listRecent(input);},
+    // The personal view. Deliberately NOT owner-gated and deliberately not able to widen: userId is
+    // taken from the session, never from the query, so there is no parameter to tamper with.
+    securityAudit:(userId,input)=>botSecurityRepository.listRecent({...input,userId}),
     linkCode:userId=>identity.createLinkCode(userId),
   };
 }

@@ -860,7 +860,23 @@ function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSear
     </div>
   </div>;
 }
-function Activity(){const [page,setPage]=useState(1);const [search,setSearch]=useState('');const listing=useLoad(`/api/activity?page=${page}&pageSize=10&search=${encodeURIComponent(search)}`,[page,search],ACTIVITY_EVENTS);return <><p className="page-lead">Paginated execution history with trigger and verification context where recorded.</p><Notice error={loadError(listing,'Could not load activity.')}/><div className="page-toolbar"><label className="page-search">Find activity<input type="search" value={search} placeholder="Title or wallet…" onChange={e=>{setSearch(e.target.value);setPage(1);}}/></label></div>{listing.data===null?<Skeleton variant="lines" rows={4}/>:<><div className="feed activity-feed">{listing.data.items.map(item=><article className="feed-item" key={item.id}><div><StatusPill status={item.status}/><h2>{item.title}</h2><p>{item.walletLabel||'No wallet'} · {new Date(item.time).toLocaleString()}</p></div><div className="activity-context"><p>Trigger: {item.triggerSource||'legacy/unrecorded'}</p><p>Verification: {item.verificationState||'not applicable'}</p></div></article>)}</div>{listing.data.items.length===0&&<Empty text={search?'No activity matches this search.':'No activity recorded yet.'}/>}<Pager value={listing.data} page={page} setPage={setPage}/></>}</>}
+// One tone per outcome, so a list reads the same way everywhere. Extends the Schedule card's
+// vocabulary to the other lists at the owner's request: green for something that worked, red for
+// something that failed, and AMBER for a refusal -- which was previously indistinguishable from a
+// failure even though it means something quite different (the system said no, rather than broke).
+const OUTCOME_TONE={
+  success:'ok', confirmed:'ok', succeeded:'ok', allowed:'ok', ok:'ok',
+  fail:'bad', failed:'bad', failure:'bad', error:'bad', reverted:'bad',
+  unauthorized:'wn', denied:'wn', rejected:'wn', blocked:'wn', 'rate-limited':'wn',
+};
+function outcomeTone(value){return OUTCOME_TONE[String(value||'').toLowerCase()]||'nu';}
+// Platform is a source, not an outcome, so it gets its own neutral chip rather than competing
+// with the colour that carries meaning.
+function PlatformChip({platform}){
+  if(!platform)return null;
+  return <span className="p nu" style={{textTransform:'capitalize'}}>{platform}</span>;
+}
+function Activity(){const [page,setPage]=useState(1);const [search,setSearch]=useState('');const listing=useLoad(`/api/activity?page=${page}&pageSize=10&search=${encodeURIComponent(search)}`,[page,search],ACTIVITY_EVENTS);return <><p className="page-lead">Paginated execution history with trigger and verification context where recorded.</p><Notice error={loadError(listing,'Could not load activity.')}/><div className="page-toolbar"><label className="page-search">Find activity<input type="search" value={search} placeholder="Title or wallet…" onChange={e=>{setSearch(e.target.value);setPage(1);}}/></label></div>{listing.data===null?<Skeleton variant="lines" rows={4}/>:<><div className="feed activity-feed">{listing.data.items.map(item=><article className="feed-item" key={item.id}><div><span className={`p ${outcomeTone(item.status)}`}>{item.status}</span><h2>{item.title}</h2><p>{item.walletLabel||'No wallet'} · {new Date(item.time).toLocaleString()}</p></div><div className="activity-context"><p>Trigger: {item.triggerSource||'legacy/unrecorded'}</p><p>Verification: {item.verificationState||'not applicable'}</p></div></article>)}</div>{listing.data.items.length===0&&<Empty text={search?'No activity matches this search.':'No activity recorded yet.'}/>}<Pager value={listing.data} page={page} setPage={setPage}/></>}</>}
 // Every confirmed mint auto-creates its own record now (see recordMintActivity/autoRecordPnl in
 // src/server.js) with real cost+gas and sale left at 0 until something actually sells -- these
 // rollups are computed straight from that same already-loaded list, not a separate fetch, since
@@ -1522,23 +1538,40 @@ function WalletsPage({profile,onProfileChange,tab,onTab}){
 // which is the separation GHOSTMINT_UI_RULES.md requires.
 //
 // Security log is OWNER-ONLY and the tab is HIDDEN, not disabled, for a regular account:
-// /api/admin/security-audit is owner-gated server-side, so rendering the tab for a non-owner
+// /api/security-audit is the PERSONAL feed: scoped to the session's own user server-side, with no
+// parameter that could widen it. This tab used to call the owner-gated admin route, so it showed
+// every account's events to the owner and 403'd for everyone else. Backlog §13.1.
+// (kept: the old note about owner-gating applied to the admin view, which still exists)
 // would 403 on load. Offering a control that cannot work is worse than not offering it
 // (contract §6.1).
+const SECURITY_PAGE_SIZE=20;
 function SecurityLogTab(){
-  const listing=useLoad('/api/admin/security-audit?limit=200');
+  const listing=useLoad('/api/security-audit?limit=200');
+  const [page,setPage]=useState(1);
+  const rows=listing.data||[];
+  // 200 rows in one scroll was the whole list. Paged client-side because the endpoint returns a
+  // capped recent window rather than a paginated collection -- the shared Pager still drives it,
+  // so it behaves and looks like every other list (§11.3).
+  const totalPages=Math.max(1,Math.ceil(rows.length/SECURITY_PAGE_SIZE));
+  const shown=rows.slice((page-1)*SECURITY_PAGE_SIZE,page*SECURITY_PAGE_SIZE);
+  const pagerValue={page,pageSize:SECURITY_PAGE_SIZE,total:rows.length,totalPages};
   return <>
-    <p className="eyebrow">Recent authorization outcomes across Telegram, Discord and the dashboard — successes, rejections and failures.</p>
+    <p className="eyebrow">Your recent authorization outcomes across Telegram, Discord and the dashboard — successes, rejections and failures.</p>
     <Notice error={loadError(listing,'Could not load governance data.')}/>
     {listing.data===null?<Skeleton variant="lines" rows={6}/>
-      :listing.data.length===0?<Empty text="No security events recorded yet."/>
-        :<div className="table-wrap"><table>
+      :rows.length===0?<Empty text="No security events recorded yet."/>
+        :<><div className="table-wrap"><table>
           <thead><tr><th>When</th><th>Platform</th><th>Command</th><th>Outcome</th><th>Reason</th></tr></thead>
-          <tbody>{listing.data.map(row=><tr key={row.auditId}>
+          <tbody>{shown.map(row=><tr key={row.auditId}>
             <td>{new Date(row.attemptedAt).toLocaleString()}</td>
-            <td>{row.platform}{row.platformUserId?`:${row.platformUserId}`:''}</td>
-            <td>{row.command}</td><td><StatusPill status={row.outcome}/></td><td>{row.reason}</td>
-          </tr>)}</tbody></table></div>}
+            <td><PlatformChip platform={row.platform}/>{row.platformUserId?` ${row.platformUserId}`:''}</td>
+            <td>{row.command}</td>
+            {/* Amber for a refusal, which used to render identically to a failure even though the
+                two mean different things: refused is the system working, failed is it not. */}
+            <td><span className={`p ${outcomeTone(row.outcome)}`}>{row.outcome}</span></td>
+            <td>{row.reason}</td>
+          </tr>)}</tbody></table></div>
+        <Pager value={pagerValue} page={page} setPage={setPage}/></>}
   </>;
 }
 function History({profile,tab,onTab}){

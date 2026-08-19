@@ -802,3 +802,90 @@ undefined. The prototype's per-field validation state could therefore never fire
 anywhere — Mint now's quantity `.fielderr` included. `api()` now keeps `issues` on
 the error. This is worth remembering: a state can be fully built, correctly styled,
 and still be unreachable because nothing upstream supplies its trigger.
+
+## 13. Owner review 2026-08-19 — the remaining build
+
+Read off the running app, not the prototype. Ordered by what breaks first, not by page.
+Nothing here is speculative: each item was checked in code or in the browser before being written.
+
+### 13.1 BUG — the Security log shows EVERY user's activity
+
+`History → Security log` calls `/api/admin/security-audit`, and
+`botSecurityRepository.listRecent(input)` applies **no user scoping whatsoever**. It is owner-gated,
+so it does not leak to other accounts — a non-owner gets 403 and the tab simply fails — but for the
+owner a *personal* page is rendering *platform-wide* data. The owner spotted it from the inside:
+"I hardly checked my wallet balance in Discord."
+
+Two things are wrong and they need separating:
+- The personal History tab must show **only the signed-in user's** events.
+- The Admin page keeps the platform-wide view. That is where "everyone's" belongs.
+
+Needs a user-scoped repository method; `listRecent` has no `user_id` predicate today.
+
+### 13.2 One status vocabulary, applied to every list
+
+The Schedule card now has a colour per state. Nothing else does. The owner wants the same
+vocabulary wherever a list carries an outcome:
+
+| meaning | tone | where |
+|---|---|---|
+| success / confirmed | `ok` green | Activity, Security log, Batch results |
+| failure | `bad` red | Activity, Security log, Batch results |
+| unauthorized / denied | `wn` amber | Security log — currently indistinguishable from a failure |
+| pending / neutral | `nu` grey | anywhere |
+
+Expired does not generalise and should not be forced where it has no meaning.
+Platform (telegram / discord / dashboard) should also be visually distinguishable in the
+Security log, so the source of an event reads at a glance.
+
+### 13.3 Pagination on the Security log
+
+It renders up to 200 rows in one scroll. Every other paginated surface uses the shared `Pager`
+(§11.3). This one should too.
+
+### 13.4 Sidebar badges
+
+The prototype puts counts on two nav items (`ghostmint-redesign-v3.html:641,644`):
+- **Mint** — `<span class="cnt of">2</span>`, neutral grey
+- **Automation** — `<span class="cnt hot of">1</span>`, red
+
+The tones are the spec: Automation's is `hot` because something is FAILING and wants attention;
+Mint's is neutral because it is a count of things merely needing a look (the owner read this
+correctly off the design: "the scheduled one is paused and the other failed"). Wire Mint's to the
+schedule states that want attention, Automation's to failing snipers/watch rules.
+
+### 13.5 Batch — untested, and two gaps
+
+- **Untested with more than one wallet.** The account has a single wallet, so batch has never
+  actually run. Its whole premise — independent per-wallet submission — is unverified.
+- **Quantity picks are fixed at 1/2/3.** They should derive from the contract's own cap the way
+  Mint now does (`quantityPicks(cap)`), rather than a hardcoded 3.
+- The empty state ("needs at least two wallets") is correct and NOT a bug, but it disables the
+  whole form including the quantity buttons, which is what made it look broken.
+- `.bres` result rows exist in the build; whether they carry per-wallet failure REASONS the way
+  the prototype does still needs checking against `mint.html`.
+
+### 13.6 Four states and responsiveness — the pages still owing them
+
+§1.7 fixed the error state app-wide. Populated/loading/empty and the phone/light-dark sweep are
+still unverified on:
+- **Automation** — all tabs: snipers, social rules, and the policy editors inside them
+- **Wallets** — including the create and import forms, which have had no prototype pass at all
+- **History** — all tabs
+- **Settings** and **Account** — no prototype pass yet
+
+Presets was verified by the owner at phone width and matches.
+
+### 13.7 Presets — is "+4 more" meant to expand?
+
+`mint.html:254` ends the Method registry with a `.tot` row reading `+4 more`. In the prototype it
+is static. Open question for the owner: truncation indicator, or a control that expands the table?
+
+### 13.8 Still open from earlier
+
+- **Archive instead of delete**, app-wide (wallets, P&L, snipers, watch rules, presets and the
+  trigger tables all hard-delete today).
+- **A blockchain sniper on `auto` spends with no confirmation** — deliberate, but worth a
+  second look now that it is understood.
+- Bell's **Bypass challenge** row has no list endpoint to read from.
+- **`.bell-cat` chips are opt-in**; most `notify()` call sites set no category.

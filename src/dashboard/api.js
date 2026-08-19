@@ -236,6 +236,7 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLo
     adminOverview:action(async(req,res)=>res.json(jsonSafe(await commands.adminOverview(user(req))))),
     adminEffective:action(async(req,res)=>res.json(jsonSafe(await commands.adminEffective(user(req),req.query)))),
     adminSecurityAudit:action(async(req,res)=>res.json(jsonSafe(await commands.adminSecurityAudit(user(req),req.query)))),
+    securityAudit:action(async(req,res)=>res.json(jsonSafe(await commands.securityAudit(user(req),req.query)))),
     // Same balance-merge-then-sanitize shape as the self-service wallets route (see publicWallet
     // above) -- the only difference is which userId's wallets get looked up.
     adminUserWallets:action(async(req,res)=>{const values=await commands.adminUserWallets(user(req),req.params.userId);
@@ -311,6 +312,7 @@ function mountDashboardRoutes(app,api){
   app.get('/api/admin',api.requireSession,api.adminOverview);
   app.get('/api/admin/effective',api.requireSession,api.adminEffective);
   app.get('/api/admin/security-audit',api.requireSession,api.adminSecurityAudit);
+  app.get('/api/security-audit',api.requireSession,api.securityAudit);
   app.get('/api/admin/users/:userId/wallets',api.requireSession,api.adminUserWallets);
   app.get('/api/admin/users/:userId/activity',api.requireSession,api.adminUserActivity);
   app.get('/api/admin/users/:userId/tasks',api.requireSession,api.adminUserTasks);
