@@ -1128,3 +1128,69 @@ Two deliberate choices:
   ... RETURNING, so two workers cannot both record the same expiry.
 - **The task is not altered.** A failed mint stays failed and stays retryable, exactly as the owner
   asked; the sweep only records that its window has gone.
+
+## 14. Batch parity across all three surfaces — 2026-08-19
+
+### 14.1 The Discord wallet list was unreadable
+
+`escapeDiscord()` was applied to the FINISHED message, so it escaped the markdown the message is
+assembled from: the code-fence backticks became literal, and every `.` `-` `(` `)` picked up a
+backslash. What arrived was
+
+```
+Wallets \(2\)
+1\. test\-placeholder — \`0xed98\.\.\.2976\` · Ethereum · minted: 0
+```
+
+Only the label is user-controlled, so only the label needs escaping. Regression test added
+(`discordMenuParity.test.js`) asserting the header renders as markdown, the address keeps its code
+formatting, and the label is still escaped — the last part matters, since the fix must not become
+a markdown-injection hole.
+
+### 14.2 Batch coverage before and after
+
+| | batch mint | batch import |
+|---|---|---|
+| Site | was ✓ / now ✓ | was **API only, no UI** / now ✓ |
+| Telegram | was **✗** / now ✓ | was **✗** / now ✓ |
+| Discord | was ✓ / now ✓ | was ✓ / now ✓ |
+
+**Telegram had neither** — not registered, no handler, nothing. Both now exist as
+`/batchmint` and `/batchimport`, registered in the command menu (so they are discoverable rather
+than folklore, which is what went wrong with `/mintpreset save` — see §13.15) and added to the list
+of JSON-payload commands that get shaped error help.
+
+**The site had the batch-import ROUTE but no way to reach it.** `/api/wallets/batch-import` has
+existed all along, so importing several wallets meant using Telegram or Discord — the two places a
+private key is least safe. The dashboard is the one surface where the key does not cross a chat
+transit, which made its absence there exactly the wrong way round.
+
+The prototype has no batch-import UI (only "Import an existing wallet"), so this is a deliberate
+addition at the owner's instruction, built in the prototype's own vocabulary — `.form-wallet-*`,
+the same warning treatment as the single import, and `.bres` result rows reused from Batch mint.
+
+### 14.3 Verified end to end on the site
+
+Three keys submitted — two valid, one deliberate dud:
+
+```
+Imported  batchtest-1  0x3C72d1DB9a156A5EfDa144ef4EeedEa6F7Ba137C
+Imported  batchtest-2  0xc2f59cD99bc34f4F4D9C70fc1B8D6e70057484D5
+Failed    #3           must be a valid Ethereum private key
+```
+
+Partial success reported per key, which is the point of the batch path: one bad key must not
+discard the good ones.
+
+Two bugs of mine were found by running it rather than by reading it:
+- the route answers `{results:[...]}`, not a bare array, so calling `.filter` on the response threw
+  before anything rendered — a 201 with real results looked like nothing happening;
+- the key splitter was written as `/[s,]+/` instead of `/[\s,]+/`, so it split on the letter "s".
+  Hex keys contain no "s", so three lines arrived as one unparseable key.
+
+### 14.4 Not verified
+
+Discord's `batch-mint` and `wallet batch-import` predate this work and were **not** exercised — they
+are wired, but I have not run them. The Telegram handlers are pattern- and payload-verified
+(including multi-line JSON, which matters for pasting a key list) but cannot be run from here at
+all. Both want a live pass on the real bots.

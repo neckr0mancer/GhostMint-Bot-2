@@ -585,8 +585,16 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
       if (data === 'wallet:list') {
         const wallets = commands.wallets(userId);
         if (!wallets.length) return dcRespond(interaction, discordMenus.placeholderMenu('Wallets', 'No wallets yet. Go back and tap Create wallet.'));
-        const list = wallets.map((w,i) => `${i+1}. ${w.label} — \`${w.address.slice(0,6)}...${w.address.slice(-4)}\` · ${chains[w.chain]?.name || w.chain} · minted: ${w.minted||0}`).join('\n');
-        return dcRespond(interaction, { content: escapeDiscord(`Wallets (${wallets.length})\n${list}`),
+        // Escape only the USER-CONTROLLED parts. Escaping the finished string escaped the very
+        // markdown this message is built from -- the code-fence backticks became literal, and every
+        // . - ( ) picked up a backslash, so the list rendered as a wall of slashes rather than as
+        // wallets. A label is the only thing a user controls, so it is the only thing to escape.
+        const list = wallets.map((w, i) => {
+          const short = `${w.address.slice(0, 6)}...${w.address.slice(-4)}`;
+          const chain = chains[w.chain]?.name || w.chain;
+          return `${i + 1}. **${escapeDiscord(w.label)}** \`${short}\` · ${escapeDiscord(chain)} · minted: ${w.minted || 0}`;
+        }).join('\n');
+        return dcRespond(interaction, { content: `**Wallets (${wallets.length})**\n${list}`,
           components: [discordMenus.row([discordMenus.button('⬅️ Back to wallets', 'menu:wallets')])] });
       }
 

@@ -1891,7 +1891,7 @@ function withTelegramUser(handler) {
       // confirmation needed, trimmed per user feedback.
       if(telegramFlowState.get('telegram',context.contextId)) telegramFlowState.clear('telegram',context.contextId);
       const command=commandName(msg.text||msg.caption);
-      if(['mintnow','mintcall','mintpreset','admin','watch','confirmtrigger','targetpolicy','updatesniper','importwallet'].includes(command)) {
+      if(['mintnow','mintcall','mintpreset','admin','watch','confirmtrigger','targetpolicy','updatesniper','importwallet','batchmint','batchimport'].includes(command)) {
         commandRateLimiter.check('telegram',userId,command);
       }
       await handler(msg, match, userId);
@@ -1950,6 +1950,8 @@ if (BOT_TOKEN) {
     { command: 'deposit', description: 'Get an address to fund your wallet' },
     { command: 'createwallet', description: 'Generate and encrypt a new wallet' },
     { command: 'importwallet', description: 'Import an existing wallet (not recommended)' },
+    { command: 'batchimport', description: 'Import many wallets at once (not recommended)' },
+    { command: 'batchmint', description: 'Mint the same drop from several wallets' },
     { command: 'removewallet', description: 'Remove a wallet' },
     { command: 'exportkey', description: 'Export a wallet\'s private key' },
     { command: 'mintnow', description: 'Mint immediately' },
@@ -2591,6 +2593,42 @@ send /mint with a contract address to get going.`;
   bot.onText(/^\/importwallet(?:@\w+)?\s+(\S+)\s+(\S+)\s+(\S+)$/i, withTelegramUser(async (msg, match, userId) => {
     const wallet = await botCommands.importWallet(userId, { label: match[1], chain: match[2], privateKey: match[3] });
     tgRender(msg.chat.id, { text: `✅ Wallet <b>${escapeTelegramHtml(wallet.label)}</b> imported at <code>${wallet.address}</code>.\n\n⚠️ <b>Not recommended:</b> the private key passed through Telegram's message transit and may remain in client history or notification previews. Prefer /createwallet; a future HTTPS dashboard will provide a safer import path.`, parseMode: 'HTML' });
+  }));
+
+  // Batch import. Same warning as /importwallet and for the same reason -- every key in the list
+  // crosses Telegram's message transit and may survive in client history. Results come back per
+  // key because one bad key must not discard the others; that tolerance is the whole point of the
+  // batch path, and importWalletsBatch already keeps going and reports each entry separately.
+  bot.onText(/^\/batchimport(?:@\w+)?\s+([\s\S]+)$/i, withTelegramUser(async (msg, match, userId) => {
+    const payload = commandJson(match[1]);
+    const results = await botCommands.importWalletsBatch(userId, {
+      privateKeys: payload.privateKeys, chain: payload.chain, labelPrefix: payload.labelPrefix });
+    const ok = results.filter(item => item.status === 'success');
+    const failed = results.filter(item => item.status !== 'success');
+    const lines = results.map(item => item.status === 'success'
+      ? `✅ <b>${escapeTelegramHtml(item.label)}</b> <code>${item.address}</code>`
+      : `❌ #${item.index + 1}: ${escapeTelegramHtml(String(item.error || 'failed'))}`);
+    await tgRender(msg.chat.id, { parseMode: 'HTML',
+      text: `<b>Batch import — ${ok.length} of ${results.length} imported</b>\n${lines.join('\n')}`
+        + (failed.length ? '\n\nFailed entries were skipped; the successful ones are already saved.' : '')
+        + "\n\n⚠️ <b>Not recommended:</b> those keys passed through Telegram's message transit. Prefer /createwallet." });
+  }));
+
+  // Batch mint. Each wallet is simulated and submitted INDEPENDENTLY -- one failing does not cancel
+  // the rest -- so the reply is per wallet rather than one verdict for the lot.
+  bot.onText(/^\/batchmint(?:@\w+)?\s+([\s\S]+)$/i, withTelegramUser(async (msg, match, userId) => {
+    const payload = commandJson(match[1]);
+    const results = await botCommands.batchMint(userId, payload);
+    const labels = payload.walletLabels || [];
+    const lines = results.map((result, index) => {
+      const label = escapeTelegramHtml(String(labels[index] ?? `wallet ${index + 1}`));
+      const state = String(result?.state || result?.status || 'submitted');
+      const hash = result?.txHash ? ` <code>${result.txHash}</code>` : '';
+      return `${state === 'failed' ? '❌' : '✅'} <b>${label}</b> — ${escapeTelegramHtml(state)}${hash}`;
+    });
+    const ok = results.filter(r => String(r?.state || r?.status || '') !== 'failed').length;
+    await tgRender(msg.chat.id, { parseMode: 'HTML',
+      text: `<b>Batch mint — ${ok} of ${results.length} submitted</b>\n${lines.join('\n')}` });
   }));
 
   bot.onText(/^\/watch(?:@\w+)?\s+add\s+(.+)$/i, withTelegramUser(async (msg, match, userId) => {
