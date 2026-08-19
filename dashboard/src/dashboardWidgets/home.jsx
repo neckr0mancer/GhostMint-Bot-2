@@ -178,7 +178,7 @@ function NextDropCard({summary,sources,go}){
         action={<button type="button" className="b sm" onClick={()=>go('Mint','schedule')}>Schedule a mint</button>}>
         A scheduled mint submits itself at the time you set — it is not a reminder.
       </EmptyState>:null}>
-      {summary.nextTask&&<CountdownRing target={summary.nextTask.mintTime}
+      {summary.nextTask&&<CountdownRing target={summary.nextTask.mintTime} from={summary.nextTask.createdAt}
         title={summary.nextTask.name||'Scheduled mint'}
         meta={[summary.nextTask.walletLabel,summary.nextTask.price?`${summary.nextTask.price} ETH`:null]
           .filter(Boolean).join(' · ')||null}/>}

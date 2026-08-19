@@ -411,6 +411,33 @@ owner has already moved past.
 7. **Pager gains « and »**, only past three pages, disabled at the ends like the
    single arrows.
 
+### 11.0b Third pass, 2026-08-19 — expired, and the filter actually filtering
+
+8. **The countdown ring was filling over a fixed final hour**, so a mint two minutes out rendered
+   96.7% full on its first frame and crept the last 3%. It now fills across the mint's OWN wait
+   (`createdAt` -> `mintTime`), starting empty whatever the distance.
+9. **`expired` is a sixth bucket**, derived rather than stored — the schema allows seven statuses
+   and this is not one of them. It is a paused or failed mint whose time went by **more than an
+   hour ago** (`EXPIRY_GRACE_MS`), and it takes precedence, so the buckets stay a partition.
+
+   The grace period is the whole design. Expiry cannot be "mint_time < now": a mint FAILS because
+   its time arrived, so that test is true for essentially every failure, which left `failed`
+   permanently empty and piled everything into `expired`. Measured live before the fix —
+   failed 0, expired 1. Inside the hour a failure is worth retrying (flaky RPC, a wallet you can
+   top up); past it the drop is over.
+
+   Expired withholds Retry and Resume, which is the owner's point: expired is a state, not an
+   action. An expired **paused** mint can still be Cancelled (the server's cancel accepts
+   'paused'); an expired **failed** one accepts nothing, since Retry was its only route.
+10. **Filtering works before the server ships**, via a shim in `Tasks`. A response carrying
+   `counts` means a server that filters; one without does not, and the client then fetches up to
+   50 rows unfiltered and filters and pages locally, reusing `bucketOf` rather than duplicating
+   it. Past 50 rows it says so in an `.nt.i` rather than quietly showing a subset. It disables
+   itself the moment the server answers with counts.
+
+   This was avoided for two turns as duplicated logic, and that was the wrong call: the feature
+   was unusable on the only environment the owner can see.
+
 ### 11.1 "2 pending" above three rows
 
 The prototype's Scheduled card shows a `.p.nu` chip reading **2 pending** above

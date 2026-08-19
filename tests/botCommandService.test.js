@@ -141,32 +141,60 @@ test('repository-supplied counts are passed through untouched, and the filter re
   assert.equal(result.totalPages, 3);
 });
 
-test('the five status buckets partition every status the schema allows', async () => {
+test('the buckets partition every status the schema allows', async () => {
   // The DB constrains status to exactly these seven (migrations/011_durable_scheduler.sql:30).
   // If a bucket ever stops covering one, rows in that status become unreachable in the UI --
   // which is why 'succeeded' has a bucket of its own rather than being left out.
   const SCHEMA_STATUSES = ['scheduled', 'claimed', 'retry', 'paused', 'cancelled', 'succeeded', 'failed'];
+  // Mint times well in the future, so nothing is expired and each status shows its own bucket.
+  const soon = Date.now() + 86_400_000;
   const tasks = SCHEMA_STATUSES.map((status, index) => ({
-    userId: 'user-a', id: `task-${index}`, name: `job-${index}`, walletLabel: 'alpha', status }));
+    userId: 'user-a', id: `task-${index}`, name: `job-${index}`, walletLabel: 'alpha', status, mintTime: soon }));
   const { service, state } = fixture();
   state.tasks.push(...tasks);
   const all = await service.tasksPage('user-a', { page: 1, pageSize: 50 });
   assert.equal(Object.values(all.counts).reduce((sum, value) => sum + value, 0), SCHEMA_STATUSES.length,
     'every status must land in exactly one bucket');
-  assert.deepEqual(all.counts, { pending: 3, paused: 1, failed: 1, cancelled: 1, done: 1 });
+  assert.deepEqual(all.counts, { pending: 3, paused: 1, failed: 1, expired: 0, cancelled: 1, done: 1 });
+});
+
+test('expiry needs the mint time to be well past, not merely past', async () => {
+  // A mint FAILS because its time arrived, so "mint_time < now" is true for almost every failure.
+  // Bucketing on that alone would empty the failed bucket and pile everything into expired, which
+  // is why there is a grace period. Inside it a failure is still worth retrying.
+  const { service, state } = fixture();
+  const now = Date.now();
+  state.tasks.push(
+    { userId: 'user-a', id: 'just-failed', name: 'just failed', walletLabel: 'alpha',
+      status: 'failed', mintTime: now - 60_000 },
+    { userId: 'user-a', id: 'old-failed', name: 'old failed', walletLabel: 'alpha',
+      status: 'failed', mintTime: now - 26 * 60 * 60 * 1000 },
+    { userId: 'user-a', id: 'old-paused', name: 'old paused', walletLabel: 'alpha',
+      status: 'paused', mintTime: now - 26 * 60 * 60 * 1000 },
+    { userId: 'user-a', id: 'future-paused', name: 'future paused', walletLabel: 'alpha',
+      status: 'paused', mintTime: now + 86_400_000 });
+  const all = await service.tasksPage('user-a', { page: 1, pageSize: 50 });
+  assert.equal(all.counts.failed, 1, 'a minute-old failure is still failed, not expired');
+  assert.equal(all.counts.paused, 1, 'a future paused mint is still paused');
+  assert.equal(all.counts.expired, 2, 'the day-old failure and the day-old pause are expired');
+  const expired = await service.tasksPage('user-a', { page: 1, pageSize: 50, status: 'expired' });
+  assert.deepEqual(expired.items.map(task => task.id).sort(), ['old-failed', 'old-paused']);
+  const failed = await service.tasksPage('user-a', { page: 1, pageSize: 50, status: 'failed' });
+  assert.deepEqual(failed.items.map(task => task.id), ['just-failed']);
 });
 
 test('a status filter narrows the rows and the total, but never the counts', async () => {
   const mix = ['scheduled', 'claimed', 'retry', 'paused', 'paused', 'failed', 'cancelled', 'succeeded'];
   const tasks = Array.from({ length: 24 }, (_, index) => ({
     userId: 'user-a', id: `task-${index}`, name: `job-${index}`, walletLabel: 'alpha',
-    status: mix[index % mix.length] }));
+    status: mix[index % mix.length], mintTime: Date.now() + 86_400_000 }));
   const { service, state } = fixture();
   state.tasks.push(...tasks);
   const unfiltered = await service.tasksPage('user-a', { page: 1, pageSize: 10 });
   assert.equal(unfiltered.total, 24);
   const BUCKETS = { pending: ['scheduled', 'claimed', 'retry'], paused: ['paused'],
     failed: ['failed'], cancelled: ['cancelled'], done: ['succeeded'] };
+  // every row is scheduled far ahead in this fixture, so none of them are expired
   for (const [bucket, statuses] of Object.entries(BUCKETS)) {
     const page = await service.tasksPage('user-a', { page: 1, pageSize: 50, status: bucket });
     assert.deepEqual([...new Set(page.items.map(task => task.status))].sort(), [...statuses].sort(),

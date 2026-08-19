@@ -8,7 +8,7 @@ const { detectContractChain } = require('../mint/chainDetector');
 const { computeSeaDropValueWei } = require('../mint/seaDropCall');
 const { SEADROP_MINT_SIGNATURE } = require('../mint/seaDropRegistry');
 const { createWalletBalanceCache } = require('./walletBalanceCache');
-const { BUCKET_OF_STATUS, TASK_BUCKETS, TASK_BUCKET_NAMES } = require('../scheduler/schedulerRepository');
+const { EXPIRY_GRACE_MS, TASK_BUCKETS, TASK_BUCKET_NAMES, bucketFor } = require('../scheduler/schedulerRepository');
 
 // The four controls a scheduled mint accepts, each with the past participle its error message
 // needs. `${action}d` got half of them wrong -- "canceld" and "retryd" both reached the user
@@ -539,11 +539,17 @@ function createBotCommandService(dependencies) {
   async function pageFrom(repositoryMethod,fallback,userId,input,searchFields,{counts,refine}={}) {const p=pagination(input);const search=typeof input?.search==='string'?input.search.trim():'';if(repositoryMethod){const {items,total,...extra}=await repositoryMethod(userId,{limit:p.pageSize,offset:p.offset,search,status:input?.status});return {...p,total,totalPages:Math.max(1,Math.ceil(total/p.pageSize)),items,...extra};}const source=fallback();const matched=search&&searchFields?source.filter(item=>searchFields.some(field=>String(item[field]||'').toLowerCase().includes(search.toLowerCase()))):source;const extra=counts?counts(matched):{};const items=refine?refine(matched,input):matched;return {...paginate(items,p),...extra};}
   // The in-memory mirror of what listPageForUser does in SQL, for the fallback path. Every status
   // lands in exactly one bucket, so these five sum to the collection total.
-  const bucketOfTask=task=>BUCKET_OF_STATUS[String(task.status||'').toLowerCase()]||null;
+  // Same rule the SQL applies, on in-memory rows: expiry needs the mint time as well as the
+  // status, so bucketing on status alone would leave the expired bucket permanently empty here
+  // while the deployed path filled it.
+  const bucketOfTask=task=>{
+    const at=task?.mintTime?new Date(task.mintTime).getTime():NaN;
+    return bucketFor(task?.status,Number.isFinite(at)&&at<Date.now()-EXPIRY_GRACE_MS);
+  };
   const countTaskBuckets=tasks=>{const counts=Object.fromEntries(TASK_BUCKET_NAMES.map(name=>[name,0]));
     for(const task of tasks){const name=bucketOfTask(task);if(name)counts[name]+=1;}return {counts};};
   const filterTaskBucket=(tasks,input)=>{const bucket=input?.status;
-    return Object.hasOwn(TASK_BUCKETS,bucket)?tasks.filter(task=>bucketOfTask(task)===bucket):tasks;};
+    return TASK_BUCKET_NAMES.includes(bucket)?tasks.filter(task=>bucketOfTask(task)===bucket):tasks;};
   const TASK_PAGE_HOOKS={counts:countTaskBuckets,refine:filterTaskBucket};
 
   async function stats(userId) {const rows=sniperRepository?.statsForUser?await sniperRepository.statsForUser(userId):[];

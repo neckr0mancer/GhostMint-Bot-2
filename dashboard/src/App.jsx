@@ -474,7 +474,42 @@ function Minting({onSwitchToBatch,onGoWallets}){const wallets=useLoad('/api/wall
   </>;
 }
 
-function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSearch]=useState('');const [bucket,setBucket]=useState('pending');const [filtersOpen,setFiltersOpen]=useState(false);const listing=useLoad(`/api/tasks?page=${page}&pageSize=10&status=${bucket}&search=${encodeURIComponent(search)}`,[page,bucket,search],'tasks.changed');const wallets=useLoad('/api/wallets',[],'wallets.changed');const [chain,setChain]=useState(profile.defaultChain||profile.supportedChains[0]);const [contractAddress,setContractAddress]=useState('');const [quantity,setQuantity]=useState('1');const [priceETH,setPriceETH]=useState('');const [mintTime,setMintTime]=useState('');const [detecting,setDetecting]=useState(false);const lastDetected=useRef('');
+/* --- Schedule status vocabulary -------------------------------------------------------------
+   Mirrors TASK_BUCKETS / bucketFor() in src/scheduler/schedulerRepository.js. Module scope on
+   purpose: these are constants and pure functions, and holding them inside the component put them
+   in the temporal dead zone of the filtering code that runs earlier in the same body -- which
+   threw "Cannot access 'EXPIRABLE' before initialization" and blanked the page.
+
+   'all' is a view, not a status: it sends no filter. 'expired' is derived from the clock rather
+   than stored -- the schema allows seven statuses and this is not one of them -- and it takes
+   precedence over paused/failed so every row lands in exactly one bucket. Ordered by lifecycle
+   (waiting -> suspended -> broke -> missed -> abandoned -> finished), the order a queue is read in.
+   Tone follows meaning: red is failure only, amber is a window that went past, and cancelled stays
+   neutral because the user chose it. */
+const BUCKETS=[['all','All'],['pending','Pending'],['paused','Paused'],['failed','Failed'],
+  ['expired','Expired'],['cancelled','Cancelled'],['done','Done']];
+const BUCKET_STATUSES={pending:['scheduled','claimed','retry'],paused:['paused'],
+  failed:['failed'],cancelled:['cancelled'],done:['succeeded']};
+const BUCKET_KEYS=['pending','paused','failed','expired','cancelled','done'];
+const BUCKET_TONE={all:'nu',pending:'ok',paused:'nu',failed:'bad',expired:'wn',cancelled:'nu',done:'nu'};
+const EXPIRABLE=['paused','failed'];
+// Must match EXPIRY_GRACE_MS in src/scheduler/schedulerRepository.js. Expiry is not "the time has
+// passed" -- a mint fails BECAUSE its time arrived, so that test would empty the failed bucket
+// entirely and pile every failure into expired. It is "passed long enough ago that retrying or
+// resuming is pointless": inside the hour a failure is worth another go, past it the drop is over.
+const EXPIRY_GRACE_MS=60*60*1000;
+function isExpired(task){
+  const value=String(task?.status||'').toLowerCase();
+  if(!EXPIRABLE.includes(value))return false;
+  const at=task?.mintTime?new Date(task.mintTime).getTime():NaN;
+  return Number.isFinite(at)&&at<Date.now()-EXPIRY_GRACE_MS;
+}
+function bucketOf(task){
+  if(isExpired(task))return 'expired';
+  const value=String(task?.status||'').toLowerCase();
+  return Object.keys(BUCKET_STATUSES).find(key=>BUCKET_STATUSES[key].includes(value))||null;
+}
+function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSearch]=useState('');const [bucket,setBucket]=useState('pending');const [filtersOpen,setFiltersOpen]=useState(false);const [serverFilters,setServerFilters]=useState(null);const PAGE_SIZE=10;const COMPAT_LIMIT=50;const listing=useLoad(serverFilters===false?`/api/tasks?page=1&pageSize=${COMPAT_LIMIT}&search=${encodeURIComponent(search)}`:`/api/tasks?page=${page}&pageSize=${PAGE_SIZE}&status=${bucket}&search=${encodeURIComponent(search)}`,[page,bucket,search,serverFilters],'tasks.changed');const wallets=useLoad('/api/wallets',[],'wallets.changed');const [chain,setChain]=useState(profile.defaultChain||profile.supportedChains[0]);const [contractAddress,setContractAddress]=useState('');const [quantity,setQuantity]=useState('1');const [priceETH,setPriceETH]=useState('');const [mintTime,setMintTime]=useState('');const [detecting,setDetecting]=useState(false);const lastDetected=useRef('');
   // The prototype's Schedule form has no price field, because it assumes the contract can be
   // priced automatically. Some cannot -- the server then rejects with a priceETH issue and there
   // is nowhere to type one, which left the form unsubmittable for those contracts. So the field
@@ -519,7 +554,33 @@ function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSear
   // table in particular was the thing the owner asked to have removed.
   const walletsArrived=wallets.data!==null&&wallets.data!==undefined;
   const noWallets=walletsArrived&&wallets.data.length===0;
-  const items=listing.data?.items;
+  // ---- Filtering, and where it happens -------------------------------------------------------
+  // The server does this: it filters by bucket and counts all of them in one round trip. But
+  // dashboard/vite.config.js proxies /api to the DEPLOYED instance, which does not have that code
+  // yet, so on localhost the filter was sent and ignored -- the list never narrowed.
+  //
+  // So: detect it. A response carrying `counts` is a server that filters; one without is not.
+  // When it is not, fetch up to COMPAT_LIMIT rows unfiltered and do the filtering and the paging
+  // here instead. This is a SHIM with a real limit -- past 50 rows it can only see the first 50 --
+  // and it disables itself the moment the server starts answering with counts. It is not a second
+  // implementation to maintain: it reuses bucketOf, the same function the rows are labelled with.
+  const compat=serverFilters===false;
+  useEffect(()=>{
+    if(listing.data&&serverFilters===null)setServerFilters(Boolean(listing.data.counts));
+  },[listing.data,serverFilters]);
+  const served=listing.data?.items;
+  const matching=compat&&served
+    ?served.filter(task=>bucket==='all'||bucketOf(task)===bucket)
+    :null;
+  const items=compat
+    ?(matching?matching.slice((page-1)*PAGE_SIZE,page*PAGE_SIZE):undefined)
+    :served;
+  const compatTotal=matching?matching.length:0;
+  const pagerValue=compat
+    ?{page,pageSize:PAGE_SIZE,total:compatTotal,totalPages:Math.max(1,Math.ceil(compatTotal/PAGE_SIZE))}
+    :listing.data;
+  // Truthful about its own blind spot rather than quietly showing a subset.
+  const compatTruncated=compat&&listing.data?.total>COMPAT_LIMIT;
   // The prototype's chip reads "2 pending" above THREE rows -- Scheduled, Paused, Failed. So
   // "pending" means not-yet-fired: a paused mint still counts, a failed one does not. Counting
   // only status==="scheduled" would have printed 1 against the same three rows.
@@ -530,23 +591,18 @@ function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSear
   // 'all' is a view, not a status -- it sends no filter at all. Ordered by lifecycle (waiting ->
   // suspended -> broke -> abandoned -> finished) rather than by the order they were dictated,
   // because that is the order someone reads a queue in.
-  const BUCKETS=[['all','All'],['pending','Pending'],['paused','Paused'],['failed','Failed'],
-    ['cancelled','Cancelled'],['done','Done']];
-  const BUCKET_STATUSES={pending:['scheduled','claimed','retry'],paused:['paused'],
-    failed:['failed'],cancelled:['cancelled'],done:['succeeded']};
   // Counts come from the server because they describe the whole collection, not this page. The
   // fallback is load-bearing rather than defensive: dashboard/vite.config.js proxies /api to the
   // deployed instance, so until this ships the response carries no counts at all. Counting the
   // page keeps a wrong-but-plausible number instead of rendering "undefined", and it corrects
   // itself the moment the server catches up.
-  const rawCounts=listing.data?.counts||(items?Object.fromEntries(Object.keys(BUCKET_STATUSES).map(key=>
-    [key,items.filter(task=>BUCKET_STATUSES[key].includes(String(task.status).toLowerCase())).length]))
-    :Object.fromEntries(Object.keys(BUCKET_STATUSES).map(key=>[key,0])));
+  const rawCounts=listing.data?.counts||(served?Object.fromEntries(BUCKET_KEYS.map(key=>
+    [key,served.filter(task=>bucketOf(task)===key).length]))
+    :Object.fromEntries(BUCKET_KEYS.map(key=>[key,0])));
   const counts={...rawCounts,all:Object.values(rawCounts).reduce((sum,value)=>sum+value,0)};
   // Tone follows meaning, not novelty. Failed is the only one that went wrong on its own, so it is
   // the only red: cancelled is something the user chose, and colouring a deliberate act like an
   // error teaches people to ignore red. Owner's ruling 2026-08-19.
-  const BUCKET_TONE={all:'nu',pending:'ok',paused:'nu',failed:'bad',cancelled:'nu',done:'nu'};
   function rowIcon(status){
     const value=String(status||'').toLowerCase();
     if(value==='paused')return <div className="ri">{PAUSE_ICON}</div>;
@@ -577,7 +633,16 @@ function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSear
     paused:['resume','cancel'],
     failed:['retry'],
   };
-  function actionsFor(status){return ACTIONS_BY_STATUS[String(status||'').toLowerCase()]||[];}
+  // Takes the whole task, not just its status, because expiry decides this as much as status
+  // does. Resume and Retry are withheld once the mint time has gone: resuming or retrying then
+  // only re-runs something whose drop is already over, which is the owner's point -- expired is a
+  // state, not an action. An expired PAUSED mint can still be cancelled (the server's cancel
+  // accepts 'paused'); an expired FAILED one accepts nothing, since retry is its only route.
+  function actionsFor(task){
+    const status=String(task?.status||'').toLowerCase();
+    if(isExpired(task))return status==='paused'?['cancel']:[];
+    return ACTIONS_BY_STATUS[status]||[];
+  }
   // Selection is scoped to the page in view -- it clears on paging and on changing filter -- and
   // intersecting here as well is what stops a control being enabled with nothing behind it.
   const selected=(items||[]).filter(task=>selectedIds.includes(task.id));
@@ -588,14 +653,14 @@ function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSear
   // ruled that out: "I cannot select a scheduled item, then also select another one, and it now
   // be cancelled." Rows that cannot join are left inert rather than hidden, so the list does not
   // reshuffle under the cursor as a selection is built.
-  const selectionKey=selected.length?actionsFor(selected[0].status).join('+'):null;
-  const canSelect=task=>selectionKey===null||actionsFor(task.status).join('+')===selectionKey;
+  const selectionKey=selected.length?actionsFor(selected[0]).join('+'):null;
+  const canSelect=task=>selectionKey===null||actionsFor(task).join('+')===selectionKey;
   function chooseRow(task){if(canSelect(task))toggleSelected(task.id);}
   // Because the selection is homogeneous, "this action is offered" and "this action will run
   // against every selected row" are now the same statement -- which is what makes the button
   // labels honest.
   function selectionSupports(action){
-    return selected.length>0&&actionsFor(selected[0].status).includes(action);
+    return selected.length>0&&actionsFor(selected[0]).includes(action);
   }
   async function controlSelected(action){
     if(!selectionSupports(action))return;
@@ -608,15 +673,11 @@ function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSear
     setSelectedIds([]);
     listing.load();
   }
-  function bucketOf(status){
-    const value=String(status||'').toLowerCase();
-    // Iterate the STATUS map, not BUCKETS -- BUCKETS carries 'all', which is a view rather than
-    // a set of statuses and has no entry here.
-    return Object.keys(BUCKET_STATUSES).find(key=>BUCKET_STATUSES[key].includes(value))||null;
-  }
-  function rowPill(status){
-    const key=bucketOf(status);
-    return <span className={`p ${key?BUCKET_TONE[key]:'nu'}`}>{status}</span>;
+  function rowPill(task){
+    const key=bucketOf(task);
+    // An expired row says "expired" rather than "paused"/"failed", because that is the fact that
+    // decides what you can do with it.
+    return <span className={`p ${key?BUCKET_TONE[key]:'nu'}`}>{key==='expired'?'expired':task.status}</span>;
   }
   return <div className="split">
     <div className="card">
@@ -711,6 +772,11 @@ function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSear
                      <p>Nothing here right now. Other states may still have mints — the counts above show which.</p></>}
                </div>
               :<div>
+                 {/* Says so out loud rather than quietly showing a subset. Only reachable before
+                     the server-side filter deploys, and only past the 50-row window. */}
+                 {compatTruncated&&<div className="nt i" style={{marginBottom:'9px'}}>{INFO_ICON}
+                   <div>Filtering the newest {COMPAT_LIMIT} of {listing.data.total} scheduled mints.
+                   The full-collection filter arrives with the next deploy.</div></div>}
                  {/* The whole row is the control: click to select, click again to drop it. The
                      checkboxes that were here are gone at the owner's instruction -- selection now
                      reads as a highlight on the row itself (.r.on), which is why the row carries
@@ -732,7 +798,7 @@ function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSear
                        <div className="rt">{task.name}</div>
                        <div className="rs fold">{task.walletLabel} · {new Date(task.mintTime).toISOString()}</div>
                      </div>
-                     <div className="rv">{rowPill(task.status)}</div>
+                     <div className="rv">{rowPill(task)}</div>
                    </div>;
                  })}
                  {/* All four always present, as the prototype draws them; the ones that cannot
@@ -749,7 +815,7 @@ function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSear
                  {/* A selection belongs to the page it was made on, so leaving the page drops it.
                      Guarded on an ACTUAL change: pressing the number you are already on is a no-op,
                      and a no-op that silently throws away a selection is just a trap. */}
-                 <Pager value={listing.data} page={page}
+                 <Pager value={pagerValue} page={page}
                    setPage={value=>{if(value!==page)setSelectedIds([]);setPage(value);}}/>
                </div>}
       </div>

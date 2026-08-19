@@ -90,7 +90,7 @@ export function weiToEth(wei){
    Re-renders on a 1s interval only while a future target exists; the effect tears the
    timer down as soon as the target passes or unmounts, so an idle Home holds no timer. */
 const RING_CIRCUMFERENCE=2*Math.PI*17;
-export function CountdownRing({target,title,meta}){
+export function CountdownRing({target,from,title,meta}){
   const [now,setNow]=useState(()=>Date.now());
   useEffect(()=>{
     if(!target)return undefined;
@@ -106,10 +106,17 @@ export function CountdownRing({target,title,meta}){
   const seconds=totalSeconds%60;
   const clock=hours>0?`${hours}:${String(minutes).padStart(2,'0')}:${String(seconds).padStart(2,'0')}`
     :`${String(minutes).padStart(2,'0')}:${String(seconds).padStart(2,'0')}`;
-  // The arc fills over the final hour. A drop scheduled days out would otherwise sit at a
-  // full ring for days, which reads as "no progress" rather than "not soon".
-  const windowMs=60*60*1000;
-  const progress=Math.min(1,Math.max(0,1-remaining/windowMs));
+  // The arc fills across THIS mint's own wait -- from the moment it was scheduled to the moment
+  // it fires -- so it starts empty and ends full whatever the distance.
+  //
+  // It used to fill over a fixed final hour, which is wrong at both ends of the range. A mint two
+  // minutes out rendered 96.7% full on its very first frame and crept the last 3%: technically
+  // "filling as it approaches", but on screen it was a stuck green ring. A mint days out sat at
+  // exactly zero for days. Scaling to the actual wait fixes both, and needs nothing the row does
+  // not already carry -- createdAt is set when the task is written.
+  const startMs=from?new Date(from).getTime():NaN;
+  const span=Number.isFinite(startMs)&&targetMs>startMs?targetMs-startMs:60*60*1000;
+  const progress=Math.min(1,Math.max(0,1-remaining/span));
   return <div className="ring">
     <svg viewBox="0 0 40 40" aria-hidden="true">
       <circle cx="20" cy="20" r="17" fill="none" stroke="var(--surface-4)" strokeWidth="4"/>
