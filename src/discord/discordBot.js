@@ -503,7 +503,7 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
   // conditional ones, the already-available interaction.values) -- showModal() is mutually
   // exclusive with defer/reply, so handleComponent's blanket up-front defer below must skip these
   // or every one of them would throw "already acknowledged" the moment it tried to open its modal.
-  const MODAL_CUSTOM_IDS = new Set(['menu:mint', 'link:enter', 'wallet:create:start', 'wallet:import:start', 'wallet:import:key-modal', 'flow:pricemanual', 'flow:gastolerancemanual', 'watch:add:start', 'flow:watchmethod:select']);
+  const MODAL_CUSTOM_IDS = new Set(['menu:mint:single', 'menu:mint:batch', 'link:enter', 'wallet:create:start', 'wallet:import:start', 'wallet:import:key-modal', 'flow:pricemanual', 'flow:gastolerancemanual', 'watch:add:start', 'flow:watchmethod:select']);
   function willShowModal(data, interaction) {
     if (MODAL_CUSTOM_IDS.has(data)) return true;
     if (data === 'flow:mintqty:select' && interaction.values?.[0] === 'custom') return true;
@@ -549,7 +549,9 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
       // every other unavoidably-free-text field elsewhere in this file (wallet labels, private
       // keys). Submitting routes through startMintGuidedFlow below -- the exact same auto-detecting
       // card /mint's own under-specified path and a bare paste already use, not a separate path.
-      if (data === 'menu:mint') return interaction.showModal(discordMenus.labelModal({ customId: 'menu:mint:submit', title: 'Contract address to mint', maxLength: 200 }));
+      if (data === 'menu:mint') return dcRespond(interaction, discordMenus.mintModeMenu());
+      if (data === 'menu:mint:single') return interaction.showModal(discordMenus.labelModal({ customId: 'menu:mint:submit', title: 'Contract address to mint', maxLength: 200 }));
+      if (data === 'menu:mint:batch') return interaction.showModal(discordMenus.labelModal({ customId: 'menu:mint:batch:submit', title: 'Contract address to batch mint', maxLength: 200 }));
       if (data === 'menu:tasks') {
         const page = await commands.tasksPage(userId, { page: 1 });
         return dcRespond(interaction, discordMenus.tasksMenu(page));
@@ -585,8 +587,16 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
       if (data === 'wallet:list') {
         const wallets = commands.wallets(userId);
         if (!wallets.length) return dcRespond(interaction, discordMenus.placeholderMenu('Wallets', 'No wallets yet. Go back and tap Create wallet.'));
-        const list = wallets.map((w,i) => `${i+1}. ${w.label} — \`${w.address.slice(0,6)}...${w.address.slice(-4)}\` · ${chains[w.chain]?.name || w.chain} · minted: ${w.minted||0}`).join('\n');
-        return dcRespond(interaction, { content: escapeDiscord(`Wallets (${wallets.length})\n${list}`),
+        // Escape only the USER-CONTROLLED parts. Escaping the finished string escaped the very
+        // markdown this message is built from -- the code-fence backticks became literal, and every
+        // . - ( ) picked up a backslash, so the list rendered as a wall of slashes rather than as
+        // wallets. A label is the only thing a user controls, so it is the only thing to escape.
+        const list = wallets.map((w, i) => {
+          const short = `${w.address.slice(0, 6)}...${w.address.slice(-4)}`;
+          const chain = chains[w.chain]?.name || w.chain;
+          return `${i + 1}. **${escapeDiscord(w.label)}** \`${short}\` · ${escapeDiscord(chain)} · minted: ${w.minted || 0}`;
+        }).join('\n');
+        return dcRespond(interaction, { content: `**Wallets (${wallets.length})**\n${list}`,
           components: [discordMenus.row([discordMenus.button('⬅️ Back to wallets', 'menu:wallets')])] });
       }
 
@@ -981,7 +991,11 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         return;
       }
 
-      if (data === 'menu:mint:submit') {
+      // Both mint modals land here; the only difference is which flow they start. Batch reuses
+      // the guided card the /batch-mint slash command already used (multi:true -> wallet
+      // multi-select -> quantity -> price -> gas -> confirm) rather than a second implementation.
+      if (data === 'menu:mint:submit' || data === 'menu:mint:batch:submit') {
+        const multi = data === 'menu:mint:batch:submit';
         // Section O -- menu:mint's modal. Not part of a guided flow (no flowState.start happened
         // when the modal opened), so this is handled here alongside link:code:submit rather than
         // past the flow-required check below. Routes through the exact same startMintGuidedFlow a
@@ -992,7 +1006,7 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         await enforceAccountStatus(userId);
         const contractAddressInput = String(interaction.fields.getTextInputValue('value') || '').trim();
         const started = await startMintGuidedFlow(mintCtx, payload => interaction.reply({ ...payload, ephemeral: true }).catch(() => {}),
-          platformUserId, userId, contractAddressInput, { originMessagePublic: false });
+          platformUserId, userId, contractAddressInput, { originMessagePublic: false, multi });
         if (started !== undefined) return;
         await interaction.reply({ content: 'Could not find this contract on any supported chain. Double-check the address.', ephemeral: true }).catch(() => {});
         return;

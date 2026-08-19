@@ -889,3 +889,308 @@ is static. Open question for the owner: truncation indicator, or a control that 
   second look now that it is understood.
 - Bell's **Bypass challenge** row has no list endpoint to read from.
 - **`.bell-cat` chips are opt-in**; most `notify()` call sites set no category.
+
+### 13.9 §1.8 first pass — phone width, 2026-08-19
+
+Swept all seven user pages at 375×812 measuring real geometry, not screenshots.
+
+**No page scrolls sideways.** `scrollWidth - clientWidth` is **0** on Home, Mint, Automation,
+Wallets, History, Account and Settings. That is the failure that actually ruins a phone layout,
+and it is clean everywhere.
+
+Three flags were raised by the sweep and **all three were false positives** — recorded so the next
+session does not chase them again:
+
+| flagged | verdict |
+|---|---|
+| Settings table wider than viewport | CONTAINED — sits in `.table-wrap` with `overflow-x:auto`, and at 322px in a 324px wrap it does not even need to scroll |
+| Automation sub-tabs extend past the viewport | BY DESIGN — `.subtabs` is `overflow-x:auto` with `scrollbar-width:none` (prototype.css:423), a deliberate swipe strip |
+| Sub-tab buttons only 32px vs `--tap-min:44px` | FAITHFUL — `.subtabs button` explicitly sets `min-height:32px` (prototype.css:427), overriding the floor on purpose |
+
+The middle one was verified rather than assumed, because "by design" is worthless if the control
+cannot be reached: the strip scrolls (401px of content in 348px), the off-screen **Policies** tab
+comes fully into view when scrolled, and clicking it activates the tab. Reachable and working.
+
+**Correction — that was my own false positive.** The Policies tab is fine: `/api/snipers`,
+`/api/watch-rules` and `/api/mode-presets` all return 200, and the empty state ("No triggers yet.
+Create a sniper or a social rule first…") renders correctly. The element my sweep matched as an
+error was the Automation page's sniper explainer, caught by a loose `.notice` selector.
+
+**But it did surface a real, smaller thing.** That explainer carries `class="notice notice-warning"`
+— the ERROR treatment — for purely informational copy. The prototype reserves `.notice` for
+failures and uses the `.nt` family (`.nt.i`, `.nt.w`) for notes. So a paragraph explaining what
+snipers are currently reads as a problem. Same confusion as the amber/red one fixed in §13.2, in
+the opposite direction.
+
+**Still owed on §1.8:** the light/dark sweep. Everything above was measured in `ghost-mint` dark;
+the four other themes have had far less scrutiny than the Mint page has, and the new `--info` /
+`--idle` tokens have only been contrast-checked, not seen in situ.
+
+### 13.10 §1.8 light/dark sweep — 2026-08-19
+
+Measured, not eyeballed: every text node on six pages in all five themes, comparing computed
+colour against the **composited** backdrop, with WCAG's own thresholds (4.5, or 3.0 for large or
+bold text) and disabled controls excluded, which the spec exempts.
+
+**Result: 861 elements, zero failures in every theme.** Before the pass there were ~24 distinct
+failures across four themes, the worst at 3.12.
+
+**Two false positives were chased and discarded first — both mine, both worth recording:**
+
+1. *"`.pill` has contrast 1.00 in clean-vault"* — it does not. `.pill` sits on a **semi-transparent**
+   background (`rgba(accent, .07)`), and the first version of the probe read the rgba's channels
+   while ignoring its alpha, so it compared the text against its own colour. Ratio 1.00 by
+   construction. Fixed by compositing the whole ancestor stack.
+2. *"the disabled Simulate button fails"* — disabled controls are explicitly exempt from the
+   contrast minimum, and `.b[disabled]` is deliberately muted.
+
+**The real cause was one idea in two places.** The app carries two parallel "quiet text" tokens:
+`--faint` in `prototype.css` and `--text-faint` in `themes.css`. Both were used for the same
+supporting copy — `.tile-meta`, footnotes, elided addresses, "· auto-detected", History's
+trigger/verification lines — and both sat under AA in four of the five themes. Fixing one moved
+half the failures and left the other half at *identical* ratios, which is what exposed the twin.
+
+Every value is the **smallest** shift toward the text colour that reaches 4.5, so `--faint` stays
+clearly quieter than `--muted` everywhere: the hierarchy the design leans on is untouched, only the
+floor moved.
+
+| theme | `--faint` | `--text-faint` | other |
+|---|---|---|---|
+| ghost-mint | `#68716c` → `#767e79` | `#6b7176` → `#787e82` | — |
+| ghost-mint-light | `#878e88` → `#6d736e` | `#8b8f94` → `#73777b` | `--accent-2` `#b6541f` → `#b2521e` |
+| clean-vault | `#8a8a94` → `#73737b` | `#8a8a94` → `#73737b` | — |
+| neon-arcade | `#7a6b9e` → `#8172a3` | `#7a6b9e` → `#8375a5` | — |
+| quiet-ledger | unchanged (5.81) | unchanged (5.81) | — |
+
+**quiet-ledger needed nothing at all**, and that is the argument the whole change rests on: the
+palette could already clear AA without being redesigned, so this is a floor being raised rather
+than a look being altered.
+
+**Still owed:** the two parallel tokens should become one. Two names for "quiet text" is how they
+drifted apart in the first place, and nothing stops them drifting again.
+
+### 13.11 Presets page — three states verified, one blocked
+
+| state | result |
+|---|---|
+| empty | **verbatim match** — "No presets saved" / "A preset stores a contract, method and arguments so a repeat mint is one tap." |
+| loading | `.sk` skeleton rows, no list |
+| error | "Could not load saved presets." + status + Retry |
+| populated | **BLOCKED — cannot be reached from here** |
+
+**Why populated is blocked.** A preset can only be created by `/mintpreset save <json>` on Telegram
+(`server.js:2492`). There is no dashboard route — `/api/mint-presets` is GET-only — and no Discord
+equivalent. Writing to the database directly is also out: `DATABASE_URL` points at
+`postgres.railway.internal`, which resolves only inside Railway's network.
+
+That is not an oversight in the redesign: the prototype's Presets tab is deliberately read-only
+(list + Use + registry, no form). But it does mean **the dashboard can display presets it can never
+create**, which is worth a decision — either a create route, or accept that presets are authored
+from the bots.
+
+**Method registry, now bound to the real table.** It reads `/api/mint-methods` rather than the
+hardcoded five, and "+N more" is a control that expands in place. Verified: expands to all ten
+(nine mint signatures plus SeaDrop) with correct standards, flips to "Show fewer", collapses back.
+
+Note the count legitimately differs from the prototype's caption: it drew "+4 more" beside its own
+five, the real registry has ten, so the app shows "+5 more". The prototype's number was a drawing;
+this one is counted.
+
+**Also verified incidentally:** the Mint rail badge renders `1` in neutral grey against the one
+expired schedule — the badge added in this pass, working on real data.
+
+### 13.12 Mint page populated and tested — 2026-08-19
+
+**Badges, both states proven on real data.**
+
+| state | data | badge |
+|---|---|---|
+| neutral | 2 paused + 1 expired | `3`, `--surface-4` on `--muted` |
+| red | a real mint failed | `4`, `--loss` on white, `aria-label="4 failing"` |
+
+The red case was produced by arming a real scheduled mint two minutes out against an empty wallet
+and letting it fail on its own ("Simulating this call failed: insufficient funds"), not by faking
+a status.
+
+**Mint's badge counts what has STOPPED, and escalates only on failure.** This is a deliberate
+departure from the untouched prototype, where the Mint badge reads `2` and the Scheduled chip also
+reads `2 pending` — i.e. there the badge is the QUEUED count. That reading does not survive real
+data: this account has 9 queued mints, so the badge would sit permanently at 9 and stop carrying
+information. A badge that is always on is wallpaper. Owner asked what would turn it red, which only
+has an answer under this reading.
+
+**BUG found and fixed: the dashboard never learned a scheduled mint had fired.** The scheduler
+broadcast `task.failed` (the notification) but nothing ever sent `tasks.changed` (the list
+refresh), and every schedule list, status count and nav badge listens for the latter. So a mint
+could fire, fail, and the page would still show it pending until the user navigated away and back —
+on the one screen whose whole claim is that it is live. Caught because the badge stayed at `3`
+while the API already said `failed: 1`.
+
+**Batch, run end to end for the first time** (a second wallet now exists).
+
+- The selection gate works exactly as specified: 0 or 1 wallet leaves the contract field
+  `readOnly` with the placeholder "Select 2 wallets first" and the message beneath; the second
+  selection unlocks the field, clears the message, and enables "Simulate all 2".
+- **Batch cannot mint SeaDrop drops.** `POST /api/mints/preview` returns 400
+  `methodSignature is not one of the supported mint signatures`, because `buildMintCall` only
+  encodes the audited plain-mint signatures and SeaDrop is not among them — the same reason
+  SeaDrop cannot be saved as a preset. This is a real product limit, not a UI defect.
+- The message the user got was the server's own field text, which is accurate and useless to
+  whoever pasted the address. It now names the actual situation and the way round it.
+
+**The prototype gives Batch no error state.** Its panel defines only `.ol` and `.emp.oe` — no
+`.ox`. So the toast is the design's only failure channel here, and a persistent panel would be
+invention. Worth an owner ruling, since §1.7 asks for four states everywhere and the prototype
+draws three on this one surface.
+
+**Presets remain unpopulated.** `POST /api/mint-presets` now exists (§13.11) but is not deployed,
+and the dev server proxies to production, so presets still cannot be created from here until it
+ships.
+
+### 13.13 Per-tab severity badges — 2026-08-19
+
+Owner's rule: a red count on the rail says the Mint page has a problem but not WHICH of its four
+screens owns it, so the badge belongs on the tab as well, coloured by severity.
+
+| tone | class | meaning |
+|---|---|---|
+| red | `.cnt.hot` | something failed |
+| amber | `.cnt.warn` | something missed its window |
+| grey | `.cnt` | something is stopped on purpose |
+
+Amber is a new addition to `.cnt`, which previously had only neutral and red. It is the missing
+middle: "expired" is neither fine nor broken, and folding it into either erases the distinction the
+Schedule filters already make.
+
+**Only Schedule can currently carry a badge, and that is a fact about the data rather than a gap in
+the mechanism.** Mint now, Batch and Presets hold nothing that outlives the request — a batch
+result and a failed simulation are gone the moment you navigate away, so a badge there would have
+nothing to count. `SubTabs` takes a general `badges` map, so any of them can report the day it has
+something to report.
+
+**Verified live:** red `4` (`.cnt.sub.hot`, `--loss` on white, `aria-label="4 failing"`) against
+1 failed + 1 expired + 2 paused, with the other three tabs correctly carrying nothing.
+
+**Amber not yet observed.** A failed mint can only be retried, never cleared — retrying this one
+re-queued it and the worker failed it again on the same empty wallet within seconds — so the state
+cannot be forced by hand. It arrives on its own: once the failed task passes the one-hour expiry
+grace it becomes expired, leaving failed 0 / expired 2 / paused 2, which is the amber case.
+
+### 13.14 Presets populated at last
+
+`POST /api/mint-presets` deployed, and three presets created through it covering three different
+method shapes: `mint(uint256)`, `mint(address,uint256)`, `mint(uint256,bytes32[])`.
+
+Populated state matches the prototype: `.r` rows with `.rt` name, `.rs.mono` "signature · elided
+address", a `.rv` **Use** button, and the count chip. All four states are now confirmed on this
+page.
+
+One rejection worth keeping: an empty `bytes32[]` proof is refused with
+"proof must contain 1-256 bytes32 hex values". That is the validation doing its job — a preset with
+an empty proof could never mint.
+
+**Known gap:** `useLoad('/api/mint-presets')` subscribes to no websocket event, so a preset created
+elsewhere (or by the bot) does not appear until the page is revisited. Every other list has an
+event; this one was missed.
+
+### 13.15 Presets event, token merge, and expiry history — 2026-08-19
+
+**Presets now announce themselves.** `saveMintPreset` calls `broadcast(userId,'presets')` and the
+client subscribes to `presets.changed`. Every other list already did this; presets were the one
+write nobody told anyone about, so a preset saved from Telegram sat invisible on an open dashboard.
+
+**The two faint tokens are now one.** `--text-faint` is an alias of `prototype.css`'s `--faint`
+rather than a second colour. They were separate names for "quiet text" that had already drifted
+into different values — which is exactly how half the WCAG failures in §13.10 survived the first
+fix, the corrected token moving one set while the other stayed failing at identical ratios.
+Re-swept after the merge: 882 elements, zero failures in all five themes.
+
+**Preset support across platforms, checked rather than assumed:**
+
+| platform | mint presets |
+|---|---|
+| Telegram | `/mintpreset save`, `/mintpreset <name>`, `/mintpresets` — but only `/mintpresets` is registered in the command menu, so saving is effectively undiscoverable |
+| Discord | **none at all.** Its "preset" commands are *transaction-mode* presets and *target-policy* presets — a different concept entirely |
+| Dashboard | list + Use, and now POST (§13.11) |
+
+Discord being unable to save or use a mint preset is a genuine parity gap, and the kind
+`mintFlowDecision`/`watchRuleFlowDecision` exist to prevent elsewhere.
+
+**Expired mints now reach history.** Expiry is derived from the clock, so nothing was ever written
+when it happened: a failure at least left a history row, a missed window left nothing, and the
+badge count was the only place it ever showed. A 60s sweep claims newly-expired tasks and writes
+one activity row each, plus a Telegram line and a live refresh.
+
+Two deliberate choices:
+- **A column, not memory.** `expired_logged_at` (migration 040). A duplicated warning is noise; a
+  duplicated HISTORY row is a permanent lie about how many times something happened, and an
+  in-memory marker would produce one on every restart. The claim is a single atomic UPDATE
+  ... RETURNING, so two workers cannot both record the same expiry.
+- **The task is not altered.** A failed mint stays failed and stays retryable, exactly as the owner
+  asked; the sweep only records that its window has gone.
+
+## 14. Batch parity across all three surfaces — 2026-08-19
+
+### 14.1 The Discord wallet list was unreadable
+
+`escapeDiscord()` was applied to the FINISHED message, so it escaped the markdown the message is
+assembled from: the code-fence backticks became literal, and every `.` `-` `(` `)` picked up a
+backslash. What arrived was
+
+```
+Wallets \(2\)
+1\. test\-placeholder — \`0xed98\.\.\.2976\` · Ethereum · minted: 0
+```
+
+Only the label is user-controlled, so only the label needs escaping. Regression test added
+(`discordMenuParity.test.js`) asserting the header renders as markdown, the address keeps its code
+formatting, and the label is still escaped — the last part matters, since the fix must not become
+a markdown-injection hole.
+
+### 14.2 Batch coverage before and after
+
+| | batch mint | batch import |
+|---|---|---|
+| Site | was ✓ / now ✓ | was **API only, no UI** / now ✓ |
+| Telegram | was **✗** / now ✓ | was **✗** / now ✓ |
+| Discord | was ✓ / now ✓ | was ✓ / now ✓ |
+
+**Telegram had neither** — not registered, no handler, nothing. Both now exist as
+`/batchmint` and `/batchimport`, registered in the command menu (so they are discoverable rather
+than folklore, which is what went wrong with `/mintpreset save` — see §13.15) and added to the list
+of JSON-payload commands that get shaped error help.
+
+**The site had the batch-import ROUTE but no way to reach it.** `/api/wallets/batch-import` has
+existed all along, so importing several wallets meant using Telegram or Discord — the two places a
+private key is least safe. The dashboard is the one surface where the key does not cross a chat
+transit, which made its absence there exactly the wrong way round.
+
+The prototype has no batch-import UI (only "Import an existing wallet"), so this is a deliberate
+addition at the owner's instruction, built in the prototype's own vocabulary — `.form-wallet-*`,
+the same warning treatment as the single import, and `.bres` result rows reused from Batch mint.
+
+### 14.3 Verified end to end on the site
+
+Three keys submitted — two valid, one deliberate dud:
+
+```
+Imported  batchtest-1  0x3C72d1DB9a156A5EfDa144ef4EeedEa6F7Ba137C
+Imported  batchtest-2  0xc2f59cD99bc34f4F4D9C70fc1B8D6e70057484D5
+Failed    #3           must be a valid Ethereum private key
+```
+
+Partial success reported per key, which is the point of the batch path: one bad key must not
+discard the good ones.
+
+Two bugs of mine were found by running it rather than by reading it:
+- the route answers `{results:[...]}`, not a bare array, so calling `.filter` on the response threw
+  before anything rendered — a 201 with real results looked like nothing happening;
+- the key splitter was written as `/[s,]+/` instead of `/[\s,]+/`, so it split on the letter "s".
+  Hex keys contain no "s", so three lines arrived as one unparseable key.
+
+### 14.4 Not verified
+
+Discord's `batch-mint` and `wallet batch-import` predate this work and were **not** exercised — they
+are wired, but I have not run them. The Telegram handlers are pattern- and payload-verified
+(including multi-line JSON, which matters for pasting a key list) but cannot be run from here at
+all. Both want a live pass on the real bots.

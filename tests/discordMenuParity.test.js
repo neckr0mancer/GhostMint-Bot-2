@@ -67,7 +67,7 @@ function fixture(overrides = {}) {
         chain: 'ethereum', isSeaDrop: false, priceKnown: true, valueWei: '1000000000000000000',
         maxSupply: 100, maxPerWallet: 1, startTime: null, endTime: null, collection: null, soldOut: false, displayPrice: null,
       }),
-      wallets: () => [{ label: 'main', chain: 'ethereum' }],
+      wallets: () => [{ label: 'main-wallet', address: '0xed9834A3E62c8eB78B7F6682c5798f69B4Ee2976', chain: 'ethereum', minted: 3 }],
       ...overrides.commands,
     },
   });
@@ -118,11 +118,21 @@ test('activity:page:2 pages forward and offers Prev but not Next once on the las
   assert.deepEqual(customIds, ['activity:page:1']);
 });
 
-test('menu:mint opens a modal for the contract address instead of replying "use /mint"', async () => {
+test('menu:mint offers single or batch, and each opens a contract modal rather than replying "use /mint"', async () => {
   const { handler } = fixture();
   const tap = buttonInteraction('menu:mint');
   await handler(tap);
-  assert.equal(tap.modal.custom_id, 'menu:mint:submit');
+  const payload = [...tap.updates, ...tap.replies].pop();
+  const ids = (payload.components || []).flatMap(r => (r.components || []).map(c => c.custom_id));
+  assert.ok(ids.includes('menu:mint:single'), 'offers a single mint');
+  assert.ok(ids.includes('menu:mint:batch'), 'offers a batch mint — previously reachable only by knowing /batch-mint existed');
+  // Each answer still opens a modal, which is the behaviour this test has always guarded.
+  const single = buttonInteraction('menu:mint:single');
+  await handler(single);
+  assert.equal(single.modal.custom_id, 'menu:mint:submit');
+  const batch = buttonInteraction('menu:mint:batch');
+  await handler(batch);
+  assert.equal(batch.modal.custom_id, 'menu:mint:batch:submit');
 });
 
 test('submitting menu:mint:submit with a valid contract reaches the same collection card /mint and pasting already use', async () => {
@@ -178,4 +188,23 @@ test('menu:admin surfaces "Owner access required" for a non-owner instead of a r
   const tap = buttonInteraction('menu:admin');
   await handler(tap);
   assert.equal(tap.updates[0].content, 'Owner access required.');
+});
+
+test('the Discord wallet list renders readable markdown, not an escaped wall of slashes', async () => {
+  // escapeDiscord() was applied to the FINISHED string, so it escaped the markdown the message is
+  // assembled from: the code-fence backticks became literal and every . - ( ) picked up a
+  // backslash, and the list arrived as slashes rather than as wallets. Only the label is
+  // user-controlled, so only the label needs escaping.
+  const { handler } = fixture();
+  const tap = buttonInteraction('wallet:list');
+  await handler(tap);
+  const payload = [...tap.updates, ...tap.replies].pop();
+  assert.ok(payload, 'the tap must be answered at all');
+  const content = String(payload.content);
+  assert.ok(content.includes('**Wallets (1)**'), 'header renders as bold markdown, not escaped');
+  assert.ok(content.includes('`0xed98...2976`'), 'the address keeps its code formatting');
+  const BS = String.fromCharCode(92);
+  assert.equal(content.includes(BS + '('), false, 'no escaped parentheses');
+  assert.equal(content.includes(BS + '.'), false, 'no escaped full stops');
+  assert.ok(content.includes('main' + BS + '-wallet'), 'the user-controlled label IS still escaped');
 });

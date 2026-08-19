@@ -721,8 +721,11 @@ html[data-theme="ghost-mint"] .dash-hero button,html[data-theme="ghost-mint-ligh
   html[data-theme="ghost-mint"] .header-avatar svg,html[data-theme="ghost-mint-light"] .header-avatar svg{width:.9375rem;height:.9375rem}
   html[data-theme="ghost-mint"] .header-avatar[aria-current=page],html[data-theme="ghost-mint-light"] .header-avatar[aria-current=page]{
     background:var(--accent-soft);border-color:transparent;color:var(--accent)}
+  /* Five EQUAL columns, as prototype.css:544 has it (grid-template-columns:repeat(5,1fr)).
+     space-around on flex sized each button to its own label, so "Wallets" got 33px and "Mint" 21px
+     and the row read as ragged rather than as a nav bar. */
   html[data-theme="ghost-mint"] .mobile-bottombar,html[data-theme="ghost-mint-light"] .mobile-bottombar{
-    display:flex;align-items:center;justify-content:space-around;height:4.125rem;padding:0 .375rem;
+    display:grid;grid-template-columns:repeat(5,1fr);align-items:center;height:4.125rem;padding:0 .375rem;
     border-top:1px solid var(--border);background:var(--surface-deep);position:fixed;left:0;right:0;bottom:0;z-index:40}
   html[data-theme="ghost-mint"] .mobile-bottombar>button,html[data-theme="ghost-mint-light"] .mobile-bottombar>button{
     background:transparent;box-shadow:none;padding:0;color:var(--text-faint);display:flex;flex-direction:column;
@@ -731,16 +734,8 @@ html[data-theme="ghost-mint"] .dash-hero button,html[data-theme="ghost-mint-ligh
     width:1.25rem;height:1.25rem;background:transparent;box-shadow:none;color:inherit}
   html[data-theme="ghost-mint"] .mobile-bottombar>button[aria-current=page],html[data-theme="ghost-mint-light"] .mobile-bottombar>button[aria-current=page]{
     color:var(--accent);font-weight:700}
-  html[data-theme="ghost-mint"] .bottombar-fab-gap,html[data-theme="ghost-mint-light"] .bottombar-fab-gap{width:3.75rem;flex:none}
-  html[data-theme="ghost-mint"] .bottombar-fab,html[data-theme="ghost-mint-light"] .bottombar-fab{
-    position:absolute;left:50%;top:-1.75rem;width:3.75rem;transform:translateX(-50%);display:flex;flex-direction:column;
-    align-items:center;gap:.2rem;color:var(--accent);font-size:.625rem;font-weight:700}
-  html[data-theme="ghost-mint"] .fab-circle,html[data-theme="ghost-mint-light"] .fab-circle{
-    width:3.75rem;height:3.75rem;border-radius:50%;background:var(--accent);border:4px solid var(--bg);
-    display:grid;place-items:center;box-shadow:var(--lift);color:var(--accent-contrast)}
-  html[data-theme="ghost-mint"] .fab-circle svg,html[data-theme="ghost-mint-light"] .fab-circle svg{width:1.6rem;height:1.6rem}
-  html[data-theme="ghost-mint"] .bottombar-fab.active .fab-circle,html[data-theme="ghost-mint-light"] .bottombar-fab.active .fab-circle{
-    box-shadow:0 6px 14px -2px var(--accent)}
+  /* The .bottombar-fab rules that lived here are gone with the FAB itself: the prototype's
+     .bbar is five flat equal columns, with no floating button over it. */
   html[data-theme="ghost-mint"] .sheet-backdrop,html[data-theme="ghost-mint-light"] .sheet-backdrop{
     display:block;position:fixed;inset:0;background:var(--scrim);z-index:45;animation:fadeIn var(--fast) var(--ease)}
   html[data-theme="ghost-mint"] .more-sheet,html[data-theme="ghost-mint-light"] .more-sheet{

@@ -7,6 +7,7 @@ const { calculateStatistics } = require('../statistics/statisticsService');
 const { detectContractChain } = require('../mint/chainDetector');
 const { computeSeaDropValueWei } = require('../mint/seaDropCall');
 const { SEADROP_MINT_SIGNATURE } = require('../mint/seaDropRegistry');
+const { MINT_METHODS } = require('../mint/mintRegistry');
 const { createWalletBalanceCache } = require('./walletBalanceCache');
 const { EXPIRY_GRACE_MS, TASK_BUCKETS, TASK_BUCKET_NAMES, bucketFor } = require('../scheduler/schedulerRepository');
 
@@ -599,6 +600,19 @@ function createBotCommandService(dependencies) {
   return {
     createWallet, importWallet, importWalletsBatch, removeWallet, walletBalance, invalidateBalance, exportWalletKeyRaw, exportWalletKeystore, mint, batchMint, send, createTask, controlTask, addPnl, updatePnl, deletePnl,
     prepareMint,submitPreparedMint,detectMintContract,resolveMintContractInput,parseOpenSeaCollectionSlug,mintPresets:userId=>mintService.listPresets(userId),
+    // The dashboard could LIST presets but never create one -- the only save path was
+    // /mintpreset save on Telegram (server.js:2492), so the Presets tab displayed a thing the
+    // dashboard had no way to produce. Same validated mintService.savePreset the bot calls,
+    // resolving the wallet the same way, rather than a second copy of the rules.
+    saveMintPreset:async(userId,input)=>{
+      const owned=wallet(userId,input.walletLabel);
+      const saved=await mintService.savePreset(userId,{...input,walletAddress:owned.address,
+        chain:input.chain||owned.chain,valueWei:input.valueWei??'0'});
+      // Every other list announces its own writes; presets did not, so one saved from Telegram
+      // sat invisible on an open dashboard until the page was revisited.
+      broadcast(userId,'presets');
+      return saved;
+    },
     createSniper, updateSniper, removeSniper, gas,
     sniperEvents:userId=>sniperRepository.listRecentForUser(userId),
     wallets: userId => state(userId).wallets,
@@ -673,6 +687,12 @@ function createBotCommandService(dependencies) {
     // The personal view. Deliberately NOT owner-gated and deliberately not able to widen: userId is
     // taken from the session, never from the query, so there is no parameter to tamper with.
     securityAudit:(userId,input)=>botSecurityRepository.listRecent({...input,userId}),
+    // The audited signature table, straight from the encoder that enforces it, so the page can
+    // never claim support for something mintCall would reject.
+    mintMethods:()=>[
+      ...Object.values(MINT_METHODS).map(method=>({signature:method.signature,standard:method.standard})),
+      {signature:SEADROP_MINT_SIGNATURE,standard:'SeaDrop'},
+    ],
     linkCode:userId=>identity.createLinkCode(userId),
   };
 }

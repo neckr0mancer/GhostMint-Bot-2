@@ -237,6 +237,9 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLo
     adminEffective:action(async(req,res)=>res.json(jsonSafe(await commands.adminEffective(user(req),req.query)))),
     adminSecurityAudit:action(async(req,res)=>res.json(jsonSafe(await commands.adminSecurityAudit(user(req),req.query)))),
     securityAudit:action(async(req,res)=>res.json(jsonSafe(await commands.securityAudit(user(req),req.query)))),
+    mintMethods:action(async(req,res)=>res.json(await commands.mintMethods())),
+    saveMintPreset:action(async(req,res)=>{const preset=await commands.saveMintPreset(user(req),req.body);
+      res.status(201).json(jsonSafe(preset));}),
     // Same balance-merge-then-sanitize shape as the self-service wallets route (see publicWallet
     // above) -- the only difference is which userId's wallets get looked up.
     adminUserWallets:action(async(req,res)=>{const values=await commands.adminUserWallets(user(req),req.params.userId);
@@ -281,6 +284,7 @@ function mountDashboardRoutes(app,api){
   app.delete('/api/wallets/:label',api.requireSession,api.requireCsrf,api.removeWallet);
   app.post('/api/wallets/:label/export',api.requireSession,api.requireCsrf,api.exportWalletKey);
   app.get('/api/mint-presets',api.requireSession,api.mintPresets);
+  app.post('/api/mint-presets',api.requireSession,api.requireCsrf,api.saveMintPreset);
   app.get('/api/mints/detect',api.requireSession,api.detectMint);
   app.post('/api/mints/preview',api.requireSession,api.requireCsrf,api.previewMint);
   app.post('/api/mints/confirm',api.requireSession,api.requireCsrf,api.confirmMint);
@@ -313,6 +317,7 @@ function mountDashboardRoutes(app,api){
   app.get('/api/admin/effective',api.requireSession,api.adminEffective);
   app.get('/api/admin/security-audit',api.requireSession,api.adminSecurityAudit);
   app.get('/api/security-audit',api.requireSession,api.securityAudit);
+  app.get('/api/mint-methods',api.requireSession,api.mintMethods);
   app.get('/api/admin/users/:userId/wallets',api.requireSession,api.adminUserWallets);
   app.get('/api/admin/users/:userId/activity',api.requireSession,api.adminUserActivity);
   app.get('/api/admin/users/:userId/tasks',api.requireSession,api.adminUserTasks);

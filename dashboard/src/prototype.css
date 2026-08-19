@@ -9,11 +9,19 @@
 
 
 /* ═══════════════ TOKENS ═══════════════ */
+/* --faint was nudged 2026-08-19 in four of the five themes, and ONLY --faint. Measured across 764
+   text nodes on six pages in every theme, it was the single token failing WCAG AA: 3.12-4.09
+   against the surfaces it actually sits on, carrying the small supporting copy -- .tile-meta,
+   footnotes, "· auto-detected", elided addresses. quiet-ledger already cleared it at 5.81 and is
+   untouched, which is what proved the palette could clear AA without being redesigned.
+   Each value is the SMALLEST shift toward the text colour that reaches 4.5 (5-19%), so --faint
+   stays clearly quieter than --muted in every theme -- the hierarchy the design depends on is
+   unchanged, only the floor moved. */
 html[data-theme="ghost-mint"]{
   color-scheme:dark;
   --bg:#070908; --surface:#0e1211; --surface-2:#141918; --surface-3:#1a201e; --surface-4:#212927;
   --border:#1e2523; --border-strong:#2b3532;
-  --text:#f0f4f2; --muted:#96a19b; --faint:#68716c;
+  --text:#f0f4f2; --muted:#96a19b; --faint:#767e79;
   --accent:#2dd4a7; --accent-ink:#04120d; --accent-soft:#2dd4a71c; --accent-line:#2dd4a740;
   --gain:#1eaa85; --loss:#e0455c; --warn:#c98500;
   --gain-text:#3fe0b4; --loss-text:#ff8095; --warn-text:#f0b74a;
@@ -29,7 +37,7 @@ html[data-theme="ghost-mint-light"]{
   color-scheme:light;
   --bg:#f6f7f5; --surface:#ffffff; --surface-2:#fbfbfa; --surface-3:#f1f2ef; --surface-4:#e8eae6;
   --border:#e3e5e0; --border-strong:#cbcec7;
-  --text:#101512; --muted:#59605a; --faint:#878e88;
+  --text:#101512; --muted:#59605a; --faint:#6d736e;
   --accent:#0f7a5c; --accent-ink:#ffffff; --accent-soft:#0f7a5c12; --accent-line:#0f7a5c38;
   --gain:#0f7a53; --loss:#c0384f; --warn:#96620a;
   --gain-text:#0d6b49; --loss-text:#ab2f45; --warn-text:#855609;
@@ -43,7 +51,7 @@ html[data-theme="clean-vault"]{
   color-scheme:light;
   --bg:#fafafa; --surface:#ffffff; --surface-2:#f7f7f9; --surface-3:#f0f0f3; --surface-4:#e7e7ec;
   --border:#e4e4e9; --border-strong:#c9c9d2;
-  --text:#14141a; --muted:#55555f; --faint:#8a8a94;
+  --text:#14141a; --muted:#55555f; --faint:#73737b;
   --accent:#2563eb; --accent-ink:#ffffff; --accent-soft:#2563eb12; --accent-line:#2563eb38;
   --gain:#0f7a53; --loss:#c0384f; --warn:#96620a;
   --gain-text:#0d6b49; --loss-text:#ab2f45; --warn-text:#855609;
@@ -57,7 +65,7 @@ html[data-theme="neon-arcade"]{
   color-scheme:dark;
   --bg:#06040b; --surface:#100a1c; --surface-2:#170f26; --surface-3:#1e1433; --surface-4:#271a41;
   --border:#32204a; --border-strong:#ff2e9355;
-  --text:#f5f0ff; --muted:#b3a3d8; --faint:#7a6b9e;
+  --text:#f5f0ff; --muted:#b3a3d8; --faint:#8172a3;
   --accent:#ff2e93; --accent-ink:#0a0212; --accent-soft:#ff2e9320; --accent-line:#ff2e9366;
   --gain:#1eaa85; --loss:#e0455c; --warn:#c98500;
   --gain-text:#39ffb0; --loss-text:#ff6d84; --warn-text:#ffd23f;
@@ -671,3 +679,10 @@ input[type="checkbox"]:checked::after{content:"";width:9px;height:5px;
   transform:rotate(-45deg) translateY(-1px)}
 input[type="checkbox"]:disabled{opacity:.45;cursor:not-allowed}
 @media(prefers-reduced-motion:reduce){input[type="checkbox"]{transition:none}}
+
+/* Sub-tab severity badges (owner's rule 2026-08-19). .cnt already carries the neutral and .hot red
+   treatments used on the rail; amber is the missing middle -- "this missed its window" is neither
+   fine nor broken, and collapsing it into either loses the distinction the Schedule filters make.
+   .sub only shrinks it to sit inside a 32px tab without changing the tone's meaning. */
+.cnt.sub{font-size:9.5px;padding:0 5px;min-width:16px;margin-left:5px}
+.cnt.warn{background:var(--warn);color:var(--accent-ink)}

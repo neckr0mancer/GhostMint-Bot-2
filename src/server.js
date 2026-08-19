@@ -301,10 +301,17 @@ ${escapeTelegramHtml(detail)}` : '';
       // design, so it gets the on-chain wording rather than an empty string.
       dashboardWebSockets.broadcastToUser(event.task.userId, {type:'task.failed',
         taskId:event.task.id, name:event.task.name, reason: detail || 'transaction reverted on chain'});
+      // task.failed is the NOTIFICATION. This is the LIST refresh, and they are not the same thing:
+      // every schedule list, status count and nav badge listens for tasks.changed, and nothing was
+      // sending it from here. So a scheduled mint could fire, fail, and the dashboard would still
+      // show it as pending until the user navigated away and back -- on the one screen whose whole
+      // claim is that it is live.
+      dashboardWebSockets.broadcastToUser(event.task.userId, {type:'tasks.changed'});
     }
     if (event.outcome === 'success') {
       dashboardWebSockets.broadcastToUser(event.task.userId, {type:'task.succeeded',
         taskId:event.task.id, name:event.task.name});
+      dashboardWebSockets.broadcastToUser(event.task.userId, {type:'tasks.changed'});
     }
   },
   log,
@@ -327,6 +334,35 @@ const LOW_BALANCE_LEAD_MS = 5 * 60 * 1000;
 const LOW_BALANCE_SWEEP_MS = 60 * 1000;
 const lowBalanceWarned = new Set();
 const PENDING_FOR_WARNING = new Set(['scheduled', 'retry', 'claimed']);
+
+// An expired scheduled mint is something that happened TO the user and then quietly vanished:
+// expiry is derived from the clock, so nothing is written when it occurs. A failure at least leaves
+// a history row; a missed window left nothing at all, and the count on the badge is the only place
+// it ever showed. This writes it to history exactly once -- the claim is atomic in SQL, so a
+// restart or a second worker cannot duplicate the row.
+//
+// The task itself is deliberately NOT altered. A failed mint stays failed and stays retryable;
+// this only records that its window has now gone.
+async function expiredHistorySweep() {
+  let recorded = 0;
+  try {
+    const expired = await schedulerRepository.claimNewlyExpired();
+    for (const task of expired) {
+      const wallet = DB.wallets.find(item => item.userId === task.userId && item.label === task.walletLabel);
+      const why = task.status === 'paused' ? 'paused past its mint time' : (task.lastError || 'no reason recorded');
+      await logActivity(task.userId, 'fail', `Scheduled mint expired: ${task.name}`,
+        task.walletLabel, null, wallet ? CHAINS[wallet.chain] : null, { triggerSource: 'scheduled' });
+      await notifyUser(task.userId,
+        `⌛ Scheduled mint <b>${escapeTelegramHtml(task.name)}</b> expired — ${escapeTelegramHtml(why)}`);
+      dashboardWebSockets.broadcastToUser(task.userId, { type: 'tasks.changed' });
+      dashboardWebSockets.broadcastToUser(task.userId, { type: 'activity.changed' });
+      recorded += 1;
+    }
+  } catch (error) {
+    log(`Expired-history sweep failed: ${safeError(error)}`);
+  }
+  return recorded;
+}
 
 async function lowBalanceSweep(now = Date.now()) {
   const due = DB.tasks.filter(task =>
@@ -1876,7 +1912,7 @@ function withTelegramUser(handler) {
       // confirmation needed, trimmed per user feedback.
       if(telegramFlowState.get('telegram',context.contextId)) telegramFlowState.clear('telegram',context.contextId);
       const command=commandName(msg.text||msg.caption);
-      if(['mintnow','mintcall','mintpreset','admin','watch','confirmtrigger','targetpolicy','updatesniper','importwallet'].includes(command)) {
+      if(['mintnow','mintcall','mintpreset','admin','watch','confirmtrigger','targetpolicy','updatesniper','importwallet','batchmint','batchimport'].includes(command)) {
         commandRateLimiter.check('telegram',userId,command);
       }
       await handler(msg, match, userId);
@@ -1940,6 +1976,8 @@ if (BOT_TOKEN) {
     { command: 'deposit', description: 'Get an address to fund your wallet' },
     { command: 'createwallet', description: 'Generate and encrypt a new wallet' },
     { command: 'importwallet', description: 'Import an existing wallet (not recommended)' },
+    { command: 'batchimport', description: 'Import many wallets at once (not recommended)' },
+    { command: 'batchmint', description: 'Mint the same drop from several wallets' },
     { command: 'removewallet', description: 'Remove a wallet' },
     { command: 'exportkey', description: 'Export a wallet\'s private key' },
     { command: 'mintnow', description: 'Mint immediately' },
@@ -2587,6 +2625,42 @@ send /mint with a contract address to get going.`;
     tgRender(msg.chat.id, { text: `✅ Wallet <b>${escapeTelegramHtml(wallet.label)}</b> imported at <code>${wallet.address}</code>.\n\n⚠️ <b>Not recommended:</b> the private key passed through Telegram's message transit and may remain in client history or notification previews. Prefer /createwallet; a future HTTPS dashboard will provide a safer import path.`, parseMode: 'HTML' });
   }));
 
+  // Batch import. Same warning as /importwallet and for the same reason -- every key in the list
+  // crosses Telegram's message transit and may survive in client history. Results come back per
+  // key because one bad key must not discard the others; that tolerance is the whole point of the
+  // batch path, and importWalletsBatch already keeps going and reports each entry separately.
+  bot.onText(/^\/batchimport(?:@\w+)?\s+([\s\S]+)$/i, withTelegramUser(async (msg, match, userId) => {
+    const payload = commandJson(match[1]);
+    const results = await botCommands.importWalletsBatch(userId, {
+      privateKeys: payload.privateKeys, chain: payload.chain, labelPrefix: payload.labelPrefix });
+    const ok = results.filter(item => item.status === 'success');
+    const failed = results.filter(item => item.status !== 'success');
+    const lines = results.map(item => item.status === 'success'
+      ? `✅ <b>${escapeTelegramHtml(item.label)}</b> <code>${item.address}</code>`
+      : `❌ #${item.index + 1}: ${escapeTelegramHtml(String(item.error || 'failed'))}`);
+    await tgRender(msg.chat.id, { parseMode: 'HTML',
+      text: `<b>Batch import — ${ok.length} of ${results.length} imported</b>\n${lines.join('\n')}`
+        + (failed.length ? '\n\nFailed entries were skipped; the successful ones are already saved.' : '')
+        + "\n\n⚠️ <b>Not recommended:</b> those keys passed through Telegram's message transit. Prefer /createwallet." });
+  }));
+
+  // Batch mint. Each wallet is simulated and submitted INDEPENDENTLY -- one failing does not cancel
+  // the rest -- so the reply is per wallet rather than one verdict for the lot.
+  bot.onText(/^\/batchmint(?:@\w+)?\s+([\s\S]+)$/i, withTelegramUser(async (msg, match, userId) => {
+    const payload = commandJson(match[1]);
+    const results = await botCommands.batchMint(userId, payload);
+    const labels = payload.walletLabels || [];
+    const lines = results.map((result, index) => {
+      const label = escapeTelegramHtml(String(labels[index] ?? `wallet ${index + 1}`));
+      const state = String(result?.state || result?.status || 'submitted');
+      const hash = result?.txHash ? ` <code>${result.txHash}</code>` : '';
+      return `${state === 'failed' ? '❌' : '✅'} <b>${label}</b> — ${escapeTelegramHtml(state)}${hash}`;
+    });
+    const ok = results.filter(r => String(r?.state || r?.status || '') !== 'failed').length;
+    await tgRender(msg.chat.id, { parseMode: 'HTML',
+      text: `<b>Batch mint — ${ok} of ${results.length} submitted</b>\n${lines.join('\n')}` });
+  }));
+
   bot.onText(/^\/watch(?:@\w+)?\s+add\s+(.+)$/i, withTelegramUser(async (msg, match, userId) => {
     const rule = await botCommands.createWatchRule(userId, commandJson(match[1]));
     tgRender(msg.chat.id, { text: `✅ Social watch rule <b>${escapeTelegramHtml(rule.name)}</b> created using ${rule.method}.`, parseMode: 'HTML' });
@@ -2919,6 +2993,8 @@ async function start() {
   }
   schedulerWorker.start();
   setInterval(()=>{lowBalanceSweep().catch(error=>log(`Low-balance sweep error: ${safeError(error)}`));},LOW_BALANCE_SWEEP_MS).unref?.();
+  setInterval(()=>{expiredHistorySweep().catch(error=>log(`Expired-history sweep error: ${safeError(error)}`));},LOW_BALANCE_SWEEP_MS).unref?.();
+  log('Started expired-mint history sweep');
   log(`Started low-balance pre-flight (${LOW_BALANCE_LEAD_MS/60000}m lead)`);
   socialWatchWorker.start();
   retentionWorker.start();

@@ -194,7 +194,55 @@ async function exportWalletKeystore(label,{profile,onProfileChange}){
 }
 function Wallets({profile,onProfileChange}){const walletList=useLoad('/api/wallets',[],'wallets.changed');const {data:wallets,load}=walletList;const [createChain,setCreateChain]=useState('evm');const [importChain,setImportChain]=useState('evm');const [importMethod,setImportMethod]=useState('privateKey');const [query,setQuery]=useState('');async function submit(event,path){event.preventDefault();const form=event.currentTarget;const values=Object.fromEntries(new FormData(form));try{await api(path,{method:'POST',body:JSON.stringify(values)});form.reset();notify('Wallet saved securely.',{type:'success'});load();}catch(value){notify(value.message,{type:'error'});}}async function remove(label){if(!await confirmDialog(`Remove wallet ${label}? This cannot be undone.`))return;try{await api(`/api/wallets/${encodeURIComponent(label)}`,{method:'DELETE',body:JSON.stringify({confirmation:'CONFIRM'})});load();}catch(value){notify(value.message,{type:'error'});}}
   const exportKey=label=>exportWalletKeystore(label,{profile,onProfileChange});
-  const normalized=query.trim().toLowerCase();const filtered=wallets?(normalized?wallets.filter(wallet=>[wallet.label,wallet.address,wallet.chain].filter(Boolean).some(value=>String(value).toLowerCase().includes(normalized))):wallets):[];return <><p className="page-lead">Create server-side encrypted wallets, check balances, and manage imports.</p><Notice error={loadError(walletList,'Could not load wallets.')}/><div className="page-toolbar"><label className="page-search">Find a wallet<input type="search" value={query} placeholder="Label, address, chain…" onChange={e=>setQuery(e.target.value)}/></label></div>{wallets===null?<Skeleton/>:<div className="card-grid wallet-grid">{filtered.map(wallet=><article className="card" key={wallet.label}><div><span className="pill">{wallet.chain}</span><h2>{wallet.label}</h2></div><div className="user-card-identity"><code>{wallet.address}</code><CopyButton value={wallet.address} label="Copy wallet address"/></div><div className="wallet-balances">{wallet.balances?.length?wallet.balances.map(b=><div className="wallet-balance-row" key={b.chain}><span>{chainMeta(b.chain).label}</span><strong>{b.balance??'Unavailable'} {b.symbol}</strong></div>):<div className="wallet-balance-row">Unavailable</div>}</div><div className="br"><button className="b g sm" onClick={()=>exportKey(wallet.label)}>Export key</button><button className="b d sm" onClick={()=>remove(wallet.label)}>Remove</button></div></article>)}{filtered.length===0&&<Empty text={normalized?'No wallets match this search.':'No wallets yet. Create the recommended server-side wallet below.'}/>}</div>}<div className="form-grid wallet-forms"><Form className="form-wallet-create" title="Create wallet" note="Recommended - the private key is generated, encrypted, and never returned." onSubmit={e=>submit(e,'/api/wallets/create')}><Field name="label" label="Label" placeholder="$1 and a dream"/><WalletChainSelect name="chain" label="Chain" value={createChain} onChange={e=>setCreateChain(e.target.value)}/><button className="b p">Create securely</button></Form><Form className="form-wallet-import" title="Import wallet" warning="Not recommended: your key or seed phrase crosses browser memory and network transit. Use HTTPS; it is encrypted immediately and never returned." onSubmit={e=>submit(e,'/api/wallets/import')}><Field name="label" label="Label" placeholder="$1 and a dream"/><WalletChainSelect name="chain" label="Chain" value={importChain} onChange={e=>setImportChain(e.target.value)}/><div className="method-toggle"><span>Import using</span><div className="seg" role="radiogroup" aria-label="Import method"><button type="button" aria-pressed={importMethod==='privateKey'} className={importMethod==='privateKey'?'on':undefined} onClick={()=>setImportMethod('privateKey')}>Private key</button><button type="button" aria-pressed={importMethod==='seedPhrase'} className={importMethod==='seedPhrase'?'on':undefined} onClick={()=>setImportMethod('seedPhrase')}>Seed phrase</button></div></div><input type="hidden" name="importMethod" value={importMethod}/>{importMethod==='privateKey'?<Field name="privateKey" label="Private key" type="password" autoComplete="off"/>:<label>Seed phrase (12-24 words)<textarea className="compact" name="seedPhrase" required autoComplete="off" placeholder="witch collapse practice feed shame open despair creek road again ice least"/></label>}<button className="b g">Import over HTTPS</button></Form></div></>}
+  // Batch import. /api/wallets/batch-import has existed all along with no way to reach it from the
+  // dashboard, so importing more than one wallet meant using Telegram or Discord -- the two places
+  // a private key is LEAST safe. This is the one surface where the key does not cross a chat
+  // transit, which makes its absence here the wrong way round.
+  //
+  // Results are per key and partial success is normal: importWalletsBatch keeps going past a bad
+  // key and reports each entry, so the summary says which ones landed rather than failing the lot.
+  const [batchResults,setBatchResults]=useState(null);
+  const [batchBusy,setBatchBusy]=useState(false);
+  async function submitBatchImport(event){
+    event.preventDefault();
+    const form=event.currentTarget;
+    const values=Object.fromEntries(new FormData(form));
+    const privateKeys=String(values.privateKeys||'').split(/[\s,]+/).map(item=>item.trim()).filter(Boolean);
+    if(!privateKeys.length){notify('Paste at least one private key.',{type:'error'});return;}
+    setBatchBusy(true);
+    try{
+      // The route answers {results:[...]}, not a bare array -- reading it as one threw before
+      // anything rendered, so a 201 with real per-key results looked like nothing happening.
+      const response=await api('/api/wallets/batch-import',{method:'POST',
+        body:JSON.stringify({privateKeys,chain:values.chain,labelPrefix:values.labelPrefix})});
+      const results=Array.isArray(response)?response:(response?.results||[]);
+      setBatchResults(results);
+      const ok=results.filter(item=>item.status==='success').length;
+      notify(`Imported ${ok} of ${results.length} wallets.`,{type:ok?'success':'error'});
+      form.reset();
+      walletList.load();
+    }catch(value){notify(value.message,{type:'error'});}
+    finally{setBatchBusy(false);}
+  }
+  const normalized=query.trim().toLowerCase();const filtered=wallets?(normalized?wallets.filter(wallet=>[wallet.label,wallet.address,wallet.chain].filter(Boolean).some(value=>String(value).toLowerCase().includes(normalized))):wallets):[];return <><p className="page-lead">Create server-side encrypted wallets, check balances, and manage imports.</p><Notice error={loadError(walletList,'Could not load wallets.')}/><div className="page-toolbar"><label className="page-search">Find a wallet<input type="search" value={query} placeholder="Label, address, chain…" onChange={e=>setQuery(e.target.value)}/></label></div>{wallets===null?<Skeleton/>:<div className="card-grid wallet-grid">{filtered.map(wallet=><article className="card" key={wallet.label}><div><span className="pill">{wallet.chain}</span><h2>{wallet.label}</h2></div><div className="user-card-identity"><code>{wallet.address}</code><CopyButton value={wallet.address} label="Copy wallet address"/></div><div className="wallet-balances">{wallet.balances?.length?wallet.balances.map(b=><div className="wallet-balance-row" key={b.chain}><span>{chainMeta(b.chain).label}</span><strong>{b.balance??'Unavailable'} {b.symbol}</strong></div>):<div className="wallet-balance-row">Unavailable</div>}</div><div className="br"><button className="b g sm" onClick={()=>exportKey(wallet.label)}>Export key</button><button className="b d sm" onClick={()=>remove(wallet.label)}>Remove</button></div></article>)}{filtered.length===0&&<Empty text={normalized?'No wallets match this search.':'No wallets yet. Create the recommended server-side wallet below.'}/>}</div>}<div className="form-grid wallet-forms"><Form className="form-wallet-create" title="Create wallet" note="Recommended - the private key is generated, encrypted, and never returned." onSubmit={e=>submit(e,'/api/wallets/create')}><Field name="label" label="Label" placeholder="$1 and a dream"/><WalletChainSelect name="chain" label="Chain" value={createChain} onChange={e=>setCreateChain(e.target.value)}/><button className="b p">Create securely</button></Form><Form className="form-wallet-import" title="Import wallet" warning="Not recommended: your key or seed phrase crosses browser memory and network transit. Use HTTPS; it is encrypted immediately and never returned." onSubmit={e=>submit(e,'/api/wallets/import')}><Field name="label" label="Label" placeholder="$1 and a dream"/><WalletChainSelect name="chain" label="Chain" value={importChain} onChange={e=>setImportChain(e.target.value)}/><div className="method-toggle"><span>Import using</span><div className="seg" role="radiogroup" aria-label="Import method"><button type="button" aria-pressed={importMethod==='privateKey'} className={importMethod==='privateKey'?'on':undefined} onClick={()=>setImportMethod('privateKey')}>Private key</button><button type="button" aria-pressed={importMethod==='seedPhrase'} className={importMethod==='seedPhrase'?'on':undefined} onClick={()=>setImportMethod('seedPhrase')}>Seed phrase</button></div></div><input type="hidden" name="importMethod" value={importMethod}/>{importMethod==='privateKey'?<Field name="privateKey" label="Private key" type="password" autoComplete="off"/>:<label>Seed phrase (12-24 words)<textarea className="compact" name="seedPhrase" required autoComplete="off" placeholder="witch collapse practice feed shame open despair creek road again ice least"/></label>}<button className="b g">Import over HTTPS</button></Form>
+    <Form className="form-wallet-batch-import" title="Import many wallets"
+      warning="Same risk as a single import, multiplied. Every key crosses browser memory and network transit; each is encrypted on arrival and never returned."
+      onSubmit={submitBatchImport}>
+      <label>Private keys <span style={{color:'var(--faint)',fontWeight:500}}>· one per line, up to 50</span>
+        <textarea className="compact" name="privateKeys" required autoComplete="off" spellCheck="false"
+          placeholder="0xabc…   0xdef…   — one key per line"/></label>
+      <Field name="labelPrefix" label="Label prefix" placeholder="wallet"/>
+      <WalletChainSelect name="chain" label="Chain" value={importChain} onChange={e=>setImportChain(e.target.value)}/>
+      <button className="b g" disabled={batchBusy}>{batchBusy?'Importing…':'Import all over HTTPS'}</button>
+      {/* Per key, because partial success is the normal outcome and a single verdict would hide it. */}
+      {batchResults&&<div className="g" style={{gap:'4px',marginTop:'9px'}}>
+        {batchResults.map(item=><div className="bres" key={item.index}>
+          <span className={`p ${item.status==='success'?'ok':'bad'}`}>{item.status==='success'?'Imported':'Failed'}</span>
+          <span className="bl2">{item.status==='success'?item.label:`#${item.index+1}`}</span>
+          <span className="be mono">{item.status==='success'?item.address:item.error}</span>
+        </div>)}
+      </div>}
+    </Form></div></>}
 const SEADROP_SIGNATURE='mintPublic(address,address,address,uint256)';
 const ADDRESS_SHAPE=/^0x[0-9a-fA-F]{40}$/;
 function weiToEthDisplay(wei){
@@ -1247,7 +1295,17 @@ function MintBatch({onGoWallets}){
         walletLabels:selected,contractAddress:contractAddress.trim(),arguments:[],valueWei:valueWei.toString()})}));
       setResults(null);
       notify(`Simulation passed for ${selected.length} wallets — review and confirm.`,{type:'success'});
-    }catch(value){notify(value.message,{type:'error'});}
+    }catch(value){
+      // The server's own words here are "methodSignature is not one of the supported mint
+      // signatures", which is true and useless to whoever pasted the address. It happens for a
+      // whole class of real drops -- SeaDrop ones -- because buildMintCall only encodes the
+      // audited plain-mint signatures, so batch genuinely cannot do them. Say THAT, and say what
+      // still works, rather than naming a field the user never filled in.
+      const unsupported=(value.issues||[]).some(issue=>issue.field==='methodSignature');
+      notify(unsupported
+        ?'This contract uses a mint method batch cannot encode (SeaDrop drops are the usual case). Mint now handles it one wallet at a time.'
+        :value.message,{type:'error',timeoutMs:unsupported?12000:5000});
+    }
     finally{setBusy(false);}
   }
   async function confirmBatch(){
@@ -1267,6 +1325,20 @@ function MintBatch({onGoWallets}){
   // so the price comes from detection, exactly as it does on Mint now.
   const walletsArrived=wallets.data!==null&&wallets.data!==undefined;
   const noWallets=walletsArrived&&wallets.data.length<2;
+  // Owner's rule: batch with one wallet is not a batch, it is Mint now with extra steps. So the
+  // gate is on how many are SELECTED, not how many exist -- the contract address stays inert until
+  // there are two, because entering a target you cannot yet act on is the part that felt broken.
+  //
+  // readOnly rather than disabled on purpose: a disabled input fires no events at all, so clicking
+  // it to find out why would tell you nothing. readOnly still looks inert, still refuses typing,
+  // and can explain itself.
+  const BATCH_MIN_WALLETS=2;
+  const enoughSelected=selected.length>=BATCH_MIN_WALLETS;
+  const gateMessage=`Select at least ${BATCH_MIN_WALLETS} wallets — batching one wallet is just a single mint.`;
+  // No toast. This fired from onFocus AND onClick, so a single click raised TWO of them, and every
+  // notify() also writes a bell entry -- one click, four pieces of noise. The rule is already
+  // stated permanently under the field, which is the version that cannot be missed or dismissed;
+  // a toast repeating it was only ever redundant.
   const resultCount=results?results.length:0;
   const succeeded=results?results.filter(entry=>entry.status==='success').length:0;
   return <div className="split">
@@ -1274,9 +1346,15 @@ function MintBatch({onGoWallets}){
       <div className="ch"><div className="chip-ico">{BATCH_ICON}</div><h2>Batch mint</h2></div>
       <form className="g" style={{gap:'11px'}} onSubmit={simulate}>
         <label className="fl"><span>Contract address</span>
-          <input className={`in mono${detectedPrice?' ok':''}`} disabled={noWallets} placeholder="0x…"
+          <input className={`in mono${detectedPrice?' ok':''}`}
+            disabled={noWallets} readOnly={!noWallets&&!enoughSelected}
+            aria-describedby={!noWallets&&!enoughSelected?'batch-gate':undefined}
+            placeholder={enoughSelected?'0x…':`Select ${BATCH_MIN_WALLETS} wallets first`}
             value={contractAddress}
-            onChange={e=>{setContractAddress(e.target.value);autoDetectIfReady(e.target.value);}}/></label>
+            onChange={e=>{if(!enoughSelected)return;setContractAddress(e.target.value);autoDetectIfReady(e.target.value);}}/>
+          {/* Stated up front as well as on click -- a rule you can only discover by bumping into it
+              is a rule the page kept to itself. */}
+          {!noWallets&&!enoughSelected&&<div className="fielderr" id="batch-gate">{ALERT_ICON}{gateMessage}</div>}</label>
         <label className="fl"><span>Wallets <span style={{color:'var(--faint)',fontWeight:500}}>· up to 100 unique</span></span>
           {!walletsArrived
             ?<div><div className="sk row"/><div className="sk row"/></div>
@@ -1308,7 +1386,7 @@ function MintBatch({onGoWallets}){
                 className={String(quantity)==='3'?'on':undefined}
                 onClick={()=>setQuantity('3')}>Max</button></div>
           </div></label>
-        <button className="b p" disabled={busy||!selected.length}>Simulate all {selected.length||0}</button>
+        <button className="b p" disabled={busy||!enoughSelected}>Simulate all {selected.length||0}</button>
       </form>
     </div>
 
@@ -1365,22 +1443,27 @@ function MintBatch({onGoWallets}){
 // registry". The registry list is static in the design and static here; nothing exposes the
 // server's signature table to the dashboard, so it is a reference panel, not live data (noted in
 // the backlog so it gets bound if a route ever appears).
-const METHOD_REGISTRY=[
-  ['mint()','ERC-721'],
-  ['mint(uint256)','ERC-721'],
-  ['mint(address,uint256)','ERC-721'],
-  ['mint(uint256,bytes32[])','proof'],
-  ['mint(uint256,bytes)','signature'],
-];
+// The prototype shows five rows and a "+4 more" summary. The five were hardcoded here to match,
+// which meant the page asserted what the encoder supports without ever asking it -- add a
+// signature to mintRegistry and this list silently starts lying. It now reads the real table from
+// /api/mint-methods, and "+N more" is a control rather than a caption: the owner's ruling is that
+// this is reference material consulted MID-FORM, so it expands in place. Sending someone to
+// another page to check a signature would abandon a half-filled preset.
+const METHOD_PREVIEW_COUNT=5;
 function MintPresets({onUsePreset}){
-  const presets=useLoad('/api/mint-presets');
+  const presets=useLoad('/api/mint-presets',[],'presets.changed');
+  const methods=useLoad('/api/mint-methods');
+  const [showAllMethods,setShowAllMethods]=useState(false);
   const items=presets.data;
+  const methodRows=methods.data||[];
+  const visibleMethods=showAllMethods?methodRows:methodRows.slice(0,METHOD_PREVIEW_COUNT);
+  const hiddenMethodCount=Math.max(0,methodRows.length-METHOD_PREVIEW_COUNT);
   return <div className="split">
     <div className="card">
       <div className="ch"><h2>Saved presets</h2><div className="sp"/>
         {items&&items.length>0&&<span className="p nu">{items.length}</span>}</div>
       {presets.error
-        ?<Notice error={{title:'Could not load saved presets.',code:presets.status,onRetry:presets.load}}/>
+        ?<Notice error={loadError(presets,'Could not load saved presets.')}/>
         :items===null||items===undefined
           ?<div><div className="sk row"/><div className="sk row"/></div>
           :items.length===0
@@ -1403,13 +1486,20 @@ function MintPresets({onUsePreset}){
       <p style={{fontSize:'12.5px',color:'var(--muted)',marginBottom:'11px'}}>Only audited signatures can be encoded. Arbitrary ABI fragments and raw calldata are rejected.</p>
       <div className="sober">
         <div className="sh">Supported signatures</div>
-        <table className="led">
-          <tbody>
-            {METHOD_REGISTRY.map(([signature,kind])=><tr key={signature}>
-              <td className="mono">{signature}</td><td>{kind}</td></tr>)}
-            <tr className="tot"><td>+4 more</td><td>1155 / SeaDrop</td></tr>
-          </tbody>
-        </table>
+        {methods.data===null
+          ?<div><div className="sk l w80"/><div className="sk l w60"/><div className="sk l w40"/></div>
+          :<table className="led">
+            <tbody>
+              {visibleMethods.map(method=><tr key={method.signature}>
+                <td className="mono">{method.signature}</td><td>{method.standard}</td></tr>)}
+              {hiddenMethodCount>0&&<tr className="tot">
+                <td colSpan={2}>
+                  <button type="button" className="b g sm" aria-expanded={showAllMethods}
+                    onClick={()=>setShowAllMethods(value=>!value)}>
+                    {showAllMethods?'Show fewer':`+${hiddenMethodCount} more`}</button>
+                </td></tr>}
+            </tbody>
+          </table>}
       </div>
     </div>
   </div>;
@@ -1421,13 +1511,29 @@ const MINT_TABS=[
   {id:'batch',label:'Batch'},
   {id:'presets',label:'Presets'},
 ];
+// Severity, worst first. A red badge on the rail says the Mint page has a problem; these say WHICH
+// of its four screens owns it, which is the whole point of putting them on the tabs as well.
+//
+// Only Schedule can currently carry one, and that is a fact about the data rather than a gap in
+// the mechanism: Mint now, Batch and Presets hold no state that outlives the request. A batch
+// result and a failed simulation are gone the moment you leave, so a badge for them would have
+// nothing to count. The mechanism is general, so any of them can report the day they do.
+function scheduleBadge(counts){
+  if(!counts)return null;
+  const failed=counts.failed||0,expired=counts.expired||0,paused=counts.paused||0;
+  const total=failed+expired+paused;
+  if(!total)return null;
+  return {count:total,tone:failed>0?'bad':expired>0?'wn':'nu'};
+}
 function Mint({profile,go,tab,onTab}){
   // Falls back to 'now' for an unknown ?tab= rather than rendering an empty page -- a stale or
   // hand-edited tab value should land somewhere useful, not nowhere.
   const active=MINT_TABS.some(item=>item.id===tab)?tab:'now';
+  const tasks=useLoad('/api/tasks?page=1&pageSize=1',[],'tasks.changed');
+  const badges={schedule:scheduleBadge(tasks.data?.counts)};
   return <>
     <div className="page-head"><div className="page-head-text"><p className="eyebrow">Mint</p><h1>Mint</h1></div></div>
-    <SubTabs tabs={MINT_TABS} active={active} onChange={onTab} label="Mint sections"/>
+    <SubTabs tabs={MINT_TABS} active={active} onChange={onTab} label="Mint sections" badges={badges}/>
     {active==='now'&&<Minting onSwitchToBatch={()=>onTab('batch')} onGoWallets={()=>go('Wallets')}/>}
     {active==='schedule'&&<Tasks profile={profile} go={go}/>}
     {active==='batch'&&<MintBatch onGoWallets={()=>go('Wallets')}/>}
@@ -1704,23 +1810,76 @@ function CommandPalette({open,onClose,go,profile,wallets}){
   </div>;
 }
 const VIEWS={Home:Dashboard,Mint,Automation,Wallets:WalletsPage,History,Settings,Account};
-const MORE_PAGES=['Automation','Settings'];
-const BOTTOM_BAR_PAGES=['Home','Wallets','History'];
+// Prototype .bbar (ghostmint-redesign-v3.html:2098): FIVE equal columns --
+// Home, Mint, Auto, Wallets, More -- and nothing else. The build had Home, Wallets, History, a
+// spacer, More, plus a floating circular Mint button hovering above the bar. That FAB is not in
+// the design at all: .bbar is grid-template-columns:repeat(5,1fr) with flat buttons whose only
+// active treatment is color:var(--accent).
+//
+// The label is "Auto", not "Automation" -- at 9.5px in a fifth of a phone screen the full word is
+// what forced the odd layout in the first place.
+const BOTTOM_BAR_PAGES=['Home','Mint','Automation','Wallets'];
+const BOTTOM_BAR_LABELS={Automation:'Auto'};
+// What the prototype's sheet holds, minus its two prototype-only entries (Auth states, Search).
+// Admin is deliberately absent: it lives behind an owner check, and offering a control that
+// 403s is worse than not offering it.
+const MORE_PAGES=['History','Account','Settings'];
 const MORE_ICON=<svg {...ICON_PROPS} fill="currentColor" stroke="none"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg>;
 const CHEVRON_LEFT=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 6l-6 6 6 6"/></svg>;
 const CHEVRON_RIGHT=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 6l6 6-6 6"/></svg>;
-function BottomBar({page,go,onOpenMore,moreOpen}){const moreActive=moreOpen||(!BOTTOM_BAR_PAGES.includes(page)&&page!=='Mint'&&page!=='Account');return <nav className="mobile-bottombar" aria-label="Primary">
-  {BOTTOM_BAR_PAGES.slice(0,2).map(item=><button key={item} type="button" aria-current={page===item?'page':undefined} onClick={()=>go(item)}><span className="nav-icon" aria-hidden="true">{NAV_ICONS[item]}</span><span className="nav-label">{item}</span></button>)}
-  <span className="bottombar-fab-gap" aria-hidden="true"/>
-  {BOTTOM_BAR_PAGES.slice(2).map(item=><button key={item} type="button" aria-current={page===item?'page':undefined} onClick={()=>go(item)}><span className="nav-icon" aria-hidden="true">{NAV_ICONS[item]}</span><span className="nav-label">{item}</span></button>)}
-  <button type="button" aria-current={moreActive?'page':undefined} onClick={onOpenMore}><span className="nav-icon" aria-hidden="true">{MORE_ICON}</span><span className="nav-label">More</span></button>
-  <button type="button" className={`bottombar-fab${page==='Mint'?' active':''}`} onClick={()=>go('Mint')}><span className="fab-circle" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><path d={BOLT_PATH}/></svg></span><span className="nav-label">Mint</span></button>
-</nav>;}
+function BottomBar({page,go,onOpenMore,moreOpen}){
+  const moreActive=moreOpen||!BOTTOM_BAR_PAGES.includes(page);
+  return <nav className="mobile-bottombar" aria-label="Primary">
+    {BOTTOM_BAR_PAGES.map(item=><button key={item} type="button"
+      aria-current={page===item?'page':undefined} onClick={()=>go(item)}>
+      <span className="nav-icon" aria-hidden="true">{NAV_ICONS[item]}</span>
+      <span className="nav-label">{BOTTOM_BAR_LABELS[item]||item}</span></button>)}
+    <button type="button" aria-current={moreActive?'page':undefined} onClick={onOpenMore}>
+      <span className="nav-icon" aria-hidden="true">{MORE_ICON}</span>
+      <span className="nav-label">More</span></button>
+  </nav>;}
 function MoreSheet({open,page,go,onClose}){return <>{open&&<div className="sheet-backdrop" onClick={onClose}/>}<div className={`more-sheet${open?' open':''}`} role="dialog" aria-modal="true" aria-label="More" aria-hidden={!open}>
   <button type="button" className="sheet-handle" aria-label="Close" onClick={onClose}/>
   <h2>More</h2>
   <div className="sheet-grid">{MORE_PAGES.map(item=><button type="button" key={item} aria-current={page===item?'page':undefined} onClick={()=>go(item)}><span className="nav-icon" aria-hidden="true">{NAV_ICONS[item]}</span><span className="nav-label">{item}</span></button>)}</div>
 </div></>;}
+// Prototype rail badges (ghostmint-redesign-v3.html:641,644): Mint carries a NEUTRAL .cnt and
+// Automation a RED .cnt.hot. The tones are the specification, not decoration:
+//   .cnt      surface-4 on muted -- "there are things here worth a look"
+//   .cnt.hot  loss on white      -- "something is broken and wants you now"
+// So Mint counts schedules that have stopped moving (paused, failed, expired) and Automation
+// counts triggers that are actually failing. A count of healthy things would make the badge
+// permanent, and a permanent badge is wallpaper.
+//
+// Each source refreshes on the socket event it already owns, so the badges follow the same data
+// the pages do rather than a second, drifting copy of it.
+function useNavBadges(){
+  const tasks=useLoad('/api/tasks?page=1&pageSize=1',[],'tasks.changed');
+  const rules=useLoad('/api/watch-rules',[],'watchrules.changed');
+  const snipers=useLoad('/api/snipers',[],'snipers.changed');
+  const counts=tasks.data?.counts;
+  // Mint counts schedules that have STOPPED and want a decision. It escalates to the red .cnt.hot
+  // only when one of them actually failed -- paused and expired are states you can live with,
+  // a failure is one that broke on its own.
+  //
+  // Note this is NOT what the untouched prototype draws. There the Mint badge reads 2 and its
+  // Scheduled chip also reads "2 pending", so in that frame the badge is the QUEUED count. That
+  // reading does not survive contact with real data: this account has 11 queued mints, so the
+  // badge would sit at 11 permanently and stop carrying information. A badge that is always on is
+  // wallpaper. Owner asked what could turn it red, which only makes sense under this reading.
+  const mint=counts?(counts.paused||0)+(counts.failed||0)+(counts.expired||0):0;
+  const mintFailing=Boolean(counts&&(counts.failed||0)>0);
+  const failingRules=(rules.data?.items||[]).filter(rule=>Number(rule.consecutiveFailures)>0).length;
+  // A sniper is failing when its most recent event failed -- an old failure it has since recovered
+  // from is history, not an alert.
+  const events=snipers.data?.events||[];
+  const failingSnipers=(snipers.data?.items||[]).filter(sniper=>{
+    const latest=events.find(event=>event.sniperId===sniper.id);
+    return latest&&['failed','error','skipped'].includes(String(latest.state||'').toLowerCase());
+  }).length;
+  return {Mint:mint,Automation:failingRules+failingSnipers,
+    hot:{Mint:mintFailing,Automation:true}};
+}
 const TOP_RAIL_PAGES=['Home','Mint','Automation','Wallets','History'];
 // The prototype's .railfoot is Admin, Account, Settings, in that order. Settings had no rail entry
 // at all before this pass -- on desktop it was reachable only by URL.
@@ -1787,7 +1946,7 @@ function AccountMenu({profile,theme,initial,go,onChangeTheme,onLogout}){
     </div>}
   </div>;
 }
-function Shell({profile,onLogout,onProfileChange}){const [route,setRoute]=useState(pageFromLocation);const {page,tab,target}=route;const live=useLiveSocket();
+function Shell({profile,onLogout,onProfileChange}){const navBadges=useNavBadges();const [route,setRoute]=useState(pageFromLocation);const {page,tab,target}=route;const live=useLiveSocket();
   // A retired slug is rewritten in place with replaceState, not pushState: the dead URL must not
   // become a history entry, or Back from the new page would land on the old slug and redirect
   // straight forward again, trapping the user.
@@ -1836,8 +1995,16 @@ function Shell({profile,onLogout,onProfileChange}){const [route,setRoute]=useSta
     <aside className="rail" role="navigation" aria-label="Dashboard">
       <div className="brand"><div className="brand-mark">G</div><div className="brand-name">GhostMint</div></div>
       <div className="grp">Operate</div>
-      {TOP_RAIL_PAGES.map(item=><button type="button" className="nav" key={item} aria-current={page===item?'page':undefined} onClick={()=>go(item)}>
-        {RAIL_ICONS[item]}<span className="nav-l">{item}</span></button>)}
+      {TOP_RAIL_PAGES.map(item=>{
+        const badge=navBadges[item]||0;
+        const hot=Boolean(navBadges.hot?.[item]);
+        return <button type="button" className="nav" key={item}
+          aria-current={page===item?'page':undefined} onClick={()=>go(item)}>
+          {RAIL_ICONS[item]}<span className="nav-l">{item}</span>
+          {badge>0&&<span className={`cnt${hot?' hot':''}`}
+            aria-label={`${badge} ${hot?'failing':'needing attention'}`}>{badge}</span>}
+        </button>;
+      })}
       <div className="railfoot">
         {/* Admin is unconditional here, matching both the prototype and the data contract §6's
             note that hiding it "makes a legitimate owner think the app broke after a permission
