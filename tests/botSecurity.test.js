@@ -65,6 +65,23 @@ test('graceful shutdown stops both bots, workers, watchers, HTTP, and database o
  assert.deepEqual(calls.sort(),['discord','http','pool','scheduler','social','telegram','watchers'].sort());
 });
 
+// The Telegram single-instance advisory lock (telegramSingleInstanceLock.js) must be released
+// before a new deploy's instance can start polling -- otherwise a rolling deploy overlap leaves
+// the replacement blocked forever waiting on a lock its predecessor never gave up.
+test('graceful shutdown releases the Telegram polling lock after stopping Telegram, before closing the pool',async()=>{
+ const calls=[];
+ const shutdown=createGracefulShutdown({getHttpServer:()=>null,
+  telegramBot:{stopPolling:async()=>calls.push('telegram-stop')},discordBot:{stop:async()=>calls.push('discord')},
+  releasePollingLock:async()=>calls.push('lock-released'),pool:{end:async()=>calls.push('pool')}});
+ await shutdown('SIGTERM');
+ assert.deepEqual(calls,['telegram-stop','discord','lock-released','pool']);
+});
+
+test('graceful shutdown works with no releasePollingLock at all (Telegram disabled)',async()=>{
+ const shutdown=createGracefulShutdown({getHttpServer:()=>null,pool:{end:async()=>{}}});
+ await assert.doesNotReject(shutdown('SIGTERM'));
+});
+
 test('a channel allowlist narrows guild channels without touching DMs or other guilds', () => {
   const allowed = { allowedChannelIds: ['111111111111111111'] };
   // In an allowed channel: fine, regardless of which guild it is.

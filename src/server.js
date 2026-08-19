@@ -60,6 +60,7 @@ const { BotContextError, RateLimitError, commandName, createCommandRateLimiter,
   escapeTelegramHtml, requireTextConfirmation,verifyTelegramContext } = require('./security/botSecurity');
 const { createBotSecurityRepository } = require('./security/botSecurityRepository');
 const { createGracefulShutdown } = require('./security/gracefulShutdown');
+const { acquireTelegramPollingLock } = require('./security/telegramSingleInstanceLock');
 const { createPostgresStorage } = require('./storage/postgresStorage');
 const { createTransactionIntentRepository } = require('./transactions/intentRepository');
 const { createTransactionPolicyRepository } = require('./transactions/policyRepository');
@@ -338,6 +339,25 @@ async function lowBalanceSweep(now = Date.now()) {
     try {
       const wallet = DB.wallets.find(item => item.userId === task.userId && item.label === task.walletLabel);
       if (!wallet) continue;
+      // Live-reported: the pre-flight fired "short by 0.003 ETH" for a collection that had already
+      // sold out, which is a needless and confusing alarm -- a wallet can never be topped up in time
+      // for a mint that can no longer succeed regardless of balance. Checked here, right before the
+      // balance comparison, using the same soldOut signal the guided-mint card already computes
+      // (SeaDrop's PublicDrop endTime having passed, or totalMinted >= maxSupply for a plain
+      // contract) -- an undetectable contract (RPC hiccup, chain no longer resolvable) falls through
+      // to the ordinary balance check below rather than silently skipping the task.
+      let detected = null;
+      if (task.contract) {
+        try { detected = await botCommands.detectMintContract(task.userId, { contractAddress: task.contract, quantity: task.qty || 1 }); }
+        catch { detected = null; }
+      }
+      if (detected?.soldOut) {
+        try { await botCommands.controlTask(task.userId, 'cancel', task.id); }
+        catch (error) { log(`Auto-cancel of sold-out task ${task.id} failed: ${safeError(error)}`); continue; }
+        await notifyUser(task.userId, `🛑 <b>${escapeTelegramHtml(task.name)}</b> was auto-cancelled -- the collection already sold out.`);
+        dashboardWebSockets.broadcastToUser(task.userId, { type: 'task.autoCancelled', taskId: task.id, name: task.name, reason: 'sold_out' });
+        continue;
+      }
       const needed = ethers.parseEther(String((Number(task.price) || 0) * (Number(task.qty) || 1)));
       if (needed <= 0n) { lowBalanceWarned.add(task.id); continue; }
       const balance = await providerService.perform(wallet.chain, 'lowBalanceCheck',
@@ -631,6 +651,7 @@ async function onBlock(chain, blockNumber, provider) {
 // ── Telegram ──────────────────────────────────────────────
 let bot = null;
 let discordBot = null;
+let releaseTelegramPollingLock = null;
 function tg(chatId, msg, options = {}) {
   if (bot && chatId) return bot.sendMessage(chatId, String(msg), options).catch(e => log('TG: '+safeError(e)));
   return Promise.resolve();
@@ -824,7 +845,7 @@ function renderFlowStep(flow, step, { userId, data = {} } = {}) {
   if (flow === 'wallet_import') {
     if (step === 'awaiting_label') return { text: 'Send the label for the wallet you are importing.', replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' };
     if (step === 'awaiting_chain') return telegramMenus.chainPicker(CONFIG.supportedChains, CHAINS);
-    if (step === 'awaiting_key') return { text: '⚠️ <b>Not recommended:</b> send the private key now. It passes through Telegram message transit and may remain in chat history or notification previews. Delete your message afterward if you can.', replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' };
+    if (step === 'awaiting_key') return { text: '⚠️ <b>Not recommended:</b> send the private key or 12/24-word recovery phrase now. It passes through Telegram message transit and may remain in chat history or notification previews. Delete your message afterward if you can.', replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' };
   }
   if (flow === 'mint_guided') {
     if (step === 'awaiting_contract') return { text: 'Send the contract address to mint from.', replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' };
@@ -1900,8 +1921,13 @@ function withTelegramUser(handler) {
 }
 
 if (BOT_TOKEN) {
-  bot = new TelegramBot(BOT_TOKEN, { polling: true });
-  log('Telegram bot started');
+  // polling starts only once the exclusive lock below is acquired -- see
+  // telegramSingleInstanceLock.js for why (a Railway deploy overlap running two pollers at once is
+  // what produced the "Command failed safely" duplicate report and the ETELEGRAM 409 conflict seen
+  // in production logs).
+  bot = new TelegramBot(BOT_TOKEN, { polling: false });
+  log('Telegram bot configured');
+  bot.on('polling_error', error => log(`Telegram polling error: ${safeError(error)}`));
   // Milestone 15a: register the command list so Telegram's "/" autocomplete is always populated,
   // instead of relying on users remembering exact command syntax.
   bot.setMyCommands([
@@ -2552,7 +2578,11 @@ send /mint with a contract address to get going.`;
     tgRender(msg.chat.id, { text: `✅ Wallet <b>${escapeTelegramHtml(wallet.label)}</b> generated securely.\nPublic address: <code>${wallet.address}</code>\nChain: ${wallet.chain}\n\nFund this public address to use it. The private key was encrypted at creation and is never returned through Telegram.`, parseMode: 'HTML' });
   }));
 
-  bot.onText(/^\/importwallet(?:@\w+)?\s+(\S+)\s+(\S+)\s+(\S+)$/i, withTelegramUser(async (msg, match, userId) => {
+  // The key/phrase capture is greedy (.+), not \S+ -- a private key is one token either way, but a
+  // 12/24-word seed phrase has internal spaces and needs the rest of the line, not just its first
+  // word. See botCommandService.importWallet for the shape-based privateKey-vs-seedPhrase detection
+  // this feeds into.
+  bot.onText(/^\/importwallet(?:@\w+)?\s+(\S+)\s+(\S+)\s+(.+)$/i, withTelegramUser(async (msg, match, userId) => {
     const wallet = await botCommands.importWallet(userId, { label: match[1], chain: match[2], privateKey: match[3] });
     tgRender(msg.chat.id, { text: `✅ Wallet <b>${escapeTelegramHtml(wallet.label)}</b> imported at <code>${wallet.address}</code>.\n\n⚠️ <b>Not recommended:</b> the private key passed through Telegram's message transit and may remain in client history or notification previews. Prefer /createwallet; a future HTTPS dashboard will provide a safer import path.`, parseMode: 'HTML' });
   }));
@@ -2729,6 +2759,17 @@ send /mint with a contract address to get going.`;
     tgRender(msg.chat.id, { text: `Remove wallet <b>${escapeTelegramHtml(owned.label)}</b>? This cannot be undone.`, replyMarkup: confirmationKeyboard(), parseMode: 'HTML' });
   }));
 
+  // Every handler above is registered synchronously and is safe to have in place before polling
+  // ever starts. Only starting the actual getUpdates loop waits on the lock -- HTTP, Discord, and
+  // every background worker in start() proceed immediately and are not held up by this.
+  acquireTelegramPollingLock(pool, { log })
+    .then(release => {
+      releaseTelegramPollingLock = release;
+      return bot.startPolling();
+    })
+    .then(() => log('Telegram bot polling started'))
+    .catch(error => log(`Failed to acquire Telegram polling lock, polling not started: ${safeError(error)}`));
+
 } else {
   log('⚠️  No TELEGRAM_BOT_TOKEN — Telegram disabled.');
 }
@@ -2896,7 +2937,7 @@ async function start() {
 const gracefulShutdown=createGracefulShutdown({getHttpServer:()=>httpServer,telegramBot:bot,discordBot,
   schedulerWorker,socialWatchWorker,retentionWorker,webSocketHub:dashboardWebSockets,stopWatchers:()=>Object.keys(chainWatchers).forEach(chain=>{
     chainWatchers[chain].stop();delete chainWatchers[chain];
-  }),pool,log});
+  }),releasePollingLock:()=>releaseTelegramPollingLock?.(),pool,log});
 for(const signal of ['SIGINT','SIGTERM'])process.once(signal,()=>gracefulShutdown(signal)
   .then(()=>{process.exitCode=0;}).catch(error=>{log(`Shutdown failed: ${safeError(error)}`);process.exitCode=1;}));
 

@@ -61,10 +61,10 @@ function commandDefinitions({ supportedChains = [], chains = {} } = {}) {
     .addSubcommand(c => c.setName('create').setDescription('Recommended: generate and securely store a new wallet')
       .addStringOption(o => o.setName('label').setDescription('Unique wallet label').setRequired(true))
       .addStringOption(o => chainOption(o, { required: true })))
-    .addSubcommand(c => c.setName('import').setDescription("Import wallet -- not recommended: your private key passes through Discord's messaging systems")
+    .addSubcommand(c => c.setName('import').setDescription("Import wallet -- not recommended: your key or phrase passes through Discord's messaging systems")
       .addStringOption(o => o.setName('label').setDescription('Unique wallet label').setRequired(true))
       .addStringOption(o => chainOption(o, { required: true }))
-      .addStringOption(o => o.setName('private-key').setDescription('Existing key; may be exposed in platform transit or client history').setRequired(true)))
+      .addStringOption(o => o.setName('private-key').setDescription('Private key or 12/24-word seed phrase; may be exposed in platform transit or client history').setRequired(true)))
     .addSubcommand(c => c.setName('list').setDescription('List your wallets'))
     .addSubcommand(c => c.setName('balance').setDescription('Check wallet balance across every supported chain')
       .addStringOption(o => o.setName('label').setDescription('Wallet label').setRequired(true).setAutocomplete(true)))
@@ -205,9 +205,9 @@ function renderFlowStep(flow, step, { supportedChains = [], chains = {} } = {}) 
   }
   if (flow === 'wallet_import' && step === 'awaiting_key') {
     return {
-      content: "⚠️ Not recommended: your private key passes through Discord's messaging systems and may remain in client history or notification previews. Tap below to enter it, or cancel.",
+      content: "⚠️ Not recommended: your private key or recovery phrase passes through Discord's messaging systems and may remain in client history or notification previews. Tap below to enter it, or cancel.",
       components: [discordMenus.row([
-        discordMenus.button('🔑 Enter private key', 'wallet:import:key-modal', 'danger'),
+        discordMenus.button('🔑 Enter key or phrase', 'wallet:import:key-modal', 'danger'),
         discordMenus.button('❌ Cancel', 'flow:cancel:ask', 'secondary'),
       ])],
     };
@@ -599,7 +599,7 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         return interaction.showModal(discordMenus.labelModal({ customId: 'flow:label:submit', title: 'Wallet label to import' }));
       }
       if (data === 'wallet:import:key-modal') {
-        return interaction.showModal(discordMenus.labelModal({ customId: 'flow:key:submit', title: 'Private key (not recommended)', maxLength: 256 }));
+        return interaction.showModal(discordMenus.labelModal({ customId: 'flow:key:submit', title: 'Private key or seed phrase', maxLength: 256 }));
       }
 
       if (data === 'flow:chain:select') {
