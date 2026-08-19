@@ -1267,6 +1267,17 @@ function MintBatch({onGoWallets}){
   // so the price comes from detection, exactly as it does on Mint now.
   const walletsArrived=wallets.data!==null&&wallets.data!==undefined;
   const noWallets=walletsArrived&&wallets.data.length<2;
+  // Owner's rule: batch with one wallet is not a batch, it is Mint now with extra steps. So the
+  // gate is on how many are SELECTED, not how many exist -- the contract address stays inert until
+  // there are two, because entering a target you cannot yet act on is the part that felt broken.
+  //
+  // readOnly rather than disabled on purpose: a disabled input fires no events at all, so clicking
+  // it to find out why would tell you nothing. readOnly still looks inert, still refuses typing,
+  // and can explain itself.
+  const BATCH_MIN_WALLETS=2;
+  const enoughSelected=selected.length>=BATCH_MIN_WALLETS;
+  const gateMessage=`Select at least ${BATCH_MIN_WALLETS} wallets — batching one wallet is just a single mint.`;
+  function explainGate(){if(!noWallets&&!enoughSelected)notify(gateMessage,{type:'info'});}
   const resultCount=results?results.length:0;
   const succeeded=results?results.filter(entry=>entry.status==='success').length:0;
   return <div className="split">
@@ -1274,9 +1285,16 @@ function MintBatch({onGoWallets}){
       <div className="ch"><div className="chip-ico">{BATCH_ICON}</div><h2>Batch mint</h2></div>
       <form className="g" style={{gap:'11px'}} onSubmit={simulate}>
         <label className="fl"><span>Contract address</span>
-          <input className={`in mono${detectedPrice?' ok':''}`} disabled={noWallets} placeholder="0x…"
+          <input className={`in mono${detectedPrice?' ok':''}`}
+            disabled={noWallets} readOnly={!noWallets&&!enoughSelected}
+            aria-describedby={!noWallets&&!enoughSelected?'batch-gate':undefined}
+            placeholder={enoughSelected?'0x…':`Select ${BATCH_MIN_WALLETS} wallets first`}
             value={contractAddress}
-            onChange={e=>{setContractAddress(e.target.value);autoDetectIfReady(e.target.value);}}/></label>
+            onFocus={explainGate} onClick={explainGate}
+            onChange={e=>{if(!enoughSelected)return;setContractAddress(e.target.value);autoDetectIfReady(e.target.value);}}/>
+          {/* Stated up front as well as on click -- a rule you can only discover by bumping into it
+              is a rule the page kept to itself. */}
+          {!noWallets&&!enoughSelected&&<div className="fielderr" id="batch-gate">{ALERT_ICON}{gateMessage}</div>}</label>
         <label className="fl"><span>Wallets <span style={{color:'var(--faint)',fontWeight:500}}>· up to 100 unique</span></span>
           {!walletsArrived
             ?<div><div className="sk row"/><div className="sk row"/></div>
@@ -1308,7 +1326,7 @@ function MintBatch({onGoWallets}){
                 className={String(quantity)==='3'?'on':undefined}
                 onClick={()=>setQuantity('3')}>Max</button></div>
           </div></label>
-        <button className="b p" disabled={busy||!selected.length}>Simulate all {selected.length||0}</button>
+        <button className="b p" disabled={busy||!enoughSelected}>Simulate all {selected.length||0}</button>
       </form>
     </div>
 
@@ -1365,16 +1383,21 @@ function MintBatch({onGoWallets}){
 // registry". The registry list is static in the design and static here; nothing exposes the
 // server's signature table to the dashboard, so it is a reference panel, not live data (noted in
 // the backlog so it gets bound if a route ever appears).
-const METHOD_REGISTRY=[
-  ['mint()','ERC-721'],
-  ['mint(uint256)','ERC-721'],
-  ['mint(address,uint256)','ERC-721'],
-  ['mint(uint256,bytes32[])','proof'],
-  ['mint(uint256,bytes)','signature'],
-];
+// The prototype shows five rows and a "+4 more" summary. The five were hardcoded here to match,
+// which meant the page asserted what the encoder supports without ever asking it -- add a
+// signature to mintRegistry and this list silently starts lying. It now reads the real table from
+// /api/mint-methods, and "+N more" is a control rather than a caption: the owner's ruling is that
+// this is reference material consulted MID-FORM, so it expands in place. Sending someone to
+// another page to check a signature would abandon a half-filled preset.
+const METHOD_PREVIEW_COUNT=5;
 function MintPresets({onUsePreset}){
   const presets=useLoad('/api/mint-presets');
+  const methods=useLoad('/api/mint-methods');
+  const [showAllMethods,setShowAllMethods]=useState(false);
   const items=presets.data;
+  const methodRows=methods.data||[];
+  const visibleMethods=showAllMethods?methodRows:methodRows.slice(0,METHOD_PREVIEW_COUNT);
+  const hiddenMethodCount=Math.max(0,methodRows.length-METHOD_PREVIEW_COUNT);
   return <div className="split">
     <div className="card">
       <div className="ch"><h2>Saved presets</h2><div className="sp"/>
@@ -1403,13 +1426,20 @@ function MintPresets({onUsePreset}){
       <p style={{fontSize:'12.5px',color:'var(--muted)',marginBottom:'11px'}}>Only audited signatures can be encoded. Arbitrary ABI fragments and raw calldata are rejected.</p>
       <div className="sober">
         <div className="sh">Supported signatures</div>
-        <table className="led">
-          <tbody>
-            {METHOD_REGISTRY.map(([signature,kind])=><tr key={signature}>
-              <td className="mono">{signature}</td><td>{kind}</td></tr>)}
-            <tr className="tot"><td>+4 more</td><td>1155 / SeaDrop</td></tr>
-          </tbody>
-        </table>
+        {methods.data===null
+          ?<div><div className="sk l w80"/><div className="sk l w60"/><div className="sk l w40"/></div>
+          :<table className="led">
+            <tbody>
+              {visibleMethods.map(method=><tr key={method.signature}>
+                <td className="mono">{method.signature}</td><td>{method.standard}</td></tr>)}
+              {hiddenMethodCount>0&&<tr className="tot">
+                <td colSpan={2}>
+                  <button type="button" className="b g sm" aria-expanded={showAllMethods}
+                    onClick={()=>setShowAllMethods(value=>!value)}>
+                    {showAllMethods?'Show fewer':`+${hiddenMethodCount} more`}</button>
+                </td></tr>}
+            </tbody>
+          </table>}
       </div>
     </div>
   </div>;

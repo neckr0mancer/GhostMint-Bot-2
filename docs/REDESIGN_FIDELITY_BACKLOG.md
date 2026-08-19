@@ -911,8 +911,16 @@ The middle one was verified rather than assumed, because "by design" is worthles
 cannot be reached: the strip scrolls (401px of content in 348px), the off-screen **Policies** tab
 comes fully into view when scrolled, and clicking it activates the tab. Reachable and working.
 
-**One real thing found:** the Policies tab renders an error `.notice` on load and has no empty
-state. Not yet diagnosed — next session should start there.
+**Correction — that was my own false positive.** The Policies tab is fine: `/api/snipers`,
+`/api/watch-rules` and `/api/mode-presets` all return 200, and the empty state ("No triggers yet.
+Create a sniper or a social rule first…") renders correctly. The element my sweep matched as an
+error was the Automation page's sniper explainer, caught by a loose `.notice` selector.
+
+**But it did surface a real, smaller thing.** That explainer carries `class="notice notice-warning"`
+— the ERROR treatment — for purely informational copy. The prototype reserves `.notice` for
+failures and uses the `.nt` family (`.nt.i`, `.nt.w`) for notes. So a paragraph explaining what
+snipers are currently reads as a problem. Same confusion as the amber/red one fixed in §13.2, in
+the opposite direction.
 
 **Still owed on §1.8:** the light/dark sweep. Everything above was measured in `ghost-mint` dark;
 the four other themes have had far less scrutiny than the Mint page has, and the new `--info` /

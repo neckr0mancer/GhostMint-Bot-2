@@ -7,6 +7,7 @@ const { calculateStatistics } = require('../statistics/statisticsService');
 const { detectContractChain } = require('../mint/chainDetector');
 const { computeSeaDropValueWei } = require('../mint/seaDropCall');
 const { SEADROP_MINT_SIGNATURE } = require('../mint/seaDropRegistry');
+const { MINT_METHODS } = require('../mint/mintRegistry');
 const { createWalletBalanceCache } = require('./walletBalanceCache');
 const { EXPIRY_GRACE_MS, TASK_BUCKETS, TASK_BUCKET_NAMES, bucketFor } = require('../scheduler/schedulerRepository');
 
@@ -661,6 +662,12 @@ function createBotCommandService(dependencies) {
     // The personal view. Deliberately NOT owner-gated and deliberately not able to widen: userId is
     // taken from the session, never from the query, so there is no parameter to tamper with.
     securityAudit:(userId,input)=>botSecurityRepository.listRecent({...input,userId}),
+    // The audited signature table, straight from the encoder that enforces it, so the page can
+    // never claim support for something mintCall would reject.
+    mintMethods:()=>[
+      ...Object.values(MINT_METHODS).map(method=>({signature:method.signature,standard:method.standard})),
+      {signature:SEADROP_MINT_SIGNATURE,standard:'SeaDrop'},
+    ],
     linkCode:userId=>identity.createLinkCode(userId),
   };
 }
