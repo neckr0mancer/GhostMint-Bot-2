@@ -342,8 +342,13 @@ async function lowBalanceSweep(now = Date.now()) {
       if (needed <= 0n) { lowBalanceWarned.add(task.id); continue; }
       const balance = await providerService.perform(wallet.chain, 'lowBalanceCheck',
         provider => provider.getBalance(wallet.address));
-      lowBalanceWarned.add(task.id);
+      // Marked ONLY once a warning actually goes out. Marking on every check -- which this did at
+      // first -- wrote off a wallet that was healthy five minutes out as "handled" and never looked
+      // at it again, so funds leaving at T-2min produced no warning at all. That is a MISSED
+      // warning, and a missed warning costs a failed mint where a duplicate costs a line of text.
+      // The re-check is one getBalance per sweep for the few minutes a task sits in the window.
       if (balance >= needed) continue;
+      lowBalanceWarned.add(task.id);
       const short = ethers.formatEther(needed - balance);
       const minutes = Math.max(1, Math.round((task.mintTime - now) / 60000));
       await notifyUser(task.userId,
