@@ -1,6 +1,7 @@
 /* global clearInterval, clearTimeout, CustomEvent, FormData, localStorage, setInterval, setTimeout, URLSearchParams */
 import React,{useCallback,useEffect,useRef,useState} from 'react';
 import Admin from './Admin.jsx';
+import {shortAddress} from './dashboardWidgets/homeParts.jsx';
 import {ACTIVITY_EVENTS,api,Ledger,NumberField,SectionCard,confirmDialog,ConfirmHost,consumePendingMintPrefill,CopyButton,csrf,downloadFile,Empty,EVM_CHAINS,Field,Form,getNotificationLog,notify,Notice,PageTitle,Pager,promptDialog,relativeTime,Select,Skeleton,StatusPill,SubTabs,subscribeNotificationLog,ToastHost,useLoad,useLiveSocket,setPendingMintPrefill,quantityPicks} from './shared.jsx';
 import Dashboard from './Dashboard.jsx';
 // Phase 4, unit 1 of 5 (brief §2). The 11->5 merge lands one page at a time so any single merge
@@ -487,11 +488,11 @@ function Minting({onSwitchToBatch,onGoWallets}){const wallets=useLoad('/api/wall
    Tone follows meaning: red is failure only, amber is a window that went past, and cancelled stays
    neutral because the user chose it. */
 const BUCKETS=[['all','All'],['pending','Pending'],['paused','Paused'],['failed','Failed'],
-  ['expired','Expired'],['cancelled','Cancelled'],['done','Done']];
+  ['expired','Expired'],['cancelled','Cancelled'],['succeeded','Successful']];
 const BUCKET_STATUSES={pending:['scheduled','claimed','retry'],paused:['paused'],
-  failed:['failed'],cancelled:['cancelled'],done:['succeeded']};
-const BUCKET_KEYS=['pending','paused','failed','expired','cancelled','done'];
-const BUCKET_TONE={all:'nu',pending:'ok',paused:'nu',failed:'bad',expired:'wn',cancelled:'nu',done:'nu'};
+  failed:['failed'],cancelled:['cancelled'],succeeded:['succeeded']};
+const BUCKET_KEYS=['pending','paused','failed','expired','cancelled','succeeded'];
+const BUCKET_TONE={all:'nu',pending:'ok',paused:'nu',failed:'bad',expired:'wn',cancelled:'nu',succeeded:'nu'};
 const EXPIRABLE=['paused','failed'];
 // Must match EXPIRY_GRACE_MS in src/scheduler/schedulerRepository.js. Expiry is not "the time has
 // passed" -- a mint fails BECAUSE its time arrived, so that test would empty the failed bucket
@@ -881,14 +882,67 @@ function NotificationBell(){const [items,setItems]=useState([]);const [open,setO
   async function resolve(id,decision){try{await api(`/api/confirmations/${id}`,{method:'POST',body:JSON.stringify({decision})});setItems(current=>current.filter(x=>x.id!==id));}catch(x){notify(x.message,{type:'error'});load();}}
   function dismissAutoPreview(){setAutoPreview(null);clearTimeout(autoPreviewTimer.current);}
   function toggleBell(){if(autoPreview){dismissAutoPreview();return;}setOpen(value=>!value);}
+  // Prototype .bell-pop (ghostmint-redesign-v3.html:2147), backlog §3. Two tabs, not two stacked
+  // headings: "Needs you" is the actionable queue and is the ONLY thing the badge counts; "Recent"
+  // is the capped session log the toasts also write to. The footer says exactly that, because the
+  // distinction is the whole point of the design -- Recent is a scratchpad, never an inbox.
+  const [tab,setTab]=useState('needs');
+  const CATEGORY_LABELS={money:'Money',auto:'Auto',security:'Security'};
+  const DOT_FOR_TYPE={success:'var(--gain)',error:'var(--loss)',info:'var(--accent)'};
   return <div className="notification-bell">
-    <button type="button" className="ib" aria-label={`${items.length} pending confirmations`} aria-expanded={open} onClick={toggleBell}>{BELL_ICON}{items.length>0&&<span className="badge">{items.length}</span>}</button>
+    <button type="button" className="ib" aria-label="Notifications" aria-expanded={open} onClick={toggleBell}>
+      {BELL_ICON}{items.length>0&&<span className="badge">{items.length}</span>}</button>
     {open&&<div className="bell-backdrop" onClick={()=>setOpen(false)}/>}
-    {open&&<div className="bell-dropdown" role="dialog" aria-label="Notifications">
-      <h2>Pending confirmations</h2>
-      {items.length===0?<p className="bell-empty">Nothing pending confirmation right now.</p>:items.map(item=><article className="preview" key={item.id}><strong>{item.triggerSource} | {item.targetType}:{item.targetId}</strong><p className="user-card-identity">{item.preview?.contractAddress}{item.preview?.contractAddress&&<CopyButton value={item.preview.contractAddress} label="Copy contract address"/>} | {item.preview?.methodSignature}</p>{item.preview?.arguments?.map(arg=><p key={arg.name}>{arg.name}: <code>{String(arg.value)}</code></p>)}<div className="br"><button className="b p" onClick={()=>resolve(item.id,'CONFIRM')}>Approve</button><button className="b d" onClick={()=>resolve(item.id,'REJECT')}>Reject</button></div></article>)}
-      <h2 className="bell-section">Recent notifications</h2>
-      {log.length===0?<p className="bell-empty">Nothing recent.</p>:<ul className="bell-log">{log.map(entry=><li key={entry.id} className={`bell-log-item bell-log-${entry.type}`}><span className="bell-log-dot" aria-hidden="true"/><span className="bell-log-message">{entry.message}</span><span className="bell-log-time">{relativeTime(entry.at)}</span></li>)}</ul>}
+    {open&&<div className="bell-pop on" role="dialog" aria-label="Notifications">
+      <div className="bell-h"><h3>Notifications</h3></div>
+      <div className="bell-tabs">
+        <button type="button" className={tab==='needs'?'on':undefined} aria-pressed={tab==='needs'}
+          onClick={()=>setTab('needs')}>Needs you{items.length>0&&
+          <span className="cnt hot" style={{marginLeft:'3px'}}>{items.length}</span>}</button>
+        <button type="button" className={tab==='recent'?'on':undefined} aria-pressed={tab==='recent'}
+          onClick={()=>setTab('recent')}>Recent</button>
+      </div>
+      <div className="bell-body">
+        {tab==='needs'
+          ?<>
+             <div className="bell-sec">Pending confirmations · durable
+               {items.length>0&&<span className="cnt hot">{items.length}</span>}</div>
+             {items.length===0
+               ?<div className="bell-i"><div className="bell-m">
+                  <div className="bs">Nothing is waiting on you.</div></div></div>
+               :items.map(item=><div className="bell-i" key={item.id}>
+                  <span className="bell-d" style={{background:'var(--warn)'}}/>
+                  <div className="bell-m">
+                    <div className="bm">Approve {item.triggerSource||'triggered'} mint</div>
+                    <div className="bs">{item.targetType}:{item.targetId}
+                      {item.preview?.contractAddress&&<> · {shortAddress(item.preview.contractAddress)}</>}
+                      {item.preview?.methodSignature&&<> · {item.preview.methodSignature}</>}</div>
+                    <div className="br" style={{marginTop:'7px'}}>
+                      <button type="button" className="b p sm" onClick={()=>resolve(item.id,'CONFIRM')}>Approve</button>
+                      <button type="button" className="b g sm" onClick={()=>resolve(item.id,'REJECT')}>Reject</button>
+                    </div>
+                  </div>
+                </div>)}
+           </>
+          :<>
+             <div className="bell-sec">Recent · session scratchpad</div>
+             {log.length===0
+               ?<div className="bell-i"><div className="bell-m">
+                  <div className="bs">Nothing recent.</div></div></div>
+               :log.map(entry=><div className="bell-i" key={entry.id}>
+                  <span className="bell-d" style={{background:DOT_FOR_TYPE[entry.type]||'var(--accent)'}}/>
+                  <div className="bell-m">
+                    <div className="bm">{entry.message}</div>
+                    <div className="bs">{relativeTime(entry.at)}</div>
+                  </div>
+                  {/* Only entries whose call site declared a domain get a chip -- see notify(). */}
+                  {entry.category&&CATEGORY_LABELS[entry.category]&&
+                    <span className="bell-cat">{CATEGORY_LABELS[entry.category]}</span>}
+                </div>)}
+           </>}
+      </div>
+      <div className="bell-act"><p style={{fontSize:'11px',color:'var(--faint)'}}>
+        The badge counts pending confirmations only. Recent is a capped session scratchpad — never an inbox.</p></div>
     </div>}
     {!open&&autoPreview&&<div className={`bell-auto-preview bell-log-${autoPreview.type}`} role="status" aria-live="polite" onClick={dismissAutoPreview}>
       <span className="bell-log-dot" aria-hidden="true"/>

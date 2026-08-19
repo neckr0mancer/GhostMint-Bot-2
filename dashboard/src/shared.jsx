@@ -62,12 +62,17 @@ const NOTIFICATION_LOG_LIMIT=20;
 function publishNotificationLog(){notificationLogListeners.forEach(listener=>listener(notificationLog));}
 export function subscribeNotificationLog(listener){notificationLogListeners.push(listener);return()=>{notificationLogListeners=notificationLogListeners.filter(item=>item!==listener);};}
 export function getNotificationLog(){return notificationLog;}
-export function notify(message,{type='info',timeoutMs=5000}={}){
+// `category` is the prototype's .bell-cat chip on a Recent row: Money / Auto / Security. It is
+// optional and defaults to nothing rather than being guessed from the message text -- an entry
+// wearing the wrong domain is worse than one wearing none, and a keyword sniffer would be wrong
+// silently. Call sites that know their domain pass it; the rest render no chip.
+export const NOTIFICATION_CATEGORIES=Object.freeze({money:'Money',auto:'Auto',security:'Security'});
+export function notify(message,{type='info',timeoutMs=5000,category}={}){
   if(!message)return null;
   const id=++toastSeq;
   toastItems=[...toastItems,{id,message,type,leaving:false}];
   publishToasts();
-  notificationLog=[{id,message,type,at:Date.now()},...notificationLog].slice(0,NOTIFICATION_LOG_LIMIT);
+  notificationLog=[{id,message,type,category,at:Date.now()},...notificationLog].slice(0,NOTIFICATION_LOG_LIMIT);
   publishNotificationLog();
   if(timeoutMs>0)setTimeout(()=>dismissToast(id),timeoutMs);
   return id;

@@ -392,6 +392,14 @@ tbody tr:last-child td{border-bottom:0}
    Notification bell (replaces the old always-expanded confirmations panel)
    ========================================================================== */
 .notification-bell{position:relative}
+/* The prototype anchors .bell-pop to the app SHELL (top:52px;right:14px), so its
+   width:min(360px,calc(100% - 28px)) measures the shell. Here the panel lives inside
+   .notification-bell, which has to stay positioned for the auto-preview that shares it -- so 100%
+   was the bell button, about 34px, and the panel rendered 6px wide. Measured against the viewport
+   instead, which is what the prototype's calc was reaching for. Overrides only geometry; every
+   colour, radius and border still comes from prototype.css. */
+.notification-bell .bell-pop{top:calc(100% + 8px);right:0;width:min(360px,calc(100vw - 28px))}
+@media(max-width:700px){.notification-bell .bell-pop{position:fixed;top:54px;left:13px;right:13px;width:auto}}
 /* The bell TRIGGER is top-bar chrome and moves to prototype.css's .ib + .badge in this pass;
    .bell-trigger / .bell-count are deleted rather than scoped because nothing renders them any
    more. NotificationBell is shared with the admin shell, so admin's bell adopts the prototype

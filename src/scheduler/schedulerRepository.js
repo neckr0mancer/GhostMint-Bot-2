@@ -8,9 +8,9 @@ const TASK_BUCKETS = Object.freeze({
   paused: ['paused'],
   failed: ['failed'],
   cancelled: ['cancelled'],
-  done: ['succeeded'],
+  succeeded: ['succeeded'],
 });
-const TASK_BUCKET_NAMES = Object.freeze(['pending', 'paused', 'failed', 'expired', 'cancelled', 'done']);
+const TASK_BUCKET_NAMES = Object.freeze(['pending', 'paused', 'failed', 'expired', 'cancelled', 'succeeded']);
 // `expired` is the one bucket that is not a status. It is a paused or failed mint whose mint time
 // has already gone: the drop is over, so Resume and Retry would only re-run something that cannot
 // succeed. It TAKES PRECEDENCE over paused and failed, which keeps the buckets a partition -- a
@@ -48,7 +48,7 @@ const BUCKET_PREDICATES = Object.freeze({
   failed: `status='failed' AND mint_time >= ${EXPIRY_GRACE_SQL}`,
   expired: `status IN (${sqlStatusList(EXPIRABLE_STATUSES)}) AND mint_time < ${EXPIRY_GRACE_SQL}`,
   cancelled: `status='cancelled'`,
-  done: `status='succeeded'`,
+  succeeded: `status='succeeded'`,
 });
 
 function time(value) { return value === null ? null : new Date(value).getTime(); }

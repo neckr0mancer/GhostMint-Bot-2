@@ -155,7 +155,7 @@ test('the buckets partition every status the schema allows', async () => {
   const all = await service.tasksPage('user-a', { page: 1, pageSize: 50 });
   assert.equal(Object.values(all.counts).reduce((sum, value) => sum + value, 0), SCHEMA_STATUSES.length,
     'every status must land in exactly one bucket');
-  assert.deepEqual(all.counts, { pending: 3, paused: 1, failed: 1, expired: 0, cancelled: 1, done: 1 });
+  assert.deepEqual(all.counts, { pending: 3, paused: 1, failed: 1, expired: 0, cancelled: 1, succeeded: 1 });
 });
 
 test('expiry needs the mint time to be well past, not merely past', async () => {
@@ -193,7 +193,7 @@ test('a status filter narrows the rows and the total, but never the counts', asy
   const unfiltered = await service.tasksPage('user-a', { page: 1, pageSize: 10 });
   assert.equal(unfiltered.total, 24);
   const BUCKETS = { pending: ['scheduled', 'claimed', 'retry'], paused: ['paused'],
-    failed: ['failed'], cancelled: ['cancelled'], done: ['succeeded'] };
+    failed: ['failed'], cancelled: ['cancelled'], succeeded: ['succeeded'] };
   // every row is scheduled far ahead in this fixture, so none of them are expired
   for (const [bucket, statuses] of Object.entries(BUCKETS)) {
     const page = await service.tasksPage('user-a', { page: 1, pageSize: 50, status: bucket });

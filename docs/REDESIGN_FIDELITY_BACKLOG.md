@@ -76,6 +76,28 @@ Not "Pending confirmations" + "Recent notifications". It is:
 
 The badge counts **pending confirmations only**, not recent entries.
 
+**Built 2026-08-19.** Structure, copy and geometry verified against the prototype: heading,
+both tabs with the `.cnt.hot` count, `Pending confirmations · durable`, `Recent · session
+scratchpad`, and the footer sentence verbatim. Computed values match — surface, 13px radius,
+`.bell-tabs` on surface-2, `.bell-body` capped at 300px.
+
+One geometry override lives in `styles.css`, not `prototype.css`: the prototype anchors
+`.bell-pop` to the app shell, so `width:min(360px,calc(100% - 28px))` measures the shell. In the
+app the panel sits inside `.notification-bell`, which must stay positioned for the auto-preview
+that shares it — so 100% was the bell button and the panel rendered **6px wide**. Measured against
+the viewport instead. Colours, radius and borders still come from the prototype.
+
+**Two gaps, both data rather than design:**
+
+- **Bypass challenge row — no source.** The prototype shows one under Needs you. The API has
+  `POST /api/targets/:id/bypass` and `POST /api/targets/bypass/confirm` but **no list endpoint**,
+  so there is nothing to enumerate outstanding challenges from. Not faked; the row is simply
+  absent until a route exposes them.
+- **`.bell-cat` chips are opt-in.** `notify()` now takes an optional `category`
+  (money / auto / security) and the chip renders only when a call site declares one. Deliberately
+  not inferred from the message text: a wrong domain is worse than none, and a keyword sniffer
+  would be wrong silently. Most of the 41 call sites do not set it yet.
+
 ## 4. Mint page — full rebuild (`docs/prototype-pages/mint.html`)
 
 The owner has authorised reforming the markup: *"If it needs to be reformed, then
