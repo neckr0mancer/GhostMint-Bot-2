@@ -4,7 +4,8 @@ const { Interface } = require('ethers');
 const { createEtherscanGasService, GasLookupError } = require('../src/gas/etherscanGasService');
 const { createReadinessService } = require('../src/health/readinessService');
 const { runAllowlistCheck, validateAllowlistCheck } = require('../src/mint/allowlistCheckRegistry');
-const { paginate } = require('../src/pagination');
+const { MAX_PAGE_SIZE, paginate, pagination } = require('../src/pagination');
+const { ValidationError } = require('../src/validation/domain');
 const { calculateStatistics } = require('../src/statistics/statisticsService');
 
 test('gas lookup uses Etherscan V2 with chain ID and degrades safely', async () => {
@@ -32,6 +33,21 @@ test('pagination has exact page boundaries without duplicates or omissions', () 
   assert.deepEqual(pages.map(value=>value.items.length),[10,10,3]);
   assert.deepEqual(pages.flatMap(value=>value.items),values);
   assert.equal(new Set(pages.flatMap(value=>value.items)).size,23);
+});
+
+test('out-of-range pagination is a field-scoped ValidationError, not a bare throw', () => {
+  // A page/pageSize off a query string is the caller's input, so a bad one has to be reportable as
+  // a client error. These used to throw TypeError, which the dashboard turned into a 500.
+  for(const [input,field] of [[{pageSize:MAX_PAGE_SIZE+1},'pageSize'],[{pageSize:0},'pageSize'],
+    [{pageSize:1.5},'pageSize'],[{page:0},'page'],[{page:-3},'page'],[{page:'abc'},'page']]){
+    assert.throws(()=>pagination(input),error=>{
+      assert.ok(error instanceof ValidationError,`${JSON.stringify(input)} should raise ValidationError`);
+      assert.deepEqual(error.issues.map(value=>value.field),[field]);
+      return true;});
+  }
+  // The boundary itself stays valid, and omitted values still fall back to the defaults.
+  assert.deepEqual(pagination({page:2,pageSize:MAX_PAGE_SIZE}),{page:2,pageSize:MAX_PAGE_SIZE,offset:MAX_PAGE_SIZE});
+  assert.deepEqual(pagination(),{page:1,pageSize:10,offset:0});
 });
 
 test('readiness distinctly reports database and RPC outages', async () => {

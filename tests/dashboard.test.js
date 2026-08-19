@@ -251,6 +251,37 @@ test('username+password login creates a working, cookie-authenticated session fo
   assert.equal(profile.username,'ghostuser');
 });
 
+test('an out-of-range page or pageSize is a 400 naming the field, not a 500',async t=>{
+  // operationsServer stubs the commands layer, so it never reaches the real pagination(). This
+  // wires the actual command service to prove the status the CALLER sees: ?pageSize=100 used to
+  // surface as 500 "Request failed safely", indistinguishable from the database being down.
+  const state={wallets:[],tasks:[],activity:[],pnl:[],snipers:[]};
+  const commands=createBotCommandService({storage:{},schedulerRepository:{},providerService:{},governance:{},
+    adminCommands:{},sniperService:{},supportedChains:['ethereum'],chains:{ethereum:{}},encryptPrivateKey:()=>({}),getState:()=>state});
+  const sessions=new Map([['token-a',{userId:'user-a',csrfTokenHash:'csrf'}]]);
+  const auth={authenticate:async header=>sessions.get(String(header||'').split('=')[1])||null,verifyCsrf:()=>true,
+    loginWithUserId:async()=>({token:'token-a'}),sessionCookies:()=>[],clearCookies:()=>[],revoke:async()=>{},revokeAll:async()=>{}};
+  const api=createDashboardApi({auth,commands,supportedChains:['ethereum'],
+    identityRepository:{listLinkedAccounts:async()=>[],getTheme:async()=>'ghost-mint',getDisplayName:async()=>null},
+    loginRateLimiter:createCommandRateLimiter()});
+  const app=express();app.use(express.json());app.use(api.securityHeaders);mountDashboardRoutes(app,api);app.use(api.error);
+  const server=http.createServer(app);await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  t.after(()=>new Promise(resolve=>server.close(resolve)));
+  const base=`http://127.0.0.1:${server.address().port}`;const headers={cookie:'ghostmint_session=token-a'};
+  for(const [query,field] of [['pageSize=100','pageSize'],['pageSize=0','pageSize'],['page=0','page'],['page=abc','page']]){
+    for(const route of ['/api/tasks','/api/activity']){
+      const response=await fetch(`${base}${route}?${query}`,{headers});
+      assert.equal(response.status,400,`${route}?${query} should be 400`);
+      const body=await response.json();
+      assert.equal(body.code,'VALIDATION_ERROR');
+      assert.deepEqual(body.issues.map(value=>value.field),[field]);
+    }
+  }
+  // The cap itself is still a valid request, as is asking for nothing in particular.
+  assert.equal((await fetch(`${base}/api/tasks?pageSize=50`,{headers})).status,200);
+  assert.equal((await fetch(`${base}/api/activity`,{headers})).status,200);
+});
+
 test('task created by the dashboard service is consumed by the existing durable worker path',async()=>{const now=Date.now();const state={wallets:[{id:1,userId:'user-a',label:'alpha',address:'0x0000000000000000000000000000000000000001',chain:'ethereum'}],tasks:[],activity:[],pnl:[],snipers:[]};const rows=[];const repository={
   claimDue:async()=>{const task=rows.find(item=>item.status==='scheduled'&&item.nextAttemptAt<=now+10_000);if(!task)return null;task.status='claimed';task.attemptCount=1;return task;},
   attachIntent:async()=>{},complete:async task=>{task.status='succeeded';return true;},fail:async()=>{},listStaleClaims:async()=>[],getByIdempotencyKey:async()=>null,
