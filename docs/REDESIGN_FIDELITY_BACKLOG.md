@@ -889,3 +889,31 @@ is static. Open question for the owner: truncation indicator, or a control that 
   second look now that it is understood.
 - Bell's **Bypass challenge** row has no list endpoint to read from.
 - **`.bell-cat` chips are opt-in**; most `notify()` call sites set no category.
+
+### 13.9 §1.8 first pass — phone width, 2026-08-19
+
+Swept all seven user pages at 375×812 measuring real geometry, not screenshots.
+
+**No page scrolls sideways.** `scrollWidth - clientWidth` is **0** on Home, Mint, Automation,
+Wallets, History, Account and Settings. That is the failure that actually ruins a phone layout,
+and it is clean everywhere.
+
+Three flags were raised by the sweep and **all three were false positives** — recorded so the next
+session does not chase them again:
+
+| flagged | verdict |
+|---|---|
+| Settings table wider than viewport | CONTAINED — sits in `.table-wrap` with `overflow-x:auto`, and at 322px in a 324px wrap it does not even need to scroll |
+| Automation sub-tabs extend past the viewport | BY DESIGN — `.subtabs` is `overflow-x:auto` with `scrollbar-width:none` (prototype.css:423), a deliberate swipe strip |
+| Sub-tab buttons only 32px vs `--tap-min:44px` | FAITHFUL — `.subtabs button` explicitly sets `min-height:32px` (prototype.css:427), overriding the floor on purpose |
+
+The middle one was verified rather than assumed, because "by design" is worthless if the control
+cannot be reached: the strip scrolls (401px of content in 348px), the off-screen **Policies** tab
+comes fully into view when scrolled, and clicking it activates the tab. Reachable and working.
+
+**One real thing found:** the Policies tab renders an error `.notice` on load and has no empty
+state. Not yet diagnosed — next session should start there.
+
+**Still owed on §1.8:** the light/dark sweep. Everything above was measured in `ghost-mint` dark;
+the four other themes have had far less scrutiny than the Mint page has, and the new `--info` /
+`--idle` tokens have only been contrast-checked, not seen in situ.
