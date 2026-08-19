@@ -1734,18 +1734,34 @@ function CommandPalette({open,onClose,go,profile,wallets}){
   </div>;
 }
 const VIEWS={Home:Dashboard,Mint,Automation,Wallets:WalletsPage,History,Settings,Account};
-const MORE_PAGES=['Automation','Settings'];
-const BOTTOM_BAR_PAGES=['Home','Wallets','History'];
+// Prototype .bbar (ghostmint-redesign-v3.html:2098): FIVE equal columns --
+// Home, Mint, Auto, Wallets, More -- and nothing else. The build had Home, Wallets, History, a
+// spacer, More, plus a floating circular Mint button hovering above the bar. That FAB is not in
+// the design at all: .bbar is grid-template-columns:repeat(5,1fr) with flat buttons whose only
+// active treatment is color:var(--accent).
+//
+// The label is "Auto", not "Automation" -- at 9.5px in a fifth of a phone screen the full word is
+// what forced the odd layout in the first place.
+const BOTTOM_BAR_PAGES=['Home','Mint','Automation','Wallets'];
+const BOTTOM_BAR_LABELS={Automation:'Auto'};
+// What the prototype's sheet holds, minus its two prototype-only entries (Auth states, Search).
+// Admin is deliberately absent: it lives behind an owner check, and offering a control that
+// 403s is worse than not offering it.
+const MORE_PAGES=['History','Account','Settings'];
 const MORE_ICON=<svg {...ICON_PROPS} fill="currentColor" stroke="none"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg>;
 const CHEVRON_LEFT=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 6l-6 6 6 6"/></svg>;
 const CHEVRON_RIGHT=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 6l6 6-6 6"/></svg>;
-function BottomBar({page,go,onOpenMore,moreOpen}){const moreActive=moreOpen||(!BOTTOM_BAR_PAGES.includes(page)&&page!=='Mint'&&page!=='Account');return <nav className="mobile-bottombar" aria-label="Primary">
-  {BOTTOM_BAR_PAGES.slice(0,2).map(item=><button key={item} type="button" aria-current={page===item?'page':undefined} onClick={()=>go(item)}><span className="nav-icon" aria-hidden="true">{NAV_ICONS[item]}</span><span className="nav-label">{item}</span></button>)}
-  <span className="bottombar-fab-gap" aria-hidden="true"/>
-  {BOTTOM_BAR_PAGES.slice(2).map(item=><button key={item} type="button" aria-current={page===item?'page':undefined} onClick={()=>go(item)}><span className="nav-icon" aria-hidden="true">{NAV_ICONS[item]}</span><span className="nav-label">{item}</span></button>)}
-  <button type="button" aria-current={moreActive?'page':undefined} onClick={onOpenMore}><span className="nav-icon" aria-hidden="true">{MORE_ICON}</span><span className="nav-label">More</span></button>
-  <button type="button" className={`bottombar-fab${page==='Mint'?' active':''}`} onClick={()=>go('Mint')}><span className="fab-circle" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><path d={BOLT_PATH}/></svg></span><span className="nav-label">Mint</span></button>
-</nav>;}
+function BottomBar({page,go,onOpenMore,moreOpen}){
+  const moreActive=moreOpen||!BOTTOM_BAR_PAGES.includes(page);
+  return <nav className="mobile-bottombar" aria-label="Primary">
+    {BOTTOM_BAR_PAGES.map(item=><button key={item} type="button"
+      aria-current={page===item?'page':undefined} onClick={()=>go(item)}>
+      <span className="nav-icon" aria-hidden="true">{NAV_ICONS[item]}</span>
+      <span className="nav-label">{BOTTOM_BAR_LABELS[item]||item}</span></button>)}
+    <button type="button" aria-current={moreActive?'page':undefined} onClick={onOpenMore}>
+      <span className="nav-icon" aria-hidden="true">{MORE_ICON}</span>
+      <span className="nav-label">More</span></button>
+  </nav>;}
 function MoreSheet({open,page,go,onClose}){return <>{open&&<div className="sheet-backdrop" onClick={onClose}/>}<div className={`more-sheet${open?' open':''}`} role="dialog" aria-modal="true" aria-label="More" aria-hidden={!open}>
   <button type="button" className="sheet-handle" aria-label="Close" onClick={onClose}/>
   <h2>More</h2>
