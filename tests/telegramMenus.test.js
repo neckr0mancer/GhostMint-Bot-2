@@ -4,6 +4,7 @@ const {
   mainMenu, walletsMenu, settingsMenu, tasksMenu, chainPicker, walletPicker,
   contractDetails, contractDetailsText, collectionInfoCard, mintConfirmation, gasTolerancePrompt,
   taskConfirmation, taskScheduled, confirmRemoveWallet, placeholderMenu,
+  sniperMenu, activityMenu, adminOverviewMenu,
 } = require('../src/telegram/menus');
 
 function flatButtons(replyMarkup) {
@@ -348,4 +349,60 @@ test('the scheduled-task screen counts phases upward and keeps a way back to the
   const buttons = flatButtons(third.replyMarkup).map(b => b.callback_data);
   assert.ok(buttons.includes('flow:phase:4:0x1234567890abcdef1234567890abcdef12345678'));
   assert.ok(buttons.includes('menu:main'));
+});
+
+// Section O -- Telegram counterparts to Discord's menu:snipers/menu:activity/menu:admin parity
+// (tests/discordMenuParity.test.js), performing the same lookups /snipers, /activity, and the
+// dashboard's admin overview already do instead of replying "use /snipers" etc.
+
+test('sniperMenu shows the same disclaimer and per-sniper detail as /snipers, with an empty state', () => {
+  const empty = sniperMenu([]);
+  assert.match(empty.text, /No snipers configured/);
+  assert.ok(flatButtons(empty.replyMarkup).some(b => b.callback_data === 'menu:main'));
+
+  const list = sniperMenu([{ label: 'Copy Cool Cats', active: true, targetAddress: '0x1234567890abcdef', chain: 'ethereum', walletLabel: 'main', hits: 3, fails: 1 }]);
+  assert.match(list.text, /Post-confirmation copy snipers \(1\)/);
+  assert.match(list.text, /Not mempool front-running/);
+  assert.match(list.text, /Copy Cool Cats/);
+  assert.match(list.text, /Hits: 3 · Fails: 1/);
+});
+
+test('activityMenu offers Next on page 1 of many but not Prev, and both on a middle page', () => {
+  const first = activityMenu({ page: 1, totalPages: 3, total: 25, items: [{ status: 'success', title: 'Minted', walletLabel: 'main', time: Date.now() }] });
+  const firstButtons = flatButtons(first.replyMarkup).map(b => b.callback_data);
+  assert.ok(!firstButtons.some(id => id.includes('Prev') || id === 'activity:page:0'));
+  assert.ok(firstButtons.includes('activity:page:2'));
+
+  const middle = activityMenu({ page: 2, totalPages: 3, total: 25, items: [] });
+  const middleButtons = flatButtons(middle.replyMarkup).map(b => b.callback_data);
+  assert.ok(middleButtons.includes('activity:page:1'));
+  assert.ok(middleButtons.includes('activity:page:3'));
+});
+
+test('activityMenu includes a tx link only when txHash is present, and says so plainly when there is no activity', () => {
+  const withTx = activityMenu({ page: 1, totalPages: 1, total: 1, items: [{ status: 'success', title: 'Minted', walletLabel: 'main', time: Date.now(), txHash: '0xabc', explorer: 'https://etherscan.io/tx/' }] });
+  assert.match(withTx.text, /View tx/);
+
+  const empty = activityMenu({ page: 1, totalPages: 1, total: 0, items: [] });
+  assert.match(empty.text, /No activity yet/);
+});
+
+test('adminOverviewMenu shows metrics and per-group ceilings, wording "no ceiling" for a null value', () => {
+  const overview = adminOverviewMenu({
+    metrics: { totalUsers: 10, activeAnyPlatform24h: 4, owners: 2, rootOwners: 1, groups: 2, linkedAccounts: 6 },
+    groups: [
+      { name: 'Standard', gasCeilingGwei: 50, maxTransactionValueEth: '0.5', dailySpendingBudgetEth: '2.0' },
+      { name: 'Unlimited', gasCeilingGwei: null, maxTransactionValueEth: null, dailySpendingBudgetEth: null },
+    ],
+  });
+  assert.match(overview.text, /10 total/);
+  assert.match(overview.text, /2 owners \(1 root\)/);
+  assert.match(overview.text, /Standard.*gas ≤50 gwei, tx ≤0\.5, daily ≤2\.0/);
+  assert.match(overview.text, /Unlimited.*no ceiling.*no ceiling.*no ceiling/);
+});
+
+test('adminOverviewMenu says so plainly when no groups are configured yet', () => {
+  const overview = adminOverviewMenu({ metrics: { totalUsers: 1, activeAnyPlatform24h: 0, owners: 1, rootOwners: 1, groups: 0, linkedAccounts: 0 }, groups: [] });
+  assert.match(overview.text, /No groups configured yet/);
+  assert.match(overview.text, /1 owner \(1 root\)/, 'singular "owner" when the count is exactly 1');
 });

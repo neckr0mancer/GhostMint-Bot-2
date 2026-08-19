@@ -383,6 +383,70 @@ function tasksMenu() {
   };
 }
 
+// Section O -- performs the same lookup /snipers already does, matching its exact list format
+// (Post-confirmation copying disclaimer included) rather than replying "use /snipers".
+function sniperMenu(snipers) {
+  if (!snipers.length) {
+    return {
+      text: '<b>🎯 Snipers</b>\n\nNo snipers configured.\n<i>Post-confirmation copy snipers replicate a target wallet\'s confirmed mint from one of yours -- not mempool front-running.</i>',
+      replyMarkup: keyboard([[button('⬅️ Back to base', 'menu:main')]]),
+      parseMode: 'HTML',
+    };
+  }
+  const list = snipers.map(s =>
+    `${s.active ? '🟢' : '⚪'} <b>${escapeTelegramHtml(s.label)}</b>\nTarget: <code>${s.targetAddress.slice(0, 10)}...</code>\nChain: ${s.chain} · Wallet: ${escapeTelegramHtml(s.walletLabel)}\nHits: ${s.hits || 0} · Fails: ${s.fails || 0}`,
+  ).join('\n\n');
+  return {
+    text: `<b>🎯 Post-confirmation copy snipers (${snipers.length})</b>\n<i>Not mempool front-running: copying begins only after the source transaction confirms.</i>\n\n${list}`,
+    replyMarkup: keyboard([[button('⬅️ Back to base', 'menu:main')]]),
+    parseMode: 'HTML',
+  };
+}
+
+// Section O -- performs the same lookup /activity already does, with Prev/Next paging (no Prev on
+// page 1, no Next once the last page is reached) instead of requiring the page number be typed.
+function activityMenu(page) {
+  const lines = page.items.length
+    ? page.items.map(a => {
+        const icon = a.status === 'success' ? '✅' : '❌';
+        const tx = a.txHash ? `\n   <a href="${a.explorer}${a.txHash}">View tx</a>` : '';
+        return `${icon} ${escapeTelegramHtml(a.title)} · <b>${escapeTelegramHtml(a.walletLabel)}</b>\n   ${new Date(a.time).toLocaleString()}${tx}`;
+      }).join('\n\n')
+    : 'No activity yet.';
+  const nav = [];
+  if (page.page > 1) nav.push(button('◀️ Prev', `activity:page:${page.page - 1}`));
+  if (page.page < page.totalPages) nav.push(button('▶️ Next', `activity:page:${page.page + 1}`));
+  const rows = nav.length ? [nav] : [];
+  rows.push([button('⬅️ Back to base', 'menu:main')]);
+  return {
+    text: `<b>📋 Activity (page ${page.page}/${page.totalPages}, ${page.total} total)</b>\n\n${lines}`,
+    replyMarkup: keyboard(rows),
+    parseMode: 'HTML',
+  };
+}
+
+// Section O -- /admin itself is a write-only dispatcher over 20+ owner actions with no single
+// "the" read to mirror, so this instead surfaces governance.dashboardOverview (already built and
+// already owner-gated -- the same data the web dashboard's own admin page shows), which is a much
+// more useful glance than the old placeholder ever was. Per-user detail and preset tuning stay on
+// the dashboard/CLI-style commands; this is a summary, not a full admin console. Wei figures are
+// formatted to ETH strings by the caller (server.js) so this module stays free of an ethers import,
+// same as every other menu function here that only ever receives display-ready numbers.
+function adminOverviewMenu({ metrics, groups }) {
+  const groupLines = groups.length
+    ? groups.map(g => `• <b>${escapeTelegramHtml(g.name)}</b> — gas ≤${g.gasCeilingGwei ?? 'no ceiling'} gwei, tx ≤${g.maxTransactionValueEth ?? 'no ceiling'}, daily ≤${g.dailySpendingBudgetEth ?? 'no ceiling'}`).join('\n')
+    : 'No groups configured yet.';
+  return {
+    text: `<b>🛡️ Admin overview</b>\n`
+      + `Users: ${metrics.totalUsers} total · ${metrics.activeAnyPlatform24h} active in 24h · ${metrics.owners} owner${metrics.owners === 1 ? '' : 's'} (${metrics.rootOwners} root)\n`
+      + `Groups: ${metrics.groups} · Linked accounts: ${metrics.linkedAccounts}\n\n`
+      + `<b>Groups</b>\n${groupLines}\n\n`
+      + `Per-user detail and every other action: /admin &lt;action&gt; ... CONFIRM.`,
+    replyMarkup: keyboard([[button('⬅️ Back to base', 'menu:main')]]),
+    parseMode: 'HTML',
+  };
+}
+
 // Same 4 presets/labels as Discord's /mode choices (discordBot.js) -- kept in sync by hand since
 // the two platforms build their option lists in entirely different shapes (inline keyboard vs.
 // slash-command choices).
@@ -573,5 +637,8 @@ module.exports = {
   modeMenu,
   MODE_META,
   gasMenu,
+  sniperMenu,
+  activityMenu,
+  adminOverviewMenu,
   formatGmtPlus1,
 };

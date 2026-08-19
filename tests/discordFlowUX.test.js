@@ -106,19 +106,20 @@ test('selecting a chain completes wallet creation through the shared botCommandS
   assert.match(select.updates[0].content, /generated securely/);
 
   // the flow must be fully cleared: a later divergent click should not think a flow is active
-  // (menu:tasks, not menu:mint, since Section O now makes menu:mint open a modal instead of
-  // updating the message in place -- this probe just needs any other menu tap that still is)
-  const after = buttonInteraction('menu:tasks', 'flow-user-3');
+  // (menu:wallets, not menu:mint/menu:tasks, since Section O now makes both of those perform a
+  // real action requiring their own command mocks -- this probe just needs any other menu tap
+  // that still renders a static, no-data-fetch screen)
+  const after = buttonInteraction('menu:wallets', 'flow-user-3');
   await handler(after);
-  assert.match(after.updates[0].content, /Tasks/);
+  assert.match(after.updates[0].content, /Wallets/);
 });
 
 test('navigating to a different menu mid-flow silently abandons it and switches immediately, no confirmation', async () => {
   const handler = createDiscordInteractionHandler({ identity: { resolveOrCreate: async () => 'internal-user' }, commands: {} });
   await handler(buttonInteraction('wallet:create:start', 'flow-user-4'));
-  const divert = buttonInteraction('menu:tasks', 'flow-user-4');
+  const divert = buttonInteraction('menu:wallets', 'flow-user-4');
   await handler(divert);
-  assert.match(divert.updates[0].content, /Tasks/);
+  assert.match(divert.updates[0].content, /Wallets/);
 
   // the abandoned flow must actually be gone -- a follow-up tap that only makes sense mid-wallet-
   // creation (submitting the label modal) must not still be honored.

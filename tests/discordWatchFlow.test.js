@@ -197,11 +197,12 @@ test('navigating away mid-flow silently abandons it and switches immediately, no
   const { handler } = fixture();
   await handler(buttonInteraction('watch:add:start', 'user-6'));
   await handler(modalInteraction('flow:watchname:submit', { value: 'Diverge test' }, 'user-6'));
-  // menu:tasks, not menu:mint, since Section O now makes menu:mint open a modal instead of
-  // updating the message in place -- this probe just needs any other menu tap that still is
-  const divert = buttonInteraction('menu:tasks', 'user-6');
+  // menu:wallets, not menu:mint/menu:tasks, since Section O now makes both of those perform a
+  // real action requiring their own command mocks -- this probe just needs any other menu tap
+  // that still renders a static, no-data-fetch screen
+  const divert = buttonInteraction('menu:wallets', 'user-6');
   await handler(divert);
-  assert.match(divert.updates[0].content, /Tasks/);
+  assert.match(divert.updates[0].content, /Wallets/);
 
   // the abandoned flow must actually be gone -- a follow-up tap that only makes sense mid-watch-
   // rule-creation (the type select the name step would normally lead to) must be silently ignored.
