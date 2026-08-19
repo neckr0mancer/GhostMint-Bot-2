@@ -2,7 +2,8 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const {
   mainMenu, walletsMenu, settingsMenu, chainSelect, walletSelect,
-  confirmCancelPrompt, confirmRemoveWallet, placeholderMenu, labelModal, collectionInfoCard,
+  confirmRemoveWallet, placeholderMenu, labelModal, collectionInfoCard,
+  taskNameQuickPicks, taskConfirmation,
 } = require('../src/discord/menus');
 
 function flatButtons(components) {
@@ -65,13 +66,6 @@ test('wallet select lists each wallet as an option with its chain in the label',
   assert.equal(selectComponent(picker.components).custom_id, 'wallet:balance:select');
 });
 
-test('the cancel-confirmation prompt names the in-progress flow and offers both outcomes', () => {
-  const prompt = confirmCancelPrompt('wallet creation');
-  assert.match(prompt.content, /wallet creation/);
-  const buttons = flatButtons(prompt.components);
-  assert.deepEqual(buttons.map(b => b.custom_id), ['flow:cancel:confirm', 'flow:cancel:resume']);
-});
-
 test('the remove-wallet confirmation embeds the exact label being removed', () => {
   const prompt = confirmRemoveWallet('cold-storage');
   assert.match(prompt.content, /cold-storage/);
@@ -101,14 +95,70 @@ test('collectionInfoCard renders the mint_guided flow\'s real first screen: Mint
   assert.equal(buttons.find(b => b.url)?.label, '🔗 OpenSea');
 });
 
-test('collectionInfoCard omits every stats-derived line when stats is null, and shows floor/market cap/volume when it is not', () => {
+test('collectionInfoCard says the floor could not be determined (not "unavailable") when sold out with no OpenSea data, and drops Max per wallet', () => {
+  const card = collectionInfoCard({
+    contractAddress: '0xabc', chainLabel: 'Ethereum', chainSym: 'ETH', isSeaDrop: true, priceETH: 0.05, priceUnknown: false,
+    maxSupply: 5000, maxPerWallet: 3, startTime: null, collection: null, soldOut: true, displayPrice: null, stats: null, openSeaUrl: null,
+  });
+  assert.match(card.content, /Status: Sold out\. Floor price couldn't be determined from this contract\./);
+  assert.equal(card.content.includes('Max per wallet'), false);
+  assert.match(card.content, /Max supply: 5000/);
+});
+
+test('collectionInfoCard shows the real floor once sold out, when OpenSea has it', () => {
+  const card = collectionInfoCard({
+    contractAddress: '0xabc', chainLabel: 'Ethereum', chainSym: 'ETH', isSeaDrop: true, priceETH: 0.05, priceUnknown: false,
+    maxSupply: 100, maxPerWallet: 1, startTime: null, collection: null, soldOut: true, displayPrice: { eth: 0.3, usd: null, source: 'floor' }, stats: null, openSeaUrl: null,
+  });
+  assert.match(card.content, /Status: Sold out — floor 0\.3 ETH/);
+});
+
+test('collectionInfoCard suggests scheduling only when the detected opening time is still in the future', () => {
+  const future = Math.floor(Date.now() / 1000) + 3_600;
+  const past = Math.floor(Date.now() / 1000) - 3_600;
+
+  const notYetOpen = collectionInfoCard({
+    contractAddress: '0xabc', chainLabel: 'Ethereum', chainSym: 'ETH', isSeaDrop: true, priceETH: 0.05, priceUnknown: false,
+    maxSupply: 100, maxPerWallet: 1, startTime: future, collection: null, soldOut: false, displayPrice: null, stats: null, openSeaUrl: null,
+  });
+  assert.deepEqual(flatButtons(notYetOpen.components).map(b => b.custom_id),
+    ['flow:mintdetailscontinue', 'flow:schedulesuggest', 'flow:detailsrefresh', 'flow:copyca', 'flow:cancel:ask']);
+  assert.match(notYetOpen.content, /Opens:/);
+
+  const alreadyOpen = collectionInfoCard({
+    contractAddress: '0xabc', chainLabel: 'Ethereum', chainSym: 'ETH', isSeaDrop: true, priceETH: 0.05, priceUnknown: false,
+    maxSupply: 100, maxPerWallet: 1, startTime: past, collection: null, soldOut: false, displayPrice: null, stats: null, openSeaUrl: null,
+  });
+  assert.equal(flatButtons(alreadyOpen.components).some(b => b.custom_id === 'flow:schedulesuggest'), false);
+  assert.match(alreadyOpen.content, /Opened:/);
+});
+
+test('taskNameQuickPicks offers GTD/FCFS/PUBLIC and a custom option in one select, with an unverified-labels caveat', () => {
+  const menu = taskNameQuickPicks();
+  const options = selectComponent(menu.components).options;
+  assert.deepEqual(options.map(o => o.value), ['GTD', 'FCFS', 'PUBLIC', 'custom']);
+  assert.match(menu.content, /unverified/);
+  assert.deepEqual(flatButtons(menu.components).map(b => b.custom_id), ['flow:cancel:ask']);
+});
+
+test('taskConfirmation states plainly that the bot executes unattended, not a reminder', () => {
+  const confirm = taskConfirmation({
+    name: 'GTD', contractAddress: '0xabc', chainLabel: 'Ethereum', walletLabel: 'main',
+    mintTime: '2026-08-20T18:00:00.000Z', priceETH: 0.1, priceUnknown: false,
+  });
+  assert.match(confirm.content, /not a reminder/);
+  assert.match(confirm.content, /GTD/);
+  assert.match(confirm.content, /0\.1 per item/);
+  assert.deepEqual(flatButtons(confirm.components).map(b => b.custom_id), ['flow:taskconfirm', 'flow:cancel:ask']);
+});
+
+test('collectionInfoCard omits the stats table entirely when stats is null, and renders an aligned floor/holders/minted/volume table -- never a market cap -- when it is not', () => {
   const noStats = collectionInfoCard({
     contractAddress: '0xabc', chainLabel: 'Ethereum', chainSym: 'ETH', isSeaDrop: false, priceETH: 0.05, priceUnknown: false,
     maxSupply: 100, maxPerWallet: 1, startTime: null, collection: null, soldOut: false, displayPrice: null, stats: null, openSeaUrl: null,
   });
-  assert.equal(noStats.content.includes('Floor:'), false);
-  assert.equal(noStats.content.includes('Market cap:'), false);
-  assert.equal(noStats.content.includes('Volume:'), false);
+  assert.equal(noStats.content.includes('```'), false);
+  assert.equal(noStats.content.includes('Floor'), false);
 
   const withStats = collectionInfoCard({
     contractAddress: '0xabc', chainLabel: 'Ethereum', chainSym: 'ETH', isSeaDrop: false, priceETH: 0.05, priceUnknown: false,
@@ -118,10 +168,13 @@ test('collectionInfoCard omits every stats-derived line when stats is null, and 
       marketCap: 4.4, volume: { oneDay: 1.2, sevenDay: 5.5, thirtyDay: null, allTime: 20 },
     },
   });
-  assert.match(withStats.content, /Floor: 0\.08 ETH · 42 holders/);
-  assert.match(withStats.content, /Market cap: 4\.4 ETH \(55\/100 minted\)/);
-  assert.match(withStats.content, /Volume: 24h 1\.2 ETH · 7d 5\.5 ETH/);
+  assert.match(withStats.content, /```[\s\S]*Floor\s+0\.08 ETH[\s\S]*```/);
+  assert.match(withStats.content, /Holders\s+42/);
+  assert.match(withStats.content, /Minted\s+55\/100/);
+  assert.match(withStats.content, /24h volume\s+1\.2 ETH/);
+  assert.match(withStats.content, /7d volume\s+5\.5 ETH/);
   assert.equal(withStats.content.includes('30d'), false);
+  assert.equal(withStats.content.includes('Market cap'), false);
 });
 
 test('label modal embeds a single required text input under the given title', () => {

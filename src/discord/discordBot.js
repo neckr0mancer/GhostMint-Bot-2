@@ -34,16 +34,31 @@ function confirmation(interaction) {
   }
 }
 
-function commandDefinitions() {
+// Chain/target-type options below are small, fixed sets known at registration time -- Discord
+// shows these as a native dropdown instead of a free-text field the user has to type correctly by
+// hand, the same way /mode and /social-usage's period already do. chainChoices is built from the
+// actual configured supportedChains (not a hardcoded list) so it can never drift from what the
+// deployment actually supports; an empty list (no chains/supportedChains passed) degrades to a
+// plain free-text field rather than an error, matching this app's usual "missing input degrades,
+// never throws" convention.
+function commandDefinitions({ supportedChains = [], chains = {} } = {}) {
+  const chainChoices = supportedChains.map(chain => ({ name: chains[chain]?.name || chain, value: chain }));
+  const chainOption = (o, { required = false, description = 'Supported chain' } = {}) => {
+    o.setName('chain').setDescription(description).setRequired(required);
+    if (chainChoices.length) o.addChoices(...chainChoices);
+    return o;
+  };
+  const targetTypeOption = o => o.setName('type').setDescription('Target type (sniper or social_rule)').setRequired(true)
+    .addChoices({ name: 'Sniper', value: 'sniper' }, { name: 'Social Rule', value: 'social_rule' });
   const commands = [];
   commands.push(new SlashCommandBuilder().setName('menu').setDescription('Open the interactive GhostMint menu'));
   commands.push(new SlashCommandBuilder().setName('wallet').setDescription('👛 Manage your wallets')
     .addSubcommand(c => c.setName('create').setDescription('Recommended: generate and securely store a new wallet')
       .addStringOption(o => o.setName('label').setDescription('Unique wallet label').setRequired(true))
-      .addStringOption(o => o.setName('chain').setDescription('Supported chain').setRequired(true)))
+      .addStringOption(o => chainOption(o, { required: true })))
     .addSubcommand(c => c.setName('import').setDescription("Not recommended: your private key passes through Discord's messaging systems")
       .addStringOption(o => o.setName('label').setDescription('Unique wallet label').setRequired(true))
-      .addStringOption(o => o.setName('chain').setDescription('Supported chain').setRequired(true))
+      .addStringOption(o => chainOption(o, { required: true }))
       .addStringOption(o => o.setName('private-key').setDescription('Existing key; may be exposed in platform transit or client history').setRequired(true)))
     .addSubcommand(c => c.setName('list').setDescription('List your wallets'))
     .addSubcommand(c => c.setName('balance').setDescription('Check wallet balance across every supported chain')
@@ -53,25 +68,35 @@ function commandDefinitions() {
       .addBooleanOption(o => o.setName('confirm').setDescription('Confirm permanent removal').setRequired(true)))
     .addSubcommand(c => c.setName('batch-import').setDescription('Owner only: import many private keys at once')
       .addStringOption(o => o.setName('private-keys').setDescription('Comma-separated private keys').setRequired(true))
-      .addStringOption(o => o.setName('chain').setDescription('Supported chain').setRequired(true))
+      .addStringOption(o => chainOption(o, { required: true }))
       .addBooleanOption(o => o.setName('confirm').setDescription('Confirm batch import of multiple private keys').setRequired(true))
       .addStringOption(o => o.setName('label-prefix').setDescription('Label prefix; wallets are named prefix-1, prefix-2, ...'))));
   commands.push(new SlashCommandBuilder().setName('deposit').setDescription('💰 Get a wallet address to fund')
     .addStringOption(o => o.setName('label').setDescription('Wallet label (optional if you have only one)').setAutocomplete(true)));
+  // Only contract is required -- wallet/quantity used to be mandatory too, which meant this could
+  // never auto-detect which chain the contract actually lives on (it silently defaulted to the
+  // wallet's own home chain instead, and SeaDrop discovery against the wrong chain is exactly what
+  // produced the confusing "priceETH could not be determined" error). Omitting wallet or quantity
+  // now routes through the same auto-detecting collection card the paste flow already uses (see
+  // the 'mint' case below) instead of attempting a one-shot mint with a guessed chain.
   commands.push(new SlashCommandBuilder().setName('mint').setDescription('⚡ Execute a supported mint')
-    .addStringOption(o => o.setName('wallet').setDescription('Wallet label').setRequired(true).setAutocomplete(true))
     .addStringOption(o => o.setName('contract').setDescription('Contract address').setRequired(true))
-    .addIntegerOption(o => o.setName('quantity').setDescription('Quantity').setMinValue(1).setRequired(true))
+    .addStringOption(o => o.setName('wallet').setDescription('Wallet label (omit to see the collection card first)').setAutocomplete(true))
+    .addIntegerOption(o => o.setName('quantity').setDescription('Quantity (omit to see the collection card first)').setMinValue(1))
     // Not required: price is read from the contract when possible (mintPrice/price/cost/etc.).
     // Only needed if the contract doesn't expose a recognized price getter.
     .addNumberOption(o => o.setName('price').setDescription('Native price per item (only if the contract does not expose one)').setMinValue(0))
-    .addStringOption(o => o.setName('chain').setDescription('Chain (defaults to wallet chain)')));
+    .addStringOption(o => chainOption(o, { description: 'Chain (auto-detected when omitted)' })));
+  // Read-only lookup: shows the same collection card as an under-specified /mint, with no
+  // mint-intent implied. Mint Now still works from the card if the user decides to go ahead.
+  commands.push(new SlashCommandBuilder().setName('info').setDescription('🔍 Look up a contract without minting')
+    .addStringOption(o => o.setName('contract').setDescription('Contract address').setRequired(true)));
   commands.push(new SlashCommandBuilder().setName('batch-mint').setDescription('⚡ Mint from multiple wallets')
     .addStringOption(o => o.setName('wallets').setDescription('Comma-separated wallet labels').setRequired(true))
     .addStringOption(o => o.setName('contract').setDescription('Contract address').setRequired(true))
     .addIntegerOption(o => o.setName('quantity').setDescription('Quantity per wallet').setMinValue(1).setRequired(true))
     .addNumberOption(o => o.setName('price').setDescription('Native price per item').setMinValue(0).setRequired(true))
-    .addStringOption(o => o.setName('chain').setDescription('Chain').setRequired(true)));
+    .addStringOption(o => chainOption(o, { required: true })));
   commands.push(new SlashCommandBuilder().setName('task').setDescription('🗓️ Manage durable scheduled mints')
     .addSubcommand(c => c.setName('create').setDescription('Create a UTC scheduled mint')
       .addStringOption(o => o.setName('input').setDescription('Validated task JSON; mintTime must include Z/offset').setRequired(true))
@@ -88,7 +113,7 @@ function commandDefinitions() {
     .addSubcommand(c => c.setName('add').setDescription('Add a P&L record').addStringOption(o => o.setName('input').setDescription('Record JSON').setRequired(true)))
     .addSubcommand(c => c.setName('delete').setDescription('Delete a P&L record').addStringOption(o => o.setName('id').setDescription('Record UUID').setRequired(true)).addBooleanOption(o => o.setName('confirm').setDescription('Confirm deletion').setRequired(true))));
   commands.push(new SlashCommandBuilder().setName('gas').setDescription('⛽ Show live chain fee data')
-    .addStringOption(o => o.setName('chain').setDescription('Supported chain')));
+    .addStringOption(o => chainOption(o)));
   commands.push(new SlashCommandBuilder().setName('sniper').setDescription('🎯 Manage post-confirmation copy snipers (not mempool front-running)')
     .addSubcommand(c => c.setName('create').setDescription('Create post-confirmation copy sniper').addStringOption(o => o.setName('input').setDescription('Validated sniper JSON').setRequired(true)).addBooleanOption(o=>o.setName('confirm').setDescription('Confirm automated copy configuration').setRequired(true)))
     .addSubcommand(c => c.setName('update').setDescription('Update post-confirmation copy sniper').addStringOption(o => o.setName('id').setDescription('Sniper UUID').setRequired(true)).addStringOption(o => o.setName('patch').setDescription('Validated patch JSON').setRequired(true)).addBooleanOption(o=>o.setName('confirm').setDescription('Confirm automated copy configuration change').setRequired(true)))
@@ -118,11 +143,11 @@ function commandDefinitions() {
       { name:'📅 Today', value:'today' }, { name:'📆 This month', value:'month' })));
   commands.push(new SlashCommandBuilder().setName('target-policy').setDescription('Configure per-target trigger and verification behavior')
     .addSubcommand(c=>c.setName('set').setDescription('Set target policy from JSON').addStringOption(o=>o.setName('input').setDescription('Target policy JSON').setRequired(true)).addBooleanOption(o=>o.setName('confirm').setDescription('Confirm trigger policy change').setRequired(true)))
-    .addSubcommand(c=>c.setName('show').setDescription('Show target policy').addStringOption(o=>o.setName('type').setDescription('Target type (sniper or social_rule)').setRequired(true)).addStringOption(o=>o.setName('id').setDescription('Target UUID').setRequired(true)))
-    .addSubcommand(c=>c.setName('bypass').setDescription('Request highest-risk social verification bypass').addStringOption(o=>o.setName('type').setDescription('Target type (sniper or social_rule)').setRequired(true)).addStringOption(o=>o.setName('id').setDescription('Target UUID').setRequired(true)).addBooleanOption(o=>o.setName('dont-ask-again').setDescription('Skip future warnings for this target only')))
+    .addSubcommand(c=>c.setName('show').setDescription('Show target policy').addStringOption(o=>targetTypeOption(o)).addStringOption(o=>o.setName('id').setDescription('Target UUID').setRequired(true)))
+    .addSubcommand(c=>c.setName('bypass').setDescription('Request highest-risk social verification bypass').addStringOption(o=>targetTypeOption(o)).addStringOption(o=>o.setName('id').setDescription('Target UUID').setRequired(true)).addBooleanOption(o=>o.setName('dont-ask-again').setDescription('Skip future warnings for this target only')))
     .addSubcommand(c=>c.setName('confirm-bypass').setDescription('Explicitly confirm bypass warning').addStringOption(o=>o.setName('challenge').setDescription('Challenge UUID').setRequired(true)).addStringOption(o=>o.setName('confirmation').setDescription('Must be CONFIRM').setRequired(true)))
     .addSubcommand(c=>c.setName('preset').setDescription('Apply a mode preset starting point').addStringOption(o=>o.setName('input').setDescription('Target and preset JSON').setRequired(true)).addBooleanOption(o=>o.setName('confirm').setDescription('Confirm target preset change').setRequired(true)))
-    .addSubcommand(c=>c.setName('reset').setDescription('Reset target policy and bypass acknowledgement').addStringOption(o=>o.setName('type').setDescription('Target type (sniper or social_rule)').setRequired(true)).addStringOption(o=>o.setName('id').setDescription('Target UUID').setRequired(true)).addBooleanOption(o=>o.setName('confirm').setDescription('Confirm policy reset').setRequired(true))));
+    .addSubcommand(c=>c.setName('reset').setDescription('Reset target policy and bypass acknowledgement').addStringOption(o=>targetTypeOption(o)).addStringOption(o=>o.setName('id').setDescription('Target UUID').setRequired(true)).addBooleanOption(o=>o.setName('confirm').setDescription('Confirm policy reset').setRequired(true))));
   commands.push(new SlashCommandBuilder().setName('confirm-trigger').setDescription('Approve or reject a pending triggered mint')
     .addStringOption(o=>o.setName('request').setDescription('Confirmation request UUID').setRequired(true))
     .addStringOption(o=>o.setName('confirmation').setDescription('Must be CONFIRM or REJECT').setRequired(true)));
@@ -143,13 +168,20 @@ function formatRows(rows, empty, mapper) {
 // of Telegram's inline keyboard + plain-text replies. Every guided step still ends by calling the
 // exact same botCommandService function the equivalent slash command already used above -- this
 // changes presentation only, never validation, transaction submission, or governance.
-const FLOW_LABELS = { wallet_create: 'creating a wallet', wallet_import: 'importing a wallet', mint_guided: 'minting', watch_guided: 'adding a watch rule' };
+const FLOW_LABELS = { wallet_create: 'creating a wallet', wallet_import: 'importing a wallet', mint_guided: 'minting', task_guided: 'scheduling a mint', watch_guided: 'adding a watch rule' };
 const FLOW_CONTINUATIONS = {
   wallet_create: ['flow:label:submit', 'flow:chain:select'],
   wallet_import: ['flow:label:submit', 'flow:chain:select', 'wallet:import:key-modal', 'flow:key:submit'],
   // Section AA -- every custom_id stays fixed (select-menu VALUES carry the chosen quantity/
   // wallet, never the custom_id itself), so this list needs no dynamic/prefix matching.
-  mint_guided: ['flow:mintdetailscontinue', 'flow:detailsrefresh', 'flow:copyca', 'flow:mintqty:select', 'flow:mintqty:submit', 'flow:mintwallet:select', 'flow:priceaccept', 'flow:pricemanual', 'flow:mintprice:submit', 'flow:mintconfirm'],
+  mint_guided: ['flow:mintdetailscontinue', 'flow:detailsrefresh', 'flow:copyca', 'flow:schedulesuggest', 'flow:mintqty:select', 'flow:mintqty:submit', 'flow:mintwallet:select', 'flow:priceaccept', 'flow:pricemanual', 'flow:mintprice:submit', 'flow:mintconfirm'],
+  // Section AF follow-up: Discord's mini schedule flow (Section S's full guided flow remains
+  // unbuilt) -- a fixed chain, optional quantity select/modal (only when maxPerWallet > 1) ->
+  // wallet select -> name select -> optional custom-name modal -> confirm, with no dynamic values
+  // in any of its own custom_ids. Shares flow:mintqty:select/submit with mint_guided -- the
+  // quantity picker is the same component either way (see mintFlowRenderPayload's counterpart in
+  // discordBot.js), and the callback handler branches on flow.flow.
+  task_guided: ['flow:taskwallet:select', 'flow:mintqty:select', 'flow:mintqty:submit', 'flow:taskname:select', 'flow:taskname:submit', 'flow:taskconfirm'],
   watch_guided: ['flow:watchname:submit', 'flow:watchtype:select', 'flow:watchmethod:select', 'flow:watchconfig:submit', 'flow:watchconfirm'],
 };
 
@@ -182,12 +214,18 @@ function componentErrorMessage(error) {
   if (error instanceof AccountBlockedError) return escapeDiscord(`⛔ Your account is ${error.status}${error.reason ? `: ${error.reason}` : ''}. Contact the project owner if you believe this is a mistake.`);
   if (error instanceof AuthorizationError) return 'Owner access required.';
   if (error instanceof RateLimitError) return `Too many sensitive commands. Retry in ${Math.ceil(error.retryAfterMs / 1000)} seconds.`;
-  if (error instanceof BotContextError) return 'Command rejected: use the authorized development guild and channel.';
+  if (error instanceof BotContextError) return 'Command rejected: this bot is not enabled here. Use an allowed channel, or DM it directly.';
   if (error instanceof LinkCodeError || error instanceof ProofResolutionError || error instanceof TransactionSafetyError) return escapeDiscord(error.message);
   return 'Action failed safely. Please try again.';
 }
 
 function dcRespond(interaction, payload) {
+  // A component interaction that already deferred (interaction.deferUpdate(), used by a handler
+  // doing slow work -- an RPC balance check, a live contract re-detection -- before it has anything
+  // to show) can no longer be answered via update()/reply(): Discord already considers it
+  // acknowledged, and calling either again throws "already acknowledged". editReply() is the only
+  // valid follow-up once deferred, for a deferred reply or a deferred update alike.
+  if (interaction.deferred || interaction.replied) return interaction.editReply(payload).catch(() => {});
   if (typeof interaction.update === 'function') {
     return interaction.update(payload).catch(() => (typeof interaction.reply === 'function' ? interaction.reply({ ...payload, ephemeral: true }).catch(() => {}) : undefined));
   }
@@ -216,7 +254,7 @@ function mintFlowRenderPayload(step, data, { wallets = [], chains = {} } = {}) {
   // superseded on Telegram.
   if (step === 'awaiting_details') {
     return discordMenus.collectionInfoCard({
-      contractAddress: data.contractAddress, chainLabel: chains[data.chain]?.name || data.chain,
+      contractAddress: data.contractAddress, chain: data.chain, chainLabel: chains[data.chain]?.name || data.chain,
       chainSym: chains[data.chain]?.sym, isSeaDrop: data.isSeaDrop, priceETH: data.priceETH, priceUnknown: data.priceUnknown,
       maxSupply: data.maxSupply, maxPerWallet: data.maxPerWallet, startTime: data.startTime,
       collection: data.collection, soldOut: data.soldOut, displayPrice: data.displayPrice,
@@ -288,6 +326,46 @@ async function finishMintExecutionDiscord(ctx, respond, platformUserId, userId, 
   }
 }
 
+// Reached once a quantity is settled (chosen via the select, typed in the custom-amount modal, or
+// defaulted to 1 when maxPerWallet doesn't allow more) -- task_guided has no batch/multi concept
+// and no public origin message to neutralize (unlike mint_guided's paste trigger), so this only
+// ever needs to decide between auto-selecting the sole wallet and showing a picker, mirroring
+// Telegram's advanceFromTaskQuantity.
+function advanceFromTaskQuantity(ctx, respond, platformUserId, userId, taskData) {
+  const { commands, flowState } = ctx;
+  const wallets = commands.wallets(userId);
+  if (wallets.length === 1) {
+    flowState.start('discord', platformUserId, 'task_guided', 'awaiting_name', { ...taskData, walletLabel: wallets[0].label });
+    return respond(discordMenus.taskNameQuickPicks());
+  }
+  flowState.start('discord', platformUserId, 'task_guided', 'awaiting_wallet', taskData);
+  return respond(discordMenus.walletSelect(wallets, { customId: 'flow:taskwallet:select', emptyHint: 'No wallets yet. Create one first from the Wallets menu.' }));
+}
+
+// Section AF follow-up -- Discord's mini schedule flow. Mirrors finishMintExecutionDiscord's rate-
+// limit handling: a rate limit leaves the flow intact so the user can just retry once it clears,
+// every other outcome (success or failure) clears it.
+async function finishTaskScheduleDiscord(ctx, respond, platformUserId, userId, flowData) {
+  const { commands, flowState, rateLimiter } = ctx;
+  const backToMenu = [discordMenus.row([discordMenus.button('⬅️ Back to menu', 'menu:main')])];
+  try {
+    rateLimiter.check('discord', userId, 'task');
+    const task = await commands.createTask(userId, {
+      name: flowData.name, walletLabel: flowData.walletLabel, contractAddress: flowData.contractAddress,
+      chain: flowData.chain, quantity: flowData.quantity || 1, priceETH: flowData.priceETH, mintTime: flowData.mintTime,
+    });
+    flowState.clear('discord', platformUserId);
+    return respond({ content: `✅ Scheduled **${escapeDiscord(task.name)}** to fire at \`${discordMenus.formatGmtPlus1(task.mintTime)}\`.`, components: backToMenu });
+  } catch (error) {
+    if (error instanceof RateLimitError) {
+      return respond({ content: `Too many sensitive commands. Retry in ${Math.ceil(error.retryAfterMs / 1000)} seconds.`, components: backToMenu });
+    }
+    flowState.clear('discord', platformUserId);
+    if (error instanceof ValidationError) return respond({ content: escapeDiscord(validationReply(error)), components: backToMenu });
+    throw error;
+  }
+}
+
 // Entry point for a bare address/link paste (Section Q's resolution) with no active flow. Section
 // AD Tier 1: shows the rich collection info card as the flow's real first screen (market cap,
 // volume, floor, holders), with Mint Now as one of its actions -- that's what actually triggers
@@ -295,13 +373,23 @@ async function finishMintExecutionDiscord(ctx, respond, platformUserId, userId, 
 // below reuses. skipConfirm is always false here -- Telegram's own bare-paste trigger never
 // bypasses confirmation either; that's /mintnow-specific and out of scope for a plain paste on
 // either platform.
-async function startMintGuidedFlow(ctx, respond, platformUserId, userId, contractAddressInput) {
+// originMessagePublic defaults to true (the paste-detection trigger: a public message.reply that
+// needs neutralizing on the owner's first touch) but is false for /mint's own under-specified-args
+// path below, whose response is already ephemeral from interaction.deferReply -- there is no
+// public origin message to neutralize, and treating it as one would try to reply a second time to
+// an interaction that already replied.
+// includeStats defaults to false -- the full OpenSea floor/holders/volume table is reserved for
+// /info's explicit, no-mint-intent lookup; a plain paste and /mint's own under-specified path get
+// the leaner card (still real live price/timing/sold-out status, just without the stats table).
+// Carried into flow data so flow:detailsrefresh knows whether to keep re-requesting stats on this
+// same flow or stay lean, without needing to know which entry point originally started it.
+async function startMintGuidedFlow(ctx, respond, platformUserId, userId, contractAddressInput, { originMessagePublic = true, includeStats = false } = {}) {
   const { commands, flowState, chains } = ctx;
   const contractAddress = await commands.resolveMintContractInput(contractAddressInput);
   if (!contractAddress) return undefined;
   let detected;
   try {
-    detected = await commands.detectMintContract(userId, { contractAddress, quantity: 1, includeStats: true });
+    detected = await commands.detectMintContract(userId, { contractAddress, quantity: 1, includeStats });
   } catch (error) {
     if (error instanceof ValidationError) return undefined;
     throw error;
@@ -314,16 +402,16 @@ async function startMintGuidedFlow(ctx, respond, platformUserId, userId, contrac
     maxSupply: detected.maxSupply, maxPerWallet: detected.maxPerWallet,
     startTime: detected.startTime, endTime: detected.endTime, collection: detected.collection,
     soldOut: detected.soldOut, displayPrice: detected.displayPrice,
-    stats: detected.stats,
+    stats: detected.stats, includeStats,
     openSeaUrl: OPENSEA_CHAIN_SLUGS[detected.chain] ? `https://opensea.io/assets/${OPENSEA_CHAIN_SLUGS[detected.chain]}/${contractAddress}` : null,
     skipConfirm: false,
-    originMessagePublic: true,
+    originMessagePublic,
   };
   flowState.start('discord', platformUserId, 'mint_guided', 'awaiting_details', data);
   return respond(mintFlowRenderPayload('awaiting_details', data, { chains }));
 }
 
-function createDiscordInteractionHandler({ identity, commands, allowedGuildId, securityAudit={record:async()=>{}},
+function createDiscordInteractionHandler({ identity, commands, allowedGuildId, allowedChannelIds=null, securityAudit={record:async()=>{}},
   rateLimiter=createCommandRateLimiter(), log = () => {}, isOwner, checkAccountStatus, supportedChains=[], chains={},
   flowState=createFlowStateStore() }) {
   const audit=value=>Promise.resolve(securityAudit.record(value)).catch(error=>log(`Security audit write failed: ${error.message}`));
@@ -338,40 +426,49 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, s
     let context, userId = null;
     const data = interaction.customId || '';
     try {
-      context = verifyDiscordContext(interaction, allowedGuildId);
+      context = verifyDiscordContext(interaction, allowedGuildId, { allowedChannelIds });
       userId = await identity.resolveOrCreate('discord', context.platformUserId);
       await enforceAccountStatus(userId);
       const platformUserId = context.platformUserId;
 
+      // A tap that doesn't belong to whatever flow is currently active implicitly abandons it and
+      // proceeds with the new action -- no confirmation needed, trimmed per user feedback. The
+      // explicit Cancel button (flow:cancel:ask) is handled the same way: straight to the main
+      // menu, no "are you sure" step first.
       const activeFlow = flowState.get('discord', platformUserId);
-      const isCancelControl = data === 'flow:cancel:confirm' || data === 'flow:cancel:resume' || data === 'flow:cancel:ask';
-      if (activeFlow && !isCancelControl && !(FLOW_CONTINUATIONS[activeFlow.flow] || []).includes(data)) {
-        flowState.markPendingCancel('discord', platformUserId);
-        return dcRespond(interaction, discordMenus.confirmCancelPrompt(FLOW_LABELS[activeFlow.flow] || activeFlow.flow));
+      if (activeFlow && data !== 'flow:cancel:ask' && !(FLOW_CONTINUATIONS[activeFlow.flow] || []).includes(data)) {
+        flowState.clear('discord', platformUserId);
       }
-
       if (data === 'flow:cancel:ask') {
-        const flow = flowState.markPendingCancel('discord', platformUserId);
-        return dcRespond(interaction, discordMenus.confirmCancelPrompt(FLOW_LABELS[flow?.flow] || 'this flow'));
-      }
-      if (data === 'flow:cancel:confirm') {
         flowState.clear('discord', platformUserId);
         return dcRespond(interaction, discordMenus.mainMenu({ isOwner: await ownerFlag(userId) }));
-      }
-      if (data === 'flow:cancel:resume') {
-        const flow = flowState.clearPendingCancel('discord', platformUserId);
-        return dcRespond(interaction, flow ? renderFlowStep(flow.flow, flow.step, { supportedChains, chains }) : discordMenus.mainMenu({ isOwner: await ownerFlag(userId) }));
       }
 
       if (data === 'menu:main') return dcRespond(interaction, discordMenus.mainMenu({ isOwner: await ownerFlag(userId) }));
       if (data === 'menu:wallets') return dcRespond(interaction, discordMenus.walletsMenu());
       if (data === 'menu:settings') return dcRespond(interaction, discordMenus.settingsMenu({ isOwner: await ownerFlag(userId) }));
-      if (data === 'menu:mint') return dcRespond(interaction, discordMenus.placeholderMenu('Mint', 'Use /mint wallet contract quantity price confirm:true.'));
+      // Section O -- the one genuinely free-text field a mint needs (a contract address) has
+      // nothing to pick from a list, so this opens a modal rather than a select/button, same as
+      // every other unavoidably-free-text field elsewhere in this file (wallet labels, private
+      // keys). Submitting routes through startMintGuidedFlow below -- the exact same auto-detecting
+      // card /mint's own under-specified path and a bare paste already use, not a separate path.
+      if (data === 'menu:mint') return interaction.showModal(discordMenus.labelModal({ customId: 'menu:mint:submit', title: 'Contract address to mint', maxLength: 200 }));
       if (data === 'menu:tasks') return dcRespond(interaction, discordMenus.placeholderMenu('Tasks', 'Use /task create|list|cancel|pause|resume|retry.'));
       if (data === 'menu:snipers') return dcRespond(interaction, discordMenus.placeholderMenu('Snipers', 'Use /sniper create|update|list|status.'));
       // menu:watch is handled further below, alongside the rest of the watch-rule guided flow.
-      if (data === 'menu:activity') return dcRespond(interaction, discordMenus.placeholderMenu('Activity', 'Use /activity to see recent mint activity.'));
-      if (data === 'menu:gas') return dcRespond(interaction, discordMenus.placeholderMenu('Gas', 'Use /gas chain:<chain> for live fee data.'));
+      if (data === 'menu:activity') {
+        const page = await commands.activityPage(userId, { page: 1 });
+        return dcRespond(interaction, discordMenus.activityMenu(page));
+      }
+      if (data.startsWith('activity:page:')) {
+        const page = await commands.activityPage(userId, { page: Number(data.slice('activity:page:'.length)) || 1 });
+        return dcRespond(interaction, discordMenus.activityMenu(page));
+      }
+      if (data === 'menu:gas' || data.startsWith('gas:chain:')) {
+        const gasChain = data.startsWith('gas:chain:') ? data.slice('gas:chain:'.length) : 'ethereum';
+        const fees = await commands.gas(gasChain).catch(() => null);
+        return dcRespond(interaction, discordMenus.gasMenu({ chain: gasChain, fees, supportedChains, chains }));
+      }
       if (data === 'menu:admin') return dcRespond(interaction, discordMenus.placeholderMenu('Admin', 'Use /admin action confirm:true. Owner-only.'));
 
       if (data === 'link:enter') {
@@ -429,8 +526,17 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, s
       }
       if (data === 'wallet:balance:select') {
         const label = interaction.values?.[0];
+        // Checks every supported chain in parallel (see botCommandService.walletBalance) -- a
+        // single slow/degraded RPC can still push this past Discord's 3s component-ack window, so
+        // this must defer immediately rather than run the check before responding at all (the
+        // previous shape here, which is what actually produced "the application did not respond").
+        await interaction.deferUpdate();
         const result = await commands.walletBalance(userId, label);
-        return dcRespond(interaction, { content: `**${result.label}**\nBalance: ${result.balance} ${result.symbol}`,
+        // result.balance/.symbol never existed on this shape (it's result.balances, one entry per
+        // chain) -- this button always showed "Balance: undefined undefined" underneath the
+        // timeout. Reuses the exact formatting /wallet balance already uses.
+        const lines = result.balances.map(b => `${chains[b.chain]?.name || b.chain}: ${b.balance ?? 'unavailable'} ${b.symbol || ''}`).join('\n');
+        return dcRespond(interaction, { content: `**${result.label}**\n${lines}`,
           components: [discordMenus.row([discordMenus.button('⬅️ Back to wallets', 'menu:wallets')])] });
       }
 
@@ -470,7 +576,7 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, s
         if (!flow || flow.flow !== 'mint_guided' || flow.step !== 'awaiting_details') return notYourMintPrompt(interaction);
         let detected;
         try {
-          detected = await commands.detectMintContract(userId, { contractAddress: flow.data.contractAddress, quantity: 1, includeStats: true });
+          detected = await commands.detectMintContract(userId, { contractAddress: flow.data.contractAddress, quantity: 1, includeStats: Boolean(flow.data.includeStats) });
         } catch {
           return dcRespond(interaction, mintFlowRenderPayload('awaiting_details', flow.data, { chains })); // transient failure -- leave last-known values, still ack the tap
         }
@@ -497,10 +603,10 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, s
       }
       if (data === 'flow:mintqty:select') {
         const flow = flowState.get('discord', platformUserId);
-        if (!flow || flow.flow !== 'mint_guided' || flow.step !== 'awaiting_quantity') return notYourMintPrompt(interaction);
+        if (!flow || (flow.flow !== 'mint_guided' && flow.flow !== 'task_guided') || flow.step !== 'awaiting_quantity') return notYourMintPrompt(interaction);
         const chosen = interaction.values?.[0];
         if (chosen === 'custom') {
-          if (flow.data.originMessagePublic) {
+          if (flow.flow === 'mint_guided' && flow.data.originMessagePublic) {
             neutralizeMintOriginMessage(interaction);
             flowState.advance('discord', platformUserId, flow.step, { originMessagePublic: false });
           }
@@ -508,6 +614,9 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, s
         }
         const quantity = Number(chosen);
         if (!Number.isInteger(quantity) || quantity < 1) return undefined;
+        if (flow.flow === 'task_guided') {
+          return advanceFromTaskQuantity(mintCtx, payload => dcRespond(interaction, payload), platformUserId, userId, { ...flow.data, quantity });
+        }
         const wentEphemeral = Boolean(flow.data.originMessagePublic);
         if (wentEphemeral) neutralizeMintOriginMessage(interaction);
         const wallets = commands.wallets(userId);
@@ -551,6 +660,76 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, s
         if (wentEphemeral) neutralizeMintOriginMessage(interaction);
         const respond = payload => (wentEphemeral ? interaction.reply({ ...payload, ephemeral: true }).catch(() => {}) : dcRespond(interaction, payload));
         return finishMintExecutionDiscord(mintCtx, respond, platformUserId, userId, { ...flow.data, originMessagePublic: false });
+      }
+
+      // Section AF follow-up -- Discord's mini schedule flow, branching off the collection card's
+      // "Schedule for opening" action (only ever shown there, so only ever reached from
+      // mint_guided's awaiting_details step with a genuinely future startTime already confirmed).
+      // Re-detects rather than trusting mint_guided's own flow data: whichever stage is live by the
+      // time this tap actually happens is what should be scheduled, not whatever was true when the
+      // card first rendered, same reasoning as Telegram's startTaskScheduleFlow. Section S (a full
+      // Discord guided task-schedule flow) remains unbuilt -- this only ever creates one task per
+      // tap; pasting the same contract again and tapping the button again is how a second phase
+      // gets scheduled here.
+      if (data === 'flow:schedulesuggest') {
+        const flow = flowState.get('discord', platformUserId);
+        if (!flow || flow.flow !== 'mint_guided' || flow.step !== 'awaiting_details') return notYourMintPrompt(interaction);
+        if (!flow.data.startTime || flow.data.startTime * 1000 <= Date.now()) return notYourMintPrompt(interaction);
+        const wentEphemeral = Boolean(flow.data.originMessagePublic);
+        if (wentEphemeral) neutralizeMintOriginMessage(interaction);
+        const respond = payload => (wentEphemeral ? interaction.reply({ ...payload, ephemeral: true }).catch(() => {}) : dcRespond(interaction, payload));
+        const backToMenu = [discordMenus.row([discordMenus.button('⬅️ Back to menu', 'menu:main')])];
+        let detected;
+        try {
+          detected = await commands.detectMintContract(userId, { contractAddress: flow.data.contractAddress, quantity: 1 });
+        } catch {
+          return respond({ content: 'Could not re-check this contract right now. Paste the address again to retry.', components: backToMenu });
+        }
+        const futureStartTime = detected.startTime && detected.startTime * 1000 > Date.now() ? detected.startTime : null;
+        if (!detected.priceKnown || !futureStartTime) {
+          // Shouldn't happen (a future startTime only ever exists alongside a resolved SeaDrop
+          // PublicDrop, which is also where the price comes from) -- degrade honestly rather than
+          // proceed with a guess if the contract's state changed underneath this tap.
+          return respond({ content: "This contract's price or opening time couldn't be confirmed just now. Use `/task create` to schedule it by hand instead.", components: backToMenu });
+        }
+        const taskData = {
+          contractAddress: flow.data.contractAddress, chain: detected.chain,
+          priceETH: Number(formatEther(BigInt(detected.valueWei))), priceUnknown: false,
+          mintTime: new Date(futureStartTime * 1000).toISOString(), maxPerWallet: detected.maxPerWallet,
+        };
+        if (Number(detected.maxPerWallet) > 1) {
+          flowState.start('discord', platformUserId, 'task_guided', 'awaiting_quantity', taskData);
+          return respond(discordMenus.mintQuantitySelect(taskData));
+        }
+        return advanceFromTaskQuantity(mintCtx, respond, platformUserId, userId, { ...taskData, quantity: 1 });
+      }
+      if (data === 'flow:taskwallet:select') {
+        const flow = flowState.get('discord', platformUserId);
+        if (!flow || flow.flow !== 'task_guided' || flow.step !== 'awaiting_wallet') return notYourMintPrompt(interaction);
+        const label = interaction.values?.[0];
+        if (!label) return undefined;
+        flowState.advance('discord', platformUserId, 'awaiting_name', { ...flow.data, walletLabel: label });
+        return dcRespond(interaction, discordMenus.taskNameQuickPicks());
+      }
+      if (data === 'flow:taskname:select') {
+        const flow = flowState.get('discord', platformUserId);
+        if (!flow || flow.flow !== 'task_guided' || flow.step !== 'awaiting_name') return notYourMintPrompt(interaction);
+        const chosen = interaction.values?.[0];
+        if (chosen === 'custom') {
+          return interaction.showModal(discordMenus.labelModal({ customId: 'flow:taskname:submit', title: 'Phase name', maxLength: 100 }));
+        }
+        if (!['GTD', 'FCFS', 'PUBLIC'].includes(chosen)) return undefined;
+        const taskData = { ...flow.data, name: chosen };
+        flowState.advance('discord', platformUserId, 'awaiting_confirm', taskData);
+        return dcRespond(interaction, discordMenus.taskConfirmation({
+          name: taskData.name, contractAddress: taskData.contractAddress, chainLabel: chains[taskData.chain]?.name || taskData.chain,
+          walletLabel: taskData.walletLabel, quantity: taskData.quantity || 1, mintTime: taskData.mintTime, priceETH: taskData.priceETH, priceUnknown: taskData.priceUnknown,
+        }));
+      }
+      if (data === 'flow:taskconfirm') {
+        const flow = flowState.get('discord', platformUserId);
+        if (!flow || flow.flow !== 'task_guided' || flow.step !== 'awaiting_confirm') return notYourMintPrompt(interaction);
+        return finishTaskScheduleDiscord(mintCtx, payload => dcRespond(interaction, payload), platformUserId, userId, flow.data);
       }
 
       // Watch-rule guided create flow ("/watch has no button" gap) plus the list/manage actions
@@ -643,7 +822,7 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, s
     let context;
     const data = interaction.customId || '';
     try {
-      context = verifyDiscordContext(interaction, allowedGuildId);
+      context = verifyDiscordContext(interaction, allowedGuildId, { allowedChannelIds });
       const platformUserId = context.platformUserId;
 
       if (data === 'link:code:submit') {
@@ -662,11 +841,27 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, s
         return;
       }
 
+      if (data === 'menu:mint:submit') {
+        // Section O -- menu:mint's modal. Not part of a guided flow (no flowState.start happened
+        // when the modal opened), so this is handled here alongside link:code:submit rather than
+        // past the flow-required check below. Routes through the exact same startMintGuidedFlow a
+        // bare paste and /mint's under-specified path already use -- originMessagePublic:false
+        // since a modal reply is already ephemeral, same reasoning as /mint's own modal-adjacent
+        // paths.
+        const userId = await identity.resolveOrCreate('discord', platformUserId);
+        await enforceAccountStatus(userId);
+        const contractAddressInput = String(interaction.fields.getTextInputValue('value') || '').trim();
+        const started = await startMintGuidedFlow(mintCtx, payload => interaction.reply({ ...payload, ephemeral: true }).catch(() => {}),
+          platformUserId, userId, contractAddressInput, { originMessagePublic: false });
+        if (started !== undefined) return;
+        await interaction.reply({ content: 'Could not find this contract on any supported chain. Double-check the address.', ephemeral: true }).catch(() => {});
+        return;
+      }
+
       const userId = await identity.resolveOrCreate('discord', platformUserId);
       await enforceAccountStatus(userId);
       const flow = flowState.get('discord', platformUserId);
       if (!flow) { await interaction.reply({ content: 'This step has expired. Open the Wallets menu again.', ephemeral: true }).catch(() => {}); return; }
-      if (flow.pendingCancel) { await interaction.reply({ ...discordMenus.confirmCancelPrompt(FLOW_LABELS[flow.flow] || flow.flow), ephemeral: true }).catch(() => {}); return; }
 
       if (data === 'flow:label:submit') {
         const value = String(interaction.fields.getTextInputValue('value') || '').trim();
@@ -709,11 +904,15 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, s
       // is its own fresh interaction that can only reply, never update the (by now already
       // neutralized -- see flow:mintqty:select/flow:pricemanual) public origin message.
       if (data === 'flow:mintqty:submit') {
-        if (flow.flow !== 'mint_guided' || flow.step !== 'awaiting_quantity') { await interaction.reply({ content: 'This step has expired. Paste the address or link again.', ephemeral: true }).catch(() => {}); return; }
+        if ((flow.flow !== 'mint_guided' && flow.flow !== 'task_guided') || flow.step !== 'awaiting_quantity') { await interaction.reply({ content: 'This step has expired. Paste the address or link again.', ephemeral: true }).catch(() => {}); return; }
         const quantity = Math.floor(Number(String(interaction.fields.getTextInputValue('value') || '').trim()));
         const max = Number(flow.data.maxPerWallet) || 100;
         if (!Number.isInteger(quantity) || quantity < 1 || quantity > max) {
           await interaction.reply({ content: `Send a whole number from 1 to ${max}. Tap the quantity prompt again to retry.`, ephemeral: true }).catch(() => {});
+          return;
+        }
+        if (flow.flow === 'task_guided') {
+          await advanceFromTaskQuantity(mintCtx, payload => interaction.reply({ ...payload, ephemeral: true }).catch(() => {}), platformUserId, userId, { ...flow.data, quantity });
           return;
         }
         const wallets = commands.wallets(userId);
@@ -730,6 +929,21 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, s
         }
         const decision = mintFlowDecision.afterPriceResolved({ data: flow.data, priceETH });
         await applyMintFlowStep(mintCtx, payload => interaction.reply({ ...payload, ephemeral: true }).catch(() => {}), platformUserId, userId, decision);
+        return;
+      }
+      if (data === 'flow:taskname:submit') {
+        if (flow.flow !== 'task_guided' || flow.step !== 'awaiting_name') { await interaction.reply({ content: 'This step has expired. Tap "Schedule for opening" on the collection card again.', ephemeral: true }).catch(() => {}); return; }
+        const name = String(interaction.fields.getTextInputValue('value') || '').trim();
+        if (!name || name.length > 100) {
+          await interaction.reply({ content: 'Name must be 1-100 characters. Tap the name step again to retry.', ephemeral: true }).catch(() => {});
+          return;
+        }
+        const taskData = { ...flow.data, name };
+        flowState.advance('discord', platformUserId, 'awaiting_confirm', taskData);
+        await interaction.reply({ ...discordMenus.taskConfirmation({
+          name: taskData.name, contractAddress: taskData.contractAddress, chainLabel: chains[taskData.chain]?.name || taskData.chain,
+          walletLabel: taskData.walletLabel, quantity: taskData.quantity || 1, mintTime: taskData.mintTime, priceETH: taskData.priceETH, priceUnknown: taskData.priceUnknown,
+        }), ephemeral: true });
         return;
       }
 
@@ -774,7 +988,7 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, s
     // error, since an autocomplete request isn't a command the user consciously submitted.
     if (interaction.isAutocomplete?.()) {
       try {
-        const context = verifyDiscordContext(interaction, allowedGuildId);
+        const context = verifyDiscordContext(interaction, allowedGuildId, { allowedChannelIds });
         const userId = await identity.resolveOrCreate('discord', context.platformUserId);
         const focused = interaction.options.getFocused(true);
         const choices = (focused.name === 'label' || focused.name === 'wallet') ? commands.wallets(userId).map(w => w.label) : [];
@@ -789,13 +1003,10 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, s
     if (!interaction.isChatInputCommand?.()) return;
     let context,userId=null;
     try {
-      context=verifyDiscordContext(interaction,allowedGuildId);
-      const activeFlow = flowState.get('discord', context.platformUserId);
-      if (activeFlow) {
-        flowState.markPendingCancel('discord', context.platformUserId);
-        await interaction.reply({ ...discordMenus.confirmCancelPrompt(FLOW_LABELS[activeFlow.flow] || activeFlow.flow), ephemeral: true });
-        return;
-      }
+      context=verifyDiscordContext(interaction, allowedGuildId, { allowedChannelIds });
+      // Running a different command mid-flow implicitly abandons whatever was in progress -- no
+      // confirmation needed, trimmed per user feedback.
+      if (flowState.get('discord', context.platformUserId)) flowState.clear('discord', context.platformUserId);
       await interaction.deferReply({ ephemeral: true });
       const discordId = context.platformUserId;
       if (interaction.commandName === 'link') {
@@ -857,8 +1068,27 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, s
           break;
         }
         case 'mint': {
-          const result = await commands.mint(userId, { walletLabel: interaction.options.getString('wallet'), contractAddress: interaction.options.getString('contract'), quantity: interaction.options.getInteger('quantity'), priceETH: interaction.options.getNumber('price'), chain: interaction.options.getString('chain') });
+          const walletLabel = interaction.options.getString('wallet');
+          const quantity = interaction.options.getInteger('quantity');
+          if (!walletLabel || quantity === null) {
+            // Under-specified: auto-detect which chain the contract actually lives on and show the
+            // collection card, same as pasting the address, rather than guessing the wallet's own
+            // home chain (see startMintGuidedFlow's originMessagePublic note on why false here).
+            const started = await startMintGuidedFlow(mintCtx, payload => interaction.editReply(payload),
+              context.platformUserId, userId, interaction.options.getString('contract'), { originMessagePublic: false });
+            if (started !== undefined) return;
+            message = 'Could not find this contract on any supported chain. Double-check the address.';
+            break;
+          }
+          const result = await commands.mint(userId, { walletLabel, contractAddress: interaction.options.getString('contract'), quantity, priceETH: interaction.options.getNumber('price'), chain: interaction.options.getString('chain') });
           message = `Mint ${result.state}: ${result.txHash || result.intentId}`; break;
+        }
+        case 'info': {
+          const started = await startMintGuidedFlow(mintCtx, payload => interaction.editReply(payload),
+            context.platformUserId, userId, interaction.options.getString('contract'), { originMessagePublic: false, includeStats: true });
+          if (started !== undefined) return;
+          message = 'Could not find this contract on any supported chain. Double-check the address.';
+          break;
         }
         case 'batch-mint': {
           const results = await commands.batchMint(userId, { walletLabels: interaction.options.getString('wallets').split(',').map(v => v.trim()), contractAddress: interaction.options.getString('contract'), quantity: interaction.options.getInteger('quantity'), priceETH: interaction.options.getNumber('price'), chain: interaction.options.getString('chain') });
@@ -866,8 +1096,8 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, s
         }
         case 'task': {
           const action = interaction.options.getSubcommand();
-          if (action === 'create') { confirmation(interaction); const task = await commands.createTask(userId, json(interaction.options.getString('input'))); message = `Task **${task.name}** scheduled for ${new Date(task.mintTime).toISOString()} UTC (ID: ${task.id}).`; }
-          else if (action === 'list') { const page=await commands.tasksPage(userId,{page:interaction.options.getInteger('page')||1}); message=`${formatRows(page.items,'No scheduled tasks.',task=>`**${task.name}** [${task.status}] — ${new Date(task.mintTime).toISOString()} — ${task.id}`)}\nPage ${page.page}/${page.totalPages} (${page.total} total)`; }
+          if (action === 'create') { confirmation(interaction); const task = await commands.createTask(userId, json(interaction.options.getString('input'))); message = `Task **${task.name}** scheduled for ${discordMenus.formatGmtPlus1(task.mintTime)} (ID: ${task.id}).`; }
+          else if (action === 'list') { const page=await commands.tasksPage(userId,{page:interaction.options.getInteger('page')||1}); message=`${formatRows(page.items,'No scheduled tasks.',task=>`**${task.name}** [${task.status}] — ${discordMenus.formatGmtPlus1(task.mintTime)} — ${task.id}`)}\nPage ${page.page}/${page.totalPages} (${page.total} total)`; }
           else { if (['cancel', 'resume', 'retry'].includes(action)) confirmation(interaction); const task = await commands.controlTask(userId, action, interaction.options.getString('id')); message = `Task **${task.name}** is now ${task.status}.`; }
           break;
         }
@@ -947,7 +1177,7 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, s
       else if (error instanceof RateLimitError) { message=`Too many sensitive commands. Retry in ${Math.ceil(error.retryAfterMs/1000)} seconds.`;
         await audit({userId,platform:'discord',platformUserId:context?.platformUserId,
           contextId:context?.contextId,command:commandName(interaction.commandName),outcome:'rate_limited',reason:error.message}); }
-      else if (error instanceof BotContextError) { message='Command rejected: use the authorized development guild and channel.';
+      else if (error instanceof BotContextError) { message='Command rejected: this bot is not enabled here. Use an allowed channel, or DM it directly.';
         await audit({platform:'discord',platformUserId:interaction.user?.id,
           contextId:`${interaction.guildId||''}:${interaction.channelId||''}`,command:commandName(interaction.commandName),
           outcome:'invalid_context',reason:error.message}); }
@@ -967,30 +1197,43 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, s
 // other plain message, and anything failing the same guild/channel/account checks every slash
 // command already enforces, is silently ignored -- a failed check here is never worth surfacing
 // as an error to a channel that may not even be the bot's.
-async function handleMintPasteMessage({ identity, commands, flowState, chains, rateLimiter, checkAccountStatus, allowedGuildId }, message) {
+async function handleMintPasteMessage({ identity, commands, flowState, chains, rateLimiter, checkAccountStatus, allowedGuildId, allowedChannelIds=null }, message) {
   try {
     if (!message.author || message.author.bot) return;
     const trimmed = String(message.content || '').trim();
     const looksAddressOrLink = /^0x[0-9a-fA-F]{40}$/.test(trimmed) || commands.parseOpenSeaCollectionSlug(trimmed);
     if (!looksAddressOrLink) return;
-    const context = verifyDiscordContext({ user: message.author, guildId: message.guildId, channelId: message.channelId }, allowedGuildId);
+    const context = verifyDiscordContext({ user: message.author, guildId: message.guildId, channelId: message.channelId }, allowedGuildId, { allowedChannelIds });
     const userId = await identity.resolveOrCreate('discord', context.platformUserId);
     if (typeof checkAccountStatus === 'function') await checkAccountStatus(userId);
     const platformUserId = context.platformUserId;
     // Mirrors the mid-flow divergence handling every slash command and component already gets: a
-    // second paste while a flow (mint or otherwise) is already in progress asks before discarding
-    // it, rather than silently starting over or silently doing nothing.
-    const existingFlow = flowState.get('discord', platformUserId);
-    if (existingFlow) {
-      flowState.markPendingCancel('discord', platformUserId);
-      await message.reply(discordMenus.confirmCancelPrompt(FLOW_LABELS[existingFlow.flow] || existingFlow.flow)).catch(() => {});
-      return;
-    }
+    // second paste while a flow (mint or otherwise) is already in progress implicitly abandons it
+    // and starts fresh with the new address -- no confirmation needed, trimmed per user feedback.
+    if (flowState.get('discord', platformUserId)) flowState.clear('discord', platformUserId);
     await startMintGuidedFlow({ commands, flowState, chains, rateLimiter }, payload => message.reply(payload).catch(() => {}), platformUserId, userId, trimmed);
   } catch { /* not address-shaped, unauthorized context, blocked account, or lookup failure -- ignore */ }
 }
 
-function createDiscordBot({ token, applicationId, devGuildId, identity, commands, securityAudit, rateLimiter, log, client, rest, isOwner, checkAccountStatus, supportedChains, chains }) {
+// Global registration does not replace commands previously registered to a guild -- Discord keeps
+// the two sets independently and renders both, so a guild left over from a DISCORD_DEV_GUILD_ID
+// that has since been removed would show every command twice. One idempotent empty write per guild
+// clears that. Best-effort by design: a bot that cannot tidy old commands should still start.
+async function clearLeftoverGuildCommands({ api, applicationId, log }) {
+  try {
+    const guilds = await api.get(Routes.userGuilds());
+    for (const guild of guilds) {
+      const existing = await api.get(Routes.applicationGuildCommands(applicationId, guild.id)).catch(() => []);
+      if (!existing.length) continue;
+      await api.put(Routes.applicationGuildCommands(applicationId, guild.id), { body: [] });
+      log(`Cleared ${existing.length} stale guild-scoped commands from ${guild.id}`);
+    }
+  } catch (error) {
+    log(`Could not clear stale guild-scoped commands: ${error.message}`);
+  }
+}
+
+function createDiscordBot({ token, applicationId, devGuildId, allowedChannelIds=null, identity, commands, securityAudit, rateLimiter, log = () => {}, client, rest, isOwner, checkAccountStatus, supportedChains, chains }) {
   const discordClient = client || new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.DirectMessages,
     GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent] });
   const api = rest || new REST({ version: '10' }).setToken(token);
@@ -998,14 +1241,24 @@ function createDiscordBot({ token, applicationId, devGuildId, identity, commands
   // messageCreate listener (Section AA's paste-to-flow trigger) so a flow started by one is
   // visible to the other -- they'd otherwise be two independent, non-communicating stores.
   const flowState = createFlowStateStore();
-  discordClient.on('interactionCreate', createDiscordInteractionHandler({ identity, commands, allowedGuildId:devGuildId,
+  discordClient.on('interactionCreate', createDiscordInteractionHandler({ identity, commands, allowedGuildId:devGuildId || null, allowedChannelIds,
     securityAudit,rateLimiter,log,isOwner,checkAccountStatus,supportedChains,chains,flowState }));
   discordClient.on('messageCreate', message =>
-    handleMintPasteMessage({ identity, commands, flowState, chains, rateLimiter, checkAccountStatus, allowedGuildId: devGuildId }, message));
+    handleMintPasteMessage({ identity, commands, flowState, chains, rateLimiter, checkAccountStatus, allowedGuildId: devGuildId || null, allowedChannelIds }, message));
   return {
     client: discordClient,
+    // devGuildId set = development bot: commands register to that one guild only (which is instant,
+    // where global registration can take up to an hour to propagate) and allowedGuildId above locks
+    // every command to it. Unset = commands register globally, so the bot serves every server it is
+    // in plus DMs. Registering global commands does NOT remove commands previously registered to a
+    // guild -- Discord keeps the two sets independently and shows both, so switching from a dev
+    // guild to global means clearing that guild's commands or they appear twice.
     async start() {
-      await api.put(Routes.applicationGuildCommands(applicationId, devGuildId), { body: commandDefinitions() });
+      const route = devGuildId
+        ? Routes.applicationGuildCommands(applicationId, devGuildId)
+        : Routes.applicationCommands(applicationId);
+      await api.put(route, { body: commandDefinitions({ supportedChains, chains }) });
+      if (!devGuildId) await clearLeftoverGuildCommands({ api, applicationId, log });
       await discordClient.login(token);
       return discordClient.user;
     },

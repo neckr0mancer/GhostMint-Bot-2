@@ -28,10 +28,18 @@ function verifyTelegramContext(message) {
   }
   return {platformUserId:String(message.from.id),contextId:String(message.chat.id)};
 }
-function verifyDiscordContext(interaction,allowedGuildId) {
+// allowedChannelIds narrows the bot to specific channels without pinning it to one guild the way
+// allowedGuildId does -- the two are independent and compose. A DM has no guildId and is never
+// filtered by either: it is already a private, one-to-one surface, and it is where a wallet bot is
+// safest to use, so restricting public channels must not take it away.
+function verifyDiscordContext(interaction,allowedGuildId,{allowedChannelIds=null}={}) {
   if (!interaction?.user?.id || interaction.user.bot) throw new BotContextError('Discord sender is missing or is a bot');
   if (allowedGuildId&&(!interaction.guildId || !interaction.channelId || String(interaction.guildId)!==String(allowedGuildId))) {
     throw new BotContextError('Discord command came from an unauthorized guild or channel');
+  }
+  if (allowedChannelIds&&allowedChannelIds.length&&interaction.guildId
+    &&!allowedChannelIds.map(String).includes(String(interaction.channelId))) {
+    throw new BotContextError('Discord command came from a channel this bot is not enabled in');
   }
   return {platformUserId:String(interaction.user.id),contextId:`${interaction.guildId}:${interaction.channelId}`};
 }

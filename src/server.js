@@ -235,6 +235,27 @@ const schedulerWorker = createSchedulerWorker({
     await governance.checkAccountStatus(task.userId);
     const wallet = DB.wallets.find(item => item.userId === task.userId && item.label === task.walletLabel);
     if (!wallet) throw new ValidationError({ field:'walletLabel', message:'was not found' });
+    // Phase-drift preflight: the schedule was set against whatever SeaDrop's PublicDrop said at
+    // scheduling time (or a hand-typed phase-2+ price/time -- Section AF, since nothing on-chain
+    // describes a stage that isn't live yet). If the project has since moved the live window --
+    // delayed it, cut it short, replaced it with the next phase -- blindly broadcasting either
+    // wastes real gas on a doomed revert (simulation-off transaction modes) or surfaces a generic
+    // on-chain revert instead of the real story (simulation-on modes). Read live, not from
+    // seaDropDiscoveryService's cached snapshot, since the whole point is catching drift since that
+    // snapshot was taken; a non-SeaDrop contract has no on-chain window concept to check at all.
+    const seaDrop = await seaDropDiscoveryService.resolve(wallet.chain, task.contract);
+    if (seaDrop.address) {
+      const livePublicDrop = await seaDropPublicDropResolver.getPublicDrop(wallet.chain, seaDrop.address, task.contract);
+      if (livePublicDrop) {
+        const nowSec = Math.floor(Date.now() / 1000);
+        if (nowSec < livePublicDrop.startTime || (livePublicDrop.endTime && nowSec > livePublicDrop.endTime)) {
+          const from = new Date(livePublicDrop.startTime * 1000).toISOString();
+          const to = livePublicDrop.endTime ? new Date(livePublicDrop.endTime * 1000).toISOString() : 'no end set';
+          throw new TransactionSafetyError('SCHEDULE_DRIFT',
+            `This drop's live mint window no longer matches what you scheduled -- it currently runs ${from} to ${to}, which does not include right now. The project likely changed their schedule; check the contract and reschedule if needed.`);
+        }
+      }
+    }
     const request = requestSchemas.mint({ walletLabel:wallet.label, contractAddress:task.contract,
       functionName:task.fn || 'mint', quantity:task.qty, priceETH:task.price || 0,
       gasGwei:task.gas, chain:wallet.chain }, { supportedChains:CONFIG.supportedChains });
@@ -257,19 +278,27 @@ const schedulerWorker = createSchedulerWorker({
       await notifyUser(event.task.userId, `✅ Scheduled mint <b>${escapeTelegramHtml(event.task.name)}</b> confirmed.`);
     }
     if (['failure','failed'].includes(event.outcome)) {
-      // A failure the user cannot see the reason for is a failure they cannot act on. The reason
-      // has always existed on the error; it was thrown away here and replaced with the word
-      // 'failed' on every channel.
-      const reason = safeError(event.error || '') || 'no reason recorded';
+      // event.error is only set for a thrown-before-broadcast failure (ValidationError, the
+      // drift-check TransactionSafetyError above, etc), not a transaction that broadcast and then
+      // reverted (settleFromIntent's 'failure' path carries event.intent instead) -- showing the
+      // real reason here instead of a bare "failed" is what makes the drift check's own message
+      // ever reach the user rather than being computed and thrown away.
+      //
+      // Merge note: both sides of this merge fixed the same silent failure independently. The
+      // upstream reasoning above is the one kept, because it is the more accurate of the two --
+      // the dashboard branch assumed event.error was always present and would have reported
+      // "no reason recorded" for every reverted transaction.
+      const detail = event.error?.message || '';
+      const reason = detail ? `
+${escapeTelegramHtml(detail)}` : '';
       if (wallet) await logActivity(event.task.userId, 'fail', `Scheduled mint failed: ${event.task.name}`,
         wallet.label, event.intent?.txHash || null, CHAINS[wallet.chain],{triggerSource:'scheduled'});
-      await notifyUser(event.task.userId,
-        `❌ Scheduled mint <b>${escapeTelegramHtml(event.task.name)}</b> failed.
-${escapeTelegramHtml(reason)}`);
+      await notifyUser(event.task.userId, `❌ Scheduled mint <b>${escapeTelegramHtml(event.task.name)}</b> failed.${reason}`);
       // Carries the id so the dashboard can offer Retry on the notification itself rather than
-      // sending the user back to the Schedule tab to find the row.
+      // sending the user back to the Schedule tab to find the row. A revert has no event.error by
+      // design, so it gets the on-chain wording rather than an empty string.
       dashboardWebSockets.broadcastToUser(event.task.userId, {type:'task.failed',
-        taskId:event.task.id, name:event.task.name, reason});
+        taskId:event.task.id, name:event.task.name, reason: detail || 'transaction reverted on chain'});
     }
     if (event.outcome === 'success') {
       dashboardWebSockets.broadcastToUser(event.task.userId, {type:'task.succeeded',
@@ -413,19 +442,24 @@ async function executePreparedMint({ wallet, prepared, chain, triggerSource='man
 // previously executeTask duplicated this inline with a hardcoded 'mint(uint256)' signature, which
 // meant a scheduled mint of a SeaDrop drop sent 0-value plain calldata to a contract that doesn't
 // implement that signature at all (SeaDrop tokens route through a separate core contract; see
-// seaDropCall.js). SeaDrop's live on-chain price is used when available so a task scheduled before
-// the drop's public price was known still mints at the real price, not a stale/zero stored value.
+// seaDropCall.js). seaDropDiscoveryService.resolve() caches its whole result (address + PublicDrop
+// snapshot) forever once the core address is found -- fine for the address, which essentially never
+// changes, but wrong for PublicDrop's price/timing, which the project can update at any time. Reads
+// PublicDrop fresh here every call (seaDropPublicDropResolver never caches) so a scheduled task
+// firing well after the contract was first pasted/detected still mints at whatever price and window
+// are really live right now, not whatever was live back when it was first resolved.
 async function prepareMintCall({ contractAddress, walletAddress, chain, quantity, priceETH }) {
   const seaDrop = await seaDropDiscoveryService.resolve(chain, contractAddress);
   if (seaDrop.address) {
+    const livePublicDrop = await seaDropPublicDropResolver.getPublicDrop(chain, seaDrop.address, contractAddress);
     return mintService.prepare({
       contractAddress,
       methodSignature: SEADROP_MINT_SIGNATURE,
       seaDropAddress: seaDrop.address,
       arguments: [seaDrop.feeRecipient, '$wallet', quantity],
       walletAddress,
-      valueWei: seaDrop.publicDrop
-        ? computeSeaDropValueWei({ mintPriceWei: seaDrop.publicDrop.mintPriceWei, quantity })
+      valueWei: livePublicDrop
+        ? computeSeaDropValueWei({ mintPriceWei: livePublicDrop.mintPriceWei, quantity })
         : ethers.parseEther(String(priceETH)) * BigInt(quantity),
       chain,
     });
@@ -647,14 +681,16 @@ function stateFor(userId) {
 const telegramFlowState = createFlowStateStore();
 const FLOW_LABELS = { wallet_create: 'creating a wallet', wallet_import: 'importing a wallet', mint_guided: 'minting', send_guided: 'sending funds', export_guided: 'exporting a private key', task_guided: 'scheduling a mint', watch_guided: 'adding a watch rule' };
 const FLOW_CONTINUATION_PREFIXES = { wallet_create: ['flow:chain:'], wallet_import: ['flow:chain:'],
-  mint_guided: ['flow:mintdetailscontinue', 'flow:detailsrefresh', 'flow:copyca', 'flow:mintqty:', 'flow:priceaccept', 'flow:pricemanual', 'flow:wallettoggle:', 'flow:walletpick:', 'flow:walletcontinue', 'flow:gastoleranceaccept', 'flow:gastolerancemanual', 'flow:mintconfirm'],
+  mint_guided: ['flow:mintdetailscontinue', 'flow:detailsrefresh', 'flow:copyca', 'flow:schedulesuggest:', 'flow:mintqty:', 'flow:priceaccept', 'flow:pricemanual', 'flow:wallettoggle:', 'flow:walletpick:', 'flow:walletcontinue', 'flow:gastoleranceaccept', 'flow:gastolerancemanual', 'flow:mintconfirm'],
   send_guided: ['flow:sendwalletpick:', 'flow:sendamount:', 'flow:sendconfirm'],
   export_guided: ['flow:exportwalletpick:', 'flow:exportconfirm'],
   // Shares flow:mintdetailscontinue with mint_guided -- the contract-details screen and its
   // Continue button are the same component either way; the callback handler branches on
   // flow.flow to decide whether "continue" means "go mint it" or "go schedule it". Also shares
   // flow:priceaccept/flow:pricemanual (Section G's OpenSea-price-accept step) the same way.
-  task_guided: ['flow:mintdetailscontinue', 'flow:priceaccept', 'flow:pricemanual', 'flow:taskwalletpick:', 'flow:taskconfirm'],
+  // flow:phase: is deliberately NOT listed: tapping "add phase N" on an older success screen while
+  // some other flow is mid-air should raise the usual abandon prompt, not silently replace it.
+  task_guided: ['flow:mintdetailscontinue', 'flow:mintqty:', 'flow:priceaccept', 'flow:pricemanual', 'flow:phasepriceaccept', 'flow:phasetimeaccept', 'flow:taskname:', 'flow:taskwalletpick:', 'flow:taskconfirm'],
   watch_guided: ['flow:watchtype:', 'flow:watchmethod:', 'flow:watchconfirm'] };
 
 // Generic one-shot confirmation gate for simple "<command> <id> CONFIRM"-shaped destructive actions
@@ -692,6 +728,21 @@ function cancelOnlyKeyboard() {
 // buttons are shown, same as before this existed.
 function priceStepPayload(data) {
   const sym = CHAINS[data.chain]?.sym || 'native currency';
+  // Section AF: for a later phase of the same drop, the contract's live price belongs to whichever
+  // stage is open right now, not to the one being scheduled -- so it is offered as a starting point
+  // to tap rather than filled in silently, and typing a different number is the expected path.
+  if (data.phaseNumber > 1) {
+    const rows = [];
+    if (data.suggestedPriceETH !== undefined) {
+      rows.push([telegramMenus.button(`Same as right now (${data.suggestedPriceETH} ${sym})`, 'flow:phasepriceaccept')]);
+    }
+    rows.push([telegramMenus.button('❌ Cancel', 'flow:cancel:ask')]);
+    return {
+      text: `What does <b>phase ${data.phaseNumber}</b> cost per item, in ${sym}? Take it from the project's own announcement — the chain only knows the stage that's live right now. Send 0 if that stage is free.`,
+      replyMarkup: telegramMenus.keyboard(rows),
+      parseMode: 'HTML',
+    };
+  }
   if (data.displayPrice) {
     const usdSuffix = data.displayPrice.usd ? ` (~$${data.displayPrice.usd.toFixed(2)})` : '';
     return {
@@ -705,6 +756,48 @@ function priceStepPayload(data) {
     };
   }
   return { text: `This contract does not expose a recognized price function. Send the price per item in ${sym} (send 0 if it is free).`, replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' };
+}
+
+// Section AF follow-up: GTD/FCFS/PUBLIC are never a verified on-chain fact -- SeaDrop's own
+// protocol has no stage-type field at all, only a bare dropStageIndex integer, so which label
+// belongs to which phase is always the project's own off-chain announcement, never something this
+// app can check. These buttons are a naming shortcut, nothing more; typing any other name always
+// still works, same as every other quick-pick in this app.
+const TASK_NAME_QUICK_PICKS = [
+  { label: '🔒 GTD', value: 'GTD' },
+  { label: '🏃 FCFS', value: 'FCFS' },
+  { label: '🌐 PUBLIC', value: 'PUBLIC' },
+];
+
+function taskNameStepPayload(data) {
+  const lead = data.phaseNumber > 1
+    ? `Name phase ${data.phaseNumber}. This is what you'll pick it out by in /tasks when several stages of the same drop are queued up, so make it obvious.`
+    : 'Send a name for this scheduled mint.';
+  const quickRow = TASK_NAME_QUICK_PICKS.map(pick => telegramMenus.button(pick.label, `flow:taskname:${pick.value}`));
+  return {
+    text: `${lead} Common phase labels below are just a shortcut -- unverified, since nothing on-chain says which stage is which; type your own name just as well.`,
+    replyMarkup: telegramMenus.keyboard([quickRow, [telegramMenus.button('❌ Cancel', 'flow:cancel:ask')]]),
+    parseMode: 'HTML',
+  };
+}
+
+function taskTimeStepPayload(data) {
+  const lead = data.phaseNumber > 1
+    ? `When does <b>phase ${data.phaseNumber}</b> open? Nothing on-chain announces a stage before it goes live, so this comes off the project's own post.`
+    : 'This contract\'s opening time is not known.';
+  const rows = [];
+  // Only offered when the contract's currently-detected stage genuinely still opens in the future
+  // -- an already-passed detected time would be a nonsensical "same as" suggestion to schedule.
+  const detectedFuture = data.startTime && data.startTime * 1000 > Date.now();
+  if (data.phaseNumber > 1 && detectedFuture) {
+    rows.push([telegramMenus.button(`Same as the currently detected stage (${new Date(data.startTime * 1000).toISOString()})`, 'flow:phasetimeaccept')]);
+  }
+  rows.push([telegramMenus.button('❌ Cancel', 'flow:cancel:ask')]);
+  return {
+    text: `${lead} Send the UTC date/time to mint at, including an explicit Z or offset, e.g. <code>2026-08-20T18:00:00Z</code>.`,
+    replyMarkup: telegramMenus.keyboard(rows),
+    parseMode: 'HTML',
+  };
 }
 
 // Quick quantity buttons for a contract whose maxPerWallet allows more than 1 (Section G) --
@@ -833,25 +926,26 @@ function renderFlowStep(flow, step, { userId, data = {} } = {}) {
         displayPrice: data.displayPrice,
       });
     }
+    if (step === 'awaiting_quantity') return quantityStepPayload(data);
     if (step === 'awaiting_wallet') {
       return telegramMenus.walletPicker(botCommands.wallets(userId), { prefix: 'flow:taskwalletpick', emptyHint: 'No wallets yet. Create one first from the Wallets menu.' });
     }
     if (step === 'awaiting_price') return priceStepPayload(data);
-    if (step === 'awaiting_name') return { text: 'Send a name for this scheduled mint.', replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' };
-    if (step === 'awaiting_time') {
-      return { text: 'This contract\'s opening time is not known. Send the UTC date/time to mint at, including an explicit Z or offset, e.g. <code>2026-08-20T18:00:00Z</code>.', replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' };
-    }
+    if (step === 'awaiting_name') return taskNameStepPayload(data);
+    if (step === 'awaiting_time') return taskTimeStepPayload(data);
     if (step === 'awaiting_confirm') {
       return telegramMenus.taskConfirmation({
         name: data.name,
         contractAddress: data.contractAddress,
         chainLabel: CHAINS[data.chain]?.name || data.chain,
         walletLabel: data.walletLabel,
+        quantity: data.quantity || 1,
         mintTime: data.mintTime,
-        autoDetectedTime: Boolean(data.startTime && new Date(data.mintTime).getTime() === data.startTime * 1000),
+        autoDetectedTime: Boolean(!data.phaseNumber && data.startTime && new Date(data.mintTime).getTime() === data.startTime * 1000),
         priceETH: data.priceETH,
         priceUnknown: data.priceUnknown,
         displayPrice: data.displayPrice,
+        phaseNumber: data.phaseNumber,
       });
     }
   }
@@ -876,14 +970,6 @@ function retryStepForField(error) {
   return null;
 }
 
-// A user's currently-selected transaction-mode preset (Section C / Milestone 7a) is the only
-// place "skip confirmation" is configured -- /mintnow reads it rather than having its own
-// separate bypass toggle, so degen-mode behavior stays consistent everywhere it applies.
-async function isVerificationBypassed(userId, chain) {
-  const effective = await governanceRepository.getEffectiveGovernance(userId, chain);
-  return effective.preset?.humanVerification === 'bypass';
-}
-
 // Entry point for /mint, /mintnow, /batch, and the "Mint" menu button. With no contract address
 // yet, starts the guided flow at awaiting_contract. With one (typed inline, or sent as the
 // awaiting_contract reply), runs the same full detection the dashboard's auto-detect uses (chain,
@@ -892,11 +978,17 @@ async function isVerificationBypassed(userId, chain) {
 // single picks exactly one (mint).
 //
 // oneShot (/mintnow only) means "skip confirmation," not "skip asking for things that aren't
-// known yet" -- it only takes effect once the user has actually opted into a bypass-verification
-// mode preset (isVerificationBypassed), and even then only the redundant final confirm tap is
-// skipped: a missing wallet pick or unresolvable price is still asked for, same as /mint. With
-// exactly one wallet and a known price -- the common case -- this reaches execution with zero taps.
-async function startMintFlow({ chatId, messageId, userId, multi, contractAddressInput, oneShot = false }) {
+// known yet": typing /mintnow is itself the user's explicit opt-in, unconditional -- no separate
+// Degen/Fast mode preset required -- but a missing wallet pick or unresolvable price is still
+// asked for, same as /mint. With exactly one wallet and a known price -- the common case -- this
+// reaches execution with zero taps.
+// includeStats is false for every entry point except /info -- the full OpenSea floor/holders/
+// volume table (and the live re-fetch cost of computing it) is reserved for the explicit,
+// no-mint-intent lookup command; a plain paste, /mint, /mintnow, and /batch all get the leaner
+// card (still the real live price/timing/sold-out status, just without the stats table). Carried
+// into flow data so flow:detailsrefresh knows whether to keep re-requesting stats on this same
+// flow or stay lean, without needing to know which command originally started it.
+async function startMintFlow({ chatId, messageId, userId, multi, contractAddressInput, oneShot = false, includeStats = false }) {
   const send = payload => tgUpdate(chatId, messageId, payload);
   if (!contractAddressInput) {
     telegramFlowState.start('telegram', chatId, 'mint_guided', 'awaiting_contract', { multi, oneShot });
@@ -908,14 +1000,18 @@ async function startMintFlow({ chatId, messageId, userId, multi, contractAddress
   }
   let detected;
   try {
-    detected = await botCommands.detectMintContract(userId, { contractAddress, quantity: 1, includeStats: true });
+    detected = await botCommands.detectMintContract(userId, { contractAddress, quantity: 1, includeStats });
   } catch (error) {
     if (error instanceof ValidationError) {
       return send({ text: 'Could not find this contract on any supported chain. Double-check the address.', replyMarkup: telegramMenus.mainMenu({}).replyMarkup });
     }
     throw error;
   }
-  const skipConfirm = oneShot && !multi && await isVerificationBypassed(userId, detected.chain);
+  // /mintnow is the user's own explicit "skip confirmation" -- typing this command already
+  // expresses that intent, so it no longer also requires a Degen/Fast transaction-mode preset.
+  // Every other safety layer (governance ceilings, simulation, gas ceiling) is unaffected: those
+  // live in transactionEngine.js and apply regardless of this confirm-screen skip.
+  const skipConfirm = oneShot && !multi;
   const data = {
     multi, contractAddress, chain: detected.chain, selectedWallets: [],
     isSeaDrop: detected.isSeaDrop,
@@ -924,7 +1020,7 @@ async function startMintFlow({ chatId, messageId, userId, multi, contractAddress
     maxSupply: detected.maxSupply, maxPerWallet: detected.maxPerWallet,
     startTime: detected.startTime, endTime: detected.endTime, collection: detected.collection,
     soldOut: detected.soldOut, displayPrice: detected.displayPrice,
-    stats: detected.stats,
+    stats: detected.stats, includeStats,
     openSeaUrl: OPENSEA_CHAIN_SLUGS[detected.chain] ? `https://opensea.io/assets/${OPENSEA_CHAIN_SLUGS[detected.chain]}/${contractAddress}` : null,
     skipConfirm,
   };
@@ -1236,7 +1332,11 @@ async function finishExportKeyExecution(chatId, messageId, userId, flowData, pla
 // contract *is* doesn't depend on whether you're minting it now or scheduling it for later. A
 // SeaDrop drop's own future opening time is carried into flow data as a pre-filled mintTime, same
 // as createTask's own auto-detection, so the confirm screen can skip asking for it entirely.
-async function startTaskScheduleFlow({ chatId, messageId, userId, contractAddressInput }) {
+// phaseNumber > 1 arrives from the previous task's success screen ("add phase N", Section AF). The
+// contract is re-detected rather than carried in memory so the entry point stays stateless across a
+// restart, but everything the detection reports about price/timing describes the stage that is live
+// *now* -- for a later stage it is a suggestion at most, so both are re-asked below.
+async function startTaskScheduleFlow({ chatId, messageId, userId, contractAddressInput, phaseNumber = 1 }) {
   const send = payload => tgUpdate(chatId, messageId, payload);
   if (!contractAddressInput) {
     telegramFlowState.start('telegram', chatId, 'task_guided', 'awaiting_contract', {});
@@ -1265,20 +1365,45 @@ async function startTaskScheduleFlow({ chatId, messageId, userId, contractAddres
     soldOut: detected.soldOut, displayPrice: detected.displayPrice,
     mintTime: futureStartTime ? new Date(futureStartTime * 1000).toISOString() : null,
   };
+  if (phaseNumber > 1) {
+    // The details screen is skipped: the user was looking at it moments ago on the way to phase 1.
+    // Clearing priceETH/mintTime (and flagging priceUnknown) is what forces this phase through the
+    // manual price and time steps instead of inheriting the live stage's numbers -- the detected
+    // price survives only as the one-tap suggestion priceStepPayload offers.
+    Object.assign(data, {
+      phaseNumber, suggestedPriceETH: data.priceETH,
+      priceETH: undefined, priceUnknown: true, mintTime: null,
+    });
+    const flow = telegramFlowState.start('telegram', chatId, 'task_guided', 'awaiting_wallet', data);
+    return advanceFromTaskDetails(chatId, messageId, userId, flow);
+  }
   telegramFlowState.start('telegram', chatId, 'task_guided', 'awaiting_details', data);
   return send(renderFlowStep('task_guided', 'awaiting_details', { userId, data }));
+}
+
+// Reached by tapping "Continue" on the details card (both phase 1 and, via the phaseNumber>1
+// path above, every later phase too) -- a contract allowing more than 1 per wallet asks how many
+// first, mirroring mint_guided's afterDetails; a max of 1 (or unknown) skips straight to wallet
+// selection with quantity defaulted to 1, same as before this step existed.
+async function advanceFromTaskDetails(chatId, messageId, userId, flow) {
+  if (Number(flow.data.maxPerWallet) > 1) {
+    telegramFlowState.advance('telegram', chatId, 'awaiting_quantity', flow.data);
+    return tgUpdate(chatId, messageId, renderFlowStep('task_guided', 'awaiting_quantity', { userId, data: flow.data }));
+  }
+  return advanceFromTaskQuantity(chatId, messageId, userId, flow, 1);
 }
 
 // Scheduling is always single-wallet (createTask has no batch concept), so this always shows a
 // picker rather than the mint flow's multi/single branching -- except the auto-select-with-one-
 // wallet shortcut, which still applies.
-async function advanceFromTaskDetails(chatId, messageId, userId, flow) {
+async function advanceFromTaskQuantity(chatId, messageId, userId, flow, quantity) {
+  const data = { ...flow.data, quantity };
   const wallets = botCommands.wallets(userId);
   if (wallets.length === 1) {
-    return advanceFromTaskWallet(chatId, messageId, userId, flow, wallets[0].label);
+    return advanceFromTaskWallet(chatId, messageId, userId, { ...flow, data }, wallets[0].label);
   }
-  telegramFlowState.advance('telegram', chatId, 'awaiting_wallet', flow.data);
-  return tgUpdate(chatId, messageId, renderFlowStep('task_guided', 'awaiting_wallet', { userId, data: flow.data }));
+  telegramFlowState.advance('telegram', chatId, 'awaiting_wallet', data);
+  return tgUpdate(chatId, messageId, renderFlowStep('task_guided', 'awaiting_wallet', { userId, data }));
 }
 
 // After the wallet is picked: a price createTask can't resolve server-side either (Section G) is
@@ -1302,13 +1427,21 @@ async function finishTaskSchedule(chatId, messageId, userId, flowData) {
     commandRateLimiter.check('telegram', userId, 'task');
     const task = await botCommands.createTask(userId, {
       name: flowData.name, walletLabel: flowData.walletLabel, contractAddress: flowData.contractAddress,
-      chain: flowData.chain, quantity: 1, priceETH: flowData.priceETH, mintTime: flowData.mintTime,
+      chain: flowData.chain, quantity: flowData.quantity || 1, priceETH: flowData.priceETH, mintTime: flowData.mintTime,
     });
     telegramFlowState.clear('telegram', chatId);
-    return tgUpdate(chatId, messageId, { text: `✅ Scheduled <b>${escapeTelegramHtml(task.name)}</b> for ${new Date(task.mintTime).toISOString()} UTC.`, replyMarkup: backToMenu, parseMode: 'HTML' });
+    return tgUpdate(chatId, messageId, telegramMenus.taskScheduled({
+      name: task.name, contractAddress: flowData.contractAddress,
+      mintTime: new Date(task.mintTime).toISOString(), phaseNumber: flowData.phaseNumber,
+    }));
   } catch (error) {
     if (error instanceof RateLimitError) {
-      return tgUpdate(chatId, messageId, { text: `Too many sensitive commands. Retry in ${Math.ceil(error.retryAfterMs / 1000)} seconds.`, replyMarkup: backToMenu, parseMode: 'HTML' });
+      const retryIn = Math.ceil(error.retryAfterMs / 1000);
+      const confirm = renderFlowStep('task_guided', 'awaiting_confirm', { userId, data: flowData });
+      return tgUpdate(chatId, messageId, { ...confirm,
+        text: `⏳ Easy — ${retryIn}s of cooldown before the next one. Nothing was lost; hit Schedule again once it clears.
+
+${confirm.text}` });
     }
     telegramFlowState.clear('telegram', chatId);
     if (error instanceof ValidationError) return tgUpdate(chatId, messageId, { text: escapeTelegramHtml(validationReply(error)), replyMarkup: backToMenu, parseMode: 'HTML' });
@@ -1331,13 +1464,26 @@ function tgMenu(chatId, { text, replyMarkup, parseMode }) {
 // one further down. Routing anything that isn't the still-current, non-stale anchor through
 // tgRender instead collapses this back to the one panel tgRender already tracks -- tgRender sends
 // a fresh message and deletes the stale anchor itself, so there is never more than one live panel.
+// Telegram's editMessageText rejects an edit whose text and reply_markup are byte-identical to
+// what's already showing ("Bad Request: message is not modified") -- a real, frequent case for
+// this bot specifically: tapping Refresh re-fetches live data that often genuinely hasn't changed
+// since the last view. That is already the correct end state, not a failure, so callers below must
+// not treat it the same as a genuine edit failure (message too old, deleted, etc), which is what
+// used to send a brand-new duplicate message purely because the old one didn't need changing.
+function isMessageNotModifiedError(error) {
+  return typeof error?.message === 'string' && error.message.includes('message is not modified');
+}
+
 function tgEditMenu(chatId, messageId, payload) {
   if (!bot || !chatId || !messageId) return tgMenu(chatId, payload);
   const { anchor } = telegramPanels.read(chatId);
   if (anchor !== messageId || telegramPanels.shouldMove(chatId)) return tgRender(chatId, payload);
   return bot.editMessageText(String(payload.text), { chat_id: chatId, message_id: messageId, reply_markup: payload.replyMarkup, parse_mode: payload.parseMode })
     .then(result => { telegramPanels.noteAnchor(chatId, messageId); return result; })
-    .catch(() => tgRender(chatId, payload));
+    .catch(error => {
+      if (isMessageNotModifiedError(error)) { telegramPanels.noteAnchor(chatId, messageId); return null; }
+      return tgRender(chatId, payload);
+    });
 }
 
 // ── Telegram anchored-menu rendering ─────────────────────────
@@ -1357,7 +1503,11 @@ async function tgEditRaw(chatId, messageId, { text, replyMarkup, parseMode }) {
   if (!bot || !chatId || !messageId) return null;
   try {
     return await bot.editMessageText(String(text), { chat_id: chatId, message_id: messageId, reply_markup: replyMarkup, parse_mode: parseMode });
-  } catch {
+  } catch (error) {
+    // Same "already showing this exact content" case as tgEditMenu -- a truthy result (not the
+    // real Telegram response, which editMessageText has no use for here beyond its truthiness)
+    // so tgRender's caller sees this as handled rather than falling through to a duplicate send.
+    if (isMessageNotModifiedError(error)) return true;
     return null;
   }
 }
@@ -1438,27 +1588,35 @@ async function handleFlowTextMessage(msg) {
   } catch { return; }
   const chatId = msg.chat.id;
   const flow = telegramFlowState.get('telegram', chatId);
-  if (!flow) {
-    // A bare contract address, or an opensea.io collection link (Section Q), with no active flow
-    // and no leading slash is treated as "show me this contract" -- the same detection /mint's
-    // inline-address form already runs, just reached without typing the command. Anything that
-    // isn't address- or link-shaped is ignored rather than guessed at, same as before this
-    // existed. The cheap sync check here only decides whether to bother starting the flow at all;
-    // startMintFlow does the real (and for a link, async) resolution either way.
-    const trimmed = msg.text.trim();
-    if (ethers.isAddress(trimmed) || botCommands.parseOpenSeaCollectionSlug(trimmed)) {
-      await startMintFlow({ chatId, messageId: null, userId, multi: false, contractAddressInput: trimmed });
-    }
-    return;
-  }
-  if (flow.pendingCancel) { await tgDeleteUserMessage(msg); tgRender(chatId, telegramMenus.confirmCancelPrompt(FLOW_LABELS[flow.flow] || flow.flow)); return; }
-  const isTextStep = (flow.flow === 'wallet_create' && flow.step === 'awaiting_label')
+  const isTextStep = Boolean(flow) && (
+    (flow.flow === 'wallet_create' && flow.step === 'awaiting_label')
     || (flow.flow === 'wallet_import' && (flow.step === 'awaiting_label' || flow.step === 'awaiting_key'))
     || (flow.flow === 'mint_guided' && ['awaiting_contract', 'awaiting_quantity', 'awaiting_price', 'awaiting_gastolerance'].includes(flow.step))
     || (flow.flow === 'send_guided' && (flow.step === 'awaiting_amount' || flow.step === 'awaiting_destination'))
-    || (flow.flow === 'task_guided' && ['awaiting_contract', 'awaiting_price', 'awaiting_name', 'awaiting_time'].includes(flow.step))
-    || (flow.flow === 'watch_guided' && ['awaiting_name', 'awaiting_config'].includes(flow.step));
-  if (!isTextStep) { await tgDeleteUserMessage(msg); tgRender(chatId, { text: 'Please use the buttons above, or tap Cancel.', replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' }); return; }
+    || (flow.flow === 'task_guided' && ['awaiting_contract', 'awaiting_quantity', 'awaiting_price', 'awaiting_name', 'awaiting_time'].includes(flow.step))
+    || (flow.flow === 'watch_guided' && ['awaiting_name', 'awaiting_config'].includes(flow.step))
+  );
+  if (!flow || !isTextStep) {
+    // A bare contract address, or an opensea.io collection link (Section Q), wins over whatever
+    // else was active -- matches Discord's handleMintPasteMessage, which checks this before caring
+    // what flow (if any) is in progress at all. Previously this only fired with NO flow active:
+    // pasting a fresh address while, say, the mint_guided card was showing (awaiting a button tap,
+    // not text -- awaiting_details isn't in isTextStep's list) just got "please use the buttons
+    // above", silently discarding the new address instead of ever starting its flow. A step that
+    // genuinely expects free-text input matching this shape (send_guided's awaiting_destination,
+    // mint_guided's own awaiting_contract) is excluded via isTextStep above, so this never steals
+    // input a flow is actually waiting on.
+    const trimmed = msg.text.trim();
+    if (ethers.isAddress(trimmed) || botCommands.parseOpenSeaCollectionSlug(trimmed)) {
+      if (flow) telegramFlowState.clear('telegram', chatId);
+      await startMintFlow({ chatId, messageId: null, userId, multi: false, contractAddressInput: trimmed });
+      return;
+    }
+    if (!flow) return;
+    await tgDeleteUserMessage(msg);
+    tgRender(chatId, { text: 'Please use the buttons above, or tap Cancel.', replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' });
+    return;
+  }
 
   // Consumed as flow input from here on -- clear it immediately rather than after a successful
   // outcome, so a private key or any other sensitive reply never lingers in chat history even if
@@ -1505,13 +1663,14 @@ async function handleFlowTextMessage(msg) {
     await startMintFlow({ chatId, messageId: null, userId, multi: flow.data.multi, contractAddressInput: value });
     return;
   }
-  if (flow.flow === 'mint_guided' && flow.step === 'awaiting_quantity') {
+  if ((flow.flow === 'mint_guided' || flow.flow === 'task_guided') && flow.step === 'awaiting_quantity') {
     const quantity = Math.floor(Number(value));
     const max = Number(flow.data.maxPerWallet) || 100;
     if (!Number.isInteger(quantity) || quantity < 1 || quantity > max) {
       tgRender(chatId, { text: `Send a whole number from 1 to ${max}.`, replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' });
       return;
     }
+    if (flow.flow === 'task_guided') { await advanceFromTaskQuantity(chatId, null, userId, flow, quantity); return; }
     await advanceFromQuantity(chatId, null, userId, flow, quantity);
     return;
   }
@@ -1615,24 +1774,18 @@ function withTelegramCallback(handler) {
 
       const data = query.data || '';
       const activeFlow = telegramFlowState.get('telegram', chatId);
-      const isCancelControl = data === 'flow:cancel:confirm' || data === 'flow:cancel:resume'
-        || data === 'confirm:pending' || data === 'cancel:pending';
-      if (activeFlow && !isCancelControl) {
+      const isPendingControl = data === 'confirm:pending' || data === 'cancel:pending';
+      // A tap that doesn't belong to whatever flow is currently active implicitly abandons it and
+      // proceeds with the new action -- no confirmation needed, trimmed per user feedback. The
+      // explicit Cancel button (flow:cancel:ask) is handled the same way below: straight to the
+      // main menu, no "are you sure" step first.
+      if (activeFlow && !isPendingControl && data !== 'flow:cancel:ask') {
         const allowed = FLOW_CONTINUATION_PREFIXES[activeFlow.flow] || [];
-        if (!allowed.some(prefix => data.startsWith(prefix))) {
-          telegramFlowState.markPendingCancel('telegram', chatId);
-          await tgEditMenu(chatId, messageId, telegramMenus.confirmCancelPrompt(FLOW_LABELS[activeFlow.flow] || activeFlow.flow));
-          return;
-        }
+        if (!allowed.some(prefix => data.startsWith(prefix))) telegramFlowState.clear('telegram', chatId);
       }
-      if (data === 'flow:cancel:confirm') {
+      if (data === 'flow:cancel:ask') {
         telegramFlowState.clear('telegram', chatId);
         await tgEditMenu(chatId, messageId, telegramMenus.mainMenu({ isOwner: await governanceRepository.isOwner(userId) }));
-        return;
-      }
-      if (data === 'flow:cancel:resume') {
-        const flow = telegramFlowState.clearPendingCancel('telegram', chatId);
-        await tgEditMenu(chatId, messageId, flow ? renderFlowStep(flow.flow, flow.step, { userId, data: flow.data }) : telegramMenus.mainMenu({ isOwner: await governanceRepository.isOwner(userId) }));
         return;
       }
       if (data === 'confirm:pending' || data === 'cancel:pending') {
@@ -1692,12 +1845,9 @@ function withTelegramUser(handler) {
       context=verifyTelegramContext(msg);
       userId=await identity.resolveOrCreate('telegram',context.platformUserId);
       await governance.checkAccountStatus(userId);
-      const activeFlow=telegramFlowState.get('telegram',context.contextId);
-      if(activeFlow) {
-        telegramFlowState.markPendingCancel('telegram',context.contextId);
-        await tgRender(msg.chat.id, telegramMenus.confirmCancelPrompt(FLOW_LABELS[activeFlow.flow]||activeFlow.flow));
-        return;
-      }
+      // Running a different command mid-flow implicitly abandons whatever was in progress -- no
+      // confirmation needed, trimmed per user feedback.
+      if(telegramFlowState.get('telegram',context.contextId)) telegramFlowState.clear('telegram',context.contextId);
       const command=commandName(msg.text||msg.caption);
       if(['mintnow','mintcall','mintpreset','admin','watch','confirmtrigger','targetpolicy','updatesniper','importwallet'].includes(command)) {
         commandRateLimiter.check('telegram',userId,command);
@@ -1751,6 +1901,7 @@ if (BOT_TOKEN) {
   bot.setMyCommands([
     { command: 'start', description: 'Open the main menu' },
     { command: 'mint', description: 'Mint from a contract' },
+    { command: 'info', description: 'Look up a contract without minting' },
     { command: 'send', description: 'Send funds to an address' },
     { command: 'wallets', description: 'List your wallets' },
     { command: 'address', description: 'Get your wallet address' },
@@ -1917,7 +2068,7 @@ if (BOT_TOKEN) {
       if (!flow || flow.flow !== 'mint_guided' || flow.step !== 'awaiting_details') return;
       let detected;
       try {
-        detected = await botCommands.detectMintContract(userId, { contractAddress: flow.data.contractAddress, quantity: 1, includeStats: true });
+        detected = await botCommands.detectMintContract(userId, { contractAddress: flow.data.contractAddress, quantity: 1, includeStats: Boolean(flow.data.includeStats) });
       } catch {
         return; // Transient lookup failure -- leave the card showing its last-known values.
       }
@@ -1943,14 +2094,15 @@ if (BOT_TOKEN) {
     }
     if (data === 'flow:mintqty:x') {
       const flow = telegramFlowState.get('telegram', chatId);
-      if (!flow || flow.flow !== 'mint_guided' || flow.step !== 'awaiting_quantity') return;
+      if (!flow || (flow.flow !== 'mint_guided' && flow.flow !== 'task_guided') || flow.step !== 'awaiting_quantity') return;
       const max = Number(flow.data.maxPerWallet) || 100;
       return tgEditMenu(chatId, messageId, { text: `Send a whole number from 1 to ${max}.`, replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' });
     }
     if (data.startsWith('flow:mintqty:')) {
       const quantity = Number(data.slice('flow:mintqty:'.length));
       const flow = telegramFlowState.get('telegram', chatId);
-      if (!flow || flow.flow !== 'mint_guided' || flow.step !== 'awaiting_quantity' || !Number.isInteger(quantity) || quantity < 1) return;
+      if (!flow || (flow.flow !== 'mint_guided' && flow.flow !== 'task_guided') || flow.step !== 'awaiting_quantity' || !Number.isInteger(quantity) || quantity < 1) return;
+      if (flow.flow === 'task_guided') return advanceFromTaskQuantity(chatId, messageId, userId, flow, quantity);
       return advanceFromQuantity(chatId, messageId, userId, flow, quantity);
     }
     if (data === 'flow:priceaccept') {
@@ -1975,6 +2127,49 @@ if (BOT_TOKEN) {
       const flow = telegramFlowState.get('telegram', chatId);
       if (!flow || flow.flow !== 'mint_guided' || flow.step !== 'awaiting_gastolerance') return;
       return tgEditMenu(chatId, messageId, { text: `Send the gas price cap in gwei (a whole or decimal number, no higher than your account's ceiling of ${flow.data.gasCeilingGwei} gwei).`, replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' });
+    }
+    // "Schedule for opening" from the collection card (Section AF follow-up): only ever shown when
+    // the card already detected a future startTime, so this is exactly the phase-1 path /schedule
+    // itself uses -- carries the contract address rather than reading mint_guided's flow data so it
+    // still works if the card outlived a restart, same reasoning as flow:phase: below.
+    if (data.startsWith('flow:schedulesuggest:')) {
+      const address = data.slice('flow:schedulesuggest:'.length);
+      if (!ethers.isAddress(address)) return;
+      return startTaskScheduleFlow({ chatId, messageId, userId, contractAddressInput: address });
+    }
+    // "Add phase N" from a task's success screen (Section AF) -- carries its own contract address so
+    // it works on any still-visible success screen, including one from before a restart.
+    if (data.startsWith('flow:phase:')) {
+      const [phase, address] = data.slice('flow:phase:'.length).split(':');
+      const phaseNumber = Number(phase);
+      if (!Number.isInteger(phaseNumber) || phaseNumber < 2 || !ethers.isAddress(address)) return;
+      return startTaskScheduleFlow({ chatId, messageId, userId, contractAddressInput: address, phaseNumber });
+    }
+    if (data === 'flow:phasepriceaccept') {
+      const flow = telegramFlowState.get('telegram', chatId);
+      if (!flow || flow.flow !== 'task_guided' || flow.step !== 'awaiting_price') return;
+      if (flow.data.suggestedPriceETH === undefined) return;
+      return advanceFromPriceResolved(chatId, messageId, userId, flow, flow.data.suggestedPriceETH);
+    }
+    // Unverified naming shortcut (see TASK_NAME_QUICK_PICKS above) -- otherwise identical to typing
+    // the same label by hand at this step.
+    if (data.startsWith('flow:taskname:')) {
+      const name = data.slice('flow:taskname:'.length);
+      const flow = telegramFlowState.get('telegram', chatId);
+      if (!flow || flow.flow !== 'task_guided' || flow.step !== 'awaiting_name') return;
+      if (!TASK_NAME_QUICK_PICKS.some(pick => pick.value === name)) return;
+      const taskData = { ...flow.data, name };
+      const nextStep = taskData.mintTime ? 'awaiting_confirm' : 'awaiting_time';
+      telegramFlowState.advance('telegram', chatId, nextStep, taskData);
+      return tgEditMenu(chatId, messageId, renderFlowStep('task_guided', nextStep, { userId, data: taskData }));
+    }
+    if (data === 'flow:phasetimeaccept') {
+      const flow = telegramFlowState.get('telegram', chatId);
+      if (!flow || flow.flow !== 'task_guided' || flow.step !== 'awaiting_time') return;
+      if (!flow.data.startTime || flow.data.startTime * 1000 <= Date.now()) return;
+      const taskData = { ...flow.data, mintTime: new Date(flow.data.startTime * 1000).toISOString() };
+      telegramFlowState.advance('telegram', chatId, 'awaiting_confirm', taskData);
+      return tgEditMenu(chatId, messageId, renderFlowStep('task_guided', 'awaiting_confirm', { userId, data: taskData }));
     }
     if (data.startsWith('flow:taskwalletpick:')) {
       const label = data.slice('flow:taskwalletpick:'.length);
@@ -2191,12 +2386,21 @@ send /mint with a contract address to get going.`;
   }));
 
   // /mintnow is /mint with oneShot:true: once the contract, a single wallet, and the price are all
-  // resolvable AND the caller has opted into a bypass-verification transaction mode (Section C), it
-  // reaches execution with zero taps -- "mint immediately without asking questions." Anything the
-  // system genuinely can't resolve (multiple wallets, an unreadable price) is still asked for, and
-  // without bypass mode selected it behaves exactly like /mint, never a silent no-op.
+  // resolvable, it reaches execution with zero taps -- "mint immediately without asking questions."
+  // Anything the system genuinely can't resolve (multiple wallets, an unreadable price) is still
+  // asked for, never a silent no-op. Unconditional: typing this command is itself the user's
+  // explicit opt-in, no separate transaction-mode preset required (see startMintFlow).
   bot.onText(/^\/mintnow(?:@\w+)?(?:\s+(\S+))?$/, withTelegramUser(async (msg, match, userId) => {
     await startMintFlow({ chatId: msg.chat.id, messageId: null, userId, multi: false, contractAddressInput: match[1] || null, oneShot: true });
+  }));
+
+  // Read-only lookup: shows the same collection card /mint's own awaiting_details step does, plus
+  // the full stats table (floor/holders/volume) that a plain paste/mint no longer requests --
+  // /info is the one place that richer, no-mint-intent view still lives. Mint Now still works from
+  // the card if the user decides to go ahead, reusing the same guided flow rather than a separate,
+  // duplicated code path.
+  bot.onText(/^\/info(?:@\w+)?(?:\s+(\S+))?$/, withTelegramUser(async (msg, match, userId) => {
+    await startMintFlow({ chatId: msg.chat.id, messageId: null, userId, multi: false, contractAddressInput: match[1] || null, includeStats: true });
   }));
 
   bot.onText(/^\/batch(?:@\w+)?(?:\s+(\S+))?$/, withTelegramUser(async (msg, match, userId) => {
@@ -2422,7 +2626,11 @@ send /mint with a contract address to get going.`;
     if (!pending.length) return tgRender(msg.chat.id, { text: 'No scheduled tasks.', parseMode: 'HTML' });
     const list = pending.map(t => {
       const ms = t.mintTime - Date.now();
-      return `⏱ <b>${escapeTelegramHtml(t.name)}</b> [${t.status}]\nWallet: ${escapeTelegramHtml(t.walletLabel)}\nQty: ${t.qty} | Price: ${t.price>0?t.price+' ETH':'Free'}\nDue (UTC): <b>${new Date(t.mintTime).toISOString()}</b>${ms>0?`\nFires in: <b>${fmtCD(ms)}</b>`:''}\nID: <code>${t.id}</code>`;
+      // The contract line matters more since Section AF: staging a multi-phase drop is now a normal
+      // thing to do, so several of these rows routinely share one contract (and one user can be
+      // staging two drops at once) -- name alone stopped being enough to tell them apart.
+      const shortName = t.name.length > 40 ? `${t.name.slice(0, 39)}…` : t.name;
+      return `⏱ <b>${escapeTelegramHtml(shortName)}</b> [${t.status}]\nContract: <code>${t.contract}</code>\nWallet: ${escapeTelegramHtml(t.walletLabel)}\nQty: ${t.qty} | Price: ${t.price>0?t.price+' ETH':'Free'}\nDue: <b>${telegramMenus.formatGmtPlus1(t.mintTime)}</b>${ms>0?`\nFires in: <b>${fmtCD(ms)}</b>`:''}\nID: <code>${t.id}</code>`;
     }).join('\n\n');
     tgRender(msg.chat.id, { text: `⏱ <b>Tasks (page ${page.page}/${page.totalPages}, ${page.total} total)</b>\n\n${list}`, parseMode: 'HTML' });
   }));
@@ -2581,6 +2789,7 @@ const dashboardApi=createDashboardApi({auth:dashboardAuth,identityRepository,com
 if (CONFIG.discordBotToken) {
   discordBot = createDiscordBot({ token: CONFIG.discordBotToken,
     applicationId: CONFIG.discordApplicationId, devGuildId: CONFIG.discordDevGuildId,
+    allowedChannelIds: CONFIG.discordChannelIds,
     identity, commands: botCommands, securityAudit:botSecurityRepository,rateLimiter:commandRateLimiter,log,
     isOwner: userId => governanceRepository.isOwner(userId),
     checkAccountStatus: userId => governance.checkAccountStatus(userId),

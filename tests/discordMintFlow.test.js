@@ -61,12 +61,12 @@ function modalInteraction(customId, fields, userId = 'discord-user') {
   return i;
 }
 
-function chatInteraction(commandName, userId = 'discord-user') {
+function chatInteraction(commandName, userId = 'discord-user', strings = {}) {
   return {
     commandName, user: { id: userId }, guildId: 'guild', channelId: 'channel',
     deferred: false, replied: false, replies: [],
     isChatInputCommand: () => true, isButton: () => false, isStringSelectMenu: () => false, isModalSubmit: () => false,
-    options: { getSubcommand: () => null, getString: () => null, getInteger: () => null, getNumber: () => null, getBoolean: () => null },
+    options: { getSubcommand: () => null, getString: name => strings[name] ?? null, getInteger: () => null, getNumber: () => null, getBoolean: () => null },
     async deferReply(options) { this.deferred = true; this.deferOptions = options; },
     async editReply(value) { this.replies.push(value); },
     async reply(value) { this.replied = true; this.replies.push(value); },
@@ -102,6 +102,63 @@ test('a paste always lands on the collection details card first', async () => {
   assert.deepEqual(message.replies[0].components[0].components.map(b => b.custom_id), ['flow:mintdetailscontinue']);
 });
 
+test('/info shows the same collection card as a paste, with no mint intent implied', async () => {
+  const flowState = createFlowStateStore();
+  const commands = baseCommands();
+  const ctx = { identity: { resolveOrCreate: async () => 'internal-user' }, commands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT };
+  const handler = createDiscordInteractionHandler(ctx);
+  const slash = chatInteraction('info', 'looker-1', { contract: '0x0000000000000000000000000000000000000001' });
+  await handler(slash);
+  assert.equal(slash.deferred, true);
+  assert.match(slash.replies[0].content, /Contract details|SeaDrop|Standard mint/);
+  assert.deepEqual(slash.replies[0].components[0].components.map(b => b.custom_id), ['flow:mintdetailscontinue']);
+  assert.equal(flowState.get('discord', 'looker-1').flow, 'mint_guided');
+});
+
+// The full OpenSea floor/holders/volume table is reserved for /info's explicit, no-mint-intent
+// lookup -- a plain paste and /mint's own under-specified path get the leaner card (still real
+// live price/timing/sold-out status), matching Telegram's own startMintFlow(includeStats).
+test('a plain paste requests the leaner card (includeStats false), unlike /info', async () => {
+  const flowState = createFlowStateStore();
+  const seenIncludeStats = [];
+  const commands = baseCommands({ detectMintContract: async (userId, input) => {
+    seenIncludeStats.push(input.includeStats);
+    return { chain: 'ethereum', isSeaDrop: false, priceKnown: true, valueWei: '1000000000000000000',
+      maxSupply: 100, maxPerWallet: 1, startTime: null, endTime: null, collection: null, soldOut: false, displayPrice: null };
+  } });
+  const identity = { resolveOrCreate: async () => 'internal-user' };
+  const ctx = { identity, commands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT };
+  await handleMintPasteMessage(ctx, mockMessage('0x0000000000000000000000000000000000000001', 'paster-stats-1'));
+  assert.equal(seenIncludeStats[0], false);
+
+  const handler = createDiscordInteractionHandler(ctx);
+  const info = chatInteraction('info', 'paster-stats-2', { contract: '0x0000000000000000000000000000000000000002' });
+  await handler(info);
+  assert.equal(seenIncludeStats[1], true);
+});
+
+test('flow:detailsrefresh keeps requesting stats for an /info-opened card, and stays lean for a pasted one', async () => {
+  const flowState = createFlowStateStore();
+  const seenIncludeStats = [];
+  const commands = baseCommands({ detectMintContract: async (userId, input) => {
+    seenIncludeStats.push(input.includeStats);
+    return { chain: 'ethereum', isSeaDrop: false, priceKnown: true, valueWei: '1000000000000000000',
+      maxSupply: 100, maxPerWallet: 1, startTime: null, endTime: null, collection: null, soldOut: false, displayPrice: null };
+  } });
+  const identity = { resolveOrCreate: async () => 'internal-user' };
+  const ctx = { identity, commands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT };
+  const handler = createDiscordInteractionHandler(ctx);
+
+  await handleMintPasteMessage(ctx, mockMessage('0x0000000000000000000000000000000000000001', 'paster-stats-3'));
+  await handler(buttonInteraction('flow:detailsrefresh', 'paster-stats-3'));
+  assert.deepEqual(seenIncludeStats, [false, false]);
+
+  seenIncludeStats.length = 0;
+  await handler(chatInteraction('info', 'paster-stats-4', { contract: '0x0000000000000000000000000000000000000002' }));
+  await handler(buttonInteraction('flow:detailsrefresh', 'paster-stats-4'));
+  assert.deepEqual(seenIncludeStats, [true, true]);
+});
+
 test('flow:detailsrefresh re-fetches live stats and updates the card in place without neutralizing the public origin message', async () => {
   const flowState = createFlowStateStore();
   let calls = 0;
@@ -122,7 +179,7 @@ test('flow:detailsrefresh re-fetches live stats and updates the card in place wi
   const ctx = { identity, commands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT };
   const message = mockMessage('0x0000000000000000000000000000000000000001', 'paster-11');
   await handleMintPasteMessage(ctx, message);
-  assert.equal(message.replies[0].content.includes('Floor:'), false);
+  assert.equal(message.replies[0].content.includes('Floor'), false);
 
   const handler = createDiscordInteractionHandler(ctx);
   const refresh = buttonInteraction('flow:detailsrefresh', 'paster-11');
@@ -131,7 +188,8 @@ test('flow:detailsrefresh re-fetches live stats and updates the card in place wi
   assert.equal(refresh.messageEdits.length, 0, 'refresh must not neutralize the public origin message');
   assert.equal(refresh.replies.length, 0);
   assert.equal(refresh.updates.length, 1);
-  assert.match(refresh.updates[0].content, /Floor: 0\.09 ETH · 7 holders/);
+  assert.match(refresh.updates[0].content, /Floor\s+0\.09 ETH/);
+  assert.match(refresh.updates[0].content, /Holders\s+7/);
   assert.equal(flowState.get('discord', 'paster-11').step, 'awaiting_details');
 });
 
@@ -423,7 +481,7 @@ test('pasting an OpenSea collection link resolves through resolveMintContractInp
   assert.match(message.replies[0].content, /0x0000000000000000000000000000000000000099/);
 });
 
-test('a second paste while a mint flow is already in progress asks for confirmation instead of silently restarting', async () => {
+test('a second paste while a mint flow is already in progress silently abandons it and starts fresh with the new address', async () => {
   const flowState = createFlowStateStore();
   const commands = baseCommands({ detectMintContract: async () => ({
     chain: 'ethereum', isSeaDrop: false, priceKnown: true, valueWei: '1000000000000000000',
@@ -431,13 +489,15 @@ test('a second paste while a mint flow is already in progress asks for confirmat
   }) });
   const ctx = { identity: { resolveOrCreate: async () => 'internal-user' }, commands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT };
   await handleMintPasteMessage(ctx, mockMessage('0x0000000000000000000000000000000000000001', 'paster-8'));
+  assert.equal(flowState.get('discord', 'paster-8').data.contractAddress, '0x0000000000000000000000000000000000000001');
+
   const second = mockMessage('0x0000000000000000000000000000000000000002', 'paster-8');
   await handleMintPasteMessage(ctx, second);
-  assert.match(second.replies[0].content, /minting/);
-  assert.deepEqual(second.replies[0].components[0].components.map(b => b.custom_id), ['flow:cancel:confirm', 'flow:cancel:resume']);
+  assert.match(second.replies[0].content, /0x0000000000000000000000000000000000000002/, 'shows the card for the new contract, not a confirmation prompt');
+  assert.equal(flowState.get('discord', 'paster-8').data.contractAddress, '0x0000000000000000000000000000000000000002', 'the first flow was abandoned, not merged with the second');
 });
 
-test('a slash command issued mid mint-flow is intercepted with a cancel-confirmation prompt instead of running', async () => {
+test('a slash command issued mid mint-flow silently abandons the flow and runs normally, no confirmation', async () => {
   const flowState = createFlowStateStore();
   const commands = baseCommands({ detectMintContract: async () => ({
     chain: 'ethereum', isSeaDrop: false, priceKnown: true, valueWei: '1000000000000000000',
@@ -447,10 +507,11 @@ test('a slash command issued mid mint-flow is intercepted with a cancel-confirma
   await handleMintPasteMessage(ctx, mockMessage('0x0000000000000000000000000000000000000001', 'paster-9'));
 
   const handler = createDiscordInteractionHandler(ctx);
-  const slash = chatInteraction('wallet', 'paster-9');
+  const slash = chatInteraction('menu', 'paster-9');
   await handler(slash);
-  assert.equal(slash.deferred, false);
-  assert.match(slash.replies[0].content, /minting/);
+  assert.equal(slash.deferred, true, 'the command actually ran (deferred+replied), not intercepted');
+  assert.match(slash.replies[0].content, /GhostMint/);
+  assert.equal(flowState.get('discord', 'paster-9'), null, 'the mint flow was abandoned');
 });
 
 test('an invalid or unresolvable contract input is ignored rather than starting a flow', async () => {

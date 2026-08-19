@@ -38,7 +38,10 @@ const CHAIN_DEFINITIONS = Object.freeze({
     name: 'Polygon',
     chainId: 137,
     envName: 'POLYGON_RPC',
-    defaultRpc: 'https://polygon-rpc.com',
+    // polygon-rpc.com started returning "API key disabled, tenant disabled" (403) for anonymous
+    // requests -- confirmed live 2026-08-18, no longer usable as a free public default. Same
+    // PublicNode family already used for the ethereum default above, confirmed live working.
+    defaultRpc: 'https://polygon.publicnode.com',
     sym: 'MATIC',
     ex: 'https://polygonscan.com/tx/',
     isTestnet: false,
@@ -265,18 +268,38 @@ function parseTelegram() {
   return { botToken: optionalString('TELEGRAM_BOT_TOKEN') };
 }
 
+const SNOWFLAKE = /^\d{17,20}$/;
+
 function parseDiscord() {
   const botToken = optionalString('DISCORD_BOT_TOKEN');
   const applicationId = optionalString('DISCORD_APPLICATION_ID');
+  // Optional, and it does two things at once when set: slash commands register to that one guild
+  // (instant, instead of global registration's propagation delay) AND every command is restricted
+  // to it. That pairing is what makes it a *dev* guild. Leave it empty for a bot that serves every
+  // server it has been added to, plus DMs -- see createDiscordBot's start().
   const devGuildId = optionalString('DISCORD_DEV_GUILD_ID');
-  const values = [botToken, applicationId, devGuildId];
+  const values = [botToken, applicationId];
   if (values.some(Boolean) && !values.every(Boolean)) {
-    throw new ConfigurationError('DISCORD_BOT_TOKEN, DISCORD_APPLICATION_ID, and DISCORD_DEV_GUILD_ID must be configured together');
+    throw new ConfigurationError('DISCORD_BOT_TOKEN and DISCORD_APPLICATION_ID must be configured together');
+  }
+  if (devGuildId && !botToken) {
+    throw new ConfigurationError('DISCORD_DEV_GUILD_ID requires DISCORD_BOT_TOKEN and DISCORD_APPLICATION_ID');
   }
   for (const [name, value] of [['DISCORD_APPLICATION_ID', applicationId], ['DISCORD_DEV_GUILD_ID', devGuildId]]) {
     if (value && !/^\d{17,20}$/.test(value)) throw new ConfigurationError(`${name} must be a valid Discord snowflake`);
   }
-  return { botToken, applicationId, devGuildId };
+  // Independent of the dev guild: this narrows which channels the bot answers in without pinning
+  // it to a single server. Empty means every channel it can see. DMs are never filtered by it.
+  const channelIds = (optionalString('DISCORD_CHANNEL_IDS') || '')
+    .split(',').map(value => value.trim()).filter(Boolean);
+  for (const value of channelIds) {
+    if (!SNOWFLAKE.test(value)) throw new ConfigurationError(
+      'DISCORD_CHANNEL_IDS must be a comma-separated list of Discord snowflakes');
+  }
+  if (channelIds.length && !botToken) {
+    throw new ConfigurationError('DISCORD_CHANNEL_IDS requires DISCORD_BOT_TOKEN and DISCORD_APPLICATION_ID');
+  }
+  return { botToken, applicationId, devGuildId, channelIds };
 }
 
 function parseSocialAdapters() {
@@ -326,6 +349,7 @@ const CONFIG = Object.freeze({
   discordBotToken: discord.botToken,
   discordApplicationId: discord.applicationId,
   discordDevGuildId: discord.devGuildId,
+  discordChannelIds: discord.channelIds,
   socialOfficialApiUrl: socialAdapters.officialApiEndpoint,
   socialOfficialApiToken: socialAdapters.officialApiToken,
   socialManagedServiceUrl: socialAdapters.managedServiceEndpoint,

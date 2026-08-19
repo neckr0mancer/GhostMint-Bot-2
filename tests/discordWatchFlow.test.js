@@ -193,14 +193,22 @@ test('the rule list lets you manage, disable/re-enable, and remove a rule with c
   assert.match(removeDo.updates[0].content, /No social watch rules yet/);
 });
 
-test('navigating away mid-flow prompts for cancel confirmation instead of silently switching', async () => {
+test('navigating away mid-flow silently abandons it and switches immediately, no confirmation', async () => {
   const { handler } = fixture();
   await handler(buttonInteraction('watch:add:start', 'user-6'));
   await handler(modalInteraction('flow:watchname:submit', { value: 'Diverge test' }, 'user-6'));
-  const divert = buttonInteraction('menu:mint', 'user-6');
+  // menu:tasks, not menu:mint, since Section O now makes menu:mint open a modal instead of
+  // updating the message in place -- this probe just needs any other menu tap that still is
+  const divert = buttonInteraction('menu:tasks', 'user-6');
   await handler(divert);
-  assert.match(divert.updates[0].content, /adding a watch rule/);
-  assert.deepEqual(divert.updates[0].components[0].components.map(b => b.custom_id), ['flow:cancel:confirm', 'flow:cancel:resume']);
+  assert.match(divert.updates[0].content, /Tasks/);
+
+  // the abandoned flow must actually be gone -- a follow-up tap that only makes sense mid-watch-
+  // rule-creation (the type select the name step would normally lead to) must be silently ignored.
+  const stray = selectInteraction('flow:watchtype:select', ['twitter_account'], 'user-6');
+  await handler(stray);
+  assert.equal(stray.updates.length, 0);
+  assert.equal(stray.replies.length, 0);
 });
 
 test('a validation error from createWatchRule is shown, and the flow is cleared so the user can start over', async () => {

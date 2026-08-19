@@ -173,6 +173,14 @@ test('accepts a complete Discord configuration and never exposes its token', () 
   assert.doesNotMatch(result.stdout, new RegExp(token));
 });
 
+// DISCORD_DEV_GUILD_ID is what makes it a *development* bot (one guild for registration and the
+// same guild as a hard restriction); a normal bot serving every server it is in leaves it empty.
+test('accepts a Discord configuration with no dev guild, which is the serve-every-server case', () => {
+  const result = probeConfig({ DISCORD_BOT_TOKEN: 'discord-token', DISCORD_APPLICATION_ID: '123456789012345678' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).summary.discordEnabled, true);
+});
+
 test('rejects partial or malformed Discord configuration', () => {
   const partial = probeConfig({ DISCORD_BOT_TOKEN: 'token-only' });
   assert.notEqual(partial.status, 0);
@@ -181,4 +189,24 @@ test('rejects partial or malformed Discord configuration', () => {
     DISCORD_DEV_GUILD_ID: '223456789012345678' });
   assert.notEqual(malformed.status, 0);
   assert.match(malformed.stderr, /valid Discord snowflake/);
+});
+
+// Real Discord snowflakes are digit strings -- this is the case a broken `\d` escape (matching the
+// literal letter "d" instead of a digit) would silently fail on every real value.
+test('accepts a real-shaped DISCORD_CHANNEL_IDS snowflake list, comma-separated and independent of a dev guild', () => {
+  const result = probeConfig({ DISCORD_BOT_TOKEN: 'discord-token', DISCORD_APPLICATION_ID: '123456789012345678',
+    DISCORD_CHANNEL_IDS: '111111111111111111,222222222222222222' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).summary.discordEnabled, true);
+});
+
+test('rejects a malformed DISCORD_CHANNEL_IDS entry and requires the bot token/application ID', () => {
+  const malformed = probeConfig({ DISCORD_BOT_TOKEN: 'token', DISCORD_APPLICATION_ID: '123456789012345678',
+    DISCORD_CHANNEL_IDS: 'not-a-snowflake' });
+  assert.notEqual(malformed.status, 0);
+  assert.match(malformed.stderr, /DISCORD_CHANNEL_IDS must be a comma-separated list of Discord snowflakes/);
+
+  const orphaned = probeConfig({ DISCORD_CHANNEL_IDS: '111111111111111111' });
+  assert.notEqual(orphaned.status, 0);
+  assert.match(orphaned.stderr, /DISCORD_CHANNEL_IDS requires DISCORD_BOT_TOKEN/);
 });

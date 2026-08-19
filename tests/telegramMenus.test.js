@@ -3,7 +3,7 @@ const test = require('node:test');
 const {
   mainMenu, walletsMenu, settingsMenu, tasksMenu, chainPicker, walletPicker,
   contractDetails, contractDetailsText, collectionInfoCard, mintConfirmation, gasTolerancePrompt,
-  taskConfirmation, confirmCancelPrompt, confirmRemoveWallet, placeholderMenu,
+  taskConfirmation, taskScheduled, confirmRemoveWallet, placeholderMenu,
 } = require('../src/telegram/menus');
 
 function flatButtons(replyMarkup) {
@@ -43,7 +43,8 @@ test('chain picker renders one button per supported chain plus a cancel option',
   const picker = chainPicker(['ethereum', 'sepolia'], chains);
   const buttons = flatButtons(picker.replyMarkup);
   assert.deepEqual(buttons.map(b => b.callback_data), ['flow:chain:ethereum', 'flow:chain:sepolia', 'flow:cancel:ask']);
-  assert.equal(buttons[0].text, 'Ethereum');
+  assert.equal(buttons[0].text, '💎 Ethereum');
+  assert.equal(buttons[1].text, 'Sepolia', 'a chain with no Unicode pick in CHAIN_EMOJI falls back to a bare label');
 });
 
 test('wallet picker shows an empty-state menu instead of an empty keyboard', () => {
@@ -57,13 +58,6 @@ test('wallet picker lists each wallet with a prefixed callback and its chain in 
   const buttons = flatButtons(picker.replyMarkup);
   assert.deepEqual(buttons.map(b => b.callback_data), ['wallet:balance:main', 'wallet:balance:spare', 'menu:wallets']);
   assert.match(buttons[0].text, /main.*ethereum/);
-});
-
-test('the cancel-confirmation prompt names the in-progress flow and offers both outcomes', () => {
-  const prompt = confirmCancelPrompt('wallet creation');
-  assert.match(prompt.text, /wallet creation/);
-  const buttons = flatButtons(prompt.replyMarkup);
-  assert.deepEqual(buttons.map(b => b.callback_data), ['flow:cancel:confirm', 'flow:cancel:resume']);
 });
 
 test('the remove-wallet confirmation embeds the exact label being removed', () => {
@@ -136,7 +130,7 @@ test('a sold-out collection shows the OpenSea floor price instead of the mint pr
     maxSupply: null, maxPerWallet: null, startTime: null, collection: null,
     soldOut: true, displayPrice: { eth: 0.3, usd: 900, source: 'floor' },
   });
-  assert.match(details.text, /Status: Sold out, ser\. Floor's sitting at 0\.3 ETH \(~\$900\.00\)/);
+  assert.match(details.text, /Status: Sold out\. Floor's sitting at 0\.3 ETH \(~\$900\.00\)/);
   assert.equal(details.text.includes('Price: 0.05 per item'), false);
 });
 
@@ -146,17 +140,27 @@ test('a sold-out collection with a genuine floor price of 0 shows 0, not "unavai
     maxSupply: null, maxPerWallet: null, startTime: null, collection: null,
     soldOut: true, displayPrice: { eth: 0, usd: 0, source: 'floor' },
   });
-  assert.match(details.text, /Status: Sold out, ser\. Floor's sitting at 0 ETH \(~\$0\.00\)/);
+  assert.match(details.text, /Status: Sold out\. Floor's sitting at 0 ETH \(~\$0\.00\)/);
   assert.equal(details.text.includes('unavailable'), false);
 });
 
-test('a sold-out collection with no OpenSea floor data at all says so plainly', () => {
+test('a sold-out collection with no OpenSea floor data at all says the floor could not be determined, not "ghosted us"', () => {
   const details = contractDetails({
     contractAddress: '0xabc', chainLabel: 'Ethereum', isSeaDrop: true, priceETH: 0.05, priceUnknown: false,
     maxSupply: null, maxPerWallet: null, startTime: null, collection: null,
     soldOut: true, displayPrice: null,
   });
-  assert.match(details.text, /Status: Sold out, and the floor price ghosted us too/);
+  assert.match(details.text, /Status: Sold out\. Floor price couldn't be determined from this contract\./);
+});
+
+test('a sold-out collection omits Max per wallet -- there is nothing left to mint, only Max supply (a permanent fact) still shows', () => {
+  const details = contractDetails({
+    contractAddress: '0xabc', chainLabel: 'Ethereum', isSeaDrop: true, priceETH: 0.05, priceUnknown: false,
+    maxSupply: 5000, maxPerWallet: 3, startTime: null, collection: null,
+    soldOut: true, displayPrice: null,
+  });
+  assert.equal(details.text.includes('Max per wallet'), false);
+  assert.match(details.text, /Max supply: 5000/);
 });
 
 test('a missing USD price omits the parenthetical entirely rather than showing $NaN', () => {
@@ -186,14 +190,34 @@ test('collectionInfoCard renders the mint_guided flow\'s real first screen: Mint
   assert.equal(buttons.find(b => b.url)?.text, '🔗 OpenSea');
 });
 
-test('collectionInfoCard omits every stats-derived line when stats is null, and shows floor/market cap/volume when it is not', () => {
+test('collectionInfoCard suggests scheduling only when the detected opening time is still in the future', () => {
+  const future = Math.floor(Date.now() / 1000) + 3_600;
+  const past = Math.floor(Date.now() / 1000) - 3_600;
+
+  const notYetOpen = collectionInfoCard({
+    contractAddress: '0xabc', chainLabel: 'Ethereum', chainSym: 'ETH', isSeaDrop: true, priceETH: 0.05, priceUnknown: false,
+    maxSupply: 100, maxPerWallet: 1, startTime: future, collection: null, soldOut: false, displayPrice: null, stats: null, openSeaUrl: null,
+  });
+  assert.deepEqual(flatButtons(notYetOpen.replyMarkup).map(b => b.callback_data),
+    ['flow:mintdetailscontinue', 'flow:schedulesuggest:0xabc', 'flow:detailsrefresh', 'flow:copyca', 'flow:cancel:ask']);
+  assert.match(notYetOpen.text, /Opens:/);
+
+  const alreadyOpen = collectionInfoCard({
+    contractAddress: '0xabc', chainLabel: 'Ethereum', chainSym: 'ETH', isSeaDrop: true, priceETH: 0.05, priceUnknown: false,
+    maxSupply: 100, maxPerWallet: 1, startTime: past, collection: null, soldOut: false, displayPrice: null, stats: null, openSeaUrl: null,
+  });
+  assert.equal(flatButtons(alreadyOpen.replyMarkup).some(b => b.callback_data?.startsWith('flow:schedulesuggest:')), false);
+  assert.match(alreadyOpen.text, /Opened:/);
+});
+
+test('collectionInfoCard omits the stats table entirely when stats is null, and renders an aligned floor/holders/minted/volume table -- never a market cap -- when it is not', () => {
   const noStats = collectionInfoCard({
     contractAddress: '0xabc', chainLabel: 'Ethereum', chainSym: 'ETH', isSeaDrop: false, priceETH: 0.05, priceUnknown: false,
     maxSupply: 100, maxPerWallet: 1, startTime: null, collection: null, soldOut: false, displayPrice: null, stats: null, openSeaUrl: null,
   });
-  assert.equal(noStats.text.includes('Floor:'), false);
-  assert.equal(noStats.text.includes('Market cap:'), false);
-  assert.equal(noStats.text.includes('Volume:'), false);
+  assert.equal(noStats.text.includes('📈'), false);
+  assert.equal(noStats.text.includes('<pre>'), false);
+  assert.equal(noStats.text.includes('Floor'), false);
 
   const withStats = collectionInfoCard({
     contractAddress: '0xabc', chainLabel: 'Ethereum', chainSym: 'ETH', isSeaDrop: false, priceETH: 0.05, priceUnknown: false,
@@ -203,10 +227,13 @@ test('collectionInfoCard omits every stats-derived line when stats is null, and 
       marketCap: 4.4, volume: { oneDay: 1.2, sevenDay: 5.5, thirtyDay: null, allTime: 20 },
     },
   });
-  assert.match(withStats.text, /Floor: 0\.08 ETH · 42 holders/);
-  assert.match(withStats.text, /Market cap: 4\.4 ETH \(55\/100 minted\)/);
-  assert.match(withStats.text, /Volume: 24h 1\.2 ETH · 7d 5\.5 ETH/);
+  assert.match(withStats.text, /<pre>[\s\S]*Floor\s+0\.08 ETH[\s\S]*<\/pre>/);
+  assert.match(withStats.text, /Holders\s+42/);
+  assert.match(withStats.text, /Minted\s+55\/100/);
+  assert.match(withStats.text, /24h volume\s+1\.2 ETH/);
+  assert.match(withStats.text, /7d volume\s+5\.5 ETH/);
   assert.equal(withStats.text.includes('30d'), false);
+  assert.equal(withStats.text.includes('Market cap'), false);
 });
 
 test('mintConfirmation omits the gas tolerance line for a plain /mint, and shows it for a /batch that went through the gas-tolerance step', () => {
@@ -269,4 +296,56 @@ test('task confirmation appends a USD equivalent to the price when a displayPric
     mintTime: '2026-08-20T18:00:00.000Z', autoDetectedTime: false, priceETH: 0.1, priceUnknown: false,
   });
   assert.equal(withoutUsd.text.includes('~$'), false);
+});
+
+// The old copy ended on "Set the alarm?", which reads like a reminder -- the bot actually signs and
+// broadcasts the mint unattended, which is a materially different thing to be agreeing to.
+test('task confirmation says the bot executes the mint itself rather than reminding the user', () => {
+  const prompt = taskConfirmation({
+    name: 'drop', contractAddress: '0xabc', chainLabel: 'Ethereum', walletLabel: 'main',
+    mintTime: '2026-08-20T18:00:00.000Z', autoDetectedTime: false, priceETH: 0.1, priceUnknown: false,
+  });
+  assert.match(prompt.text, /not a reminder/i);
+  assert.match(prompt.text, /signs and sends/i);
+  assert.equal(/alarm/i.test(prompt.text), false);
+});
+
+test('a later phase is labelled as one and never claims its price came from the contract', () => {
+  const base = {
+    name: 'phase 2 public', contractAddress: '0xabc', chainLabel: 'Ethereum', walletLabel: 'main',
+    mintTime: '2026-08-20T18:00:00.000Z', autoDetectedTime: false, priceETH: 0.08,
+  };
+  // priceUnknown is set for every phase past the first (it is what forces the manual price step),
+  // but the reason is "the chain only describes the live stage", not "this contract hides its price".
+  const phase = taskConfirmation({ ...base, priceUnknown: true, phaseNumber: 2 });
+  assert.match(phase.text, /Confirm phase 2/);
+  assert.match(phase.text, /Price: 0\.08 per item \(your number for this phase\)/);
+  assert.equal(phase.text.includes('not exposed by this contract'), false);
+  const first = taskConfirmation({ ...base, priceUnknown: true, phaseNumber: 1 });
+  assert.match(first.text, /Confirm scheduled mint/);
+  assert.match(first.text, /not exposed by this contract/);
+});
+
+test('the scheduled-task screen offers the next phase for the same contract', () => {
+  const screen = taskScheduled({
+    name: 'phase 1 allowlist', contractAddress: '0x1234567890abcdef1234567890abcdef12345678',
+    mintTime: '2026-08-20T18:00:00.000Z',
+  });
+  const next = flatButtons(screen.replyMarkup).find(b => b.callback_data.startsWith('flow:phase:'));
+  assert.equal(next.callback_data, 'flow:phase:2:0x1234567890abcdef1234567890abcdef12345678');
+  assert.match(next.text, /phase 2/i);
+  // Telegram rejects callback_data over 64 bytes outright, and this one carries a full address.
+  // Every character in it is ASCII (prefix, digits, hex address), so length is the byte count.
+  assert.ok(next.callback_data.length <= 64);
+});
+
+test('the scheduled-task screen counts phases upward and keeps a way back to the menu', () => {
+  const third = taskScheduled({
+    name: 'phase 3', contractAddress: '0x1234567890abcdef1234567890abcdef12345678',
+    mintTime: '2026-08-20T18:00:00.000Z', phaseNumber: 3,
+  });
+  assert.match(third.text, /Phase 3 armed/);
+  const buttons = flatButtons(third.replyMarkup).map(b => b.callback_data);
+  assert.ok(buttons.includes('flow:phase:4:0x1234567890abcdef1234567890abcdef12345678'));
+  assert.ok(buttons.includes('menu:main'));
 });

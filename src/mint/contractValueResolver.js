@@ -61,7 +61,21 @@ function createContractValueResolver({ providerService, repository }) {
     return resolveOne(chain, contractAddress, 'totalMinted');
   }
 
-  return { resolve, probeTotalMinted };
+  // For a SeaDrop-detected contract, called instead of resolve() -- SeaDrop's own PublicDrop struct
+  // has no supply-cap field (confirmed against the real ABI: mintPrice/startTime/endTime/
+  // maxTotalMintableByWallet/feeBps/restrictFeeRecipients only), so a SeaDrop contract's maxSupply
+  // was previously hardcoded null everywhere, silently dropping the "Max supply" line and the
+  // Minted stat's "/maxSupply" denominator from every SeaDrop collection card on both platforms.
+  // The cap, if the token exposes one at all, still lives on the NFT token contract itself under
+  // one of the same conventional getters non-SeaDrop contracts use -- but reusing resolve()'s full
+  // probe (and its cache) here would also probe price/maxPerWallet against a SeaDrop token contract
+  // that never exposes its real public mint price on itself, same cache-collision risk
+  // probeTotalMinted above already avoids by bypassing repository.get()/save() entirely.
+  async function probeMaxSupply(chain, contractAddress) {
+    return resolveOne(chain, contractAddress, 'maxSupply');
+  }
+
+  return { resolve, probeTotalMinted, probeMaxSupply };
 }
 
 module.exports = { createContractValueResolver, CANDIDATES };

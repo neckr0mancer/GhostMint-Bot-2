@@ -19,13 +19,24 @@ first.** It's a chronological log of every feature Round (A, B, C... AA, AB...),
 what's partial, and what's next. `git log --oneline -20` corroborates recent work; commit messages
 in this repo are written to be self-explanatory.
 
-**Next up:** Round 9 / Section AF — phase-aware scheduled mints (a `/schedule`d mint should be able
-to target a drop *phase*, not just a fixed clock time). Full context, research findings, and two
-scoped workaround shapes are already written up in `docs/WORKLIST.md` under "Round 9 — phase-aware
-scheduled mints" — read that section before starting, it has everything needed to pick this up
-cold. A related copy-accuracy note (the Telegram "Set the alarm?" confirmation text undersells
-that a scheduled mint actually executes unattended, not just reminds) is flagged in the same
-section but belongs to whichever session owns the Telegram copy/tone pass, not this task.
+**Just shipped (2026-08-18):** Round 9 / Section AF shape 1 — manual multi-phase scheduling on
+Telegram. A drop's stage schedule genuinely doesn't exist on-chain (SeaDrop's `PublicDrop` is one
+mutable struct describing only the live stage), so the shipped answer is one `/schedule` task per
+stage: the task success screen now offers "➕ Add phase N", which re-enters the guided flow against
+the same contract and forces this phase's own price and time instead of inheriting the live stage's.
+The "Set the alarm?" copy note flagged in the same section was fixed at the same time — the
+confirmation now says outright that the bot signs and sends the mint itself.
+
+**Next up: not decided — pick with the user.** The open candidates, all detailed in
+`docs/WORKLIST.md`: Section AF **shape 2** (allowlist/GTD phases via a hand-entered merkle proof —
+deliberately left unbuilt, needs `mintAllowList`/`mintSigned` calldata construction that doesn't
+exist yet, and shouldn't be built speculatively); Round 2's Sections **O** (button ⇄ command
+parity), **P** + **R** (transaction watching + sniper guided config, which share one watcher
+abstraction), and **S** (Discord guided task-schedule — also where Section AF's add-a-phase idea
+would land if it's ever wanted on Discord); Round 3's Sections **T–Z**; and Section **AD Tier 2**,
+which is researched but unbuilt. The worklist's own "Suggested order for Round 2" still stands for
+that batch. Section O has an unanswered open question logged against it — check that before
+starting it.
 
 ## Repo state
 

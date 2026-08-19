@@ -176,8 +176,11 @@ function createBotCommandService(dependencies) {
       // passed is the signal available here, distinct from the totalMinted>=maxSupply comparison
       // the plain-mint branch below uses.
       const soldOut = Boolean(seaDrop.publicDrop?.endTime && seaDrop.publicDrop.endTime * 1000 <= Date.now());
-      const displayPrice = await resolveDisplayPrice({ chain, soldOut, mintPriceKnown: priceKnown,
-        mintPriceWeiPerItem: priceKnown ? BigInt(seaDrop.publicDrop.mintPriceWei) : null, floorPrice: openSea?.floorPrice });
+      const [displayPrice, liveMaxSupply] = await Promise.all([
+        resolveDisplayPrice({ chain, soldOut, mintPriceKnown: priceKnown,
+          mintPriceWeiPerItem: priceKnown ? BigInt(seaDrop.publicDrop.mintPriceWei) : null, floorPrice: openSea?.floorPrice }),
+        contractValueResolver ? contractValueResolver.probeMaxSupply(chain, contractAddress) : null,
+      ]);
       return {
         chain,
         isSeaDrop: true,
@@ -186,7 +189,9 @@ function createBotCommandService(dependencies) {
         arguments: [seaDrop.feeRecipient || null, '$wallet', quantity],
         valueWei: priceKnown ? computeSeaDropValueWei({ mintPriceWei: seaDrop.publicDrop.mintPriceWei, quantity }).toString() : null,
         priceKnown,
-        maxSupply: null,
+        // SeaDrop's PublicDrop struct has no supply-cap field -- probed live from the token contract
+        // itself, separately from the SeaDrop core's price/timing above.
+        maxSupply: liveMaxSupply ? Number(liveMaxSupply.value) : null,
         maxPerWallet: seaDrop.publicDrop?.maxTotalMintableByWallet ?? null,
         // Real on-chain SeaDrop PublicDrop fields (unix seconds) -- null for a drop with no known
         // PublicDrop yet, not "no opening time exists." Non-SeaDrop contracts have no equivalent
