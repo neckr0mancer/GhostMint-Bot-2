@@ -370,12 +370,25 @@ function createBotCommandService(dependencies) {
     return executeSend({ userId, wallet: owned, request: validated });
   }
 
+  // Per wallet, because partial success is the normal outcome and money is involved: a batch
+  // that aborted on the first throw left the wallets before it already broadcast on-chain while
+  // the caller saw nothing but a generic error -- no txHash, no way to know a mint had gone out.
+  // Every wallet is now attempted and reported, matching importWalletsBatch and the per-wallet
+  // rendering /batchmint already had. Validation still throws: a bad contract or an unsupported
+  // chain is wrong for the whole request, not for one wallet, and must not be retried 5 times.
   async function batchMint(userId, input) {
     const withPrice = await resolvePriceIfMissing(input, input.chain);
     const validated = requestSchemas.batchMint(withPrice, { supportedChains });
     const results = [];
     for (const label of validated.walletLabels) {
-      results.push(await mint(userId, { ...validated, walletLabel: label }));
+      try {
+        results.push({ walletLabel: label, ...await mint(userId, { ...validated, walletLabel: label }) });
+      } catch (error) {
+        results.push({ walletLabel: label, state: 'failed',
+          error: error instanceof ValidationError
+            ? error.issues.map(issue => issue.message).join('; ')
+            : String(error?.message || 'mint failed') });
+      }
     }
     return results;
   }

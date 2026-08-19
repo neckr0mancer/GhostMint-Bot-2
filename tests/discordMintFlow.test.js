@@ -170,7 +170,10 @@ test('full batch-mint happy path: selecting more than one wallet in one tap reac
   const batches = [];
   const commands = baseCommands({
     wallets: () => [{ label: 'alpha', chain: 'ethereum' }, { label: 'beta', chain: 'ethereum' }, { label: 'gamma', chain: 'ethereum' }],
-    batchMint: async (userId, input) => { batches.push({ userId, input }); return [{ txHash: '0x1' }, { txHash: '0x2' }]; },
+    batchMint: async (userId, input) => { batches.push({ userId, input }); return [
+      { walletLabel: 'alpha', state: 'confirmed', txHash: '0x1' },
+      { walletLabel: 'gamma', state: 'failed', error: 'insufficient funds for gas' },
+    ]; },
   });
   const ctx = { identity: { resolveOrCreate: async () => 'internal-user' }, commands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT };
   const handler = createDiscordInteractionHandler(ctx);
@@ -194,7 +197,11 @@ test('full batch-mint happy path: selecting more than one wallet in one tap reac
   await handler(confirm);
   assert.equal(batches.length, 1);
   assert.deepEqual(batches[0].input.walletLabels, ['alpha', 'gamma']);
-  assert.match(confirm.updates[0].content, /Batch complete: 2 wallet transaction/);
+  // Per wallet, not a bare count: batchMint attempts every wallet now, so a batch where one
+  // wallet failed must not read as an unqualified success.
+  assert.match(confirm.updates[0].content, /Batch mint . 1 of 2 submitted/);
+  assert.match(confirm.updates[0].content, /alpha/);
+  assert.match(confirm.updates[0].content, /insufficient funds for gas/);
 });
 
 // Item 16: /mintnow mirrors Telegram's oneShot -- skips the details card, quantity step, price

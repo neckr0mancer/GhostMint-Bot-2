@@ -8,6 +8,7 @@
 // before being interpolated next to a real tag so it can never break or inject into the markup.
 
 const { escapeTelegramHtml } = require('../security/botSecurity');
+const { LIMITS } = require('../validation/domain');
 
 function button(text, callbackData) {
   return { text, callback_data: callbackData };
@@ -45,6 +46,41 @@ function mainMenu({ isOwner = false } = {}) {
   };
 }
 
+// Batch was previously reachable only by knowing /batch existed -- the Mint button went straight
+// into a single-wallet flow. This is the fork, mirroring Discord's mintModeMenu: the guided flow
+// underneath is the same one, started with multi true or false.
+function mintModeMenu() {
+  return {
+    text: '<b>🎯 Mint</b>\n\nOne wallet, or the whole squad?',
+    replyMarkup: keyboard([
+      [button('🎯 Single mint', 'menu:mint:single')],
+      [button('🎯🎯 Batch mint (several wallets)', 'menu:mint:batch')],
+      [button('⬅️ Back to base', 'menu:main')],
+    ]),
+    parseMode: 'HTML',
+  };
+}
+
+// Telegram has no modal, so "add another key" is just another message -- the card below is the
+// running tally, re-rendered after each one. The keys themselves are never echoed back: Telegram
+// keeps chat history, and repeating what was just typed would put every key back on screen.
+function batchImportMenu({ count = 0, chainLabel = '', dropped = 0 } = {}) {
+  const ready = count > 0;
+  const rows = [];
+  if (ready) rows.push([button(`✅ Import ${count} wallet${count === 1 ? '' : 's'}`, 'wallet:batch-import:confirm')]);
+  rows.push([button('❌ Nah, cancel', 'flow:cancel:ask')]);
+  return {
+    text: `<b>📥📥 Batch import${chainLabel ? ` · ${escapeTelegramHtml(chainLabel)}` : ''}</b>\n\n`
+      + (ready
+        ? `<b>${count}</b> key${count === 1 ? '' : 's'} ready. Send another message to add more, or import what you have.`
+        : 'Send your private keys now — one per line, or several messages. Paste them however you have them.')
+      + (dropped ? `\n\n⚠️ ${dropped} key${dropped === 1 ? ' was' : 's were'} ignored — ${LIMITS.batchWalletImport} is the most one import can take. Import these, then start another batch.` : '')
+      + "\n\n⚠️ <b>Not recommended:</b> keys pass through Telegram's message transit and may remain in chat history or notification previews. Delete your messages afterward if you can.",
+    replyMarkup: keyboard(rows),
+    parseMode: 'HTML',
+  };
+}
+
 function walletsMenu() {
   return {
     text: '<b>👛 Wallets</b>\n\nA fresh wallet minted server-side beats importing your seed phrase from a sticky note. We recommend generating new.',
@@ -52,6 +88,7 @@ function walletsMenu() {
       [button('📋 List wallets', 'wallet:list')],
       [button('➕ Create wallet', 'wallet:create:start')],
       [button('📥 Import wallet', 'wallet:import:start')],
+      [button('📥📥 Batch import', 'wallet:batch-import:start')],
       [button('💰 Check balance', 'wallet:balance:pick')],
       [button('🔑 Export key', 'menu:exportkey')],
       [button('🗑️ Remove wallet', 'wallet:remove:pick')],
@@ -611,6 +648,8 @@ module.exports = {
   keyboard,
   mainMenu,
   walletsMenu,
+  mintModeMenu,
+  batchImportMenu,
   settingsMenu,
   tasksMenu,
   placeholderMenu,

@@ -8,7 +8,7 @@ const { LinkCodeError } = require('../identity/identityService');
 const { ProofResolutionError } = require('../mint/proofResolver');
 const { OPENSEA_CHAIN_SLUGS } = require('../mint/openSeaService');
 const { TransactionSafetyError } = require('../transactions/transactionEngine');
-const { ValidationError, validationReply } = require('../validation/domain');
+const { ValidationError, validationReply, LIMITS } = require('../validation/domain');
 const { BotContextError, RateLimitError, commandName, createCommandRateLimiter, escapeDiscord,
   verifyDiscordContext } = require('../security/botSecurity');
 // Shared with Telegram (src/telegram/flowState.js). That module has no Telegram-specific logic --
@@ -350,7 +350,14 @@ async function finishMintExecutionDiscord(ctx, respond, platformUserId, userId, 
       const results = await commands.batchMint(userId, { walletLabels: flowData.selectedWallets,
         contractAddress: flowData.contractAddress, chain: flowData.chain, quantity: flowData.quantity || 1, priceETH: flowData.priceETH, maxGasGwei: flowData.maxGasGwei });
       flowState.clear('discord', platformUserId);
-      return respond({ content: `✅ Batch complete: ${results.length} wallet transaction(s).`, components: backToMenu });
+      // Per wallet: batchMint no longer aborts on the first failure, so a bare count would
+      // report a batch where half the wallets never minted as an unqualified success.
+      const ok = results.filter(item => item.state !== 'failed');
+      const lines = results.map(item => (item.state === 'failed'
+        ? `❌ **${escapeDiscord(String(item.walletLabel))}** — ${escapeDiscord(String(item.error || 'failed'))}`
+        : `✅ **${escapeDiscord(String(item.walletLabel))}** — ${escapeDiscord(String(item.state || 'submitted'))}`
+          + (item.txHash ? ` \`${item.txHash}\`` : '')));
+      return respond({ content: `**Batch mint — ${ok.length} of ${results.length} submitted**\n${lines.join('\n')}`, components: backToMenu });
     }
     const result = await commands.mint(userId, { walletLabel: flowData.selectedWallets[0],
       contractAddress: flowData.contractAddress, chain: flowData.chain, quantity: flowData.quantity || 1, priceETH: flowData.priceETH });
@@ -1071,9 +1078,14 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         const raw = String(interaction.fields.getTextInputValue('value') || '');
         const added = raw.split(/[\s,]+/).map(item => item.trim()).filter(Boolean);
         const existing = flow?.data?.privateKeys || [];
-        const privateKeys = [...existing, ...added];
+        // Clamp here rather than letting importWalletsBatch reject the lot: the card offers no
+        // way to remove a key, so an over-cap list would be a dead end with nothing to do but
+        // cancel and re-paste.
+        const merged = [...existing, ...added];
+        const privateKeys = merged.slice(0, LIMITS.batchWalletImport);
         flowState.advance('discord', platformUserId, 'awaiting_key', { privateKeys });
         return interaction.reply({ ...discordMenus.batchImportMenu({ count: privateKeys.length,
+          dropped: merged.length - privateKeys.length,
           chainLabel: chains[flow.data.chain]?.name || flow.data.chain }), ephemeral: true }).catch(() => {});
       }
 

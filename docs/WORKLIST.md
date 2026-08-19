@@ -28,6 +28,9 @@ shipped).
   multi-phase scheduling on Telegram) shipped 2026-08-18, together with the scheduled-mint
   confirmation copy fix flagged in the same section; shape 2 (allowlist phases via a hand-entered
   merkle proof) remains deliberately unbuilt.
+- **Round 11** (Section AH) makes batch mint and batch import reachable as guided flows on the
+  dashboard, Telegram and Discord, rather than JSON commands; requested directly, outside the
+  redesign phases; shipped 2026-08-19. Fixed two real defects on the way — see the section.
 - **Round 10** (Section AG) is the dashboard redesign — design complete, build well underway on
   `redesign/dashboard`. Shell chrome, the Mint page (all four tabs) and the four-state pass are
   done; see `docs/REDESIGN_HANDOFF.md` for what is next. It began scoped to `dashboard/**` alone,
@@ -35,6 +38,72 @@ shipped).
   filters, failure reasons and the low-balance pre-flight.
 
 Status legend: ✅ Done · 🟡 Partial · ❌ Not started
+
+---
+
+# Round 11 — guided batch mint + batch import, all three surfaces (2026-08-19)
+
+## Section AH — Batch mint and batch import as guided flows, not JSON commands ✅
+
+Requested directly, outside the redesign phases: *"fully implement batch mint and batch import for
+both the site and Telegram and Discord."* Followed by a design correction that set the shape —
+batch must be reachable by **clicking**, not by knowing a command exists, and must let you add
+inputs one at a time rather than hand-writing JSON. Discord was named the priority, then Telegram.
+
+Both operations already existed as JSON slash commands (`/batchmint {...}`, `/batchimport {...}`)
+and, on Telegram, batch mint already had a full guided flow behind `/batch` — with a working
+multi-wallet toggle picker. **None of it was reachable from a menu.** That was the actual gap on
+both platforms: the Mint button went straight into a single-wallet flow, and Wallets offered only
+single-key import.
+
+**What shipped**
+
+- **Mint forks into single or batch** on both platforms (`mintModeMenu` in each menus module).
+  The flow underneath is unchanged — it is the same guided flow, started with `multi` true or
+  false — so batch inherits the wallet multi-select, the gas-tolerance step and the confirm screen
+  it already had.
+- **Guided batch import** on both platforms, keys added incrementally:
+  - *Discord*: a paragraph modal, an `➕ Add more keys` button that reopens it, and a running
+    tally. Each submission appends rather than replaces.
+  - *Telegram*: no modals, so **each message is an add** — send keys one per line, several per
+    message, or across several messages; the card re-renders with the count after each one.
+  - Keys are split on any whitespace or comma, so they paste from wherever the user had them.
+  - The card **never echoes keys back**: both platforms keep chat history, and repeating them
+    would put every key back on screen.
+  - Telegram deletes the user's key message on receipt, as the single-key import already did.
+- **The 50-key cap is enforced when keys arrive, not at import.** `importWalletsBatch` rejects an
+  over-cap list wholesale, and the card offers no way to remove a key — so an over-cap list was a
+  dead end whose only exit was Cancel. Keys past the cap are now dropped as they arrive, with the
+  card saying how many and why, and the 50 that fit stay importable.
+
+**Two real defects found and fixed while building this**
+
+1. **`batchMint` aborted the whole batch on the first wallet that threw** — `results.push(await
+   mint(...))` in a bare loop. This is the worst possible shape for this operation: the wallets
+   *before* the failure had already broadcast real transactions, and the caller got an exception
+   carrying no txHash and no way to learn that a mint had gone out. Logged as a known limitation in
+   Section AE and fixed here: every wallet is attempted, each result names its wallet and carries a
+   state, and a failed one reports why. `/batchmint`'s reply has always rendered per wallet with a
+   `state === 'failed'` branch — that branch was simply unreachable until now. Request-wide
+   problems (unsupported chain, bad contract) still throw, since retrying them once per wallet
+   would turn one mistake into N identical failures.
+   The dashboard was never affected: it does not call `batchMint` at all, going through
+   `previewMint`/`confirmMint`, whose per-wallet try/catch already cited `importWalletsBatch` as
+   the model to follow. `batchMint` was the one path that had not.
+2. **Discord's Import button was never actually disabled.** `button()`'s 4th parameter is `emoji`;
+   the disabled flag was being passed there, which set `emoji: true` — a shape Discord rejects for
+   the whole component payload — and left the button live with nothing to import. `disabled` is now
+   its own 5th parameter.
+
+The guided-flow reply for batch mint changed on both platforms as a consequence of (1): it reported
+`Batch complete: N wallet transaction(s)`, which would have described a batch where half the wallets
+never minted as an unqualified success. It now reports `N of M submitted` with a line per wallet.
+
+**Still open**
+
+- Discord's `/batch-mint` and `/wallet batch-import` slash commands, and both Telegram flows, are
+  covered by unit tests but have not yet been exercised against the live bots.
+- Discord still has no mint presets at all — a separate parity gap, unrelated to batch.
 
 ---
 

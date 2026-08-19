@@ -392,3 +392,51 @@ test('profileLimits passes a supported chain through to the governance resolver'
   assert.deepEqual(seen, [['user-a', 'ethereum']]);
   assert.equal(result.chain, 'ethereum');
 });
+
+// batchMint used to be `results.push(await mint(...))` in a bare loop, so the first wallet that
+// threw rejected the whole call. That is the worst possible shape for this operation: the wallets
+// BEFORE the failure have already broadcast real transactions, and the caller got an exception
+// with no txHash and no way to learn a mint had gone out. /batchmint's reply has always rendered
+// per wallet with a `state === 'failed'` branch -- that branch was simply unreachable.
+test('batch mint attempts every wallet and reports per wallet instead of aborting on the first failure', async () => {
+  const attempted = [];
+  const { service } = fixture({
+    executeMint: async ({ wallet }) => {
+      attempted.push(wallet.label);
+      if (wallet.label === 'beta') throw new Error('insufficient funds for gas');
+      return { state: 'confirmed', txHash: `0x${wallet.label}` };
+    },
+    getState: () => ({
+      wallets: [
+        { userId: 'user-a', label: 'alpha', address: '0x0000000000000000000000000000000000000001', chain: 'ethereum' },
+        { userId: 'user-a', label: 'beta', address: '0x0000000000000000000000000000000000000002', chain: 'ethereum' },
+        { userId: 'user-a', label: 'gamma', address: '0x0000000000000000000000000000000000000003', chain: 'ethereum' },
+      ],
+      tasks: [], activity: [], pnl: [], snipers: [],
+    }),
+  });
+  const results = await service.batchMint('user-a', {
+    walletLabels: ['alpha', 'beta', 'gamma'],
+    contractAddress: '0x000000000000000000000000000000000000dEaD',
+    chain: 'ethereum', quantity: 1, priceETH: 0,
+  });
+  assert.deepEqual(attempted, ['alpha', 'beta', 'gamma'], 'the wallet after the failure is still attempted');
+  assert.equal(results.length, 3);
+  assert.deepEqual(results.map(item => item.walletLabel), ['alpha', 'beta', 'gamma'],
+    'each result names its wallet, so callers need not zip by index');
+  assert.equal(results[0].state, 'confirmed');
+  assert.equal(results[0].txHash, '0xalpha');
+  assert.equal(results[1].state, 'failed');
+  assert.match(results[1].error, /insufficient funds/);
+  assert.equal(results[2].state, 'confirmed', 'gamma mints even though beta failed before it');
+});
+
+test('batch mint still throws for a request-wide problem rather than failing each wallet separately', async () => {
+  // An unsupported chain is wrong for the whole request; retrying it once per wallet would turn
+  // one mistake into N identical failures and hide what actually went wrong.
+  const { service } = fixture({ executeMint: async () => ({ state: 'confirmed' }) });
+  await assert.rejects(service.batchMint('user-a', {
+    walletLabels: ['alpha'], contractAddress: '0x000000000000000000000000000000000000dEaD',
+    chain: 'dogecoin', quantity: 1, priceETH: 0,
+  }), ValidationError);
+});

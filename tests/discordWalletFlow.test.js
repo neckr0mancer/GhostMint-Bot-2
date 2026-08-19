@@ -93,3 +93,25 @@ test('wallet:balance:pick still renders the picker promptly, via the same blanke
   assert.equal(pick.deferred, true);
   assert.equal(pick.editReplies.length, 1);
 });
+
+test('the Discord batch card reports keys dropped by the 50 cap instead of failing at import time', () => {
+  const { batchImportMenu } = require('../src/discord/menus');
+  const { LIMITS } = require('../src/validation/domain');
+  assert.equal(/ignored/.test(batchImportMenu({ count: 4 }).content), false, 'silent when nothing was dropped');
+  const over = batchImportMenu({ count: LIMITS.batchWalletImport, dropped: 2 });
+  assert.match(over.content, /2 keys were ignored/);
+  const confirm = over.components.flatMap(r => r.components).find(b => b.custom_id === 'wallet:batch-import:confirm');
+  assert.notEqual(confirm.disabled, true, 'the keys that fit stay importable');
+});
+
+test('the empty batch card disables Import via disabled, not via the emoji slot', () => {
+  // button()'s 4th parameter is emoji; passing the disabled flag there set emoji:true, which
+  // Discord rejects for the whole component payload -- and left the button live with nothing to
+  // import. Guards both halves.
+  const { batchImportMenu } = require('../src/discord/menus');
+  const find = card => card.components.flatMap(r => r.components).find(b => b.custom_id === 'wallet:batch-import:confirm');
+  const empty = find(batchImportMenu({ count: 0 }));
+  assert.equal(empty.disabled, true, 'nothing collected yet, so Import is disabled');
+  assert.equal('emoji' in empty, false, 'the disabled flag must not land in the emoji slot');
+  assert.equal('emoji' in find(batchImportMenu({ count: 2 })), false);
+});

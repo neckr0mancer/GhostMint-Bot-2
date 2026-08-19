@@ -5,6 +5,8 @@
 // interaction.reply/update/showModal, so this stays fully unit-testable without loading
 // discord.js, and discordBot.js (the composition root) is responsible only for wiring.
 
+const { LIMITS } = require('../validation/domain');
+
 const ROW = 1;
 const BUTTON = 2;
 const SELECT = 3;
@@ -12,9 +14,13 @@ const TEXT_INPUT = 4;
 const BUTTON_STYLE = { primary: 1, secondary: 2, success: 3, danger: 4 };
 const TEXT_STYLE = { short: 1, paragraph: 2 };
 
-function button(label, customId, style = 'secondary', emoji) {
+// disabled is the 5th parameter, after emoji, because emoji was here first and gas:chain:*
+// passes it positionally. Discord rejects the whole component payload for an unknown emoji
+// shape, so a disabled flag passed in the emoji slot is not a cosmetic mistake.
+function button(label, customId, style = 'secondary', emoji, disabled = false) {
   const value = { type: BUTTON, style: BUTTON_STYLE[style] || BUTTON_STYLE.secondary, custom_id: customId, label };
   if (emoji) value.emoji = emoji;
+  if (disabled) value.disabled = true;
   return value;
 }
 
@@ -315,18 +321,19 @@ function mintModeMenu() {
 //
 // The keys themselves are never echoed back. Discord keeps message history, and a card that
 // repeated what you just typed would put every key back on screen for anyone shoulder-surfing.
-function batchImportMenu({ count = 0, chainLabel = '' } = {}) {
+function batchImportMenu({ count = 0, chainLabel = '', dropped = 0 } = {}) {
   const ready = count > 0;
   return {
     content: `## Batch import${chainLabel ? ` · ${chainLabel}` : ''}\n`
       + (ready
         ? `**${count}** key${count === 1 ? '' : 's'} ready to import. Add more, or import what you have.`
         : 'Add your first private key. You can paste several at once, one per line.')
+      + (dropped ? `\n\n⚠️ ${dropped} key${dropped === 1 ? ' was' : 's were'} ignored — ${LIMITS.batchWalletImport} is the most one import can take. Import these, then start another batch.` : '')
       + "\n\n⚠️ Not recommended: keys pass through Discord's messaging systems and may remain in client history.",
     components: [
       row([button(ready ? '➕ Add more keys' : '🔑 Add keys', 'wallet:batch-import:add', 'danger')]),
       row([
-        button(ready ? `✅ Import ${count}` : '✅ Import', 'wallet:batch-import:confirm', 'success', !ready),
+        button(ready ? `✅ Import ${count}` : '✅ Import', 'wallet:batch-import:confirm', 'success', undefined, !ready),
         button('❌ Cancel', 'flow:cancel:ask', 'secondary'),
       ]),
     ],
