@@ -481,6 +481,8 @@ function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSear
   // appears ONLY once that has happened, carrying the server's own message in the prototype's
   // .fielderr. A gap in the design rather than a departure from it; see backlog §14.
   const [priceIssue,setPriceIssue]=useState(null);
+  const [selectedIds,setSelectedIds]=useState([]);
+  function toggleSelected(id){setSelectedIds(current=>current.includes(id)?current.filter(x=>x!==id):[...current,id]);}
   // Mirrors Minting's auto-detect: a scheduled mint needs the same price/opening-time knowledge an
   // immediate mint does, so this reuses the identical /api/mints/detect endpoint rather than making
   // the user look those up by hand. Price and time stay editable afterward -- detection pre-fills,
@@ -510,7 +512,7 @@ function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSear
   // just-changed value directly since setState hasn't applied yet inside the same onChange handler.
   function autoDetectIfReady(value=contractAddress){const trimmed=value.trim();if(ADDRESS_SHAPE.test(trimmed)&&trimmed!==lastDetected.current)detect(trimmed);}
   function handleContractBlur(){autoDetectIfReady();}
-  async function create(event){event.preventDefault();const form=event.currentTarget;try{const input=Object.fromEntries(new FormData(form));if(!input.priceETH)delete input.priceETH;if(input.mintTime)input.mintTime=new Date(input.mintTime).toISOString();else delete input.mintTime;await api('/api/tasks',{method:'POST',body:JSON.stringify(input)});setPriceIssue(null);form.reset();setContractAddress('');setQuantity('1');setPriceETH('');setMintTime('');lastDetected.current='';notify('Task scheduled.',{type:'success'});listing.load();}catch(value){const issue=value.issues?.find(entry=>entry.field==='priceETH');if(issue)setPriceIssue(issue.message);notify(value.message,{type:'error'});}}async function control(id,action){if(action==='cancel'&&!await confirmDialog('Delete this scheduled mint? It will not fire, and this cannot be undone.'))return;try{await api(`/api/tasks/${id}/control`,{method:'POST',body:JSON.stringify({action,confirmation:action==='cancel'?'CONFIRM':undefined})});listing.load();}catch(value){notify(value.message,{type:'error'});}}
+  async function create(event){event.preventDefault();const form=event.currentTarget;try{const input=Object.fromEntries(new FormData(form));if(!input.priceETH)delete input.priceETH;if(input.mintTime)input.mintTime=new Date(input.mintTime).toISOString();else delete input.mintTime;await api('/api/tasks',{method:'POST',body:JSON.stringify(input)});setPriceIssue(null);form.reset();setContractAddress('');setQuantity('1');setPriceETH('');setMintTime('');lastDetected.current='';notify('Task scheduled.',{type:'success'});listing.load();}catch(value){const issue=value.issues?.find(entry=>entry.field==='priceETH');if(issue)setPriceIssue(issue.message);notify(value.message,{type:'error'});}}async function control(id,action){try{await api(`/api/tasks/${id}/control`,{method:'POST',body:JSON.stringify({action,confirmation:action==='cancel'?'CONFIRM':undefined})});}catch(value){notify(value.message,{type:'error'});}}
   // Prototype docs/prototype-pages/mint.html:111-158. The Schedule tab is a .split: the form on
   // the left, the "Scheduled" list on the right. The old page-lead, the search toolbar, the chain
   // select and the table UNDER the form are all gone -- none of them exist in the design, and the
@@ -521,7 +523,12 @@ function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSear
   // The prototype's chip reads "2 pending" above THREE rows -- Scheduled, Paused, Failed. So
   // "pending" means not-yet-fired: a paused mint still counts, a failed one does not. Counting
   // only status==="scheduled" would have printed 1 against the same three rows.
-  const PENDING_STATUSES=new Set(['scheduled','paused','pending','queued']);
+  // These are the statuses src/scheduler/schedulerRepository.js:71 itself counts as active, and
+  // "pending" means exactly that: not yet fired. 'retry' is a task the worker will attempt again
+  // and 'claimed' is one it is holding a lease on -- both are still coming, so both count. The
+  // earlier list guessed at 'pending'/'queued', which this schema never produces, while missing
+  // the two that it does.
+  const PENDING_STATUSES=new Set(['scheduled','retry','claimed','paused']);
   const pending=items?items.filter(task=>PENDING_STATUSES.has(String(task.status).toLowerCase())).length:0;
   function rowIcon(status){
     const value=String(status||'').toLowerCase();
@@ -529,15 +536,38 @@ function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSear
     if(value==='failed'||value==='error')return <div className="ri" style={{color:'var(--loss-text)'}}>{CROSS_ICON}</div>;
     return <div className="ri">{CLOCK_ICON_LG}</div>;
   }
-  // Pause applies while a mint is still going to fire; Resume only to a paused one; Retry only
-  // to one that has already failed. Cancel is always available and is handled separately, since it
-  // is destructive and carries its own confirmation.
-  function actionsFor(status){
-    const value=String(status||'').toLowerCase();
-    if(value==='paused')return ['resume'];
-    if(value==='failed'||value==='error')return ['retry'];
-    if(PENDING_STATUSES.has(value))return ['pause'];
-    return [];
+  // The server is the authority on which control a status accepts, so this mirrors the WHERE
+  // clauses in src/scheduler/schedulerRepository.js (pause/resume/retry/cancel, lines 137-155)
+  // rather than reasoning about it independently. Cancel used to be treated as always available;
+  // it is not -- the server takes it only for a mint that is still going to fire, and offering it
+  // on an already-cancelled row just produced a rejection the user could do nothing about.
+  const ACTIONS_BY_STATUS={
+    scheduled:['pause','cancel'],
+    retry:['pause','cancel'],
+    paused:['resume','cancel'],
+    failed:['retry'],
+  };
+  function actionsFor(status){return ACTIONS_BY_STATUS[String(status||'').toLowerCase()]||[];}
+  // Everything below acts on what is BOTH selected and on the page in view. Paging clears the
+  // selection anyway (see the Pager), but intersecting here as well is what stops a control from
+  // ever being enabled with nothing behind it -- a button that looks live and silently does
+  // nothing is worse than a disabled one.
+  const selected=(items||[]).filter(task=>selectedIds.includes(task.id));
+  // An action is offered when at least one selected schedule can take it, and then runs against
+  // exactly those -- selecting a paused and a failed mint together and pressing Retry retries the
+  // failed one and leaves the paused one alone, rather than erroring on the pair.
+  function selectionSupports(action){
+    return selected.some(task=>actionsFor(task.status).includes(action));
+  }
+  async function controlSelected(action){
+    const targets=selected.filter(task=>actionsFor(task.status).includes(action));
+    if(!targets.length)return;
+    if(action==='cancel'&&!await confirmDialog(targets.length===1
+      ?'Cancel this scheduled mint? It will not fire, and this cannot be undone.'
+      :`Cancel ${targets.length} scheduled mints? They will not fire, and this cannot be undone.`))return;
+    for(const task of targets)await control(task.id,action);
+    setSelectedIds([]);
+    listing.load();
   }
   function rowPill(status){
     const value=String(status||'').toLowerCase();
@@ -607,25 +637,43 @@ function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSear
                  <p>A scheduled mint is a database row, not a browser timer — it fires whether or not this tab is open.</p>
                </div>
               :<div>
+                 {/* Rows are SELECTABLE, and the four controls sit in ONE .br beneath the list,
+                     exactly where the prototype puts them (mint.html:145). That placement only
+                     works if something says WHICH schedule the buttons act on, so each row
+                     carries the same checkbox treatment the prototype already uses on Batch's
+                     wallet list (mint.html:171) and on Automation (auto.html:49) -- borrowed from
+                     its own vocabulary rather than inventing a selected-row style it does not
+                     define. min-height:auto is not decoration: prototype.css:83 sets a
+                     var(--tap-min) floor on every bare input, which is why the prototype's own
+                     checkboxes carry it too. flex:none is the one addition, and only because .r is
+                     a flex row where the prototype's checkboxes sit in a label. Backlog §4.4. */}
                  {items.map(task=><div className="r" key={task.id}>
+                   <input type="checkbox" style={{minHeight:'auto',width:'16px',height:'16px',flex:'none'}}
+                     aria-label={`Select ${task.name}`}
+                     checked={selectedIds.includes(task.id)} onChange={()=>toggleSelected(task.id)}/>
                    {rowIcon(task.status)}
                    <div className="rm">
                      <div className="rt">{task.name}</div>
                      <div className="rs fold">{task.walletLabel} · {new Date(task.mintTime).toISOString()}</div>
                    </div>
                    <div className="rv">{rowPill(task.status)}</div>
-                   {/* Per row, and only the actions that apply to THIS row's status: Pause a
-                       scheduled mint, Resume a paused one, Retry a failed one, Cancel any of them.
-                       The prototype lists all four together because it is a static legend of what
-                       exists, not four live controls bound to one row. Cancel keeps the ellipsis
-                       because it opens a confirmation -- it deletes the schedule. */}
-                   <div className="br">
-                     {actionsFor(task.status).map(action=><button type="button" key={action} className="b sm"
-                       onClick={()=>control(task.id,action)}>{action[0].toUpperCase()+action.slice(1)}</button>)}
-                     <button type="button" className="b d sm" onClick={()=>control(task.id,'cancel')}>Cancel…</button>
-                   </div>
                  </div>)}
-                 <Pager value={listing.data} page={page} setPage={setPage}/>
+                 {/* All four always present, as the prototype draws them; the ones that cannot
+                     apply to the current selection are disabled rather than hidden, so the row
+                     does not reflow as the selection changes. .b[disabled] is the prototype's
+                     own treatment for exactly this. */}
+                 <div className="br" style={{marginTop:'11px'}}>
+                   {['pause','resume','retry'].map(action=><button type="button" key={action} className="b sm"
+                     disabled={!selectionSupports(action)} onClick={()=>controlSelected(action)}>
+                     {action[0].toUpperCase()+action.slice(1)}</button>)}
+                   <button type="button" className="b d sm" disabled={!selectionSupports('cancel')}
+                     onClick={()=>controlSelected('cancel')}>Cancel…</button>
+                 </div>
+                 {/* A selection belongs to the page it was made on, so leaving the page drops it.
+                     Guarded on an ACTUAL change: pressing the number you are already on is a no-op,
+                     and a no-op that silently throws away a selection is just a trap. */}
+                 <Pager value={listing.data} page={page}
+                   setPage={value=>{if(value!==page)setSelectedIds([]);setPage(value);}}/>
                </div>}
       </div>
     </div>

@@ -340,19 +340,38 @@ Checked against docs/prototype-pages/mint.html with the account's only wallet de
 
 The form is shown DISABLED rather than hidden, which is the point of the state.
 
-### Schedule tab — one deliberate deviation, needs a ruling
+### Schedule tab — the action row. RULED 2026-08-19: selection, not per-row
 
 The prototype (mint.html:145) puts a SINGLE action row after the scheduled list:
-Pause / Resume / Retry / Cancel. That cannot be wired to anything, because the design
-has no selection model — no checkboxes, no active row, nothing to say which scheduled
-mint the buttons would act on.
+Pause / Resume / Retry / Cancel. It was first built per-row instead, on the reasoning
+that a single row cannot be wired to anything because the design has no selection
+model — no checkboxes, no active row, nothing to say which scheduled mint the buttons
+would act on.
 
-Built instead as a per-row action row, keeping the prototype's exact classes
-(.b.sm and .b.d.sm), labels and order. Every visual token is the prototype's; only
-the placement differs, and only because the prototype's placement is not operable.
+**The owner rejected that, reading the prototype back against the build:** the bar
+belongs under the list exactly as drawn, and the rows become selectable. Their words —
+"the pause, resume, retry and cancel buttons were under the three schedule items,
+while yours is beside the single scheduled one ... there will be multiple pause and
+resume and cancel buttons, so I think they should be selectable."
 
-**Ruling needed:** accept per-row, or add a selection model so the single row can
-match the prototype literally? Per-row is what is in the tree today.
+Two things that reasoning got right, worth keeping:
+
+- The per-row build read the single bar as a *legend* because there were three rows
+  and one bar. But the bar sits under three rows in the prototype and would sit under
+  ten in the app — the count was never the variable. One bar is the design.
+- The missing selection model was a real gap, but the prototype does define a checkbox
+  treatment: the Batch wallet list (mint.html:171-173) and Automation (auto.html:49),
+  both `min-height:auto;width:16px;height:16px`. Reusing that is staying inside the
+  prototype's own vocabulary; inventing a selected-row highlight would not have been.
+
+Built now as: a checkbox opening each `.r`, one `.br` under the list carrying all
+four controls in the prototype's order and classes (`.b.sm` ×3 + `.b.d.sm`), then the
+pager. Controls the current selection cannot take are `disabled` rather than hidden,
+so the row does not reflow as the selection changes — `.b[disabled]` (prototype.css:354)
+is the prototype's own treatment for exactly that.
+
+**The rule this generalises to:** when the prototype's placement looks inoperable,
+the missing mechanism is the thing to find, not the placement to move.
 
 ### Pager
 
@@ -384,15 +403,45 @@ Implemented as a `PENDING_STATUSES` set so the rule is stated once and named.
 - **Pause** — suspend a mint that is still going to fire.
 - **Resume** — un-suspend a paused one.
 - **Retry** — re-attempt one that has already failed.
-- **Cancel** — delete the schedule entirely. Destructive, so it carries its own
-  confirmation ("Delete this scheduled mint? It will not fire, and this cannot be
-  undone."), and keeps the prototype's ellipsis, which is what an ellipsis on a
-  button means: this opens something before it acts.
+- **Cancel** — stop a mint that is still going to fire. It does **not** delete the
+  row: `schedulerRepository.cancel` (schedulerRepository.js:137) sets
+  `status='cancelled'` and the row stays in the list wearing a cancelled pill. The
+  confirmation said "Delete this scheduled mint?" until 2026-08-19, which was simply
+  untrue; it now reads "Cancel this scheduled mint? It will not fire, and this cannot
+  be undone." The ellipsis stays, which is what an ellipsis on a button means: this
+  opens something before it acts.
 
-Each row therefore shows only the action that applies to ITS status, plus Cancel.
-The prototype lists all four together because it is a static legend of what exists,
-not four live controls bound to one row. This supersedes the deviation logged in
-§4.4 — the owner has confirmed the controls act on individual schedules.
+**Which control a status accepts is the server's decision, not the UI's.** The four
+guards are WHERE clauses in schedulerRepository.js:137-155 and the UI now mirrors them
+exactly:
+
+| status | accepts |
+|---|---|
+| `scheduled` | Pause, Cancel |
+| `retry` | Pause, Cancel |
+| `paused` | Resume, Cancel |
+| `failed` | Retry |
+| `cancelled`, `completed`, `claimed` | nothing |
+
+Found by live testing, not by reading: Cancel was previously offered on **anything**
+selected, so cancelling an already-cancelled row produced "id was not found or cannot
+be canceld" — an error the user could do nothing about, from a button that should
+never have been live. `retry` status offered nothing at all, because the old list of
+statuses was guessed rather than taken from the server.
+
+The controls act on the **selection** — see §10, ruled 2026-08-19. An action is
+offered when at least one selected schedule can take it, and then runs against exactly
+those: select a paused and a failed mint together, press Retry, and the failed one
+retries while the paused one is left alone rather than erroring on the pair. Cancel
+applies to anything selected.
+
+Selection is scoped to the page in view. Paging clears it, and every control
+intersects the selection with the rows actually on screen, so a control can never be
+enabled with nothing behind it.
+
+(An earlier revision of this section recorded the opposite — that the controls act on
+individual rows. That was the pre-ruling build; §10 has the correction and the
+reasoning.)
 
 ### 11.3 Pagination — applies to every list in the project
 
@@ -413,6 +462,24 @@ project including the navigation."
 The general principle, which is the part worth keeping: **a truncated list must say
 what it is truncating.** "3 of 14" tells the user 11 more exist; "Page 1 of 5" makes
 them do the arithmetic, and a bare list tells them nothing at all.
+
+### 11.4 Known gap — the "N pending" chip counts one page
+
+Measured 2026-08-19 with 22 tasks (14 scheduled, 8 cancelled) at pageSize 10:
+
+| page | chip reads | truth |
+|---|---|---|
+| 1 | 10 pending | 14 |
+| 2 | 2 pending | 14 |
+
+The count is computed from `listing.data.items`, which is only the page in view, so it
+changes as the user pages. It was invisible until this session because the account had
+never held more than one page of schedules — the bug was always there, the data was not.
+
+Not fixed here: the honest fix is server-side (return a pending total alongside
+`{page,pageSize,total,totalPages,items}`), and reshaping an endpoint does not belong in
+a UI-fidelity commit. Counting client-side would also break past the pageSize cap of 50.
+Raised as its own task. **Check Activity for the same trap.**
 
 ## 12. Batch and Presets — notes from the rebuild
 
