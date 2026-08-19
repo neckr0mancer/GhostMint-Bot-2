@@ -59,6 +59,48 @@ test('shared task controls always pass the resolved internal user ID to the repo
   assert.deepEqual(calls, [['cancel', 'user-a', id]]);
 });
 
+test('a task control error names the action in real English, not `${action}d`', async () => {
+  const id = '123e4567-e89b-42d3-a456-426614174000';
+  // Every control resolves to null here, which is the not-found branch -- the point is the wording
+  // the user is shown. "canceld" and "retryd" both used to reach the dashboard's error toast.
+  const repository = Object.fromEntries(['cancel', 'pause', 'resume', 'retry']
+    .map(action => [action, async () => null]));
+  const { service } = fixture({ schedulerRepository: repository });
+  const seen = {};
+  for (const action of ['cancel', 'pause', 'resume', 'retry']) {
+    await assert.rejects(service.controlTask('user-a', action, id), error => {
+      assert.ok(error instanceof ValidationError);
+      seen[action] = error.issues[0].message;
+      return true;
+    });
+  }
+  assert.deepEqual(seen, {
+    cancel: 'was not found or cannot be cancelled',
+    pause: 'was not found or cannot be paused',
+    resume: 'was not found or cannot be resumed',
+    retry: 'was not found or cannot be retried',
+  });
+});
+
+test('a task control action outside the four is rejected before the repository is touched', async () => {
+  const id = '123e4567-e89b-42d3-a456-426614174000';
+  // action comes straight off a request body, and was dispatched as schedulerRepository[action].
+  // Anything on that object -- including the state-mutating ones -- used to be reachable.
+  const touched = [];
+  const repository = new Proxy({}, { get: (target, name) => typeof name === 'string'
+    ? async () => { touched.push(name); return null; } : undefined });
+  const { service } = fixture({ schedulerRepository: repository });
+  for (const action of ['complete', 'fail', 'attachIntent', 'recoverWithoutExecution', 'listStaleClaims',
+    'toString', '__proto__', '', undefined]) {
+    await assert.rejects(service.controlTask('user-a', action, id), error => {
+      assert.ok(error instanceof ValidationError, `${action} should be a ValidationError`);
+      assert.deepEqual(error.issues, [{ field: 'action', message: 'must be one of cancel, pause, resume, retry' }]);
+      return true;
+    });
+  }
+  assert.deepEqual(touched, []);
+});
+
 test('send validates the request and hands off to executeSend with the resolved wallet', async () => {
   const calls = [];
   const state = { wallets: [{ userId: 'user-a', label: 'alpha', address: '0x0000000000000000000000000000000000000001', chain: 'ethereum' }], tasks: [], activity: [], pnl: [], snipers: [] };

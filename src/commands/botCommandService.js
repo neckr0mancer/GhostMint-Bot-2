@@ -9,6 +9,15 @@ const { computeSeaDropValueWei } = require('../mint/seaDropCall');
 const { SEADROP_MINT_SIGNATURE } = require('../mint/seaDropRegistry');
 const { createWalletBalanceCache } = require('./walletBalanceCache');
 
+// The four controls a scheduled mint accepts, each with the past participle its error message
+// needs. `${action}d` got half of them wrong -- "canceld" and "retryd" both reached the user
+// verbatim in the dashboard's error toast. "cancelled" carries the double l the rest of the
+// codebase uses, including the status value the scheduler writes (schedulerRepository.js:138).
+// This also serves as the ALLOWLIST for controlTask: see the note there.
+const TASK_CONTROLS = Object.freeze({
+  cancel: 'cancelled', pause: 'paused', resume: 'resumed', retry: 'retried',
+});
+
 function createBotCommandService(dependencies) {
   const { storage, schedulerRepository, providerService, governance, adminCommands, sniperService,
     socialWatchService, socialUsageService, targetPolicyService, triggerExecutionService, governanceRepository,
@@ -388,12 +397,21 @@ function createBotCommandService(dependencies) {
   }
 
   async function controlTask(userId, action, id) {
+    // `action` arrives straight off a request body (src/dashboard/api.js:213) and is dispatched as
+    // schedulerRepository[action](...), so before this guard ANY method on the repository could be
+    // reached -- complete, fail, attachIntent, recoverWithoutExecution -- called with the wrong
+    // arguments. Nothing corrupted data (complete's UPDATE matched no rows and returned false),
+    // but fail threw on destructuring and surfaced as a 500, and nothing stopped the call being
+    // made at all. Telegram and Discord always pass literals; only the dashboard route is open.
+    if (!Object.hasOwn(TASK_CONTROLS, action)) {
+      throw new ValidationError({ field: 'action', message: 'must be one of cancel, pause, resume, retry' });
+    }
     const validated = requestSchemas.taskDeletion({ id });
     const now = Date.now();
     const task = action === 'resume' || action === 'retry'
       ? await schedulerRepository[action](userId, validated.id, now)
       : await schedulerRepository[action](userId, validated.id);
-    if (!task) throw new ValidationError({ field: 'id', message: `was not found or cannot be ${action}d` });
+    if (!task) throw new ValidationError({ field: 'id', message: `was not found or cannot be ${TASK_CONTROLS[action]}` });
     const cached = getState().tasks.find(item => item.userId === userId && item.id === task.id);
     if (cached) Object.assign(cached, task);
     broadcast(userId, 'tasks');
