@@ -1046,3 +1046,49 @@ draws three on this one surface.
 **Presets remain unpopulated.** `POST /api/mint-presets` now exists (§13.11) but is not deployed,
 and the dev server proxies to production, so presets still cannot be created from here until it
 ships.
+
+### 13.13 Per-tab severity badges — 2026-08-19
+
+Owner's rule: a red count on the rail says the Mint page has a problem but not WHICH of its four
+screens owns it, so the badge belongs on the tab as well, coloured by severity.
+
+| tone | class | meaning |
+|---|---|---|
+| red | `.cnt.hot` | something failed |
+| amber | `.cnt.warn` | something missed its window |
+| grey | `.cnt` | something is stopped on purpose |
+
+Amber is a new addition to `.cnt`, which previously had only neutral and red. It is the missing
+middle: "expired" is neither fine nor broken, and folding it into either erases the distinction the
+Schedule filters already make.
+
+**Only Schedule can currently carry a badge, and that is a fact about the data rather than a gap in
+the mechanism.** Mint now, Batch and Presets hold nothing that outlives the request — a batch
+result and a failed simulation are gone the moment you navigate away, so a badge there would have
+nothing to count. `SubTabs` takes a general `badges` map, so any of them can report the day it has
+something to report.
+
+**Verified live:** red `4` (`.cnt.sub.hot`, `--loss` on white, `aria-label="4 failing"`) against
+1 failed + 1 expired + 2 paused, with the other three tabs correctly carrying nothing.
+
+**Amber not yet observed.** A failed mint can only be retried, never cleared — retrying this one
+re-queued it and the worker failed it again on the same empty wallet within seconds — so the state
+cannot be forced by hand. It arrives on its own: once the failed task passes the one-hour expiry
+grace it becomes expired, leaving failed 0 / expired 2 / paused 2, which is the amber case.
+
+### 13.14 Presets populated at last
+
+`POST /api/mint-presets` deployed, and three presets created through it covering three different
+method shapes: `mint(uint256)`, `mint(address,uint256)`, `mint(uint256,bytes32[])`.
+
+Populated state matches the prototype: `.r` rows with `.rt` name, `.rs.mono` "signature · elided
+address", a `.rv` **Use** button, and the count chip. All four states are now confirmed on this
+page.
+
+One rejection worth keeping: an empty `bytes32[]` proof is refused with
+"proof must contain 1-256 bytes32 hex values". That is the validation doing its job — a preset with
+an empty proof could never mint.
+
+**Known gap:** `useLoad('/api/mint-presets')` subscribes to no websocket event, so a preset created
+elsewhere (or by the bot) does not appear until the page is revisited. Every other list has an
+event; this one was missed.

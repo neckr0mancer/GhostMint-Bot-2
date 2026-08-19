@@ -1463,13 +1463,29 @@ const MINT_TABS=[
   {id:'batch',label:'Batch'},
   {id:'presets',label:'Presets'},
 ];
+// Severity, worst first. A red badge on the rail says the Mint page has a problem; these say WHICH
+// of its four screens owns it, which is the whole point of putting them on the tabs as well.
+//
+// Only Schedule can currently carry one, and that is a fact about the data rather than a gap in
+// the mechanism: Mint now, Batch and Presets hold no state that outlives the request. A batch
+// result and a failed simulation are gone the moment you leave, so a badge for them would have
+// nothing to count. The mechanism is general, so any of them can report the day they do.
+function scheduleBadge(counts){
+  if(!counts)return null;
+  const failed=counts.failed||0,expired=counts.expired||0,paused=counts.paused||0;
+  const total=failed+expired+paused;
+  if(!total)return null;
+  return {count:total,tone:failed>0?'bad':expired>0?'wn':'nu'};
+}
 function Mint({profile,go,tab,onTab}){
   // Falls back to 'now' for an unknown ?tab= rather than rendering an empty page -- a stale or
   // hand-edited tab value should land somewhere useful, not nowhere.
   const active=MINT_TABS.some(item=>item.id===tab)?tab:'now';
+  const tasks=useLoad('/api/tasks?page=1&pageSize=1',[],'tasks.changed');
+  const badges={schedule:scheduleBadge(tasks.data?.counts)};
   return <>
     <div className="page-head"><div className="page-head-text"><p className="eyebrow">Mint</p><h1>Mint</h1></div></div>
-    <SubTabs tabs={MINT_TABS} active={active} onChange={onTab} label="Mint sections"/>
+    <SubTabs tabs={MINT_TABS} active={active} onChange={onTab} label="Mint sections" badges={badges}/>
     {active==='now'&&<Minting onSwitchToBatch={()=>onTab('batch')} onGoWallets={()=>go('Wallets')}/>}
     {active==='schedule'&&<Tasks profile={profile} go={go}/>}
     {active==='batch'&&<MintBatch onGoWallets={()=>go('Wallets')}/>}

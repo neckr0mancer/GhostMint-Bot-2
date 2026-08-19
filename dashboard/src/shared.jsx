@@ -400,12 +400,24 @@ export function SearchField({label,value='',onChange,placeholder='Label, address
 
 // In-page tab row for merged content. `was` renders the retired page name in muted text so a user
 // who knew the old IA can still find it (brief §2.1).
-export function SubTabs({tabs=[],active,onChange,label='Sections'}){
+// A tab may carry {count, tone}. Tone is SEVERITY, not decoration, and it is the reason the badge
+// belongs on the tab rather than only on the rail: one red count in the sidebar tells you the Mint
+// page has a problem, but not which of its four screens owns it. Owner's rule, 2026-08-19.
+//   bad  red    -- something failed
+//   wn   amber  -- something missed its window
+//   nu   grey   -- something is stopped on purpose
+export function SubTabs({tabs=[],active,onChange,label='Sections',badges={}}){
   return <div className="subtabs" role="tablist" aria-label={label}>
-    {tabs.map(tab=><button key={tab.id} type="button" role="tab" aria-selected={active===tab.id}
-      className={active===tab.id?'on':undefined} onClick={()=>onChange(tab.id)}>
-      <span>{tab.label}</span>{tab.was&&<span className="was">was {tab.was}</span>}
-    </button>)}
+    {tabs.map(tab=>{
+      const badge=badges[tab.id];
+      return <button key={tab.id} type="button" role="tab" aria-selected={active===tab.id}
+        className={active===tab.id?'on':undefined} onClick={()=>onChange(tab.id)}>
+        <span>{tab.label}</span>{tab.was&&<span className="was">was {tab.was}</span>}
+        {badge&&badge.count>0&&<span className={`cnt sub${badge.tone==='bad'?' hot':badge.tone==='wn'?' warn':''}`}
+          aria-label={`${badge.count} ${badge.tone==='bad'?'failing':badge.tone==='wn'?'expired':'paused'}`}>
+          {badge.count}</span>}
+      </button>;
+    })}
   </div>;
 }
 
