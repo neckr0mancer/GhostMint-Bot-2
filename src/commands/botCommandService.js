@@ -588,6 +588,15 @@ function createBotCommandService(dependencies) {
   return {
     createWallet, importWallet, importWalletsBatch, removeWallet, walletBalance, invalidateBalance, exportWalletKeyRaw, exportWalletKeystore, mint, batchMint, send, createTask, controlTask, addPnl, updatePnl, deletePnl,
     prepareMint,submitPreparedMint,detectMintContract,resolveMintContractInput,parseOpenSeaCollectionSlug,mintPresets:userId=>mintService.listPresets(userId),
+    // The dashboard could LIST presets but never create one -- the only save path was
+    // /mintpreset save on Telegram (server.js:2492), so the Presets tab displayed a thing the
+    // dashboard had no way to produce. Same validated mintService.savePreset the bot calls,
+    // resolving the wallet the same way, rather than a second copy of the rules.
+    saveMintPreset:async(userId,input)=>{
+      const owned=wallet(userId,input.walletLabel);
+      return mintService.savePreset(userId,{...input,walletAddress:owned.address,
+        chain:input.chain||owned.chain,valueWei:input.valueWei??'0'});
+    },
     createSniper, updateSniper, removeSniper, gas,
     sniperEvents:userId=>sniperRepository.listRecentForUser(userId),
     wallets: userId => state(userId).wallets,
