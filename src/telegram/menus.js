@@ -73,7 +73,10 @@ function batchImportMenu({ count = 0, chainLabel = '', dropped = 0 } = {}) {
     text: `<b>📥📥 Batch import${chainLabel ? ` · ${escapeTelegramHtml(chainLabel)}` : ''}</b>\n\n`
       + (ready
         ? `<b>${count}</b> key${count === 1 ? '' : 's'} ready. Send another message to add more, or import what you have.`
-        : 'Send your private keys now — one per line, or several messages. Paste them however you have them.')
+        : `Send your private keys now. Several can go in one message — on separate lines, or separated by commas — and you can send more messages to keep adding.
+
+<b>Example (one message):</b>
+<code>0xabc…1111,0xdef…2222</code>`)
       + (dropped ? `\n\n⚠️ ${dropped} key${dropped === 1 ? ' was' : 's were'} ignored — ${LIMITS.batchWalletImport} is the most one import can take. Import these, then start another batch.` : '')
       + "\n\n⚠️ <b>Not recommended:</b> keys pass through Telegram's message transit and may remain in chat history or notification previews. Delete your messages afterward if you can.",
     replyMarkup: keyboard(rows),

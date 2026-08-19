@@ -339,17 +339,17 @@ function batchImportMenu({ count = 0, chainLabel = '', dropped = 0 } = {}) {
     ],
   };
 }
+// Buttons are PACKED into rows, not one per row. Discord allows at most 5 action rows per
+// message and rejects the whole payload -- silently, from the user's side -- when there are more.
+// One-button-per-row put this menu at 6 rows before Batch import was added and 7 after, which is
+// why tapping Wallets appeared to load and then do nothing at all. Guarded by menuShape.test.js.
 function walletsMenu() {
   return {
     content: '## Wallets\nGenerating a new wallet server-side is recommended over importing an existing key.',
     components: [
-      row([button('📋 List wallets', 'wallet:list')]),
-      row([button('➕ Create wallet', 'wallet:create:start', 'success')]),
-      row([button('📥 Import wallet', 'wallet:import:start')]),
-      row([button('📥📥 Batch import', 'wallet:batch-import:start')]),
-      row([button('💰 Check balance', 'wallet:balance:pick')]),
-      row([button('🗑️ Remove wallet', 'wallet:remove:pick', 'danger')]),
-      row([button('⬅️ Back to menu', 'menu:main')]),
+      row([button('📋 List wallets', 'wallet:list'), button('💰 Check balance', 'wallet:balance:pick')]),
+      row([button('➕ Create wallet', 'wallet:create:start', 'success'), button('📥 Import wallet', 'wallet:import:start'), button('📥📥 Batch import', 'wallet:batch-import:start')]),
+      row([button('🗑️ Remove wallet', 'wallet:remove:pick', 'danger'), button('⬅️ Back to menu', 'menu:main')]),
     ],
   };
 }

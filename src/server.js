@@ -2154,7 +2154,7 @@ if (BOT_TOKEN) {
       const link = await identity.createLinkCode(userId);
       // Reachable from both the main menu and Settings now, so "back" always returns to the top
       // level rather than assuming Settings was the entry point.
-      return tgEditMenu(chatId, messageId, { text: `🔗 <b>Account link code:</b> <code>${link.code}</code>\n\nTap the code to copy it. Expires in 5 minutes and can be used once. Enter it on the dashboard, or use the equivalent link command on another platform.`,
+      return tgEditMenu(chatId, messageId, { text: `🔗 <b>Account link code</b>\n\n<pre>${link.code}</pre>\nTap or long-press the code above to copy it. Expires in 5 minutes and can be used once. Enter it on the dashboard, or use the equivalent link command on another platform.`,
         replyMarkup: telegramMenus.keyboard([[telegramMenus.button('⬅️ Back to menu', 'menu:main')]]), parseMode: 'HTML' });
     }
 
@@ -2594,7 +2594,7 @@ send /mint with a contract address to get going.`;
 
   bot.onText(/^\/link(?:@\w+)?$/, withTelegramUser(async (msg, match, userId) => {
     const link = await identity.createLinkCode(userId);
-    tgRender(msg.chat.id, { text: `🔗 <b>Account link code:</b> <code>${link.code}</code>\n\nTap the code to copy it. Expires in 5 minutes and can be used once.`, parseMode: 'HTML' });
+    tgRender(msg.chat.id, { text: `🔗 <b>Account link code</b>\n\n<pre>${link.code}</pre>\nTap or long-press the code above to copy it. Expires in 5 minutes and can be used once.`, parseMode: 'HTML' });
   }));
 
   bot.onText(/^\/mode(?:@\w+)?\s+(\S+)\s+(CONFIRM)$/i, withTelegramUser(async (msg, match, userId) => {
