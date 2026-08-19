@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const {
-  mainMenu, walletsMenu, settingsMenu, tasksMenu, chainPicker, walletPicker,
+  mainMenu, walletsMenu, settingsMenu, tasksMenu, taskActions, confirmCancelTask, chainPicker, walletPicker,
   mintModeMenu, batchImportMenu,
   contractDetails, contractDetailsText, collectionInfoCard, mintConfirmation, gasTolerancePrompt,
   taskConfirmation, taskScheduled, confirmRemoveWallet, placeholderMenu,
@@ -77,6 +77,51 @@ test('placeholder menu always offers a way back to the main menu', () => {
 test('the tasks menu offers a way to schedule a mint and a way back to the main menu', () => {
   const buttons = flatButtons(tasksMenu().replyMarkup).map(b => b.callback_data);
   assert.deepEqual(buttons, ['menu:schedule', 'menu:main']);
+});
+
+// Live-reported: this used to always show the empty-state placeholder text ("Use /tasks to list,
+// /canceltask, /pausetask..."), never an actual list, regardless of how many tasks existed.
+test('a populated tasks page lists every task with a Cancel button beside it when cancel is valid for that status', () => {
+  const page = { page: 1, totalPages: 1, total: 3, items: [
+    { id: 'a', name: 'Drop A', status: 'scheduled', contract: '0xa', walletLabel: 'main', qty: 1, price: 0.1, mintTime: Date.now() + 60000 },
+    { id: 'b', name: 'Drop B', status: 'paused', contract: '0xb', walletLabel: 'main', qty: 1, price: 0, mintTime: Date.now() + 60000 },
+    { id: 'c', name: 'Drop C', status: 'claimed', contract: '0xc', walletLabel: 'main', qty: 1, price: 0.2, mintTime: Date.now() + 60000 },
+  ] };
+  const menu = tasksMenu(page);
+  const rows = menu.replyMarkup.inline_keyboard;
+  assert.deepEqual(rows[0].map(b => b.callback_data), ['task:manage:a', 'task:cancel:ask:a']);
+  assert.deepEqual(rows[1].map(b => b.callback_data), ['task:manage:b', 'task:cancel:ask:b']);
+  // 'claimed' is not a cancellable status (schedulerRepository.cancel only accepts
+  // scheduled/retry/paused) -- no dead Cancel button that would just fail if tapped.
+  assert.deepEqual(rows[2].map(b => b.callback_data), ['task:manage:c']);
+  assert.match(menu.text, /Tasks \(page 1\/1, 3 total\)/);
+});
+
+test('the tasks page shows Prev/Next paging the same way the activity menu does', () => {
+  const page = { page: 2, totalPages: 3, total: 25, items: [
+    { id: 'a', name: 'Drop A', status: 'scheduled', contract: '0xa', walletLabel: 'main', qty: 1, price: 0.1, mintTime: Date.now() + 60000 },
+  ] };
+  const buttons = flatButtons(tasksMenu(page).replyMarkup).map(b => b.callback_data);
+  assert.ok(buttons.includes('task:page:1'));
+  assert.ok(buttons.includes('task:page:3'));
+});
+
+test('taskActions shows only the action(s) valid for the task\'s current status', () => {
+  const base = { id: 'a', name: 'Drop A', contract: '0xa', walletLabel: 'main', qty: 1, price: 0.1, mintTime: Date.now() + 60000 };
+  assert.deepEqual(flatButtons(taskActions({ ...base, status: 'scheduled' }).replyMarkup).map(b => b.callback_data),
+    ['task:pause:a', 'task:cancel:ask:a', 'menu:tasks']);
+  assert.deepEqual(flatButtons(taskActions({ ...base, status: 'paused' }).replyMarkup).map(b => b.callback_data),
+    ['task:resume:a', 'task:cancel:ask:a', 'menu:tasks']);
+  assert.deepEqual(flatButtons(taskActions({ ...base, status: 'failed' }).replyMarkup).map(b => b.callback_data),
+    ['task:retry:a', 'menu:tasks']);
+  assert.deepEqual(flatButtons(taskActions({ ...base, status: 'claimed' }).replyMarkup).map(b => b.callback_data),
+    ['menu:tasks']);
+});
+
+test('confirmCancelTask asks before cancelling and names the exact task', () => {
+  const menu = confirmCancelTask({ id: 'a', name: 'Drop A' });
+  assert.match(menu.text, /Cancel <b>Drop A<\/b>/);
+  assert.deepEqual(flatButtons(menu.replyMarkup).map(b => b.callback_data), ['task:cancel:do:a', 'task:manage:a']);
 });
 
 test('contract details renders every known field and degrades gracefully with none of the optional ones', () => {

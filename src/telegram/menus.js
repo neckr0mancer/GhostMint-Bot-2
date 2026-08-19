@@ -409,12 +409,64 @@ function gasMenu(chain, fees, supportedChains, chains) {
   };
 }
 
-function tasksMenu() {
+// Live-reported: this used to be a static instructional placeholder pointing at /tasks,
+// /canceltask, /pausetask, /resumetask, /retrytask <id> instead of an actual list -- the same
+// command-line-only gap Section O already closed for wallets, watch rules and snipers. Mirrors
+// watchRulesList's shape: one row per task, with a Cancel button directly beside it whenever
+// cancel is actually valid for the task's current status (schedulerRepository.cancel only accepts
+// scheduled/retry/paused, so a claimed/failed/completed task gets no dead Cancel button). Tapping
+// the task itself opens taskActions() below for the full detail and every other status-appropriate
+// action, matching watchRuleActions' depth.
+const CANCELLABLE_TASK_STATUSES = new Set(['scheduled', 'retry', 'paused']);
+
+function tasksMenu(page) {
+  const tasks = page?.items ?? [];
+  if (!tasks.length) {
+    return {
+      text: '<b>🗓️ Tasks</b>\n\nSchedule a mint to fire automatically the moment it\'s go time.',
+      replyMarkup: keyboard([[button('🗓️ Schedule mint', 'menu:schedule')], [button('⬅️ Back to base', 'menu:main')]]),
+      parseMode: 'HTML',
+    };
+  }
+  const rows = tasks.map(task => {
+    const shortName = task.name.length > 28 ? `${task.name.slice(0, 27)}…` : task.name;
+    const row = [button(`⏱ ${shortName} [${task.status}]`, `task:manage:${task.id}`)];
+    if (CANCELLABLE_TASK_STATUSES.has(task.status)) row.push(button('❌', `task:cancel:ask:${task.id}`));
+    return row;
+  });
+  const nav = [];
+  if (page.page > 1) nav.push(button('◀️ Prev', `task:page:${page.page - 1}`));
+  if (page.page < page.totalPages) nav.push(button('▶️ Next', `task:page:${page.page + 1}`));
+  if (nav.length) rows.push(nav);
+  rows.push([button('🗓️ Schedule mint', 'menu:schedule')]);
+  rows.push([button('⬅️ Back to base', 'menu:main')]);
   return {
-    text: '<b>🗓️ Tasks</b>\n\nSchedule a mint to fire automatically the moment it\'s go time. Use /tasks to list, /canceltask, /pausetask, /resumetask, or /retrytask &lt;id&gt; to manage one.',
+    text: `<b>🗓️ Tasks (page ${page.page}/${page.totalPages}, ${page.total} total)</b>`,
+    replyMarkup: keyboard(rows),
+    parseMode: 'HTML',
+  };
+}
+
+function taskActions(task) {
+  const rows = [];
+  if (task.status === 'scheduled' || task.status === 'retry') rows.push([button('⏸ Pause', `task:pause:${task.id}`)]);
+  if (task.status === 'paused') rows.push([button('▶️ Resume', `task:resume:${task.id}`)]);
+  if (task.status === 'failed') rows.push([button('↻ Retry', `task:retry:${task.id}`)]);
+  if (CANCELLABLE_TASK_STATUSES.has(task.status)) rows.push([button('❌ Cancel', `task:cancel:ask:${task.id}`)]);
+  rows.push([button('⬅️ Back to the list', 'menu:tasks')]);
+  return {
+    text: `<b>${escapeTelegramHtml(task.name)}</b> [${task.status}]\nContract: <code>${task.contract}</code>\nWallet: ${escapeTelegramHtml(task.walletLabel)}\nQty: ${task.qty} | Price: ${task.price > 0 ? `${task.price} ETH` : 'Free'}\nDue: <b>${formatGmtPlus1(task.mintTime)}</b>\nID: <code>${task.id}</code>`,
+    replyMarkup: keyboard(rows),
+    parseMode: 'HTML',
+  };
+}
+
+function confirmCancelTask(task) {
+  return {
+    text: `Cancel <b>${escapeTelegramHtml(task.name)}</b>? This cannot be undone.`,
     replyMarkup: keyboard([
-      [button('🗓️ Schedule mint', 'menu:schedule')],
-      [button('⬅️ Back to base', 'menu:main')],
+      [button('✅ Yes, cancel it', `task:cancel:do:${task.id}`)],
+      [button('❌ No, keep it', `task:manage:${task.id}`)],
     ]),
     parseMode: 'HTML',
   };
@@ -652,6 +704,8 @@ module.exports = {
   batchImportMenu,
   settingsMenu,
   tasksMenu,
+  taskActions,
+  confirmCancelTask,
   placeholderMenu,
   chainPicker,
   walletPicker,

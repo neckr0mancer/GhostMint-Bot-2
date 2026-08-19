@@ -52,6 +52,24 @@ test('wallet import remains available through the separate fallback operation', 
   assert.deepEqual(calls.find(call => call[0] === 'encrypt'), ['encrypt', privateKey]);
 });
 
+// Every platform's import UI forwards whatever the user typed as input.privateKey, with no
+// separate "seed phrase" field or step anywhere -- so a recovery phrase only ever works if
+// importWallet itself notices the shape (spaces = multiple words = a phrase, never a single hex
+// key) and routes it through validateWalletCreate's importMethod:'seedPhrase' path instead of
+// failing it as an invalid private key. Live-reported: "/import wallet doesn't work on tg".
+test('importWallet auto-detects a typed seed phrase (by its spaces) and derives the same result a private key would', async () => {
+  const { service } = fixture();
+  const phrase = 'test test test test test test test test test test test junk';
+  const imported = await service.importWallet('user-a', { label: 'recovered', chain: 'ethereum', privateKey: phrase });
+  assert.equal(imported.label, 'recovered');
+  assert.equal(imported.address, '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266');
+});
+
+test('importWallet still rejects a single-token value that is not a real private key, instead of misreading it as a one-word phrase', async () => {
+  const { service } = fixture();
+  await assert.rejects(service.importWallet('user-a', { label: 'bad', chain: 'ethereum', privateKey: 'not-a-key' }), ValidationError);
+});
+
 // Batch wallet import used to require governance.requireOwner(userId) before anything else --
 // removed per explicit request, since single-key import was already available to every user and
 // there's no reason importing several keys in one call needed a higher bar than importing one at a

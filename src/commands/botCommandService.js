@@ -256,7 +256,19 @@ function createBotCommandService(dependencies) {
     return persistWallet(userId, { ...input, privateKey: generated.privateKey });
   }
 
+  // Every platform's import UI (Telegram's guided flow and /importwallet, Discord's modal and
+  // /wallet import) collects one free-text field and always forwarded it as input.privateKey --
+  // validateWalletCreate has supported a BIP-39 seed phrase via importMethod:'seedPhrase' since it
+  // was written, but nothing ever actually offered that path, so typing a recovery phrase (the only
+  // thing many wallets export) always failed validation as "must be a valid Ethereum private key"
+  // with no way to succeed. A private key is always one unbroken hex token; a seed phrase is always
+  // multiple space-separated words -- that shape difference is unambiguous and needs no new
+  // UI/step on either platform, so detecting it here (once, for every caller) is what makes it work
+  // everywhere at once instead of requiring each call site to duplicate the same check.
   function importWallet(userId, input) {
+    if (input.importMethod === 'seedPhrase' || input.seedPhrase) return persistWallet(userId, { ...input, importMethod: 'seedPhrase' });
+    const raw = String(input.privateKey ?? '').trim();
+    if (raw.includes(' ')) return persistWallet(userId, { label: input.label, chain: input.chain, importMethod: 'seedPhrase', seedPhrase: raw });
     return persistWallet(userId, input);
   }
 
