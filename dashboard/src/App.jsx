@@ -686,6 +686,31 @@ function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSear
     setSelectedIds([]);
     listing.load();
   }
+  // The prototype writes a DIFFERENT meta line per state, and the failed one is the reason:
+  //   scheduled  "Primary · fires in 42m · 2026-08-20T18:00:00Z"
+  //   paused     "Trading · paused"
+  //   failed     "attempt 3 of 3 · sale not active"
+  // The build printed wallet + timestamp on every row regardless, so a failure said only that it
+  // failed. lastError has carried the reason all along -- "Simulating this call failed:
+  // insufficient funds" -- it was simply never shown. A state the user cannot act on because it
+  // will not say what went wrong is the thing the owner asked to end.
+  function rowMeta(task){
+    const key=bucketOf(task);
+    if((key==='failed'||key==='expired')&&task.lastError){
+      const attempt=task.attemptCount||0,cap=task.maxAttempts||3;
+      return `attempt ${attempt} of ${cap} · ${task.lastError}`;
+    }
+    if(key==='paused')return `${task.walletLabel} · paused`;
+    const at=task.mintTime?new Date(task.mintTime):null;
+    if(!at||Number.isNaN(at.getTime()))return String(task.walletLabel||'');
+    const ms=at.getTime()-Date.now();
+    if(ms>0){
+      const mins=Math.round(ms/60000);
+      const when=mins<60?`fires in ${mins}m`:mins<1440?`fires in ${Math.round(mins/60)}h`:`fires in ${Math.round(mins/1440)}d`;
+      return `${task.walletLabel} · ${when} · ${at.toISOString()}`;
+    }
+    return `${task.walletLabel} · ${at.toISOString()}`;
+  }
   function rowPill(task){
     const key=bucketOf(task);
     // An expired row says "expired" rather than "paused"/"failed", because that is the fact that
@@ -809,7 +834,7 @@ function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSear
                      {rowIcon(task.status)}
                      <div className="rm">
                        <div className="rt">{task.name}</div>
-                       <div className="rs fold">{task.walletLabel} · {new Date(task.mintTime).toISOString()}</div>
+                       <div className="rs fold">{rowMeta(task)}</div>
                      </div>
                      <div className="rv">{rowPill(task)}</div>
                    </div>;
