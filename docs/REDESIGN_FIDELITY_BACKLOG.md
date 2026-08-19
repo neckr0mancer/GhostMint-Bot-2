@@ -925,3 +925,46 @@ the opposite direction.
 **Still owed on §1.8:** the light/dark sweep. Everything above was measured in `ghost-mint` dark;
 the four other themes have had far less scrutiny than the Mint page has, and the new `--info` /
 `--idle` tokens have only been contrast-checked, not seen in situ.
+
+### 13.10 §1.8 light/dark sweep — 2026-08-19
+
+Measured, not eyeballed: every text node on six pages in all five themes, comparing computed
+colour against the **composited** backdrop, with WCAG's own thresholds (4.5, or 3.0 for large or
+bold text) and disabled controls excluded, which the spec exempts.
+
+**Result: 861 elements, zero failures in every theme.** Before the pass there were ~24 distinct
+failures across four themes, the worst at 3.12.
+
+**Two false positives were chased and discarded first — both mine, both worth recording:**
+
+1. *"`.pill` has contrast 1.00 in clean-vault"* — it does not. `.pill` sits on a **semi-transparent**
+   background (`rgba(accent, .07)`), and the first version of the probe read the rgba's channels
+   while ignoring its alpha, so it compared the text against its own colour. Ratio 1.00 by
+   construction. Fixed by compositing the whole ancestor stack.
+2. *"the disabled Simulate button fails"* — disabled controls are explicitly exempt from the
+   contrast minimum, and `.b[disabled]` is deliberately muted.
+
+**The real cause was one idea in two places.** The app carries two parallel "quiet text" tokens:
+`--faint` in `prototype.css` and `--text-faint` in `themes.css`. Both were used for the same
+supporting copy — `.tile-meta`, footnotes, elided addresses, "· auto-detected", History's
+trigger/verification lines — and both sat under AA in four of the five themes. Fixing one moved
+half the failures and left the other half at *identical* ratios, which is what exposed the twin.
+
+Every value is the **smallest** shift toward the text colour that reaches 4.5, so `--faint` stays
+clearly quieter than `--muted` everywhere: the hierarchy the design leans on is untouched, only the
+floor moved.
+
+| theme | `--faint` | `--text-faint` | other |
+|---|---|---|---|
+| ghost-mint | `#68716c` → `#767e79` | `#6b7176` → `#787e82` | — |
+| ghost-mint-light | `#878e88` → `#6d736e` | `#8b8f94` → `#73777b` | `--accent-2` `#b6541f` → `#b2521e` |
+| clean-vault | `#8a8a94` → `#73737b` | `#8a8a94` → `#73737b` | — |
+| neon-arcade | `#7a6b9e` → `#8172a3` | `#7a6b9e` → `#8375a5` | — |
+| quiet-ledger | unchanged (5.81) | unchanged (5.81) | — |
+
+**quiet-ledger needed nothing at all**, and that is the argument the whole change rests on: the
+palette could already clear AA without being redesigned, so this is a floor being raised rather
+than a look being altered.
+
+**Still owed:** the two parallel tokens should become one. Two names for "quiet text" is how they
+drifted apart in the first place, and nothing stops them drifting again.

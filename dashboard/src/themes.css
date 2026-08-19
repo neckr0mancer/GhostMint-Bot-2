@@ -1,3 +1,9 @@
+/* --text-faint raised 2026-08-19 to clear WCAG AA (4.5) on the surfaces it actually sits on.
+ It is the app-side twin of prototype.css's --faint and had the same problem: 3.25-4.30 across
+ the small supporting copy (.tile-meta, elided addresses, History trigger/verification lines).
+ Values are the smallest shift that reaches 4.5, so the token stays clearly quieter than
+ --text-muted. quiet-ledger already passed at 5.81 and is unchanged. Measured, not guessed --
+ see backlog §13.10. */
 /* ==========================================================================
    Theme tokens
    Each block redefines the same variable names declared as the :root
@@ -18,7 +24,7 @@
   --border-strong:#2e3338;
   --text:#eef1ee;
   --text-muted:#9aa2a9;
-  --text-faint:#6b7176;
+  --text-faint:#787e82;
   --accent:#2dd4a7;
   --accent-2:#e8a33d;
   --accent-soft:#2dd4a71f;
@@ -112,7 +118,7 @@ html[data-theme="ghost-mint"]{
   --border-strong:#2e3338;
   --text:#eef1ee;
   --text-muted:#9aa2a9;
-  --text-faint:#6b7176;
+  --text-faint:#787e82;
   --accent:#2dd4a7;
   --accent-2:#e8a33d;
   --accent-soft:#2dd4a71f;
@@ -166,9 +172,9 @@ html[data-theme="ghost-mint-light"]{
   --border-strong:#d7d3c8;
   --text:#14171a;
   --text-muted:#5f6469;
-  --text-faint:#8b8f94;
+  --text-faint:#73777b;
   --accent:#1f9d76;
-  --accent-2:#b6541f;
+  --accent-2:#b2521e;
   --accent-soft:#1f9d761a;
   --accent-contrast:#ffffff;
   --success:#1f9d76;
@@ -222,7 +228,7 @@ html[data-theme="clean-vault"]{
   --border-strong:#c9c9d2;
   --text:#14141a;
   --text-muted:#55555f;
-  --text-faint:#8a8a94;
+  --text-faint:#73737b;
   --accent:#2563eb;
   --accent-2:#2563eb;
   --accent-soft:#2563eb14;
@@ -281,7 +287,7 @@ html[data-theme="neon-arcade"]{
   --border-strong:#ff2e9366;
   --text:#f5f0ff;
   --text-muted:#b9a8e0;
-  --text-faint:#7a6b9e;
+  --text-faint:#8375a5;
   --accent:#ff2e93;
   --accent-2:#00e5ff;
   --accent-soft:#ff2e9326;

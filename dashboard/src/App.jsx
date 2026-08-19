@@ -1277,7 +1277,10 @@ function MintBatch({onGoWallets}){
   const BATCH_MIN_WALLETS=2;
   const enoughSelected=selected.length>=BATCH_MIN_WALLETS;
   const gateMessage=`Select at least ${BATCH_MIN_WALLETS} wallets — batching one wallet is just a single mint.`;
-  function explainGate(){if(!noWallets&&!enoughSelected)notify(gateMessage,{type:'info'});}
+  // No toast. This fired from onFocus AND onClick, so a single click raised TWO of them, and every
+  // notify() also writes a bell entry -- one click, four pieces of noise. The rule is already
+  // stated permanently under the field, which is the version that cannot be missed or dismissed;
+  // a toast repeating it was only ever redundant.
   const resultCount=results?results.length:0;
   const succeeded=results?results.filter(entry=>entry.status==='success').length:0;
   return <div className="split">
@@ -1290,7 +1293,6 @@ function MintBatch({onGoWallets}){
             aria-describedby={!noWallets&&!enoughSelected?'batch-gate':undefined}
             placeholder={enoughSelected?'0x…':`Select ${BATCH_MIN_WALLETS} wallets first`}
             value={contractAddress}
-            onFocus={explainGate} onClick={explainGate}
             onChange={e=>{if(!enoughSelected)return;setContractAddress(e.target.value);autoDetectIfReady(e.target.value);}}/>
           {/* Stated up front as well as on click -- a rule you can only discover by bumping into it
               is a rule the page kept to itself. */}
@@ -1767,6 +1769,32 @@ function MoreSheet({open,page,go,onClose}){return <>{open&&<div className="sheet
   <h2>More</h2>
   <div className="sheet-grid">{MORE_PAGES.map(item=><button type="button" key={item} aria-current={page===item?'page':undefined} onClick={()=>go(item)}><span className="nav-icon" aria-hidden="true">{NAV_ICONS[item]}</span><span className="nav-label">{item}</span></button>)}</div>
 </div></>;}
+// Prototype rail badges (ghostmint-redesign-v3.html:641,644): Mint carries a NEUTRAL .cnt and
+// Automation a RED .cnt.hot. The tones are the specification, not decoration:
+//   .cnt      surface-4 on muted -- "there are things here worth a look"
+//   .cnt.hot  loss on white      -- "something is broken and wants you now"
+// So Mint counts schedules that have stopped moving (paused, failed, expired) and Automation
+// counts triggers that are actually failing. A count of healthy things would make the badge
+// permanent, and a permanent badge is wallpaper.
+//
+// Each source refreshes on the socket event it already owns, so the badges follow the same data
+// the pages do rather than a second, drifting copy of it.
+function useNavBadges(){
+  const tasks=useLoad('/api/tasks?page=1&pageSize=1',[],'tasks.changed');
+  const rules=useLoad('/api/watch-rules',[],'watchrules.changed');
+  const snipers=useLoad('/api/snipers',[],'snipers.changed');
+  const counts=tasks.data?.counts;
+  const mint=counts?(counts.paused||0)+(counts.failed||0)+(counts.expired||0):0;
+  const failingRules=(rules.data?.items||[]).filter(rule=>Number(rule.consecutiveFailures)>0).length;
+  // A sniper is failing when its most recent event failed -- an old failure it has since recovered
+  // from is history, not an alert.
+  const events=snipers.data?.events||[];
+  const failingSnipers=(snipers.data?.items||[]).filter(sniper=>{
+    const latest=events.find(event=>event.sniperId===sniper.id);
+    return latest&&['failed','error','skipped'].includes(String(latest.state||'').toLowerCase());
+  }).length;
+  return {Mint:mint,Automation:failingRules+failingSnipers};
+}
 const TOP_RAIL_PAGES=['Home','Mint','Automation','Wallets','History'];
 // The prototype's .railfoot is Admin, Account, Settings, in that order. Settings had no rail entry
 // at all before this pass -- on desktop it was reachable only by URL.
@@ -1833,7 +1861,7 @@ function AccountMenu({profile,theme,initial,go,onChangeTheme,onLogout}){
     </div>}
   </div>;
 }
-function Shell({profile,onLogout,onProfileChange}){const [route,setRoute]=useState(pageFromLocation);const {page,tab,target}=route;const live=useLiveSocket();
+function Shell({profile,onLogout,onProfileChange}){const navBadges=useNavBadges();const [route,setRoute]=useState(pageFromLocation);const {page,tab,target}=route;const live=useLiveSocket();
   // A retired slug is rewritten in place with replaceState, not pushState: the dead URL must not
   // become a history entry, or Back from the new page would land on the old slug and redirect
   // straight forward again, trapping the user.
@@ -1882,8 +1910,15 @@ function Shell({profile,onLogout,onProfileChange}){const [route,setRoute]=useSta
     <aside className="rail" role="navigation" aria-label="Dashboard">
       <div className="brand"><div className="brand-mark">G</div><div className="brand-name">GhostMint</div></div>
       <div className="grp">Operate</div>
-      {TOP_RAIL_PAGES.map(item=><button type="button" className="nav" key={item} aria-current={page===item?'page':undefined} onClick={()=>go(item)}>
-        {RAIL_ICONS[item]}<span className="nav-l">{item}</span></button>)}
+      {TOP_RAIL_PAGES.map(item=>{
+        const badge=navBadges[item]||0;
+        return <button type="button" className="nav" key={item}
+          aria-current={page===item?'page':undefined} onClick={()=>go(item)}>
+          {RAIL_ICONS[item]}<span className="nav-l">{item}</span>
+          {badge>0&&<span className={`cnt${item==='Automation'?' hot':''}`}
+            aria-label={`${badge} ${item==='Automation'?'failing':'needing attention'}`}>{badge}</span>}
+        </button>;
+      })}
       <div className="railfoot">
         {/* Admin is unconditional here, matching both the prototype and the data contract §6's
             note that hiding it "makes a legitimate owner think the app broke after a permission
