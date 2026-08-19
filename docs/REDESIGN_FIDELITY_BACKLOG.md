@@ -460,6 +460,32 @@ owner has already moved past.
    This was avoided for two turns as duplicated logic, and that was the wrong call: the feature
    was unusable on the only environment the owner can see.
 
+### 11.0c Chip colours, 2026-08-19 — one hue per state
+
+Grey was carrying four different meanings: All, Paused, Cancelled and Successful all wore it, so
+Cancelled was indistinguishable from the no-filter view sitting beside it. The owner ruled each
+should stand apart. The prototype's pill palette had only four tones (`ok` `bad` `wn` `nu`), so
+three were added: `.p.ac` (theme accent), `.p.info`, `.p.idle`.
+
+| chip | tone | why |
+|---|---|---|
+| All | `nu` grey | the absence of a filter; it should not compete |
+| Pending | `ok` green | live and coming |
+| Paused | `info` blue | deliberately held, not broken |
+| Failed | `bad` red | the only one that went wrong on its own |
+| Expired | `wn` amber | a window that went past |
+| Cancelled | `idle` violet | ended by choice — distinct from grey AND from red |
+| Successful | `ac` accent | the theme's signature, the liveliest colour it has |
+
+**`--info` and `--idle` are defined in all five themes, and the hue is chosen against each
+theme's own accent.** `clean-vault` and `quiet-ledger` are already blue/navy, so a blue "paused"
+would have collided with the accent that now marks Successful — both use teal instead.
+
+Contrast measured against each theme's real backdrop (not the card, which is transparent in two
+themes — measuring against that gave false failures first time round). Every chip clears WCAG AA:
+the weakest is Successful at **4.95** in `clean-vault`, which is that theme's own `--accent` and
+therefore inherent to the token rather than introduced here.
+
 ### 11.1 "2 pending" above three rows
 
 The prototype's Scheduled card shows a `.p.nu` chip reading **2 pending** above

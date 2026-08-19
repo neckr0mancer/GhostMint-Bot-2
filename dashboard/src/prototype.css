@@ -17,6 +17,7 @@ html[data-theme="ghost-mint"]{
   --accent:#2dd4a7; --accent-ink:#04120d; --accent-soft:#2dd4a71c; --accent-line:#2dd4a740;
   --gain:#1eaa85; --loss:#e0455c; --warn:#c98500;
   --gain-text:#3fe0b4; --loss-text:#ff8095; --warn-text:#f0b74a;
+  --info:#3f7fd8; --info-text:#6aa8ff; --idle:#7b5ed6; --idle-text:#b197ff;
   --radius:13px; --radius-sm:9px; --radius-lg:18px;
   --shadow:0 8px 24px -14px #000d;
   --lift:0 12px 28px -16px #000f;
@@ -32,6 +33,7 @@ html[data-theme="ghost-mint-light"]{
   --accent:#0f7a5c; --accent-ink:#ffffff; --accent-soft:#0f7a5c12; --accent-line:#0f7a5c38;
   --gain:#0f7a53; --loss:#c0384f; --warn:#96620a;
   --gain-text:#0d6b49; --loss-text:#ab2f45; --warn-text:#855609;
+  --info:#2563c4; --info-text:#1d4fa5; --idle:#6b4fc0; --idle-text:#57399f;
   --radius:11px; --radius-sm:8px; --radius-lg:15px;
   --shadow:0 1px 2px #0000000d;
   --lift:0 6px 18px -10px #00000024;
@@ -45,6 +47,8 @@ html[data-theme="clean-vault"]{
   --accent:#2563eb; --accent-ink:#ffffff; --accent-soft:#2563eb12; --accent-line:#2563eb38;
   --gain:#0f7a53; --loss:#c0384f; --warn:#96620a;
   --gain-text:#0d6b49; --loss-text:#ab2f45; --warn-text:#855609;
+  /* accent is already blue here, so paused goes teal rather than colliding with Successful */
+  --info:#0d8a8a; --info-text:#0a6f6f; --idle:#7a4fd0; --idle-text:#603bb0;
   --radius:8px; --radius-sm:6px; --radius-lg:11px;
   --shadow:none; --lift:0 4px 14px -8px #00000020;
   --grid:#eeeef1; --sheen:none; --tap-min:44px;
@@ -57,6 +61,7 @@ html[data-theme="neon-arcade"]{
   --accent:#ff2e93; --accent-ink:#0a0212; --accent-soft:#ff2e9320; --accent-line:#ff2e9366;
   --gain:#1eaa85; --loss:#e0455c; --warn:#c98500;
   --gain-text:#39ffb0; --loss-text:#ff6d84; --warn-text:#ffd23f;
+  --info:#3fa8ff; --info-text:#6ec4ff; --idle:#9b6bff; --idle-text:#c0a0ff;
   --radius:15px; --radius-sm:10px; --radius-lg:22px;
   --shadow:0 0 30px -16px #ff2e9377; --lift:0 0 44px -16px #ff2e9399;
   --grid:#241738;
@@ -71,6 +76,8 @@ html[data-theme="quiet-ledger"]{
   --accent:#0d5288; --accent-ink:#ffffff; --accent-soft:#0d528812; --accent-line:#0d528840;
   --gain:#0f7a3d; --loss:#b3261e; --warn:#8a5a00;
   --gain-text:#0c6733; --loss-text:#98201a; --warn-text:#7a5000;
+  /* accent is navy here, so paused goes teal */
+  --info:#0f6d78; --info-text:#0b5760; --idle:#6a4fb5; --idle-text:#553d97;
   --radius:6px; --radius-sm:5px; --radius-lg:8px;
   --shadow:0 1px 3px #00000014; --lift:0 3px 8px #0000001a;
   --grid:#e6e9ed; --sheen:none; --tap-min:48px;
@@ -363,6 +370,12 @@ h3{font-size:12.5px;font-weight:650}
 .p.bad{color:var(--loss-text);border-color:var(--loss);background:color-mix(in srgb,var(--loss) 13%,transparent)}
 .p.wn{color:var(--warn-text);border-color:var(--warn);background:color-mix(in srgb,var(--warn) 13%,transparent)}
 .p.nu{color:var(--muted);border-color:var(--border-strong);background:var(--surface-3)}
+/* Owner's ruling 2026-08-19: successful, paused and cancelled each needed their own colour rather
+   than sharing neutral grey with All. .ac borrows the theme's signature accent -- the liveliest
+   colour any theme has, which is what "successful" earned. */
+.p.ac{color:var(--accent);border-color:var(--accent);background:color-mix(in srgb,var(--accent) 13%,transparent)}
+.p.info{color:var(--info-text);border-color:var(--info);background:color-mix(in srgb,var(--info) 13%,transparent)}
+.p.idle{color:var(--idle-text);border-color:var(--idle);background:color-mix(in srgb,var(--idle) 13%,transparent)}
 /* Status filters (Schedule). Pills that are also buttons: each keeps its own tone so the row reads
    as a legend of states, and the ACTIVE one is marked by weight and an inset ring rather than by
    colour -- colour is already carrying the state's meaning and cannot carry selection too. */

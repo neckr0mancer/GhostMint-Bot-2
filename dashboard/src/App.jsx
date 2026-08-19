@@ -492,7 +492,18 @@ const BUCKETS=[['all','All'],['pending','Pending'],['paused','Paused'],['failed'
 const BUCKET_STATUSES={pending:['scheduled','claimed','retry'],paused:['paused'],
   failed:['failed'],cancelled:['cancelled'],succeeded:['succeeded']};
 const BUCKET_KEYS=['pending','paused','failed','expired','cancelled','succeeded'];
-const BUCKET_TONE={all:'nu',pending:'ok',paused:'nu',failed:'bad',expired:'wn',cancelled:'nu',succeeded:'nu'};
+// One colour per state, so no two chips read as the same thing. Owner's ruling 2026-08-19:
+// grey was doing too much work -- All, Paused, Cancelled and Successful all shared it, which made
+// Cancelled indistinguishable from the "no filter" view sitting right next to it.
+//   all        neutral   -- it is the absence of a filter, so it should not compete
+//   pending    green     -- live and coming
+//   paused     blue      -- deliberately held, not broken
+//   failed     red       -- the only one that went wrong on its own
+//   expired    amber     -- a window that went past
+//   cancelled  violet    -- ended by choice, distinct from both grey and red
+//   succeeded  accent    -- the theme's signature, the liveliest colour it has
+const BUCKET_TONE={all:'nu',pending:'ok',paused:'info',failed:'bad',expired:'wn',
+  cancelled:'idle',succeeded:'ac'};
 const EXPIRABLE=['paused','failed'];
 // Must match EXPIRY_GRACE_MS in src/scheduler/schedulerRepository.js. Expiry is not "the time has
 // passed" -- a mint fails BECAUSE its time arrived, so that test would empty the failed bucket
