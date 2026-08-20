@@ -46,8 +46,78 @@ shipped).
   unresolved Discord `/info` "no response" report that got a diagnostic (not a confirmed fix).
 - **Round 14** (Section AT) is a speed pass for scheduled mints and Degen mode specifically,
   requested directly and deliberately scoped away from manual mints; shipped 2026-08-20.
+- **Round 15** (Section AU) is a proposal to split RPC traffic into three isolated pools
+  (scheduled/Degen, sniper, everything else) so sniper's continuous polling can never queue behind
+  a time-critical scheduled broadcast; scoped 2026-08-20, not yet built — needs a provider/budget
+  decision first.
 
 Status legend: ✅ Done · 🟡 Partial · ❌ Not started
+
+---
+
+# Round 15 — split RPC traffic into isolated pools (scoped 2026-08-20, not built)
+
+## Section AU — Separate RPC/WS endpoints for scheduled+Degen mints, sniper watching, and everything else ❌
+
+Raised directly as a follow-up to Round 14's speed pass: "if we had different rpc's for different
+actions, would performance be improved? and how would you split it between paid and free rpc's?"
+— then narrowed to cover scheduled mints, not just the sniper. Scoped against the real config, not
+assumed.
+
+**Confirmed today, live against this repo's own config (not guessed):**
+- **Every chain has exactly one RPC URL, with zero failover.** `ETH_RPC`/`BASE_RPC`/`POLYGON_RPC`
+  are single legacy vars (not the plural `_URLS` form `parseRpcUrls` already supports); Arbitrum and
+  Robinhood have **no dedicated RPC configured at all** and silently fall back to a hardcoded public
+  default (`arb1.arbitrum.io/rpc`, `rpc.mainnet.chain.robinhood.com`). This is a real gap
+  independent of the "split by action" question — right now a single bad endpoint is a hard outage
+  for a whole chain, not a fallback.
+- **No WebSocket RPC is configured on any chain**, despite `config/index.js`'s `parseWsRpcUrl()`
+  and `chainWatcher.js` already fully supporting one (`{CHAIN}_WS` env var). Every sniper watcher is
+  therefore stuck on 2.5s HTTP polling (`pollingIntervalMs` in `chainWatcher.js`) instead of
+  instant block-push — a real, currently-unrealized latency cost specifically for sniping, where
+  the whole point is reacting fast.
+- **Scheduled mints, sniper watching, and ordinary manual mints all share the exact same RPC pool
+  per chain today.** `ensureChainWatcher` (`server.js:680-683`) reads `CHAINS[chain].rpcUrls`/
+  `rpcWsUrl` — the identical config `transactionEngine.js`'s `providerCall` uses for every mint.
+  Round 14's scheduled+Degen fast path (tighter timeout, fee-data cache) shares this same pool too
+  — it only changed *how patiently* this app waits on the shared endpoint, not *which* endpoint it
+  waits on. A sniper watching several chains continuously can still be sharing a rate-limit bucket
+  with a scheduled mint that needs to broadcast the instant a phase opens.
+
+**Proposed shape: three pools, not two — the "just sniper" framing undersold it.**
+1. **Scheduled + Degen fast path** — low request volume, but the one pool where a slow/rate-limited
+   response is most costly (a missed phase-open window). Should get the best available endpoint
+   (paid — this app already has an Alchemy key) as primary, with a fallback candidate behind it
+   using the *existing* multi-URL failover `parseRpcUrls` already implements — no new failover
+   logic needed, just real URLs in a new env var.
+2. **Sniper watching** — continuous, high-volume, individually low-stakes (missing one block means
+   catching the next one, not a failed mint). Isolating this from pool 1 is the actual point: it
+   should never be able to add queueing delay to a scheduled broadcast. Wiring a real WS endpoint
+   here (already-built, unused capability) is probably a bigger win than the paid/free question —
+   instant block-push vs. 2.5s polling changes sniper reaction time regardless of which tier pays
+   for it.
+3. **Everything else** (manual mints, `/info`, `/gas`, dashboard preview/confirm, collection cards)
+   — today's existing single-pool setup, unaffected. Latency here is already bounded by a human's
+   own read-and-tap time; not worth new infrastructure.
+
+**Config shape, reusing what already exists rather than inventing new parsing:** extend
+`parseRpcUrls`/`parseWsRpcUrl` to take an optional pool suffix, so `{CHAIN}_RPC_FAST_URLS` and
+`{CHAIN}_RPC_SNIPER_URLS`/`{CHAIN}_RPC_SNIPER_WS` become new, **fully optional** env vars — each
+pool falls back to today's single shared list when its own isn't configured, so this ships with
+zero required config changes and zero cost to an owner who doesn't want to pay for more endpoints.
+
+**Code touch points:** `config/index.js` (parse the new optional var families per chain),
+`transactionEngine.js` (thread a resolved "fast pool" `providerService` instance through
+`resolveFeeData`/the other `providerCall` sites already gated by `useFastPath`, instead of always
+using the one shared `providerService`), `server.js`'s `ensureChainWatcher` (read the sniper pool's
+URLs/WS instead of the shared ones).
+
+**Why this isn't built yet, deliberately:** needs a real decision from the owner, not a default —
+specifically, which endpoints to actually put behind the new fast/sniper pools (a second paid
+Alchemy app scoped to just the fast path? a free-tier WS provider for sniper, or also paid if
+sniping speed matters enough to justify it?) and how much extra monthly RPC cost is acceptable.
+Building against placeholder/guessed provider choices would mean redoing the config the moment a
+real answer arrives — cheaper to ask first.
 
 ---
 
