@@ -6,7 +6,7 @@ const { ethers }  = require('ethers');
 const WebSocket   = require('ws');
 const { TelegramBot } = require('node-telegram-bot-api');
 const axios       = require('axios');
-const { CHAINS, CONFIG, getSafeConfigSummary } = require('./config');
+const { CHAINS, FAST_CHAINS, SNIPER_CHAINS, CONFIG, getSafeConfigSummary } = require('./config');
 const { createBotCommandService } = require('./commands/botCommandService');
 const { createDatabasePool } = require('./db/pool');
 const { createDiscordBot } = require('./discord/discordBot');
@@ -106,6 +106,27 @@ const providerService = createProviderService({
   timeoutMs: CONFIG.rpcTimeoutMs,
   retries: CONFIG.rpcRetries,
 });
+// Round 15 (docs/WORKLIST.md Section AU): a separate pool for scheduled/Degen mints' pre-broadcast
+// reads, built from FAST_CHAINS (config/index.js) -- {ENVNAME}_FAST_URLS per chain where configured,
+// with that chain's own general-pool URLs appended as an automatic fallback. With no fast URLs
+// configured anywhere, FAST_CHAINS is identical to CHAINS chain-for-chain, so this is just a second
+// handle onto the exact same pool -- harmless, not a second network client.
+const fastProviderService = createProviderService({
+  chains: FAST_CHAINS,
+  timeoutMs: CONFIG.rpcTimeoutMs,
+  retries: CONFIG.rpcRetries,
+});
+// Round 16 (docs/WORKLIST.md Section AV): sniper's own isolated pool, built from SNIPER_CHAINS --
+// {ENVNAME}_RPC_SNIPER_URLS/_WS per chain where configured, general-pool URLs appended as fallback.
+// Used both for sniper's pre-broadcast reads and to race the broadcast itself (performAll) in
+// transactionEngine.js -- deliberately a separate provider service from fastProviderService, not
+// shared, so sniper's continuous watching can never share a rate-limit bucket with a time-critical
+// scheduled broadcast.
+const sniperProviderService = createProviderService({
+  chains: SNIPER_CHAINS,
+  timeoutMs: CONFIG.rpcTimeoutMs,
+  retries: CONFIG.rpcRetries,
+});
 const etherscanGasService = createEtherscanGasService({
   apiKey: CONFIG.etherscanApiKey,
   chains: CHAINS,
@@ -174,10 +195,25 @@ const dashboardWebSockets=createDashboardWebSocketHub({auth:dashboardAuth,log});
 log(`Configuration loaded: ${JSON.stringify(getSafeConfigSummary())}`);
 const transactionEngine = createTransactionEngine({
   providerService,
+  fastProviderService,
+  sniperProviderService,
   intentRepository: transactionIntentRepository,
   policyRepository: transactionPolicyRepository,
   decryptPrivateKey: decryptPK,
-  notify: event => log(`Transaction ${event.intent.intentId} is ${event.state}`),
+  // Round 16 (docs/WORKLIST.md Section AV): "keep the launch path minimal, add end-to-end timing
+  // logs" -- event.event==='timing' is a separate, additive notify shape (see submit() in
+  // transactionEngine.js), never persisted, so real numbers accumulate from day one to inform
+  // items 3/4's tuning constants (pre-arm lead time, precise-timer threshold) instead of guessing.
+  notify: event => {
+    if (event.event === 'timing') {
+      const { submitStartedAt, preparedAt, signedAt, broadcastAt } = event.timings;
+      log(`Transaction timing (${event.triggerSource}, ${event.chain}) ${event.intent.intentId}: `
+        + `prep ${preparedAt - submitStartedAt}ms, sign ${signedAt - preparedAt}ms, `
+        + `broadcast ${broadcastAt - signedAt}ms, total ${broadcastAt - submitStartedAt}ms`);
+      return;
+    }
+    log(`Transaction ${event.intent.intentId} is ${event.state}`);
+  },
 });
 const mintExecution = createMintExecutionService({ mintService, transactionEngine });
 const targetPolicyService = createTargetPolicyService({ repository:targetPolicyRepository,
@@ -677,14 +713,19 @@ const sniperService = createSniperService({
 
 const activeSnipersForChain = chain => DB.snipers.filter(s => s.active && s.chain === chain);
 
+// Round 16 (docs/WORKLIST.md Section AV): sniper watching reads from SNIPER_CHAINS, not CHAINS --
+// its own isolated RPC/WS pool, separate from both the general pool and the scheduled/Degen fast
+// pool, so continuous sniper polling can never share a rate-limit bucket with a time-critical
+// scheduled broadcast. With no {ENVNAME}_RPC_SNIPER_URLS/_WS configured, SNIPER_CHAINS[chain] is a
+// literal alias for CHAINS[chain] (see config/index.js), so this is a no-op change until configured.
 function ensureChainWatcher(chain) {
-  if (chainWatchers[chain] || !CHAINS[chain]) return;
+  if (chainWatchers[chain] || !SNIPER_CHAINS[chain]) return;
   const watcher = createChainWatcher({
-    chain, rpcUrls: CHAINS[chain].rpcUrls, wsUrl: CHAINS[chain].rpcWsUrl,
+    chain, rpcUrls: SNIPER_CHAINS[chain].rpcUrls, wsUrl: SNIPER_CHAINS[chain].rpcWsUrl,
     providerFactory: url => new ethers.JsonRpcProvider(url),
     wsProviderFactory: url => {
       const socket = new WebSocket(url);
-      const provider = new ethers.WebSocketProvider(socket, CHAINS[chain].chainId);
+      const provider = new ethers.WebSocketProvider(socket, SNIPER_CHAINS[chain].chainId);
       socket.on('close', () => provider.emit('error', new Error('WebSocket closed')));
       socket.on('error', error => provider.emit('error', error));
       return provider;

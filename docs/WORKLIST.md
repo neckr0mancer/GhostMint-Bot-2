@@ -46,18 +46,172 @@ shipped).
   unresolved Discord `/info` "no response" report that got a diagnostic (not a confirmed fix).
 - **Round 14** (Section AT) is a speed pass for scheduled mints and Degen mode specifically,
   requested directly and deliberately scoped away from manual mints; shipped 2026-08-20.
-- **Round 15** (Section AU) is a proposal to split RPC traffic into three isolated pools
-  (scheduled/Degen, sniper, everything else) so sniper's continuous polling can never queue behind
-  a time-critical scheduled broadcast; scoped 2026-08-20, not yet built — needs a provider/budget
-  decision first.
+- **Round 15** (Section AU) splits RPC traffic into isolated pools so sniper's continuous polling
+  can never queue behind a time-critical scheduled broadcast. Pool 1 (scheduled/Degen fast path, a
+  generic opt-in `{ENVNAME}_FAST_URLS` per chain) shipped 2026-08-20; pool 2 (sniper isolation + a
+  real WebSocket endpoint) remains open, needs its own provider/budget decision.
+- **Round 16** (Section AV) is the owner's own two-tier plan for sniper execution speed —
+  2026-08-20. Worklist A: finish Round 15's pool 2 (sniper's own RPC/WS pool), same-tx multi-RPC
+  broadcast for sniper, sniper as its own execution profile, and end-to-end timing logs all
+  shipped; pre-arming scheduled mints and precise near-launch timers remain open, deliberately left
+  for their own careful pass. Worklist B (after A is stable): parallelized pre-arm, dynamic fee
+  presets, RPC health scoring/failover, hot wallet session cache (security tradeoff, needs its own
+  sign-off), and latency dashboards — none started.
 
 Status legend: ✅ Done · 🟡 Partial · ❌ Not started
 
 ---
 
-# Round 15 — split RPC traffic into isolated pools (scoped 2026-08-20, not built)
+# Round 16 — sniper execution speed, the owner's own two-tier plan (2026-08-20)
 
-## Section AU — Separate RPC/WS endpoints for scheduled+Degen mints, sniper watching, and everything else ❌
+## Section AV — Sniper as its own execution profile, pre-arming, precise timers, and same-tx multi-RPC broadcast 🟡
+
+The owner wrote out their own plan directly, as two worklists — "A" (must ship) and "B"
+(enhancements, after A is stable) — then added one architectural correction: **sniper should be
+treated as a true execution profile, not just a gas preset.** That correction turned out to map
+cleanly onto something that already exists: `triggerSource === 'blockchain'` already distinguishes
+a sniper-fired execution from a scheduled or manual one in `policyRepository.js`'s
+`applyGovernance` (it's how today's `blockchain_off` simulation mode works) — every item below
+gates on that existing signal, not on the Degen/Normie mode-preset axis at all, and not on any new
+signal invented for this round.
+
+### Worklist A — must ship
+
+**Shipped 2026-08-20: items 1, 2 (config only — see note), 5, 6, 7. Still open: items 3, 4** (the
+two genuinely new scheduler-architecture pieces, deliberately left for their own careful pass
+rather than rushed alongside the rest — see "What shipped" below for the real implementation).
+
+1. **Finish Round 15's pool 2** — sniper gets its own RPC/WS pool, isolated from the scheduled/Degen
+   fast path shipped in Round 15 pool 1. Decided: a **separate Alchemy app** from the scheduled
+   pool's (continuous sniper polling must never share a rate-limit bucket with a time-critical
+   scheduled broadcast — that was the whole point of splitting pools in the first place), same
+   `{ENVNAME}_RPC_SNIPER_URLS`/`{ENVNAME}_RPC_SNIPER_WS` config shape Round 15 already established
+   for pool 1.
+2. **Account tier: Alchemy Pay-As-You-Go, not Free** — reconsidered given real scale (`i plan to
+   use this in two server of about 100 users each`, ~200 users total). Free tier caps at **25
+   requests/second**; the actual risk isn't monthly volume (`ensureChainWatcher` is per-*chain*,
+   not per-user, so baseline watching load stays low regardless of user count) but *burst*
+   throughput — if a popular drop opens and, say, 50 of 200 users' snipers match within the same
+   few seconds, that's ~50 simultaneous fire sequences (fee/balance/nonce/simulate/broadcast each)
+   easily exceeding 25 req/s at exactly the moment it matters most. Pay-As-You-Go jumps to 300
+   req/s, usage-based at $0.40-0.45/1M compute units, no fixed monthly minimum. This is an
+   account-level setting, so it covers both apps/pools, not just the new sniper one.
+   - **QuickNode checked as an alternative, not assumed away.** Live-verified pricing: QuickNode's
+     free tier is a **one-month trial only**, not permanent like Alchemy's; matching Alchemy's
+     ~300 req/s requires QuickNode's top "Scale" tier at **$424-499/month fixed** (and that still
+     only reaches 250 req/s) versus Alchemy's usage-based rate. QuickNode also supports Robinhood
+     Chain, so chain coverage wasn't the deciding factor — the pricing structure was. QuickNode has
+     a real reputation in trading/sniping circles for raw latency, but no verified benchmark
+     comparing the two was found or claimed; the decision rests on the confirmed pricing gap, not
+     an unconfirmed latency claim.
+3. **Pre-arm scheduled mints** — genuinely new work, not something Round 14 already covered. Round
+   14 fixed scheduler *concurrency* (tasks no longer serialize behind each other); it never touched
+   *precision* — today's scheduler still starts all prep work (fee fetch, balance, nonce,
+   simulation) only once a task becomes due, not before. Pre-arming splits "prepare" from "fire"
+   into two phases, capturing nonce/fee state some lead time ahead of `mint_time` so the only work
+   left at the fire moment is signing and broadcasting. Default lead time: **~10-15s**, matching the
+   OSNM-Z reference's own constants (already logged in this file's Round 3, Section W) — open to
+   tuning once real timing logs (item 6) show how stale a 10-15s-old fee/nonce snapshot actually
+   gets in practice.
+4. **Precise timers for near-launch tasks, replacing coarse polling** — distinct from item 3: this
+   is about how the scheduler *wakes up* near a task's fire moment, not what it does once awake.
+   Default: once a task is within one poll interval of due, switch from the normal ~1s poll tick to
+   a direct `setTimeout` fire at the exact target moment, instead of waiting for the next tick.
+5. **Same-tx multi-RPC broadcast, sniper only** — deliberately *not* extended to scheduled/Degen
+   mints generally (Round 14 explicitly declined broadcast-racing there, reasoning the
+   duplicate-broadcast complexity wasn't worth it for that lower-stakes case). For sniper it's
+   justified: same signed transaction, same nonce and signature, so no double-spend risk — worst
+   case a losing endpoint reports "already known." Fans out to whatever's configured in the
+   sniper pool's own candidate list (item 1/2) — **not** a private MEV relay (Flashbots Protect,
+   MEV-blocker, etc.), a deliberate scope decision: those solve front-running/sandwich protection,
+   a DEX-trade problem where there's price slippage to extract. An NFT mint sniper isn't racing
+   predators reading mempool intent, it's racing everyone else for inclusion in the first valid
+   block after a contract opens — a pure speed/redundancy problem a relay doesn't obviously help
+   with, at real added cost and a new vendor relationship.
+6. **Keep the launch path minimal; add end-to-end timing logs** — deliberately no speculative
+   complexity added to the hot path itself. Timestamp each stage (task claimed → pre-armed →
+   signed → broadcast → confirmed) so items 3/4's tuning constants get adjusted from real data
+   later, not re-guessed.
+7. **Sniper as its own execution profile** — the owner's own correction, folded in here rather than
+   left as a separate item: every behavior above (dedicated pool, multi-broadcast, precise timing)
+   activates on `triggerSource === 'blockchain'` specifically, independent of whichever mode preset
+   (Degen/Normie/etc.) the account has selected. This is also where Worklist B's own "sniper
+   profile" item (below) turns out to already be covered, not a separate later task.
+
+### What shipped 2026-08-20: items 1, 2, 5, 6, 7 ✅
+
+- **Item 1/7 (sniper's own pool + execution profile):** `config/index.js` gained `SNIPER_CHAINS`,
+  built the same way Round 15's `FAST_CHAINS` was — `parseFastRpcUrls`/its validation logic was
+  generalized into `parseNamedRpcUrls(definition, generalUrls, suffix)` so both pools share one
+  implementation, and `parseWsRpcUrl` gained an optional `suffix` param so sniper can have its own
+  `{ENVNAME}_RPC_SNIPER_WS` independent of any general-pool WS setting. `{ENVNAME}_RPC_SNIPER_URLS`
+  prepends ahead of the general pool's URLs (same automatic-fallback shape as pool 1); unconfigured,
+  `SNIPER_CHAINS[chain] === CHAINS[chain]` by reference, zero behavior change. `server.js`'s
+  `ensureChainWatcher` now reads from `SNIPER_CHAINS` instead of `CHAINS`. `transactionEngine.js`
+  gained an optional `sniperProviderService` constructor param; `submit()` computes
+  `isSniperTrigger = request.triggerSource === 'blockchain'` and an `activeService` that prefers
+  sniper's pool over the scheduled/Degen fast pool over the general one, in that priority order —
+  this is the actual mechanism behind "sniper is its own execution profile," not a separate flag.
+  `server.js` constructs `sniperProviderService` from `SNIPER_CHAINS` alongside the existing two.
+- **Item 5 (same-tx multi-RPC broadcast):** `providerService.js` gained `performAll(chain,
+  operationName, operation)` — fans one operation out to every configured candidate concurrently,
+  resolving with whichever succeeds first, throwing `RpcUnavailableError` only if all fail. Used
+  *only* for the broadcast step, *only* when `isSniperTrigger && sniperProviderService`; every other
+  trigger source (including sniper with no sniper pool configured) keeps `perform()`'s ordinary
+  sequential try-then-fallback. `preview()` and every pre-broadcast read path were untouched.
+- **Item 6 (timing logs):** `submit()` captures four checkpoints (`submitStartedAt`, `preparedAt`,
+  `signedAt`, `broadcastAt`) in a plain local object and reports them through one additional
+  `notify({ event: 'timing', ... })` call right after broadcast — deliberately *not* persisted
+  through `intentRepository` at all (a test pins this: `repository.intents[0].timings` stays
+  `undefined`), so this can never affect what's actually stored for an intent regardless of what
+  the repository's real schema supports. `confirmedAt` needed no new code: `reconcileIntent` already
+  calls `transition()` on every state change including the final one, so the existing `state:
+  'confirmed'` notify already reports that moment. `server.js`'s `notify` callback logs elapsed
+  deltas between checkpoints (prep/sign/broadcast/total) per transaction.
+- **Item 2 (Alchemy Pay-As-You-Go)** is a billing action outside this app's own code — nothing to
+  ship there beyond what item 1 already enables (config is provider-agnostic; whatever URL an
+  upgraded, separate Alchemy app produces just gets pasted into `{ENVNAME}_RPC_SNIPER_URLS`/`_WS`).
+  Recorded as covered because the code path it depends on is real and tested, not because the
+  account has actually been upgraded — that remains an owner action.
+- Verified: `npm run lint` on every touched file, and the full suite (728 tests; the only failures
+  across two separate full runs were the same four DB-bootstrap/pool-restart integration tests this
+  file already documents as flaky in this sandboxed dev environment, corroborated by a clean 128/128
+  targeted run covering every file this round touched, including the normally-flaky
+  `sniper.integration.test.js`). New coverage: `tests/config.test.js` (sniper pool alias-by-default,
+  configured-and-hidden, malformed-URL, and sniper/fast-pool-independence cases);
+  `tests/transactionEngine.test.js` (`performAll` racing/failure-tolerance/all-fail behavior;
+  sniper-trigger routing including priority over the fast pool; the timing-event shape and its
+  never-persisted guarantee).
+
+### Worklist B — enhancements, after A is stable and shipped
+
+1. Parallelize pre-arm prep (item A3) across multiple pending tasks instead of doing it serially.
+2. Dynamic fee strategy presets, beyond the flat gas-multiplier Degen already applies.
+3. ~~Sniper profile~~ — subsumed by A7 above; not a separate task.
+4. RPC health scoring and fast failover, building on top of the pool split (route around a
+   candidate that's been slow/erroring recently, not just retry-then-fallback per call).
+5. **Hot wallet session cache — flagged, not defaulted in.** This means caching decrypted key
+   material in memory for longer or more accessibly, which is a real security tradeoff, not a pure
+   performance win. Deserves the same "checked with the owner directly" treatment Round 14's
+   simulation-skip exception got — not something to build as a routine cache the way
+   `feeDataCache.js` was.
+6. Broadcast telemetry and latency dashboards, visualizing item A6's timing logs.
+
+### Related but explicitly out of scope for this round
+
+Raised in the same conversation (Alchemy also offers NFT APIs) but orthogonal to execution speed —
+these are read/reporting capabilities, not write-path work, and stay separate backlog items:
+- **Section AD Tier 2** (Top Holders % on the collection info card) — already researched in Round 7:
+  OpenSea's holder endpoint is gated (401), Alchemy's `getOwnersForContract` does the job, free
+  tier confirmed usable at the time. Still unbuilt, still just needs a "worth doing now?" decision.
+- **Section T** (extracting which token ID a mint actually received) — currently unbuilt; Alchemy's
+  `getNFTsForOwner` is a candidate alternative to parsing raw Transfer event logs from the receipt.
+
+---
+
+# Round 15 — split RPC traffic into isolated pools (2026-08-20)
+
+## Section AU — Separate RPC/WS endpoints for scheduled+Degen mints, sniper watching, and everything else 🟡
 
 Raised directly as a follow-up to Round 14's speed pass: "if we had different rpc's for different
 actions, would performance be improved? and how would you split it between paid and free rpc's?"
@@ -100,24 +254,57 @@ assumed.
    — today's existing single-pool setup, unaffected. Latency here is already bounded by a human's
    own read-and-tap time; not worth new infrastructure.
 
-**Config shape, reusing what already exists rather than inventing new parsing:** extend
-`parseRpcUrls`/`parseWsRpcUrl` to take an optional pool suffix, so `{CHAIN}_RPC_FAST_URLS` and
-`{CHAIN}_RPC_SNIPER_URLS`/`{CHAIN}_RPC_SNIPER_WS` become new, **fully optional** env vars — each
-pool falls back to today's single shared list when its own isn't configured, so this ships with
-zero required config changes and zero cost to an owner who doesn't want to pay for more endpoints.
+### What shipped 2026-08-20: pool 1, scheduled+Degen fast path ✅
 
-**Code touch points:** `config/index.js` (parse the new optional var families per chain),
-`transactionEngine.js` (thread a resolved "fast pool" `providerService` instance through
-`resolveFeeData`/the other `providerCall` sites already gated by `useFastPath`, instead of always
-using the one shared `providerService`), `server.js`'s `ensureChainWatcher` (read the sniper pool's
-URLs/WS instead of the shared ones).
+Scoped against a real budget decision rather than a guess ("How much do you want to spend on
+this?" → "One paid endpoint, for scheduled/Degen only"). Two implementation angles were tried:
 
-**Why this isn't built yet, deliberately:** needs a real decision from the owner, not a default —
-specifically, which endpoints to actually put behind the new fast/sniper pools (a second paid
-Alchemy app scoped to just the fast path? a free-tier WS provider for sniper, or also paid if
-sniping speed matters enough to justify it?) and how much extra monthly RPC cost is acceptable.
-Building against placeholder/guessed provider choices would mean redoing the config the moment a
-real answer arrives — cheaper to ask first.
+- **First built: auto-derive the fast-pool URL from the existing, already-present-but-unused
+  `ALCHEMY_API_KEY`** (confirmed live 2026-08-20 that it's referenced nowhere in the codebase, and
+  that one key already works across ethereum/arbitrum/robinhood — base/polygon just needed enabling
+  as a network on the existing Alchemy app, a dashboard toggle, not a plan limitation; Alchemy does
+  genuinely support Robinhood Chain, confirmed via `alchemy.com/rpc/robinhood`). Set aside at the
+  owner's direction in favor of the option below, which keeps the provider choice entirely in
+  config rather than hardcoding one vendor's URL-naming scheme into the app. The Alchemy variant's
+  full diff and live findings are preserved for later in case zero-config auto-derivation is wanted
+  as a default that the generic env vars below could still override.
+- **Shipped: a generic, provider-agnostic `{ENVNAME}_FAST_URLS` env var per chain**, entirely
+  opt-in — matches `parseRpcUrls`' own existing `{ENVNAME}_URLS` pattern exactly rather than
+  inventing new parsing. Unset for a chain, `FAST_CHAINS[chain]` is a literal alias for
+  `CHAINS[chain]` (`===`, not just equal) — zero behavior change, zero required config. Configured,
+  the fast URL(s) are prepended ahead of that chain's own general-pool URLs, so
+  `providerService.perform()`'s existing per-candidate retry/fallback already degrades to the
+  general pool on a rate limit or outage — no new resilience code needed for that.
+- `transactionEngine.js`'s `createTransactionEngine` gained an optional `fastProviderService` param
+  (undefined by default — every existing caller/test unaffected). `providerCall`,
+  `resolveFeeData`, `estimateGasSafely`, `simulateCallSafely` all gained a trailing
+  `service = providerService` parameter; `submit()` computes `activeService` right alongside Round
+  14's existing `useFastPath`/`fastRpcOptions` and threads it through every pre-broadcast read.
+  `broadcastTransaction`'s own call site was deliberately left untouched (always the general pool),
+  matching Round 14's own reasoning that a failed/slow broadcast is costlier to get wrong than a
+  failed read. `preview()` (the dashboard's own flow) was not touched at all.
+- `server.js` constructs a second `createProviderService({ chains: FAST_CHAINS, ... })` instance
+  alongside the existing one and passes it into `createTransactionEngine`.
+- Verified: `npm run lint`, `npm run check` (full syntax pass), and the full suite. New coverage in
+  `tests/config.test.js` (unconfigured → no fast chains reported; configured → reported without
+  leaking the URL; malformed → refused the same way a malformed general URL is) and
+  `tests/transactionEngine.test.js` (scheduled mint routes reads through the fast service but still
+  broadcasts via the general one; a manual mint never touches the fast service even when one is
+  configured; no configured fast service → behaves exactly as Round 14 shipped it).
+- A refactor mid-build (extracting shared URL-validation logic) briefly regressed one existing error
+  message's exact wording (singular "must be a valid... URL" for the legacy single-value case vs.
+  plural "must contain... URLs" for an actual list) — caught by the existing
+  `tests/config.test.js` coverage, not missed.
+
+### Not built this round, still open: pools 2 and 3 ❌
+
+- **Sniper watching isn't isolated from the general pool yet**, and still has no WebSocket endpoint
+  wired up despite `chainWatcher.js`/`parseWsRpcUrl()` already fully supporting one — every sniper
+  watcher remains on 2.5s HTTP polling. `ensureChainWatcher` (`server.js`) still reads
+  `CHAINS[chain].rpcUrls`/`rpcWsUrl`, the same pool every manual mint uses.
+- Same config shape (`{ENVNAME}_RPC_SNIPER_URLS`/`{ENVNAME}_RPC_SNIPER_WS`) would extend cleanly
+  once a provider/budget decision is made for this pool specifically — deliberately not built
+  speculatively, same reasoning as before: needs a real answer, not a guess.
 
 ---
 
@@ -241,6 +428,21 @@ this app derives from chain state (SeaDrop's on-chain `PublicDrop` struct only e
 and the collection info card via new `humanizeStageType`/`stageSummaryLine` helpers in each
 platform's `menus.js`. Returns `null` on anything that isn't a tracked OpenSea Drop (a 404, the
 overwhelmingly common case) with no error surfaced to the card renderer.
+
+**Live incident, found and closed 2026-08-20:** neither platform was actually showing drop phases
+in production — reported directly by the owner. Live-reproduced against real, currently-open drops
+(not assumed): every `/drops/*` endpoint returned `401 "Invalid API key"` with this app's
+then-current `OPENSEA_API_KEY`, while the exact same key worked fine for `/collections/{slug}` and
+everything else this file calls. This means Section AQ *and* Section AR below were shipped on the
+strength of unit tests against mocked HTTP only — they were never actually verified against the
+live API with this app's real credentials, despite this file's own established discipline of
+live-verifying rather than assuming. The root cause was the key itself: OpenSea's docs don't
+document any special tier for Drops endpoints, but the old key plainly didn't have that access and
+a freshly-generated one did — regenerating the key (owner's own OpenSea account, Settings →
+Developer) fixed both `getDrop` and `buildMintTransaction` immediately, live-confirmed against three
+real drops (phase data decoded correctly, `buildMintTransaction` correctly threw the intended
+`ValidationError`/`Insufficient balance` for a fresh test wallet) with no code changes needed at
+all. Recorded here so a future stale-key symptom like this isn't re-investigated as a code bug.
 
 ## Section AR — OpenSea-backed minting for allowlist/GTD/FCFS stages ✅
 

@@ -65,6 +65,32 @@ function createProviderService({ chains, timeoutMs = 10_000, retries = 1, provid
     throw new RpcUnavailableError(chain, attempts);
   }
 
+  // Round 16 (docs/WORKLIST.md Section AV): fans one operation out to EVERY configured candidate
+  // concurrently, resolving with whichever succeeds first, instead of perform()'s sequential
+  // try-then-fallback. Used only for sniper's same-signed-tx broadcast: the same nonce+signature
+  // can't double-spend across endpoints, so racing all of them beats waiting on one at a time when
+  // shaving inclusion latency is the entire point. Every other caller stays on perform().
+  async function performAll(chain, operationName, operation, { timeoutMs: timeoutOverride } = {}) {
+    const candidates = chainProviders(chain);
+    const effectiveTimeoutMs = timeoutOverride ?? timeoutMs;
+    return new Promise((resolve, reject) => {
+      let pending = candidates.length;
+      let settled = false;
+      for (const candidate of candidates) {
+        withTimeout(
+          Promise.resolve().then(() => operation(candidate.provider)),
+          effectiveTimeoutMs,
+          `${chain} ${operationName}`,
+        ).then(value => {
+          if (!settled) { settled = true; resolve(value); }
+        }).catch(() => {
+          pending -= 1;
+          if (!settled && pending === 0) { settled = true; reject(new RpcUnavailableError(chain, candidates.length)); }
+        });
+      }
+    });
+  }
+
   function destroy() {
     for (const candidates of providers.values()) {
       for (const candidate of candidates) candidate.provider.destroy?.();
@@ -76,7 +102,7 @@ function createProviderService({ chains, timeoutMs = 10_000, retries = 1, provid
     return chains[chain]?.chainId ?? null;
   }
 
-  return { destroy, expectedChainId, perform };
+  return { destroy, expectedChainId, perform, performAll };
 }
 
 module.exports = { RpcUnavailableError, createProviderService, withTimeout };

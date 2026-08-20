@@ -94,6 +94,20 @@ function explainCallFailure(error, { chain, params } = {}) {
 
 function createTransactionEngine({
   providerService,
+  // Round 15 (docs/WORKLIST.md Section AU): an optional, separately-configured provider service for
+  // scheduled/Degen mints' pre-broadcast reads -- built from FAST_CHAINS (config/index.js), whose
+  // per-chain {ENVNAME}_FAST_URLS is entirely opt-in and provider-agnostic, with the general pool's
+  // own URLs appended as an automatic fallback. Left undefined, every fast-path call below just uses
+  // `providerService` like before this existed -- this is purely additive.
+  fastProviderService,
+  // Round 16 (docs/WORKLIST.md Section AV): same idea, sniper's own pool -- built from SNIPER_CHAINS,
+  // isolated from both the general pool and the scheduled/Degen fast pool so sniper's continuous
+  // watching never shares a rate-limit bucket with a time-critical scheduled broadcast. Also the
+  // service submit() races the broadcast itself across, via performAll() -- the one carve-out from
+  // "broadcast always uses the conservative default," justified because it's the same signed
+  // transaction to every candidate, so no double-spend risk exists the way there would be for any
+  // other trigger source.
+  sniperProviderService,
   intentRepository,
   policyRepository,
   decryptPrivateKey,
@@ -103,32 +117,32 @@ function createTransactionEngine({
   pollIntervalMs = 1_000,
   feeDataCache = createFeeDataCache({ now }),
 }) {
-  async function providerCall(chain, name, operation, options) {
-    return providerService.perform(chain, name, operation, options);
+  async function providerCall(chain, name, operation, options, service = providerService) {
+    return service.perform(chain, name, operation, options);
   }
 
   // Only consulted for scheduled and Degen-mode mints (see feeDataCache.js) -- every other caller
   // keeps getting a live quote. policy.gasPriceMultiplier is only ever non-1 for a preset with its
   // own multiplier (today, only Degen/"ultra_fast" -- see migration 035), so it doubles as the
   // "is this Degen" signal already resolved by this point, no new lookup needed.
-  async function resolveFeeData(chain, useCache, options) {
+  async function resolveFeeData(chain, useCache, options, service = providerService) {
     if (useCache) {
       const cached = feeDataCache.get(chain);
       if (cached) return cached;
     }
-    const fresh = await providerCall(chain, 'getFeeData', provider => provider.getFeeData(), options);
+    const fresh = await providerCall(chain, 'getFeeData', provider => provider.getFeeData(), options, service);
     if (useCache) feeDataCache.set(chain, fresh);
     return fresh;
   }
 
 
-  async function estimateGasSafely(chain, params, options) {
-    try { return await providerCall(chain, 'estimateGas', provider => provider.estimateGas(params), options); }
+  async function estimateGasSafely(chain, params, options, service = providerService) {
+    try { return await providerCall(chain, 'estimateGas', provider => provider.estimateGas(params), options, service); }
     catch (error) { throw new TransactionSafetyError('SIMULATION_FAILED', explainCallFailure(error, { chain, params })); }
   }
 
-  async function simulateCallSafely(chain, params, options) {
-    try { return await providerCall(chain, 'simulate', provider => provider.call(params), options); }
+  async function simulateCallSafely(chain, params, options, service = providerService) {
+    try { return await providerCall(chain, 'simulate', provider => provider.call(params), options, service); }
     catch (error) { throw new TransactionSafetyError('SIMULATION_FAILED', explainCallFailure(error, { chain, params })); }
   }
 
@@ -214,6 +228,14 @@ function createTransactionEngine({
 
   async function submit(request) {
     const walletKey = `${request.chain}:${request.wallet.id}`;
+    // Round 16 (Section AV): "keep the launch path minimal, add end-to-end timing logs" -- these
+    // four checkpoints are the only new work on the hot path, purely additive (no branching, no new
+    // awaits). Reported via one extra notify() call after broadcast, not persisted through
+    // intentRepository at all, so this can never affect what actually gets stored for an intent --
+    // whoever's listening on notify (server.js today) decides whether/how to log or aggregate it,
+    // and confirmedAt is already available for free from the existing state:'confirmed' notify
+    // reconcileIntent already fires, no new instrumentation needed for that half.
+    const timings = { submitStartedAt: now() };
     return nonceQueue.run(walletKey, async () => {
       if (request.idempotencyKey && intentRepository.getByIdempotencyKey) {
         const existing = await intentRepository.getByIdempotencyKey(request.idempotencyKey);
@@ -234,16 +256,21 @@ function createTransactionEngine({
 
       const from = request.wallet.address;
       const base = { from, to: request.to, data: request.data || '0x', value: valueWei };
-      // Scheduled and Degen-mode mints (policy.gasPriceMultiplier > 1 -- see feeDataCache.js's own
-      // note) get a tighter per-call RPC budget on every pre-broadcast read below: a slow primary
-      // RPC is abandoned after one fast attempt instead of eating the full default timeout across
-      // every retry before even trying the next configured URL. The broadcast itself and post-
-      // broadcast finality polling deliberately keep the conservative defaults -- a failed/slow
-      // broadcast is far more costly to get wrong than a failed read, which just falls over to the
-      // next candidate URL either way.
-      const useFastPath = (request.triggerSource || 'manual') === 'scheduled' || policy.gasPriceMultiplier > 1;
+      // Scheduled mints, Degen-mode mints (policy.gasPriceMultiplier > 1 -- see feeDataCache.js's
+      // own note), and sniper fires (triggerSource === 'blockchain' -- Round 16, Section AV: sniper
+      // is its own execution profile, not gated on the mode preset at all) all get a tighter
+      // per-call RPC budget on every pre-broadcast read below: a slow primary RPC is abandoned after
+      // one fast attempt instead of eating the full default timeout across every retry before even
+      // trying the next configured URL. Sniper additionally gets its own isolated pool
+      // (sniperProviderService) rather than sharing the scheduled/Degen fast pool -- continuous
+      // sniper watching must never be able to queue behind a time-critical scheduled broadcast, the
+      // whole reason these pools were split in the first place.
+      const isSniperTrigger = request.triggerSource === 'blockchain';
+      const useFastPath = isSniperTrigger || (request.triggerSource || 'manual') === 'scheduled' || policy.gasPriceMultiplier > 1;
       const fastRpcOptions = useFastPath ? { timeoutMs: FAST_RPC_TIMEOUT_MS, retries: FAST_RPC_RETRIES } : undefined;
-      const feeData = await resolveFeeData(request.chain, useFastPath, fastRpcOptions);
+      const activeService = isSniperTrigger && sniperProviderService ? sniperProviderService
+        : (useFastPath && fastProviderService ? fastProviderService : providerService);
+      const feeData = await resolveFeeData(request.chain, useFastPath, fastRpcOptions, activeService);
       const hasExplicitLegacyFee = request.gasPriceWei !== undefined && request.gasPriceWei !== null;
       const hasExplicitMaxFee = request.maxFeePerGasWei !== undefined && request.maxFeePerGasWei !== null;
       const gasPriceWei = hasExplicitLegacyFee
@@ -287,11 +314,11 @@ function createTransactionEngine({
         ? { maxFeePerGas: maxFeePerGasWei, maxPriorityFeePerGas: maxPriorityFeePerGasWei ?? 0n, type: 2 }
         : { gasPrice: gasPriceWei };
       const gasLimit = request.gasLimitWei === undefined
-        ? await estimateGasSafely(request.chain, { ...base, ...feeFields }, fastRpcOptions)
+        ? await estimateGasSafely(request.chain, { ...base, ...feeFields }, fastRpcOptions, activeService)
         : asBigInt(request.gasLimitWei, 'gasLimitWei');
       if (gasLimit <= 0n) throw new TransactionSafetyError('INVALID_TRANSACTION', 'Gas limit must be positive');
       const estimatedCostWei = valueWei + gasLimit * selectedFee;
-      const balance = await providerCall(request.chain, 'getBalance', provider => provider.getBalance(from), fastRpcOptions);
+      const balance = await providerCall(request.chain, 'getBalance', provider => provider.getBalance(from), fastRpcOptions, activeService);
       if (BigInt(balance) < estimatedCostWei) {
         throw new TransactionSafetyError('INSUFFICIENT_BALANCE', 'Wallet balance is below the estimated transaction cost');
       }
@@ -300,11 +327,11 @@ function createTransactionEngine({
         throw new TransactionSafetyError('DAILY_BUDGET_EXCEEDED', 'Transaction would exceed the wallet daily spending budget');
       }
       if (policy.simulationEnabled) {
-        await simulateCallSafely(request.chain, { ...base, ...feeFields, gasLimit }, fastRpcOptions);
+        await simulateCallSafely(request.chain, { ...base, ...feeFields, gasLimit }, fastRpcOptions, activeService);
       }
 
-      const providerNonce = Number(await providerCall(request.chain, 'getTransactionCount', provider => provider.getTransactionCount(from, 'pending'), fastRpcOptions));
-      const network = await providerCall(request.chain, 'getNetwork', provider => provider.getNetwork(), fastRpcOptions);
+      const providerNonce = Number(await providerCall(request.chain, 'getTransactionCount', provider => provider.getTransactionCount(from, 'pending'), fastRpcOptions, activeService));
+      const network = await providerCall(request.chain, 'getNetwork', provider => provider.getNetwork(), fastRpcOptions, activeService);
       const expectedChainId = providerService.expectedChainId?.(request.chain);
       if (expectedChainId !== null && expectedChainId !== undefined && BigInt(network.chainId) !== BigInt(expectedChainId)) {
         throw new TransactionSafetyError('WRONG_CHAIN', 'RPC provider is connected to the wrong chain');
@@ -353,6 +380,7 @@ function createTransactionEngine({
       }
       if (!intent) throw new TransactionSafetyError('NONCE_RESERVATION_FAILED', 'Could not reserve a unique wallet nonce');
       if (request.onIntentPersisted) await request.onIntentPersisted(intent);
+      timings.preparedAt = now();
       const transaction = {
         to: request.to,
         data: request.data || '0x',
@@ -364,14 +392,27 @@ function createTransactionEngine({
       };
 
       const signedTransaction = await signer.signTransaction(transaction);
+      timings.signedAt = now();
       const txHash = keccak256(signedTransaction);
       intent = await intentRepository.attachSignedHash(intent.intentId, txHash);
       try {
-        await providerCall(request.chain, 'broadcastTransaction', provider => provider.broadcastTransaction(signedTransaction));
+        // Round 16 (Section AV): sniper races the same signed transaction across every candidate
+        // in its own pool concurrently instead of trying one at a time -- safe because it's the
+        // same nonce+signature everywhere, so a losing endpoint's own response (often just
+        // "already known") is harmless to discard. Every other trigger source keeps the
+        // conservative sequential default; a failed/slow broadcast is too costly to get wrong to
+        // race it without a reason as strong as sniper's actual competitive-inclusion use case.
+        if (isSniperTrigger && sniperProviderService) {
+          await sniperProviderService.performAll(request.chain, 'broadcastTransaction', provider => provider.broadcastTransaction(signedTransaction));
+        } else {
+          await providerCall(request.chain, 'broadcastTransaction', provider => provider.broadcastTransaction(signedTransaction));
+        }
       } catch (error) {
         await transition(intent.intentId, 'unknown', { reason: 'broadcast result was not observable' });
         throw new TransactionSafetyError('BROADCAST_UNKNOWN', 'Transaction broadcast outcome is unknown; reconciliation will continue');
       }
+      timings.broadcastAt = now();
+      await safeNotify(notify, { intent, event: 'timing', triggerSource: request.triggerSource || 'manual', chain: request.chain, timings });
       intent = await transition(intent.intentId, 'pending', { reason: 'raw signed transaction broadcast accepted' });
       return waitForFinality(intent);
     });
