@@ -569,7 +569,12 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
 
       if (data === 'menu:main') return dcRespond(interaction, discordMenus.mainMenu({ isOwner: await ownerFlag(userId) }));
       if (data === 'menu:wallets') return dcRespond(interaction, discordMenus.walletsMenu());
-      if (data === 'menu:settings') return dcRespond(interaction, discordMenus.settingsMenu({ isOwner: await ownerFlag(userId) }));
+      if (data === 'menu:settings') {
+        if (!await actionGate.allows(userId, 'discord', platformUserId, 'settings')) {
+          return dcRespond(interaction, discordMenus.gateUnlockCard({ action: 'settings' }));
+        }
+        return dcRespond(interaction, discordMenus.settingsMenu({ isOwner: await ownerFlag(userId) }));
+      }
       // Section O -- the one genuinely free-text field a mint needs (a contract address) has
       // nothing to pick from a list, so this opens a modal rather than a select/button, same as
       // every other unavoidably-free-text field elsewhere in this file (wallet labels, private
@@ -579,6 +584,9 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
       if (data === 'menu:mint:single') return interaction.showModal(discordMenus.labelModal({ customId: 'menu:mint:submit', title: 'Contract address to mint', maxLength: 200 }));
       if (data === 'menu:mint:batch') return interaction.showModal(discordMenus.labelModal({ customId: 'menu:mint:batch:submit', title: 'Contract address to batch mint', maxLength: 200 }));
       if (data === 'menu:tasks') {
+        if (!await actionGate.allows(userId, 'discord', platformUserId, 'tasks')) {
+          return dcRespond(interaction, discordMenus.gateUnlockCard({ action: 'tasks' }));
+        }
         const page = await commands.tasksPage(userId, { page: 1 });
         return dcRespond(interaction, discordMenus.tasksMenu(page));
       }
@@ -586,7 +594,12 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         const page = await commands.tasksPage(userId, { page: Number(data.slice('tasks:page:'.length)) || 1 });
         return dcRespond(interaction, discordMenus.tasksMenu(page));
       }
-      if (data === 'menu:snipers') return dcRespond(interaction, discordMenus.snipersMenu(commands.snipers(userId)));
+      if (data === 'menu:snipers') {
+        if (!await actionGate.allows(userId, 'discord', platformUserId, 'snipers')) {
+          return dcRespond(interaction, discordMenus.gateUnlockCard({ action: 'snipers' }));
+        }
+        return dcRespond(interaction, discordMenus.snipersMenu(commands.snipers(userId)));
+      }
       // menu:watch is handled further below, alongside the rest of the watch-rule guided flow.
       if (data === 'menu:activity') {
         if (!await actionGate.allows(userId, 'discord', platformUserId, 'activity')) {
@@ -605,6 +618,9 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         return dcRespond(interaction, discordMenus.gasMenu({ chain: gasChain, fees, supportedChains, chains }));
       }
       if (data === 'menu:mode') {
+        if (!await actionGate.allows(userId, 'discord', platformUserId, 'mode')) {
+          return dcRespond(interaction, discordMenus.gateUnlockCard({ action: 'mode' }));
+        }
         const [presets, currentMode, advancedModesAllowed] = await Promise.all([
           commands.modePresets(), commands.currentMode(userId), commands.advancedModesAllowed(userId),
         ]);
@@ -620,6 +636,9 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         return dcRespond(interaction, discordMenus.modeMenu({ currentKey: currentMode?.key, presets, advancedModesAllowed }));
       }
       if (data === 'menu:admin') {
+        if (!await actionGate.allows(userId, 'discord', platformUserId, 'admin')) {
+          return dcRespond(interaction, discordMenus.gateUnlockCard({ action: 'admin' }));
+        }
         const overview = await commands.adminOverview(userId);
         return dcRespond(interaction, discordMenus.adminOverviewMenu(formatAdminOverview(overview)));
       }
@@ -673,8 +692,10 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
       // Discord slash commands must be registered with the API, so the counterpart to Telegram's
       // /lock is a button on the confirmation we already send.
       if (data === 'gate:lock') {
-        actionGate.lock?.('discord', platformUserId);
-        return dcRespond(interaction, { content: '🔒 Locked. Sensitive actions will ask for your password again.', components: [] });
+        const wasUnlocked = actionGate.lock?.('discord', platformUserId);
+        return dcRespond(interaction, { content: wasUnlocked
+          ? '🔒 Locked. Sensitive actions will ask for your password again.'
+          : '🔒 Already locked — nothing was unlocked.', components: [] });
       }
       if (data === 'gate:unlock:open') {
         return interaction.showModal(discordMenus.labelModal({ customId: 'gate:unlock:submit',
@@ -1030,9 +1051,15 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
       // already-ephemeral message (/menu or menu:watch, exactly like wallet create/import), so
       // there's no public-origin-message complication to handle here.
       if (data === 'menu:watch' || data === 'watch:list') {
+        if (!await actionGate.allows(userId, 'discord', platformUserId, 'watchrules')) {
+          return dcRespond(interaction, discordMenus.gateUnlockCard({ action: 'watchrules' }));
+        }
         return dcRespond(interaction, discordMenus.watchRulesList(await commands.watchRules(userId)));
       }
       if (data === 'watch:add:start') {
+        if (!await actionGate.allows(userId, 'discord', platformUserId, 'watchedit')) {
+          return dcRespond(interaction, discordMenus.gateUnlockCard({ action: 'watchedit' }));
+        }
         flowState.start('discord', platformUserId, 'watch_guided', 'awaiting_name');
         return interaction.showModal(discordMenus.labelModal({ customId: 'flow:watchname:submit', title: 'Watch rule name' }));
       }
@@ -1174,7 +1201,7 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
           return interaction.reply({ content: `🔒 ${escapeDiscord(text)}`, ephemeral: true }).catch(() => {});
         }
         const content = outcome.ok
-          ? '🔓 Unlocked for 10 minutes. Tap what you were doing again.'
+          ? '🔓 Unlocked for 10 minutes. Tap what you were doing again, or Lock now to end it straight away.'
           : `❌ Wrong password. ${outcome.attemptsLeft} attempt(s) left.`;
         const components = outcome.ok
           ? [discordMenus.row([discordMenus.button('🔒 Lock now', 'gate:lock', 'secondary')])]
