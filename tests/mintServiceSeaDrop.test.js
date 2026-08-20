@@ -416,6 +416,39 @@ test('detectMintContract computes live stats and market cap (floor x current min
   assert.equal(result.stats.marketCap, 6000); // 1.5 ETH floor x 4000 minted
 });
 
+// Round 17 (Section AW): a SeaDrop collection that sells out well before its stage window closes
+// used to keep showing the real mint price -- soldOut only ever checked endTime, never
+// totalMinted>=maxSupply, unlike the plain-mint branch a few lines below in the source. Reproduces
+// the live report against phoenix-in-the-hood: sold out (totalMinted === maxSupply) but endTime
+// still in the future.
+test('detectMintContract treats a SeaDrop drop as sold out once totalMinted reaches maxSupply, even while its stage window is still open', async () => {
+  const futureEndTime = Math.floor(Date.now() / 1000) + 3_600;
+  const { service } = commandServiceFixture({
+    contractValueResolver: { resolve: async () => { throw new Error('should not be reached -- SeaDrop was found first'); },
+      probeTotalMinted: async () => ({ value: '4444', source: 'totalSupply' }), probeMaxSupply: async () => ({ value: '4444', source: 'maxSupply' }) },
+    seaDropDiscoveryService: { resolve: async () => ({ address: SEADROP, publicDrop: { mintPriceWei: '2000000000000000', endTime: futureEndTime }, feeRecipient: FEE_RECIPIENT }) },
+    openSeaService: { getCollectionMetadata: async () => ({ floorPrice: 0 }), getCollectionStats: async () => ({ floorPrice: 0 }) },
+  });
+  const result = await service.detectMintContract('user-a', { contractAddress: CONTRACT, quantity: 1, includeStats: true });
+  assert.equal(result.soldOut, true);
+  assert.equal(result.displayPrice.source, 'floor');
+});
+
+// Outside includeStats there is no live totalMinted to compare against (see the comment in
+// detectMintContract) -- soldOut correctly falls back to the time-window check alone, same
+// limitation this function already had before this fix, just no longer silently wrong when stats
+// ARE available.
+test('detectMintContract cannot detect a sold-out SeaDrop drop by supply alone when includeStats is not set', async () => {
+  const futureEndTime = Math.floor(Date.now() / 1000) + 3_600;
+  const { service } = commandServiceFixture({
+    contractValueResolver: { resolve: async () => { throw new Error('should not be reached -- SeaDrop was found first'); },
+      probeMaxSupply: async () => ({ value: '4444', source: 'maxSupply' }) },
+    seaDropDiscoveryService: { resolve: async () => ({ address: SEADROP, publicDrop: { mintPriceWei: '2000000000000000', endTime: futureEndTime }, feeRecipient: FEE_RECIPIENT }) },
+  });
+  const result = await service.detectMintContract('user-a', { contractAddress: CONTRACT, quantity: 1 });
+  assert.equal(result.soldOut, false);
+});
+
 test('detectMintContract computes live stats for a plain (non-SeaDrop) contract too, reusing the same stats shape', async () => {
   const { service } = commandServiceFixture({
     contractValueResolver: {

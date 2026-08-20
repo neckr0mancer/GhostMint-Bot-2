@@ -3014,8 +3014,17 @@ send /mint with a contract address to get going.`;
         + "\n\n⚠️ <b>Not recommended:</b> those keys passed through Telegram's message transit. Prefer /createwallet." });
   }));
 
-  // Batch mint. Each wallet is simulated and submitted INDEPENDENTLY -- one failing does not cancel
-  // the rest -- so the reply is per wallet rather than one verdict for the lot.
+  // Bare /batchmint (no JSON payload) opens the same guided wallet-picker flow the "Batch mint"
+  // button does. /batchmint -- not /batch -- is the one registered in Telegram's command list
+  // (see setMyCommands above), so it's what users actually tap/type; leaving it wired only to the
+  // raw-JSON path below meant the command Telegram itself advertises never showed a wallet picker.
+  // A JSON payload still reaches the power-user path unchanged, mirroring /mint vs /mintcall.
+  bot.onText(/^\/batchmint(?:@\w+)?$/, withTelegramUser(async (msg, match, userId) => {
+    await startMintFlow({ chatId: msg.chat.id, messageId: null, userId, multi: true, contractAddressInput: null });
+  }));
+
+  // Batch mint (power-user path). Each wallet is simulated and submitted INDEPENDENTLY -- one
+  // failing does not cancel the rest -- so the reply is per wallet rather than one verdict for the lot.
   bot.onText(/^\/batchmint(?:@\w+)?\s+([\s\S]+)$/i, withTelegramUser(async (msg, match, userId) => {
     const payload = commandJson(match[1]);
     const results = await botCommands.batchMint(userId, payload);

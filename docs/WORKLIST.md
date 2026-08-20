@@ -52,17 +52,143 @@ shipped).
   real WebSocket endpoint) remains open, needs its own provider/budget decision.
 - **Round 16** (Section AV) is the owner's own two-tier plan for sniper execution speed —
   2026-08-20. Worklist A: finish Round 15's pool 2 (sniper's own RPC/WS pool), same-tx multi-RPC
-  broadcast for sniper, sniper as its own execution profile, and end-to-end timing logs all
-  shipped; pre-arming scheduled mints and precise near-launch timers remain open, deliberately left
-  for their own careful pass. Worklist B (after A is stable): parallelized pre-arm, dynamic fee
-  presets, RPC health scoring/failover, hot wallet session cache (security tradeoff, needs its own
-  sign-off), and latency dashboards — none started.
+  broadcast for sniper, sniper as its own execution profile, precise near-launch timers, and
+  end-to-end timing logs all shipped; pre-arming scheduled mints (item 3) remains open, deliberately
+  paused pending real timing data rather than built speculatively. Worklist B (after A is stable):
+  parallelized pre-arm, dynamic fee presets, RPC health scoring/failover, hot wallet session cache
+  (security tradeoff, needs its own sign-off), and latency dashboards — none started.
+- **Round 17** (Section AW) is a run of live-reported bugs found via real production use,
+  2026-08-20. Shipped: Telegram's `/batchmint` — the one command Telegram's own "/" autocomplete
+  actually advertises — was wired only to a raw-JSON power-user path and silently did nothing when
+  typed bare, now opens the same guided wallet-picker flow the "Batch mint" button uses. A SeaDrop
+  collection's mint price displaying wrong once sold out, fixed (`soldOut` now checks
+  `totalMinted >= maxSupply` too, not just the stage's time window). Discord's `/batch-mint` "wallets
+  not pulling up a picker" turned out to be working as designed (typing into `wallets` is the
+  documented direct-fill shortcut) but that field had no autocomplete backing up its own "omit to
+  pick from a list" description — now autocompletes like every other wallet-label field. Diagnosed,
+  Discord-side fix needed (not this app's code): auto-detect on pasted links working in only one
+  channel per server points to that channel's Discord permission settings for the bot's role, not
+  anything in this app.
 
 Status legend: ✅ Done · 🟡 Partial · ❌ Not started
 
 ---
 
-# Round 16 — sniper execution speed, the owner's own two-tier plan (2026-08-20)
+# Round 17 — live-reported bug run (2026-08-20)
+
+## Section AW — Batch-mint command/button parity, SeaDrop sold-out price 🟡
+
+Three separate live reports came in back to back while Round 16 was wrapping up. Tracked together
+since they surfaced the same way (a real user hitting a real drop or a real command), not because
+they share a root cause.
+
+### `/batchmint` silently doing nothing on Telegram ✅
+
+Reported as "batch mint still doesn't pull up wallets to select from when using the slash command,
+but it works when using the button." Root cause: Telegram's registered command list
+(`bot.setMyCommands`, the thing that actually populates the "/" autocomplete users tap) advertises
+`batchmint` — "Mint the same drop from several wallets" — but the only handler wired to that name
+was the raw-JSON power-user path (`bot.onText(/^\/batchmint(?:@\w+)?\s+([\s\S]+)$/i, ...)`), which
+requires a hand-typed JSON payload and never shows a wallet picker. The guided flow that actually
+shows the picker — the same one `menu:mint:batch` (the button) starts via `startMintFlow({multi:
+true, ...})` — only existed under an undocumented `/batch` command, never added to `setMyCommands`.
+A bare `/batchmint` matched neither handler's regex, so it looked like nothing happened at all.
+
+Fix: added a second `bot.onText(/^\/batchmint(?:@\w+)?$/, ...)` handler that opens the same guided
+flow the button does when called with no arguments; the existing JSON-payload handler is untouched
+and still reachable by passing arguments. Mirrors how `/mint` (guided) and `/mintcall` (raw JSON)
+already coexist. `src/server.js`. Verified: `node --check`, `npx eslint --max-warnings=0`, both
+clean. `/batch` still works as a hidden alias; left in place rather than removed since it's harmless
+and other in-flight sessions may reference it.
+
+### SeaDrop mint price wrong once a collection sells out ❌ (diagnosed, fix not yet written)
+
+Reported live against `phoenix-in-the-hood` (contract `0x6209e8d1e28cc40427f8e7ec8cc1e9410a35612a`,
+Robinhood Chain): both Telegram and Discord showed "Mint price: 0.002 ETH per item" despite the
+collection being confirmed free (OpenSea's API and a live on-chain read both independently report 0
+wei for every stage) and confirmed sold out (4444/4444, visible in Discord's own Stats block — the
+decisive piece of evidence, since it ruled out phase drift, floor-price leakage, a stale DB cache,
+and cross-platform formula divergence, all checked and ruled out first).
+
+Root cause: `detectMintContract`'s SeaDrop branch in `src/commands/botCommandService.js` computes
+`soldOut` from the stage's `endTime` alone —
+`Boolean(seaDrop.publicDrop?.endTime && seaDrop.publicDrop.endTime * 1000 <= Date.now())` — never
+checking `totalMinted >= maxSupply` the way the plain-mint branch a few lines below correctly does.
+This collection is sold out but its stage window hasn't closed, so `soldOut` evaluates `false` and
+`resolveDisplayPrice` falls through to the real (non-zero-looking, stale) per-item price instead of
+reporting sold-out/free.
+
+Planned fix: add an unconditional `contractValueResolver.probeTotalMinted(chain, contractAddress)`
+call alongside the existing `probeMaxSupply` one, resolve both *before* computing `soldOut` (today
+`resolveDisplayPrice` and `probeMaxSupply` run in the same `Promise.all`, which doesn't work once
+`soldOut` needs `totalMinted` too — needs reordering), then combine:
+`Boolean(timeWindowClosed || (maxSupply !== null && totalMinted !== null && totalMinted >= maxSupply))`.
+Not yet written to disk.
+
+### Discord `/batch-mint` reported as the same symptom — not a bug, but a real trap ✅
+
+Reported as "also the same on discord" immediately after the Telegram fix, before any diagnosis was
+shared. Static + live inspection found no matching bug: `/batch-mint`'s `wallets`/`quantity`/`price`
+options are all genuinely optional in the code (`src/discord/discordBot.js`), omitting any of them
+routes to the identical `startMintGuidedFlow` call the "Batch mint" button uses, and a live
+`GET /applications/{id}/commands` against Discord's own API confirmed the *currently registered*
+command schema matches the code exactly — ruling out stale command registration.
+
+Confirmed with the user: they were typing into `wallets` — the documented direct-fill shortcut, not
+the picker path. That's working as designed, but the field had **no autocomplete at all**, so typing
+a label by hand was the only thing that field ever visibly did; the "omit to pick from a list" note
+in its own description had no on-screen affordance backing it up, making the direct-fill path the
+path of least resistance even for someone who wanted the picker.
+
+Fix: `wallets` now has `.setAutocomplete(true)`; the shared autocomplete handler
+(`src/discord/discordBot.js`, the `interaction.isAutocomplete?.()` branch) gained comma-aware
+handling — completes only the segment currently being typed (after the last comma), offers the full
+accumulated string as each suggestion's value so picking one preserves everything already chosen,
+and excludes labels already present so the same wallet can't be suggested twice. Verified:
+`node --check`, `npx eslint --max-warnings=0`, both clean; 3 new tests in `tests/discordBot.test.js`
+(definition asserts `autocomplete: true`; handler tests cover a fresh suggestion list and picking a
+second wallet while the first stays chosen) — full file 26/26 passing.
+
+### Discord auto-detect working in only one channel per server — diagnostic logging shipped, root cause still open
+
+Separately reported: pasting a contract/OpenSea link auto-detects in one channel of one server, but
+not in the other two servers, and not on other channels of the *same* server that does work — so
+it's per-channel, not per-guild. Every hypothesis raised was checked directly against the real
+servers and ruled out in turn, not assumed:
+
+- **App-level config** — `DISCORD_CHANNEL_IDS` and `DISCORD_DEV_GUILD_ID` are both unset, confirmed
+  against Railway's *live* production values (not just local `.env`) via `variables(...)`, so
+  `verifyDiscordContext`'s guild/channel allowlist checks are no-ops everywhere right now.
+- **Channel permissions** — confirmed by the user directly on the two broken channels: View Channel,
+  Read Message History, Send Messages, and Embed Links are all present for the bot's role. (The
+  reasoning for checking Send Messages/Embed Links specifically: every slash-command reply in this
+  app is ephemeral — `deferReply({ ephemeral: true })`, the one place that's set, covers every chat
+  command — and ephemeral interaction responses are delivered straight to the invoking user without
+  needing the bot's normal channel-send permissions at all. So "slash commands work everywhere" was
+  never actually evidence that `message.reply()`, a real channel message the paste-detector depends
+  on, would also succeed — worth confirming separately, which the user did.)
+- **Install method** — confirmed the bot was added via the classic `bot` + `applications.commands`
+  OAuth invite (not Discord's newer "User Install," which can make slash commands work without the
+  app ever joining the guild as a member) and shows as a real member in the two broken servers.
+
+With every direct-permission and config explanation exhausted, the actual failure point needs to be
+observed rather than guessed at — and `handleMintPasteMessage` swallows every failure completely
+silently by design (a failed check here was never worth surfacing as a visible error in a channel
+that may not even be the bot's), so there was nothing in Railway's logs to look at. Shipped: three
+log lines on paths that already did nothing before, so behavior is unchanged — logs when an
+address/link-shaped message is received (guild+channel), logs if `message.reply()` itself fails, and
+logs if anything earlier (`verifyDiscordContext`, account resolution) throws. `log` threaded through
+from `createDiscordBot`'s existing param down to `handleMintPasteMessage`, which gained an optional
+`log = () => {}` parameter. `src/discord/discordBot.js`. Verified: `node --check`,
+`npx eslint --max-warnings=0`, both clean; `discordTaskFlow.test.js` + `discordMintFlow.test.js` +
+`discordBot.test.js` (70 tests covering `handleMintPasteMessage` and the wider Discord flow) still
+pass unchanged. Next step: reproduce the failure once in a broken channel, then read
+`deploymentLogs(...)` filtered on `Paste-detect` for that window (same Railway access documented in
+CLAUDE.md) to see exactly which line fires.
+
+---
+
+
 
 ## Section AV — Sniper as its own execution profile, pre-arming, precise timers, and same-tx multi-RPC broadcast 🟡
 

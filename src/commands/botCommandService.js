@@ -190,15 +190,21 @@ function createBotCommandService(dependencies) {
       : { address: null, publicDrop: null, feeRecipient: null };
     if (seaDrop.address) {
       const priceKnown = Boolean(seaDrop.publicDrop);
-      // SeaDrop's own PublicDrop struct has no current-supply field -- its endTime having already
-      // passed is the signal available here, distinct from the totalMinted>=maxSupply comparison
-      // the plain-mint branch below uses.
-      const soldOut = Boolean(seaDrop.publicDrop?.endTime && seaDrop.publicDrop.endTime * 1000 <= Date.now());
-      const [displayPrice, liveMaxSupply] = await Promise.all([
-        resolveDisplayPrice({ chain, soldOut, mintPriceKnown: priceKnown,
-          mintPriceWeiPerItem: priceKnown ? BigInt(seaDrop.publicDrop.mintPriceWei) : null, floorPrice: openSea?.floorPrice }),
-        contractValueResolver ? contractValueResolver.probeMaxSupply(chain, contractAddress) : null,
-      ]);
+      // SeaDrop's own PublicDrop struct has no current-supply field, so the stage's endTime having
+      // already passed is one sold-out signal here -- but a popular drop can sell out well before
+      // its window closes, so that alone isn't enough. `stats.totalMinted` above is the only live
+      // minted-count already available without probing twice, and it's includeStats-gated on
+      // purpose (see the comment above it) -- outside includeStats there is no live count to
+      // compare against, so soldOut falls back to the time-window check alone, same as before this
+      // fix. maxSupply is probed unconditionally either way, same as the card's own "Max supply"
+      // line further down.
+      const timeWindowClosed = Boolean(seaDrop.publicDrop?.endTime && seaDrop.publicDrop.endTime * 1000 <= Date.now());
+      const liveMaxSupply = contractValueResolver ? await contractValueResolver.probeMaxSupply(chain, contractAddress) : null;
+      const maxSupplyValue = liveMaxSupply ? Number(liveMaxSupply.value) : null;
+      const soldOut = Boolean(timeWindowClosed || (maxSupplyValue !== null && typeof stats?.totalMinted === 'number'
+        && stats.totalMinted >= maxSupplyValue));
+      const displayPrice = await resolveDisplayPrice({ chain, soldOut, mintPriceKnown: priceKnown,
+        mintPriceWeiPerItem: priceKnown ? BigInt(seaDrop.publicDrop.mintPriceWei) : null, floorPrice: openSea?.floorPrice });
       return {
         chain,
         isSeaDrop: true,
