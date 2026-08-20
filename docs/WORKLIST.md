@@ -50,20 +50,21 @@ shipped).
   can never queue behind a time-critical scheduled broadcast. Pool 1 (scheduled/Degen fast path, a
   generic opt-in `{ENVNAME}_FAST_URLS` per chain) shipped 2026-08-20; pool 2 (sniper isolation + a
   real WebSocket endpoint) remains open, needs its own provider/budget decision.
-- **Round 16** (Section AV) is the owner's own two-tier plan for sniper execution speed — scoped
-  2026-08-20, not yet built. Worklist A (must-ship): finish Round 15's pool 2, pre-arm scheduled
-  mints, precise near-launch timers, same-tx multi-RPC broadcast for sniper, sniper as its own
-  execution profile, and end-to-end timing logs. Worklist B (after A is stable): parallelized
-  pre-arm, dynamic fee presets, RPC health scoring/failover, hot wallet session cache (security
-  tradeoff, needs its own sign-off), and latency dashboards.
+- **Round 16** (Section AV) is the owner's own two-tier plan for sniper execution speed —
+  2026-08-20. Worklist A: finish Round 15's pool 2 (sniper's own RPC/WS pool), same-tx multi-RPC
+  broadcast for sniper, sniper as its own execution profile, and end-to-end timing logs all
+  shipped; pre-arming scheduled mints and precise near-launch timers remain open, deliberately left
+  for their own careful pass. Worklist B (after A is stable): parallelized pre-arm, dynamic fee
+  presets, RPC health scoring/failover, hot wallet session cache (security tradeoff, needs its own
+  sign-off), and latency dashboards — none started.
 
 Status legend: ✅ Done · 🟡 Partial · ❌ Not started
 
 ---
 
-# Round 16 — sniper execution speed, the owner's own two-tier plan (scoped 2026-08-20, not built)
+# Round 16 — sniper execution speed, the owner's own two-tier plan (2026-08-20)
 
-## Section AV — Sniper as its own execution profile, pre-arming, precise timers, and same-tx multi-RPC broadcast ❌
+## Section AV — Sniper as its own execution profile, pre-arming, precise timers, and same-tx multi-RPC broadcast 🟡
 
 The owner wrote out their own plan directly, as two worklists — "A" (must ship) and "B"
 (enhancements, after A is stable) — then added one architectural correction: **sniper should be
@@ -75,6 +76,10 @@ gates on that existing signal, not on the Degen/Normie mode-preset axis at all, 
 signal invented for this round.
 
 ### Worklist A — must ship
+
+**Shipped 2026-08-20: items 1, 2 (config only — see note), 5, 6, 7. Still open: items 3, 4** (the
+two genuinely new scheduler-architecture pieces, deliberately left for their own careful pass
+rather than rushed alongside the rest — see "What shipped" below for the real implementation).
 
 1. **Finish Round 15's pool 2** — sniper gets its own RPC/WS pool, isolated from the scheduled/Degen
    fast path shipped in Round 15 pool 1. Decided: a **separate Alchemy app** from the scheduled
@@ -132,6 +137,51 @@ signal invented for this round.
    activates on `triggerSource === 'blockchain'` specifically, independent of whichever mode preset
    (Degen/Normie/etc.) the account has selected. This is also where Worklist B's own "sniper
    profile" item (below) turns out to already be covered, not a separate later task.
+
+### What shipped 2026-08-20: items 1, 2, 5, 6, 7 ✅
+
+- **Item 1/7 (sniper's own pool + execution profile):** `config/index.js` gained `SNIPER_CHAINS`,
+  built the same way Round 15's `FAST_CHAINS` was — `parseFastRpcUrls`/its validation logic was
+  generalized into `parseNamedRpcUrls(definition, generalUrls, suffix)` so both pools share one
+  implementation, and `parseWsRpcUrl` gained an optional `suffix` param so sniper can have its own
+  `{ENVNAME}_RPC_SNIPER_WS` independent of any general-pool WS setting. `{ENVNAME}_RPC_SNIPER_URLS`
+  prepends ahead of the general pool's URLs (same automatic-fallback shape as pool 1); unconfigured,
+  `SNIPER_CHAINS[chain] === CHAINS[chain]` by reference, zero behavior change. `server.js`'s
+  `ensureChainWatcher` now reads from `SNIPER_CHAINS` instead of `CHAINS`. `transactionEngine.js`
+  gained an optional `sniperProviderService` constructor param; `submit()` computes
+  `isSniperTrigger = request.triggerSource === 'blockchain'` and an `activeService` that prefers
+  sniper's pool over the scheduled/Degen fast pool over the general one, in that priority order —
+  this is the actual mechanism behind "sniper is its own execution profile," not a separate flag.
+  `server.js` constructs `sniperProviderService` from `SNIPER_CHAINS` alongside the existing two.
+- **Item 5 (same-tx multi-RPC broadcast):** `providerService.js` gained `performAll(chain,
+  operationName, operation)` — fans one operation out to every configured candidate concurrently,
+  resolving with whichever succeeds first, throwing `RpcUnavailableError` only if all fail. Used
+  *only* for the broadcast step, *only* when `isSniperTrigger && sniperProviderService`; every other
+  trigger source (including sniper with no sniper pool configured) keeps `perform()`'s ordinary
+  sequential try-then-fallback. `preview()` and every pre-broadcast read path were untouched.
+- **Item 6 (timing logs):** `submit()` captures four checkpoints (`submitStartedAt`, `preparedAt`,
+  `signedAt`, `broadcastAt`) in a plain local object and reports them through one additional
+  `notify({ event: 'timing', ... })` call right after broadcast — deliberately *not* persisted
+  through `intentRepository` at all (a test pins this: `repository.intents[0].timings` stays
+  `undefined`), so this can never affect what's actually stored for an intent regardless of what
+  the repository's real schema supports. `confirmedAt` needed no new code: `reconcileIntent` already
+  calls `transition()` on every state change including the final one, so the existing `state:
+  'confirmed'` notify already reports that moment. `server.js`'s `notify` callback logs elapsed
+  deltas between checkpoints (prep/sign/broadcast/total) per transaction.
+- **Item 2 (Alchemy Pay-As-You-Go)** is a billing action outside this app's own code — nothing to
+  ship there beyond what item 1 already enables (config is provider-agnostic; whatever URL an
+  upgraded, separate Alchemy app produces just gets pasted into `{ENVNAME}_RPC_SNIPER_URLS`/`_WS`).
+  Recorded as covered because the code path it depends on is real and tested, not because the
+  account has actually been upgraded — that remains an owner action.
+- Verified: `npm run lint` on every touched file, and the full suite (728 tests; the only failures
+  across two separate full runs were the same four DB-bootstrap/pool-restart integration tests this
+  file already documents as flaky in this sandboxed dev environment, corroborated by a clean 128/128
+  targeted run covering every file this round touched, including the normally-flaky
+  `sniper.integration.test.js`). New coverage: `tests/config.test.js` (sniper pool alias-by-default,
+  configured-and-hidden, malformed-URL, and sniper/fast-pool-independence cases);
+  `tests/transactionEngine.test.js` (`performAll` racing/failure-tolerance/all-fail behavior;
+  sniper-trigger routing including priority over the fast pool; the timing-event shape and its
+  never-persisted guarantee).
 
 ### Worklist B — enhancements, after A is stable and shipped
 

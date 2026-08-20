@@ -256,24 +256,29 @@ function parseRpcUrls(definition) {
   return { urls, overridden: configuredList !== null || legacy !== null };
 }
 
-// Round 15 (docs/WORKLIST.md Section AU): an optional, separately-configured RPC candidate list for
-// scheduled/Degen mints' pre-broadcast reads -- {ENVNAME}_FAST_URLS, entirely opt-in per chain. Not
-// tied to any specific provider (the owner picks whatever they want here, paid or free); unset for a
-// chain just means that chain's "fast" pool is an alias for its general one, same safe-by-default
-// shape parseRpcUrls itself already has. Prepended ahead of the chain's own general-pool URLs rather
-// than replacing them, so providerService.perform()'s existing per-candidate retry/fallback already
-// degrades to the general pool on a rate limit or outage -- no new resilience code needed.
-function parseFastRpcUrls(definition, generalUrls) {
-  const listName = `${definition.envName}_FAST_URLS`;
+// Round 15 (docs/WORKLIST.md Section AU) introduced {ENVNAME}_FAST_URLS for scheduled/Degen mints'
+// pre-broadcast reads; Round 16 (Section AV) adds {ENVNAME}_SNIPER_URLS for sniper's own pool, same
+// shape, different suffix -- both entirely opt-in per chain, not tied to any specific provider (the
+// owner picks whatever they want here, paid or free). Unset for a chain, that pool is just an alias
+// for the general one, same safe-by-default shape parseRpcUrls itself already has. Prepended ahead
+// of the chain's own general-pool URLs rather than replacing them, so providerService.perform()'s
+// existing per-candidate retry/fallback already degrades to the general pool on a rate limit or
+// outage -- no new resilience code needed for either pool.
+function parseNamedRpcUrls(definition, generalUrls, suffix) {
+  const listName = `${definition.envName}${suffix}`;
   const configuredList = optionalString(listName);
   if (!configuredList) return generalUrls;
   const rawUrls = configuredList.split(',').map(value => value.trim()).filter(Boolean);
-  const fastUrls = validateUrlList(rawUrls, listName, listName, true);
-  return Object.freeze([...fastUrls, ...generalUrls]);
+  const namedUrls = validateUrlList(rawUrls, listName, listName, true);
+  return Object.freeze([...namedUrls, ...generalUrls]);
 }
 
-function parseWsRpcUrl(definition) {
-  const name = `${definition.envName}_WS`;
+// suffix lets a caller ask for a named WS pool ({ENVNAME}{suffix}_WS) instead of the general one
+// ({ENVNAME}_WS) -- Round 16's sniper pool wants its own WebSocket endpoint, separate from whatever
+// (if anything) is configured for general use, since chainWatcher.js's WS mode is specifically what
+// sniper needs and nothing else in this app currently uses a WS connection at all.
+function parseWsRpcUrl(definition, suffix = '') {
+  const name = `${definition.envName}${suffix}_WS`;
   const raw = optionalString(name);
   if (!raw) return null;
   let parsed;
@@ -344,6 +349,7 @@ const encryption = parseEncryptionKeys(environment);
 const rpcOverrides = {};
 const CHAINS = {};
 const FAST_CHAINS = {};
+const SNIPER_CHAINS = {};
 
 for (const chainName of supportedChains) {
   const definition = CHAIN_DEFINITIONS[chainName];
@@ -359,10 +365,16 @@ for (const chainName of supportedChains) {
     ex: definition.ex,
     isTestnet: definition.isTestnet,
   });
-  const fastUrls = parseFastRpcUrls(definition, CHAINS[chainName].rpcUrls);
+  const fastUrls = parseNamedRpcUrls(definition, CHAINS[chainName].rpcUrls, '_FAST_URLS');
   FAST_CHAINS[chainName] = fastUrls === CHAINS[chainName].rpcUrls
     ? CHAINS[chainName]
     : Object.freeze({ ...CHAINS[chainName], rpcUrls: fastUrls });
+
+  const sniperUrls = parseNamedRpcUrls(definition, CHAINS[chainName].rpcUrls, '_SNIPER_URLS');
+  const sniperWsUrl = parseWsRpcUrl(definition, '_SNIPER');
+  SNIPER_CHAINS[chainName] = (sniperUrls === CHAINS[chainName].rpcUrls && sniperWsUrl === null)
+    ? CHAINS[chainName]
+    : Object.freeze({ ...CHAINS[chainName], rpcUrls: sniperUrls, rpcWsUrl: sniperWsUrl ?? CHAINS[chainName].rpcWsUrl });
 }
 
 const CONFIG = Object.freeze({
@@ -398,6 +410,7 @@ const CONFIG = Object.freeze({
 
 Object.freeze(CHAINS);
 Object.freeze(FAST_CHAINS);
+Object.freeze(SNIPER_CHAINS);
 Object.freeze(rpcOverrides);
 
 function getSafeConfigSummary() {
@@ -413,6 +426,8 @@ function getSafeConfigSummary() {
     etherscanGasConfigured: CONFIG.etherscanApiKey !== null,
     openSeaConfigured: CONFIG.openSeaApiKey !== null,
     fastRpcChainsConfigured: Object.entries(FAST_CHAINS).filter(([name, chain]) => chain.rpcUrls[0] !== CHAINS[name].rpcUrls[0]).map(([name]) => name),
+    sniperRpcChainsConfigured: Object.entries(SNIPER_CHAINS).filter(([name, chain]) => chain.rpcUrls[0] !== CHAINS[name].rpcUrls[0]).map(([name]) => name),
+    sniperWebSocketConfigured: Object.entries(SNIPER_CHAINS).filter(([name, chain]) => chain.rpcWsUrl !== CHAINS[name].rpcWsUrl).map(([name]) => name),
     databaseConfigured: CONFIG.databaseUrl !== null,
     migrationConnectionConfigured: CONFIG.databaseUrlUnpooled !== null,
     databasePoolMax: CONFIG.databasePoolMax,
@@ -428,6 +443,7 @@ module.exports = {
   CHAIN_DEFINITIONS,
   CHAINS,
   FAST_CHAINS,
+  SNIPER_CHAINS,
   CONFIG,
   ConfigurationError,
   getSafeConfigSummary,

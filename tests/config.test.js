@@ -169,6 +169,52 @@ test('Round 15: a malformed {CHAIN}_FAST_URLS is refused the same way a malforme
   assert.match(result.stderr, /ETH_RPC_FAST_URLS must contain valid HTTP or HTTPS URLs/);
 });
 
+test('Round 16: an unconfigured {CHAIN}_SNIPER_URLS/_SNIPER_WS reports no sniper chains at all -- same alias-by-default shape as the fast pool', () => {
+  const result = probeConfig();
+  assert.equal(result.status, 0, result.stderr);
+  const summary = JSON.parse(result.stdout).summary;
+  assert.deepEqual(summary.sniperRpcChainsConfigured, []);
+  assert.deepEqual(summary.sniperWebSocketConfigured, []);
+});
+
+test('Round 16: a configured {CHAIN}_RPC_SNIPER_URLS reports that chain as covered, without exposing the URL itself', () => {
+  const sniper = 'https://sniper-rpc.example.com';
+  const result = probeConfig({ ETH_RPC_SNIPER_URLS: sniper });
+  assert.equal(result.status, 0, result.stderr);
+  const summary = JSON.parse(result.stdout).summary;
+  assert.deepEqual(summary.sniperRpcChainsConfigured, ['ethereum']);
+  assert.deepEqual(summary.sniperWebSocketConfigured, []);
+  assert.doesNotMatch(result.stdout, /sniper-rpc/);
+});
+
+test('Round 16: a configured {CHAIN}_RPC_SNIPER_WS reports that chain\'s WebSocket as covered independently of the URL list', () => {
+  const ws = 'wss://sniper-ws.example.com';
+  const result = probeConfig({ ETH_RPC_SNIPER_WS: ws });
+  assert.equal(result.status, 0, result.stderr);
+  const summary = JSON.parse(result.stdout).summary;
+  assert.deepEqual(summary.sniperRpcChainsConfigured, []);
+  assert.deepEqual(summary.sniperWebSocketConfigured, ['ethereum']);
+  assert.doesNotMatch(result.stdout, /sniper-ws/);
+});
+
+test('Round 16: sniper and fast pools are independent -- configuring one does not affect the other', () => {
+  const result = probeConfig({ ETH_RPC_FAST_URLS: 'https://fast-rpc.example.com', ETH_RPC_SNIPER_URLS: 'https://sniper-rpc.example.com' });
+  assert.equal(result.status, 0, result.stderr);
+  const summary = JSON.parse(result.stdout).summary;
+  assert.deepEqual(summary.fastRpcChainsConfigured, ['ethereum']);
+  assert.deepEqual(summary.sniperRpcChainsConfigured, ['ethereum']);
+});
+
+test('Round 16: a malformed {CHAIN}_RPC_SNIPER_URLS or _SNIPER_WS is refused the same way as the fast pool', () => {
+  const badUrl = probeConfig({ ETH_RPC_SNIPER_URLS: 'not-a-url' });
+  assert.notEqual(badUrl.status, 0);
+  assert.match(badUrl.stderr, /ETH_RPC_SNIPER_URLS must contain valid HTTP or HTTPS URLs/);
+
+  const badWs = probeConfig({ ETH_RPC_SNIPER_WS: 'https://not-a-ws-url.example.com' });
+  assert.notEqual(badWs.status, 0);
+  assert.match(badWs.stderr, /ETH_RPC_SNIPER_WS must be a WS or WSS URL without embedded credentials/);
+});
+
 test('refuses unsupported and duplicate chain names', () => {
   const unsupported = probeConfig({ SUPPORTED_CHAINS: 'ethereum,solana' });
   assert.notEqual(unsupported.status, 0);
