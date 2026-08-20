@@ -421,6 +421,7 @@ const requestSchemas = Object.freeze({
   watchRuleDeletion: input => ({ id: uuid(input.id, 'id') }),
   themeUpdate: input => ({ theme: dashboardTheme(input.theme) }),
   botGateUpdate: input => ({ level: botGateLevel(input.level) }),
+  botGateMintUpdate: input => ({ skipMint: input.skipMint === true || input.skipMint === 'true' }),
   displayNameUpdate: input => ({ displayName: displayName(input.displayName) }),
   defaultChainUpdate: (input, context) => ({ defaultChain: chainName(input.defaultChain, context.supportedChains, 'defaultChain') }),
   socialUsagePeriod: input => ({ period: usagePeriod(input.period) }),

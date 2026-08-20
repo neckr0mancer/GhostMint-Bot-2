@@ -808,6 +808,7 @@ const actionGate = createActionGate({
   getLevel: userId => identityRepository.getBotGateLevel(userId),
   getPasswordHash: userId => identityRepository.getSecurityPasswordHash(userId),
   verify: verifySecurityPassword,
+  getExemptions: async userId => ({ mint: await identityRepository.getBotGateSkipMint(userId) }),
   onRelock: (platform, contextId, reason) => {
     const notifier = gateRelockNotifiers[platform];
     if (notifier) Promise.resolve(notifier(contextId, reason)).catch(() => {});
@@ -2182,9 +2183,18 @@ if (BOT_TOKEN) {
       if (await gateBlocks({ chatId, messageId, userId, action: 'settings' })) return;
       return tgEditMenu(chatId, messageId, telegramMenus.settingsMenu({ isOwner: await ownerFlag() }));
     }
-    if (data === 'menu:mint') return tgEditMenu(chatId, messageId, telegramMenus.mintModeMenu());
-    if (data === 'menu:mint:single') return startMintFlow({ chatId, messageId, userId, multi: false, contractAddressInput: null });
-    if (data === 'menu:mint:batch') return startMintFlow({ chatId, messageId, userId, multi: true, contractAddressInput: null });
+    if (data === 'menu:mint') {
+      if (await gateBlocks({ chatId, messageId, userId, action: 'mint' })) return;
+      return tgEditMenu(chatId, messageId, telegramMenus.mintModeMenu());
+    }
+    if (data === 'menu:mint:single') {
+      if (await gateBlocks({ chatId, messageId, userId, action: 'mint' })) return;
+      return startMintFlow({ chatId, messageId, userId, multi: false, contractAddressInput: null });
+    }
+    if (data === 'menu:mint:batch') {
+      if (await gateBlocks({ chatId, messageId, userId, action: 'mint' })) return;
+      return startMintFlow({ chatId, messageId, userId, multi: true, contractAddressInput: null });
+    }
     if (data === 'menu:send') {
       if (await gateBlocks({ chatId, messageId, userId, action: 'send' })) return;
       return startSendFlow({ chatId, messageId, userId });
@@ -2234,7 +2244,10 @@ if (BOT_TOKEN) {
       const task = await botCommands.controlTask(userId, 'retry', data.slice('task:retry:'.length));
       return tgEditMenu(chatId, messageId, telegramMenus.taskActions(task));
     }
-    if (data === 'menu:schedule') return startTaskScheduleFlow({ chatId, messageId, userId, contractAddressInput: null });
+    if (data === 'menu:schedule') {
+      if (await gateBlocks({ chatId, messageId, userId, action: 'schedule' })) return;
+      return startTaskScheduleFlow({ chatId, messageId, userId, contractAddressInput: null });
+    }
     if (data === 'menu:snipers') {
       if (await gateBlocks({ chatId, messageId, userId, action: 'snipers' })) return;
       return tgEditMenu(chatId, messageId, telegramMenus.sniperMenu(botCommands.snipers(userId)));

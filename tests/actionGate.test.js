@@ -250,3 +250,109 @@ test('strict covers the surfaces that merely disclose, sensitive covers the ones
     assert.equal(requiresPassword('strict', action), true, `${action} must be covered by strict`);
   }
 });
+
+// Minting spends real money to a contract the tapper chooses, so it is gated -- but it is the one
+// action where the prompt has a genuine cost, because a drop is competitive. The exemption buys
+// that speed back for minting ALONE, without weakening anything else.
+test('minting is gated, and the exemption frees minting only', async () => {
+  const make = exempt => createActionGate({
+    getLevel: async () => 'sensitive',
+    getPasswordHash: async () => 'stored-hash',
+    verify: () => true,
+    getExemptions: async () => ({ mint: exempt }),
+    setTimer: () => ({ unref() {} }),
+    clearTimer: () => {},
+  });
+
+  const gated = make(false);
+  assert.equal(await gated.allows('u', 'telegram', 'c', 'mint'), false, 'gated by default');
+
+  const fast = make(true);
+  assert.equal(await fast.allows('u', 'telegram', 'c', 'mint'), true, 'exempt mints run straight through');
+  for (const action of ['exportkey', 'send', 'removewallet', 'linkcode', 'admin']) {
+    assert.equal(await fast.allows('u', 'telegram', 'c', action), false,
+      `${action} must stay gated -- the exemption is for minting alone`);
+  }
+});
+
+test('an exemption lookup that fails leaves minting gated rather than opening it', async () => {
+  // An exemption only ever ALLOWS, so the safe fallback for a failed read is to keep asking.
+  const gate = createActionGate({
+    getLevel: async () => 'sensitive',
+    getPasswordHash: async () => 'stored-hash',
+    verify: () => true,
+    getExemptions: async () => { throw new Error('db down'); },
+    setTimer: () => ({ unref() {} }),
+    clearTimer: () => {},
+  });
+  assert.equal(await gate.allows('u', 'telegram', 'c', 'mint'), false);
+});
+
+test('the exemption cannot switch anything ON that the level left off', async () => {
+  const gate = createActionGate({
+    getLevel: async () => 'off',
+    getPasswordHash: async () => 'stored-hash',
+    verify: () => true,
+    getExemptions: async () => ({ mint: false }),
+    setTimer: () => ({ unref() {} }),
+    clearTimer: () => {},
+  });
+  assert.equal(await gate.allows('u', 'telegram', 'c', 'mint'), true, 'gate off still means no prompt');
+});
+
+test('the locked mint card explains the speed trade and its risk; other actions do not carry it', () => {
+  const tg = require('../src/telegram/menus');
+  const dc = require('../src/discord/menus');
+  for (const [card, name] of [[tg.gateUnlockPrompt({ action: 'mint' }).text, 'telegram'],
+    [dc.gateUnlockCard({ action: 'mint' }).content, 'discord']]) {
+    assert.match(card, /Ask before minting/, `${name}: names the exact setting`);
+    assert.match(card, /risk/i, `${name}: states the cost, so it is a choice not a shortcut`);
+    assert.match(card, /spend from your wallets/, `${name}: says concretely what goes wrong`);
+  }
+  assert.equal(/Minting feels slow/.test(tg.gateUnlockPrompt({ action: 'exportkey' }).text), false,
+    'the mint-only hint must not appear on unrelated actions');
+  assert.equal(/Minting feels slow/.test(dc.gateUnlockCard({ action: 'removewallet' }).content), false);
+});
+
+// The owner's rule: pay the password when you COMMIT, never when it fires. A scheduled mint spends
+// money at a future moment with nobody watching -- the commitment is the thing worth a password,
+// and the firing is the thing that must never need one, because there is nobody there to answer.
+test('scheduling a mint is gated at setup, and firing one never consults the gate', () => {
+  assert.equal(requiresPassword('sensitive', 'schedule'), true, 'committing future spend is gated');
+  assert.equal(requiresPassword('strict', 'schedule'), true);
+  assert.equal(requiresPassword('off', 'schedule'), false);
+
+  // The firing path is ungated structurally, not by configuration: nothing unattended imports the
+  // gate at all. A test rather than a comment, because "we did not wire it" is easy to undo by
+  // accident and would break every scheduled mint silently, at 3am, with no way to recover it.
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const root = path.join(__dirname, '..', 'src');
+  const unattended = ['scheduler', 'sniper', 'triggers', 'social'];
+  for (const dir of unattended) {
+    const full = path.join(root, dir);
+    if (!fs.existsSync(full)) continue;
+    for (const name of fs.readdirSync(full).filter(item => item.endsWith('.js'))) {
+      const source = fs.readFileSync(path.join(full, name), 'utf8');
+      assert.equal(/actionGate|gateBlocks|requiresPassword/.test(source), false,
+        `src/${dir}/${name} must never consult the password gate -- it runs with nobody present`);
+    }
+  }
+});
+
+test('the mint exemption is named the same thing everywhere, and checked always means safer', () => {
+  // The dashboard control said "Skip the password for minting" while both bots pointed at "Ask
+  // before minting" -- two names with opposite polarity for one setting, which is how you end up
+  // turning off the thing you meant to turn on.
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const app = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'src', 'App.jsx'), 'utf8');
+  assert.match(app, /Ask before minting/, 'the dashboard uses the name the bots tell people to look for');
+  assert.equal(/Skip the password for minting/.test(app), false, 'and not the old inverted one');
+  assert.match(app, /checked=\{!skipMint\}/, 'checked means asking, i.e. the safer state');
+
+  for (const file of [['telegram', 'menus.js'], ['discord', 'menus.js']]) {
+    const source = fs.readFileSync(path.join(__dirname, '..', 'src', ...file), 'utf8');
+    assert.match(source, /Ask before minting/, `${file[0]} points at the same control by name`);
+  }
+});

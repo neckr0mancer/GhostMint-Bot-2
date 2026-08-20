@@ -1409,3 +1409,9 @@ html[data-theme="ghost-mint-light"] .rail-bottom-nav{
 .settings-bot-gate .gate-picker{margin-top:10px}
 .settings-bot-gate .gate-picker button[disabled]{opacity:.45;cursor:not-allowed}
 .settings-bot-gate .settings-hint{margin-top:8px;color:var(--muted);font-size:12px}
+
+/* Mint exemption, shown only once the gate is on. Indented under the level picker because it
+   qualifies that choice rather than standing beside it. */
+.settings-bot-gate .gate-mint-row{margin-top:12px;padding-top:12px;border-top:1px solid var(--border)}
+.settings-bot-gate .gate-mint-row label{display:flex;align-items:center;gap:8px;font-weight:650;font-size:13px;cursor:pointer}
+.settings-bot-gate .gate-mint-row input[disabled]{cursor:not-allowed}
