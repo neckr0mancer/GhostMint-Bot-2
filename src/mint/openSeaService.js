@@ -18,7 +18,16 @@ const OPENSEA_CHAIN_SLUGS = Object.freeze({
 // rather than blocking anything. Two API calls are needed because OpenSea's contract lookup only
 // returns a collection slug, not the collection's own name/image/stats.
 function createOpenSeaService({ apiKey, repository, baseUrl = 'https://api.opensea.io/api/v2',
-  http = axios, timeoutMs = 8_000 }) {
+  http = axios, timeoutMs = 8_000, log = () => {} }) {
+  // Every catch block below was silently swallowing whatever actually went wrong (a bad/expired
+  // API key, a network failure, a genuine OpenSea outage) -- correct for the card renderer, which
+  // must never see a thrown error, but it meant a real, ongoing failure (e.g. an invalid key) left
+  // no trace anywhere. This logs the failure's shape without ever leaking the key itself.
+  function logFailure(operation, chain, contractAddress, error) {
+    const status = error?.response?.status;
+    const detail = status ? `HTTP ${status}` : (error?.code || error?.message || 'unknown error');
+    log(`OpenSea ${operation} failed for ${chain}:${contractAddress}: ${detail}`);
+  }
   async function fetchCollectionSlug(openSeaChain, contractAddress) {
     const response = await http.get(`${baseUrl}/chain/${openSeaChain}/contract/${contractAddress}`,
       { timeout: timeoutMs, headers: { 'x-api-key': apiKey } });
@@ -49,7 +58,8 @@ function createOpenSeaService({ apiKey, repository, baseUrl = 'https://api.opens
     let response;
     try {
       response = await http.get(`${baseUrl}/collections/${slug}`, { timeout: timeoutMs, headers: { 'x-api-key': apiKey } });
-    } catch {
+    } catch (error) {
+      logFailure('resolveCollectionContract', 'n/a', slug, error);
       return null;
     }
     const contracts = Array.isArray(response.data?.contracts) ? response.data.contracts : [];
@@ -111,9 +121,10 @@ function createOpenSeaService({ apiKey, repository, baseUrl = 'https://api.opens
           allTime: typeof total?.sales === 'number' ? total.sales : null,
         },
       };
-    } catch {
+    } catch (error) {
       // Network failure, timeout, 404, rate limit -- same "nothing to show" outcome as an
       // unconfigured key or unsupported chain, never a thrown error into the card renderer.
+      logFailure('getCollectionStats', chain, contractAddress, error);
       return EMPTY_STATS;
     }
   }
@@ -139,9 +150,10 @@ function createOpenSeaService({ apiKey, repository, baseUrl = 'https://api.opens
             };
           }
         }
-      } catch {
+      } catch (error) {
         // Network failure, timeout, 404 (contract not on OpenSea), rate limit -- all the same
         // "nothing to show" outcome as an unconfigured key or unsupported chain.
+        logFailure('getCollectionMetadata', chain, contractAddress, error);
       }
     }
     return repository.saveOpenSea(chain, contractAddress, metadata);
@@ -192,9 +204,13 @@ function createOpenSeaService({ apiKey, repository, baseUrl = 'https://api.opens
         nextStage: normalizeStage(data.next_stage),
         stages: Array.isArray(data.stages) ? data.stages.map(normalizeStage) : [],
       };
-    } catch {
+    } catch (error) {
       // A plain (non-OpenSea-drop) contract 404s here -- same "nothing to show" outcome as every
-      // other failure mode, not an error worth surfacing.
+      // other failure mode, not an error worth surfacing to the card renderer. Not logged: it's the
+      // overwhelmingly common case (most contracts simply aren't OpenSea-tracked drops) and would
+      // just be noise. Everything else (a bad API key, a network failure, a real OpenSea outage) is
+      // genuinely unexpected and worth a trace.
+      if (error?.response?.status !== 404) logFailure('getDrop', chain, contractAddress, error);
       return null;
     }
   }
@@ -219,7 +235,7 @@ function createOpenSeaService({ apiKey, repository, baseUrl = 'https://api.opens
     if (!apiKey || !openSeaChain) return null;
     let slug;
     try { slug = await fetchCollectionSlug(openSeaChain, contractAddress); }
-    catch { return null; }
+    catch (error) { logFailure('buildMintTransaction (slug lookup)', chain, contractAddress, error); return null; }
     if (!slug) return null;
     let response;
     try {
@@ -235,6 +251,9 @@ function createOpenSeaService({ apiKey, repository, baseUrl = 'https://api.opens
       if (status === 422) {
         throw new ValidationError({ field: 'contractAddress', message: detail || "this wallet can't mint right now (insufficient balance, not on the allowlist, limit reached, or sold out)" });
       }
+      // A real mint attempt got no calldata at all -- unlike the read-only functions above, this is
+      // always worth a trace, not just the non-404 subset (there is no "expected" failure shape here).
+      logFailure('buildMintTransaction', chain, contractAddress, error);
       return null;
     }
     const data = response.data;

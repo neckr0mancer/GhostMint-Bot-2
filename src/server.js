@@ -137,6 +137,9 @@ const seaDropDiscoveryService = createSeaDropDiscoveryService({
 const openSeaService = createOpenSeaService({
   apiKey: CONFIG.openSeaApiKey,
   repository: contractValueRepository,
+  // log is defined further below in this file (module-load order, not a real circular dependency)
+  // -- safe because this closure isn't called until a real request comes in, long after log exists.
+  log: msg => log(msg),
 });
 const priceFeedService = createPriceFeedService();
 const governanceRepository = createPostgresGovernanceRepository(pool);

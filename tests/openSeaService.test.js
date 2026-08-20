@@ -279,6 +279,27 @@ test('getDrop returns null (never throws) when unconfigured, unsupported, not a 
   assert.equal(await notADrop.getDrop('ethereum', CONTRACT), null);
 });
 
+test('getDrop does not log the common 404 "not a drop" case, but does log a real failure (bad key, network error, outage)', async () => {
+  const logs = [];
+  const log = msg => logs.push(msg);
+
+  const notADrop = createOpenSeaService({ apiKey: 'test-key', repository: fakeRepository(), log, http: { get: async url => {
+    if (url.includes('/chain/ethereum/contract/')) return { data: { collection: 'plain-collection' } };
+    const error = new Error('Not Found'); error.response = { status: 404 }; throw error;
+  } } });
+  assert.equal(await notADrop.getDrop('ethereum', CONTRACT), null);
+  assert.equal(logs.length, 0);
+
+  const unauthorized = createOpenSeaService({ apiKey: 'super-secret-key', repository: fakeRepository(), log, http: { get: async url => {
+    if (url.includes('/chain/ethereum/contract/')) return { data: { collection: 'plain-collection' } };
+    const error = new Error('Unauthorized'); error.response = { status: 401 }; throw error;
+  } } });
+  assert.equal(await unauthorized.getDrop('ethereum', CONTRACT), null);
+  assert.equal(logs.length, 1);
+  assert.match(logs[0], /getDrop failed for ethereum:.*HTTP 401/);
+  assert.doesNotMatch(logs[0], /super-secret-key/);
+});
+
 const MINTER = '0x00000000000000000000000000000000000000A1';
 
 // Section AF -- the point of the whole feature: an allowlist/GTD/FCFS stage has no on-chain proof
@@ -361,6 +382,40 @@ test('buildMintTransaction returns null (genuine unavailability, not ineligibili
     post: async () => { throw new Error('network error'); },
   } });
   assert.equal(await networkFailure.buildMintTransaction('ethereum', CONTRACT, MINTER, 1), null);
+});
+
+test('buildMintTransaction logs every genuine unavailability failure (slug lookup and mint build), never leaking the API key', async () => {
+  const logs = [];
+  const log = msg => logs.push(msg);
+
+  const slugLookupFails = createOpenSeaService({ apiKey: 'super-secret-key', repository: fakeRepository(), log, http: {
+    get: async () => { throw new Error('network error'); },
+    post: async () => { throw new Error('should not be called'); },
+  } });
+  assert.equal(await slugLookupFails.buildMintTransaction('ethereum', CONTRACT, MINTER, 1), null);
+  assert.equal(logs.length, 1);
+  assert.match(logs[0], /buildMintTransaction \(slug lookup\) failed for ethereum:.*network error/);
+  assert.doesNotMatch(logs[0], /super-secret-key/);
+
+  logs.length = 0;
+  const serverError = createOpenSeaService({ apiKey: 'super-secret-key', repository: fakeRepository(), log, http: {
+    get: async () => ({ data: { collection: 'cool-cats' } }),
+    post: async () => { const error = new Error('Internal Server Error'); error.response = { status: 500 }; throw error; },
+  } });
+  assert.equal(await serverError.buildMintTransaction('ethereum', CONTRACT, MINTER, 1), null);
+  assert.equal(logs.length, 1);
+  assert.match(logs[0], /buildMintTransaction failed for ethereum:.*HTTP 500/);
+  assert.doesNotMatch(logs[0], /super-secret-key/);
+
+  // A 422/409 (real ineligibility, not unavailability) still throws a ValidationError, not a log --
+  // that path is a normal, expected outcome for the caller, not a failure worth tracing.
+  logs.length = 0;
+  const ineligible = createOpenSeaService({ apiKey: 'super-secret-key', repository: fakeRepository(), log, http: {
+    get: async () => ({ data: { collection: 'cool-cats' } }),
+    post: async () => { const error = new Error('Unprocessable'); error.response = { status: 422, data: {} }; throw error; },
+  } });
+  await assert.rejects(ineligible.buildMintTransaction('ethereum', CONTRACT, MINTER, 1));
+  assert.equal(logs.length, 0);
 });
 
 test('getCollectionStats tolerates a stats response missing some fields, filling in null rather than throwing', async () => {
