@@ -39,8 +39,159 @@ shipped).
   done; see `docs/REDESIGN_HANDOFF.md` for what is next. It began scoped to `dashboard/**` alone,
   but now also carries server-side work in `botCommandService`/`server.js` for the schedule status
   filters, failure reasons and the low-balance pre-flight.
+- **Round 13** (Sections AL-AS) is a sequential run of smaller fixes plus the full three-part
+  OpenSea Drops build (phase display, OpenSea-backed minting, OpenSea-backed scheduling) requested
+  directly ("All three, in that order"); shipped 2026-08-19/20. Also records a live-verified finding
+  that OpenSea's API cannot support pre-checking wallet eligibility before a phase opens, and an
+  unresolved Discord `/info` "no response" report that got a diagnostic (not a confirmed fix).
 
 Status legend: ✅ Done · 🟡 Partial · ❌ Not started
+
+---
+
+# Round 13 — sequential fix run + the full OpenSea Drops build (2026-08-19/20)
+
+A batch of smaller, independently-requested fixes, worked strictly in the sequence the owner set
+("push the mintnow feature and others after testing before you start working on the opensea
+stuff... keep it sequential"), followed by the three-part OpenSea Drops build approved as "All
+three, in that order." All shipped, tested, and pushed to `origin/main`.
+
+## Section AL — Telegram single-instance polling lock ✅
+
+Root-caused two symptoms that looked unrelated until traced to the same cause: users occasionally
+seeing a duplicate "Command failed safely" reply to one command, and a recurring
+`ETELEGRAM: 409 Conflict` line in Railway logs. Both come from Railway's rolling deploys — a new
+container starts polling before the outgoing one's `stopPolling()` has fully released its Telegram
+long-poll connection, so two processes briefly handle the same update against two different
+in-memory flow states.
+
+Fixed with a Postgres session-level advisory lock (`pg_advisory_lock`/`pg_advisory_unlock`,
+`src/security/telegramSingleInstanceLock.js`), held by a dedicated `pool.connect()`'d client and
+acquired before `startPolling()` is ever called. This blocks at the database level with no lease or
+expiry bookkeeping needed — if the holding process dies, Postgres releases the lock automatically,
+so a crashed instance can't wedge the next deploy. Wired into `createGracefulShutdown`
+(`src/security/gracefulShutdown.js`) so `release()` runs after the rest of shutdown, not before.
+`tests/telegramSingleInstanceLock.test.js` covers acquisition, idempotent release, and that the
+lock genuinely blocks (via a real second connection against a real Postgres in the test DB) rather
+than just calling the query once.
+
+## Section AM — Seed-phrase wallet import on both platforms ✅
+
+`/importwallet` only ever accepted a raw private key, despite `validateWalletCreate` already
+supporting `importMethod: 'seedPhrase'` underneath — the UI-layer regex was the only thing missing.
+Fixed by widening the input regex to `/^\/importwallet(?:@\w+)?\s+(\S+)\s+(\S+)\s+(.+)$/i` and
+auto-detecting which kind of secret was pasted: a private key is always one unbroken hex token, a
+seed phrase always contains spaces. No new step or UI was needed on either platform — the routing
+happens invisibly at the point the input is parsed.
+
+## Section AN — Low-balance alarm gated on sold-out state ✅
+
+A scheduled mint's low-balance warning fired even when the drop had already sold out, which is
+misleading (there's nothing left to fund) and wastes the user's attention. `lowBalanceSweep` now
+runs `botCommands.detectMintContract` before the balance comparison and, on a sold-out result,
+auto-cancels the task via `controlTask(..., 'cancel', ...)` instead of warning.
+
+## Section AO — Real Telegram Tasks menu ✅
+
+`menu:tasks` was a static placeholder. It now lists real scheduled tasks with pagination
+(`task:page:`) and per-task actions — manage, cancel (with a confirm step), pause, resume, retry —
+each wired through the existing `controlTask` surface rather than a new one.
+
+## Section AP — Discord `/mintnow` ✅
+
+Telegram's one-shot, zero-confirmation mint command ported to Discord, matching its existing
+semantics: resolvable contract, one wallet, and a known price mint immediately with no confirm
+screen; anything ambiguous (multiple wallets, unknown price, `maxPerWallet > 1`) falls back to the
+guided flow instead of guessing.
+
+## Section AQ — OpenSea Drops phase display, `/info` + collection card ✅
+
+The first of the three approved OpenSea pieces. `openSeaService.js` gained `getDrop(chain,
+contractAddress)`, reading OpenSea's real per-stage phase data (`GET /drops/{slug}`) — `active_stage`
+and `next_stage`, each with `label`, `start_time`/`end_time`, `price` (decimal wei string),
+`max_per_wallet`, and `stage_type` — the same data OpenSea's own mint page reads, not something
+this app derives from chain state (SeaDrop's on-chain `PublicDrop` struct only ever describes the
+*current* live stage, never the schedule of stages before or after it). Surfaced on both `/info`
+and the collection info card via new `humanizeStageType`/`stageSummaryLine` helpers in each
+platform's `menus.js`. Returns `null` on anything that isn't a tracked OpenSea Drop (a 404, the
+overwhelmingly common case) with no error surfaced to the card renderer.
+
+## Section AR — OpenSea-backed minting for allowlist/GTD/FCFS stages ✅
+
+The second piece. `buildMintTransaction(chain, contractAddress, minterAddress, quantity)` calls
+`POST /drops/{slug}/mint`, which needs no wallet signature or session — OpenSea's own backend
+selects the correct stage and returns ready-to-sign calldata (`{chain, data, to, value}`). This is
+the answer to the phase-determinability problem Section AF's shape-2 analysis got stuck on for
+allowlist/GTD/FCFS stages: this app was never going to be able to source a per-wallet merkle proof
+itself, but it doesn't need to — OpenSea already holds the allowlist and does the proof-checking
+server-side, this app just needs to ask.
+
+Calldata returned by OpenSea is executed through the exact same safety pipeline as every other
+mint (`executePreparedMint` → `mintExecution.executePrepared` → `transactionEngine.submit`) via a
+synthetic `prepared` object (`{chain, calldata, valueWei, method: {signature:
+'opensea:drops-mint'}, preview: {...}}`) rather than a separate execution path — governance
+ceilings, simulation, and gas-ceiling enforcement all apply unconditionally, unchanged. A 422
+response (insufficient balance, not on the allowlist, limit reached, sold out) throws a real
+`ValidationError` with OpenSea's own reason; a 409 (drop not currently active — a different,
+non-ineligibility condition) throws its own distinct message. Everything else (no key, unsupported
+chain, not a tracked drop, network failure, 5xx) returns `null` so the caller falls back to this
+app's own on-chain `mintPublic()` calldata path.
+
+Reused the shared `mintFlowDecision.js` core unchanged: a `viaOpenSea: true, priceUnknown: false,
+skipConfirm: true, quantity: 1` flag set on flow data routes through the same
+`afterQuantity`/`afterWalletSelection`/`afterPriceKnown` functions every other mint uses, just
+selecting `botCommands.mintViaOpenSea` instead of `botCommands.mint` at the end. "🎫 Mint via
+OpenSea" appears as a button on the collection info card on both platforms when `drop.activeStage`
+or `drop.nextStage` is present.
+
+## Section AS — Schedule OpenSea-backed mints to fire when a phase opens ✅
+
+The third piece, requested directly: *"eligibility checks should be done long before phase time so
+as to cut down on time wastage. there should also be a button to schedule eligible phases."*
+"🎫📅 Schedule for OpenSea phase" reuses the existing `task_guided` scheduling flow unchanged,
+pre-filling `mintTime` from `drop.nextStage.startTime` and skipping the price/time steps
+(`priceUnknown: false, priceETH: 0`) straight to wallet/name/confirm, since OpenSea's own backend
+resolves both at mint time. At execution, `executeTask`'s scheduler callback takes an early branch
+for `task.viaOpenSea` that skips this app's own SeaDrop drift preflight (there's no drift to check
+— OpenSea supplies live calldata, not a pre-computed one) and calls `buildMintTransaction` +
+`executePrepared` directly. `migrations/042_task_via_opensea.sql` adds the `via_opensea` column;
+`postgresStorage.js` and `schedulerRepository.js` both carry it through their own `mapTask`.
+
+**Investigated and explicitly rejected: pre-checking eligibility before the phase opens.** The
+owner asked directly whether an already-imported wallet's eligibility for an upcoming allowlist
+phase could be checked ahead of time, to avoid wasted time at the exact open moment. Live-verified
+against `docs.opensea.io` (not assumed from memory): the only endpoint that answers this,
+`GET /drops/{slug}/eligibility`, requires a pre-existing **OpenSea account session** for the wallet
+being checked — there is no documented way for a third-party server-side API-key integration like
+this one to establish that session for an arbitrary end user's wallet (confirmed via
+`POST /accounts/wallets/siwx`, OpenSea's own wallet-linking endpoint, which is SIWE-style and
+still needs the same session). The mint-build endpoint itself only ever answers "eligible right
+now" (or its specific reason for refusing right now) — it has no "will this wallet be eligible
+later" mode. A follow-up proposal (using the mint-build endpoint itself as a preflight, read
+without broadcasting) was evaluated and doesn't change this: OpenSea's stated 409 for "not active
+yet" doesn't distinguish "will be eligible when it opens" from "wallet was never going to be
+eligible at all." Net: genuinely a hard external API limitation, not a gap in this app's own
+integration — left unbuilt on that basis.
+
+## Also flagged: Discord Settings had no "Transaction mode" button, unlike Telegram's ✅
+
+Reported directly by the owner. Fixed on Discord's `⚙️ Settings` menu, mirroring Telegram's
+existing picker (`eb21a47`). Built in parallel by the owner in a separate local session while this
+one was occupied with the OpenSea build; the two sessions' work is coordinated, not duplicated —
+see `CLAUDE.md`'s note on this repo's shared-workspace concurrency.
+
+## Investigated, not resolved: Discord `/info` returning no response at all 🟡
+
+Reported by the owner with no further detail than "no response at all." Traced the full code path
+end to end — every branch, including every catch block, produces a real Discord reply; nothing
+found that could silently swallow the interaction. No reproduction. Given the volume of deploys in
+the same window, the leading (unconfirmed) theory is a transient Railway rolling-deploy overlap,
+the same underlying issue Section AL fixed for Telegram polling — Discord's gateway connection
+doesn't have the equivalent single-instance guard. **Not fixed, because the root cause isn't
+confirmed** — what shipped instead is defensive logging in `openSeaService.js` (previously every
+failure there was silently swallowed with no trace at all), so a recurrence has a chance of leaving
+evidence. If this happens again, capture the exact contract/timestamp so the Railway logs for that
+window can be checked directly.
 
 ---
 

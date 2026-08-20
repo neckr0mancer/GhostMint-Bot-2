@@ -19,24 +19,31 @@ first.** It's a chronological log of every feature Round (A, B, C... AA, AB...),
 what's partial, and what's next. `git log --oneline -20` corroborates recent work; commit messages
 in this repo are written to be self-explanatory.
 
-**Just shipped (2026-08-18):** Round 9 / Section AF shape 1 — manual multi-phase scheduling on
-Telegram. A drop's stage schedule genuinely doesn't exist on-chain (SeaDrop's `PublicDrop` is one
-mutable struct describing only the live stage), so the shipped answer is one `/schedule` task per
-stage: the task success screen now offers "➕ Add phase N", which re-enters the guided flow against
-the same contract and forces this phase's own price and time instead of inheriting the live stage's.
-The "Set the alarm?" copy note flagged in the same section was fixed at the same time — the
-confirmation now says outright that the bot signs and sends the mint itself.
+**Just shipped (2026-08-20):** Round 13 (Sections AL–AS) — a sequential run of smaller fixes
+(Telegram single-instance polling lock, seed-phrase wallet import on both platforms, sold-out
+auto-cancel for low-balance alarms, a real Telegram Tasks menu, Discord `/mintnow`), then the full
+three-part OpenSea Drops build approved as "All three, in that order": phase display on `/info` and
+the collection card, OpenSea-backed minting for allowlist/GTD/FCFS stages via OpenSea's own
+`POST /drops/{slug}/mint`, and scheduling those OpenSea-backed mints to fire automatically the
+moment a phase opens. Also live-verified (not assumed) that OpenSea's API cannot support
+pre-checking an arbitrary wallet's eligibility before a phase opens — a hard external limitation,
+recorded so it isn't re-investigated later. One open thread: a Discord `/info` "no response" report
+was investigated but not reproduced or root-caused; diagnostic logging shipped as a safety net, not
+a confirmed fix — see Round 13's note in `docs/WORKLIST.md` for what to capture if it recurs.
 
 **Next up: not decided — pick with the user.** The open candidates, all detailed in
-`docs/WORKLIST.md`: Section AF **shape 2** (allowlist/GTD phases via a hand-entered merkle proof —
-deliberately left unbuilt, needs `mintAllowList`/`mintSigned` calldata construction that doesn't
-exist yet, and shouldn't be built speculatively); Round 2's Sections **O** (button ⇄ command
-parity), **P** + **R** (transaction watching + sniper guided config, which share one watcher
-abstraction), and **S** (Discord guided task-schedule — also where Section AF's add-a-phase idea
-would land if it's ever wanted on Discord); Round 3's Sections **T–Z**; and Section **AD Tier 2**,
-which is researched but unbuilt. The worklist's own "Suggested order for Round 2" still stands for
-that batch. Section O has an unanswered open question logged against it — check that before
-starting it.
+`docs/WORKLIST.md`: a `/buy` (secondary-market) command, scoped but not yet built; Section AF
+**shape 2** (allowlist/GTD phases via a hand-entered merkle proof — deliberately left unbuilt, needs
+`mintAllowList`/`mintSigned` calldata construction that doesn't exist yet, and shouldn't be built
+speculatively); Round 2's Sections **O** (button ⇄ command parity), **P** + **R** (transaction
+watching + sniper guided config, which share one watcher abstraction), and **S** (Discord guided
+task-schedule — also where Section AF's add-a-phase idea would land if it's ever wanted on
+Discord); Round 3's Sections **T–Z**; and Section **AD Tier 2**, which is researched but unbuilt.
+The worklist's own "Suggested order for Round 2" still stands for that batch. Section O has an
+unanswered open question logged against it — check that before starting it. The "speed"
+optimization work (fast RPC, skip-simulation opt-in for scheduled mints and Degen mode
+specifically, cached fee data, tighter scheduler timing) was raised directly by the owner and
+explicitly deferred until after the OpenSea build — still not scoped or started.
 
 ## Repo state
 
