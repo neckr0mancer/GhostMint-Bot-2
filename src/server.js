@@ -2227,6 +2227,7 @@ if (BOT_TOKEN) {
       return tgEditMenu(chatId, messageId, telegramMenus.watchRulesList(await botCommands.watchRules(userId)));
     }
     if (data === 'menu:activity') {
+      if (await gateBlocks({ chatId, messageId, userId, action: 'activity' })) return;
       const page = await botCommands.activityPage(userId, { page: 1 });
       return tgEditMenu(chatId, messageId, telegramMenus.activityMenu(page));
     }
@@ -2270,6 +2271,7 @@ if (BOT_TOKEN) {
     }
 
     if (data === 'wallet:list') {
+      if (await gateBlocks({ chatId, messageId, userId, action: 'walletlist' })) return;
       const wallets = botCommands.wallets(userId);
       if (!wallets.length) return tgEditMenu(chatId, messageId, telegramMenus.placeholderMenu('Wallets', 'No wallets yet. Go back and tap Create wallet.'));
       const summary = await walletSummaryHtml(userId);
@@ -2282,10 +2284,12 @@ if (BOT_TOKEN) {
       return tgEditMenu(chatId, messageId, renderFlowStep('wallet_create', 'awaiting_label'));
     }
     if (data === 'wallet:import:start') {
+      if (await gateBlocks({ chatId, messageId, userId, action: 'importwallet' })) return;
       telegramFlowState.start('telegram', chatId, 'wallet_import', 'awaiting_label');
       return tgEditMenu(chatId, messageId, renderFlowStep('wallet_import', 'awaiting_label'));
     }
     if (data === 'wallet:batch-import:start') {
+      if (await gateBlocks({ chatId, messageId, userId, action: 'batchimport' })) return;
       // No chain step: an EVM key is the same address on every chain, so the question had no
       // true answer and was wrong outright for a batch spanning chains. Detected per key instead.
       telegramFlowState.start('telegram', chatId, 'wallet_batch_import', 'awaiting_keys', { privateKeys: [] });
@@ -2615,6 +2619,7 @@ if (BOT_TOKEN) {
     }
 
     if (data === 'wallet:balance:pick') {
+      if (await gateBlocks({ chatId, messageId, userId, action: 'balance' })) return;
       return tgEditMenu(chatId, messageId, telegramMenus.walletPicker(botCommands.wallets(userId), { prefix:'wallet:balance', emptyHint:'No wallets yet. Create one first.' }));
     }
     if (data.startsWith('wallet:balance:') && data !== 'wallet:balance:pick') {
@@ -2752,6 +2757,15 @@ send /mint with a contract address to get going.`;
 
   bot.onText(/^\/schedule(?:@\w+)?(?:\s+(\S+))?$/, withTelegramUser(async (msg, match, userId) => {
     await startTaskScheduleFlow({ chatId: msg.chat.id, messageId: null, userId, contractAddressInput: match[1] || null });
+  }));
+
+  // Ends the unlock window immediately. Without it, the only way to confirm an action is really
+  // gated is to wait the window out -- one unlock covers every gated action in that conversation
+  // by design, so testing them one at a time was impossible.
+  bot.onText(/^\/lock(?:@\w+)?$/, withTelegramUser(async msg => {
+    actionGate.lock('telegram', msg.chat.id);
+    tgRender(msg.chat.id, { text: '🔒 Locked. Sensitive actions will ask for your password again.',
+      replyMarkup: telegramMenus.keyboard([[telegramMenus.button('⬅️ Back to base', 'menu:main')]]), parseMode: 'HTML' });
   }));
 
   bot.onText(/^\/link(?:@\w+)?$/, withTelegramUser(async (msg, match, userId) => {

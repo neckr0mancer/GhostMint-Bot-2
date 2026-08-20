@@ -134,3 +134,39 @@ test('a successful unlock clears the failure count, so old misses cannot accumul
   const result = await gate.submit('user-a', 'telegram', 'chat-1', 'wrong');
   assert.equal(result.attemptsLeft, 2, 'the counter restarted from the successful unlock');
 });
+
+// ACTION_TIERS shipped declaring eight actions while only four call sites actually consulted the
+// gate -- so `strict` gated nothing that `sensitive` did not, and the extra tier was decorative.
+// A tier table is a promise about behaviour; this checks the promise is kept by real call sites.
+// Source-scanning rather than behavioural because the bot handlers are not individually exported.
+test('every action the tier table classifies is actually consulted somewhere in the bots', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const { ACTION_TIERS } = require('../src/security/actionGate');
+  const read = name => fs.readFileSync(path.join(__dirname, '..', 'src', name), 'utf8');
+  const telegram = read('server.js');
+  const discord = read(path.join('discord', 'discordBot.js'));
+
+  // Discord has no export-key or send-funds flow at all, so those two cannot be gated there.
+  const DISCORD_HAS_NO_FLOW = new Set(['exportkey', 'send']);
+
+  for (const action of Object.keys(ACTION_TIERS)) {
+    assert.ok(telegram.includes(`action: '${action}'`),
+      `${action} is classified in ACTION_TIERS but no Telegram call site asks the gate about it`);
+    if (DISCORD_HAS_NO_FLOW.has(action)) continue;
+    assert.ok(discord.includes(`platformUserId, '${action}'`),
+      `${action} is classified in ACTION_TIERS but no Discord call site asks the gate about it`);
+  }
+});
+
+test('strict genuinely gates more than sensitive, rather than being a decorative third option', () => {
+  const { requiresPassword, ACTION_TIERS } = require('../src/security/actionGate');
+  const gatedAt = level => Object.keys(ACTION_TIERS).filter(action => requiresPassword(level, action));
+  const sensitive = gatedAt('sensitive');
+  const strict = gatedAt('strict');
+  assert.ok(gatedAt('off').length === 0, 'off gates nothing');
+  assert.ok(strict.length > sensitive.length, 'strict must cover strictly more than sensitive');
+  for (const action of sensitive) {
+    assert.ok(strict.includes(action), `strict must be a superset -- ${action} is missing from it`);
+  }
+});

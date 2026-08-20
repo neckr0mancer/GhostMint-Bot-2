@@ -589,6 +589,9 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
       if (data === 'menu:snipers') return dcRespond(interaction, discordMenus.snipersMenu(commands.snipers(userId)));
       // menu:watch is handled further below, alongside the rest of the watch-rule guided flow.
       if (data === 'menu:activity') {
+        if (!await actionGate.allows(userId, 'discord', platformUserId, 'activity')) {
+          return dcRespond(interaction, discordMenus.gateUnlockCard({ action: 'activity' }));
+        }
         const page = await commands.activityPage(userId, { page: 1 });
         return dcRespond(interaction, discordMenus.activityMenu(page));
       }
@@ -626,6 +629,9 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
       }
 
       if (data === 'wallet:list') {
+        if (!await actionGate.allows(userId, 'discord', platformUserId, 'walletlist')) {
+          return dcRespond(interaction, discordMenus.gateUnlockCard({ action: 'walletlist' }));
+        }
         const wallets = commands.wallets(userId);
         if (!wallets.length) return dcRespond(interaction, discordMenus.placeholderMenu('Wallets', 'No wallets yet. Go back and tap Create wallet.'));
         // Escape only the USER-CONTROLLED parts. Escaping the finished string escaped the very
@@ -646,11 +652,17 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         return interaction.showModal(discordMenus.labelModal({ customId: 'flow:label:submit', title: 'New wallet label' }));
       }
       if (data === 'wallet:batch-import:start') {
+        if (!await actionGate.allows(userId, 'discord', platformUserId, 'batchimport')) {
+          return dcRespond(interaction, discordMenus.gateUnlockCard({ action: 'batchimport' }));
+        }
         // No chain step -- see the Telegram counterpart and detectHomeChain().
         flowState.start('discord', platformUserId, 'wallet_batch_import', 'awaiting_key', { privateKeys: [] });
         return dcRespond(interaction, discordMenus.batchImportMenu({ count: 0 }));
       }
       if (data === 'wallet:import:start') {
+        if (!await actionGate.allows(userId, 'discord', platformUserId, 'importwallet')) {
+          return dcRespond(interaction, discordMenus.gateUnlockCard({ action: 'importwallet' }));
+        }
         flowState.start('discord', platformUserId, 'wallet_import', 'awaiting_label');
         return interaction.showModal(discordMenus.labelModal({ customId: 'flow:label:submit', title: 'Wallet label to import' }));
       }
@@ -658,6 +670,12 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         return interaction.showModal(discordMenus.labelModal({ customId: 'flow:key:submit', title: 'Private key or seed phrase', maxLength: 256 }));
       }
 
+      // Discord slash commands must be registered with the API, so the counterpart to Telegram's
+      // /lock is a button on the confirmation we already send.
+      if (data === 'gate:lock') {
+        actionGate.lock?.('discord', platformUserId);
+        return dcRespond(interaction, { content: '🔒 Locked. Sensitive actions will ask for your password again.', components: [] });
+      }
       if (data === 'gate:unlock:open') {
         return interaction.showModal(discordMenus.labelModal({ customId: 'gate:unlock:submit',
           title: 'Account password', maxLength: 200, placeholder: 'Same password as the dashboard' }));
@@ -725,6 +743,9 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
       }
 
       if (data === 'wallet:balance:pick') {
+        if (!await actionGate.allows(userId, 'discord', platformUserId, 'balance')) {
+          return dcRespond(interaction, discordMenus.gateUnlockCard({ action: 'balance' }));
+        }
         return dcRespond(interaction, discordMenus.walletSelect(commands.wallets(userId), { customId: 'wallet:balance:select', emptyHint: 'No wallets yet. Create one first.' }));
       }
       if (data === 'wallet:balance:select') {
@@ -1144,20 +1165,10 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
       const userId = await identity.resolveOrCreate('discord', platformUserId);
       await enforceAccountStatus(userId);
       const flow = flowState.get('discord', platformUserId);
-      if (!flow) { await interaction.reply({ content: 'This step has expired. Open the Wallets menu again.', ephemeral: true }).catch(() => {}); return; }
-
-      if (data === 'flow:label:submit') {
-        const value = String(interaction.fields.getTextInputValue('value') || '').trim();
-        if (!value || value.length > 64) { await interaction.reply({ content: 'Label must be 1-64 characters. Tap Create/Import wallet again to retry.', ephemeral: true }).catch(() => {}); return; }
-        flowState.advance('discord', platformUserId, 'awaiting_chain', { label: value });
-        await interaction.reply({ ...renderFlowStep(flow.flow, 'awaiting_chain', { supportedChains, chains }), ephemeral: true });
-        return;
-      }
-      // Every key the user pastes is appended, so tapping "Add more" builds the list up rather than
-      // replacing it. Splitting on any whitespace or comma means one-per-line, all-on-one-line and
-      // comma-separated all work -- people paste from wherever they had them.
-      // The submitted value is never echoed, logged, or put in a message -- it exists only long
-      // enough to be verified against the stored scrypt hash.
+      // BEFORE the !flow guard below. Unlocking the action gate is deliberately not a flowState
+      // flow -- there is no multi-step state to keep -- so `flow` is always null here. Handled
+      // after the guard, every unlock was answered with "This step has expired" and the password
+      // was never actually checked, so Discord asked for it again forever.
       if (data === 'gate:unlock:submit') {
         const supplied = String(interaction.fields.getTextInputValue('value') || '');
         let outcome;
@@ -1172,8 +1183,26 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         const content = outcome.ok
           ? '🔓 Unlocked for 10 minutes. Tap what you were doing again.'
           : `❌ Wrong password. ${outcome.attemptsLeft} attempt(s) left.`;
-        return interaction.reply({ content, ephemeral: true }).catch(() => {});
+        const components = outcome.ok
+          ? [discordMenus.row([discordMenus.button('🔒 Lock now', 'gate:lock', 'secondary')])]
+          : [];
+        return interaction.reply({ content, components, ephemeral: true }).catch(() => {});
       }
+
+      if (!flow) { await interaction.reply({ content: 'This step has expired. Open the Wallets menu again.', ephemeral: true }).catch(() => {}); return; }
+
+      if (data === 'flow:label:submit') {
+        const value = String(interaction.fields.getTextInputValue('value') || '').trim();
+        if (!value || value.length > 64) { await interaction.reply({ content: 'Label must be 1-64 characters. Tap Create/Import wallet again to retry.', ephemeral: true }).catch(() => {}); return; }
+        flowState.advance('discord', platformUserId, 'awaiting_chain', { label: value });
+        await interaction.reply({ ...renderFlowStep(flow.flow, 'awaiting_chain', { supportedChains, chains }), ephemeral: true });
+        return;
+      }
+      // Every key the user pastes is appended, so tapping "Add more" builds the list up rather than
+      // replacing it. Splitting on any whitespace or comma means one-per-line, all-on-one-line and
+      // comma-separated all work -- people paste from wherever they had them.
+      // The submitted value is never echoed, logged, or put in a message -- it exists only long
+      // enough to be verified against the stored scrypt hash.
       if (data === 'flow:batchkeys:submit') {
         const raw = String(interaction.fields.getTextInputValue('value') || '');
         const added = raw.split(/[\s,]+/).map(item => item.trim()).filter(Boolean);
