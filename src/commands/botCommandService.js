@@ -344,6 +344,16 @@ function createBotCommandService(dependencies) {
         let detected = false;
         if (!home) {
           const address = new Wallet(privateKey).address;
+          // Duplicate check BEFORE detection. persistWallet checks again and remains the
+          // authority; this only avoids paying for it. Detection costs one balance read per
+          // supported chain, so re-pasting a batch that is already imported -- the likeliest way
+          // to hit this -- would otherwise spend the whole round trip per key just to be told so.
+          const already = state(userId).wallets.find(item =>
+            String(item.address).toLowerCase() === address.toLowerCase());
+          if (already) {
+            throw new ValidationError({ field: 'privateKey',
+              message: `is already imported as "${already.label}" (${already.address})` });
+          }
           ({ chain: home, detected } = await detectHomeChain(address));
         }
         const saved = await persistWallet(userId, { label, chain: home, privateKey, importMethod: 'privateKey' });
