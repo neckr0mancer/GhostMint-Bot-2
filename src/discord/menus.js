@@ -213,6 +213,11 @@ function collectionInfoCard({ contractAddress, chain, chainLabel, chainSym, isSe
   // Shown only when OpenSea confirms a stage is live right now -- there is nothing for it to mint
   // against otherwise.
   if (drop?.activeStage) rows.push(row([button('🎫 Mint via OpenSea', 'flow:mintviaopensea')]));
+  // A phase that hasn't opened yet has nothing to mint against -- being tapped-in and ready at the
+  // exact open is what cuts the time wasted, not a pre-check OpenSea has no way to answer ahead of
+  // time (see mintViaOpenSea's own notes). OpenSea only ever returns nextStage when nothing is
+  // currently minting, so this and the button above are never both shown at once.
+  if (drop?.nextStage) rows.push(row([button('🎫📅 Schedule for OpenSea phase', 'flow:scheduleviaopensea')]));
   rows.push(row(utilityRow), row([button('📋 Copy CA', 'flow:copyca')]), row([button('❌ Cancel', 'flow:cancel:ask', 'danger')]));
 
   return { content: lines.join('\n'), components: rows };
@@ -485,7 +490,7 @@ function gasMenu({ chain, fees, supportedChains, chains }) {
 // user to go type the command. No Prev button on page 1; no Next once the last page is reached.
 function activityMenu(page) {
   const lines = page.items.length
-    ? page.items.map(item => `${item.status}: ${item.title} — ${item.walletLabel}`).join('\n')
+    ? page.items.map(item => `${item.status}: ${item.title}${item.address ? ` to \`${item.address}\`` : ''} — ${item.walletLabel}`).join('\n')
     : 'No activity yet.';
   const nav = [];
   if (page.page > 1) nav.push(button('◀️ Prev', `activity:page:${page.page - 1}`));

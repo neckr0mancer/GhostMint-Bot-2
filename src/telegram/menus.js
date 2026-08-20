@@ -414,6 +414,11 @@ function collectionInfoCard({ contractAddress, chainLabel, chainSym, isSeaDrop, 
   // Shown only when OpenSea confirms a stage is live right now -- there is nothing for it to mint
   // against otherwise.
   if (drop?.activeStage) rows.push([button('🎫 Mint via OpenSea', 'flow:mintviaopensea')]);
+  // A phase that hasn't opened yet has nothing to mint against -- being tapped-in and ready at the
+  // exact open is what cuts the time wasted, not a pre-check OpenSea has no way to answer ahead of
+  // time (see mintViaOpenSea's own notes). OpenSea only ever returns nextStage when nothing is
+  // currently minting, so this and the button above are never both shown at once.
+  if (drop?.nextStage) rows.push([button('🎫📅 Schedule for OpenSea phase', 'flow:scheduleviaopensea')]);
   rows.push(utilityRow, [button('📋 Copy CA', 'flow:copyca')], [button('❌ Cancel', 'flow:cancel:ask')]);
 
   return {
@@ -426,16 +431,19 @@ function collectionInfoCard({ contractAddress, chainLabel, chainSym, isSeaDrop, 
 // phaseNumber > 1 means this task is a later stage of a multi-stage drop (Section AF). Its price and
 // time were typed by hand off the project's own announcement -- nothing on-chain describes a stage
 // that isn't live yet -- so the price line must not claim the contract said so.
-function taskConfirmation({ name, contractAddress, chainLabel, walletLabel, quantity, mintTime, autoDetectedTime, priceETH, priceUnknown, displayPrice, phaseNumber }) {
+function taskConfirmation({ name, contractAddress, chainLabel, walletLabel, quantity, mintTime, autoDetectedTime, priceETH, priceUnknown, displayPrice, phaseNumber, viaOpenSea }) {
   const phase = Number(phaseNumber) > 1 ? Number(phaseNumber) : null;
   let priceLine;
-  if (phase) priceLine = `Price: ${priceETH} per item (your number for this phase)`;
+  // Section AF -- OpenSea's own response at execution time determines the real price for an
+  // allowlist/GTD/FCFS stage; nothing scheduled up front could ever be the real number.
+  if (viaOpenSea) priceLine = 'Price: determined by OpenSea at mint time (it resolves eligibility and price for this stage automatically)';
+  else if (phase) priceLine = `Price: ${priceETH} per item (your number for this phase)`;
   else if (priceUnknown) priceLine = 'Price: not exposed by this contract. Using the amount you entered above.';
   else priceLine = `Price: ${priceETH} per item (pulled straight from the contract)${displayPrice ? usdSuffix(displayPrice.usd) : ''}`;
   const timeLine = autoDetectedTime
     ? `Fires: <b>${formatGmtPlus1(mintTime)}</b> (this contract's own opening time)`
     : `Fires: <b>${formatGmtPlus1(mintTime)}</b>`;
-  const heading = phase ? `<b>⏰ Confirm phase ${phase}</b>` : '<b>⏰ Confirm scheduled mint</b>';
+  const heading = viaOpenSea ? '<b>⏰🎫 Confirm OpenSea-backed schedule</b>' : phase ? `<b>⏰ Confirm phase ${phase}</b>` : '<b>⏰ Confirm scheduled mint</b>';
   return {
     text: `${heading}\nName: ${escapeTelegramHtml(name)}\nContract: <code>${contractAddress}</code>\nChain: ${chainLabel}\nWallet: ${escapeTelegramHtml(walletLabel)}\nQuantity: ${quantity || 1}\n${priceLine}\n${timeLine}\n\nThis is not a reminder — the bot signs and sends the mint itself at that moment, phone in your pocket, you asleep.\n\nLock it in?`,
     replyMarkup: keyboard([[button('✅ Schedule it', 'flow:taskconfirm')], [button('❌ Cancel', 'flow:cancel:ask')]]),
@@ -448,18 +456,25 @@ function taskConfirmation({ name, contractAddress, chainLabel, walletLabel, quan
 // stage that is live right now), so the only way to pre-arm every stage is one task per stage, each
 // with its own hand-entered time and price. Offering that as the obvious next tap is the feature --
 // the contract address rides in the callback data so the next phase skips straight past re-pasting.
-function taskScheduled({ name, contractAddress, mintTime, phaseNumber }) {
+function taskScheduled({ name, contractAddress, mintTime, phaseNumber, viaOpenSea }) {
   const phase = Number(phaseNumber) > 1 ? Number(phaseNumber) : 1;
-  const armed = phase > 1
-    ? `✅ Phase ${phase} armed: <b>${escapeTelegramHtml(name)}</b>`
-    : `✅ Locked in: <b>${escapeTelegramHtml(name)}</b>`;
+  const armed = viaOpenSea
+    ? `✅🎫 Armed via OpenSea: <b>${escapeTelegramHtml(name)}</b>`
+    : phase > 1
+      ? `✅ Phase ${phase} armed: <b>${escapeTelegramHtml(name)}</b>`
+      : `✅ Locked in: <b>${escapeTelegramHtml(name)}</b>`;
+  // Section AF -- "Add phase" is the manual-entry path (its own hand-typed price/time, no on-chain
+  // or OpenSea data behind it) and still can't cover an allowlist/GTD stage that way; the OpenSea
+  // button on the collection card is the actual answer for those now, so this points there instead
+  // of just saying they can't be scheduled at all, which stopped being true once that button shipped.
+  const nextStageHint = viaOpenSea
+    ? "Got another OpenSea phase coming up? Head back to that contract's card and tap Schedule for OpenSea phase again once the next one shows."
+    : 'Got another public stage? Stack another task for it: different time, different price, and the bot works down the list. An allowlist/GTD stage still can\'t go through Add phase (it has no price/time for you to type by hand) -- if OpenSea tracks the drop, use "Schedule for OpenSea phase" on its collection card instead.';
+  const rows = viaOpenSea ? [] : [[button(`➕ Add phase ${phase + 1}`, `flow:phase:${phase + 1}:${contractAddress}`)]];
+  rows.push([button('🗓️ See all tasks', 'menu:tasks')], [button('⬅️ Back to base', 'menu:main')]);
   return {
-    text: `${armed}\nFires: <b>${formatGmtPlus1(mintTime)}</b>\n\nGot another public stage? Stack another task for it: different time, different price, and the bot works down the list. Allowlist/GTD stages need a per-wallet proof this bot can't fetch yet, so those aren't schedulable.`,
-    replyMarkup: keyboard([
-      [button(`➕ Add phase ${phase + 1}`, `flow:phase:${phase + 1}:${contractAddress}`)],
-      [button('🗓️ See all tasks', 'menu:tasks')],
-      [button('⬅️ Back to base', 'menu:main')],
-    ]),
+    text: `${armed}\nFires: <b>${formatGmtPlus1(mintTime)}</b>\n\n${nextStageHint}`,
+    replyMarkup: keyboard(rows),
     parseMode: 'HTML',
   };
 }
@@ -531,8 +546,12 @@ function taskActions(task) {
   if (task.status === 'failed') rows.push([button('↻ Retry', `task:retry:${task.id}`)]);
   if (CANCELLABLE_TASK_STATUSES.has(task.status)) rows.push([button('❌ Cancel', `task:cancel:ask:${task.id}`)]);
   rows.push([button('⬅️ Back to the list', 'menu:tasks')]);
+  // A viaOpenSea task's price is always stored as 0 -- OpenSea's own response at execution time
+  // determines the real value, never anything scheduled up front -- so "Free" would be a real lie
+  // for a paid allowlist/GTD stage, not just an unhelpful label.
+  const priceLine = task.viaOpenSea ? 'via OpenSea (determined at mint time)' : (task.price > 0 ? `${task.price} ETH` : 'Free');
   return {
-    text: `<b>${escapeTelegramHtml(task.name)}</b> [${task.status}]\nContract: <code>${task.contract}</code>\nWallet: ${escapeTelegramHtml(task.walletLabel)}\nQty: ${task.qty} | Price: ${task.price > 0 ? `${task.price} ETH` : 'Free'}\nDue: <b>${formatGmtPlus1(task.mintTime)}</b>\nID: <code>${task.id}</code>`,
+    text: `<b>${escapeTelegramHtml(task.name)}</b>${task.viaOpenSea ? ' 🎫' : ''} [${task.status}]\nContract: <code>${task.contract}</code>\nWallet: ${escapeTelegramHtml(task.walletLabel)}\nQty: ${task.qty} | Price: ${priceLine}\nDue: <b>${formatGmtPlus1(task.mintTime)}</b>\nID: <code>${task.id}</code>`,
     replyMarkup: keyboard(rows),
     parseMode: 'HTML',
   };
@@ -575,8 +594,12 @@ function activityMenu(page) {
   const lines = page.items.length
     ? page.items.map(a => {
         const icon = a.status === 'success' ? '✅' : '❌';
+        // a.address is a separate column from a.title specifically so it can be wrapped in a real
+        // <code> tag here -- title goes through escapeTelegramHtml, and an address baked into that
+        // same string would have its own tap-to-copy markup escaped right along with it.
+        const addressLine = a.address ? ` to <code>${a.address}</code>` : '';
         const tx = a.txHash ? `\n   <a href="${a.explorer}${a.txHash}">View tx</a>` : '';
-        return `${icon} ${escapeTelegramHtml(a.title)} · <b>${escapeTelegramHtml(a.walletLabel)}</b>\n   ${new Date(a.time).toLocaleString()}${tx}`;
+        return `${icon} ${escapeTelegramHtml(a.title)}${addressLine} · <b>${escapeTelegramHtml(a.walletLabel)}</b>\n   ${new Date(a.time).toLocaleString()}${tx}`;
       }).join('\n\n')
     : 'No activity yet.';
   const nav = [];

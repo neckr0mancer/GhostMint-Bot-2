@@ -514,14 +514,21 @@ function createBotCommandService(dependencies) {
     const chain = input.chain || owned.chain;
     const target = input.contractAddress ?? input.contract;
     if (target) await assertContractExists(target, chain);
-    const withPrice = await resolvePriceIfMissing({ ...input, contractAddress: target }, chain);
+    // Section AF -- scheduling an OpenSea-backed mint (allowlist/GTD/FCFS stages this app has no
+    // on-chain proof for): priceETH is always 0 here, never resolved from the contract, since
+    // OpenSea's own response at execution time determines the real value -- resolvePriceIfMissing
+    // would otherwise throw for a contract whose price genuinely can't be read on-chain (the exact
+    // case this path exists for).
+    const withPrice = input.viaOpenSea
+      ? { ...input, contractAddress: target, priceETH: 0 }
+      : await resolvePriceIfMissing({ ...input, contractAddress: target }, chain);
     const withMintTime = await resolveMintTimeIfMissing(withPrice, chain);
     const validated = requestSchemas.taskCreate({ ...withMintTime, chain }, { supportedChains, now: Date.now() });
     const task = { userId, id: validated.id, name: validated.name, walletLabel: validated.walletLabel,
       contract: validated.contractAddress, fn: validated.functionName, qty: validated.quantity,
       price: validated.priceETH, gas: validated.gasGwei, mintTime: validated.mintTime,
       nextAttemptAt: validated.mintTime, status: 'scheduled', createdAt: Date.now(), maxAttempts: 3,
-      idempotencyKey: `scheduled-mint:${userId}:${validated.id}` };
+      idempotencyKey: `scheduled-mint:${userId}:${validated.id}`, viaOpenSea: Boolean(input.viaOpenSea) };
     await storage.saveTask(task);
     getState().tasks.push(task);
     broadcast(userId, 'tasks');

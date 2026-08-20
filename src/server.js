@@ -239,6 +239,24 @@ const schedulerWorker = createSchedulerWorker({
     await governance.checkAccountStatus(task.userId);
     const wallet = DB.wallets.find(item => item.userId === task.userId && item.label === task.walletLabel);
     if (!wallet) throw new ValidationError({ field:'walletLabel', message:'was not found' });
+    // Section AF -- an allowlist/GTD/FCFS stage this app has no on-chain proof for (see
+    // mintViaOpenSea); the drift preflight below doesn't apply here at all -- there is no on-chain
+    // PublicDrop for an OpenSea-scheduled task to drift against, since OpenSea's own backend
+    // resolves the live stage and eligibility itself, fresh, at this exact moment. A 409/422 from
+    // OpenSea IS the honest drift/ineligibility answer for this path, surfaced as a ValidationError
+    // (not in schedulerWorker's TRANSIENT_CODES, so it fails permanently rather than retrying
+    // against a wallet that will never become eligible by retrying alone).
+    if (task.viaOpenSea) {
+      const built = await openSeaService.buildMintTransaction(wallet.chain, task.contract, wallet.address, task.qty || 1);
+      if (!built) {
+        throw new ValidationError({ field: 'contractAddress', message: "OpenSea couldn't build a mint for this contract right now -- it may not track this as a drop, or OpenSea is temporarily unavailable" });
+      }
+      const prepared = { chain: wallet.chain, calldata: built.data, valueWei: BigInt(built.valueWei),
+        method: { signature: 'opensea:drops-mint' }, preview: { contractAddress: task.contract, callTarget: built.to } };
+      return mintExecution.executePrepared({ userId: task.userId, wallet, prepared, triggerSource: 'scheduled',
+        idempotencyKey: hooks.idempotencyKey, onIntentPersisted: hooks.onIntentPersisted,
+        onPreview: preview => notifyUser(task.userId, formatMintPreview(preview)) });
+    }
     // Phase-drift preflight: the schedule was set against whatever SeaDrop's PublicDrop said at
     // scheduling time (or a hand-typed phase-2+ price/time -- Section AF, since nothing on-chain
     // describes a stage that isn't live yet). If the project has since moved the live window --
@@ -427,7 +445,8 @@ async function logActivity(userId, status, title, walletLabel, txHash, chain,con
   const entry = await storage.addActivity({ userId, status, title, walletLabel,
     txHash: intent?.txHash || txHash, explorer: chain?.ex, time: Date.now(),
     actualNetworkCostWei: intent?.actualNetworkCostWei ?? null,
-    triggerSource:context.triggerSource??null,verificationState:context.verificationState??null });
+    triggerSource:context.triggerSource??null,verificationState:context.verificationState??null,
+    address:context.address??null });
   DB.activity.unshift(entry);
   if (DB.activity.length > 200) DB.activity.pop();
   // logActivity is the sole writer of activity entries (mint, scheduled mint, sniper copy-mint,
@@ -790,7 +809,7 @@ const FLOW_CONTINUATION_PREFIXES = { wallet_create: ['flow:chain:'], wallet_impo
   // No continuation buttons of its own -- the only tap it offers is Cancel, which the gate
   // above already exempts. Listed so the flow is not silently absent from this map.
   gate_unlock: [],
-  mint_guided: ['flow:mintdetailscontinue', 'flow:mintviaopensea', 'flow:detailsrefresh', 'flow:copyca', 'flow:schedulesuggest:', 'flow:mintqty:', 'flow:priceaccept', 'flow:pricemanual', 'flow:wallettoggle:', 'flow:walletpick:', 'flow:walletcontinue', 'flow:gastoleranceaccept', 'flow:gastolerancemanual', 'flow:mintconfirm'],
+  mint_guided: ['flow:mintdetailscontinue', 'flow:mintviaopensea', 'flow:scheduleviaopensea', 'flow:detailsrefresh', 'flow:copyca', 'flow:schedulesuggest:', 'flow:mintqty:', 'flow:priceaccept', 'flow:pricemanual', 'flow:wallettoggle:', 'flow:walletpick:', 'flow:walletcontinue', 'flow:gastoleranceaccept', 'flow:gastolerancemanual', 'flow:mintconfirm'],
   send_guided: ['flow:sendwalletpick:', 'flow:sendamount:', 'flow:sendconfirm'],
   export_guided: ['flow:exportwalletpick:', 'flow:exportconfirm'],
   // Shares flow:mintdetailscontinue with mint_guided -- the contract-details screen and its
@@ -1056,6 +1075,7 @@ function renderFlowStep(flow, step, { userId, data = {} } = {}) {
         priceUnknown: data.priceUnknown,
         displayPrice: data.displayPrice,
         phaseNumber: data.phaseNumber,
+        viaOpenSea: data.viaOpenSea,
       });
     }
   }
@@ -1553,11 +1573,12 @@ async function finishTaskSchedule(chatId, messageId, userId, flowData) {
     const task = await botCommands.createTask(userId, {
       name: flowData.name, walletLabel: flowData.walletLabel, contractAddress: flowData.contractAddress,
       chain: flowData.chain, quantity: flowData.quantity || 1, priceETH: flowData.priceETH, mintTime: flowData.mintTime,
+      viaOpenSea: flowData.viaOpenSea,
     });
     telegramFlowState.clear('telegram', chatId);
     return tgUpdate(chatId, messageId, telegramMenus.taskScheduled({
       name: task.name, contractAddress: flowData.contractAddress,
-      mintTime: new Date(task.mintTime).toISOString(), phaseNumber: flowData.phaseNumber,
+      mintTime: new Date(task.mintTime).toISOString(), phaseNumber: flowData.phaseNumber, viaOpenSea: task.viaOpenSea,
     }));
   } catch (error) {
     if (error instanceof RateLimitError) {
@@ -2339,6 +2360,23 @@ if (BOT_TOKEN) {
       const result = mintFlowDecision.afterQuantity({ data: { ...flow.data, quantity: 1, priceUnknown: false, skipConfirm: true, viaOpenSea: true }, wallets });
       return applyMintFlowStep(chatId, messageId, userId, result);
     }
+    // Section AF -- a phase that hasn't opened yet has nothing to mint against, so there's no
+    // eligibility to pre-check (see mintViaOpenSea's own notes); being scheduled and ready right at
+    // open is what actually cuts the wasted time. Switches from mint_guided to a task_guided flow
+    // pre-filled with the next stage's own opening time (mirrors startTaskScheduleFlow's own
+    // phaseNumber>1 branch) -- quantity is always 1, no price step (OpenSea determines it), no time
+    // step (already known from drop.nextStage).
+    if (data === 'flow:scheduleviaopensea') {
+      const flow = telegramFlowState.get('telegram', chatId);
+      if (!flow || flow.flow !== 'mint_guided' || flow.step !== 'awaiting_details' || !flow.data.drop?.nextStage) return;
+      const taskData = {
+        contractAddress: flow.data.contractAddress, chain: flow.data.chain, isSeaDrop: flow.data.isSeaDrop,
+        priceETH: 0, priceUnknown: false, viaOpenSea: true, collection: flow.data.collection,
+        mintTime: new Date(flow.data.drop.nextStage.startTime * 1000).toISOString(),
+      };
+      const started = telegramFlowState.start('telegram', chatId, 'task_guided', 'awaiting_wallet', taskData);
+      return advanceFromTaskQuantity(chatId, messageId, userId, started, 1);
+    }
     if (data === 'flow:detailsrefresh') {
       const flow = telegramFlowState.get('telegram', chatId);
       if (!flow || flow.flow !== 'mint_guided' || flow.step !== 'awaiting_details') return;
@@ -2967,8 +3005,9 @@ send /mint with a contract address to get going.`;
     if (!recent.length) return tgRender(msg.chat.id, { text: 'No activity yet.', parseMode: 'HTML' });
     const list = recent.map(a => {
       const ico = a.status==='success'?'✅':'❌';
+      const addressLine = a.address ? ` to <code>${a.address}</code>` : '';
       const tx  = a.txHash?`\n   <a href="${a.explorer}${a.txHash}">View tx</a>`:'';
-      return `${ico} ${escapeTelegramHtml(a.title)} · <b>${escapeTelegramHtml(a.walletLabel)}</b>\n   ${new Date(a.time).toLocaleString()}${tx}`;
+      return `${ico} ${escapeTelegramHtml(a.title)}${addressLine} · <b>${escapeTelegramHtml(a.walletLabel)}</b>\n   ${new Date(a.time).toLocaleString()}${tx}`;
     }).join('\n\n');
     tgRender(msg.chat.id, { text: `📋 <b>Activity (page ${page.page}/${page.totalPages}, ${page.total} total)</b>\n\n${list}`, parseMode: 'HTML' });
   }));
@@ -3111,8 +3150,8 @@ const botCommands = createBotCommandService({
     const intent = await transactionEngine.submit({ userId, wallet, chain: request.chain,
       to: request.toAddress, valueWei: ethers.parseEther(String(request.amountETH)), triggerSource: 'manual',
       gasPriceWei: request.gasGwei === undefined || request.gasGwei === null ? undefined : ethers.parseUnits(String(request.gasGwei), 'gwei') });
-    await logActivity(userId, 'success', `Sent ${request.amountETH} ${CHAINS[request.chain]?.sym || ''} to ${request.toAddress}`,
-      wallet.label, intent, CHAINS[request.chain], { triggerSource: 'manual' });
+    await logActivity(userId, 'success', `Sent ${request.amountETH} ${CHAINS[request.chain]?.sym || ''}`,
+      wallet.label, intent, CHAINS[request.chain], { triggerSource: 'manual', address: request.toAddress });
     return intent;
   },
   // SEC-01. decryptPK/keyEncryption stay private to this module either way -- these are the only
