@@ -21,9 +21,10 @@ const WATCH_TYPE_PLATFORMS = Object.freeze({
   farcaster_keyword: 'farcaster',
 });
 const MAX_SCHEDULE_AHEAD_MS = 5 * 365 * 24 * 60 * 60 * 1000;
-// A batch of one is a single mint. Enforced here rather than per surface so the dashboard, the
-// two bots and the JSON commands cannot drift -- the dashboard already gated at 2 in its own UI.
-const MIN_BATCH_WALLETS = 2;
+// A batch of one is allowed: it simply behaves like a single mint. This stays a named constant
+// (rather than a bare 1) because every surface reads it, so the rule can move in one place if
+// that judgement changes again. The dashboard keeps its own stricter UI gate.
+const MIN_BATCH_WALLETS = 1;
 const LIMITS = Object.freeze({
   quantity: 100,
   priceEth: 1_000,
@@ -288,7 +289,7 @@ function validateTaskCreate(input, context) {
 
 function validateBatchMint(input, context) {
   if (!Array.isArray(input.walletLabels) || input.walletLabels.length < MIN_BATCH_WALLETS || input.walletLabels.length > LIMITS.batchWallets) {
-    fail('walletLabels', `must contain ${MIN_BATCH_WALLETS}-${LIMITS.batchWallets} wallet labels -- a batch of one is a single mint`);
+    fail('walletLabels', `must contain ${MIN_BATCH_WALLETS}-${LIMITS.batchWallets} wallet labels`);
   }
   const labels = input.walletLabels.map(label => walletLabel(label));
   if (new Set(labels.map(label => label.toLowerCase())).size !== labels.length) fail('walletLabels', 'must not contain duplicates');

@@ -498,3 +498,47 @@ test('detectHomeChain survives an unreachable RPC instead of failing the import'
   assert.equal(result.chain, 'ethereum');
   assert.equal(result.detected, false, 'a blip is not a detection');
 });
+
+// Re-importing a wallet you already hold used to succeed silently, leaving two labels for one
+// address. The check lives in persistWallet -- the single funnel createWallet, importWallet and
+// importWalletsBatch all pass through -- so the dashboard, Telegram and Discord all get the same
+// answer without any of them implementing it. Address, not key: the same wallet reached by a seed
+// phrase and by its private key is still the same wallet.
+test('importing a wallet that is already held is refused, and names the wallet it already is', async () => {
+  const key = `0x${'22'.repeat(32)}`;
+  const address = new (require('ethers').Wallet)(key).address;
+  const state = {
+    wallets: [{ userId: 'user-a', label: 'my-main', address, chain: 'ethereum' }],
+    tasks: [], activity: [], pnl: [], snipers: [],
+  };
+  const { service } = fixture({ getState: () => state });
+  await assert.rejects(
+    () => service.importWallet('user-a', { label: 'second-copy', chain: 'ethereum', privateKey: key }),
+    error => {
+      assert.equal(error.name, 'ValidationError');
+      assert.match(error.issues[0].message, /already imported as "my-main"/,
+        'names the existing wallet so the user can find it');
+      assert.match(error.issues[0].message, new RegExp(address));
+      return true;
+    });
+  assert.equal(state.wallets.length, 1, 'nothing was persisted');
+});
+
+test('a duplicate inside a batch import fails only its own entry, and the others still land', async () => {
+  const dupe = `0x${'33'.repeat(32)}`;
+  const fresh = `0x${'44'.repeat(32)}`;
+  const { Wallet } = require('ethers');
+  const state = {
+    wallets: [{ userId: 'user-a', label: 'already-here', address: new Wallet(dupe).address, chain: 'ethereum' }],
+    tasks: [], activity: [], pnl: [], snipers: [],
+  };
+  const { service } = fixture({
+    getState: () => state,
+    storage: { addWallet: async value => { state.wallets.push(value); return { ...value, id: state.wallets.length }; },
+      deleteWallet: async () => true },
+  });
+  const results = await service.importWalletsBatch('user-a', { privateKeys: [dupe, fresh], chain: 'ethereum' });
+  assert.equal(results[0].status, 'failed');
+  assert.match(results[0].error, /already imported as "already-here"/);
+  assert.equal(results[1].status, 'success', 'the good key still imports -- one duplicate is not a whole-batch failure');
+});

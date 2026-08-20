@@ -86,6 +86,28 @@ Each wallet's chain is detected from its own balances — a batch can span chain
   };
 }
 
+// Shown in place of a gated action while the conversation is locked. The copy states outright that
+// a chat is a worse place for a password than the dashboard is -- the gate reduces the risk of a
+// borrowed phone, it does not make typing secrets into Telegram safe, and pretending otherwise
+// would be the more dangerous message.
+const GATE_ACTION_LABELS = {
+  exportkey: 'export a private key', removewallet: 'remove a wallet', send: 'send funds',
+  batchimport: 'import wallets', importwallet: 'import a wallet',
+  walletlist: 'list your wallets', balance: 'check a balance', activity: 'see your activity',
+};
+
+function gateUnlockPrompt({ action }) {
+  const what = GATE_ACTION_LABELS[action] || 'do that';
+  return {
+    text: `<b>🔒 Locked</b>\n\nSend your account password to ${escapeTelegramHtml(what)}.`
+      + '\n\nThis is the same password the dashboard uses. It stays unlocked here for 10 minutes.'
+      + "\n\n⚠️ Your message crosses Telegram's servers — it is deleted the moment it arrives, but the"
+      + ' dashboard is still the safer place for anything sensitive.',
+    replyMarkup: keyboard([[button('❌ Nah, cancel', 'flow:cancel:ask')]]),
+    parseMode: 'HTML',
+  };
+}
+
 function walletsMenu() {
   return {
     text: '<b>👛 Wallets</b>\n\nA fresh wallet minted server-side beats importing your seed phrase from a sticky note. We recommend generating new.',
@@ -720,6 +742,7 @@ module.exports = {
   walletsMenu,
   mintModeMenu,
   batchImportMenu,
+  gateUnlockPrompt,
   settingsMenu,
   tasksMenu,
   taskActions,

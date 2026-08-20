@@ -345,6 +345,26 @@ Each wallet's chain is detected from its own balances -- a batch can span chains
 // message and rejects the whole payload -- silently, from the user's side -- when there are more.
 // One-button-per-row put this menu at 6 rows before Batch import was added and 7 after, which is
 // why tapping Wallets appeared to load and then do nothing at all. Guarded by menuShape.test.js.
+// Discord verifies through a MODAL rather than a chat prompt: modal input never becomes a message
+// and never enters channel history, which makes this genuinely safer than the Telegram equivalent
+// rather than merely mitigated. Same password as the dashboard; no second one exists.
+const GATE_ACTION_LABELS = {
+  exportkey: 'export a private key', removewallet: 'remove a wallet', send: 'send funds',
+  batchimport: 'import wallets', importwallet: 'import a wallet',
+  walletlist: 'list your wallets', balance: 'check a balance', activity: 'see your activity',
+};
+
+function gateUnlockCard({ action }) {
+  const what = GATE_ACTION_LABELS[action] || 'do that';
+  return {
+    content: `## 🔒 Locked\nUnlock to ${what}. This is the same password the dashboard uses, and it stays unlocked here for 10 minutes.`,
+    components: [row([
+      button('🔓 Enter password', 'gate:unlock:open', 'success'),
+      button('❌ Cancel', 'flow:cancel:ask', 'secondary'),
+    ])],
+  };
+}
+
 function walletsMenu() {
   return {
     content: '## Wallets\nGenerating a new wallet server-side is recommended over importing an existing key.',
@@ -632,7 +652,7 @@ function labelModal({ customId, title, placeholder = '', style = 'short', maxLen
 }
 
 module.exports = {
-  button, row, select, mainMenu, mintModeMenu, batchImportMenu, walletsMenu, settingsMenu, placeholderMenu,
+  button, row, select, mainMenu, mintModeMenu, batchImportMenu, gateUnlockCard, walletsMenu, settingsMenu, placeholderMenu,
   chainSelect, walletSelect, walletMultiSelect, confirmRemoveWallet, labelModal, gasMenu, activityMenu, tasksMenu, snipersMenu, adminOverviewMenu,
   contractDetailsText, collectionInfoCard, mintQuantitySelect, mintPriceStep, gasTolerancePrompt, mintConfirmation, numberModal,
   taskNameQuickPicks, taskConfirmation,

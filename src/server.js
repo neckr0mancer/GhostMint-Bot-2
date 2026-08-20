@@ -58,6 +58,8 @@ const { createKeyEncryption } = require('./security/keyEncryption');
 const { createRedactor } = require('./security/redaction');
 const { BotContextError, RateLimitError, commandName, createCommandRateLimiter,
   escapeTelegramHtml, requireTextConfirmation,verifyTelegramContext } = require('./security/botSecurity');
+const { createActionGate, GateLockedError } = require('./security/actionGate');
+const { verifySecurityPassword } = require('./security/securityPassword');
 const { createBotSecurityRepository } = require('./security/botSecurityRepository');
 const { createGracefulShutdown } = require('./security/gracefulShutdown');
 const { acquireTelegramPollingLock } = require('./security/telegramSingleInstanceLock');
@@ -742,11 +744,32 @@ function stateFor(userId) {
 // follow-up pass). None of this bypasses botCommands/validation/the transaction engine — every
 // guided step ends by calling the exact same service function the equivalent slash command uses.
 const telegramFlowState = createFlowStateStore();
+
+// Ships OFF for every account (migration 041 defaults bot_gate_level to 'off'), so until an
+// owner opts in this changes nothing: allows() returns true for every action and no prompt is
+// ever shown. Reuses the dashboard's own password rather than introducing a second one.
+const actionGate = createActionGate({
+  getLevel: userId => identityRepository.getBotGateLevel(userId),
+  getPasswordHash: userId => identityRepository.getSecurityPasswordHash(userId),
+  verify: verifySecurityPassword,
+});
+
+// Returns true when the caller should stop: the gate is on, this conversation is locked, and a
+// password prompt has been put on screen in place of the action.
+async function gateBlocks({ chatId, messageId, userId, action }) {
+  if (await actionGate.allows(userId, 'telegram', chatId, action)) return false;
+  telegramFlowState.start('telegram', chatId, 'gate_unlock', 'awaiting_password', { action });
+  await tgEditMenu(chatId, messageId, telegramMenus.gateUnlockPrompt({ action }));
+  return true;
+}
 const FLOW_LABELS = { wallet_create: 'creating a wallet', wallet_import: 'importing a wallet', mint_guided: 'minting', send_guided: 'sending funds', export_guided: 'exporting a private key', task_guided: 'scheduling a mint', watch_guided: 'adding a watch rule' };
 const FLOW_CONTINUATION_PREFIXES = { wallet_create: ['flow:chain:'], wallet_import: ['flow:chain:'],
   // Without this the abandon gate below would clear the flow on the very next tap -- including
   // the chain pick and the Import button the flow itself renders.
   wallet_batch_import: ['flow:chain:', 'wallet:batch-import:confirm'],
+  // No continuation buttons of its own -- the only tap it offers is Cancel, which the gate
+  // above already exempts. Listed so the flow is not silently absent from this map.
+  gate_unlock: [],
   mint_guided: ['flow:mintdetailscontinue', 'flow:detailsrefresh', 'flow:copyca', 'flow:schedulesuggest:', 'flow:mintqty:', 'flow:priceaccept', 'flow:pricemanual', 'flow:wallettoggle:', 'flow:walletpick:', 'flow:walletcontinue', 'flow:gastoleranceaccept', 'flow:gastolerancemanual', 'flow:mintconfirm'],
   send_guided: ['flow:sendwalletpick:', 'flow:sendamount:', 'flow:sendconfirm'],
   export_guided: ['flow:exportwalletpick:', 'flow:exportconfirm'],
@@ -1665,6 +1688,7 @@ async function handleFlowTextMessage(msg) {
     (flow.flow === 'wallet_create' && flow.step === 'awaiting_label')
     || (flow.flow === 'wallet_import' && (flow.step === 'awaiting_label' || flow.step === 'awaiting_key'))
     || (flow.flow === 'wallet_batch_import' && flow.step === 'awaiting_keys')
+    || (flow.flow === 'gate_unlock' && flow.step === 'awaiting_password')
     || (flow.flow === 'mint_guided' && ['awaiting_contract', 'awaiting_quantity', 'awaiting_price', 'awaiting_gastolerance'].includes(flow.step))
     || (flow.flow === 'send_guided' && (flow.step === 'awaiting_amount' || flow.step === 'awaiting_destination'))
     || (flow.flow === 'task_guided' && ['awaiting_contract', 'awaiting_quantity', 'awaiting_price', 'awaiting_name', 'awaiting_time'].includes(flow.step))
@@ -1701,6 +1725,34 @@ async function handleFlowTextMessage(msg) {
     if (!value || value.length > 64) { tgRender(chatId, { text: 'Label must be 1-64 characters. Try again.', replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' }); return; }
     telegramFlowState.advance('telegram', chatId, 'awaiting_chain', { label: value });
     tgRender(chatId, renderFlowStep(flow.flow, 'awaiting_chain'));
+    return;
+  }
+  if (flow.flow === 'gate_unlock' && flow.step === 'awaiting_password') {
+    const action = flow.data.action;
+    let result;
+    try {
+      result = await actionGate.submit(userId, 'telegram', chatId, value);
+    } catch (error) {
+      if (error instanceof GateLockedError) {
+        telegramFlowState.clear('telegram', chatId);
+        const text = error.message === 'no password set'
+          ? 'No account password is set. Set one on the dashboard first — it is deliberately not settable from chat, because a password typed here would stay in your message history.'
+          : `Too many attempts. Try again in ${Math.ceil(error.retryAfterMs / 60000)} minutes.`;
+        tgRender(chatId, { text: `🔒 ${escapeTelegramHtml(text)}`, parseMode: 'HTML',
+          replyMarkup: telegramMenus.keyboard([[telegramMenus.button('⬅️ Back to base', 'menu:main')]]) });
+        return;
+      }
+      throw error;
+    }
+    if (!result.ok) {
+      tgRender(chatId, { text: `❌ Wrong password. ${result.attemptsLeft} attempt${result.attemptsLeft === 1 ? '' : 's'} left.`,
+        replyMarkup: telegramMenus.keyboard([[telegramMenus.button('❌ Nah, cancel', 'flow:cancel:ask')]]), parseMode: 'HTML' });
+      return;
+    }
+    telegramFlowState.clear('telegram', chatId);
+    tgRender(chatId, { text: '🔓 Unlocked for 10 minutes. Tap what you were doing again.',
+      replyMarkup: telegramMenus.keyboard([[telegramMenus.button('⬅️ Back to base', 'menu:main')]]), parseMode: 'HTML' });
+    void action;
     return;
   }
   // Every message the user sends is appended, so sending another builds the list up rather than
@@ -2042,8 +2094,14 @@ if (BOT_TOKEN) {
     if (data === 'menu:mint') return tgEditMenu(chatId, messageId, telegramMenus.mintModeMenu());
     if (data === 'menu:mint:single') return startMintFlow({ chatId, messageId, userId, multi: false, contractAddressInput: null });
     if (data === 'menu:mint:batch') return startMintFlow({ chatId, messageId, userId, multi: true, contractAddressInput: null });
-    if (data === 'menu:send') return startSendFlow({ chatId, messageId, userId });
-    if (data === 'menu:exportkey') return startExportKeyFlow({ chatId, messageId, userId });
+    if (data === 'menu:send') {
+      if (await gateBlocks({ chatId, messageId, userId, action: 'send' })) return;
+      return startSendFlow({ chatId, messageId, userId });
+    }
+    if (data === 'menu:exportkey') {
+      if (await gateBlocks({ chatId, messageId, userId, action: 'exportkey' })) return;
+      return startExportKeyFlow({ chatId, messageId, userId });
+    }
     if (data === 'menu:tasks') {
       const page = await botCommands.tasksPage(userId, { page: 1 });
       return tgEditMenu(chatId, messageId, telegramMenus.tasksMenu(page));
@@ -2493,6 +2551,7 @@ if (BOT_TOKEN) {
     }
 
     if (data === 'wallet:remove:pick') {
+      if (await gateBlocks({ chatId, messageId, userId, action: 'removewallet' })) return;
       return tgEditMenu(chatId, messageId, telegramMenus.walletPicker(botCommands.wallets(userId), { prefix:'wallet:remove:pick', emptyHint:'No wallets yet.' }));
     }
     if (data.startsWith('wallet:remove:pick:')) {
@@ -3028,7 +3087,7 @@ if (CONFIG.discordBotToken) {
     identity, commands: botCommands, securityAudit:botSecurityRepository,rateLimiter:commandRateLimiter,log,
     isOwner: userId => governanceRepository.isOwner(userId),
     checkAccountStatus: userId => governance.checkAccountStatus(userId),
-    supportedChains: CONFIG.supportedChains, chains: CHAINS });
+    supportedChains: CONFIG.supportedChains, chains: CHAINS, actionGate });
   // Live push: skip the 30s social-watch poll for discord_channel rules by reacting
   // to the Gateway's messageCreate event directly. The scheduled poller keeps running
   // as a fallback, so a dropped Gateway connection never stops detection, just slows it.

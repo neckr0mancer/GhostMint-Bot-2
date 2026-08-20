@@ -244,6 +244,12 @@ function createBotCommandService(dependencies) {
     const validated = requestSchemas.walletCreate(input, {
       existingLabels: state(userId).wallets.map(item => item.label), supportedChains,
     });
+    const existing = state(userId).wallets.find(item =>
+      String(item.address).toLowerCase() === String(validated.address).toLowerCase());
+    if (existing) {
+      throw new ValidationError({ field: 'privateKey',
+        message: `is already imported as "${existing.label}" (${existing.address})` });
+    }
     const saved = await storage.addWallet({ userId, label: validated.label, address: validated.address,
       chain: validated.chain, keyEnvelope: encryptPrivateKey(validated.privateKey), minted: 0, addedAt: Date.now() });
     getState().wallets.push(saved);
