@@ -488,14 +488,21 @@ function chainEmojiTag(chain) {
   return emoji ? `<:${emoji.name}:${emoji.id}> ` : '';
 }
 
-function chainSelect(supportedChains, chains, { customId = 'flow:chain:select' } = {}) {
-  const options = supportedChains.map(chain => ({
-    label: chains[chain]?.name || chain, value: chain,
-    emoji: CHAIN_EMOJI[chain] || undefined,
-  }));
+// Used only for wallet create/import -- a private key or seed phrase is chain-agnostic within EVM
+// (see telegramMenus.chainPicker's matching note), so five near-identical options for one real
+// choice was noise, not a real decision. Solana is shown, not hidden, so this doesn't need to
+// change shape again the day real Solana support lands -- picking it today explains why it can't
+// proceed yet instead of silently doing nothing. Discord select-menu options have no per-option
+// disabled state, so "coming soon" is handled the same way as everything else that isn't ready: a
+// distinct value the caller routes to an explanation rather than a real chain.
+function chainSelect(supportedChains, chains, { customId = 'flow:chain:select', note } = {}) {
+  const options = [
+    { label: 'EVM', value: 'ethereum', emoji: CHAIN_EMOJI.ethereum || undefined },
+    { label: 'Solana (coming soon)', value: 'solana-soon' },
+  ];
   return {
-    content: 'Choose a chain:',
-    components: [select(customId, options, 'Select a chain'), row([button('❌ Cancel', 'flow:cancel:ask', 'danger')])],
+    content: `${note ? `${note}\n` : ''}Choose a network:`,
+    components: [select(customId, options, 'Select a network'), row([button('❌ Cancel', 'flow:cancel:ask', 'danger')])],
   };
 }
 

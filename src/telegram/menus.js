@@ -158,10 +158,21 @@ function chainButtonLabel(chain, chains) {
   return `${emoji ? `${emoji} ` : ''}${chains[chain]?.name || chain}`;
 }
 
-function chainPicker(supportedChains, chains, { prefix = 'flow:chain' } = {}) {
-  const rows = supportedChains.map(chain => [button(chainButtonLabel(chain, chains), `${prefix}:${chain}`)]);
-  rows.push([button('❌ Cancel', 'flow:cancel:ask')]);
-  return { text: 'Pick your chain:', replyMarkup: keyboard(rows), parseMode: 'HTML' };
+// Used only for wallet create/import -- a private key or seed phrase is chain-agnostic within EVM
+// (the same secret works identically on ethereum/base/arbitrum/polygon/robinhood; see
+// botCommandService.js's own note that a wallet's stored chain is just a nominal home chain, not a
+// functional gate), so five near-identical buttons for one real choice was noise, not a real
+// decision. Matches the dashboard's own DEFAULT_EVM_CHAIN precedent (App.jsx) of just picking
+// 'ethereum' rather than asking. Solana is shown, not hidden, so the picker's shape doesn't have to
+// change again the day real Solana support lands -- tapping it today explains why it can't proceed
+// yet instead of silently doing nothing.
+function chainPicker(supportedChains, chains, { prefix = 'flow:chain', note } = {}) {
+  const rows = [
+    [button('⛓️ EVM', `${prefix}:ethereum`)],
+    [button('◎ Solana (coming soon)', `${prefix}:solana-soon`)],
+    [button('❌ Cancel', 'flow:cancel:ask')],
+  ];
+  return { text: `${note ? `${note}\n\n` : ''}Pick a network:`, replyMarkup: keyboard(rows), parseMode: 'HTML' };
 }
 
 function walletPicker(wallets, { prefix, emptyHint }) {

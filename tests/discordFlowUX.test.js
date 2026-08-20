@@ -135,7 +135,7 @@ test('submitting the label modal advances the flow to chain selection', async ()
   const modal = modalInteraction('flow:label:submit', { value: 'my-wallet' }, 'flow-user-2');
   await handler(modal);
   assert.equal(modal.replies.length, 1);
-  assert.match(modal.replies[0].content, /Choose a chain/);
+  assert.match(modal.replies[0].content, /Choose a network/);
 });
 
 test('selecting a chain completes wallet creation through the shared botCommandService and clears the flow', async () => {
@@ -159,6 +159,26 @@ test('selecting a chain completes wallet creation through the shared botCommandS
   const after = buttonInteraction('menu:wallets', 'flow-user-3');
   await handler(after);
   assert.match(after.updates[0].content, /Wallets/);
+});
+
+test('picking "Solana (coming soon)" re-shows the chain select with an explanation instead of doing nothing, and does not touch flow state', async () => {
+  const created = [];
+  const handler = createDiscordInteractionHandler({
+    identity: { resolveOrCreate: async () => 'internal-user' },
+    commands: { createWallet: async (userId, input) => { created.push({ userId, input }); return { label: input.label, address: '0xabc', chain: input.chain }; } },
+    supportedChains: ['ethereum'], chains: { ethereum: { name: 'Ethereum' } },
+  });
+  await handler(buttonInteraction('wallet:create:start', 'flow-user-4'));
+  await handler(modalInteraction('flow:label:submit', { value: 'main' }, 'flow-user-4'));
+  const solanaPick = selectInteraction('flow:chain:select', ['solana-soon'], 'flow-user-4');
+  await handler(solanaPick);
+  assert.equal(created.length, 0, 'must not create a wallet for an unsupported chain');
+  assert.match(solanaPick.updates[0].content, /Solana wallets aren't supported yet/);
+
+  // the flow must still be alive -- picking Solana was a no-op, not an abandonment
+  const evmPick = selectInteraction('flow:chain:select', ['ethereum'], 'flow-user-4');
+  await handler(evmPick);
+  assert.deepEqual(created[0], { userId: 'internal-user', input: { label: 'main', chain: 'ethereum' } });
 });
 
 test('navigating to a different menu mid-flow silently abandons it and switches immediately, no confirmation', async () => {

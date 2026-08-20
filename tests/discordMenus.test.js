@@ -77,14 +77,20 @@ test('modeMenu hides Degen and Fast unless advanced modes are allowed for this u
   assert.ok(unlockedIds.includes('mode:pick:fast'));
 });
 
-test('chain select renders one option per supported chain plus a cancel button', () => {
+test('chain select offers EVM/Solana, not one option per configured chain, since an EVM key works identically on every one', () => {
   const chains = { ethereum: { name: 'Ethereum' }, base: { name: 'Base' } };
   const picker = chainSelect(['ethereum', 'base'], chains);
   const options = selectComponent(picker.components).options;
-  assert.deepEqual(options.map(o => o.value), ['ethereum', 'base']);
-  assert.equal(options[0].label, 'Ethereum');
+  assert.deepEqual(options.map(o => o.value), ['ethereum', 'solana-soon']);
+  assert.equal(options[0].label, 'EVM');
+  assert.match(options[1].label, /Solana/i);
   const buttons = flatButtons(picker.components);
   assert.deepEqual(buttons.map(b => b.custom_id), ['flow:cancel:ask']);
+});
+
+test('chain select shows a note (e.g. explaining Solana is not supported yet) above the prompt when given one', () => {
+  const picker = chainSelect(['ethereum'], {}, { note: "Solana wallets aren't supported yet -- this bot is EVM-only for now." });
+  assert.match(picker.content, /Solana wallets aren't supported yet/);
 });
 
 test('wallet select shows an empty-state menu instead of an empty select', () => {
