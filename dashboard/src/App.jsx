@@ -396,7 +396,14 @@ function Minting({onSwitchToBatch,onGoWallets}){const wallets=useLoad('/api/wall
   // state rather than hiding it, so you can see what minting looks like before you have one.
   const walletsArrived=wallets.data!==null&&wallets.data!==undefined;
   const noWallets=walletsArrived&&wallets.data.length===0;
-  const pageError=wallets.error?{title:'Could not load your wallets.',detail:'Request failed safely — nothing was changed.',code:wallets.status,onRetry:wallets.load}:mintError;
+  // Same shape as loadError() everywhere else -- the prototype puts the whole line inside the
+  // <code>, and Mint now was splitting it between the body and a bare status, so the same page
+  // showed two different error layouts depending on which tab you were on. Not on the helper
+  // itself because this one falls through to mintError, a second source the helper knows nothing
+  // about.
+  const pageError=wallets.error?{title:'Could not load your wallets.',
+    code:wallets.status?`${wallets.status} · Request failed safely`:'Request failed safely',
+    onRetry:wallets.load}:mintError;
   // Derived from the cap by the shared rule (shared.jsx quantityPicks). At a cap of 3 this
   // returns exactly the prototype's "1 2 3"; at 10 it returns "1 2 5". Backlog §13.
   const maxPick=maxPerWallet||100;
@@ -1466,9 +1473,12 @@ function MintBatch({onGoWallets}){
     <div className="g">
       <div className="nt i">{INFO_ICON}
         <div>Each wallet is simulated and submitted <b>independently</b>. One wallet failing does not cancel the others.</div></div>
-      {busy
+      <Notice error={loadError(wallets,'Could not load wallets.')}/>
+      {busy||(!walletsArrived&&!wallets.error)
         ?<div><div className="sk row"/><div className="sk row"/><div className="sk row"/></div>
-        :noWallets
+        :wallets.error
+          ?null
+          :noWallets
           ?<div className="emp">
              <div className="ei">{WALLET_EMPTY_ICON}</div>
              <h3>No wallets to batch</h3>
