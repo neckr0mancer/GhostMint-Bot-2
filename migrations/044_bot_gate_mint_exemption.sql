@@ -1,0 +1,12 @@
+-- Minting is the one gated action where the password has a real cost: a drop is competitive, and a
+-- prompt between "tap mint" and the transaction going out can be the difference between getting in
+-- and not. Some owners will want that trade, some will not, so it is a choice rather than a rule.
+--
+-- Default FALSE = minting IS gated once the gate is on, because the safe default for a security
+-- setting is the secure one. An owner who wants speed turns this on deliberately, on the dashboard,
+-- having read what it costs them.
+--
+-- This exempts INTERACTIVE minting only. Scheduled tasks, snipers and watch-rule triggers never
+-- consult the gate at all -- they run unattended, with nobody present to answer a prompt, so there
+-- is nothing for this flag to change about them.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS bot_gate_skip_mint BOOLEAN NOT NULL DEFAULT FALSE;

@@ -291,6 +291,21 @@ function createPostgresIdentityRepository(pool) {
       }
     },
 
+    // Exempts interactive minting from the gate. Falls back to FALSE (still gated) on a read
+    // failure: an exemption only ever opens a door, so the safe fallback is not to open it.
+    async getBotGateSkipMint(userId) {
+      try {
+        const result = await pool.query('SELECT bot_gate_skip_mint FROM users WHERE user_id=$1', [userId]);
+        return Boolean(result.rows[0]?.bot_gate_skip_mint);
+      } catch {
+        return false;
+      }
+    },
+
+    async setBotGateSkipMint(userId, value) {
+      await pool.query('UPDATE users SET bot_gate_skip_mint=$2 WHERE user_id=$1', [userId, Boolean(value)]);
+    },
+
     async setBotGateLevel(userId, level) {
       await pool.query('UPDATE users SET bot_gate_level=$2 WHERE user_id=$1', [userId, level]);
     },

@@ -146,18 +146,25 @@ Each wallet's chain is detected from its own balances — a batch can span chain
 // borrowed phone, it does not make typing secrets into Telegram safe, and pretending otherwise
 // would be the more dangerous message.
 const GATE_ACTION_LABELS = {
-  exportkey: 'export a private key', removewallet: 'remove a wallet', send: 'send funds',
+  mint: 'mint', exportkey: 'export a private key', removewallet: 'remove a wallet', send: 'send funds',
   batchimport: 'import wallets', importwallet: 'import a wallet',
   walletlist: 'list your wallets', balance: 'check a balance', activity: 'see your activity',
 };
 
 function gateUnlockPrompt({ action }) {
   const what = GATE_ACTION_LABELS[action] || 'do that';
+  const mintHint = action === 'mint'
+    ? '\n\n⚡ <b>Minting feels slow with this on?</b> You can switch the password off for minting only,'
+      + ' on the dashboard: <b>Settings</b> → <b>Password gate</b> → <b>Ask before minting</b>.'
+      + ' Everything else stays protected. The risk: anyone who reaches this chat could then spend'
+      + ' from your wallets on a contract of their choosing, without knowing your password.'
+    : '';
   return {
     text: `<b>🔒 Locked</b>\n\nSend your account password to ${escapeTelegramHtml(what)}.`
       + '\n\nThis is the same password the dashboard uses. It stays unlocked here for 10 minutes.'
       + "\n\n⚠️ Your message crosses Telegram's servers — it is deleted the moment it arrives, but the"
-      + ' dashboard is still the safer place for anything sensitive.',
+      + ' dashboard is still the safer place for anything sensitive.'
+      + mintHint,
     replyMarkup: keyboard([[button('❌ Nah, cancel', 'flow:cancel:ask')]]),
     parseMode: 'HTML',
   };

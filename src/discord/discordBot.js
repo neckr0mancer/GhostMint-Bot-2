@@ -189,7 +189,8 @@ const FLOW_CONTINUATIONS = {
   wallet_import: ['flow:label:submit', 'flow:chain:select', 'wallet:import:key-modal', 'flow:key:submit'],
   // Keys accumulate across repeated taps of the SAME two ids, so this list stays fixed however
   // many are added -- no dynamic custom_ids, the rule every other flow here follows.
-  wallet_batch_import: ['flow:chain:select', 'wallet:batch-import:add', 'flow:batchkeys:submit', 'wallet:batch-import:confirm'],
+  // No flow:chain:select: batch import stopped asking for a chain when detection replaced it.
+  wallet_batch_import: ['wallet:batch-import:add', 'flow:batchkeys:submit', 'wallet:batch-import:confirm'],
   // Section AA -- every custom_id stays fixed (select-menu VALUES carry the chosen quantity/
   // wallet, never the custom_id itself), so this list needs no dynamic/prefix matching.
   mint_guided: ['flow:mintdetailscontinue', 'flow:detailsrefresh', 'flow:copyca', 'flow:schedulesuggest', 'flow:mintqty:select', 'flow:mintqty:submit', 'flow:mintwallet:select', 'flow:mintwalletmulti:select', 'flow:priceaccept', 'flow:pricemanual', 'flow:mintprice:submit', 'flow:gastoleranceaccept', 'flow:gastolerancemanual', 'flow:gastolerance:submit', 'flow:mintconfirm', 'flow:mintviaopensea', 'flow:scheduleviaopensea'],
@@ -204,9 +205,6 @@ const FLOW_CONTINUATIONS = {
 };
 
 function renderFlowStep(flow, step, { supportedChains = [], chains = {} } = {}) {
-  if (flow === 'wallet_batch_import' && step === 'awaiting_chain') {
-    return discordMenus.chainSelect(supportedChains, chains);
-  }
   if ((flow === 'wallet_create' || flow === 'wallet_import') && step === 'awaiting_chain') {
     return discordMenus.chainSelect(supportedChains, chains);
   }
@@ -584,9 +582,24 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
       // every other unavoidably-free-text field elsewhere in this file (wallet labels, private
       // keys). Submitting routes through startMintGuidedFlow below -- the exact same auto-detecting
       // card /mint's own under-specified path and a bare paste already use, not a separate path.
-      if (data === 'menu:mint') return dcRespond(interaction, discordMenus.mintModeMenu());
-      if (data === 'menu:mint:single') return interaction.showModal(discordMenus.labelModal({ customId: 'menu:mint:submit', title: 'Contract address to mint', maxLength: 200 }));
-      if (data === 'menu:mint:batch') return interaction.showModal(discordMenus.labelModal({ customId: 'menu:mint:batch:submit', title: 'Contract address to batch mint', maxLength: 200 }));
+      if (data === 'menu:mint') {
+        if (!await actionGate.allows(userId, 'discord', platformUserId, 'mint')) {
+          return dcRespond(interaction, discordMenus.gateUnlockCard({ action: 'mint' }));
+        }
+        return dcRespond(interaction, discordMenus.mintModeMenu());
+      }
+      if (data === 'menu:mint:single') {
+        if (!await actionGate.allows(userId, 'discord', platformUserId, 'mint')) {
+          return dcRespond(interaction, discordMenus.gateUnlockCard({ action: 'mint' }));
+        }
+        return interaction.showModal(discordMenus.labelModal({ customId: 'menu:mint:submit', title: 'Contract address to mint', maxLength: 200 }));
+      }
+      if (data === 'menu:mint:batch') {
+        if (!await actionGate.allows(userId, 'discord', platformUserId, 'mint')) {
+          return dcRespond(interaction, discordMenus.gateUnlockCard({ action: 'mint' }));
+        }
+        return interaction.showModal(discordMenus.labelModal({ customId: 'menu:mint:batch:submit', title: 'Contract address to batch mint', maxLength: 200 }));
+      }
       if (data === 'menu:tasks') {
         if (!await actionGate.allows(userId, 'discord', platformUserId, 'tasks')) {
           return dcRespond(interaction, discordMenus.gateUnlockCard({ action: 'tasks' }));
@@ -734,10 +747,6 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         const chain = interaction.values?.[0];
         const flow = flowState.get('discord', platformUserId);
         if (!flow) return dcRespond(interaction, discordMenus.mainMenu({ isOwner: await ownerFlag(userId), security: await securityStatus(userId) }));
-        if (flow.flow === 'wallet_batch_import') {
-          flowState.advance('discord', platformUserId, 'awaiting_key', { chain, privateKeys: [] });
-          return dcRespond(interaction, discordMenus.batchImportMenu({ count: 0, chainLabel: chains[chain]?.name || chain }));
-        }
         if (flow.flow === 'wallet_create') {
           try {
             const wallet = await commands.createWallet(userId, { label: flow.data.label, chain });

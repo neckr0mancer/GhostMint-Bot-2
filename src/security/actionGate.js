@@ -52,6 +52,11 @@ const ACTION_TIERS = Object.freeze({
   watchedit: 'sensitive',
   // Governance: ceilings, budgets, group policy. Raising a ceiling makes every later spend bigger.
   admin: 'sensitive',
+  // Minting spends real money to a contract the tapper chooses, so it belongs here -- but it is
+  // the one action where the prompt has a real cost, because a drop is competitive. Owners who
+  // want the speed can exempt THIS action alone (see skipMint below); everything else stays
+  // gated. Interactive minting only: unattended paths never reach the gate at all.
+  mint: 'sensitive',
 
   // 'read' is disclosure: it does not move anything, but it tells a stranger what you hold, what
   // you are about to buy, and what your automation is watching.
@@ -99,6 +104,9 @@ function createActionGate({
   getLevel,
   getPasswordHash,
   verify,
+  // Per-account opt-outs for individual actions, e.g. { mint: true }. Deliberately separate from
+  // the level: an owner should be able to buy speed on one action without weakening the rest.
+  getExemptions = async () => ({}),
   now = () => Date.now(),
   unlockMs = DEFAULT_UNLOCK_MS,
   maxAttempts = DEFAULT_MAX_ATTEMPTS,
@@ -177,6 +185,10 @@ function createActionGate({
   async function allows(userId, platform, contextId, action) {
     const level = normaliseLevel(await getLevel(userId));
     if (!requiresPassword(level, action)) return true;
+    // An exemption only ever ALLOWS, so a failed read falls back to gating rather than opening.
+    let exemptions = {};
+    try { exemptions = (await getExemptions(userId)) || {}; } catch { exemptions = {}; }
+    if (exemptions[String(action).toLowerCase()]) return true;
     return isUnlocked(platform, contextId);
   }
 

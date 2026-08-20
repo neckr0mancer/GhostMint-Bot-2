@@ -250,3 +250,66 @@ test('strict covers the surfaces that merely disclose, sensitive covers the ones
     assert.equal(requiresPassword('strict', action), true, `${action} must be covered by strict`);
   }
 });
+
+// Minting spends real money to a contract the tapper chooses, so it is gated -- but it is the one
+// action where the prompt has a genuine cost, because a drop is competitive. The exemption buys
+// that speed back for minting ALONE, without weakening anything else.
+test('minting is gated, and the exemption frees minting only', async () => {
+  const make = exempt => createActionGate({
+    getLevel: async () => 'sensitive',
+    getPasswordHash: async () => 'stored-hash',
+    verify: () => true,
+    getExemptions: async () => ({ mint: exempt }),
+    setTimer: () => ({ unref() {} }),
+    clearTimer: () => {},
+  });
+
+  const gated = make(false);
+  assert.equal(await gated.allows('u', 'telegram', 'c', 'mint'), false, 'gated by default');
+
+  const fast = make(true);
+  assert.equal(await fast.allows('u', 'telegram', 'c', 'mint'), true, 'exempt mints run straight through');
+  for (const action of ['exportkey', 'send', 'removewallet', 'linkcode', 'admin']) {
+    assert.equal(await fast.allows('u', 'telegram', 'c', action), false,
+      `${action} must stay gated -- the exemption is for minting alone`);
+  }
+});
+
+test('an exemption lookup that fails leaves minting gated rather than opening it', async () => {
+  // An exemption only ever ALLOWS, so the safe fallback for a failed read is to keep asking.
+  const gate = createActionGate({
+    getLevel: async () => 'sensitive',
+    getPasswordHash: async () => 'stored-hash',
+    verify: () => true,
+    getExemptions: async () => { throw new Error('db down'); },
+    setTimer: () => ({ unref() {} }),
+    clearTimer: () => {},
+  });
+  assert.equal(await gate.allows('u', 'telegram', 'c', 'mint'), false);
+});
+
+test('the exemption cannot switch anything ON that the level left off', async () => {
+  const gate = createActionGate({
+    getLevel: async () => 'off',
+    getPasswordHash: async () => 'stored-hash',
+    verify: () => true,
+    getExemptions: async () => ({ mint: false }),
+    setTimer: () => ({ unref() {} }),
+    clearTimer: () => {},
+  });
+  assert.equal(await gate.allows('u', 'telegram', 'c', 'mint'), true, 'gate off still means no prompt');
+});
+
+test('the locked mint card explains the speed trade and its risk; other actions do not carry it', () => {
+  const tg = require('../src/telegram/menus');
+  const dc = require('../src/discord/menus');
+  for (const [card, name] of [[tg.gateUnlockPrompt({ action: 'mint' }).text, 'telegram'],
+    [dc.gateUnlockCard({ action: 'mint' }).content, 'discord']]) {
+    assert.match(card, /Ask before minting/, `${name}: names the exact setting`);
+    assert.match(card, /risk/i, `${name}: states the cost, so it is a choice not a shortcut`);
+    assert.match(card, /spend from your wallets/, `${name}: says concretely what goes wrong`);
+  }
+  assert.equal(/Minting feels slow/.test(tg.gateUnlockPrompt({ action: 'exportkey' }).text), false,
+    'the mint-only hint must not appear on unrelated actions');
+  assert.equal(/Minting feels slow/.test(dc.gateUnlockCard({ action: 'removewallet' }).content), false);
+});

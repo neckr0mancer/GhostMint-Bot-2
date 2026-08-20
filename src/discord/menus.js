@@ -450,15 +450,23 @@ Each wallet's chain is detected from its own balances -- a batch can span chains
 // and never enters channel history, which makes this genuinely safer than the Telegram equivalent
 // rather than merely mitigated. Same password as the dashboard; no second one exists.
 const GATE_ACTION_LABELS = {
-  exportkey: 'export a private key', removewallet: 'remove a wallet', send: 'send funds',
+  mint: 'mint', exportkey: 'export a private key', removewallet: 'remove a wallet', send: 'send funds',
   batchimport: 'import wallets', importwallet: 'import a wallet',
   walletlist: 'list your wallets', balance: 'check a balance', activity: 'see your activity',
 };
 
 function gateUnlockCard({ action }) {
   const what = GATE_ACTION_LABELS[action] || 'do that';
+  // Offered on the spot rather than buried in settings, with what it costs, so it reads as a
+  // choice rather than a shortcut.
+  const mintHint = action === 'mint'
+    ? '\n\n⚡ **Minting feels slow with this on?** Switch the password off for minting only:'
+      + ' Dashboard → **Settings** → **Password gate** → **Ask before minting**. Everything else stays'
+      + ' protected. The risk: anyone who reaches this chat could then spend from your wallets on a'
+      + ' contract of their choosing, without knowing your password.'
+    : '';
   return {
-    content: `## 🔒 Locked\nUnlock to ${what}. This is the same password the dashboard uses, and it stays unlocked here for 10 minutes.`,
+    content: `## 🔒 Locked\nUnlock to ${what}. This is the same password the dashboard uses, and it stays unlocked here for 10 minutes.${mintHint}`,
     components: [row([
       button('🔓 Enter password', 'gate:unlock:open', 'success'),
       button('❌ Cancel', 'flow:cancel:ask', 'secondary'),
