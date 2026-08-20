@@ -279,6 +279,28 @@ function createBotCommandService(dependencies) {
   // the rest of the batch, since a single typo shouldn't cost the whole paste. Labels are
   // auto-generated (labelPrefix-N, deduped against both existing wallets and labels already
   // claimed earlier in this same batch) since the caller supplies only keys, not one label per key.
+  // An EVM private key derives the SAME address on every EVM chain, so a wallet's stored chain is
+  // only a nominal home (see prepareMint's note). Asking which chain a key is 'on' therefore asks
+  // a question with no true answer -- and gets it wrong whenever a batch spans chains. This picks
+  // the home chain by looking: whichever supported chain actually holds a balance for that
+  // address wins, and an address that is empty everywhere (a brand new wallet, or an RPC blip)
+  // falls back to the first supported chain rather than failing the import. Nothing is locked
+  // either way -- minting always targets the contract's own chain.
+  async function detectHomeChain(address) {
+    const probes = await Promise.all(supportedChains.map(async chain => {
+      try {
+        const balance = await providerService.perform(chain, 'detectHomeChain', provider => provider.getBalance(address));
+        return { chain, balance: BigInt(balance) };
+      } catch {
+        return { chain, balance: 0n };
+      }
+    }));
+    const funded = probes.filter(item => item.balance > 0n).sort((a, b) => (a.balance < b.balance ? 1 : -1));
+    return { chain: funded[0]?.chain || supportedChains[0], detected: Boolean(funded.length) };
+  }
+
+  // chain is optional now: omit it and each key's home chain is detected from its own balances,
+  // which is what lets one batch hold wallets that live on different chains.
   async function importWalletsBatch(userId, { privateKeys, chain, labelPrefix }) {
     if (!Array.isArray(privateKeys) || privateKeys.length < 1 || privateKeys.length > LIMITS.batchWalletImport) {
       throw new ValidationError({ field: 'privateKeys', message: `must contain 1-${LIMITS.batchWalletImport} private keys` });
@@ -293,9 +315,15 @@ function createBotCommandService(dependencies) {
       let suffix = 1;
       while (claimed.has(label.toLowerCase())) { suffix += 1; label = `${prefix}-${index + 1}-${suffix}`; }
       try {
-        const saved = await persistWallet(userId, { label, chain, privateKey, importMethod: 'privateKey' });
+        let home = chain;
+        let detected = false;
+        if (!home) {
+          const address = new Wallet(privateKey).address;
+          ({ chain: home, detected } = await detectHomeChain(address));
+        }
+        const saved = await persistWallet(userId, { label, chain: home, privateKey, importMethod: 'privateKey' });
         claimed.add(saved.label.toLowerCase());
-        results.push({ index, status: 'success', label: saved.label, address: saved.address });
+        results.push({ index, status: 'success', label: saved.label, address: saved.address, chain: saved.chain, detected });
       } catch (error) {
         results.push({ index, status: 'failed',
           error: error instanceof ValidationError ? error.issues.map(issue => issue.message).join('; ') : 'import failed' });
@@ -611,7 +639,7 @@ function createBotCommandService(dependencies) {
     return calculateStatistics({activity:state(userId).activity,sniperEvents});}
 
   return {
-    createWallet, importWallet, importWalletsBatch, removeWallet, walletBalance, invalidateBalance, exportWalletKeyRaw, exportWalletKeystore, mint, batchMint, send, createTask, controlTask, addPnl, updatePnl, deletePnl,
+    createWallet, importWallet, importWalletsBatch, detectHomeChain, removeWallet, walletBalance, invalidateBalance, exportWalletKeyRaw, exportWalletKeystore, mint, batchMint, send, createTask, controlTask, addPnl, updatePnl, deletePnl,
     prepareMint,submitPreparedMint,detectMintContract,resolveMintContractInput,parseOpenSeaCollectionSlug,mintPresets:userId=>mintService.listPresets(userId),
     // The dashboard could LIST presets but never create one -- the only save path was
     // /mintpreset save on Telegram (server.js:2492), so the Presets tab displayed a thing the

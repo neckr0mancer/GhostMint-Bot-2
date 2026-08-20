@@ -70,7 +70,7 @@ const { createTriggerPipeline } = require('./triggers/triggerPipeline');
 const { createTargetPolicyRepository } = require('./triggers/targetPolicyRepository');
 const { createTargetPolicyService } = require('./triggers/targetPolicyService');
 const { createTriggerExecutionService } = require('./triggers/triggerExecutionService');
-const { ValidationError, requestSchemas, validationReply, LIMITS } = require('./validation/domain');
+const { ValidationError, requestSchemas, validationReply, LIMITS, MIN_BATCH_WALLETS } = require('./validation/domain');
 
 // ── Config ────────────────────────────────────────────────
 const PORT         = CONFIG.port;
@@ -2175,8 +2175,10 @@ if (BOT_TOKEN) {
       return tgEditMenu(chatId, messageId, renderFlowStep('wallet_import', 'awaiting_label'));
     }
     if (data === 'wallet:batch-import:start') {
-      telegramFlowState.start('telegram', chatId, 'wallet_batch_import', 'awaiting_chain');
-      return tgEditMenu(chatId, messageId, telegramMenus.chainPicker(CONFIG.supportedChains, CHAINS));
+      // No chain step: an EVM key is the same address on every chain, so the question had no
+      // true answer and was wrong outright for a batch spanning chains. Detected per key instead.
+      telegramFlowState.start('telegram', chatId, 'wallet_batch_import', 'awaiting_keys', { privateKeys: [] });
+      return tgEditMenu(chatId, messageId, telegramMenus.batchImportMenu({ count: 0 }));
     }
     if (data === 'wallet:batch-import:confirm') {
       const flow = telegramFlowState.get('telegram', chatId);
@@ -2190,7 +2192,7 @@ if (BOT_TOKEN) {
       // Per key, because partial success is the normal outcome: one bad key must not discard the
       // rest, and a single verdict would hide which ones actually landed.
       const lines = results.map(item => item.status === 'success'
-        ? `✅ <b>${escapeTelegramHtml(item.label)}</b> <code>${item.address}</code>`
+        ? `✅ <b>${escapeTelegramHtml(item.label)}</b> <code>${item.address}</code> · ${escapeTelegramHtml(CHAINS[item.chain]?.name || item.chain || '')}${item.detected ? ' (detected)' : ''}`
         : `❌ #${item.index + 1}: ${escapeTelegramHtml(String(item.error || 'failed'))}`);
       return tgEditMenu(chatId, messageId, { parseMode: 'HTML',
         text: `<b>Batch import — ${ok.length} of ${results.length} imported</b>\n${lines.join('\n')}`,
@@ -2391,7 +2393,16 @@ if (BOT_TOKEN) {
     if (data === 'flow:walletcontinue') {
       const flow = telegramFlowState.get('telegram', chatId);
       if (!flow || flow.flow !== 'mint_guided' || !flow.data.selectedWallets?.length) return;
-      return advanceFromWalletSelection(chatId, messageId, userId, flow, flow.data.selectedWallets);
+      // The picker only renders Continue at MIN_BATCH_WALLETS, but inline buttons live on in chat
+      // history: an older card, rendered when two were ticked, is still tappable after untoggling
+      // back to one. Re-check here so the rule is enforced by the server, not only drawn by the UI.
+      const picked = flow.data.selectedWallets;
+      if (flow.data.multi && picked.length < MIN_BATCH_WALLETS) {
+        const wallets = botCommands.wallets(userId);
+        return tgEditMenu(chatId, messageId, telegramMenus.walletMultiPicker(wallets, picked,
+          { emptyHint: 'No wallets yet. Create one first from the Wallets menu.' }));
+      }
+      return advanceFromWalletSelection(chatId, messageId, userId, flow, picked);
     }
     if (data === 'flow:mintconfirm') {
       const flow = telegramFlowState.get('telegram', chatId);

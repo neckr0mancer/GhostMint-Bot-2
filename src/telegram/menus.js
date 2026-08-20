@@ -72,7 +72,9 @@ function batchImportMenu({ count = 0, chainLabel = '', dropped = 0 } = {}) {
   return {
     text: `<b>📥📥 Batch import${chainLabel ? ` · ${escapeTelegramHtml(chainLabel)}` : ''}</b>\n\n`
       + (ready
-        ? `<b>${count}</b> key${count === 1 ? '' : 's'} ready. Send another message to add more, or import what you have.`
+        ? `<b>${count}</b> key${count === 1 ? '' : 's'} ready. Send another message to add more, or import what you have.
+
+Each wallet's chain is detected from its own balances — a batch can span chains.`
         : `Send your private keys now. Several can go in one message — on separate lines, or separated by commas — and you can send more messages to keep adding.
 
 <b>Example (one message):</b>

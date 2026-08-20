@@ -326,7 +326,9 @@ function batchImportMenu({ count = 0, chainLabel = '', dropped = 0 } = {}) {
   return {
     content: `## Batch import${chainLabel ? ` · ${chainLabel}` : ''}\n`
       + (ready
-        ? `**${count}** key${count === 1 ? '' : 's'} ready to import. Add more, or import what you have.`
+        ? `**${count}** key${count === 1 ? '' : 's'} ready to import. Add more, or import what you have.
+
+Each wallet's chain is detected from its own balances -- a batch can span chains.`
         : 'Add your first private key. You can paste several at once, one per line.')
       + (dropped ? `\n\n⚠️ ${dropped} key${dropped === 1 ? ' was' : 's were'} ignored — ${LIMITS.batchWalletImport} is the most one import can take. Import these, then start another batch.` : '')
       + "\n\n⚠️ Not recommended: keys pass through Discord's messaging systems and may remain in client history.",

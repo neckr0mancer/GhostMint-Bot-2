@@ -458,3 +458,43 @@ test('batch mint still throws for a request-wide problem rather than failing eac
     chain: 'dogecoin', quantity: 1, priceETH: 0,
   }), ValidationError);
 });
+
+// Asking which chain a private key is "on" has no true answer -- the same key is the same address
+// on every EVM chain -- and is wrong outright for a batch spanning chains. Detection replaces it.
+test('batch import detects each wallet home chain from its own balances, so one batch can span chains', async () => {
+  const balances = {
+    '0x0000000000000000000000000000000000000001': { base: 5n },
+    '0x0000000000000000000000000000000000000002': { polygon: 9n },
+  };
+  const persisted = [];
+  const { service } = fixture({
+    supportedChains: ['ethereum', 'base', 'polygon'],
+    chains: { ethereum: { sym: 'ETH' }, base: { sym: 'ETH' }, polygon: { sym: 'MATIC' } },
+    providerService: {
+      perform: async (chain, _label, fn) => fn({
+        getBalance: async address => (balances[address]?.[chain] ?? 0n),
+      }),
+    },
+    storage: {
+      addWallet: async value => { persisted.push(value); return { ...value, id: persisted.length }; },
+      deleteWallet: async () => true,
+    },
+  });
+  const detected = await service.detectHomeChain('0x0000000000000000000000000000000000000002');
+  assert.deepEqual(detected, { chain: 'polygon', detected: true },
+    'the chain actually holding a balance wins');
+  const empty = await service.detectHomeChain('0x000000000000000000000000000000000000dEaD');
+  assert.deepEqual(empty, { chain: 'ethereum', detected: false },
+    'an address empty everywhere falls back to the first supported chain rather than failing');
+});
+
+test('detectHomeChain survives an unreachable RPC instead of failing the import', async () => {
+  const { service } = fixture({
+    supportedChains: ['ethereum', 'base'],
+    chains: { ethereum: { sym: 'ETH' }, base: { sym: 'ETH' } },
+    providerService: { perform: async () => { throw new Error('rpc down'); } },
+  });
+  const result = await service.detectHomeChain('0x0000000000000000000000000000000000000001');
+  assert.equal(result.chain, 'ethereum');
+  assert.equal(result.detected, false, 'a blip is not a detection');
+});

@@ -619,8 +619,9 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         return interaction.showModal(discordMenus.labelModal({ customId: 'flow:label:submit', title: 'New wallet label' }));
       }
       if (data === 'wallet:batch-import:start') {
-        flowState.start('discord', platformUserId, 'wallet_batch_import', 'awaiting_chain');
-        return dcRespond(interaction, discordMenus.chainSelect(supportedChains, chains));
+        // No chain step -- see the Telegram counterpart and detectHomeChain().
+        flowState.start('discord', platformUserId, 'wallet_batch_import', 'awaiting_key', { privateKeys: [] });
+        return dcRespond(interaction, discordMenus.batchImportMenu({ count: 0 }));
       }
       if (data === 'wallet:import:start') {
         flowState.start('discord', platformUserId, 'wallet_import', 'awaiting_label');
@@ -649,7 +650,7 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         // Per key, because partial success is the normal outcome: one bad key must not discard the
         // rest, and a single verdict would hide which ones actually landed.
         const lines = results.map(item => item.status === 'success'
-          ? `✅ ${escapeDiscord(item.label)} \`${item.address}\``
+          ? `✅ ${escapeDiscord(item.label)} \`${item.address}\` · ${escapeDiscord(chains[item.chain]?.name || item.chain || '')}${item.detected ? ' (detected)' : ''}`
           : `❌ #${item.index + 1} — ${escapeDiscord(String(item.error || 'failed'))}`);
         return dcRespond(interaction, {
           content: `**Batch import — ${ok.length} of ${results.length} imported**\n${lines.join('\n')}`,
