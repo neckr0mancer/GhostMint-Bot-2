@@ -58,6 +58,8 @@ const { createKeyEncryption } = require('./security/keyEncryption');
 const { createRedactor } = require('./security/redaction');
 const { BotContextError, RateLimitError, commandName, createCommandRateLimiter,
   escapeTelegramHtml, requireTextConfirmation,verifyTelegramContext } = require('./security/botSecurity');
+const { createActionGate, GateLockedError } = require('./security/actionGate');
+const { verifySecurityPassword } = require('./security/securityPassword');
 const { createBotSecurityRepository } = require('./security/botSecurityRepository');
 const { createGracefulShutdown } = require('./security/gracefulShutdown');
 const { acquireTelegramPollingLock } = require('./security/telegramSingleInstanceLock');
@@ -70,7 +72,7 @@ const { createTriggerPipeline } = require('./triggers/triggerPipeline');
 const { createTargetPolicyRepository } = require('./triggers/targetPolicyRepository');
 const { createTargetPolicyService } = require('./triggers/targetPolicyService');
 const { createTriggerExecutionService } = require('./triggers/triggerExecutionService');
-const { ValidationError, requestSchemas, validationReply } = require('./validation/domain');
+const { ValidationError, requestSchemas, validationReply, LIMITS, MIN_BATCH_WALLETS } = require('./validation/domain');
 
 // ── Config ────────────────────────────────────────────────
 const PORT         = CONFIG.port;
@@ -742,8 +744,32 @@ function stateFor(userId) {
 // follow-up pass). None of this bypasses botCommands/validation/the transaction engine — every
 // guided step ends by calling the exact same service function the equivalent slash command uses.
 const telegramFlowState = createFlowStateStore();
+
+// Ships OFF for every account (migration 041 defaults bot_gate_level to 'off'), so until an
+// owner opts in this changes nothing: allows() returns true for every action and no prompt is
+// ever shown. Reuses the dashboard's own password rather than introducing a second one.
+const actionGate = createActionGate({
+  getLevel: userId => identityRepository.getBotGateLevel(userId),
+  getPasswordHash: userId => identityRepository.getSecurityPasswordHash(userId),
+  verify: verifySecurityPassword,
+});
+
+// Returns true when the caller should stop: the gate is on, this conversation is locked, and a
+// password prompt has been put on screen in place of the action.
+async function gateBlocks({ chatId, messageId, userId, action }) {
+  if (await actionGate.allows(userId, 'telegram', chatId, action)) return false;
+  telegramFlowState.start('telegram', chatId, 'gate_unlock', 'awaiting_password', { action });
+  await tgEditMenu(chatId, messageId, telegramMenus.gateUnlockPrompt({ action }));
+  return true;
+}
 const FLOW_LABELS = { wallet_create: 'creating a wallet', wallet_import: 'importing a wallet', mint_guided: 'minting', send_guided: 'sending funds', export_guided: 'exporting a private key', task_guided: 'scheduling a mint', watch_guided: 'adding a watch rule' };
 const FLOW_CONTINUATION_PREFIXES = { wallet_create: ['flow:chain:'], wallet_import: ['flow:chain:'],
+  // Without this the abandon gate below would clear the flow on the very next tap -- including
+  // the chain pick and the Import button the flow itself renders.
+  wallet_batch_import: ['flow:chain:', 'wallet:batch-import:confirm'],
+  // No continuation buttons of its own -- the only tap it offers is Cancel, which the gate
+  // above already exempts. Listed so the flow is not silently absent from this map.
+  gate_unlock: [],
   mint_guided: ['flow:mintdetailscontinue', 'flow:detailsrefresh', 'flow:copyca', 'flow:schedulesuggest:', 'flow:mintqty:', 'flow:priceaccept', 'flow:pricemanual', 'flow:wallettoggle:', 'flow:walletpick:', 'flow:walletcontinue', 'flow:gastoleranceaccept', 'flow:gastolerancemanual', 'flow:mintconfirm'],
   send_guided: ['flow:sendwalletpick:', 'flow:sendamount:', 'flow:sendconfirm'],
   export_guided: ['flow:exportwalletpick:', 'flow:exportconfirm'],
@@ -1192,7 +1218,14 @@ async function finishMintExecution(chatId, messageId, userId, flowData) {
       const results = await botCommands.batchMint(userId, { walletLabels: flowData.selectedWallets,
         contractAddress: flowData.contractAddress, chain: flowData.chain, quantity: flowData.quantity || 1, priceETH: flowData.priceETH, maxGasGwei: flowData.maxGasGwei });
       telegramFlowState.clear('telegram', chatId);
-      return tgUpdate(chatId, messageId, { text: `✅ Batch complete: ${results.length} wallet transaction(s).`, replyMarkup: backToMenu, parseMode: 'HTML' });
+      // Per wallet: batchMint no longer aborts on the first failure, so a bare count would
+      // report a batch where half the wallets never minted as an unqualified success.
+      const ok = results.filter(item => item.state !== 'failed');
+      const lines = results.map(item => (item.state === 'failed'
+        ? `❌ <b>${escapeTelegramHtml(String(item.walletLabel))}</b> — ${escapeTelegramHtml(String(item.error || 'failed'))}`
+        : `✅ <b>${escapeTelegramHtml(String(item.walletLabel))}</b> — ${escapeTelegramHtml(String(item.state || 'submitted'))}`
+          + (item.txHash ? ` <code>${item.txHash}</code>` : '')));
+      return tgUpdate(chatId, messageId, { text: `<b>Batch mint — ${ok.length} of ${results.length} submitted</b>\n${lines.join('\n')}`, replyMarkup: backToMenu, parseMode: 'HTML' });
     }
     const result = await botCommands.mint(userId, { walletLabel: flowData.selectedWallets[0],
       contractAddress: flowData.contractAddress, chain: flowData.chain, quantity: flowData.quantity || 1, priceETH: flowData.priceETH });
@@ -1655,6 +1688,8 @@ async function handleFlowTextMessage(msg) {
   const isTextStep = Boolean(flow) && (
     (flow.flow === 'wallet_create' && flow.step === 'awaiting_label')
     || (flow.flow === 'wallet_import' && (flow.step === 'awaiting_label' || flow.step === 'awaiting_key'))
+    || (flow.flow === 'wallet_batch_import' && flow.step === 'awaiting_keys')
+    || (flow.flow === 'gate_unlock' && flow.step === 'awaiting_password')
     || (flow.flow === 'mint_guided' && ['awaiting_contract', 'awaiting_quantity', 'awaiting_price', 'awaiting_gastolerance'].includes(flow.step))
     || (flow.flow === 'send_guided' && (flow.step === 'awaiting_amount' || flow.step === 'awaiting_destination'))
     || (flow.flow === 'task_guided' && ['awaiting_contract', 'awaiting_quantity', 'awaiting_price', 'awaiting_name', 'awaiting_time'].includes(flow.step))
@@ -1691,6 +1726,49 @@ async function handleFlowTextMessage(msg) {
     if (!value || value.length > 64) { tgRender(chatId, { text: 'Label must be 1-64 characters. Try again.', replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' }); return; }
     telegramFlowState.advance('telegram', chatId, 'awaiting_chain', { label: value });
     tgRender(chatId, renderFlowStep(flow.flow, 'awaiting_chain'));
+    return;
+  }
+  if (flow.flow === 'gate_unlock' && flow.step === 'awaiting_password') {
+    const action = flow.data.action;
+    let result;
+    try {
+      result = await actionGate.submit(userId, 'telegram', chatId, value);
+    } catch (error) {
+      if (error instanceof GateLockedError) {
+        telegramFlowState.clear('telegram', chatId);
+        const text = error.message === 'no password set'
+          ? 'No account password is set. Set one on the dashboard first — it is deliberately not settable from chat, because a password typed here would stay in your message history.'
+          : `Too many attempts. Try again in ${Math.ceil(error.retryAfterMs / 60000)} minutes.`;
+        tgRender(chatId, { text: `🔒 ${escapeTelegramHtml(text)}`, parseMode: 'HTML',
+          replyMarkup: telegramMenus.keyboard([[telegramMenus.button('⬅️ Back to base', 'menu:main')]]) });
+        return;
+      }
+      throw error;
+    }
+    if (!result.ok) {
+      tgRender(chatId, { text: `❌ Wrong password. ${result.attemptsLeft} attempt${result.attemptsLeft === 1 ? '' : 's'} left.`,
+        replyMarkup: telegramMenus.keyboard([[telegramMenus.button('❌ Nah, cancel', 'flow:cancel:ask')]]), parseMode: 'HTML' });
+      return;
+    }
+    telegramFlowState.clear('telegram', chatId);
+    tgRender(chatId, { text: '🔓 Unlocked for 10 minutes. Tap what you were doing again.',
+      replyMarkup: telegramMenus.keyboard([[telegramMenus.button('⬅️ Back to base', 'menu:main')]]), parseMode: 'HTML' });
+    void action;
+    return;
+  }
+  // Every message the user sends is appended, so sending another builds the list up rather than
+  // replacing it -- Telegram's equivalent of Discord's "Add more keys". Splitting on any
+  // whitespace or comma means one-per-line, all-on-one-line and comma-separated all work.
+  if (flow.step === 'awaiting_keys') {
+    const added = value.split(/[\s,]+/).map(item => item.trim()).filter(Boolean);
+    // Clamp here rather than letting importWalletsBatch reject the lot: the card offers no way
+    // to remove a key, so an over-cap list would be a dead end with nothing to do but cancel.
+    const merged = [...(flow.data.privateKeys || []), ...added];
+    const privateKeys = merged.slice(0, LIMITS.batchWalletImport);
+    telegramFlowState.advance('telegram', chatId, 'awaiting_keys', { privateKeys });
+    tgRender(chatId, telegramMenus.batchImportMenu({ count: privateKeys.length,
+      dropped: merged.length - privateKeys.length,
+      chainLabel: CHAINS[flow.data.chain]?.name || flow.data.chain }));
     return;
   }
   if (flow.step === 'awaiting_key') {
@@ -2014,9 +2092,17 @@ if (BOT_TOKEN) {
     if (data === 'menu:main') return tgEditMenu(chatId, messageId, telegramMenus.mainMenu({ isOwner: await ownerFlag() }));
     if (data === 'menu:wallets') return tgEditMenu(chatId, messageId, telegramMenus.walletsMenu());
     if (data === 'menu:settings') return tgEditMenu(chatId, messageId, telegramMenus.settingsMenu({ isOwner: await ownerFlag() }));
-    if (data === 'menu:mint') return startMintFlow({ chatId, messageId, userId, multi: false, contractAddressInput: null });
-    if (data === 'menu:send') return startSendFlow({ chatId, messageId, userId });
-    if (data === 'menu:exportkey') return startExportKeyFlow({ chatId, messageId, userId });
+    if (data === 'menu:mint') return tgEditMenu(chatId, messageId, telegramMenus.mintModeMenu());
+    if (data === 'menu:mint:single') return startMintFlow({ chatId, messageId, userId, multi: false, contractAddressInput: null });
+    if (data === 'menu:mint:batch') return startMintFlow({ chatId, messageId, userId, multi: true, contractAddressInput: null });
+    if (data === 'menu:send') {
+      if (await gateBlocks({ chatId, messageId, userId, action: 'send' })) return;
+      return startSendFlow({ chatId, messageId, userId });
+    }
+    if (data === 'menu:exportkey') {
+      if (await gateBlocks({ chatId, messageId, userId, action: 'exportkey' })) return;
+      return startExportKeyFlow({ chatId, messageId, userId });
+    }
     if (data === 'menu:tasks') {
       const page = await botCommands.tasksPage(userId, { page: 1 });
       return tgEditMenu(chatId, messageId, telegramMenus.tasksMenu(page));
@@ -2127,7 +2213,7 @@ if (BOT_TOKEN) {
       const link = await identity.createLinkCode(userId);
       // Reachable from both the main menu and Settings now, so "back" always returns to the top
       // level rather than assuming Settings was the entry point.
-      return tgEditMenu(chatId, messageId, { text: `🔗 <b>Account link code:</b> <code>${link.code}</code>\n\nTap the code to copy it. Expires in 5 minutes and can be used once. Enter it on the dashboard, or use the equivalent link command on another platform.`,
+      return tgEditMenu(chatId, messageId, { text: `🔗 <b>Account link code</b>\n\n<pre>${link.code}</pre>\nTap or long-press the code above to copy it. Expires in 5 minutes and can be used once. Enter it on the dashboard, or use the equivalent link command on another platform.`,
         replyMarkup: telegramMenus.keyboard([[telegramMenus.button('⬅️ Back to menu', 'menu:main')]]), parseMode: 'HTML' });
     }
 
@@ -2146,6 +2232,30 @@ if (BOT_TOKEN) {
     if (data === 'wallet:import:start') {
       telegramFlowState.start('telegram', chatId, 'wallet_import', 'awaiting_label');
       return tgEditMenu(chatId, messageId, renderFlowStep('wallet_import', 'awaiting_label'));
+    }
+    if (data === 'wallet:batch-import:start') {
+      // No chain step: an EVM key is the same address on every chain, so the question had no
+      // true answer and was wrong outright for a batch spanning chains. Detected per key instead.
+      telegramFlowState.start('telegram', chatId, 'wallet_batch_import', 'awaiting_keys', { privateKeys: [] });
+      return tgEditMenu(chatId, messageId, telegramMenus.batchImportMenu({ count: 0 }));
+    }
+    if (data === 'wallet:batch-import:confirm') {
+      const flow = telegramFlowState.get('telegram', chatId);
+      const collected = flow?.data?.privateKeys || [];
+      if (!collected.length) return tgEditMenu(chatId, messageId, telegramMenus.batchImportMenu({ count: 0 }));
+      commandRateLimiter.check('telegram', userId, 'batchimport');
+      const results = await botCommands.importWalletsBatch(userId, {
+        privateKeys: collected, chain: flow.data.chain, labelPrefix: flow.data.labelPrefix });
+      telegramFlowState.clear('telegram', chatId);
+      const ok = results.filter(item => item.status === 'success');
+      // Per key, because partial success is the normal outcome: one bad key must not discard the
+      // rest, and a single verdict would hide which ones actually landed.
+      const lines = results.map(item => item.status === 'success'
+        ? `✅ <b>${escapeTelegramHtml(item.label)}</b> <code>${item.address}</code> · ${escapeTelegramHtml(CHAINS[item.chain]?.name || item.chain || '')}${item.detected ? ' (detected)' : ''}`
+        : `❌ #${item.index + 1}: ${escapeTelegramHtml(String(item.error || 'failed'))}`);
+      return tgEditMenu(chatId, messageId, { parseMode: 'HTML',
+        text: `<b>Batch import — ${ok.length} of ${results.length} imported</b>\n${lines.join('\n')}`,
+        replyMarkup: telegramMenus.keyboard([[telegramMenus.button('⬅️ Back to wallets', 'menu:wallets')]]) });
     }
 
     if (data.startsWith('flow:chain:')) {
@@ -2172,6 +2282,10 @@ if (BOT_TOKEN) {
       if (flow.flow === 'wallet_import') {
         telegramFlowState.advance('telegram', chatId, 'awaiting_key', { chain });
         return tgEditMenu(chatId, messageId, renderFlowStep('wallet_import', 'awaiting_key'));
+      }
+      if (flow.flow === 'wallet_batch_import') {
+        telegramFlowState.advance('telegram', chatId, 'awaiting_keys', { chain, privateKeys: [] });
+        return tgEditMenu(chatId, messageId, telegramMenus.batchImportMenu({ count: 0, chainLabel: CHAINS[chain]?.name || chain }));
       }
       return;
     }
@@ -2338,7 +2452,16 @@ if (BOT_TOKEN) {
     if (data === 'flow:walletcontinue') {
       const flow = telegramFlowState.get('telegram', chatId);
       if (!flow || flow.flow !== 'mint_guided' || !flow.data.selectedWallets?.length) return;
-      return advanceFromWalletSelection(chatId, messageId, userId, flow, flow.data.selectedWallets);
+      // The picker only renders Continue at MIN_BATCH_WALLETS, but inline buttons live on in chat
+      // history: an older card, rendered when two were ticked, is still tappable after untoggling
+      // back to one. Re-check here so the rule is enforced by the server, not only drawn by the UI.
+      const picked = flow.data.selectedWallets;
+      if (flow.data.multi && picked.length < MIN_BATCH_WALLETS) {
+        const wallets = botCommands.wallets(userId);
+        return tgEditMenu(chatId, messageId, telegramMenus.walletMultiPicker(wallets, picked,
+          { emptyHint: 'No wallets yet. Create one first from the Wallets menu.' }));
+      }
+      return advanceFromWalletSelection(chatId, messageId, userId, flow, picked);
     }
     if (data === 'flow:mintconfirm') {
       const flow = telegramFlowState.get('telegram', chatId);
@@ -2429,6 +2552,7 @@ if (BOT_TOKEN) {
     }
 
     if (data === 'wallet:remove:pick') {
+      if (await gateBlocks({ chatId, messageId, userId, action: 'removewallet' })) return;
       return tgEditMenu(chatId, messageId, telegramMenus.walletPicker(botCommands.wallets(userId), { prefix:'wallet:remove:pick', emptyHint:'No wallets yet.' }));
     }
     if (data.startsWith('wallet:remove:pick:')) {
@@ -2541,7 +2665,7 @@ send /mint with a contract address to get going.`;
 
   bot.onText(/^\/link(?:@\w+)?$/, withTelegramUser(async (msg, match, userId) => {
     const link = await identity.createLinkCode(userId);
-    tgRender(msg.chat.id, { text: `🔗 <b>Account link code:</b> <code>${link.code}</code>\n\nTap the code to copy it. Expires in 5 minutes and can be used once.`, parseMode: 'HTML' });
+    tgRender(msg.chat.id, { text: `🔗 <b>Account link code</b>\n\n<pre>${link.code}</pre>\nTap or long-press the code above to copy it. Expires in 5 minutes and can be used once.`, parseMode: 'HTML' });
   }));
 
   bot.onText(/^\/mode(?:@\w+)?\s+(\S+)\s+(CONFIRM)$/i, withTelegramUser(async (msg, match, userId) => {
@@ -2964,7 +3088,7 @@ if (CONFIG.discordBotToken) {
     identity, commands: botCommands, securityAudit:botSecurityRepository,rateLimiter:commandRateLimiter,log,
     isOwner: userId => governanceRepository.isOwner(userId),
     checkAccountStatus: userId => governance.checkAccountStatus(userId),
-    supportedChains: CONFIG.supportedChains, chains: CHAINS });
+    supportedChains: CONFIG.supportedChains, chains: CHAINS, actionGate });
   // Live push: skip the 30s social-watch poll for discord_channel rules by reacting
   // to the Gateway's messageCreate event directly. The scheduled poller keeps running
   // as a fallback, so a dropped Gateway connection never stops detection, just slows it.

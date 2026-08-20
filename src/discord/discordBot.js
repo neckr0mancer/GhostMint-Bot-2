@@ -8,7 +8,7 @@ const { LinkCodeError } = require('../identity/identityService');
 const { ProofResolutionError } = require('../mint/proofResolver');
 const { OPENSEA_CHAIN_SLUGS } = require('../mint/openSeaService');
 const { TransactionSafetyError } = require('../transactions/transactionEngine');
-const { ValidationError, validationReply } = require('../validation/domain');
+const { ValidationError, validationReply, LIMITS } = require('../validation/domain');
 const { BotContextError, RateLimitError, commandName, createCommandRateLimiter, escapeDiscord,
   verifyDiscordContext } = require('../security/botSecurity');
 // Shared with Telegram (src/telegram/flowState.js). That module has no Telegram-specific logic --
@@ -182,10 +182,14 @@ function formatRows(rows, empty, mapper) {
 // of Telegram's inline keyboard + plain-text replies. Every guided step still ends by calling the
 // exact same botCommandService function the equivalent slash command already used above -- this
 // changes presentation only, never validation, transaction submission, or governance.
-const FLOW_LABELS = { wallet_create: 'creating a wallet', wallet_import: 'importing a wallet', mint_guided: 'minting', task_guided: 'scheduling a mint', watch_guided: 'adding a watch rule' };
+const FLOW_LABELS = { wallet_create: 'creating a wallet', wallet_import: 'importing a wallet',
+  wallet_batch_import: 'importing several wallets', mint_guided: 'minting', task_guided: 'scheduling a mint', watch_guided: 'adding a watch rule' };
 const FLOW_CONTINUATIONS = {
   wallet_create: ['flow:label:submit', 'flow:chain:select'],
   wallet_import: ['flow:label:submit', 'flow:chain:select', 'wallet:import:key-modal', 'flow:key:submit'],
+  // Keys accumulate across repeated taps of the SAME two ids, so this list stays fixed however
+  // many are added -- no dynamic custom_ids, the rule every other flow here follows.
+  wallet_batch_import: ['flow:chain:select', 'wallet:batch-import:add', 'flow:batchkeys:submit', 'wallet:batch-import:confirm'],
   // Section AA -- every custom_id stays fixed (select-menu VALUES carry the chosen quantity/
   // wallet, never the custom_id itself), so this list needs no dynamic/prefix matching.
   mint_guided: ['flow:mintdetailscontinue', 'flow:detailsrefresh', 'flow:copyca', 'flow:schedulesuggest', 'flow:mintqty:select', 'flow:mintqty:submit', 'flow:mintwallet:select', 'flow:mintwalletmulti:select', 'flow:priceaccept', 'flow:pricemanual', 'flow:mintprice:submit', 'flow:gastoleranceaccept', 'flow:gastolerancemanual', 'flow:gastolerance:submit', 'flow:mintconfirm'],
@@ -200,6 +204,9 @@ const FLOW_CONTINUATIONS = {
 };
 
 function renderFlowStep(flow, step, { supportedChains = [], chains = {} } = {}) {
+  if (flow === 'wallet_batch_import' && step === 'awaiting_chain') {
+    return discordMenus.chainSelect(supportedChains, chains);
+  }
   if ((flow === 'wallet_create' || flow === 'wallet_import') && step === 'awaiting_chain') {
     return discordMenus.chainSelect(supportedChains, chains);
   }
@@ -343,7 +350,14 @@ async function finishMintExecutionDiscord(ctx, respond, platformUserId, userId, 
       const results = await commands.batchMint(userId, { walletLabels: flowData.selectedWallets,
         contractAddress: flowData.contractAddress, chain: flowData.chain, quantity: flowData.quantity || 1, priceETH: flowData.priceETH, maxGasGwei: flowData.maxGasGwei });
       flowState.clear('discord', platformUserId);
-      return respond({ content: `✅ Batch complete: ${results.length} wallet transaction(s).`, components: backToMenu });
+      // Per wallet: batchMint no longer aborts on the first failure, so a bare count would
+      // report a batch where half the wallets never minted as an unqualified success.
+      const ok = results.filter(item => item.state !== 'failed');
+      const lines = results.map(item => (item.state === 'failed'
+        ? `❌ **${escapeDiscord(String(item.walletLabel))}** — ${escapeDiscord(String(item.error || 'failed'))}`
+        : `✅ **${escapeDiscord(String(item.walletLabel))}** — ${escapeDiscord(String(item.state || 'submitted'))}`
+          + (item.txHash ? ` \`${item.txHash}\`` : '')));
+      return respond({ content: `**Batch mint — ${ok.length} of ${results.length} submitted**\n${lines.join('\n')}`, components: backToMenu });
     }
     const result = await commands.mint(userId, { walletLabel: flowData.selectedWallets[0],
       contractAddress: flowData.contractAddress, chain: flowData.chain, quantity: flowData.quantity || 1, priceETH: flowData.priceETH });
@@ -483,7 +497,10 @@ async function startMintNowFlow(ctx, respond, platformUserId, userId, contractAd
 
 function createDiscordInteractionHandler({ identity, commands, allowedGuildId, allowedChannelIds=null, securityAudit={record:async()=>{}},
   rateLimiter=createCommandRateLimiter(), log = () => {}, isOwner, checkAccountStatus, supportedChains=[], chains={},
-  flowState=createFlowStateStore() }) {
+  flowState=createFlowStateStore(),
+  // Defaults to a gate that permits everything, so a caller that does not wire one (and every
+  // existing test) behaves exactly as before this existed.
+  actionGate={ allows: async () => true, submit: async () => ({ ok: true }) } }) {
   const audit=value=>Promise.resolve(securityAudit.record(value)).catch(error=>log(`Security audit write failed: ${error.message}`));
   const ownerFlag = async userId => (typeof isOwner === 'function' ? Boolean(await isOwner(userId)) : false);
   const enforceAccountStatus = async userId => { if (typeof checkAccountStatus === 'function') await checkAccountStatus(userId); };
@@ -503,7 +520,7 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
   // conditional ones, the already-available interaction.values) -- showModal() is mutually
   // exclusive with defer/reply, so handleComponent's blanket up-front defer below must skip these
   // or every one of them would throw "already acknowledged" the moment it tried to open its modal.
-  const MODAL_CUSTOM_IDS = new Set(['menu:mint:single', 'menu:mint:batch', 'link:enter', 'wallet:create:start', 'wallet:import:start', 'wallet:import:key-modal', 'flow:pricemanual', 'flow:gastolerancemanual', 'watch:add:start', 'flow:watchmethod:select']);
+  const MODAL_CUSTOM_IDS = new Set(['menu:mint:single', 'menu:mint:batch', 'link:enter', 'wallet:create:start', 'wallet:import:start', 'wallet:import:key-modal', 'wallet:batch-import:add', 'gate:unlock:open', 'flow:pricemanual', 'flow:gastolerancemanual', 'watch:add:start', 'flow:watchmethod:select']);
   function willShowModal(data, interaction) {
     if (MODAL_CUSTOM_IDS.has(data)) return true;
     if (data === 'flow:mintqty:select' && interaction.values?.[0] === 'custom') return true;
@@ -604,6 +621,11 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         flowState.start('discord', platformUserId, 'wallet_create', 'awaiting_label');
         return interaction.showModal(discordMenus.labelModal({ customId: 'flow:label:submit', title: 'New wallet label' }));
       }
+      if (data === 'wallet:batch-import:start') {
+        // No chain step -- see the Telegram counterpart and detectHomeChain().
+        flowState.start('discord', platformUserId, 'wallet_batch_import', 'awaiting_key', { privateKeys: [] });
+        return dcRespond(interaction, discordMenus.batchImportMenu({ count: 0 }));
+      }
       if (data === 'wallet:import:start') {
         flowState.start('discord', platformUserId, 'wallet_import', 'awaiting_label');
         return interaction.showModal(discordMenus.labelModal({ customId: 'flow:label:submit', title: 'Wallet label to import' }));
@@ -612,10 +634,43 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         return interaction.showModal(discordMenus.labelModal({ customId: 'flow:key:submit', title: 'Private key or seed phrase', maxLength: 256 }));
       }
 
+      if (data === 'gate:unlock:open') {
+        return interaction.showModal(discordMenus.labelModal({ customId: 'gate:unlock:submit',
+          title: 'Account password', maxLength: 200, placeholder: 'Same password as the dashboard' }));
+      }
+      if (data === 'wallet:batch-import:add') {
+        return interaction.showModal(discordMenus.labelModal({ customId: 'flow:batchkeys:submit',
+          title: 'Private keys (not recommended)', style: 'paragraph', maxLength: 4000,
+          placeholder: 'One key per line' }));
+      }
+      if (data === 'wallet:batch-import:confirm') {
+        // Read the flow here rather than relying on the outer scope: this branch runs in the
+        // button dispatcher, above where flow:chain:select fetches its own copy.
+        const flow = flowState.get('discord', platformUserId);
+        const collected = flow?.data?.privateKeys || [];
+        if (!collected.length) return dcRespond(interaction, discordMenus.batchImportMenu({ count: 0 }));
+        rateLimiter.check('discord', userId, 'batch-import');
+        const results = await commands.importWalletsBatch(userId, {
+          privateKeys: collected, chain: flow.data.chain, labelPrefix: flow.data.labelPrefix });
+        flowState.clear('discord', platformUserId);
+        const ok = results.filter(item => item.status === 'success');
+        // Per key, because partial success is the normal outcome: one bad key must not discard the
+        // rest, and a single verdict would hide which ones actually landed.
+        const lines = results.map(item => item.status === 'success'
+          ? `✅ ${escapeDiscord(item.label)} \`${item.address}\` · ${escapeDiscord(chains[item.chain]?.name || item.chain || '')}${item.detected ? ' (detected)' : ''}`
+          : `❌ #${item.index + 1} — ${escapeDiscord(String(item.error || 'failed'))}`);
+        return dcRespond(interaction, {
+          content: `**Batch import — ${ok.length} of ${results.length} imported**\n${lines.join('\n')}`,
+          components: [discordMenus.row([discordMenus.button('⬅️ Back to wallets', 'menu:wallets')])] });
+      }
       if (data === 'flow:chain:select') {
         const chain = interaction.values?.[0];
         const flow = flowState.get('discord', platformUserId);
         if (!flow) return dcRespond(interaction, discordMenus.mainMenu({ isOwner: await ownerFlag(userId) }));
+        if (flow.flow === 'wallet_batch_import') {
+          flowState.advance('discord', platformUserId, 'awaiting_key', { chain, privateKeys: [] });
+          return dcRespond(interaction, discordMenus.batchImportMenu({ count: 0, chainLabel: chains[chain]?.name || chain }));
+        }
         if (flow.flow === 'wallet_create') {
           try {
             const wallet = await commands.createWallet(userId, { label: flow.data.label, chain });
@@ -656,6 +711,9 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
       }
 
       if (data === 'wallet:remove:pick') {
+        if (!await actionGate.allows(userId, 'discord', platformUserId, 'removewallet')) {
+          return dcRespond(interaction, discordMenus.gateUnlockCard({ action: 'removewallet' }));
+        }
         return dcRespond(interaction, discordMenus.walletSelect(commands.wallets(userId), { customId: 'wallet:remove:select', emptyHint: 'No wallets yet.' }));
       }
       if (data === 'wallet:remove:select') {
@@ -1024,6 +1082,42 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         await interaction.reply({ ...renderFlowStep(flow.flow, 'awaiting_chain', { supportedChains, chains }), ephemeral: true });
         return;
       }
+      // Every key the user pastes is appended, so tapping "Add more" builds the list up rather than
+      // replacing it. Splitting on any whitespace or comma means one-per-line, all-on-one-line and
+      // comma-separated all work -- people paste from wherever they had them.
+      // The submitted value is never echoed, logged, or put in a message -- it exists only long
+      // enough to be verified against the stored scrypt hash.
+      if (data === 'gate:unlock:submit') {
+        const supplied = String(interaction.fields.getTextInputValue('value') || '');
+        let outcome;
+        try {
+          outcome = await actionGate.submit(userId, 'discord', platformUserId, supplied);
+        } catch (error) {
+          const text = error?.message === 'no password set'
+            ? 'No account password is set. Set one on the dashboard first -- it is deliberately not settable from chat.'
+            : `Too many attempts. Try again in ${Math.ceil((error?.retryAfterMs || 0) / 60000)} minutes.`;
+          return interaction.reply({ content: `🔒 ${escapeDiscord(text)}`, ephemeral: true }).catch(() => {});
+        }
+        const content = outcome.ok
+          ? '🔓 Unlocked for 10 minutes. Tap what you were doing again.'
+          : `❌ Wrong password. ${outcome.attemptsLeft} attempt(s) left.`;
+        return interaction.reply({ content, ephemeral: true }).catch(() => {});
+      }
+      if (data === 'flow:batchkeys:submit') {
+        const raw = String(interaction.fields.getTextInputValue('value') || '');
+        const added = raw.split(/[\s,]+/).map(item => item.trim()).filter(Boolean);
+        const existing = flow?.data?.privateKeys || [];
+        // Clamp here rather than letting importWalletsBatch reject the lot: the card offers no
+        // way to remove a key, so an over-cap list would be a dead end with nothing to do but
+        // cancel and re-paste.
+        const merged = [...existing, ...added];
+        const privateKeys = merged.slice(0, LIMITS.batchWalletImport);
+        flowState.advance('discord', platformUserId, 'awaiting_key', { privateKeys });
+        return interaction.reply({ ...discordMenus.batchImportMenu({ count: privateKeys.length,
+          dropped: merged.length - privateKeys.length,
+          chainLabel: chains[flow.data.chain]?.name || flow.data.chain }), ephemeral: true }).catch(() => {});
+      }
+
       if (data === 'flow:key:submit') {
         const value = String(interaction.fields.getTextInputValue('value') || '').trim();
         try {
@@ -1307,7 +1401,18 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
           const rawContract = interaction.options.getString('contract');
           const contractAddress = await commands.resolveMintContractInput(rawContract) || rawContract;
           const results = await commands.batchMint(userId, { walletLabels: walletsInput.split(',').map(v => v.trim()), contractAddress, quantity, priceETH: price, chain: interaction.options.getString('chain') });
-          message = `Batch complete: ${results.length} wallet transaction(s).`; break;
+          // Per wallet, not a count. batchMint stopped throwing on a per-wallet failure, so a
+          // bare length here reported a batch where every wallet failed as an unqualified
+          // success -- the guided flow was updated for this and this path was missed.
+          {
+            const ok = results.filter(item => item.state !== 'failed');
+            const lines = results.map(item => (item.state === 'failed'
+              ? `❌ **${escapeDiscord(String(item.walletLabel))}** — ${escapeDiscord(String(item.error || 'failed'))}`
+              : `✅ **${escapeDiscord(String(item.walletLabel))}** — ${escapeDiscord(String(item.state || 'submitted'))}`
+                + (item.txHash ? ` \`${item.txHash}\`` : '')));
+            message = `**Batch mint — ${ok.length} of ${results.length} submitted**\n${lines.join('\n')}`;
+          }
+          break;
         }
         case 'task': {
           const action = interaction.options.getSubcommand();
@@ -1448,7 +1553,7 @@ async function clearLeftoverGuildCommands({ api, applicationId, log }) {
   }
 }
 
-function createDiscordBot({ token, applicationId, devGuildId, allowedChannelIds=null, identity, commands, securityAudit, rateLimiter, log = () => {}, client, rest, isOwner, checkAccountStatus, supportedChains, chains }) {
+function createDiscordBot({ token, applicationId, devGuildId, allowedChannelIds=null, identity, commands, securityAudit, rateLimiter, log = () => {}, client, rest, isOwner, checkAccountStatus, supportedChains, chains, actionGate }) {
   const discordClient = client || new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.DirectMessages,
     GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent] });
   const api = rest || new REST({ version: '10' }).setToken(token);
@@ -1457,7 +1562,7 @@ function createDiscordBot({ token, applicationId, devGuildId, allowedChannelIds=
   // visible to the other -- they'd otherwise be two independent, non-communicating stores.
   const flowState = createFlowStateStore();
   discordClient.on('interactionCreate', createDiscordInteractionHandler({ identity, commands, allowedGuildId:devGuildId || null, allowedChannelIds,
-    securityAudit,rateLimiter,log,isOwner,checkAccountStatus,supportedChains,chains,flowState }));
+    securityAudit,rateLimiter,log,isOwner,checkAccountStatus,supportedChains,chains,flowState,actionGate }));
   discordClient.on('messageCreate', message =>
     handleMintPasteMessage({ identity, commands, flowState, chains, rateLimiter, checkAccountStatus, allowedGuildId: devGuildId || null, allowedChannelIds }, message));
   return {

@@ -1115,6 +1115,50 @@ const PRIMARY_THEMES=[{value:'ghost-mint-light',label:'Light',icon:SUN_ICON},{va
 const SECONDARY_THEMES=THEME_OPTIONS.filter(option=>option.value!=='ghost-mint'&&option.value!=='ghost-mint-light');
 function ThemeSwatch({value}){return <span className={`theme-swatch theme-swatch-${value}`} aria-hidden="true"><span className="theme-swatch-accent"/></span>}
 function DefaultChainPanel({profile}){const [value,setValue]=useState(profile.defaultChain||profile.supportedChains[0]);async function change(event){const next=event.target.value;const previous=value;setValue(next);try{await api('/api/profile/default-chain',{method:'PUT',body:JSON.stringify({defaultChain:next})});notify('Default chain saved.',{type:'success'});}catch(error){setValue(previous);notify(error.message,{type:'error'});}}return <div className="panel settings-chain"><div className="settings-panel-heading"><div><p className="eyebrow">Network preference</p><h2>Default chain</h2></div><span className="pill">Account setting</span></div><p>Pre-selects this chain on wallet and scheduled-task forms.</p><ChainSelect name="defaultChain" label="Default chain" options={profile.supportedChains} value={value} onChange={change}/></div>}
+// The ONLY place the bot action gate can be changed. Deliberately not a Telegram or Discord
+// control: if the gate could be switched off from chat, whoever picked up an unlocked phone would
+// switch it off and then remove the wallets, and the gate would protect nothing. The dashboard is
+// already behind a session, which is exactly the property this needs.
+const BOT_GATE_OPTIONS=[
+  {value:'off',label:'Off',hint:'No password is asked for in Telegram or Discord. This is the default.'},
+  {value:'sensitive',label:'Sensitive',hint:'Ask before exporting a key, removing a wallet, sending funds, or importing.'},
+  {value:'strict',label:'Strict',hint:'Everything above, plus reading your wallet list, balances, and activity.'},
+];
+function BotSecurityPanel({profile,onProfileChange}){
+  const [level,setLevel]=useState(profile.botGateLevel||'off');
+  const [saving,setSaving]=useState(false);
+  const noPassword=!profile.securityPasswordSet;
+  async function change(next){
+    if(next===level)return;
+    const previous=level;setLevel(next);setSaving(true);
+    try{
+      await api('/api/profile/bot-gate',{method:'PUT',body:JSON.stringify({level:next})});
+      onProfileChange?.(current=>({...current,botGateLevel:next}));
+      notify(next==='off'?'Bot password gate turned off.':`Bot password gate set to ${next}.`,{type:'success'});
+    }catch(error){setLevel(previous);notify(error.message,{type:'error'});}
+    finally{setSaving(false);}
+  }
+  return <div className="panel settings-bot-gate">
+    <div className="settings-panel-heading">
+      <div><p className="eyebrow">Bot security</p><h2>Password gate</h2></div>
+      <span className={`p ${level==='off'?'idle':'ok'}`}>{level==='off'?'Off':'On'}</span>
+    </div>
+    <p>Requires your security password before sensitive actions taken from Telegram or Discord. It
+    uses the same password as this dashboard, and each conversation stays unlocked for 10 minutes.</p>
+    {noPassword&&<p className="notice notice-warning">Set a security password on the Account page
+    first. It cannot be set from a chat, because a password typed there stays in your message
+    history.</p>}
+    <div className="seg gate-picker" role="radiogroup" aria-label="Bot password gate level">
+      {BOT_GATE_OPTIONS.map(option=><button type="button" key={option.value} role="radio"
+        aria-checked={level===option.value} disabled={saving||(noPassword&&option.value!=='off')}
+        className={level===option.value?'on':undefined} onClick={()=>change(option.value)}>{option.label}</button>)}
+    </div>
+    <p className="settings-hint">{BOT_GATE_OPTIONS.find(option=>option.value===level)?.hint}</p>
+    <p className="notice">Typing a password into a chat is weaker than typing it here. Discord asks
+    in a pop-up window that never becomes a message; Telegram has no such window, so the bot deletes
+    your message the moment it arrives.</p>
+  </div>;
+}
 function GasPanel({profile}){const [chain,setChain]=useState(profile.defaultChain||profile.supportedChains[0]);const [result,setResult]=useState(null);const [error,setError]=useState('');const [unavailable,setUnavailable]=useState('');const [loading,setLoading]=useState(false);const load=useCallback(async next=>{setLoading(true);setError('');setUnavailable('');setResult(null);try{setResult(await api(`/api/gas/${next}`));}catch(err){if(['MISSING_API_KEY','PROVIDER_ERROR','TIMEOUT','UNAVAILABLE'].includes(err.code))setUnavailable(err.message);else setError(err.message);}finally{setLoading(false);}},[]);useEffect(()=>{load(chain);},[chain,load]);return <div className="panel settings-gas"><div className="settings-panel-heading"><div><p className="eyebrow">Live network data</p><h2>Gas prices</h2></div><ChainSelect name="gasChain" label="Chain" options={profile.supportedChains} value={chain} onChange={e=>setChain(e.target.value)}/></div><p>Etherscan V2 gas oracle. An unavailable provider never blocks the rest of Settings.</p><Notice error={error?{title:'Could not load gas prices.',code:'Request failed safely',onRetry:()=>load(chain)}:null}/>{unavailable&&<p className="notice notice-warning" role="status">{unavailable}</p>}{loading&&<Skeleton variant="lines" rows={1}/>}{result&&<div className="gas-readout"><div><span>Safe</span><strong>{result.safeGasPriceGwei} gwei</strong></div><div><span>Standard</span><strong>{result.gasPriceGwei} gwei</strong></div><div><span>Fast</span><strong>{result.maxFeePerGasGwei} gwei</strong></div></div>}</div>}
 // Self-service counterpart to Admin > Mode presets (which edits the four shared preset
 // definitions) -- this only ever picks which of those four the signed-in user is currently on,
@@ -1168,7 +1212,7 @@ function TransactionModePanel({profile}){
 }
 const USAGE_PERIODS=[['today','Today'],['day','24 hours'],['week','7 days'],['month','Month']];
 function ApiUsagePanel(){const [period,setPeriod]=useState('month');const usage=useLoad(`/api/social-usage?period=${period}`,[period]);const {data}=usage;return <div className="panel settings-usage"><div className="settings-panel-heading"><div><p className="eyebrow">Owner reporting</p><h2>Social API usage</h2></div><div className="seg usage-period" role="radiogroup" aria-label="Usage period">{USAGE_PERIODS.map(([value,label])=><button type="button" key={value} className={period===value?'on':undefined} aria-pressed={period===value} onClick={()=>setPeriod(value)}>{label}</button>)}</div></div><p>Observed adapter requests, provider-reported consumption, and current pricing estimates.</p><Notice error={loadError(usage,'Could not load social API usage.')}/>{data===null?<Skeleton variant="lines" rows={4}/>:<><div className="usage-stats"><div><span>Total requests</span><strong>{data.requests}</strong></div><div><span>Reported cost</span><strong>${data.reportedCostUsd.toFixed(4)}</strong></div><div><span>Reported credits</span><strong>{data.reportedCredits.toFixed(2)}</strong></div><div><span>Pay-per-use estimate</span><strong>${data.payPerUseEstimateUsd.toFixed(2)}</strong></div><div><span>Projected monthly</span><strong>{Math.round(data.projectedMonthlyRequests).toLocaleString()}</strong></div></div><div className="settings-usage-tables"><div className="table-wrap"><table><thead><tr><th>Rule</th><th>Method</th><th>Type</th><th>Requests</th></tr></thead><tbody>{data.rows.map(row=><tr key={`${row.ruleId}-${row.method}-${row.requestType}`}><td>{row.ruleName}</td><td>{row.method}</td><td>{row.requestType}</td><td>{row.requests}</td></tr>)}</tbody></table>{data.rows.length===0&&<Empty text="No social adapter requests recorded for this period."/>}</div><div className="table-wrap"><table><thead><tr><th>Managed tier</th><th>Break-even reads</th><th>Break-even posts</th></tr></thead><tbody>{data.breakEvenRequests.map(tier=><tr key={tier.price}><td>${tier.price}/mo</td><td>{tier.atReadRate.toLocaleString()}</td><td>{tier.atPostRate.toLocaleString()}</td></tr>)}</tbody></table></div></div></>}</div>}
-function Settings({profile,onThemeChange}){const secondaryActive=SECONDARY_THEMES.some(option=>option.value===profile.theme);return <><PageTitle eyebrow="Preferences" title="Settings" subtitle="Display, network defaults, live gas information, and owner reporting."/><div className="settings-layout"><div className="panel settings-appearance"><div className="settings-panel-heading"><div><p className="eyebrow">Display</p><h2>Appearance</h2></div><div className="seg theme-picker" role="radiogroup" aria-label="Dashboard appearance">{PRIMARY_THEMES.map(option=><button type="button" key={option.value} aria-pressed={profile.theme===option.value} className={profile.theme===option.value?'on':undefined} onClick={()=>onThemeChange(option.value)}><span className="theme-picker-icon" aria-hidden="true">{option.icon}</span>{option.label}</button>)}</div></div><details className="settings-more-themes" open={secondaryActive}><summary>More themes</summary><div className="theme-grid" role="radiogroup" aria-label="More dashboard themes">{SECONDARY_THEMES.map(option=><button type="button" key={option.value} aria-pressed={profile.theme===option.value} className={`theme-option${profile.theme===option.value?' active':''}`} onClick={()=>onThemeChange(option.value)}><ThemeSwatch value={option.value}/><span className="theme-option-label">{option.label}</span></button>)}</div></details></div><DefaultChainPanel profile={profile}/><TransactionModePanel profile={profile}/><GasPanel profile={profile}/>{profile.isOwner&&<ApiUsagePanel/>}</div></>}
+function Settings({profile,onThemeChange,onProfileChange}){const secondaryActive=SECONDARY_THEMES.some(option=>option.value===profile.theme);return <><PageTitle eyebrow="Preferences" title="Settings" subtitle="Display, network defaults, live gas information, and owner reporting."/><div className="settings-layout"><div className="panel settings-appearance"><div className="settings-panel-heading"><div><p className="eyebrow">Display</p><h2>Appearance</h2></div><div className="seg theme-picker" role="radiogroup" aria-label="Dashboard appearance">{PRIMARY_THEMES.map(option=><button type="button" key={option.value} aria-pressed={profile.theme===option.value} className={profile.theme===option.value?'on':undefined} onClick={()=>onThemeChange(option.value)}><span className="theme-picker-icon" aria-hidden="true">{option.icon}</span>{option.label}</button>)}</div></div><details className="settings-more-themes" open={secondaryActive}><summary>More themes</summary><div className="theme-grid" role="radiogroup" aria-label="More dashboard themes">{SECONDARY_THEMES.map(option=><button type="button" key={option.value} aria-pressed={profile.theme===option.value} className={`theme-option${profile.theme===option.value?' active':''}`} onClick={()=>onThemeChange(option.value)}><ThemeSwatch value={option.value}/><span className="theme-option-label">{option.label}</span></button>)}</div></details></div><DefaultChainPanel profile={profile}/><TransactionModePanel profile={profile}/><BotSecurityPanel profile={profile} onProfileChange={onProfileChange}/><GasPanel profile={profile}/>{profile.isOwner&&<ApiUsagePanel/>}</div></>}
 function Login({onLogin}){
   const [mode,setMode]=useState('code');
   const [code,setCode]=useState('');

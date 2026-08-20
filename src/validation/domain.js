@@ -21,6 +21,10 @@ const WATCH_TYPE_PLATFORMS = Object.freeze({
   farcaster_keyword: 'farcaster',
 });
 const MAX_SCHEDULE_AHEAD_MS = 5 * 365 * 24 * 60 * 60 * 1000;
+// A batch of one is allowed: it simply behaves like a single mint. This stays a named constant
+// (rather than a bare 1) because every surface reads it, so the rule can move in one place if
+// that judgement changes again. The dashboard keeps its own stricter UI gate.
+const MIN_BATCH_WALLETS = 1;
 const LIMITS = Object.freeze({
   quantity: 100,
   priceEth: 1_000,
@@ -89,6 +93,17 @@ function addressList(value, field) {
 function chainName(value, supportedChains, field = 'chain') {
   const normalized = string(value, field, { max: 32 }).toLowerCase();
   if (!supportedChains.includes(normalized)) fail(field, `must be one of: ${supportedChains.join(', ')}`);
+  return normalized;
+}
+
+// The bot action gate's level. Rejects anything unrecognised rather than silently coercing to
+// 'off': quietly turning someone's gate off because a value was misspelled is the one failure
+// mode this must not have. (The gate's own reader coerces to 'off' -- that is a read path,
+// where failing open is correct; this is a write path, where it is not.)
+const BOT_GATE_LEVELS = new Set(['off', 'sensitive', 'strict']);
+function botGateLevel(value, field = 'level') {
+  const normalized = string(value, field, { max: 16 }).toLowerCase();
+  if (!BOT_GATE_LEVELS.has(normalized)) fail(field, `must be one of: ${[...BOT_GATE_LEVELS].join(', ')}`);
   return normalized;
 }
 
@@ -284,8 +299,8 @@ function validateTaskCreate(input, context) {
 }
 
 function validateBatchMint(input, context) {
-  if (!Array.isArray(input.walletLabels) || input.walletLabels.length < 1 || input.walletLabels.length > LIMITS.batchWallets) {
-    fail('walletLabels', `must contain 1-${LIMITS.batchWallets} wallet labels`);
+  if (!Array.isArray(input.walletLabels) || input.walletLabels.length < MIN_BATCH_WALLETS || input.walletLabels.length > LIMITS.batchWallets) {
+    fail('walletLabels', `must contain ${MIN_BATCH_WALLETS}-${LIMITS.batchWallets} wallet labels`);
   }
   const labels = input.walletLabels.map(label => walletLabel(label));
   if (new Set(labels.map(label => label.toLowerCase())).size !== labels.length) fail('walletLabels', 'must not contain duplicates');
@@ -405,6 +420,7 @@ const requestSchemas = Object.freeze({
   watchRulePatch: input => validateWatchRule(input, { partial: true }),
   watchRuleDeletion: input => ({ id: uuid(input.id, 'id') }),
   themeUpdate: input => ({ theme: dashboardTheme(input.theme) }),
+  botGateUpdate: input => ({ level: botGateLevel(input.level) }),
   displayNameUpdate: input => ({ displayName: displayName(input.displayName) }),
   defaultChainUpdate: (input, context) => ({ defaultChain: chainName(input.defaultChain, context.supportedChains, 'defaultChain') }),
   socialUsagePeriod: input => ({ period: usagePeriod(input.period) }),
@@ -427,6 +443,7 @@ function sendValidationError(response, error) {
 
 module.exports = {
   LIMITS,
+  MIN_BATCH_WALLETS,
   MAX_SCHEDULE_AHEAD_MS,
   ValidationError,
   WATCH_TYPE_PLATFORMS,

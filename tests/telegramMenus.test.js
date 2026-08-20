@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const {
   mainMenu, walletsMenu, settingsMenu, tasksMenu, taskActions, confirmCancelTask, chainPicker, walletPicker,
+  mintModeMenu, batchImportMenu,
   contractDetails, contractDetailsText, collectionInfoCard, mintConfirmation, gasTolerancePrompt,
   taskConfirmation, taskScheduled, confirmRemoveWallet, placeholderMenu,
   sniperMenu, activityMenu, adminOverviewMenu,
@@ -494,4 +495,54 @@ test('adminOverviewMenu says so plainly when no groups are configured yet', () =
   const overview = adminOverviewMenu({ metrics: { totalUsers: 1, activeAnyPlatform24h: 0, owners: 1, rootOwners: 1, groups: 0, linkedAccounts: 0 }, groups: [] });
   assert.match(overview.text, /No groups configured yet/);
   assert.match(overview.text, /1 owner \(1 root\)/, 'singular "owner" when the count is exactly 1');
+});
+
+// Telegram batch parity (mirrors tests/discordMenuParity.test.js). Batch mint and batch import
+// both existed as JSON commands only -- /batch and /batchimport -- so they were reachable only by
+// knowing the command. These cover the menu route to each.
+test('the wallets menu offers batch import alongside the single-wallet import', () => {
+  const buttons = flatButtons(walletsMenu().replyMarkup).map(b => b.callback_data);
+  assert.ok(buttons.includes('wallet:import:start'), 'single import stays');
+  assert.ok(buttons.includes('wallet:batch-import:start'), 'batch import — previously reachable only by knowing /batchimport existed');
+});
+
+test('the mint menu forks into single or batch instead of assuming a single wallet', () => {
+  const buttons = flatButtons(mintModeMenu().replyMarkup).map(b => b.callback_data);
+  assert.ok(buttons.includes('menu:mint:single'));
+  assert.ok(buttons.includes('menu:mint:batch'));
+  assert.ok(buttons.includes('menu:main'), 'a way back out');
+});
+
+test('batch import withholds the Import button until at least one key has been sent', () => {
+  const empty = flatButtons(batchImportMenu({ count: 0 }).replyMarkup).map(b => b.callback_data);
+  assert.equal(empty.includes('wallet:batch-import:confirm'), false, 'nothing to import yet');
+  assert.ok(empty.includes('flow:cancel:ask'), 'cancel is always available');
+  const ready = flatButtons(batchImportMenu({ count: 3, chainLabel: 'Base' }).replyMarkup);
+  const confirm = ready.find(b => b.callback_data === 'wallet:batch-import:confirm');
+  assert.ok(confirm, 'the Import button appears once keys exist');
+  assert.match(confirm.text, /3 wallets/, 'the button states how many are going in');
+});
+
+test('batch import counts one key as singular and reports the chosen chain', () => {
+  const one = batchImportMenu({ count: 1, chainLabel: 'Ethereum' });
+  assert.match(one.text, /<b>1<\/b> key\b/, 'singular for one key');
+  assert.match(one.text, /Ethereum/);
+  assert.match(batchImportMenu({ count: 2, chainLabel: 'Base' }).text, /<b>2<\/b> keys\b/);
+});
+
+test('batch import never echoes the keys back and keeps warning about message transit', () => {
+  const card = batchImportMenu({ count: 2, chainLabel: 'Base' });
+  assert.equal(/0x[0-9a-fA-F]{16}/.test(card.text), false, 'no key material on screen — Telegram keeps chat history');
+  assert.match(card.text, /Not recommended/);
+});
+
+test('batch import says so when keys past the 50 cap were ignored, rather than failing at import time', () => {
+  const { LIMITS } = require('../src/validation/domain');
+  assert.equal(/ignored/.test(batchImportMenu({ count: 50 }).text), false, 'silent when nothing was dropped');
+  const over = batchImportMenu({ count: LIMITS.batchWalletImport, dropped: 3 });
+  assert.match(over.text, /3 keys were ignored/);
+  assert.match(over.text, new RegExp(String(LIMITS.batchWalletImport)));
+  assert.match(batchImportMenu({ count: 50, dropped: 1 }).text, /1 key was ignored/, 'singular for one');
+  assert.ok(flatButtons(over.replyMarkup).some(b => b.callback_data === 'wallet:batch-import:confirm'),
+    'the 50 that fit are still importable — the overflow must not block them');
 });

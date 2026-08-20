@@ -8,6 +8,7 @@
 // before being interpolated next to a real tag so it can never break or inject into the markup.
 
 const { escapeTelegramHtml } = require('../security/botSecurity');
+const { LIMITS, MIN_BATCH_WALLETS } = require('../validation/domain');
 
 function button(text, callbackData) {
   return { text, callback_data: callbackData };
@@ -45,6 +46,68 @@ function mainMenu({ isOwner = false } = {}) {
   };
 }
 
+// Batch was previously reachable only by knowing /batch existed -- the Mint button went straight
+// into a single-wallet flow. This is the fork, mirroring Discord's mintModeMenu: the guided flow
+// underneath is the same one, started with multi true or false.
+function mintModeMenu() {
+  return {
+    text: '<b>🎯 Mint</b>\n\nOne wallet, or the whole squad?',
+    replyMarkup: keyboard([
+      [button('🎯 Single mint', 'menu:mint:single')],
+      [button('🎯🎯 Batch mint (several wallets)', 'menu:mint:batch')],
+      [button('⬅️ Back to base', 'menu:main')],
+    ]),
+    parseMode: 'HTML',
+  };
+}
+
+// Telegram has no modal, so "add another key" is just another message -- the card below is the
+// running tally, re-rendered after each one. The keys themselves are never echoed back: Telegram
+// keeps chat history, and repeating what was just typed would put every key back on screen.
+function batchImportMenu({ count = 0, chainLabel = '', dropped = 0 } = {}) {
+  const ready = count > 0;
+  const rows = [];
+  if (ready) rows.push([button(`✅ Import ${count} wallet${count === 1 ? '' : 's'}`, 'wallet:batch-import:confirm')]);
+  rows.push([button('❌ Nah, cancel', 'flow:cancel:ask')]);
+  return {
+    text: `<b>📥📥 Batch import${chainLabel ? ` · ${escapeTelegramHtml(chainLabel)}` : ''}</b>\n\n`
+      + (ready
+        ? `<b>${count}</b> key${count === 1 ? '' : 's'} ready. Send another message to add more, or import what you have.
+
+Each wallet's chain is detected from its own balances — a batch can span chains.`
+        : `Send your private keys now. Several can go in one message — on separate lines, or separated by commas — and you can send more messages to keep adding.
+
+<b>Example (one message):</b>
+<code>0xabc…1111,0xdef…2222</code>`)
+      + (dropped ? `\n\n⚠️ ${dropped} key${dropped === 1 ? ' was' : 's were'} ignored — ${LIMITS.batchWalletImport} is the most one import can take. Import these, then start another batch.` : '')
+      + "\n\n⚠️ <b>Not recommended:</b> keys pass through Telegram's message transit and may remain in chat history or notification previews. Delete your messages afterward if you can.",
+    replyMarkup: keyboard(rows),
+    parseMode: 'HTML',
+  };
+}
+
+// Shown in place of a gated action while the conversation is locked. The copy states outright that
+// a chat is a worse place for a password than the dashboard is -- the gate reduces the risk of a
+// borrowed phone, it does not make typing secrets into Telegram safe, and pretending otherwise
+// would be the more dangerous message.
+const GATE_ACTION_LABELS = {
+  exportkey: 'export a private key', removewallet: 'remove a wallet', send: 'send funds',
+  batchimport: 'import wallets', importwallet: 'import a wallet',
+  walletlist: 'list your wallets', balance: 'check a balance', activity: 'see your activity',
+};
+
+function gateUnlockPrompt({ action }) {
+  const what = GATE_ACTION_LABELS[action] || 'do that';
+  return {
+    text: `<b>🔒 Locked</b>\n\nSend your account password to ${escapeTelegramHtml(what)}.`
+      + '\n\nThis is the same password the dashboard uses. It stays unlocked here for 10 minutes.'
+      + "\n\n⚠️ Your message crosses Telegram's servers — it is deleted the moment it arrives, but the"
+      + ' dashboard is still the safer place for anything sensitive.',
+    replyMarkup: keyboard([[button('❌ Nah, cancel', 'flow:cancel:ask')]]),
+    parseMode: 'HTML',
+  };
+}
+
 function walletsMenu() {
   return {
     text: '<b>👛 Wallets</b>\n\nA fresh wallet minted server-side beats importing your seed phrase from a sticky note. We recommend generating new.',
@@ -52,6 +115,7 @@ function walletsMenu() {
       [button('📋 List wallets', 'wallet:list')],
       [button('➕ Create wallet', 'wallet:create:start')],
       [button('📥 Import wallet', 'wallet:import:start')],
+      [button('📥📥 Batch import', 'wallet:batch-import:start')],
       [button('💰 Check balance', 'wallet:balance:pick')],
       [button('🔑 Export key', 'menu:exportkey')],
       [button('🗑️ Remove wallet', 'wallet:remove:pick')],
@@ -111,12 +175,25 @@ function walletPicker(wallets, { prefix, emptyHint }) {
 // updated checkmark), Continue only appears once at least one wallet is selected.
 function walletMultiPicker(wallets, selectedLabels, { emptyHint }) {
   if (!wallets.length) return placeholderMenu('Wallets', emptyHint);
+  if (wallets.length < MIN_BATCH_WALLETS) {
+    return {
+      text: `<b>Batch mint needs ${MIN_BATCH_WALLETS} wallets</b>
+
+You have ${wallets.length}. A batch of one is just a single mint — use that instead, or add another wallet first.`,
+      replyMarkup: keyboard([
+        [button('🎯 Single mint instead', 'menu:mint:single')],
+        [button('➕ Create wallet', 'wallet:create:start')],
+        [button('⬅️ Back to base', 'menu:main')],
+      ]),
+      parseMode: 'HTML',
+    };
+  }
   const rows = wallets.map(wallet => {
     const checked = selectedLabels.includes(wallet.label);
     return [button(`${checked ? '✅' : '⬜'} ${wallet.label} (${wallet.chain})`, `flow:wallettoggle:${wallet.label}`)];
   });
-  if (selectedLabels.length) {
-    rows.push([button(`▶️ Wallets locked. Continue with ${selectedLabels.length}.`, 'flow:walletcontinue')]);
+  if (selectedLabels.length >= MIN_BATCH_WALLETS) {
+    rows.push([button(`▶️ Squad's set, continue with ${selectedLabels.length} wallets`, 'flow:walletcontinue')]);
   }
   rows.push([button('❌ Cancel', 'flow:cancel:ask')]);
   return { text: 'Tap every wallet you want in this batch, then hit Continue:', replyMarkup: keyboard(rows), parseMode: 'HTML' };
@@ -695,6 +772,9 @@ module.exports = {
   keyboard,
   mainMenu,
   walletsMenu,
+  mintModeMenu,
+  batchImportMenu,
+  gateUnlockPrompt,
   settingsMenu,
   tasksMenu,
   taskActions,

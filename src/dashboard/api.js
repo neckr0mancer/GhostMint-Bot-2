@@ -115,9 +115,15 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLo
     },
     logout:async(req,res)=>{noStore(res);await auth.revoke(req.dashboardSession);res.setHeader('Set-Cookie',auth.clearCookies());res.status(204).end();},
     logoutAll:async(req,res)=>{noStore(res);await auth.revokeAll(req.dashboardSession);res.setHeader('Set-Cookie',auth.clearCookies());res.status(204).end();},
-    profile:async(req,res)=>{noStore(res);res.json({userId:user(req),isOwner:commands?.isOwner?await commands.isOwner(user(req)):false,isRootOwner:commands?.isRootOwner?await commands.isRootOwner(user(req)):false,linkedAccounts:await identityRepository.listLinkedAccounts(user(req)),supportedChains,theme:await identityRepository.getTheme(user(req)),displayName:identityRepository.getDisplayName?await identityRepository.getDisplayName(user(req)):null,defaultChain:identityRepository.getDefaultChain?await identityRepository.getDefaultChain(user(req)):null,securityPasswordSet:identityRepository.getSecurityPasswordHash?Boolean(await identityRepository.getSecurityPasswordHash(user(req))):false,username:identityRepository.getUsername?await identityRepository.getUsername(user(req)):null,currentMode:commands?.currentMode?await commands.currentMode(user(req)):null,advancedModesAllowed:commands?.advancedModesAllowed?await commands.advancedModesAllowed(user(req)):false});},
+    profile:async(req,res)=>{noStore(res);res.json({userId:user(req),isOwner:commands?.isOwner?await commands.isOwner(user(req)):false,isRootOwner:commands?.isRootOwner?await commands.isRootOwner(user(req)):false,linkedAccounts:await identityRepository.listLinkedAccounts(user(req)),supportedChains,theme:await identityRepository.getTheme(user(req)),displayName:identityRepository.getDisplayName?await identityRepository.getDisplayName(user(req)):null,defaultChain:identityRepository.getDefaultChain?await identityRepository.getDefaultChain(user(req)):null,securityPasswordSet:identityRepository.getSecurityPasswordHash?Boolean(await identityRepository.getSecurityPasswordHash(user(req))):false,botGateLevel:identityRepository.getBotGateLevel?await identityRepository.getBotGateLevel(user(req)):'off',username:identityRepository.getUsername?await identityRepository.getUsername(user(req)):null,currentMode:commands?.currentMode?await commands.currentMode(user(req)):null,advancedModesAllowed:commands?.advancedModesAllowed?await commands.advancedModesAllowed(user(req)):false});},
     updateMode:action(async(req,res)=>{res.json({mode:await commands.selectMode(user(req),req.body.preset)});}),
     updateTheme:action(async(req,res)=>{const {theme}=requestSchemas.themeUpdate(req.body||{});res.json({theme:await identityRepository.setTheme(user(req),theme)});}),
+    // The bot action gate is changed HERE and nowhere else. If it could be switched off from
+    // Telegram or Discord, whoever picked up an unlocked phone would simply switch it off before
+    // removing the wallets -- the gate would be decorative. The dashboard is already an
+    // authenticated surface (session + CSRF below), which is the whole point.
+    updateBotGate:action(async(req,res)=>{const {level}=requestSchemas.botGateUpdate(req.body||{});
+      await identityRepository.setBotGateLevel(user(req),level);res.json({botGateLevel:level});}),
     updateDisplayName:action(async(req,res)=>{const {displayName}=requestSchemas.displayNameUpdate(req.body||{});res.json({displayName:await identityRepository.setDisplayName(user(req),displayName)});}),
     updateDefaultChain:action(async(req,res)=>{const {defaultChain}=requestSchemas.defaultChainUpdate(req.body||{},{supportedChains});res.json({defaultChain:await identityRepository.setDefaultChain(user(req),defaultChain)});}),
     // The caller's own effective ceilings, resolved user override -> group -> chain defaults.
@@ -269,6 +275,7 @@ function mountDashboardRoutes(app,api){
   app.get('/api/profile',api.requireSession,api.profile);
   app.get('/api/profile/limits',api.requireSession,api.profileLimits);
   app.put('/api/profile/theme',api.requireSession,api.requireCsrf,api.updateTheme);
+  app.put('/api/profile/bot-gate',api.requireSession,api.requireCsrf,api.updateBotGate);
   app.put('/api/profile/display-name',api.requireSession,api.requireCsrf,api.updateDisplayName);
   app.put('/api/profile/default-chain',api.requireSession,api.requireCsrf,api.updateDefaultChain);
   app.put('/api/auth/security-password',api.requireSession,api.requireCsrf,api.securityPasswordSet);

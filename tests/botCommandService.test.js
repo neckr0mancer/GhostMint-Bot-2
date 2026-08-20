@@ -410,3 +410,135 @@ test('profileLimits passes a supported chain through to the governance resolver'
   assert.deepEqual(seen, [['user-a', 'ethereum']]);
   assert.equal(result.chain, 'ethereum');
 });
+
+// batchMint used to be `results.push(await mint(...))` in a bare loop, so the first wallet that
+// threw rejected the whole call. That is the worst possible shape for this operation: the wallets
+// BEFORE the failure have already broadcast real transactions, and the caller got an exception
+// with no txHash and no way to learn a mint had gone out. /batchmint's reply has always rendered
+// per wallet with a `state === 'failed'` branch -- that branch was simply unreachable.
+test('batch mint attempts every wallet and reports per wallet instead of aborting on the first failure', async () => {
+  const attempted = [];
+  const { service } = fixture({
+    executeMint: async ({ wallet }) => {
+      attempted.push(wallet.label);
+      if (wallet.label === 'beta') throw new Error('insufficient funds for gas');
+      return { state: 'confirmed', txHash: `0x${wallet.label}` };
+    },
+    getState: () => ({
+      wallets: [
+        { userId: 'user-a', label: 'alpha', address: '0x0000000000000000000000000000000000000001', chain: 'ethereum' },
+        { userId: 'user-a', label: 'beta', address: '0x0000000000000000000000000000000000000002', chain: 'ethereum' },
+        { userId: 'user-a', label: 'gamma', address: '0x0000000000000000000000000000000000000003', chain: 'ethereum' },
+      ],
+      tasks: [], activity: [], pnl: [], snipers: [],
+    }),
+  });
+  const results = await service.batchMint('user-a', {
+    walletLabels: ['alpha', 'beta', 'gamma'],
+    contractAddress: '0x000000000000000000000000000000000000dEaD',
+    chain: 'ethereum', quantity: 1, priceETH: 0,
+  });
+  assert.deepEqual(attempted, ['alpha', 'beta', 'gamma'], 'the wallet after the failure is still attempted');
+  assert.equal(results.length, 3);
+  assert.deepEqual(results.map(item => item.walletLabel), ['alpha', 'beta', 'gamma'],
+    'each result names its wallet, so callers need not zip by index');
+  assert.equal(results[0].state, 'confirmed');
+  assert.equal(results[0].txHash, '0xalpha');
+  assert.equal(results[1].state, 'failed');
+  assert.match(results[1].error, /insufficient funds/);
+  assert.equal(results[2].state, 'confirmed', 'gamma mints even though beta failed before it');
+});
+
+test('batch mint still throws for a request-wide problem rather than failing each wallet separately', async () => {
+  // An unsupported chain is wrong for the whole request; retrying it once per wallet would turn
+  // one mistake into N identical failures and hide what actually went wrong.
+  const { service } = fixture({ executeMint: async () => ({ state: 'confirmed' }) });
+  await assert.rejects(service.batchMint('user-a', {
+    walletLabels: ['alpha'], contractAddress: '0x000000000000000000000000000000000000dEaD',
+    chain: 'dogecoin', quantity: 1, priceETH: 0,
+  }), ValidationError);
+});
+
+// Asking which chain a private key is "on" has no true answer -- the same key is the same address
+// on every EVM chain -- and is wrong outright for a batch spanning chains. Detection replaces it.
+test('batch import detects each wallet home chain from its own balances, so one batch can span chains', async () => {
+  const balances = {
+    '0x0000000000000000000000000000000000000001': { base: 5n },
+    '0x0000000000000000000000000000000000000002': { polygon: 9n },
+  };
+  const persisted = [];
+  const { service } = fixture({
+    supportedChains: ['ethereum', 'base', 'polygon'],
+    chains: { ethereum: { sym: 'ETH' }, base: { sym: 'ETH' }, polygon: { sym: 'MATIC' } },
+    providerService: {
+      perform: async (chain, _label, fn) => fn({
+        getBalance: async address => (balances[address]?.[chain] ?? 0n),
+      }),
+    },
+    storage: {
+      addWallet: async value => { persisted.push(value); return { ...value, id: persisted.length }; },
+      deleteWallet: async () => true,
+    },
+  });
+  const detected = await service.detectHomeChain('0x0000000000000000000000000000000000000002');
+  assert.deepEqual(detected, { chain: 'polygon', detected: true },
+    'the chain actually holding a balance wins');
+  const empty = await service.detectHomeChain('0x000000000000000000000000000000000000dEaD');
+  assert.deepEqual(empty, { chain: 'ethereum', detected: false },
+    'an address empty everywhere falls back to the first supported chain rather than failing');
+});
+
+test('detectHomeChain survives an unreachable RPC instead of failing the import', async () => {
+  const { service } = fixture({
+    supportedChains: ['ethereum', 'base'],
+    chains: { ethereum: { sym: 'ETH' }, base: { sym: 'ETH' } },
+    providerService: { perform: async () => { throw new Error('rpc down'); } },
+  });
+  const result = await service.detectHomeChain('0x0000000000000000000000000000000000000001');
+  assert.equal(result.chain, 'ethereum');
+  assert.equal(result.detected, false, 'a blip is not a detection');
+});
+
+// Re-importing a wallet you already hold used to succeed silently, leaving two labels for one
+// address. The check lives in persistWallet -- the single funnel createWallet, importWallet and
+// importWalletsBatch all pass through -- so the dashboard, Telegram and Discord all get the same
+// answer without any of them implementing it. Address, not key: the same wallet reached by a seed
+// phrase and by its private key is still the same wallet.
+test('importing a wallet that is already held is refused, and names the wallet it already is', async () => {
+  const key = `0x${'22'.repeat(32)}`;
+  const address = new (require('ethers').Wallet)(key).address;
+  const state = {
+    wallets: [{ userId: 'user-a', label: 'my-main', address, chain: 'ethereum' }],
+    tasks: [], activity: [], pnl: [], snipers: [],
+  };
+  const { service } = fixture({ getState: () => state });
+  await assert.rejects(
+    () => service.importWallet('user-a', { label: 'second-copy', chain: 'ethereum', privateKey: key }),
+    error => {
+      assert.equal(error.name, 'ValidationError');
+      assert.match(error.issues[0].message, /already imported as "my-main"/,
+        'names the existing wallet so the user can find it');
+      assert.match(error.issues[0].message, new RegExp(address));
+      return true;
+    });
+  assert.equal(state.wallets.length, 1, 'nothing was persisted');
+});
+
+test('a duplicate inside a batch import fails only its own entry, and the others still land', async () => {
+  const dupe = `0x${'33'.repeat(32)}`;
+  const fresh = `0x${'44'.repeat(32)}`;
+  const { Wallet } = require('ethers');
+  const state = {
+    wallets: [{ userId: 'user-a', label: 'already-here', address: new Wallet(dupe).address, chain: 'ethereum' }],
+    tasks: [], activity: [], pnl: [], snipers: [],
+  };
+  const { service } = fixture({
+    getState: () => state,
+    storage: { addWallet: async value => { state.wallets.push(value); return { ...value, id: state.wallets.length }; },
+      deleteWallet: async () => true },
+  });
+  const results = await service.importWalletsBatch('user-a', { privateKeys: [dupe, fresh], chain: 'ethereum' });
+  assert.equal(results[0].status, 'failed');
+  assert.match(results[0].error, /already imported as "already-here"/);
+  assert.equal(results[1].status, 'success', 'the good key still imports -- one duplicate is not a whole-batch failure');
+});
