@@ -867,6 +867,18 @@ schedule states that want attention, Automation's to failing snipers/watch rules
 
 ### 13.6 Four states and responsiveness — the pages still owing them
 
+**Mint is done and verified (2026-08-20).** All four states on all four tabs, measured live rather
+than read: the error state forced with a 500 on each tab (notice + Retry, and Retry proven to
+recover on Batch), every empty state forced by stubbing its endpoint to an empty response, loading
+observed, populated in normal use. Responsiveness swept as 5 themes x 4 tabs at 375px and 788px --
+40 combinations, zero horizontal overflow. The production Vite build also runs clean now (use the
+Node 24 runtime; system Node 18 cannot run Vite 8).
+
+Three defects came out of that pass: Batch had no loading or error state at all (a failed
+/api/wallets rendered nothing), Mint now's error used a different shape from its own sibling tabs,
+and a confirmed batch wallet showed a blank instead of its transaction hash (§13.5).
+
+
 §1.7 fixed the error state app-wide. Populated/loading/empty and the phone/light-dark sweep are
 still unverified on:
 - **Automation** — all tabs: snipers, social rules, and the policy editors inside them
@@ -876,10 +888,19 @@ still unverified on:
 
 Presets was verified by the owner at phone width and matches.
 
-### 13.7 Presets — is "+4 more" meant to expand?
+### 13.7 Presets — "+N more" expands ✅ RULED
 
-`mint.html:254` ends the Method registry with a `.tot` row reading `+4 more`. In the prototype it
-is static. Open question for the owner: truncation indicator, or a control that expands the table?
+`mint.html:254` ends the Method registry with a `.tot` row reading `+4 more`, static in the
+prototype. **Owner ruling 2026-08-20: keep the expander.** The build had already implemented it as a
+working toggle (`+N more` ⇄ `Show fewer`), so this is recorded as a deliberate deviation from the
+prototype rather than an open question — a static indicator would leave the remaining signatures
+unreachable, which is worse than the inconsistency.
+
+Note the bug this surfaced, since it is the reason the ruling was needed: expanding the table on a
+phone used to push the whole PAGE wider than the screen. That was structural, not cosmetic — a long
+unbreakable method signature set its cell's min-content width, and grid children default to
+`min-width:auto`, so every ancestor refused to shrink. Fixed app-wide (`min-width:0` on the
+containers, `.led` cells wrap); measured at 375px as 422px before and 375px after.
 
 ### 13.8 Still open from earlier
 
