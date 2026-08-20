@@ -425,10 +425,45 @@ function walletsMenu() {
 }
 
 function settingsMenu({ isOwner = false } = {}) {
-  const rows = [row([button('🔗 Enter a link code from Telegram', 'link:enter')])];
+  const rows = [
+    row([button('🔗 Enter a link code from Telegram', 'link:enter')]),
+    row([button('🎛️ Transaction mode', 'menu:mode')]),
+  ];
   if (isOwner) rows.push(row([button('🛡️ Admin console', 'menu:admin')]));
   rows.push(row([button('⬅️ Back to menu', 'menu:main')]));
   return { content: '## Settings', components: rows };
+}
+
+// Section O -- the "Transaction mode" button had no button/menu path at all: /mode worked fine as
+// a slash command, but was only reachable by already knowing the command and an exact preset name.
+// Same 4 presets/labels as Telegram's already-shipped MODE_META (src/telegram/menus.js) -- kept in
+// sync by hand since the two platforms build their option lists in entirely different shapes.
+const MODE_META = {
+  ultra_fast: { label: 'Degen', hint: 'Full send. Aggressive gas, minimal friction.' },
+  fast: { label: 'Fast', hint: 'quick, higher gas, still asks before it fires' },
+  semi_safe: { label: 'Cautious', hint: 'measured, moderate gas' },
+  safe: { label: 'Normie', hint: 'slow and steady, network-price gas, zero surprises' },
+};
+
+// Must match ADVANCED_PRESET_KEYS in src/governance/postgresGovernanceRepository.js -- the
+// backend is the real gate (selectPreset rejects these for an ineligible caller regardless of
+// what's offered here); this list only avoids offering a doomed tap in the first place.
+const GATED_PRESET_KEYS = ['ultra_fast', 'fast'];
+
+function modeMenu({ currentKey, presets, advancedModesAllowed = false }) {
+  const rows = presets
+    .filter(preset => advancedModesAllowed || !GATED_PRESET_KEYS.includes(preset.key))
+    .map(preset => {
+      const meta = MODE_META[preset.key] || { label: preset.displayName, hint: '' };
+      return row([button(`${preset.key === currentKey ? '✅ ' : ''}${meta.label} · ${meta.hint}`, `mode:pick:${preset.key}`)]);
+    });
+  rows.push(row([button('⬅️ Back to settings', 'menu:settings')]));
+  const currentLabel = MODE_META[currentKey]?.label || 'none selected';
+  const lockedNote = advancedModesAllowed ? '' : '\n\n🔒 Degen and Fast require group or admin access.';
+  return {
+    content: `## 🎛️ Transaction mode\nCurrent mode: **${currentLabel}**\n\nControls confirmation prompts and how hard this thing sends gas on every mint. Ceilings and forced simulation always have the final say, no matter which mode you pick.${lockedNote}`,
+    components: rows,
+  };
 }
 
 function placeholderMenu(title, hint) {
@@ -702,6 +737,7 @@ function labelModal({ customId, title, placeholder = '', style = 'short', maxLen
 module.exports = {
   button, row, select, mainMenu, mintModeMenu, batchImportMenu, gateUnlockCard, walletsMenu, settingsMenu, placeholderMenu,
   chainSelect, walletSelect, walletMultiSelect, confirmRemoveWallet, labelModal, gasMenu, activityMenu, tasksMenu, snipersMenu, adminOverviewMenu,
+  modeMenu, MODE_META,
   contractDetailsText, collectionInfoCard, mintQuantitySelect, mintPriceStep, gasTolerancePrompt, mintConfirmation, numberModal,
   taskNameQuickPicks, taskConfirmation,
   watchTypeSelect, watchMethodSelect, watchConfigModal, watchRuleConfirmation,

@@ -601,6 +601,21 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         const fees = await commands.gas(gasChain).catch(() => null);
         return dcRespond(interaction, discordMenus.gasMenu({ chain: gasChain, fees, supportedChains, chains }));
       }
+      if (data === 'menu:mode') {
+        const [presets, currentMode, advancedModesAllowed] = await Promise.all([
+          commands.modePresets(), commands.currentMode(userId), commands.advancedModesAllowed(userId),
+        ]);
+        return dcRespond(interaction, discordMenus.modeMenu({ currentKey: currentMode?.key, presets, advancedModesAllowed }));
+      }
+      if (data.startsWith('mode:pick:')) {
+        const presetKey = data.slice('mode:pick:'.length);
+        if (!discordMenus.MODE_META[presetKey]) return dcRespond(interaction, discordMenus.mainMenu({ isOwner: await ownerFlag(userId) }));
+        await commands.selectMode(userId, presetKey);
+        const [presets, currentMode, advancedModesAllowed] = await Promise.all([
+          commands.modePresets(), commands.currentMode(userId), commands.advancedModesAllowed(userId),
+        ]);
+        return dcRespond(interaction, discordMenus.modeMenu({ currentKey: currentMode?.key, presets, advancedModesAllowed }));
+      }
       if (data === 'menu:admin') {
         const overview = await commands.adminOverview(userId);
         return dcRespond(interaction, discordMenus.adminOverviewMenu(formatAdminOverview(overview)));

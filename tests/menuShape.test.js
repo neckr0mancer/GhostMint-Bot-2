@@ -33,6 +33,10 @@ const CASES = {
   'batchImportMenu (ready)': () => menus.batchImportMenu({ count: 3, chainLabel: 'Base', dropped: 2 }),
   chainSelect: () => menus.chainSelect(SUPPORTED, CHAINS),
   placeholderMenu: () => menus.placeholderMenu('Wallets', 'Nothing here yet.'),
+  'modeMenu (advanced allowed, all 4 presets)': () => menus.modeMenu({
+    currentKey: 'safe', advancedModesAllowed: true,
+    presets: [{ key: 'ultra_fast' }, { key: 'fast' }, { key: 'semi_safe' }, { key: 'safe' }],
+  }),
 };
 
 test('every Discord menu fits inside the 5-row / 5-button limits Discord enforces', () => {

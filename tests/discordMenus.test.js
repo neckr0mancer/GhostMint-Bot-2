@@ -4,6 +4,7 @@ const {
   mainMenu, walletsMenu, settingsMenu, chainSelect, walletSelect,
   confirmRemoveWallet, placeholderMenu, labelModal, collectionInfoCard,
   taskNameQuickPicks, taskConfirmation, tasksMenu, snipersMenu, adminOverviewMenu,
+  modeMenu, MODE_META,
 } = require('../src/discord/menus');
 
 function flatButtons(components) {
@@ -40,6 +41,40 @@ test('settings shows the link button to every user and admin console only to own
   assert.ok(buttons.includes('link:enter'));
   assert.equal(buttons.includes('menu:admin'), false);
   assert.ok(flatButtons(settingsMenu({ isOwner: true }).components).some(b => b.custom_id === 'menu:admin'));
+});
+
+// Section O -- the "Transaction mode" button used to have no button/menu path at all: /mode worked
+// fine as a slash command, but was only reachable by already knowing it and an exact preset name.
+test('settings offers a way into transaction mode for every user, owner or not', () => {
+  const buttons = flatButtons(settingsMenu({ isOwner: false }).components).map(b => b.custom_id);
+  assert.ok(buttons.includes('menu:mode'));
+  assert.ok(flatButtons(settingsMenu({ isOwner: true }).components).some(b => b.custom_id === 'menu:mode'));
+});
+
+test('modeMenu offers every preset with the current one checked, plus a way back to settings', () => {
+  const presets = [{ key: 'ultra_fast' }, { key: 'fast' }, { key: 'semi_safe' }, { key: 'safe' }];
+  const menu = modeMenu({ currentKey: 'semi_safe', presets, advancedModesAllowed: true });
+  const buttons = flatButtons(menu.components);
+  assert.deepEqual(buttons.map(b => b.custom_id),
+    ['mode:pick:ultra_fast', 'mode:pick:fast', 'mode:pick:semi_safe', 'mode:pick:safe', 'menu:settings']);
+  const current = buttons.find(b => b.custom_id === 'mode:pick:semi_safe');
+  assert.match(current.label, /^✅ /);
+  assert.doesNotMatch(buttons.find(b => b.custom_id === 'mode:pick:safe').label, /^✅ /);
+  assert.match(menu.content, new RegExp(MODE_META.semi_safe.label));
+});
+
+test('modeMenu hides Degen and Fast unless advanced modes are allowed for this user', () => {
+  const presets = [{ key: 'ultra_fast' }, { key: 'fast' }, { key: 'semi_safe' }, { key: 'safe' }];
+  const locked = modeMenu({ currentKey: 'safe', presets, advancedModesAllowed: false });
+  const lockedIds = flatButtons(locked.components).map(b => b.custom_id);
+  assert.equal(lockedIds.includes('mode:pick:ultra_fast'), false);
+  assert.equal(lockedIds.includes('mode:pick:fast'), false);
+  assert.match(locked.content, /require group or admin access/);
+
+  const unlocked = modeMenu({ currentKey: 'safe', presets, advancedModesAllowed: true });
+  const unlockedIds = flatButtons(unlocked.components).map(b => b.custom_id);
+  assert.ok(unlockedIds.includes('mode:pick:ultra_fast'));
+  assert.ok(unlockedIds.includes('mode:pick:fast'));
 });
 
 test('chain select renders one option per supported chain plus a cancel button', () => {

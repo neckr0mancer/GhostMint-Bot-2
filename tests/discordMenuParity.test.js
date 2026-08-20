@@ -6,6 +6,9 @@ const { createDiscordInteractionHandler } = require('../src/discord/discordBot')
 // buttons used to just reply "use /mint" etc instead of performing the action; this file now
 // covers all six, closing out Discord's side of Section O (only menu:admin has no single "the"
 // read to mirror -- it surfaces governance.dashboardOverview instead, see adminOverviewFormat.js).
+// menu:mode/mode:pick: are a related gap closed later: Telegram's settingsMenu already had a
+// "Transaction mode" button wired to modeMenu()/mode:pick:, but Discord's had none at all -- /mode
+// worked fine as a slash command, but only if you already knew it and an exact preset name.
 // Mirrors the mock shape established by tests/discordWalletFlow.test.js.
 
 function baseInteraction(userId) {
@@ -68,6 +71,10 @@ function fixture(overrides = {}) {
         maxSupply: 100, maxPerWallet: 1, startTime: null, endTime: null, collection: null, soldOut: false, displayPrice: null,
       }),
       wallets: () => [{ label: 'main-wallet', address: '0xed9834A3E62c8eB78B7F6682c5798f69B4Ee2976', chain: 'ethereum', minted: 3 }],
+      modePresets: async () => [{ key: 'ultra_fast' }, { key: 'fast' }, { key: 'semi_safe' }, { key: 'safe' }],
+      currentMode: async () => ({ key: 'safe' }),
+      advancedModesAllowed: async () => false,
+      selectMode: async (userId, key) => key,
       ...overrides.commands,
     },
   });
@@ -172,6 +179,54 @@ test('menu:snipers performs the same lookup /sniper list uses instead of replyin
   await handler(tap);
   assert.match(tap.updates[0].content, /Post-confirmation copying only/);
   assert.match(tap.updates[0].content, /Copy Cool Cats/);
+});
+
+// The "Transaction mode" button had no button/menu path at all: /mode worked fine as a slash
+// command, but was only reachable by already knowing it and an exact preset name.
+test('menu:mode shows the current preset and hides Degen/Fast for a user without advanced access', async () => {
+  const { handler } = fixture();
+  const tap = buttonInteraction('menu:mode');
+  await handler(tap);
+  assert.match(tap.updates[0].content, /Transaction mode/);
+  assert.match(tap.updates[0].content, /Normie/);
+  const ids = tap.updates[0].components.flatMap(r => r.components).map(b => b.custom_id);
+  assert.deepEqual(ids, ['mode:pick:semi_safe', 'mode:pick:safe', 'menu:settings']);
+  const current = tap.updates[0].components.flatMap(r => r.components).find(b => b.custom_id === 'mode:pick:safe');
+  assert.match(current.label, /^✅ /);
+});
+
+test('menu:mode offers every preset once advanced modes are allowed', async () => {
+  const { handler } = fixture({ commands: { advancedModesAllowed: async () => true } });
+  const tap = buttonInteraction('menu:mode');
+  await handler(tap);
+  const ids = tap.updates[0].components.flatMap(r => r.components).map(b => b.custom_id);
+  assert.deepEqual(ids, ['mode:pick:ultra_fast', 'mode:pick:fast', 'mode:pick:semi_safe', 'mode:pick:safe', 'menu:settings']);
+});
+
+test('mode:pick:fast calls the same commands.selectMode the /mode slash command uses, then re-renders with the new current preset checked', async () => {
+  const selected = [];
+  const { handler } = fixture({
+    commands: {
+      advancedModesAllowed: async () => true,
+      selectMode: async (userId, key) => { selected.push({ userId, key }); return key; },
+      currentMode: async () => ({ key: 'fast' }),
+    },
+  });
+  const tap = buttonInteraction('mode:pick:fast');
+  await handler(tap);
+  assert.deepEqual(selected, [{ userId: 'internal-user', key: 'fast' }]);
+  assert.match(tap.updates[0].content, /Fast/);
+  const current = tap.updates[0].components.flatMap(r => r.components).find(b => b.custom_id === 'mode:pick:fast');
+  assert.match(current.label, /^✅ /);
+});
+
+test('an unknown mode:pick preset is refused rather than passed through to selectMode', async () => {
+  const selected = [];
+  const { handler } = fixture({ commands: { selectMode: async (userId, key) => { selected.push(key); return key; } } });
+  const tap = buttonInteraction('mode:pick:nonsense');
+  await handler(tap);
+  assert.equal(selected.length, 0);
+  assert.ok(tap.updates[0].components.flatMap(r => r.components).some(b => b.custom_id === 'menu:wallets'), 'falls back to the main menu');
 });
 
 test('menu:admin shows the real governance overview instead of replying "use /admin"', async () => {
