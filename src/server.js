@@ -2667,6 +2667,15 @@ send /mint with a contract address to get going.`;
     await startTaskScheduleFlow({ chatId: msg.chat.id, messageId: null, userId, contractAddressInput: match[1] || null });
   }));
 
+  // Ends the unlock window immediately. Without it, the only way to confirm an action is really
+  // gated is to wait the window out -- one unlock covers every gated action in that conversation
+  // by design, so testing them one at a time was impossible.
+  bot.onText(/^\/lock(?:@\w+)?$/, withTelegramUser(async msg => {
+    actionGate.lock('telegram', msg.chat.id);
+    tgRender(msg.chat.id, { text: '🔒 Locked. Sensitive actions will ask for your password again.',
+      replyMarkup: telegramMenus.keyboard([[telegramMenus.button('⬅️ Back to base', 'menu:main')]]), parseMode: 'HTML' });
+  }));
+
   bot.onText(/^\/link(?:@\w+)?$/, withTelegramUser(async (msg, match, userId) => {
     const link = await identity.createLinkCode(userId);
     tgRender(msg.chat.id, { text: `🔗 <b>Account link code</b>\n\n<pre>${link.code}</pre>\nTap or long-press the code above to copy it. Expires in 5 minutes and can be used once.`, parseMode: 'HTML' });

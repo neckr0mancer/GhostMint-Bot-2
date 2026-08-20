@@ -48,6 +48,7 @@ const CHAINS = { ethereum: { name: 'Ethereum', sym: 'ETH' }, base: { name: 'Base
 function fixture(overrides = {}) {
   const handler = createDiscordInteractionHandler({
     identity: { resolveOrCreate: async () => 'internal-user' },
+    ...(overrides.actionGate ? { actionGate: overrides.actionGate } : {}),
     chains: CHAINS,
     supportedChains: ['ethereum', 'base'],
     commands: {
@@ -207,4 +208,47 @@ test('the Discord wallet list renders readable markdown, not an escaped wall of 
   assert.equal(content.includes(BS + '('), false, 'no escaped parentheses');
   assert.equal(content.includes(BS + '.'), false, 'no escaped full stops');
   assert.ok(content.includes('main' + BS + '-wallet'), 'the user-controlled label IS still escaped');
+});
+
+// Unlocking the gate is deliberately NOT a flowState flow -- there is no multi-step state worth
+// keeping -- so `flow` is null when the password modal comes back. The handler sat below
+// handleModal's `if (!flow)` guard, so every unlock was answered "This step has expired. Open the
+// Wallets menu again", the password was never checked, and Discord asked again forever.
+test('the gate password modal is verified even though unlocking starts no flow', async () => {
+  const submitted = [];
+  const { handler } = fixture({
+    actionGate: {
+      allows: async () => false,
+      submit: async (userId, platform, contextId, password) => {
+        submitted.push({ userId, platform, contextId, password });
+        return password === 'right' ? { ok: true } : { ok: false, attemptsLeft: 4 };
+      },
+    },
+  });
+
+  const good = modalInteraction('gate:unlock:submit', { value: 'right' });
+  await handler(good);
+  const okReply = [...good.replies, ...good.updates].pop();
+  assert.ok(okReply, 'the modal submit must be answered at all');
+  assert.equal(/expired/i.test(okReply.content), false,
+    'the no-flow guard must not swallow the unlock');
+  assert.match(okReply.content, /Unlocked/);
+  assert.equal(submitted.length, 1, 'the password actually reached the gate');
+  assert.equal(submitted[0].password, 'right');
+
+  const bad = modalInteraction('gate:unlock:submit', { value: 'nope' });
+  await handler(bad);
+  const badReply = [...bad.replies, ...bad.updates].pop();
+  assert.match(badReply.content, /Wrong password/);
+  assert.match(badReply.content, /4 attempt/);
+});
+
+test('a gated Discord action shows the unlock card instead of running', async () => {
+  const { handler } = fixture({ actionGate: { allows: async () => false, submit: async () => ({ ok: true }) } });
+  const tap = buttonInteraction('wallet:remove:pick');
+  await handler(tap);
+  const payload = [...tap.updates, ...tap.replies].pop();
+  assert.match(payload.content, /Locked/);
+  const ids = (payload.components || []).flatMap(r => (r.components || []).map(c => c.custom_id));
+  assert.ok(ids.includes('gate:unlock:open'), 'offers a way to actually unlock');
 });
