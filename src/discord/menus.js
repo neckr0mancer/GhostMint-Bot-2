@@ -666,11 +666,15 @@ function walletSelect(wallets, { customId, emptyHint }) {
   return { content: 'Choose a wallet:', components: [select(customId, options, 'Select a wallet'), row([button('⬅️ Back to menu', 'menu:wallets')])] };
 }
 
-// Batch mint (multi:true) needs more than one wallet -- Discord's select menu supports true
-// multi-select in one component (min_values/max_values), unlike Telegram's toggle-then-Continue
-// button list (no equivalent component exists there), so this is a single tap-to-submit select
-// rather than a dedicated multi-step picker.
-function walletMultiSelect(wallets, { customId, emptyHint }) {
+// Batch mint (multi:true) needs more than one wallet. Discord's select menu supports checking
+// several options in one open-dropdown session, but each *submission* (closing the dropdown) is
+// its own interaction carrying only whatever was checked in that session -- picking one wallet,
+// having the dropdown close, then reopening it does NOT remember the earlier pick unless this menu
+// marks it `default: true`. So this stays open across submissions: every select fires flow state
+// forward via `selectedLabels`, re-renders this same menu with those options pre-checked, and a
+// separate Continue button (mirroring Telegram's toggle-then-flow:walletcontinue shape, the closest
+// real equivalent Discord has) is what actually advances the flow -- not the select itself.
+function walletMultiSelect(wallets, selectedLabels, { customId, emptyHint }) {
   if (!wallets.length) return placeholderMenu('Wallets', emptyHint);
   if (wallets.length < MIN_BATCH_WALLETS) {
     return {
@@ -679,10 +683,15 @@ You have ${wallets.length}. A batch of one is just a single mint -- use that ins
       components: [row([button('🎯 Single mint instead', 'menu:mint:single', 'success'), button('➕ Add a wallet', 'wallet:create:start'), button('⬅️ Back', 'menu:main')])],
     };
   }
-  const options = wallets.map(w => ({ label: `${w.label} (${w.chain})`, value: w.label, emoji: CHAIN_EMOJI[w.chain] || undefined }));
+  const options = wallets.map(w => ({ label: `${w.label} (${w.chain})`, value: w.label, emoji: CHAIN_EMOJI[w.chain] || undefined, default: selectedLabels.includes(w.label) }));
+  const continueRow = selectedLabels.length >= MIN_BATCH_WALLETS
+    ? row([button(`▶️ Continue with ${selectedLabels.length}`, 'flow:mintwalletmulti:continue', 'success'), button('❌ Cancel', 'flow:cancel:ask', 'danger')])
+    : row([button('❌ Cancel', 'flow:cancel:ask', 'danger')]);
   return {
-    content: 'Choose every wallet to include in this batch:',
-    components: [select(customId, options, `Select at least ${MIN_BATCH_WALLETS} wallets`, { minValues: MIN_BATCH_WALLETS, maxValues: wallets.length }), row([button('❌ Cancel', 'flow:cancel:ask', 'danger')])],
+    content: selectedLabels.length
+      ? `Choose every wallet to include in this batch.\nSelected so far: ${selectedLabels.join(', ')}`
+      : 'Choose every wallet to include in this batch:',
+    components: [select(customId, options, `Select at least ${MIN_BATCH_WALLETS} wallets`, { minValues: MIN_BATCH_WALLETS, maxValues: wallets.length }), continueRow],
   };
 }
 

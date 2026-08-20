@@ -166,7 +166,7 @@ test('multi:true reaches a genuine multi-select (min 2, max = wallet count) at t
   assert.deepEqual(select.options.map(o => o.value), ['alpha', 'beta', 'gamma']);
 });
 
-test('full batch-mint happy path: selecting more than one wallet in one tap reaches confirm with every wallet, and batchMint receives all of them', async () => {
+test('full batch-mint happy path: selecting wallets stays on the picker until Continue is tapped, then reaches confirm with every wallet, and batchMint receives all of them', async () => {
   const flowState = createFlowStateStore();
   const batches = [];
   const commands = baseCommands({
@@ -183,10 +183,28 @@ test('full batch-mint happy path: selecting more than one wallet in one tap reac
   await handler(slash);
   await handler(buttonInteraction('flow:mintdetailscontinue', 'batcher-3'));
 
-  const select = selectInteraction('flow:mintwalletmulti:select', ['alpha', 'gamma'], 'batcher-3');
-  await handler(select);
-  assert.match(select.updates[0].content, /Gas tolerance for this batch/);
-  // A batch mint asks for a gas tolerance before confirm -- a plain single mint never does.
+  // Each select submission only carries what Discord's dropdown had checked in that one session --
+  // picking 'alpha' first must not advance the flow, and must re-render the same picker (still
+  // 'awaiting_wallet') with 'alpha' pre-checked (default: true) and selected wallets recorded, not
+  // silently dropped.
+  const firstPick = selectInteraction('flow:mintwalletmulti:select', ['alpha'], 'batcher-3');
+  await handler(firstPick);
+  assert.equal(flowState.get('discord', 'batcher-3').step, 'awaiting_wallet');
+  assert.deepEqual(flowState.get('discord', 'batcher-3').data.selectedWallets, ['alpha']);
+  const reRenderedSelect = firstPick.updates[0].components[0].components[0];
+  assert.deepEqual(reRenderedSelect.options.filter(o => o.default).map(o => o.value), ['alpha']);
+  assert.match(firstPick.updates[0].content, /Selected so far: alpha/);
+
+  // Reopening the dropdown and checking 'gamma' too (Discord's real client would show 'alpha'
+  // already checked from `default: true` above, so the submitted values carry both).
+  const secondPick = selectInteraction('flow:mintwalletmulti:select', ['alpha', 'gamma'], 'batcher-3');
+  await handler(secondPick);
+  assert.equal(flowState.get('discord', 'batcher-3').step, 'awaiting_wallet');
+  assert.deepEqual(flowState.get('discord', 'batcher-3').data.selectedWallets, ['alpha', 'gamma']);
+  const continueButton = secondPick.updates[0].components[1].components[0];
+  assert.equal(continueButton.custom_id, 'flow:mintwalletmulti:continue');
+
+  await handler(buttonInteraction('flow:mintwalletmulti:continue', 'batcher-3'));
   assert.equal(flowState.get('discord', 'batcher-3').step, 'awaiting_gastolerance');
 
   const noLimit = buttonInteraction('flow:gastoleranceaccept', 'batcher-3');

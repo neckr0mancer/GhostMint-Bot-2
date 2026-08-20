@@ -89,7 +89,7 @@ test('the batch wallet picker never builds a select whose minimum exceeds its ma
     [{ label: 'a', chain: 'ethereum' }, { label: 'b', chain: 'base' }],
   ];
   for (const wallets of sets) {
-    const card = dc.walletMultiSelect(wallets, { customId: 'x', emptyHint: 'none' });
+    const card = dc.walletMultiSelect(wallets, [], { customId: 'x', emptyHint: 'none' });
     const select = card.components[0].components.find(c => c.type === 3);
     if (select) {
       assert.ok(select.min_values <= select.max_values,

@@ -193,7 +193,7 @@ const FLOW_CONTINUATIONS = {
   wallet_batch_import: ['wallet:batch-import:add', 'flow:batchkeys:submit', 'wallet:batch-import:confirm'],
   // Section AA -- every custom_id stays fixed (select-menu VALUES carry the chosen quantity/
   // wallet, never the custom_id itself), so this list needs no dynamic/prefix matching.
-  mint_guided: ['flow:mintdetailscontinue', 'flow:detailsrefresh', 'flow:copyca', 'flow:schedulesuggest', 'flow:mintqty:select', 'flow:mintqty:submit', 'flow:mintwallet:select', 'flow:mintwalletmulti:select', 'flow:priceaccept', 'flow:pricemanual', 'flow:mintprice:submit', 'flow:gastoleranceaccept', 'flow:gastolerancemanual', 'flow:gastolerance:submit', 'flow:mintconfirm', 'flow:mintviaopensea', 'flow:scheduleviaopensea'],
+  mint_guided: ['flow:mintdetailscontinue', 'flow:detailsrefresh', 'flow:copyca', 'flow:schedulesuggest', 'flow:mintqty:select', 'flow:mintqty:submit', 'flow:mintwallet:select', 'flow:mintwalletmulti:select', 'flow:mintwalletmulti:continue', 'flow:priceaccept', 'flow:pricemanual', 'flow:mintprice:submit', 'flow:gastoleranceaccept', 'flow:gastolerancemanual', 'flow:gastolerance:submit', 'flow:mintconfirm', 'flow:mintviaopensea', 'flow:scheduleviaopensea'],
   // Section AF follow-up: Discord's mini schedule flow (Section S's full guided flow remains
   // unbuilt) -- a fixed chain, optional quantity select/modal (only when maxPerWallet > 1) ->
   // wallet select -> name select -> optional custom-name modal -> confirm, with no dynamic values
@@ -283,7 +283,7 @@ function mintFlowRenderPayload(step, data, { wallets = [], chains = {} } = {}) {
   if (step === 'awaiting_quantity') return discordMenus.mintQuantitySelect(data);
   if (step === 'awaiting_wallet') {
     return data.multi
-      ? discordMenus.walletMultiSelect(wallets, { customId: 'flow:mintwalletmulti:select', emptyHint: 'No wallets yet. Create one first from the Wallets menu.' })
+      ? discordMenus.walletMultiSelect(wallets, data.selectedWallets || [], { customId: 'flow:mintwalletmulti:select', emptyHint: 'No wallets yet. Create one first from the Wallets menu.' })
       : discordMenus.walletSelect(wallets, { customId: 'flow:mintwallet:select', emptyHint: 'No wallets yet. Create one first from the Wallets menu.' });
   }
   if (step === 'awaiting_price') return discordMenus.mintPriceStep({ chainSym: chains[data.chain]?.sym, displayPrice: data.displayPrice });
@@ -933,20 +933,35 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         const respond = payload => (wentEphemeral ? interaction.followUp({ ...payload, ephemeral: true }).catch(() => {}) : dcRespond(interaction, payload));
         return applyMintFlowStep(mintCtx, respond, platformUserId, userId, decision);
       }
-      // A batch mint (multi:true) needs more than one wallet in one tap -- Discord's native select
-      // menu supports min_values/max_values for exactly this, unlike Telegram's toggle-then-Continue
-      // button list (no such component exists there), so this is a single interaction carrying every
-      // chosen label in interaction.values instead of a dedicated Continue step.
+      // A batch mint (multi:true) needs more than one wallet. Discord's select menu lets several be
+      // checked within one open-dropdown session, but each *submission* (the dropdown closing) is
+      // its own interaction carrying only whatever was checked in that session -- picking one,
+      // having it close, then reopening it does NOT remember the earlier pick unless this menu
+      // marks it `default: true`. So this does not advance the flow on the first pick: it stores
+      // whatever was just selected and re-renders this same picker (walletMultiSelect) with those
+      // options marked `default: true`, so the running selection persists across dropdown sessions.
+      // A separate Continue tap (only shown once at least one wallet is selected) is what actually
+      // advances the flow -- the closest real Discord equivalent to Telegram's
+      // toggle-then-flow:walletcontinue shape, since no native "confirm this multi-select" gesture
+      // exists on Discord's side.
       if (data === 'flow:mintwalletmulti:select') {
         const flow = flowState.get('discord', platformUserId);
         if (!flow || flow.flow !== 'mint_guided' || flow.step !== 'awaiting_wallet') return notYourMintPrompt(interaction);
         const labels = interaction.values || [];
-        if (!labels.length) return undefined;
         const wentEphemeral = Boolean(flow.data.originMessagePublic);
         if (wentEphemeral) neutralizeMintOriginMessage(interaction);
-        const decision = mintFlowDecision.afterWalletSelection({ data: { ...flow.data, originMessagePublic: false, selectedWallets: labels } });
+        const updatedData = { ...flow.data, originMessagePublic: false, selectedWallets: labels };
+        flowState.advance('discord', platformUserId, 'awaiting_wallet', updatedData);
+        const wallets = commands.wallets(userId);
         const respond = payload => (wentEphemeral ? interaction.followUp({ ...payload, ephemeral: true }).catch(() => {}) : dcRespond(interaction, payload));
-        return applyMintFlowStep(mintCtx, respond, platformUserId, userId, decision);
+        return respond(mintFlowRenderPayload('awaiting_wallet', updatedData, { wallets, chains }));
+      }
+      if (data === 'flow:mintwalletmulti:continue') {
+        const flow = flowState.get('discord', platformUserId);
+        if (!flow || flow.flow !== 'mint_guided' || flow.step !== 'awaiting_wallet') return notYourMintPrompt(interaction);
+        if (!flow.data.selectedWallets?.length) return undefined;
+        const decision = mintFlowDecision.afterWalletSelection({ data: flow.data });
+        return applyMintFlowStep(mintCtx, payload => dcRespond(interaction, payload), platformUserId, userId, decision);
       }
       if (data === 'flow:priceaccept') {
         const flow = flowState.get('discord', platformUserId);

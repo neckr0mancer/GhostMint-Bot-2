@@ -57,6 +57,13 @@ shipped).
   paused pending real timing data rather than built speculatively. Worklist B (after A is stable):
   parallelized pre-arm, dynamic fee presets, RPC health scoring/failover, hot wallet session cache
   (security tradeoff, needs its own sign-off), and latency dashboards — none started.
+- **Round 18** (no section letter yet — folded into Section AH's batch-mint work) fixes a live-found
+  regression in Discord's batch-mint wallet multi-select: picking one wallet from the dropdown
+  advanced the flow immediately instead of letting more be added, since each dropdown submission
+  only carries what was checked in that one session and the menu never marked earlier picks
+  `default: true` on re-render. Now stays on the picker (showing the running selection, pre-checked)
+  until an explicit Continue tap, mirroring Telegram's toggle-then-`flow:walletcontinue` shape;
+  2026-08-20.
 - **Round 17** (Section AW) is a run of live-reported bugs found via real production use,
   2026-08-20. Shipped: Telegram's `/batchmint` — the one command Telegram's own "/" autocomplete
   actually advertises — was wired only to a raw-JSON power-user path and silently did nothing when
