@@ -67,9 +67,21 @@ not reproduced or root-caused; diagnostic logging shipped as a safety net, not a
 it recurs, capture the exact contract/timestamp so the Railway logs for that window can be checked
 directly (now straightforward, given the access above).
 
-**Next up: not decided — pick with the user.** The open candidates, all detailed in
-`docs/WORKLIST.md`: Round 15's **pool 2** (sniper RPC isolation + a real WebSocket endpoint, needs a
-provider/budget decision first); a `/buy` (secondary-market) command, scoped but not yet built;
+**Next up: Round 16 (Section AV), scoped 2026-08-20, ready to build.** The owner's own two-tier
+plan for sniper execution speed — every decision needed to start is already made (see the section
+in `docs/WORKLIST.md` for the full reasoning): Round 15's pool 2 finishes on a **separate Alchemy
+app**, account upgraded to **Pay-As-You-Go** (25 req/s free tier risked throttling during
+simultaneous multi-user sniper fires at ~200 users across two servers; QuickNode was checked and
+priced out, not just assumed worse); pre-arming scheduled mints (~10-15s lead time default);
+precise near-launch timers replacing coarse polling; same-tx multi-RPC broadcast for sniper only,
+fanning out to the sniper pool's own URLs, not a relay; and sniper treated as its own execution
+profile gated on the already-existing `triggerSource === 'blockchain'` signal. Worklist B
+(parallelized pre-arm, dynamic fee presets, RPC health scoring, latency dashboards) follows once A
+is stable — except the hot-wallet session cache in B, which needs its own explicit sign-off before
+building since it's a security tradeoff, not a routine cache.
+
+Other open candidates, lower priority than Round 16: a `/buy` (secondary-market) command, scoped
+but not yet built;
 Round 2's Sections **O** (button ⇄ command parity), **P** + **R** (transaction watching + sniper
 guided config, which share one watcher abstraction), and **S** (Discord guided task-schedule);
 Round 3's Sections **T–Z**; and Section **AD Tier 2**, which is researched but unbuilt. The

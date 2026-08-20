@@ -50,8 +50,112 @@ shipped).
   can never queue behind a time-critical scheduled broadcast. Pool 1 (scheduled/Degen fast path, a
   generic opt-in `{ENVNAME}_FAST_URLS` per chain) shipped 2026-08-20; pool 2 (sniper isolation + a
   real WebSocket endpoint) remains open, needs its own provider/budget decision.
+- **Round 16** (Section AV) is the owner's own two-tier plan for sniper execution speed — scoped
+  2026-08-20, not yet built. Worklist A (must-ship): finish Round 15's pool 2, pre-arm scheduled
+  mints, precise near-launch timers, same-tx multi-RPC broadcast for sniper, sniper as its own
+  execution profile, and end-to-end timing logs. Worklist B (after A is stable): parallelized
+  pre-arm, dynamic fee presets, RPC health scoring/failover, hot wallet session cache (security
+  tradeoff, needs its own sign-off), and latency dashboards.
 
 Status legend: ✅ Done · 🟡 Partial · ❌ Not started
+
+---
+
+# Round 16 — sniper execution speed, the owner's own two-tier plan (scoped 2026-08-20, not built)
+
+## Section AV — Sniper as its own execution profile, pre-arming, precise timers, and same-tx multi-RPC broadcast ❌
+
+The owner wrote out their own plan directly, as two worklists — "A" (must ship) and "B"
+(enhancements, after A is stable) — then added one architectural correction: **sniper should be
+treated as a true execution profile, not just a gas preset.** That correction turned out to map
+cleanly onto something that already exists: `triggerSource === 'blockchain'` already distinguishes
+a sniper-fired execution from a scheduled or manual one in `policyRepository.js`'s
+`applyGovernance` (it's how today's `blockchain_off` simulation mode works) — every item below
+gates on that existing signal, not on the Degen/Normie mode-preset axis at all, and not on any new
+signal invented for this round.
+
+### Worklist A — must ship
+
+1. **Finish Round 15's pool 2** — sniper gets its own RPC/WS pool, isolated from the scheduled/Degen
+   fast path shipped in Round 15 pool 1. Decided: a **separate Alchemy app** from the scheduled
+   pool's (continuous sniper polling must never share a rate-limit bucket with a time-critical
+   scheduled broadcast — that was the whole point of splitting pools in the first place), same
+   `{ENVNAME}_RPC_SNIPER_URLS`/`{ENVNAME}_RPC_SNIPER_WS` config shape Round 15 already established
+   for pool 1.
+2. **Account tier: Alchemy Pay-As-You-Go, not Free** — reconsidered given real scale (`i plan to
+   use this in two server of about 100 users each`, ~200 users total). Free tier caps at **25
+   requests/second**; the actual risk isn't monthly volume (`ensureChainWatcher` is per-*chain*,
+   not per-user, so baseline watching load stays low regardless of user count) but *burst*
+   throughput — if a popular drop opens and, say, 50 of 200 users' snipers match within the same
+   few seconds, that's ~50 simultaneous fire sequences (fee/balance/nonce/simulate/broadcast each)
+   easily exceeding 25 req/s at exactly the moment it matters most. Pay-As-You-Go jumps to 300
+   req/s, usage-based at $0.40-0.45/1M compute units, no fixed monthly minimum. This is an
+   account-level setting, so it covers both apps/pools, not just the new sniper one.
+   - **QuickNode checked as an alternative, not assumed away.** Live-verified pricing: QuickNode's
+     free tier is a **one-month trial only**, not permanent like Alchemy's; matching Alchemy's
+     ~300 req/s requires QuickNode's top "Scale" tier at **$424-499/month fixed** (and that still
+     only reaches 250 req/s) versus Alchemy's usage-based rate. QuickNode also supports Robinhood
+     Chain, so chain coverage wasn't the deciding factor — the pricing structure was. QuickNode has
+     a real reputation in trading/sniping circles for raw latency, but no verified benchmark
+     comparing the two was found or claimed; the decision rests on the confirmed pricing gap, not
+     an unconfirmed latency claim.
+3. **Pre-arm scheduled mints** — genuinely new work, not something Round 14 already covered. Round
+   14 fixed scheduler *concurrency* (tasks no longer serialize behind each other); it never touched
+   *precision* — today's scheduler still starts all prep work (fee fetch, balance, nonce,
+   simulation) only once a task becomes due, not before. Pre-arming splits "prepare" from "fire"
+   into two phases, capturing nonce/fee state some lead time ahead of `mint_time` so the only work
+   left at the fire moment is signing and broadcasting. Default lead time: **~10-15s**, matching the
+   OSNM-Z reference's own constants (already logged in this file's Round 3, Section W) — open to
+   tuning once real timing logs (item 6) show how stale a 10-15s-old fee/nonce snapshot actually
+   gets in practice.
+4. **Precise timers for near-launch tasks, replacing coarse polling** — distinct from item 3: this
+   is about how the scheduler *wakes up* near a task's fire moment, not what it does once awake.
+   Default: once a task is within one poll interval of due, switch from the normal ~1s poll tick to
+   a direct `setTimeout` fire at the exact target moment, instead of waiting for the next tick.
+5. **Same-tx multi-RPC broadcast, sniper only** — deliberately *not* extended to scheduled/Degen
+   mints generally (Round 14 explicitly declined broadcast-racing there, reasoning the
+   duplicate-broadcast complexity wasn't worth it for that lower-stakes case). For sniper it's
+   justified: same signed transaction, same nonce and signature, so no double-spend risk — worst
+   case a losing endpoint reports "already known." Fans out to whatever's configured in the
+   sniper pool's own candidate list (item 1/2) — **not** a private MEV relay (Flashbots Protect,
+   MEV-blocker, etc.), a deliberate scope decision: those solve front-running/sandwich protection,
+   a DEX-trade problem where there's price slippage to extract. An NFT mint sniper isn't racing
+   predators reading mempool intent, it's racing everyone else for inclusion in the first valid
+   block after a contract opens — a pure speed/redundancy problem a relay doesn't obviously help
+   with, at real added cost and a new vendor relationship.
+6. **Keep the launch path minimal; add end-to-end timing logs** — deliberately no speculative
+   complexity added to the hot path itself. Timestamp each stage (task claimed → pre-armed →
+   signed → broadcast → confirmed) so items 3/4's tuning constants get adjusted from real data
+   later, not re-guessed.
+7. **Sniper as its own execution profile** — the owner's own correction, folded in here rather than
+   left as a separate item: every behavior above (dedicated pool, multi-broadcast, precise timing)
+   activates on `triggerSource === 'blockchain'` specifically, independent of whichever mode preset
+   (Degen/Normie/etc.) the account has selected. This is also where Worklist B's own "sniper
+   profile" item (below) turns out to already be covered, not a separate later task.
+
+### Worklist B — enhancements, after A is stable and shipped
+
+1. Parallelize pre-arm prep (item A3) across multiple pending tasks instead of doing it serially.
+2. Dynamic fee strategy presets, beyond the flat gas-multiplier Degen already applies.
+3. ~~Sniper profile~~ — subsumed by A7 above; not a separate task.
+4. RPC health scoring and fast failover, building on top of the pool split (route around a
+   candidate that's been slow/erroring recently, not just retry-then-fallback per call).
+5. **Hot wallet session cache — flagged, not defaulted in.** This means caching decrypted key
+   material in memory for longer or more accessibly, which is a real security tradeoff, not a pure
+   performance win. Deserves the same "checked with the owner directly" treatment Round 14's
+   simulation-skip exception got — not something to build as a routine cache the way
+   `feeDataCache.js` was.
+6. Broadcast telemetry and latency dashboards, visualizing item A6's timing logs.
+
+### Related but explicitly out of scope for this round
+
+Raised in the same conversation (Alchemy also offers NFT APIs) but orthogonal to execution speed —
+these are read/reporting capabilities, not write-path work, and stay separate backlog items:
+- **Section AD Tier 2** (Top Holders % on the collection info card) — already researched in Round 7:
+  OpenSea's holder endpoint is gated (401), Alchemy's `getOwnersForContract` does the job, free
+  tier confirmed usable at the time. Still unbuilt, still just needs a "worth doing now?" decision.
+- **Section T** (extracting which token ID a mint actually received) — currently unbuilt; Alchemy's
+  `getNFTsForOwner` is a candidate alternative to parsing raw Transfer event logs from the receipt.
 
 ---
 
