@@ -1434,3 +1434,7 @@ html[data-theme="ghost-mint-light"] .rail-bottom-nav{
 .led{table-layout:fixed}
 .led td{overflow-wrap:anywhere}
 .led td.mono{white-space:normal;word-break:break-word}
+
+/* A quick-pick with nothing left to offer (Max at a cap of one) stays visible but reads as
+   unavailable, rather than inviting a tap that changes nothing. */
+.qb button[disabled]{opacity:.4;cursor:not-allowed}

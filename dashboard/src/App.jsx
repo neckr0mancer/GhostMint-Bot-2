@@ -458,7 +458,15 @@ function Minting({onSwitchToBatch,onGoWallets}){const wallets=useLoad('/api/wall
                   {quickPicks.map(pick=><button type="button" key={pick} disabled={noWallets}
                     className={String(pick)===String(quantity)?'on':undefined}
                     onClick={()=>{setQuantity(String(pick));autoDetectIfReady(contractAddress,String(pick));}}>{pick}</button>)}
-                  <button type="button" disabled={noWallets}
+                  {/* At a cap of ONE there is a single legal quantity, so Max sets exactly what
+                      the "1" beside it already does -- two controls offering the same value,
+                      which reads as a choice that is not there. Disabled rather than removed, so
+                      the control keeps its shape and it stays visible that Max exists and simply
+                      has nothing left to do. Only at a cap of one: the prototype draws
+                      "1 2 3 Max" at a cap of three, so a Max that duplicates a pick is its own
+                      deliberate choice at every cap above this one. */}
+                  <button type="button" disabled={noWallets||maxPick===1}
+                  title={maxPick===1?'This drop allows one per wallet':undefined}
                     className={String(maxPick)===String(quantity)?'on':undefined}
                     onClick={()=>{setQuantity(String(maxPick));autoDetectIfReady(contractAddress,String(maxPick));}}>Max</button>
                 </div>
