@@ -517,7 +517,7 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
   // conditional ones, the already-available interaction.values) -- showModal() is mutually
   // exclusive with defer/reply, so handleComponent's blanket up-front defer below must skip these
   // or every one of them would throw "already acknowledged" the moment it tried to open its modal.
-  const MODAL_CUSTOM_IDS = new Set(['menu:mint:single', 'menu:mint:batch', 'link:enter', 'wallet:create:start', 'wallet:import:start', 'wallet:import:key-modal', 'flow:pricemanual', 'flow:gastolerancemanual', 'watch:add:start', 'flow:watchmethod:select']);
+  const MODAL_CUSTOM_IDS = new Set(['menu:mint:single', 'menu:mint:batch', 'link:enter', 'wallet:create:start', 'wallet:import:start', 'wallet:import:key-modal', 'wallet:batch-import:add', 'flow:pricemanual', 'flow:gastolerancemanual', 'watch:add:start', 'flow:watchmethod:select']);
   function willShowModal(data, interaction) {
     if (MODAL_CUSTOM_IDS.has(data)) return true;
     if (data === 'flow:mintqty:select' && interaction.values?.[0] === 'custom') return true;

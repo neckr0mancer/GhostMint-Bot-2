@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const { createDiscordInteractionHandler } = require('../src/discord/discordBot');
+const { createFlowStateStore } = require('../src/telegram/flowState');
 
 // Discord's wallet-menu buttons (menu:wallets and everything under it) had no dedicated coverage
 // before this file -- wallet:balance:select in particular ran a multi-chain RPC balance check
@@ -12,10 +13,11 @@ const { createDiscordInteractionHandler } = require('../src/discord/discordBot')
 function baseInteraction(userId) {
   const state = {
     user: { id: userId }, guildId: 'guild', channelId: 'channel',
-    updates: [], replies: [], deferred: false, editReplies: [],
+    updates: [], replies: [], deferred: false, editReplies: [], modal: null, replied: false,
     isChatInputCommand: () => false, isButton: () => false, isStringSelectMenu: () => false, isModalSubmit: () => false,
     async update(payload) { this.updates.push(payload); },
-    async reply(payload) { this.replies.push(payload); },
+    async reply(payload) { this.replied = true; this.replies.push(payload); },
+    async showModal(payload) { this.modal = payload; },
     async deferUpdate() { this.deferred = true; },
     async editReply(payload) { this.editReplies.push(payload); },
   };
@@ -40,6 +42,7 @@ function selectInteraction(customId, values, userId = 'discord-user') {
 function fixture(overrides = {}) {
   const handler = createDiscordInteractionHandler({
     identity: { resolveOrCreate: async () => 'internal-user' },
+    flowState: overrides.flowState || createFlowStateStore(),
     chains: { ethereum: { name: 'Ethereum', sym: 'ETH' }, base: { name: 'Base', sym: 'ETH' } },
     commands: {
       wallets: () => [{ label: 'main', chain: 'ethereum' }],
@@ -114,4 +117,31 @@ test('the empty batch card disables Import via disabled, not via the emoji slot'
   assert.equal(empty.disabled, true, 'nothing collected yet, so Import is disabled');
   assert.equal('emoji' in empty, false, 'the disabled flag must not land in the emoji slot');
   assert.equal('emoji' in find(batchImportMenu({ count: 2 })), false);
+});
+
+// showModal() is mutually exclusive with defer/reply, so any button that opens a modal must be
+// listed in MODAL_CUSTOM_IDS or handleComponent's blanket up-front defer acknowledges it first and
+// the modal never opens -- Discord then shows "didn't respond in time" and the flow dead-ends.
+// wallet:batch-import:add shipped missing from that set, which is exactly how it failed live.
+test('every button that opens a modal skips the up-front defer, so the modal actually opens', async () => {
+  const { handler } = fixture();
+  for (const customId of ['wallet:create:start', 'wallet:import:start', 'wallet:import:key-modal',
+    'wallet:batch-import:add', 'menu:mint:single', 'menu:mint:batch']) {
+    const tap = buttonInteraction(customId);
+    await handler(tap);
+    assert.ok(tap.modal, `${customId} must open a modal`);
+    assert.equal(tap.deferred, false,
+      `${customId} was deferred before showModal -- Discord rejects that and the user sees "didn't respond in time"`);
+    assert.equal(tap.replied, false, `${customId} must not reply before showing its modal`);
+  }
+});
+
+test('the batch import modal collects keys as a paragraph, not a single line', async () => {
+  const { handler } = fixture();
+  const tap = buttonInteraction('wallet:batch-import:add');
+  await handler(tap);
+  assert.equal(tap.modal.custom_id, 'flow:batchkeys:submit');
+  const input = tap.modal.components[0].components[0];
+  assert.equal(input.style, 2, 'paragraph style, so several keys fit');
+  assert.ok(input.max_length > 256, 'room for more than one key');
 });
