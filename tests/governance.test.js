@@ -268,6 +268,21 @@ test('forced simulation overrides presets and direct settings', () => {
   }
 });
 
+test('a scheduled Degen mint skips simulation even with simulationForced on, but nothing else does', () => {
+  const degenPreset = { key: 'ultra_fast', simulationMode: 'off', confirmationCount: 1, humanVerification: 'bypass', gasPriceMultiplier: 1.5 };
+  const governance = { isOwner: false, maxTransactionValueWei: 1000n, dailySpendingBudgetWei: 2000n, gasCeilingGwei: 100, simulationForced: true, preset: degenPreset };
+
+  assert.equal(applyGovernance(basePolicy, governance, 'scheduled').simulationEnabled, false,
+    'the scheduled+Degen combination is the one deliberate exception to simulationForced');
+
+  assert.equal(applyGovernance(basePolicy, governance, 'manual').simulationEnabled, true,
+    'a manual Degen mint keeps its human-in-the-loop safety net -- only scheduled Degen skips it');
+
+  const otherPreset = { key: 'safe', simulationMode: 'off', confirmationCount: 1, humanVerification: 'bypass' };
+  assert.equal(applyGovernance(basePolicy, { ...governance, preset: otherPreset }, 'scheduled').simulationEnabled, true,
+    'scheduling alone is not the trigger -- a scheduled mint on any other preset still respects simulationForced');
+});
+
 test('owners are marked ceiling-exempt without disabling other safety settings', () => {
   const effective = applyGovernance(basePolicy, {
     isOwner: true, maxTransactionValueWei: 1n, dailySpendingBudgetWei: 1n,

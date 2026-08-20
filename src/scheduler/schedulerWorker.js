@@ -18,9 +18,18 @@ function isTransientFailure(error) {
 
 function createSchedulerWorker({ repository, intentRepository, transactionEngine, executeTask,
   workerId = randomUUID(), now = () => Date.now(), leaseMs = 120_000,
-  pollIntervalMs = 1_000, retryBaseMs = 5_000, notify, log = () => {}, sanitizeError = errorReason }) {
+  pollIntervalMs = 1_000, retryBaseMs = 5_000, notify, log = () => {}, sanitizeError = errorReason,
+  // A single in-flight task used to serialize every scheduled mint behind whichever one claimed
+  // first, even though processTask() waits for full on-chain finality (up to policy's
+  // transactionTimeoutMs, 10 minutes by default) before returning -- a second task whose own
+  // mint_time had already arrived sat unclaimed the entire time. Raising this from the old
+  // single-slot guard to a small pool lets independent due tasks run concurrently; each `tick()`
+  // call still fully awaits its own claimed task (unchanged -- see dashboard.test.js's
+  // `await worker.tick()` expectation), so this only changes how many overlapping `tick()` calls
+  // the existing setInterval loop is allowed to have outstanding at once.
+  maxConcurrentTasks = 5 }) {
   let timer = null;
-  let active = false;
+  let inFlightCount = 0;
   let lastTickAt=null;let lastSuccessAt=null;let lastError=null;
 
   function retryAt(attemptCount) {
@@ -85,8 +94,8 @@ function createSchedulerWorker({ repository, intentRepository, transactionEngine
   }
 
   async function tick() {
-    if (active) return false;
-    active = true;
+    if (inFlightCount >= maxConcurrentTasks) return false;
+    inFlightCount += 1;
     lastTickAt=now();
     try {
       const task = await repository.claimDue({ workerId, now: now(), leaseMs });
@@ -95,7 +104,7 @@ function createSchedulerWorker({ repository, intentRepository, transactionEngine
       lastSuccessAt=now();lastError=null;
       return true;
     } catch(error){lastError=String(error?.message||'poll failed').slice(0,200);throw error;}
-    finally { active = false; }
+    finally { inFlightCount -= 1; }
   }
 
   function start() {
@@ -109,7 +118,7 @@ function createSchedulerWorker({ repository, intentRepository, transactionEngine
     timer = null;
   }
 
-  function health(){return {status:timer&&(!lastError||lastSuccessAt>=lastTickAt)?'up':'down',running:Boolean(timer),active,lastTickAt,lastSuccessAt,lastError};}
+  function health(){return {status:timer&&(!lastError||lastSuccessAt>=lastTickAt)?'up':'down',running:Boolean(timer),active:inFlightCount>0,inFlightCount,lastTickAt,lastSuccessAt,lastError};}
   return { health,processTask, recoverStaleClaims, start, stop, tick, workerId };
 }
 

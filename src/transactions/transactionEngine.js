@@ -1,8 +1,15 @@
 const { Wallet, keccak256, parseUnits } = require('ethers');
 const { WalletNonceQueue } = require('./nonceQueue');
 const { describeSeaDropError } = require('../mint/seaDropErrors');
+const { createFeeDataCache } = require('./feeDataCache');
 
 const FINAL_STATES = new Set(['confirmed', 'reverted', 'replaced']);
+
+// See submit()'s useFastPath: abandon a slow primary RPC after one quick attempt instead of the
+// provider service's own conservative default (10s x 2 attempts per URL) -- only ever applied to
+// pre-broadcast reads for scheduled/Degen mints, never to the broadcast itself.
+const FAST_RPC_TIMEOUT_MS = 3_000;
+const FAST_RPC_RETRIES = 0;
 
 class TransactionSafetyError extends Error {
   constructor(code, message) {
@@ -47,9 +54,24 @@ function createTransactionEngine({
   now = () => Date.now(),
   notify,
   pollIntervalMs = 1_000,
+  feeDataCache = createFeeDataCache({ now }),
 }) {
-  async function providerCall(chain, name, operation) {
-    return providerService.perform(chain, name, operation);
+  async function providerCall(chain, name, operation, options) {
+    return providerService.perform(chain, name, operation, options);
+  }
+
+  // Only consulted for scheduled and Degen-mode mints (see feeDataCache.js) -- every other caller
+  // keeps getting a live quote. policy.gasPriceMultiplier is only ever non-1 for a preset with its
+  // own multiplier (today, only Degen/"ultra_fast" -- see migration 035), so it doubles as the
+  // "is this Degen" signal already resolved by this point, no new lookup needed.
+  async function resolveFeeData(chain, useCache, options) {
+    if (useCache) {
+      const cached = feeDataCache.get(chain);
+      if (cached) return cached;
+    }
+    const fresh = await providerCall(chain, 'getFeeData', provider => provider.getFeeData(), options);
+    if (useCache) feeDataCache.set(chain, fresh);
+    return fresh;
   }
 
   // estimateGas/call revert with a raw ethers CALL_EXCEPTION (not a TransactionSafetyError) when the
@@ -83,13 +105,13 @@ function createTransactionEngine({
     return 'Simulating this call failed -- the contract may not implement this function, or the call would revert.';
   }
 
-  async function estimateGasSafely(chain, params) {
-    try { return await providerCall(chain, 'estimateGas', provider => provider.estimateGas(params)); }
+  async function estimateGasSafely(chain, params, options) {
+    try { return await providerCall(chain, 'estimateGas', provider => provider.estimateGas(params), options); }
     catch (error) { throw new TransactionSafetyError('SIMULATION_FAILED', explainCallFailure(error)); }
   }
 
-  async function simulateCallSafely(chain, params) {
-    try { return await providerCall(chain, 'simulate', provider => provider.call(params)); }
+  async function simulateCallSafely(chain, params, options) {
+    try { return await providerCall(chain, 'simulate', provider => provider.call(params), options); }
     catch (error) { throw new TransactionSafetyError('SIMULATION_FAILED', explainCallFailure(error)); }
   }
 
@@ -195,7 +217,16 @@ function createTransactionEngine({
 
       const from = request.wallet.address;
       const base = { from, to: request.to, data: request.data || '0x', value: valueWei };
-      const feeData = await providerCall(request.chain, 'getFeeData', provider => provider.getFeeData());
+      // Scheduled and Degen-mode mints (policy.gasPriceMultiplier > 1 -- see feeDataCache.js's own
+      // note) get a tighter per-call RPC budget on every pre-broadcast read below: a slow primary
+      // RPC is abandoned after one fast attempt instead of eating the full default timeout across
+      // every retry before even trying the next configured URL. The broadcast itself and post-
+      // broadcast finality polling deliberately keep the conservative defaults -- a failed/slow
+      // broadcast is far more costly to get wrong than a failed read, which just falls over to the
+      // next candidate URL either way.
+      const useFastPath = (request.triggerSource || 'manual') === 'scheduled' || policy.gasPriceMultiplier > 1;
+      const fastRpcOptions = useFastPath ? { timeoutMs: FAST_RPC_TIMEOUT_MS, retries: FAST_RPC_RETRIES } : undefined;
+      const feeData = await resolveFeeData(request.chain, useFastPath, fastRpcOptions);
       const hasExplicitLegacyFee = request.gasPriceWei !== undefined && request.gasPriceWei !== null;
       const hasExplicitMaxFee = request.maxFeePerGasWei !== undefined && request.maxFeePerGasWei !== null;
       const gasPriceWei = hasExplicitLegacyFee
@@ -239,11 +270,11 @@ function createTransactionEngine({
         ? { maxFeePerGas: maxFeePerGasWei, maxPriorityFeePerGas: maxPriorityFeePerGasWei ?? 0n, type: 2 }
         : { gasPrice: gasPriceWei };
       const gasLimit = request.gasLimitWei === undefined
-        ? await estimateGasSafely(request.chain, { ...base, ...feeFields })
+        ? await estimateGasSafely(request.chain, { ...base, ...feeFields }, fastRpcOptions)
         : asBigInt(request.gasLimitWei, 'gasLimitWei');
       if (gasLimit <= 0n) throw new TransactionSafetyError('INVALID_TRANSACTION', 'Gas limit must be positive');
       const estimatedCostWei = valueWei + gasLimit * selectedFee;
-      const balance = await providerCall(request.chain, 'getBalance', provider => provider.getBalance(from));
+      const balance = await providerCall(request.chain, 'getBalance', provider => provider.getBalance(from), fastRpcOptions);
       if (BigInt(balance) < estimatedCostWei) {
         throw new TransactionSafetyError('INSUFFICIENT_BALANCE', 'Wallet balance is below the estimated transaction cost');
       }
@@ -252,11 +283,11 @@ function createTransactionEngine({
         throw new TransactionSafetyError('DAILY_BUDGET_EXCEEDED', 'Transaction would exceed the wallet daily spending budget');
       }
       if (policy.simulationEnabled) {
-        await simulateCallSafely(request.chain, { ...base, ...feeFields, gasLimit });
+        await simulateCallSafely(request.chain, { ...base, ...feeFields, gasLimit }, fastRpcOptions);
       }
 
-      const providerNonce = Number(await providerCall(request.chain, 'getTransactionCount', provider => provider.getTransactionCount(from, 'pending')));
-      const network = await providerCall(request.chain, 'getNetwork', provider => provider.getNetwork());
+      const providerNonce = Number(await providerCall(request.chain, 'getTransactionCount', provider => provider.getTransactionCount(from, 'pending'), fastRpcOptions));
+      const network = await providerCall(request.chain, 'getNetwork', provider => provider.getNetwork(), fastRpcOptions);
       const expectedChainId = providerService.expectedChainId?.(request.chain);
       if (expectedChainId !== null && expectedChainId !== undefined && BigInt(network.chainId) !== BigInt(expectedChainId)) {
         throw new TransactionSafetyError('WRONG_CHAIN', 'RPC provider is connected to the wrong chain');
