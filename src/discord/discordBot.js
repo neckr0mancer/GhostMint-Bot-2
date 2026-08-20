@@ -509,7 +509,8 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
   flowState=createFlowStateStore(),
   // Defaults to a gate that permits everything, so a caller that does not wire one (and every
   // existing test) behaves exactly as before this existed.
-  actionGate={ allows: async () => true, submit: async () => ({ ok: true }) } }) {
+  actionGate={ allows: async () => true, submit: async () => ({ ok: true }) },
+  securityStatus=async () => ({ passwordSet: true, gateLevel: 'sensitive' }) }) {
   const audit=value=>Promise.resolve(securityAudit.record(value)).catch(error=>log(`Security audit write failed: ${error.message}`));
   const ownerFlag = async userId => (typeof isOwner === 'function' ? Boolean(await isOwner(userId)) : false);
   const enforceAccountStatus = async userId => { if (typeof checkAccountStatus === 'function') await checkAccountStatus(userId); };
@@ -564,10 +565,13 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
       }
       if (data === 'flow:cancel:ask') {
         flowState.clear('discord', platformUserId);
-        return dcRespond(interaction, discordMenus.mainMenu({ isOwner: await ownerFlag(userId) }));
+        return dcRespond(interaction, discordMenus.mainMenu({ isOwner: await ownerFlag(userId), security: await securityStatus(userId) }));
       }
 
-      if (data === 'menu:main') return dcRespond(interaction, discordMenus.mainMenu({ isOwner: await ownerFlag(userId) }));
+      if (data === 'menu:main') return dcRespond(interaction, discordMenus.mainMenu({ isOwner: await ownerFlag(userId), security: await securityStatus(userId) }));
+      if (data === 'menu:security') {
+        return dcRespond(interaction, discordMenus.securitySetupCard(await securityStatus(userId)));
+      }
       if (data === 'menu:wallets') return dcRespond(interaction, discordMenus.walletsMenu());
       if (data === 'menu:settings') {
         if (!await actionGate.allows(userId, 'discord', platformUserId, 'settings')) {
@@ -628,7 +632,7 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
       }
       if (data.startsWith('mode:pick:')) {
         const presetKey = data.slice('mode:pick:'.length);
-        if (!discordMenus.MODE_META[presetKey]) return dcRespond(interaction, discordMenus.mainMenu({ isOwner: await ownerFlag(userId) }));
+        if (!discordMenus.MODE_META[presetKey]) return dcRespond(interaction, discordMenus.mainMenu({ isOwner: await ownerFlag(userId), security: await securityStatus(userId) }));
         await commands.selectMode(userId, presetKey);
         const [presets, currentMode, advancedModesAllowed] = await Promise.all([
           commands.modePresets(), commands.currentMode(userId), commands.advancedModesAllowed(userId),
@@ -736,7 +740,7 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
             { note: "Solana wallets aren't supported yet -- this bot is EVM-only for now." }));
         }
         const flow = flowState.get('discord', platformUserId);
-        if (!flow) return dcRespond(interaction, discordMenus.mainMenu({ isOwner: await ownerFlag(userId) }));
+        if (!flow) return dcRespond(interaction, discordMenus.mainMenu({ isOwner: await ownerFlag(userId), security: await securityStatus(userId) }));
         if (flow.flow === 'wallet_batch_import') {
           flowState.advance('discord', platformUserId, 'awaiting_key', { chain, privateKeys: [] });
           return dcRespond(interaction, discordMenus.batchImportMenu({ count: 0, chainLabel: chains[chain]?.name || chain }));
@@ -1413,7 +1417,7 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
       let message;
       switch (interaction.commandName) {
         case 'menu': {
-          await interaction.editReply(discordMenus.mainMenu({ isOwner: await ownerFlag(userId) }));
+          await interaction.editReply(discordMenus.mainMenu({ isOwner: await ownerFlag(userId), security: await securityStatus(userId) }));
           return;
         }
         // Telegram counterpart to /start: same welcome text, same first-wallet auto-create, same
@@ -1426,7 +1430,7 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
             try { await commands.createWallet(userId, { label: 'wallet-1', chain: supportedChains[0] }); }
             catch (error) { log(`Auto wallet creation on /start failed: ${error?.message || 'unknown error'}`); }
           }
-          const menu = discordMenus.mainMenu({ isOwner: await ownerFlag(userId) });
+          const menu = discordMenus.mainMenu({ isOwner: await ownerFlag(userId), security: await securityStatus(userId) });
           const created = hadNoWallets ? commands.wallets(userId)[0] : null;
           const welcome = 'gm. i mint things.\n\nHere\'s the short version:\n\n'
             + '/mint -- mint from a contract\n/batch-mint -- mint across multiple wallets\n'
@@ -1681,7 +1685,7 @@ async function clearLeftoverGuildCommands({ api, applicationId, log }) {
   }
 }
 
-function createDiscordBot({ token, applicationId, devGuildId, allowedChannelIds=null, identity, commands, securityAudit, rateLimiter, log = () => {}, client, rest, isOwner, checkAccountStatus, supportedChains, chains, actionGate }) {
+function createDiscordBot({ token, applicationId, devGuildId, allowedChannelIds=null, identity, commands, securityAudit, rateLimiter, log = () => {}, client, rest, isOwner, checkAccountStatus, supportedChains, chains, actionGate, securityStatus }) {
   const discordClient = client || new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.DirectMessages,
     GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent] });
   const api = rest || new REST({ version: '10' }).setToken(token);
@@ -1690,7 +1694,7 @@ function createDiscordBot({ token, applicationId, devGuildId, allowedChannelIds=
   // visible to the other -- they'd otherwise be two independent, non-communicating stores.
   const flowState = createFlowStateStore();
   discordClient.on('interactionCreate', createDiscordInteractionHandler({ identity, commands, allowedGuildId:devGuildId || null, allowedChannelIds,
-    securityAudit,rateLimiter,log,isOwner,checkAccountStatus,supportedChains,chains,flowState,actionGate }));
+    securityAudit,rateLimiter,log,isOwner,checkAccountStatus,supportedChains,chains,flowState,actionGate,securityStatus }));
   discordClient.on('messageCreate', message =>
     handleMintPasteMessage({ identity, commands, flowState, chains, rateLimiter, checkAccountStatus, allowedGuildId: devGuildId || null, allowedChannelIds }, message));
   return {

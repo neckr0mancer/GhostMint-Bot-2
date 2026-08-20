@@ -29,7 +29,59 @@ function keyboard(rows) {
 // createLinkCode() call underneath. Putting it on the main menu too just cuts the common case
 // from two taps to one; it doesn't change what the code does or its security properties (still
 // single-use, still expires in five minutes, still Telegram-only origin per Milestone 15e).
-function mainMenu({ isOwner = false } = {}) {
+// Shown on the main menu until the account is actually protected. Deliberately persistent rather
+// than a one-off tip: an account with no password cannot use the gate at all, so it is not "not yet
+// configured", it is open -- anyone who picks up this chat can move funds and, worse, generate a
+// link code and sign in as the owner on the dashboard.
+//
+// Returns '' once the account is secure, so a protected owner never sees security nagging.
+// A null/absent `security` means the caller has no reading -- typically a fallback keyboard on an
+// error path. That must produce NO warning: telling someone their account is exposed because a
+// lookup was skipped would send them to fix something that is not broken.
+function securityBanner(security) {
+  if (!security) return '';
+  const { passwordSet = false, gateLevel = 'off' } = security;
+  if (!passwordSet) {
+    return '\n\n⚠️ <b>Your account is unprotected.</b> Anyone who opens this chat can move your funds'
+      + ' or link your account to their own device. Tap <b>Secure my account</b> below — it takes a minute.';
+  }
+  if (gateLevel === 'off') {
+    return '\n\n⚠️ <b>Bot security is off.</b> Your password is set, but this chat will not ask for it.'
+      + ' Tap <b>Secure my account</b> below to switch it on.';
+  }
+  return '';
+}
+
+function securityNeedsAttention(security) {
+  return securityBanner(security) !== '';
+}
+
+// The walkthrough. Names the exact page and section rather than saying "go to settings", because
+// the whole point is that the owner completes it rather than postponing it.
+function securitySetupCard({ passwordSet = false, gateLevel = 'off' } = {}) {
+  const done = '✅';
+  const todo = '▫️';
+  const step1 = passwordSet ? done : todo;
+  const step2 = passwordSet && gateLevel !== 'off' ? done : todo;
+  const body = passwordSet && gateLevel !== 'off'
+    ? '<b>You are protected.</b> Sensitive actions in this chat ask for your password.'
+    : 'Two steps, both on the dashboard. It cannot be done from chat — a password typed here would'
+      + ' stay in your message history, which is exactly what we are protecting you from.';
+  return {
+    text: `<b>🔐 Secure my account</b>\n\n${body}\n\n`
+      + `${step1} <b>1. Set a security password</b>\n`
+      + '   Dashboard → <b>Account</b> → <b>Login credentials</b> → <b>Security password</b> → Set\n\n'
+      + `${step2} <b>2. Turn on the bot password gate</b>\n`
+      + '   Dashboard → <b>Settings</b> → <b>Password gate</b> → <b>Sensitive</b> or <b>Strict</b>\n\n'
+      + '<b>Sensitive</b> asks before anything that moves funds, exposes a key, or links your account.\n'
+      + '<b>Strict</b> also asks before showing your wallets, balances and activity.\n\n'
+      + 'Once on, this chat stays unlocked for 10 minutes after each password entry. Send /lock to end that early.',
+    replyMarkup: keyboard([[button('⬅️ Back to base', 'menu:main')]]),
+    parseMode: 'HTML',
+  };
+}
+
+function mainMenu({ isOwner = false, security = null } = {}) {
   const rows = [
     [button('👛 Wallets', 'menu:wallets'), button('⚡ Mint', 'menu:mint')],
     [button('💸 Send', 'menu:send')],
@@ -39,8 +91,11 @@ function mainMenu({ isOwner = false } = {}) {
     [button('🔗 Link Discord or dashboard', 'link:generate')],
   ];
   if (isOwner) rows.push([button('🛡️ Admin', 'menu:admin')]);
+  // First row, not last: an unprotected account is the most important thing on this screen.
+  if (securityNeedsAttention(security)) rows.unshift([button('🔐 Secure my account', 'menu:security')]);
   return {
-    text: '<b>👻 GhostMint</b>\n\nYour GhostMint command center. Pick a move below, or run a command straight in if you already know the play.',
+    text: '<b>👻 GhostMint</b>\n\nYour GhostMint command center. Pick a move below, or run a command straight in if you already know the play.'
+      + securityBanner(security),
     replyMarkup: keyboard(rows),
     parseMode: 'HTML',
   };
@@ -813,6 +868,9 @@ module.exports = {
   walletsMenu,
   mintModeMenu,
   batchImportMenu,
+  securityBanner,
+  securityNeedsAttention,
+  securitySetupCard,
   gateUnlockPrompt,
   settingsMenu,
   tasksMenu,

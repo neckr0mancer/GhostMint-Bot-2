@@ -102,3 +102,58 @@ test('the batch wallet picker never builds a select whose minimum exceeds its ma
   assert.equal(picked.includes('flow:walletcontinue'), MIN_BATCH_WALLETS <= 1,
     'Continue tracks the shared minimum rather than a hardcoded count');
 });
+
+// An account with no security password cannot use the gate at all -- it is not "not yet
+// configured", it is open. The reminder is deliberately persistent for exactly as long as that is
+// true, and gone the moment it stops being true.
+test('the security reminder appears only while the account is actually exposed', () => {
+  const tg = require('../src/telegram/menus');
+  const dc = require('../src/discord/menus');
+  const cases = [
+    [{ passwordSet: false, gateLevel: 'off' }, true, 'no password at all'],
+    [{ passwordSet: false, gateLevel: 'strict' }, true, 'a level set with no password is still open'],
+    [{ passwordSet: true, gateLevel: 'off' }, true, 'password set but the gate never asks for it'],
+    [{ passwordSet: true, gateLevel: 'sensitive' }, false, 'protected'],
+    [{ passwordSet: true, gateLevel: 'strict' }, false, 'protected'],
+  ];
+  for (const [security, expected, why] of cases) {
+    assert.equal(tg.securityNeedsAttention(security), expected, `telegram: ${why}`);
+    assert.equal(dc.securityNeedsAttention(security), expected, `discord: ${why}`);
+    const tgRows = tg.mainMenu({ isOwner: true, security }).replyMarkup.inline_keyboard;
+    const tgIds = tgRows.flat().map(b => b.callback_data);
+    assert.equal(tgIds.includes('menu:security'), expected, `telegram button: ${why}`);
+  }
+});
+
+test('the reminder never pushes the Discord menu past the 5-row limit', () => {
+  // The menu is already at 5 rows with Admin present. A sixth row makes Discord reject the whole
+  // payload, so a security warning added carelessly would blank the very menu it warns on.
+  const dc = require('../src/discord/menus');
+  for (const security of [{ passwordSet: false, gateLevel: 'off' }, { passwordSet: true, gateLevel: 'sensitive' }]) {
+    for (const isOwner of [true, false]) {
+      const menu = dc.mainMenu({ isOwner, security });
+      assert.ok(menu.components.length <= 5, `rows: ${menu.components.length}`);
+      for (const r of menu.components) assert.ok(r.components.length <= 5, 'buttons per row');
+    }
+  }
+  const exposed = dc.mainMenu({ isOwner: true, security: { passwordSet: false, gateLevel: 'off' } });
+  assert.equal(exposed.components[0].components[0].custom_id, 'menu:security',
+    'and it leads the first row rather than hiding at the bottom');
+});
+
+test('the setup card names the exact dashboard pages, and ticks off what is already done', () => {
+  const tg = require('../src/telegram/menus');
+  const fresh = tg.securitySetupCard({ passwordSet: false, gateLevel: 'off' });
+  assert.match(fresh.text, /Account/);
+  assert.match(fresh.text, /Security password/);
+  assert.match(fresh.text, /Settings/);
+  assert.match(fresh.text, /Password gate/);
+  assert.match(fresh.text, /cannot be done from chat/i, 'says why, so it does not read as an arbitrary detour');
+
+  const halfway = tg.securitySetupCard({ passwordSet: true, gateLevel: 'off' });
+  assert.match(halfway.text, /✅ <b>1\./, 'step one shows as done');
+  assert.match(halfway.text, /▫️ <b>2\./, 'step two still outstanding');
+
+  const done = tg.securitySetupCard({ passwordSet: true, gateLevel: 'strict' });
+  assert.match(done.text, /You are protected/);
+});

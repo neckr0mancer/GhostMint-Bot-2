@@ -805,6 +805,20 @@ const actionGate = createActionGate({
 
 // Returns true when the caller should stop: the gate is on, this conversation is locked, and a
 // password prompt has been put on screen in place of the action.
+async function securityFlags(userId) {
+  try {
+    const [hash, gateLevel] = await Promise.all([
+      identityRepository.getSecurityPasswordHash(userId),
+      identityRepository.getBotGateLevel(userId),
+    ]);
+    return { passwordSet: Boolean(hash), gateLevel };
+  } catch {
+    // Never let a failed read turn into a false 'you are unprotected' warning, which would send
+    // the owner to fix something that is not broken.
+    return { passwordSet: true, gateLevel: 'sensitive' };
+  }
+}
+
 async function gateBlocks({ chatId, messageId, userId, action }) {
   if (await actionGate.allows(userId, 'telegram', chatId, action)) return false;
   telegramFlowState.start('telegram', chatId, 'gate_unlock', 'awaiting_password', { action });
@@ -1986,11 +2000,11 @@ function withTelegramCallback(handler) {
       }
       if (data === 'flow:cancel:ask') {
         telegramFlowState.clear('telegram', chatId);
-        await tgEditMenu(chatId, messageId, telegramMenus.mainMenu({ isOwner: await governanceRepository.isOwner(userId) }));
+        await tgEditMenu(chatId, messageId, telegramMenus.mainMenu({ isOwner: await governanceRepository.isOwner(userId), security: await securityFlags(userId) }));
         return;
       }
       if (data === 'confirm:pending' || data === 'cancel:pending') {
-        const backToMenu = telegramMenus.mainMenu({ isOwner: await governanceRepository.isOwner(userId) }).replyMarkup;
+        const backToMenu = telegramMenus.mainMenu({ isOwner: await governanceRepository.isOwner(userId), security: await securityFlags(userId) }).replyMarkup;
         const pending = takePendingConfirmation(chatId);
         if (!pending) {
           await tgEditMenu(chatId, messageId, { text: 'That confirmation expired or was already handled. Run the command again if needed.', replyMarkup: backToMenu, parseMode: 'HTML' });
@@ -2148,7 +2162,10 @@ if (BOT_TOKEN) {
     const data = query.data || '';
     const ownerFlag = async () => governanceRepository.isOwner(userId);
 
-    if (data === 'menu:main') return tgEditMenu(chatId, messageId, telegramMenus.mainMenu({ isOwner: await ownerFlag() }));
+    if (data === 'menu:main') return tgEditMenu(chatId, messageId, telegramMenus.mainMenu({ isOwner: await ownerFlag(), security: await securityFlags(userId) }));
+    if (data === 'menu:security') {
+      return tgEditMenu(chatId, messageId, telegramMenus.securitySetupCard(await securityFlags(userId)));
+    }
     if (data === 'menu:wallets') return tgEditMenu(chatId, messageId, telegramMenus.walletsMenu());
     if (data === 'menu:settings') {
       if (await gateBlocks({ chatId, messageId, userId, action: 'settings' })) return;
@@ -2346,7 +2363,7 @@ if (BOT_TOKEN) {
     if (data.startsWith('flow:chain:')) {
       const chain = data.slice('flow:chain:'.length);
       const flow = telegramFlowState.get('telegram', chatId);
-      if (!flow) return tgEditMenu(chatId, messageId, telegramMenus.mainMenu({ isOwner: await ownerFlag() }));
+      if (!flow) return tgEditMenu(chatId, messageId, telegramMenus.mainMenu({ isOwner: await ownerFlag(), security: await securityFlags(userId) }));
       if (flow.flow === 'wallet_create') {
         try {
           const wallet = await botCommands.createWallet(userId, { label: flow.data.label, chain });
@@ -2717,7 +2734,7 @@ send /mint with a contract address to get going.`;
       try { await botCommands.createWallet(userId, { label: 'wallet-1', chain: CONFIG.supportedChains[0] }); }
       catch (error) { log(`Auto wallet creation on /start failed: ${safeError(error)}`); }
     }
-    const menu = telegramMenus.mainMenu({ isOwner: await governanceRepository.isOwner(userId) });
+    const menu = telegramMenus.mainMenu({ isOwner: await governanceRepository.isOwner(userId), security: await securityFlags(userId) });
     if (!isStart) return tgRender(msg.chat.id, { text: menu.text, replyMarkup: menu.replyMarkup, parseMode: menu.parseMode });
     const summary = await walletSummaryHtml(userId);
     tgRender(msg.chat.id, { text: `${WELCOME_TEXT}\n\n${summary}\n\n${menu.text}`, replyMarkup: menu.replyMarkup, parseMode: 'HTML' });
@@ -3230,7 +3247,8 @@ if (CONFIG.discordBotToken) {
     identity, commands: botCommands, securityAudit:botSecurityRepository,rateLimiter:commandRateLimiter,log,
     isOwner: userId => governanceRepository.isOwner(userId),
     checkAccountStatus: userId => governance.checkAccountStatus(userId),
-    supportedChains: CONFIG.supportedChains, chains: CHAINS, actionGate });
+    supportedChains: CONFIG.supportedChains, chains: CHAINS, actionGate,
+    securityStatus: userId => securityFlags(userId) });
   // Live push: skip the 30s social-watch poll for discord_channel rules by reacting
   // to the Gateway's messageCreate event directly. The scheduled poller keeps running
   // as a fallback, so a dropped Gateway connection never stops detection, just slows it.

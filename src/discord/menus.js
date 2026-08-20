@@ -42,7 +42,50 @@ function select(customId, options, placeholder, { minValues, maxValues } = {}) {
   return row([component]);
 }
 
-function mainMenu({ isOwner = false } = {}) {
+// Counterpart to the Telegram banner -- see src/telegram/menus.js for the reasoning. Shown until
+// the account is actually protected, and gone entirely once it is.
+// A null/absent `security` means the caller has no reading -- typically a fallback keyboard on an
+// error path. That must produce NO warning: telling someone their account is exposed because a
+// lookup was skipped would send them to fix something that is not broken.
+function securityBanner(security) {
+  if (!security) return '';
+  const { passwordSet = false, gateLevel = 'off' } = security;
+  if (!passwordSet) {
+    return '\n\n⚠️ **Your account is unprotected.** Anyone who opens this chat can move your funds'
+      + ' or link your account to their own device. Tap **Secure my account** below.';
+  }
+  if (gateLevel === 'off') {
+    return '\n\n⚠️ **Bot security is off.** Your password is set, but this chat will not ask for it.'
+      + ' Tap **Secure my account** below to switch it on.';
+  }
+  return '';
+}
+
+function securityNeedsAttention(security) {
+  return securityBanner(security) !== '';
+}
+
+function securitySetupCard({ passwordSet = false, gateLevel = 'off' } = {}) {
+  const step1 = passwordSet ? '✅' : '▫️';
+  const step2 = passwordSet && gateLevel !== 'off' ? '✅' : '▫️';
+  const body = passwordSet && gateLevel !== 'off'
+    ? '**You are protected.** Sensitive actions here ask for your password.'
+    : 'Two steps, both on the dashboard. It cannot be done from chat -- a password typed here would'
+      + ' stay in your message history, which is exactly what this protects you from.';
+  return {
+    content: `## 🔐 Secure my account\n${body}\n\n`
+      + `${step1} **1. Set a security password**\n`
+      + 'Dashboard → **Account** → **Login credentials** → **Security password** → Set\n\n'
+      + `${step2} **2. Turn on the bot password gate**\n`
+      + 'Dashboard → **Settings** → **Password gate** → **Sensitive** or **Strict**\n\n'
+      + '**Sensitive** asks before anything that moves funds, exposes a key, or links your account.\n'
+      + '**Strict** also asks before showing your wallets, balances and activity.\n\n'
+      + 'Once on, this chat stays unlocked for 10 minutes after each password entry.',
+    components: [row([button('⬅️ Back to menu', 'menu:main')])],
+  };
+}
+
+function mainMenu({ isOwner = false, security = null } = {}) {
   const rows = [
     row([button('👛 Wallets', 'menu:wallets'), button('⚡ Mint', 'menu:mint')]),
     row([button('🗓️ Tasks', 'menu:tasks'), button('🎯 Snipers', 'menu:snipers')]),
@@ -50,7 +93,17 @@ function mainMenu({ isOwner = false } = {}) {
     row([button('⛽ Gas', 'menu:gas'), button('⚙️ Settings', 'menu:settings')]),
   ];
   if (isOwner) rows.push(row([button('🛡️ Admin', 'menu:admin')]));
-  return { content: '## GhostMint\nChoose a section below, or use a slash command directly if you already know it.', components: rows };
+  // Packed into the FIRST row rather than added as a new one. With Admin present this menu is
+  // already at Discord's 5-row ceiling, and a sixth row makes Discord reject the whole payload --
+  // a security warning that silently blanks the menu would be worse than no warning at all.
+  if (securityNeedsAttention(security)) {
+    rows[0].components.unshift(button('🔐 Secure my account', 'menu:security', 'danger'));
+  }
+  return {
+    content: '## GhostMint\nChoose a section below, or use a slash command directly if you already know it.'
+      + securityBanner(security),
+    components: rows,
+  };
 }
 
 // Discord counterpart to Telegram's contractDetailsText (src/telegram/menus.js). Pure text only --
@@ -742,7 +795,8 @@ function labelModal({ customId, title, placeholder = '', style = 'short', maxLen
 }
 
 module.exports = {
-  button, row, select, mainMenu, mintModeMenu, batchImportMenu, gateUnlockCard, walletsMenu, settingsMenu, placeholderMenu,
+  button, row, select, mainMenu, mintModeMenu, batchImportMenu, gateUnlockCard,
+  securityBanner, securityNeedsAttention, securitySetupCard, walletsMenu, settingsMenu, placeholderMenu,
   chainSelect, walletSelect, walletMultiSelect, confirmRemoveWallet, labelModal, gasMenu, activityMenu, tasksMenu, snipersMenu, adminOverviewMenu,
   modeMenu, MODE_META,
   contractDetailsText, collectionInfoCard, mintQuantitySelect, mintPriceStep, gasTolerancePrompt, mintConfirmation, numberModal,
