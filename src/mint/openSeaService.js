@@ -146,7 +146,59 @@ function createOpenSeaService({ apiKey, repository, baseUrl = 'https://api.opens
     return repository.saveOpenSea(chain, contractAddress, metadata);
   }
 
-  return { getCollectionMetadata, resolveCollectionContract, getCollectionStats };
+  // Section AF -- "can't you read the phases from OpenSea and the contract?" On-chain SeaDrop only
+  // ever exposes ONE mutable PublicDrop struct (whatever stage is currently configured), so it can
+  // never show what's coming next. OpenSea's own Drops API is the real, non-guessed source for that:
+  // GET /drops/{slug} (live-verified against docs.opensea.io/reference/get_drop_by_slug) returns the
+  // full stage list plus which one (if any) is active right now and which is next by start_time.
+  // Same "unknown is a valid outcome" shape as everything else here -- a 404 (not an OpenSea-tracked
+  // drop), no API key, an unsupported chain, or a network failure all just mean "no phase data",
+  // never a thrown error into the card renderer.
+  function normalizeStage(stage) {
+    if (!stage) return null;
+    return {
+      uuid: stage.uuid || null,
+      label: stage.label || null,
+      // The API returns ISO 8601 strings; every other timestamp this app already threads through
+      // menus (SeaDrop's own on-chain startTime/endTime) is unix seconds, so this converts once here
+      // rather than making every caller/renderer handle two different time representations.
+      startTime: stage.start_time ? Math.floor(Date.parse(stage.start_time) / 1000) : null,
+      endTime: stage.end_time ? Math.floor(Date.parse(stage.end_time) / 1000) : null,
+      // Decimal wei string per the docs -- left as a string here (this module has no ethers
+      // dependency and stays presentation-agnostic); botCommandService converts to an ETH number
+      // the same way it already does for every other on-chain/API price it resolves.
+      priceWei: stage.price ?? null,
+      maxPerWallet: stage.max_per_wallet !== undefined && stage.max_per_wallet !== null ? Number(stage.max_per_wallet) : null,
+      stageType: stage.stage_type || null,
+    };
+  }
+
+  async function getDrop(chain, contractAddress) {
+    const openSeaChain = OPENSEA_CHAIN_SLUGS[chain];
+    if (!apiKey || !openSeaChain) return null;
+    try {
+      const slug = await fetchCollectionSlug(openSeaChain, contractAddress);
+      if (!slug) return null;
+      const response = await http.get(`${baseUrl}/drops/${slug}`, { timeout: timeoutMs, headers: { 'x-api-key': apiKey } });
+      const data = response.data;
+      if (!data) return null;
+      return {
+        isMinting: Boolean(data.is_minting),
+        dropType: data.drop_type || null,
+        maxSupply: data.max_supply !== undefined && data.max_supply !== null ? Number(data.max_supply) : null,
+        openSeaUrl: data.opensea_url || null,
+        activeStage: normalizeStage(data.active_stage),
+        nextStage: normalizeStage(data.next_stage),
+        stages: Array.isArray(data.stages) ? data.stages.map(normalizeStage) : [],
+      };
+    } catch {
+      // A plain (non-OpenSea-drop) contract 404s here -- same "nothing to show" outcome as every
+      // other failure mode, not an error worth surfacing.
+      return null;
+    }
+  }
+
+  return { getCollectionMetadata, resolveCollectionContract, getCollectionStats, getDrop };
 }
 
 module.exports = { OPENSEA_CHAIN_SLUGS, createOpenSeaService };

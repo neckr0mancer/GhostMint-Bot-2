@@ -38,7 +38,7 @@ function select(customId, options, placeholder, { minValues, maxValues } = {}) {
 
 function mainMenu({ isOwner = false } = {}) {
   const rows = [
-    row([button('👛 Wallets', 'menu:wallets', 'primary'), button('⚡ Mint', 'menu:mint')]),
+    row([button('👛 Wallets', 'menu:wallets'), button('⚡ Mint', 'menu:mint')]),
     row([button('🗓️ Tasks', 'menu:tasks'), button('🎯 Snipers', 'menu:snipers')]),
     row([button('📡 Watch rules', 'menu:watch'), button('📊 Activity', 'menu:activity')]),
     row([button('⛽ Gas', 'menu:gas'), button('⚙️ Settings', 'menu:settings')]),
@@ -106,7 +106,22 @@ function formatGmtPlus1(value) {
 // simply omitted rather than shown as a placeholder when a field is unavailable. openSeaUrl is
 // built by discordBot.js (from OPENSEA_CHAIN_SLUGS), not here, so this module stays free of a
 // cross-directory import into src/mint/ -- null omits the button entirely.
-function collectionInfoCard({ contractAddress, chain, chainLabel, chainSym, isSeaDrop, priceETH, priceUnknown, maxSupply, maxPerWallet, startTime, collection, soldOut, displayPrice, stats, openSeaUrl }) {
+// Section AF -- humanizes an OpenSea stage_type ("public_sale", "presale", ...) into a fallback
+// label for a stage OpenSea didn't give its own human-written label. Mirrors
+// src/telegram/menus.js's humanizeStageType/stageSummaryLine.
+function humanizeStageType(stageType) {
+  if (!stageType) return 'Phase';
+  return stageType.split('_').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
+}
+
+function stageSummaryLine(stage, sym) {
+  const label = stage.label || humanizeStageType(stage.stageType);
+  const price = stage.priceETH !== null && stage.priceETH !== undefined ? `${stage.priceETH} ${sym}` : 'price TBD';
+  const cap = stage.maxPerWallet !== null && stage.maxPerWallet !== undefined ? ` · max ${stage.maxPerWallet}/wallet` : '';
+  return `${label} — ${price}${cap}`;
+}
+
+function collectionInfoCard({ contractAddress, chain, chainLabel, chainSym, isSeaDrop, priceETH, priceUnknown, maxSupply, maxPerWallet, startTime, collection, soldOut, displayPrice, stats, drop, openSeaUrl }) {
   const sym = chainSym || 'ETH';
   // Blank lines below group the card into identity / price / stats / limits / description bands --
   // mirrors src/telegram/menus.js's collectionInfoCard.
@@ -147,6 +162,24 @@ function collectionInfoCard({ contractAddress, chain, chainLabel, chainSym, isSe
     }
   }
 
+  // Section AF -- "can't you read the phases from OpenSea and the contract?" On-chain SeaDrop only
+  // ever exposes the ONE currently-configured PublicDrop struct (the Opens/Opened line below), so it
+  // can never say what's coming after that. drop is null unless OpenSea actually tracks this
+  // contract as a drop -- omitted entirely rather than shown as a broken/empty section.
+  if (drop && (drop.activeStage || drop.nextStage || drop.stages.length > 1)) {
+    const phaseLines = [];
+    if (drop.stages.length > 1) phaseLines.push(`${drop.stages.length} phases total`);
+    if (drop.activeStage) {
+      const endsAt = drop.activeStage.endTime ? ` · ends ${formatGmtPlus1(drop.activeStage.endTime * 1000)}` : '';
+      phaseLines.push(`🟢 Live: ${stageSummaryLine(drop.activeStage, sym)}${endsAt}`);
+    }
+    if (drop.nextStage) {
+      const opensAt = drop.nextStage.startTime ? ` · opens ${formatGmtPlus1(drop.nextStage.startTime * 1000)}` : '';
+      phaseLines.push(`🔵 Next: ${stageSummaryLine(drop.nextStage, sym)}${opensAt}`);
+    }
+    lines.push('', '### Phases (via OpenSea)', ...phaseLines);
+  }
+
   const limits = [];
   // Once sold out there's nothing left to mint -- a per-wallet mint cap has nothing left to apply
   // to (trading moves to secondary from here), so it drops off rather than sitting there as a
@@ -168,7 +201,7 @@ function collectionInfoCard({ contractAddress, chain, chainLabel, chainSym, isSe
   if (openSeaUrl) utilityRow.push(urlButton('🔗 OpenSea', openSeaUrl));
 
   const rows = [row([button('🪙 Mint Now', 'flow:mintdetailscontinue', 'success')])];
-  if (opensInFuture) rows.push(row([button('📅 Schedule for opening', 'flow:schedulesuggest')]));
+  if (opensInFuture) rows.push(row([button('📅 Schedule for opening', 'flow:schedulesuggest', 'success')]));
   rows.push(row(utilityRow), row([button('📋 Copy CA', 'flow:copyca')]), row([button('❌ Cancel', 'flow:cancel:ask', 'danger')]));
 
   return { content: lines.join('\n'), components: rows };
@@ -301,7 +334,7 @@ function mintModeMenu() {
   return {
     content: '## Mint\nMint from one wallet, or the same drop from several at once.',
     components: [
-      row([button('⚡ Single mint', 'menu:mint:single', 'primary')]),
+      row([button('⚡ Single mint', 'menu:mint:single')]),
       row([button('🗂️ Batch mint', 'menu:mint:batch')]),
       row([button('⬅️ Back to menu', 'menu:main')]),
     ],
@@ -552,7 +585,7 @@ function watchRuleActions(rule) {
   return {
     content: `## ${rule.name}\nStatus: ${rule.enabled ? '🟢 enabled' : '⚪ disabled'}\nWatching: ${WATCH_TYPE_META[rule.type]?.label || rule.type}\nMethod: ${WATCH_METHOD_META[rule.method]?.label || rule.method}\nID: \`${rule.id}\``,
     components: [
-      row([button(rule.enabled ? '⏸ Disable' : '▶️ Re-enable', `watch:toggle:${rule.id}`)]),
+      row([button(rule.enabled ? '⏸ Disable' : '▶️ Re-enable', `watch:toggle:${rule.id}`, rule.enabled ? 'secondary' : 'success')]),
       row([button('🗑️ Remove', `watch:remove:ask:${rule.id}`, 'danger')]),
       row([button('⬅️ Back to list', 'watch:list')]),
     ],

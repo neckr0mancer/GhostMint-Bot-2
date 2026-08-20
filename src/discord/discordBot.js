@@ -272,7 +272,7 @@ function mintFlowRenderPayload(step, data, { wallets = [], chains = {} } = {}) {
       chainSym: chains[data.chain]?.sym, isSeaDrop: data.isSeaDrop, priceETH: data.priceETH, priceUnknown: data.priceUnknown,
       maxSupply: data.maxSupply, maxPerWallet: data.maxPerWallet, startTime: data.startTime,
       collection: data.collection, soldOut: data.soldOut, displayPrice: data.displayPrice,
-      stats: data.stats, openSeaUrl: data.openSeaUrl,
+      stats: data.stats, drop: data.drop, openSeaUrl: data.openSeaUrl,
     });
   }
   if (step === 'awaiting_quantity') return discordMenus.mintQuantitySelect(data);
@@ -436,7 +436,7 @@ async function startMintGuidedFlow(ctx, respond, platformUserId, userId, contrac
     maxSupply: detected.maxSupply, maxPerWallet: detected.maxPerWallet,
     startTime: detected.startTime, endTime: detected.endTime, collection: detected.collection,
     soldOut: detected.soldOut, displayPrice: detected.displayPrice,
-    stats: detected.stats, includeStats,
+    stats: detected.stats, drop: detected.drop, includeStats,
     openSeaUrl: OPENSEA_CHAIN_SLUGS[detected.chain] ? `https://opensea.io/assets/${OPENSEA_CHAIN_SLUGS[detected.chain]}/${contractAddress}` : null,
     skipConfirm: false,
     originMessagePublic,
@@ -703,7 +703,7 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
           maxSupply: detected.maxSupply, maxPerWallet: detected.maxPerWallet,
           startTime: detected.startTime, endTime: detected.endTime, collection: detected.collection,
           soldOut: detected.soldOut, displayPrice: detected.displayPrice,
-          stats: detected.stats,
+          stats: detected.stats, drop: detected.drop,
         };
         flowState.advance('discord', platformUserId, 'awaiting_details', refreshed);
         return dcRespond(interaction, mintFlowRenderPayload('awaiting_details', refreshed, { chains }));

@@ -39,7 +39,7 @@ function mainMenu({ isOwner = false } = {}) {
   ];
   if (isOwner) rows.push([button('🛡️ Admin', 'menu:admin')]);
   return {
-    text: '<b>👻 GhostMint</b>\n\nWagmi HQ. Pick your lane below, or fire a command straight in if you already know the drill.',
+    text: '<b>👻 GhostMint</b>\n\nYour GhostMint command center. Pick a move below, or run a command straight in if you already know the play.',
     replyMarkup: keyboard(rows),
     parseMode: 'HTML',
   };
@@ -68,7 +68,7 @@ function settingsMenu({ isOwner = false } = {}) {
   ];
   if (isOwner) rows.push([button('🛡️ Admin console', 'menu:admin')]);
   rows.push([button('⬅️ Back to base', 'menu:main')]);
-  return { text: '<b>⚙️ Settings</b>\n\nRun it your way.', replyMarkup: keyboard(rows), parseMode: 'HTML' };
+  return { text: '<b>⚙️ Settings</b>\n\nSet GhostMint up your way.', replyMarkup: keyboard(rows), parseMode: 'HTML' };
 }
 
 // title/hint are always literal strings the developer wrote at the call site (never user input),
@@ -96,15 +96,15 @@ function chainButtonLabel(chain, chains) {
 
 function chainPicker(supportedChains, chains, { prefix = 'flow:chain' } = {}) {
   const rows = supportedChains.map(chain => [button(chainButtonLabel(chain, chains), `${prefix}:${chain}`)]);
-  rows.push([button('❌ Nah, cancel', 'flow:cancel:ask')]);
-  return { text: 'Pick your chain, ser:', replyMarkup: keyboard(rows), parseMode: 'HTML' };
+  rows.push([button('❌ Cancel', 'flow:cancel:ask')]);
+  return { text: 'Pick your chain:', replyMarkup: keyboard(rows), parseMode: 'HTML' };
 }
 
 function walletPicker(wallets, { prefix, emptyHint }) {
   if (!wallets.length) return placeholderMenu('Wallets', emptyHint);
   const rows = wallets.map(wallet => [button(`${wallet.label} (${wallet.chain})`, `${prefix}:${wallet.label}`)]);
   rows.push([button('⬅️ Back to wallets', 'menu:wallets')]);
-  return { text: 'Which wallet is riding this one?', replyMarkup: keyboard(rows), parseMode: 'HTML' };
+  return { text: 'Which wallet are we using for this one?', replyMarkup: keyboard(rows), parseMode: 'HTML' };
 }
 
 // Multi-select variant for /batch: tapping a wallet toggles it (re-renders this same menu with the
@@ -116,16 +116,16 @@ function walletMultiPicker(wallets, selectedLabels, { emptyHint }) {
     return [button(`${checked ? '✅' : '⬜'} ${wallet.label} (${wallet.chain})`, `flow:wallettoggle:${wallet.label}`)];
   });
   if (selectedLabels.length) {
-    rows.push([button(`▶️ Squad's set, continue with ${selectedLabels.length} wallet${selectedLabels.length === 1 ? '' : 's'}`, 'flow:walletcontinue')]);
+    rows.push([button(`▶️ Wallets locked. Continue with ${selectedLabels.length}.`, 'flow:walletcontinue')]);
   }
-  rows.push([button('❌ Nah, cancel', 'flow:cancel:ask')]);
+  rows.push([button('❌ Cancel', 'flow:cancel:ask')]);
   return { text: 'Tap every wallet you want in this batch, then hit Continue:', replyMarkup: keyboard(rows), parseMode: 'HTML' };
 }
 
 function sendConfirmation({ walletLabel, toAddress, chainLabel, amountETH, sym, estimatedGasETH, totalETH }) {
   return {
-    text: `<b>🚀 Confirm send</b>\nFrom: ${escapeTelegramHtml(walletLabel)}\nTo: <code>${toAddress}</code>\nChain: ${chainLabel}\nAmount: ${amountETH} ${sym}\nEstimated gas: ~${estimatedGasETH} ${sym}\nTotal: ~${totalETH} ${sym}\n\nSend it, ser?`,
-    replyMarkup: keyboard([[button('✅ Send it', 'flow:sendconfirm')], [button('❌ Nah, cancel', 'flow:cancel:ask')]]),
+    text: `<b>🚀 Confirm send</b>\nFrom: ${escapeTelegramHtml(walletLabel)}\nTo: <code>${toAddress}</code>\nChain: ${chainLabel}\nAmount: ${amountETH} ${sym}\nEstimated gas: ~${estimatedGasETH} ${sym}\nTotal: ~${totalETH} ${sym}\n\nReady to send it?`,
+    replyMarkup: keyboard([[button('✅ Send it', 'flow:sendconfirm')], [button('❌ Cancel', 'flow:cancel:ask')]]),
     parseMode: 'HTML',
   };
 }
@@ -137,7 +137,7 @@ function sendConfirmation({ walletLabel, toAddress, chainLabel, amountETH, sym, 
 function exportKeyWarning({ walletLabel }) {
   return {
     text: `⚠️ <b>Export the private key for ${escapeTelegramHtml(walletLabel)}?</b>\n\nThis is the master key to this wallet's bag. Whoever holds it owns everything in it, permanently, no takebacks. The message auto-deletes shortly, but that's a courtesy, not a control: the key still transits Telegram's servers and can be screenshotted or forwarded before the timer fires. Only proceed if you fully understand what you're holding.`,
-    replyMarkup: keyboard([[button('⚠️ I understand, export it', 'flow:exportconfirm')], [button('❌ Nah, cancel', 'flow:cancel:ask')]]),
+    replyMarkup: keyboard([[button('⚠️ I understand, export it', 'flow:exportconfirm')], [button('❌ Cancel', 'flow:cancel:ask')]]),
     parseMode: 'HTML',
   };
 }
@@ -164,14 +164,14 @@ function contractDetailsText({ contractAddress, chainLabel, isSeaDrop, priceETH,
   // one flat run-on list -- Telegram has no layout primitives beyond line breaks, so spacing IS the
   // only alignment tool available here.
   const lines = [
-    collection?.name ? `<b>${escapeTelegramHtml(collection.name)}</b>` : '<b>📜 The Deets</b>',
+    collection?.name ? `<b>${escapeTelegramHtml(collection.name)}</b>` : '<b>📜 Collection Details</b>',
     `<code>${contractAddress}</code>`,
     `Chain: ${chainLabel} · ${isSeaDrop ? 'SeaDrop drop' : 'Standard mint(uint256)'}`,
     '',
   ];
   if (soldOut) {
     lines.push(displayPrice
-      ? `Status: Sold out. Floor's sitting at ${displayPrice.eth} ETH${usdSuffix(displayPrice.usd)}`
+      ? `Status: Sold out. Floor: ${displayPrice.eth} ETH${usdSuffix(displayPrice.usd)}`
       : "Status: Sold out. Floor price couldn't be determined from this contract.");
   } else {
     lines.push(priceUnknown
@@ -201,7 +201,7 @@ function contractDetailsText({ contractAddress, chainLabel, isSeaDrop, priceETH,
 function contractDetails(data) {
   return {
     text: contractDetailsText(data),
-    replyMarkup: keyboard([[button('▶️ Continue', 'flow:mintdetailscontinue')], [button('❌ Nah, cancel', 'flow:cancel:ask')]]),
+    replyMarkup: keyboard([[button('▶️ Continue', 'flow:mintdetailscontinue')], [button('❌ Cancel', 'flow:cancel:ask')]]),
     parseMode: 'HTML',
   };
 }
@@ -233,13 +233,27 @@ function formatGmtPlus1(value) {
 // openSeaUrl is built by the caller (server.js, from OPENSEA_CHAIN_SLUGS) rather than here, so
 // this module stays free of a cross-directory import into src/mint/ -- null omits the button
 // entirely rather than linking to a chain OpenSea doesn't index.
-function collectionInfoCard({ contractAddress, chainLabel, chainSym, isSeaDrop, priceETH, priceUnknown, maxSupply, maxPerWallet, startTime, collection, soldOut, displayPrice, stats, openSeaUrl }) {
+// Section AF -- humanizes an OpenSea stage_type ("public_sale", "presale", ...) into a fallback
+// label for a stage OpenSea didn't give its own human-written label.
+function humanizeStageType(stageType) {
+  if (!stageType) return 'Phase';
+  return stageType.split('_').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
+}
+
+function stageSummaryLine(stage, sym) {
+  const label = stage.label || humanizeStageType(stage.stageType);
+  const price = stage.priceETH !== null && stage.priceETH !== undefined ? `${stage.priceETH} ${sym}` : 'price TBD';
+  const cap = stage.maxPerWallet !== null && stage.maxPerWallet !== undefined ? ` · max ${stage.maxPerWallet}/wallet` : '';
+  return `${escapeTelegramHtml(label)} — ${price}${cap}`;
+}
+
+function collectionInfoCard({ contractAddress, chainLabel, chainSym, isSeaDrop, priceETH, priceUnknown, maxSupply, maxPerWallet, startTime, collection, soldOut, displayPrice, stats, drop, openSeaUrl }) {
   const sym = chainSym || 'ETH';
   // Blank lines below group the card into identity / price / stats / limits / description bands --
   // Telegram has no layout primitives beyond line breaks, so spacing IS the only alignment tool
   // available here.
   const lines = [
-    collection?.name ? `<b>${escapeTelegramHtml(collection.name)}</b>` : '<b>📜 The Deets</b>',
+    collection?.name ? `<b>${escapeTelegramHtml(collection.name)}</b>` : '<b>📜 Collection Details</b>',
     `<code>${contractAddress}</code>`,
     `Chain: ${chainLabel} · ${isSeaDrop ? 'SeaDrop drop' : 'Standard mint(uint256)'}`,
     '',
@@ -247,7 +261,7 @@ function collectionInfoCard({ contractAddress, chainLabel, chainSym, isSeaDrop, 
 
   if (soldOut) {
     lines.push(displayPrice
-      ? `Status: Sold out. Floor's at ${displayPrice.eth} ${sym}${usdSuffix(displayPrice.usd)}`
+      ? `Status: Sold out. Floor: ${displayPrice.eth} ${sym}${usdSuffix(displayPrice.usd)}`
       : "Status: Sold out. Floor price couldn't be determined from this contract.");
   } else {
     lines.push(priceUnknown ? "Mint price: not exposed by this contract. You're flying manual" : `Mint price: ${priceETH} ${sym} per item`);
@@ -278,6 +292,24 @@ function collectionInfoCard({ contractAddress, chainLabel, chainSym, isSeaDrop, 
     }
   }
 
+  // Section AF -- "can't you read the phases from OpenSea and the contract?" On-chain SeaDrop only
+  // ever exposes the ONE currently-configured PublicDrop struct (the Opens/Opened line below), so it
+  // can never say what's coming after that. drop is null unless OpenSea actually tracks this
+  // contract as a drop -- omitted entirely rather than shown as a broken/empty section.
+  if (drop && (drop.activeStage || drop.nextStage || drop.stages.length > 1)) {
+    const phaseLines = [];
+    if (drop.stages.length > 1) phaseLines.push(`${drop.stages.length} phases total`);
+    if (drop.activeStage) {
+      const endsAt = drop.activeStage.endTime ? ` · ends ${formatGmtPlus1(drop.activeStage.endTime * 1000)}` : '';
+      phaseLines.push(`🟢 Live: ${stageSummaryLine(drop.activeStage, sym)}${endsAt}`);
+    }
+    if (drop.nextStage) {
+      const opensAt = drop.nextStage.startTime ? ` · opens ${formatGmtPlus1(drop.nextStage.startTime * 1000)}` : '';
+      phaseLines.push(`🔵 Next: ${stageSummaryLine(drop.nextStage, sym)}${opensAt}`);
+    }
+    lines.push('', '🎟️ <b>Phases (via OpenSea)</b>', ...phaseLines);
+  }
+
   const limits = [];
   // Once sold out there's nothing left to mint -- a per-wallet mint cap has nothing left to apply
   // to (trading moves to secondary from here), so it drops off rather than sitting there as a
@@ -298,9 +330,9 @@ function collectionInfoCard({ contractAddress, chainLabel, chainSym, isSeaDrop, 
   const utilityRow = [button('🔄 Refresh', 'flow:detailsrefresh')];
   if (openSeaUrl) utilityRow.push(urlButton('🔗 OpenSea', openSeaUrl));
 
-  const rows = [[button('🪙 Ape In Now', 'flow:mintdetailscontinue')]];
+  const rows = [[button('🔥 Ape In', 'flow:mintdetailscontinue')]];
   if (opensInFuture) rows.push([button('📅 Schedule for opening', `flow:schedulesuggest:${contractAddress}`)]);
-  rows.push(utilityRow, [button('📋 Copy CA', 'flow:copyca')], [button('❌ Nah, cancel', 'flow:cancel:ask')]);
+  rows.push(utilityRow, [button('📋 Copy CA', 'flow:copyca')], [button('❌ Cancel', 'flow:cancel:ask')]);
 
   return {
     text: lines.join('\n'),
@@ -316,15 +348,15 @@ function taskConfirmation({ name, contractAddress, chainLabel, walletLabel, quan
   const phase = Number(phaseNumber) > 1 ? Number(phaseNumber) : null;
   let priceLine;
   if (phase) priceLine = `Price: ${priceETH} per item (your number for this phase)`;
-  else if (priceUnknown) priceLine = 'Price: not exposed by this contract. Using the amount you punched in above.';
-  else priceLine = `Price: ${priceETH} per item (straight from the contract)${displayPrice ? usdSuffix(displayPrice.usd) : ''}`;
+  else if (priceUnknown) priceLine = 'Price: not exposed by this contract. Using the amount you entered above.';
+  else priceLine = `Price: ${priceETH} per item (pulled straight from the contract)${displayPrice ? usdSuffix(displayPrice.usd) : ''}`;
   const timeLine = autoDetectedTime
     ? `Fires: <b>${formatGmtPlus1(mintTime)}</b> (this contract's own opening time)`
     : `Fires: <b>${formatGmtPlus1(mintTime)}</b>`;
   const heading = phase ? `<b>⏰ Confirm phase ${phase}</b>` : '<b>⏰ Confirm scheduled mint</b>';
   return {
     text: `${heading}\nName: ${escapeTelegramHtml(name)}\nContract: <code>${contractAddress}</code>\nChain: ${chainLabel}\nWallet: ${escapeTelegramHtml(walletLabel)}\nQuantity: ${quantity || 1}\n${priceLine}\n${timeLine}\n\nThis is not a reminder — the bot signs and sends the mint itself at that moment, phone in your pocket, you asleep.\n\nLock it in?`,
-    replyMarkup: keyboard([[button('✅ Schedule it', 'flow:taskconfirm')], [button('❌ Nah, cancel', 'flow:cancel:ask')]]),
+    replyMarkup: keyboard([[button('✅ Schedule it', 'flow:taskconfirm')], [button('❌ Cancel', 'flow:cancel:ask')]]),
     parseMode: 'HTML',
   };
 }
@@ -340,7 +372,7 @@ function taskScheduled({ name, contractAddress, mintTime, phaseNumber }) {
     ? `✅ Phase ${phase} armed: <b>${escapeTelegramHtml(name)}</b>`
     : `✅ Locked in: <b>${escapeTelegramHtml(name)}</b>`;
   return {
-    text: `${armed}\nFires: <b>${formatGmtPlus1(mintTime)}</b>\n\nGot another public stage on this drop? Different time, different price — stack one task per stage and the bot works down the list. Allowlist/GTD stages need a per-wallet proof this bot can't fetch yet, so those aren't schedulable.`,
+    text: `${armed}\nFires: <b>${formatGmtPlus1(mintTime)}</b>\n\nGot another public stage? Stack another task for it: different time, different price, and the bot works down the list. Allowlist/GTD stages need a per-wallet proof this bot can't fetch yet, so those aren't schedulable.`,
     replyMarkup: keyboard([
       [button(`➕ Add phase ${phase + 1}`, `flow:phase:${phase + 1}:${contractAddress}`)],
       [button('🗓️ See all tasks', 'menu:tasks')],
@@ -364,7 +396,7 @@ function gasMenu(chain, fees, supportedChains, chains) {
   rows.push([button('⬅️ Back to base', 'menu:main')]);
   const readout = fees
     ? `Safe: <b>${fees.safeGasPriceGwei ?? 'unavailable'}</b> Gwei\nStandard: <b>${fees.gasPriceGwei ?? 'unavailable'}</b> Gwei\nFast: <b>${fees.maxFeePerGasGwei ?? 'unavailable'}</b> Gwei`
-    : "Couldn't fetch gas prices for this chain. The network's ghosting us.";
+    : "Couldn't fetch gas right now. Network's ghosting us.";
   return {
     text: `⛽ <b>Gas check: ${escapeTelegramHtml(chains[chain]?.name || chain)}</b>\nReal-time, no cap.\n${readout}`,
     replyMarkup: keyboard(rows),
@@ -503,7 +535,7 @@ function adminOverviewMenu({ metrics, groups }) {
 // the two platforms build their option lists in entirely different shapes (inline keyboard vs.
 // slash-command choices).
 const MODE_META = {
-  ultra_fast: { label: 'Degen', hint: 'full send, high gas, zero confirmations, no brakes' },
+  ultra_fast: { label: 'Degen', hint: 'Full send. Aggressive gas, minimal friction.' },
   fast: { label: 'Fast', hint: 'quick, higher gas, still asks before it fires' },
   semi_safe: { label: 'Cautious', hint: 'measured, moderate gas' },
   safe: { label: 'Normie', hint: 'slow and steady, network-price gas, zero surprises' },
@@ -525,7 +557,7 @@ function modeMenu(currentKey, presets, advancedModesAllowed = false) {
   const currentLabel = MODE_META[currentKey]?.label || 'none selected';
   const lockedNote = advancedModesAllowed ? '' : '\n\n🔒 Degen and Fast require group or admin access.';
   return {
-    text: `<b>🎛️ Transaction mode</b>\n\nCurrent vibe: <b>${escapeTelegramHtml(currentLabel)}</b>\n\nControls confirmation prompts and how hard this thing sends gas on every mint. Ceilings and forced simulation always have the final say, no matter which mode you pick.${lockedNote}`,
+    text: `<b>🎛️ Transaction mode</b>\n\nCurrent mode: <b>${escapeTelegramHtml(currentLabel)}</b>\n\nControls confirmation prompts and how hard this thing sends gas on every mint. Ceilings and forced simulation always have the final say, no matter which mode you pick.${lockedNote}`,
     replyMarkup: keyboard(rows),
     parseMode: 'HTML',
   };
@@ -534,14 +566,14 @@ function modeMenu(currentKey, presets, advancedModesAllowed = false) {
 function mintConfirmation({ contractAddress, chainLabel, walletLabels, quantity = 1, priceETH, priceUnknown, maxGasGwei }) {
   const priceLine = priceUnknown
     ? 'Price: not exposed by this contract. Using the amount you entered above.'
-    : `Price: ${priceETH} per item (straight from the contract)`;
+    : `Price: ${priceETH} per item (pulled straight from the contract)`;
   // maxGasGwei only ever appears here for a batch (see afterGasToleranceResolved) -- undefined
   // means this confirm screen isn't reachable through that step at all (a plain /mint), so the
   // line is omitted entirely rather than shown as "not set" for a flow that was never asked.
   const gasLine = maxGasGwei === undefined ? '' : `\nGas tolerance: ${maxGasGwei === null ? 'no extra limit (account ceiling only)' : `up to ${maxGasGwei} gwei`}`;
   return {
     text: `<b>🪙 Confirm mint</b>\nContract: <code>${contractAddress}</code>\nChain: ${chainLabel}\nWallet(s): ${walletLabels.map(escapeTelegramHtml).join(', ')}\nQuantity: ${quantity} each\n${priceLine}${gasLine}\n\nLocked in?`,
-    replyMarkup: keyboard([[button('✅ Send it', 'flow:mintconfirm')], [button('❌ Nah, cancel', 'flow:cancel:ask')]]),
+    replyMarkup: keyboard([[button('✅ Send it', 'flow:mintconfirm')], [button('❌ Cancel', 'flow:cancel:ask')]]),
     parseMode: 'HTML',
   };
 }
@@ -560,7 +592,7 @@ function gasTolerancePrompt({ currentGasGwei, ceilingGwei }) {
     replyMarkup: keyboard([
       [button(`✅ No extra limit (up to ${ceilingGwei} gwei)`, 'flow:gastoleranceaccept')],
       [button('✏️ Set my own gwei cap', 'flow:gastolerancemanual')],
-      [button('❌ Nah, cancel', 'flow:cancel:ask')],
+      [button('❌ Cancel', 'flow:cancel:ask')],
     ]),
     parseMode: 'HTML',
   };
@@ -583,19 +615,19 @@ const WATCH_METHOD_META = {
 
 function watchTypeSelect() {
   const rows = Object.entries(WATCH_TYPE_META).map(([type, meta]) => [button(meta.label, `flow:watchtype:${type}`)]);
-  rows.push([button('❌ Nah, cancel', 'flow:cancel:ask')]);
+  rows.push([button('❌ Cancel', 'flow:cancel:ask')]);
   return { text: "What's on your radar?", replyMarkup: keyboard(rows), parseMode: 'HTML' };
 }
 
 function watchMethodSelect(type) {
   const rows = Object.entries(WATCH_METHOD_META).map(([method, meta]) => [button(meta.label, `flow:watchmethod:${method}`)]);
-  rows.push([button('❌ Nah, cancel', 'flow:cancel:ask')]);
+  rows.push([button('❌ Cancel', 'flow:cancel:ask')]);
   const typeLabel = WATCH_TYPE_META[type]?.label || type;
   return { text: `<b>${escapeTelegramHtml(typeLabel)}</b>\n\nHow's this rule pulling its intel?\n${Object.values(WATCH_METHOD_META).map(meta => `• <b>${meta.label}</b> — ${meta.hint}`).join('\n')}`, replyMarkup: keyboard(rows), parseMode: 'HTML' };
 }
 
 function watchConfigPrompt(field, hint) {
-  return { text: `Drop the ${escapeTelegramHtml(field)}: ${escapeTelegramHtml(hint)}`, replyMarkup: keyboard([[button('❌ Nah, cancel', 'flow:cancel:ask')]]), parseMode: 'HTML' };
+  return { text: `Drop the ${escapeTelegramHtml(field)}: ${escapeTelegramHtml(hint)}`, replyMarkup: keyboard([[button('❌ Cancel', 'flow:cancel:ask')]]), parseMode: 'HTML' };
 }
 
 function watchRuleConfirmation({ name, type, method, config }) {
@@ -605,7 +637,7 @@ function watchRuleConfirmation({ name, type, method, config }) {
     .join('\n');
   return {
     text: `<b>📡 Confirm watch rule</b>\nName: ${escapeTelegramHtml(name)}\nWatching: ${WATCH_TYPE_META[type]?.label || type}\nMethod: ${WATCH_METHOD_META[method]?.label || method}\n${configLines}\n\nStand up this rule?`,
-    replyMarkup: keyboard([[button('✅ Create rule', 'flow:watchconfirm')], [button('❌ Nah, cancel', 'flow:cancel:ask')]]),
+    replyMarkup: keyboard([[button('✅ Create rule', 'flow:watchconfirm')], [button('❌ Cancel', 'flow:cancel:ask')]]),
     parseMode: 'HTML',
   };
 }

@@ -144,7 +144,7 @@ test('contract details renders every known field and degrades gracefully with no
     contractAddress: '0xdef', chainLabel: 'Base', isSeaDrop: false, priceUnknown: true,
     maxSupply: null, maxPerWallet: null, startTime: null, collection: null, soldOut: false, displayPrice: null,
   });
-  assert.match(minimal.text, /The Deets/);
+  assert.match(minimal.text, /Collection Details/);
   assert.match(minimal.text, /Standard mint\(uint256\)/);
   assert.match(minimal.text, /not determinable/);
   assert.equal(minimal.text.includes('Max per wallet'), false);
@@ -176,7 +176,7 @@ test('a sold-out collection shows the OpenSea floor price instead of the mint pr
     maxSupply: null, maxPerWallet: null, startTime: null, collection: null,
     soldOut: true, displayPrice: { eth: 0.3, usd: 900, source: 'floor' },
   });
-  assert.match(details.text, /Status: Sold out\. Floor's sitting at 0\.3 ETH \(~\$900\.00\)/);
+  assert.match(details.text, /Status: Sold out\. Floor: 0\.3 ETH \(~\$900\.00\)/);
   assert.equal(details.text.includes('Price: 0.05 per item'), false);
 });
 
@@ -186,7 +186,7 @@ test('a sold-out collection with a genuine floor price of 0 shows 0, not "unavai
     maxSupply: null, maxPerWallet: null, startTime: null, collection: null,
     soldOut: true, displayPrice: { eth: 0, usd: 0, source: 'floor' },
   });
-  assert.match(details.text, /Status: Sold out\. Floor's sitting at 0 ETH \(~\$0\.00\)/);
+  assert.match(details.text, /Status: Sold out\. Floor: 0 ETH \(~\$0\.00\)/);
   assert.equal(details.text.includes('unavailable'), false);
 });
 
@@ -254,6 +254,50 @@ test('collectionInfoCard suggests scheduling only when the detected opening time
   });
   assert.equal(flatButtons(alreadyOpen.replyMarkup).some(b => b.callback_data?.startsWith('flow:schedulesuggest:')), false);
   assert.match(alreadyOpen.text, /Opened:/);
+});
+
+// Section AF -- on-chain SeaDrop only ever exposes the ONE currently-configured stage (the
+// Opens/Opened line), so it can never say what comes after. drop carries OpenSea's own real stage
+// data (null unless OpenSea actually tracks this contract as a drop).
+test('collectionInfoCard shows the live and next OpenSea phase when drop data is available, and omits the section entirely when it is not', () => {
+  const noDrop = collectionInfoCard({
+    contractAddress: '0xabc', chainLabel: 'Ethereum', chainSym: 'ETH', isSeaDrop: true, priceETH: 0.05, priceUnknown: false,
+    maxSupply: 100, maxPerWallet: 1, startTime: null, collection: null, soldOut: false, displayPrice: null, stats: null, drop: null, openSeaUrl: null,
+  });
+  assert.equal(noDrop.text.includes('Phases'), false);
+
+  const withDrop = collectionInfoCard({
+    contractAddress: '0xabc', chainLabel: 'Ethereum', chainSym: 'ETH', isSeaDrop: true, priceETH: 0.05, priceUnknown: false,
+    maxSupply: 100, maxPerWallet: 1, startTime: null, collection: null, soldOut: false, displayPrice: null, stats: null, openSeaUrl: null,
+    drop: {
+      isMinting: true, dropType: 'seadrop_v1_erc721', maxSupply: 100, openSeaUrl: null,
+      activeStage: { uuid: 'a1', label: 'Public sale', startTime: 1_700_000_000, endTime: 1_700_100_000, priceETH: 0.05, maxPerWallet: 5, stageType: 'public_sale' },
+      nextStage: null,
+      stages: [
+        { uuid: 'a0', label: 'Allowlist', startTime: 1_699_900_000, endTime: 1_700_000_000, priceETH: 0, maxPerWallet: 2, stageType: 'presale' },
+        { uuid: 'a1', label: 'Public sale', startTime: 1_700_000_000, endTime: 1_700_100_000, priceETH: 0.05, maxPerWallet: 5, stageType: 'public_sale' },
+      ],
+    },
+  });
+  assert.match(withDrop.text, /🎟️ <b>Phases \(via OpenSea\)<\/b>/);
+  assert.match(withDrop.text, /2 phases total/);
+  assert.match(withDrop.text, /🟢 Live: Public sale — 0\.05 ETH · max 5\/wallet/);
+  assert.equal(withDrop.text.includes('🔵 Next'), false);
+});
+
+test('collectionInfoCard shows an upcoming OpenSea phase with a fallback label built from stage_type when the stage has no name', () => {
+  const withNext = collectionInfoCard({
+    contractAddress: '0xabc', chainLabel: 'Ethereum', chainSym: 'ETH', isSeaDrop: true, priceETH: 0.05, priceUnknown: true,
+    maxSupply: 100, maxPerWallet: 1, startTime: null, collection: null, soldOut: false, displayPrice: null, stats: null, openSeaUrl: null,
+    drop: {
+      isMinting: false, dropType: 'seadrop_v1_erc721', maxSupply: 100, openSeaUrl: null,
+      activeStage: null,
+      nextStage: { uuid: 'n1', label: null, startTime: 1_700_000_000, endTime: 1_700_100_000, priceETH: 0.05, maxPerWallet: 5, stageType: 'public_sale' },
+      stages: [],
+    },
+  });
+  assert.match(withNext.text, /🔵 Next: Public Sale — 0\.05 ETH · max 5\/wallet · opens/);
+  assert.equal(withNext.text.includes('phases total'), false, 'must not show a phase count for a single-stage next-only drop');
 });
 
 test('collectionInfoCard omits the stats table entirely when stats is null, and renders an aligned floor/holders/minted/volume table -- never a market cap -- when it is not', () => {
@@ -336,7 +380,7 @@ test('task confirmation appends a USD equivalent to the price when a displayPric
     mintTime: '2026-08-20T18:00:00.000Z', autoDetectedTime: false, priceETH: 0.1, priceUnknown: false,
     displayPrice: { eth: 0.1, usd: 300, source: 'mint' },
   });
-  assert.match(withUsd.text, /Price: 0\.1 per item \(straight from the contract\) \(~\$300\.00\)/);
+  assert.match(withUsd.text, /Price: 0\.1 per item \(pulled straight from the contract\) \(~\$300\.00\)/);
   const withoutUsd = taskConfirmation({
     name: 'drop', contractAddress: '0xabc', chainLabel: 'Ethereum', walletLabel: 'main',
     mintTime: '2026-08-20T18:00:00.000Z', autoDetectedTime: false, priceETH: 0.1, priceUnknown: false,

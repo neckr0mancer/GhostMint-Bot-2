@@ -168,6 +168,23 @@ function createBotCommandService(dependencies) {
       };
     }
 
+    // Section AF -- "can't you read the phases from OpenSea and the contract?" On-chain SeaDrop only
+    // ever exposes the ONE currently-configured PublicDrop struct, so it can never show what's
+    // coming next; OpenSea's Drops API is the real source for the full stage list plus which one is
+    // active/next. Same includeStats gate as the stats block above (this is display-only, opt-in,
+    // and shouldn't cost every plain paste an extra API round-trip). Stage prices convert wei -> ETH
+    // here (not in openSeaService, which stays ethers-free) the same way every other price this
+    // function resolves already does.
+    let drop = null;
+    if (input.includeStats && openSeaService?.getDrop) {
+      const liveDrop = await openSeaService.getDrop(chain, contractAddress);
+      if (liveDrop) {
+        const toEthStage = stage => (stage ? { ...stage, priceETH: stage.priceWei !== null ? Number(formatEther(BigInt(stage.priceWei))) : null } : null);
+        drop = { ...liveDrop, activeStage: toEthStage(liveDrop.activeStage), nextStage: toEthStage(liveDrop.nextStage),
+          stages: liveDrop.stages.map(toEthStage) };
+      }
+    }
+
     const seaDrop = seaDropDiscoveryService
       ? await seaDropDiscoveryService.resolve(chain, contractAddress)
       : { address: null, publicDrop: null, feeRecipient: null };
@@ -203,6 +220,7 @@ function createBotCommandService(dependencies) {
         soldOut,
         displayPrice,
         stats,
+        drop,
       };
     }
 
@@ -230,6 +248,7 @@ function createBotCommandService(dependencies) {
       soldOut,
       displayPrice,
       stats,
+      drop,
     };
   }
 

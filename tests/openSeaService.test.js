@@ -207,6 +207,78 @@ test('getCollectionStats returns an all-null shape (never throws) when unconfigu
   assert.equal((await networkFailure.getCollectionStats('ethereum', CONTRACT)).floorPrice, null);
 });
 
+// Section AF -- reading real phase data from OpenSea's Drops API instead of guessing from the
+// single mutable on-chain PublicDrop struct. Response shape live-verified against
+// docs.opensea.io/reference/get_drop_by_slug: price is a decimal wei string, start/end times are
+// ISO 8601 strings (converted to unix seconds here to match every other timestamp this app threads
+// through, e.g. SeaDrop's own on-chain startTime/endTime).
+test('getDrop normalizes a real-shaped response: active/next stage, full stage list, wei price kept as a string', async () => {
+  const http = { get: async url => {
+    if (url.includes('/chain/ethereum/contract/')) return { data: { collection: 'cool-cats' } };
+    if (url.endsWith('/drops/cool-cats')) return { data: {
+      is_minting: true, drop_type: 'seadrop_v1_erc721', max_supply: '10000', opensea_url: 'https://opensea.io/collection/cool-cats',
+      active_stage: { uuid: 'a1', label: 'Public sale', start_time: '2026-08-19T18:00:00Z', end_time: '2026-08-26T18:00:00Z', price: '50000000000000000', price_currency_address: '0x0000000000000000000000000000000000000000', stage_type: 'public_sale', max_per_wallet: '5' },
+      next_stage: null,
+      stages: [
+        { uuid: 'a0', label: 'Allowlist', start_time: '2026-08-18T18:00:00Z', end_time: '2026-08-19T18:00:00Z', price: '0', price_currency_address: '0x0000000000000000000000000000000000000000', stage_type: 'presale', max_per_wallet: '2' },
+        { uuid: 'a1', label: 'Public sale', start_time: '2026-08-19T18:00:00Z', end_time: '2026-08-26T18:00:00Z', price: '50000000000000000', price_currency_address: '0x0000000000000000000000000000000000000000', stage_type: 'public_sale', max_per_wallet: '5' },
+      ],
+    } };
+    throw new Error(`unexpected url ${url}`);
+  } };
+  const service = createOpenSeaService({ apiKey: 'test-key', repository: fakeRepository(), http });
+  const drop = await service.getDrop('ethereum', CONTRACT);
+  assert.equal(drop.isMinting, true);
+  assert.equal(drop.dropType, 'seadrop_v1_erc721');
+  assert.equal(drop.maxSupply, 10000);
+  assert.equal(drop.openSeaUrl, 'https://opensea.io/collection/cool-cats');
+  assert.equal(drop.activeStage.label, 'Public sale');
+  assert.equal(drop.activeStage.priceWei, '50000000000000000');
+  assert.equal(drop.activeStage.maxPerWallet, 5);
+  assert.equal(drop.activeStage.startTime, Math.floor(Date.parse('2026-08-19T18:00:00Z') / 1000));
+  assert.equal(drop.nextStage, null);
+  assert.equal(drop.stages.length, 2);
+  assert.equal(drop.stages[0].label, 'Allowlist');
+  assert.equal(drop.stages[0].priceWei, '0');
+});
+
+test('getDrop surfaces a future stage as nextStage when the drop is not currently minting', async () => {
+  const http = { get: async url => {
+    if (url.includes('/chain/ethereum/contract/')) return { data: { collection: 'cool-cats' } };
+    if (url.endsWith('/drops/cool-cats')) return { data: {
+      is_minting: false, drop_type: 'seadrop_v1_erc721', max_supply: '10000', opensea_url: null,
+      active_stage: null,
+      next_stage: { uuid: 'a1', label: 'Public sale', start_time: '2026-08-20T18:00:00Z', end_time: '2026-08-27T18:00:00Z', price: '50000000000000000', price_currency_address: '0x0000000000000000000000000000000000000000', stage_type: 'public_sale', max_per_wallet: '5' },
+      stages: [],
+    } };
+    throw new Error(`unexpected url ${url}`);
+  } };
+  const service = createOpenSeaService({ apiKey: 'test-key', repository: fakeRepository(), http });
+  const drop = await service.getDrop('ethereum', CONTRACT);
+  assert.equal(drop.isMinting, false);
+  assert.equal(drop.activeStage, null);
+  assert.equal(drop.nextStage.label, 'Public sale');
+  assert.equal(drop.nextStage.startTime, Math.floor(Date.parse('2026-08-20T18:00:00Z') / 1000));
+});
+
+test('getDrop returns null (never throws) when unconfigured, unsupported, not a drop, or the API fails', async () => {
+  const noKey = createOpenSeaService({ apiKey: null, repository: fakeRepository(), http: { get: async () => { throw new Error('should not be called'); } } });
+  assert.equal(await noKey.getDrop('ethereum', CONTRACT), null);
+
+  const unsupportedChain = createOpenSeaService({ apiKey: 'test-key', repository: fakeRepository(), http: { get: async () => { throw new Error('should not be called'); } } });
+  assert.equal(await unsupportedChain.getDrop('not-a-real-chain', CONTRACT), null);
+
+  const noSlug = createOpenSeaService({ apiKey: 'test-key', repository: fakeRepository(), http: { get: async () => ({ data: {} }) } });
+  assert.equal(await noSlug.getDrop('ethereum', CONTRACT), null);
+
+  // A plain, non-OpenSea-drop contract 404s -- exactly this shape of failure, not a special case.
+  const notADrop = createOpenSeaService({ apiKey: 'test-key', repository: fakeRepository(), http: { get: async url => {
+    if (url.includes('/chain/ethereum/contract/')) return { data: { collection: 'plain-collection' } };
+    throw new Error('404');
+  } } });
+  assert.equal(await notADrop.getDrop('ethereum', CONTRACT), null);
+});
+
 test('getCollectionStats tolerates a stats response missing some fields, filling in null rather than throwing', async () => {
   const http = { get: async url => {
     if (url.includes('/chain/ethereum/contract/')) return { data: { collection: 'partial-collection' } };

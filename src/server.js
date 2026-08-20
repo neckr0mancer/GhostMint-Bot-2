@@ -903,6 +903,7 @@ function renderFlowStep(flow, step, { userId, data = {} } = {}) {
         soldOut: data.soldOut,
         displayPrice: data.displayPrice,
         stats: data.stats,
+        drop: data.drop,
         openSeaUrl: data.openSeaUrl,
       });
     }
@@ -1083,7 +1084,7 @@ async function startMintFlow({ chatId, messageId, userId, multi, contractAddress
     maxSupply: detected.maxSupply, maxPerWallet: detected.maxPerWallet,
     startTime: detected.startTime, endTime: detected.endTime, collection: detected.collection,
     soldOut: detected.soldOut, displayPrice: detected.displayPrice,
-    stats: detected.stats, includeStats,
+    stats: detected.stats, drop: detected.drop, includeStats,
     openSeaUrl: OPENSEA_CHAIN_SLUGS[detected.chain] ? `https://opensea.io/assets/${OPENSEA_CHAIN_SLUGS[detected.chain]}/${contractAddress}` : null,
     skipConfirm,
   };
@@ -2199,7 +2200,7 @@ if (BOT_TOKEN) {
         maxSupply: detected.maxSupply, maxPerWallet: detected.maxPerWallet,
         startTime: detected.startTime, endTime: detected.endTime, collection: detected.collection,
         soldOut: detected.soldOut, displayPrice: detected.displayPrice,
-        stats: detected.stats,
+        stats: detected.stats, drop: detected.drop,
       };
       telegramFlowState.advance('telegram', chatId, 'awaiting_details', refreshed);
       return tgEditMenu(chatId, messageId, renderFlowStep('mint_guided', 'awaiting_details', { userId, data: refreshed }));
