@@ -66,9 +66,10 @@ shipped).
   not pulling up a picker" turned out to be working as designed (typing into `wallets` is the
   documented direct-fill shortcut) but that field had no autocomplete backing up its own "omit to
   pick from a list" description — now autocompletes like every other wallet-label field. Diagnosed,
-  Discord-side fix needed (not this app's code): auto-detect on pasted links working in only one
-  channel per server points to that channel's Discord permission settings for the bot's role, not
-  anything in this app.
+  Discord-side, not this app's code: auto-detect on pasted links working in only one channel per
+  server turned out to be that channel's own restricted permission list simply never including the
+  bot's role, confirmed live via the diagnostic logging this round also shipped (which stays in
+  place) — fixed by the user directly in Discord, nothing to change here.
 
 Status legend: ✅ Done · 🟡 Partial · ❌ Not started
 
@@ -149,7 +150,7 @@ and excludes labels already present so the same wallet can't be suggested twice.
 (definition asserts `autocomplete: true`; handler tests cover a fresh suggestion list and picking a
 second wallet while the first stays chosen) — full file 26/26 passing.
 
-### Discord auto-detect working in only one channel per server — diagnostic logging shipped, root cause still open
+### Discord auto-detect working in only one channel per server — root cause found, no code fix needed ✅
 
 Separately reported: pasting a contract/OpenSea link auto-detects in one channel of one server, but
 not in the other two servers, and not on other channels of the *same* server that does work — so
@@ -182,9 +183,22 @@ from `createDiscordBot`'s existing param down to `handleMintPasteMessage`, which
 `log = () => {}` parameter. `src/discord/discordBot.js`. Verified: `node --check`,
 `npx eslint --max-warnings=0`, both clean; `discordTaskFlow.test.js` + `discordMintFlow.test.js` +
 `discordBot.test.js` (70 tests covering `handleMintPasteMessage` and the wider Discord flow) still
-pass unchanged. Next step: reproduce the failure once in a broken channel, then read
-`deploymentLogs(...)` filtered on `Paste-detect` for that window (same Railway access documented in
-CLAUDE.md) to see exactly which line fires.
+pass unchanged.
+
+**Resolved.** The user reproduced the failure live in a broken channel while also pasting in the
+working one for comparison; `deploymentLogs(...)` filtered on `Paste-detect` showed exactly one log
+line total, for the working channel only — the broken channel's paste produced *nothing*, not even
+the "received" line that fires before any permission check runs. That put it beyond doubt that
+Discord itself never delivers the `messageCreate` gateway event to the bot for that channel, not an
+app-side failure. Checked the role's own permission page next (all green — View Channels, Send
+Messages, Read Message History, Embed Links, one role only, no second role to conflict) and the
+channel's own permission overwrite tab, at which point the user found it directly: **the bot's role
+was never added to that channel's member/permission list at all** (a "Private"/restricted channel
+that only grants access to explicitly-listed roles) — a fundamentally different thing from the
+role's server-wide default permissions being correct, which is what every earlier check had
+confirmed and why they kept coming back clean. Fixed by the user adding the role to that channel's
+permission overwrites directly in Discord; nothing to change in this app. The diagnostic logging
+stays in place — cheap, harmless, and exactly what made this conclusive instead of another guess.
 
 ---
 
