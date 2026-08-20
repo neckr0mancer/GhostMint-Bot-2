@@ -2,7 +2,7 @@
 import React,{useCallback,useEffect,useRef,useState} from 'react';
 import Admin from './Admin.jsx';
 import {shortAddress} from './dashboardWidgets/homeParts.jsx';
-import {loadError} from './shared.jsx';
+import {loadError,batchRowDetail} from './shared.jsx';
 import {ACTIVITY_EVENTS,api,Ledger,NumberField,SectionCard,confirmDialog,ConfirmHost,consumePendingMintPrefill,CopyButton,csrf,downloadFile,Empty,EVM_CHAINS,Field,Form,getNotificationLog,notify,Notice,PageTitle,Pager,promptDialog,relativeTime,Select,Skeleton,StatusPill,SubTabs,subscribeNotificationLog,ToastHost,useLoad,useLiveSocket,setPendingMintPrefill,quantityPicks} from './shared.jsx';
 import Dashboard from './Dashboard.jsx';
 // Phase 4, unit 1 of 5 (brief §2). The 11->5 merge lands one page at a time so any single merge
@@ -396,7 +396,14 @@ function Minting({onSwitchToBatch,onGoWallets}){const wallets=useLoad('/api/wall
   // state rather than hiding it, so you can see what minting looks like before you have one.
   const walletsArrived=wallets.data!==null&&wallets.data!==undefined;
   const noWallets=walletsArrived&&wallets.data.length===0;
-  const pageError=wallets.error?{title:'Could not load your wallets.',detail:'Request failed safely — nothing was changed.',code:wallets.status,onRetry:wallets.load}:mintError;
+  // Same shape as loadError() everywhere else -- the prototype puts the whole line inside the
+  // <code>, and Mint now was splitting it between the body and a bare status, so the same page
+  // showed two different error layouts depending on which tab you were on. Not on the helper
+  // itself because this one falls through to mintError, a second source the helper knows nothing
+  // about.
+  const pageError=wallets.error?{title:'Could not load your wallets.',
+    code:wallets.status?`${wallets.status} · Request failed safely`:'Request failed safely',
+    onRetry:wallets.load}:mintError;
   // Derived from the cap by the shared rule (shared.jsx quantityPicks). At a cap of 3 this
   // returns exactly the prototype's "1 2 3"; at 10 it returns "1 2 5". Backlog §13.
   const maxPick=maxPerWallet||100;
@@ -451,7 +458,15 @@ function Minting({onSwitchToBatch,onGoWallets}){const wallets=useLoad('/api/wall
                   {quickPicks.map(pick=><button type="button" key={pick} disabled={noWallets}
                     className={String(pick)===String(quantity)?'on':undefined}
                     onClick={()=>{setQuantity(String(pick));autoDetectIfReady(contractAddress,String(pick));}}>{pick}</button>)}
-                  <button type="button" disabled={noWallets}
+                  {/* At a cap of ONE there is a single legal quantity, so Max sets exactly what
+                      the "1" beside it already does -- two controls offering the same value,
+                      which reads as a choice that is not there. Disabled rather than removed, so
+                      the control keeps its shape and it stays visible that Max exists and simply
+                      has nothing left to do. Only at a cap of one: the prototype draws
+                      "1 2 3 Max" at a cap of three, so a Max that duplicates a pick is its own
+                      deliberate choice at every cap above this one. */}
+                  <button type="button" disabled={noWallets||maxPick===1}
+                  title={maxPick===1?'This drop allows one per wallet':undefined}
                     className={String(maxPick)===String(quantity)?'on':undefined}
                     onClick={()=>{setQuantity(String(maxPick));autoDetectIfReady(contractAddress,String(maxPick));}}>Max</button>
                 </div>
@@ -482,14 +497,27 @@ function Minting({onSwitchToBatch,onGoWallets}){const wallets=useLoad('/api/wall
               note is that "a collapsed total is a hidden total". */}
           <table className="led">
             <tbody>
-              <tr><td>Contract</td><td className="mono">{item?shortHex(item.preview.contractAddress):'—'}</td></tr>
-              <tr><td>Method</td><td className="mono">{item?item.preview.methodSignature:'—'}</td></tr>
+              {/* These four are known from DETECTION and the form, before any simulation runs.
+                  They used to be gated on `item` -- the result of a SUCCESSFUL simulation -- so a
+                  failed simulation blanked facts already on screen, and the panel read as "the app
+                  knows nothing" when it had just reported detecting the drop. Chain was the only
+                  row wired to what was actually known, which is why it was the only one that
+                  filled in. Only gas, Simulation and Total debit genuinely depend on simulating. */}
+              <tr><td>Contract</td><td className="mono">{item?shortHex(item.preview.contractAddress):(contractAddress?shortHex(contractAddress):'—')}</td></tr>
+              <tr><td>Method</td><td className="mono">{item?item.preview.methodSignature:(methodSignature||'—')}</td></tr>
               <tr><td>Chain</td><td>{detectedChain||'—'}</td></tr>
-              <tr><td>Quantity</td><td>{item?quantity:'—'}</td></tr>
-              <tr><td>Mint price</td><td>{item?`${weiToEthDisplay(item.preview.nativeValue)} ETH`:'0.000000 ETH'}</td></tr>
-              <tr><td>Est. gas</td><td>{item?`${weiToEthDisplay(item.simulation.estimatedGasCostWei??0)} ETH`:'0.000000 ETH'}</td></tr>
+              <tr><td>Quantity</td><td>{item?quantity:(detected?quantity:'—')}</td></tr>
+              <tr><td>Mint price</td><td>{item?`${weiToEthDisplay(item.preview.nativeValue)} ETH`
+                :(priceEth!==''&&priceEth!==null&&priceEth!==undefined?`${Number(priceEth).toFixed(6)} ETH`:'0.000000 ETH')}</td></tr>
+              {/* Only these three depend on simulating. Before one has run they show an em dash
+                  rather than 0.000000 ETH: gas is never actually zero, so printing a confident
+                  zero claims something untrue -- and next to a genuinely free mint price it is
+                  exactly what made the panel look like it had failed to compute anything. The
+                  rows still render, so the prototype's "a collapsed total is a hidden total"
+                  still holds; only the unknown VALUE is withheld. */}
+              <tr><td>Est. gas</td><td>{item?`${weiToEthDisplay(item.simulation.estimatedGasCostWei??0)} ETH`:(detected?'—':'0.000000 ETH')}</td></tr>
               <tr><td>Simulation</td><td>{simulating?'Running…':item?'Passed':'Not run'}</td></tr>
-              <tr className="tot"><td>Total debit</td><td>{totalDebitWei?`${weiToEthDisplay(totalDebitWei)} ETH`:'0.000000 ETH'}</td></tr>
+              <tr className="tot"><td>Total debit</td><td>{totalDebitWei?`${weiToEthDisplay(totalDebitWei)} ETH`:(detected?'—':'0.000000 ETH')}</td></tr>
             </tbody>
           </table>
         </div>
@@ -503,7 +531,13 @@ function Minting({onSwitchToBatch,onGoWallets}){const wallets=useLoad('/api/wall
         {ceilingWei!==undefined&&<div className="card tight">
           <div style={{display:'flex',alignItems:'center',gap:'8px',fontSize:'11.5px',color:'var(--muted)'}}>
             <span>Your daily ceiling</span><span className="sp"/>
-            <b className="tab" style={{color:'var(--text)'}}>{weiToEthDisplay(ceilingWei)} ETH</b></div>
+            {/* null is not "zero" and not "unknown": /api/profile/limits returns a null budget
+                with ceilingExempt true for an owner, and weiToEthDisplay(null) is an empty string,
+                so this rendered as "Your daily ceiling    ETH" -- a unit with no number, which
+                reads as a broken field rather than as having no ceiling. */}
+            <b className="tab" style={{color:'var(--text)'}}>{ceilingWei===null||ceilingWei===''
+              ?(limits.data?.ceilingExempt?'Exempt':'No limit')
+              :`${weiToEthDisplay(ceilingWei)} ETH`}</b></div>
         </div>}
         {pageError&&<Notice error={pageError}/>}
         {/* One CTA per state, all .big.bl, copy verbatim from the prototype. */}
@@ -1466,9 +1500,12 @@ function MintBatch({onGoWallets}){
     <div className="g">
       <div className="nt i">{INFO_ICON}
         <div>Each wallet is simulated and submitted <b>independently</b>. One wallet failing does not cancel the others.</div></div>
-      {busy
+      <Notice error={loadError(wallets,'Could not load wallets.')}/>
+      {busy||(!walletsArrived&&!wallets.error)
         ?<div><div className="sk row"/><div className="sk row"/><div className="sk row"/></div>
-        :noWallets
+        :wallets.error
+          ?null
+          :noWallets
           ?<div className="emp">
              <div className="ei">{WALLET_EMPTY_ICON}</div>
              <h3>No wallets to batch</h3>
@@ -1483,7 +1520,7 @@ function MintBatch({onGoWallets}){
                  <span className={`p ${entry.status==='success'?'ok':'bad'}`}>{entry.status==='success'?'Confirmed':'Failed'}</span>
                  <span className="bl2">{entry.walletLabel||entry.label}</span>
                  <span className={entry.status==='success'?'be mono':'be'}>
-                   {entry.status==='success'?shortHex(entry.transactionHash||''):entry.error}</span>
+                   {entry.status==='success'?shortHex(batchRowDetail(entry)):batchRowDetail(entry)}</span>
                </div>)}
                <p style={{fontSize:'11px',color:'var(--faint)',marginTop:'9px'}}>
                  {succeeded} {succeeded===1?'transaction was':'transactions were'} broadcast.

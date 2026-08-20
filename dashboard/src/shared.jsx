@@ -177,6 +177,7 @@ const NOTICE_GLYPH=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" st
 // Built here rather than at each call site because there are eight of them and they had already
 // drifted -- every one passed a bare string, so none of them offered the Retry at all, which is
 // the part that turns an error state from a dead end into something the user can act on.
+export { batchRowDetail } from './batchRow.js';
 export function loadError(listing,title){
   if(!listing?.error)return null;
   return {title,onRetry:listing.load,

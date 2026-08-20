@@ -1,5 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
+const fs = require('node:fs');
+const path = require('node:path');
 const menus = require('../src/discord/menus');
 
 // Discord rejects a message whose components exceed its structural limits -- and it rejects the
@@ -156,4 +158,28 @@ test('the setup card names the exact dashboard pages, and ticks off what is alre
 
   const done = tg.securitySetupCard({ passwordSet: true, gateLevel: 'strict' });
   assert.match(done.text, /You are protected/);
+});
+
+// The .bres row's third column. /api/mint/confirm answers {label,status,result} on success and the
+// hash lives at result.txHash -- the row was reading entry.transactionHash, a field that never
+// existed, so every SUCCESSFUL wallet rendered an empty span while its failures showed their
+// reasons correctly. A batch looked worse the better it went. The helper lives in its own plain
+// module precisely so this shape contract can be asserted instead of living only inside JSX.
+test('a batch result row shows the hash when a wallet confirmed and the reason when it did not', async () => {
+  const { pathToFileURL } = require('node:url');
+  const path = require('node:path');
+  const { batchRowDetail } = await import(
+    pathToFileURL(path.join(__dirname, '..', 'dashboard', 'src', 'batchRow.js')).href);
+
+  assert.equal(batchRowDetail({ status: 'success', result: { txHash: '0xabc' } }), '0xabc',
+    'the dashboard shape: the hash is nested under result');
+  assert.equal(batchRowDetail({ state: 'confirmed', txHash: '0xdef' }), '0xdef',
+    "the bots' batchMint shape: the hash is top level");
+  assert.equal(batchRowDetail({ status: 'failed', error: 'insufficient funds' }), 'insufficient funds',
+    'a failure still shows its reason');
+  assert.equal(batchRowDetail({ status: 'success', result: {} }), '',
+    'a confirmed wallet with no hash yields empty rather than the string "undefined"');
+  assert.equal(batchRowDetail(null), '', 'and a missing entry never throws');
+  assert.equal(batchRowDetail({ status: 'success', transactionHash: '0x111' }), '0x111',
+    'the old field is still honoured if anything ever sends it');
 });

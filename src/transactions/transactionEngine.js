@@ -45,6 +45,53 @@ function safeNotify(notify, event) {
   return Promise.resolve().then(() => notify?.(event)).catch(() => {});
 }
 
+// estimateGas/call revert with a raw ethers CALL_EXCEPTION (not a TransactionSafetyError) when the
+// target contract doesn't actually implement the call being made -- the most common cause being a
+// wrong or unsupported function signature. Without this, that exception was falling all the way
+// through to a generic "request failed" response instead of a message that explains what happened.
+function explainCallFailure(error, { chain, params } = {}) {
+  // Insufficient funds is the most common simulation failure there is, and the least useful
+  // one to pass through verbatim: "Simulating this call failed: insufficient funds" reads like
+  // the contract rejected the mint, when what actually happened is that the wallet cannot pay
+  // the network fee. It is especially confusing on a FREE drop, where the user can see the
+  // price is 0 and reasonably concludes the app is broken. Say which wallet, on which chain,
+  // and that gas is owed even when the mint itself is free.
+  const insufficient = error?.code === 'INSUFFICIENT_FUNDS'
+    || /insufficient funds/i.test(String(error?.shortMessage || error?.reason || error?.message || ''));
+  if (insufficient) {
+    const where = chain ? ` on ${chain}` : '';
+    const who = params?.from ? ` (${params.from})` : '';
+    return `This wallet cannot cover the mint price plus the network fee${where}${who}. `
+      + "Both are paid from the same balance in that chain's own currency, and the node checks "
+      + 'them together -- so this can mean the price is too high, the fee is, or only the two '
+      + 'added up are. Nothing was broadcast and nothing was spent.';
+  }
+  // A bare provider.call() (no Contract/Interface attached, which is all this engine ever
+  // does) never auto-decodes a custom Solidity error -- ethers can only surface the raw revert
+  // bytes (error.data) for anyone who happens to know that contract's error ABI. SeaDrop is the
+  // one protocol this app has that knowledge for (src/mint/seaDropErrors.js, sourced from
+  // SeaDrop's real error definitions), so try it first; it's purely selector-based and simply
+  // returns null for anything that isn't a recognized SeaDrop error, so trying it against a
+  // non-SeaDrop failure is harmless.
+  const seaDropReason = describeSeaDropError(error?.data);
+  if (seaDropReason) return seaDropReason;
+  // ethers synthesizes the literal reason "require(false)" whenever a revert returned zero
+  // bytes of data (confirmed against the installed package's own AbiCoder.getBuiltinCallException)
+  // -- reproduced live against a real reported failure (a contract with no mint(uint256) and no
+  // fallback function). That zero-length signature is genuinely ambiguous between a real bare
+  // require() with no message and calling a selector the contract doesn't implement at all, but
+  // showing the raw "require(false)" text as if it were an informative reason is actively
+  // misleading either way -- it reads like a real revert message when it is really "no
+  // information was returned."
+  if (error?.reason === 'require(false)' && (!error?.data || error.data === '0x')) {
+    return 'Simulating this call failed with no reason given by the contract -- it may not implement the function this app tried to call, or a requirement failed silently (e.g. wrong price, quantity, or timing).';
+  }
+  if (error?.reason) return `Simulating this call failed: ${error.reason}`;
+  if (error?.shortMessage) return `Simulating this call failed: ${error.shortMessage}`;
+  if (error?.message) return `Simulating this call failed: ${error.message}`;
+  return 'Simulating this call failed -- the contract may not implement this function, or the call would revert.';
+}
+
 function createTransactionEngine({
   providerService,
   // Round 15 (docs/WORKLIST.md Section AU): an optional, separately-configured provider service for
@@ -88,45 +135,15 @@ function createTransactionEngine({
     return fresh;
   }
 
-  // estimateGas/call revert with a raw ethers CALL_EXCEPTION (not a TransactionSafetyError) when the
-  // target contract doesn't actually implement the call being made -- the most common cause being a
-  // wrong or unsupported function signature. Without this, that exception was falling all the way
-  // through to a generic "request failed" response instead of a message that explains what happened.
-  function explainCallFailure(error) {
-    // A bare provider.call() (no Contract/Interface attached, which is all this engine ever
-    // does) never auto-decodes a custom Solidity error -- ethers can only surface the raw revert
-    // bytes (error.data) for anyone who happens to know that contract's error ABI. SeaDrop is the
-    // one protocol this app has that knowledge for (src/mint/seaDropErrors.js, sourced from
-    // SeaDrop's real error definitions), so try it first; it's purely selector-based and simply
-    // returns null for anything that isn't a recognized SeaDrop error, so trying it against a
-    // non-SeaDrop failure is harmless.
-    const seaDropReason = describeSeaDropError(error?.data);
-    if (seaDropReason) return seaDropReason;
-    // ethers synthesizes the literal reason "require(false)" whenever a revert returned zero
-    // bytes of data (confirmed against the installed package's own AbiCoder.getBuiltinCallException)
-    // -- reproduced live against a real reported failure (a contract with no mint(uint256) and no
-    // fallback function). That zero-length signature is genuinely ambiguous between a real bare
-    // require() with no message and calling a selector the contract doesn't implement at all, but
-    // showing the raw "require(false)" text as if it were an informative reason is actively
-    // misleading either way -- it reads like a real revert message when it is really "no
-    // information was returned."
-    if (error?.reason === 'require(false)' && (!error?.data || error.data === '0x')) {
-      return 'Simulating this call failed with no reason given by the contract -- it may not implement the function this app tried to call, or a requirement failed silently (e.g. wrong price, quantity, or timing).';
-    }
-    if (error?.reason) return `Simulating this call failed: ${error.reason}`;
-    if (error?.shortMessage) return `Simulating this call failed: ${error.shortMessage}`;
-    if (error?.message) return `Simulating this call failed: ${error.message}`;
-    return 'Simulating this call failed -- the contract may not implement this function, or the call would revert.';
-  }
 
   async function estimateGasSafely(chain, params, options, service = providerService) {
     try { return await providerCall(chain, 'estimateGas', provider => provider.estimateGas(params), options, service); }
-    catch (error) { throw new TransactionSafetyError('SIMULATION_FAILED', explainCallFailure(error)); }
+    catch (error) { throw new TransactionSafetyError('SIMULATION_FAILED', explainCallFailure(error, { chain, params })); }
   }
 
   async function simulateCallSafely(chain, params, options, service = providerService) {
     try { return await providerCall(chain, 'simulate', provider => provider.call(params), options, service); }
-    catch (error) { throw new TransactionSafetyError('SIMULATION_FAILED', explainCallFailure(error)); }
+    catch (error) { throw new TransactionSafetyError('SIMULATION_FAILED', explainCallFailure(error, { chain, params })); }
   }
 
   async function transition(intentId, state, details) {
@@ -423,4 +440,4 @@ function createTransactionEngine({
   return { preview,reconcileIntent, reconcileNonFinal, submit, waitForFinality };
 }
 
-module.exports = { FINAL_STATES, TransactionSafetyError, createTransactionEngine };
+module.exports = { FINAL_STATES, TransactionSafetyError, createTransactionEngine, explainCallFailure };
