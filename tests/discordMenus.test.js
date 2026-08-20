@@ -4,6 +4,7 @@ const {
   mainMenu, walletsMenu, settingsMenu, chainSelect, walletSelect,
   confirmRemoveWallet, placeholderMenu, labelModal, collectionInfoCard,
   taskNameQuickPicks, taskConfirmation, tasksMenu, snipersMenu, adminOverviewMenu,
+  modeMenu, MODE_META,
 } = require('../src/discord/menus');
 
 function flatButtons(components) {
@@ -40,6 +41,40 @@ test('settings shows the link button to every user and admin console only to own
   assert.ok(buttons.includes('link:enter'));
   assert.equal(buttons.includes('menu:admin'), false);
   assert.ok(flatButtons(settingsMenu({ isOwner: true }).components).some(b => b.custom_id === 'menu:admin'));
+});
+
+// Section O -- the "Transaction mode" button used to have no button/menu path at all: /mode worked
+// fine as a slash command, but was only reachable by already knowing it and an exact preset name.
+test('settings offers a way into transaction mode for every user, owner or not', () => {
+  const buttons = flatButtons(settingsMenu({ isOwner: false }).components).map(b => b.custom_id);
+  assert.ok(buttons.includes('menu:mode'));
+  assert.ok(flatButtons(settingsMenu({ isOwner: true }).components).some(b => b.custom_id === 'menu:mode'));
+});
+
+test('modeMenu offers every preset with the current one checked, plus a way back to settings', () => {
+  const presets = [{ key: 'ultra_fast' }, { key: 'fast' }, { key: 'semi_safe' }, { key: 'safe' }];
+  const menu = modeMenu({ currentKey: 'semi_safe', presets, advancedModesAllowed: true });
+  const buttons = flatButtons(menu.components);
+  assert.deepEqual(buttons.map(b => b.custom_id),
+    ['mode:pick:ultra_fast', 'mode:pick:fast', 'mode:pick:semi_safe', 'mode:pick:safe', 'menu:settings']);
+  const current = buttons.find(b => b.custom_id === 'mode:pick:semi_safe');
+  assert.match(current.label, /^✅ /);
+  assert.doesNotMatch(buttons.find(b => b.custom_id === 'mode:pick:safe').label, /^✅ /);
+  assert.match(menu.content, new RegExp(MODE_META.semi_safe.label));
+});
+
+test('modeMenu hides Degen and Fast unless advanced modes are allowed for this user', () => {
+  const presets = [{ key: 'ultra_fast' }, { key: 'fast' }, { key: 'semi_safe' }, { key: 'safe' }];
+  const locked = modeMenu({ currentKey: 'safe', presets, advancedModesAllowed: false });
+  const lockedIds = flatButtons(locked.components).map(b => b.custom_id);
+  assert.equal(lockedIds.includes('mode:pick:ultra_fast'), false);
+  assert.equal(lockedIds.includes('mode:pick:fast'), false);
+  assert.match(locked.content, /require group or admin access/);
+
+  const unlocked = modeMenu({ currentKey: 'safe', presets, advancedModesAllowed: true });
+  const unlockedIds = flatButtons(unlocked.components).map(b => b.custom_id);
+  assert.ok(unlockedIds.includes('mode:pick:ultra_fast'));
+  assert.ok(unlockedIds.includes('mode:pick:fast'));
 });
 
 test('chain select renders one option per supported chain plus a cancel button', () => {
@@ -131,6 +166,69 @@ test('collectionInfoCard suggests scheduling only when the detected opening time
   });
   assert.equal(flatButtons(alreadyOpen.components).some(b => b.custom_id === 'flow:schedulesuggest'), false);
   assert.match(alreadyOpen.content, /Opened:/);
+});
+
+// Section AF -- mirrors telegramMenus.test.js's coverage. On-chain SeaDrop only ever exposes the
+// ONE currently-configured stage (the Opens/Opened line above), so it can never say what's coming
+// after that; drop carries OpenSea's own real stage data (null unless OpenSea tracks this contract).
+test('collectionInfoCard shows the live and next OpenSea phase when drop data is available, and omits the section entirely when it is not', () => {
+  const noDrop = collectionInfoCard({
+    contractAddress: '0xabc', chainLabel: 'Ethereum', chainSym: 'ETH', isSeaDrop: true, priceETH: 0.05, priceUnknown: false,
+    maxSupply: 100, maxPerWallet: 1, startTime: null, collection: null, soldOut: false, displayPrice: null, stats: null, drop: null, openSeaUrl: null,
+  });
+  assert.equal(noDrop.content.includes('Phases'), false);
+
+  const withDrop = collectionInfoCard({
+    contractAddress: '0xabc', chainLabel: 'Ethereum', chainSym: 'ETH', isSeaDrop: true, priceETH: 0.05, priceUnknown: false,
+    maxSupply: 100, maxPerWallet: 1, startTime: null, collection: null, soldOut: false, displayPrice: null, stats: null, openSeaUrl: null,
+    drop: {
+      isMinting: true, dropType: 'seadrop_v1_erc721', maxSupply: 100, openSeaUrl: null,
+      activeStage: { uuid: 'a1', label: 'Public sale', startTime: 1_700_000_000, endTime: 1_700_100_000, priceETH: 0.05, maxPerWallet: 5, stageType: 'public_sale' },
+      nextStage: null,
+      stages: [
+        { uuid: 'a0', label: 'Allowlist', startTime: 1_699_900_000, endTime: 1_700_000_000, priceETH: 0, maxPerWallet: 2, stageType: 'presale' },
+        { uuid: 'a1', label: 'Public sale', startTime: 1_700_000_000, endTime: 1_700_100_000, priceETH: 0.05, maxPerWallet: 5, stageType: 'public_sale' },
+      ],
+    },
+  });
+  assert.match(withDrop.content, /### Phases \(via OpenSea\)/);
+  assert.match(withDrop.content, /2 phases total/);
+  assert.match(withDrop.content, /🟢 Live: Public sale — 0\.05 ETH · max 5\/wallet/);
+  assert.equal(withDrop.content.includes('🔵 Next'), false);
+  // Section AF -- an allowlist/GTD/FCFS stage has no on-chain proof this app can construct; this
+  // button is the only path that actually works for those, shown whenever OpenSea confirms a
+  // stage is live right now.
+  assert.equal(flatButtons(noDrop.components).some(b => b.custom_id === 'flow:mintviaopensea'), false);
+  assert.equal(flatButtons(withDrop.components).some(b => b.custom_id === 'flow:mintviaopensea'), true);
+});
+
+test('collectionInfoCard shows an upcoming OpenSea phase with a fallback label built from stage_type when the stage has no name', () => {
+  const withNext = collectionInfoCard({
+    contractAddress: '0xabc', chainLabel: 'Ethereum', chainSym: 'ETH', isSeaDrop: true, priceETH: 0.05, priceUnknown: true,
+    maxSupply: 100, maxPerWallet: 1, startTime: null, collection: null, soldOut: false, displayPrice: null, stats: null, openSeaUrl: null,
+    drop: {
+      isMinting: false, dropType: 'seadrop_v1_erc721', maxSupply: 100, openSeaUrl: null,
+      activeStage: null,
+      nextStage: { uuid: 'n1', label: null, startTime: 1_700_000_000, endTime: 1_700_100_000, priceETH: 0.05, maxPerWallet: 5, stageType: 'public_sale' },
+      stages: [],
+    },
+  });
+  assert.match(withNext.content, /🔵 Next: Public Sale — 0\.05 ETH · max 5\/wallet · opens/);
+  assert.equal(withNext.content.includes('phases total'), false, 'must not show a phase count for a single-stage next-only drop');
+  // Nothing is minting yet -- OpenSea has nothing to build a mint transaction against, so the
+  // button stays hidden until activeStage is real, not merely because drop data exists at all.
+  assert.equal(flatButtons(withNext.components).some(b => b.custom_id === 'flow:mintviaopensea'), false);
+  // A phase that hasn't opened yet has nothing to mint against but IS schedulable -- OpenSea's own
+  // response at the exact open time is what determines eligibility and price, live.
+  assert.equal(flatButtons(withNext.components).some(b => b.custom_id === 'flow:scheduleviaopensea'), true);
+});
+
+test('collectionInfoCard never offers Schedule for OpenSea phase when there is no upcoming stage to schedule against', () => {
+  const noDrop = collectionInfoCard({
+    contractAddress: '0xabc', chainLabel: 'Ethereum', chainSym: 'ETH', isSeaDrop: true, priceETH: 0.05, priceUnknown: false,
+    maxSupply: 100, maxPerWallet: 1, startTime: null, collection: null, soldOut: false, displayPrice: null, stats: null, drop: null, openSeaUrl: null,
+  });
+  assert.equal(flatButtons(noDrop.components).some(b => b.custom_id === 'flow:scheduleviaopensea'), false);
 });
 
 test('taskNameQuickPicks offers GTD/FCFS/PUBLIC and a custom option in one select, with an unverified-labels caveat', () => {

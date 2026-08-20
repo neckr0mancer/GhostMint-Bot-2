@@ -53,13 +53,13 @@ function policy(overrides = {}) {
   };
 }
 
-function fixture({ policyOverrides, notification, simulationError, feeData } = {}) {
+function fixture({ policyOverrides, notification, simulationError, feeData, feeDataCache } = {}) {
   const repository = new MemoryIntentRepository();
-  const calls = { broadcasts: [], simulations: 0 };
+  const calls = { broadcasts: [], simulations: 0, feeDataFetches: 0 };
   let pendingNonce = 0;
   const receipts = new Map();
   const provider = {
-    async getFeeData() { return feeData || { gasPrice: parseUnits('2', 'gwei'), maxFeePerGas: null, maxPriorityFeePerGas: null }; },
+    async getFeeData() { calls.feeDataFetches += 1; return feeData || { gasPrice: parseUnits('2', 'gwei'), maxFeePerGas: null, maxPriorityFeePerGas: null }; },
     async estimateGas() { return 21_000n; },
     async getBalance() { return parseEther('10'); },
     async call() {
@@ -90,6 +90,7 @@ function fixture({ policyOverrides, notification, simulationError, feeData } = {
     decryptPrivateKey: () => PRIVATE_KEY,
     notify: notification,
     pollIntervalMs: 1,
+    ...(feeDataCache ? { feeDataCache } : {}),
   });
   const request = {
     userId: '11111111-1111-4111-8111-111111111111',
@@ -298,4 +299,70 @@ test('provider service retries then falls back to the next configured RPC', asyn
     providerFactory: url => providers.get(url),
   });
   assert.equal(await service.perform('ethereum', 'read', provider => provider.read()), 'ok');
+});
+
+test('perform() accepts a per-call timeout/retries override without changing the constructor defaults for other callers', async () => {
+  const providers = new Map([
+    // Never resolves or rejects -- the only way perform() moves off this candidate is its own
+    // per-call timeout firing, not the provider ever answering.
+    ['https://first.invalid', { read: () => new Promise(() => {}) }],
+    ['https://second.invalid', { read: async () => 'ok' }],
+  ]);
+  const service = createProviderService({
+    chains: { ethereum: { rpcUrls: [...providers.keys()] } },
+    retries: 3,
+    timeoutMs: 5_000,
+    providerFactory: url => providers.get(url),
+  });
+  const start = Date.now();
+  assert.equal(await service.perform('ethereum', 'read', provider => provider.read(), { timeoutMs: 50, retries: 0 }), 'ok');
+  const elapsed = Date.now() - start;
+  assert.ok(elapsed < 1_000, `override should abandon the hung candidate after ~50ms, not the constructor's 5s default, took ${elapsed}ms`);
+});
+
+test('fee data is cached for scheduled and Degen-mode mints, but always fetched fresh for a manual mint', async t => {
+  await t.test('a plain manual mint fetches fresh fee data every time', async () => {
+    const { calls, engine, request } = fixture();
+    await engine.submit({ ...request, triggerSource: 'manual' });
+    await engine.submit({ ...request, triggerSource: 'manual' });
+    assert.equal(calls.feeDataFetches, 2);
+  });
+
+  await t.test('two scheduled mints on the same chain within the TTL share one fee fetch', async () => {
+    const { createFeeDataCache } = require('../src/transactions/feeDataCache');
+    let clock = 1_000;
+    const feeDataCache = createFeeDataCache({ ttlMs: 5_000, now: () => clock });
+    const { calls, engine, request } = fixture({ feeDataCache });
+    await engine.submit({ ...request, triggerSource: 'scheduled' });
+    clock += 1_000;
+    await engine.submit({ ...request, triggerSource: 'scheduled' });
+    assert.equal(calls.feeDataFetches, 1, 'the second scheduled mint should reuse the first fetch, still within the TTL');
+  });
+
+  await t.test('a scheduled mint fetches fresh fee data again once the cache entry has aged out', async () => {
+    const { createFeeDataCache } = require('../src/transactions/feeDataCache');
+    let clock = 1_000;
+    const feeDataCache = createFeeDataCache({ ttlMs: 5_000, now: () => clock });
+    const { calls, engine, request } = fixture({ feeDataCache });
+    await engine.submit({ ...request, triggerSource: 'scheduled' });
+    clock += 5_001;
+    await engine.submit({ ...request, triggerSource: 'scheduled' });
+    assert.equal(calls.feeDataFetches, 2, 'a stale cache entry must not be reused past its TTL');
+  });
+
+  await t.test('a manual mint using Degen mode (gasPriceMultiplier > 1) also uses the cache', async () => {
+    const { calls, engine, request } = fixture({ policyOverrides: { gasPriceMultiplier: 1.5 } });
+    await engine.submit({ ...request, triggerSource: 'manual' });
+    await engine.submit({ ...request, triggerSource: 'manual' });
+    assert.equal(calls.feeDataFetches, 1, 'Degen mode is a caching trigger independently of triggerSource');
+  });
+
+  await t.test('a scheduled mint on a different chain does not reuse another chain\'s cached fee data', async () => {
+    const { createFeeDataCache } = require('../src/transactions/feeDataCache');
+    const feeDataCache = createFeeDataCache();
+    const { calls, engine, request } = fixture({ feeDataCache });
+    await engine.submit({ ...request, chain: 'ethereum', triggerSource: 'scheduled' });
+    await engine.submit({ ...request, chain: 'base', triggerSource: 'scheduled' });
+    assert.equal(calls.feeDataFetches, 2);
+  });
 });

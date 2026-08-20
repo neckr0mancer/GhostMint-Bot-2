@@ -263,6 +263,34 @@ test('/gas still reports real figures when the provider has data', async () => {
   assert.equal(input.replies[0], 'ethereum: gas 12 Gwei, max fee 20 Gwei\\.');
 });
 
+// Settings' "Transaction mode" button had no button/menu path at all -- /mode worked fine as a
+// slash command, but only if you already knew it and an exact preset name. The button reuses the
+// exact same commands.selectMode(userId, preset) the slash command dispatches to below.
+test('the menu:mode button reaches the same commands.selectMode the /mode slash command uses', async () => {
+  const selected = [];
+  const tap = {
+    customId: 'mode:pick:fast', user: { id: 'discord-mode' }, guildId: 'guild', channelId: 'channel',
+    updates: [], deferred: false,
+    isChatInputCommand: () => false, isButton: () => true, isStringSelectMenu: () => false, isModalSubmit: () => false,
+    async deferUpdate() { this.deferred = true; },
+    async editReply(payload) { this.updates.push(payload); },
+  };
+  const handler = createDiscordInteractionHandler({
+    identity: { resolveOrCreate: async () => 'user-mode' },
+    commands: {
+      modePresets: async () => [{ key: 'fast' }, { key: 'safe' }],
+      currentMode: async () => ({ key: 'fast' }),
+      advancedModesAllowed: async () => true,
+      selectMode: async (userId, key) => { selected.push({ userId, key }); return key; },
+    },
+  });
+  await handler(tap);
+  assert.deepEqual(selected, [{ userId: 'user-mode', key: 'fast' }]);
+  assert.match(tap.updates[0].content, /Transaction mode/);
+  const current = tap.updates[0].components.flatMap(r => r.components).find(b => b.custom_id === 'mode:pick:fast');
+  assert.match(current.label, /^✅ /);
+});
+
 // The dev-guild pairing: DISCORD_DEV_GUILD_ID both scopes registration to one guild and locks every
 // command to it. Leaving it unset has to flip BOTH halves, or the bot ends up with commands visible
 // everywhere that only work in one place (or vice versa).

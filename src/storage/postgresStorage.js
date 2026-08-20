@@ -18,6 +18,7 @@ function mapTask(row) {
     status: row.status, createdAt: time(row.created_at), nextAttemptAt: time(row.next_attempt_at),
     attemptCount: row.attempt_count, maxAttempts: row.max_attempts,
     transactionIntentId: row.transaction_intent_id, idempotencyKey: row.idempotency_key,
+    viaOpenSea: row.via_opensea,
   };
 }
 
@@ -25,7 +26,8 @@ function mapActivity(row) {
   return { id: Number(row.id), userId: row.user_id, status: row.status, title: row.title,
     walletLabel: row.wallet_label, txHash: row.tx_hash, explorer: row.explorer, time: time(row.occurred_at),
     actualNetworkCostWei:row.actual_network_cost_wei===null?null:BigInt(row.actual_network_cost_wei),
-    triggerSource:row.trigger_source || null, verificationState:row.verification_state || null };
+    triggerSource:row.trigger_source || null, verificationState:row.verification_state || null,
+    address: row.address || null };
 }
 
 function mapPnl(row) {
@@ -114,19 +116,19 @@ function createPostgresStorage(pool) {
       const status = task.status === 'waiting' ? 'scheduled' : task.status;
       const result = await pool.query(`INSERT INTO mint_tasks
         (user_id,id,name,wallet_label,contract_address,function_name,quantity,price_eth,gas_gwei,mint_time,status,created_at,
-          next_attempt_at,max_attempts,idempotency_key)
+          next_attempt_at,max_attempts,idempotency_key,via_opensea)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,TO_TIMESTAMP($10 / 1000.0),$11,TO_TIMESTAMP($12 / 1000.0),
-          TO_TIMESTAMP($13 / 1000.0),$14,$15)
+          TO_TIMESTAMP($13 / 1000.0),$14,$15,$16)
         ON CONFLICT (user_id,id) DO UPDATE SET name=EXCLUDED.name,wallet_label=EXCLUDED.wallet_label,
         contract_address=EXCLUDED.contract_address,function_name=EXCLUDED.function_name,
         quantity=EXCLUDED.quantity,price_eth=EXCLUDED.price_eth,gas_gwei=EXCLUDED.gas_gwei,
         mint_time=EXCLUDED.mint_time,status=EXCLUDED.status,next_attempt_at=EXCLUDED.next_attempt_at,
-        max_attempts=EXCLUDED.max_attempts
+        max_attempts=EXCLUDED.max_attempts,via_opensea=EXCLUDED.via_opensea
         RETURNING id`,
       [task.userId, task.id, task.name, task.walletLabel, task.contract, task.fn || 'mint', task.qty,
         task.price || 0, task.gas ?? null, task.mintTime, status, task.createdAt || Date.now(),
         task.nextAttemptAt || task.mintTime, task.maxAttempts || 3,
-        task.idempotencyKey || `scheduled-mint:${task.userId}:${task.id}`]);
+        task.idempotencyKey || `scheduled-mint:${task.userId}:${task.id}`, Boolean(task.viaOpenSea)]);
       return result.rowCount > 0;
     },
     async deleteTask(userId, id) {
@@ -136,10 +138,10 @@ function createPostgresStorage(pool) {
 
     async addActivity(entry) {
       const result = await pool.query(`INSERT INTO activity
-        (user_id,status,title,wallet_label,tx_hash,explorer,occurred_at,actual_network_cost_wei,trigger_source,verification_state)
-        VALUES ($1,$2,$3,$4,$5,$6,TO_TIMESTAMP($7 / 1000.0),$8,$9,$10) RETURNING *`,
+        (user_id,status,title,wallet_label,tx_hash,explorer,occurred_at,actual_network_cost_wei,trigger_source,verification_state,address)
+        VALUES ($1,$2,$3,$4,$5,$6,TO_TIMESTAMP($7 / 1000.0),$8,$9,$10,$11) RETURNING *`,
       [entry.userId, entry.status, entry.title, entry.walletLabel, entry.txHash, entry.explorer, entry.time,
-        entry.actualNetworkCostWei?.toString()??null,entry.triggerSource??null,entry.verificationState??null]);
+        entry.actualNetworkCostWei?.toString()??null,entry.triggerSource??null,entry.verificationState??null,entry.address??null]);
       return mapActivity(result.rows[0]);
     },
     async addPnl(record) {

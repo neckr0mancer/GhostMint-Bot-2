@@ -1,4 +1,5 @@
 const axios = require('axios');
+const { ValidationError } = require('../validation/domain');
 
 // This app's internal chain names -> OpenSea's own chain identifiers. Chains with no entry here
 // (e.g. a custom/obscure chain OpenSea has never indexed) are simply "not looked up" -- same
@@ -17,7 +18,16 @@ const OPENSEA_CHAIN_SLUGS = Object.freeze({
 // rather than blocking anything. Two API calls are needed because OpenSea's contract lookup only
 // returns a collection slug, not the collection's own name/image/stats.
 function createOpenSeaService({ apiKey, repository, baseUrl = 'https://api.opensea.io/api/v2',
-  http = axios, timeoutMs = 8_000 }) {
+  http = axios, timeoutMs = 8_000, log = () => {} }) {
+  // Every catch block below was silently swallowing whatever actually went wrong (a bad/expired
+  // API key, a network failure, a genuine OpenSea outage) -- correct for the card renderer, which
+  // must never see a thrown error, but it meant a real, ongoing failure (e.g. an invalid key) left
+  // no trace anywhere. This logs the failure's shape without ever leaking the key itself.
+  function logFailure(operation, chain, contractAddress, error) {
+    const status = error?.response?.status;
+    const detail = status ? `HTTP ${status}` : (error?.code || error?.message || 'unknown error');
+    log(`OpenSea ${operation} failed for ${chain}:${contractAddress}: ${detail}`);
+  }
   async function fetchCollectionSlug(openSeaChain, contractAddress) {
     const response = await http.get(`${baseUrl}/chain/${openSeaChain}/contract/${contractAddress}`,
       { timeout: timeoutMs, headers: { 'x-api-key': apiKey } });
@@ -48,7 +58,8 @@ function createOpenSeaService({ apiKey, repository, baseUrl = 'https://api.opens
     let response;
     try {
       response = await http.get(`${baseUrl}/collections/${slug}`, { timeout: timeoutMs, headers: { 'x-api-key': apiKey } });
-    } catch {
+    } catch (error) {
+      logFailure('resolveCollectionContract', 'n/a', slug, error);
       return null;
     }
     const contracts = Array.isArray(response.data?.contracts) ? response.data.contracts : [];
@@ -110,9 +121,10 @@ function createOpenSeaService({ apiKey, repository, baseUrl = 'https://api.opens
           allTime: typeof total?.sales === 'number' ? total.sales : null,
         },
       };
-    } catch {
+    } catch (error) {
       // Network failure, timeout, 404, rate limit -- same "nothing to show" outcome as an
       // unconfigured key or unsupported chain, never a thrown error into the card renderer.
+      logFailure('getCollectionStats', chain, contractAddress, error);
       return EMPTY_STATS;
     }
   }
@@ -138,15 +150,118 @@ function createOpenSeaService({ apiKey, repository, baseUrl = 'https://api.opens
             };
           }
         }
-      } catch {
+      } catch (error) {
         // Network failure, timeout, 404 (contract not on OpenSea), rate limit -- all the same
         // "nothing to show" outcome as an unconfigured key or unsupported chain.
+        logFailure('getCollectionMetadata', chain, contractAddress, error);
       }
     }
     return repository.saveOpenSea(chain, contractAddress, metadata);
   }
 
-  return { getCollectionMetadata, resolveCollectionContract, getCollectionStats };
+  // Section AF -- "can't you read the phases from OpenSea and the contract?" On-chain SeaDrop only
+  // ever exposes ONE mutable PublicDrop struct (whatever stage is currently configured), so it can
+  // never show what's coming next. OpenSea's own Drops API is the real, non-guessed source for that:
+  // GET /drops/{slug} (live-verified against docs.opensea.io/reference/get_drop_by_slug) returns the
+  // full stage list plus which one (if any) is active right now and which is next by start_time.
+  // Same "unknown is a valid outcome" shape as everything else here -- a 404 (not an OpenSea-tracked
+  // drop), no API key, an unsupported chain, or a network failure all just mean "no phase data",
+  // never a thrown error into the card renderer.
+  function normalizeStage(stage) {
+    if (!stage) return null;
+    return {
+      uuid: stage.uuid || null,
+      label: stage.label || null,
+      // The API returns ISO 8601 strings; every other timestamp this app already threads through
+      // menus (SeaDrop's own on-chain startTime/endTime) is unix seconds, so this converts once here
+      // rather than making every caller/renderer handle two different time representations.
+      startTime: stage.start_time ? Math.floor(Date.parse(stage.start_time) / 1000) : null,
+      endTime: stage.end_time ? Math.floor(Date.parse(stage.end_time) / 1000) : null,
+      // Decimal wei string per the docs -- left as a string here (this module has no ethers
+      // dependency and stays presentation-agnostic); botCommandService converts to an ETH number
+      // the same way it already does for every other on-chain/API price it resolves.
+      priceWei: stage.price ?? null,
+      maxPerWallet: stage.max_per_wallet !== undefined && stage.max_per_wallet !== null ? Number(stage.max_per_wallet) : null,
+      stageType: stage.stage_type || null,
+    };
+  }
+
+  async function getDrop(chain, contractAddress) {
+    const openSeaChain = OPENSEA_CHAIN_SLUGS[chain];
+    if (!apiKey || !openSeaChain) return null;
+    try {
+      const slug = await fetchCollectionSlug(openSeaChain, contractAddress);
+      if (!slug) return null;
+      const response = await http.get(`${baseUrl}/drops/${slug}`, { timeout: timeoutMs, headers: { 'x-api-key': apiKey } });
+      const data = response.data;
+      if (!data) return null;
+      return {
+        isMinting: Boolean(data.is_minting),
+        dropType: data.drop_type || null,
+        maxSupply: data.max_supply !== undefined && data.max_supply !== null ? Number(data.max_supply) : null,
+        openSeaUrl: data.opensea_url || null,
+        activeStage: normalizeStage(data.active_stage),
+        nextStage: normalizeStage(data.next_stage),
+        stages: Array.isArray(data.stages) ? data.stages.map(normalizeStage) : [],
+      };
+    } catch (error) {
+      // A plain (non-OpenSea-drop) contract 404s here -- same "nothing to show" outcome as every
+      // other failure mode, not an error worth surfacing to the card renderer. Not logged: it's the
+      // overwhelmingly common case (most contracts simply aren't OpenSea-tracked drops) and would
+      // just be noise. Everything else (a bad API key, a network failure, a real OpenSea outage) is
+      // genuinely unexpected and worth a trace.
+      if (error?.response?.status !== 404) logFailure('getDrop', chain, contractAddress, error);
+      return null;
+    }
+  }
+
+  // Section AF -- the point of all of this: an allowlist/GTD/FCFS SeaDrop stage has no on-chain way
+  // for this app to prove eligibility (no merkle proof, no signature this app can produce), because
+  // that verification lives entirely in OpenSea's own backend. POST /drops/{slug}/mint (live-verified
+  // against docs.opensea.io/reference/build_drop_mint_transaction) is OpenSea doing that verification
+  // itself and handing back ready-to-sign calldata -- "no wallet authentication is required, only an
+  // API key... stage selection is handled automatically by the backend." This app still signs and
+  // broadcasts it through its own wallet/transactionEngine exactly like every other mint (governance
+  // ceilings, simulation, gas ceiling all still apply); OpenSea only ever supplies to/data/value.
+  //
+  // Unlike every other function here, a failure is NOT always "nothing to show" -- 409/422 are
+  // OpenSea telling us definitively that this wallet cannot mint right now (not active yet, sold
+  // out, not on the allowlist, already at its limit), which is real information a mint attempt must
+  // surface honestly, not swallow. Everything else (no key, unsupported chain, not a drop, network
+  // failure, 5xx) is genuine unavailability, not ineligibility, and returns null so the caller can
+  // fall back to this app's own on-chain calldata path instead.
+  async function buildMintTransaction(chain, contractAddress, minterAddress, quantity) {
+    const openSeaChain = OPENSEA_CHAIN_SLUGS[chain];
+    if (!apiKey || !openSeaChain) return null;
+    let slug;
+    try { slug = await fetchCollectionSlug(openSeaChain, contractAddress); }
+    catch (error) { logFailure('buildMintTransaction (slug lookup)', chain, contractAddress, error); return null; }
+    if (!slug) return null;
+    let response;
+    try {
+      response = await http.post(`${baseUrl}/drops/${slug}/mint`, { minter: minterAddress, quantity },
+        { timeout: timeoutMs, headers: { 'x-api-key': apiKey } });
+    } catch (error) {
+      const status = error?.response?.status;
+      const reasons = error?.response?.data?.errors;
+      const detail = Array.isArray(reasons) && reasons.length ? reasons.join('; ') : null;
+      if (status === 409) {
+        throw new ValidationError({ field: 'contractAddress', message: detail || 'this drop is not currently active for minting (not started, ended, or paused)' });
+      }
+      if (status === 422) {
+        throw new ValidationError({ field: 'contractAddress', message: detail || "this wallet can't mint right now (insufficient balance, not on the allowlist, limit reached, or sold out)" });
+      }
+      // A real mint attempt got no calldata at all -- unlike the read-only functions above, this is
+      // always worth a trace, not just the non-404 subset (there is no "expected" failure shape here).
+      logFailure('buildMintTransaction', chain, contractAddress, error);
+      return null;
+    }
+    const data = response.data;
+    if (!data?.to || !data?.data) return null;
+    return { to: data.to, data: data.data, valueWei: BigInt(data.value ?? '0x0').toString(), chain: data.chain };
+  }
+
+  return { getCollectionMetadata, resolveCollectionContract, getCollectionStats, getDrop, buildMintTransaction };
 }
 
 module.exports = { OPENSEA_CHAIN_SLUGS, createOpenSeaService };

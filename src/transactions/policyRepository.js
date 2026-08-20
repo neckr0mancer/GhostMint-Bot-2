@@ -33,6 +33,14 @@ function applyGovernance(policy, governance, triggerSource = 'manual') {
     result.gasPriceMultiplier = governance.preset.gasPriceMultiplier ?? 1;
   }
   if (governance.simulationForced) result.simulationEnabled = true;
+  // Scheduled + Degen ("ultra_fast") is a deliberate, narrow exception to simulationForced above --
+  // requested directly as part of a "speed" pass scoped to exactly this combination, not to any
+  // Degen mint or any scheduled one alone. Skipping the free pre-broadcast revert-catch only makes
+  // sense here: nobody is watching a scheduled mint fire, and selecting Degen is the account's own
+  // explicit signal that it accepts more risk for more speed. A manual Degen mint still has a human
+  // at the confirm screen moments before broadcast, so it keeps the safety net; a scheduled mint on
+  // any other preset keeps it too, since nothing about scheduling alone opts out of simulation.
+  if (triggerSource === 'scheduled' && governance.preset?.key === 'ultra_fast') result.simulationEnabled = false;
   result.simulationForced = governance.simulationForced;
   result.ceilingExempt = governance.isOwner;
   if (!governance.isOwner) {

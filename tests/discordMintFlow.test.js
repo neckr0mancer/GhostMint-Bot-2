@@ -284,6 +284,89 @@ test('/mintnow with an unresolvable contract degrades to a clear error and start
   assert.equal(flowState.get('discord', 'now-4'), null);
 });
 
+// Section AF -- an allowlist/GTD/FCFS SeaDrop stage has no on-chain proof this app can construct;
+// OpenSea's own backend resolves eligibility, so this button (shown only when the card's own
+// drop.activeStage confirmed a live stage) is the only path that actually works for those.
+function withActiveStage(overrides = {}) {
+  return baseCommands({
+    detectMintContract: async () => ({
+      chain: 'ethereum', isSeaDrop: true, priceKnown: true, valueWei: '1000000000000000000',
+      maxSupply: 100, maxPerWallet: 1, startTime: null, endTime: null, collection: null, soldOut: false, displayPrice: null,
+      drop: { isMinting: true, dropType: 'seadrop_v1_erc721', maxSupply: 100, openSeaUrl: null,
+        activeStage: { uuid: 'a1', label: 'Allowlist', startTime: 1_700_000_000, endTime: 1_700_100_000, priceETH: 0.05, maxPerWallet: 1, stageType: 'presale' },
+        nextStage: null, stages: [] },
+    }),
+    ...overrides,
+  });
+}
+
+test('flow:mintviaopensea with a single wallet mints immediately through mintViaOpenSea, not the normal mint path', async () => {
+  const flowState = createFlowStateStore();
+  const viaOpenSeaMints = [];
+  const normalMints = [];
+  const commands = withActiveStage({
+    mint: async (userId, input) => { normalMints.push({ userId, input }); return { state: 'confirmed', txHash: '0xnormal' }; },
+    mintViaOpenSea: async (userId, input) => { viaOpenSeaMints.push({ userId, input }); return { state: 'confirmed', txHash: '0xopensea' }; },
+  });
+  const ctx = { identity: { resolveOrCreate: async () => 'internal-user' }, commands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT };
+  const handler = createDiscordInteractionHandler(ctx);
+  const info = chatInteraction('info', 'osea-1', { contract: '0x0000000000000000000000000000000000000001' });
+  await handler(info);
+  const button = info.replies[0].components.flatMap(r => r.components).find(b => b.custom_id === 'flow:mintviaopensea');
+  assert.ok(button, 'the collection card must offer Mint via OpenSea when drop.activeStage is live');
+
+  const tap = buttonInteraction('flow:mintviaopensea', 'osea-1');
+  await handler(tap);
+  assert.equal(normalMints.length, 0, 'must never fall through to the normal on-chain calldata path');
+  assert.equal(viaOpenSeaMints.length, 1);
+  assert.equal(viaOpenSeaMints[0].input.walletLabel, 'main');
+  assert.equal(viaOpenSeaMints[0].input.quantity, 1);
+  assert.match(tap.updates[0].content, /Mint confirmed/);
+  assert.equal(flowState.get('discord', 'osea-1'), null);
+});
+
+test('flow:mintviaopensea with multiple wallets asks which one, then mints immediately with no confirm step', async () => {
+  const flowState = createFlowStateStore();
+  const viaOpenSeaMints = [];
+  const commands = withActiveStage({
+    wallets: () => [{ label: 'alpha', chain: 'ethereum' }, { label: 'beta', chain: 'ethereum' }],
+    mintViaOpenSea: async (userId, input) => { viaOpenSeaMints.push({ userId, input }); return { state: 'confirmed', txHash: '0xopensea' }; },
+  });
+  const ctx = { identity: { resolveOrCreate: async () => 'internal-user' }, commands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT };
+  const handler = createDiscordInteractionHandler(ctx);
+  const info = chatInteraction('info', 'osea-2', { contract: '0x0000000000000000000000000000000000000001' });
+  await handler(info);
+  const tap = buttonInteraction('flow:mintviaopensea', 'osea-2');
+  await handler(tap);
+  assert.equal(viaOpenSeaMints.length, 0, 'must not mint before a wallet is chosen');
+  const picker = tap.updates[0].components[0].components[0];
+  assert.equal(picker.custom_id, 'flow:mintwallet:select');
+  assert.deepEqual(picker.options.map(o => o.value), ['alpha', 'beta']);
+
+  const select = selectInteraction('flow:mintwallet:select', ['beta'], 'osea-2');
+  await handler(select);
+  assert.equal(viaOpenSeaMints.length, 1);
+  assert.equal(viaOpenSeaMints[0].input.walletLabel, 'beta');
+  assert.match(select.updates[0].content, /Mint confirmed/);
+  assert.equal(flowState.get('discord', 'osea-2'), null);
+});
+
+test('flow:mintviaopensea is a no-op when the card has no live OpenSea stage, instead of minting blind', async () => {
+  const flowState = createFlowStateStore();
+  const viaOpenSeaMints = [];
+  const commands = baseCommands({ mintViaOpenSea: async (userId, input) => { viaOpenSeaMints.push({ userId, input }); return { state: 'confirmed' }; } });
+  const ctx = { identity: { resolveOrCreate: async () => 'internal-user' }, commands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT };
+  const handler = createDiscordInteractionHandler(ctx);
+  const info = chatInteraction('info', 'osea-3', { contract: '0x0000000000000000000000000000000000000001' });
+  await handler(info);
+  const button = info.replies[0].components.flatMap(r => r.components).find(b => b.custom_id === 'flow:mintviaopensea');
+  assert.equal(button, undefined, 'must not offer the button at all when no stage is live');
+
+  const tap = buttonInteraction('flow:mintviaopensea', 'osea-3');
+  await handler(tap);
+  assert.equal(viaOpenSeaMints.length, 0);
+});
+
 // The full OpenSea floor/holders/volume table is reserved for /info's explicit, no-mint-intent
 // lookup -- a plain paste and /mint's own under-specified path get the leaner card (still real
 // live price/timing/sold-out status), matching Telegram's own startMintFlow(includeStats).

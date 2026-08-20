@@ -44,7 +44,7 @@ function select(customId, options, placeholder, { minValues, maxValues } = {}) {
 
 function mainMenu({ isOwner = false } = {}) {
   const rows = [
-    row([button('👛 Wallets', 'menu:wallets', 'primary'), button('⚡ Mint', 'menu:mint')]),
+    row([button('👛 Wallets', 'menu:wallets'), button('⚡ Mint', 'menu:mint')]),
     row([button('🗓️ Tasks', 'menu:tasks'), button('🎯 Snipers', 'menu:snipers')]),
     row([button('📡 Watch rules', 'menu:watch'), button('📊 Activity', 'menu:activity')]),
     row([button('⛽ Gas', 'menu:gas'), button('⚙️ Settings', 'menu:settings')]),
@@ -112,7 +112,22 @@ function formatGmtPlus1(value) {
 // simply omitted rather than shown as a placeholder when a field is unavailable. openSeaUrl is
 // built by discordBot.js (from OPENSEA_CHAIN_SLUGS), not here, so this module stays free of a
 // cross-directory import into src/mint/ -- null omits the button entirely.
-function collectionInfoCard({ contractAddress, chain, chainLabel, chainSym, isSeaDrop, priceETH, priceUnknown, maxSupply, maxPerWallet, startTime, collection, soldOut, displayPrice, stats, openSeaUrl }) {
+// Section AF -- humanizes an OpenSea stage_type ("public_sale", "presale", ...) into a fallback
+// label for a stage OpenSea didn't give its own human-written label. Mirrors
+// src/telegram/menus.js's humanizeStageType/stageSummaryLine.
+function humanizeStageType(stageType) {
+  if (!stageType) return 'Phase';
+  return stageType.split('_').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
+}
+
+function stageSummaryLine(stage, sym) {
+  const label = stage.label || humanizeStageType(stage.stageType);
+  const price = stage.priceETH !== null && stage.priceETH !== undefined ? `${stage.priceETH} ${sym}` : 'price TBD';
+  const cap = stage.maxPerWallet !== null && stage.maxPerWallet !== undefined ? ` · max ${stage.maxPerWallet}/wallet` : '';
+  return `${label} — ${price}${cap}`;
+}
+
+function collectionInfoCard({ contractAddress, chain, chainLabel, chainSym, isSeaDrop, priceETH, priceUnknown, maxSupply, maxPerWallet, startTime, collection, soldOut, displayPrice, stats, drop, openSeaUrl }) {
   const sym = chainSym || 'ETH';
   // Blank lines below group the card into identity / price / stats / limits / description bands --
   // mirrors src/telegram/menus.js's collectionInfoCard.
@@ -153,6 +168,24 @@ function collectionInfoCard({ contractAddress, chain, chainLabel, chainSym, isSe
     }
   }
 
+  // Section AF -- "can't you read the phases from OpenSea and the contract?" On-chain SeaDrop only
+  // ever exposes the ONE currently-configured PublicDrop struct (the Opens/Opened line below), so it
+  // can never say what's coming after that. drop is null unless OpenSea actually tracks this
+  // contract as a drop -- omitted entirely rather than shown as a broken/empty section.
+  if (drop && (drop.activeStage || drop.nextStage || drop.stages.length > 1)) {
+    const phaseLines = [];
+    if (drop.stages.length > 1) phaseLines.push(`${drop.stages.length} phases total`);
+    if (drop.activeStage) {
+      const endsAt = drop.activeStage.endTime ? ` · ends ${formatGmtPlus1(drop.activeStage.endTime * 1000)}` : '';
+      phaseLines.push(`🟢 Live: ${stageSummaryLine(drop.activeStage, sym)}${endsAt}`);
+    }
+    if (drop.nextStage) {
+      const opensAt = drop.nextStage.startTime ? ` · opens ${formatGmtPlus1(drop.nextStage.startTime * 1000)}` : '';
+      phaseLines.push(`🔵 Next: ${stageSummaryLine(drop.nextStage, sym)}${opensAt}`);
+    }
+    lines.push('', '### Phases (via OpenSea)', ...phaseLines);
+  }
+
   const limits = [];
   // Once sold out there's nothing left to mint -- a per-wallet mint cap has nothing left to apply
   // to (trading moves to secondary from here), so it drops off rather than sitting there as a
@@ -174,7 +207,17 @@ function collectionInfoCard({ contractAddress, chain, chainLabel, chainSym, isSe
   if (openSeaUrl) utilityRow.push(urlButton('🔗 OpenSea', openSeaUrl));
 
   const rows = [row([button('🪙 Mint Now', 'flow:mintdetailscontinue', 'success')])];
-  if (opensInFuture) rows.push(row([button('📅 Schedule for opening', 'flow:schedulesuggest')]));
+  if (opensInFuture) rows.push(row([button('📅 Schedule for opening', 'flow:schedulesuggest', 'success')]));
+  // Section AF -- an allowlist/GTD/FCFS stage has no on-chain proof this app can construct itself;
+  // OpenSea's own backend resolves eligibility, so this is the path that actually works for those.
+  // Shown only when OpenSea confirms a stage is live right now -- there is nothing for it to mint
+  // against otherwise.
+  if (drop?.activeStage) rows.push(row([button('🎫 Mint via OpenSea', 'flow:mintviaopensea')]));
+  // A phase that hasn't opened yet has nothing to mint against -- being tapped-in and ready at the
+  // exact open is what cuts the time wasted, not a pre-check OpenSea has no way to answer ahead of
+  // time (see mintViaOpenSea's own notes). OpenSea only ever returns nextStage when nothing is
+  // currently minting, so this and the button above are never both shown at once.
+  if (drop?.nextStage) rows.push(row([button('🎫📅 Schedule for OpenSea phase', 'flow:scheduleviaopensea')]));
   rows.push(row(utilityRow), row([button('📋 Copy CA', 'flow:copyca')]), row([button('❌ Cancel', 'flow:cancel:ask', 'danger')]));
 
   return { content: lines.join('\n'), components: rows };
@@ -275,12 +318,17 @@ function taskNameQuickPicks() {
   };
 }
 
-function taskConfirmation({ name, contractAddress, chainLabel, walletLabel, quantity, mintTime, priceETH, priceUnknown }) {
-  const priceLine = priceUnknown
-    ? 'Price: not exposed by this contract'
-    : `Price: ${priceETH} per item (read from the contract)`;
+function taskConfirmation({ name, contractAddress, chainLabel, walletLabel, quantity, mintTime, priceETH, priceUnknown, viaOpenSea }) {
+  // Section AF -- OpenSea's own response at execution time determines the real price for an
+  // allowlist/GTD/FCFS stage; nothing scheduled up front could ever be the real number.
+  const priceLine = viaOpenSea
+    ? 'Price: determined by OpenSea at mint time (it resolves eligibility and price for this stage automatically)'
+    : priceUnknown
+      ? 'Price: not exposed by this contract'
+      : `Price: ${priceETH} per item (read from the contract)`;
+  const heading = viaOpenSea ? '## Confirm OpenSea-backed schedule' : '## Confirm scheduled mint';
   return {
-    content: `## Confirm scheduled mint\nName: ${name}\nContract: \`${contractAddress}\`\nChain: ${chainLabel}\nWallet: ${walletLabel}\nQuantity: ${quantity || 1}\n${priceLine}\nFires: ${formatGmtPlus1(mintTime)}\n\nThis is not a reminder -- the bot signs and sends the mint itself at that moment.\n\nProceed?`,
+    content: `${heading}\nName: ${name}\nContract: \`${contractAddress}\`\nChain: ${chainLabel}\nWallet: ${walletLabel}\nQuantity: ${quantity || 1}\n${priceLine}\nFires: ${formatGmtPlus1(mintTime)}\n\nThis is not a reminder -- the bot signs and sends the mint itself at that moment.\n\nProceed?`,
     components: [row([button('✅ Schedule it', 'flow:taskconfirm', 'success'), button('❌ Cancel', 'flow:cancel:ask', 'danger')])],
   };
 }
@@ -307,7 +355,7 @@ function mintModeMenu() {
   return {
     content: '## Mint\nMint from one wallet, or the same drop from several at once.',
     components: [
-      row([button('⚡ Single mint', 'menu:mint:single', 'primary')]),
+      row([button('⚡ Single mint', 'menu:mint:single')]),
       row([button('🗂️ Batch mint', 'menu:mint:batch')]),
       row([button('⬅️ Back to menu', 'menu:main')]),
     ],
@@ -377,10 +425,45 @@ function walletsMenu() {
 }
 
 function settingsMenu({ isOwner = false } = {}) {
-  const rows = [row([button('🔗 Enter a link code from Telegram', 'link:enter')])];
+  const rows = [
+    row([button('🔗 Enter a link code from Telegram', 'link:enter')]),
+    row([button('🎛️ Transaction mode', 'menu:mode')]),
+  ];
   if (isOwner) rows.push(row([button('🛡️ Admin console', 'menu:admin')]));
   rows.push(row([button('⬅️ Back to menu', 'menu:main')]));
   return { content: '## Settings', components: rows };
+}
+
+// Section O -- the "Transaction mode" button had no button/menu path at all: /mode worked fine as
+// a slash command, but was only reachable by already knowing the command and an exact preset name.
+// Same 4 presets/labels as Telegram's already-shipped MODE_META (src/telegram/menus.js) -- kept in
+// sync by hand since the two platforms build their option lists in entirely different shapes.
+const MODE_META = {
+  ultra_fast: { label: 'Degen', hint: 'Full send. Aggressive gas, minimal friction.' },
+  fast: { label: 'Fast', hint: 'quick, higher gas, still asks before it fires' },
+  semi_safe: { label: 'Cautious', hint: 'measured, moderate gas' },
+  safe: { label: 'Normie', hint: 'slow and steady, network-price gas, zero surprises' },
+};
+
+// Must match ADVANCED_PRESET_KEYS in src/governance/postgresGovernanceRepository.js -- the
+// backend is the real gate (selectPreset rejects these for an ineligible caller regardless of
+// what's offered here); this list only avoids offering a doomed tap in the first place.
+const GATED_PRESET_KEYS = ['ultra_fast', 'fast'];
+
+function modeMenu({ currentKey, presets, advancedModesAllowed = false }) {
+  const rows = presets
+    .filter(preset => advancedModesAllowed || !GATED_PRESET_KEYS.includes(preset.key))
+    .map(preset => {
+      const meta = MODE_META[preset.key] || { label: preset.displayName, hint: '' };
+      return row([button(`${preset.key === currentKey ? '✅ ' : ''}${meta.label} · ${meta.hint}`, `mode:pick:${preset.key}`)]);
+    });
+  rows.push(row([button('⬅️ Back to settings', 'menu:settings')]));
+  const currentLabel = MODE_META[currentKey]?.label || 'none selected';
+  const lockedNote = advancedModesAllowed ? '' : '\n\n🔒 Degen and Fast require group or admin access.';
+  return {
+    content: `## 🎛️ Transaction mode\nCurrent mode: **${currentLabel}**\n\nControls confirmation prompts and how hard this thing sends gas on every mint. Ceilings and forced simulation always have the final say, no matter which mode you pick.${lockedNote}`,
+    components: rows,
+  };
 }
 
 function placeholderMenu(title, hint) {
@@ -447,7 +530,7 @@ function gasMenu({ chain, fees, supportedChains, chains }) {
 // user to go type the command. No Prev button on page 1; no Next once the last page is reached.
 function activityMenu(page) {
   const lines = page.items.length
-    ? page.items.map(item => `${item.status}: ${item.title} — ${item.walletLabel}`).join('\n')
+    ? page.items.map(item => `${item.status}: ${item.title}${item.address ? ` to \`${item.address}\`` : ''} — ${item.walletLabel}`).join('\n')
     : 'No activity yet.';
   const nav = [];
   if (page.page > 1) nav.push(button('◀️ Prev', `activity:page:${page.page - 1}`));
@@ -464,7 +547,7 @@ function activityMenu(page) {
 // activityMenu above.
 function tasksMenu(page) {
   const lines = page.items.length
-    ? page.items.map(task => `${task.name} [${task.status}] — ${formatGmtPlus1(task.mintTime)} — ${task.id}`).join('\n')
+    ? page.items.map(task => `${task.viaOpenSea ? '🎫 ' : ''}${task.name} [${task.status}] — ${formatGmtPlus1(task.mintTime)} — ${task.id}`).join('\n')
     : 'No scheduled tasks.';
   const nav = [];
   if (page.page > 1) nav.push(button('◀️ Prev', `tasks:page:${page.page - 1}`));
@@ -613,7 +696,7 @@ function watchRuleActions(rule) {
   return {
     content: `## ${rule.name}\nStatus: ${rule.enabled ? '🟢 enabled' : '⚪ disabled'}\nWatching: ${WATCH_TYPE_META[rule.type]?.label || rule.type}\nMethod: ${WATCH_METHOD_META[rule.method]?.label || rule.method}\nID: \`${rule.id}\``,
     components: [
-      row([button(rule.enabled ? '⏸ Disable' : '▶️ Re-enable', `watch:toggle:${rule.id}`)]),
+      row([button(rule.enabled ? '⏸ Disable' : '▶️ Re-enable', `watch:toggle:${rule.id}`, rule.enabled ? 'secondary' : 'success')]),
       row([button('🗑️ Remove', `watch:remove:ask:${rule.id}`, 'danger')]),
       row([button('⬅️ Back to list', 'watch:list')]),
     ],
@@ -654,6 +737,7 @@ function labelModal({ customId, title, placeholder = '', style = 'short', maxLen
 module.exports = {
   button, row, select, mainMenu, mintModeMenu, batchImportMenu, gateUnlockCard, walletsMenu, settingsMenu, placeholderMenu,
   chainSelect, walletSelect, walletMultiSelect, confirmRemoveWallet, labelModal, gasMenu, activityMenu, tasksMenu, snipersMenu, adminOverviewMenu,
+  modeMenu, MODE_META,
   contractDetailsText, collectionInfoCard, mintQuantitySelect, mintPriceStep, gasTolerancePrompt, mintConfirmation, numberModal,
   taskNameQuickPicks, taskConfirmation,
   watchTypeSelect, watchMethodSelect, watchConfigModal, watchRuleConfirmation,

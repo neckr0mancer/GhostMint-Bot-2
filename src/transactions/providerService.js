@@ -38,16 +38,23 @@ function createProviderService({ chains, timeoutMs = 10_000, retries = 1, provid
     return result;
   }
 
-  async function perform(chain, operationName, operation) {
+  // timeoutMs/retries overrides let a caller opt into a tighter failover budget for one call --
+  // used for scheduled and Degen-mode mints (transactionEngine.js), where a slow primary RPC
+  // should be abandoned quickly rather than eating the full default timeout on every retry before
+  // even reaching the next configured URL. Every other caller is unaffected: omitting the third
+  // argument keeps the constructor's own defaults exactly as before this existed.
+  async function perform(chain, operationName, operation, { timeoutMs: timeoutOverride, retries: retriesOverride } = {}) {
     const candidates = chainProviders(chain);
+    const effectiveTimeoutMs = timeoutOverride ?? timeoutMs;
+    const effectiveRetries = retriesOverride ?? retries;
     let attempts = 0;
     for (const candidate of candidates) {
-      for (let retry = 0; retry <= retries; retry += 1) {
+      for (let retry = 0; retry <= effectiveRetries; retry += 1) {
         attempts += 1;
         try {
           return await withTimeout(
             Promise.resolve().then(() => operation(candidate.provider)),
-            timeoutMs,
+            effectiveTimeoutMs,
             `${chain} ${operationName}`,
           );
         } catch (error) {
