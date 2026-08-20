@@ -379,6 +379,21 @@ and the collection info card via new `humanizeStageType`/`stageSummaryLine` help
 platform's `menus.js`. Returns `null` on anything that isn't a tracked OpenSea Drop (a 404, the
 overwhelmingly common case) with no error surfaced to the card renderer.
 
+**Live incident, found and closed 2026-08-20:** neither platform was actually showing drop phases
+in production — reported directly by the owner. Live-reproduced against real, currently-open drops
+(not assumed): every `/drops/*` endpoint returned `401 "Invalid API key"` with this app's
+then-current `OPENSEA_API_KEY`, while the exact same key worked fine for `/collections/{slug}` and
+everything else this file calls. This means Section AQ *and* Section AR below were shipped on the
+strength of unit tests against mocked HTTP only — they were never actually verified against the
+live API with this app's real credentials, despite this file's own established discipline of
+live-verifying rather than assuming. The root cause was the key itself: OpenSea's docs don't
+document any special tier for Drops endpoints, but the old key plainly didn't have that access and
+a freshly-generated one did — regenerating the key (owner's own OpenSea account, Settings →
+Developer) fixed both `getDrop` and `buildMintTransaction` immediately, live-confirmed against three
+real drops (phase data decoded correctly, `buildMintTransaction` correctly threw the intended
+`ValidationError`/`Insufficient balance` for a fresh test wallet) with no code changes needed at
+all. Recorded here so a future stale-key symptom like this isn't re-investigated as a code bug.
+
 ## Section AR — OpenSea-backed minting for allowlist/GTD/FCFS stages ✅
 
 The second piece. `buildMintTransaction(chain, contractAddress, minterAddress, quantity)` calls
