@@ -183,6 +183,17 @@ test('collectionInfoCard shows an upcoming OpenSea phase with a fallback label b
   // Nothing is minting yet -- OpenSea has nothing to build a mint transaction against, so the
   // button stays hidden until activeStage is real, not merely because drop data exists at all.
   assert.equal(flatButtons(withNext.components).some(b => b.custom_id === 'flow:mintviaopensea'), false);
+  // A phase that hasn't opened yet has nothing to mint against but IS schedulable -- OpenSea's own
+  // response at the exact open time is what determines eligibility and price, live.
+  assert.equal(flatButtons(withNext.components).some(b => b.custom_id === 'flow:scheduleviaopensea'), true);
+});
+
+test('collectionInfoCard never offers Schedule for OpenSea phase when there is no upcoming stage to schedule against', () => {
+  const noDrop = collectionInfoCard({
+    contractAddress: '0xabc', chainLabel: 'Ethereum', chainSym: 'ETH', isSeaDrop: true, priceETH: 0.05, priceUnknown: false,
+    maxSupply: 100, maxPerWallet: 1, startTime: null, collection: null, soldOut: false, displayPrice: null, stats: null, drop: null, openSeaUrl: null,
+  });
+  assert.equal(flatButtons(noDrop.components).some(b => b.custom_id === 'flow:scheduleviaopensea'), false);
 });
 
 test('taskNameQuickPicks offers GTD/FCFS/PUBLIC and a custom option in one select, with an unverified-labels caveat', () => {

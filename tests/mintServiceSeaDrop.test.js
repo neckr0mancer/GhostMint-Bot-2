@@ -498,3 +498,38 @@ test('createTask still requires mintTime for a plain (non-SeaDrop) contract -- t
   });
   await assert.rejects(service.createTask('user-a', { name: 'drop', walletLabel: 'main', contractAddress: CONTRACT, quantity: 1 }), ValidationError);
 });
+
+// Section AF -- scheduling an OpenSea-backed mint (an allowlist/GTD/FCFS stage this app has no
+// on-chain proof for). priceETH is forced to 0 and never resolved from the contract -- OpenSea's
+// own response at execution time determines the real value, so resolvePriceIfMissing (which would
+// throw for a price that genuinely can't be read on-chain, exactly this path's normal case) must
+// never even run for a viaOpenSea task.
+test('createTask forces priceETH to 0 and skips price resolution entirely for a viaOpenSea task, storing viaOpenSea on the saved row', async () => {
+  const { saved, service } = taskServiceFixture({
+    contractValueResolver: { resolve: async () => { throw new Error('must not be called for a viaOpenSea task'); } },
+    seaDropDiscoveryService: { resolve: async () => ({ address: null, publicDrop: null, feeRecipient: null }) },
+  });
+  const mintTime = new Date(Date.now() + 60_000).toISOString();
+  const task = await service.createTask('user-a', { name: 'allowlist phase', walletLabel: 'main', contractAddress: CONTRACT, quantity: 1, mintTime, viaOpenSea: true });
+  assert.equal(saved[0].price, 0);
+  assert.equal(saved[0].viaOpenSea, true);
+  assert.equal(task.viaOpenSea, true);
+});
+
+test('createTask still requires an explicit mintTime for a viaOpenSea task -- there is no PublicDrop opening time to auto-fill from', async () => {
+  const { service } = taskServiceFixture({
+    contractValueResolver: { resolve: async () => { throw new Error('must not be called'); } },
+    seaDropDiscoveryService: { resolve: async () => ({ address: null, publicDrop: null, feeRecipient: null }) },
+  });
+  await assert.rejects(service.createTask('user-a', { name: 'allowlist phase', walletLabel: 'main', contractAddress: CONTRACT, quantity: 1, viaOpenSea: true }), ValidationError);
+});
+
+test('a non-viaOpenSea task never has viaOpenSea set on the saved row', async () => {
+  const { saved, service } = taskServiceFixture({
+    contractValueResolver: { resolve: async () => ({ price: { value: '500' }, maxSupply: null, maxPerWallet: null }) },
+    seaDropDiscoveryService: { resolve: async () => ({ address: null, publicDrop: null, feeRecipient: null }) },
+  });
+  const mintTime = new Date(Date.now() + 60_000).toISOString();
+  await service.createTask('user-a', { name: 'plain', walletLabel: 'main', contractAddress: CONTRACT, quantity: 1, mintTime });
+  assert.equal(saved[0].viaOpenSea, false);
+});

@@ -307,6 +307,17 @@ test('collectionInfoCard shows an upcoming OpenSea phase with a fallback label b
   // Nothing is minting yet -- OpenSea has nothing to build a mint transaction against, so the
   // button stays hidden until activeStage is real, not merely because drop data exists at all.
   assert.equal(flatButtons(withNext.replyMarkup).some(b => b.callback_data === 'flow:mintviaopensea'), false);
+  // A phase that hasn't opened yet has nothing to mint against but IS schedulable -- OpenSea's own
+  // response at the exact open time is what determines eligibility and price, live.
+  assert.equal(flatButtons(withNext.replyMarkup).some(b => b.callback_data === 'flow:scheduleviaopensea'), true);
+});
+
+test('collectionInfoCard never offers Schedule for OpenSea phase when there is no upcoming stage to schedule against', () => {
+  const noDrop = collectionInfoCard({
+    contractAddress: '0xabc', chainLabel: 'Ethereum', chainSym: 'ETH', isSeaDrop: true, priceETH: 0.05, priceUnknown: false,
+    maxSupply: 100, maxPerWallet: 1, startTime: null, collection: null, soldOut: false, displayPrice: null, stats: null, drop: null, openSeaUrl: null,
+  });
+  assert.equal(flatButtons(noDrop.replyMarkup).some(b => b.callback_data === 'flow:scheduleviaopensea'), false);
 });
 
 test('collectionInfoCard omits the stats table entirely when stats is null, and renders an aligned floor/holders/minted/volume table -- never a market cap -- when it is not', () => {
@@ -447,6 +458,33 @@ test('the scheduled-task screen counts phases upward and keeps a way back to the
   const buttons = flatButtons(third.replyMarkup).map(b => b.callback_data);
   assert.ok(buttons.includes('flow:phase:4:0x1234567890abcdef1234567890abcdef12345678'));
   assert.ok(buttons.includes('menu:main'));
+});
+
+// Section AF -- OpenSea's own response at execution time determines the real price for an
+// allowlist/GTD/FCFS stage; nothing scheduled up front could ever be the real number, so this must
+// never claim a price the way a plain scheduled task (or "not exposed by this contract") would.
+test('a viaOpenSea task confirmation says the price is determined by OpenSea at mint time, not any number scheduled up front', () => {
+  const prompt = taskConfirmation({
+    name: 'allowlist phase', contractAddress: '0xabc', chainLabel: 'Ethereum', walletLabel: 'main',
+    mintTime: '2026-08-20T18:00:00.000Z', autoDetectedTime: false, priceETH: 0, priceUnknown: false, viaOpenSea: true,
+  });
+  assert.match(prompt.text, /Confirm OpenSea-backed schedule/);
+  assert.match(prompt.text, /Price: determined by OpenSea at mint time/);
+  assert.equal(prompt.text.includes('not exposed by this contract'), false);
+  assert.equal(/Price: 0 per item/.test(prompt.text), false);
+});
+
+// "Add phase" (the manual-entry path) genuinely still can't cover an allowlist/GTD stage -- this
+// only exists to make sure a viaOpenSea success screen doesn't offer that dead end, and points at
+// the real path instead.
+test('a viaOpenSea scheduled-task screen has no Add phase button and points back at the OpenSea button instead', () => {
+  const screen = taskScheduled({
+    name: 'allowlist phase', contractAddress: '0x1234567890abcdef1234567890abcdef12345678',
+    mintTime: '2026-08-20T18:00:00.000Z', viaOpenSea: true,
+  });
+  assert.match(screen.text, /Armed via OpenSea/);
+  assert.equal(flatButtons(screen.replyMarkup).some(b => b.callback_data.startsWith('flow:phase:')), false);
+  assert.match(screen.text, /Schedule for OpenSea phase/);
 });
 
 // Section O -- Telegram counterparts to Discord's menu:snipers/menu:activity/menu:admin parity

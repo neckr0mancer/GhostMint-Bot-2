@@ -318,12 +318,17 @@ function taskNameQuickPicks() {
   };
 }
 
-function taskConfirmation({ name, contractAddress, chainLabel, walletLabel, quantity, mintTime, priceETH, priceUnknown }) {
-  const priceLine = priceUnknown
-    ? 'Price: not exposed by this contract'
-    : `Price: ${priceETH} per item (read from the contract)`;
+function taskConfirmation({ name, contractAddress, chainLabel, walletLabel, quantity, mintTime, priceETH, priceUnknown, viaOpenSea }) {
+  // Section AF -- OpenSea's own response at execution time determines the real price for an
+  // allowlist/GTD/FCFS stage; nothing scheduled up front could ever be the real number.
+  const priceLine = viaOpenSea
+    ? 'Price: determined by OpenSea at mint time (it resolves eligibility and price for this stage automatically)'
+    : priceUnknown
+      ? 'Price: not exposed by this contract'
+      : `Price: ${priceETH} per item (read from the contract)`;
+  const heading = viaOpenSea ? '## Confirm OpenSea-backed schedule' : '## Confirm scheduled mint';
   return {
-    content: `## Confirm scheduled mint\nName: ${name}\nContract: \`${contractAddress}\`\nChain: ${chainLabel}\nWallet: ${walletLabel}\nQuantity: ${quantity || 1}\n${priceLine}\nFires: ${formatGmtPlus1(mintTime)}\n\nThis is not a reminder -- the bot signs and sends the mint itself at that moment.\n\nProceed?`,
+    content: `${heading}\nName: ${name}\nContract: \`${contractAddress}\`\nChain: ${chainLabel}\nWallet: ${walletLabel}\nQuantity: ${quantity || 1}\n${priceLine}\nFires: ${formatGmtPlus1(mintTime)}\n\nThis is not a reminder -- the bot signs and sends the mint itself at that moment.\n\nProceed?`,
     components: [row([button('✅ Schedule it', 'flow:taskconfirm', 'success'), button('❌ Cancel', 'flow:cancel:ask', 'danger')])],
   };
 }
@@ -507,7 +512,7 @@ function activityMenu(page) {
 // activityMenu above.
 function tasksMenu(page) {
   const lines = page.items.length
-    ? page.items.map(task => `${task.name} [${task.status}] — ${formatGmtPlus1(task.mintTime)} — ${task.id}`).join('\n')
+    ? page.items.map(task => `${task.viaOpenSea ? '🎫 ' : ''}${task.name} [${task.status}] — ${formatGmtPlus1(task.mintTime)} — ${task.id}`).join('\n')
     : 'No scheduled tasks.';
   const nav = [];
   if (page.page > 1) nav.push(button('◀️ Prev', `tasks:page:${page.page - 1}`));

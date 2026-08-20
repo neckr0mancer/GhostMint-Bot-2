@@ -219,6 +219,69 @@ test('full happy path: schedule suggestion -> name quick-pick -> confirm -> task
   assert.equal(flowState.get('discord', 'paster-3'), null);
 });
 
+// Section AF -- a phase that hasn't opened yet has nothing to mint against, so there's no
+// eligibility to pre-check (see mintViaOpenSea's own notes); being scheduled and ready right at
+// open is what actually cuts the wasted time this feature exists for.
+function withNextStage(overrides = {}) {
+  return baseCommands({
+    detectMintContract: async () => ({
+      chain: 'ethereum', isSeaDrop: true, priceKnown: false, valueWei: '0',
+      maxSupply: 100, maxPerWallet: 1, startTime: null, endTime: null, collection: null, soldOut: false, displayPrice: null,
+      drop: { isMinting: false, dropType: 'seadrop_v1_erc721', maxSupply: 100, openSeaUrl: null,
+        activeStage: null,
+        nextStage: { uuid: 'n1', label: 'Allowlist', startTime: FUTURE_START, endTime: FUTURE_START + 3600, priceETH: 0.05, maxPerWallet: 1, stageType: 'presale' },
+        stages: [] },
+    }),
+    ...overrides,
+  });
+}
+
+test('flow:scheduleviaopensea pre-fills the next stage\'s own opening time and skips straight to naming for a single wallet', async () => {
+  const flowState = createFlowStateStore();
+  const created = [];
+  const commands = withNextStage({
+    createTask: async (userId, input) => { created.push({ userId, input }); return { name: input.name, mintTime: input.mintTime, viaOpenSea: input.viaOpenSea }; },
+  });
+  const identity = { resolveOrCreate: async () => 'internal-user' };
+  const ctx = { identity, commands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT };
+
+  const message = mockMessage('0x0000000000000000000000000000000000000001', 'osea-sched-1');
+  await handleMintPasteMessage(ctx, message);
+  const handler = createDiscordInteractionHandler(ctx);
+  const tap = buttonInteraction('flow:scheduleviaopensea', 'osea-sched-1');
+  await handler(tap);
+  assert.equal(flowState.get('discord', 'osea-sched-1').flow, 'task_guided');
+  assert.equal(flowState.get('discord', 'osea-sched-1').step, 'awaiting_name');
+  assert.equal(flowState.get('discord', 'osea-sched-1').data.mintTime, FUTURE_ISO);
+  assert.equal(flowState.get('discord', 'osea-sched-1').data.viaOpenSea, true);
+  // No price step reached at all -- OpenSea determines the real price, never anything asked here.
+  assert.notEqual(flowState.get('discord', 'osea-sched-1').step, 'awaiting_price');
+
+  await handler(selectInteraction('flow:taskname:select', ['GTD'], 'osea-sched-1'));
+  const confirm = buttonInteraction('flow:taskconfirm', 'osea-sched-1');
+  await handler(confirm);
+  assert.equal(created.length, 1);
+  assert.equal(created[0].input.viaOpenSea, true);
+  assert.equal(created[0].input.mintTime, FUTURE_ISO);
+  assert.match(confirm.updates[0].content, /Scheduled/);
+  assert.match(confirm.updates[0].content, /via OpenSea/);
+});
+
+test('flow:scheduleviaopensea is a no-op when the card has no upcoming OpenSea stage, instead of scheduling against nothing', async () => {
+  const flowState = createFlowStateStore();
+  const created = [];
+  const commands = baseCommands({ createTask: async (userId, input) => { created.push({ userId, input }); return {}; } });
+  const identity = { resolveOrCreate: async () => 'internal-user' };
+  const ctx = { identity, commands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT };
+
+  const message = mockMessage('0x0000000000000000000000000000000000000001', 'osea-sched-2');
+  await handleMintPasteMessage(ctx, message);
+  const handler = createDiscordInteractionHandler(ctx);
+  const tap = buttonInteraction('flow:scheduleviaopensea', 'osea-sched-2');
+  await handler(tap);
+  assert.equal(created.length, 0);
+});
+
 test('picking "custom" opens a modal; submitting it reaches the same confirm screen', async () => {
   const flowState = createFlowStateStore();
   const commands = baseCommands();

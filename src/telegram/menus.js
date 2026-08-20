@@ -522,7 +522,7 @@ function tasksMenu(page) {
   }
   const rows = tasks.map(task => {
     const shortName = task.name.length > 28 ? `${task.name.slice(0, 27)}…` : task.name;
-    const row = [button(`⏱ ${shortName} [${task.status}]`, `task:manage:${task.id}`)];
+    const row = [button(`${task.viaOpenSea ? '🎫' : '⏱'} ${shortName} [${task.status}]`, `task:manage:${task.id}`)];
     if (CANCELLABLE_TASK_STATUSES.has(task.status)) row.push(button('❌', `task:cancel:ask:${task.id}`));
     return row;
   });
