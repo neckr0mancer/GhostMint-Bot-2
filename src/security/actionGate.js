@@ -29,14 +29,39 @@ const LEVELS = Object.freeze(['off', 'sensitive', 'strict']);
 // every level -- that is the safe default for a gate that ships off, since a missing entry can
 // only ever fail open to today's behaviour rather than locking someone out of something new.
 const ACTION_TIERS = Object.freeze({
+  // 'sensitive' is not "scary-looking" -- it is "can this cost the owner money, expose a key, or
+  // hand someone the account". Everything here fails that test if a stranger reaches it.
   exportkey: 'sensitive',
   removewallet: 'sensitive',
   send: 'sensitive',
-  batchimport: 'sensitive',
   importwallet: 'sensitive',
+  batchimport: 'sensitive',
+  // Account takeover, and the most dangerous entry in this table. A link code is redeemable on the
+  // dashboard, so anyone who can generate one can sign in AS the owner and then has every wallet,
+  // every key export and every setting -- gating key export while leaving this open would be
+  // locking the door and posting the key through the letterbox.
+  linkcode: 'sensitive',
+  // Switching to Degen removes the confirmation step from every future mint on every platform, so
+  // it is a way to arrange silent spending later rather than a preference.
+  mode: 'sensitive',
+  // Watch rules SPEND: they sign and send transactions unattended once armed, so creating one is a
+  // funds-moving action even though no money moves at the moment you tap it. Sniper creation is
+  // deliberately absent: it has no button-driven flow on either platform (it is configured through
+  // /sniper subcommands), and classifying an action with no call site is the decorative-tier bug
+  // this table already had once. Add it here at the same time as the call site, not before.
+  watchedit: 'sensitive',
+  // Governance: ceilings, budgets, group policy. Raising a ceiling makes every later spend bigger.
+  admin: 'sensitive',
+
+  // 'read' is disclosure: it does not move anything, but it tells a stranger what you hold, what
+  // you are about to buy, and what your automation is watching.
   walletlist: 'read',
   balance: 'read',
   activity: 'read',
+  snipers: 'read',
+  watchrules: 'read',
+  settings: 'read',
+  tasks: 'read',
 });
 
 const TIERS_BY_LEVEL = Object.freeze({
@@ -78,10 +103,17 @@ function createActionGate({
   unlockMs = DEFAULT_UNLOCK_MS,
   maxAttempts = DEFAULT_MAX_ATTEMPTS,
   lockoutMs = DEFAULT_LOCKOUT_MS,
+  // Called when a window ends, with why: 'expired' (the ten minutes ran out) or 'locked' (the
+  // owner ended it). Without it, re-locking is invisible -- the owner cannot tell a gated action
+  // from one already unlocked, which is exactly how the first round of live testing went wrong.
+  onRelock = () => {},
+  setTimer = (fn, ms) => setTimeout(fn, ms),
+  clearTimer = handle => clearTimeout(handle),
 } = {}) {
   // Keyed by platform + conversation, never by account: see the note at the top of this file.
   const unlocked = new Map();
   const attempts = new Map();
+  const timers = new Map();
   const key = (platform, contextId) => `${platform}:${contextId}`;
 
   function isUnlocked(platform, contextId) {
@@ -91,12 +123,36 @@ function createActionGate({
     return true;
   }
 
-  function unlock(platform, contextId) {
-    unlocked.set(key(platform, contextId), now() + unlockMs);
+  function clearTimerFor(id) {
+    const handle = timers.get(id);
+    if (handle !== undefined) { clearTimer(handle); timers.delete(id); }
   }
 
-  function lock(platform, contextId) {
-    unlocked.delete(key(platform, contextId));
+  function unlock(platform, contextId) {
+    const id = key(platform, contextId);
+    clearTimerFor(id);
+    unlocked.set(id, now() + unlockMs);
+    // Fires once, at expiry, so the owner is told the window closed rather than discovering it
+    // by being asked for a password again mid-task. unref'd where the runtime supports it so a
+    // pending notice never holds the process open on shutdown.
+    const handle = setTimer(() => {
+      timers.delete(id);
+      if (!unlocked.has(id)) return;
+      unlocked.delete(id);
+      try { onRelock(platform, contextId, 'expired'); } catch { /* a notice must never break the gate */ }
+    }, unlockMs);
+    if (handle && typeof handle.unref === 'function') handle.unref();
+    timers.set(id, handle);
+  }
+
+  function lock(platform, contextId, { notify = false } = {}) {
+    const id = key(platform, contextId);
+    const had = unlocked.delete(id);
+    clearTimerFor(id);
+    if (had && notify) {
+      try { onRelock(platform, contextId, 'locked'); } catch { /* as above */ }
+    }
+    return had;
   }
 
   function lockoutRemaining(platform, contextId) {

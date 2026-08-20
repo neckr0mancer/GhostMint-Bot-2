@@ -147,8 +147,11 @@ test('every action the tier table classifies is actually consulted somewhere in 
   const telegram = read('server.js');
   const discord = read(path.join('discord', 'discordBot.js'));
 
-  // Discord has no export-key or send-funds flow at all, so those two cannot be gated there.
-  const DISCORD_HAS_NO_FLOW = new Set(['exportkey', 'send']);
+  // Actions Discord has no flow for at all, so there is nothing there to gate. linkcode is the
+  // notable one: Discord can CONSUME a link code (link:enter) but cannot generate one, and it is
+  // generation that hands over the account. If Discord ever grows a generate path it must be
+  // gated on arrival -- this exemption is about a missing feature, not an accepted risk.
+  const DISCORD_HAS_NO_FLOW = new Set(['exportkey', 'send', 'linkcode']);
 
   for (const action of Object.keys(ACTION_TIERS)) {
     assert.ok(telegram.includes(`action: '${action}'`),
@@ -168,5 +171,82 @@ test('strict genuinely gates more than sensitive, rather than being a decorative
   assert.ok(strict.length > sensitive.length, 'strict must cover strictly more than sensitive');
   for (const action of sensitive) {
     assert.ok(strict.includes(action), `strict must be a superset -- ${action} is missing from it`);
+  }
+});
+
+// A relock used to be silent. That is not a cosmetic gap: with one unlock covering every gated
+// action in a conversation, a silent expiry means the owner cannot tell a gated action from an
+// already-unlocked one, which is exactly how the first round of live testing produced a false pass.
+test('the owner is told when the unlock window expires on its own', () => {
+  const notices = [];
+  let clock = 0;
+  const pending = [];
+  const gate = createActionGate({
+    getLevel: async () => 'sensitive',
+    getPasswordHash: async () => 'stored-hash',
+    verify: () => true,
+    now: () => clock,
+    unlockMs: 600_000,
+    onRelock: (platform, contextId, reason) => notices.push({ platform, contextId, reason }),
+    setTimer: (fn, ms) => { pending.push({ fn, at: clock + ms }); return { unref() {} }; },
+    clearTimer: () => {},
+  });
+  gate.unlock('telegram', 'chat-1');
+  assert.deepEqual(notices, [], 'nothing is announced while the window is still open');
+
+  clock = 600_000;
+  pending.forEach(timer => timer.fn());
+  assert.deepEqual(notices, [{ platform: 'telegram', contextId: 'chat-1', reason: 'expired' }]);
+});
+
+test('locking on purpose reports it, and reports doing nothing when already locked', () => {
+  const notices = [];
+  const gate = createActionGate({
+    getLevel: async () => 'sensitive',
+    getPasswordHash: async () => 'stored-hash',
+    verify: () => true,
+    onRelock: (platform, contextId, reason) => notices.push(reason),
+    setTimer: () => ({ unref() {} }),
+    clearTimer: () => {},
+  });
+  gate.unlock('telegram', 'chat-1');
+  assert.equal(gate.lock('telegram', 'chat-1', { notify: true }), true, 'reports that it locked something');
+  assert.deepEqual(notices, ['locked']);
+  assert.equal(gate.lock('telegram', 'chat-1', { notify: true }), false,
+    'a second lock reports that nothing was unlocked, rather than claiming success');
+  assert.deepEqual(notices, ['locked'], 'and does not announce a relock that did not happen');
+});
+
+test('an expiry notice that throws can never break the gate', () => {
+  const pending = [];
+  const gate = createActionGate({
+    getLevel: async () => 'sensitive',
+    getPasswordHash: async () => 'stored-hash',
+    verify: () => true,
+    onRelock: () => { throw new Error('telegram is down'); },
+    setTimer: fn => { pending.push(fn); return { unref() {} }; },
+    clearTimer: () => {},
+  });
+  gate.unlock('telegram', 'chat-1');
+  assert.doesNotThrow(() => pending.forEach(fn => fn()));
+  assert.equal(gate.isUnlocked('telegram', 'chat-1'), false, 'and the window still closed');
+});
+
+test('link code generation is gated at sensitive -- it hands over the whole account', () => {
+  // A link code is redeemable on the dashboard, so generating one lets a stranger sign in AS the
+  // owner. Gating key export while leaving this open would be locking the door and posting the key
+  // through the letterbox.
+  assert.equal(requiresPassword('sensitive', 'linkcode'), true);
+  assert.equal(requiresPassword('strict', 'linkcode'), true);
+  assert.equal(requiresPassword('off', 'linkcode'), false, 'still nothing happens while off');
+});
+
+test('strict covers the surfaces that merely disclose, sensitive covers the ones that cost', () => {
+  for (const action of ['exportkey', 'send', 'removewallet', 'linkcode', 'mode', 'admin', 'watchedit']) {
+    assert.equal(requiresPassword('sensitive', action), true, `${action} can cost money or the account`);
+  }
+  for (const action of ['walletlist', 'balance', 'activity', 'snipers', 'watchrules', 'settings', 'tasks']) {
+    assert.equal(requiresPassword('sensitive', action), false, `${action} only discloses, so sensitive leaves it`);
+    assert.equal(requiresPassword('strict', action), true, `${action} must be covered by strict`);
   }
 });

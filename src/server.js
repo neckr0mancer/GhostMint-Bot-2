@@ -790,10 +790,17 @@ const telegramFlowState = createFlowStateStore();
 // Ships OFF for every account (migration 041 defaults bot_gate_level to 'off'), so until an
 // owner opts in this changes nothing: allows() returns true for every action and no prompt is
 // ever shown. Reuses the dashboard's own password rather than introducing a second one.
+// Assigned once the bots exist. A mutable hook because the gate is constructed here, well before
+// either sender does.
+const gateRelockNotifiers = { telegram: null, discord: null };
 const actionGate = createActionGate({
   getLevel: userId => identityRepository.getBotGateLevel(userId),
   getPasswordHash: userId => identityRepository.getSecurityPasswordHash(userId),
   verify: verifySecurityPassword,
+  onRelock: (platform, contextId, reason) => {
+    const notifier = gateRelockNotifiers[platform];
+    if (notifier) Promise.resolve(notifier(contextId, reason)).catch(() => {});
+  },
 });
 
 // Returns true when the caller should stop: the gate is on, this conversation is locked, and a
@@ -1803,7 +1810,7 @@ async function handleFlowTextMessage(msg) {
       return;
     }
     telegramFlowState.clear('telegram', chatId);
-    tgRender(chatId, { text: '🔓 Unlocked for 10 minutes. Tap what you were doing again.',
+    tgRender(chatId, { text: '🔓 Unlocked for 10 minutes. Tap what you were doing again.\n\nSend /lock to lock it again straight away.',
       replyMarkup: telegramMenus.keyboard([[telegramMenus.button('⬅️ Back to base', 'menu:main')]]), parseMode: 'HTML' });
     void action;
     return;
@@ -2143,7 +2150,10 @@ if (BOT_TOKEN) {
 
     if (data === 'menu:main') return tgEditMenu(chatId, messageId, telegramMenus.mainMenu({ isOwner: await ownerFlag() }));
     if (data === 'menu:wallets') return tgEditMenu(chatId, messageId, telegramMenus.walletsMenu());
-    if (data === 'menu:settings') return tgEditMenu(chatId, messageId, telegramMenus.settingsMenu({ isOwner: await ownerFlag() }));
+    if (data === 'menu:settings') {
+      if (await gateBlocks({ chatId, messageId, userId, action: 'settings' })) return;
+      return tgEditMenu(chatId, messageId, telegramMenus.settingsMenu({ isOwner: await ownerFlag() }));
+    }
     if (data === 'menu:mint') return tgEditMenu(chatId, messageId, telegramMenus.mintModeMenu());
     if (data === 'menu:mint:single') return startMintFlow({ chatId, messageId, userId, multi: false, contractAddressInput: null });
     if (data === 'menu:mint:batch') return startMintFlow({ chatId, messageId, userId, multi: true, contractAddressInput: null });
@@ -2156,6 +2166,7 @@ if (BOT_TOKEN) {
       return startExportKeyFlow({ chatId, messageId, userId });
     }
     if (data === 'menu:tasks') {
+      if (await gateBlocks({ chatId, messageId, userId, action: 'tasks' })) return;
       const page = await botCommands.tasksPage(userId, { page: 1 });
       return tgEditMenu(chatId, messageId, telegramMenus.tasksMenu(page));
     }
@@ -2196,11 +2207,18 @@ if (BOT_TOKEN) {
       return tgEditMenu(chatId, messageId, telegramMenus.taskActions(task));
     }
     if (data === 'menu:schedule') return startTaskScheduleFlow({ chatId, messageId, userId, contractAddressInput: null });
-    if (data === 'menu:snipers') return tgEditMenu(chatId, messageId, telegramMenus.sniperMenu(botCommands.snipers(userId)));
+    if (data === 'menu:snipers') {
+      if (await gateBlocks({ chatId, messageId, userId, action: 'snipers' })) return;
+      return tgEditMenu(chatId, messageId, telegramMenus.sniperMenu(botCommands.snipers(userId)));
+    }
     if (data === 'menu:watch' || data === 'watch:list') {
+      if (await gateBlocks({ chatId, messageId, userId, action: 'watchrules' })) return;
       return tgEditMenu(chatId, messageId, telegramMenus.watchRulesList(await botCommands.watchRules(userId)));
     }
-    if (data === 'watch:add:start') return startWatchRuleFlow(chatId, messageId, userId);
+    if (data === 'watch:add:start') {
+      if (await gateBlocks({ chatId, messageId, userId, action: 'watchedit' })) return;
+      return startWatchRuleFlow(chatId, messageId, userId);
+    }
     if (data.startsWith('watch:manage:')) {
       const id = data.slice('watch:manage:'.length);
       const rule = (await botCommands.watchRules(userId)).find(item => item.id === id);
@@ -2242,6 +2260,7 @@ if (BOT_TOKEN) {
       return tgEditMenu(chatId, messageId, telegramMenus.gasMenu(chain, fees, CONFIG.supportedChains, CHAINS));
     }
     if (data === 'menu:mode') {
+      if (await gateBlocks({ chatId, messageId, userId, action: 'mode' })) return;
       const [presets, current, advancedModesAllowed] = await Promise.all([
         botCommands.modePresets(), botCommands.currentMode(userId), botCommands.advancedModesAllowed(userId),
       ]);
@@ -2258,11 +2277,13 @@ if (BOT_TOKEN) {
       return tgEditMenu(chatId, messageId, { text: `Switch to <b>${escapeTelegramHtml(meta.label)}</b> (${escapeTelegramHtml(meta.hint)})? This changes behavior for every mint on every platform until you switch again.`, replyMarkup: confirmationKeyboard(), parseMode: 'HTML' });
     }
     if (data === 'menu:admin') {
+      if (await gateBlocks({ chatId, messageId, userId, action: 'admin' })) return;
       const overview = await botCommands.adminOverview(userId);
       return tgEditMenu(chatId, messageId, telegramMenus.adminOverviewMenu(formatAdminOverview(overview)));
     }
 
     if (data === 'link:generate') {
+      if (await gateBlocks({ chatId, messageId, userId, action: 'linkcode' })) return;
       const link = await identity.createLinkCode(userId);
       // Reachable from both the main menu and Settings now, so "back" always returns to the top
       // level rather than assuming Settings was the entry point.
@@ -2762,9 +2783,18 @@ send /mint with a contract address to get going.`;
   // Ends the unlock window immediately. Without it, the only way to confirm an action is really
   // gated is to wait the window out -- one unlock covers every gated action in that conversation
   // by design, so testing them one at a time was impossible.
+  // A relock is otherwise invisible: the owner cannot tell a gated action from one already
+  // unlocked, which is how the first round of live testing went wrong.
+  gateRelockNotifiers.telegram = (chatId, reason) => bot.sendMessage(chatId,
+    reason === 'expired'
+      ? '🔒 Your 10-minute unlock has expired. Sensitive actions will ask for your password again.'
+      : '🔒 Locked. Sensitive actions will ask for your password again.').catch(() => {});
+
   bot.onText(/^\/lock(?:@\w+)?$/, withTelegramUser(async msg => {
-    actionGate.lock('telegram', msg.chat.id);
-    tgRender(msg.chat.id, { text: '🔒 Locked. Sensitive actions will ask for your password again.',
+    const wasUnlocked = actionGate.lock('telegram', msg.chat.id);
+    tgRender(msg.chat.id, { text: wasUnlocked
+      ? '🔒 Locked. Sensitive actions will ask for your password again.'
+      : '🔒 Already locked — nothing was unlocked.',
       replyMarkup: telegramMenus.keyboard([[telegramMenus.button('⬅️ Back to base', 'menu:main')]]), parseMode: 'HTML' });
   }));
 
