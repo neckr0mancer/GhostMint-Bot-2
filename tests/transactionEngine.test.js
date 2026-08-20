@@ -366,3 +366,42 @@ test('fee data is cached for scheduled and Degen-mode mints, but always fetched 
     assert.equal(calls.feeDataFetches, 2);
   });
 });
+
+// "Simulating this call failed: insufficient funds" used to be passed through verbatim. On a FREE
+// drop that reads as the contract rejecting the mint -- the price says 0, so the app looks broken --
+// when what actually happened is the wallet cannot pay gas. Reported from production, where every
+// wallet held 0 on every chain and the mint page said only "Cannot mint · see above".
+test('an insufficient-funds failure explains gas, names where, and says nothing was spent', () => {
+  const { explainCallFailure } = require('../src/transactions/transactionEngine');
+  const byCode = Object.assign(new Error('whatever'), { code: 'INSUFFICIENT_FUNDS' });
+  const byText = Object.assign(new Error('x'), { shortMessage: 'insufficient funds for gas * price + value' });
+
+  for (const error of [byCode, byText]) {
+    const message = explainCallFailure(error, { chain: 'robinhood', params: { from: '0xWALLET' } });
+    assert.match(message, /no funds to pay the network fee/i, 'says what actually went wrong');
+    assert.match(message, /robinhood/, 'names the chain');
+    assert.match(message, /0xWALLET/, 'names the wallet');
+    assert.match(message, /free mint still costs gas/i, 'answers "but the drop is free"');
+    assert.match(message, /nothing was broadcast/i, 'and that no money moved');
+    assert.equal(/Simulating this call failed: insufficient/.test(message), false,
+      'the raw ethers text is not passed through');
+  }
+});
+
+test('the insufficient-funds branch does not swallow real contract reverts', () => {
+  // It must not become a catch-all: a genuine revert still has to report its own reason.
+  const { explainCallFailure } = require('../src/transactions/transactionEngine');
+  const revert = Object.assign(new Error('execution reverted'), { reason: 'MintQuantityExceedsMaxSupply' });
+  const message = explainCallFailure(revert, { chain: 'ethereum', params: {} });
+  assert.match(message, /MintQuantityExceedsMaxSupply/);
+  assert.equal(/no funds to pay/.test(message), false);
+});
+
+test('it still degrades gracefully with no chain or wallet context', () => {
+  const { explainCallFailure } = require('../src/transactions/transactionEngine');
+  const error = Object.assign(new Error('insufficient funds'), { code: 'INSUFFICIENT_FUNDS' });
+  const message = explainCallFailure(error);
+  assert.match(message, /no funds to pay the network fee/i);
+  assert.equal(/ on undefined/.test(message), false, 'no "on undefined" leaking into user-facing copy');
+  assert.equal(/\(undefined\)/.test(message), false);
+});

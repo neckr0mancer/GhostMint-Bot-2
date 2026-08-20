@@ -1415,3 +1415,22 @@ html[data-theme="ghost-mint-light"] .rail-bottom-nav{
 .settings-bot-gate .gate-mint-row{margin-top:12px;padding-top:12px;border-top:1px solid var(--border)}
 .settings-bot-gate .gate-mint-row label{display:flex;align-items:center;gap:8px;font-weight:650;font-size:13px;cursor:pointer}
 .settings-bot-gate .gate-mint-row input[disabled]{cursor:not-allowed}
+
+/* ── Horizontal overflow guard ────────────────────────────────────────────
+   Reported from a phone: expanding the Presets "Method registry" made the whole
+   PAGE wider than the screen. The cause is structural, not cosmetic — a long
+   unbreakable string (a method signature in .led td.mono) sets its cell's
+   min-content width, and grid/flex children default to min-width:auto, so every
+   ancestor refuses to shrink below it and the page grows instead. .sober's
+   overflow:hidden cannot help: the box has already been sized by its content.
+
+   Two rules, in the order they matter:
+   1. Let the containers shrink at all. Without min-width:0 no amount of
+      overflow handling on the inner element can work.
+   2. Let long signatures wrap rather than demand a wider column. Wrapping is
+      right here — a signature is readable across two lines, and a horizontal
+      scrollbar inside a card on a phone is easy to miss entirely.  */
+.card,.panel,.split>*,.settings-layout>*,.card-grid>*{min-width:0}
+.led{table-layout:fixed}
+.led td{overflow-wrap:anywhere}
+.led td.mono{white-space:normal;word-break:break-word}
