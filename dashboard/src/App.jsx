@@ -489,14 +489,27 @@ function Minting({onSwitchToBatch,onGoWallets}){const wallets=useLoad('/api/wall
               note is that "a collapsed total is a hidden total". */}
           <table className="led">
             <tbody>
-              <tr><td>Contract</td><td className="mono">{item?shortHex(item.preview.contractAddress):'—'}</td></tr>
-              <tr><td>Method</td><td className="mono">{item?item.preview.methodSignature:'—'}</td></tr>
+              {/* These four are known from DETECTION and the form, before any simulation runs.
+                  They used to be gated on `item` -- the result of a SUCCESSFUL simulation -- so a
+                  failed simulation blanked facts already on screen, and the panel read as "the app
+                  knows nothing" when it had just reported detecting the drop. Chain was the only
+                  row wired to what was actually known, which is why it was the only one that
+                  filled in. Only gas, Simulation and Total debit genuinely depend on simulating. */}
+              <tr><td>Contract</td><td className="mono">{item?shortHex(item.preview.contractAddress):(contractAddress?shortHex(contractAddress):'—')}</td></tr>
+              <tr><td>Method</td><td className="mono">{item?item.preview.methodSignature:(methodSignature||'—')}</td></tr>
               <tr><td>Chain</td><td>{detectedChain||'—'}</td></tr>
-              <tr><td>Quantity</td><td>{item?quantity:'—'}</td></tr>
-              <tr><td>Mint price</td><td>{item?`${weiToEthDisplay(item.preview.nativeValue)} ETH`:'0.000000 ETH'}</td></tr>
-              <tr><td>Est. gas</td><td>{item?`${weiToEthDisplay(item.simulation.estimatedGasCostWei??0)} ETH`:'0.000000 ETH'}</td></tr>
+              <tr><td>Quantity</td><td>{item?quantity:(detected?quantity:'—')}</td></tr>
+              <tr><td>Mint price</td><td>{item?`${weiToEthDisplay(item.preview.nativeValue)} ETH`
+                :(priceEth!==''&&priceEth!==null&&priceEth!==undefined?`${Number(priceEth).toFixed(6)} ETH`:'0.000000 ETH')}</td></tr>
+              {/* Only these three depend on simulating. Before one has run they show an em dash
+                  rather than 0.000000 ETH: gas is never actually zero, so printing a confident
+                  zero claims something untrue -- and next to a genuinely free mint price it is
+                  exactly what made the panel look like it had failed to compute anything. The
+                  rows still render, so the prototype's "a collapsed total is a hidden total"
+                  still holds; only the unknown VALUE is withheld. */}
+              <tr><td>Est. gas</td><td>{item?`${weiToEthDisplay(item.simulation.estimatedGasCostWei??0)} ETH`:(detected?'—':'0.000000 ETH')}</td></tr>
               <tr><td>Simulation</td><td>{simulating?'Running…':item?'Passed':'Not run'}</td></tr>
-              <tr className="tot"><td>Total debit</td><td>{totalDebitWei?`${weiToEthDisplay(totalDebitWei)} ETH`:'0.000000 ETH'}</td></tr>
+              <tr className="tot"><td>Total debit</td><td>{totalDebitWei?`${weiToEthDisplay(totalDebitWei)} ETH`:(detected?'—':'0.000000 ETH')}</td></tr>
             </tbody>
           </table>
         </div>
@@ -510,7 +523,13 @@ function Minting({onSwitchToBatch,onGoWallets}){const wallets=useLoad('/api/wall
         {ceilingWei!==undefined&&<div className="card tight">
           <div style={{display:'flex',alignItems:'center',gap:'8px',fontSize:'11.5px',color:'var(--muted)'}}>
             <span>Your daily ceiling</span><span className="sp"/>
-            <b className="tab" style={{color:'var(--text)'}}>{weiToEthDisplay(ceilingWei)} ETH</b></div>
+            {/* null is not "zero" and not "unknown": /api/profile/limits returns a null budget
+                with ceilingExempt true for an owner, and weiToEthDisplay(null) is an empty string,
+                so this rendered as "Your daily ceiling    ETH" -- a unit with no number, which
+                reads as a broken field rather than as having no ceiling. */}
+            <b className="tab" style={{color:'var(--text)'}}>{ceilingWei===null||ceilingWei===''
+              ?(limits.data?.ceilingExempt?'Exempt':'No limit')
+              :`${weiToEthDisplay(ceilingWei)} ETH`}</b></div>
         </div>}
         {pageError&&<Notice error={pageError}/>}
         {/* One CTA per state, all .big.bl, copy verbatim from the prototype. */}

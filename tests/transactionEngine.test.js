@@ -371,18 +371,24 @@ test('fee data is cached for scheduled and Degen-mode mints, but always fetched 
 // drop that reads as the contract rejecting the mint -- the price says 0, so the app looks broken --
 // when what actually happened is the wallet cannot pay gas. Reported from production, where every
 // wallet held 0 on every chain and the mint page said only "Cannot mint · see above".
-test('an insufficient-funds failure explains gas, names where, and says nothing was spent', () => {
+test('an insufficient-funds failure states the comparison instead of guessing which part was short', () => {
   const { explainCallFailure } = require('../src/transactions/transactionEngine');
   const byCode = Object.assign(new Error('whatever'), { code: 'INSUFFICIENT_FUNDS' });
   const byText = Object.assign(new Error('x'), { shortMessage: 'insufficient funds for gas * price + value' });
 
   for (const error of [byCode, byText]) {
     const message = explainCallFailure(error, { chain: 'robinhood', params: { from: '0xWALLET' } });
-    assert.match(message, /no funds to pay the network fee/i, 'says what actually went wrong');
+    // The node returns one generic INSUFFICIENT_FUNDS -- it never says WHICH part was short.
+    // An earlier version of this message asserted "no funds to pay the network fee", which was
+    // true for an empty wallet but false for one holding gas money and facing a priced mint.
+    // It must state the check the node actually performs and let the numbers speak.
+    assert.match(message, /cannot cover the mint price plus the network fee/i, 'states the real check');
     assert.match(message, /robinhood/, 'names the chain');
     assert.match(message, /0xWALLET/, 'names the wallet');
-    assert.match(message, /free mint still costs gas/i, 'answers "but the drop is free"');
+    assert.match(message, /added up/i, 'covers the case where only the SUM is too much');
     assert.match(message, /nothing was broadcast/i, 'and that no money moved');
+    assert.equal(/no funds to pay the network fee/i.test(message), false,
+      'must not name a single cause it cannot know');
     assert.equal(/Simulating this call failed: insufficient/.test(message), false,
       'the raw ethers text is not passed through');
   }
@@ -394,14 +400,14 @@ test('the insufficient-funds branch does not swallow real contract reverts', () 
   const revert = Object.assign(new Error('execution reverted'), { reason: 'MintQuantityExceedsMaxSupply' });
   const message = explainCallFailure(revert, { chain: 'ethereum', params: {} });
   assert.match(message, /MintQuantityExceedsMaxSupply/);
-  assert.equal(/no funds to pay/.test(message), false);
+  assert.equal(/cannot cover the mint price/.test(message), false);
 });
 
 test('it still degrades gracefully with no chain or wallet context', () => {
   const { explainCallFailure } = require('../src/transactions/transactionEngine');
   const error = Object.assign(new Error('insufficient funds'), { code: 'INSUFFICIENT_FUNDS' });
   const message = explainCallFailure(error);
-  assert.match(message, /no funds to pay the network fee/i);
+  assert.match(message, /cannot cover the mint price plus the network fee/i);
   assert.equal(/ on undefined/.test(message), false, 'no "on undefined" leaking into user-facing copy');
   assert.equal(/\(undefined\)/.test(message), false);
 });

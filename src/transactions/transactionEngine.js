@@ -61,9 +61,10 @@ function explainCallFailure(error, { chain, params } = {}) {
   if (insufficient) {
     const where = chain ? ` on ${chain}` : '';
     const who = params?.from ? ` (${params.from})` : '';
-    return `This wallet has no funds to pay the network fee${where}${who}. `
-      + 'A free mint still costs gas, so the wallet needs a small balance before it can mint. '
-      + 'Nothing was broadcast and nothing was spent.';
+    return `This wallet cannot cover the mint price plus the network fee${where}${who}. `
+      + "Both are paid from the same balance in that chain's own currency, and the node checks "
+      + 'them together -- so this can mean the price is too high, the fee is, or only the two '
+      + 'added up are. Nothing was broadcast and nothing was spent.';
   }
   // A bare provider.call() (no Contract/Interface attached, which is all this engine ever
   // does) never auto-decodes a custom Solidity error -- ethers can only surface the raw revert
