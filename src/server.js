@@ -2174,6 +2174,7 @@ if (BOT_TOKEN) {
       return tgEditMenu(chatId, messageId, telegramMenus.watchRulesList(await botCommands.watchRules(userId)));
     }
     if (data === 'menu:activity') {
+      if (await gateBlocks({ chatId, messageId, userId, action: 'activity' })) return;
       const page = await botCommands.activityPage(userId, { page: 1 });
       return tgEditMenu(chatId, messageId, telegramMenus.activityMenu(page));
     }
@@ -2217,6 +2218,7 @@ if (BOT_TOKEN) {
     }
 
     if (data === 'wallet:list') {
+      if (await gateBlocks({ chatId, messageId, userId, action: 'walletlist' })) return;
       const wallets = botCommands.wallets(userId);
       if (!wallets.length) return tgEditMenu(chatId, messageId, telegramMenus.placeholderMenu('Wallets', 'No wallets yet. Go back and tap Create wallet.'));
       const summary = await walletSummaryHtml(userId);
@@ -2229,10 +2231,12 @@ if (BOT_TOKEN) {
       return tgEditMenu(chatId, messageId, renderFlowStep('wallet_create', 'awaiting_label'));
     }
     if (data === 'wallet:import:start') {
+      if (await gateBlocks({ chatId, messageId, userId, action: 'importwallet' })) return;
       telegramFlowState.start('telegram', chatId, 'wallet_import', 'awaiting_label');
       return tgEditMenu(chatId, messageId, renderFlowStep('wallet_import', 'awaiting_label'));
     }
     if (data === 'wallet:batch-import:start') {
+      if (await gateBlocks({ chatId, messageId, userId, action: 'batchimport' })) return;
       // No chain step: an EVM key is the same address on every chain, so the question had no
       // true answer and was wrong outright for a batch spanning chains. Detected per key instead.
       telegramFlowState.start('telegram', chatId, 'wallet_batch_import', 'awaiting_keys', { privateKeys: [] });
@@ -2523,6 +2527,7 @@ if (BOT_TOKEN) {
     }
 
     if (data === 'wallet:balance:pick') {
+      if (await gateBlocks({ chatId, messageId, userId, action: 'balance' })) return;
       return tgEditMenu(chatId, messageId, telegramMenus.walletPicker(botCommands.wallets(userId), { prefix:'wallet:balance', emptyHint:'No wallets yet. Create one first.' }));
     }
     if (data.startsWith('wallet:balance:') && data !== 'wallet:balance:pick') {

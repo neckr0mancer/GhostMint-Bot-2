@@ -580,6 +580,9 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
       if (data === 'menu:snipers') return dcRespond(interaction, discordMenus.snipersMenu(commands.snipers(userId)));
       // menu:watch is handled further below, alongside the rest of the watch-rule guided flow.
       if (data === 'menu:activity') {
+        if (!await actionGate.allows(userId, 'discord', platformUserId, 'activity')) {
+          return dcRespond(interaction, discordMenus.gateUnlockCard({ action: 'activity' }));
+        }
         const page = await commands.activityPage(userId, { page: 1 });
         return dcRespond(interaction, discordMenus.activityMenu(page));
       }
@@ -602,6 +605,9 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
       }
 
       if (data === 'wallet:list') {
+        if (!await actionGate.allows(userId, 'discord', platformUserId, 'walletlist')) {
+          return dcRespond(interaction, discordMenus.gateUnlockCard({ action: 'walletlist' }));
+        }
         const wallets = commands.wallets(userId);
         if (!wallets.length) return dcRespond(interaction, discordMenus.placeholderMenu('Wallets', 'No wallets yet. Go back and tap Create wallet.'));
         // Escape only the USER-CONTROLLED parts. Escaping the finished string escaped the very
@@ -622,11 +628,17 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         return interaction.showModal(discordMenus.labelModal({ customId: 'flow:label:submit', title: 'New wallet label' }));
       }
       if (data === 'wallet:batch-import:start') {
+        if (!await actionGate.allows(userId, 'discord', platformUserId, 'batchimport')) {
+          return dcRespond(interaction, discordMenus.gateUnlockCard({ action: 'batchimport' }));
+        }
         // No chain step -- see the Telegram counterpart and detectHomeChain().
         flowState.start('discord', platformUserId, 'wallet_batch_import', 'awaiting_key', { privateKeys: [] });
         return dcRespond(interaction, discordMenus.batchImportMenu({ count: 0 }));
       }
       if (data === 'wallet:import:start') {
+        if (!await actionGate.allows(userId, 'discord', platformUserId, 'importwallet')) {
+          return dcRespond(interaction, discordMenus.gateUnlockCard({ action: 'importwallet' }));
+        }
         flowState.start('discord', platformUserId, 'wallet_import', 'awaiting_label');
         return interaction.showModal(discordMenus.labelModal({ customId: 'flow:label:submit', title: 'Wallet label to import' }));
       }
@@ -694,6 +706,9 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
       }
 
       if (data === 'wallet:balance:pick') {
+        if (!await actionGate.allows(userId, 'discord', platformUserId, 'balance')) {
+          return dcRespond(interaction, discordMenus.gateUnlockCard({ action: 'balance' }));
+        }
         return dcRespond(interaction, discordMenus.walletSelect(commands.wallets(userId), { customId: 'wallet:balance:select', emptyHint: 'No wallets yet. Create one first.' }));
       }
       if (data === 'wallet:balance:select') {
