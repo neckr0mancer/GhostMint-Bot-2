@@ -1154,7 +1154,11 @@ function BotSecurityPanel({profile,onProfileChange}){
         className={level===option.value?'on':undefined} onClick={()=>change(option.value)}>{option.label}</button>)}
     </div>
     <p className="settings-hint">{BOT_GATE_OPTIONS.find(option=>option.value===level)?.hint}</p>
-    <p className="notice">Typing a password into a chat is weaker than typing it here. Discord asks
+    {/* .notice is the prototype's WARNING style (loss-red border and tint) -- this caveat is
+        informational, so it uses the same muted hint style as the level description above it
+        rather than borrowing an alarm colour or inventing an "info" variant the prototype has no
+        equivalent for. The genuine warning above (no password set) keeps .notice-warning. */}
+    <p className="settings-hint">Typing a password into a chat is weaker than typing it here. Discord asks
     in a pop-up window that never becomes a message; Telegram has no such window, so the bot deletes
     your message the moment it arrives.</p>
   </div>;
