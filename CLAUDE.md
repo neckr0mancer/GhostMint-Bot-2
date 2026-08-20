@@ -61,6 +61,15 @@ recorded so it isn't re-investigated later.
   `.env` as `RAILWAY_TOKEN` — see `docs/WORKLIST.md` Round 10 item 10 for the exact GraphQL
   endpoint, auth header shape, and this project's IDs. The Railway CLI itself doesn't accept this
   token for `whoami`/`status`; the raw GraphQL API does.
+- **Same access reads production logs directly, including the `Transaction timing (...)` lines
+  Round 16 item 6 added** — no dashboard needed. Query `deploymentLogs(deploymentId, filter, limit)`
+  against the current deployment ID (fetch it fresh via the `deployments(...)` query in Round 10
+  item 10's note, since it changes on every deploy); `filter: "Transaction timing"` narrows straight
+  to the timing lines. Live-verified 2026-08-20 — confirmed this returns real log rows, and that
+  right after a deploy there's genuinely nothing yet (no scheduled/sniper mint had fired since).
+  This is the mechanism for judging Round 16 item 3 (pre-arming) later: once real scheduled/sniper
+  mints have happened, read the `prep` component of those lines — if it's consistently large, item 3
+  is worth building; if it's already small, item 4 alone was probably enough.
 
 **One open thread, not yet resolved:** a Discord `/info` "no response" report was investigated but
 not reproduced or root-caused; diagnostic logging shipped as a safety net, not a confirmed fix. If

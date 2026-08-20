@@ -77,9 +77,8 @@ signal invented for this round.
 
 ### Worklist A — must ship
 
-**Shipped 2026-08-20: items 1, 2 (config only — see note), 5, 6, 7. Still open: items 3, 4** (the
-two genuinely new scheduler-architecture pieces, deliberately left for their own careful pass
-rather than rushed alongside the rest — see "What shipped" below for the real implementation).
+**Shipped 2026-08-20: items 1, 2 (config only — see note), 4, 5, 6, 7. Still open: item 3**
+(pre-arming) — deliberately paused rather than built speculatively; see its own note below for why.
 
 1. **Finish Round 15's pool 2** — sniper gets its own RPC/WS pool, isolated from the scheduled/Degen
    fast path shipped in Round 15 pool 1. Decided: a **separate Alchemy app** from the scheduled
@@ -138,8 +137,21 @@ rather than rushed alongside the rest — see "What shipped" below for the real 
    (Degen/Normie/etc.) the account has selected. This is also where Worklist B's own "sniper
    profile" item (below) turns out to already be covered, not a separate later task.
 
-### What shipped 2026-08-20: items 1, 2, 5, 6, 7 ✅
+### What shipped 2026-08-20: items 1, 2, 4, 5, 6, 7 ✅
 
+- **Item 4 (precise timers for near-launch tasks):** `schedulerRepository.js` gained
+  `listImminent({ now, withinMs })` — a read-only lookahead (no locking, no row mutation, safe to
+  call as often as needed) finding tasks due within `withinMs`, live-verified against the real
+  database. `schedulerWorker.js` gained `armPreciseTimers()`, called from the same `setInterval`
+  as `tick()`: for each imminent task not already tracked in an in-memory `Map`, it schedules an
+  exact `setTimeout` that fires `tick()` the instant the task becomes due, instead of waiting for
+  the next ~1s poll tick. Deliberately layered *on top of* the existing claim machinery rather than
+  replacing any of it — a precise timer firing early, late, or for a task that's since been
+  claimed/cancelled elsewhere is harmless by construction: it just calls the same `tick()` →
+  `claimDue()` path, whose own `WHERE next_attempt_at <= NOW()` and `FOR UPDATE SKIP LOCKED` already
+  guarantee correctness regardless of what triggered the check. `stop()` clears every armed timer.
+  Default lookahead window is `pollIntervalMs * 2`, wide enough that nothing can slip through the
+  gap between one lookahead scan and the next.
 - **Item 1/7 (sniper's own pool + execution profile):** `config/index.js` gained `SNIPER_CHAINS`,
   built the same way Round 15's `FAST_CHAINS` was — `parseFastRpcUrls`/its validation logic was
   generalized into `parseNamedRpcUrls(definition, generalUrls, suffix)` so both pools share one
@@ -173,6 +185,20 @@ rather than rushed alongside the rest — see "What shipped" below for the real 
   upgraded, separate Alchemy app produces just gets pasted into `{ENVNAME}_RPC_SNIPER_URLS`/`_WS`).
   Recorded as covered because the code path it depends on is real and tested, not because the
   account has actually been upgraded — that remains an owner action.
+- **Item 3 (pre-arming) deliberately paused, not built.** Raised directly with the owner rather than
+  built speculatively: pre-arming's value is now genuinely in question. Round 14's `feeDataCache`
+  has a 5-second TTL, tuned specifically because gas prices move fast — a 10-15s-old pre-armed fee
+  snapshot (the plan's own default lead time) is already past that staleness window, so it couldn't
+  be safely reused at fire time without a fresh re-check anyway, which mostly defeats the point. And
+  item 4, shipped the same day, already closes the *larger* measured gap (waking up to ~1 poll
+  interval late); what's left is the actual RPC chain at fire time (fee → gas estimate → balance →
+  simulate → nonce → network), likely 50-200ms per call against production's real RPC. Decided to
+  wait for item 6's real timing data to show whether that remaining chain is an actual bottleneck in
+  production before building pre-arming's real complexity (a cache with different staleness rules
+  than the existing one, re-validation logic, more edge cases on a money-moving path) against a
+  guess. Read the `Transaction timing (...)` log lines this app now emits for real scheduled/sniper
+  mints — specifically the `prep` component — to make that call; see the note in CLAUDE.md for how
+  to pull them from Railway directly.
 - Verified: `npm run lint` on every touched file, and the full suite (728 tests; the only failures
   across two separate full runs were the same four DB-bootstrap/pool-restart integration tests this
   file already documents as flaky in this sandboxed dev environment, corroborated by a clean 128/128

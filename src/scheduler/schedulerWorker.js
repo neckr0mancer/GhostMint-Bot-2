@@ -27,10 +27,17 @@ function createSchedulerWorker({ repository, intentRepository, transactionEngine
   // call still fully awaits its own claimed task (unchanged -- see dashboard.test.js's
   // `await worker.tick()` expectation), so this only changes how many overlapping `tick()` calls
   // the existing setInterval loop is allowed to have outstanding at once.
-  maxConcurrentTasks = 5 }) {
+  maxConcurrentTasks = 5,
+  // Round 16 (docs/WORKLIST.md Section AV, item 4): "replace coarse polling with precise timers
+  // for near-launch tasks." A task due more than this far out is left to the ordinary poll loop --
+  // only one about to become due gets an exact setTimeout instead of waiting for the next tick.
+  // Defaults to twice the poll interval so nothing can slip through the gap between one lookahead
+  // scan and the next, even if a scan itself runs a little late.
+  preciseArmWindowMs = pollIntervalMs * 2 }) {
   let timer = null;
   let inFlightCount = 0;
   let lastTickAt=null;let lastSuccessAt=null;let lastError=null;
+  const armedTimers = new Map();
 
   function retryAt(attemptCount) {
     return now() + retryBaseMs * (2 ** Math.max(0, attemptCount - 1));
@@ -107,19 +114,43 @@ function createSchedulerWorker({ repository, intentRepository, transactionEngine
     finally { inFlightCount -= 1; }
   }
 
+  // Round 16 (Section AV, item 4): read-only lookahead, no claiming -- arms one setTimeout per
+  // imminent task not already armed, so it fires the instant it's due instead of waiting for the
+  // next poll tick. A task whose own state changes before its timer fires (claimed by a regular
+  // tick, cancelled, rescheduled) is harmless: the timer just calls tick(), and claimDue()'s own
+  // WHERE clause simply won't match it anymore -- no cancellation bookkeeping needed for that.
+  async function armPreciseTimers() {
+    const tasks = await repository.listImminent({ now: now(), withinMs: preciseArmWindowMs });
+    for (const task of tasks) {
+      if (armedTimers.has(task.id)) continue;
+      const delay = Math.max(0, task.nextAttemptAt - now());
+      const handle = setTimeout(() => {
+        armedTimers.delete(task.id);
+        tick().catch(error => log(`Scheduler precise-fire failed: ${sanitizeError(error)}`));
+      }, delay);
+      handle.unref?.();
+      armedTimers.set(task.id, handle);
+    }
+  }
+
   function start() {
     if (timer) return;
-    timer = setInterval(() => tick().catch(error => log(`Scheduler poll failed: ${sanitizeError(error)}`)), pollIntervalMs);
+    timer = setInterval(() => {
+      tick().catch(error => log(`Scheduler poll failed: ${sanitizeError(error)}`));
+      armPreciseTimers().catch(error => log(`Scheduler precise-arm failed: ${sanitizeError(error)}`));
+    }, pollIntervalMs);
     timer.unref?.();
   }
 
   function stop() {
     if (timer) clearInterval(timer);
     timer = null;
+    for (const handle of armedTimers.values()) clearTimeout(handle);
+    armedTimers.clear();
   }
 
-  function health(){return {status:timer&&(!lastError||lastSuccessAt>=lastTickAt)?'up':'down',running:Boolean(timer),active:inFlightCount>0,inFlightCount,lastTickAt,lastSuccessAt,lastError};}
-  return { health,processTask, recoverStaleClaims, start, stop, tick, workerId };
+  function health(){return {status:timer&&(!lastError||lastSuccessAt>=lastTickAt)?'up':'down',running:Boolean(timer),active:inFlightCount>0,inFlightCount,armedCount:armedTimers.size,lastTickAt,lastSuccessAt,lastError};}
+  return { armPreciseTimers, health,processTask, recoverStaleClaims, start, stop, tick, workerId };
 }
 
 module.exports = { TRANSIENT_CODES, createSchedulerWorker, errorReason, isTransientFailure };
