@@ -46,18 +46,18 @@ shipped).
   unresolved Discord `/info` "no response" report that got a diagnostic (not a confirmed fix).
 - **Round 14** (Section AT) is a speed pass for scheduled mints and Degen mode specifically,
   requested directly and deliberately scoped away from manual mints; shipped 2026-08-20.
-- **Round 15** (Section AU) is a proposal to split RPC traffic into three isolated pools
-  (scheduled/Degen, sniper, everything else) so sniper's continuous polling can never queue behind
-  a time-critical scheduled broadcast; scoped 2026-08-20, not yet built — needs a provider/budget
-  decision first.
+- **Round 15** (Section AU) splits RPC traffic into isolated pools so sniper's continuous polling
+  can never queue behind a time-critical scheduled broadcast. Pool 1 (scheduled/Degen fast path, a
+  generic opt-in `{ENVNAME}_FAST_URLS` per chain) shipped 2026-08-20; pool 2 (sniper isolation + a
+  real WebSocket endpoint) remains open, needs its own provider/budget decision.
 
 Status legend: ✅ Done · 🟡 Partial · ❌ Not started
 
 ---
 
-# Round 15 — split RPC traffic into isolated pools (scoped 2026-08-20, not built)
+# Round 15 — split RPC traffic into isolated pools (2026-08-20)
 
-## Section AU — Separate RPC/WS endpoints for scheduled+Degen mints, sniper watching, and everything else ❌
+## Section AU — Separate RPC/WS endpoints for scheduled+Degen mints, sniper watching, and everything else 🟡
 
 Raised directly as a follow-up to Round 14's speed pass: "if we had different rpc's for different
 actions, would performance be improved? and how would you split it between paid and free rpc's?"
@@ -100,24 +100,57 @@ assumed.
    — today's existing single-pool setup, unaffected. Latency here is already bounded by a human's
    own read-and-tap time; not worth new infrastructure.
 
-**Config shape, reusing what already exists rather than inventing new parsing:** extend
-`parseRpcUrls`/`parseWsRpcUrl` to take an optional pool suffix, so `{CHAIN}_RPC_FAST_URLS` and
-`{CHAIN}_RPC_SNIPER_URLS`/`{CHAIN}_RPC_SNIPER_WS` become new, **fully optional** env vars — each
-pool falls back to today's single shared list when its own isn't configured, so this ships with
-zero required config changes and zero cost to an owner who doesn't want to pay for more endpoints.
+### What shipped 2026-08-20: pool 1, scheduled+Degen fast path ✅
 
-**Code touch points:** `config/index.js` (parse the new optional var families per chain),
-`transactionEngine.js` (thread a resolved "fast pool" `providerService` instance through
-`resolveFeeData`/the other `providerCall` sites already gated by `useFastPath`, instead of always
-using the one shared `providerService`), `server.js`'s `ensureChainWatcher` (read the sniper pool's
-URLs/WS instead of the shared ones).
+Scoped against a real budget decision rather than a guess ("How much do you want to spend on
+this?" → "One paid endpoint, for scheduled/Degen only"). Two implementation angles were tried:
 
-**Why this isn't built yet, deliberately:** needs a real decision from the owner, not a default —
-specifically, which endpoints to actually put behind the new fast/sniper pools (a second paid
-Alchemy app scoped to just the fast path? a free-tier WS provider for sniper, or also paid if
-sniping speed matters enough to justify it?) and how much extra monthly RPC cost is acceptable.
-Building against placeholder/guessed provider choices would mean redoing the config the moment a
-real answer arrives — cheaper to ask first.
+- **First built: auto-derive the fast-pool URL from the existing, already-present-but-unused
+  `ALCHEMY_API_KEY`** (confirmed live 2026-08-20 that it's referenced nowhere in the codebase, and
+  that one key already works across ethereum/arbitrum/robinhood — base/polygon just needed enabling
+  as a network on the existing Alchemy app, a dashboard toggle, not a plan limitation; Alchemy does
+  genuinely support Robinhood Chain, confirmed via `alchemy.com/rpc/robinhood`). Set aside at the
+  owner's direction in favor of the option below, which keeps the provider choice entirely in
+  config rather than hardcoding one vendor's URL-naming scheme into the app. The Alchemy variant's
+  full diff and live findings are preserved for later in case zero-config auto-derivation is wanted
+  as a default that the generic env vars below could still override.
+- **Shipped: a generic, provider-agnostic `{ENVNAME}_FAST_URLS` env var per chain**, entirely
+  opt-in — matches `parseRpcUrls`' own existing `{ENVNAME}_URLS` pattern exactly rather than
+  inventing new parsing. Unset for a chain, `FAST_CHAINS[chain]` is a literal alias for
+  `CHAINS[chain]` (`===`, not just equal) — zero behavior change, zero required config. Configured,
+  the fast URL(s) are prepended ahead of that chain's own general-pool URLs, so
+  `providerService.perform()`'s existing per-candidate retry/fallback already degrades to the
+  general pool on a rate limit or outage — no new resilience code needed for that.
+- `transactionEngine.js`'s `createTransactionEngine` gained an optional `fastProviderService` param
+  (undefined by default — every existing caller/test unaffected). `providerCall`,
+  `resolveFeeData`, `estimateGasSafely`, `simulateCallSafely` all gained a trailing
+  `service = providerService` parameter; `submit()` computes `activeService` right alongside Round
+  14's existing `useFastPath`/`fastRpcOptions` and threads it through every pre-broadcast read.
+  `broadcastTransaction`'s own call site was deliberately left untouched (always the general pool),
+  matching Round 14's own reasoning that a failed/slow broadcast is costlier to get wrong than a
+  failed read. `preview()` (the dashboard's own flow) was not touched at all.
+- `server.js` constructs a second `createProviderService({ chains: FAST_CHAINS, ... })` instance
+  alongside the existing one and passes it into `createTransactionEngine`.
+- Verified: `npm run lint`, `npm run check` (full syntax pass), and the full suite. New coverage in
+  `tests/config.test.js` (unconfigured → no fast chains reported; configured → reported without
+  leaking the URL; malformed → refused the same way a malformed general URL is) and
+  `tests/transactionEngine.test.js` (scheduled mint routes reads through the fast service but still
+  broadcasts via the general one; a manual mint never touches the fast service even when one is
+  configured; no configured fast service → behaves exactly as Round 14 shipped it).
+- A refactor mid-build (extracting shared URL-validation logic) briefly regressed one existing error
+  message's exact wording (singular "must be a valid... URL" for the legacy single-value case vs.
+  plural "must contain... URLs" for an actual list) — caught by the existing
+  `tests/config.test.js` coverage, not missed.
+
+### Not built this round, still open: pools 2 and 3 ❌
+
+- **Sniper watching isn't isolated from the general pool yet**, and still has no WebSocket endpoint
+  wired up despite `chainWatcher.js`/`parseWsRpcUrl()` already fully supporting one — every sniper
+  watcher remains on 2.5s HTTP polling. `ensureChainWatcher` (`server.js`) still reads
+  `CHAINS[chain].rpcUrls`/`rpcWsUrl`, the same pool every manual mint uses.
+- Same config shape (`{ENVNAME}_RPC_SNIPER_URLS`/`{ENVNAME}_RPC_SNIPER_WS`) would extend cleanly
+  once a provider/budget decision is made for this pool specifically — deliberately not built
+  speculatively, same reasoning as before: needs a real answer, not a guess.
 
 ---
 

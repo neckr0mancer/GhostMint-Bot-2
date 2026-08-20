@@ -148,6 +148,27 @@ test('accepts ordered RPC fallback lists and reports only endpoint counts', () =
   assert.doesNotMatch(result.stdout, /first-rpc|second-rpc/);
 });
 
+test('Round 15: an unconfigured {CHAIN}_FAST_URLS reports no fast chains at all -- the fast pool is just an alias for the general one', () => {
+  const result = probeConfig();
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout).summary.fastRpcChainsConfigured, []);
+});
+
+test('Round 15: a configured {CHAIN}_FAST_URLS reports that chain as covered, without exposing the URL itself', () => {
+  const fast = 'https://fast-rpc.example.com';
+  const result = probeConfig({ ETH_RPC_FAST_URLS: fast });
+  assert.equal(result.status, 0, result.stderr);
+  const summary = JSON.parse(result.stdout).summary;
+  assert.deepEqual(summary.fastRpcChainsConfigured, ['ethereum']);
+  assert.doesNotMatch(result.stdout, /fast-rpc/);
+});
+
+test('Round 15: a malformed {CHAIN}_FAST_URLS is refused the same way a malformed general URL is', () => {
+  const result = probeConfig({ ETH_RPC_FAST_URLS: 'not-a-url' });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /ETH_RPC_FAST_URLS must contain valid HTTP or HTTPS URLs/);
+});
+
 test('refuses unsupported and duplicate chain names', () => {
   const unsupported = probeConfig({ SUPPORTED_CHAINS: 'ethereum,solana' });
   assert.notEqual(unsupported.status, 0);

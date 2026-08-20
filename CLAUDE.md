@@ -19,16 +19,25 @@ first.** It's a chronological log of every feature Round (A, B, C... AA, AB...),
 what's partial, and what's next. `git log --oneline -20` corroborates recent work; commit messages
 in this repo are written to be self-explanatory.
 
-**Just shipped (2026-08-20):** Round 14 (Section AT) — the "speed" pass the owner asked for right
-after Round 13's OpenSea build, scoped specifically to scheduled mints and Degen mode: scheduler
-concurrency (the single biggest fix — a poll-loop guard was serializing every scheduled task behind
-whichever one claimed first, even though it waits for full on-chain finality, up to 10 minutes by
-default), a short-TTL fee-data cache, a tighter per-call RPC timeout for pre-broadcast reads, and
-one narrow simulation-skip exception for the scheduled+Degen combination specifically — the last of
-these was a real safety/speed tradeoff, checked with the owner directly rather than assumed. See
-Round 14 in `docs/WORKLIST.md` for the full detail on each of the four changes.
+**Just shipped (2026-08-20):** Round 15 (Section AU, pool 1 only) — a dedicated RPC pool for
+scheduled/Degen mints' pre-broadcast reads, raised as a follow-up to Round 14's own speed pass
+("if we had different rpc's for different actions, would performance be improved?"). Provider-
+agnostic and entirely opt-in: a new `{ENVNAME}_FAST_URLS` env var per chain, unconfigured chains
+just alias the existing general pool (zero behavior change), configured ones get that URL prepended
+ahead of the general pool as an automatic fallback. An Alchemy-auto-derived variant was built first
+and set aside at the owner's direction in favor of this generic one — see Round 15 in
+`docs/WORKLIST.md` for both, including the preserved Alchemy variant's diff. **Pool 2 (isolating
+sniper's continuous polling + wiring a real WebSocket endpoint) is still open** — needs its own
+provider/budget decision, deliberately not built speculatively.
 
-Round 13 (Sections AL–AS) shipped just before it: a sequential run of smaller fixes (Telegram
+Round 14 (Section AT) shipped just before it: scheduler concurrency (the single biggest fix — a
+poll-loop guard was serializing every scheduled task behind whichever one claimed first, even
+though it waits for full on-chain finality, up to 10 minutes by default), a short-TTL fee-data
+cache, a tighter per-call RPC timeout for pre-broadcast reads, and one narrow simulation-skip
+exception for the scheduled+Degen combination specifically — the last of these was a real
+safety/speed tradeoff, checked with the owner directly rather than assumed.
+
+Round 13 (Sections AL–AS) shipped just before that: a sequential run of smaller fixes (Telegram
 single-instance polling lock, seed-phrase wallet import on both platforms, sold-out auto-cancel for
 low-balance alarms, a real Telegram Tasks menu, Discord `/mintnow`), then the full three-part
 OpenSea Drops build approved as "All three, in that order": phase display on `/info` and the
@@ -59,15 +68,18 @@ it recurs, capture the exact contract/timestamp so the Railway logs for that win
 directly (now straightforward, given the access above).
 
 **Next up: not decided — pick with the user.** The open candidates, all detailed in
-`docs/WORKLIST.md`: a `/buy` (secondary-market) command, scoped but not yet built; Section AF
-**shape 2** (allowlist/GTD phases via a hand-entered merkle proof — deliberately left unbuilt, needs
-`mintAllowList`/`mintSigned` calldata construction that doesn't exist yet, and shouldn't be built
-speculatively); Round 2's Sections **O** (button ⇄ command parity), **P** + **R** (transaction
-watching + sniper guided config, which share one watcher abstraction), and **S** (Discord guided
-task-schedule — also where Section AF's add-a-phase idea would land if it's ever wanted on
-Discord); Round 3's Sections **T–Z**; and Section **AD Tier 2**, which is researched but unbuilt.
-The worklist's own "Suggested order for Round 2" still stands for that batch. Section O has an
-unanswered open question logged against it — check that before starting it.
+`docs/WORKLIST.md`: Round 15's **pool 2** (sniper RPC isolation + a real WebSocket endpoint, needs a
+provider/budget decision first); a `/buy` (secondary-market) command, scoped but not yet built;
+Round 2's Sections **O** (button ⇄ command parity), **P** + **R** (transaction watching + sniper
+guided config, which share one watcher abstraction), and **S** (Discord guided task-schedule);
+Round 3's Sections **T–Z**; and Section **AD Tier 2**, which is researched but unbuilt. The
+worklist's own "Suggested order for Round 2" still stands for that batch. Section O has an
+unanswered open question logged against it — check that before starting it. Section AF **shape 2**
+(GhostMint constructing its own `mintAllowList` calldata from a hand-entered merkle proof) is now
+**mostly moot** — Round 13's Section AR already gets the same outcome for any OpenSea-tracked drop
+via OpenSea's own `POST /drops/{slug}/mint`, no proof needed on this app's side at all; shape 2
+would only still matter for a contract that runs its own allowlist and isn't tracked by OpenSea as
+a Drop, where no API exists to ask at all (confirmed, every project's custom allowlist differs).
 
 ## Repo state
 

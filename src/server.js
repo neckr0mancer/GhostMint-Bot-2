@@ -6,7 +6,7 @@ const { ethers }  = require('ethers');
 const WebSocket   = require('ws');
 const { TelegramBot } = require('node-telegram-bot-api');
 const axios       = require('axios');
-const { CHAINS, CONFIG, getSafeConfigSummary } = require('./config');
+const { CHAINS, FAST_CHAINS, CONFIG, getSafeConfigSummary } = require('./config');
 const { createBotCommandService } = require('./commands/botCommandService');
 const { createDatabasePool } = require('./db/pool');
 const { createDiscordBot } = require('./discord/discordBot');
@@ -106,6 +106,16 @@ const providerService = createProviderService({
   timeoutMs: CONFIG.rpcTimeoutMs,
   retries: CONFIG.rpcRetries,
 });
+// Round 15 (docs/WORKLIST.md Section AU): a separate pool for scheduled/Degen mints' pre-broadcast
+// reads, built from FAST_CHAINS (config/index.js) -- {ENVNAME}_FAST_URLS per chain where configured,
+// with that chain's own general-pool URLs appended as an automatic fallback. With no fast URLs
+// configured anywhere, FAST_CHAINS is identical to CHAINS chain-for-chain, so this is just a second
+// handle onto the exact same pool -- harmless, not a second network client.
+const fastProviderService = createProviderService({
+  chains: FAST_CHAINS,
+  timeoutMs: CONFIG.rpcTimeoutMs,
+  retries: CONFIG.rpcRetries,
+});
 const etherscanGasService = createEtherscanGasService({
   apiKey: CONFIG.etherscanApiKey,
   chains: CHAINS,
@@ -174,6 +184,7 @@ const dashboardWebSockets=createDashboardWebSocketHub({auth:dashboardAuth,log});
 log(`Configuration loaded: ${JSON.stringify(getSafeConfigSummary())}`);
 const transactionEngine = createTransactionEngine({
   providerService,
+  fastProviderService,
   intentRepository: transactionIntentRepository,
   policyRepository: transactionPolicyRepository,
   decryptPrivateKey: decryptPK,

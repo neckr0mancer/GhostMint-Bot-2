@@ -53,7 +53,7 @@ function policy(overrides = {}) {
   };
 }
 
-function fixture({ policyOverrides, notification, simulationError, feeData, feeDataCache } = {}) {
+function fixture({ policyOverrides, notification, simulationError, feeData, feeDataCache, fastProviderService } = {}) {
   const repository = new MemoryIntentRepository();
   const calls = { broadcasts: [], simulations: 0, feeDataFetches: 0 };
   let pendingNonce = 0;
@@ -91,6 +91,7 @@ function fixture({ policyOverrides, notification, simulationError, feeData, feeD
     notify: notification,
     pollIntervalMs: 1,
     ...(feeDataCache ? { feeDataCache } : {}),
+    ...(fastProviderService ? { fastProviderService } : {}),
   });
   const request = {
     userId: '11111111-1111-4111-8111-111111111111',
@@ -364,5 +365,46 @@ test('fee data is cached for scheduled and Degen-mode mints, but always fetched 
     await engine.submit({ ...request, chain: 'ethereum', triggerSource: 'scheduled' });
     await engine.submit({ ...request, chain: 'base', triggerSource: 'scheduled' });
     assert.equal(calls.feeDataFetches, 2);
+  });
+});
+
+test('a dedicated fastProviderService (Round 15) is used for scheduled/Degen pre-broadcast reads, never for a manual mint or the broadcast itself', async t => {
+  function fastServiceFixture() {
+    const fastCalls = [];
+    const fastProvider = {
+      async getFeeData() { return { gasPrice: parseUnits('3', 'gwei'), maxFeePerGas: null, maxPriorityFeePerGas: null }; },
+      async estimateGas() { return 21_000n; },
+      async getBalance() { return parseEther('10'); },
+      async call() { return '0x'; },
+      async getTransactionCount() { return 0; },
+      async getNetwork() { return { chainId: 1n }; },
+    };
+    const fastProviderService = { expectedChainId: () => 1, perform: (chain, name, operation) => { fastCalls.push(name); return operation(fastProvider); } };
+    return { fastCalls, fastProviderService };
+  }
+
+  await t.test('a scheduled mint routes its reads through the fast service, but still broadcasts via the general one', async () => {
+    const { fastCalls, fastProviderService } = fastServiceFixture();
+    const { calls, engine, request } = fixture({ fastProviderService });
+    await engine.submit({ ...request, triggerSource: 'scheduled' });
+    assert.ok(fastCalls.includes('getFeeData'), 'fee data should come from the fast service');
+    assert.ok(fastCalls.includes('getBalance'), 'balance check should come from the fast service');
+    assert.equal(calls.broadcasts.length, 1, 'the general service must still be the one that actually broadcasts');
+    assert.ok(!fastCalls.includes('broadcastTransaction'), 'the fast service must never be asked to broadcast');
+  });
+
+  await t.test('a manual mint never touches the fast service, even when one is configured', async () => {
+    const { fastCalls, fastProviderService } = fastServiceFixture();
+    const { calls, engine, request } = fixture({ fastProviderService });
+    await engine.submit({ ...request, triggerSource: 'manual' });
+    assert.equal(fastCalls.length, 0, 'a manual mint should never reach the fast service at all');
+    assert.equal(calls.feeDataFetches, 1, 'the general service handled every read instead');
+  });
+
+  await t.test('without a configured fastProviderService, a scheduled mint falls back to the general service unchanged', async () => {
+    const { calls, engine, request } = fixture();
+    await engine.submit({ ...request, triggerSource: 'scheduled' });
+    assert.equal(calls.feeDataFetches, 1);
+    assert.equal(calls.broadcasts.length, 1);
   });
 });

@@ -47,6 +47,12 @@ function safeNotify(notify, event) {
 
 function createTransactionEngine({
   providerService,
+  // Round 15 (docs/WORKLIST.md Section AU): an optional, separately-configured provider service for
+  // scheduled/Degen mints' pre-broadcast reads -- built from FAST_CHAINS (config/index.js), whose
+  // per-chain {ENVNAME}_FAST_URLS is entirely opt-in and provider-agnostic, with the general pool's
+  // own URLs appended as an automatic fallback. Left undefined, every fast-path call below just uses
+  // `providerService` like before this existed -- this is purely additive.
+  fastProviderService,
   intentRepository,
   policyRepository,
   decryptPrivateKey,
@@ -56,20 +62,20 @@ function createTransactionEngine({
   pollIntervalMs = 1_000,
   feeDataCache = createFeeDataCache({ now }),
 }) {
-  async function providerCall(chain, name, operation, options) {
-    return providerService.perform(chain, name, operation, options);
+  async function providerCall(chain, name, operation, options, service = providerService) {
+    return service.perform(chain, name, operation, options);
   }
 
   // Only consulted for scheduled and Degen-mode mints (see feeDataCache.js) -- every other caller
   // keeps getting a live quote. policy.gasPriceMultiplier is only ever non-1 for a preset with its
   // own multiplier (today, only Degen/"ultra_fast" -- see migration 035), so it doubles as the
   // "is this Degen" signal already resolved by this point, no new lookup needed.
-  async function resolveFeeData(chain, useCache, options) {
+  async function resolveFeeData(chain, useCache, options, service = providerService) {
     if (useCache) {
       const cached = feeDataCache.get(chain);
       if (cached) return cached;
     }
-    const fresh = await providerCall(chain, 'getFeeData', provider => provider.getFeeData(), options);
+    const fresh = await providerCall(chain, 'getFeeData', provider => provider.getFeeData(), options, service);
     if (useCache) feeDataCache.set(chain, fresh);
     return fresh;
   }
@@ -105,13 +111,13 @@ function createTransactionEngine({
     return 'Simulating this call failed -- the contract may not implement this function, or the call would revert.';
   }
 
-  async function estimateGasSafely(chain, params, options) {
-    try { return await providerCall(chain, 'estimateGas', provider => provider.estimateGas(params), options); }
+  async function estimateGasSafely(chain, params, options, service = providerService) {
+    try { return await providerCall(chain, 'estimateGas', provider => provider.estimateGas(params), options, service); }
     catch (error) { throw new TransactionSafetyError('SIMULATION_FAILED', explainCallFailure(error)); }
   }
 
-  async function simulateCallSafely(chain, params, options) {
-    try { return await providerCall(chain, 'simulate', provider => provider.call(params), options); }
+  async function simulateCallSafely(chain, params, options, service = providerService) {
+    try { return await providerCall(chain, 'simulate', provider => provider.call(params), options, service); }
     catch (error) { throw new TransactionSafetyError('SIMULATION_FAILED', explainCallFailure(error)); }
   }
 
@@ -226,7 +232,8 @@ function createTransactionEngine({
       // next candidate URL either way.
       const useFastPath = (request.triggerSource || 'manual') === 'scheduled' || policy.gasPriceMultiplier > 1;
       const fastRpcOptions = useFastPath ? { timeoutMs: FAST_RPC_TIMEOUT_MS, retries: FAST_RPC_RETRIES } : undefined;
-      const feeData = await resolveFeeData(request.chain, useFastPath, fastRpcOptions);
+      const activeService = useFastPath && fastProviderService ? fastProviderService : providerService;
+      const feeData = await resolveFeeData(request.chain, useFastPath, fastRpcOptions, activeService);
       const hasExplicitLegacyFee = request.gasPriceWei !== undefined && request.gasPriceWei !== null;
       const hasExplicitMaxFee = request.maxFeePerGasWei !== undefined && request.maxFeePerGasWei !== null;
       const gasPriceWei = hasExplicitLegacyFee
@@ -270,11 +277,11 @@ function createTransactionEngine({
         ? { maxFeePerGas: maxFeePerGasWei, maxPriorityFeePerGas: maxPriorityFeePerGasWei ?? 0n, type: 2 }
         : { gasPrice: gasPriceWei };
       const gasLimit = request.gasLimitWei === undefined
-        ? await estimateGasSafely(request.chain, { ...base, ...feeFields }, fastRpcOptions)
+        ? await estimateGasSafely(request.chain, { ...base, ...feeFields }, fastRpcOptions, activeService)
         : asBigInt(request.gasLimitWei, 'gasLimitWei');
       if (gasLimit <= 0n) throw new TransactionSafetyError('INVALID_TRANSACTION', 'Gas limit must be positive');
       const estimatedCostWei = valueWei + gasLimit * selectedFee;
-      const balance = await providerCall(request.chain, 'getBalance', provider => provider.getBalance(from), fastRpcOptions);
+      const balance = await providerCall(request.chain, 'getBalance', provider => provider.getBalance(from), fastRpcOptions, activeService);
       if (BigInt(balance) < estimatedCostWei) {
         throw new TransactionSafetyError('INSUFFICIENT_BALANCE', 'Wallet balance is below the estimated transaction cost');
       }
@@ -283,11 +290,11 @@ function createTransactionEngine({
         throw new TransactionSafetyError('DAILY_BUDGET_EXCEEDED', 'Transaction would exceed the wallet daily spending budget');
       }
       if (policy.simulationEnabled) {
-        await simulateCallSafely(request.chain, { ...base, ...feeFields, gasLimit }, fastRpcOptions);
+        await simulateCallSafely(request.chain, { ...base, ...feeFields, gasLimit }, fastRpcOptions, activeService);
       }
 
-      const providerNonce = Number(await providerCall(request.chain, 'getTransactionCount', provider => provider.getTransactionCount(from, 'pending'), fastRpcOptions));
-      const network = await providerCall(request.chain, 'getNetwork', provider => provider.getNetwork(), fastRpcOptions);
+      const providerNonce = Number(await providerCall(request.chain, 'getTransactionCount', provider => provider.getTransactionCount(from, 'pending'), fastRpcOptions, activeService));
+      const network = await providerCall(request.chain, 'getNetwork', provider => provider.getNetwork(), fastRpcOptions, activeService);
       const expectedChainId = providerService.expectedChainId?.(request.chain);
       if (expectedChainId !== null && expectedChainId !== undefined && BigInt(network.chainId) !== BigInt(expectedChainId)) {
         throw new TransactionSafetyError('WRONG_CHAIN', 'RPC provider is connected to the wrong chain');
