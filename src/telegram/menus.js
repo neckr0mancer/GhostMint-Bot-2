@@ -193,7 +193,7 @@ You have ${wallets.length}. A batch of one is just a single mint — use that in
     return [button(`${checked ? '✅' : '⬜'} ${wallet.label} (${wallet.chain})`, `flow:wallettoggle:${wallet.label}`)];
   });
   if (selectedLabels.length >= MIN_BATCH_WALLETS) {
-    rows.push([button(`▶️ Squad's set, continue with ${selectedLabels.length} wallets`, 'flow:walletcontinue')]);
+    rows.push([button(`▶️ Wallets locked. Continue with ${selectedLabels.length}.`, 'flow:walletcontinue')]);
   }
   rows.push([button('❌ Cancel', 'flow:cancel:ask')]);
   return { text: 'Tap every wallet you want in this batch, then hit Continue:', replyMarkup: keyboard(rows), parseMode: 'HTML' };
