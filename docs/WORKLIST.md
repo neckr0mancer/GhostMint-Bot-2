@@ -430,13 +430,27 @@ Two further items were settled while auditing the live deployment on 2026-08-17:
    Quiet Ledger therefore have no bottom bar, no More sheet, and no mobile grid collapse — and
    Admin has no mobile nav at all in those three. The redesign deliberately targets Light and Dark
    only (brief §9.1-D15); restoring the other three is logged as brief §9.2-O10.
-9. **Railway's `SUPPORTED_CHAINS` does not match this repo's documented list.** `CLAUDE.md` records
-   `ethereum, base, arbitrum, polygon, robinhood`, but production's `GET /api/profile` returns
-   `["ethereum","sepolia","robinhood"]` — Sepolia still present, `base`/`arbitrum`/`polygon`
-   absent. `SUPPORTED_CHAINS` is read from the environment at boot, so Section AF's removal of
-   Sepolia from user-facing surfaces will **not** take effect in production until that Railway
-   environment variable is updated. Verified live 2026-08-17 via a dev proxy against
-   `ghostmint-bot-2-production`.
+9. **Railway's `SUPPORTED_CHAINS` did not match this repo's documented list — fixed 2026-08-20.**
+   `CLAUDE.md` records `ethereum, base, arbitrum, polygon, robinhood`; production's live var had
+   drifted to `ethereum, sepolia, robinhood` at some point, missing `base`/`arbitrum`/`polygon` and
+   still carrying `sepolia` (which Section AF deliberately removed from user-facing surfaces, a
+   change that can't take effect while the env var still includes it). Surfaced by a real Discord
+   `/mint` report — an OpenSea link on one of the missing chains resolved via OpenSea but then
+   failed chain-detection with "not found on any supported chain." The owner corrected the variable
+   directly in the Railway dashboard; verified live via the Railway GraphQL API (see item 10 below)
+   that the running production deployment now carries the full five-chain list and the most recent
+   deploy (`d24ffdcd`, 2026-08-20T08:57 UTC) is `SUCCESS`.
+10. **This app can now read/write Railway config directly, via a workspace-scoped API token the
+    owner created (Account Settings → Tokens → workspace, not "No workspace").** `RAILWAY_TOKEN` in
+    `.env` (gitignored). Auth is `Authorization: Bearer <token>` against
+    `https://backboard.railway.com/graphql/v2`; the `me` query only works with an *account* token,
+    not a workspace one — use `projects { edges { node { id name } } }` to enumerate, then
+    `project(id)`/`variables(projectId, environmentId, serviceId)` to drill in. GhostMint's
+    production service lives in project `radiant-consideration`
+    (`2d0ca629-63f4-4dcb-a29a-a6c3f3e087e5`), service `GhostMint-Bot-2`
+    (`5a72c996-cd2b-4f70-965a-10cb22c8d61c`), environment `production`
+    (`0a771389-b0b3-4035-8970-41b795d668e4`). No Railway CLI auth path worked for this token
+    (`whoami`/`status` both rejected it) — the raw GraphQL API is the reliable path, not the CLI.
 
 ---
 
