@@ -1372,7 +1372,18 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
           const rawContract = interaction.options.getString('contract');
           const contractAddress = await commands.resolveMintContractInput(rawContract) || rawContract;
           const results = await commands.batchMint(userId, { walletLabels: walletsInput.split(',').map(v => v.trim()), contractAddress, quantity, priceETH: price, chain: interaction.options.getString('chain') });
-          message = `Batch complete: ${results.length} wallet transaction(s).`; break;
+          // Per wallet, not a count. batchMint stopped throwing on a per-wallet failure, so a
+          // bare length here reported a batch where every wallet failed as an unqualified
+          // success -- the guided flow was updated for this and this path was missed.
+          {
+            const ok = results.filter(item => item.state !== 'failed');
+            const lines = results.map(item => (item.state === 'failed'
+              ? `❌ **${escapeDiscord(String(item.walletLabel))}** — ${escapeDiscord(String(item.error || 'failed'))}`
+              : `✅ **${escapeDiscord(String(item.walletLabel))}** — ${escapeDiscord(String(item.state || 'submitted'))}`
+                + (item.txHash ? ` \`${item.txHash}\`` : '')));
+            message = `**Batch mint — ${ok.length} of ${results.length} submitted**\n${lines.join('\n')}`;
+          }
+          break;
         }
         case 'task': {
           const action = interaction.options.getSubcommand();

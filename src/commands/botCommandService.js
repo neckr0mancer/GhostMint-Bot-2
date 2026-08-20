@@ -398,7 +398,7 @@ function createBotCommandService(dependencies) {
       } catch (error) {
         results.push({ walletLabel: label, state: 'failed',
           error: error instanceof ValidationError
-            ? error.issues.map(issue => issue.message).join('; ')
+            ? error.issues.map(issue => `${issue.field} ${issue.message}`).join('; ')
             : String(error?.message || 'mint failed') });
       }
     }
