@@ -23,7 +23,7 @@ const TASK_CONTROLS = Object.freeze({
 function createBotCommandService(dependencies) {
   const { storage, schedulerRepository, providerService, governance, adminCommands, sniperService,
     socialWatchService, socialUsageService, targetPolicyService, triggerExecutionService, governanceRepository,
-    triggerAuditRepository, transactionIntentRepository, gasService, supportedChains, chains, encryptPrivateKey, getState, executeMint, executeSend,
+    triggerAuditRepository, transactionIntentRepository, gasService, supportedChains, chains, encryptPrivateKey, getState, executeMint, executeMintViaOpenSea, executeSend,
     sniperRepository, mintService, previewMint, executePreparedMint, identity, contractValueResolver, seaDropDiscoveryService, openSeaService, priceFeedService,
     exportRawKey, exportKeystore, botSecurityRepository,
     ensureChainWatcher = () => {}, broadcast = () => {}, walletBalanceCache = createWalletBalanceCache() } = dependencies;
@@ -424,6 +424,30 @@ function createBotCommandService(dependencies) {
     return executeMint({ userId, wallet: owned, request: validated });
   }
 
+  // Section AF -- the point of the whole feature: an allowlist/GTD/FCFS SeaDrop stage has no
+  // on-chain proof this app can construct (no merkle proof, no signature it can produce) -- that
+  // verification lives entirely in OpenSea's own backend. This validates the request the same way
+  // mint() does (priceETH is irrelevant here -- OpenSea's own response determines the real value --
+  // so it's always passed as 0 to satisfy the shared schema, never used downstream), then asks
+  // OpenSea to build the ready-to-sign calldata instead of this app's own prepareMintCall, and hands
+  // it to executeMintViaOpenSea (server.js), which runs it through the exact same
+  // executePreparedMint -> transactionEngine.submit path every other mint uses -- governance
+  // ceilings, simulation, gas ceiling, and activity recording are all still enforced; OpenSea only
+  // ever supplies to/data/value.
+  async function mintViaOpenSea(userId, input) {
+    const owned = wallet(userId, input.walletLabel);
+    const chain = input.chain || owned.chain;
+    const validated = requestSchemas.mint({ ...input, priceETH: 0, chain }, { supportedChains });
+    if (!openSeaService) {
+      throw new ValidationError({ field: 'contractAddress', message: 'OpenSea-backed minting is not available -- no OpenSea integration is configured' });
+    }
+    const built = await openSeaService.buildMintTransaction(chain, validated.contractAddress, owned.address, validated.quantity);
+    if (!built) {
+      throw new ValidationError({ field: 'contractAddress', message: "OpenSea couldn't build a mint for this contract right now -- it may not track this as a drop, or OpenSea is temporarily unavailable" });
+    }
+    return executeMintViaOpenSea({ userId, wallet: owned, request: validated, built });
+  }
+
   // A plain native-currency transfer -- unlike mint(), there's no contract/method/ABI to resolve,
   // so this skips mintService entirely and hands off straight to executeSend (wired in server.js to
   // call transactionEngine.submit directly), which still applies the same spend caps, gas ceiling,
@@ -664,7 +688,7 @@ function createBotCommandService(dependencies) {
     return calculateStatistics({activity:state(userId).activity,sniperEvents});}
 
   return {
-    createWallet, importWallet, importWalletsBatch, detectHomeChain, removeWallet, walletBalance, invalidateBalance, exportWalletKeyRaw, exportWalletKeystore, mint, batchMint, send, createTask, controlTask, addPnl, updatePnl, deletePnl,
+    createWallet, importWallet, importWalletsBatch, detectHomeChain, removeWallet, walletBalance, invalidateBalance, exportWalletKeyRaw, exportWalletKeystore, mint, mintViaOpenSea, batchMint, send, createTask, controlTask, addPnl, updatePnl, deletePnl,
     prepareMint,submitPreparedMint,detectMintContract,resolveMintContractInput,parseOpenSeaCollectionSlug,mintPresets:userId=>mintService.listPresets(userId),
     // The dashboard could LIST presets but never create one -- the only save path was
     // /mintpreset save on Telegram (server.js:2492), so the Presets tab displayed a thing the

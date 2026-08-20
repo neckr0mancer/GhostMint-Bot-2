@@ -279,6 +279,90 @@ test('getDrop returns null (never throws) when unconfigured, unsupported, not a 
   assert.equal(await notADrop.getDrop('ethereum', CONTRACT), null);
 });
 
+const MINTER = '0x00000000000000000000000000000000000000A1';
+
+// Section AF -- the point of the whole feature: an allowlist/GTD/FCFS stage has no on-chain proof
+// this app can construct, because eligibility lives entirely in OpenSea's own backend.
+// POST /drops/{slug}/mint (live-verified against
+// docs.opensea.io/reference/build_drop_mint_transaction) does that verification and hands back
+// ready-to-sign calldata this app still signs and broadcasts through its own wallet/engine.
+test('buildMintTransaction returns ready-to-sign calldata from a real-shaped response, converting the hex value to a decimal wei string', async () => {
+  const calls = [];
+  const http = {
+    get: async url => { calls.push(['get', url]); if (url.includes('/chain/ethereum/contract/')) return { data: { collection: 'cool-cats' } }; throw new Error(`unexpected url ${url}`); },
+    post: async (url, body, config) => {
+      calls.push(['post', url, body, config.headers['x-api-key']]);
+      return { data: { chain: 'ethereum', to: '0x00000000000000000000000000000000000000D4', data: '0xabcd1234', value: '0x2386f26fc10000' } };
+    },
+  };
+  const service = createOpenSeaService({ apiKey: 'test-key', repository: fakeRepository(), http });
+  const result = await service.buildMintTransaction('ethereum', CONTRACT, MINTER, 2);
+  assert.deepEqual(calls[1], ['post', 'https://api.opensea.io/api/v2/drops/cool-cats/mint', { minter: MINTER, quantity: 2 }, 'test-key']);
+  assert.equal(result.to, '0x00000000000000000000000000000000000000D4');
+  assert.equal(result.data, '0xabcd1234');
+  assert.equal(result.valueWei, '10000000000000000');
+  assert.equal(result.chain, 'ethereum');
+});
+
+test('buildMintTransaction throws a ValidationError (not a silent null) when OpenSea reports the drop is not currently active', async () => {
+  const http = {
+    get: async () => ({ data: { collection: 'cool-cats' } }),
+    post: async () => { const error = new Error('Conflict'); error.response = { status: 409, data: { errors: ['drop has not started yet'] } }; throw error; },
+  };
+  const service = createOpenSeaService({ apiKey: 'test-key', repository: fakeRepository(), http });
+  await assert.rejects(
+    service.buildMintTransaction('ethereum', CONTRACT, MINTER, 1),
+    error => { assert.equal(error.name, 'ValidationError'); assert.match(error.issues[0].message, /drop has not started yet/); return true; },
+  );
+});
+
+test('buildMintTransaction throws a ValidationError when OpenSea reports a minting precondition failed (balance, allowlist, limit, or supply)', async () => {
+  const http = {
+    get: async () => ({ data: { collection: 'cool-cats' } }),
+    post: async () => { const error = new Error('Unprocessable'); error.response = { status: 422, data: { errors: ['wallet is not on the allowlist'] } }; throw error; },
+  };
+  const service = createOpenSeaService({ apiKey: 'test-key', repository: fakeRepository(), http });
+  await assert.rejects(
+    service.buildMintTransaction('ethereum', CONTRACT, MINTER, 1),
+    error => { assert.equal(error.name, 'ValidationError'); assert.match(error.issues[0].message, /not on the allowlist/); return true; },
+  );
+});
+
+test('buildMintTransaction still throws a ValidationError with a sensible default message when OpenSea gives no specific reason', async () => {
+  const http = {
+    get: async () => ({ data: { collection: 'cool-cats' } }),
+    post: async () => { const error = new Error('Unprocessable'); error.response = { status: 422, data: {} }; throw error; },
+  };
+  const service = createOpenSeaService({ apiKey: 'test-key', repository: fakeRepository(), http });
+  await assert.rejects(
+    service.buildMintTransaction('ethereum', CONTRACT, MINTER, 1),
+    error => { assert.match(error.issues[0].message, /insufficient balance|allowlist|limit|sold out/); return true; },
+  );
+});
+
+test('buildMintTransaction returns null (genuine unavailability, not ineligibility) when unconfigured, unsupported, not a drop, or the API is down', async () => {
+  const noKey = createOpenSeaService({ apiKey: null, repository: fakeRepository(), http: { get: async () => { throw new Error('should not be called'); }, post: async () => { throw new Error('should not be called'); } } });
+  assert.equal(await noKey.buildMintTransaction('ethereum', CONTRACT, MINTER, 1), null);
+
+  const notADrop = createOpenSeaService({ apiKey: 'test-key', repository: fakeRepository(), http: {
+    get: async () => ({ data: { collection: 'plain-collection' } }),
+    post: async () => { const error = new Error('Not Found'); error.response = { status: 404 }; throw error; },
+  } });
+  assert.equal(await notADrop.buildMintTransaction('ethereum', CONTRACT, MINTER, 1), null);
+
+  const serverError = createOpenSeaService({ apiKey: 'test-key', repository: fakeRepository(), http: {
+    get: async () => ({ data: { collection: 'cool-cats' } }),
+    post: async () => { const error = new Error('Internal Server Error'); error.response = { status: 500 }; throw error; },
+  } });
+  assert.equal(await serverError.buildMintTransaction('ethereum', CONTRACT, MINTER, 1), null);
+
+  const networkFailure = createOpenSeaService({ apiKey: 'test-key', repository: fakeRepository(), http: {
+    get: async () => ({ data: { collection: 'cool-cats' } }),
+    post: async () => { throw new Error('network error'); },
+  } });
+  assert.equal(await networkFailure.buildMintTransaction('ethereum', CONTRACT, MINTER, 1), null);
+});
+
 test('getCollectionStats tolerates a stats response missing some fields, filling in null rather than throwing', async () => {
   const http = { get: async url => {
     if (url.includes('/chain/ethereum/contract/')) return { data: { collection: 'partial-collection' } };

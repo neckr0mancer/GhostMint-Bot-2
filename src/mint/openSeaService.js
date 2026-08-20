@@ -1,4 +1,5 @@
 const axios = require('axios');
+const { ValidationError } = require('../validation/domain');
 
 // This app's internal chain names -> OpenSea's own chain identifiers. Chains with no entry here
 // (e.g. a custom/obscure chain OpenSea has never indexed) are simply "not looked up" -- same
@@ -198,7 +199,50 @@ function createOpenSeaService({ apiKey, repository, baseUrl = 'https://api.opens
     }
   }
 
-  return { getCollectionMetadata, resolveCollectionContract, getCollectionStats, getDrop };
+  // Section AF -- the point of all of this: an allowlist/GTD/FCFS SeaDrop stage has no on-chain way
+  // for this app to prove eligibility (no merkle proof, no signature this app can produce), because
+  // that verification lives entirely in OpenSea's own backend. POST /drops/{slug}/mint (live-verified
+  // against docs.opensea.io/reference/build_drop_mint_transaction) is OpenSea doing that verification
+  // itself and handing back ready-to-sign calldata -- "no wallet authentication is required, only an
+  // API key... stage selection is handled automatically by the backend." This app still signs and
+  // broadcasts it through its own wallet/transactionEngine exactly like every other mint (governance
+  // ceilings, simulation, gas ceiling all still apply); OpenSea only ever supplies to/data/value.
+  //
+  // Unlike every other function here, a failure is NOT always "nothing to show" -- 409/422 are
+  // OpenSea telling us definitively that this wallet cannot mint right now (not active yet, sold
+  // out, not on the allowlist, already at its limit), which is real information a mint attempt must
+  // surface honestly, not swallow. Everything else (no key, unsupported chain, not a drop, network
+  // failure, 5xx) is genuine unavailability, not ineligibility, and returns null so the caller can
+  // fall back to this app's own on-chain calldata path instead.
+  async function buildMintTransaction(chain, contractAddress, minterAddress, quantity) {
+    const openSeaChain = OPENSEA_CHAIN_SLUGS[chain];
+    if (!apiKey || !openSeaChain) return null;
+    let slug;
+    try { slug = await fetchCollectionSlug(openSeaChain, contractAddress); }
+    catch { return null; }
+    if (!slug) return null;
+    let response;
+    try {
+      response = await http.post(`${baseUrl}/drops/${slug}/mint`, { minter: minterAddress, quantity },
+        { timeout: timeoutMs, headers: { 'x-api-key': apiKey } });
+    } catch (error) {
+      const status = error?.response?.status;
+      const reasons = error?.response?.data?.errors;
+      const detail = Array.isArray(reasons) && reasons.length ? reasons.join('; ') : null;
+      if (status === 409) {
+        throw new ValidationError({ field: 'contractAddress', message: detail || 'this drop is not currently active for minting (not started, ended, or paused)' });
+      }
+      if (status === 422) {
+        throw new ValidationError({ field: 'contractAddress', message: detail || "this wallet can't mint right now (insufficient balance, not on the allowlist, limit reached, or sold out)" });
+      }
+      return null;
+    }
+    const data = response.data;
+    if (!data?.to || !data?.data) return null;
+    return { to: data.to, data: data.data, valueWei: BigInt(data.value ?? '0x0').toString(), chain: data.chain };
+  }
+
+  return { getCollectionMetadata, resolveCollectionContract, getCollectionStats, getDrop, buildMintTransaction };
 }
 
 module.exports = { OPENSEA_CHAIN_SLUGS, createOpenSeaService };

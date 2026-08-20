@@ -75,6 +75,7 @@ function commandServiceFixture({ contractValueResolver, seaDropDiscoveryService,
     supportedChains: ['ethereum'], chains: { ethereum: { sym: 'ETH' } }, getState: () => state,
     contractValueResolver, seaDropDiscoveryService, openSeaService, priceFeedService,
     executeMint: async ({ userId, wallet, request }) => { calls.push(['executeMint', userId, wallet.label, request]); return { txHash: '0xabc' }; },
+    executeMintViaOpenSea: async ({ userId, wallet, request, built }) => { calls.push(['executeMintViaOpenSea', userId, wallet.label, request, built]); return { txHash: '0xdef' }; },
   });
   return { calls, service };
 }
@@ -104,6 +105,61 @@ test('mint() still requires a manual price when neither resolver finds anything'
     seaDropDiscoveryService: { resolve: async () => ({ address: null, publicDrop: null, feeRecipient: null }) },
   });
   await assert.rejects(service.mint('user-a', { walletLabel: 'main', contractAddress: CONTRACT, quantity: 1, chain: 'ethereum' }), ValidationError);
+  assert.equal(calls.length, 0);
+});
+
+// Section AF -- the point of the whole feature: an allowlist/GTD/FCFS SeaDrop stage has no on-chain
+// proof this app can construct, because eligibility lives entirely in OpenSea's own backend.
+// mintViaOpenSea asks OpenSea to build the calldata (openSeaService.buildMintTransaction) instead of
+// this app's own prepareMintCall, then hands it to executeMintViaOpenSea -- the exact same execution
+// path (governance ceilings, simulation, gas ceiling, activity recording) every other mint uses.
+test('mintViaOpenSea builds calldata through OpenSea and executes it via executeMintViaOpenSea, not the normal calldata path', async () => {
+  const built = { to: SEADROP, data: '0xabcd', valueWei: '50000000000000000', chain: 'ethereum' };
+  const buildCalls = [];
+  const { calls, service } = commandServiceFixture({
+    openSeaService: { buildMintTransaction: async (...args) => { buildCalls.push(args); return built; } },
+  });
+  const result = await service.mintViaOpenSea('user-a', { walletLabel: 'main', contractAddress: CONTRACT, quantity: 2, chain: 'ethereum' });
+  assert.deepEqual(buildCalls, [['ethereum', CONTRACT, WALLET, 2]]);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], 'executeMintViaOpenSea');
+  assert.equal(calls[0][2], 'main');
+  assert.equal(calls[0][3].quantity, 2);
+  assert.deepEqual(calls[0][4], built);
+  assert.equal(result.txHash, '0xdef');
+});
+
+test('mintViaOpenSea throws instead of executing when OpenSea cannot build a mint for this contract', async () => {
+  const { calls, service } = commandServiceFixture({
+    openSeaService: { buildMintTransaction: async () => null },
+  });
+  await assert.rejects(
+    service.mintViaOpenSea('user-a', { walletLabel: 'main', contractAddress: CONTRACT, quantity: 1, chain: 'ethereum' }),
+    ValidationError,
+  );
+  assert.equal(calls.length, 0);
+});
+
+// buildMintTransaction itself throws ValidationError for a real 409/422 ineligibility (see
+// openSeaService.test.js) -- that propagates through mintViaOpenSea unchanged, since it's already
+// the exact honest reason to show the user, not something to wrap or reinterpret.
+test('mintViaOpenSea propagates OpenSea\'s own ineligibility reason unchanged, rather than executing or masking it', async () => {
+  const { calls, service } = commandServiceFixture({
+    openSeaService: { buildMintTransaction: async () => { throw new ValidationError({ field: 'contractAddress', message: 'wallet is not on the allowlist' }); } },
+  });
+  await assert.rejects(
+    service.mintViaOpenSea('user-a', { walletLabel: 'main', contractAddress: CONTRACT, quantity: 1, chain: 'ethereum' }),
+    error => { assert.equal(error.issues[0].message, 'wallet is not on the allowlist'); return true; },
+  );
+  assert.equal(calls.length, 0);
+});
+
+test('mintViaOpenSea throws when no OpenSea integration is configured at all, instead of silently doing nothing', async () => {
+  const { calls, service } = commandServiceFixture({});
+  await assert.rejects(
+    service.mintViaOpenSea('user-a', { walletLabel: 'main', contractAddress: CONTRACT, quantity: 1, chain: 'ethereum' }),
+    ValidationError,
+  );
   assert.equal(calls.length, 0);
 });
 

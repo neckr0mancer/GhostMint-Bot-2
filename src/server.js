@@ -557,6 +557,26 @@ async function executeMint({ wallet, contractAddr, fnName='mint', qty=1, priceET
     gasGwei: request.gasGwei, maxGasGwei: request.maxGasGwei, onPreview });
 }
 
+// Section AF -- OpenSea-backed mint execution: skips prepareMintCall's own SeaDrop/plain calldata
+// construction entirely and signs+broadcasts whatever OpenSea's own /drops/{slug}/mint endpoint
+// already built (botCommands.mintViaOpenSea calls openSeaService.buildMintTransaction and hands the
+// result here as `built`) -- the only way to mint an allowlist/GTD/FCFS stage this app has no
+// on-chain proof for, since OpenSea's backend resolves eligibility and picks the right stage itself.
+// Goes through the exact same executePreparedMint -> mintExecution.executePrepared ->
+// transactionEngine.submit path as executeMint above, so governance ceilings, simulation, and gas
+// ceiling are all still enforced; OpenSea only ever supplies to/data/value. methodSignature is a
+// label for display/error-decoding purposes only, not a real ABI signature this app encoded.
+async function executeMintViaOpenSea({ wallet, contractAddr, chain, built, triggerSource='manual', gasGwei=null, maxGasGwei=null, onPreview }) {
+  const prepared = {
+    chain,
+    calldata: built.data,
+    valueWei: BigInt(built.valueWei),
+    method: { signature: 'opensea:drops-mint' },
+    preview: { contractAddress: contractAddr, callTarget: built.to },
+  };
+  return executePreparedMint({ wallet, prepared, chain, triggerSource, gasGwei, maxGasGwei, onPreview });
+}
+
 // ── Wallet Sniper / Copy-Mint Engine ─────────────────────────
 // Watches a target wallet block-by-block and, when it sees the
 // target call a contract (typically a mint), replicates that exact
@@ -770,7 +790,7 @@ const FLOW_CONTINUATION_PREFIXES = { wallet_create: ['flow:chain:'], wallet_impo
   // No continuation buttons of its own -- the only tap it offers is Cancel, which the gate
   // above already exempts. Listed so the flow is not silently absent from this map.
   gate_unlock: [],
-  mint_guided: ['flow:mintdetailscontinue', 'flow:detailsrefresh', 'flow:copyca', 'flow:schedulesuggest:', 'flow:mintqty:', 'flow:priceaccept', 'flow:pricemanual', 'flow:wallettoggle:', 'flow:walletpick:', 'flow:walletcontinue', 'flow:gastoleranceaccept', 'flow:gastolerancemanual', 'flow:mintconfirm'],
+  mint_guided: ['flow:mintdetailscontinue', 'flow:mintviaopensea', 'flow:detailsrefresh', 'flow:copyca', 'flow:schedulesuggest:', 'flow:mintqty:', 'flow:priceaccept', 'flow:pricemanual', 'flow:wallettoggle:', 'flow:walletpick:', 'flow:walletcontinue', 'flow:gastoleranceaccept', 'flow:gastolerancemanual', 'flow:mintconfirm'],
   send_guided: ['flow:sendwalletpick:', 'flow:sendamount:', 'flow:sendconfirm'],
   export_guided: ['flow:exportwalletpick:', 'flow:exportconfirm'],
   // Shares flow:mintdetailscontinue with mint_guided -- the contract-details screen and its
@@ -1227,8 +1247,16 @@ async function finishMintExecution(chatId, messageId, userId, flowData) {
           + (item.txHash ? ` <code>${item.txHash}</code>` : '')));
       return tgUpdate(chatId, messageId, { text: `<b>Batch mint — ${ok.length} of ${results.length} submitted</b>\n${lines.join('\n')}`, replyMarkup: backToMenu, parseMode: 'HTML' });
     }
-    const result = await botCommands.mint(userId, { walletLabel: flowData.selectedWallets[0],
-      contractAddress: flowData.contractAddress, chain: flowData.chain, quantity: flowData.quantity || 1, priceETH: flowData.priceETH });
+    // Section AF -- an allowlist/GTD/FCFS stage has no on-chain proof this app can construct;
+    // mintViaOpenSea asks OpenSea's own backend to resolve eligibility and build the calldata
+    // instead of this app's own prepareMintCall. quantity is always 1 here (see the
+    // flow:mintviaopensea handler) -- OpenSea's own response determines the real price, not
+    // anything this flow asked for.
+    const result = flowData.viaOpenSea
+      ? await botCommands.mintViaOpenSea(userId, { walletLabel: flowData.selectedWallets[0],
+          contractAddress: flowData.contractAddress, chain: flowData.chain, quantity: 1 })
+      : await botCommands.mint(userId, { walletLabel: flowData.selectedWallets[0],
+          contractAddress: flowData.contractAddress, chain: flowData.chain, quantity: flowData.quantity || 1, priceETH: flowData.priceETH });
     telegramFlowState.clear('telegram', chatId);
     return tgUpdate(chatId, messageId, { text: `✅ Mint ${result.state}: <code>${result.txHash || result.intentId}</code>`, replyMarkup: backToMenu, parseMode: 'HTML' });
   } catch (error) {
@@ -2297,6 +2325,20 @@ if (BOT_TOKEN) {
       if (flow.flow === 'task_guided') return advanceFromTaskDetails(chatId, messageId, userId, flow);
       return;
     }
+    // Section AF -- an allowlist/GTD/FCFS stage has no on-chain proof this app can construct;
+    // tapping this (only shown when the card's own drop.activeStage confirmed a live stage) is
+    // itself the explicit opt-in, mirroring /mintnow: quantity is always 1 and there's no confirm
+    // screen, since neither this app nor the user knows the real price until OpenSea's own response
+    // determines it. Reuses mintFlowDecision.afterQuantity unchanged (auto-selects a sole wallet,
+    // otherwise asks) -- only viaOpenSea threads through to tell finishMintExecution which command
+    // to call.
+    if (data === 'flow:mintviaopensea') {
+      const flow = telegramFlowState.get('telegram', chatId);
+      if (!flow || flow.flow !== 'mint_guided' || flow.step !== 'awaiting_details' || !flow.data.drop?.activeStage) return;
+      const wallets = botCommands.wallets(userId);
+      const result = mintFlowDecision.afterQuantity({ data: { ...flow.data, quantity: 1, priceUnknown: false, skipConfirm: true, viaOpenSea: true }, wallets });
+      return applyMintFlowStep(chatId, messageId, userId, result);
+    }
     if (data === 'flow:detailsrefresh') {
       const flow = telegramFlowState.get('telegram', chatId);
       if (!flow || flow.flow !== 'mint_guided' || flow.step !== 'awaiting_details') return;
@@ -3053,6 +3095,12 @@ const botCommands = createBotCommandService({
     const intent = await executeMint({ wallet, contractAddr: request.contractAddress,
       qty: request.quantity, priceETH: request.priceETH, gasGwei: request.gasGwei, maxGasGwei: request.maxGasGwei,
       chain: request.chain, triggerSource: 'manual' });
+    await recordMintActivity({ userId, wallet, quantity: request.quantity, intent, chain: request.chain });
+    return intent;
+  },
+  executeMintViaOpenSea: async ({ userId, wallet, request, built }) => {
+    const intent = await executeMintViaOpenSea({ wallet, contractAddr: request.contractAddress, chain: request.chain, built,
+      triggerSource: 'manual', gasGwei: request.gasGwei, maxGasGwei: request.maxGasGwei });
     await recordMintActivity({ userId, wallet, quantity: request.quantity, intent, chain: request.chain });
     return intent;
   },

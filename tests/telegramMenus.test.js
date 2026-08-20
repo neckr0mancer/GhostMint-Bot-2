@@ -284,6 +284,11 @@ test('collectionInfoCard shows the live and next OpenSea phase when drop data is
   assert.match(withDrop.text, /2 phases total/);
   assert.match(withDrop.text, /🟢 Live: Public sale — 0\.05 ETH · max 5\/wallet/);
   assert.equal(withDrop.text.includes('🔵 Next'), false);
+  // Section AF -- an allowlist/GTD/FCFS stage has no on-chain proof this app can construct; this
+  // button is the only path that actually works for those, shown whenever OpenSea confirms a
+  // stage is live right now.
+  assert.equal(flatButtons(noDrop.replyMarkup).some(b => b.callback_data === 'flow:mintviaopensea'), false);
+  assert.equal(flatButtons(withDrop.replyMarkup).some(b => b.callback_data === 'flow:mintviaopensea'), true);
 });
 
 test('collectionInfoCard shows an upcoming OpenSea phase with a fallback label built from stage_type when the stage has no name', () => {
@@ -299,6 +304,9 @@ test('collectionInfoCard shows an upcoming OpenSea phase with a fallback label b
   });
   assert.match(withNext.text, /🔵 Next: Public Sale — 0\.05 ETH · max 5\/wallet · opens/);
   assert.equal(withNext.text.includes('phases total'), false, 'must not show a phase count for a single-stage next-only drop');
+  // Nothing is minting yet -- OpenSea has nothing to build a mint transaction against, so the
+  // button stays hidden until activeStage is real, not merely because drop data exists at all.
+  assert.equal(flatButtons(withNext.replyMarkup).some(b => b.callback_data === 'flow:mintviaopensea'), false);
 });
 
 test('collectionInfoCard omits the stats table entirely when stats is null, and renders an aligned floor/holders/minted/volume table -- never a market cap -- when it is not', () => {

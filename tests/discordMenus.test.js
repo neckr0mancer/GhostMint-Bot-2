@@ -160,6 +160,11 @@ test('collectionInfoCard shows the live and next OpenSea phase when drop data is
   assert.match(withDrop.content, /2 phases total/);
   assert.match(withDrop.content, /🟢 Live: Public sale — 0\.05 ETH · max 5\/wallet/);
   assert.equal(withDrop.content.includes('🔵 Next'), false);
+  // Section AF -- an allowlist/GTD/FCFS stage has no on-chain proof this app can construct; this
+  // button is the only path that actually works for those, shown whenever OpenSea confirms a
+  // stage is live right now.
+  assert.equal(flatButtons(noDrop.components).some(b => b.custom_id === 'flow:mintviaopensea'), false);
+  assert.equal(flatButtons(withDrop.components).some(b => b.custom_id === 'flow:mintviaopensea'), true);
 });
 
 test('collectionInfoCard shows an upcoming OpenSea phase with a fallback label built from stage_type when the stage has no name', () => {
@@ -175,6 +180,9 @@ test('collectionInfoCard shows an upcoming OpenSea phase with a fallback label b
   });
   assert.match(withNext.content, /🔵 Next: Public Sale — 0\.05 ETH · max 5\/wallet · opens/);
   assert.equal(withNext.content.includes('phases total'), false, 'must not show a phase count for a single-stage next-only drop');
+  // Nothing is minting yet -- OpenSea has nothing to build a mint transaction against, so the
+  // button stays hidden until activeStage is real, not merely because drop data exists at all.
+  assert.equal(flatButtons(withNext.components).some(b => b.custom_id === 'flow:mintviaopensea'), false);
 });
 
 test('taskNameQuickPicks offers GTD/FCFS/PUBLIC and a custom option in one select, with an unverified-labels caveat', () => {

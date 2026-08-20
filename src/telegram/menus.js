@@ -409,6 +409,11 @@ function collectionInfoCard({ contractAddress, chainLabel, chainSym, isSeaDrop, 
 
   const rows = [[button('🔥 Ape In', 'flow:mintdetailscontinue')]];
   if (opensInFuture) rows.push([button('📅 Schedule for opening', `flow:schedulesuggest:${contractAddress}`)]);
+  // Section AF -- an allowlist/GTD/FCFS stage has no on-chain proof this app can construct itself;
+  // OpenSea's own backend resolves eligibility, so this is the path that actually works for those.
+  // Shown only when OpenSea confirms a stage is live right now -- there is nothing for it to mint
+  // against otherwise.
+  if (drop?.activeStage) rows.push([button('🎫 Mint via OpenSea', 'flow:mintviaopensea')]);
   rows.push(utilityRow, [button('📋 Copy CA', 'flow:copyca')], [button('❌ Cancel', 'flow:cancel:ask')]);
 
   return {

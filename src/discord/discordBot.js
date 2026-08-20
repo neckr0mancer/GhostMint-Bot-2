@@ -192,7 +192,7 @@ const FLOW_CONTINUATIONS = {
   wallet_batch_import: ['flow:chain:select', 'wallet:batch-import:add', 'flow:batchkeys:submit', 'wallet:batch-import:confirm'],
   // Section AA -- every custom_id stays fixed (select-menu VALUES carry the chosen quantity/
   // wallet, never the custom_id itself), so this list needs no dynamic/prefix matching.
-  mint_guided: ['flow:mintdetailscontinue', 'flow:detailsrefresh', 'flow:copyca', 'flow:schedulesuggest', 'flow:mintqty:select', 'flow:mintqty:submit', 'flow:mintwallet:select', 'flow:mintwalletmulti:select', 'flow:priceaccept', 'flow:pricemanual', 'flow:mintprice:submit', 'flow:gastoleranceaccept', 'flow:gastolerancemanual', 'flow:gastolerance:submit', 'flow:mintconfirm'],
+  mint_guided: ['flow:mintdetailscontinue', 'flow:detailsrefresh', 'flow:copyca', 'flow:schedulesuggest', 'flow:mintqty:select', 'flow:mintqty:submit', 'flow:mintwallet:select', 'flow:mintwalletmulti:select', 'flow:priceaccept', 'flow:pricemanual', 'flow:mintprice:submit', 'flow:gastoleranceaccept', 'flow:gastolerancemanual', 'flow:gastolerance:submit', 'flow:mintconfirm', 'flow:mintviaopensea'],
   // Section AF follow-up: Discord's mini schedule flow (Section S's full guided flow remains
   // unbuilt) -- a fixed chain, optional quantity select/modal (only when maxPerWallet > 1) ->
   // wallet select -> name select -> optional custom-name modal -> confirm, with no dynamic values
@@ -359,8 +359,16 @@ async function finishMintExecutionDiscord(ctx, respond, platformUserId, userId, 
           + (item.txHash ? ` \`${item.txHash}\`` : '')));
       return respond({ content: `**Batch mint — ${ok.length} of ${results.length} submitted**\n${lines.join('\n')}`, components: backToMenu });
     }
-    const result = await commands.mint(userId, { walletLabel: flowData.selectedWallets[0],
-      contractAddress: flowData.contractAddress, chain: flowData.chain, quantity: flowData.quantity || 1, priceETH: flowData.priceETH });
+    // Section AF -- an allowlist/GTD/FCFS stage has no on-chain proof this app can construct;
+    // mintViaOpenSea asks OpenSea's own backend to resolve eligibility and build the calldata
+    // instead of this app's own prepareMintCall. quantity is always 1 here (see
+    // startMintViaOpenSeaFlow) -- OpenSea's own response determines the real price, not anything
+    // this flow asked for.
+    const result = flowData.viaOpenSea
+      ? await commands.mintViaOpenSea(userId, { walletLabel: flowData.selectedWallets[0],
+          contractAddress: flowData.contractAddress, chain: flowData.chain, quantity: 1 })
+      : await commands.mint(userId, { walletLabel: flowData.selectedWallets[0],
+          contractAddress: flowData.contractAddress, chain: flowData.chain, quantity: flowData.quantity || 1, priceETH: flowData.priceETH });
     flowState.clear('discord', platformUserId);
     return respond({ content: `✅ Mint ${result.state}: \`${escapeDiscord(String(result.txHash || result.intentId))}\``, components: backToMenu });
   } catch (error) {
@@ -743,6 +751,26 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         const decision = mintFlowDecision.afterDetails({ data: { ...flow.data, originMessagePublic: false }, wallets });
         const respond = payload => (wentEphemeral ? interaction.followUp({ ...payload, ephemeral: true }).catch(() => {}) : dcRespond(interaction, payload));
         return applyMintFlowStep(mintCtx, respond, platformUserId, userId, decision);
+      }
+      // Section AF -- an allowlist/GTD/FCFS stage has no on-chain proof this app can construct;
+      // tapping this (only shown when the card's own drop.activeStage confirmed a live stage) is
+      // itself the explicit opt-in, mirroring /mintnow: quantity is always 1 and there's no confirm
+      // screen, since neither this app nor the user knows the real price until OpenSea's own
+      // response determines it. Reuses the ordinary wallet-select step/handler unchanged -- only
+      // viaOpenSea threads through to tell finishMintExecutionDiscord which command to call.
+      if (data === 'flow:mintviaopensea') {
+        const flow = flowState.get('discord', platformUserId);
+        if (!flow || flow.flow !== 'mint_guided' || flow.step !== 'awaiting_details' || !flow.data.drop?.activeStage) return notYourMintPrompt(interaction);
+        const wentEphemeral = Boolean(flow.data.originMessagePublic);
+        if (wentEphemeral) neutralizeMintOriginMessage(interaction);
+        const data = { ...flow.data, originMessagePublic: false, viaOpenSea: true, quantity: 1, priceUnknown: false, skipConfirm: true, selectedWallets: [] };
+        const respond = payload => (wentEphemeral ? interaction.followUp({ ...payload, ephemeral: true }).catch(() => {}) : dcRespond(interaction, payload));
+        const wallets = commands.wallets(userId);
+        if (wallets.length === 1) {
+          return finishMintExecutionDiscord(mintCtx, respond, platformUserId, userId, { ...data, selectedWallets: [wallets[0].label] });
+        }
+        flowState.start('discord', platformUserId, 'mint_guided', 'awaiting_wallet', data);
+        return respond(discordMenus.walletSelect(wallets, { customId: 'flow:mintwallet:select', emptyHint: 'No wallets yet. Create one first from the Wallets menu.' }));
       }
       if (data === 'flow:detailsrefresh') {
         const flow = flowState.get('discord', platformUserId);
