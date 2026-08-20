@@ -44,8 +44,64 @@ shipped).
   directly ("All three, in that order"); shipped 2026-08-19/20. Also records a live-verified finding
   that OpenSea's API cannot support pre-checking wallet eligibility before a phase opens, and an
   unresolved Discord `/info` "no response" report that got a diagnostic (not a confirmed fix).
+- **Round 14** (Section AT) is a speed pass for scheduled mints and Degen mode specifically,
+  requested directly and deliberately scoped away from manual mints; shipped 2026-08-20.
 
 Status legend: ✅ Done · 🟡 Partial · ❌ Not started
+
+---
+
+# Round 14 — speed pass for scheduled mints and Degen mode (2026-08-20)
+
+## Section AT — Scheduler concurrency, fee-data caching, RPC timeout tightening, and a scoped simulation-skip ✅
+
+Requested directly ("the speed stuff should be hardwired into scheduled mints and the degen
+setting"), deliberately deferred until the OpenSea build finished. Four independent changes, each
+scoped to scheduled and/or Degen-mode mints — a manual mint a human is about to confirm is
+unaffected by any of them.
+
+- **Scheduler concurrency was the dominant bottleneck, by far.** `schedulerWorker.js`'s poll loop
+  used a single boolean `active` flag to guard `tick()`, but `processTask()` doesn't return once a
+  transaction broadcasts — it awaits full on-chain finality, up to `transactionTimeoutMs` (10
+  minutes by default) per policy. One slow-confirming scheduled mint therefore blocked every other
+  due task behind it, including ones whose own `mint_time` had already arrived — worst case, up to
+  10 minutes of pure queuing delay, dwarfing the ~1s poll-interval granularity anyone would assume
+  from reading `pollIntervalMs`. Fixed by raising the single-slot guard to a small pool
+  (`maxConcurrentTasks`, default 5): `tick()` still fully awaits its own claimed task unchanged (a
+  test — `dashboard.test.js`'s `await worker.tick()` — depends on that), the fix only raises how
+  many overlapping `tick()` calls the existing `setInterval` loop is allowed to have outstanding at
+  once, which it was already structurally capable of.
+- **Fee-data caching**: ether's `getFeeData()` fans out to three concurrent RPC legs and was
+  fetched fresh on every `submit()`, with no caching anywhere in the codebase. `feeDataCache.js` is
+  a short-TTL (5s) in-memory cache, chain-keyed, mirroring `walletBalanceCache.js`'s pattern —
+  consulted only when `triggerSource === 'scheduled'` or `policy.gasPriceMultiplier > 1` (Degen's
+  own multiplier already doubles as the "is this Degen" signal, no new lookup needed). A second
+  scheduled/Degen mint on the same chain within the window skips the fetch entirely; a manual mint
+  always gets a live quote, unconditionally.
+- **RPC timeout tightening**: `providerService.perform()` now accepts a per-call `{timeoutMs,
+  retries}` override, defaulting to the constructor's own settings for every existing caller.
+  Scheduled/Degen mints use a 3s/0-retry budget for every pre-broadcast read (fee data, balance,
+  gas estimate, simulation, nonce, network check) — a slow primary RPC is abandoned after one quick
+  attempt instead of the conservative default (10s × 2 attempts per URL, compounding across every
+  configured candidate). The broadcast itself and post-broadcast finality polling deliberately keep
+  the conservative defaults — a failed/slow broadcast is far more costly to get wrong than a failed
+  read, which just falls over to the next candidate URL regardless of which timeout is in effect.
+- **Simulation skip, decided with the owner directly rather than assumed**: Degen's own preset
+  already sets `simulation_mode='off'`, but a `simulationForced` safety setting (defaults to `true`
+  for every account) was silently overriding that back on — meaning Degen's simulation-skip was
+  not actually in effect for any account today unless the owner had separately disabled
+  `simulationForced`. Investigated and surfaced this to the owner rather than guessing at the right
+  tradeoff: their choice was to add one narrow exception — a mint that is **both** scheduled **and**
+  Degen skips simulation regardless of `simulationForced`, since nobody is watching a scheduled
+  mint fire and Degen is the account's own explicit signal it accepts more risk for more speed. A
+  manual Degen mint keeps its human-at-the-confirm-screen safety net; a scheduled mint on any other
+  preset keeps simulation too — scheduling alone was never the trigger.
+- Verified: `npm run lint` on every touched file, and the full suite (685 tests, 0 failures) —
+  `tests/transactionEngine.test.js` gained coverage for the fee-cache hit/miss/TTL-expiry/per-chain
+  isolation behavior and the RPC timeout override; `tests/governance.test.js` gained a case pinning
+  the scheduled+Degen exception against three angles (does apply to scheduled+Degen, does not apply
+  to manual+Degen, does not apply to scheduled+any-other-preset) so a future change can't quietly
+  widen or narrow who it affects.
 
 ---
 
