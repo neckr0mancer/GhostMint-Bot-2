@@ -450,7 +450,7 @@ Each wallet's chain is detected from its own balances -- a batch can span chains
 // and never enters channel history, which makes this genuinely safer than the Telegram equivalent
 // rather than merely mitigated. Same password as the dashboard; no second one exists.
 const GATE_ACTION_LABELS = {
-  mint: 'mint', exportkey: 'export a private key', removewallet: 'remove a wallet', send: 'send funds',
+  mint: 'mint', schedule: 'schedule a mint', exportkey: 'export a private key', removewallet: 'remove a wallet', send: 'send funds',
   batchimport: 'import wallets', importwallet: 'import a wallet',
   walletlist: 'list your wallets', balance: 'check a balance', activity: 'see your activity',
 };

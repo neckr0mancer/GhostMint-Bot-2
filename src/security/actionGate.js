@@ -44,6 +44,11 @@ const ACTION_TIERS = Object.freeze({
   // Switching to Degen removes the confirmation step from every future mint on every platform, so
   // it is a way to arrange silent spending later rather than a preference.
   mode: 'sensitive',
+  // Scheduling a mint commits money to a future moment when nobody will be watching, which is
+  // exactly why the commitment is the thing worth gating. The firing itself never consults the
+  // gate -- there is nobody present to answer a prompt at 3am, and a scheduled mint that silently
+  // failed on a password would be worse than one that was never scheduled.
+  schedule: 'sensitive',
   // Watch rules SPEND: they sign and send transactions unattended once armed, so creating one is a
   // funds-moving action even though no money moves at the moment you tap it. Sniper creation is
   // deliberately absent: it has no button-driven flow on either platform (it is configured through

@@ -2233,7 +2233,10 @@ if (BOT_TOKEN) {
       const task = await botCommands.controlTask(userId, 'retry', data.slice('task:retry:'.length));
       return tgEditMenu(chatId, messageId, telegramMenus.taskActions(task));
     }
-    if (data === 'menu:schedule') return startTaskScheduleFlow({ chatId, messageId, userId, contractAddressInput: null });
+    if (data === 'menu:schedule') {
+      if (await gateBlocks({ chatId, messageId, userId, action: 'schedule' })) return;
+      return startTaskScheduleFlow({ chatId, messageId, userId, contractAddressInput: null });
+    }
     if (data === 'menu:snipers') {
       if (await gateBlocks({ chatId, messageId, userId, action: 'snipers' })) return;
       return tgEditMenu(chatId, messageId, telegramMenus.sniperMenu(botCommands.snipers(userId)));

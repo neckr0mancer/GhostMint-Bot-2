@@ -996,6 +996,9 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
       // tap; pasting the same contract again and tapping the button again is how a second phase
       // gets scheduled here.
       if (data === 'flow:schedulesuggest') {
+        if (!await actionGate.allows(userId, 'discord', platformUserId, 'schedule')) {
+          return dcRespond(interaction, discordMenus.gateUnlockCard({ action: 'schedule' }));
+        }
         const flow = flowState.get('discord', platformUserId);
         if (!flow || flow.flow !== 'mint_guided' || flow.step !== 'awaiting_details') return notYourMintPrompt(interaction);
         if (!flow.data.startTime || flow.data.startTime * 1000 <= Date.now()) return notYourMintPrompt(interaction);

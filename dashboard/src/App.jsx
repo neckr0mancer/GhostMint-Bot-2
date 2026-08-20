@@ -1134,7 +1134,7 @@ function BotSecurityPanel({profile,onProfileChange}){
     try{
       await api('/api/profile/bot-gate-mint',{method:'PUT',body:JSON.stringify({skipMint:next})});
       onProfileChange?.(current=>({...current,botGateSkipMint:next}));
-      notify(next?'Minting will not ask for your password.':'Minting will ask for your password.',{type:'success'});
+      notify(next?'Minting will no longer ask for your password.':'Minting will ask for your password.',{type:next?'error':'success'});
     }catch(error){setSkipMint(previous);notify(error.message,{type:'error'});}
     finally{setSavingMint(false);}
   }
@@ -1171,14 +1171,15 @@ function BotSecurityPanel({profile,onProfileChange}){
         equivalent for. The genuine warning above (no password set) keeps .notice-warning. */}
     {level!=='off'&&<div className="gate-mint-row">
       <label>
-        <input type="checkbox" checked={skipMint} disabled={savingMint}
-          onChange={event=>changeMint(event.target.checked)}/>
-        <span>Skip the password for minting</span>
+        <input type="checkbox" checked={!skipMint} disabled={savingMint}
+          onChange={event=>changeMint(!event.target.checked)}/>
+        <span>Ask before minting</span>
       </label>
-      <p className="settings-hint">Minting is competitive, and a prompt between tapping mint and the
-      transaction going out can cost you the drop. Turning this on keeps everything else gated.
-      The risk: anyone who reaches your Telegram or Discord could spend from your wallets on a
-      contract of their choosing, without knowing your password.</p>
+      <p className="settings-hint">On, minting asks for your password like every other sensitive
+      action. Turn it off only if the prompt is costing you drops — minting is competitive, and the
+      seconds between tapping mint and the transaction going out matter. The risk of turning it off:
+      anyone who reaches your Telegram or Discord could spend from your wallets on a contract of
+      their choosing, without knowing your password. Everything else stays gated either way.</p>
       <p className="settings-hint">Scheduled mints, snipers and watch rules are unaffected either
       way — they run unattended and never ask for a password.</p>
     </div>}
