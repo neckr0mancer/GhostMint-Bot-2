@@ -40,13 +40,18 @@ test('settings shows the link button to every user and admin console only to own
   assert.ok(flatButtons(settingsMenu({ isOwner: true }).replyMarkup).some(b => b.callback_data === 'menu:admin'));
 });
 
-test('chain picker renders one button per supported chain plus a cancel option', () => {
+test('chain picker offers EVM/Solana, not one button per configured chain, since an EVM key works identically on every one', () => {
   const chains = { ethereum: { name: 'Ethereum' }, sepolia: { name: 'Sepolia' } };
   const picker = chainPicker(['ethereum', 'sepolia'], chains);
   const buttons = flatButtons(picker.replyMarkup);
-  assert.deepEqual(buttons.map(b => b.callback_data), ['flow:chain:ethereum', 'flow:chain:sepolia', 'flow:cancel:ask']);
-  assert.equal(buttons[0].text, '💎 Ethereum');
-  assert.equal(buttons[1].text, 'Sepolia', 'a chain with no Unicode pick in CHAIN_EMOJI falls back to a bare label');
+  assert.deepEqual(buttons.map(b => b.callback_data), ['flow:chain:ethereum', 'flow:chain:solana-soon', 'flow:cancel:ask']);
+  assert.match(buttons[0].text, /EVM/);
+  assert.match(buttons[1].text, /Solana/i);
+});
+
+test('chain picker shows a note (e.g. explaining Solana is not supported yet) above the prompt when given one', () => {
+  const picker = chainPicker(['ethereum'], {}, { note: "Solana wallets aren't supported yet -- this bot is EVM-only for now." });
+  assert.match(picker.text, /Solana wallets aren't supported yet/);
 });
 
 test('wallet picker shows an empty-state menu instead of an empty keyboard', () => {

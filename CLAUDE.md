@@ -38,18 +38,25 @@ moment a phase opens. Also live-verified (not assumed) that OpenSea's API cannot
 pre-checking an arbitrary wallet's eligibility before a phase opens — a hard external limitation,
 recorded so it isn't re-investigated later.
 
-**Two open threads, not yet resolved:**
-1. A Discord `/info` "no response" report was investigated but not reproduced or root-caused;
-   diagnostic logging shipped as a safety net, not a confirmed fix. A related report — an OpenSea
-   link resolving to "not found on any supported chain" on Discord `/mint` — pointed at the same
-   likely cause: Railway's live `SUPPORTED_CHAINS` env var missing `base`/`arbitrum`/`polygon` (a
-   drift first documented in Round 10's item 9, 2026-08-17). The owner is checking/fixing that
-   directly in the Railway dashboard; not something this session can do without dashboard access.
-2. The owner asked for wallet import to offer "EVM/Solana" instead of listing individual EVM
-   chains. Not scoped yet — GhostMint is EVM-only today (no Solana wallet or mint support anywhere
-   in the codebase), so this could mean either a cosmetic relabel (one "EVM" bucket, chain
-   auto-detected the way mint contracts already are) or real Solana support from scratch. Ask which
-   before starting.
+**Since Round 14, also shipped (2026-08-20):**
+- Wallet create/import on both platforms now offers **EVM / Solana (coming soon)** instead of five
+  separate EVM chain buttons — a private key/seed phrase is chain-agnostic within EVM, so the five
+  buttons were noise, not a real decision; picking EVM defaults to `ethereum`, matching the
+  dashboard's own `DEFAULT_EVM_CHAIN` precedent. Solana is shown, not hidden, so tapping it explains
+  it isn't supported yet rather than doing nothing or requiring the picker to change shape later.
+- Railway's `SUPPORTED_CHAINS` drift (missing `base`/`arbitrum`/`polygon`, first documented in
+  Round 10's item 9) is fixed — the owner corrected it directly, and it's now verified live via
+  Railway's own API (see Round 10 item 10 in `docs/WORKLIST.md`) that production is running the
+  full five-chain list.
+- **This app can now read/write Railway config directly** via a workspace-scoped API token in
+  `.env` as `RAILWAY_TOKEN` — see `docs/WORKLIST.md` Round 10 item 10 for the exact GraphQL
+  endpoint, auth header shape, and this project's IDs. The Railway CLI itself doesn't accept this
+  token for `whoami`/`status`; the raw GraphQL API does.
+
+**One open thread, not yet resolved:** a Discord `/info` "no response" report was investigated but
+not reproduced or root-caused; diagnostic logging shipped as a safety net, not a confirmed fix. If
+it recurs, capture the exact contract/timestamp so the Railway logs for that window can be checked
+directly (now straightforward, given the access above).
 
 **Next up: not decided — pick with the user.** The open candidates, all detailed in
 `docs/WORKLIST.md`: a `/buy` (secondary-market) command, scoped but not yet built; Section AF

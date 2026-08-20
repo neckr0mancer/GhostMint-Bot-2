@@ -2365,6 +2365,14 @@ if (BOT_TOKEN) {
         replyMarkup: telegramMenus.keyboard([[telegramMenus.button('⬅️ Back to wallets', 'menu:wallets')]]) });
     }
 
+    if (data === 'flow:chain:solana-soon') {
+      // Shown, not hidden, on the EVM/Solana picker (see chainPicker's own note) -- re-renders the
+      // same picker with an explanation instead of silently doing nothing, and never touches flow
+      // state, so the user is still exactly where they were.
+      return tgEditMenu(chatId, messageId, telegramMenus.chainPicker(CONFIG.supportedChains, CHAINS,
+        { note: 'Solana wallets aren\'t supported yet -- this bot is EVM-only for now.' }));
+    }
+
     if (data.startsWith('flow:chain:')) {
       const chain = data.slice('flow:chain:'.length);
       const flow = telegramFlowState.get('telegram', chatId);

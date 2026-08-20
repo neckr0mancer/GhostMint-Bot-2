@@ -745,6 +745,13 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
       }
       if (data === 'flow:chain:select') {
         const chain = interaction.values?.[0];
+        // Shown, not hidden, on the picker (see chainSelect's own note) -- re-renders the same
+        // select with an explanation instead of silently doing nothing, and never touches flow
+        // state, so the user is still exactly where they were.
+        if (chain === 'solana-soon') {
+          return dcRespond(interaction, discordMenus.chainSelect(supportedChains, chains,
+            { note: "Solana wallets aren't supported yet -- this bot is EVM-only for now." }));
+        }
         const flow = flowState.get('discord', platformUserId);
         if (!flow) return dcRespond(interaction, discordMenus.mainMenu({ isOwner: await ownerFlag(userId), security: await securityStatus(userId) }));
         if (flow.flow === 'wallet_create') {
