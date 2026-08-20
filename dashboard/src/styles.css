@@ -1402,3 +1402,10 @@ html[data-theme="ghost-mint-light"] .rail-bottom-nav{
 .account-menu{position:relative;display:flex}
 .account-menu .acct-pop{top:calc(100% + 8px);right:0;width:min(268px,calc(100vw - 28px))}
 @media(max-width:700px){.account-menu .acct-pop{position:fixed;top:54px;right:13px;left:auto;width:min(268px,calc(100vw - 26px))}}
+
+/* Bot password gate panel (Settings). Reuses the prototype's own .seg segmented control and .panel
+   shell rather than introducing a new visual language -- the only additions are a disabled state
+   for the segments (unavailable until a security password exists) and the hint line under them. */
+.settings-bot-gate .gate-picker{margin-top:10px}
+.settings-bot-gate .gate-picker button[disabled]{opacity:.45;cursor:not-allowed}
+.settings-bot-gate .settings-hint{margin-top:8px;color:var(--muted);font-size:12px}

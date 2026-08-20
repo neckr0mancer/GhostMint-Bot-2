@@ -96,6 +96,17 @@ function chainName(value, supportedChains, field = 'chain') {
   return normalized;
 }
 
+// The bot action gate's level. Rejects anything unrecognised rather than silently coercing to
+// 'off': quietly turning someone's gate off because a value was misspelled is the one failure
+// mode this must not have. (The gate's own reader coerces to 'off' -- that is a read path,
+// where failing open is correct; this is a write path, where it is not.)
+const BOT_GATE_LEVELS = new Set(['off', 'sensitive', 'strict']);
+function botGateLevel(value, field = 'level') {
+  const normalized = string(value, field, { max: 16 }).toLowerCase();
+  if (!BOT_GATE_LEVELS.has(normalized)) fail(field, `must be one of: ${[...BOT_GATE_LEVELS].join(', ')}`);
+  return normalized;
+}
+
 function dashboardTheme(value, field = 'theme') {
   const normalized = string(value, field, { max: 32 }).toLowerCase();
   if (!DASHBOARD_THEMES.has(normalized)) fail(field, `must be one of: ${[...DASHBOARD_THEMES].join(', ')}`);
@@ -409,6 +420,7 @@ const requestSchemas = Object.freeze({
   watchRulePatch: input => validateWatchRule(input, { partial: true }),
   watchRuleDeletion: input => ({ id: uuid(input.id, 'id') }),
   themeUpdate: input => ({ theme: dashboardTheme(input.theme) }),
+  botGateUpdate: input => ({ level: botGateLevel(input.level) }),
   displayNameUpdate: input => ({ displayName: displayName(input.displayName) }),
   defaultChainUpdate: (input, context) => ({ defaultChain: chainName(input.defaultChain, context.supportedChains, 'defaultChain') }),
   socialUsagePeriod: input => ({ period: usagePeriod(input.period) }),
