@@ -2,7 +2,7 @@
 import React,{useCallback,useEffect,useRef,useState} from 'react';
 import Admin from './Admin.jsx';
 import {shortAddress} from './dashboardWidgets/homeParts.jsx';
-import {loadError} from './shared.jsx';
+import {loadError,batchRowDetail} from './shared.jsx';
 import {ACTIVITY_EVENTS,api,Ledger,NumberField,SectionCard,confirmDialog,ConfirmHost,consumePendingMintPrefill,CopyButton,csrf,downloadFile,Empty,EVM_CHAINS,Field,Form,getNotificationLog,notify,Notice,PageTitle,Pager,promptDialog,relativeTime,Select,Skeleton,StatusPill,SubTabs,subscribeNotificationLog,ToastHost,useLoad,useLiveSocket,setPendingMintPrefill,quantityPicks} from './shared.jsx';
 import Dashboard from './Dashboard.jsx';
 // Phase 4, unit 1 of 5 (brief §2). The 11->5 merge lands one page at a time so any single merge
@@ -1520,7 +1520,7 @@ function MintBatch({onGoWallets}){
                  <span className={`p ${entry.status==='success'?'ok':'bad'}`}>{entry.status==='success'?'Confirmed':'Failed'}</span>
                  <span className="bl2">{entry.walletLabel||entry.label}</span>
                  <span className={entry.status==='success'?'be mono':'be'}>
-                   {entry.status==='success'?shortHex(entry.transactionHash||''):entry.error}</span>
+                   {entry.status==='success'?shortHex(batchRowDetail(entry)):batchRowDetail(entry)}</span>
                </div>)}
                <p style={{fontSize:'11px',color:'var(--faint)',marginTop:'9px'}}>
                  {succeeded} {succeeded===1?'transaction was':'transactions were'} broadcast.
