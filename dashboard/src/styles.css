@@ -1445,3 +1445,10 @@ html[data-theme="ghost-mint-light"] .rail-bottom-nav{
 /* A quick-pick with nothing left to offer (Max at a cap of one) stays visible but reads as
    unavailable, rather than inviting a tap that changes nothing. */
 .qb button[disabled]{opacity:.4;cursor:not-allowed}
+
+/* .p is two different things in this vocabulary: the status pill (.p.ok / .p.bad) and the primary
+   BUTTON modifier (.b.p). prototype.css declares .b.p without a radius, so the pill's 20px bleeds
+   into every primary button and they render noticeably rounder than the .b.g / .b.sm buttons beside
+   them. .b sets one radius for all its variants deliberately, so this restores that intent rather
+   than choosing a new look. Reported from the Resume button sitting next to Edit. */
+.b.p{border-radius:var(--radius-sm)}
