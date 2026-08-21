@@ -749,12 +749,18 @@ html[data-theme="ghost-mint"] .dash-hero button,html[data-theme="ghost-mint-ligh
     margin:0 auto .875rem;box-shadow:none}
   html[data-theme="ghost-mint"] .more-sheet h2,html[data-theme="ghost-mint-light"] .more-sheet h2{margin:0 0 .75rem;font-size:.95rem}
   html[data-theme="ghost-mint"] .sheet-grid,html[data-theme="ghost-mint-light"] .sheet-grid{
-    display:grid;grid-template-columns:1fr 1fr;gap:.625rem}
+    display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
   html[data-theme="ghost-mint"] .sheet-grid button,html[data-theme="ghost-mint-light"] .sheet-grid button{
-    display:flex;align-items:center;gap:.625rem;padding:.7rem;border-radius:var(--radius);background:var(--surface);
-    border:1px solid var(--border);box-shadow:none;color:var(--text);font-weight:600;font-size:.82rem;justify-content:flex-start}
+    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;padding:13px 6px;
+    border-radius:var(--radius);background:var(--surface-2);border:1px solid var(--border);box-shadow:none;
+    font-size:11px;font-weight:650;color:var(--muted);text-align:center}
+  html[data-theme="ghost-mint"] .sheet-grid button[aria-current="page"],
+  html[data-theme="ghost-mint-light"] .sheet-grid button[aria-current="page"]{
+    border-color:var(--accent);color:var(--text)}
   html[data-theme="ghost-mint"] .sheet-grid button .nav-icon,html[data-theme="ghost-mint-light"] .sheet-grid button .nav-icon{
-    width:1.7rem;height:1.7rem}
+    width:18px;height:18px;color:var(--faint);display:block}
+  html[data-theme="ghost-mint"] .sheet-grid button .nav-icon svg,
+  html[data-theme="ghost-mint-light"] .sheet-grid button .nav-icon svg{width:18px;height:18px}
   html[data-theme="ghost-mint"] .sheet-grid button .nav-label,html[data-theme="ghost-mint-light"] .sheet-grid button .nav-label{
     position:static;width:auto;height:auto;padding:0;margin:0;overflow:visible;clip:auto}
 }
@@ -1452,3 +1458,29 @@ html[data-theme="ghost-mint-light"] .rail-bottom-nav{
    them. .b sets one radius for all its variants deliberately, so this restores that intent rather
    than choosing a new look. Reported from the Resume button sitting next to Edit. */
 .b.p{border-radius:var(--radius-sm)}
+
+/* The stop/start button previews the state it moves you TO, using that state's own pill colour:
+   Pause is tinted with --idle (the Paused pill's colour) and Resume with --gain (the Active
+   pill's). Tint and border only, never a filled button -- these sit beside Edit and must stay the
+   same weight of control, which is what went wrong when Resume was the filled primary. */
+.trigger-stop{border-color:var(--idle);color:var(--idle-text)}
+.trigger-stop:hover{border-color:var(--idle);background:color-mix(in srgb,var(--idle) 10%,transparent)}
+.trigger-start{border-color:var(--gain);color:var(--gain-text)}
+.trigger-start:hover{border-color:var(--gain);background:color-mix(in srgb,var(--gain) 10%,transparent)}
+
+/* .p already sizes an svg child in the prototype's own pills; this keeps the paused glyph to the
+   same 11px rhythm rather than inheriting a default that would tower over the label. */
+.p svg{width:11px;height:11px;flex:none}
+
+/* .nav-icon is the RAIL's icon chip: it carries an accent background and a radius so the active
+   rail item reads as a tile. In the sheet that chip renders as a solid green blob behind each
+   glyph, which is what made the menu look wrong. The sheet wants the bare glyph. */
+html[data-theme="ghost-mint"] .sheet-grid button .nav-icon,
+html[data-theme="ghost-mint-light"] .sheet-grid button .nav-icon{
+  background:none;border:0;border-radius:0;box-shadow:none;padding:0}
+/* The grab handle is a <button>, so the global tap-target min-height stretched it to 44px and it
+   rendered as a grey block rather than the prototype's 4px bar. The tap target moves to a padded
+   wrapper height instead, so it stays easy to hit without looking like a control. */
+html[data-theme="ghost-mint"] .sheet-handle,
+html[data-theme="ghost-mint-light"] .sheet-handle{
+  height:4px;min-height:4px;background-clip:padding-box}

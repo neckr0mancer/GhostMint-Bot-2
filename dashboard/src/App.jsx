@@ -89,6 +89,13 @@ const CHAIN_CHECK_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor
 const SOLANA_ICON=<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 2 20 7v10l-8 5-8-5V7z" fill="none" stroke="currentColor" strokeWidth="1.8"/></svg>;
 const BOLT_PATH="M13 2 4 14h6l-1 8 9-12h-6z";
 const ICON_PROPS={viewBox:"0 0 24 24",fill:"none",stroke:"currentColor",strokeWidth:"1.8",strokeLinecap:"round",strokeLinejoin:"round",xmlns:"http://www.w3.org/2000/svg"};
+// Carried by the Paused pill alone. Active and Failing already read as themselves through colour
+// -- green and red -- but Paused is a quiet grey that scans as "nothing to see", which is the
+// one state where that is wrong: it means the trigger is not running.
+const PAUSED_GLYPH=<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"
+  xmlns="http://www.w3.org/2000/svg"><rect x="7" y="6" width="3.4" height="12" rx="1"/><rect x="13.6" y="6" width="3.4" height="12" rx="1"/></svg>;
+const SEARCH_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9"
+  strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>;
 const NAV_ICONS={
   Home:<svg {...ICON_PROPS}><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>,
   Wallets:<svg {...ICON_PROPS}><rect x="3" y="6" width="18" height="13" rx="2.5"/><path d="M3 10h18"/><circle cx="16.5" cy="14.5" r="1" fill="currentColor" stroke="none"/></svg>,
@@ -1947,7 +1954,8 @@ function TriggerCard({row,onEdit,onToggle,onArchive}){
           strokeLinecap="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
       </button>
       <div className="colb">
-        <div className="ch"><span className={`p ${row.tone}`}>{row.status}</span><div className="sp"/>
+        <div className="ch"><span className={`p ${row.tone}`}>
+          {row.status==='Paused'&&PAUSED_GLYPH}{row.status}</span><div className="sp"/>
           {row.kind==='sniper'
             ?<span className="chain"><i style={{background:CHAIN_DOT[row.chain]||'var(--faint)'}}/>
                {CHAIN_LABEL[row.chain]||titleCase(row.chain)}</span>
@@ -1974,7 +1982,7 @@ function TriggerCard({row,onEdit,onToggle,onArchive}){
         })()}
         <div className="br">
           <button type="button" className="b sm" onClick={()=>onEdit?.(row)}>Edit</button>
-          <button type="button" className="b g sm"
+          <button type="button" className={`b g sm ${stopped?'trigger-start':'trigger-stop'}`}
             onClick={()=>onToggle?.(row)}>{stopLabel}</button>
           <button type="button" className="b d sm" onClick={()=>onArchive?.(row)}>Archive</button>
         </div>
@@ -2529,6 +2537,7 @@ const BOTTOM_BAR_LABELS={Automation:'Auto'};
 // Admin is deliberately absent: it lives behind an owner check, and offering a control that
 // 403s is worse than not offering it.
 const MORE_PAGES=['History','Account','Settings'];
+const MORE_ADMIN='Admin';
 const MORE_ICON=<svg {...ICON_PROPS} fill="currentColor" stroke="none"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg>;
 const CHEVRON_LEFT=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 6l-6 6 6 6"/></svg>;
 const CHEVRON_RIGHT=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 6l6 6-6 6"/></svg>;
@@ -2543,11 +2552,28 @@ function BottomBar({page,go,onOpenMore,moreOpen}){
       <span className="nav-icon" aria-hidden="true">{MORE_ICON}</span>
       <span className="nav-label">More</span></button>
   </nav>;}
-function MoreSheet({open,page,go,onClose}){return <>{open&&<div className="sheet-backdrop" onClick={onClose}/>}<div className={`more-sheet${open?' open':''}`} role="dialog" aria-modal="true" aria-label="More" aria-hidden={!open}>
-  <button type="button" className="sheet-handle" aria-label="Close" onClick={onClose}/>
-  <h2>More</h2>
-  <div className="sheet-grid">{MORE_PAGES.map(item=><button type="button" key={item} aria-current={page===item?'page':undefined} onClick={()=>go(item)}><span className="nav-icon" aria-hidden="true">{NAV_ICONS[item]}</span><span className="nav-label">{item}</span></button>)}</div>
-</div></>;}
+function MoreSheet({open,page,go,onClose,isOwner,onSearch}){
+  const items=[...MORE_PAGES,...(isOwner?[MORE_ADMIN]:[])];
+  return <>{open&&<div className="sheet-backdrop" onClick={onClose}/>}
+    <div className={`more-sheet${open?' open':''}`} role="dialog" aria-modal="true"
+      aria-label="More" aria-hidden={!open}>
+      <button type="button" className="sheet-handle" aria-label="Close" onClick={onClose}/>
+      <div className="sheet-grid">
+        {items.map(item=><button type="button" key={item}
+          aria-current={page===item?'page':undefined} onClick={()=>{go(item);onClose?.();}}>
+          {/* RAIL_ICONS first: NAV_ICONS gives Admin a gear, which is the same glyph as
+              Settings, so the two tiles were indistinguishable. states.html gives Admin a
+              shield, which RAIL_ICONS already carries. */}
+          <span className="nav-icon" aria-hidden="true">{RAIL_ICONS[item]||NAV_ICONS[item]}</span>
+          <span className="nav-label">{item}</span></button>)}
+        {/* Search is an action, not a page: it opens the command palette the desktop header
+            already offers, which has no other route in on a phone. */}
+        <button type="button" onClick={()=>{onClose?.();onSearch?.();}}>
+          <span className="nav-icon" aria-hidden="true">{SEARCH_ICON}</span>
+          <span className="nav-label">Search</span></button>
+      </div>
+    </div></>;
+}
 // Prototype rail badges (ghostmint-redesign-v3.html:641,644): Mint carries a NEUTRAL .cnt and
 // Automation a RED .cnt.hot. The tones are the specification, not decoration:
 //   .cnt      surface-4 on muted -- "there are things here worth a look"
@@ -2766,7 +2792,8 @@ function Shell({profile,onLogout,onProfileChange}){const navBadges=useNavBadges(
       <main className="wrap" tabIndex="-1"><View profile={viewProfile} go={go} tab={tab} target={target} onTab={next=>go(page,next)} onThemeChange={changeTheme} onLogout={onLogout} onProfileChange={onProfileChange}/></main>
     </div>
     <BottomBar page={page} go={go} moreOpen={moreOpen} onOpenMore={()=>setMoreOpen(value=>!value)}/>
-    <MoreSheet open={moreOpen} page={page} go={go} onClose={()=>setMoreOpen(false)}/>
+    <MoreSheet open={moreOpen} page={page} go={go} onClose={()=>setMoreOpen(false)}
+      isOwner={profile.isOwner} onSearch={()=>setPaletteOpen(true)}/>
     <CommandPalette open={paletteOpen} onClose={()=>setPaletteOpen(false)} go={go} profile={profile} wallets={paletteWallets.data}/>
   </div>;
   const brandMark=<span className="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d={BOLT_PATH} fill="currentColor"/></svg></span>;
