@@ -1430,7 +1430,14 @@ html[data-theme="ghost-mint-light"] .rail-bottom-nav{
    2. Let long signatures wrap rather than demand a wider column. Wrapping is
       right here — a signature is readable across two lines, and a horizontal
       scrollbar inside a card on a phone is easy to miss entirely.  */
-.card,.panel,.split>*,.settings-layout>*,.card-grid>*{min-width:0}
+/* .g>* and .blk added after the Automation All tab shipped: a trigger card is a .blk inside a
+   .g grid, and a long social handle pushed the PAGE to 429px at a 375px viewport -- the same
+   grid min-width:auto root cause as the Presets table, just a container the first pass missed.
+   Any new grid child needs to be here, or it can widen the page on a phone. */
+.card,.panel,.split>*,.settings-layout>*,.card-grid>*,.g>*,.blk{min-width:0}
+/* The card title is the long unbreakable part; the prototype already ellipsises it in the
+   collapsed header (.cti), so the expanded body's heading gets the same treatment. */
+.card.col .colb h3{overflow-wrap:anywhere}
 .led{table-layout:fixed}
 .led td{overflow-wrap:anywhere}
 .led td.mono{white-space:normal;word-break:break-word}

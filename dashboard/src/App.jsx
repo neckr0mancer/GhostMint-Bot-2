@@ -1657,12 +1657,138 @@ function Mint({profile,go,tab,onTab}){
 // As in unit 1, the three originals render UNCHANGED inside their tabs: same components, same
 // hooks, same routes with the same params. No API call changes.
 const AUTOMATION_TABS=[
+  {id:'all',label:'All'},
   {id:'snipers',label:'Snipers'},
   {id:'social',label:'Social rules',was:'Watch Rules'},
   {id:'policies',label:'Policies',was:'Target Policies'},
 ];
+// The prototype's Automation page has FOUR panels -- at-all, at-snp, at-soc, at-pol -- and "All" is
+// the default. Its own comment states the relationship: "Snipers / Social rules are filters over
+// the same list; Policies is the editor + challenge". The build had only the three narrow tabs, so
+// the populated/empty/loading/error states the prototype draws had nowhere to live at all. This is
+// that missing panel, and Snipers/Social render it with a filter rather than duplicating it.
+//
+// The card is .card.col: a header (.colh) and a body (.colb). Collapsing is MOBILE-ONLY --
+// prototype.css sets .colh{display:none} and only reveals it under .app[data-m] -- so both halves
+// are always emitted and the stylesheet decides. Nothing here toggles on width.
+//
+// Deliberately NOT built: the .dragh drag handle and data-reorder. Reordering needs a persisted
+// order the API does not expose, and a handle that forgets its order on reload is worse than none.
+const AUTOMATION_KIND={sniper:'Copy sniper',social:'Social rule'};
+function triggerRows(snipers,rules){
+  const fromSnipers=(snipers?.items||[]).map(item=>{
+    const recent=(snipers.events||[]).find(event=>event.sniperId===item.id);
+    const state=recent?.state||'';
+    return {kind:'sniper',id:item.id,title:item.label,
+      status:state==='failed'?'Failing':(item.active===false?'Paused':'Active'),
+      tone:state==='failed'?'bad':(item.active===false?'idle':'ok'),
+      meta:`Post-confirmation · wallet ${item.walletLabel}`,
+      badge:item.chain,value:`${item.maxValueETH} ETH`,
+      policy:[['Blockchain trigger','Auto'],['Max copied value',`${item.maxValueETH} ETH`],
+        ['Daily cap',`${item.dailySpendingCapETH} ETH`],['Gas ceiling',`${item.maxGasGwei} gwei`],
+        ['Wallet',item.walletLabel]],
+      search:[item.label,item.chain,item.walletLabel]};
+  });
+  const fromRules=(rules?.items||[]).map(item=>({
+    kind:'social',id:item.id,title:item.name,
+    status:item.consecutiveFailures>0?'Failing':(item.enabled?'Active':'Paused'),
+    tone:item.consecutiveFailures>0?'bad':(item.enabled?'ok':'idle'),
+    meta:`${item.type.replace(/_/g,' ')} · ${item.method}`,
+    badge:item.type.split('_')[0],
+    value:item.consecutiveFailures>0?`${item.consecutiveFailures} failed polls`:'',
+    policy:[['Social trigger','Manual'],['Method',item.method],
+      ['Enabled',item.enabled?'Yes':'No'],
+      ['Consecutive failures',String(item.consecutiveFailures||0)]],
+    search:[item.name,item.type,item.method]}));
+  return [...fromSnipers,...fromRules];
+}
+
+function TriggerCard({row}){
+  const [open,setOpen]=useState(false);
+  return <div className="blk">
+    <div className="card col" data-open={open?'1':'0'}>
+      <button type="button" className="colh" aria-expanded={open} onClick={()=>setOpen(v=>!v)}>
+        <span className={`p ${row.tone}`}>{row.status}</span>
+        <span className="cti">{row.title}</span>
+        {row.value?<span className="ctv">{row.value}</span>:null}
+        <svg className="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"
+          strokeLinecap="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+      </button>
+      <div className="colb">
+        <div className="ch"><span className={`p ${row.tone}`}>{row.status}</span>
+          <div className="sp"/><span className="cw">{row.badge}</span></div>
+        <h3 style={{fontSize:'14.5px',marginBottom:'2px'}}>{row.title}</h3>
+        <p style={{fontSize:'12px',color:'var(--muted)',marginBottom:'11px'}}>{row.meta}</p>
+        <div className="sober" style={{marginBottom:'11px'}}>
+          <div className="sh">Policy · inline</div>
+          <table className="led"><tbody>
+            {row.policy.map(([label,value])=><tr key={label}><td>{label}</td><td>{value}</td></tr>)}
+          </tbody></table>
+        </div>
+        <p style={{fontSize:'11px',color:'var(--faint)'}}>{AUTOMATION_KIND[row.kind]}</p>
+      </div>
+    </div>
+  </div>;
+}
+
+function AutomationAll({filter=null,onTab}){
+  const snipers=useLoad('/api/snipers',[],'snipers.changed');
+  const rules=useLoad('/api/watch-rules',[],'watch.changed');
+  const [query,setQuery]=useState('');
+  const error=loadError(snipers,'Could not load your triggers.')||loadError(rules,'Could not load your triggers.');
+  const loading=(snipers.data===null&&!snipers.error)||(rules.data===null&&!rules.error);
+  const all=(!loading&&!error)?triggerRows(snipers.data,rules.data):[];
+  const scoped=filter?all.filter(row=>row.kind===filter):all;
+  const needle=query.trim().toLowerCase();
+  const rows=needle?scoped.filter(row=>row.search.filter(Boolean)
+    .some(value=>String(value).toLowerCase().includes(needle))):scoped;
+
+  return <>
+    {filter&&<div className="nt i">{INFO_ICON}
+      <div>Showing {filter==='sniper'?'wallet-copy snipers':'social watch rules'} only — the same
+        cards as <b>All</b>, filtered client-side over data the server already scoped to you.</div></div>}
+    <Notice error={error}/>
+    {!error&&!loading&&all.length>0&&<div className="sfrow">
+      {/* aria-label rather than a hidden span: there is no visually-hidden utility in this
+          stylesheet, and inventing one for a single input would be a new class the prototype
+          does not have. The prototype's .sf carries an icon and no visible label. */}
+      <div className="sf">
+        <input type="search" value={query} aria-label="Find a trigger"
+          placeholder="Target, address, chain…"
+          onChange={event=>setQuery(event.target.value)}/>
+      </div>
+    </div>}
+    {loading
+      ?<div className="ol"><div className="sk row"/><div className="sk row"/><div className="sk row"/><div className="sk row"/></div>
+      :error
+        ?null
+        :all.length===0
+          /* The prototype's empty state: two explainer cards, one CTA each. It explains what the
+             page IS to someone who has never made a trigger, which a bare "nothing here" cannot. */
+          ?<div className="g g2">
+             <div className="card">
+               <div className="ch"><h2>Copy snipers</h2></div>
+               <p style={{fontSize:'12.5px',color:'var(--muted)',marginBottom:'12px'}}>Watch a wallet.
+                 When it mints something and that transaction confirms, GhostMint copies the same call
+                 from one of yours — with your own value, gas and daily caps.</p>
+               <button type="button" className="b p sm" onClick={()=>onTab?.('snipers')}>Create a sniper</button>
+             </div>
+             <div className="card">
+               <div className="ch"><h2>Social watch rules</h2></div>
+               <p style={{fontSize:'12.5px',color:'var(--muted)',marginBottom:'12px'}}>Watch an X,
+                 Discord or Farcaster account or keyword. When a contract address appears, it becomes
+                 a trigger — manual by default, so nothing spends without you.</p>
+               <button type="button" className="b p sm" onClick={()=>onTab?.('social')}>Create a watch rule</button>
+             </div>
+           </div>
+          :rows.length===0
+            ?<Empty text="No triggers match this search."/>
+            :<div className="g g2">{rows.map(row=><TriggerCard key={`${row.kind}:${row.id}`} row={row}/>)}</div>}
+  </>;
+}
+
 function Automation({tab,onTab,target}){
-  const active=AUTOMATION_TABS.some(item=>item.id===tab)?tab:'snipers';
+  const active=AUTOMATION_TABS.some(item=>item.id===tab)?tab:'all';
   return <>
     <div className="page-head"><div className="page-head-text"><p className="eyebrow">Automation</p><h1>Automation</h1></div></div>
     {/* The post-confirmation disclosure is page-level and unconditional -- it must be visible
@@ -1675,8 +1801,9 @@ function Automation({tab,onTab,target}){
       the target made has already confirmed on chain.
     </p>
     <SubTabs tabs={AUTOMATION_TABS} active={active} onChange={onTab} label="Automation sections"/>
-    {active==='snipers'&&<Snipers/>}
-    {active==='social'&&<WatchRules/>}
+    {active==='all'&&<AutomationAll onTab={onTab}/>}
+    {active==='snipers'&&<><AutomationAll filter="sniper" onTab={onTab}/><Snipers/></>}
+    {active==='social'&&<><AutomationAll filter="social" onTab={onTab}/><WatchRules/></>}
     {active==='policies'&&<TargetPolicies target={target}/>}
   </>;
 }
