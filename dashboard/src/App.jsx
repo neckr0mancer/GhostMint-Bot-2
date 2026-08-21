@@ -1674,39 +1674,79 @@ const AUTOMATION_TABS=[
 //
 // Deliberately NOT built: the .dragh drag handle and data-reorder. Reordering needs a persisted
 // order the API does not expose, and a handle that forgets its order on reload is worse than none.
+// Only Ethereum and Base appear in the prototype (#627eea, #0052ff); the rest are each chain's own
+// brand colour, because a dot that is the WRONG colour is worse than the one thing it exists to do.
+const CHAIN_DOT={ethereum:'#627eea',base:'#0052ff',arbitrum:'#28a0f0',polygon:'#8247e5',robinhood:'#ccff00'};
+const CHAIN_LABEL={ethereum:'Ethereum',base:'Base',arbitrum:'Arbitrum',polygon:'Polygon',robinhood:'Robinhood'};
+const SOCIAL_LABEL={twitter:'Twitter',discord:'Discord',farcaster:'Farcaster'};
 const AUTOMATION_KIND={sniper:'Copy sniper',social:'Social rule'};
+
+// The prototype's "Policy · inline" rows are the REAL target policy, not a restatement of the
+// trigger's own fields: targetPolicyService stores blockchainTrigger, socialTrigger,
+// humanVerification and walletLabel, which is exactly what the card lists. Read them, do not invent
+// them -- an inline policy that shows something other than the policy is worse than showing none.
+//
+// The prototype also draws a .meter for "Daily cap used · 0.140 / 0.200". That figure is NOT
+// rendered here, deliberately. governanceService.js:315 records why spentTodayWei is withheld:
+// rollingSpendWei sums COALESCE(actual_network_cost_wei, estimated_cost_wei) and the actual column
+// holds gas only, so a confirmed mint's value drops out and the total is wrong in the user's
+// favour. The cap is real and is shown; the "used" half would be a known-wrong number on a money
+// surface, and Mint now already refuses the same figure for the same reason.
+function policyRows(row,policy){
+  if(!policy)return null;
+  const rows=[];
+  if(row.kind==='sniper')rows.push(['Blockchain trigger',titleCase(policy.blockchainTrigger||'manual')]);
+  else rows.push(['Social trigger',titleCase(policy.socialTrigger||'manual')]);
+  rows.push(['Human verification',policy.humanVerification==='bypassed'
+    ?<span style={{color:'var(--warn-text)'}}>Bypassed</span>:'On']);
+  if(policy.walletLabel||row.walletLabel)rows.push(['Wallet',policy.walletLabel||row.walletLabel]);
+  if(row.kind==='sniper'){
+    rows.push(['Max copied value',`${row.maxValueETH} ETH`]);
+    rows.push(['Daily cap',`${row.dailySpendingCapETH} ETH`]);
+  }
+  return rows;
+}
+function titleCase(value){const s=String(value||'');return s.charAt(0).toUpperCase()+s.slice(1);}
+
 function triggerRows(snipers,rules){
   const fromSnipers=(snipers?.items||[]).map(item=>{
     const recent=(snipers.events||[]).find(event=>event.sniperId===item.id);
-    const state=recent?.state||'';
-    return {kind:'sniper',id:item.id,title:item.label,
-      status:state==='failed'?'Failing':(item.active===false?'Paused':'Active'),
-      tone:state==='failed'?'bad':(item.active===false?'idle':'ok'),
+    const failed=recent?.state==='failed';
+    return {kind:'sniper',id:item.id,title:item.label,chain:item.chain,
+      walletLabel:item.walletLabel,maxValueETH:item.maxValueETH,
+      dailySpendingCapETH:item.dailySpendingCapETH,
+      status:failed?'Failing':(item.active===false?'Paused':'Active'),
+      tone:failed?'bad':(item.active===false?'idle':'ok'),
       meta:`Post-confirmation · wallet ${item.walletLabel}`,
-      badge:item.chain,value:`${item.maxValueETH} ETH`,
-      policy:[['Blockchain trigger','Auto'],['Max copied value',`${item.maxValueETH} ETH`],
-        ['Daily cap',`${item.dailySpendingCapETH} ETH`],['Gas ceiling',`${item.maxGasGwei} gwei`],
-        ['Wallet',item.walletLabel]],
+      value:`${item.maxValueETH} ETH`,
       search:[item.label,item.chain,item.walletLabel]};
   });
   const fromRules=(rules?.items||[]).map(item=>({
-    kind:'social',id:item.id,title:item.name,
+    kind:'social',id:item.id,title:item.name,platform:String(item.type||'').split('_')[0],
     status:item.consecutiveFailures>0?'Failing':(item.enabled?'Active':'Paused'),
     tone:item.consecutiveFailures>0?'bad':(item.enabled?'ok':'idle'),
-    meta:`${item.type.replace(/_/g,' ')} · ${item.method}`,
-    badge:item.type.split('_')[0],
+    meta:`${String(item.type||'').replace(/_/g,' ')} · ${item.method}`+
+      (item.consecutiveFailures>0?` · ${item.consecutiveFailures} consecutive failures`:''),
     value:item.consecutiveFailures>0?`${item.consecutiveFailures} failed polls`:'',
-    policy:[['Social trigger','Manual'],['Method',item.method],
-      ['Enabled',item.enabled?'Yes':'No'],
-      ['Consecutive failures',String(item.consecutiveFailures||0)]],
     search:[item.name,item.type,item.method]}));
   return [...fromSnipers,...fromRules];
 }
 
-function TriggerCard({row}){
+function TriggerCard({row,onEdit,onToggle}){
   const [open,setOpen]=useState(false);
+  const [policy,setPolicy]=useState(undefined);
+  useEffect(()=>{let live=true;
+    api(`/api/targets/${row.id}?type=${row.kind==='sniper'?'sniper':'social'}`)
+      .then(value=>{if(live)setPolicy(value.policy||null);})
+      .catch(()=>{if(live)setPolicy(null);});
+    return()=>{live=false;};},[row.id,row.kind]);
+  const rows=policyRows(row,policy);
+  // Active triggers offer Pause; a failing one offers Disable -- the prototype uses each verb on
+  // the card whose state it fits, and they are different actions, not a style choice.
+  const stopLabel=row.status==='Failing'?'Disable':'Pause';
   return <div className="blk">
-    <div className="card col" data-open={open?'1':'0'}>
+    <div className="card col" data-open={open?'1':'0'}
+      style={row.tone==='bad'?{borderColor:'var(--loss)'}:undefined}>
       <button type="button" className="colh" aria-expanded={open} onClick={()=>setOpen(v=>!v)}>
         <span className={`p ${row.tone}`}>{row.status}</span>
         <span className="cti">{row.title}</span>
@@ -1715,17 +1755,28 @@ function TriggerCard({row}){
           strokeLinecap="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
       </button>
       <div className="colb">
-        <div className="ch"><span className={`p ${row.tone}`}>{row.status}</span>
-          <div className="sp"/><span className="cw">{row.badge}</span></div>
+        <div className="ch"><span className={`p ${row.tone}`}>{row.status}</span><div className="sp"/>
+          {row.kind==='sniper'
+            ?<span className="chain"><i style={{background:CHAIN_DOT[row.chain]||'var(--faint)'}}/>
+               {CHAIN_LABEL[row.chain]||titleCase(row.chain)}</span>
+            :<span className="cw">{SOCIAL_LABEL[row.platform]||titleCase(row.platform)}</span>}
+        </div>
         <h3 style={{fontSize:'14.5px',marginBottom:'2px'}}>{row.title}</h3>
         <p style={{fontSize:'12px',color:'var(--muted)',marginBottom:'11px'}}>{row.meta}</p>
         <div className="sober" style={{marginBottom:'11px'}}>
           <div className="sh">Policy · inline</div>
-          <table className="led"><tbody>
-            {row.policy.map(([label,value])=><tr key={label}><td>{label}</td><td>{value}</td></tr>)}
-          </tbody></table>
+          {policy===undefined
+            ?<div style={{padding:'9px 13px'}}><div className="sk l w80"/><div className="sk l w60"/></div>
+            :rows
+              ?<table className="led"><tbody>{rows.map(([label,value])=>
+                 <tr key={label}><td>{label}</td><td>{value}</td></tr>)}</tbody></table>
+              :<p style={{padding:'9px 13px',fontSize:'12px',color:'var(--muted)'}}>
+                 Policy unavailable right now.</p>}
         </div>
-        <p style={{fontSize:'11px',color:'var(--faint)'}}>{AUTOMATION_KIND[row.kind]}</p>
+        <div className="br">
+          <button type="button" className="b sm" onClick={()=>onEdit?.(row)}>Edit</button>
+          <button type="button" className="b g sm" onClick={()=>onToggle?.(row)}>{stopLabel}</button>
+        </div>
       </div>
     </div>
   </div>;
@@ -1739,6 +1790,18 @@ function AutomationAll({filter=null,onTab}){
   const loading=(snipers.data===null&&!snipers.error)||(rules.data===null&&!rules.error);
   const all=(!loading&&!error)?triggerRows(snipers.data,rules.data):[];
   const scoped=filter?all.filter(row=>row.kind===filter):all;
+  async function toggleTrigger(row){
+    const stopping=row.status!=='Paused';
+    try{
+      if(row.kind==='social'){
+        await api(`/api/watch-rules/${row.id}/disable`,{method:'POST',body:JSON.stringify({})});
+        notify('Watch rule disabled.',{type:'success'});rules.load();
+      }else{
+        await api(`/api/snipers/${row.id}`,{method:'PUT',body:JSON.stringify({active:!stopping})});
+        notify(stopping?'Sniper paused.':'Sniper resumed.',{type:'success'});snipers.load();
+      }
+    }catch(error){notify(error.message,{type:'error'});}
+  }
   const needle=query.trim().toLowerCase();
   const rows=needle?scoped.filter(row=>row.search.filter(Boolean)
     .some(value=>String(value).toLowerCase().includes(needle))):scoped;
@@ -1783,7 +1846,9 @@ function AutomationAll({filter=null,onTab}){
            </div>
           :rows.length===0
             ?<Empty text="No triggers match this search."/>
-            :<div className="g g2">{rows.map(row=><TriggerCard key={`${row.kind}:${row.id}`} row={row}/>)}</div>}
+            :<div className="g g2">{rows.map(row=><TriggerCard key={`${row.kind}:${row.id}`} row={row}
+                onEdit={item=>onTab?.(item.kind==='sniper'?'snipers':'social')}
+                onToggle={toggleTrigger}/>)}</div>}
   </>;
 }
 
@@ -1791,20 +1856,20 @@ function Automation({tab,onTab,target}){
   const active=AUTOMATION_TABS.some(item=>item.id===tab)?tab:'all';
   return <>
     <div className="page-head"><div className="page-head-text"><p className="eyebrow">Automation</p><h1>Automation</h1></div></div>
-    {/* The post-confirmation disclosure is page-level and unconditional -- it must be visible
-        even with zero triggers configured, because it describes what this page's feature IS,
-        not what any particular row is doing. Previously it only appeared on sniper cards, so an
-        empty Snipers page disclosed nothing at all. */}
-    <p className="notice notice-warning" role="note">
-      Snipers copy <strong>confirmed</strong> wallet transactions after their confirmation
-      threshold. This is not mempool front-running, and nothing here submits before a transaction
-      the target made has already confirmed on chain.
-    </p>
     <SubTabs tabs={AUTOMATION_TABS} active={active} onChange={onTab} label="Automation sections"/>
     {active==='all'&&<AutomationAll onTab={onTab}/>}
     {active==='snipers'&&<><AutomationAll filter="sniper" onTab={onTab}/><Snipers/></>}
     {active==='social'&&<><AutomationAll filter="social" onTab={onTab}/><WatchRules/></>}
     {active==='policies'&&<TargetPolicies target={target}/>}
+    {/* Below the panels and outside every state, exactly as auto.html places it: its own comment
+        reads "disclosure stays visible in EVERY state, including zero triggers and errors". It
+        describes what this page's feature IS, so an empty or failed page must still say it.
+        .nt.w with the warning triangle, and the prototype's sentence verbatim as the bold claim --
+        the extra line after it is this app's own precision about WHEN a copy can be submitted,
+        which the prototype has no room for but which makes the same claim checkable. */}
+    <div className="nt w" role="note" style={{marginTop:'12px'}}>{WARN_TRIANGLE_ICON}
+      <div><b>Copying is post-confirmation, not mempool front-running.</b> Nothing here submits
+        until a transaction the target made has already confirmed on chain.</div></div>
   </>;
 }
 // Wallets = Wallets + P&L (brief §2). On its own page P&L was a table the user had to mentally
@@ -2114,8 +2179,18 @@ function useNavBadges(){
     const latest=events.find(event=>event.sniperId===sniper.id);
     return latest&&['failed','error','skipped'].includes(String(latest.state||'').toLowerCase());
   }).length;
-  return {Mint:mint,Automation:failingRules+failingSnipers,
-    hot:{Mint:mintFailing,Automation:true}};
+  // Derived, not hardcoded. It was `Automation:true`, which is right only for as long as the
+  // count contains nothing but failures -- the moment anything merely-pending joins it, a red
+  // badge would be claiming a break that has not happened. Mint already derives its own flag the
+  // same way, and the owner's rule for these badges is that the colour tracks severity.
+  //
+  // The prototype's rail agrees with the count: _rail.html gives Automation `cnt hot of` reading
+  // 1 against its one Failing rule, while its Active sniper adds nothing. The Policies tab's
+  // "Bypass · Requires an explicit challenge" is a row inside a policy table, not a pending
+  // action, so it is deliberately not counted here.
+  const automationFailing=failingRules+failingSnipers;
+  return {Mint:mint,Automation:automationFailing,
+    hot:{Mint:mintFailing,Automation:automationFailing>0}};
 }
 const TOP_RAIL_PAGES=['Home','Mint','Automation','Wallets','History'];
 // The prototype's .railfoot is Admin, Account, Settings, in that order. Settings had no rail entry
