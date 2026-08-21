@@ -1,7 +1,7 @@
 const {randomBytes,randomUUID}=require('node:crypto');
 const {LinkCodeError}=require('../identity/identityService');
 const {UsernameTakenError}=require('../identity/postgresIdentityRepository');
-const {BotContextError,RateLimitError,requireTextConfirmation}=require('../security/botSecurity');
+const {ACCOUNT_RATE_LIMIT_SCOPE,BotContextError,RateLimitError,requireTextConfirmation}=require('../security/botSecurity');
 const {ValidationError,sendValidationError,requestSchemas}=require('../validation/domain');
 const {AccountBlockedError,AuthorizationError}=require('../governance/governanceService');
 const {GasLookupError}=require('../gas/etherscanGasService');
@@ -205,10 +205,14 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLo
     // encrypted blob ever comes back. That password is verified here, against the stored hash,
     // before it's trusted for anything -- and the same verified value then doubles as the keystore's
     // own encryption password, so there is exactly one password to remember for this whole flow.
-    // Rate limiter is shared with Telegram's /exportkey (same instance, passed in from server.js) so
-    // switching platforms doesn't double the effective rate.
+    // Rate limiting is scoped to the ACCOUNT, not to this surface: the check below passes
+    // ACCOUNT_RATE_LIMIT_SCOPE where it would normally pass 'dashboard', and Telegram's /exportkey
+    // passes the same constant, so both land on one `account:<userId>:exportkey` bucket rather than
+    // one bucket each. Sharing the limiter instance alone was never enough -- createCommandRateLimiter
+    // keys on platform too, so a per-platform string silently doubled the real ceiling. Note this is
+    // deliberately NOT done for 'securitypassword' above, which stays per-platform.
     exportWalletKey:action(async(req,res)=>{confirmation(req);noStore(res);
-      try{exportKeyRateLimiter.check('dashboard',user(req),'exportkey');}
+      try{exportKeyRateLimiter.check(ACCOUNT_RATE_LIMIT_SCOPE,user(req),'exportkey');}
       catch(error){
         if(error instanceof RateLimitError){await auditExportKey(req,'rate_limited','export key rate limit exceeded');res.set('Retry-After',String(Math.ceil(error.retryAfterMs/1000)));return res.status(429).json({error:'Too many export attempts'});}
         throw error;
