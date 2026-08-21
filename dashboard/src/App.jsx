@@ -1973,6 +1973,159 @@ function TriggerCard({row,onEdit,onToggle}){
   </div>;
 }
 
+// A guided form, not a JSON textarea. The owner's point: a user should not have to hand-write
+// {"label":...,"targetAddress":...} to create a sniper, and should not have to know the field names
+// at all. The same object still goes to the API -- it is assembled here from selects and inputs
+// instead of typed. Chain and wallet are dropdowns because both are closed sets the app already
+// knows; typing either was a spelling test with a validation error as the prize.
+//
+// Collapsed by default and opened by New trigger, so the page starts as a list of what exists
+// rather than a form for something that does not.
+function SniperForm({wallets,chains,onCreated,onCancel,editing}){
+  const [busy,setBusy]=useState(false);
+  const formRef=useRef(null);
+  async function submit(event){
+    event.preventDefault();
+    const form=new FormData(event.currentTarget);
+    const body={
+      label:String(form.get('label')||'').trim(),
+      targetAddress:String(form.get('targetAddress')||'').trim(),
+      chain:form.get('chain'),
+      walletLabel:form.get('walletLabel'),
+      maxValueETH:Number(form.get('maxValueETH')),
+      maxGasGwei:Number(form.get('maxGasGwei')),
+      dailySpendingCapETH:Number(form.get('dailySpendingCapETH')),
+      cooldownMs:Number(form.get('cooldownSeconds'))*1000,
+      maxAttempts:Number(form.get('maxAttempts')),
+    };
+    setBusy(true);
+    try{
+      await api(editing?`/api/snipers/${editing}`:'/api/snipers',
+        {method:editing?'PUT':'POST',body:JSON.stringify(body)});
+      notify(editing?'Sniper updated.':'Sniper created.',{type:'success'});
+      // Cleared on success, as the owner asked: leaving the last target address sitting in the
+      // field is how you create the same sniper twice by accident.
+      formRef.current?.reset();
+      onCreated?.();
+    }catch(error){notify(error.message,{type:'error'});}
+    finally{setBusy(false);}
+  }
+  return <form ref={formRef} className="panel form" onSubmit={submit} aria-busy={busy||undefined}>
+    <h2>{editing?'Edit sniper':'New copy sniper'}</h2>
+    <p className="page-lead">Watch one wallet. When it mints and that transaction confirms, copy the
+      same call from yours — never before it confirms.</p>
+    <div className="g gm2 g2">
+      <label className="fl"><span>Name</span>
+        <input className="in" name="label" required placeholder="e.g. copy-whale-1"/></label>
+      <label className="fl"><span>Wallet that pays</span>
+        <select className="in" name="walletLabel" required>
+          {(wallets||[]).map(item=><option key={item.label} value={item.label}>{item.label}</option>)}
+        </select></label>
+      <label className="fl" style={{gridColumn:'1 / -1'}}><span>Wallet to watch</span>
+        <input className="in mono" name="targetAddress" required pattern="0x[0-9a-fA-F]{40}"
+          placeholder="0x… the address whose mints you want to copy"/></label>
+      <label className="fl"><span>Chain</span>
+        <select className="in" name="chain" required defaultValue="ethereum">
+          {(chains||[]).map(item=><option key={item} value={item}>{item}</option>)}
+        </select></label>
+      <label className="fl"><span>Max per copy (ETH)</span>
+        <input className="in tab" name="maxValueETH" type="number" step="any" min="0" required defaultValue="0.01"/></label>
+      <label className="fl"><span>Daily cap (ETH)</span>
+        <input className="in tab" name="dailySpendingCapETH" type="number" step="any" min="0" required defaultValue="0.05"/></label>
+      <label className="fl"><span>Gas ceiling (gwei)</span>
+        <input className="in tab" name="maxGasGwei" type="number" min="1" required defaultValue="50"/></label>
+      <label className="fl"><span>Cooldown (seconds)</span>
+        <input className="in tab" name="cooldownSeconds" type="number" min="0" required defaultValue="60"/></label>
+      <label className="fl"><span>Max attempts</span>
+        <input className="in tab" name="maxAttempts" type="number" min="1" required defaultValue="3"/></label>
+    </div>
+    <div className="nt i" style={{marginTop:'11px'}}>{INFO_ICON}
+      <div>These caps apply to this sniper alone. Your account gas ceiling and spending budget still
+        apply on top, and the lower of the two always wins.</div></div>
+    <div className="br" style={{marginTop:'11px'}}>
+      <button className="b p sm" disabled={busy}>{editing?'Save sniper':'Create sniper'}</button>
+      <button type="button" className="b g sm" onClick={()=>onCancel?.()}>Cancel</button>
+    </div>
+  </form>;
+}
+
+// Same treatment for watch rules. The config shape depends on the type -- an account rule needs a
+// handle, a channel rule needs a channel ID, a keyword rule needs keywords -- so the form shows
+// only the field that type actually uses instead of asking for a config object covering all three.
+const WATCH_TYPES=[
+  {value:'twitter_account',label:'X / Twitter · account'},
+  {value:'twitter_keyword',label:'X / Twitter · keyword'},
+  {value:'discord_channel',label:'Discord · channel'},
+  {value:'discord_keyword',label:'Discord · keyword'},
+  {value:'farcaster_account',label:'Farcaster · account'},
+  {value:'farcaster_keyword',label:'Farcaster · keyword'},
+];
+const WATCH_METHODS=[
+  {value:'official_api',label:'Official API'},
+  {value:'managed_service',label:'Managed service'},
+  {value:'scraper',label:'Scraper'},
+];
+function WatchRuleForm({onCreated,onCancel,editing}){
+  const [type,setType]=useState('twitter_account');
+  const [method,setMethod]=useState('official_api');
+  const [busy,setBusy]=useState(false);
+  const formRef=useRef(null);
+  const kind=type.endsWith('_account')?'account':type.endsWith('_channel')?'channel':'keyword';
+  async function submit(event){
+    event.preventDefault();
+    const form=new FormData(event.currentTarget);
+    const config={};
+    if(kind==='account')config.handle=String(form.get('handle')||'').trim().replace(/^@/,'');
+    if(kind==='channel')config.channelId=String(form.get('channelId')||'').trim();
+    if(kind==='keyword')config.keywords=String(form.get('keywords')||'')
+      .split(',').map(value=>value.trim()).filter(Boolean);
+    const sourceUrl=String(form.get('sourceUrl')||'').trim();
+    if(method==='scraper'&&sourceUrl)config.sourceUrl=sourceUrl;
+    setBusy(true);
+    try{
+      await api(editing?`/api/watch-rules/${editing}`:'/api/watch-rules',
+        {method:editing?'PUT':'POST',
+          body:JSON.stringify({name:String(form.get('name')||'').trim(),type,method,config})});
+      notify(editing?'Watch rule updated.':'Watch rule created.',{type:'success'});
+      formRef.current?.reset();
+      onCreated?.();
+    }catch(error){notify(error.message,{type:'error'});}
+    finally{setBusy(false);}
+  }
+  return <form ref={formRef} className="panel form" onSubmit={submit} aria-busy={busy||undefined}>
+    <h2>{editing?'Edit watch rule':'New social watch rule'}</h2>
+    <p className="page-lead">Watch an account or a keyword. When a contract address appears, it
+      becomes a trigger — manual by default, so nothing spends without you.</p>
+    <div className="g gm2 g2">
+      <label className="fl"><span>Name</span>
+        <input className="in" name="name" required placeholder="e.g. azuki-announcements"/></label>
+      <label className="fl"><span>Watch</span>
+        <select className="in" value={type} onChange={event=>setType(event.target.value)}>
+          {WATCH_TYPES.map(item=><option key={item.value} value={item.value}>{item.label}</option>)}
+        </select></label>
+      {kind==='account'&&<label className="fl" style={{gridColumn:'1 / -1'}}><span>Handle</span>
+        <input className="in" name="handle" required placeholder="zeneca_33 — without the @"/></label>}
+      {kind==='channel'&&<label className="fl" style={{gridColumn:'1 / -1'}}><span>Channel ID</span>
+        <input className="in mono" name="channelId" required placeholder="123456789012345678"/></label>}
+      {kind==='keyword'&&<label className="fl" style={{gridColumn:'1 / -1'}}><span>Keywords</span>
+        <input className="in" name="keywords" required placeholder="mint, drop, allowlist — comma separated"/></label>}
+      <label className="fl"><span>How to read it</span>
+        <select className="in" value={method} onChange={event=>setMethod(event.target.value)}>
+          {WATCH_METHODS.map(item=><option key={item.value} value={item.value}>{item.label}</option>)}
+        </select></label>
+      {method==='scraper'&&<label className="fl"><span>Source URL</span>
+        <input className="in" name="sourceUrl" placeholder="https://…"/></label>}
+    </div>
+    <div className="nt i" style={{marginTop:'11px'}}>{INFO_ICON}
+      <div>A social mention is not proof. Matches arrive as manual triggers you approve, unless you
+        change that in Policies for this rule specifically.</div></div>
+    <div className="br" style={{marginTop:'11px'}}>
+      <button className="b p sm" disabled={busy}>{editing?'Save rule':'Create watch rule'}</button>
+      <button type="button" className="b g sm" onClick={()=>onCancel?.()}>Cancel</button>
+    </div>
+  </form>;
+}
+
 function AutomationAll({filter=null,onTab}){
   const snipers=useLoad('/api/snipers',[],'snipers.changed');
   const rules=useLoad('/api/watch-rules',[],'watch.changed');
@@ -2050,18 +2203,33 @@ function AutomationAll({filter=null,onTab}){
 
 function Automation({tab,onTab,target}){
   const active=AUTOMATION_TABS.some(item=>item.id===tab)?tab:'all';
+  // Collapsed until asked for: the page should open as a list of what exists, not a form for
+  // something that does not.
+  const [creating,setCreating]=useState(false);
+  // Close it when the tab changes: opening New trigger on Snipers and then switching to Social
+  // otherwise left a watch-rule form already open, which reads as though the tab did it.
+  useEffect(()=>{setCreating(false);},[active]);
   // Same helper the rail badge uses, so the tab numbers and the Automation total are one
   // calculation rather than two that agree by luck.
   const snipers=useLoad('/api/snipers',[],'snipers.changed');
   const rules=useLoad('/api/watch-rules',[],'watchrules.changed');
   const confirmations=useLoad('/api/confirmations',[],'confirmations.changed');
+  const wallets=useLoad('/api/wallets',[],'wallets.changed');
   const badges=automationBadges({snipers:snipers.data,rules:rules.data,confirmations:confirmations.data}).tabs;
   return <>
-    <div className="page-head"><div className="page-head-text"><p className="eyebrow">Automation</p><h1>Automation</h1></div></div>
+    <div className="page-head"><div className="page-head-text"><p className="eyebrow">Automation</p><h1>Automation</h1></div>
+      <button type="button" className="b p" onClick={()=>{
+        if(active==='snipers'||active==='social'){setCreating(true);return;}
+        onTab?.('snipers');setCreating(true);
+      }}>New trigger</button></div>
     <SubTabs tabs={AUTOMATION_TABS} active={active} onChange={onTab} label="Automation sections" badges={badges}/>
     {active==='all'&&<AutomationAll onTab={onTab}/>}
-    {active==='snipers'&&<><AutomationAll filter="sniper" onTab={onTab}/><Snipers formOnly/></>}
-    {active==='social'&&<><AutomationAll filter="social" onTab={onTab}/><WatchRules formOnly/></>}
+    {active==='snipers'&&<>{creating&&<SniperForm wallets={wallets.data} chains={EVM_CHAINS}
+      onCreated={()=>{setCreating(false);snipers.load();}} onCancel={()=>setCreating(false)}/>}
+      <AutomationAll filter="sniper" onTab={onTab}/></>}
+    {active==='social'&&<>{creating&&<WatchRuleForm
+      onCreated={()=>{setCreating(false);rules.load();}} onCancel={()=>setCreating(false)}/>}
+      <AutomationAll filter="social" onTab={onTab}/></>}
     {active==='policies'&&<TargetPolicies target={target}/>}
     {/* Below the panels and outside every state, exactly as auto.html places it: its own comment
         reads "disclosure stays visible in EVERY state, including zero triggers and errors". It
