@@ -988,7 +988,15 @@ function TargetPolicies({target}){
   return <>
     <p className="eyebrow">Per-target safety — trigger modes, verification, presets, and read-only effective governance ceilings.</p>
     {missing&&<Notice error={`No target matches ${target}. It may have been removed. Showing all targets instead.`}/>}
-    {snipers.data!==null&&rules.data!==null&&all.length===0
+    {/* Loading and error were both absent: while the two lists were in flight this rendered an
+        empty policy grid, and if either request failed it rendered the same empty grid and said
+        nothing at all. A silent failure on a SAFETY screen is the worst place to have one --
+        "no policies" and "could not read your policies" mean opposite things. */}
+    <Notice error={loadError(snipers,'Could not load your triggers.')||loadError(rules,'Could not load your triggers.')}/>
+    {(snipers.data===null&&!snipers.error)||(rules.data===null&&!rules.error)
+      ?<Skeleton/>
+      :null}
+    {!snipers.error&&!rules.error&&snipers.data!==null&&rules.data!==null&&all.length===0
       &&<Empty text="No triggers yet. Create a sniper or a social rule first — a policy configures an existing target, it does not create one."/>}
     <div className="policy-grid">{targets.map(item=><PolicyEditor key={`${item.type}:${item.id}`} target={item} highlighted={item.id===target}/>)}</div>
   </>;
@@ -1702,9 +1710,25 @@ function policyRows(row,policy){
   if(policy.walletLabel||row.walletLabel)rows.push(['Wallet',policy.walletLabel||row.walletLabel]);
   if(row.kind==='sniper'){
     rows.push(['Max copied value',`${row.maxValueETH} ETH`]);
-    rows.push(['Daily cap',`${row.dailySpendingCapETH} ETH`]);
+    rows.push(['Daily cap used',`${row.spend.eth.toFixed(3)} / ${row.dailySpendingCapETH} ETH`]);
   }
   return rows;
+}
+// The prototype's "Daily cap used · 0.140 / 0.200" and its .meter. governanceService.js:315
+// withholds spentTodayWei because rollingSpendWei sums COALESCE(actual_network_cost_wei,
+// estimated_cost_wei) and the actual column holds gas only -- a confirmed mint's VALUE drops out.
+// sniper_seen_transactions.copied_value_wei is that missing value, per event, and it reaches the
+// dashboard through /api/snipers events. Summing today's copies gives the figure the server
+// refuses to publish, computed from the column that actually holds it rather than the one that
+// does not. Only states that really moved money count: a skipped or failed copy spent nothing.
+const SPENT_STATES=new Set(['confirmed','sent','submitted','pending']);
+function dailyCopySpend(events,sniperId){
+  const dayStart=new Date();dayStart.setHours(0,0,0,0);
+  const mine=(events||[]).filter(event=>event.sniperId===sniperId
+    &&SPENT_STATES.has(String(event.state||'').toLowerCase())
+    &&Number(event.seenAt||event.updatedAt||0)>=dayStart.getTime());
+  const wei=mine.reduce((total,event)=>total+(Number(event.copiedValueWei)||0),0);
+  return {copies:mine.length,eth:wei/1e18};
 }
 function titleCase(value){const s=String(value||'');return s.charAt(0).toUpperCase()+s.slice(1);}
 
@@ -1717,7 +1741,8 @@ function triggerRows(snipers,rules){
       dailySpendingCapETH:item.dailySpendingCapETH,
       status:failed?'Failing':(item.active===false?'Paused':'Active'),
       tone:failed?'bad':(item.active===false?'idle':'ok'),
-      meta:`Post-confirmation · wallet ${item.walletLabel}`,
+      spend:dailyCopySpend(snipers.events,item.id),
+      meta:`Post-confirmation · wallet ${item.walletLabel}`+(dailyCopySpend(snipers.events,item.id).copies?` · ${dailyCopySpend(snipers.events,item.id).copies} copies today`:''),
       value:`${item.maxValueETH} ETH`,
       search:[item.label,item.chain,item.walletLabel]};
   });
@@ -1736,7 +1761,7 @@ function TriggerCard({row,onEdit,onToggle}){
   const [open,setOpen]=useState(false);
   const [policy,setPolicy]=useState(undefined);
   useEffect(()=>{let live=true;
-    api(`/api/targets/${row.id}?type=${row.kind==='sniper'?'sniper':'social'}`)
+    api(`/api/targets/${row.id}?type=${row.kind==='sniper'?'sniper':'social_rule'}`)
       .then(value=>{if(live)setPolicy(value.policy||null);})
       .catch(()=>{if(live)setPolicy(null);});
     return()=>{live=false;};},[row.id,row.kind]);
@@ -1773,6 +1798,13 @@ function TriggerCard({row,onEdit,onToggle}){
               :<p style={{padding:'9px 13px',fontSize:'12px',color:'var(--muted)'}}>
                  Policy unavailable right now.</p>}
         </div>
+        {row.kind==='sniper'&&row.dailySpendingCapETH>0&&(()=>{
+          const pct=Math.min(100,(row.spend.eth/row.dailySpendingCapETH)*100);
+          // .warn once most of the cap is gone, matching the prototype's amber fill at 70%.
+          return <div className="meter" style={{marginBottom:'11px'}} role="img"
+            aria-label={`${row.spend.eth.toFixed(3)} of ${row.dailySpendingCapETH} ETH daily cap used today`}>
+            <i className={pct>=60?'warn':undefined} style={{width:`${pct}%`}}/></div>;
+        })()}
         <div className="br">
           <button type="button" className="b sm" onClick={()=>onEdit?.(row)}>Edit</button>
           <button type="button" className="b g sm" onClick={()=>onToggle?.(row)}>{stopLabel}</button>
@@ -1825,7 +1857,7 @@ function AutomationAll({filter=null,onTab}){
       ?<div className="ol"><div className="sk row"/><div className="sk row"/><div className="sk row"/><div className="sk row"/></div>
       :error
         ?null
-        :all.length===0
+        :all.length===0&&!filter
           /* The prototype's empty state: two explainer cards, one CTA each. It explains what the
              page IS to someone who has never made a trigger, which a bare "nothing here" cannot. */
           ?<div className="g g2">
@@ -1844,6 +1876,11 @@ function AutomationAll({filter=null,onTab}){
                <button type="button" className="b p sm" onClick={()=>onTab?.('social')}>Create a watch rule</button>
              </div>
            </div>
+          :all.length===0
+            /* A filtered tab with nothing to show says nothing here -- the tab's own list and
+               create form render directly below, and an empty state on top of a form reads as
+               though the form is unavailable. */
+            ?null
           :rows.length===0
             ?<Empty text="No triggers match this search."/>
             :<div className="g g2">{rows.map(row=><TriggerCard key={`${row.kind}:${row.id}`} row={row}
@@ -1854,9 +1891,15 @@ function AutomationAll({filter=null,onTab}){
 
 function Automation({tab,onTab,target}){
   const active=AUTOMATION_TABS.some(item=>item.id===tab)?tab:'all';
+  // Same helper the rail badge uses, so the tab numbers and the Automation total are one
+  // calculation rather than two that agree by luck.
+  const snipers=useLoad('/api/snipers',[],'snipers.changed');
+  const rules=useLoad('/api/watch-rules',[],'watchrules.changed');
+  const confirmations=useLoad('/api/confirmations',[],'confirmations.changed');
+  const badges=automationBadges({snipers:snipers.data,rules:rules.data,confirmations:confirmations.data}).tabs;
   return <>
     <div className="page-head"><div className="page-head-text"><p className="eyebrow">Automation</p><h1>Automation</h1></div></div>
-    <SubTabs tabs={AUTOMATION_TABS} active={active} onChange={onTab} label="Automation sections"/>
+    <SubTabs tabs={AUTOMATION_TABS} active={active} onChange={onTab} label="Automation sections" badges={badges}/>
     {active==='all'&&<AutomationAll onTab={onTab}/>}
     {active==='snipers'&&<><AutomationAll filter="sniper" onTab={onTab}/><Snipers/></>}
     {active==='social'&&<><AutomationAll filter="social" onTab={onTab}/><WatchRules/></>}
@@ -2155,10 +2198,34 @@ function MoreSheet({open,page,go,onClose}){return <>{open&&<div className="sheet
 //
 // Each source refreshes on the socket event it already owns, so the badges follow the same data
 // the pages do rather than a second, drifting copy of it.
+function automationBadges({snipers,rules,confirmations}){
+  const events=snipers?.events||[];
+  // A sniper counts as failing on its MOST RECENT event only: an old failure it has since
+  // recovered from is history, not an alert.
+  const failingSnipers=(snipers?.items||[]).filter(sniper=>{
+    const latest=events.find(event=>event.sniperId===sniper.id);
+    return latest&&['failed','error','skipped'].includes(String(latest.state||'').toLowerCase());
+  }).length;
+  const failingRules=(rules?.items||[]).filter(rule=>Number(rule.consecutiveFailures)>0).length;
+  // Pending confirmations are 'needs you', not 'broke' -- amber, never red. A trigger waiting on
+  // a human is the system working as designed.
+  const pending=(confirmations||[]).length;
+  const total=failingSnipers+failingRules+pending;
+  return {
+    tabs:{
+      snipers:failingSnipers?{count:failingSnipers,tone:'bad'}:null,
+      social:failingRules?{count:failingRules,tone:'bad'}:null,
+      policies:pending?{count:pending,tone:'wn'}:null,
+    },
+    total,
+    hot:(failingSnipers+failingRules)>0,
+  };
+}
 function useNavBadges(){
   const tasks=useLoad('/api/tasks?page=1&pageSize=1',[],'tasks.changed');
   const rules=useLoad('/api/watch-rules',[],'watchrules.changed');
   const snipers=useLoad('/api/snipers',[],'snipers.changed');
+  const confirmations=useLoad('/api/confirmations',[],'confirmations.changed');
   const counts=tasks.data?.counts;
   // Mint counts schedules that have STOPPED and want a decision. It escalates to the red .cnt.hot
   // only when one of them actually failed -- paused and expired are states you can live with,
@@ -2171,14 +2238,7 @@ function useNavBadges(){
   // wallpaper. Owner asked what could turn it red, which only makes sense under this reading.
   const mint=counts?(counts.paused||0)+(counts.failed||0)+(counts.expired||0):0;
   const mintFailing=Boolean(counts&&(counts.failed||0)>0);
-  const failingRules=(rules.data?.items||[]).filter(rule=>Number(rule.consecutiveFailures)>0).length;
-  // A sniper is failing when its most recent event failed -- an old failure it has since recovered
-  // from is history, not an alert.
-  const events=snipers.data?.events||[];
-  const failingSnipers=(snipers.data?.items||[]).filter(sniper=>{
-    const latest=events.find(event=>event.sniperId===sniper.id);
-    return latest&&['failed','error','skipped'].includes(String(latest.state||'').toLowerCase());
-  }).length;
+  const automation=automationBadges({snipers:snipers.data,rules:rules.data,confirmations:confirmations.data});
   // Derived, not hardcoded. It was `Automation:true`, which is right only for as long as the
   // count contains nothing but failures -- the moment anything merely-pending joins it, a red
   // badge would be claiming a break that has not happened. Mint already derives its own flag the
@@ -2188,9 +2248,8 @@ function useNavBadges(){
   // 1 against its one Failing rule, while its Active sniper adds nothing. The Policies tab's
   // "Bypass · Requires an explicit challenge" is a row inside a policy table, not a pending
   // action, so it is deliberately not counted here.
-  const automationFailing=failingRules+failingSnipers;
-  return {Mint:mint,Automation:automationFailing,
-    hot:{Mint:mintFailing,Automation:automationFailing>0}};
+  return {Mint:mint,Automation:automation.total,
+    hot:{Mint:mintFailing,Automation:automation.hot}};
 }
 const TOP_RAIL_PAGES=['Home','Mint','Automation','Wallets','History'];
 // The prototype's .railfoot is Admin, Account, Settings, in that order. Settings had no rail entry
