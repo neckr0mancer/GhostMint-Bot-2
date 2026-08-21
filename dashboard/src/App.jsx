@@ -2,7 +2,7 @@
 import React,{useCallback,useEffect,useRef,useState} from 'react';
 import Admin from './Admin.jsx';
 import {shortAddress} from './dashboardWidgets/homeParts.jsx';
-import {loadError,batchRowDetail} from './shared.jsx';
+import {loadError,batchRowDetail,useRetryAfter} from './shared.jsx';
 import {ACTIVITY_EVENTS,api,Ledger,NumberField,SectionCard,confirmDialog,ConfirmHost,consumePendingMintPrefill,CopyButton,csrf,downloadFile,Empty,EVM_CHAINS,Field,Form,getNotificationLog,notify,Notice,PageTitle,Pager,promptDialog,relativeTime,Select,Skeleton,StatusPill,SubTabs,subscribeNotificationLog,ToastHost,useLoad,useLiveSocket,setPendingMintPrefill,quantityPicks} from './shared.jsx';
 import Dashboard from './Dashboard.jsx';
 // Phase 4, unit 1 of 5 (brief §2). The 11->5 merge lands one page at a time so any single merge
@@ -199,7 +199,88 @@ async function exportWalletKeystore(label,{profile,onProfileChange}){
     notify('Encrypted keystore downloaded. Store it and your security password separately and securely.',{type:'success'});
   }catch(value){notify(value.message,{type:'error'});}
 }
-function Wallets({profile,onProfileChange}){const walletList=useLoad('/api/wallets',[],'wallets.changed');const {data:wallets,load}=walletList;const [createChain,setCreateChain]=useState('evm');const [importChain,setImportChain]=useState('evm');const [importMethod,setImportMethod]=useState('privateKey');const [query,setQuery]=useState('');async function submit(event,path){event.preventDefault();const form=event.currentTarget;const values=Object.fromEntries(new FormData(form));try{await api(path,{method:'POST',body:JSON.stringify(values)});form.reset();notify('Wallet saved securely.',{type:'success'});load();}catch(value){notify(value.message,{type:'error'});}}async function remove(label){if(!await confirmDialog(`Remove wallet ${label}? This cannot be undone.`))return;try{await api(`/api/wallets/${encodeURIComponent(label)}`,{method:'DELETE',body:JSON.stringify({confirmation:'CONFIRM'})});load();}catch(value){notify(value.message,{type:'error'});}}
+// Zero renders as 0.000000, never blank -- the ??-not-truthiness rule wallets.html's own footnote
+// states. A chain whose RPC failed returns null, and that is Unavailable: a DIFFERENT fact from
+// zero. Conflating the two is how a funded wallet reads as empty during an RPC outage, which is
+// the one misreading here that could make someone top up a wallet that never needed it.
+function walletBalanceText(value,places){
+  if(value===null||value===undefined||value==='')return null;
+  const parsed=Number(value);
+  return Number.isFinite(parsed)?parsed.toFixed(places===undefined?6:places):String(value);
+}
+// The wallet's own chain carries the headline number; any others are the same address holding
+// funds elsewhere, which is why they are a table row rather than a second big figure.
+function walletHome(wallet){
+  const balances=wallet.balances||[];
+  return balances.find(item=>item.chain===wallet.chain)||balances[0]||null;
+}
+// Funded / Unfunded / Unavailable, and nothing between them. The prototype also draws "Low", but
+// low against WHAT -- no threshold exists anywhere in the data model, and only a mint price would
+// define one. Inventing a cutoff would put a judgement on screen the app cannot actually make, so
+// these three are the three the balance can prove on its own.
+function walletStatus(wallet){
+  const text=walletBalanceText(walletHome(wallet)?.balance);
+  if(text===null)return {label:'Unavailable',tone:''};
+  return Number(text)>0?{label:'Funded',tone:'ok'}:{label:'Unfunded',tone:'wn'};
+}
+// wallets.html's .blk > .card.col: a collapsed summary row on a phone, the whole card on a desktop.
+// prototype.css hides .colh above the mobile breakpoint, so this is one markup serving both rather
+// than a viewport branch in JS -- the same shape TriggerCard uses on Automation.
+//
+// What the ledger can honestly say per wallet: pnl_records has no wallet column
+// (001_initial_schema.sql:48), so cost, gas and net cannot be split per wallet at all. The
+// prototype's own Performance note says exactly that, even though its card mock shows those rows
+// anyway -- the note is right and the mock is not. `minted` IS per wallet: a real column on
+// wallets, incremented on every confirmed mint (server.js:334 scheduled, :530 direct, :688 sniper).
+// So the table carries the per-chain balances plus that count, the honest subset of what was drawn.
+function WalletCard({wallet,onExport,onRemove}){
+  const [open,setOpen]=useState(false);
+  const home=walletHome(wallet);
+  const status=walletStatus(wallet);
+  const headline=walletBalanceText(home?.balance,3);
+  const balances=wallet.balances||[];
+  return <div className="blk">
+    <div className="card col" data-open={open?'1':'0'}
+      style={status.tone==='wn'?{borderColor:'var(--warn)'}:undefined}>
+      <button type="button" className="colh" aria-expanded={open} onClick={()=>setOpen(value=>!value)}>
+        <span className={`p ${status.tone}`}>{status.label}</span>
+        <span className="cti">{wallet.label}</span>
+        <span className="ctv">{headline===null?'Unavailable':headline}</span>
+        <svg className="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"
+          strokeLinecap="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+      </button>
+      <div className="colb">
+        <div className="ch"><h2>{wallet.label}</h2><div className="sp"></div>
+          <span className={`p ${status.tone}`}>{status.label}</span></div>
+        <div className="tv tab" style={{marginBottom:'3px',
+          color:status.tone==='wn'?'var(--warn-text)':undefined}}>
+          {headline===null?'Unavailable':headline}
+          {headline===null?null:<small>{home?.symbol||'ETH'}</small>}
+        </div>
+        <div className="addr" style={{marginBottom:'11px'}}>
+          <code className="mono">{shortHex(wallet.address)}</code>
+          <CopyButton value={wallet.address} label="Copy wallet address"/>
+        </div>
+        <div className="sober">
+          <div className="sh">Balances · by chain</div>
+          <table className="led"><tbody>
+            {balances.length?balances.map(item=><tr key={item.chain}>
+              <td>{chainMeta(item.chain).label||item.chain}</td>
+              <td>{walletBalanceText(item.balance)===null?'Unavailable'
+                :`${walletBalanceText(item.balance)} ${item.symbol||''}`.trim()}</td>
+            </tr>):<tr><td>Balances</td><td>Unavailable</td></tr>}
+            <tr className="tot"><td>Minted · lifetime</td><td>{wallet.minted??0}</td></tr>
+          </tbody></table>
+        </div>
+        <div className="br" style={{marginTop:'11px'}}>
+          <button type="button" className="b g sm" onClick={onExport}>Export key</button>
+          <button type="button" className="b d sm" onClick={onRemove}>Remove</button>
+        </div>
+      </div>
+    </div>
+  </div>;
+}
+function Wallets({profile,onProfileChange,walletList,formsOpen,onFormsOpen}){const {data:wallets,load}=walletList;const [createChain,setCreateChain]=useState('evm');const [importChain,setImportChain]=useState('evm');const [importMethod,setImportMethod]=useState('privateKey');const [query,setQuery]=useState('');async function submit(event,path){event.preventDefault();const form=event.currentTarget;const values=Object.fromEntries(new FormData(form));try{await api(path,{method:'POST',body:JSON.stringify(values)});form.reset();notify('Wallet saved securely.',{type:'success'});load();}catch(value){notify(value.message,{type:'error'});}}async function remove(label){if(!await confirmDialog(`Remove wallet ${label}? This cannot be undone.`))return;try{await api(`/api/wallets/${encodeURIComponent(label)}`,{method:'DELETE',body:JSON.stringify({confirmation:'CONFIRM'})});load();}catch(value){notify(value.message,{type:'error'});}}
   const exportKey=label=>exportWalletKeystore(label,{profile,onProfileChange});
   // Batch import. /api/wallets/batch-import has existed all along with no way to reach it from the
   // dashboard, so importing more than one wallet meant using Telegram or Discord -- the two places
@@ -231,7 +312,42 @@ function Wallets({profile,onProfileChange}){const walletList=useLoad('/api/walle
     }catch(value){notify(value.message,{type:'error'});}
     finally{setBatchBusy(false);}
   }
-  const normalized=query.trim().toLowerCase();const filtered=wallets?(normalized?wallets.filter(wallet=>[wallet.label,wallet.address,wallet.chain].filter(Boolean).some(value=>String(value).toLowerCase().includes(normalized))):wallets):[];return <><p className="page-lead">Create server-side encrypted wallets, check balances, and manage imports.</p><Notice error={loadError(walletList,'Could not load wallets.')}/><div className="page-toolbar"><label className="page-search">Find a wallet<input type="search" value={query} placeholder="Label, address, chain…" onChange={e=>setQuery(e.target.value)}/></label></div>{wallets===null?<Skeleton/>:<div className="card-grid wallet-grid">{filtered.map(wallet=><article className="card" key={wallet.label}><div><span className="pill">{wallet.chain}</span><h2>{wallet.label}</h2></div><div className="user-card-identity"><code>{wallet.address}</code><CopyButton value={wallet.address} label="Copy wallet address"/></div><div className="wallet-balances">{wallet.balances?.length?wallet.balances.map(b=><div className="wallet-balance-row" key={b.chain}><span>{chainMeta(b.chain).label}</span><strong>{b.balance??'Unavailable'} {b.symbol}</strong></div>):<div className="wallet-balance-row">Unavailable</div>}</div><div className="br"><button className="b g sm" onClick={()=>exportKey(wallet.label)}>Export key</button><button className="b d sm" onClick={()=>remove(wallet.label)}>Remove</button></div></article>)}{filtered.length===0&&<Empty text={normalized?'No wallets match this search.':'No wallets yet. Create the recommended server-side wallet below.'}/>}</div>}<div className="form-grid wallet-forms"><Form className="form-wallet-create" title="Create wallet" note="Recommended - the private key is generated, encrypted, and never returned." onSubmit={e=>submit(e,'/api/wallets/create')}><Field name="label" label="Label" placeholder="$1 and a dream"/><WalletChainSelect name="chain" label="Chain" value={createChain} onChange={e=>setCreateChain(e.target.value)}/><button className="b p">Create securely</button></Form><Form className="form-wallet-import" title="Import wallet" warning="Not recommended: your key or seed phrase crosses browser memory and network transit. Use HTTPS; it is encrypted immediately and never returned." onSubmit={e=>submit(e,'/api/wallets/import')}><Field name="label" label="Label" placeholder="$1 and a dream"/><WalletChainSelect name="chain" label="Chain" value={importChain} onChange={e=>setImportChain(e.target.value)}/><div className="method-toggle"><span>Import using</span><div className="seg" role="radiogroup" aria-label="Import method"><button type="button" aria-pressed={importMethod==='privateKey'} className={importMethod==='privateKey'?'on':undefined} onClick={()=>setImportMethod('privateKey')}>Private key</button><button type="button" aria-pressed={importMethod==='seedPhrase'} className={importMethod==='seedPhrase'?'on':undefined} onClick={()=>setImportMethod('seedPhrase')}>Seed phrase</button></div></div><input type="hidden" name="importMethod" value={importMethod}/>{importMethod==='privateKey'?<Field name="privateKey" label="Private key" type="password" autoComplete="off"/>:<label>Seed phrase (12-24 words)<textarea className="compact" name="seedPhrase" required autoComplete="off" placeholder="witch collapse practice feed shame open despair creek road again ice least"/></label>}<button className="b g">Import over HTTPS</button></Form>
+  const normalized=query.trim().toLowerCase();
+  const filtered=wallets?(normalized?wallets.filter(wallet=>[wallet.label,wallet.address,wallet.chain]
+    .filter(Boolean).some(value=>String(value).toLowerCase().includes(normalized))):wallets):[];
+  const loading=wallets===null&&!walletList.error;
+  const empty=Array.isArray(wallets)&&wallets.length===0;
+  // The chain picker is EVM / Solana rather than the prototype's four-EVM-chain dropdown, and that
+  // is deliberate: a private key or seed phrase is chain-agnostic within EVM, so the per-chain
+  // choice was noise. WalletChainSelect is the control that decision produced (see CLAUDE.md), and
+  // the prototype's markup predates it.
+  //
+  // includeCreate is false in the EMPTY state only, where .frun below already IS the create form --
+  // rendering both would put two identical Create securely buttons on one screen.
+  const forms=includeCreate=><div className="form-grid wallet-forms">
+    {includeCreate&&<Form className="form-wallet-create" title="Create wallet"
+      note="Recommended - the private key is generated, encrypted, and never returned."
+      onSubmit={event=>submit(event,'/api/wallets/create')}>
+      <Field name="label" label="Label" placeholder="$1 and a dream"/>
+      <WalletChainSelect name="chain" label="Chain" value={createChain} onChange={e=>setCreateChain(e.target.value)}/>
+      <button className="b p">Create securely</button>
+    </Form>}
+    <Form className="form-wallet-import" title="Import wallet"
+      warning="Not recommended: your key or seed phrase crosses browser memory and network transit. Use HTTPS; it is encrypted immediately and never returned."
+      onSubmit={event=>submit(event,'/api/wallets/import')}>
+      <Field name="label" label="Label" placeholder="$1 and a dream"/>
+      <WalletChainSelect name="chain" label="Chain" value={importChain} onChange={e=>setImportChain(e.target.value)}/>
+      <div className="method-toggle"><span>Import using</span>
+        <div className="seg" role="radiogroup" aria-label="Import method">
+          <button type="button" aria-pressed={importMethod==='privateKey'} className={importMethod==='privateKey'?'on':undefined} onClick={()=>setImportMethod('privateKey')}>Private key</button>
+          <button type="button" aria-pressed={importMethod==='seedPhrase'} className={importMethod==='seedPhrase'?'on':undefined} onClick={()=>setImportMethod('seedPhrase')}>Seed phrase</button>
+        </div></div>
+      <input type="hidden" name="importMethod" value={importMethod}/>
+      {importMethod==='privateKey'
+        ?<Field name="privateKey" label="Private key" type="password" autoComplete="off"/>
+        :<label>Seed phrase (12-24 words)<textarea className="compact" name="seedPhrase" required autoComplete="off" placeholder="witch collapse practice feed shame open despair creek road again ice least"/></label>}
+      <button className="b g">Import over HTTPS</button>
+    </Form>
     <Form className="form-wallet-batch-import" title="Import many wallets"
       warning="Same risk as a single import, multiplied. Every key crosses browser memory and network transit; each is encrypted on arrival and never returned."
       onSubmit={submitBatchImport}>
@@ -249,7 +365,59 @@ function Wallets({profile,onProfileChange}){const walletList=useLoad('/api/walle
           <span className="be mono">{item.status==='success'?item.address:item.error}</span>
         </div>)}
       </div>}
-    </Form></div></>}
+    </Form>
+  </div>;
+
+  return <>
+    {/* The error state says what did NOT happen as well as what did: a read failing is not a
+        wallet being lost, and that is the first thing anyone seeing this needs to know. */}
+    <Notice error={walletList.error?{title:'Could not load wallets.',
+      detail:'Your wallets and their keys are unaffected — this is a read failure only.',
+      code:`${walletList.status||500} · Request failed safely`,onRetry:walletList.load}:null}/>
+    {loading&&<div className="g g3" aria-busy="true">{[0,1,2].map(index=><div className="card" key={index}>
+      <div className="sk big"></div><div className="sk l w80"></div><div className="sk row"></div></div>)}</div>}
+    {empty&&<div className="g">
+      <div className="frun">
+        <h2>Create your first wallet</h2>
+        <p>GhostMint generates the private key on the server, encrypts it immediately with
+          AES-256-GCM, and returns only the public address. The key is never sent to your browser.</p>
+        <form onSubmit={event=>submit(event,'/api/wallets/create')}>
+          <div className="g gm2 g2" style={{marginBottom:'13px'}}>
+            <label className="fl"><span>Label</span>
+              <input className="in" name="label" required placeholder="e.g. Primary"/></label>
+            <WalletChainSelect name="chain" label="Chain" value={createChain} onChange={e=>setCreateChain(e.target.value)}/>
+          </div>
+          <button className="b p">Create securely</button>
+        </form>
+      </div>
+      <div className="card">
+        <div className="ch"><h2>Import an existing wallet</h2><div className="sp"></div>
+          <span className="p wn">Not recommended</span></div>
+        <p style={{fontSize:'12.5px',color:'var(--muted)',marginBottom:'12px'}}>Your key or seed
+          phrase crosses browser memory and network transit. It is encrypted the moment it arrives
+          and never returned — but creating a wallet above avoids the exposure entirely.</p>
+        <button type="button" className="b g sm" aria-expanded={formsOpen}
+          onClick={()=>onFormsOpen?.(!formsOpen)}>Import over HTTPS</button>
+      </div>
+    </div>}
+    {!loading&&!empty&&!walletList.error&&<>
+      <div className="sfrow"><div className="sf">
+        <span className="si" aria-hidden="true">{SEARCH_ICON}</span>
+        <input type="search" value={query} placeholder="Label, address, chain…"
+          aria-label="Find a wallet" onChange={event=>setQuery(event.target.value)}/>
+        {query&&<button type="button" className="sx" aria-label="Clear search"
+          onClick={()=>setQuery('')}>×</button>}
+      </div></div>
+      {filtered.length
+        ?<div className="g g3">{filtered.map(wallet=><WalletCard key={wallet.label} wallet={wallet}
+            onExport={()=>exportKey(wallet.label)} onRemove={()=>remove(wallet.label)}/>)}</div>
+        :<Empty text="No wallets match this search."/>}
+      <p style={{fontSize:'11.5px',color:'var(--faint)',marginTop:'10px'}}>Zero renders
+        as <b>0.000000</b>, never blank. A chain whose RPC failed shows <b>Unavailable</b>, which is
+        not the same as zero.</p>
+    </>}
+    {formsOpen&&forms(!empty)}
+  </>;}
 const SEADROP_SIGNATURE='mintPublic(address,address,address,uint256)';
 const ADDRESS_SHAPE=/^0x[0-9a-fA-F]{40}$/;
 function weiToEthDisplay(wei){
@@ -300,6 +468,7 @@ const PAUSE_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stro
 // (mint.html:215) and a wallet for "No wallets to batch" (mint.html:192).
 const PRESET_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><path d="M5 5h14v14H5z"/><path d="M9 9h6v6H9z"/></svg>;
 const WALLET_EMPTY_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><rect x="3" y="6" width="18" height="13" rx="2.5"/></svg>;
+const TREND_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><path d="M3 17l5-6 4 3 5-8"/></svg>;
 const CROSS_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><path d="M18 6 6 18M6 6l12 12"/></svg>;
 const LOCK_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><rect x="4" y="10.5" width="16" height="10.5" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/></svg>;
 function shortHex(value){const v=String(value||"");return v.length>12?`${v.slice(0,6)}…${v.slice(-4)}`:v;}
@@ -971,10 +1140,158 @@ function Activity(){const [page,setPage]=useState(1);const [search,setSearch]=us
 // rollups are computed straight from that same already-loaded list, not a separate fetch, since
 // summing what's already on screen is simpler than a new endpoint for the same numbers.
 const PNL_PERIODS=[['day','Today',86400000],['week','7 days',7*86400000],['month','30 days',30*86400000],['year','365 days',365*86400000]];
-function summarizePnlPeriod(records,windowMs){const cutoff=Date.now()-windowMs;const inWindow=records.filter(item=>item.t>=cutoff);
+function summarizePnlPeriod(records,windowMs){const cutoff=windowMs===null?-Infinity:Date.now()-windowMs;const inWindow=records.filter(item=>item.t>=cutoff);
   return {count:inWindow.length,cost:inWindow.reduce((sum,item)=>sum+Number(item.cost),0),sale:inWindow.reduce((sum,item)=>sum+Number(item.sale),0),
     gas:inWindow.reduce((sum,item)=>sum+Number(item.gas),0),net:inWindow.reduce((sum,item)=>sum+Number(item.net),0)};}
-function Pnl(){const listing=useLoad('/api/pnl',[],'pnl.changed');const [editing,setEditing]=useState(null);const [query,setQuery]=useState('');async function save(event){event.preventDefault();const form=event.currentTarget;const wasEditing=editing;const body=JSON.stringify(Object.fromEntries(new FormData(form)));try{await api(wasEditing?`/api/pnl/${wasEditing}`:'/api/pnl',{method:wasEditing?'PUT':'POST',body});setEditing(null);form.reset();notify(wasEditing?'Record updated.':'Record added.',{type:'success'});listing.load();}catch(value){notify(value.message,{type:'error'});}}async function remove(id){if(!await confirmDialog('Delete this P&L record?'))return;try{await api(`/api/pnl/${id}`,{method:'DELETE',body:JSON.stringify({confirmation:'CONFIRM'})});listing.load();}catch(value){notify(value.message,{type:'error'});}}const current=listing.data?.find(x=>x.id===editing);const normalized=query.trim().toLowerCase();const filtered=listing.data?(normalized?listing.data.filter(item=>String(item.nm||'').toLowerCase().includes(normalized)):listing.data):null;return <><p className="page-lead">Cost and gas are recorded automatically on every confirmed mint; sale stays editable below once something actually sells.</p><Notice error={loadError(listing,'Could not load your P&L records.')}/>{listing.data&&<div className="card-grid pnl-summary-grid">{PNL_PERIODS.map(([key,label,windowMs])=>{const summary=summarizePnlPeriod(listing.data,windowMs);return <article className="card pnl-summary-card" key={key}><span className="eyebrow">{label}</span><strong className={summary.net<0?'net-loss':'net-gain'}>Net {summary.net>0?'+':''}{summary.net.toFixed(4)}</strong><p>{summary.count} record{summary.count===1?'':'s'} · Cost {summary.cost.toFixed(4)} · Sale {summary.sale.toFixed(4)} · Gas {summary.gas.toFixed(4)}</p></article>;})}</div>}<div className="page-toolbar"><label className="page-search">Find a record<input type="search" value={query} placeholder="Name…" onChange={e=>setQuery(e.target.value)}/></label></div><Form className="form-pnl" key={editing||'new'} title={editing?'Edit record':'Add record'} note="Auto-created records can be edited here too -- fill in Sale once an NFT actually resells." onSubmit={save}><Field name="name" label="Name" defaultValue={current?.nm}/><Field name="cost" label="Cost" type="number" step="any" defaultValue={current?.cost??0}/><Field name="sale" label="Sale" type="number" step="any" defaultValue={current?.sale??0}/><Field name="gas" label="Gas" type="number" step="any" defaultValue={current?.gas??0}/><button className="b p">{editing?'Save changes':'Add record'}</button>{editing&&<button type="button" className="b g" onClick={()=>setEditing(null)}>Cancel edit</button>}</Form>{listing.data===null?<Skeleton/>:<div className="card-grid pnl-grid">{filtered.map(item=><article className="card" key={item.id}><h2>{item.nm}</h2><p>Cost {item.cost} · Sale {item.sale} · Gas {item.gas}</p><strong className={Number(item.net)<0?'net-loss':'net-gain'}>Net {Number(item.net)>0?'+':''}{item.net}</strong><div className="br"><button className="b g sm" onClick={()=>setEditing(item.id)}>Edit</button><button className="b d sm" onClick={()=>remove(item.id)}>Delete</button></div></article>)}{filtered.length===0&&<Empty text={normalized?'No P&L records match this search.':'No P&L records yet.'}/>}</div>}</>}
+// wallets.html's Net-by-day chart. One bar per DAY in the window, not per record: two mints on the
+// same day are one day's result, which is the question "how am I doing" actually asks. Days with no
+// records still occupy their slot, so a gap reads as a quiet day rather than silently compressing
+// the timeline.
+//
+// Drawn from records the page already loaded rather than a new endpoint -- pnl_records carries
+// created_at (mapped to `t`), so the grouping is arithmetic, not a request.
+const PNL_WINDOWS=[['30d',30],['90d',90],['All',null]];
+function pnlDailyNet(records,days){
+  const dayMs=86400000;
+  const end=new Date();end.setHours(0,0,0,0);
+  const earliest=records.reduce((low,item)=>Math.min(low,item.t),Date.now());
+  const first=new Date(days===null?earliest:Date.now()-(days-1)*dayMs);first.setHours(0,0,0,0);
+  const span=Math.max(1,Math.round((end.getTime()-first.getTime())/dayMs)+1);
+  const buckets=new Array(span).fill(0);
+  for(const item of records){
+    const at=new Date(item.t);at.setHours(0,0,0,0);
+    const index=Math.round((at.getTime()-first.getTime())/dayMs);
+    if(index>=0&&index<span)buckets[index]+=Number(item.net)||0;
+  }
+  return buckets;
+}
+function PnlChart({values}){
+  const width=620,height=112,baseline=56;
+  const peak=values.reduce((high,value)=>Math.max(high,Math.abs(value)),0);
+  const slot=width/Math.max(1,values.length);
+  const barWidth=Math.max(1,Math.min(14,slot-2));
+  const total=values.reduce((sum,value)=>sum+value,0);
+  return <svg className="chart" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" role="img"
+    aria-label={`Daily net over ${values.length} ${values.length===1?'day':'days'}. Net ${total<0?'negative':'positive'} ${Math.abs(total).toFixed(3)} ETH.`}>
+    <line x1="0" y1={baseline} x2={width} y2={baseline} stroke="var(--border-strong)" strokeWidth="1"/>
+    {values.map((value,index)=>{
+      // A zero day still gets a hairline: no bar at all is indistinguishable from a day that fell
+      // outside the window, and those are different facts.
+      const size=peak?Math.max(value===0?0.5:1.5,(Math.abs(value)/peak)*(baseline-6)):0.5;
+      return <rect key={index} x={index*slot+(slot-barWidth)/2} width={barWidth}
+        y={value<0?baseline:baseline-size} height={size} rx="1"
+        fill={value<0?'var(--loss)':'var(--gain)'}/>;
+    })}
+  </svg>;
+}
+function Pnl(){
+  const listing=useLoad('/api/pnl',[],'pnl.changed');
+  const [editing,setEditing]=useState(null);
+  const [query,setQuery]=useState('');
+  const [window_,setWindow]=useState('30d');
+  const [adding,setAdding]=useState(false);
+  async function save(event){
+    event.preventDefault();const form=event.currentTarget;const wasEditing=editing;
+    const body=JSON.stringify(Object.fromEntries(new FormData(form)));
+    try{
+      await api(wasEditing?`/api/pnl/${wasEditing}`:'/api/pnl',{method:wasEditing?'PUT':'POST',body});
+      setEditing(null);setAdding(false);form.reset();
+      notify(wasEditing?'Record updated.':'Record added.',{type:'success'});listing.load();
+    }catch(value){notify(value.message,{type:'error'});}
+  }
+  async function remove(id){
+    if(!await confirmDialog('Delete this P&L record?'))return;
+    try{await api(`/api/pnl/${id}`,{method:'DELETE',body:JSON.stringify({confirmation:'CONFIRM'})});listing.load();}
+    catch(value){notify(value.message,{type:'error'});}
+  }
+  const records=listing.data;
+  const current=records?.find(item=>item.id===editing);
+  const normalized=query.trim().toLowerCase();
+  const filtered=records?(normalized?records.filter(item=>String(item.nm||'').toLowerCase().includes(normalized)):records):null;
+  const days=PNL_WINDOWS.find(([key])=>key===window_)?.[1]??30;
+  const totals=records?summarizePnlPeriod(records,days===null?null:days*86400000):null;
+  const loading=records===null&&!listing.error;
+  const empty=Array.isArray(records)&&records.length===0;
+  const formOpen=adding||editing!==null;
+  return <>
+    <Notice error={listing.error?{title:'Could not load your P&L records.',
+      detail:'Nothing was changed — this is a read failure only.',
+      code:`${listing.status||500} · Request failed safely`,onRetry:listing.load}:null}/>
+    {!listing.error&&<div className="split">
+      <div className="card">
+        <div className="ch"><h2>Net by day</h2><div className="sp"></div>
+          <div className="seg" role="group" aria-label="Chart window">
+            {PNL_WINDOWS.map(([key])=><button type="button" key={key} className={window_===key?'on':undefined}
+              aria-pressed={window_===key} onClick={()=>setWindow(key)}>{key}</button>)}
+          </div></div>
+        {loading&&<div className="sk chart"></div>}
+        {empty&&<div className="emp"><div className="ei">{TREND_ICON}</div>
+          <h3>No records yet</h3><p>Every confirmed mint creates a record with its real cost and gas.</p></div>}
+        {!loading&&!empty&&<>
+          <PnlChart values={pnlDailyNet(records,days)}/>
+          <div className="lgnd">
+            <span><i className="sw" style={{background:'var(--gain)'}}></i> Gain · above baseline · <b>+</b></span>
+            <span><i className="sw" style={{background:'var(--loss)'}}></i> Loss · below baseline · <b>−</b></span></div>
+          <p style={{fontSize:'11px',color:'var(--faint)',marginTop:'8px'}}>Sale proceeds are entered
+            manually — a mint with no recorded sale shows as a loss.</p>
+        </>}
+      </div>
+      <div className="g">
+        <div className="sober"><div className="sh">Totals · {days===null?'all time':`${days} days`}</div>
+          <table className="led"><tbody>
+            <tr><td>Mints</td><td>{loading?'—':totals.count}</td></tr>
+            <tr><td>Cost</td><td>{loading?'—':`${totals.cost.toFixed(6)} ETH`}</td></tr>
+            <tr><td>Gas</td><td>{loading?'—':`${totals.gas.toFixed(6)} ETH`}</td></tr>
+            <tr><td>Sale proceeds</td><td>{loading?'—':`${totals.sale.toFixed(6)} ETH`}</td></tr>
+            <tr className="tot"><td>Net</td><td style={{color:loading?undefined
+              :totals.net<0?'var(--loss-text)':'var(--gain-text)'}}>
+              {loading?'—':`${totals.net<0?'−':'+'}${Math.abs(totals.net).toFixed(6)} ETH`}</td></tr>
+          </tbody></table></div>
+        <div className="card tight">
+          <div className="ch"><h2>Records</h2><div className="sp"></div>
+            <button type="button" className="b g sm" aria-expanded={formOpen}
+              onClick={()=>{setEditing(null);setAdding(value=>!value);}}>
+              {formOpen?'Close':'Add manually'}</button></div>
+          <p style={{fontSize:'12px',color:'var(--muted)'}}>Edit a record to enter what a token
+            actually resold for. Until then its net is cost + gas as a loss.</p>
+        </div>
+      </div>
+    </div>}
+    {formOpen&&<Form className="form-pnl" key={editing||'new'} title={editing?'Edit record':'Add record'}
+      note="Auto-created records can be edited here too -- fill in Sale once an NFT actually resells."
+      onSubmit={save}>
+      <Field name="name" label="Name" defaultValue={current?.nm}/>
+      <Field name="cost" label="Cost" type="number" step="any" defaultValue={current?.cost??0}/>
+      <Field name="sale" label="Sale" type="number" step="any" defaultValue={current?.sale??0}/>
+      <Field name="gas" label="Gas" type="number" step="any" defaultValue={current?.gas??0}/>
+      <button className="b p">{editing?'Save changes':'Add record'}</button>
+      <button type="button" className="b g" onClick={()=>{setEditing(null);setAdding(false);}}>Cancel</button>
+    </Form>}
+    {!loading&&!empty&&!listing.error&&<>
+      <div className="sfrow" style={{marginTop:'12px'}}><div className="sf">
+        <span className="si" aria-hidden="true">{SEARCH_ICON}</span>
+        <input type="search" value={query} placeholder="Name…" aria-label="Find a record"
+          onChange={event=>setQuery(event.target.value)}/>
+        {query&&<button type="button" className="sx" aria-label="Clear search" onClick={()=>setQuery('')}>×</button>}
+      </div></div>
+      {filtered.length?<div className="g g3">{filtered.map(item=><div className="card" key={item.id}>
+        <div className="ch"><h2>{item.nm}</h2></div>
+        <div className="tv tab" style={{marginBottom:'3px',
+          color:Number(item.net)<0?'var(--loss-text)':'var(--gain-text)'}}>
+          {Number(item.net)<0?'−':'+'}{Math.abs(Number(item.net)).toFixed(6)}<small>ETH</small></div>
+        <div className="sober" style={{marginTop:'9px'}}>
+          <table className="led"><tbody>
+            <tr><td>Cost</td><td>{Number(item.cost).toFixed(6)} ETH</td></tr>
+            <tr><td>Sale</td><td>{Number(item.sale).toFixed(6)} ETH</td></tr>
+            <tr className="tot"><td>Gas</td><td>{Number(item.gas).toFixed(6)} ETH</td></tr>
+          </tbody></table></div>
+        <div className="br" style={{marginTop:'11px'}}>
+          <button type="button" className="b g sm" onClick={()=>{setAdding(false);setEditing(item.id);}}>Edit</button>
+          <button type="button" className="b d sm" onClick={()=>remove(item.id)}>Delete</button></div>
+      </div>)}</div>:<Empty text="No P&L records match this search."/>}
+    </>}
+  </>;
+}
 function jsonForm(event){event.preventDefault();const form=event.currentTarget;return {form,value:JSON.parse(new FormData(form).get('json'))};}
 // policyFor: which card has its policy expanded. A policy configures an existing target, so it
 // now lives ON that target's card rather than on a page of its own (brief §2). Same PolicyEditor,
@@ -2192,7 +2509,9 @@ function AutomationAll({filter=null,onTab}){
     .some(value=>String(value).toLowerCase().includes(needle))):scoped;
 
   return <>
-    {filter&&<div className="nt i">{INFO_ICON}
+    {/* auto.html gives this note margin-bottom:12px; without it the search row below sits
+        against its border. */}
+    {filter&&<div className="nt i" style={{marginBottom:'12px'}}>{INFO_ICON}
       <div>Showing {filter==='sniper'?'wallet-copy snipers':'social watch rules'} only — the same
         cards as <b>All</b>, filtered client-side over data the server already scoped to you.</div></div>}
     <Notice error={error}/>
@@ -2301,43 +2620,122 @@ function Automation({tab,onTab,target}){
 // §5.10) and adding one is a value-moving path that deserves its own review rather than a slot
 // in a restyle. So this says plainly where sending DOES work today instead of rendering a
 // disabled form that looks like a bug, or worse, one that looks live and silently fails.
+// wallets.html's .unav block. Telegram ONLY, not "either platform" as this panel used to say:
+// /send is registered in server.js:2842 and there is no Discord equivalent anywhere in
+// src/discord/ -- checked rather than assumed, because naming a platform that cannot do it sends
+// someone to a bot that will not answer.
+//
+// The prototype puts a "How sending works" button here. Dropped: there is no page for it to open,
+// and a button that goes nowhere is worse than the sentence it would have replaced.
+const SEND_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><path d="M21 4 3 11l7 3 3 7z"/></svg>;
 function WalletSend(){
-  return <div className="panel">
-    <h2>Sending is available from the bots, not the dashboard yet</h2>
-    <p>The conversational send flow — pick a wallet, enter a destination and an amount, confirm
-      against your spending ceiling — runs on Telegram and Discord today. Use <code>/send</code>
-      on either platform.</p>
-    <p>It is deliberately not duplicated here yet. Moving value is the one path where a second,
-      differently-built implementation could disagree with the first, so it gets its own review
-      rather than arriving alongside a visual change.</p>
-  </div>;
+  return <>
+    <div className="unav">
+      <div className="ei">{SEND_ICON}</div>
+      <h3>Sending is available from Telegram</h3>
+      <p>There is no dashboard send route yet. <code>/send</code> on Telegram walks through wallet,
+        amount, destination and a confirm screen, using the same spend caps and gas ceiling.</p>
+    </div>
+    <div className="nt i" style={{marginTop:'12px'}}>{INFO_ICON}
+      <div>Deliberate: a value-moving path gets its own review rather than arriving inside a
+        restyle.</div></div>
+  </>;
 }
 
 // Export. The raw private key NEVER reaches the browser: the server re-encrypts the stored key
-// into a standard V3 keystore under the account's security password, and only that encrypted
-// blob is returned. This panel deliberately restates that, because "export key" reasonably
-// sounds like it hands over the key itself.
-function WalletExport({profile,onProfileChange}){
-  const wallets=useLoad('/api/wallets',[],'wallets.changed');
-  return <>
-    <div className="panel">
-      <h2>Encrypted keystore export</h2>
-      <p>The raw private key is never sent to your browser. The server re-encrypts it into a
-        standard V3 keystore file using your security password, and only that encrypted file is
-        downloaded.</p>
-      <p className="warning">Store the keystore and your security password separately. Together
-        they are the wallet; either one alone is not.</p>
-      {!profile.securityPasswordSet&&<p className="notice notice-warning">Set a security password
-        first — exporting needs one, and it then gates every future sensitive action.</p>}
+// into a standard V3 keystore under the account's security password, and only that encrypted blob
+// is returned. This panel restates that, because "export key" reasonably sounds like it hands over
+// the key itself.
+//
+// One form with a wallet picker, per wallets.html, rather than an Export button on every wallet
+// card in a grid. The three fields are exactly what /api/wallets/:label/export takes
+// (securityPassword + confirmation:'CONFIRM'), so the form is the request rather than a prelude to
+// three sequential modal prompts.
+function walletExportRetryText(seconds){
+  if(!(seconds>0))return 'Try again shortly.';
+  if(seconds<90)return `Try again in ${seconds} ${seconds===1?'second':'seconds'}.`;
+  const minutes=Math.ceil(seconds/60);
+  return `Try again in ${minutes} ${minutes===1?'minute':'minutes'}.`;
+}
+function WalletExport({profile,onProfileChange,walletList}){
+  const wallets=walletList.data;
+  const [busy,setBusy]=useState(false);
+  const [limited,setLimited]=useState(null);
+  const retry=useRetryAfter();
+  async function submitExport(event){
+    event.preventDefault();
+    const form=event.currentTarget;
+    const values=Object.fromEntries(new FormData(form));
+    if(!profile.securityPasswordSet){
+      if(!await confirmDialog('Exporting a key needs a security password first. It will then be required for this and every future sensitive action. Set it now?'))return;
+      if(!await promptSetSecurityPassword({isChange:false,onProfileChange}))return;
+    }
+    setBusy(true);setLimited(null);
+    try{
+      const {keystore}=await api(`/api/wallets/${encodeURIComponent(values.label)}/export`,
+        {method:'POST',body:JSON.stringify({securityPassword:values.securityPassword,
+          confirmation:String(values.confirmation||'').trim()})});
+      downloadFile(`${values.label}-keystore.json`,keystore);
+      notify('Encrypted keystore downloaded. Store it and your security password separately and securely.',{type:'success'});
+      form.reset();
+    }catch(error){
+      // 429 is the one failure worth keeping on screen: it is not something a retry fixes, and the
+      // only useful reply is when the window reopens. Everything else stays a toast.
+      if(error.status===429){setLimited(error);retry.start(error.retryAfter);}
+      else notify(error.message,{type:'error'});
+    }finally{setBusy(false);}
+  }
+  const loading=wallets===null&&!walletList.error;
+  return <div className="split">
+    <div className="card">
+      <div className="ch"><div className="chip-ico">{LOCK_ICON}</div><h2>Export an encrypted keystore</h2></div>
+      <div className="nt w" style={{marginBottom:'12px'}}>{WARN_TRIANGLE_ICON}
+        <div><b>The raw key never reaches your browser.</b> The server decrypts the stored envelope
+          and immediately re-encrypts it as a standard V3 keystore under your security password.
+          Only that encrypted file is downloaded.</div></div>
+      <Notice error={loadError(walletList,'Could not load wallets.')}/>
+      {loading?<Skeleton rows={2}/>:null}
+      {!loading&&!walletList.error&&wallets?.length===0
+        &&<Empty text="No wallets to export yet. Create one on Balances first."/>}
+      {!profile.securityPasswordSet&&<div className="nt i" style={{marginBottom:'12px'}}>{INFO_ICON}
+        <div>You have no security password yet. Exporting asks you to set one first — it then gates
+          every future sensitive action.</div></div>}
+      {wallets?.length?<form onSubmit={submitExport}>
+        <div className="g" style={{gap:'11px'}}>
+          <label className="fl"><span>Wallet</span>
+            <select className="in" name="label" required>
+              {wallets.map(item=><option key={item.label} value={item.label}>{item.label}</option>)}
+            </select></label>
+          <label className="fl"><span>Security password</span>
+            <input className="in" type="password" name="securityPassword" required autoComplete="off"
+              placeholder="Your account security password"/></label>
+          <label className="fl"><span>Type <b>CONFIRM</b> to proceed</span>
+            <input className="in mono" name="confirmation" required placeholder="CONFIRM"/></label>
+          <div className="br"><button className="b d" disabled={busy||retry.blocked}>{busy?'Exporting…':retry.blocked?'Rate limited':'Export keystore'}</button></div>
+          <p style={{fontSize:'11px',color:'var(--faint)'}}>Store the keystore and your security
+            password separately. Together they are the wallet; either one alone is not.</p>
+        </div>
+      </form>:null}
     </div>
-    {wallets.data===null?<Skeleton rows={2}/>
-      :wallets.data.length===0?<Empty text="No wallets to export yet."/>
-        :<div className="card-grid">{wallets.data.map(wallet=><article className="card" key={wallet.label}>
-          <h2>{wallet.label}</h2>
-          <div className="user-card-identity"><p className="mono">{wallet.address}</p><CopyButton value={wallet.address} label="Copy wallet address"/></div>
-          <div className="br"><button className="b g sm" onClick={()=>exportWalletKeystore(wallet.label,{profile,onProfileChange})}>Export keystore</button></div>
-        </article>)}</div>}
-  </>;
+    <div className="g">
+      {limited&&<Notice error={{title:'Too many export attempts.',
+        detail:walletExportRetryText(retry.seconds),
+        code:`429 · Retry-After: ${limited.retryAfter??'unknown'}`}}/>}
+      <div className="sober"><div className="sh">Export policy</div>
+        <table className="led"><tbody>
+          <tr><td>Rate limit</td><td>2 per hour</td></tr>
+          {/* NOT "shared with Telegram", which is what the prototype claims and what api.js:193's
+              own comment still says. createCommandRateLimiter keys on `platform:userId:command`
+              (botSecurity.js:61), so dashboard: and telegram: are separate buckets and the real
+              ceiling across both is 4 an hour. Stating the true number here rather than the
+              intended one -- whether the buckets SHOULD be shared is a security decision, not a
+              caption. */}
+          <tr><td>Telegram /exportkey</td><td>Counted separately</td></tr>
+          <tr><td>Requires</td><td>Security password</td></tr>
+          <tr className="tot"><td>Audited</td><td>Always</td></tr>
+        </tbody></table></div>
+    </div>
+  </div>;
 }
 
 const WALLET_TABS=[
@@ -2348,17 +2746,31 @@ const WALLET_TABS=[
 ];
 function WalletsPage({profile,onProfileChange,tab,onTab}){
   const active=WALLET_TABS.some(item=>item.id===tab)?tab:'balances';
+  // One load for the whole page, not one per tab. wallets.html shows Create wallet in the header
+  // only in the populated state (.of), so the header has to know whether any wallet exists -- and
+  // Export reads the same list. Three components each calling /api/wallets was also three requests.
+  const walletList=useLoad('/api/wallets',[],'wallets.changed');
+  const [formsOpen,setFormsOpen]=useState(false);
+  const populated=Array.isArray(walletList.data)&&walletList.data.length>0;
   return <>
-    <div className="page-head"><div className="page-head-text"><p className="eyebrow">Wallets</p><h1>Wallets</h1></div></div>
+    <div className="page-head">
+      <div className="page-head-text"><p className="eyebrow">Wallets</p><h1>Wallets</h1></div>
+      {active==='balances'&&populated&&<div className="page-head-actions">
+        <button type="button" className="b p" aria-expanded={formsOpen}
+          onClick={()=>setFormsOpen(value=>!value)}>{formsOpen?'Close':'Create wallet'}</button>
+      </div>}
+    </div>
     <SubTabs tabs={WALLET_TABS} active={active} onChange={onTab} label="Wallet sections"/>
-    {active==='balances'&&<Wallets profile={profile} onProfileChange={onProfileChange}/>}
-    {active==='performance'&&<><p className="notice notice-warning" role="note">
-      Performance is <strong>account-level</strong>, across every wallet together. Per-wallet
-      cost and return cannot be shown: P&amp;L records carry no wallet, so splitting the totals
-      would mean inventing an attribution the data does not support.
-    </p><Pnl/></>}
+    {active==='balances'&&<Wallets profile={profile} onProfileChange={onProfileChange}
+      walletList={walletList} formsOpen={formsOpen} onFormsOpen={setFormsOpen}/>}
+    {active==='performance'&&<>
+      <div className="nt i" style={{marginBottom:'12px'}}>{INFO_ICON}
+        <div>Performance is <b>account-level</b>. P&amp;L records carry no wallet, so cost and
+          gas cannot be split per wallet — only <b>minted</b> can, and it is on each wallet card.</div></div>
+      <Pnl/></>}
     {active==='send'&&<WalletSend/>}
-    {active==='export'&&<WalletExport profile={profile} onProfileChange={onProfileChange}/>}
+    {active==='export'&&<WalletExport profile={profile} onProfileChange={onProfileChange}
+      walletList={walletList}/>}
   </>;
 }
 // History = Activity + the audit surfaces (brief §2). Activity is a mutable feed; audit is
