@@ -974,7 +974,144 @@ function jsonForm(event){event.preventDefault();const form=event.currentTarget;r
 // same routes, new place -- including the bypass challenge, which keeps its explicit CONFIRM step.
 function Snipers({formOnly=false}={}){const listing=useLoad('/api/snipers',[],'snipers.changed');const [editing,setEditing]=useState(null);const [query,setQuery]=useState('');const [policyFor,setPolicyFor]=useState(null);async function save(event){try{const {form,value}=jsonForm(event);const wasEditing=editing;await api(editing?`/api/snipers/${editing}`:'/api/snipers',{method:editing?'PUT':'POST',body:JSON.stringify(value)});form.reset();setEditing(null);notify(wasEditing?'Sniper updated.':'Sniper created.',{type:'success'});listing.load();}catch(value){notify(value.message,{type:'error'});}}async function remove(id){if(!await confirmDialog('Remove this post-confirmation copy sniper?'))return;try{await api(`/api/snipers/${id}`,{method:'DELETE',body:JSON.stringify({confirmation:'CONFIRM'})});listing.load();}catch(value){notify(value.message,{type:'error'});}}const normalized=query.trim().toLowerCase();const filtered=listing.data?{...listing.data,items:normalized?listing.data.items.filter(item=>[item.label,item.chain,item.walletLabel].filter(Boolean).some(value=>String(value).toLowerCase().includes(normalized))):listing.data.items}:null;return <>{!formOnly&&<><p className="page-lead">Copies confirmed wallet transactions after their confirmation threshold. This is not mempool front-running.</p><Notice error={loadError(listing,'Could not load your triggers.')}/><div className="page-toolbar"><label className="page-search">Find a sniper<input type="search" value={query} placeholder="Label, chain, wallet…" onChange={e=>setQuery(e.target.value)}/></label></div></>}<Form className="form-json" title={editing?'Edit sniper patch':'Create sniper'} note="The same M10 validation and M7a ceilings used by Telegram and Discord apply here." onSubmit={save}><label>Configuration JSON<textarea name="json" required defaultValue={editing?'{}':'{"label":"copy","targetAddress":"0x0000000000000000000000000000000000000001","chain":"ethereum","walletLabel":"wallet","maxValueETH":0.01,"maxGasGwei":50,"dailySpendingCapETH":0.05,"cooldownMs":60000,"maxAttempts":3}'}/></label><button className="b p">{editing?'Apply validated patch':'Create sniper'}</button></Form>{!formOnly&&(listing.data===null?<Skeleton/>:<div className="card-grid sniper-grid">{filtered.items.map(item=>{const recent=listing.data.events.filter(event=>event.sniperId===item.id)[0];return <article className="card" key={item.id}><StatusPill status={recent?.state||'no events'}/><h2>{item.label}</h2><p className="warning">Post-confirmation copy; not front-running.</p><p>{item.chain} · wallet {item.walletLabel}</p><p>Max {item.maxValueETH} ETH · Gas {item.maxGasGwei} gwei · Daily {item.dailySpendingCapETH} ETH</p><p>Cooldown {item.cooldownMs} ms · Attempts {item.maxAttempts}</p><p>Allow: {item.contractAllowlist.join(', ')||'any'}<br/>Deny: {item.contractDenylist.join(', ')||'none'}</p><div className="br"><button className="b g sm" onClick={()=>setEditing(item.id)}>Edit</button><button className="b g sm" aria-expanded={policyFor===item.id} onClick={()=>setPolicyFor(policyFor===item.id?null:item.id)}>{policyFor===item.id?'Hide policy':'Policy'}</button><button className="b d sm" onClick={()=>remove(item.id)}>Remove</button></div>{policyFor===item.id&&<PolicyEditor target={{id:item.id,label:item.label,type:'sniper'}}/>}</article>})}{filtered.items.length===0&&<Empty text={normalized?'No snipers match this search.':'No snipers yet. Create one above to start post-confirmation copying.'}/>}</div>)}</>}
 function WatchRules({formOnly=false}={}){const listing=useLoad('/api/watch-rules',[],'watchrules.changed');const [editing,setEditing]=useState(null);const [query,setQuery]=useState('');const [policyFor,setPolicyFor]=useState(null);async function save(event){try{const {form,value}=jsonForm(event);const wasEditing=editing;await api(editing?`/api/watch-rules/${editing}`:'/api/watch-rules',{method:editing?'PUT':'POST',body:JSON.stringify(value)});form.reset();setEditing(null);notify(wasEditing?'Watch rule updated.':'Watch rule created.',{type:'success'});listing.load();}catch(value){notify(value.message,{type:'error'});}}async function action(id,name){try{await api(`/api/watch-rules/${id}${name==='disable'?'/disable':''}`,{method:name==='remove'?'DELETE':'POST',body:JSON.stringify(name==='remove'?{confirmation:'CONFIRM'}:{})});listing.load();}catch(value){notify(value.message,{type:'error'});}}const normalized=query.trim().toLowerCase();const filtered=listing.data?{...listing.data,items:normalized?listing.data.items.filter(item=>[item.name,item.type,item.method].filter(Boolean).some(value=>String(value).toLowerCase().includes(normalized))):listing.data.items}:null;return <>{!formOnly&&<><p className="page-lead">Manage adapter-backed Twitter/X and Discord source monitoring.</p><Notice error={loadError(listing,'Could not load your triggers.')}/><div className="page-toolbar"><label className="page-search">Find a watch rule<input type="search" value={query} placeholder="Name, type, method…" onChange={e=>setQuery(e.target.value)}/></label></div></>}<Form className="form-json" title={editing?'Edit watch rule patch':'Create watch rule'} onSubmit={save}><label>Configuration JSON<textarea name="json" required defaultValue={editing?'{}':'{"name":"announcements","type":"discord_channel","method":"scraper","config":{"channelId":"123","keywords":["mint"],"sourceUrl":"https://example.com/feed"}}'}/></label><button className="b p">{editing?'Apply validated patch':'Create rule'}</button></Form>{!formOnly&&(listing.data===null?<Skeleton/>:<div className="card-grid watch-grid">{filtered.items.map(item=>{const events=listing.data.events.filter(event=>event.matchedRuleIds.includes(item.id)).slice(0,3);return <article className="card" key={item.id}><StatusPill status={item.enabled?'enabled':'disabled'}/><h2>{item.name}</h2><p>{item.type} · {item.method}</p><p className={item.consecutiveFailures?'warning':''}>Adapter health: {item.consecutiveFailures?`failing (${item.consecutiveFailures} consecutive)`:'healthy'} </p>{events.map(event=><p key={event.id}><code>{event.address}</code><br/>{new Date(event.detectedAt).toLocaleString()}</p>)}<div className="br"><button className="b g sm" onClick={()=>setEditing(item.id)}>Edit</button><button className="b g sm" onClick={()=>action(item.id,'disable')}>Disable</button><button className="b g sm" aria-expanded={policyFor===item.id} onClick={()=>setPolicyFor(policyFor===item.id?null:item.id)}>{policyFor===item.id?'Hide policy':'Policy'}</button><button className="b d sm" onClick={async()=>{if(await confirmDialog('Remove this watch rule?'))action(item.id,'remove');}}>Remove</button></div>{policyFor===item.id&&<PolicyEditor target={{id:item.id,label:item.name,type:'social_rule'}}/>}</article>})}{filtered.items.length===0&&<Empty text={normalized?'No watch rules match this search.':'No watch rules yet. Create one above to start social-trigger detection.'}/>}</div>)}</>}
-function PolicyEditor({target,onChanged,highlighted}){const details=useLoad(`/api/targets/${target.id}?type=${target.type}`,[target.id,target.type]);const presets=useLoad('/api/mode-presets');const [challenge,setChallenge]=useState(null);async function update(event){event.preventDefault();const value=Object.fromEntries(new FormData(event.currentTarget));try{await api(`/api/targets/${target.id}`,{method:'PUT',body:JSON.stringify({...value,targetType:target.type})});notify('Policy saved.',{type:'success'});details.load();onChanged?.();}catch(x){notify(x.message,{type:'error'});}}async function bypass(event){event.preventDefault();try{setChallenge(await api(`/api/targets/${target.id}/bypass`,{method:'POST',body:JSON.stringify({targetType:target.type,dontAskAgain:new FormData(event.currentTarget).get('dontAskAgain')==='on'})}));}catch(x){notify(x.message,{type:'error'});}}async function confirmBypass(event){event.preventDefault();try{await api('/api/targets/bypass/confirm',{method:'POST',body:JSON.stringify({challengeId:challenge.challengeId,confirmation:new FormData(event.currentTarget).get('confirmation')})});setChallenge(null);notify('Bypass confirmed.',{type:'success'});details.load();}catch(x){notify(x.message,{type:'error'});}}async function preset(key){try{const result=await api(`/api/targets/${target.id}/preset`,{method:'POST',body:JSON.stringify({targetType:target.type,presetKey:key})});if(result.requiresConfirmation)setChallenge(result);else notify('Preset applied.',{type:'success'});details.load();}catch(x){notify(x.message,{type:'error'});}}const value=details.data;return <article className={`panel${highlighted?' policy-highlighted':''}`}><h2>{target.label}</h2><Notice error={loadError(details,'Could not load this target’s policy.')}/>{value&&<><p>Effective ceiling (read only): {value.governance.maxTransactionValueWei} wei/tx, {value.governance.dailySpendingBudgetWei} wei/day, {value.governance.gasCeilingGwei} gwei gas.</p><Form title="Trigger behavior" onSubmit={update}><input type="hidden" name="targetType" value={target.type}/><Select name="blockchainTrigger" label="Blockchain trigger" options={['auto','manual']} defaultValue={value.policy.blockchainTrigger}/><Select name="socialTrigger" label="Social trigger" options={['auto','manual']} defaultValue={value.policy.socialTrigger}/><Select name="humanVerification" label="Verification" options={['on']} defaultValue="on"/><button className="b p">Save policy</button></Form><div className="br">{presets.data?.map(p=><button className="b sm" key={p.key} onClick={()=>preset(p.key)}>{p.displayName}</button>)}</div><form className="bypass" onSubmit={bypass}><label><input type="checkbox" name="dontAskAgain"/> Don&apos;t ask again for this target only</label><button className="b d">Request bypass</button></form>{challenge?.requiresConfirmation&&<form className="warning-box" onSubmit={confirmBypass}><strong>{challenge.warning}</strong><p>Type CONFIRM exactly to enable the highest-risk configuration.</p><input name="confirmation" autoComplete="off"/><button className="b d">Confirm bypass</button></form>}</>}</article>}
+// Laid out as auto.html's at-pol panel: a .split with the policy form on the left and, on the
+// right, a read-only Human verification table above the bypass challenge.
+//
+// What a target policy IS, and is not. It answers one question per trigger -- when this fires, what
+// happens: does it go automatically or wait for you (blockchainTrigger / socialTrigger), which
+// wallet pays, and which saved Mint preset to use. It is NOT where spend or gas limits live; the
+// prototype's own note says so and is reproduced verbatim below, because this is the distinction
+// users get wrong. Ceilings belong to the transaction engine and the governance tier, and the
+// account-wide Degen/Fast/Cautious/Normie choice belongs to Settings > Transaction mode.
+//
+// The mode preset select stays, and is NOT a duplicate of that Settings control: applyPreset()
+// stamps modePresetKey onto THIS target's policy, so it means "apply that tier's stance to this one
+// trigger". It is a select in the same grid rather than a row of loose buttons, which is what made
+// the panel read as a second control panel.
+//
+// Verification is deliberately read-only. Turning it off is the one change that lets funds move
+// with no human check, so it goes through the explicit challenge rather than a dropdown.
+function PolicyEditor({target,onChanged,highlighted}){
+  const details=useLoad(`/api/targets/${target.id}?type=${target.type}`,[target.id,target.type]);
+  const modes=useLoad('/api/mode-presets');
+  const wallets=useLoad('/api/wallets',[],'wallets.changed');
+  const mintPresets=useLoad('/api/mint-presets',[],'presets.changed');
+  const [challenge,setChallenge]=useState(null);
+  const [busy,setBusy]=useState(false);
+  const value=details.data;
+
+  async function update(event){
+    event.preventDefault();
+    const form=new FormData(event.currentTarget);
+    const body={targetType:target.type};
+    for(const [key,entry] of form.entries())if(entry!=='')body[key]=entry;
+    try{
+      await api(`/api/targets/${target.id}`,{method:'PUT',body:JSON.stringify(body)});
+      notify('Policy saved.',{type:'success'});details.load();onChanged?.();
+    }catch(error){notify(error.message,{type:'error'});}
+  }
+  async function applyMode(key){
+    if(!key)return;
+    setBusy(true);
+    try{
+      const result=await api(`/api/targets/${target.id}/preset`,
+        {method:'POST',body:JSON.stringify({targetType:target.type,presetKey:key})});
+      if(result.requiresConfirmation)setChallenge(result);
+      else notify('Mode preset applied to this target.',{type:'success'});
+      details.load();
+    }catch(error){notify(error.message,{type:'error'});}
+    finally{setBusy(false);}
+  }
+  async function requestBypass(event){
+    event.preventDefault();
+    try{
+      setChallenge(await api(`/api/targets/${target.id}/bypass`,{method:'POST',
+        body:JSON.stringify({targetType:target.type,
+          dontAskAgain:new FormData(event.currentTarget).get('dontAskAgain')==='on'})}));
+    }catch(error){notify(error.message,{type:'error'});}
+  }
+  async function confirmBypass(event){
+    event.preventDefault();
+    try{
+      await api('/api/targets/bypass/confirm',{method:'POST',body:JSON.stringify({
+        challengeId:challenge.challengeId,
+        confirmation:new FormData(event.currentTarget).get('confirmation')})});
+      setChallenge(null);notify('Bypass confirmed.',{type:'success'});details.load();
+    }catch(error){notify(error.message,{type:'error'});}
+  }
+
+  const verification=value?.policy?.humanVerification||'on';
+  return <div className="split">
+    <div className={`card${highlighted?' policy-highlighted':''}`}>
+      <div className="ch"><h2>{target.label} · policy</h2></div>
+      <Notice error={loadError(details,'Could not load this target policy.')}/>
+      {details.data===null&&!details.error?<Skeleton rows={2}/>:null}
+      {value&&<form onSubmit={update}>
+        <div className="g gm2 g2" style={{marginBottom:'11px'}}>
+          <label className="fl"><span>Blockchain trigger</span>
+            <select className="in" name="blockchainTrigger" defaultValue={value.policy.blockchainTrigger||'manual'}>
+              <option value="auto">Auto</option><option value="manual">Manual</option></select></label>
+          <label className="fl"><span>Social trigger</span>
+            <select className="in" name="socialTrigger" defaultValue={value.policy.socialTrigger||'manual'}>
+              <option value="manual">Manual</option><option value="auto">Auto</option></select></label>
+          <label className="fl"><span>Wallet</span>
+            <select className="in" name="walletLabel" defaultValue={value.policy.walletLabel||''}>
+              <option value="">Use the trigger own wallet</option>
+              {(wallets.data||[]).map(item=><option key={item.label} value={item.label}>{item.label}</option>)}</select></label>
+          <label className="fl"><span>Mint preset</span>
+            <select className="in" name="mintPresetName" defaultValue={value.policy.mintPresetName||''}>
+              <option value="">None, use the contract as detected</option>
+              {(mintPresets.data||[]).map(item=><option key={item.name} value={item.name}>{item.name}</option>)}</select></label>
+        </div>
+        <div className="nt i">{INFO_ICON}
+          <div>A target policy cannot contain spend or gas ceilings. Those stay with the transaction
+            engine and your governance tier.</div></div>
+        <div className="br" style={{marginTop:'11px'}}><button className="b p sm">Save policy</button></div>
+      </form>}
+      {value&&<label className="fl" style={{marginTop:'11px'}}>
+        <span>Mode preset, applies that tier stance to this target only</span>
+        <select className="in" disabled={busy} defaultValue={value.policy.modePresetKey||''}
+          onChange={event=>applyMode(event.target.value)}>
+          <option value="">Not set</option>
+          {(modes.data||[]).map(item=><option key={item.key} value={item.key}>{item.displayName}</option>)}
+        </select></label>}
+    </div>
+    <div className="g">
+      <div className="sober"><div className="sh">Human verification</div>
+        <table className="led"><tbody>
+          <tr><td>Current</td><td>{verification==='bypassed'
+            ?<span style={{color:'var(--warn-text)'}}>Bypassed</span>:'On'}</td></tr>
+          <tr><td>Blockchain-auto</td><td>Does not force verification</td></tr>
+          <tr><td>Social-auto</td><td>Verification on by default</td></tr>
+          <tr className="tot"><td>Bypass</td><td>Requires an explicit challenge</td></tr>
+        </tbody></table></div>
+      {challenge
+        ?<div className="chal">
+           <div className="chal-h">{WARN_TRIANGLE_ICON}<span>Confirm bypass</span></div>
+           <div className="chal-b">
+             <p>Matching triggers will execute <b>immediately, with no manual check</b>. Funds can
+               move without you seeing the transaction first.</p>
+             <div className="cid mono">Challenge {challenge.challengeId}</div>
+             <form onSubmit={confirmBypass}>
+               <label className="fl" style={{marginBottom:'11px'}}>
+                 <span>Type <b>CONFIRM</b> exactly to enable</span>
+                 <input className="in mono" name="confirmation" placeholder="CONFIRM"/></label>
+               <div className="br"><button className="b d sm">Enable bypass</button>
+                 <button type="button" className="b g sm" onClick={()=>setChallenge(null)}>Cancel</button></div>
+             </form>
+           </div>
+         </div>
+        :verification!=='bypassed'&&<form onSubmit={requestBypass}>
+           <label style={{display:'flex',gap:'8px',alignItems:'flex-start',fontSize:'12px',
+             color:'var(--muted)',marginBottom:'12px'}}>
+             <input type="checkbox" name="dontAskAgain" style={{minHeight:'auto',width:'16px',height:'16px',marginTop:'2px'}}/>
+             <span>Do not ask again <b>for this target only</b>. Reset or removal clears this.</span></label>
+           <button className="b g sm">Request bypass</button>
+         </form>}
+    </div>
+  </div>;
+}
+
 // `target` arrives from a /dashboard/target-policies/:id deep link, rewritten to
 // ?target=:id. A bookmark that pointed at one policy still lands on that policy: the matching
 // card is rendered first and marked, rather than the user being dropped into an unordered grid
