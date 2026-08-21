@@ -388,11 +388,13 @@ test('flow:mintviaopensea is a no-op when the card has no live OpenSea stage, in
 // The full OpenSea floor/holders/volume table is reserved for /info's explicit, no-mint-intent
 // lookup -- a plain paste and /mint's own under-specified path get the leaner card (still real
 // live price/timing/sold-out status), matching Telegram's own startMintFlow(includeStats).
-test('a plain paste requests the leaner card (includeStats false), unlike /info', async () => {
+test('a plain paste requests the leaner card (includeStats false), unlike /info -- but both now request phases (includeDrop true)', async () => {
   const flowState = createFlowStateStore();
   const seenIncludeStats = [];
+  const seenIncludeDrop = [];
   const commands = baseCommands({ detectMintContract: async (userId, input) => {
     seenIncludeStats.push(input.includeStats);
+    seenIncludeDrop.push(input.includeDrop);
     return { chain: 'ethereum', isSeaDrop: false, priceKnown: true, valueWei: '1000000000000000000',
       maxSupply: 100, maxPerWallet: 1, startTime: null, endTime: null, collection: null, soldOut: false, displayPrice: null };
   } });
@@ -400,11 +402,13 @@ test('a plain paste requests the leaner card (includeStats false), unlike /info'
   const ctx = { identity, commands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT };
   await handleMintPasteMessage(ctx, mockMessage('0x0000000000000000000000000000000000000001', 'paster-stats-1'));
   assert.equal(seenIncludeStats[0], false);
+  assert.equal(seenIncludeDrop[0], true);
 
   const handler = createDiscordInteractionHandler(ctx);
   const info = chatInteraction('info', 'paster-stats-2', { contract: '0x0000000000000000000000000000000000000002' });
   await handler(info);
   assert.equal(seenIncludeStats[1], true);
+  assert.equal(seenIncludeDrop[1], true);
 });
 
 test('flow:detailsrefresh keeps requesting stats for an /info-opened card, and stays lean for a pasted one', async () => {

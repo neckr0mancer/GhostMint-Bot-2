@@ -234,7 +234,7 @@ test('detectMintContract attaches real phase data from OpenSea when includeStats
   assert.equal(result.drop.stages[0].priceETH, 0.05);
 });
 
-test('detectMintContract never calls getDrop (or attaches drop) when includeStats is not requested', async () => {
+test('detectMintContract never calls getDrop (or attaches drop) when neither includeDrop nor includeStats is requested', async () => {
   const getDropCalls = [];
   const { service } = commandServiceFixture({
     contractValueResolver: { resolve: async () => { throw new Error('should not be reached'); }, probeMaxSupply: async () => null },
@@ -242,6 +242,39 @@ test('detectMintContract never calls getDrop (or attaches drop) when includeStat
     openSeaService: { getCollectionMetadata: async () => null, getDrop: async (...args) => { getDropCalls.push(args); return null; } },
   });
   const result = await service.detectMintContract('user-a', { contractAddress: CONTRACT, quantity: 1 });
+  assert.equal(getDropCalls.length, 0);
+  assert.equal(result.drop, null);
+});
+
+// Round 20: phases now show on every paste, not just /info -- includeDrop is its own opt-in flag,
+// independent of includeStats (the heavier floor/holders/volume table), so this must work with
+// includeStats left at its default false.
+test('detectMintContract attaches drop data via includeDrop alone, without needing includeStats too', async () => {
+  const getDropCalls = [];
+  const { service } = commandServiceFixture({
+    contractValueResolver: { resolve: async () => { throw new Error('should not be reached'); }, probeMaxSupply: async () => null },
+    seaDropDiscoveryService: { resolve: async () => ({ address: SEADROP, publicDrop: { mintPriceWei: '1000', maxTotalMintableByWallet: 5 }, feeRecipient: FEE_RECIPIENT }) },
+    openSeaService: { getCollectionMetadata: async () => null, getDrop: async (...args) => { getDropCalls.push(args); return {
+      isMinting: false, dropType: 'seadrop_v1_erc721', maxSupply: 4444, openSeaUrl: 'https://opensea.io/collection/kiyo',
+      activeStage: null, nextStage: { uuid: 'n1', label: 'Early birds', startTime: 1_800_000_000, endTime: 1_800_001_800, priceWei: '0', maxPerWallet: 1, stageType: 'signed_presale' },
+      stages: [],
+    }; } },
+  });
+  const result = await service.detectMintContract('user-a', { contractAddress: CONTRACT, quantity: 1, includeDrop: true });
+  assert.deepEqual(getDropCalls, [['ethereum', CONTRACT]]);
+  assert.equal(result.drop.nextStage.label, 'Early birds');
+  assert.equal(result.drop.nextStage.priceETH, 0);
+  assert.equal(result.stats, null, 'includeDrop alone must not also pull in the heavier stats block');
+});
+
+test('detectMintContract skips getDrop when includeDrop is explicitly false, even if includeStats is true', async () => {
+  const getDropCalls = [];
+  const { service } = commandServiceFixture({
+    contractValueResolver: { resolve: async () => { throw new Error('should not be reached'); }, probeMaxSupply: async () => null, probeTotalMinted: async () => null },
+    seaDropDiscoveryService: { resolve: async () => ({ address: SEADROP, publicDrop: { mintPriceWei: '1000', maxTotalMintableByWallet: 5 }, feeRecipient: FEE_RECIPIENT }) },
+    openSeaService: { getCollectionMetadata: async () => null, getCollectionStats: async () => null, getDrop: async (...args) => { getDropCalls.push(args); return null; } },
+  });
+  const result = await service.detectMintContract('user-a', { contractAddress: CONTRACT, quantity: 1, includeStats: true, includeDrop: false });
   assert.equal(getDropCalls.length, 0);
   assert.equal(result.drop, null);
 });

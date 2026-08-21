@@ -58,6 +58,13 @@ shipped).
   paused pending real timing data rather than built speculatively. Worklist B (after A is stable):
   parallelized pre-arm, dynamic fee presets, RPC health scoring/failover, hot wallet session cache
   (security tradeoff, needs its own sign-off), and latency dashboards — none started.
+- **Round 20** (Section AF/AD follow-up) makes OpenSea phase detection show on every paste, not just
+  `/info` — live-reported ("I need you to be able to detect and show phases, Telegram and Discord
+  still doesn't do that") and confirmed live against a real drop (KIYO, contract
+  `0x90c888ea77194e52c97c3692e715e276bb68931b`, Robinhood Chain): the backend detection already
+  worked (`openSeaService.getDrop` correctly returned three real, named stages), it just never ran
+  outside `/info` — `includeStats`'s gate covered `drop` too, so a bare paste got the leaner card by
+  design. Split into its own opt-in flag; shipped 2026-08-21.
 - **Round 19** (Section R, Phase 1) is the guided sniper-creation flow on both platforms — Telegram
   had no way to create a sniper at all before this, Discord's only path was a hand-typed JSON blob.
   Scoped explicitly to just this against the existing copy-mode schema (no new DB migration);

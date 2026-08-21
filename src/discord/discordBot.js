@@ -446,7 +446,7 @@ async function startMintGuidedFlow(ctx, respond, platformUserId, userId, contrac
   if (!contractAddress) return undefined;
   let detected;
   try {
-    detected = await commands.detectMintContract(userId, { contractAddress, quantity: 1, includeStats });
+    detected = await commands.detectMintContract(userId, { contractAddress, quantity: 1, includeStats, includeDrop: true });
   } catch (error) {
     if (error instanceof ValidationError) return undefined;
     throw error;
@@ -876,7 +876,7 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         if (!flow || flow.flow !== 'mint_guided' || flow.step !== 'awaiting_details') return notYourMintPrompt(interaction);
         let detected;
         try {
-          detected = await commands.detectMintContract(userId, { contractAddress: flow.data.contractAddress, quantity: 1, includeStats: Boolean(flow.data.includeStats) });
+          detected = await commands.detectMintContract(userId, { contractAddress: flow.data.contractAddress, quantity: 1, includeStats: Boolean(flow.data.includeStats), includeDrop: true });
         } catch {
           return dcRespond(interaction, mintFlowRenderPayload('awaiting_details', flow.data, { chains })); // transient failure -- leave last-known values, still ack the tap
         }

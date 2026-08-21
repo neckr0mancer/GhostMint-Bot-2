@@ -171,12 +171,19 @@ function createBotCommandService(dependencies) {
     // Section AF -- "can't you read the phases from OpenSea and the contract?" On-chain SeaDrop only
     // ever exposes the ONE currently-configured PublicDrop struct, so it can never show what's
     // coming next; OpenSea's Drops API is the real source for the full stage list plus which one is
-    // active/next. Same includeStats gate as the stats block above (this is display-only, opt-in,
-    // and shouldn't cost every plain paste an extra API round-trip). Stage prices convert wei -> ETH
-    // here (not in openSeaService, which stays ethers-free) the same way every other price this
-    // function resolves already does.
+    // active/next. Round 20: phases are common enough (and useful enough on first paste, not just
+    // /info) that this is now its own opt-in flag, `includeDrop` -- distinct from `includeStats`
+    // (the heavier floor/holders/volume table), which every card-rendering entry point
+    // (startMintFlow/startMintGuidedFlow: a bare paste, /mint, /batch, /info, and their own
+    // detailsrefresh) now passes unconditionally. Falls back to `includeStats` when `includeDrop`
+    // is omitted so every OTHER caller (/mintnow, the scheduler's own auto-fill re-detection, the
+    // dashboard's raw detect endpoint -- none of which ever render this card) keeps paying for this
+    // extra OpenSea round-trip only when they already asked for stats, exactly as before. Stage
+    // prices convert wei -> ETH here (not in openSeaService, which stays ethers-free) the same way
+    // every other price this function resolves already does.
     let drop = null;
-    if (input.includeStats && openSeaService?.getDrop) {
+    const wantsDrop = input.includeDrop ?? input.includeStats;
+    if (wantsDrop && openSeaService?.getDrop) {
       const liveDrop = await openSeaService.getDrop(chain, contractAddress);
       if (liveDrop) {
         const toEthStage = stage => (stage ? { ...stage, priceETH: stage.priceWei !== null ? Number(formatEther(BigInt(stage.priceWei))) : null } : null);

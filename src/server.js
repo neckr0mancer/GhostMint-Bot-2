@@ -1217,7 +1217,10 @@ async function startMintFlow({ chatId, messageId, userId, multi, contractAddress
   }
   let detected;
   try {
-    detected = await botCommands.detectMintContract(userId, { contractAddress, quantity: 1, includeStats });
+    // includeDrop is unconditional for the card-rendering path -- but oneShot (/mintnow) reaches
+    // execution with zero taps in the common case and never shows this card at all, so fetching
+    // phases there is usually pure waste on a path whose whole point is speed.
+    detected = await botCommands.detectMintContract(userId, { contractAddress, quantity: 1, includeStats, includeDrop: !oneShot });
   } catch (error) {
     if (error instanceof ValidationError) {
       return send({ text: 'Could not find this contract on any supported chain. Double-check the address.', replyMarkup: telegramMenus.mainMenu({}).replyMarkup });
@@ -2582,7 +2585,7 @@ if (BOT_TOKEN) {
       if (!flow || flow.flow !== 'mint_guided' || flow.step !== 'awaiting_details') return;
       let detected;
       try {
-        detected = await botCommands.detectMintContract(userId, { contractAddress: flow.data.contractAddress, quantity: 1, includeStats: Boolean(flow.data.includeStats) });
+        detected = await botCommands.detectMintContract(userId, { contractAddress: flow.data.contractAddress, quantity: 1, includeStats: Boolean(flow.data.includeStats), includeDrop: true });
       } catch {
         return; // Transient lookup failure -- leave the card showing its last-known values.
       }
