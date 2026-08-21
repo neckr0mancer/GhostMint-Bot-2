@@ -1811,10 +1811,14 @@ const MINT_TABS=[
 // nothing to count. The mechanism is general, so any of them can report the day they do.
 function scheduleBadge(counts){
   if(!counts)return null;
-  const failed=counts.failed||0,expired=counts.expired||0,paused=counts.paused||0;
-  const total=failed+expired+paused;
+  // Expired is deliberately absent, and this has to match the rail's own arithmetic or the tab
+  // and the rail summarising it disagree. An expired mint has no action left -- retry and resume
+  // both refuse it -- so it is history, not a to-do. Counting it made the badge permanent and
+  // ever-growing.
+  const failed=counts.failed||0,paused=counts.paused||0;
+  const total=failed+paused;
   if(!total)return null;
-  return {count:total,tone:failed>0?'bad':expired>0?'wn':'nu'};
+  return {count:total,tone:failed>0?'bad':'nu'};
 }
 function Mint({profile,go,tab,onTab}){
   // Falls back to 'now' for an unknown ?tab= rather than rendering an empty page -- a stale or
@@ -2600,14 +2604,18 @@ function automationBadges({snipers,rules,confirmations}){
   }).length;
   const failingRules=(rules?.items||[]).filter(rule=>
     rule.enabled!==false&&Number(rule.consecutiveFailures)>0).length;
+  const pausedRules=(rules?.items||[]).filter(rule=>rule.enabled===false).length;
+  const pausedSnipers=(snipers?.items||[]).filter(sniper=>sniper.active===false).length;
   // Pending confirmations are 'needs you', not 'broke' -- amber, never red. A trigger waiting on
   // a human is the system working as designed.
   const pending=(confirmations||[]).length;
-  const total=failingSnipers+failingRules+pending;
+  const total=failingSnipers+failingRules+pausedSnipers+pausedRules+pending;
   return {
     tabs:{
-      snipers:failingSnipers?{count:failingSnipers,tone:'bad'}:null,
-      social:failingRules?{count:failingRules,tone:'bad'}:null,
+      snipers:(failingSnipers+pausedSnipers)?{count:failingSnipers+pausedSnipers,
+        tone:failingSnipers?'bad':'nu'}:null,
+      social:(failingRules+pausedRules)?{count:failingRules+pausedRules,
+        tone:failingRules?'bad':'nu'}:null,
       policies:pending?{count:pending,tone:'wn'}:null,
     },
     total,
@@ -2629,7 +2637,7 @@ function useNavBadges(){
   // reading does not survive contact with real data: this account has 11 queued mints, so the
   // badge would sit at 11 permanently and stop carrying information. A badge that is always on is
   // wallpaper. Owner asked what could turn it red, which only makes sense under this reading.
-  const mint=counts?(counts.paused||0)+(counts.failed||0)+(counts.expired||0):0;
+  const mint=counts?(counts.paused||0)+(counts.failed||0):0;
   const mintFailing=Boolean(counts&&(counts.failed||0)>0);
   const automation=automationBadges({snipers:snipers.data,rules:rules.data,confirmations:confirmations.data});
   // Derived, not hardcoded. It was `Automation:true`, which is right only for as long as the
