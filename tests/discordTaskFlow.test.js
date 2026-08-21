@@ -322,6 +322,35 @@ test('flow:scheduleviaopensea pre-fills the next stage\'s own opening time AND i
   assert.match(confirm.updates[0].content, /via OpenSea/);
 });
 
+// Live-reported follow-up: the phase label alone ("Allowlist") isn't enough to tell two different
+// collections' tasks apart in /task list once more than one is staged -- the auto-derived name now
+// leads with the collection's own name too.
+test('the auto-derived name leads with the collection name when OpenSea knows one, not just the bare phase label', async () => {
+  const flowState = createFlowStateStore();
+  const created = [];
+  const nextStage = { uuid: 'n1', label: 'Allowlist', startTime: FUTURE_START, endTime: FUTURE_START + 3600, priceETH: 0.05, maxPerWallet: 1, stageType: 'presale' };
+  const commands = baseCommands({
+    detectMintContract: async () => ({
+      chain: 'ethereum', isSeaDrop: true, priceKnown: false, valueWei: '0',
+      maxSupply: 100, maxPerWallet: 1, startTime: null, endTime: null, collection: { name: 'KIYO' }, soldOut: false, displayPrice: null,
+      drop: { isMinting: false, dropType: 'seadrop_v1_erc721', maxSupply: 100, openSeaUrl: null,
+        activeStage: null, nextStage, stages: [nextStage] },
+    }),
+    createTask: async (userId, input) => { created.push({ userId, input }); return { name: input.name, mintTime: input.mintTime, viaOpenSea: input.viaOpenSea }; },
+  });
+  const identity = { resolveOrCreate: async () => 'internal-user' };
+  const ctx = { identity, commands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT };
+
+  const message = mockMessage('0x0000000000000000000000000000000000000001', 'osea-name-1');
+  await handleMintPasteMessage(ctx, message);
+  const handler = createDiscordInteractionHandler(ctx);
+  await handler(buttonInteraction('flow:scheduleviaopensea', 'osea-name-1'));
+  assert.equal(flowState.get('discord', 'osea-name-1').data.name, 'KIYO — Allowlist');
+
+  await handler(buttonInteraction('flow:taskconfirm', 'osea-name-1'));
+  assert.equal(created[0].input.name, 'KIYO — Allowlist');
+});
+
 // Live-reported: "when scheduling for phases, i can't select how many i want to mint" --
 // flow:scheduleviaopensea used to hardcode quantity:1 unconditionally, skipping the maxPerWallet
 // check flow:schedulesuggest's own re-detection already applies.

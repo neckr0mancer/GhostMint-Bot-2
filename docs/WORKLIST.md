@@ -1112,6 +1112,58 @@ flow, reused as-is) replicates `mintFlowDecision.afterDetails`' shape: `maxPerWa
 `flow:schedulesuggest` handler now calls the same shared helper instead of its own inlined copy of
 the same check, removing a duplicate.
 
+### Follow-up (same day) -- auto-derived names now lead with the collection ✅
+
+Live-reported: "you can actually schedule phases now [so] the task names should inherit the name of
+the phase & collection in an easy to remember way." The phase-only name from the previous follow-up
+("Public sale", "Allowlist") is ambiguous once more than one collection has a task staged --
+`/tasks`/`/task list` had no way to tell them apart without opening each one. `openSeaPhaseTaskName`
+(both platforms) now builds `"<collection> — <phase>"` when OpenSea has a collection name for the
+contract, falling back to the phase name alone otherwise (an untracked or unnamed collection),
+same "unknown is fine" convention the rest of this card already follows.
+
+### Follow-up (same day) -- Discord notifications showed raw HTML tags instead of formatting ✅
+
+Live-reported, with a screenshot: a Discord DM read "❌ Scheduled mint <b>PUBLIC</b> failed." with
+the tags shown literally. Root cause: every `notifyUser` message (scheduled-mint success/failure,
+sold-out auto-cancel, trigger confirmations, sniper alerts) is built once as Telegram HTML
+(`escapeTelegramHtml` + `<b>`/`<code>` markup) and fanned out unchanged to every linked platform by
+`notificationService.sendToUser` -- correct for Telegram (sent with `parse_mode:'HTML'`), but
+Discord has no HTML parser at all.
+
+Fixed at the single choke point every Discord DM passes through (`sendDirectMessage`, confirmed via
+grep to have exactly one caller): new `src/notifications/discordMarkdown.js`
+(`telegramHtmlToDiscordMarkdown`) converts the small, fixed set of tags these messages actually use
+(`<b>`, `<code>`, `<i>`, `<pre>`) into Discord markdown, then reverses `escapeTelegramHtml`'s own
+entity-escaping (`&amp;`/`&lt;`/`&gt;`) -- those were only ever needed to keep dynamic content (task
+names, error text) safe inside Telegram's HTML parser, and Discord doesn't decode HTML entities
+either. Tags convert before entities decode, so a task literally named `<b>` round-trips to literal
+text on Discord, not a stray unmatched delimiter. 5 new tests.
+
+### Follow-up (same day) -- dashboard admin writes silently corrupted on a blank field ✅
+
+Live-reported: the dashboard's "Advanced mode access" form (and, per the user, "other admin stuff
+too") appeared to do nothing when submitted. Root cause, found by testing the real write pipeline
+directly rather than guessing: `adminInput` (`src/dashboard/api.js`) joins every dashboard form field
+into one whitespace-separated string (the same shared syntax Telegram/Discord's own `/admin` text
+command produces), which `adminCommandService.execute` then re-splits on `/\s+/`. A field containing
+internal whitespace was already guarded against (a prior regression fix) -- but a genuinely **blank**
+field passes that check trivially (there's no space to find in `''`), and `split(/\s+/)` collapses
+consecutive whitespace, so the blank vanishes from the token stream and every field after it silently
+shifts one slot to the left. Confirmed live: leaving "Platform user ID" blank put the literal string
+`"inherit"` (the *next* field's value) into `platformUserId` and left `advancedModesAllowed`
+`undefined` -- the write didn't fail, it silently applied to the wrong target with a garbled value.
+
+Fixed: `adminInput` now rejects any blank/missing required field immediately, naming the actual
+field, the same way the existing space-guard does. One field genuinely needed to accept blank as
+"leave this alone" (`group-retention`'s `retentionPeriodDays`/`requireRecentActivityDays`, per the
+form's own "leave as 'off' to disable" note) -- `durationDays` (suspend) already substituted a real
+sentinel client-side before this ever mattered; the retention form gained the same pattern
+(`retentionSubmit`) instead of relying on `formWrite`'s generic pass-through. 2 new regression tests
+(matching the existing space-in-a-field test's shape) plus 2 pre-existing test fixtures fixed --
+they'd always submitted incomplete bodies for `group-set`/`preset-set`, silently tolerated before
+this fix since nothing validated field completeness at all.
+
 ## Also flagged: "Confirm Scheduled Mint" copy reads like a reminder, not an execution ✅
 
 From the same 2026-08-17 message, and from the then-in-flight Telegram copy-tone pass —

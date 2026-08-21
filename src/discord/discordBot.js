@@ -390,17 +390,23 @@ async function finishMintExecutionDiscord(ctx, respond, platformUserId, userId, 
 
 // Section AF -- shared shape for both the direct (single-stage) and picked (multi-stage) paths out
 // of flow:scheduleviaopensea, so they build identical task data from whichever stage was settled
-// on. Mirrors server.js's openSeaPhaseTaskData.
-// name is the stage's own real label (or a humanized fallback from its stage_type) -- which phase
-// this is is a known fact now, not a guess, so both advanceFromTaskQuantity and flow:taskwallet:select
-// skip the manual naming step entirely for a viaOpenSea task rather than asking the user to re-type
-// something already known.
+// on. Mirrors server.js's openSeaPhaseTaskData/openSeaPhaseTaskName.
+// name is "<collection> — <phase>" (the stage's own real label, or a humanized fallback from its
+// stage_type) -- which phase this is is a known fact now, not a guess, so both
+// advanceFromTaskQuantity and flow:taskwallet:select skip the manual naming step entirely for a
+// viaOpenSea task rather than asking the user to re-type something already known. The collection
+// name makes each row identifiable in /task list once more than one collection is staged at once;
+// falls back to the phase name alone when OpenSea has no collection name for this contract.
+function openSeaPhaseTaskName(mintFlowData, stage) {
+  const phase = stage.label || discordMenus.humanizeStageType(stage.stageType);
+  return mintFlowData.collection?.name ? `${mintFlowData.collection.name} — ${phase}` : phase;
+}
 function openSeaPhaseTaskData(mintFlowData, stage) {
   return {
     contractAddress: mintFlowData.contractAddress, chain: mintFlowData.chain,
     priceETH: 0, priceUnknown: false, viaOpenSea: true,
     mintTime: new Date(stage.startTime * 1000).toISOString(),
-    name: stage.label || discordMenus.humanizeStageType(stage.stageType),
+    name: openSeaPhaseTaskName(mintFlowData, stage),
     maxPerWallet: mintFlowData.maxPerWallet,
   };
 }
