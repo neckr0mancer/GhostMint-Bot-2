@@ -1984,7 +1984,12 @@ function TriggerCard({row,onEdit,onToggle,onArchive}){
           <button type="button" className="b sm" onClick={()=>onEdit?.(row)}>Edit</button>
           <button type="button" className={`b g sm ${stopped?'trigger-start':'trigger-stop'}`}
             onClick={()=>onToggle?.(row)}>{stopLabel}</button>
-          <button type="button" className="b d sm" onClick={()=>onArchive?.(row)}>Archive</button>
+          {/* Only once it is stopped. Archiving is the one action that removes a trigger from
+              every list, so requiring a pause first makes it a two-step decision rather than one
+              a stray tap can complete -- and a running trigger is exactly the one you would not
+              mean to archive. */}
+          {stopped&&<button type="button" className="b d sm"
+            onClick={()=>onArchive?.(row)}>Archive</button>}
         </div>
       </div>
     </div>
