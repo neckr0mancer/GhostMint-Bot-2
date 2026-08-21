@@ -1935,7 +1935,7 @@ function TriggerCard({row,onEdit,onToggle}){
   // Active triggers offer Pause; a failing one offers Disable -- the prototype uses each verb on
   // the card whose state it fits, and they are different actions, not a style choice.
   const stopped=row.status==='Paused';
-  const stopLabel=stopped?'Resume':(row.status==='Failing'?'Disable':'Pause');
+  const stopLabel=stopped?'Resume':'Pause';
   return <div className="blk">
     <div className="card col" data-open={open?'1':'0'}
       style={row.tone==='bad'?{borderColor:'var(--loss)'}:undefined}>
