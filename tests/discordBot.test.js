@@ -337,6 +337,28 @@ test('the menu:mode button reaches the same commands.selectMode the /mode slash 
   assert.match(current.label, /^✅ /);
 });
 
+// Round 21: the wallets list used to truncate each address to "0x1234...abcd" before wrapping it
+// in backticks -- still LOOKS tap-to-copy, but copying it hands back a truncated string that isn't
+// a real, usable address. Every address this app renders must be the real one.
+test('the wallet:list button shows the full address for every wallet, never a truncated one', async () => {
+  const tap = {
+    customId: 'wallet:list', user: { id: 'discord-walletlist' }, guildId: 'guild', channelId: 'channel',
+    updates: [], deferred: false,
+    isChatInputCommand: () => false, isButton: () => true, isStringSelectMenu: () => false, isModalSubmit: () => false,
+    async deferUpdate() { this.deferred = true; },
+    async editReply(payload) { this.updates.push(payload); },
+  };
+  const FULL_ADDRESS = '0x1234567890abcdef1234567890abcdef12345678';
+  const handler = createDiscordInteractionHandler({
+    identity: { resolveOrCreate: async () => 'user-walletlist' },
+    commands: { wallets: () => [{ label: 'main', address: FULL_ADDRESS, chain: 'ethereum', minted: 2 }] },
+    chains: { ethereum: { name: 'Ethereum' } },
+  });
+  await handler(tap);
+  assert.match(tap.updates[0].content, new RegExp('`' + FULL_ADDRESS + '`'));
+  assert.doesNotMatch(tap.updates[0].content, /\.\.\./);
+});
+
 // The dev-guild pairing: DISCORD_DEV_GUILD_ID both scopes registration to one guild and locks every
 // command to it. Leaving it unset has to flip BOTH halves, or the bot ends up with commands visible
 // everywhere that only work in one place (or vice versa).

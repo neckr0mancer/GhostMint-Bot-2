@@ -259,19 +259,29 @@ function collectionInfoCard({ contractAddress, chain, chainLabel, chainSym, isSe
   const utilityRow = [button('🔄 Refresh', 'flow:detailsrefresh')];
   if (openSeaUrl) utilityRow.push(urlButton('🔗 OpenSea', openSeaUrl));
 
+  // Discord hard-caps a message at 5 action rows. Mint Now + the two fixed utility rows (Refresh/
+  // OpenSea, Cancel) already claim 3, leaving room for the ONE more added below. Copy CA was
+  // dropped entirely for the same reason -- the contract address is already shown as inline code at
+  // the top of the card, which Discord's own client already lets you tap-to-copy, so the button was
+  // a convenience shortcut, not the only way to get it. Once drop has phase data
+  // at all, its own buttons are strictly more useful than the generic "Schedule for opening" (no
+  // on-chain proof this app can construct for an allowlist/GTD/FCFS stage; OpenSea's own backend
+  // resolves eligibility), so the generic one only shows when OpenSea has nothing to say at all --
+  // this also guarantees the three conditions below are mutually exclusive, not just usually so.
   const rows = [row([button('🪙 Mint Now', 'flow:mintdetailscontinue', 'success')])];
-  if (opensInFuture) rows.push(row([button('📅 Schedule for opening', 'flow:schedulesuggest', 'success')]));
-  // Section AF -- an allowlist/GTD/FCFS stage has no on-chain proof this app can construct itself;
-  // OpenSea's own backend resolves eligibility, so this is the path that actually works for those.
-  // Shown only when OpenSea confirms a stage is live right now -- there is nothing for it to mint
-  // against otherwise.
-  if (drop?.activeStage) rows.push(row([button('🎫 Mint via OpenSea', 'flow:mintviaopensea')]));
-  // A phase that hasn't opened yet has nothing to mint against -- being tapped-in and ready at the
-  // exact open is what cuts the time wasted, not a pre-check OpenSea has no way to answer ahead of
-  // time (see mintViaOpenSea's own notes). OpenSea only ever returns nextStage when nothing is
-  // currently minting, so this and the button above are never both shown at once.
-  if (drop?.nextStage) rows.push(row([button('🎫📅 Schedule for OpenSea phase', 'flow:scheduleviaopensea')]));
-  rows.push(row(utilityRow), row([button('📋 Copy CA', 'flow:copyca')]), row([button('❌ Cancel', 'flow:cancel:ask', 'danger')]));
+  if (drop?.activeStage) {
+    // Shown only when OpenSea confirms a stage is live right now -- there is nothing for it to mint
+    // against otherwise.
+    rows.push(row([button('🎫 Mint via OpenSea', 'flow:mintviaopensea')]));
+  } else if (drop?.nextStage) {
+    // A phase that hasn't opened yet has nothing to mint against -- being tapped-in and ready at
+    // the exact open is what cuts the time wasted, not a pre-check OpenSea has no way to answer
+    // ahead of time (see mintViaOpenSea's own notes).
+    rows.push(row([button('🎫📅 Schedule for OpenSea phase', 'flow:scheduleviaopensea')]));
+  } else if (opensInFuture) {
+    rows.push(row([button('📅 Schedule for opening', 'flow:schedulesuggest', 'success')]));
+  }
+  rows.push(row(utilityRow), row([button('❌ Cancel', 'flow:cancel:ask', 'danger')]));
 
   return { content: lines.join('\n'), components: rows };
 }

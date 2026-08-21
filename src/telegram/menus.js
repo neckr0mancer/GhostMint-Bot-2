@@ -375,8 +375,9 @@ function formatGmtPlus1(value) {
 
 // Section AD Tier 1: the collection info card mint_guided's first screen renders instead of the
 // old merged-details-header (Section M) -- market cap, live floor, and volume alongside the
-// existing mint-specific fields, with "🪙 Mint Now" as one of several actions (Refresh, Copy CA,
-// View on OpenSea) rather than the screen's only purpose. stats is null until
+// existing mint-specific fields, with "🪙 Mint Now" as one of several actions (Refresh,
+// View on OpenSea) rather than the screen's only purpose. No dedicated Copy CA button -- the
+// contract address is already <code>-wrapped a few lines up, tap-to-copy without one. stats is null until
 // detectMintContract has been called with includeStats:true (server.js's job, not this file's);
 // every stats-derived line is simply omitted rather than shown as a placeholder when a field is
 // unavailable, the same "unknown is fine" convention contractDetailsText above already uses.
@@ -492,7 +493,7 @@ function collectionInfoCard({ contractAddress, chainLabel, chainSym, isSeaDrop, 
   // time (see mintViaOpenSea's own notes). OpenSea only ever returns nextStage when nothing is
   // currently minting, so this and the button above are never both shown at once.
   if (drop?.nextStage) rows.push([button('🎫📅 Schedule for OpenSea phase', 'flow:scheduleviaopensea')]);
-  rows.push(utilityRow, [button('📋 Copy CA', 'flow:copyca')], [button('❌ Cancel', 'flow:cancel:ask')]);
+  rows.push(utilityRow, [button('❌ Cancel', 'flow:cancel:ask')]);
 
   return {
     text: lines.join('\n'),
@@ -651,8 +652,10 @@ function sniperMenu(snipers) {
       parseMode: 'HTML',
     };
   }
+  // The full address, never truncated -- a shortened display would still be <code>-wrapped and look
+  // tap-to-copy, but copying it hands back a truncated string that isn't a usable address at all.
   const list = snipers.map(s =>
-    `${s.active ? '🟢' : '⚪'} <b>${escapeTelegramHtml(s.label)}</b>\nTarget: <code>${s.targetAddress.slice(0, 10)}...</code>\nChain: ${s.chain} · Wallet: ${escapeTelegramHtml(s.walletLabel)}\nHits: ${s.hits || 0} · Fails: ${s.fails || 0}`,
+    `${s.active ? '🟢' : '⚪'} <b>${escapeTelegramHtml(s.label)}</b>\nTarget: <code>${s.targetAddress}</code>\nChain: ${s.chain} · Wallet: ${escapeTelegramHtml(s.walletLabel)}\nHits: ${s.hits || 0} · Fails: ${s.fails || 0}`,
   ).join('\n\n');
   return {
     text: `<b>🎯 Post-confirmation copy snipers (${snipers.length})</b>\n<i>Not mempool front-running: copying begins only after the source transaction confirms.</i>\n\n${list}`,

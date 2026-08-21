@@ -225,12 +225,14 @@ test('a missing USD price omits the parenthetical entirely rather than showing $
   assert.equal(details.text.includes('~$'), false);
 });
 
-test('collectionInfoCard renders the mint_guided flow\'s real first screen: Mint Now, Refresh, Copy CA, Cancel, with OpenSea only when a link is given', () => {
+test('collectionInfoCard renders the mint_guided flow\'s real first screen: Mint Now, Refresh, Cancel, with OpenSea only when a link is given', () => {
   const withoutOpenSea = collectionInfoCard({
     contractAddress: '0xabc', chainLabel: 'Ethereum', chainSym: 'ETH', isSeaDrop: false, priceETH: 0.05, priceUnknown: false,
     maxSupply: 100, maxPerWallet: 1, startTime: null, collection: null, soldOut: false, displayPrice: null, stats: null, openSeaUrl: null,
   });
-  assert.deepEqual(flatButtons(withoutOpenSea.replyMarkup).map(b => b.callback_data), ['flow:mintdetailscontinue', 'flow:detailsrefresh', 'flow:copyca', 'flow:cancel:ask']);
+  assert.deepEqual(flatButtons(withoutOpenSea.replyMarkup).map(b => b.callback_data), ['flow:mintdetailscontinue', 'flow:detailsrefresh', 'flow:cancel:ask']);
+  // No dedicated Copy CA button -- the address is already tap-to-copy via <code> in the card text.
+  assert.match(withoutOpenSea.text, /<code>0xabc<\/code>/);
 
   const withOpenSea = collectionInfoCard({
     contractAddress: '0xabc', chainLabel: 'Ethereum', chainSym: 'ETH', isSeaDrop: false, priceETH: 0.05, priceUnknown: false,
@@ -238,7 +240,7 @@ test('collectionInfoCard renders the mint_guided flow\'s real first screen: Mint
     openSeaUrl: 'https://opensea.io/assets/ethereum/0xabc',
   });
   const buttons = flatButtons(withOpenSea.replyMarkup);
-  assert.deepEqual(buttons.map(b => b.callback_data || b.url), ['flow:mintdetailscontinue', 'flow:detailsrefresh', 'https://opensea.io/assets/ethereum/0xabc', 'flow:copyca', 'flow:cancel:ask']);
+  assert.deepEqual(buttons.map(b => b.callback_data || b.url), ['flow:mintdetailscontinue', 'flow:detailsrefresh', 'https://opensea.io/assets/ethereum/0xabc', 'flow:cancel:ask']);
   assert.equal(buttons.find(b => b.url)?.text, '🔗 OpenSea');
 });
 
@@ -251,7 +253,7 @@ test('collectionInfoCard suggests scheduling only when the detected opening time
     maxSupply: 100, maxPerWallet: 1, startTime: future, collection: null, soldOut: false, displayPrice: null, stats: null, openSeaUrl: null,
   });
   assert.deepEqual(flatButtons(notYetOpen.replyMarkup).map(b => b.callback_data),
-    ['flow:mintdetailscontinue', 'flow:schedulesuggest:0xabc', 'flow:detailsrefresh', 'flow:copyca', 'flow:cancel:ask']);
+    ['flow:mintdetailscontinue', 'flow:schedulesuggest:0xabc', 'flow:detailsrefresh', 'flow:cancel:ask']);
   assert.match(notYetOpen.text, /Opens:/);
 
   const alreadyOpen = collectionInfoCard({
@@ -502,11 +504,14 @@ test('sniperMenu shows the same disclaimer and per-sniper detail as /snipers, wi
   assert.ok(flatButtons(empty.replyMarkup).some(b => b.callback_data === 'menu:main'));
   assert.ok(flatButtons(empty.replyMarkup).some(b => b.callback_data === 'sniper:create:start'));
 
-  const list = sniperMenu([{ label: 'Copy Cool Cats', active: true, targetAddress: '0x1234567890abcdef', chain: 'ethereum', walletLabel: 'main', hits: 3, fails: 1 }]);
+  const list = sniperMenu([{ label: 'Copy Cool Cats', active: true, targetAddress: '0x1234567890abcdef1234567890abcdef12345678', chain: 'ethereum', walletLabel: 'main', hits: 3, fails: 1 }]);
   assert.match(list.text, /Post-confirmation copy snipers \(1\)/);
   assert.match(list.text, /Not mempool front-running/);
   assert.match(list.text, /Copy Cool Cats/);
   assert.match(list.text, /Hits: 3 · Fails: 1/);
+  // The full address, never truncated -- a shortened display is still <code>-wrapped and looks
+  // tap-to-copy, but copying it hands back a string that isn't a real usable address.
+  assert.match(list.text, /<code>0x1234567890abcdef1234567890abcdef12345678<\/code>/);
   assert.ok(flatButtons(list.replyMarkup).some(b => b.callback_data === 'sniper:create:start'));
 });
 

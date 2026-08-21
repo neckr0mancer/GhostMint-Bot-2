@@ -119,12 +119,12 @@ test('placeholder menu always offers a way back to the main menu', () => {
   assert.deepEqual(flatButtons(menu.components).map(b => b.custom_id), ['menu:main']);
 });
 
-test('collectionInfoCard renders the mint_guided flow\'s real first screen: Mint Now, Refresh, Copy CA, Cancel, with OpenSea only when a link is given', () => {
+test('collectionInfoCard renders the mint_guided flow\'s real first screen: Mint Now, Refresh, Cancel, with OpenSea only when a link is given', () => {
   const withoutOpenSea = collectionInfoCard({
     contractAddress: '0xabc', chainLabel: 'Ethereum', chainSym: 'ETH', isSeaDrop: false, priceETH: 0.05, priceUnknown: false,
     maxSupply: 100, maxPerWallet: 1, startTime: null, collection: null, soldOut: false, displayPrice: null, stats: null, openSeaUrl: null,
   });
-  assert.deepEqual(flatButtons(withoutOpenSea.components).map(b => b.custom_id || b.url), ['flow:mintdetailscontinue', 'flow:detailsrefresh', 'flow:copyca', 'flow:cancel:ask']);
+  assert.deepEqual(flatButtons(withoutOpenSea.components).map(b => b.custom_id || b.url), ['flow:mintdetailscontinue', 'flow:detailsrefresh', 'flow:cancel:ask']);
 
   const withOpenSea = collectionInfoCard({
     contractAddress: '0xabc', chainLabel: 'Ethereum', chainSym: 'ETH', isSeaDrop: false, priceETH: 0.05, priceUnknown: false,
@@ -132,7 +132,7 @@ test('collectionInfoCard renders the mint_guided flow\'s real first screen: Mint
     openSeaUrl: 'https://opensea.io/assets/ethereum/0xabc',
   });
   const buttons = flatButtons(withOpenSea.components);
-  assert.deepEqual(buttons.map(b => b.custom_id || b.url), ['flow:mintdetailscontinue', 'flow:detailsrefresh', 'https://opensea.io/assets/ethereum/0xabc', 'flow:copyca', 'flow:cancel:ask']);
+  assert.deepEqual(buttons.map(b => b.custom_id || b.url), ['flow:mintdetailscontinue', 'flow:detailsrefresh', 'https://opensea.io/assets/ethereum/0xabc', 'flow:cancel:ask']);
   assert.equal(buttons.find(b => b.url)?.label, '🔗 OpenSea');
 });
 
@@ -163,7 +163,7 @@ test('collectionInfoCard suggests scheduling only when the detected opening time
     maxSupply: 100, maxPerWallet: 1, startTime: future, collection: null, soldOut: false, displayPrice: null, stats: null, openSeaUrl: null,
   });
   assert.deepEqual(flatButtons(notYetOpen.components).map(b => b.custom_id),
-    ['flow:mintdetailscontinue', 'flow:schedulesuggest', 'flow:detailsrefresh', 'flow:copyca', 'flow:cancel:ask']);
+    ['flow:mintdetailscontinue', 'flow:schedulesuggest', 'flow:detailsrefresh', 'flow:cancel:ask']);
   assert.match(notYetOpen.content, /Opens:/);
 
   const alreadyOpen = collectionInfoCard({

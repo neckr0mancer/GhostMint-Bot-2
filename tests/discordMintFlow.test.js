@@ -484,25 +484,6 @@ test('a transient failure during flow:detailsrefresh leaves the last-known card 
   assert.equal(flowState.get('discord', 'paster-12').step, 'awaiting_details');
 });
 
-test('flow:copyca replies with a copy-friendly echo of the address without touching flow state or the origin message', async () => {
-  const flowState = createFlowStateStore();
-  const commands = baseCommands();
-  const identity = { resolveOrCreate: async () => 'internal-user' };
-  const ctx = { identity, commands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT };
-  const message = mockMessage('0x0000000000000000000000000000000000000001', 'paster-13');
-  await handleMintPasteMessage(ctx, message);
-
-  const handler = createDiscordInteractionHandler(ctx);
-  const copy = buttonInteraction('flow:copyca', 'paster-13');
-  await handler(copy);
-  assert.equal(copy.replies.length, 1);
-  assert.equal(copy.replies[0].ephemeral, true);
-  assert.match(copy.replies[0].content, /0x0000000000000000000000000000000000000001/);
-  assert.equal(copy.messageEdits.length, 0);
-  assert.equal(copy.updates.length, 0);
-  assert.equal(flowState.get('discord', 'paster-13').step, 'awaiting_details');
-});
-
 test('tapping Mint Now on a single wallet, maxPerWallet 1, known-price contract reaches the confirm screen with no further taps', async () => {
   const flowState = createFlowStateStore();
   const commands = baseCommands();

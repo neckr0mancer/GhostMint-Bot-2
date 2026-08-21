@@ -258,7 +258,7 @@ test('the Discord wallet list renders readable markdown, not an escaped wall of 
   assert.ok(payload, 'the tap must be answered at all');
   const content = String(payload.content);
   assert.ok(content.includes('**Wallets (1)**'), 'header renders as bold markdown, not escaped');
-  assert.ok(content.includes('`0xed98...2976`'), 'the address keeps its code formatting');
+  assert.ok(content.includes('`0xed9834A3E62c8eB78B7F6682c5798f69B4Ee2976`'), 'the address keeps its code formatting, in full, never truncated');
   const BS = String.fromCharCode(92);
   assert.equal(content.includes(BS + '('), false, 'no escaped parentheses');
   assert.equal(content.includes(BS + '.'), false, 'no escaped full stops');

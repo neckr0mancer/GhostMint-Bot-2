@@ -902,7 +902,7 @@ const FLOW_CONTINUATION_PREFIXES = { wallet_create: ['flow:chain:'], wallet_impo
   // No continuation buttons of its own -- the only tap it offers is Cancel, which the gate
   // above already exempts. Listed so the flow is not silently absent from this map.
   gate_unlock: [],
-  mint_guided: ['flow:mintdetailscontinue', 'flow:mintviaopensea', 'flow:scheduleviaopensea', 'flow:detailsrefresh', 'flow:copyca', 'flow:schedulesuggest:', 'flow:mintqty:', 'flow:priceaccept', 'flow:pricemanual', 'flow:wallettoggle:', 'flow:walletpick:', 'flow:walletcontinue', 'flow:gastoleranceaccept', 'flow:gastolerancemanual', 'flow:mintconfirm'],
+  mint_guided: ['flow:mintdetailscontinue', 'flow:mintviaopensea', 'flow:scheduleviaopensea', 'flow:detailsrefresh', 'flow:schedulesuggest:', 'flow:mintqty:', 'flow:priceaccept', 'flow:pricemanual', 'flow:wallettoggle:', 'flow:walletpick:', 'flow:walletcontinue', 'flow:gastoleranceaccept', 'flow:gastolerancemanual', 'flow:mintconfirm'],
   send_guided: ['flow:sendwalletpick:', 'flow:sendamount:', 'flow:sendconfirm'],
   export_guided: ['flow:exportwalletpick:', 'flow:exportconfirm'],
   // Shares flow:mintdetailscontinue with mint_guided -- the contract-details screen and its
@@ -1046,7 +1046,8 @@ function renderFlowStep(flow, step, { userId, data = {} } = {}) {
     if (step === 'awaiting_contract') return { text: 'Send the contract address to mint from.', replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' };
     // Section AD Tier 1: the flow's real first screen -- market cap, volume, floor, holders
     // alongside the existing mint-specific fields, with Mint Now as one of several actions
-    // (Refresh, Copy CA, View on OpenSea) rather than a dead "tap to continue" pass-through.
+    // (Refresh, View on OpenSea) rather than a dead "tap to continue" pass-through. The contract
+    // address itself is already <code>-wrapped in the card text -- tap-to-copy without a button.
     if (step === 'awaiting_details') {
       return telegramMenus.collectionInfoCard({
         contractAddress: data.contractAddress,
@@ -2627,13 +2628,6 @@ if (BOT_TOKEN) {
       };
       telegramFlowState.advance('telegram', chatId, 'awaiting_details', refreshed);
       return tgEditMenu(chatId, messageId, renderFlowStep('mint_guided', 'awaiting_details', { userId, data: refreshed }));
-    }
-    if (data === 'flow:copyca') {
-      const flow = telegramFlowState.get('telegram', chatId);
-      if (!flow || flow.flow !== 'mint_guided' || !flow.data.contractAddress) return;
-      // A plain, untracked message (not the anchored panel) -- purely a copy-friendly echo of the
-      // address already shown on the card, so tapping it never moves or replaces the live panel.
-      return tgMenu(chatId, { text: `<code>${flow.data.contractAddress}</code>`, parseMode: 'HTML' });
     }
     if (data === 'flow:mintqty:x') {
       const flow = telegramFlowState.get('telegram', chatId);

@@ -39,6 +39,25 @@ const CASES = {
     currentKey: 'safe', advancedModesAllowed: true,
     presets: [{ key: 'ultra_fast' }, { key: 'fast' }, { key: 'semi_safe' }, { key: 'safe' }],
   }),
+  // Round 21 regression: collectionInfoCard has up to three independent conditions that each used
+  // to add their own row (opensInFuture, drop.activeStage, drop.nextStage) -- a real drop that was
+  // both not-yet-open on-chain AND had OpenSea phase data pushed this to 6 rows in production
+  // (confirmed via a live "components[BASE_TYPE_MAX_LENGTH]" failure) before those three were made
+  // mutually exclusive. These two cases are exactly the combinations that broke it.
+  'collectionInfoCard (not yet open on-chain, and OpenSea has an upcoming phase)': () => menus.collectionInfoCard({
+    contractAddress: '0xabc', chain: 'ethereum', chainLabel: 'Ethereum', chainSym: 'ETH', isSeaDrop: true,
+    priceETH: 0.05, priceUnknown: false, maxSupply: 100, maxPerWallet: 1,
+    startTime: Math.floor(Date.now() / 1000) + 3_600, collection: null, soldOut: false, displayPrice: null, stats: null,
+    drop: { activeStage: null, nextStage: { label: 'Early birds', startTime: Math.floor(Date.now() / 1000) + 3_600, endTime: null, priceETH: 0, maxPerWallet: 1 }, stages: [] },
+    openSeaUrl: 'https://opensea.io/collection/example',
+  }),
+  'collectionInfoCard (not yet open on-chain, and OpenSea says a stage is live right now)': () => menus.collectionInfoCard({
+    contractAddress: '0xabc', chain: 'ethereum', chainLabel: 'Ethereum', chainSym: 'ETH', isSeaDrop: true,
+    priceETH: 0.05, priceUnknown: false, maxSupply: 100, maxPerWallet: 1,
+    startTime: Math.floor(Date.now() / 1000) + 3_600, collection: null, soldOut: false, displayPrice: null, stats: null,
+    drop: { activeStage: { label: 'Public', startTime: Math.floor(Date.now() / 1000) - 3_600, endTime: null, priceETH: 0.05, maxPerWallet: 1 }, nextStage: null, stages: [] },
+    openSeaUrl: 'https://opensea.io/collection/example',
+  }),
 };
 
 test('every Discord menu fits inside the 5-row / 5-button limits Discord enforces', () => {

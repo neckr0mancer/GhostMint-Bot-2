@@ -194,7 +194,7 @@ const FLOW_CONTINUATIONS = {
   wallet_batch_import: ['wallet:batch-import:add', 'flow:batchkeys:submit', 'wallet:batch-import:confirm'],
   // Section AA -- every custom_id stays fixed (select-menu VALUES carry the chosen quantity/
   // wallet, never the custom_id itself), so this list needs no dynamic/prefix matching.
-  mint_guided: ['flow:mintdetailscontinue', 'flow:detailsrefresh', 'flow:copyca', 'flow:schedulesuggest', 'flow:mintqty:select', 'flow:mintqty:submit', 'flow:mintwallet:select', 'flow:mintwalletmulti:select', 'flow:mintwalletmulti:continue', 'flow:priceaccept', 'flow:pricemanual', 'flow:mintprice:submit', 'flow:gastoleranceaccept', 'flow:gastolerancemanual', 'flow:gastolerance:submit', 'flow:mintconfirm', 'flow:mintviaopensea', 'flow:scheduleviaopensea'],
+  mint_guided: ['flow:mintdetailscontinue', 'flow:detailsrefresh', 'flow:schedulesuggest', 'flow:mintqty:select', 'flow:mintqty:submit', 'flow:mintwallet:select', 'flow:mintwalletmulti:select', 'flow:mintwalletmulti:continue', 'flow:priceaccept', 'flow:pricemanual', 'flow:mintprice:submit', 'flow:gastoleranceaccept', 'flow:gastolerancemanual', 'flow:gastolerance:submit', 'flow:mintconfirm', 'flow:mintviaopensea', 'flow:scheduleviaopensea'],
   // Section AF follow-up: Discord's mini schedule flow (Section S's full guided flow remains
   // unbuilt) -- a fixed chain, optional quantity select/modal (only when maxPerWallet > 1) ->
   // wallet select -> name select -> optional custom-name modal -> confirm, with no dynamic values
@@ -270,7 +270,7 @@ function dcRespond(interaction, payload) {
 function mintFlowRenderPayload(step, data, { wallets = [], chains = {} } = {}) {
   // Section AD Tier 1: the flow's real first screen -- market cap, volume, floor, holders
   // alongside the existing mint-specific fields, with Mint Now as one of several actions
-  // (Refresh, Copy CA, View on OpenSea) rather than a dead "tap to continue" pass-through.
+  // (Refresh, View on OpenSea) rather than a dead "tap to continue" pass-through.
   // Supersedes Section AA's withDetailsHeader merge the same way Section M's merge was
   // superseded on Telegram.
   if (step === 'awaiting_details') {
@@ -676,10 +676,12 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         // markdown this message is built from -- the code-fence backticks became literal, and every
         // . - ( ) picked up a backslash, so the list rendered as a wall of slashes rather than as
         // wallets. A label is the only thing a user controls, so it is the only thing to escape.
+        // The full address, never truncated -- a shortened "0x1234...abcd" display would still be
+        // backtick-wrapped and look tap-to-copy, but copying it hands back a truncated string that
+        // isn't a usable address at all.
         const list = wallets.map((w, i) => {
-          const short = `${w.address.slice(0, 6)}...${w.address.slice(-4)}`;
           const chain = chains[w.chain]?.name || w.chain;
-          return `${i + 1}. **${escapeDiscord(w.label)}** \`${short}\` · ${escapeDiscord(chain)} · minted: ${w.minted || 0}`;
+          return `${i + 1}. **${escapeDiscord(w.label)}** \`${w.address}\` · ${escapeDiscord(chain)} · minted: ${w.minted || 0}`;
         }).join('\n');
         return dcRespond(interaction, { content: `**Wallets (${wallets.length})**\n${list}`,
           components: [discordMenus.row([discordMenus.button('⬅️ Back to wallets', 'menu:wallets')])] });
@@ -892,14 +894,6 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         };
         flowState.advance('discord', platformUserId, 'awaiting_details', refreshed);
         return dcRespond(interaction, mintFlowRenderPayload('awaiting_details', refreshed, { chains }));
-      }
-      if (data === 'flow:copyca') {
-        const flow = flowState.get('discord', platformUserId);
-        if (!flow || flow.flow !== 'mint_guided' || !flow.data.contractAddress) return notYourMintPrompt(interaction);
-        // A plain ephemeral follow-up, not an update -- purely a copy-friendly echo of the address
-        // already shown on the card, so tapping it never touches the flow's own public/ephemeral
-        // state or its progression.
-        return interaction.followUp({ content: `\`${flow.data.contractAddress}\``, ephemeral: true }).catch(() => {});
       }
       if (data === 'flow:mintqty:select') {
         const flow = flowState.get('discord', platformUserId);
