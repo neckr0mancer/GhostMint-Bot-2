@@ -41,7 +41,7 @@ function createHttpAdapter(method, { request, endpoint, token, recordUsage = asy
       let succeeded = false;
       try {
         response = await request({ method: 'get', url: method === 'scraper' ? rule.config.sourceUrl : endpoint,
-          headers: token ? { authorization: `Bearer ${token}` } : {}, timeout: 10_000,
+          headers: token ? { authorization: `Bearer ${token}` } : {}, timeout: 10_000, maxContentLength: 1_000_000,
           params: method === 'scraper' ? undefined : { type: rule.type, config: JSON.stringify(rule.config), cursor:JSON.stringify(rule.cursor) } });
         const raw = method === 'scraper' && typeof response.data === 'string'
           ? scrapedItems(response.data, rule.config.sourceUrl)

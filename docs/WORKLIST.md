@@ -1541,12 +1541,34 @@ asserts a struct's debug/string formatting can't contain a raw private key. Chea
 insurance worth adding to GhostMint's own test suite for whatever in-memory structure carries a
 decrypted private key during signing, against an accidental future log/error-message leak.
 
-## Section Z — Bounded response reads and selective retry for external HTTP calls ❌
+## Section Z — Bounded response reads and selective retry for external HTTP calls ✅
 
 `osnm-z-main/src/opensea.rs`'s `read_limited_body` hard-caps response size to avoid unbounded
 memory growth from a malformed/oversized response, and `is_retryable_request_error` retries only
-429/5xx/408/409/425, failing fast on everything else. Needs confirming `openSeaService.js`/
+429/5xx/408/409/425, failing fast on everything else. Needed confirming `openSeaService.js`/
 `priceFeedService.js` don't retry indiscriminately or buffer unbounded response bodies.
+
+**Retry half: nothing to fix.** Grepped every outbound-HTTP file in `src/` for retry/backoff
+logic — none exists anywhere in this codebase. Every external call (OpenSea, Etherscan, price
+feed, social adapters) either succeeds, throws, or is caught and returned as a typed error to the
+caller. No indiscriminate-retry problem to have.
+
+**Body-size half: fixed.** `axios` has no default response-size cap — a malformed or malicious
+response (or a misbehaving `scraper` watch-rule target, since that one fetches an arbitrary
+user-supplied URL) could buffer an unbounded body into memory. Added `maxContentLength: 1_000_000`
+(1MB — every real response these calls expect is JSON on the order of KB) to every bare `axios`/
+`http.get`/`request()` call in the app that didn't already have a cap:
+`openSeaService.js` (all 7 call sites — collection slug/details lookups, stats, drop data, mint-tx
+build), `priceFeedService.js` (`getUsdPrice`), `seaDropDiscoveryService.js` (`viaEtherscan`'s
+`eth_getLogs` call), `etherscanGasService.js` (`gasoracle` lookup), and `social/adapters.js`'s
+`createHttpAdapter` (covers `official_api`/`managed_service`/`scraper` — the last being the one
+with a genuinely untrusted, user-configured target URL, the highest-risk case in this list).
+
+Verified: `node --check` on all five files, clean. No existing test in this repo asserts on axios
+call options for any of these five services (confirmed by grep before editing), so nothing broke;
+the full suites covering all five (`seaDropDiscoveryService.test.js`, `gasService.test.js`,
+`socialWatch.test.js`, `socialWatch.integration.test.js`, `socialUsage.test.js` — 33 tests) still
+pass unchanged.
 
 ## Considered and explicitly not recommended
 

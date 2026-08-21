@@ -18,7 +18,7 @@ function createPriceFeedService({ http = axios, baseUrl = 'https://api.coingecko
     if (cached && now() - cached.at < ttlMs) return cached.usd;
     try {
       const response = await http.get(`${baseUrl}/simple/price`,
-        { timeout: 8_000, params: { ids: coingeckoId, vs_currencies: 'usd' } });
+        { timeout: 8_000, maxContentLength: 1_000_000, params: { ids: coingeckoId, vs_currencies: 'usd' } });
       const usd = response.data?.[coingeckoId]?.usd;
       if (typeof usd !== 'number') return cached?.usd ?? null;
       cache.set(upper, { usd, at: now() });

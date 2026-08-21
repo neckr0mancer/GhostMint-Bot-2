@@ -66,7 +66,7 @@ function createSeaDropDiscoveryService({ providerService, publicDropResolver, ch
     const definition = chains[chain];
     if (!definition) return undefined;
     try {
-      const response = await http.get(endpoint, { timeout: timeoutMs, params: {
+      const response = await http.get(endpoint, { timeout: timeoutMs, maxContentLength: 1_000_000, params: {
         chainid: String(definition.chainId), module: 'logs', action: 'getLogs',
         address: contractAddress, topic0, fromBlock: 0, toBlock: 'latest', apikey: apiKey,
       } });

@@ -30,14 +30,14 @@ function createOpenSeaService({ apiKey, repository, baseUrl = 'https://api.opens
   }
   async function fetchCollectionSlug(openSeaChain, contractAddress) {
     const response = await http.get(`${baseUrl}/chain/${openSeaChain}/contract/${contractAddress}`,
-      { timeout: timeoutMs, headers: { 'x-api-key': apiKey } });
+      { timeout: timeoutMs, maxContentLength: 1_000_000, headers: { 'x-api-key': apiKey } });
     return response.data?.collection || null;
   }
 
   async function fetchCollectionDetails(slug) {
     const [collection, stats] = await Promise.allSettled([
-      http.get(`${baseUrl}/collections/${slug}`, { timeout: timeoutMs, headers: { 'x-api-key': apiKey } }),
-      http.get(`${baseUrl}/collections/${slug}/stats`, { timeout: timeoutMs, headers: { 'x-api-key': apiKey } }),
+      http.get(`${baseUrl}/collections/${slug}`, { timeout: timeoutMs, maxContentLength: 1_000_000, headers: { 'x-api-key': apiKey } }),
+      http.get(`${baseUrl}/collections/${slug}/stats`, { timeout: timeoutMs, maxContentLength: 1_000_000, headers: { 'x-api-key': apiKey } }),
     ]);
     return {
       collection: collection.status === 'fulfilled' ? collection.value.data : null,
@@ -57,7 +57,7 @@ function createOpenSeaService({ apiKey, repository, baseUrl = 'https://api.opens
     if (!apiKey) return null;
     let response;
     try {
-      response = await http.get(`${baseUrl}/collections/${slug}`, { timeout: timeoutMs, headers: { 'x-api-key': apiKey } });
+      response = await http.get(`${baseUrl}/collections/${slug}`, { timeout: timeoutMs, maxContentLength: 1_000_000, headers: { 'x-api-key': apiKey } });
     } catch (error) {
       logFailure('resolveCollectionContract', 'n/a', slug, error);
       return null;
@@ -101,7 +101,7 @@ function createOpenSeaService({ apiKey, repository, baseUrl = 'https://api.opens
     try {
       const slug = await fetchCollectionSlug(openSeaChain, contractAddress);
       if (!slug) return EMPTY_STATS;
-      const response = await http.get(`${baseUrl}/collections/${slug}/stats`, { timeout: timeoutMs, headers: { 'x-api-key': apiKey } });
+      const response = await http.get(`${baseUrl}/collections/${slug}/stats`, { timeout: timeoutMs, maxContentLength: 1_000_000, headers: { 'x-api-key': apiKey } });
       const total = response.data?.total;
       const intervals = response.data?.intervals;
       return {
@@ -192,7 +192,7 @@ function createOpenSeaService({ apiKey, repository, baseUrl = 'https://api.opens
     try {
       const slug = await fetchCollectionSlug(openSeaChain, contractAddress);
       if (!slug) return null;
-      const response = await http.get(`${baseUrl}/drops/${slug}`, { timeout: timeoutMs, headers: { 'x-api-key': apiKey } });
+      const response = await http.get(`${baseUrl}/drops/${slug}`, { timeout: timeoutMs, maxContentLength: 1_000_000, headers: { 'x-api-key': apiKey } });
       const data = response.data;
       if (!data) return null;
       return {
@@ -240,7 +240,7 @@ function createOpenSeaService({ apiKey, repository, baseUrl = 'https://api.opens
     let response;
     try {
       response = await http.post(`${baseUrl}/drops/${slug}/mint`, { minter: minterAddress, quantity },
-        { timeout: timeoutMs, headers: { 'x-api-key': apiKey } });
+        { timeout: timeoutMs, maxContentLength: 1_000_000, headers: { 'x-api-key': apiKey } });
     } catch (error) {
       const status = error?.response?.status;
       const reasons = error?.response?.data?.errors;

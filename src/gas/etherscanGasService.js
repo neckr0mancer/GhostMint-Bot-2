@@ -18,7 +18,7 @@ function createEtherscanGasService({ apiKey, chains, timeoutMs=10_000,
       if (!definition) throw new GasLookupError('UNSUPPORTED_CHAIN','Gas lookup is unavailable for that chain');
       if (!apiKey) throw new GasLookupError('MISSING_API_KEY','Gas lookup is unavailable until ETHERSCAN_API_KEY is configured');
       try {
-        const response=await http.get(endpoint,{timeout:timeoutMs,params:{chainid:String(definition.chainId),module:'gastracker',action:'gasoracle',apikey:apiKey}});
+        const response=await http.get(endpoint,{timeout:timeoutMs,maxContentLength:1_000_000,params:{chainid:String(definition.chainId),module:'gastracker',action:'gasoracle',apikey:apiKey}});
         if (String(response.data?.status) !== '1' || !response.data?.result || typeof response.data.result !== 'object') {
           throw new GasLookupError('PROVIDER_ERROR','Etherscan could not provide gas prices right now');
         }
