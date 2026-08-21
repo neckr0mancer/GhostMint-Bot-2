@@ -7,8 +7,9 @@ shipped).
 
 - **Round 1** (Sections A–K) was scoped and implemented on 2026-08-16; 9 of 11 sections shipped in
   commit `423c7c1`. Kept below as the record of what exists.
-- **Round 2** (Sections L–S) is the newer batch of requirements; L, M, N, and Q have shipped,
-  O/P/R/S remain open.
+- **Round 2** (Sections L–S) is the newer batch of requirements; L, M, N, Q, and O have shipped.
+  R is partial (Phase 1, guided sniper creation, shipped 2026-08-20 — see Round 19 below); P and
+  R's own Phase 2 (contract-open detection) remain open; S remains open.
 - **Round 3** (Sections T–Z) is candidate work sourced from studying an external reference project,
   not yet scoped or estimated.
 - **Round 4** (Section AA) is a follow-up requirement raised while shipping Round 2's Section Q;
@@ -57,6 +58,11 @@ shipped).
   paused pending real timing data rather than built speculatively. Worklist B (after A is stable):
   parallelized pre-arm, dynamic fee presets, RPC health scoring/failover, hot wallet session cache
   (security tradeoff, needs its own sign-off), and latency dashboards — none started.
+- **Round 19** (Section R, Phase 1) is the guided sniper-creation flow on both platforms — Telegram
+  had no way to create a sniper at all before this, Discord's only path was a hand-typed JSON blob.
+  Scoped explicitly to just this against the existing copy-mode schema (no new DB migration);
+  contract-open detection (Phase 2) and Section P's tx-watching are real, separate pieces deferred
+  on purpose. Shipped 2026-08-20 — see Section R below for the full write-up.
 - **Round 18** (no section letter yet — folded into Section AH's batch-mint work) fixes a live-found
   regression in Discord's batch-mint wallet multi-select: picking one wallet from the dropdown
   advanced the flow immediately instead of letting more be added, since each dropdown submission
@@ -1626,16 +1632,10 @@ prompt, that's a different (and contradictory) requirement.
 
 ## Section P — Watch specific transactions ❌
 
-Today's watching is wallet-level (`sniperService` copies a target wallet's confirmed transactions;
-`socialWatch` monitors social sources). Wanted: watch a **specific transaction** tied to a wallet
-address and notify on occurrence/state change.
-
-- Delivery routes to whichever platform is configured — Discord if configured, Telegram if
-  configured. `notificationService` already resolves a user's linked platforms, so the delivery
-  half largely exists; the tracking half does not.
-- Overlaps with Section R (sniper contract-open detection) — both want a poller watching chain
-  state and firing a notification/action. Worth building one watcher abstraction for both rather
-  than two.
+Always overlapped with Section R (sniper contract-open detection) — both want a poller watching
+chain state and firing a notification/action off the same watcher abstraction — so scoped and
+written up together under Section R below rather than duplicated here; see Section R's own "Section
+P — watch a specific wallet's transactions" write-up.
 
 ## Section Q — Accept OpenSea collection links ✅
 
@@ -1678,17 +1678,97 @@ its collection/contract, then continue into the normal contract/mint workflow.
   `resolveMintContractInput` passthrough/resolve/unresolvable/no-service-configured), plus the
   full existing suite (107 tests total) still passing.
 
-## Section R — Sniper guided config + contract-open auto-detection ❌
+## Section R — Sniper guided config + contract-open auto-detection 🟡
 
-Carried over from Round 1, still the largest single item.
+Carried over from Round 1, the largest single item — scoped into phases 2026-08-20 rather than
+built all at once (contract-open detection and Section P's tx-watching each need their own
+architecture decision, and are real, separate pieces of work from the guided-creation gap).
 
-- No guided config flow: Telegram has no sniper-creation command at all; Discord's `/sniper create`
-  takes one pre-validated JSON blob.
-- No mint-open detection. Plan: guided flow (contract → chain → wallet → fee tolerance → caps), a
-  `sniper_mode: 'copy' | 'contract_open'` field, and for `contract_open` a poller on
-  `PublicDrop.startTime` (SeaDrop) or a `paused()`/`saleActive()` getter, firing through the same
-  transaction engine once open and respecting the sniper's own caps. Share the watcher with
-  Section P.
+### Phase 1 — guided sniper-creation flow (copy-mode), both platforms ✅
+
+Before this: Telegram had **no way to create a sniper at all** (only `/updatesniper <id>
+<patch-json>` to patch one that already exists, and a read-only `/snipers` list); Discord's only
+path was `/sniper create input:<json>`, one free-text option holding a hand-typed JSON blob.
+Against the *existing* copy-mode sniper schema only — no new DB migration, no new sniper fields.
+
+- **New shared decision core**: `src/sniper/sniperFlowDecision.js` — pure `{step, data}` functions
+  mirroring `mintFlowDecision.js`'s auto-skip shape (skips the wallet-pick step when the user owns
+  exactly one), not `watchRuleFlowDecision.js`'s flat field-list walker, since this flow needs
+  conditional skipping the same way `mint_guided` does. Also exports `DEFAULTS`, mirroring
+  `validateSniper`'s own `??` fallbacks (`maxGasGwei: 200`, `maxValueETH: 0.1`,
+  `dailySpendingCapETH: 0.25`) so both platforms' "here's the default" text reads from one source.
+- **Correction made mid-scoping**: the flow's second field is a **wallet address to copy from**
+  (`targetAddress`), not a contract — copy-mode snipers watch a target wallet and mirror whatever
+  it does, they don't target a mint contract at all.
+- **Scope, deliberately**: only asks for what `validateSniper` has no default for (`label`,
+  `targetAddress`, `chain`, `walletLabel`) plus one combined fee-tolerance-and-caps step
+  (`maxGasGwei`/`maxValueETH`/`dailySpendingCapETH` — accept all three defaults in one tap, or set
+  your own). Everything else (`valueMode`, `gasBoostPercent`, `cooldownMs`, `maxAttempts`,
+  contract allow/deny lists, `sourceConfirmations`) stays default-only in this flow, same scope
+  line `mint_guided`'s own gas-tolerance step already draws against the rest of governance config —
+  editable later via the existing `/updatesniper`.
+- **Telegram** (`src/server.js`, `src/telegram/menus.js`): new `sniper_guided` flow, started from a
+  new "➕ Create sniper" button on `sniperMenu` (mirrors how `watch_guided` starts from
+  `watchRulesList`'s own Add button, not a slash command). Steps: label → target (free text, both
+  inlined in `renderFlowStep` the same way `watch_guided`'s `awaiting_name` already is) → chain (new
+  `sniperChainSelect`, a real per-chain button grid reusing `gasMenu`'s `chunk(items, 3)` pattern —
+  deliberately *not* the wallet-import `chainPicker`, which collapses to EVM/Solana and would be
+  wrong here since the chain determines which chain's watcher/RPC pool ends up watching the target)
+  → wallet (existing `walletPicker`, auto-skipped for a single wallet) → tolerance (new
+  `sniperTolerancePrompt` accept/customize; customizing walks the three fields one at a time,
+  `awaiting_tolerance_gas/_value/_cap`, the same free-text-with-a-default-hint shape
+  `watch_guided`'s `awaiting_config` already uses) → confirm (new `sniperConfirmation`) →
+  `botCommands.createSniper(...)`.
+- **Discord** (`src/discord/discordBot.js`, `src/discord/menus.js`): `sniper:create:start` button →
+  one combined modal for label+target (new `sniperDetailsModal` — two fields in one modal, not two
+  modals, since a modal can only be opened from a button/select interaction, never chained directly
+  off another modal's own submit — the same constraint `watchConfigModal`'s existing comment
+  documents) → `chainSelect`/`walletSelect` (existing, reused as-is) → tolerance (new
+  `sniperTolerancePrompt` accept/customize button pair; customizing opens `sniperToleranceModal`,
+  three optional numeric fields with the default shown as each one's placeholder) → confirm (new
+  `sniperConfirmation`) → `commands.createSniper(...)`.
+- Verified: `node --check` + `npx eslint --max-warnings=0` on every new/touched file, all clean.
+  New tests: `tests/sniperFlowDecision.test.js` (7, pure decision-core unit tests),
+  `tests/discordSniperFlow.test.js` (7, full integration coverage — happy path, wallet auto-skip,
+  invalid target address, tolerance customize with a blank field falling back to its default,
+  negative/non-numeric tolerance rejection, a `ValidationError` from `createSniper` surfacing
+  plainly instead of throwing), plus new render-function coverage in `tests/telegramMenus.test.js`
+  and `tests/discordMenus.test.js`. Every existing Discord/Telegram menu and flow test still passes
+  unchanged (152 Discord-side, 54 Telegram-menu-side). No live Telegram/Discord click-through from
+  here (no real bot session) — flagged rather than claimed, same as Section M's own verification
+  note; Telegram's guided-flow orchestration in `server.js` has no integration-test harness in this
+  repo at all (not even `watch_guided` does — only its render functions and the pure decision core
+  are unit-tested), so this is at parity with the existing precedent, not a regression in rigor.
+
+### Phase 2 — contract-open auto-detection, still open ❌
+
+A new `sniper_mode`/`trigger_mode`-style field (needs a name distinct from the existing
+`value_mode` field, which already uses the literal string `'copy'` for a different axis — a real
+naming trap flagged during scoping) and, for the `contract_open` mode, a poller on
+`PublicDrop.startTime` (SeaDrop — reuse `seaDropDiscoveryService.resolve()` +
+`seaDropPublicDropResolver.getPublicDrop()`, already used exactly this way in
+`schedulerWorker.js`'s own drift-check) or a `paused()`/`saleActive()` getter for a non-SeaDrop
+contract (genuinely new code — no existing getter-probe to mirror beyond
+`contractValueResolver.js`'s general "probe, treat revert as unknown, never throw" philosophy).
+Firing plugs into the same `transactionEngine.submit({triggerSource: 'blockchain', ...})` path
+`sniperService.execute()` already uses, so Round 16's dedicated sniper RPC pool, fast-path
+timeouts, and Degen's blockchain-simulation-skip all apply automatically with no new plumbing.
+Recommended extension point: `server.js`'s existing per-chain `onBlock(chain, blockNumber,
+provider)` (the same function `chainWatcher`'s sniper detection already runs through) — one extra
+provider call per relevant block per watched contract, gated by the sniper RPC pool, rather than a
+second parallel poller.
+
+### Section P — watch a specific wallet's transactions, notification-only — still open ❌
+
+"Watch a specific transaction tied to a wallet address, notify on occurrence/state change" reads,
+on closer inspection, as sniper's own copy-detection (matching `tx.from === targetAddress` per
+block via the same `onBlock`/`chainWatcher` infra) minus the copy-execution step — occurrence
+notified via the existing `notificationService.sendToUser(userId, message)` (the one notification
+front door every existing background worker — `schedulerWorker`, `sniperService` — already routes
+through), state-change notified by lifting the receipt/confirmation-counting technique from
+`transactionEngine.js`'s `inspectChain`/`waitForFinality` (built for the app's own tracked intents,
+so needs adapting for an arbitrary externally-supplied wallet/tx, not reused as-is). Shares the
+watcher with Phase 2 above, per this section's own original "share one watcher abstraction" note.
 
 ## Section S — Discord guided task-schedule ❌
 

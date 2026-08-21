@@ -636,7 +636,62 @@ function snipersMenu(snipers) {
     : 'No matching snipers.';
   return {
     content: `🎯 Post-confirmation copying only; not mempool front-running.\n${lines}`,
-    components: [row([button('⬅️ Back to menu', 'menu:main')])],
+    components: [row([button('➕ Create sniper', 'sniper:create:start')]), row([button('⬅️ Back to menu', 'menu:main')])],
+  };
+}
+
+// Guided sniper-creation flow (mirrors src/sniper/sniperFlowDecision.js's step ordering).
+// Chain/wallet steps reuse chainSelect/walletSelect as-is; only the tolerance prompt/modal and the
+// confirm screen are new here.
+
+// Every field here already has a working default in validateSniper -- accepting them is one tap;
+// customizing opens sniperToleranceModal below. Mirrors mint_guided's own gasTolerancePrompt shape
+// (accept-default button vs a "set my own" button that opens a modal).
+function sniperTolerancePrompt(defaults) {
+  return {
+    content: `⛽ Fee tolerance & caps\nDefaults: max gas **${defaults.maxGasGwei} gwei** · max value per fire **${defaults.maxValueETH} ETH** · daily spend cap **${defaults.dailySpendingCapETH} ETH**.\n\nUse these, or set your own?`,
+    components: [row([
+      button('✅ Use these defaults', 'flow:snipertoleranceaccept', 'success'),
+      button('✏️ Set my own', 'flow:snipertolerancemanual'),
+    ])],
+  };
+}
+
+// Label and target address land in one modal, not two -- a modal cannot be opened directly from
+// another modal's own submit handler (only from a button/select interaction), the same constraint
+// watchConfigModal's own "combine several fields into one modal" comment already documents. Both
+// are required, unlike the tolerance modal below.
+function sniperDetailsModal() {
+  return {
+    custom_id: 'flow:snipercreate:submit', title: 'New sniper',
+    components: [
+      row([{ type: TEXT_INPUT, custom_id: 'label', style: TEXT_STYLE.short, label: 'Label', placeholder: 'A name to recognize this sniper by', required: true, max_length: 100 }]),
+      row([{ type: TEXT_INPUT, custom_id: 'targetAddress', style: TEXT_STYLE.short, label: 'Target wallet address to copy', placeholder: '0x...', required: true, max_length: 42 }]),
+    ],
+  };
+}
+
+// All three fields are optional (validateSniper already has a working default for each), unlike
+// watchConfigModal's fields which are always required -- shown as the placeholder text instead, so
+// leaving a field blank on submit means "use the default", not a rejected empty required field.
+function sniperToleranceModal(defaults) {
+  const fields = [
+    { id: 'maxGasGwei', label: 'Max gas (gwei)', hint: `Default ${defaults.maxGasGwei}` },
+    { id: 'maxValueETH', label: 'Max value per fire (ETH)', hint: `Default ${defaults.maxValueETH}` },
+    { id: 'dailySpendingCapETH', label: 'Daily spending cap (ETH)', hint: `Default ${defaults.dailySpendingCapETH}` },
+  ];
+  const rows = fields.map(field => row([{
+    type: TEXT_INPUT, custom_id: field.id, style: TEXT_STYLE.short,
+    label: field.label, placeholder: field.hint, required: false, max_length: 20,
+  }]));
+  return { custom_id: 'flow:snipertolerance:submit', title: 'Fee tolerance & caps', components: rows };
+}
+
+function sniperConfirmation(data) {
+  const fmt = (value, fallback) => (value === undefined || value === null || Number.isNaN(value) ? `default (${fallback})` : value);
+  return {
+    content: `## 🎯 Confirm sniper\nLabel: ${data.label}\nTarget: \`${data.targetAddress}\`\nChain: ${data.chain}\nWallet: ${data.walletLabel}\nMax gas: ${fmt(data.maxGasGwei, '200 gwei')}\nMax value/fire: ${fmt(data.maxValueETH, '0.1 ETH')}\nDaily cap: ${fmt(data.dailySpendingCapETH, '0.25 ETH')}\n\nCreate this sniper?`,
+    components: [row([button('✅ Create', 'flow:sniperconfirm', 'success'), button('❌ Cancel', 'flow:cancel:ask', 'danger')])],
   };
 }
 
@@ -815,6 +870,7 @@ module.exports = {
   button, row, select, mainMenu, mintModeMenu, batchImportMenu, gateUnlockCard,
   securityBanner, securityNeedsAttention, securitySetupCard, walletsMenu, settingsMenu, placeholderMenu,
   chainSelect, walletSelect, walletMultiSelect, confirmRemoveWallet, labelModal, gasMenu, activityMenu, tasksMenu, snipersMenu, adminOverviewMenu,
+  sniperDetailsModal, sniperTolerancePrompt, sniperToleranceModal, sniperConfirmation,
   modeMenu, MODE_META,
   contractDetailsText, collectionInfoCard, mintQuantitySelect, mintPriceStep, gasTolerancePrompt, mintConfirmation, numberModal,
   taskNameQuickPicks, taskConfirmation,

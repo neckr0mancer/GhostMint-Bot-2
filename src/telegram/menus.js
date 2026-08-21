@@ -647,7 +647,7 @@ function sniperMenu(snipers) {
   if (!snipers.length) {
     return {
       text: '<b>🎯 Snipers</b>\n\nNo snipers configured.\n<i>Post-confirmation copy snipers replicate a target wallet\'s confirmed mint from one of yours -- not mempool front-running.</i>',
-      replyMarkup: keyboard([[button('⬅️ Back to base', 'menu:main')]]),
+      replyMarkup: keyboard([[button('➕ Create sniper', 'sniper:create:start')], [button('⬅️ Back to base', 'menu:main')]]),
       parseMode: 'HTML',
     };
   }
@@ -656,7 +656,7 @@ function sniperMenu(snipers) {
   ).join('\n\n');
   return {
     text: `<b>🎯 Post-confirmation copy snipers (${snipers.length})</b>\n<i>Not mempool front-running: copying begins only after the source transaction confirms.</i>\n\n${list}`,
-    replyMarkup: keyboard([[button('⬅️ Back to base', 'menu:main')]]),
+    replyMarkup: keyboard([[button('➕ Create sniper', 'sniper:create:start')], [button('⬅️ Back to base', 'menu:main')]]),
     parseMode: 'HTML',
   };
 }
@@ -770,6 +770,49 @@ function gasTolerancePrompt({ currentGasGwei, ceilingGwei }) {
     replyMarkup: keyboard([
       [button(`✅ No extra limit (up to ${ceilingGwei} gwei)`, 'flow:gastoleranceaccept')],
       [button('✏️ Set my own gwei cap', 'flow:gastolerancemanual')],
+      [button('❌ Cancel', 'flow:cancel:ask')],
+    ]),
+    parseMode: 'HTML',
+  };
+}
+
+// Guided sniper-creation flow (mirrors src/sniper/sniperFlowDecision.js's step ordering). Only the
+// genuinely structured steps live here -- awaiting_label/awaiting_target and the tolerance
+// customize sub-fields are plain free-text prompts, inlined directly in server.js's renderFlowStep
+// the same way watch_guided's own awaiting_name step already is.
+
+// A real per-chain choice, unlike wallet create/import's EVM/Solana-collapsed chainPicker above --
+// the sniper's chain determines which chain's watcher/RPC pool ends up watching the target wallet,
+// so it has to be a specific chain, not an EVM-wide default. Mirrors gasMenu's own per-chain button
+// grid (chunk(items, 3)) rather than reusing chainPicker.
+function sniperChainSelect(supportedChains, chains) {
+  const chainButtons = supportedChains.map(value => button(chainButtonLabel(value, chains), `flow:sniperchain:${value}`));
+  const rows = chunk(chainButtons, 3);
+  rows.push([button('❌ Cancel', 'flow:cancel:ask')]);
+  return { text: 'Which chain does that wallet operate on?', replyMarkup: keyboard(rows), parseMode: 'HTML' };
+}
+
+// Every field here already has a working default in validateSniper -- accepting them is one tap;
+// customizing walks the three fields one at a time (awaiting_tolerance_gas/_value/_cap in
+// server.js), the same free-text-with-a-default-hint shape watch_guided's awaiting_config uses.
+function sniperTolerancePrompt({ maxGasGwei, maxValueETH, dailySpendingCapETH }) {
+  return {
+    text: `<b>⛽ Fee tolerance & caps</b>\nDefaults: max gas <b>${maxGasGwei} gwei</b> · max value per fire <b>${maxValueETH} ETH</b> · daily spend cap <b>${dailySpendingCapETH} ETH</b>.\n\nUse these, or set your own?`,
+    replyMarkup: keyboard([
+      [button('✅ Use these defaults', 'flow:snipertoleranceaccept')],
+      [button('✏️ Set my own', 'flow:snipertolerancemanual')],
+      [button('❌ Cancel', 'flow:cancel:ask')],
+    ]),
+    parseMode: 'HTML',
+  };
+}
+
+function sniperConfirmation(data) {
+  const fmt = (value, fallback) => (value === undefined || value === null ? `default (${fallback})` : value);
+  return {
+    text: `<b>🎯 Confirm sniper</b>\nLabel: <b>${escapeTelegramHtml(data.label)}</b>\nTarget: <code>${data.targetAddress}</code>\nChain: ${data.chain}\nWallet: ${escapeTelegramHtml(data.walletLabel)}\nMax gas: ${fmt(data.maxGasGwei, '200 gwei')}\nMax value/fire: ${fmt(data.maxValueETH, '0.1 ETH')}\nDaily cap: ${fmt(data.dailySpendingCapETH, '0.25 ETH')}\n\nCreate this sniper?`,
+    replyMarkup: keyboard([
+      [button('✅ Create', 'flow:sniperconfirm')],
       [button('❌ Cancel', 'flow:cancel:ask')],
     ]),
     parseMode: 'HTML',
@@ -908,6 +951,9 @@ module.exports = {
   MODE_META,
   gasMenu,
   sniperMenu,
+  sniperChainSelect,
+  sniperTolerancePrompt,
+  sniperConfirmation,
   activityMenu,
   adminOverviewMenu,
   formatGmtPlus1,

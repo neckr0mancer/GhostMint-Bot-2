@@ -4,7 +4,7 @@ const {
   mainMenu, walletsMenu, settingsMenu, chainSelect, walletSelect,
   confirmRemoveWallet, placeholderMenu, labelModal, collectionInfoCard,
   taskNameQuickPicks, taskConfirmation, tasksMenu, snipersMenu, adminOverviewMenu,
-  modeMenu, MODE_META,
+  modeMenu, MODE_META, sniperDetailsModal, sniperTolerancePrompt, sniperToleranceModal, sniperConfirmation,
 } = require('../src/discord/menus');
 
 function flatButtons(components) {
@@ -323,6 +323,43 @@ test('snipersMenu matches /sniper list\'s exact format and disclaimer', () => {
 
   const empty = snipersMenu([]);
   assert.match(empty.content, /No matching snipers/);
+  assert.ok(flatButtons(list.components).some(b => b.custom_id === 'sniper:create:start'));
+  assert.ok(flatButtons(empty.components).some(b => b.custom_id === 'sniper:create:start'));
+});
+
+test('sniperDetailsModal asks for both label and target address, both required', () => {
+  const modal = sniperDetailsModal();
+  assert.equal(modal.custom_id, 'flow:snipercreate:submit');
+  const fields = modal.components.map(r => r.components[0]);
+  assert.deepEqual(fields.map(f => f.custom_id), ['label', 'targetAddress']);
+  assert.ok(fields.every(f => f.required === true));
+});
+
+test('sniperTolerancePrompt shows every default and offers accept-defaults alongside set-my-own', () => {
+  const prompt = sniperTolerancePrompt({ maxGasGwei: 200, maxValueETH: 0.1, dailySpendingCapETH: 0.25 });
+  assert.match(prompt.content, /max gas \*\*200 gwei\*\*/);
+  assert.match(prompt.content, /max value per fire \*\*0\.1 ETH\*\*/);
+  assert.match(prompt.content, /daily spend cap \*\*0\.25 ETH\*\*/);
+  assert.deepEqual(flatButtons(prompt.components).map(b => b.custom_id), ['flow:snipertoleranceaccept', 'flow:snipertolerancemanual']);
+});
+
+test('sniperToleranceModal offers all three fields as optional, showing the default in each placeholder', () => {
+  const modal = sniperToleranceModal({ maxGasGwei: 200, maxValueETH: 0.1, dailySpendingCapETH: 0.25 });
+  const fields = modal.components.map(r => r.components[0]);
+  assert.deepEqual(fields.map(f => f.custom_id), ['maxGasGwei', 'maxValueETH', 'dailySpendingCapETH']);
+  assert.ok(fields.every(f => f.required === false));
+  assert.match(fields[0].placeholder, /200/);
+  assert.match(fields[1].placeholder, /0\.1/);
+  assert.match(fields[2].placeholder, /0\.25/);
+});
+
+test('sniperConfirmation shows every field, naming defaults explicitly rather than a blank', () => {
+  const withCustom = sniperConfirmation({ label: 'Whale copy', targetAddress: '0xabc', chain: 'ethereum', walletLabel: 'main', maxGasGwei: 80 });
+  assert.match(withCustom.content, /Whale copy/);
+  assert.match(withCustom.content, /Max gas: 80/);
+  assert.match(withCustom.content, /Max value\/fire: default \(0\.1 ETH\)/);
+  assert.match(withCustom.content, /Daily cap: default \(0\.25 ETH\)/);
+  assert.deepEqual(flatButtons(withCustom.components).map(b => b.custom_id), ['flow:sniperconfirm', 'flow:cancel:ask']);
 });
 
 test('adminOverviewMenu shows metrics and per-group ceilings, wording "no ceiling" for a null value', () => {

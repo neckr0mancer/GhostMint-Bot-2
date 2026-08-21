@@ -5,7 +5,7 @@ const {
   mintModeMenu, batchImportMenu,
   contractDetails, contractDetailsText, collectionInfoCard, mintConfirmation, gasTolerancePrompt,
   taskConfirmation, taskScheduled, confirmRemoveWallet, placeholderMenu,
-  sniperMenu, activityMenu, adminOverviewMenu,
+  sniperMenu, sniperChainSelect, sniperTolerancePrompt, sniperConfirmation, activityMenu, adminOverviewMenu,
 } = require('../src/telegram/menus');
 
 function flatButtons(replyMarkup) {
@@ -500,12 +500,40 @@ test('sniperMenu shows the same disclaimer and per-sniper detail as /snipers, wi
   const empty = sniperMenu([]);
   assert.match(empty.text, /No snipers configured/);
   assert.ok(flatButtons(empty.replyMarkup).some(b => b.callback_data === 'menu:main'));
+  assert.ok(flatButtons(empty.replyMarkup).some(b => b.callback_data === 'sniper:create:start'));
 
   const list = sniperMenu([{ label: 'Copy Cool Cats', active: true, targetAddress: '0x1234567890abcdef', chain: 'ethereum', walletLabel: 'main', hits: 3, fails: 1 }]);
   assert.match(list.text, /Post-confirmation copy snipers \(1\)/);
   assert.match(list.text, /Not mempool front-running/);
   assert.match(list.text, /Copy Cool Cats/);
   assert.match(list.text, /Hits: 3 · Fails: 1/);
+  assert.ok(flatButtons(list.replyMarkup).some(b => b.callback_data === 'sniper:create:start'));
+});
+
+test('sniperChainSelect offers one button per configured chain, chunked 3-per-row, plus Cancel', () => {
+  const supportedChains = ['ethereum', 'base', 'arbitrum', 'polygon', 'robinhood'];
+  const chains = Object.fromEntries(supportedChains.map(c => [c, { name: c[0].toUpperCase() + c.slice(1), sym: 'X' }]));
+  const prompt = sniperChainSelect(supportedChains, chains);
+  const buttons = flatButtons(prompt.replyMarkup);
+  assert.deepEqual(buttons.map(b => b.callback_data), supportedChains.map(c => `flow:sniperchain:${c}`).concat(['flow:cancel:ask']));
+});
+
+test('sniperTolerancePrompt shows every default and offers accept-defaults alongside set-my-own', () => {
+  const prompt = sniperTolerancePrompt({ maxGasGwei: 200, maxValueETH: 0.1, dailySpendingCapETH: 0.25 });
+  assert.match(prompt.text, /max gas <b>200 gwei<\/b>/);
+  assert.match(prompt.text, /max value per fire <b>0\.1 ETH<\/b>/);
+  assert.match(prompt.text, /daily spend cap <b>0\.25 ETH<\/b>/);
+  const buttons = flatButtons(prompt.replyMarkup);
+  assert.deepEqual(buttons.map(b => b.callback_data), ['flow:snipertoleranceaccept', 'flow:snipertolerancemanual', 'flow:cancel:ask']);
+});
+
+test('sniperConfirmation shows every field, naming defaults explicitly rather than showing a blank', () => {
+  const withCustom = sniperConfirmation({ label: 'Whale copy', targetAddress: '0xabc', chain: 'ethereum', walletLabel: 'main', maxGasGwei: 80 });
+  assert.match(withCustom.text, /Whale copy/);
+  assert.match(withCustom.text, /Max gas: 80/);
+  assert.match(withCustom.text, /Max value\/fire: default \(0\.1 ETH\)/);
+  assert.match(withCustom.text, /Daily cap: default \(0\.25 ETH\)/);
+  assert.deepEqual(flatButtons(withCustom.replyMarkup).map(b => b.callback_data), ['flow:sniperconfirm', 'flow:cancel:ask']);
 });
 
 test('activityMenu offers Next on page 1 of many but not Prev, and both on a middle page', () => {

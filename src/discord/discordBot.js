@@ -1,7 +1,7 @@
 const {
   Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder,
 } = require('discord.js');
-const { formatEther } = require('ethers');
+const { formatEther, isAddress } = require('ethers');
 const { AccountBlockedError, AuthorizationError } = require('../governance/governanceService');
 const { formatAdminOverview } = require('../governance/adminOverviewFormat');
 const { LinkCodeError } = require('../identity/identityService');
@@ -20,6 +20,7 @@ const discordMenus = require('./menus');
 // hand-mirrored copy per platform.
 const mintFlowDecision = require('../mint/mintFlowDecision');
 const watchRuleFlowDecision = require('../social/watchRuleFlowDecision');
+const sniperFlowDecision = require('../sniper/sniperFlowDecision');
 
 function json(value, field = 'input') {
   try {
@@ -183,7 +184,7 @@ function formatRows(rows, empty, mapper) {
 // exact same botCommandService function the equivalent slash command already used above -- this
 // changes presentation only, never validation, transaction submission, or governance.
 const FLOW_LABELS = { wallet_create: 'creating a wallet', wallet_import: 'importing a wallet',
-  wallet_batch_import: 'importing several wallets', mint_guided: 'minting', task_guided: 'scheduling a mint', watch_guided: 'adding a watch rule' };
+  wallet_batch_import: 'importing several wallets', mint_guided: 'minting', task_guided: 'scheduling a mint', watch_guided: 'adding a watch rule', sniper_guided: 'creating a sniper' };
 const FLOW_CONTINUATIONS = {
   wallet_create: ['flow:label:submit', 'flow:chain:select'],
   wallet_import: ['flow:label:submit', 'flow:chain:select', 'wallet:import:key-modal', 'flow:key:submit'],
@@ -202,6 +203,7 @@ const FLOW_CONTINUATIONS = {
   // discordBot.js), and the callback handler branches on flow.flow.
   task_guided: ['flow:taskwallet:select', 'flow:mintqty:select', 'flow:mintqty:submit', 'flow:taskname:select', 'flow:taskname:submit', 'flow:taskconfirm'],
   watch_guided: ['flow:watchname:submit', 'flow:watchtype:select', 'flow:watchmethod:select', 'flow:watchconfig:submit', 'flow:watchconfirm'],
+  sniper_guided: ['flow:snipercreate:submit', 'flow:sniperchain:select', 'flow:sniperwallet:select', 'flow:snipertoleranceaccept', 'flow:snipertolerancemanual', 'flow:snipertolerance:submit', 'flow:sniperconfirm'],
 };
 
 function renderFlowStep(flow, step, { supportedChains = [], chains = {} } = {}) {
@@ -528,7 +530,7 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
   // conditional ones, the already-available interaction.values) -- showModal() is mutually
   // exclusive with defer/reply, so handleComponent's blanket up-front defer below must skip these
   // or every one of them would throw "already acknowledged" the moment it tried to open its modal.
-  const MODAL_CUSTOM_IDS = new Set(['menu:mint:single', 'menu:mint:batch', 'link:enter', 'wallet:create:start', 'wallet:import:start', 'wallet:import:key-modal', 'wallet:batch-import:add', 'gate:unlock:open', 'flow:pricemanual', 'flow:gastolerancemanual', 'watch:add:start', 'flow:watchmethod:select']);
+  const MODAL_CUSTOM_IDS = new Set(['menu:mint:single', 'menu:mint:batch', 'link:enter', 'wallet:create:start', 'wallet:import:start', 'wallet:import:key-modal', 'wallet:batch-import:add', 'gate:unlock:open', 'flow:pricemanual', 'flow:gastolerancemanual', 'watch:add:start', 'flow:watchmethod:select', 'sniper:create:start', 'flow:snipertolerancemanual']);
   function willShowModal(data, interaction) {
     if (MODAL_CUSTOM_IDS.has(data)) return true;
     if (data === 'flow:mintqty:select' && interaction.values?.[0] === 'custom') return true;
@@ -1157,6 +1159,64 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         }
       }
 
+      // Guided sniper-creation flow (Section R, Phase 1) -- Discord's only prior path was
+      // /sniper create with a hand-typed JSON blob; this mirrors watch_guided's wiring shape.
+      if (data === 'sniper:create:start') {
+        if (!await actionGate.allows(userId, 'discord', platformUserId, 'snipers')) {
+          return dcRespond(interaction, discordMenus.gateUnlockCard({ action: 'snipers' }));
+        }
+        flowState.start('discord', platformUserId, 'sniper_guided', 'awaiting_label', {});
+        return interaction.showModal(discordMenus.sniperDetailsModal());
+      }
+      if (data === 'flow:sniperchain:select') {
+        const flow = flowState.get('discord', platformUserId);
+        if (!flow || flow.flow !== 'sniper_guided' || flow.step !== 'awaiting_chain') return undefined;
+        const chain = interaction.values?.[0];
+        const wallets = commands.wallets(userId);
+        const decision = sniperFlowDecision.afterChain({ data: { ...flow.data, chain }, wallets });
+        flowState.advance('discord', platformUserId, decision.step, decision.data);
+        if (decision.step === 'awaiting_wallet') {
+          return dcRespond(interaction, discordMenus.walletSelect(wallets, { customId: 'flow:sniperwallet:select', emptyHint: 'No wallets yet. Create one first from the Wallets menu.' }));
+        }
+        return dcRespond(interaction, discordMenus.sniperTolerancePrompt(sniperFlowDecision.DEFAULTS));
+      }
+      if (data === 'flow:sniperwallet:select') {
+        const flow = flowState.get('discord', platformUserId);
+        if (!flow || flow.flow !== 'sniper_guided' || flow.step !== 'awaiting_wallet') return undefined;
+        const walletLabel = interaction.values?.[0];
+        const decision = sniperFlowDecision.afterWalletSelection({ data: { ...flow.data, walletLabel } });
+        flowState.advance('discord', platformUserId, decision.step, decision.data);
+        return dcRespond(interaction, discordMenus.sniperTolerancePrompt(sniperFlowDecision.DEFAULTS));
+      }
+      if (data === 'flow:snipertoleranceaccept') {
+        const flow = flowState.get('discord', platformUserId);
+        if (!flow || flow.flow !== 'sniper_guided' || flow.step !== 'awaiting_tolerance') return undefined;
+        const decision = sniperFlowDecision.afterTolerance({ data: flow.data, maxGasGwei: undefined, maxValueETH: undefined, dailySpendingCapETH: undefined });
+        flowState.advance('discord', platformUserId, decision.step, decision.data);
+        return dcRespond(interaction, discordMenus.sniperConfirmation(decision.data));
+      }
+      if (data === 'flow:snipertolerancemanual') {
+        const flow = flowState.get('discord', platformUserId);
+        if (!flow || flow.flow !== 'sniper_guided' || flow.step !== 'awaiting_tolerance') return undefined;
+        return interaction.showModal(discordMenus.sniperToleranceModal(sniperFlowDecision.DEFAULTS));
+      }
+      if (data === 'flow:sniperconfirm') {
+        const flow = flowState.get('discord', platformUserId);
+        if (!flow || flow.flow !== 'sniper_guided' || flow.step !== 'awaiting_confirm') return undefined;
+        try {
+          const sniper = await commands.createSniper(userId, { label: flow.data.label, targetAddress: flow.data.targetAddress,
+            chain: flow.data.chain, walletLabel: flow.data.walletLabel, maxGasGwei: flow.data.maxGasGwei,
+            maxValueETH: flow.data.maxValueETH, dailySpendingCapETH: flow.data.dailySpendingCapETH });
+          flowState.clear('discord', platformUserId);
+          return dcRespond(interaction, { content: `✅ Sniper ${sniper.label} is live, watching \`${sniper.targetAddress}\` on ${sniper.chain}.`,
+            components: [discordMenus.row([discordMenus.button('⬅️ Back to menu', 'menu:main')])] });
+        } catch (error) {
+          flowState.clear('discord', platformUserId);
+          if (error instanceof ValidationError) return dcRespond(interaction, { content: validationReply(error), components: [] });
+          throw error;
+        }
+      }
+
       return undefined;
     } catch (error) {
       if (error instanceof AuthorizationError) {
@@ -1391,6 +1451,44 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         const nextData = { ...flow.data, config };
         flowState.advance('discord', platformUserId, 'awaiting_confirm', nextData);
         await interaction.reply({ ...discordMenus.watchRuleConfirmation(nextData), ephemeral: true });
+        return;
+      }
+      if (data === 'flow:snipercreate:submit') {
+        if (flow.flow !== 'sniper_guided' || flow.step !== 'awaiting_label') { await interaction.reply({ content: 'This step has expired. Open the sniper menu again.', ephemeral: true }).catch(() => {}); return; }
+        const label = String(interaction.fields.getTextInputValue('label') || '').trim();
+        const targetAddress = String(interaction.fields.getTextInputValue('targetAddress') || '').trim();
+        if (!label || label.length > 100) {
+          await interaction.reply({ content: 'Label must be 1-100 characters. Tap "Create sniper" again to retry.', ephemeral: true }).catch(() => {});
+          return;
+        }
+        if (!isAddress(targetAddress)) {
+          await interaction.reply({ content: 'That does not look like a valid address. Tap "Create sniper" again to retry.', ephemeral: true }).catch(() => {});
+          return;
+        }
+        const labelStep = sniperFlowDecision.afterLabel({ data: { label } });
+        const decision = sniperFlowDecision.afterTarget({ data: { ...labelStep.data, targetAddress } });
+        flowState.advance('discord', platformUserId, decision.step, decision.data);
+        await interaction.reply({ ...discordMenus.chainSelect(supportedChains, chains, { customId: 'flow:sniperchain:select' }), ephemeral: true });
+        return;
+      }
+      if (data === 'flow:snipertolerance:submit') {
+        if (flow.flow !== 'sniper_guided' || flow.step !== 'awaiting_tolerance') { await interaction.reply({ content: 'This step has expired. Open the sniper menu again.', ephemeral: true }).catch(() => {}); return; }
+        const parseOptional = raw => {
+          const trimmed = String(raw || '').trim();
+          if (!trimmed) return undefined;
+          const value = Number(trimmed);
+          return Number.isFinite(value) && value >= 0 ? value : NaN;
+        };
+        const maxGasGwei = parseOptional(interaction.fields.getTextInputValue('maxGasGwei'));
+        const maxValueETH = parseOptional(interaction.fields.getTextInputValue('maxValueETH'));
+        const dailySpendingCapETH = parseOptional(interaction.fields.getTextInputValue('dailySpendingCapETH'));
+        if ([maxGasGwei, maxValueETH, dailySpendingCapETH].some(value => Number.isNaN(value))) {
+          await interaction.reply({ content: 'Each field must be a non-negative number, or left blank for the default. Tap the tolerance step again to retry.', ephemeral: true }).catch(() => {});
+          return;
+        }
+        const decision = sniperFlowDecision.afterTolerance({ data: flow.data, maxGasGwei, maxValueETH, dailySpendingCapETH });
+        flowState.advance('discord', platformUserId, decision.step, decision.data);
+        await interaction.reply({ ...discordMenus.sniperConfirmation(decision.data), ephemeral: true });
         return;
       }
     } catch (error) {

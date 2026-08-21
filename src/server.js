@@ -36,6 +36,7 @@ const { computeSeaDropValueWei } = require('./mint/seaDropCall');
 const { SEADROP_MINT_SIGNATURE } = require('./mint/seaDropRegistry');
 const mintFlowDecision = require('./mint/mintFlowDecision');
 const watchRuleFlowDecision = require('./social/watchRuleFlowDecision');
+const sniperFlowDecision = require('./sniper/sniperFlowDecision');
 const { createSchedulerRepository } = require('./scheduler/schedulerRepository');
 const { createSchedulerWorker } = require('./scheduler/schedulerWorker');
 const { createSocialAdapters } = require('./social/adapters');
@@ -867,7 +868,7 @@ async function gateBlocks({ chatId, messageId, userId, action }) {
   await tgEditMenu(chatId, messageId, telegramMenus.gateUnlockPrompt({ action }));
   return true;
 }
-const FLOW_LABELS = { wallet_create: 'creating a wallet', wallet_import: 'importing a wallet', mint_guided: 'minting', send_guided: 'sending funds', export_guided: 'exporting a private key', task_guided: 'scheduling a mint', watch_guided: 'adding a watch rule' };
+const FLOW_LABELS = { wallet_create: 'creating a wallet', wallet_import: 'importing a wallet', mint_guided: 'minting', send_guided: 'sending funds', export_guided: 'exporting a private key', task_guided: 'scheduling a mint', watch_guided: 'adding a watch rule', sniper_guided: 'creating a sniper' };
 const FLOW_CONTINUATION_PREFIXES = { wallet_create: ['flow:chain:'], wallet_import: ['flow:chain:'],
   // Without this the abandon gate below would clear the flow on the very next tap -- including
   // the chain pick and the Import button the flow itself renders.
@@ -885,7 +886,8 @@ const FLOW_CONTINUATION_PREFIXES = { wallet_create: ['flow:chain:'], wallet_impo
   // flow:phase: is deliberately NOT listed: tapping "add phase N" on an older success screen while
   // some other flow is mid-air should raise the usual abandon prompt, not silently replace it.
   task_guided: ['flow:mintdetailscontinue', 'flow:mintqty:', 'flow:priceaccept', 'flow:pricemanual', 'flow:phasepriceaccept', 'flow:phasetimeaccept', 'flow:taskname:', 'flow:taskwalletpick:', 'flow:taskconfirm'],
-  watch_guided: ['flow:watchtype:', 'flow:watchmethod:', 'flow:watchconfirm'] };
+  watch_guided: ['flow:watchtype:', 'flow:watchmethod:', 'flow:watchconfirm'],
+  sniper_guided: ['flow:sniperchain:', 'flow:sniperwalletpick:', 'flow:snipertoleranceaccept', 'flow:snipertolerancemanual', 'flow:sniperconfirm'] };
 
 // Generic one-shot confirmation gate for simple "<command> <id> CONFIRM"-shaped destructive actions
 // (remove wallet, cancel/resume/retry task, remove watch rule) -- replaces typing the literal word
@@ -1155,6 +1157,25 @@ function renderFlowStep(flow, step, { userId, data = {} } = {}) {
     }
     if (step === 'awaiting_confirm') return telegramMenus.watchRuleConfirmation(data);
   }
+  if (flow === 'sniper_guided') {
+    if (step === 'awaiting_label') return { text: 'What should we call this sniper? A short label to recognize it by.', replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' };
+    if (step === 'awaiting_target') return { text: 'Which wallet address should this sniper copy? Paste the address to watch.', replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' };
+    if (step === 'awaiting_chain') return telegramMenus.sniperChainSelect(CONFIG.supportedChains, CHAINS);
+    if (step === 'awaiting_wallet') {
+      return telegramMenus.walletPicker(botCommands.wallets(userId), { prefix: 'flow:sniperwalletpick', emptyHint: 'No wallets yet. Create one first from the Wallets menu.' });
+    }
+    if (step === 'awaiting_tolerance') {
+      return telegramMenus.sniperTolerancePrompt({ maxGasGwei: sniperFlowDecision.DEFAULTS.maxGasGwei,
+        maxValueETH: sniperFlowDecision.DEFAULTS.maxValueETH, dailySpendingCapETH: sniperFlowDecision.DEFAULTS.dailySpendingCapETH });
+    }
+    // Customize walks the three fields one at a time -- the same free-text-with-a-default-hint
+    // shape watch_guided's awaiting_config already uses, just a fixed 3-field sequence instead of
+    // a type-dependent list, since every sniper's tolerance step asks for the same three things.
+    if (step === 'awaiting_tolerance_gas') return { text: `Max gas, in gwei. Default is ${sniperFlowDecision.DEFAULTS.maxGasGwei}. Type a number, or send "default" to keep it.`, replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' };
+    if (step === 'awaiting_tolerance_value') return { text: `Max value per fire, in ETH. Default is ${sniperFlowDecision.DEFAULTS.maxValueETH}. Type a number, or send "default" to keep it.`, replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' };
+    if (step === 'awaiting_tolerance_cap') return { text: `Daily spending cap, in ETH. Default is ${sniperFlowDecision.DEFAULTS.dailySpendingCapETH}. Type a number, or send "default" to keep it.`, replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' };
+    if (step === 'awaiting_confirm') return telegramMenus.sniperConfirmation(data);
+  }
   return telegramMenus.mainMenu({});
 }
 
@@ -1404,6 +1425,29 @@ async function finishWatchRuleCreation(chatId, messageId, userId, flowData) {
     const rule = await botCommands.createWatchRule(userId, { name: flowData.name, type: flowData.type, method: flowData.method, config: flowData.config });
     telegramFlowState.clear('telegram', chatId);
     return tgUpdate(chatId, messageId, { text: `✅ Watch rule <b>${escapeTelegramHtml(rule.name)}</b> created using ${rule.method}.`, replyMarkup: backToMenu, parseMode: 'HTML' });
+  } catch (error) {
+    telegramFlowState.clear('telegram', chatId);
+    if (error instanceof ValidationError) return tgUpdate(chatId, messageId, { text: escapeTelegramHtml(validationReply(error)), replyMarkup: backToMenu, parseMode: 'HTML' });
+    throw error;
+  }
+}
+
+// Guided sniper-creation flow (Section R, Phase 1) -- Telegram had no way to create a sniper at
+// all before this (only /updatesniper to patch one that already exists), unlike every other
+// guided-flow feature here. Mirrors startWatchRuleFlow's shape exactly.
+async function startSniperFlow(chatId, messageId, userId) {
+  telegramFlowState.start('telegram', chatId, 'sniper_guided', 'awaiting_label', {});
+  return tgUpdate(chatId, messageId, renderFlowStep('sniper_guided', 'awaiting_label'));
+}
+
+async function finishSniperCreation(chatId, messageId, userId, flowData) {
+  const backToMenu = telegramMenus.mainMenu({}).replyMarkup;
+  try {
+    const sniper = await botCommands.createSniper(userId, { label: flowData.label, targetAddress: flowData.targetAddress,
+      chain: flowData.chain, walletLabel: flowData.walletLabel, maxGasGwei: flowData.maxGasGwei,
+      maxValueETH: flowData.maxValueETH, dailySpendingCapETH: flowData.dailySpendingCapETH });
+    telegramFlowState.clear('telegram', chatId);
+    return tgUpdate(chatId, messageId, { text: `✅ Sniper <b>${escapeTelegramHtml(sniper.label)}</b> is live, watching <code>${sniper.targetAddress}</code> on ${sniper.chain}.`, replyMarkup: backToMenu, parseMode: 'HTML' });
   } catch (error) {
     telegramFlowState.clear('telegram', chatId);
     if (error instanceof ValidationError) return tgUpdate(chatId, messageId, { text: escapeTelegramHtml(validationReply(error)), replyMarkup: backToMenu, parseMode: 'HTML' });
@@ -1809,6 +1853,7 @@ async function handleFlowTextMessage(msg) {
     || (flow.flow === 'send_guided' && (flow.step === 'awaiting_amount' || flow.step === 'awaiting_destination'))
     || (flow.flow === 'task_guided' && ['awaiting_contract', 'awaiting_quantity', 'awaiting_price', 'awaiting_name', 'awaiting_time'].includes(flow.step))
     || (flow.flow === 'watch_guided' && ['awaiting_name', 'awaiting_config'].includes(flow.step))
+    || (flow.flow === 'sniper_guided' && ['awaiting_label', 'awaiting_target', 'awaiting_tolerance_gas', 'awaiting_tolerance_value', 'awaiting_tolerance_cap'].includes(flow.step))
   );
   if (!flow || !isTextStep) {
     // A bare contract address, or an opensea.io collection link (Section Q), wins over whatever
@@ -2009,6 +2054,50 @@ async function handleFlowTextMessage(msg) {
     }
     const data = { ...flow.data, config: { ...flow.data.config, [field]: parsed } };
     await advanceWatchConfigStep(chatId, null, userId, { data });
+  }
+  if (flow.flow === 'sniper_guided' && flow.step === 'awaiting_label') {
+    if (!value || value.length > 100) {
+      tgRender(chatId, { text: 'Label must be 1-100 characters. Try again.', replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' });
+      return;
+    }
+    const decision = sniperFlowDecision.afterLabel({ data: { ...flow.data, label: value } });
+    telegramFlowState.advance('telegram', chatId, decision.step, decision.data);
+    tgRender(chatId, renderFlowStep('sniper_guided', decision.step, { userId, data: decision.data }));
+    return;
+  }
+  if (flow.flow === 'sniper_guided' && flow.step === 'awaiting_target') {
+    if (!ethers.isAddress(value)) {
+      tgRender(chatId, { text: 'That does not look like a valid address. Try again.', replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' });
+      return;
+    }
+    const decision = sniperFlowDecision.afterTarget({ data: { ...flow.data, targetAddress: value } });
+    telegramFlowState.advance('telegram', chatId, decision.step, decision.data);
+    tgRender(chatId, renderFlowStep('sniper_guided', decision.step, { userId, data: decision.data }));
+    return;
+  }
+  if (flow.flow === 'sniper_guided' && ['awaiting_tolerance_gas', 'awaiting_tolerance_value', 'awaiting_tolerance_cap'].includes(flow.step)) {
+    // "default" (or an empty send) keeps validateSniper's own fallback for that field -- undefined
+    // reaches createSniper as "not provided", same as accepting all three defaults up front does.
+    const parsed = /^default$/i.test(value) ? undefined : Number(value);
+    if (parsed !== undefined && (!Number.isFinite(parsed) || parsed < 0)) {
+      tgRender(chatId, { text: 'Send a non-negative number, or "default" to keep the default.', replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' });
+      return;
+    }
+    if (flow.step === 'awaiting_tolerance_gas') {
+      const data = { ...flow.data, maxGasGwei: parsed };
+      telegramFlowState.advance('telegram', chatId, 'awaiting_tolerance_value', data);
+      tgRender(chatId, renderFlowStep('sniper_guided', 'awaiting_tolerance_value', { userId, data }));
+      return;
+    }
+    if (flow.step === 'awaiting_tolerance_value') {
+      const data = { ...flow.data, maxValueETH: parsed };
+      telegramFlowState.advance('telegram', chatId, 'awaiting_tolerance_cap', data);
+      tgRender(chatId, renderFlowStep('sniper_guided', 'awaiting_tolerance_cap', { userId, data }));
+      return;
+    }
+    const decision = sniperFlowDecision.afterTolerance({ data: flow.data, maxGasGwei: flow.data.maxGasGwei, maxValueETH: flow.data.maxValueETH, dailySpendingCapETH: parsed });
+    telegramFlowState.advance('telegram', chatId, decision.step, decision.data);
+    tgRender(chatId, renderFlowStep('sniper_guided', decision.step, { userId, data: decision.data }));
   }
 }
 
@@ -2281,6 +2370,10 @@ if (BOT_TOKEN) {
     if (data === 'menu:snipers') {
       if (await gateBlocks({ chatId, messageId, userId, action: 'snipers' })) return;
       return tgEditMenu(chatId, messageId, telegramMenus.sniperMenu(botCommands.snipers(userId)));
+    }
+    if (data === 'sniper:create:start') {
+      if (await gateBlocks({ chatId, messageId, userId, action: 'snipers' })) return;
+      return startSniperFlow(chatId, messageId, userId);
     }
     if (data === 'menu:watch' || data === 'watch:list') {
       if (await gateBlocks({ chatId, messageId, userId, action: 'watchrules' })) return;
@@ -2619,6 +2712,41 @@ if (BOT_TOKEN) {
       const flow = telegramFlowState.get('telegram', chatId);
       if (!flow || flow.flow !== 'watch_guided') return;
       return finishWatchRuleCreation(chatId, messageId, userId, flow.data);
+    }
+    if (data.startsWith('flow:sniperchain:')) {
+      const chain = data.slice('flow:sniperchain:'.length);
+      const flow = telegramFlowState.get('telegram', chatId);
+      if (!flow || flow.flow !== 'sniper_guided' || flow.step !== 'awaiting_chain') return;
+      const wallets = botCommands.wallets(userId);
+      const decision = sniperFlowDecision.afterChain({ data: { ...flow.data, chain }, wallets });
+      telegramFlowState.advance('telegram', chatId, decision.step, decision.data);
+      return tgEditMenu(chatId, messageId, renderFlowStep('sniper_guided', decision.step, { userId, data: decision.data }));
+    }
+    if (data.startsWith('flow:sniperwalletpick:')) {
+      const label = data.slice('flow:sniperwalletpick:'.length);
+      const flow = telegramFlowState.get('telegram', chatId);
+      if (!flow || flow.flow !== 'sniper_guided' || flow.step !== 'awaiting_wallet') return;
+      const decision = sniperFlowDecision.afterWalletSelection({ data: { ...flow.data, walletLabel: label } });
+      telegramFlowState.advance('telegram', chatId, decision.step, decision.data);
+      return tgEditMenu(chatId, messageId, renderFlowStep('sniper_guided', decision.step, { userId, data: decision.data }));
+    }
+    if (data === 'flow:snipertoleranceaccept') {
+      const flow = telegramFlowState.get('telegram', chatId);
+      if (!flow || flow.flow !== 'sniper_guided' || flow.step !== 'awaiting_tolerance') return;
+      const decision = sniperFlowDecision.afterTolerance({ data: flow.data, maxGasGwei: undefined, maxValueETH: undefined, dailySpendingCapETH: undefined });
+      telegramFlowState.advance('telegram', chatId, decision.step, decision.data);
+      return tgEditMenu(chatId, messageId, renderFlowStep('sniper_guided', decision.step, { userId, data: decision.data }));
+    }
+    if (data === 'flow:snipertolerancemanual') {
+      const flow = telegramFlowState.get('telegram', chatId);
+      if (!flow || flow.flow !== 'sniper_guided' || flow.step !== 'awaiting_tolerance') return;
+      telegramFlowState.advance('telegram', chatId, 'awaiting_tolerance_gas', flow.data);
+      return tgEditMenu(chatId, messageId, renderFlowStep('sniper_guided', 'awaiting_tolerance_gas'));
+    }
+    if (data === 'flow:sniperconfirm') {
+      const flow = telegramFlowState.get('telegram', chatId);
+      if (!flow || flow.flow !== 'sniper_guided') return;
+      return finishSniperCreation(chatId, messageId, userId, flow.data);
     }
     if (data.startsWith('flow:walletpick:')) {
       const label = data.slice('flow:walletpick:'.length);
