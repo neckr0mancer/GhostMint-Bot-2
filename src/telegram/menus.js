@@ -349,9 +349,14 @@ function contractDetailsText({ contractAddress, chainLabel, isSeaDrop, priceETH,
 // into whatever the first actionable mint screen turns out to be instead), but the schedule flow
 // is unchanged and still wants a plain details-then-Continue screen.
 function contractDetails(data) {
+  // Sold out means there is nothing left to schedule a mint against -- Continue would only lead
+  // into a task that could never fire successfully, so it drops the same way Mint Now does on
+  // collectionInfoCard, leaving Cancel as the only way forward.
+  const rows = data.soldOut ? [] : [[button('▶️ Continue', 'flow:mintdetailscontinue')]];
+  rows.push([button('❌ Cancel', 'flow:cancel:ask')]);
   return {
     text: contractDetailsText(data),
-    replyMarkup: keyboard([[button('▶️ Continue', 'flow:mintdetailscontinue')], [button('❌ Cancel', 'flow:cancel:ask')]]),
+    replyMarkup: keyboard(rows),
     parseMode: 'HTML',
   };
 }
@@ -446,8 +451,10 @@ function collectionInfoCard({ contractAddress, chainLabel, chainSym, isSeaDrop, 
   // Section AF -- "can't you read the phases from OpenSea and the contract?" On-chain SeaDrop only
   // ever exposes the ONE currently-configured PublicDrop struct (the Opens/Opened line below), so it
   // can never say what's coming after that. drop is null unless OpenSea actually tracks this
-  // contract as a drop -- omitted entirely rather than shown as a broken/empty section.
-  if (drop && (drop.activeStage || drop.nextStage || drop.stages.length > 1)) {
+  // contract as a drop -- omitted entirely rather than shown as a broken/empty section. Once sold
+  // out there is nothing left for a phase to gate access to, so the section is dropped even if OpenSea
+  // still hands back stale stage data for it.
+  if (!soldOut && drop && (drop.activeStage || drop.nextStage || drop.stages.length > 1)) {
     const phaseLines = [];
     if (drop.stages.length > 1) phaseLines.push(`${drop.stages.length} phases total`);
     if (drop.activeStage) {
@@ -481,18 +488,23 @@ function collectionInfoCard({ contractAddress, chainLabel, chainSym, isSeaDrop, 
   const utilityRow = [button('🔄 Refresh', 'flow:detailsrefresh')];
   if (openSeaUrl) utilityRow.push(urlButton('🔗 OpenSea', openSeaUrl));
 
-  const rows = [[button('🔥 Ape In', 'flow:mintdetailscontinue')]];
-  if (opensInFuture) rows.push([button('📅 Schedule for opening', `flow:schedulesuggest:${contractAddress}`)]);
-  // Section AF -- an allowlist/GTD/FCFS stage has no on-chain proof this app can construct itself;
-  // OpenSea's own backend resolves eligibility, so this is the path that actually works for those.
-  // Shown only when OpenSea confirms a stage is live right now -- there is nothing for it to mint
-  // against otherwise.
-  if (drop?.activeStage) rows.push([button('🎫 Mint via OpenSea', 'flow:mintviaopensea')]);
-  // A phase that hasn't opened yet has nothing to mint against -- being tapped-in and ready at the
-  // exact open is what cuts the time wasted, not a pre-check OpenSea has no way to answer ahead of
-  // time (see mintViaOpenSea's own notes). OpenSea only ever returns nextStage when nothing is
-  // currently minting, so this and the button above are never both shown at once.
-  if (drop?.nextStage) rows.push([button('🎫📅 Schedule for OpenSea phase', 'flow:scheduleviaopensea')]);
+  // Sold out means there is nothing left to mint or schedule against -- only the info-only utility/
+  // cancel row below remains.
+  const rows = [];
+  if (!soldOut) {
+    rows.push([button('🔥 Ape In', 'flow:mintdetailscontinue')]);
+    if (opensInFuture) rows.push([button('📅 Schedule for opening', `flow:schedulesuggest:${contractAddress}`)]);
+    // Section AF -- an allowlist/GTD/FCFS stage has no on-chain proof this app can construct itself;
+    // OpenSea's own backend resolves eligibility, so this is the path that actually works for those.
+    // Shown only when OpenSea confirms a stage is live right now -- there is nothing for it to mint
+    // against otherwise.
+    if (drop?.activeStage) rows.push([button('🎫 Mint via OpenSea', 'flow:mintviaopensea')]);
+    // A phase that hasn't opened yet has nothing to mint against -- being tapped-in and ready at the
+    // exact open is what cuts the time wasted, not a pre-check OpenSea has no way to answer ahead of
+    // time (see mintViaOpenSea's own notes). OpenSea only ever returns nextStage when nothing is
+    // currently minting, so this and the button above are never both shown at once.
+    if (drop?.nextStage) rows.push([button('🎫📅 Schedule for OpenSea phase', 'flow:scheduleviaopensea')]);
+  }
   rows.push(utilityRow, [button('❌ Cancel', 'flow:cancel:ask')]);
 
   return {

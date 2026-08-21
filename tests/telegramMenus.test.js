@@ -215,6 +215,15 @@ test('a sold-out collection omits Max per wallet -- there is nothing left to min
   assert.match(details.text, /Max supply: 5000/);
 });
 
+test('a sold-out collection offers no Continue on the /task schedule screen -- only Cancel, since there is nothing left to schedule a mint against', () => {
+  const details = contractDetails({
+    contractAddress: '0xabc', chainLabel: 'Ethereum', isSeaDrop: true, priceETH: 0.05, priceUnknown: false,
+    maxSupply: 5000, maxPerWallet: 3, startTime: null, collection: null,
+    soldOut: true, displayPrice: null,
+  });
+  assert.deepEqual(flatButtons(details.replyMarkup).map(b => b.callback_data), ['flow:cancel:ask']);
+});
+
 test('a missing USD price omits the parenthetical entirely rather than showing $NaN', () => {
   const details = contractDetails({
     contractAddress: '0xabc', chainLabel: 'Ethereum', isSeaDrop: false, priceETH: 0.05, priceUnknown: false,
@@ -325,6 +334,27 @@ test('collectionInfoCard never offers Schedule for OpenSea phase when there is n
     maxSupply: 100, maxPerWallet: 1, startTime: null, collection: null, soldOut: false, displayPrice: null, stats: null, drop: null, openSeaUrl: null,
   });
   assert.equal(flatButtons(noDrop.replyMarkup).some(b => b.callback_data === 'flow:scheduleviaopensea'), false);
+});
+
+test('a sold-out collection shows no phases and no mint/schedule actions, even when OpenSea still hands back stale stage data for it', () => {
+  const card = collectionInfoCard({
+    contractAddress: '0xabc', chainLabel: 'Ethereum', chainSym: 'ETH', isSeaDrop: true, priceETH: 0.05, priceUnknown: false,
+    maxSupply: 100, maxPerWallet: 1, startTime: Math.floor(Date.now() / 1000) - 3_600, collection: null,
+    soldOut: true, displayPrice: null, stats: null, openSeaUrl: 'https://opensea.io/assets/ethereum/0xabc',
+    drop: {
+      isMinting: true, dropType: 'seadrop_v1_erc721', maxSupply: 100, openSeaUrl: null,
+      activeStage: { uuid: 'a1', label: 'Public sale', startTime: 1_700_000_000, endTime: 1_700_100_000, priceETH: 0.05, maxPerWallet: 5, stageType: 'public_sale' },
+      nextStage: null,
+      stages: [
+        { uuid: 'a0', label: 'Allowlist', startTime: 1_699_900_000, endTime: 1_700_000_000, priceETH: 0, maxPerWallet: 2, stageType: 'presale' },
+        { uuid: 'a1', label: 'Public sale', startTime: 1_700_000_000, endTime: 1_700_100_000, priceETH: 0.05, maxPerWallet: 5, stageType: 'public_sale' },
+      ],
+    },
+  });
+  assert.equal(card.text.includes('Phases'), false, 'phases section must not render once sold out');
+  const buttons = flatButtons(card.replyMarkup);
+  assert.deepEqual(buttons.map(b => b.callback_data || b.url), ['flow:detailsrefresh', 'https://opensea.io/assets/ethereum/0xabc', 'flow:cancel:ask'],
+    'only the info-only Refresh/OpenSea/Cancel actions remain -- no Ape In, no OpenSea phase action, no Schedule for opening');
 });
 
 test('collectionInfoCard omits the stats table entirely when stats is null, and renders an aligned floor/holders/minted/volume table -- never a market cap -- when it is not', () => {

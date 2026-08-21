@@ -237,6 +237,27 @@ test('collectionInfoCard never offers Schedule for OpenSea phase when there is n
   assert.equal(flatButtons(noDrop.components).some(b => b.custom_id === 'flow:scheduleviaopensea'), false);
 });
 
+test('a sold-out collection shows no phases and no mint/schedule actions, even when OpenSea still hands back stale stage data for it', () => {
+  const card = collectionInfoCard({
+    contractAddress: '0xabc', chainLabel: 'Ethereum', chainSym: 'ETH', isSeaDrop: true, priceETH: 0.05, priceUnknown: false,
+    maxSupply: 100, maxPerWallet: 1, startTime: Math.floor(Date.now() / 1000) - 3_600, collection: null,
+    soldOut: true, displayPrice: null, stats: null, openSeaUrl: 'https://opensea.io/assets/ethereum/0xabc',
+    drop: {
+      isMinting: true, dropType: 'seadrop_v1_erc721', maxSupply: 100, openSeaUrl: null,
+      activeStage: { uuid: 'a1', label: 'Public sale', startTime: 1_700_000_000, endTime: 1_700_100_000, priceETH: 0.05, maxPerWallet: 5, stageType: 'public_sale' },
+      nextStage: null,
+      stages: [
+        { uuid: 'a0', label: 'Allowlist', startTime: 1_699_900_000, endTime: 1_700_000_000, priceETH: 0, maxPerWallet: 2, stageType: 'presale' },
+        { uuid: 'a1', label: 'Public sale', startTime: 1_700_000_000, endTime: 1_700_100_000, priceETH: 0.05, maxPerWallet: 5, stageType: 'public_sale' },
+      ],
+    },
+  });
+  assert.equal(card.content.includes('Phases'), false, 'phases section must not render once sold out');
+  const ids = flatButtons(card.components).map(b => b.custom_id || b.url);
+  assert.deepEqual(ids, ['flow:detailsrefresh', 'https://opensea.io/assets/ethereum/0xabc', 'flow:cancel:ask'],
+    'only the info-only Refresh/OpenSea/Cancel actions remain -- no Mint Now, no OpenSea phase action, no Schedule for opening');
+});
+
 test('taskNameQuickPicks offers GTD/FCFS/PUBLIC and a custom option in one select, with an unverified-labels caveat', () => {
   const menu = taskNameQuickPicks();
   const options = selectComponent(menu.components).options;
