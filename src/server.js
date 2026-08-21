@@ -24,6 +24,7 @@ const { decodeMintCall, formatMintPreview } = require('./mint/mintCall');
 const { createMintExecutionService } = require('./mint/mintExecutionService');
 const { createMintService } = require('./mint/mintService');
 const { createNotificationService } = require('./notifications/notificationService');
+const { telegramHtmlToDiscordMarkdown } = require('./notifications/discordMarkdown');
 const { createPostgresMintPresetRepository } = require('./mint/postgresMintPresetRepository');
 const { createProofResolver, ProofResolutionError } = require('./mint/proofResolver');
 const { createContractValueRepository } = require('./mint/contractValueRepository');
@@ -822,7 +823,7 @@ const notificationService = createNotificationService({
   identityRepository,
   transports: {
     telegram: (platformUserId, message) => tg(platformUserId, message, { parse_mode: 'HTML' }),
-    discord: (platformUserId, message) => discordBot?.sendDirectMessage(platformUserId, message),
+    discord: (platformUserId, message) => discordBot?.sendDirectMessage(platformUserId, telegramHtmlToDiscordMarkdown(message)),
   },
   log,
 });
@@ -1704,15 +1705,24 @@ async function advanceFromTaskDetails(chatId, messageId, userId, flow) {
 
 // Section AF -- shared shape for both the direct (single-stage) and picked (multi-stage) paths out
 // of flow:scheduleviaopensea, so they build identical task data from whichever stage was settled on.
-// name is the stage's own real label (or a humanized fallback from its stage_type) -- which phase
-// this is is a known fact now, not a guess, so advanceFromTaskWallet skips the manual naming step
-// entirely for a viaOpenSea task rather than asking the user to re-type something already known.
+// name is "<collection> — <phase>" (the stage's own real label, or a humanized fallback from its
+// stage_type) -- which phase this is is a known fact now, not a guess, so advanceFromTaskWallet
+// skips the manual naming step entirely for a viaOpenSea task rather than asking the user to re-type
+// something already known. Live-reported follow-up: the phase label alone ("Public sale") isn't
+// enough to tell two different collections' tasks apart in /tasks once more than one is staged --
+// the collection name makes each row identifiable at a glance without opening it. Falls back to the
+// phase name alone when OpenSea has no collection name for this contract, same "unknown is fine"
+// convention the rest of this card already follows.
+function openSeaPhaseTaskName(mintFlowData, stage) {
+  const phase = stage.label || telegramMenus.humanizeStageType(stage.stageType);
+  return mintFlowData.collection?.name ? `${mintFlowData.collection.name} — ${phase}` : phase;
+}
 function openSeaPhaseTaskData(mintFlowData, stage) {
   return {
     contractAddress: mintFlowData.contractAddress, chain: mintFlowData.chain, isSeaDrop: mintFlowData.isSeaDrop,
     priceETH: 0, priceUnknown: false, viaOpenSea: true, collection: mintFlowData.collection,
     mintTime: new Date(stage.startTime * 1000).toISOString(),
-    name: stage.label || telegramMenus.humanizeStageType(stage.stageType),
+    name: openSeaPhaseTaskName(mintFlowData, stage),
     maxPerWallet: mintFlowData.maxPerWallet,
   };
 }
