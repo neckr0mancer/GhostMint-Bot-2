@@ -156,13 +156,31 @@ const seaDropDiscoveryService = createSeaDropDiscoveryService({
   apiKey: CONFIG.etherscanApiKey,
   repository: contractValueRepository,
 });
-const openSeaService = createOpenSeaService({
+// Round 20 follow-up: read/display calls (getDrop/getCollectionMetadata/getCollectionStats/
+// resolveCollectionContract -- now hit on every paste, not just /info) route through a genuinely
+// separate OpenSea account's key when OPENSEA_READ_API_KEY is configured, so a rate-limit hit on
+// that side can never touch the account buildMintTransaction actually mints through. Unconfigured,
+// openSeaReadApiKey === openSeaApiKey (see config/index.js), so this composes down to the same
+// single-key behavior as before -- zero change for anyone who hasn't set the new var.
+const openSeaReadService = createOpenSeaService({
+  apiKey: CONFIG.openSeaReadApiKey,
+  repository: contractValueRepository,
+  log: msg => log(msg),
+});
+const openSeaWriteService = CONFIG.openSeaReadApiKey === CONFIG.openSeaApiKey ? openSeaReadService : createOpenSeaService({
   apiKey: CONFIG.openSeaApiKey,
   repository: contractValueRepository,
   // log is defined further below in this file (module-load order, not a real circular dependency)
   // -- safe because this closure isn't called until a real request comes in, long after log exists.
   log: msg => log(msg),
 });
+const openSeaService = {
+  getCollectionMetadata: openSeaReadService.getCollectionMetadata,
+  resolveCollectionContract: openSeaReadService.resolveCollectionContract,
+  getCollectionStats: openSeaReadService.getCollectionStats,
+  getDrop: openSeaReadService.getDrop,
+  buildMintTransaction: openSeaWriteService.buildMintTransaction,
+};
 const priceFeedService = createPriceFeedService();
 const governanceRepository = createPostgresGovernanceRepository(pool);
 const governance = createGovernanceService(governanceRepository);

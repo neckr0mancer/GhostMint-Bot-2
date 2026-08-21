@@ -65,6 +65,25 @@ shipped).
   worked (`openSeaService.getDrop` correctly returned three real, named stages), it just never ran
   outside `/info` — `includeStats`'s gate covered `drop` too, so a bare paste got the leaner card by
   design. Split into its own opt-in flag; shipped 2026-08-21.
+  **Follow-up, same day:** the owner flagged that this multiplies read-call volume against OpenSea's
+  API (every paste now, not just `/info`) and asked whether splitting into separate keys/accounts
+  would help. Live-verified against OpenSea's own docs (two independent pages): rate limits pool
+  **per account**, not per key — "creating multiple API keys will not increase your overall rate
+  limit" — so a second key on the *same* account buys nothing. What already exists for free: OpenSea
+  splits its limit into separate read (600/h) and write (30/h) buckets, and this app's only write
+  call is `buildMintTransaction` (the actual OpenSea-backed mint) — so the increased read volume was
+  never actually threatening mint execution in the first place. Built anyway, as a genuine
+  least-privilege/blast-radius improvement the owner wanted regardless: a **second, real OpenSea
+  account's key**, `OPENSEA_READ_API_KEY` (optional, aliases the main key when unset — same
+  zero-behavior-change-if-unconfigured shape as Round 15's RPC pool split), now carries every read
+  call (`getDrop`/`getCollectionMetadata`/`getCollectionStats`/`resolveCollectionContract`);
+  `OPENSEA_API_KEY` keeps handling `buildMintTransaction` alone. `server.js` composes one
+  `openSeaService`-shaped object from two underlying `createOpenSeaService` instances so every
+  existing caller (both platforms, the scheduler) needed zero changes. Live-verified the new key
+  actually works (real `getDrop` call against the same KIYO contract, correct data back) before
+  setting it on Railway via `variableUpsert`. New tests in `tests/config.test.js` covering both the
+  aliased-when-unset and genuinely-separate-when-configured cases, keys never leaking into the
+  summary either way.
 - **Round 19** (Section R, Phase 1) is the guided sniper-creation flow on both platforms — Telegram
   had no way to create a sniper at all before this, Discord's only path was a hand-typed JSON blob.
   Scoped explicitly to just this against the existing copy-mode schema (no new DB migration);

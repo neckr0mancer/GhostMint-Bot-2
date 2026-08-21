@@ -344,6 +344,15 @@ const discord = parseDiscord();
 const socialAdapters = parseSocialAdapters();
 const etherscanApiKey = optionalString('ETHERSCAN_API_KEY');
 const openSeaApiKey = optionalString('OPENSEA_API_KEY');
+// Round 20 follow-up: read (display) calls -- getDrop/getCollectionMetadata/getCollectionStats,
+// now hit on every paste, not just /info -- separated from write (buildMintTransaction, the actual
+// OpenSea-backed mint) onto its own account, since a rate-limit hit on the read side should never
+// have any chance of touching the account that executes real mints. OpenSea pools its rate limit
+// per ACCOUNT regardless of key count (live-verified against their docs), so this only helps
+// because it's a genuinely separate account/key, not just a second key on the same one. Optional
+// and provider-agnostic like every other opt-in split in this app (Round 15's RPC pools): unset
+// means read traffic keeps sharing the one existing key, zero behavior change.
+const openSeaReadApiKey = optionalString('OPENSEA_READ_API_KEY') || openSeaApiKey;
 const database = parseDatabaseConfig(environment);
 const encryption = parseEncryptionKeys(environment);
 const rpcOverrides = {};
@@ -394,6 +403,7 @@ const CONFIG = Object.freeze({
   socialManagedServiceToken: socialAdapters.managedServiceToken,
   etherscanApiKey,
   openSeaApiKey,
+  openSeaReadApiKey,
   socialPollIntervalMs: parseInteger('SOCIAL_POLL_INTERVAL_MS', 30_000, 5_000, 3_600_000),
   socialPricing: Object.freeze({ officialReadUsd:0.005, officialPostUsd:0.015,
     managedMonthlyTiersUsd:Object.freeze([199, 499]) }),
@@ -425,6 +435,7 @@ function getSafeConfigSummary() {
     socialScraperAvailable: true,
     etherscanGasConfigured: CONFIG.etherscanApiKey !== null,
     openSeaConfigured: CONFIG.openSeaApiKey !== null,
+    openSeaReadKeySeparate: CONFIG.openSeaReadApiKey !== CONFIG.openSeaApiKey,
     fastRpcChainsConfigured: Object.entries(FAST_CHAINS).filter(([name, chain]) => chain.rpcUrls[0] !== CHAINS[name].rpcUrls[0]).map(([name]) => name),
     sniperRpcChainsConfigured: Object.entries(SNIPER_CHAINS).filter(([name, chain]) => chain.rpcUrls[0] !== CHAINS[name].rpcUrls[0]).map(([name]) => name),
     sniperWebSocketConfigured: Object.entries(SNIPER_CHAINS).filter(([name, chain]) => chain.rpcWsUrl !== CHAINS[name].rpcWsUrl).map(([name]) => name),
