@@ -194,7 +194,7 @@ const FLOW_CONTINUATIONS = {
   wallet_batch_import: ['wallet:batch-import:add', 'flow:batchkeys:submit', 'wallet:batch-import:confirm'],
   // Section AA -- every custom_id stays fixed (select-menu VALUES carry the chosen quantity/
   // wallet, never the custom_id itself), so this list needs no dynamic/prefix matching.
-  mint_guided: ['flow:mintdetailscontinue', 'flow:detailsrefresh', 'flow:schedulesuggest', 'flow:mintqty:select', 'flow:mintqty:submit', 'flow:mintwallet:select', 'flow:mintwalletmulti:select', 'flow:mintwalletmulti:continue', 'flow:priceaccept', 'flow:pricemanual', 'flow:mintprice:submit', 'flow:gastoleranceaccept', 'flow:gastolerancemanual', 'flow:gastolerance:submit', 'flow:mintconfirm', 'flow:mintviaopensea', 'flow:scheduleviaopensea'],
+  mint_guided: ['flow:mintdetailscontinue', 'flow:detailsrefresh', 'flow:schedulesuggest', 'flow:mintqty:select', 'flow:mintqty:submit', 'flow:mintwallet:select', 'flow:mintwalletmulti:select', 'flow:mintwalletmulti:continue', 'flow:priceaccept', 'flow:pricemanual', 'flow:mintprice:submit', 'flow:gastoleranceaccept', 'flow:gastolerancemanual', 'flow:gastolerance:submit', 'flow:mintconfirm', 'flow:mintviaopensea', 'flow:scheduleviaopensea', 'flow:scheduleviaopenseaphase:select'],
   // Section AF follow-up: Discord's mini schedule flow (Section S's full guided flow remains
   // unbuilt) -- a fixed chain, optional quantity select/modal (only when maxPerWallet > 1) ->
   // wallet select -> name select -> optional custom-name modal -> confirm, with no dynamic values
@@ -281,6 +281,12 @@ function mintFlowRenderPayload(step, data, { wallets = [], chains = {} } = {}) {
       collection: data.collection, soldOut: data.soldOut, displayPrice: data.displayPrice,
       stats: data.stats, drop: data.drop, openSeaUrl: data.openSeaUrl,
     });
+  }
+  // Section AF -- reached only when flow:scheduleviaopensea found more than one schedulable stage
+  // (mintFlowDecision.afterScheduleViaOpenSeaTap); re-derived from data.drop rather than stored
+  // separately, so a re-render (e.g. after a bot restart) shows the same list.
+  if (step === 'awaiting_phase_pick') {
+    return discordMenus.openSeaPhasePicker(mintFlowDecision.schedulableStages({ drop: data.drop }), chains[data.chain]?.sym);
   }
   if (step === 'awaiting_quantity') return discordMenus.mintQuantitySelect(data);
   if (step === 'awaiting_wallet') {
@@ -380,6 +386,17 @@ async function finishMintExecutionDiscord(ctx, respond, platformUserId, userId, 
     if (error instanceof TransactionSafetyError) return respond({ content: `❌ ${escapeDiscord(error.message)}`, components: backToMenu });
     throw error;
   }
+}
+
+// Section AF -- shared shape for both the direct (single-stage) and picked (multi-stage) paths out
+// of flow:scheduleviaopensea, so they build identical task data from whichever stage was settled
+// on. Mirrors server.js's openSeaPhaseTaskData.
+function openSeaPhaseTaskData(mintFlowData, stage) {
+  return {
+    contractAddress: mintFlowData.contractAddress, chain: mintFlowData.chain,
+    priceETH: 0, priceUnknown: false, viaOpenSea: true,
+    mintTime: new Date(stage.startTime * 1000).toISOString(),
+  };
 }
 
 // Reached once a quantity is settled (chosen via the select, typed in the custom-amount modal, or
@@ -857,20 +874,35 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
       // Section AF -- a phase that hasn't opened yet has nothing to mint against, so there's no
       // eligibility to pre-check (see mintViaOpenSea's own notes above); being scheduled and ready
       // right at open is what actually cuts the wasted time. Switches from mint_guided to a
-      // task_guided flow pre-filled with the next stage's own opening time -- quantity is always 1,
-      // no price step (OpenSea determines it), matching flow:schedulesuggest's own pre-fill-then-
-      // advance shape.
+      // task_guided flow pre-filled with the chosen stage's own opening time -- quantity is always
+      // 1, no price step (OpenSea determines it), matching flow:schedulesuggest's own pre-fill-then-
+      // advance shape. A single schedulable stage goes straight there (afterScheduleViaOpenSeaTap);
+      // more than one shows a picker first (awaiting_phase_pick).
       if (data === 'flow:scheduleviaopensea') {
         const flow = flowState.get('discord', platformUserId);
-        if (!flow || flow.flow !== 'mint_guided' || flow.step !== 'awaiting_details' || !flow.data.drop?.nextStage) return notYourMintPrompt(interaction);
+        if (!flow || flow.flow !== 'mint_guided' || flow.step !== 'awaiting_details') return notYourMintPrompt(interaction);
+        const decision = mintFlowDecision.afterScheduleViaOpenSeaTap({ drop: flow.data.drop });
         const wentEphemeral = Boolean(flow.data.originMessagePublic);
         if (wentEphemeral) neutralizeMintOriginMessage(interaction);
         const respond = payload => (wentEphemeral ? interaction.followUp({ ...payload, ephemeral: true }).catch(() => {}) : dcRespond(interaction, payload));
-        const taskData = {
-          contractAddress: flow.data.contractAddress, chain: flow.data.chain,
-          priceETH: 0, priceUnknown: false, viaOpenSea: true,
-          mintTime: new Date(flow.data.drop.nextStage.startTime * 1000).toISOString(),
-        };
+        if (decision.type === 'pick') {
+          flowState.advance('discord', platformUserId, 'awaiting_phase_pick', { ...flow.data, originMessagePublic: false });
+          return respond(discordMenus.openSeaPhasePicker(decision.stages, chains[flow.data.chain]?.sym));
+        }
+        if (!decision.stage) return notYourMintPrompt(interaction);
+        const taskData = openSeaPhaseTaskData(flow.data, decision.stage);
+        return advanceFromTaskQuantity(mintCtx, respond, platformUserId, userId, { ...taskData, quantity: 1 });
+      }
+      if (data === 'flow:scheduleviaopenseaphase:select') {
+        const flow = flowState.get('discord', platformUserId);
+        if (!flow || flow.flow !== 'mint_guided' || flow.step !== 'awaiting_phase_pick') return notYourMintPrompt(interaction);
+        const index = Number(interaction.values?.[0]);
+        const stage = flow.data.drop?.stages?.[index];
+        if (!stage) return notYourMintPrompt(interaction);
+        const wentEphemeral = Boolean(flow.data.originMessagePublic);
+        if (wentEphemeral) neutralizeMintOriginMessage(interaction);
+        const respond = payload => (wentEphemeral ? interaction.followUp({ ...payload, ephemeral: true }).catch(() => {}) : dcRespond(interaction, payload));
+        const taskData = openSeaPhaseTaskData(flow.data, stage);
         return advanceFromTaskQuantity(mintCtx, respond, platformUserId, userId, { ...taskData, quantity: 1 });
       }
       if (data === 'flow:detailsrefresh') {

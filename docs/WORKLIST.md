@@ -116,7 +116,7 @@ Status legend: ✅ Done · 🟡 Partial · ❌ Not started
 
 # Round 17 — live-reported bug run (2026-08-20)
 
-## Section AW — Batch-mint command/button parity, SeaDrop sold-out price 🟡
+## Section AW — Batch-mint command/button parity, SeaDrop sold-out price ✅
 
 Three separate live reports came in back to back while Round 16 was wrapping up. Tracked together
 since they surfaced the same way (a real user hitting a real drop or a real command), not because
@@ -141,7 +141,7 @@ already coexist. `src/server.js`. Verified: `node --check`, `npx eslint --max-wa
 clean. `/batch` still works as a hidden alias; left in place rather than removed since it's harmless
 and other in-flight sessions may reference it.
 
-### SeaDrop mint price wrong once a collection sells out ❌ (diagnosed, fix not yet written)
+### SeaDrop mint price wrong once a collection sells out ✅
 
 Reported live against `phoenix-in-the-hood` (contract `0x6209e8d1e28cc40427f8e7ec8cc1e9410a35612a`,
 Robinhood Chain): both Telegram and Discord showed "Mint price: 0.002 ETH per item" despite the
@@ -158,12 +158,10 @@ This collection is sold out but its stage window hasn't closed, so `soldOut` eva
 `resolveDisplayPrice` falls through to the real (non-zero-looking, stale) per-item price instead of
 reporting sold-out/free.
 
-Planned fix: add an unconditional `contractValueResolver.probeTotalMinted(chain, contractAddress)`
-call alongside the existing `probeMaxSupply` one, resolve both *before* computing `soldOut` (today
-`resolveDisplayPrice` and `probeMaxSupply` run in the same `Promise.all`, which doesn't work once
-`soldOut` needs `totalMinted` too — needs reordering), then combine:
-`Boolean(timeWindowClosed || (maxSupply !== null && totalMinted !== null && totalMinted >= maxSupply))`.
-Not yet written to disk.
+**Fixed** — this doc's own "not yet written" note was stale (caught and corrected 2026-08-21):
+`botCommandService.js`'s SeaDrop branch (line ~211) does compute `soldOut` as
+`Boolean(timeWindowClosed || (maxSupplyValue !== null && typeof stats?.totalMinted === 'number' &&
+stats.totalMinted >= maxSupplyValue))`, confirmed live against the actual code, not just this doc.
 
 ### Discord `/batch-mint` reported as the same symptom — not a bug, but a real trap ✅
 
@@ -1023,6 +1021,41 @@ flow — stays open and is where this would land if it's ever wanted there.)
   announcement and types it in. What shipped is the ability to pre-arm every stage once you know
   them, which is the whole of what was buildable without the merkle-proof capability shape 2
   describes.
+
+### Refinement (Round 22, 2026-08-21) — show every OpenSea phase, schedule any of them ✅
+
+Separate from shapes 1/2 above: Section AR (Round 13) later gave `collectionInfoCard` real,
+non-manual phase data via OpenSea's own Drops API (`drop.activeStage`/`drop.nextStage`/`drop.stages`),
+and let "Schedule for OpenSea phase" pre-fill a task from it with no proof or manual entry needed.
+Live user report: "it only shows the next phase. all phases should be shown and i should be able to
+schedule a phase of my choice" plus "opensea doesnt always have 3 stages. some might have more than
+3" — the card only ever showed OpenSea's own `activeStage`/`nextStage` convenience pointers (at most
+two of potentially many stages), and the schedule button was hardcoded to `nextStage` specifically,
+with no way to reach any other upcoming phase. Also flagged as "jam packed" -- verbose per-phase
+lines and a full ISO timestamp with seconds.
+
+**Fixed.** Source of truth switched from `activeStage`/`nextStage` to every entry in `drop.stages`,
+classified against the current time (ended/live/upcoming) rather than trusting OpenSea's own two
+pointers to be exhaustive. `collectionInfoCard` now lists every stage (capped at 10 lines, with an
+overflow note) instead of at most two, in a shorter format (`Aug 21, 12:56 GMT+1`, no seconds --
+`formatGmtPlus1` itself was shortened, benefiting the existing Opens/Opened line too). New shared
+`schedulableStages`/`afterScheduleViaOpenSeaTap` in `src/mint/mintFlowDecision.js`: a single
+upcoming stage still schedules itself directly (zero behavior change from before this round, and
+the existing test fixture for it needed correcting -- it had `nextStage` set but `stages: []`,
+unrealistic against a real OpenSea response where `nextStage` is always also an entry in `stages`);
+more than one shows a new picker screen (`openSeaPhasePicker` on both platforms -- a select menu on
+Discord, one button per stage on Telegram) so the user picks which phase, not just whichever one
+OpenSea calls "next." The picker's option `value`/`callback_data` carries the stage's *index* into
+`drop.stages`, not its OpenSea `uuid` -- a 36-char uuid would blow past Telegram's 64-byte
+`callback_data` budget alongside the handler's own prefix, the same reasoning the existing
+`flow:phase:<n>:<address>` button already relies on.
+
+Also fixed in the same pass: "Mint via OpenSea" and "Schedule for OpenSea phase" were wrongly
+mutually exclusive (an `if/else if` added by this session's own earlier Discord row-limit crash
+fix) even though a stage can be live right now *while* a separate stage is upcoming later -- both
+actions are genuinely useful at once. They're independent again; the Discord worst case (Mint Now +
+Mint via OpenSea + Schedule for OpenSea phase + utility row + Cancel) is exactly 5 rows, still
+inside the cap, pinned in `menuShape.test.js`.
 
 ## Also flagged: "Confirm Scheduled Mint" copy reads like a reminder, not an execution ✅
 

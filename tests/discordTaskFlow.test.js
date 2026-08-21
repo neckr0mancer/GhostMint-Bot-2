@@ -223,14 +223,17 @@ test('full happy path: schedule suggestion -> name quick-pick -> confirm -> task
 // eligibility to pre-check (see mintViaOpenSea's own notes); being scheduled and ready right at
 // open is what actually cuts the wasted time this feature exists for.
 function withNextStage(overrides = {}) {
+  const nextStage = { uuid: 'n1', label: 'Allowlist', startTime: FUTURE_START, endTime: FUTURE_START + 3600, priceETH: 0.05, maxPerWallet: 1, stageType: 'presale' };
   return baseCommands({
     detectMintContract: async () => ({
       chain: 'ethereum', isSeaDrop: true, priceKnown: false, valueWei: '0',
       maxSupply: 100, maxPerWallet: 1, startTime: null, endTime: null, collection: null, soldOut: false, displayPrice: null,
+      // A real OpenSea response always has nextStage as one of the entries in stages too (its own
+      // convenience pointer into that same list) -- an empty stages array here would be unrealistic
+      // and, since the schedule-via-OpenSea decision is driven by stages now, would wrongly read as
+      // "nothing schedulable" instead of "exactly one schedulable stage."
       drop: { isMinting: false, dropType: 'seadrop_v1_erc721', maxSupply: 100, openSeaUrl: null,
-        activeStage: null,
-        nextStage: { uuid: 'n1', label: 'Allowlist', startTime: FUTURE_START, endTime: FUTURE_START + 3600, priceETH: 0.05, maxPerWallet: 1, stageType: 'presale' },
-        stages: [] },
+        activeStage: null, nextStage, stages: [nextStage] },
     }),
     ...overrides,
   });
@@ -280,6 +283,53 @@ test('flow:scheduleviaopensea is a no-op when the card has no upcoming OpenSea s
   const tap = buttonInteraction('flow:scheduleviaopensea', 'osea-sched-2');
   await handler(tap);
   assert.equal(created.length, 0);
+});
+
+// Round 22: a drop with more than one upcoming stage can't schedule "the next one" blindly anymore
+// -- flow:scheduleviaopensea shows a picker, and the chosen stage (not necessarily the earliest)
+// drives what actually gets scheduled.
+function withTwoUpcomingStages(overrides = {}) {
+  const earlier = { uuid: 'e1', label: 'Allowlist', startTime: FUTURE_START, endTime: FUTURE_START + 3600, priceETH: 0.05, maxPerWallet: 1, stageType: 'presale' };
+  const later = { uuid: 'l1', label: 'Late FCFS', startTime: FUTURE_START + 90_000, endTime: FUTURE_START + 180_000, priceETH: 0.08, maxPerWallet: 3, stageType: 'fcfs' };
+  return baseCommands({
+    detectMintContract: async () => ({
+      chain: 'ethereum', isSeaDrop: true, priceKnown: false, valueWei: '0',
+      maxSupply: 100, maxPerWallet: 1, startTime: null, endTime: null, collection: null, soldOut: false, displayPrice: null,
+      drop: { isMinting: false, dropType: 'seadrop_v1_erc721', maxSupply: 100, openSeaUrl: null,
+        activeStage: null, nextStage: earlier, stages: [earlier, later] },
+    }),
+    ...overrides,
+  });
+}
+
+test('flow:scheduleviaopensea shows a picker with more than one upcoming stage, and picking the LATER one schedules against that, not the earlier default', async () => {
+  const flowState = createFlowStateStore();
+  const created = [];
+  const commands = withTwoUpcomingStages({ createTask: async (userId, input) => { created.push({ userId, input }); return { name: input.name, mintTime: input.mintTime, viaOpenSea: input.viaOpenSea }; } });
+  const identity = { resolveOrCreate: async () => 'internal-user' };
+  const ctx = { identity, commands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT };
+
+  const message = mockMessage('0x0000000000000000000000000000000000000001', 'osea-pick-1');
+  await handleMintPasteMessage(ctx, message);
+  const handler = createDiscordInteractionHandler(ctx);
+  const tap = buttonInteraction('flow:scheduleviaopensea', 'osea-pick-1');
+  await handler(tap);
+  assert.equal(flowState.get('discord', 'osea-pick-1').flow, 'mint_guided');
+  assert.equal(flowState.get('discord', 'osea-pick-1').step, 'awaiting_phase_pick');
+  const options = tap.replies[0].components[0].components[0].options;
+  assert.equal(options.length, 2);
+
+  const pick = selectInteraction('flow:scheduleviaopenseaphase:select', ['1'], 'osea-pick-1');
+  await handler(pick);
+  assert.equal(flowState.get('discord', 'osea-pick-1').flow, 'task_guided');
+  assert.equal(flowState.get('discord', 'osea-pick-1').step, 'awaiting_name');
+  assert.equal(flowState.get('discord', 'osea-pick-1').data.mintTime, new Date((FUTURE_START + 90_000) * 1000).toISOString(),
+    'the LATER stage (index 1) was chosen, not index 0');
+
+  await handler(selectInteraction('flow:taskname:select', ['GTD'], 'osea-pick-1'));
+  await handler(buttonInteraction('flow:taskconfirm', 'osea-pick-1'));
+  assert.equal(created.length, 1);
+  assert.equal(created[0].input.mintTime, new Date((FUTURE_START + 90_000) * 1000).toISOString());
 });
 
 test('picking "custom" opens a modal; submitting it reaches the same confirm screen', async () => {

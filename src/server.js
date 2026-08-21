@@ -902,7 +902,7 @@ const FLOW_CONTINUATION_PREFIXES = { wallet_create: ['flow:chain:'], wallet_impo
   // No continuation buttons of its own -- the only tap it offers is Cancel, which the gate
   // above already exempts. Listed so the flow is not silently absent from this map.
   gate_unlock: [],
-  mint_guided: ['flow:mintdetailscontinue', 'flow:mintviaopensea', 'flow:scheduleviaopensea', 'flow:detailsrefresh', 'flow:schedulesuggest:', 'flow:mintqty:', 'flow:priceaccept', 'flow:pricemanual', 'flow:wallettoggle:', 'flow:walletpick:', 'flow:walletcontinue', 'flow:gastoleranceaccept', 'flow:gastolerancemanual', 'flow:mintconfirm'],
+  mint_guided: ['flow:mintdetailscontinue', 'flow:mintviaopensea', 'flow:scheduleviaopensea', 'flow:scheduleviaopenseaphase:', 'flow:detailsrefresh', 'flow:schedulesuggest:', 'flow:mintqty:', 'flow:priceaccept', 'flow:pricemanual', 'flow:wallettoggle:', 'flow:walletpick:', 'flow:walletcontinue', 'flow:gastoleranceaccept', 'flow:gastolerancemanual', 'flow:mintconfirm'],
   send_guided: ['flow:sendwalletpick:', 'flow:sendamount:', 'flow:sendconfirm'],
   export_guided: ['flow:exportwalletpick:', 'flow:exportconfirm'],
   // Shares flow:mintdetailscontinue with mint_guided -- the contract-details screen and its
@@ -1066,6 +1066,12 @@ function renderFlowStep(flow, step, { userId, data = {} } = {}) {
         drop: data.drop,
         openSeaUrl: data.openSeaUrl,
       });
+    }
+    // Section AF -- reached only when flow:scheduleviaopensea found more than one schedulable
+    // stage (mintFlowDecision.afterScheduleViaOpenSeaTap); re-derived from data.drop rather than
+    // stored separately, so a re-render (e.g. after a bot restart) shows the same list.
+    if (step === 'awaiting_phase_pick') {
+      return telegramMenus.openSeaPhasePicker(mintFlowDecision.schedulableStages({ drop: data.drop }));
     }
     if (step === 'awaiting_wallet') {
       const wallets = botCommands.wallets(userId);
@@ -1676,6 +1682,16 @@ async function advanceFromTaskDetails(chatId, messageId, userId, flow) {
     return tgUpdate(chatId, messageId, renderFlowStep('task_guided', 'awaiting_quantity', { userId, data: flow.data }));
   }
   return advanceFromTaskQuantity(chatId, messageId, userId, flow, 1);
+}
+
+// Section AF -- shared shape for both the direct (single-stage) and picked (multi-stage) paths out
+// of flow:scheduleviaopensea, so they build identical task data from whichever stage was settled on.
+function openSeaPhaseTaskData(mintFlowData, stage) {
+  return {
+    contractAddress: mintFlowData.contractAddress, chain: mintFlowData.chain, isSeaDrop: mintFlowData.isSeaDrop,
+    priceETH: 0, priceUnknown: false, viaOpenSea: true, collection: mintFlowData.collection,
+    mintTime: new Date(stage.startTime * 1000).toISOString(),
+  };
 }
 
 // Scheduling is always single-wallet (createTask has no batch concept), so this always shows a
@@ -2593,17 +2609,30 @@ if (BOT_TOKEN) {
     // Section AF -- a phase that hasn't opened yet has nothing to mint against, so there's no
     // eligibility to pre-check (see mintViaOpenSea's own notes); being scheduled and ready right at
     // open is what actually cuts the wasted time. Switches from mint_guided to a task_guided flow
-    // pre-filled with the next stage's own opening time (mirrors startTaskScheduleFlow's own
+    // pre-filled with the chosen stage's own opening time (mirrors startTaskScheduleFlow's own
     // phaseNumber>1 branch) -- quantity is always 1, no price step (OpenSea determines it), no time
-    // step (already known from drop.nextStage).
+    // step (already known from the stage). A single schedulable stage goes straight there
+    // (afterScheduleViaOpenSeaTap); more than one shows a picker first (awaiting_phase_pick).
     if (data === 'flow:scheduleviaopensea') {
       const flow = telegramFlowState.get('telegram', chatId);
-      if (!flow || flow.flow !== 'mint_guided' || flow.step !== 'awaiting_details' || !flow.data.drop?.nextStage) return;
-      const taskData = {
-        contractAddress: flow.data.contractAddress, chain: flow.data.chain, isSeaDrop: flow.data.isSeaDrop,
-        priceETH: 0, priceUnknown: false, viaOpenSea: true, collection: flow.data.collection,
-        mintTime: new Date(flow.data.drop.nextStage.startTime * 1000).toISOString(),
-      };
+      if (!flow || flow.flow !== 'mint_guided' || flow.step !== 'awaiting_details') return;
+      const decision = mintFlowDecision.afterScheduleViaOpenSeaTap({ drop: flow.data.drop });
+      if (decision.type === 'pick') {
+        telegramFlowState.advance('telegram', chatId, 'awaiting_phase_pick', flow.data);
+        return tgUpdate(chatId, messageId, telegramMenus.openSeaPhasePicker(decision.stages));
+      }
+      if (!decision.stage) return;
+      const taskData = openSeaPhaseTaskData(flow.data, decision.stage);
+      const started = telegramFlowState.start('telegram', chatId, 'task_guided', 'awaiting_wallet', taskData);
+      return advanceFromTaskQuantity(chatId, messageId, userId, started, 1);
+    }
+    if (data.startsWith('flow:scheduleviaopenseaphase:')) {
+      const flow = telegramFlowState.get('telegram', chatId);
+      if (!flow || flow.flow !== 'mint_guided' || flow.step !== 'awaiting_phase_pick') return;
+      const index = Number(data.slice('flow:scheduleviaopenseaphase:'.length));
+      const stage = flow.data.drop?.stages?.[index];
+      if (!stage) return;
+      const taskData = openSeaPhaseTaskData(flow.data, stage);
       const started = telegramFlowState.start('telegram', chatId, 'task_guided', 'awaiting_wallet', taskData);
       return advanceFromTaskQuantity(chatId, messageId, userId, started, 1);
     }

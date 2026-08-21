@@ -58,6 +58,28 @@ const CASES = {
     drop: { activeStage: { label: 'Public', startTime: Math.floor(Date.now() / 1000) - 3_600, endTime: null, priceETH: 0.05, maxPerWallet: 1 }, nextStage: null, stages: [] },
     openSeaUrl: 'https://opensea.io/collection/example',
   }),
+  // Round 22 regression: Mint via OpenSea and Schedule for OpenSea phase used to be mutually
+  // exclusive (if/else-if) even though a stage can be live right now while a separate one is
+  // upcoming later -- the fix makes them independent, so this is now the actual worst case for row
+  // budget: Mint Now + Mint via OpenSea + Schedule for OpenSea phase + utility + Cancel = 5 rows.
+  'collectionInfoCard (a stage is live right now AND a separate stage is upcoming -- the 5-row worst case)': () => menus.collectionInfoCard({
+    contractAddress: '0xabc', chain: 'ethereum', chainLabel: 'Ethereum', chainSym: 'ETH', isSeaDrop: true,
+    priceETH: 0.05, priceUnknown: false, maxSupply: 100, maxPerWallet: 1,
+    startTime: Math.floor(Date.now() / 1000) - 3_600, collection: null, soldOut: false, displayPrice: null, stats: null,
+    drop: {
+      activeStage: { label: 'Public', startTime: Math.floor(Date.now() / 1000) - 3_600, endTime: Math.floor(Date.now() / 1000) + 3_600, priceETH: 0.05, maxPerWallet: 1 },
+      nextStage: { label: 'Late FCFS', startTime: Math.floor(Date.now() / 1000) + 7_200, endTime: null, priceETH: 0.08, maxPerWallet: 1 },
+      stages: [
+        { label: 'Public', startTime: Math.floor(Date.now() / 1000) - 3_600, endTime: Math.floor(Date.now() / 1000) + 3_600, priceETH: 0.05, maxPerWallet: 1 },
+        { label: 'Late FCFS', startTime: Math.floor(Date.now() / 1000) + 7_200, endTime: null, priceETH: 0.08, maxPerWallet: 1 },
+      ],
+    },
+    openSeaUrl: 'https://opensea.io/collection/example',
+  }),
+  'openSeaPhasePicker (several stages)': () => menus.openSeaPhasePicker([
+    { uuid: 's1', index: 1, label: 'Public sale', startTime: Math.floor(Date.now() / 1000) + 3_600, endTime: null, priceETH: 0.05, maxPerWallet: 5, stageType: 'public_sale' },
+    { uuid: 's2', index: 2, label: 'Late FCFS', startTime: Math.floor(Date.now() / 1000) + 7_200, endTime: null, priceETH: 0.08, maxPerWallet: 3, stageType: 'fcfs' },
+  ], 'ETH'),
 };
 
 test('every Discord menu fits inside the 5-row / 5-button limits Discord enforces', () => {

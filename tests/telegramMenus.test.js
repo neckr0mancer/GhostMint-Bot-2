@@ -276,56 +276,61 @@ test('collectionInfoCard suggests scheduling only when the detected opening time
 // Section AF -- on-chain SeaDrop only ever exposes the ONE currently-configured stage (the
 // Opens/Opened line), so it can never say what comes after. drop carries OpenSea's own real stage
 // data (null unless OpenSea actually tracks this contract as a drop).
-test('collectionInfoCard shows the live and next OpenSea phase when drop data is available, and omits the section entirely when it is not', () => {
+test('collectionInfoCard shows every stage (ended/live/upcoming), not just OpenSea\'s own active/next pointers, and omits the section entirely when there is no drop', () => {
   const noDrop = collectionInfoCard({
     contractAddress: '0xabc', chainLabel: 'Ethereum', chainSym: 'ETH', isSeaDrop: true, priceETH: 0.05, priceUnknown: false,
     maxSupply: 100, maxPerWallet: 1, startTime: null, collection: null, soldOut: false, displayPrice: null, stats: null, drop: null, openSeaUrl: null,
   });
   assert.equal(noDrop.text.includes('Phases'), false);
 
+  const now = Math.floor(Date.now() / 1000);
   const withDrop = collectionInfoCard({
     contractAddress: '0xabc', chainLabel: 'Ethereum', chainSym: 'ETH', isSeaDrop: true, priceETH: 0.05, priceUnknown: false,
     maxSupply: 100, maxPerWallet: 1, startTime: null, collection: null, soldOut: false, displayPrice: null, stats: null, openSeaUrl: null,
     drop: {
       isMinting: true, dropType: 'seadrop_v1_erc721', maxSupply: 100, openSeaUrl: null,
-      activeStage: { uuid: 'a1', label: 'Public sale', startTime: 1_700_000_000, endTime: 1_700_100_000, priceETH: 0.05, maxPerWallet: 5, stageType: 'public_sale' },
-      nextStage: null,
+      activeStage: { uuid: 'a1', label: 'Public sale', startTime: now - 100, endTime: now + 100, priceETH: 0.05, maxPerWallet: 5, stageType: 'public_sale' },
+      nextStage: { uuid: 'a2', label: 'Late FCFS', startTime: now + 3600, endTime: now + 7200, priceETH: 0.08, maxPerWallet: 3, stageType: 'fcfs' },
       stages: [
-        { uuid: 'a0', label: 'Allowlist', startTime: 1_699_900_000, endTime: 1_700_000_000, priceETH: 0, maxPerWallet: 2, stageType: 'presale' },
-        { uuid: 'a1', label: 'Public sale', startTime: 1_700_000_000, endTime: 1_700_100_000, priceETH: 0.05, maxPerWallet: 5, stageType: 'public_sale' },
+        { uuid: 'a0', label: 'Allowlist', startTime: now - 7200, endTime: now - 3600, priceETH: 0, maxPerWallet: 2, stageType: 'presale' },
+        { uuid: 'a1', label: 'Public sale', startTime: now - 100, endTime: now + 100, priceETH: 0.05, maxPerWallet: 5, stageType: 'public_sale' },
+        { uuid: 'a2', label: 'Late FCFS', startTime: now + 3600, endTime: now + 7200, priceETH: 0.08, maxPerWallet: 3, stageType: 'fcfs' },
       ],
     },
   });
-  assert.match(withDrop.text, /🎟️ <b>Phases \(via OpenSea\)<\/b>/);
-  assert.match(withDrop.text, /2 phases total/);
-  assert.match(withDrop.text, /🟢 Live: Public sale — 0\.05 ETH · max 5\/wallet/);
-  assert.equal(withDrop.text.includes('🔵 Next'), false);
+  assert.match(withDrop.text, /🎟️ <b>Phases \(3\)<\/b>/);
+  assert.match(withDrop.text, /⚫ Allowlist — Free \(ended\)/, 'a stage whose endTime has passed shows as ended, not silently omitted');
+  assert.match(withDrop.text, /🟢 Public sale — 0\.05 ETH · ends/);
+  assert.match(withDrop.text, /🔵 Late FCFS — 0\.08 ETH · opens/, 'a THIRD stage beyond active/next still shows -- a drop is not capped at two phases');
   // Section AF -- an allowlist/GTD/FCFS stage has no on-chain proof this app can construct; this
   // button is the only path that actually works for those, shown whenever OpenSea confirms a
   // stage is live right now.
   assert.equal(flatButtons(noDrop.replyMarkup).some(b => b.callback_data === 'flow:mintviaopensea'), false);
   assert.equal(flatButtons(withDrop.replyMarkup).some(b => b.callback_data === 'flow:mintviaopensea'), true);
+  // A live stage and a separately upcoming one are not mutually exclusive -- both actions are
+  // genuinely useful at once (the exact case an earlier if/else-if wrongly collapsed).
+  assert.equal(flatButtons(withDrop.replyMarkup).some(b => b.callback_data === 'flow:scheduleviaopensea'), true);
 });
 
 test('collectionInfoCard shows an upcoming OpenSea phase with a fallback label built from stage_type when the stage has no name', () => {
+  const now = Math.floor(Date.now() / 1000);
+  const stage = { uuid: 'n1', label: null, startTime: now + 3600, endTime: now + 7200, priceETH: 0.05, maxPerWallet: 5, stageType: 'public_sale' };
   const withNext = collectionInfoCard({
     contractAddress: '0xabc', chainLabel: 'Ethereum', chainSym: 'ETH', isSeaDrop: true, priceETH: 0.05, priceUnknown: true,
     maxSupply: 100, maxPerWallet: 1, startTime: null, collection: null, soldOut: false, displayPrice: null, stats: null, openSeaUrl: null,
-    drop: {
-      isMinting: false, dropType: 'seadrop_v1_erc721', maxSupply: 100, openSeaUrl: null,
-      activeStage: null,
-      nextStage: { uuid: 'n1', label: null, startTime: 1_700_000_000, endTime: 1_700_100_000, priceETH: 0.05, maxPerWallet: 5, stageType: 'public_sale' },
-      stages: [],
-    },
+    drop: { isMinting: false, dropType: 'seadrop_v1_erc721', maxSupply: 100, openSeaUrl: null, activeStage: null, nextStage: stage, stages: [stage] },
   });
-  assert.match(withNext.text, /🔵 Next: Public Sale — 0\.05 ETH · max 5\/wallet · opens/);
-  assert.equal(withNext.text.includes('phases total'), false, 'must not show a phase count for a single-stage next-only drop');
+  assert.match(withNext.text, /🔵 Public Sale — 0\.05 ETH · opens/);
+  assert.equal(withNext.text.includes('max 5/wallet'), false, 'per-phase max/wallet lives on the picker, not the summary line');
   // Nothing is minting yet -- OpenSea has nothing to build a mint transaction against, so the
   // button stays hidden until activeStage is real, not merely because drop data exists at all.
   assert.equal(flatButtons(withNext.replyMarkup).some(b => b.callback_data === 'flow:mintviaopensea'), false);
   // A phase that hasn't opened yet has nothing to mint against but IS schedulable -- OpenSea's own
-  // response at the exact open time is what determines eligibility and price, live.
-  assert.equal(flatButtons(withNext.replyMarkup).some(b => b.callback_data === 'flow:scheduleviaopensea'), true);
+  // response at the exact open time is what determines eligibility and price, live. A single
+  // schedulable stage shows no count -- it schedules itself with no picker needed.
+  const scheduleBtn = flatButtons(withNext.replyMarkup).find(b => b.callback_data === 'flow:scheduleviaopensea');
+  assert.ok(scheduleBtn);
+  assert.equal(scheduleBtn.text, '🎫📅 Schedule for OpenSea phase');
 });
 
 test('collectionInfoCard never offers Schedule for OpenSea phase when there is no upcoming stage to schedule against', () => {

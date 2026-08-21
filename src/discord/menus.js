@@ -151,10 +151,15 @@ function formatEthAmount(value, sym) {
 // scheduler's own clock, startTime from the contract) stays true UTC; this only reformats what the
 // user reads on screen, so shifting it can never change when a mint actually fires. Mirrors
 // src/telegram/menus.js's formatGmtPlus1.
+const SHORT_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 function formatGmtPlus1(value) {
   const date = value instanceof Date ? value : new Date(value);
   const shifted = new Date(date.getTime() + 60 * 60 * 1000);
-  return `${shifted.toISOString().slice(0, 19).replace('T', ' ')} GMT+1`;
+  const month = SHORT_MONTHS[shifted.getUTCMonth()];
+  const day = String(shifted.getUTCDate()).padStart(2, '0');
+  const hh = String(shifted.getUTCHours()).padStart(2, '0');
+  const mm = String(shifted.getUTCMinutes()).padStart(2, '0');
+  return `${month} ${day}, ${hh}:${mm} GMT+1`;
 }
 
 // Section AD Tier 1 -- Discord counterpart to Telegram's collectionInfoCard: market cap, live
@@ -178,6 +183,42 @@ function stageSummaryLine(stage, sym) {
   const price = stage.priceETH !== null && stage.priceETH !== undefined ? `${stage.priceETH} ${sym}` : 'price TBD';
   const cap = stage.maxPerWallet !== null && stage.maxPerWallet !== undefined ? ` · max ${stage.maxPerWallet}/wallet` : '';
   return `${label} — ${price}${cap}`;
+}
+
+// Classifies a stage against the current time -- the only source of truth for "what's live/upcoming"
+// once a drop has more than the two OpenSea happens to name (activeStage/nextStage are just its own
+// convenience pointers into this same list). Mirrors mintFlowDecision.schedulableStages' own
+// "startTime in the future" definition of upcoming, without importing it (see the no-cross-import
+// note above collectionInfoCard).
+function classifyStage(stage, now) {
+  if (stage.endTime && stage.endTime * 1000 <= now) return 'ended';
+  if (stage.startTime && stage.startTime * 1000 > now) return 'upcoming';
+  return 'live';
+}
+
+const PHASE_STATUS_EMOJI = { ended: '⚫', live: '🟢', upcoming: '🔵' };
+const MAX_PHASE_LINES = 10;
+
+// One compact line per stage, capped so a drop with an unusually long stage list can't blow up the
+// card -- the phase picker (openSeaPhasePicker) shows every schedulable stage regardless, up to
+// Discord's own 25-option select limit, so nothing schedulable is actually hidden here, only
+// summarized.
+function phaseLines(stages, sym, now) {
+  const lines = stages.slice(0, MAX_PHASE_LINES).map(stage => {
+    const status = classifyStage(stage, now);
+    const label = stage.label || humanizeStageType(stage.stageType);
+    if (status === 'ended') {
+      const price = stage.priceETH !== null && stage.priceETH !== undefined ? (Number(stage.priceETH) === 0 ? 'Free' : `${stage.priceETH} ${sym}`) : 'price unknown';
+      return `${PHASE_STATUS_EMOJI.ended} ${label} — ${price} (ended)`;
+    }
+    const price = stage.priceETH !== null && stage.priceETH !== undefined ? (Number(stage.priceETH) === 0 ? 'Free' : `${stage.priceETH} ${sym}`) : 'price TBD';
+    const time = status === 'live'
+      ? (stage.endTime ? ` · ends ${formatGmtPlus1(stage.endTime * 1000)}` : '')
+      : ` · opens ${formatGmtPlus1(stage.startTime * 1000)}`;
+    return `${PHASE_STATUS_EMOJI[status]} ${label} — ${price}${time}`;
+  });
+  if (stages.length > MAX_PHASE_LINES) lines.push(`+${stages.length - MAX_PHASE_LINES} more — pick a phase to schedule to see the rest`);
+  return lines;
 }
 
 function collectionInfoCard({ contractAddress, chain, chainLabel, chainSym, isSeaDrop, priceETH, priceUnknown, maxSupply, maxPerWallet, startTime, collection, soldOut, displayPrice, stats, drop, openSeaUrl }) {
@@ -226,19 +267,10 @@ function collectionInfoCard({ contractAddress, chain, chainLabel, chainSym, isSe
   // can never say what's coming after that. drop is null unless OpenSea actually tracks this
   // contract as a drop -- omitted entirely rather than shown as a broken/empty section. Once sold
   // out there is nothing left for a phase to gate access to, so the section is dropped even if OpenSea
-  // still hands back stale stage data for it.
-  if (!soldOut && drop && (drop.activeStage || drop.nextStage || drop.stages.length > 1)) {
-    const phaseLines = [];
-    if (drop.stages.length > 1) phaseLines.push(`${drop.stages.length} phases total`);
-    if (drop.activeStage) {
-      const endsAt = drop.activeStage.endTime ? ` · ends ${formatGmtPlus1(drop.activeStage.endTime * 1000)}` : '';
-      phaseLines.push(`🟢 Live: ${stageSummaryLine(drop.activeStage, sym)}${endsAt}`);
-    }
-    if (drop.nextStage) {
-      const opensAt = drop.nextStage.startTime ? ` · opens ${formatGmtPlus1(drop.nextStage.startTime * 1000)}` : '';
-      phaseLines.push(`🔵 Next: ${stageSummaryLine(drop.nextStage, sym)}${opensAt}`);
-    }
-    lines.push('', '### Phases (via OpenSea)', ...phaseLines);
+  // still hands back stale stage data for it. Shows every stage OpenSea knows about, not just
+  // whichever two it names active/next -- a drop isn't capped at any fixed stage count.
+  if (!soldOut && drop?.stages?.length) {
+    lines.push('', `### Phases (${drop.stages.length})`, ...phaseLines(drop.stages, sym, Date.now()));
   }
 
   const limits = [];
@@ -261,17 +293,18 @@ function collectionInfoCard({ contractAddress, chain, chainLabel, chainSym, isSe
   const utilityRow = [button('🔄 Refresh', 'flow:detailsrefresh')];
   if (openSeaUrl) utilityRow.push(urlButton('🔗 OpenSea', openSeaUrl));
 
-  // Discord hard-caps a message at 5 action rows. Mint Now + the two fixed utility rows (Refresh/
-  // OpenSea, Cancel) already claim 3, leaving room for the ONE more added below. Copy CA was
-  // dropped entirely for the same reason -- the contract address is already shown as inline code at
-  // the top of the card, which Discord's own client already lets you tap-to-copy, so the button was
-  // a convenience shortcut, not the only way to get it. Once drop has phase data
-  // at all, its own buttons are strictly more useful than the generic "Schedule for opening" (no
-  // on-chain proof this app can construct for an allowlist/GTD/FCFS stage; OpenSea's own backend
-  // resolves eligibility), so the generic one only shows when OpenSea has nothing to say at all --
-  // this also guarantees the three conditions below are mutually exclusive, not just usually so.
-  // Sold out means there is nothing left to mint or schedule against, so none of this block applies
-  // -- only the info-only utility/cancel rows below remain.
+  // Discord hard-caps a message at 5 action rows: Mint Now + Mint via OpenSea + Schedule for
+  // OpenSea phase + the utility row (Refresh/OpenSea) + Cancel is the worst case, exactly 5 -- see
+  // menuShape.test.js's pinned case for this combination. Copy CA was dropped entirely for the same
+  // budget reason -- the contract address is already shown as inline code at the top of the card,
+  // which Discord's own client already lets you tap-to-copy, so the button was a convenience
+  // shortcut, not the only way to get it. Mint via OpenSea and Schedule for OpenSea phase are NOT
+  // mutually exclusive -- a stage can be live right now while a later one is separately upcoming,
+  // and both actions are genuinely useful at once; the generic on-chain "Schedule for opening"
+  // fallback (no eligibility proof this app can construct itself) is the only one gated on OpenSea
+  // having nothing to say at all. Sold out means there is nothing left to mint or schedule against,
+  // so none of this block applies -- only the info-only utility/cancel rows below remain.
+  const schedulable = (drop?.stages || []).filter(stage => stage.startTime && stage.startTime * 1000 > Date.now());
   const rows = [];
   if (!soldOut) {
     rows.push(row([button('🪙 Mint Now', 'flow:mintdetailscontinue', 'success')]));
@@ -279,11 +312,14 @@ function collectionInfoCard({ contractAddress, chain, chainLabel, chainSym, isSe
       // Shown only when OpenSea confirms a stage is live right now -- there is nothing for it to
       // mint against otherwise.
       rows.push(row([button('🎫 Mint via OpenSea', 'flow:mintviaopensea')]));
-    } else if (drop?.nextStage) {
+    }
+    if (schedulable.length > 0) {
       // A phase that hasn't opened yet has nothing to mint against -- being tapped-in and ready at
       // the exact open is what cuts the time wasted, not a pre-check OpenSea has no way to answer
-      // ahead of time (see mintViaOpenSea's own notes).
-      rows.push(row([button('🎫📅 Schedule for OpenSea phase', 'flow:scheduleviaopensea')]));
+      // ahead of time (see mintViaOpenSea's own notes). The count only shows once there's an actual
+      // choice to make (see afterScheduleViaOpenSeaTap) -- a single upcoming stage schedules itself.
+      const label = schedulable.length > 1 ? `🎫📅 Schedule OpenSea phase (${schedulable.length})` : '🎫📅 Schedule for OpenSea phase';
+      rows.push(row([button(label, 'flow:scheduleviaopensea')]));
     } else if (opensInFuture) {
       rows.push(row([button('📅 Schedule for opening', 'flow:schedulesuggest', 'success')]));
     }
@@ -291,6 +327,25 @@ function collectionInfoCard({ contractAddress, chain, chainLabel, chainSym, isSe
   rows.push(row(utilityRow), row([button('❌ Cancel', 'flow:cancel:ask', 'danger')]));
 
   return { content: lines.join('\n'), components: rows };
+}
+
+// Section AF -- shown only when there's a genuine choice (see mintFlowDecision.afterScheduleViaOpenSeaTap);
+// a single upcoming stage schedules itself with no picker at all. A select menu, not one button per
+// stage, keeps this at Discord's actual limit (25 options) rather than the 5-row cap a button-per-
+// stage layout would hit almost immediately -- same reasoning as walletMultiSelect's own choice of a
+// select over buttons. The option VALUE carries the stage's index into drop.stages (not its OpenSea
+// uuid -- irrelevant here, but kept consistent with Telegram's own byte-budget reason for using an
+// index, see flow:scheduleviaopenseaphase's handler).
+function openSeaPhasePicker(stages, sym) {
+  const options = stages.map(stage => ({
+    label: `${stage.label || humanizeStageType(stage.stageType)} — opens ${formatGmtPlus1(stage.startTime * 1000)}`.slice(0, 100),
+    description: stageSummaryLine(stage, sym).slice(0, 100),
+    value: String(stage.index),
+  }));
+  return {
+    content: 'Which phase should this be scheduled against?',
+    components: [select('flow:scheduleviaopenseaphase:select', options, 'Select a phase'), row([button('❌ Cancel', 'flow:cancel:ask', 'danger')])],
+  };
 }
 
 // Section AA -- Discord counterpart to Telegram's quantityStepPayload/Section L. A select menu
@@ -889,7 +944,7 @@ module.exports = {
   chainSelect, walletSelect, walletMultiSelect, confirmRemoveWallet, labelModal, gasMenu, activityMenu, tasksMenu, snipersMenu, adminOverviewMenu,
   sniperDetailsModal, sniperTolerancePrompt, sniperToleranceModal, sniperConfirmation,
   modeMenu, MODE_META,
-  contractDetailsText, collectionInfoCard, mintQuantitySelect, mintPriceStep, gasTolerancePrompt, mintConfirmation, numberModal,
+  contractDetailsText, collectionInfoCard, openSeaPhasePicker, mintQuantitySelect, mintPriceStep, gasTolerancePrompt, mintConfirmation, numberModal,
   taskNameQuickPicks, taskConfirmation,
   watchTypeSelect, watchMethodSelect, watchConfigModal, watchRuleConfirmation,
   watchRulesList, watchRuleActions, confirmRemoveWatchRule,
