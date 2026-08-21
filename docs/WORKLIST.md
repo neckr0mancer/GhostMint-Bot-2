@@ -1432,15 +1432,44 @@ directory by mistake and moved out to a sibling directory
 (`C:\Users\hp\Documents\osnm-z-main`, outside this repo). It was reviewed for patterns GhostMint
 could adopt. None of the items below are scoped or estimated; they're candidates only.
 
-## Section T — Extract token IDs from mint receipts ❌
+## Section T — Extract token IDs from mint receipts 🟡
 
 `osnm-z-main/src/nft.rs`'s `extract_minted_assets()` parses `receipt.logs` for the ERC-721
 `Transfer` and ERC-1155 `TransferSingle`/`TransferBatch` events, filtered to `from == 0x0`,
-`to == wallet`, on the target contract, and decodes the minted token ID(s). This is a working,
-tested reference for exactly blocker #1 in this file's own deferred P&L sales-detection note
-under Section G + K: "no token ID is captured from a mint receipt today." Would land in
-`transactionEngine.js`'s `inspectChain`, alongside the existing `gasUsed`/`gasPrice`/`blockNumber`
-read, and unblocks that deferred work.
+`to == wallet`, on the target contract, and decodes the minted token ID(s). Confirmed as blocker #1
+in this file's own deferred P&L sales-detection note under Section G + K: "no token ID is captured
+from a mint receipt today" — `inspectChain` only ever read `gasUsed`/`gasPrice`/`blockNumber`.
+
+**Shipped: the capture-and-persist piece.** New `src/transactions/mintReceiptTokens.js`
+(`extractMintedTokenIds`) — pure function, parses `receipt.logs` for `Transfer`/`TransferSingle`/
+`TransferBatch`, filtered to `from === zero address` (a genuine mint) landing on the wallet that
+submitted the transaction, **on the contract that was actually minted** (`intent.callPreview
+.contractAddress`) — deliberately never the transaction's own `to`, which for a SeaDrop mint is the
+SeaDrop core/router, not the NFT contract; only the NFT contract itself ever emits `Transfer` for
+its own tokens. A malformed/unrelated log is silently skipped, same "augment a receipt that already
+confirmed, never fail one" philosophy the existing `gasUsed`/cost computation already follows.
+Wired into `transactionEngine.js`'s `inspectChain` (computed once alongside the existing
+`receiptCost`, only carried on the final `'confirmed'` state — no point re-persisting on every
+`'pending'` reconciliation poll before the state settles). New `token_ids TEXT[]` column on
+`transaction_intents` (migration `046_intent_token_ids.sql`, `ADD COLUMN IF NOT EXISTS`, purely
+additive), threaded through `intentRepository.js`'s `transition()`/`mapIntent` the same way
+`gasUsed`/`effectiveGasPriceWei` already are.
+
+Verified: `node --check` + `npx eslint --max-warnings=0`, clean. 11 new tests in
+`tests/mintReceiptTokens.test.js` (single/batch ERC-721, ERC-1155 single/batch, non-mint transfers
+ignored, wrong-recipient ignored, a log from a different contract than the one minted correctly
+ignored — the exact "never trust the tx's own `to`" case — malformed logs skipped not thrown,
+deduplication, and the missing-input/no-logs cases), plus the full existing transactionEngine/
+scheduler/sniper suite (79 tests) unaffected. Migration applied to and verified against the real
+dev database (`transactionEngine.integration.test.js`/`storage.integration.test.js` both still
+pass with real DB writes through the updated `transition()` SQL). **Still needs the migration
+applied to production** before this actually starts capturing anything there — flagged, not done
+by this session without a separate go-ahead, same as every other production infrastructure change.
+
+**Not done, and deliberately out of scope for this pass:** actually wiring captured token IDs into
+`activity`/`pnl_records` (neither has a `token_id`/`contract_address` column yet) or building the
+OpenSea per-token sales-lookup this was always meant to feed — those are the other two blockers the
+original G+K note names, real separate pieces of work, not something this pass claims to close.
 
 ## Section U — Validate mint calldata before signing, not just before broadcasting ✅
 

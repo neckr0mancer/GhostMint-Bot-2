@@ -2,6 +2,7 @@ const { Wallet, keccak256, parseUnits } = require('ethers');
 const { WalletNonceQueue } = require('./nonceQueue');
 const { describeSeaDropError } = require('../mint/seaDropErrors');
 const { createFeeDataCache } = require('./feeDataCache');
+const { extractMintedTokenIds } = require('./mintReceiptTokens');
 
 const FINAL_STATES = new Set(['confirmed', 'reverted', 'replaced']);
 
@@ -162,10 +163,15 @@ function createTransactionEngine({
       const actualNetworkCostWei=gasUsed!==null&&effectiveGasPriceWei!==null?gasUsed*effectiveGasPriceWei:null;
       const receiptCost={gasUsed,effectiveGasPriceWei,actualNetworkCostWei};
       if (Number(receipt.status) === 0) return { state: 'reverted', blockNumber: Number(receipt.blockNumber), reason: 'transaction reverted on chain',...receiptCost };
+      // Section T: which token ID(s) this mint actually received, read from the NFT contract's own
+      // Transfer/TransferSingle/TransferBatch event(s) -- never the transaction's own `to`, which
+      // for a SeaDrop mint is the SeaDrop core, not the token contract. Computed once here (logs
+      // don't change with more confirmations) and carried the same way receiptCost already is.
+      const tokenIds = extractMintedTokenIds(receipt, { contractAddress: intent.callPreview?.contractAddress, minterAddress: intent.from });
       const currentBlock = await providerCall(intent.chain, 'getBlockNumber', provider => provider.getBlockNumber());
       const confirmations = Math.max(0, Number(currentBlock) - Number(receipt.blockNumber) + 1);
       if (confirmations >= intent.requiredConfirmations) {
-        return { state: 'confirmed', blockNumber: Number(receipt.blockNumber), reason: `${confirmations} confirmations observed`,...receiptCost };
+        return { state: 'confirmed', blockNumber: Number(receipt.blockNumber), reason: `${confirmations} confirmations observed`,...receiptCost, tokenIds };
       }
       return { state: 'pending', blockNumber: Number(receipt.blockNumber), reason: `${confirmations}/${intent.requiredConfirmations} confirmations observed`,...receiptCost };
     }
