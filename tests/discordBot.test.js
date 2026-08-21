@@ -20,6 +20,19 @@ function interaction({ commandName, userId = 'discord-user', subcommand = null, 
   };
 }
 
+function autocompleteInteraction({ focusedName, focusedValue = '', userId = 'discord-user' }) {
+  return {
+    user: { id: userId }, guildId: 'guild', channelId: 'channel', responded: null,
+    isAutocomplete: () => true,
+    isButton: () => false,
+    isStringSelectMenu: () => false,
+    isModalSubmit: () => false,
+    isChatInputCommand: () => false,
+    options: { getFocused: () => ({ name: focusedName, value: focusedValue }) },
+    async respond(choices) { this.responded = choices; },
+  };
+}
+
 test('Discord command definitions include the complete Milestone 10a surface', () => {
   const definitions = commandDefinitions();
   const names = definitions.map(command => command.name);
@@ -101,6 +114,39 @@ test('every chain option offers the actual configured chains as a picker instead
   const gasChain = gas.options.find(option => option.name === 'chain');
   assert.deepEqual(namesAndValues(gasChain.choices), expectedChoices);
   assert.equal(gasChain.required, false, 'gas chain stays optional -- it defaults to ethereum at dispatch time');
+});
+
+// Round 17 (Section AW): reported live as batch-mint "not pulling up wallets to select from" on
+// Discord -- turned out to be the user typing into `wallets` by habit, which is the documented
+// direct-fill shortcut, not a bug. But that field had no autocomplete at all, so typing a label by
+// hand was the ONLY thing it ever did -- the "omit to pick from a list" in its own description had
+// no visual affordance nudging toward the intended path. `wallets` now autocompletes like every
+// other wallet-label field.
+test('batch-mint wallets option is autocomplete-enabled', () => {
+  const definitions = commandDefinitions();
+  const batchMint = definitions.find(command => command.name === 'batch-mint');
+  const wallets = batchMint.options.find(option => option.name === 'wallets');
+  assert.equal(wallets.autocomplete, true);
+});
+
+test('typing into batch-mint\'s wallets field suggests matching wallet labels, one per Discord\'s own autocomplete result shape', async () => {
+  const input = autocompleteInteraction({ focusedName: 'wallets', focusedValue: 'co' });
+  const handler = createDiscordInteractionHandler({
+    identity: { resolveOrCreate: async () => 'user-a' },
+    commands: { wallets: () => [{ label: 'cold-1' }, { label: 'cold-2' }, { label: 'hot' }] },
+  });
+  await handler(input);
+  assert.deepEqual(input.responded, [{ name: 'cold-1', value: 'cold-1' }, { name: 'cold-2', value: 'cold-2' }]);
+});
+
+test('picking a suggestion for the second wallet in the list keeps the first one already chosen, and never re-suggests it', async () => {
+  const input = autocompleteInteraction({ focusedName: 'wallets', focusedValue: 'cold-1, ho' });
+  const handler = createDiscordInteractionHandler({
+    identity: { resolveOrCreate: async () => 'user-a' },
+    commands: { wallets: () => [{ label: 'cold-1' }, { label: 'cold-2' }, { label: 'hot' }] },
+  });
+  await handler(input);
+  assert.deepEqual(input.responded, [{ name: 'cold-1, hot', value: 'cold-1, hot' }]);
 });
 
 test('a chain option degrades to plain free text, not an error, when no chains are passed in', () => {

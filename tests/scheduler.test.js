@@ -11,7 +11,7 @@ function task(overrides = {}) {
   };
 }
 
-function repositoryFixture(stale = []) {
+function repositoryFixture(stale = [], { imminent = [] } = {}) {
   const calls = [];
   return {
     calls,
@@ -20,7 +20,8 @@ function repositoryFixture(stale = []) {
     async complete(value, intentId) { calls.push(['complete', intentId]); },
     async recoverWithoutExecution(value, details) { calls.push(['recover', details]); },
     async fail(value, details) { calls.push(['fail', details]); return details.transient ? 'retry' : 'failed'; },
-    async claimDue() { return null; },
+    async claimDue() { calls.push(['claimDue']); return null; },
+    async listImminent() { return imminent; },
   };
 }
 
@@ -94,4 +95,57 @@ test('notification failure cannot change a confirmed task outcome', async () => 
   });
   assert.equal(await worker.processTask(task()), 'succeeded');
   assert.deepEqual(repository.calls.at(-1), ['complete', 'intent-2']);
+});
+
+test('Round 16 (Section AV, item 4): precise timers fire tick() the instant a lookahead task becomes due, without waiting for the next poll interval', async t => {
+  await t.test('an imminent task gets a precise setTimeout that calls tick() at its exact due time', async () => {
+    const imminentTask = task({ nextAttemptAt: Date.now() + 20 });
+    const repository = repositoryFixture([], { imminent: [imminentTask] });
+    const worker = createSchedulerWorker({
+      repository, intentRepository: { get: async () => null, getByIdempotencyKey: async () => null },
+      transactionEngine: {}, executeTask: async () => ({ intentId: 'x', state: 'confirmed' }),
+    });
+    // start() is never called here, so the only way claimDue() could be reached at all is the
+    // precise timer armPreciseTimers() sets -- there is no interval loop running in this test.
+    await worker.armPreciseTimers();
+    assert.equal(repository.calls.filter(c => c[0] === 'claimDue').length, 0, 'must not claim before the due time arrives');
+    await new Promise(resolve => setTimeout(resolve, 60));
+    assert.ok(repository.calls.filter(c => c[0] === 'claimDue').length >= 1, 'the precise timer must have called tick() -> claimDue() on its own');
+  });
+
+  await t.test('arming the same task twice only ever schedules one timer for it', async () => {
+    const imminentTask = task({ nextAttemptAt: Date.now() + 10_000 });
+    const repository = repositoryFixture([], { imminent: [imminentTask] });
+    const worker = createSchedulerWorker({
+      repository, intentRepository: { get: async () => null, getByIdempotencyKey: async () => null },
+      transactionEngine: {}, executeTask: async () => ({ intentId: 'x', state: 'confirmed' }),
+    });
+    await worker.armPreciseTimers();
+    await worker.armPreciseTimers();
+    assert.equal(worker.health().armedCount, 1, 're-arming an already-armed task must be a no-op');
+    worker.stop();
+  });
+
+  await t.test('stop() clears every armed timer -- none of them fire afterward', async () => {
+    const imminentTask = task({ nextAttemptAt: Date.now() + 20 });
+    const repository = repositoryFixture([], { imminent: [imminentTask] });
+    const worker = createSchedulerWorker({
+      repository, intentRepository: { get: async () => null, getByIdempotencyKey: async () => null },
+      transactionEngine: {}, executeTask: async () => ({ intentId: 'x', state: 'confirmed' }),
+    });
+    await worker.armPreciseTimers();
+    worker.stop();
+    await new Promise(resolve => setTimeout(resolve, 60));
+    assert.equal(repository.calls.filter(c => c[0] === 'claimDue').length, 0, 'a cleared timer must never fire');
+  });
+
+  await t.test('a task outside the lookahead window is left for the ordinary poll loop, not armed', async () => {
+    const repository = repositoryFixture([], { imminent: [] });
+    const worker = createSchedulerWorker({
+      repository, intentRepository: { get: async () => null, getByIdempotencyKey: async () => null },
+      transactionEngine: {}, executeTask: async () => ({ intentId: 'x', state: 'confirmed' }),
+    });
+    await worker.armPreciseTimers();
+    assert.equal(worker.health().armedCount, 0);
+  });
 });

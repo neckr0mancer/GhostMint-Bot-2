@@ -107,7 +107,7 @@ function commandDefinitions({ supportedChains = [], chains = {} } = {}) {
   // so the wallet step becomes a real multi-select instead of a single pick.
   commands.push(new SlashCommandBuilder().setName('batch-mint').setDescription('⚡ Mint from multiple wallets')
     .addStringOption(o => o.setName('contract').setDescription('Contract address').setRequired(true))
-    .addStringOption(o => o.setName('wallets').setDescription('Comma-separated wallet labels (omit to pick from a list)'))
+    .addStringOption(o => o.setName('wallets').setDescription('Comma-separated wallet labels (omit to pick from a list)').setAutocomplete(true))
     .addIntegerOption(o => o.setName('quantity').setDescription('Quantity per wallet (omit to see the collection card first)').setMinValue(1))
     .addNumberOption(o => o.setName('price').setDescription('Native price per item (only if the contract does not expose one)').setMinValue(0))
     .addStringOption(o => chainOption(o, { description: 'Chain (auto-detected when omitted)' })));
@@ -1394,6 +1394,25 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         const context = verifyDiscordContext(interaction, allowedGuildId, { allowedChannelIds });
         const userId = await identity.resolveOrCreate('discord', context.platformUserId);
         const focused = interaction.options.getFocused(true);
+        // batch-mint's `wallets` is comma-separated -- typing into it used to bring up nothing at
+        // all (no autocomplete wired), which meant typing a label by hand was actually the ONLY
+        // affordance that field ever showed, defeating the "omit to pick from a list" the field's
+        // own description promises. Autocompletes only the segment currently being typed (after the
+        // last comma), offers the full accumulated string as each suggestion's value so picking one
+        // preserves everything already chosen, and excludes labels already present so the same
+        // wallet can't be suggested twice.
+        if (focused.name === 'wallets') {
+          const parts = String(focused.value || '').split(',');
+          const chosen = parts.slice(0, -1).map(part => part.trim()).filter(Boolean);
+          const query = parts[parts.length - 1].trim().toLowerCase();
+          const remaining = commands.wallets(userId).map(w => w.label).filter(label => !chosen.includes(label));
+          const filtered = remaining.filter(label => label.toLowerCase().includes(query)).slice(0, 25);
+          await interaction.respond(filtered.map(label => {
+            const value = [...chosen, label].join(', ');
+            return { name: value, value };
+          }));
+          return;
+        }
         const choices = (focused.name === 'label' || focused.name === 'wallet') ? commands.wallets(userId).map(w => w.label) : [];
         const query = String(focused.value || '').toLowerCase();
         const filtered = choices.filter(label => label.toLowerCase().includes(query)).slice(0, 25);
@@ -1661,12 +1680,22 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
 // other plain message, and anything failing the same guild/channel/account checks every slash
 // command already enforces, is silently ignored -- a failed check here is never worth surfacing
 // as an error to a channel that may not even be the bot's.
-async function handleMintPasteMessage({ identity, commands, flowState, chains, rateLimiter, checkAccountStatus, allowedGuildId, allowedChannelIds=null }, message) {
+async function handleMintPasteMessage({ identity, commands, flowState, chains, rateLimiter, checkAccountStatus, allowedGuildId, allowedChannelIds=null, log = () => {} }, message) {
+  // Diagnostic-only (Round 17, Section AW): reported live as working in one channel of one server
+  // but not others, with every direct-permission explanation (View Channel, Read Message History,
+  // Send Messages, Embed Links, bot/applications.commands install, real member) ruled out one by
+  // one against the actual server. Every failure below was previously swallowed completely silently
+  // -- by design, since a failed check here (not address-shaped, wrong channel, blocked account) is
+  // never worth surfacing as a visible error in a channel that may not even be the bot's -- which
+  // also means there was nothing to look at in Railway's logs when this got reported. These lines
+  // change that without changing behavior: every one is on a path that already did nothing before.
+  const where = `guild=${message.guildId || 'dm'} channel=${message.channelId || 'unknown'}`;
   try {
     if (!message.author || message.author.bot) return;
     const trimmed = String(message.content || '').trim();
     const looksAddressOrLink = /^0x[0-9a-fA-F]{40}$/.test(trimmed) || commands.parseOpenSeaCollectionSlug(trimmed);
     if (!looksAddressOrLink) return;
+    log(`Paste-detect: address/link-shaped message received (${where})`);
     const context = verifyDiscordContext({ user: message.author, guildId: message.guildId, channelId: message.channelId }, allowedGuildId, { allowedChannelIds });
     const userId = await identity.resolveOrCreate('discord', context.platformUserId);
     if (typeof checkAccountStatus === 'function') await checkAccountStatus(userId);
@@ -1675,8 +1704,10 @@ async function handleMintPasteMessage({ identity, commands, flowState, chains, r
     // second paste while a flow (mint or otherwise) is already in progress implicitly abandons it
     // and starts fresh with the new address -- no confirmation needed, trimmed per user feedback.
     if (flowState.get('discord', platformUserId)) flowState.clear('discord', platformUserId);
-    await startMintGuidedFlow({ commands, flowState, chains, rateLimiter }, payload => message.reply(payload).catch(() => {}), platformUserId, userId, trimmed);
-  } catch { /* not address-shaped, unauthorized context, blocked account, or lookup failure -- ignore */ }
+    await startMintGuidedFlow({ commands, flowState, chains, rateLimiter },
+      payload => message.reply(payload).catch(error => log(`Paste-detect: reply failed (${where}): ${error?.message || error}`)),
+      platformUserId, userId, trimmed);
+  } catch (error) { log(`Paste-detect: dropped before reply (${where}): ${error?.message || error}`); }
 }
 
 // Global registration does not replace commands previously registered to a guild -- Discord keeps
@@ -1708,7 +1739,7 @@ function createDiscordBot({ token, applicationId, devGuildId, allowedChannelIds=
   discordClient.on('interactionCreate', createDiscordInteractionHandler({ identity, commands, allowedGuildId:devGuildId || null, allowedChannelIds,
     securityAudit,rateLimiter,log,isOwner,checkAccountStatus,supportedChains,chains,flowState,actionGate,securityStatus }));
   discordClient.on('messageCreate', message =>
-    handleMintPasteMessage({ identity, commands, flowState, chains, rateLimiter, checkAccountStatus, allowedGuildId: devGuildId || null, allowedChannelIds }, message));
+    handleMintPasteMessage({ identity, commands, flowState, chains, rateLimiter, checkAccountStatus, allowedGuildId: devGuildId || null, allowedChannelIds, log }, message));
   return {
     client: discordClient,
     // devGuildId set = development bot: commands register to that one guild only (which is instant,

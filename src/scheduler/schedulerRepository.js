@@ -162,6 +162,21 @@ function createSchedulerRepository(pool) {
       return result.rows.map(mapTask);
     },
 
+    // Round 16 (docs/WORKLIST.md Section AV, item 4): read-only lookahead, deliberately not a
+    // claim -- no locking, no row mutation, safe to call as often as the caller likes. Lets
+    // schedulerWorker.js arm a precise setTimeout for a task that's about to become due, instead of
+    // waiting for the next poll tick to notice it. A task returned here that's already been
+    // claimed, cancelled, or rescheduled by the time its timer fires is harmless: the timer just
+    // calls tick(), and claimDue()'s own WHERE clause simply won't match it anymore.
+    async listImminent({ now, withinMs }) {
+      const result = await pool.query(`SELECT * FROM mint_tasks
+        WHERE status IN ('scheduled','retry')
+          AND next_attempt_at > TO_TIMESTAMP($1 / 1000.0)
+          AND next_attempt_at <= TO_TIMESTAMP(($1 + $2) / 1000.0)
+        ORDER BY next_attempt_at`, [now, withinMs]);
+      return result.rows.map(mapTask);
+    },
+
     async attachIntent(task, intentId) {
       await pool.query(`UPDATE mint_tasks SET transaction_intent_id=$4 WHERE user_id=$1 AND id=$2
         AND attempt_count=$3 AND status='claimed'`, [task.userId, task.id, task.attemptCount, intentId]);
