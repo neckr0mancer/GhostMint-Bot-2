@@ -3,6 +3,7 @@ import React,{useCallback,useEffect,useRef,useState} from 'react';
 import Admin from './Admin.jsx';
 import {shortAddress} from './dashboardWidgets/homeParts.jsx';
 import {loadError,batchRowDetail,useRetryAfter} from './shared.jsx';
+import {walletPerformance} from './walletPerformance.js';
 import {ACTIVITY_EVENTS,api,Ledger,NumberField,SectionCard,confirmDialog,ConfirmHost,consumePendingMintPrefill,CopyButton,csrf,downloadFile,Empty,EVM_CHAINS,Field,Form,getNotificationLog,notify,Notice,PageTitle,Pager,promptDialog,relativeTime,Select,Skeleton,StatusPill,SubTabs,subscribeNotificationLog,ToastHost,useLoad,useLiveSocket,setPendingMintPrefill,quantityPicks} from './shared.jsx';
 import Dashboard from './Dashboard.jsx';
 // Phase 4, unit 1 of 5 (brief §2). The 11->5 merge lands one page at a time so any single merge
@@ -209,7 +210,7 @@ function walletBalanceText(value,places){
   return Number.isFinite(parsed)?parsed.toFixed(places===undefined?6:places):String(value);
 }
 // The wallet's own chain carries the headline number; any others are the same address holding
-// funds elsewhere, which is why they are a table row rather than a second big figure.
+// funds elsewhere, which is why they live in the details rather than a second big figure.
 function walletHome(wallet){
   const balances=wallet.balances||[];
   return balances.find(item=>item.chain===wallet.chain)||balances[0]||null;
@@ -217,28 +218,51 @@ function walletHome(wallet){
 // Funded / Unfunded / Unavailable, and nothing between them. The prototype also draws "Low", but
 // low against WHAT -- no threshold exists anywhere in the data model, and only a mint price would
 // define one. Inventing a cutoff would put a judgement on screen the app cannot actually make, so
-// these three are the three the balance can prove on its own.
+// these three are the three the balance can prove on its own. Unfunded takes the prototype's warn
+// treatment (orange border, orange figure); it is also what the Balances and rail badges count.
 function walletStatus(wallet){
   const text=walletBalanceText(walletHome(wallet)?.balance);
   if(text===null)return {label:'Unavailable',tone:''};
   return Number(text)>0?{label:'Funded',tone:'ok'}:{label:'Unfunded',tone:'wn'};
 }
+function unfundedWallets(wallets){
+  return Array.isArray(wallets)?wallets.filter(item=>walletStatus(item).tone==='wn').length:0;
+}
+
+// ── Per-wallet performance ───────────────────────────────────────────────────
+// pnl_records has no wallet column, which is why this looked impossible at first. It is not:
+// autoRecordPnl (server.js:545) writes every confirmed mint as "Minted {n} NFT{s} — {label}", so
+// the wallet IS recoverable from the row, and the cost and gas on it are real numbers off the
+// confirmed receipt rather than estimates.
+//
+// The catch, stated on the page rather than hidden: that name is editable, and a hand-added record
+// does not follow the pattern. So this attributes what it can and the page says so. The durable
+// fix is a wallet column on pnl_records, which is a migration and a deploy, not a render.
+//
+// Net starts negative -- autoRecordPnl seeds net as -(cost + gas) -- and only turns positive once
+// a resale is entered by hand in Performance. That is why a wallet can mint profitably and still
+// read as a loss here: nothing has been recorded as sold yet.
+function signedEth(value){
+  return `${value<0?'−':'+'}${Math.abs(value).toFixed(6)} ETH`;
+}
+
 // wallets.html's .blk > .card.col: a collapsed summary row on a phone, the whole card on a desktop.
 // prototype.css hides .colh above the mobile breakpoint, so this is one markup serving both rather
 // than a viewport branch in JS -- the same shape TriggerCard uses on Automation.
 //
-// What the ledger can honestly say per wallet: pnl_records has no wallet column
-// (001_initial_schema.sql:48), so cost, gas and net cannot be split per wallet at all. The
-// prototype's own Performance note says exactly that, even though its card mock shows those rows
-// anyway -- the note is right and the mock is not. `minted` IS per wallet: a real column on
-// wallets, incremented on every confirmed mint (server.js:334 scheduled, :530 direct, :688 sniper).
-// So the table carries the per-chain balances plus that count, the honest subset of what was drawn.
-function WalletCard({wallet,onExport,onRemove}){
+// Export key is deliberately NOT on this card: the Export tab is the one place a keystore comes
+// from, and a second door to it here made the tab look optional. Remove is not on the face either
+// -- a destructive action sitting between two read-only tables is one slip from a deleted key
+// envelope, so it lives behind Details along with the facts you would want to check before using
+// it (full address, chain, lifetime mints).
+function WalletCard({wallet,records,windowLabel,windowMs,onRemove}){
   const [open,setOpen]=useState(false);
+  const [details,setDetails]=useState(false);
   const home=walletHome(wallet);
   const status=walletStatus(wallet);
   const headline=walletBalanceText(home?.balance,3);
-  const balances=wallet.balances||[];
+  const performance=walletPerformance(records,wallet.label,windowMs);
+  const cell=value=>performance?value:'—';
   return <div className="blk">
     <div className="card col" data-open={open?'1':'0'}
       style={status.tone==='wn'?{borderColor:'var(--warn)'}:undefined}>
@@ -257,30 +281,55 @@ function WalletCard({wallet,onExport,onRemove}){
           {headline===null?'Unavailable':headline}
           {headline===null?null:<small>{home?.symbol||'ETH'}</small>}
         </div>
-        <div className="addr" style={{marginBottom:'11px'}}>
+        {/* .tight keeps the copy mark next to the address instead of flung to the far edge of the
+            row, where it read as a full-width button rather than the icon it is. */}
+        <div className="addr tight" style={{marginBottom:'11px'}}>
           <code className="mono">{shortHex(wallet.address)}</code>
           <CopyButton value={wallet.address} label="Copy wallet address"/>
         </div>
         <div className="sober">
-          <div className="sh">Balances · by chain</div>
+          <div className="sh">Performance · {windowLabel}</div>
           <table className="led"><tbody>
-            {balances.length?balances.map(item=><tr key={item.chain}>
-              <td>{chainMeta(item.chain).label||item.chain}</td>
-              <td>{walletBalanceText(item.balance)===null?'Unavailable'
-                :`${walletBalanceText(item.balance)} ${item.symbol||''}`.trim()}</td>
-            </tr>):<tr><td>Balances</td><td>Unavailable</td></tr>}
-            <tr className="tot"><td>Minted · lifetime</td><td>{wallet.minted??0}</td></tr>
+            <tr><td>Minted</td><td>{cell(performance?.minted)}</td></tr>
+            <tr><td>Cost</td><td>{cell(performance&&`${performance.cost.toFixed(6)} ETH`)}</td></tr>
+            <tr><td>Gas</td><td>{cell(performance&&`${performance.gas.toFixed(6)} ETH`)}</td></tr>
+            <tr className="tot"><td>Net</td><td style={{color:!performance?undefined
+              :performance.net<0?'var(--loss-text)':'var(--gain-text)'}}>
+              {cell(performance&&signedEth(performance.net))}</td></tr>
           </tbody></table>
         </div>
         <div className="br" style={{marginTop:'11px'}}>
-          <button type="button" className="b g sm" onClick={onExport}>Export key</button>
-          <button type="button" className="b d sm" onClick={onRemove}>Remove</button>
+          <button type="button" className="b g sm" aria-expanded={details}
+            onClick={()=>setDetails(value=>!value)}>{details?'Hide details':'Details'}</button>
         </div>
+        {details&&<div style={{marginTop:'9px'}}>
+          <div className="sober">
+            <div className="sh">Wallet details</div>
+            <table className="led"><tbody>
+              <tr><td>Home chain</td><td>{chainMeta(wallet.chain).label||wallet.chain}</td></tr>
+              {(wallet.balances||[]).map(item=><tr key={item.chain}>
+                <td>{chainMeta(item.chain).label||item.chain}</td>
+                <td>{walletBalanceText(item.balance)===null?'Unavailable'
+                  :`${walletBalanceText(item.balance)} ${item.symbol||''}`.trim()}</td></tr>)}
+              <tr className="tot"><td>Minted · lifetime</td><td>{wallet.minted??0}</td></tr>
+            </tbody></table>
+          </div>
+          <div className="addr tight" style={{marginTop:'9px',marginBottom:'0'}}>
+            <code className="mono">{wallet.address}</code>
+            <CopyButton value={wallet.address} label="Copy full wallet address"/>
+          </div>
+          <div className="nt w" style={{marginTop:'9px'}}>{WARN_TRIANGLE_ICON}
+            <div><b>Removing this wallet deletes its stored key.</b> The encrypted envelope is
+              deleted outright, not archived — if you might need this address again, take a keystore
+              from the <b>Export</b> tab first.</div></div>
+          <div className="br" style={{marginTop:'9px'}}>
+            <button type="button" className="b d sm" onClick={onRemove}>Remove wallet</button></div>
+        </div>}
       </div>
     </div>
   </div>;
 }
-function Wallets({profile,onProfileChange,walletList,formsOpen,onFormsOpen}){const {data:wallets,load}=walletList;const [createChain,setCreateChain]=useState('evm');const [importChain,setImportChain]=useState('evm');const [importMethod,setImportMethod]=useState('privateKey');const [query,setQuery]=useState('');async function submit(event,path){event.preventDefault();const form=event.currentTarget;const values=Object.fromEntries(new FormData(form));try{await api(path,{method:'POST',body:JSON.stringify(values)});form.reset();notify('Wallet saved securely.',{type:'success'});load();}catch(value){notify(value.message,{type:'error'});}}async function remove(label){if(!await confirmDialog(`Remove wallet ${label}? This cannot be undone.`))return;try{await api(`/api/wallets/${encodeURIComponent(label)}`,{method:'DELETE',body:JSON.stringify({confirmation:'CONFIRM'})});load();}catch(value){notify(value.message,{type:'error'});}}
+function Wallets({profile,onProfileChange,walletList,pnl,windowKey,onWindow,formsOpen,onFormsOpen}){const {data:wallets,load}=walletList;const [createChain,setCreateChain]=useState('evm');const [importChain,setImportChain]=useState('evm');const [importMethod,setImportMethod]=useState('privateKey');const [query,setQuery]=useState('');async function submit(event,path){event.preventDefault();const form=event.currentTarget;const values=Object.fromEntries(new FormData(form));try{await api(path,{method:'POST',body:JSON.stringify(values)});form.reset();notify('Wallet saved securely.',{type:'success'});load();}catch(value){notify(value.message,{type:'error'});}}async function remove(label){if(!await confirmDialog(`Remove wallet ${label}? This cannot be undone.`))return;try{await api(`/api/wallets/${encodeURIComponent(label)}`,{method:'DELETE',body:JSON.stringify({confirmation:'CONFIRM'})});load();}catch(value){notify(value.message,{type:'error'});}}
   const exportKey=label=>exportWalletKeystore(label,{profile,onProfileChange});
   // Batch import. /api/wallets/batch-import has existed all along with no way to reach it from the
   // dashboard, so importing more than one wallet meant using Telegram or Discord -- the two places
@@ -407,14 +456,22 @@ function Wallets({profile,onProfileChange,walletList,formsOpen,onFormsOpen}){con
           aria-label="Find a wallet" onChange={event=>setQuery(event.target.value)}/>
         {query&&<button type="button" className="sx" aria-label="Clear search"
           onClick={()=>setQuery('')}>×</button>}
+      </div>
+      {/* One window for every card. Per-card pickers would mean four cards disagreeing about what
+          period they show, which is exactly the confusion the figures are meant to resolve. */}
+      <div className="seg" role="group" aria-label="Performance window">
+        {WALLET_WINDOWS.map(([key])=><button type="button" key={key} className={windowKey===key?'on':undefined}
+          aria-pressed={windowKey===key} onClick={()=>onWindow(key)}>{key}</button>)}
       </div></div>
       {filtered.length
         ?<div className="g g3">{filtered.map(wallet=><WalletCard key={wallet.label} wallet={wallet}
-            onExport={()=>exportKey(wallet.label)} onRemove={()=>remove(wallet.label)}/>)}</div>
+            records={pnl?.data} windowLabel={walletWindow(windowKey).label}
+            windowMs={walletWindow(windowKey).ms} onRemove={()=>remove(wallet.label)}/>)}</div>
         :<Empty text="No wallets match this search."/>}
       <p style={{fontSize:'11.5px',color:'var(--faint)',marginTop:'10px'}}>Zero renders
         as <b>0.000000</b>, never blank. A chain whose RPC failed shows <b>Unavailable</b>, which is
-        not the same as zero.</p>
+        not the same as zero. Performance counts the mint records GhostMint wrote for each wallet;
+        a record renamed by hand, or added by hand, stops being attributable to one.</p>
     </>}
     {formsOpen&&forms(!empty)}
   </>;}
@@ -2738,6 +2795,11 @@ function WalletExport({profile,onProfileChange,walletList}){
   </div>;
 }
 
+const WALLET_WINDOWS=[['7d',7],['30d',30],['90d',90],['All',null]];
+function walletWindow(key){
+  const found=WALLET_WINDOWS.find(([name])=>name===key)||WALLET_WINDOWS[1];
+  return {label:found[1]===null?'all time':`${found[1]}d`,ms:found[1]===null?null:found[1]*86400000};
+}
 const WALLET_TABS=[
   {id:'balances',label:'Balances'},
   {id:'performance',label:'Performance',was:'P&L'},
@@ -2750,8 +2812,13 @@ function WalletsPage({profile,onProfileChange,tab,onTab}){
   // only in the populated state (.of), so the header has to know whether any wallet exists -- and
   // Export reads the same list. Three components each calling /api/wallets was also three requests.
   const walletList=useLoad('/api/wallets',[],'wallets.changed');
+  const pnl=useLoad('/api/pnl',[],'pnl.changed');
   const [formsOpen,setFormsOpen]=useState(false);
+  const [windowKey,setWindowKey]=useState('30d');
   const populated=Array.isArray(walletList.data)&&walletList.data.length>0;
+  // Unfunded wallets get a badge on Balances and on the rail, in the card's own warn colour rather
+  // than red: a wallet with no funds is not broken, it just cannot mint until it is topped up.
+  const unfunded=unfundedWallets(walletList.data);
   return <>
     <div className="page-head">
       <div className="page-head-text"><p className="eyebrow">Wallets</p><h1>Wallets</h1></div>
@@ -2760,9 +2827,11 @@ function WalletsPage({profile,onProfileChange,tab,onTab}){
           onClick={()=>setFormsOpen(value=>!value)}>{formsOpen?'Close':'Create wallet'}</button>
       </div>}
     </div>
-    <SubTabs tabs={WALLET_TABS} active={active} onChange={onTab} label="Wallet sections"/>
+    <SubTabs tabs={WALLET_TABS} active={active} onChange={onTab} label="Wallet sections"
+      badges={{balances:unfunded?{count:unfunded,tone:'wn'}:null}}/>
     {active==='balances'&&<Wallets profile={profile} onProfileChange={onProfileChange}
-      walletList={walletList} formsOpen={formsOpen} onFormsOpen={setFormsOpen}/>}
+      walletList={walletList} pnl={pnl} windowKey={windowKey} onWindow={setWindowKey}
+      formsOpen={formsOpen} onFormsOpen={setFormsOpen}/>}
     {active==='performance'&&<>
       <div className="nt i" style={{marginBottom:'12px'}}>{INFO_ICON}
         <div>Performance is <b>account-level</b>. P&amp;L records carry no wallet, so cost and
@@ -3039,6 +3108,7 @@ function useNavBadges(){
   const rules=useLoad('/api/watch-rules',[],'watchrules.changed');
   const snipers=useLoad('/api/snipers',[],'snipers.changed');
   const confirmations=useLoad('/api/confirmations',[],'confirmations.changed');
+  const wallets=useLoad('/api/wallets',[],'wallets.changed');
   const counts=tasks.data?.counts;
   // Mint counts schedules that have STOPPED and want a decision. It escalates to the red .cnt.hot
   // only when one of them actually failed -- paused and expired are states you can live with,
@@ -3061,7 +3131,7 @@ function useNavBadges(){
   // 1 against its one Failing rule, while its Active sniper adds nothing. The Policies tab's
   // "Bypass · Requires an explicit challenge" is a row inside a policy table, not a pending
   // action, so it is deliberately not counted here.
-  return {Mint:mint,Automation:automation.total,
+  return {Mint:mint,Automation:automation.total,Wallets:unfundedWallets(wallets.data),
     hot:{Mint:mintFailing,Automation:automation.hot}};
 }
 const TOP_RAIL_PAGES=['Home','Mint','Automation','Wallets','History'];

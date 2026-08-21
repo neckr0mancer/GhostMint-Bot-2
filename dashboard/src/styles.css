@@ -1484,3 +1484,10 @@ html[data-theme="ghost-mint-light"] .sheet-grid button .nav-icon{
 html[data-theme="ghost-mint"] .sheet-handle,
 html[data-theme="ghost-mint-light"] .sheet-handle{
   height:4px;min-height:4px;background-clip:padding-box}
+
+/* .addr puts the copy mark at the far right of a full-width row, which on a wallet card read as a
+   button rather than the icon it is. .tight lets the code box size to its content so the mark sits
+   directly beside the address, per the owner's note. The full-address row inside Details keeps the
+   same treatment, so both addresses on a card look like one control, not two. */
+.addr.tight{justify-content:flex-start}
+.addr.tight code{flex:0 1 auto}
