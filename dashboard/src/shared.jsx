@@ -155,7 +155,10 @@ export function downloadFile(filename,content,mimeType='application/json'){
 // code (brief §3.8 requires it visible: "it said 429" is the single most useful thing a user can
 // report back). It was being discarded here -- api() sets .status on the thrown Error, and this
 // catch kept only .message, so no caller could ever show it.
-export function useLoad(path,dependencies=[],wsEvents){const [data,setData]=useState(null);const [error,setError]=useState('');const [status,setStatus]=useState(null);const load=useCallback(()=>{setError('');setStatus(null);return api(path).then(setData).catch(value=>{setError(value.message);setStatus(value.status??null);});},[path,...dependencies]);useEffect(()=>{load();},[load]);useEffect(()=>{if(!wsEvents)return;const watched=[].concat(wsEvents);const listener=event=>{if(watched.includes(event.detail?.type))load();};window.addEventListener('ghostmint-ws',listener);return()=>window.removeEventListener('ghostmint-ws',listener);},[load,wsEvents]);return {data,error,status,load};}
+// A null path means "not yet" -- the caller has nothing to fetch for the current state (a tab that
+// has not been opened, an id that is not chosen). It stays in the loading shape rather than firing
+// a request for the string "null", so a panel can defer its own load until someone looks at it.
+export function useLoad(path,dependencies=[],wsEvents){const [data,setData]=useState(null);const [error,setError]=useState('');const [status,setStatus]=useState(null);const load=useCallback(()=>{if(!path)return Promise.resolve();setError('');setStatus(null);return api(path).then(setData).catch(value=>{setError(value.message);setStatus(value.status??null);});},[path,...dependencies]);useEffect(()=>{load();},[load]);useEffect(()=>{if(!wsEvents)return;const watched=[].concat(wsEvents);const listener=event=>{if(watched.includes(event.detail?.type))load();};window.addEventListener('ghostmint-ws',listener);return()=>window.removeEventListener('ghostmint-ws',listener);},[load,wsEvents]);return {data,error,status,load};}
 // Opens the one live-update socket for the whole session (shared by both the regular dashboard
 // shell and the admin shell, which previously never opened one at all -- so admin pages had no live
 // listener). Every server-side change is broadcast as a 'ghostmint-ws' window CustomEvent; useLoad's

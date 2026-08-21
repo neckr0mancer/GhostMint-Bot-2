@@ -1485,9 +1485,67 @@ html[data-theme="ghost-mint"] .sheet-handle,
 html[data-theme="ghost-mint-light"] .sheet-handle{
   height:4px;min-height:4px;background-clip:padding-box}
 
-/* .addr puts the copy mark at the far right of a full-width row, which on a wallet card read as a
-   button rather than the icon it is. .tight lets the code box size to its content so the mark sits
-   directly beside the address, per the owner's note. The full-address row inside Details keeps the
-   same treatment, so both addresses on a card look like one control, not two. */
-.addr.tight{justify-content:flex-start}
-.addr.tight code{flex:0 1 auto}
+
+/* ── Wallet address ───────────────────────────────────────────────────────────
+   wallets.html prints a funded wallet's address as plain muted mono under the balance: no box, no
+   border. The copy mark sits inline with it rather than at the far edge of a full-width row. */
+.wallet-addr.mono{display:flex;align-items:center;gap:4px;font-size:11px;color:var(--faint);
+  margin-bottom:11px;min-width:0}
+.wallet-addr .user-card-copy{color:var(--faint)}
+
+/* ── Icon button ──────────────────────────────────────────────────────────────
+   A bare glyph control: no fill, no border, sized to the touch target rather than to its text.
+   Used for Details on a wallet card and Close on an overlay. */
+.ico-btn{display:inline-grid;place-items:center;width:28px;height:28px;min-height:28px;padding:0;
+  flex:none;background:transparent;border:1px solid transparent;border-radius:var(--radius-sm);
+  color:var(--muted);box-shadow:none}
+.ico-btn:hover:not(:disabled){background:var(--surface-hover);border-color:var(--border);
+  color:var(--text);filter:none}
+.ico-btn svg{width:15px;height:15px;display:block}
+
+/* ── Overlay ──────────────────────────────────────────────────────────────────
+   The prototype's .cmd-bd/.cmd palette treatment, reused for panels that must not push the page
+   around: a blurred scrim and a rounded panel. On a phone it becomes a bottom sheet, since a
+   centred dialog at 375px is a full-screen panel with wasted margins pretending otherwise. */
+.ovl-bd{position:fixed;inset:0;z-index:9100;background:#000a;backdrop-filter:blur(3px);
+  display:flex;align-items:center;justify-content:center;padding:24px}
+.ovl{width:min(560px,100%);max-height:min(84vh,760px);display:flex;flex-direction:column;
+  background:var(--surface);border:1px solid var(--border-strong);border-radius:var(--radius-lg);
+  box-shadow:0 30px 70px -20px #000;overflow:hidden}
+.ovl.wide{width:min(680px,100%)}
+.ovl:focus{outline:none}
+.ovl-h{display:flex;align-items:flex-start;gap:10px;padding:14px 16px;
+  border-bottom:1px solid var(--border);flex:none}
+.ovl-h h2{font-size:15px;font-weight:750;letter-spacing:-.02em;margin:0;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ovl-sub{margin:2px 0 0;font-size:11.5px;color:var(--faint)}
+.ovl-b{padding:14px 16px 16px;overflow-y:auto;flex:1}
+.ovl-b .subtabs{margin-bottom:12px}
+@media(max-width:700px){
+  .ovl-bd{align-items:flex-end;padding:0}
+  .ovl,.ovl.wide{width:100%;max-height:90vh;border-radius:var(--radius-lg) var(--radius-lg) 0 0;
+    border-bottom:none}
+}
+
+/* ── Pick list ────────────────────────────────────────────────────────────────
+   The create-or-import choice. One row per answer, each carrying the consequence of picking it,
+   because that difference is the entire reason the question is asked. */
+.pick{display:flex;align-items:flex-start;gap:11px;width:100%;text-align:left;padding:13px;
+  border:1px solid var(--border);border-radius:var(--radius);background:var(--surface-2);
+  color:var(--text);min-height:0;box-shadow:none}
+.pick:hover:not(:disabled){border-color:var(--border-strong);background:var(--surface-3);filter:none}
+.pick .chip-ico{margin-top:1px}
+.pick-t{flex:1;min-width:0;display:block}
+.pick-t b{display:block;font-size:13px;font-weight:700;margin-bottom:3px}
+.pick-t span{display:block;font-size:11.5px;color:var(--muted);line-height:1.45}
+.pick .p{flex:none;margin-top:1px}
+@media(max-width:520px){.pick{flex-wrap:wrap}.pick .p{margin-left:37px}}
+
+/* Each secret gets its own row so a batch import is the same form with more of them, and any one
+   row can be removed without disturbing the rest. */
+.secret-row{display:flex;align-items:flex-start;gap:7px}
+.secret-row .ico-btn{margin-top:19px}
+.secret-row textarea.in{min-height:62px;resize:vertical}
+
+.b svg{width:13px;height:13px;flex:none}
+.b.sm svg{width:12px;height:12px}

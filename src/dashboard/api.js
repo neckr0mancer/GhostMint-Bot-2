@@ -16,7 +16,7 @@ const SECURITY_HEADERS=Object.freeze({
 // enumerate which usernames are registered before ever guessing a password.
 const DUMMY_SECURITY_PASSWORD_HASH=hashSecurityPassword(randomBytes(32).toString('hex'));
 function noStore(res){res.set('Cache-Control','no-store, private');}
-function publicWallet(value){return {label:value.label,address:value.address,chain:value.chain,balances:value.balances??[],minted:value.minted??0};}
+function publicWallet(value){return {label:value.label,address:value.address,chain:value.chain,balances:value.balances??[],minted:value.minted??0,addedAt:value.addedAt??null};}
 function jsonSafe(value){return JSON.parse(JSON.stringify(value,(_key,item)=>typeof item==='bigint'?item.toString():item));}
 
 function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLoginRateLimiter,exportKeyRateLimiter,commands,securityAudit={record:async()=>{}},broadcast=()=>{},broadcastToUsers=()=>{},supportedChains=[],now=()=>Date.now(),checkAccountStatus}) {
