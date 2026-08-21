@@ -502,6 +502,20 @@ test('the scheduled-task screen counts phases upward and keeps a way back to the
   assert.ok(buttons.includes('menu:main'));
 });
 
+// Reported live: "after a mint is scheduled, theres no cancel schedule button" -- the success
+// screen offered Add phase / See all tasks / Back to base, but no way to undo the very schedule it
+// was just confirming. Reuses the same task:cancel:ask:<id> step tasksMenu/taskActions already use.
+test('the scheduled-task screen offers a way to cancel the schedule it just confirmed', () => {
+  const screen = taskScheduled({
+    id: 'task-123', name: 'phase 1', contractAddress: '0x1234567890abcdef1234567890abcdef12345678',
+    mintTime: '2026-08-20T18:00:00.000Z',
+  });
+  const buttons = flatButtons(screen.replyMarkup);
+  const cancel = buttons.find(b => b.callback_data === 'task:cancel:ask:task-123');
+  assert.ok(cancel, 'a Cancel button targeting this exact task must be present');
+  assert.match(cancel.text, /Cancel/);
+});
+
 // Section AF -- OpenSea's own response at execution time determines the real price for an
 // allowlist/GTD/FCFS stage; nothing scheduled up front could ever be the real number, so this must
 // never claim a price the way a plain scheduled task (or "not exposed by this contract") would.

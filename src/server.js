@@ -1686,11 +1686,15 @@ async function advanceFromTaskDetails(chatId, messageId, userId, flow) {
 
 // Section AF -- shared shape for both the direct (single-stage) and picked (multi-stage) paths out
 // of flow:scheduleviaopensea, so they build identical task data from whichever stage was settled on.
+// name is the stage's own real label (or a humanized fallback from its stage_type) -- which phase
+// this is is a known fact now, not a guess, so advanceFromTaskWallet skips the manual naming step
+// entirely for a viaOpenSea task rather than asking the user to re-type something already known.
 function openSeaPhaseTaskData(mintFlowData, stage) {
   return {
     contractAddress: mintFlowData.contractAddress, chain: mintFlowData.chain, isSeaDrop: mintFlowData.isSeaDrop,
     priceETH: 0, priceUnknown: false, viaOpenSea: true, collection: mintFlowData.collection,
     mintTime: new Date(stage.startTime * 1000).toISOString(),
+    name: stage.label || telegramMenus.humanizeStageType(stage.stageType),
   };
 }
 
@@ -1709,14 +1713,21 @@ async function advanceFromTaskQuantity(chatId, messageId, userId, flow, quantity
 
 // After the wallet is picked: a price createTask can't resolve server-side either (Section G) is
 // asked for here rather than surfacing as a late validation error at the very end of the flow.
-// Otherwise, always ask for a name (there's no way to auto-detect that), then skip straight to
-// confirm if mintTime was already auto-filled from the contract's own opening time, or ask for it
-// by hand when it wasn't.
+// A viaOpenSea task already carries a real name (the actual stage's own label -- see
+// openSeaPhaseTaskData) since which phase this is is now a known fact, not a guess; asking the user
+// to name it themselves would be asking them to re-type something this app already knows for
+// certain. Every other task still asks (there's no way to auto-detect a name for those), then skips
+// straight to confirm if mintTime was already auto-filled from the contract's own opening time, or
+// asks for it by hand when it wasn't.
 async function advanceFromTaskWallet(chatId, messageId, userId, flow, walletLabel) {
   const data = { ...flow.data, walletLabel };
   if (data.priceUnknown && data.priceETH === undefined) {
     telegramFlowState.advance('telegram', chatId, 'awaiting_price', data);
     return tgUpdate(chatId, messageId, renderFlowStep('task_guided', 'awaiting_price', { userId, data }));
+  }
+  if (data.viaOpenSea && data.name) {
+    telegramFlowState.advance('telegram', chatId, 'awaiting_confirm', data);
+    return tgUpdate(chatId, messageId, renderFlowStep('task_guided', 'awaiting_confirm', { userId, data }));
   }
   telegramFlowState.advance('telegram', chatId, 'awaiting_name', data);
   return tgUpdate(chatId, messageId, renderFlowStep('task_guided', 'awaiting_name', { userId, data }));
@@ -1733,7 +1744,7 @@ async function finishTaskSchedule(chatId, messageId, userId, flowData) {
     });
     telegramFlowState.clear('telegram', chatId);
     return tgUpdate(chatId, messageId, telegramMenus.taskScheduled({
-      name: task.name, contractAddress: flowData.contractAddress,
+      id: task.id, name: task.name, contractAddress: flowData.contractAddress,
       mintTime: new Date(task.mintTime).toISOString(), phaseNumber: flowData.phaseNumber, viaOpenSea: task.viaOpenSea,
     }));
   } catch (error) {

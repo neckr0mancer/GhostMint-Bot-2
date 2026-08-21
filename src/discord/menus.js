@@ -927,6 +927,18 @@ function confirmRemoveWallet(label) {
   };
 }
 
+// Discord counterpart to Telegram's confirmCancelTask -- same task:cancel:ask:<id>/task:cancel:do:<id>
+// step shape, so both platforms' handlers can share the exact same commands.tasks/controlTask calls.
+function confirmCancelTask(task) {
+  return {
+    content: `Cancel **${task.name}**? This cannot be undone.`,
+    components: [row([
+      button('✅ Yes, cancel it', `task:cancel:do:${task.id}`, 'danger'),
+      button('❌ No, keep it', 'menu:main'),
+    ])],
+  };
+}
+
 function labelModal({ customId, title, placeholder = '', style = 'short', maxLength = 64 }) {
   return {
     custom_id: customId,
@@ -941,10 +953,10 @@ function labelModal({ customId, title, placeholder = '', style = 'short', maxLen
 module.exports = {
   button, row, select, mainMenu, mintModeMenu, batchImportMenu, gateUnlockCard,
   securityBanner, securityNeedsAttention, securitySetupCard, walletsMenu, settingsMenu, placeholderMenu,
-  chainSelect, walletSelect, walletMultiSelect, confirmRemoveWallet, labelModal, gasMenu, activityMenu, tasksMenu, snipersMenu, adminOverviewMenu,
+  chainSelect, walletSelect, walletMultiSelect, confirmRemoveWallet, confirmCancelTask, labelModal, gasMenu, activityMenu, tasksMenu, snipersMenu, adminOverviewMenu,
   sniperDetailsModal, sniperTolerancePrompt, sniperToleranceModal, sniperConfirmation,
   modeMenu, MODE_META,
-  contractDetailsText, collectionInfoCard, openSeaPhasePicker, mintQuantitySelect, mintPriceStep, gasTolerancePrompt, mintConfirmation, numberModal,
+  contractDetailsText, collectionInfoCard, openSeaPhasePicker, humanizeStageType, mintQuantitySelect, mintPriceStep, gasTolerancePrompt, mintConfirmation, numberModal,
   taskNameQuickPicks, taskConfirmation,
   watchTypeSelect, watchMethodSelect, watchConfigModal, watchRuleConfirmation,
   watchRulesList, watchRuleActions, confirmRemoveWatchRule,

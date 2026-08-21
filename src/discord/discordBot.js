@@ -391,12 +391,25 @@ async function finishMintExecutionDiscord(ctx, respond, platformUserId, userId, 
 // Section AF -- shared shape for both the direct (single-stage) and picked (multi-stage) paths out
 // of flow:scheduleviaopensea, so they build identical task data from whichever stage was settled
 // on. Mirrors server.js's openSeaPhaseTaskData.
+// name is the stage's own real label (or a humanized fallback from its stage_type) -- which phase
+// this is is a known fact now, not a guess, so both advanceFromTaskQuantity and flow:taskwallet:select
+// skip the manual naming step entirely for a viaOpenSea task rather than asking the user to re-type
+// something already known.
 function openSeaPhaseTaskData(mintFlowData, stage) {
   return {
     contractAddress: mintFlowData.contractAddress, chain: mintFlowData.chain,
     priceETH: 0, priceUnknown: false, viaOpenSea: true,
     mintTime: new Date(stage.startTime * 1000).toISOString(),
+    name: stage.label || discordMenus.humanizeStageType(stage.stageType),
   };
+}
+
+function taskConfirmPayload(taskData, chains) {
+  return discordMenus.taskConfirmation({
+    name: taskData.name, contractAddress: taskData.contractAddress, chainLabel: chains[taskData.chain]?.name || taskData.chain,
+    walletLabel: taskData.walletLabel, quantity: taskData.quantity || 1, mintTime: taskData.mintTime, priceETH: taskData.priceETH, priceUnknown: taskData.priceUnknown,
+    viaOpenSea: taskData.viaOpenSea,
+  });
 }
 
 // Reached once a quantity is settled (chosen via the select, typed in the custom-amount modal, or
@@ -405,10 +418,15 @@ function openSeaPhaseTaskData(mintFlowData, stage) {
 // ever needs to decide between auto-selecting the sole wallet and showing a picker, mirroring
 // Telegram's advanceFromTaskQuantity.
 function advanceFromTaskQuantity(ctx, respond, platformUserId, userId, taskData) {
-  const { commands, flowState } = ctx;
+  const { commands, flowState, chains } = ctx;
   const wallets = commands.wallets(userId);
   if (wallets.length === 1) {
-    flowState.start('discord', platformUserId, 'task_guided', 'awaiting_name', { ...taskData, walletLabel: wallets[0].label });
+    const data = { ...taskData, walletLabel: wallets[0].label };
+    if (data.viaOpenSea && data.name) {
+      flowState.start('discord', platformUserId, 'task_guided', 'awaiting_confirm', data);
+      return respond(taskConfirmPayload(data, chains));
+    }
+    flowState.start('discord', platformUserId, 'task_guided', 'awaiting_name', data);
     return respond(discordMenus.taskNameQuickPicks());
   }
   flowState.start('discord', platformUserId, 'task_guided', 'awaiting_wallet', taskData);
@@ -429,7 +447,10 @@ async function finishTaskScheduleDiscord(ctx, respond, platformUserId, userId, f
       viaOpenSea: flowData.viaOpenSea,
     });
     flowState.clear('discord', platformUserId);
-    return respond({ content: `✅${task.viaOpenSea ? '🎫' : ''} Scheduled ${escapeDiscord(task.name)} to fire at \`${discordMenus.formatGmtPlus1(task.mintTime)}\`${task.viaOpenSea ? ' via OpenSea (it resolves eligibility and price automatically)' : ''}.`, components: backToMenu });
+    // Reuses the same task:cancel:ask:<id> step tasksMenu/taskActions already use on Telegram -- a
+    // freshly scheduled task starts life in the 'scheduled' status, always cancellable.
+    const cancelRow = discordMenus.row([discordMenus.button('❌ Cancel this schedule', `task:cancel:ask:${task.id}`, 'danger')]);
+    return respond({ content: `✅${task.viaOpenSea ? '🎫' : ''} Scheduled ${escapeDiscord(task.name)} to fire at \`${discordMenus.formatGmtPlus1(task.mintTime)}\`${task.viaOpenSea ? ' via OpenSea (it resolves eligibility and price automatically)' : ''}.`, components: [cancelRow, ...backToMenu] });
   } catch (error) {
     if (error instanceof RateLimitError) {
       return respond({ content: `Too many sensitive commands. Retry in ${Math.ceil(error.retryAfterMs / 1000)} seconds.`, components: backToMenu });
@@ -1087,7 +1108,12 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         if (!flow || flow.flow !== 'task_guided' || flow.step !== 'awaiting_wallet') return notYourMintPrompt(interaction);
         const label = interaction.values?.[0];
         if (!label) return undefined;
-        flowState.advance('discord', platformUserId, 'awaiting_name', { ...flow.data, walletLabel: label });
+        const taskData = { ...flow.data, walletLabel: label };
+        if (taskData.viaOpenSea && taskData.name) {
+          flowState.advance('discord', platformUserId, 'awaiting_confirm', taskData);
+          return dcRespond(interaction, taskConfirmPayload(taskData, chains));
+        }
+        flowState.advance('discord', platformUserId, 'awaiting_name', taskData);
         return dcRespond(interaction, discordMenus.taskNameQuickPicks());
       }
       if (data === 'flow:taskname:select') {
@@ -1100,16 +1126,25 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         if (!['GTD', 'FCFS', 'PUBLIC'].includes(chosen)) return undefined;
         const taskData = { ...flow.data, name: chosen };
         flowState.advance('discord', platformUserId, 'awaiting_confirm', taskData);
-        return dcRespond(interaction, discordMenus.taskConfirmation({
-          name: taskData.name, contractAddress: taskData.contractAddress, chainLabel: chains[taskData.chain]?.name || taskData.chain,
-          walletLabel: taskData.walletLabel, quantity: taskData.quantity || 1, mintTime: taskData.mintTime, priceETH: taskData.priceETH, priceUnknown: taskData.priceUnknown,
-          viaOpenSea: taskData.viaOpenSea,
-        }));
+        return dcRespond(interaction, taskConfirmPayload(taskData, chains));
       }
       if (data === 'flow:taskconfirm') {
         const flow = flowState.get('discord', platformUserId);
         if (!flow || flow.flow !== 'task_guided' || flow.step !== 'awaiting_confirm') return notYourMintPrompt(interaction);
         return finishTaskScheduleDiscord(mintCtx, payload => dcRespond(interaction, payload), platformUserId, userId, flow.data);
+      }
+      // Not part of the task_guided flow (reachable straight off the schedule success screen, no
+      // flow state to check) -- mirrors Telegram's task:cancel:ask:/task:cancel:do: exactly, sharing
+      // the same commands.tasks/controlTask calls so both platforms stay in sync.
+      if (data.startsWith('task:cancel:ask:')) {
+        const id = data.slice('task:cancel:ask:'.length);
+        const task = (await commands.tasks(userId)).find(item => item.id === id);
+        if (!task) return dcRespond(interaction, { content: 'That task is gone already -- probably already fired or was cancelled.', components: [discordMenus.row([discordMenus.button('⬅️ Back to menu', 'menu:main')])] });
+        return dcRespond(interaction, discordMenus.confirmCancelTask(task));
+      }
+      if (data.startsWith('task:cancel:do:')) {
+        const task = await commands.controlTask(userId, 'cancel', data.slice('task:cancel:do:'.length));
+        return dcRespond(interaction, { content: `❌ Cancelled **${task.name}**.`, components: [discordMenus.row([discordMenus.button('⬅️ Back to menu', 'menu:main')])] });
       }
 
       // Watch-rule guided create flow ("/watch has no button" gap) plus the list/manage actions

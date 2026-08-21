@@ -1057,6 +1057,45 @@ actions are genuinely useful at once. They're independent again; the Discord wor
 Mint via OpenSea + Schedule for OpenSea phase + utility row + Cancel) is exactly 5 rows, still
 inside the cap, pinned in `menuShape.test.js`.
 
+### Follow-up (same day) -- drop the manual naming step for OpenSea-backed schedules ✅
+
+Live-reported immediately after the above shipped: "the last name stuff for schedulers should be
+removed because you can now actually schedule for phases." The manual "name this task"
+GTD/FCFS/PUBLIC/custom quick-pick step (`TASK_NAME_QUICK_PICKS`) existed because nothing on-chain or
+via any API said which real phase a scheduled task was for -- the user had to guess/type a label
+themselves. That's no longer true for the OpenSea-backed path specifically: the actual stage (direct
+or picked) now carries its own real label.
+
+Fixed: `openSeaPhaseTaskData` (both platforms) now sets `name: stage.label || humanizeStageType(stage
+.stageType)` -- the same label/fallback `collectionInfoCard`'s phase list and the picker already use,
+now exported from both `menus.js` files for this purpose. Telegram's `advanceFromTaskWallet` and
+Discord's `advanceFromTaskQuantity`/`flow:taskwallet:select` handler skip `awaiting_name` entirely
+and go straight to `awaiting_confirm` whenever `data.viaOpenSea && data.name` -- every other
+scheduling path (manual `/schedule`, the "Add phase N" shape-1 flow) is unaffected and still asks,
+since those genuinely still can't know the phase automatically (see Section AF's own phase-
+determinability research above, unchanged). Discord gained a small `taskConfirmPayload` helper so
+the two new skip-to-confirm call sites and the existing `flow:taskname:select` handler all render
+the confirm screen identically.
+
+### Follow-up (same day) -- cancel button missing from the post-schedule success screen ✅
+
+Reported live: "after a mint is scheduled, theres no cancel schedule button." Telegram's
+`taskScheduled` success screen offered Add phase / See all tasks / Back to base but no way to undo
+the very schedule it was just confirming (the cancel action existed, just only reachable via
+`/tasks` afterward). Discord's gap was larger: `finishTaskScheduleDiscord`'s success message had
+only "Back to menu," and Discord had **no button-based task cancellation anywhere** -- `tasksMenu`
+is a read-only list, and the only way to cancel was the raw `/task cancel <id> <confirm>` command.
+
+Fixed: Telegram's `taskScheduled` gained an `id` param and a `❌ Cancel this schedule` button
+reusing the existing `task:cancel:ask:<id>`/`task:cancel:do:<id>` steps `tasksMenu`/`taskActions`
+already have -- a freshly created task is always in the `scheduled` status, so no cancellability
+check is needed here the way `CANCELLABLE_TASK_STATUSES` gates it elsewhere. Discord needed the
+handlers built: new `confirmCancelTask` menu function (mirrors Telegram's), and two new standalone
+handlers (`task:cancel:ask:`/`task:cancel:do:`, not part of any flow) sharing the exact same
+`commands.tasks`/`controlTask` calls Telegram's version uses. Deliberately scoped to just the
+success-screen button, not a full port of Telegram's `tasksMenu`/`taskActions` button surface to
+Discord -- that remains the larger, still-unbuilt Section S gap.
+
 ## Also flagged: "Confirm Scheduled Mint" copy reads like a reminder, not an execution ✅
 
 From the same 2026-08-17 message, and from the then-in-flight Telegram copy-tone pass —

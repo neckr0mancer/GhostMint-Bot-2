@@ -601,7 +601,7 @@ function taskConfirmation({ name, contractAddress, chainLabel, walletLabel, quan
 // stage that is live right now), so the only way to pre-arm every stage is one task per stage, each
 // with its own hand-entered time and price. Offering that as the obvious next tap is the feature --
 // the contract address rides in the callback data so the next phase skips straight past re-pasting.
-function taskScheduled({ name, contractAddress, mintTime, phaseNumber, viaOpenSea }) {
+function taskScheduled({ id, name, contractAddress, mintTime, phaseNumber, viaOpenSea }) {
   const phase = Number(phaseNumber) > 1 ? Number(phaseNumber) : 1;
   const armed = viaOpenSea
     ? `✅🎫 Armed via OpenSea: <b>${escapeTelegramHtml(name)}</b>`
@@ -616,6 +616,10 @@ function taskScheduled({ name, contractAddress, mintTime, phaseNumber, viaOpenSe
     ? "Got another OpenSea phase coming up? Head back to that contract's card and tap Schedule for OpenSea phase again once the next one shows."
     : 'Got another public stage? Stack another task for it: different time, different price, and the bot works down the list. An allowlist/GTD stage still can\'t go through Add phase (it has no price/time for you to type by hand) -- if OpenSea tracks the drop, use "Schedule for OpenSea phase" on its collection card instead.';
   const rows = viaOpenSea ? [] : [[button(`➕ Add phase ${phase + 1}`, `flow:phase:${phase + 1}:${contractAddress}`)]];
+  // Reuses the same task:cancel:ask:<id> step tasksMenu/taskActions already use -- a freshly
+  // scheduled task starts life in the 'scheduled' status, always cancellable, so no status check
+  // is needed here the way CANCELLABLE_TASK_STATUSES gates it elsewhere.
+  rows.push([button('❌ Cancel this schedule', `task:cancel:ask:${id}`)]);
   rows.push([button('🗓️ See all tasks', 'menu:tasks')], [button('⬅️ Back to base', 'menu:main')]);
   return {
     text: `${armed}\nFires: <b>${formatGmtPlus1(mintTime)}</b>\n\n${nextStageHint}`,
@@ -1008,6 +1012,7 @@ module.exports = {
   contractDetailsText,
   collectionInfoCard,
   openSeaPhasePicker,
+  humanizeStageType,
   mintConfirmation,
   gasTolerancePrompt,
   sendConfirmation,

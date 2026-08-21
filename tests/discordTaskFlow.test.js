@@ -80,7 +80,9 @@ function baseCommands(overrides = {}) {
       maxSupply: 100, maxPerWallet: 1, startTime: FUTURE_START, endTime: null, collection: null, soldOut: false, displayPrice: null,
     }),
     wallets: () => [{ label: 'main', chain: 'ethereum' }],
-    createTask: async () => ({ name: 'GTD', mintTime: FUTURE_ISO }),
+    createTask: async () => ({ id: 'task-1', name: 'GTD', mintTime: FUTURE_ISO, status: 'scheduled' }),
+    tasks: async () => [],
+    controlTask: async () => { throw new Error('controlTask not mocked for this test'); },
     ...overrides,
   };
 }
@@ -191,7 +193,7 @@ test('full happy path: schedule suggestion -> name quick-pick -> confirm -> task
   const flowState = createFlowStateStore();
   const created = [];
   const commands = baseCommands({
-    createTask: async (userId, input) => { created.push({ userId, input }); return { name: input.name, mintTime: input.mintTime }; },
+    createTask: async (userId, input) => { created.push({ userId, input }); return { id: 'task-1', name: input.name, mintTime: input.mintTime }; },
   });
   const identity = { resolveOrCreate: async () => 'internal-user' };
   const ctx = { identity, commands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT };
@@ -216,7 +218,53 @@ test('full happy path: schedule suggestion -> name quick-pick -> confirm -> task
   assert.equal(created[0].input.mintTime, FUTURE_ISO);
   assert.equal(created[0].input.priceETH, 1);
   assert.match(confirm.updates[0].content, /Scheduled/);
+  // Reported live: "after a mint is scheduled, theres no cancel schedule button" -- the success
+  // message offered only Back to menu.
+  const cancelButton = confirm.updates[0].components.flatMap(r => r.components).find(c => c.custom_id === 'task:cancel:ask:task-1');
+  assert.ok(cancelButton, 'a Cancel button targeting the just-created task must be present');
   assert.equal(flowState.get('discord', 'paster-3'), null);
+});
+
+test('task:cancel:ask: shows a confirm prompt for a still-cancellable task, and task:cancel:do: actually cancels it', async () => {
+  const flowState = createFlowStateStore();
+  let cancelled = null;
+  const commands = baseCommands({
+    tasks: async () => [{ id: 'task-1', name: 'GTD', status: 'scheduled' }],
+    controlTask: async (userId, action, id) => {
+      assert.equal(action, 'cancel');
+      assert.equal(id, 'task-1');
+      cancelled = id;
+      return { id, name: 'GTD', status: 'cancelled' };
+    },
+  });
+  const identity = { resolveOrCreate: async () => 'internal-user' };
+  const ctx = { identity, commands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT };
+  const handler = createDiscordInteractionHandler(ctx);
+
+  const ask = buttonInteraction('task:cancel:ask:task-1', 'canceller-1');
+  await handler(ask);
+  assert.match(ask.updates[0].content, /Cancel/);
+  assert.match(ask.updates[0].content, /GTD/);
+  const doButton = ask.updates[0].components.flatMap(r => r.components).find(c => c.custom_id === 'task:cancel:do:task-1');
+  assert.ok(doButton);
+
+  const doIt = buttonInteraction('task:cancel:do:task-1', 'canceller-1');
+  await handler(doIt);
+  assert.equal(cancelled, 'task-1');
+  assert.match(doIt.updates[0].content, /Cancelled/);
+  assert.match(doIt.updates[0].content, /GTD/);
+});
+
+test('task:cancel:ask: for a task that no longer exists (already fired or cancelled) says so instead of erroring', async () => {
+  const flowState = createFlowStateStore();
+  const commands = baseCommands({ tasks: async () => [] });
+  const identity = { resolveOrCreate: async () => 'internal-user' };
+  const ctx = { identity, commands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT };
+  const handler = createDiscordInteractionHandler(ctx);
+
+  const ask = buttonInteraction('task:cancel:ask:gone', 'canceller-2');
+  await handler(ask);
+  assert.match(ask.updates[0].content, /gone already/);
 });
 
 // Section AF -- a phase that hasn't opened yet has nothing to mint against, so there's no
@@ -239,7 +287,7 @@ function withNextStage(overrides = {}) {
   });
 }
 
-test('flow:scheduleviaopensea pre-fills the next stage\'s own opening time and skips straight to naming for a single wallet', async () => {
+test('flow:scheduleviaopensea pre-fills the next stage\'s own opening time AND its real name, skipping the manual naming step entirely for a single wallet', async () => {
   const flowState = createFlowStateStore();
   const created = [];
   const commands = withNextStage({
@@ -254,16 +302,20 @@ test('flow:scheduleviaopensea pre-fills the next stage\'s own opening time and s
   const tap = buttonInteraction('flow:scheduleviaopensea', 'osea-sched-1');
   await handler(tap);
   assert.equal(flowState.get('discord', 'osea-sched-1').flow, 'task_guided');
-  assert.equal(flowState.get('discord', 'osea-sched-1').step, 'awaiting_name');
+  // Round 22 follow-up: which phase this is is a known fact now (the stage's own label), not a
+  // guess -- so this goes straight to confirm, never asking the user to name something already known.
+  assert.equal(flowState.get('discord', 'osea-sched-1').step, 'awaiting_confirm');
+  assert.equal(flowState.get('discord', 'osea-sched-1').data.name, 'Allowlist');
   assert.equal(flowState.get('discord', 'osea-sched-1').data.mintTime, FUTURE_ISO);
   assert.equal(flowState.get('discord', 'osea-sched-1').data.viaOpenSea, true);
   // No price step reached at all -- OpenSea determines the real price, never anything asked here.
   assert.notEqual(flowState.get('discord', 'osea-sched-1').step, 'awaiting_price');
+  assert.match(tap.replies[0].content, /Allowlist/, 'the confirm screen the tap itself renders already shows the real name');
 
-  await handler(selectInteraction('flow:taskname:select', ['GTD'], 'osea-sched-1'));
   const confirm = buttonInteraction('flow:taskconfirm', 'osea-sched-1');
   await handler(confirm);
   assert.equal(created.length, 1);
+  assert.equal(created[0].input.name, 'Allowlist');
   assert.equal(created[0].input.viaOpenSea, true);
   assert.equal(created[0].input.mintTime, FUTURE_ISO);
   assert.match(confirm.updates[0].content, /Scheduled/);
@@ -322,13 +374,16 @@ test('flow:scheduleviaopensea shows a picker with more than one upcoming stage, 
   const pick = selectInteraction('flow:scheduleviaopenseaphase:select', ['1'], 'osea-pick-1');
   await handler(pick);
   assert.equal(flowState.get('discord', 'osea-pick-1').flow, 'task_guided');
-  assert.equal(flowState.get('discord', 'osea-pick-1').step, 'awaiting_name');
+  // Round 22 follow-up: the picked stage's own label ("Late FCFS") is a known fact, so this skips
+  // straight to confirm rather than asking the user to name a phase this app already knows.
+  assert.equal(flowState.get('discord', 'osea-pick-1').step, 'awaiting_confirm');
+  assert.equal(flowState.get('discord', 'osea-pick-1').data.name, 'Late FCFS');
   assert.equal(flowState.get('discord', 'osea-pick-1').data.mintTime, new Date((FUTURE_START + 90_000) * 1000).toISOString(),
     'the LATER stage (index 1) was chosen, not index 0');
 
-  await handler(selectInteraction('flow:taskname:select', ['GTD'], 'osea-pick-1'));
   await handler(buttonInteraction('flow:taskconfirm', 'osea-pick-1'));
   assert.equal(created.length, 1);
+  assert.equal(created[0].input.name, 'Late FCFS');
   assert.equal(created[0].input.mintTime, new Date((FUTURE_START + 90_000) * 1000).toISOString());
 });
 
