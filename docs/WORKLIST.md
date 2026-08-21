@@ -1442,15 +1442,43 @@ under Section G + K: "no token ID is captured from a mint receipt today." Would 
 `transactionEngine.js`'s `inspectChain`, alongside the existing `gasUsed`/`gasPrice`/`blockNumber`
 read, and unblocks that deferred work.
 
-## Section U — Validate mint calldata before signing, not just before broadcasting ❌
+## Section U — Validate mint calldata before signing, not just before broadcasting ✅
 
 `osnm-z-main/src/opensea.rs`'s `validate_stage_calldata`/`validate_mint_transaction` decode the
 ABI words of any externally supplied calldata (contract address, minter, quantity, selector) and
 cross-check them against what was actually requested, rejecting anything that doesn't match,
-before it's ever signed. Needs confirming whether `src/mint/seaDropCall.js`/`mintCall.js` already
-do the equivalent for GhostMint's own constructed calls — matters most wherever calldata comes
-from an external source (OpenSea price/eligibility lookups) rather than being built entirely
-in-house.
+before it's ever signed.
+
+Investigated first, confirmed a real gap: GhostMint's own in-house calldata builders
+(`buildSeaDropMintCall`/`buildMintCall`) encode already-validated arguments through a known ABI
+fragment — decoding that back to "verify" it would be a tautology, correctly out of scope. But
+OpenSea's own `POST /drops/{slug}/mint` response (`openSeaService.js`'s `buildMintTransaction`) —
+calldata it constructs itself and hands back — was signed and broadcast entirely as OpenSea
+supplied it, with nothing decoded or cross-checked against what the user actually asked to mint.
+Both real call sites (`executeMintViaOpenSea` in `src/server.js`, and the scheduler's own
+`task.viaOpenSea` execution branch) built `prepared` straight from `built.data`/`built.to`.
+
+**Fixed:** new `validateOpenSeaMintCall({ built, contractAddress, quantity })` in
+`src/mint/seaDropCall.js`, reusing the already-written-but-previously-unused
+`decodeSeaDropMintCall` rather than a second decoder. Checks the two facts that are unambiguous
+either way — the NFT contract actually being minted (`nftContract` from the decoded calldata must
+equal what was requested) and the quantity — and throws a `ValidationError` if either doesn't
+match, before signing. **Deliberately does not check `minterIfNotPayer`/`feeRecipient`**: OpenSea's
+exact encoding for "payer is minter" (zero address vs. an explicit wallet address) isn't confirmed
+against a real live response, and a wrong guess there would reject legitimate mints rather than
+just catch bad ones — narrower-but-certain over wider-but-guessed on a path that signs and spends
+real funds. Wired into both real call sites; OpenSea's eligibility *decision* (which this app has
+no independent way to verify — the whole reason this feature exists) stays trusted exactly as
+before, only the mechanical shape of the response is now checked.
+
+Verified: `node --check` + `npx eslint --max-warnings=0`, clean. 4 new tests in
+`tests/seaDropCall.test.js` (accepts a match; rejects wrong contract; rejects wrong quantity;
+rejects non-`mintPublic` calldata entirely), plus the full existing SeaDrop/OpenSea/scheduler/
+botCommandService suite (120+98 tests across the touched areas) still passing unchanged — none of
+it exercises `server.js`'s real `executeMintViaOpenSea`/scheduler `task.viaOpenSea` branch directly
+(that layer has no integration-test harness in this repo, same gap noted for Telegram's guided-flow
+orchestration elsewhere in this file), so coverage lives at the `validateOpenSeaMintCall` function
+level, where the actual logic is.
 
 ## Section V — Verify bytecode, not just the address, for canonical contracts ❌
 

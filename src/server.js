@@ -32,7 +32,7 @@ const { createSeaDropDiscoveryService } = require('./mint/seaDropDiscoveryServic
 const { createSeaDropPublicDropResolver } = require('./mint/seaDropPublicDropResolver');
 const { createOpenSeaService, OPENSEA_CHAIN_SLUGS } = require('./mint/openSeaService');
 const { createPriceFeedService } = require('./mint/priceFeedService');
-const { computeSeaDropValueWei } = require('./mint/seaDropCall');
+const { computeSeaDropValueWei, validateOpenSeaMintCall } = require('./mint/seaDropCall');
 const { SEADROP_MINT_SIGNATURE } = require('./mint/seaDropRegistry');
 const mintFlowDecision = require('./mint/mintFlowDecision');
 const watchRuleFlowDecision = require('./social/watchRuleFlowDecision');
@@ -305,10 +305,14 @@ const schedulerWorker = createSchedulerWorker({
     // (not in schedulerWorker's TRANSIENT_CODES, so it fails permanently rather than retrying
     // against a wallet that will never become eligible by retrying alone).
     if (task.viaOpenSea) {
-      const built = await openSeaService.buildMintTransaction(wallet.chain, task.contract, wallet.address, task.qty || 1);
+      const qty = task.qty || 1;
+      const built = await openSeaService.buildMintTransaction(wallet.chain, task.contract, wallet.address, qty);
       if (!built) {
         throw new ValidationError({ field: 'contractAddress', message: "OpenSea couldn't build a mint for this contract right now -- it may not track this as a drop, or OpenSea is temporarily unavailable" });
       }
+      // Same check executeMintViaOpenSea applies to the manual path -- OpenSea's eligibility
+      // resolution is trusted, the mechanical shape of what it returned still is not.
+      validateOpenSeaMintCall({ built, contractAddress: task.contract, quantity: qty });
       const prepared = { chain: wallet.chain, calldata: built.data, valueWei: BigInt(built.valueWei),
         method: { signature: 'opensea:drops-mint' }, preview: { contractAddress: task.contract, callTarget: built.to } };
       return mintExecution.executePrepared({ userId: task.userId, wallet, prepared, triggerSource: 'scheduled',
@@ -643,7 +647,11 @@ async function executeMint({ wallet, contractAddr, fnName='mint', qty=1, priceET
 // transactionEngine.submit path as executeMint above, so governance ceilings, simulation, and gas
 // ceiling are all still enforced; OpenSea only ever supplies to/data/value. methodSignature is a
 // label for display/error-decoding purposes only, not a real ABI signature this app encoded.
-async function executeMintViaOpenSea({ wallet, contractAddr, chain, built, triggerSource='manual', gasGwei=null, maxGasGwei=null, onPreview }) {
+async function executeMintViaOpenSea({ wallet, contractAddr, chain, quantity, built, triggerSource='manual', gasGwei=null, maxGasGwei=null, onPreview }) {
+  // OpenSea's own eligibility resolution is trusted by design (see buildMintTransaction's own
+  // comment) -- this only checks the mechanical shape of what it handed back actually matches what
+  // was requested, before it gets signed and broadcast with real funds.
+  validateOpenSeaMintCall({ built, contractAddress: contractAddr, quantity });
   const prepared = {
     chain,
     calldata: built.data,
@@ -3422,7 +3430,7 @@ const botCommands = createBotCommandService({
     return intent;
   },
   executeMintViaOpenSea: async ({ userId, wallet, request, built }) => {
-    const intent = await executeMintViaOpenSea({ wallet, contractAddr: request.contractAddress, chain: request.chain, built,
+    const intent = await executeMintViaOpenSea({ wallet, contractAddr: request.contractAddress, chain: request.chain, quantity: request.quantity, built,
       triggerSource: 'manual', gasGwei: request.gasGwei, maxGasGwei: request.maxGasGwei });
     await recordMintActivity({ userId, wallet, quantity: request.quantity, intent, chain: request.chain });
     return intent;
