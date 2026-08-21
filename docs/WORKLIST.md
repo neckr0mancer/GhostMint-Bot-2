@@ -1096,6 +1096,22 @@ handlers (`task:cancel:ask:`/`task:cancel:do:`, not part of any flow) sharing th
 success-screen button, not a full port of Telegram's `tasksMenu`/`taskActions` button surface to
 Discord -- that remains the larger, still-unbuilt Section S gap.
 
+### Follow-up (same day) -- OpenSea-backed scheduling couldn't ask for a quantity ✅
+
+Reported live: "when scheduling for phases, i can't select how many i want to mint." Both
+`flow:scheduleviaopensea` (direct) and `flow:scheduleviaopenseaphase` (picked) called
+`advanceFromTaskQuantity` with a hardcoded `quantity: 1`, unlike `flow:schedulesuggest`'s own
+re-detection branch, which already checks `maxPerWallet > 1` and shows a quantity selector first.
+The OpenSea path simply never carried `maxPerWallet` into its task data at all, so there was nothing
+for it to branch on even if it had checked.
+
+Fixed: `openSeaPhaseTaskData` now threads `maxPerWallet` through from the mint flow's own detected
+value. New `advanceFromTaskDetails` (Discord; Telegram already had one from the regular schedule
+flow, reused as-is) replicates `mintFlowDecision.afterDetails`' shape: `maxPerWallet > 1` shows
+`awaiting_quantity` first, otherwise defaults to 1 same as before. Discord's existing
+`flow:schedulesuggest` handler now calls the same shared helper instead of its own inlined copy of
+the same check, removing a duplicate.
+
 ## Also flagged: "Confirm Scheduled Mint" copy reads like a reminder, not an execution ✅
 
 From the same 2026-08-17 message, and from the then-in-flight Telegram copy-tone pass —

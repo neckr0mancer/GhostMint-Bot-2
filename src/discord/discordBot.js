@@ -401,6 +401,7 @@ function openSeaPhaseTaskData(mintFlowData, stage) {
     priceETH: 0, priceUnknown: false, viaOpenSea: true,
     mintTime: new Date(stage.startTime * 1000).toISOString(),
     name: stage.label || discordMenus.humanizeStageType(stage.stageType),
+    maxPerWallet: mintFlowData.maxPerWallet,
   };
 }
 
@@ -417,6 +418,20 @@ function taskConfirmPayload(taskData, chains) {
 // and no public origin message to neutralize (unlike mint_guided's paste trigger), so this only
 // ever needs to decide between auto-selecting the sole wallet and showing a picker, mirroring
 // Telegram's advanceFromTaskQuantity.
+// A contract allowing more than 1 per wallet asks how many first, mirroring mint_guided's
+// afterDetails and flow:schedulesuggest's own re-detection branch above -- a max of 1 (or unknown)
+// skips straight to advanceFromTaskQuantity with quantity defaulted to 1. Both OpenSea-backed
+// scheduling entry points (flow:scheduleviaopensea direct, flow:scheduleviaopenseaphase:select)
+// route through this now instead of hardcoding quantity:1 unconditionally -- that was the bug
+// reported live: "when scheduling for phases, i can't select how many i want to mint."
+function advanceFromTaskDetails(ctx, respond, platformUserId, userId, taskData) {
+  if (Number(taskData.maxPerWallet) > 1) {
+    ctx.flowState.start('discord', platformUserId, 'task_guided', 'awaiting_quantity', taskData);
+    return respond(discordMenus.mintQuantitySelect(taskData));
+  }
+  return advanceFromTaskQuantity(ctx, respond, platformUserId, userId, { ...taskData, quantity: 1 });
+}
+
 function advanceFromTaskQuantity(ctx, respond, platformUserId, userId, taskData) {
   const { commands, flowState, chains } = ctx;
   const wallets = commands.wallets(userId);
@@ -912,7 +927,7 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         }
         if (!decision.stage) return notYourMintPrompt(interaction);
         const taskData = openSeaPhaseTaskData(flow.data, decision.stage);
-        return advanceFromTaskQuantity(mintCtx, respond, platformUserId, userId, { ...taskData, quantity: 1 });
+        return advanceFromTaskDetails(mintCtx, respond, platformUserId, userId, taskData);
       }
       if (data === 'flow:scheduleviaopenseaphase:select') {
         const flow = flowState.get('discord', platformUserId);
@@ -924,7 +939,7 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         if (wentEphemeral) neutralizeMintOriginMessage(interaction);
         const respond = payload => (wentEphemeral ? interaction.followUp({ ...payload, ephemeral: true }).catch(() => {}) : dcRespond(interaction, payload));
         const taskData = openSeaPhaseTaskData(flow.data, stage);
-        return advanceFromTaskQuantity(mintCtx, respond, platformUserId, userId, { ...taskData, quantity: 1 });
+        return advanceFromTaskDetails(mintCtx, respond, platformUserId, userId, taskData);
       }
       if (data === 'flow:detailsrefresh') {
         const flow = flowState.get('discord', platformUserId);
@@ -1097,11 +1112,7 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
           priceETH: Number(formatEther(BigInt(detected.valueWei))), priceUnknown: false,
           mintTime: new Date(futureStartTime * 1000).toISOString(), maxPerWallet: detected.maxPerWallet,
         };
-        if (Number(detected.maxPerWallet) > 1) {
-          flowState.start('discord', platformUserId, 'task_guided', 'awaiting_quantity', taskData);
-          return respond(discordMenus.mintQuantitySelect(taskData));
-        }
-        return advanceFromTaskQuantity(mintCtx, respond, platformUserId, userId, { ...taskData, quantity: 1 });
+        return advanceFromTaskDetails(mintCtx, respond, platformUserId, userId, taskData);
       }
       if (data === 'flow:taskwallet:select') {
         const flow = flowState.get('discord', platformUserId);

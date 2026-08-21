@@ -322,6 +322,47 @@ test('flow:scheduleviaopensea pre-fills the next stage\'s own opening time AND i
   assert.match(confirm.updates[0].content, /via OpenSea/);
 });
 
+// Live-reported: "when scheduling for phases, i can't select how many i want to mint" --
+// flow:scheduleviaopensea used to hardcode quantity:1 unconditionally, skipping the maxPerWallet
+// check flow:schedulesuggest's own re-detection already applies.
+test('flow:scheduleviaopensea asks for a quantity when the contract allows more than 1 per wallet, instead of hardcoding 1', async () => {
+  const flowState = createFlowStateStore();
+  const created = [];
+  const stage = { uuid: 'n1', label: 'Allowlist', startTime: FUTURE_START, endTime: FUTURE_START + 3600, priceETH: 0.05, maxPerWallet: 1, stageType: 'presale' };
+  const commands = baseCommands({
+    detectMintContract: async () => ({
+      chain: 'ethereum', isSeaDrop: true, priceKnown: false, valueWei: '0',
+      maxSupply: 100, maxPerWallet: 5, startTime: null, endTime: null, collection: null, soldOut: false, displayPrice: null,
+      drop: { isMinting: false, dropType: 'seadrop_v1_erc721', maxSupply: 100, openSeaUrl: null,
+        activeStage: null, nextStage: stage, stages: [stage] },
+    }),
+    createTask: async (userId, input) => { created.push({ userId, input }); return { id: 'task-1', name: input.name, mintTime: input.mintTime, viaOpenSea: input.viaOpenSea }; },
+  });
+  const identity = { resolveOrCreate: async () => 'internal-user' };
+  const ctx = { identity, commands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT };
+
+  const message = mockMessage('0x0000000000000000000000000000000000000001', 'osea-qty-1');
+  await handleMintPasteMessage(ctx, message);
+  const handler = createDiscordInteractionHandler(ctx);
+  const tap = buttonInteraction('flow:scheduleviaopensea', 'osea-qty-1');
+  await handler(tap);
+  assert.equal(flowState.get('discord', 'osea-qty-1').flow, 'task_guided');
+  assert.equal(flowState.get('discord', 'osea-qty-1').step, 'awaiting_quantity', 'maxPerWallet 5 must offer a quantity choice, not silently default to 1');
+  const options = tap.replies[0].components[0].components[0].options;
+  assert.ok(options.some(o => o.value === '5'), 'the max quantity the contract allows must be offered');
+
+  const pick = selectInteraction('flow:mintqty:select', ['3'], 'osea-qty-1');
+  await handler(pick);
+  // Still viaOpenSea with a real name already known -- skips straight to confirm, same as the
+  // single-wallet-no-quantity-step case, never asks to name something already known.
+  assert.equal(flowState.get('discord', 'osea-qty-1').step, 'awaiting_confirm');
+  assert.equal(flowState.get('discord', 'osea-qty-1').data.quantity, 3);
+
+  await handler(buttonInteraction('flow:taskconfirm', 'osea-qty-1'));
+  assert.equal(created.length, 1);
+  assert.equal(created[0].input.quantity, 3, 'the quantity the user actually picked must reach createTask, not a hardcoded 1');
+});
+
 test('flow:scheduleviaopensea is a no-op when the card has no upcoming OpenSea stage, instead of scheduling against nothing', async () => {
   const flowState = createFlowStateStore();
   const created = [];

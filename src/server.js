@@ -1695,6 +1695,7 @@ function openSeaPhaseTaskData(mintFlowData, stage) {
     priceETH: 0, priceUnknown: false, viaOpenSea: true, collection: mintFlowData.collection,
     mintTime: new Date(stage.startTime * 1000).toISOString(),
     name: stage.label || telegramMenus.humanizeStageType(stage.stageType),
+    maxPerWallet: mintFlowData.maxPerWallet,
   };
 }
 
@@ -2634,8 +2635,8 @@ if (BOT_TOKEN) {
       }
       if (!decision.stage) return;
       const taskData = openSeaPhaseTaskData(flow.data, decision.stage);
-      const started = telegramFlowState.start('telegram', chatId, 'task_guided', 'awaiting_wallet', taskData);
-      return advanceFromTaskQuantity(chatId, messageId, userId, started, 1);
+      const started = telegramFlowState.start('telegram', chatId, 'task_guided', 'awaiting_details', taskData);
+      return advanceFromTaskDetails(chatId, messageId, userId, started);
     }
     if (data.startsWith('flow:scheduleviaopenseaphase:')) {
       const flow = telegramFlowState.get('telegram', chatId);
@@ -2644,8 +2645,8 @@ if (BOT_TOKEN) {
       const stage = flow.data.drop?.stages?.[index];
       if (!stage) return;
       const taskData = openSeaPhaseTaskData(flow.data, stage);
-      const started = telegramFlowState.start('telegram', chatId, 'task_guided', 'awaiting_wallet', taskData);
-      return advanceFromTaskQuantity(chatId, messageId, userId, started, 1);
+      const started = telegramFlowState.start('telegram', chatId, 'task_guided', 'awaiting_details', taskData);
+      return advanceFromTaskDetails(chatId, messageId, userId, started);
     }
     if (data === 'flow:detailsrefresh') {
       const flow = telegramFlowState.get('telegram', chatId);
