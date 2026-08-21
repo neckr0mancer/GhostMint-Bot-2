@@ -127,7 +127,7 @@ const RAIL_ICONS={
   History:<svg {...RAIL_ICON_PROPS}><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg>,
   Admin:<svg {...RAIL_ICON_PROPS}><path d="M12 3l7 3v5c0 5-3 8.5-7 10-4-1.5-7-5-7-10V6z"/></svg>,
   Account:<svg {...RAIL_ICON_PROPS}><circle cx="12" cy="8" r="3.6"/><path d="M4.5 20c.8-4 3.8-6 7.5-6s6.7 2 7.5 6"/></svg>,
-  Settings:<svg {...RAIL_ICON_PROPS}><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-2.7 1.1V21a2 2 0 1 1-4 0v-.1A1.6 1.6 0 0 0 7 19.4a1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.6 1.6 0 0 0 3 14.1H3a2 2 0 0 1 0-4h.1A1.6 1.6 0 0 0 4.6 7a1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.6 1.6 0 0 0 9.9 3H10a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 2.7 1.1l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0 1.1 2.7H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1.3z"/></svg>,
+  Settings:<svg {...RAIL_ICON_PROPS}><path d="M3 6h8.6M15.4 6H21"/><circle cx="13.5" cy="6" r="1.9"/><path d="M3 12h4.6M11.4 12H21"/><circle cx="9.5" cy="12" r="1.9"/><path d="M3 18h11.6M18.4 18H21"/><circle cx="16.5" cy="18" r="1.9"/></svg>,
 };
 const CMDK_ICON=<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" xmlns="http://www.w3.org/2000/svg"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>;
 // prototype.css expresses "mobile" as .app[data-m], set by the prototype's own Desktop/Mobile
@@ -347,6 +347,39 @@ function walletCreatedText(wallet){
   return Number.isFinite(at.getTime())?at.toLocaleDateString(undefined,
     {year:'numeric',month:'short',day:'numeric'}):null;
 }
+// One activity event, in history.html's .r shape. The subtitle carries what identifies the event
+// rather than what it already says: the wallet is not repeated (the overlay is already that
+// wallet), so the room goes to the hash, what triggered it, the gas it actually cost, and when.
+//
+// activity rows only ever carry status 'success' or 'fail' (every logActivity call in server.js),
+// but an unknown value is rendered as itself rather than mapped to a wrong word -- a status this
+// does not recognise is not automatically a failure.
+const ACTIVITY_TONES={success:{tone:'ok',label:'Confirmed'},fail:{tone:'bad',label:'Failed'}};
+function ActivityRow({item}){
+  const verdict=ACTIVITY_TONES[item.status]
+    ||{tone:'wn',label:String(item.status||'unknown').replace(/^./,value=>value.toUpperCase())};
+  // actualNetworkCostWei is the gas that was really paid, not an estimate, and it is the one figure
+  // a wallet's own history is asked for most. Absent on anything that never broadcast.
+  const gas=item.actualNetworkCostWei===null||item.actualNetworkCostWei===undefined
+    ?null:`${Number(weiToEthDisplay(item.actualNetworkCostWei)).toFixed(6)} ETH gas`;
+  const details=[item.txHash?shortHex(item.txHash):null,item.triggerSource,gas,
+    item.time?relativeTime(item.time):null].filter(Boolean).join(' · ');
+  const href=item.txHash&&item.explorer?`${item.explorer}${item.txHash}`:null;
+  return <div className="r">
+    <div className="rm">
+      <div className="rt">{item.title}</div>
+      {details&&<div className="rs mono">{details}</div>}
+    </div>
+    <div className="rv" style={{display:'flex',alignItems:'center',gap:'7px'}}>
+      {/* noreferrer as well as noopener: the explorer does not need to be told which page sent
+          someone to a transaction of theirs. */}
+      {href&&<a className="ico-btn" href={href} target="_blank" rel="noopener noreferrer"
+        aria-label={`View ${shortHex(item.txHash)} on the block explorer`}
+        title="View on explorer">{EXTERNAL_ICON}</a>}
+      <span className={`p ${verdict.tone}`}>{verdict.label}</span>
+    </div>
+  </div>;
+}
 function WalletDetails({wallet,records,windowKey,onWindow,onRemove,onClose}){
   const [tab,setTab]=useState('summary');
   // Activity is scoped server-side by session and searched by wallet label. It is only fetched
@@ -397,25 +430,35 @@ function WalletDetails({wallet,records,windowKey,onWindow,onRemove,onClose}){
           by hand moves one and not the other.</div></div>
     </div>}
 
-    {tab==='activity'&&<>
-      <Notice error={loadError(activity,'Could not load this wallet activity.')}/>
-      {activity.data===null&&!activity.error?<Skeleton rows={3}/>:null}
-      {/* The server's search matches title OR walletLabel, so a row could arrive because the
-          label appears in some other wallet's title. Matching walletLabel exactly here makes the
-          list mean what its heading says. The timestamp field is `time`, not `occurredAt`. */}
-      {(()=>{
-        const rows=(activity.data?.items||[]).filter(item=>item.walletLabel===wallet.label);
-        if(!activity.data||activity.error)return null;
-        return rows.length
-          ?<div className="sober"><table className="led"><tbody>
-            {rows.map(item=><tr key={item.id}>
-              <td><span className={`p ${item.status==='success'?'ok':item.status==='fail'?'bad':''}`}
-                style={{marginRight:'7px'}}>{item.status}</span>{item.title}</td>
-              <td>{item.time?new Date(item.time).toLocaleDateString():''}</td></tr>)}
-          </tbody></table></div>
-          :<Empty text="Nothing recorded against this wallet yet. Mints, sends and trigger fires land here."/>;
-      })()}
-    </>}
+    {tab==='activity'&&(()=>{
+      // history.html's row vocabulary -- .r / .rm / .rt / .rs / .rv -- rather than the two-column
+      // ledger this was. A ledger is for figures that line up; an event has a title, a set of
+      // identifying details, and an outcome, which is exactly what .r lays out.
+      //
+      // The server's search matches title OR walletLabel, so a row could arrive because this label
+      // appears in some other wallet's title. Matching walletLabel exactly makes the list mean what
+      // its heading says.
+      const rows=(activity.data?.items||[]).filter(item=>item.walletLabel===wallet.label);
+      const loading=activity.data===null&&!activity.error;
+      return <>
+        <Notice error={activity.error?{title:'Could not load this wallet activity.',
+          detail:'The wallet and its balances are unaffected — this is a read failure only.',
+          code:`${activity.status||500} · Request failed safely`,onRetry:activity.load}:null}/>
+        {loading&&<div className="card" aria-busy="true">
+          {[0,1,2,3].map(index=><div className="sk row" key={index}></div>)}</div>}
+        {!loading&&!activity.error&&rows.length>0&&<div className="card">
+          {rows.map(item=><ActivityRow key={item.id} item={item}/>)}</div>}
+        {!loading&&!activity.error&&rows.length===0&&<div className="card"><div className="emp">
+          <div className="ei">{CLOCK_ICON_LG}</div>
+          <h3>Nothing yet</h3>
+          <p>Mints, sends and trigger fires for this wallet appear here. An empty list is evidence
+            that nothing has happened — not an error.</p>
+        </div></div>}
+        {rows.length>0&&<p style={{fontSize:'11px',color:'var(--faint)',marginTop:'9px'}}>
+          The {rows.length===1?'most recent event':`${rows.length} most recent events`} for this
+          wallet. The full feed, across every wallet, is on <b>History</b>.</p>}
+      </>;
+    })()}
 
     {tab==='performance'&&<div className="g">
       <div className="seg" role="group" aria-label="Performance window">
@@ -751,6 +794,7 @@ const WALLET_EMPTY_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColo
 const TREND_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><path d="M3 17l5-6 4 3 5-8"/></svg>;
 const EXPAND_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><path d="M9 3H3v6M15 21h6v-6"/><path d="M3 3l7 7M21 21l-7-7"/></svg>;
 const PLUS_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><path d="M12 5v14M5 12h14"/></svg>;
+const EXTERNAL_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M14 4h6v6"/><path d="M20 4l-8.5 8.5"/><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg>;
 const CROSS_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><path d="M18 6 6 18M6 6l12 12"/></svg>;
 const LOCK_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><rect x="4" y="10.5" width="16" height="10.5" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/></svg>;
 function shortHex(value){const v=String(value||"");return v.length>12?`${v.slice(0,6)}…${v.slice(-4)}`:v;}
