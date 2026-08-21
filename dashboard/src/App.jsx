@@ -89,6 +89,13 @@ const CHAIN_CHECK_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor
 const SOLANA_ICON=<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 2 20 7v10l-8 5-8-5V7z" fill="none" stroke="currentColor" strokeWidth="1.8"/></svg>;
 const BOLT_PATH="M13 2 4 14h6l-1 8 9-12h-6z";
 const ICON_PROPS={viewBox:"0 0 24 24",fill:"none",stroke:"currentColor",strokeWidth:"1.8",strokeLinecap:"round",strokeLinejoin:"round",xmlns:"http://www.w3.org/2000/svg"};
+// Carried by the Paused pill alone. Active and Failing already read as themselves through colour
+// -- green and red -- but Paused is a quiet grey that scans as "nothing to see", which is the
+// one state where that is wrong: it means the trigger is not running.
+const PAUSED_GLYPH=<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"
+  xmlns="http://www.w3.org/2000/svg"><rect x="7" y="6" width="3.4" height="12" rx="1"/><rect x="13.6" y="6" width="3.4" height="12" rx="1"/></svg>;
+const SEARCH_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9"
+  strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>;
 const NAV_ICONS={
   Home:<svg {...ICON_PROPS}><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>,
   Wallets:<svg {...ICON_PROPS}><rect x="3" y="6" width="18" height="13" rx="2.5"/><path d="M3 10h18"/><circle cx="16.5" cy="14.5" r="1" fill="currentColor" stroke="none"/></svg>,
@@ -972,27 +979,201 @@ function jsonForm(event){event.preventDefault();const form=event.currentTarget;r
 // policyFor: which card has its policy expanded. A policy configures an existing target, so it
 // now lives ON that target's card rather than on a page of its own (brief §2). Same PolicyEditor,
 // same routes, new place -- including the bypass challenge, which keeps its explicit CONFIRM step.
-function Snipers(){const listing=useLoad('/api/snipers',[],'snipers.changed');const [editing,setEditing]=useState(null);const [query,setQuery]=useState('');const [policyFor,setPolicyFor]=useState(null);async function save(event){try{const {form,value}=jsonForm(event);const wasEditing=editing;await api(editing?`/api/snipers/${editing}`:'/api/snipers',{method:editing?'PUT':'POST',body:JSON.stringify(value)});form.reset();setEditing(null);notify(wasEditing?'Sniper updated.':'Sniper created.',{type:'success'});listing.load();}catch(value){notify(value.message,{type:'error'});}}async function remove(id){if(!await confirmDialog('Remove this post-confirmation copy sniper?'))return;try{await api(`/api/snipers/${id}`,{method:'DELETE',body:JSON.stringify({confirmation:'CONFIRM'})});listing.load();}catch(value){notify(value.message,{type:'error'});}}const normalized=query.trim().toLowerCase();const filtered=listing.data?{...listing.data,items:normalized?listing.data.items.filter(item=>[item.label,item.chain,item.walletLabel].filter(Boolean).some(value=>String(value).toLowerCase().includes(normalized))):listing.data.items}:null;return <><p className="page-lead">Copies confirmed wallet transactions after their confirmation threshold. This is not mempool front-running.</p><Notice error={loadError(listing,'Could not load your triggers.')}/><div className="page-toolbar"><label className="page-search">Find a sniper<input type="search" value={query} placeholder="Label, chain, wallet…" onChange={e=>setQuery(e.target.value)}/></label></div><Form className="form-json" title={editing?'Edit sniper patch':'Create sniper'} note="The same M10 validation and M7a ceilings used by Telegram and Discord apply here." onSubmit={save}><label>Configuration JSON<textarea name="json" required defaultValue={editing?'{}':'{"label":"copy","targetAddress":"0x0000000000000000000000000000000000000001","chain":"ethereum","walletLabel":"wallet","maxValueETH":0.01,"maxGasGwei":50,"dailySpendingCapETH":0.05,"cooldownMs":60000,"maxAttempts":3}'}/></label><button className="b p">{editing?'Apply validated patch':'Create sniper'}</button></Form>{listing.data===null?<Skeleton/>:<div className="card-grid sniper-grid">{filtered.items.map(item=>{const recent=listing.data.events.filter(event=>event.sniperId===item.id)[0];return <article className="card" key={item.id}><StatusPill status={recent?.state||'no events'}/><h2>{item.label}</h2><p className="warning">Post-confirmation copy; not front-running.</p><p>{item.chain} · wallet {item.walletLabel}</p><p>Max {item.maxValueETH} ETH · Gas {item.maxGasGwei} gwei · Daily {item.dailySpendingCapETH} ETH</p><p>Cooldown {item.cooldownMs} ms · Attempts {item.maxAttempts}</p><p>Allow: {item.contractAllowlist.join(', ')||'any'}<br/>Deny: {item.contractDenylist.join(', ')||'none'}</p><div className="br"><button className="b g sm" onClick={()=>setEditing(item.id)}>Edit</button><button className="b g sm" aria-expanded={policyFor===item.id} onClick={()=>setPolicyFor(policyFor===item.id?null:item.id)}>{policyFor===item.id?'Hide policy':'Policy'}</button><button className="b d sm" onClick={()=>remove(item.id)}>Remove</button></div>{policyFor===item.id&&<PolicyEditor target={{id:item.id,label:item.label,type:'sniper'}}/>}</article>})}{filtered.items.length===0&&<Empty text={normalized?'No snipers match this search.':'No snipers yet. Create one above to start post-confirmation copying.'}/>}</div>}</>}
-function WatchRules(){const listing=useLoad('/api/watch-rules',[],'watchrules.changed');const [editing,setEditing]=useState(null);const [query,setQuery]=useState('');const [policyFor,setPolicyFor]=useState(null);async function save(event){try{const {form,value}=jsonForm(event);const wasEditing=editing;await api(editing?`/api/watch-rules/${editing}`:'/api/watch-rules',{method:editing?'PUT':'POST',body:JSON.stringify(value)});form.reset();setEditing(null);notify(wasEditing?'Watch rule updated.':'Watch rule created.',{type:'success'});listing.load();}catch(value){notify(value.message,{type:'error'});}}async function action(id,name){try{await api(`/api/watch-rules/${id}${name==='disable'?'/disable':''}`,{method:name==='remove'?'DELETE':'POST',body:JSON.stringify(name==='remove'?{confirmation:'CONFIRM'}:{})});listing.load();}catch(value){notify(value.message,{type:'error'});}}const normalized=query.trim().toLowerCase();const filtered=listing.data?{...listing.data,items:normalized?listing.data.items.filter(item=>[item.name,item.type,item.method].filter(Boolean).some(value=>String(value).toLowerCase().includes(normalized))):listing.data.items}:null;return <><p className="page-lead">Manage adapter-backed Twitter/X and Discord source monitoring.</p><Notice error={loadError(listing,'Could not load your triggers.')}/><div className="page-toolbar"><label className="page-search">Find a watch rule<input type="search" value={query} placeholder="Name, type, method…" onChange={e=>setQuery(e.target.value)}/></label></div><Form className="form-json" title={editing?'Edit watch rule patch':'Create watch rule'} onSubmit={save}><label>Configuration JSON<textarea name="json" required defaultValue={editing?'{}':'{"name":"announcements","type":"discord_channel","method":"scraper","config":{"channelId":"123","keywords":["mint"],"sourceUrl":"https://example.com/feed"}}'}/></label><button className="b p">{editing?'Apply validated patch':'Create rule'}</button></Form>{listing.data===null?<Skeleton/>:<div className="card-grid watch-grid">{filtered.items.map(item=>{const events=listing.data.events.filter(event=>event.matchedRuleIds.includes(item.id)).slice(0,3);return <article className="card" key={item.id}><StatusPill status={item.enabled?'enabled':'disabled'}/><h2>{item.name}</h2><p>{item.type} · {item.method}</p><p className={item.consecutiveFailures?'warning':''}>Adapter health: {item.consecutiveFailures?`failing (${item.consecutiveFailures} consecutive)`:'healthy'} </p>{events.map(event=><p key={event.id}><code>{event.address}</code><br/>{new Date(event.detectedAt).toLocaleString()}</p>)}<div className="br"><button className="b g sm" onClick={()=>setEditing(item.id)}>Edit</button><button className="b g sm" onClick={()=>action(item.id,'disable')}>Disable</button><button className="b g sm" aria-expanded={policyFor===item.id} onClick={()=>setPolicyFor(policyFor===item.id?null:item.id)}>{policyFor===item.id?'Hide policy':'Policy'}</button><button className="b d sm" onClick={async()=>{if(await confirmDialog('Remove this watch rule?'))action(item.id,'remove');}}>Remove</button></div>{policyFor===item.id&&<PolicyEditor target={{id:item.id,label:item.name,type:'social_rule'}}/>}</article>})}{filtered.items.length===0&&<Empty text={normalized?'No watch rules match this search.':'No watch rules yet. Create one above to start social-trigger detection.'}/>}</div>}</>}
-function PolicyEditor({target,onChanged,highlighted}){const details=useLoad(`/api/targets/${target.id}?type=${target.type}`,[target.id,target.type]);const presets=useLoad('/api/mode-presets');const [challenge,setChallenge]=useState(null);async function update(event){event.preventDefault();const value=Object.fromEntries(new FormData(event.currentTarget));try{await api(`/api/targets/${target.id}`,{method:'PUT',body:JSON.stringify({...value,targetType:target.type})});notify('Policy saved.',{type:'success'});details.load();onChanged?.();}catch(x){notify(x.message,{type:'error'});}}async function bypass(event){event.preventDefault();try{setChallenge(await api(`/api/targets/${target.id}/bypass`,{method:'POST',body:JSON.stringify({targetType:target.type,dontAskAgain:new FormData(event.currentTarget).get('dontAskAgain')==='on'})}));}catch(x){notify(x.message,{type:'error'});}}async function confirmBypass(event){event.preventDefault();try{await api('/api/targets/bypass/confirm',{method:'POST',body:JSON.stringify({challengeId:challenge.challengeId,confirmation:new FormData(event.currentTarget).get('confirmation')})});setChallenge(null);notify('Bypass confirmed.',{type:'success'});details.load();}catch(x){notify(x.message,{type:'error'});}}async function preset(key){try{const result=await api(`/api/targets/${target.id}/preset`,{method:'POST',body:JSON.stringify({targetType:target.type,presetKey:key})});if(result.requiresConfirmation)setChallenge(result);else notify('Preset applied.',{type:'success'});details.load();}catch(x){notify(x.message,{type:'error'});}}const value=details.data;return <article className={`panel${highlighted?' policy-highlighted':''}`}><h2>{target.label}</h2><Notice error={loadError(details,'Could not load this target’s policy.')}/>{value&&<><p>Effective ceiling (read only): {value.governance.maxTransactionValueWei} wei/tx, {value.governance.dailySpendingBudgetWei} wei/day, {value.governance.gasCeilingGwei} gwei gas.</p><Form title="Trigger behavior" onSubmit={update}><input type="hidden" name="targetType" value={target.type}/><Select name="blockchainTrigger" label="Blockchain trigger" options={['auto','manual']} defaultValue={value.policy.blockchainTrigger}/><Select name="socialTrigger" label="Social trigger" options={['auto','manual']} defaultValue={value.policy.socialTrigger}/><Select name="humanVerification" label="Verification" options={['on']} defaultValue="on"/><button className="b p">Save policy</button></Form><div className="br">{presets.data?.map(p=><button className="b sm" key={p.key} onClick={()=>preset(p.key)}>{p.displayName}</button>)}</div><form className="bypass" onSubmit={bypass}><label><input type="checkbox" name="dontAskAgain"/> Don&apos;t ask again for this target only</label><button className="b d">Request bypass</button></form>{challenge?.requiresConfirmation&&<form className="warning-box" onSubmit={confirmBypass}><strong>{challenge.warning}</strong><p>Type CONFIRM exactly to enable the highest-risk configuration.</p><input name="confirmation" autoComplete="off"/><button className="b d">Confirm bypass</button></form>}</>}</article>}
+function Snipers({formOnly=false}={}){const listing=useLoad('/api/snipers',[],'snipers.changed');const [editing,setEditing]=useState(null);const [query,setQuery]=useState('');const [policyFor,setPolicyFor]=useState(null);async function save(event){try{const {form,value}=jsonForm(event);const wasEditing=editing;await api(editing?`/api/snipers/${editing}`:'/api/snipers',{method:editing?'PUT':'POST',body:JSON.stringify(value)});form.reset();setEditing(null);notify(wasEditing?'Sniper updated.':'Sniper created.',{type:'success'});listing.load();}catch(value){notify(value.message,{type:'error'});}}async function remove(id){if(!await confirmDialog('Remove this post-confirmation copy sniper?'))return;try{await api(`/api/snipers/${id}`,{method:'DELETE',body:JSON.stringify({confirmation:'CONFIRM'})});listing.load();}catch(value){notify(value.message,{type:'error'});}}const normalized=query.trim().toLowerCase();const filtered=listing.data?{...listing.data,items:normalized?listing.data.items.filter(item=>[item.label,item.chain,item.walletLabel].filter(Boolean).some(value=>String(value).toLowerCase().includes(normalized))):listing.data.items}:null;return <>{!formOnly&&<><p className="page-lead">Copies confirmed wallet transactions after their confirmation threshold. This is not mempool front-running.</p><Notice error={loadError(listing,'Could not load your triggers.')}/><div className="page-toolbar"><label className="page-search">Find a sniper<input type="search" value={query} placeholder="Label, chain, wallet…" onChange={e=>setQuery(e.target.value)}/></label></div></>}<Form className="form-json" title={editing?'Edit sniper patch':'Create sniper'} note="The same M10 validation and M7a ceilings used by Telegram and Discord apply here." onSubmit={save}><label>Configuration JSON<textarea name="json" required defaultValue={editing?'{}':'{"label":"copy","targetAddress":"0x0000000000000000000000000000000000000001","chain":"ethereum","walletLabel":"wallet","maxValueETH":0.01,"maxGasGwei":50,"dailySpendingCapETH":0.05,"cooldownMs":60000,"maxAttempts":3}'}/></label><button className="b p">{editing?'Apply validated patch':'Create sniper'}</button></Form>{!formOnly&&(listing.data===null?<Skeleton/>:<div className="card-grid sniper-grid">{filtered.items.map(item=>{const recent=listing.data.events.filter(event=>event.sniperId===item.id)[0];return <article className="card" key={item.id}><StatusPill status={recent?.state||'no events'}/><h2>{item.label}</h2><p className="warning">Post-confirmation copy; not front-running.</p><p>{item.chain} · wallet {item.walletLabel}</p><p>Max {item.maxValueETH} ETH · Gas {item.maxGasGwei} gwei · Daily {item.dailySpendingCapETH} ETH</p><p>Cooldown {item.cooldownMs} ms · Attempts {item.maxAttempts}</p><p>Allow: {item.contractAllowlist.join(', ')||'any'}<br/>Deny: {item.contractDenylist.join(', ')||'none'}</p><div className="br"><button className="b g sm" onClick={()=>setEditing(item.id)}>Edit</button><button className="b g sm" aria-expanded={policyFor===item.id} onClick={()=>setPolicyFor(policyFor===item.id?null:item.id)}>{policyFor===item.id?'Hide policy':'Policy'}</button><button className="b d sm" onClick={()=>remove(item.id)}>Remove</button></div>{policyFor===item.id&&<PolicyEditor target={{id:item.id,label:item.label,type:'sniper'}}/>}</article>})}{filtered.items.length===0&&<Empty text={normalized?'No snipers match this search.':'No snipers yet. Create one above to start post-confirmation copying.'}/>}</div>)}</>}
+function WatchRules({formOnly=false}={}){const listing=useLoad('/api/watch-rules',[],'watchrules.changed');const [editing,setEditing]=useState(null);const [query,setQuery]=useState('');const [policyFor,setPolicyFor]=useState(null);async function save(event){try{const {form,value}=jsonForm(event);const wasEditing=editing;await api(editing?`/api/watch-rules/${editing}`:'/api/watch-rules',{method:editing?'PUT':'POST',body:JSON.stringify(value)});form.reset();setEditing(null);notify(wasEditing?'Watch rule updated.':'Watch rule created.',{type:'success'});listing.load();}catch(value){notify(value.message,{type:'error'});}}async function action(id,name){try{await api(`/api/watch-rules/${id}${name==='disable'?'/disable':''}`,{method:name==='remove'?'DELETE':'POST',body:JSON.stringify(name==='remove'?{confirmation:'CONFIRM'}:{})});listing.load();}catch(value){notify(value.message,{type:'error'});}}const normalized=query.trim().toLowerCase();const filtered=listing.data?{...listing.data,items:normalized?listing.data.items.filter(item=>[item.name,item.type,item.method].filter(Boolean).some(value=>String(value).toLowerCase().includes(normalized))):listing.data.items}:null;return <>{!formOnly&&<><p className="page-lead">Manage adapter-backed Twitter/X and Discord source monitoring.</p><Notice error={loadError(listing,'Could not load your triggers.')}/><div className="page-toolbar"><label className="page-search">Find a watch rule<input type="search" value={query} placeholder="Name, type, method…" onChange={e=>setQuery(e.target.value)}/></label></div></>}<Form className="form-json" title={editing?'Edit watch rule patch':'Create watch rule'} onSubmit={save}><label>Configuration JSON<textarea name="json" required defaultValue={editing?'{}':'{"name":"announcements","type":"discord_channel","method":"scraper","config":{"channelId":"123","keywords":["mint"],"sourceUrl":"https://example.com/feed"}}'}/></label><button className="b p">{editing?'Apply validated patch':'Create rule'}</button></Form>{!formOnly&&(listing.data===null?<Skeleton/>:<div className="card-grid watch-grid">{filtered.items.map(item=>{const events=listing.data.events.filter(event=>event.matchedRuleIds.includes(item.id)).slice(0,3);return <article className="card" key={item.id}><StatusPill status={item.enabled?'enabled':'disabled'}/><h2>{item.name}</h2><p>{item.type} · {item.method}</p><p className={item.consecutiveFailures?'warning':''}>Adapter health: {item.consecutiveFailures?`failing (${item.consecutiveFailures} consecutive)`:'healthy'} </p>{events.map(event=><p key={event.id}><code>{event.address}</code><br/>{new Date(event.detectedAt).toLocaleString()}</p>)}<div className="br"><button className="b g sm" onClick={()=>setEditing(item.id)}>Edit</button><button className="b g sm" onClick={()=>action(item.id,'disable')}>Disable</button><button className="b g sm" aria-expanded={policyFor===item.id} onClick={()=>setPolicyFor(policyFor===item.id?null:item.id)}>{policyFor===item.id?'Hide policy':'Policy'}</button><button className="b d sm" onClick={async()=>{if(await confirmDialog('Remove this watch rule?'))action(item.id,'remove');}}>Remove</button></div>{policyFor===item.id&&<PolicyEditor target={{id:item.id,label:item.name,type:'social_rule'}}/>}</article>})}{filtered.items.length===0&&<Empty text={normalized?'No watch rules match this search.':'No watch rules yet. Create one above to start social-trigger detection.'}/>}</div>)}</>}
+// Laid out as auto.html's at-pol panel: a .split with the policy form on the left and, on the
+// right, a read-only Human verification table above the bypass challenge.
+//
+// What a target policy IS, and is not. It answers one question per trigger -- when this fires, what
+// happens: does it go automatically or wait for you (blockchainTrigger / socialTrigger), which
+// wallet pays, and which saved Mint preset to use. It is NOT where spend or gas limits live; the
+// prototype's own note says so and is reproduced verbatim below, because this is the distinction
+// users get wrong. Ceilings belong to the transaction engine and the governance tier, and the
+// account-wide Degen/Fast/Cautious/Normie choice belongs to Settings > Transaction mode.
+//
+// The mode preset select stays, and is NOT a duplicate of that Settings control: applyPreset()
+// stamps modePresetKey onto THIS target's policy, so it means "apply that tier's stance to this one
+// trigger". It is a select in the same grid rather than a row of loose buttons, which is what made
+// the panel read as a second control panel.
+//
+// Verification is deliberately read-only. Turning it off is the one change that lets funds move
+// with no human check, so it goes through the explicit challenge rather than a dropdown.
+function PolicyEditor({target,onChanged,highlighted}){
+  const details=useLoad(`/api/targets/${target.id}?type=${target.type}`,[target.id,target.type]);
+  const modes=useLoad('/api/mode-presets');
+  const wallets=useLoad('/api/wallets',[],'wallets.changed');
+  const mintPresets=useLoad('/api/mint-presets',[],'presets.changed');
+  const [challenge,setChallenge]=useState(null);
+  const [busy,setBusy]=useState(false);
+  const value=details.data;
+
+  async function update(event){
+    event.preventDefault();
+    const form=new FormData(event.currentTarget);
+    const body={targetType:target.type};
+    for(const [key,entry] of form.entries())if(entry!=='')body[key]=entry;
+    try{
+      await api(`/api/targets/${target.id}`,{method:'PUT',body:JSON.stringify(body)});
+      notify('Policy saved.',{type:'success'});details.load();onChanged?.();
+    }catch(error){notify(error.message,{type:'error'});}
+  }
+  async function applyMode(key){
+    if(!key)return;
+    setBusy(true);
+    try{
+      const result=await api(`/api/targets/${target.id}/preset`,
+        {method:'POST',body:JSON.stringify({targetType:target.type,presetKey:key})});
+      if(result.requiresConfirmation)setChallenge(result);
+      else notify('Mode preset applied to this target.',{type:'success'});
+      details.load();
+    }catch(error){notify(error.message,{type:'error'});}
+    finally{setBusy(false);}
+  }
+  async function requestBypass(event){
+    event.preventDefault();
+    try{
+      setChallenge(await api(`/api/targets/${target.id}/bypass`,{method:'POST',
+        body:JSON.stringify({targetType:target.type,
+          dontAskAgain:new FormData(event.currentTarget).get('dontAskAgain')==='on'})}));
+    }catch(error){notify(error.message,{type:'error'});}
+  }
+  async function confirmBypass(event){
+    event.preventDefault();
+    try{
+      await api('/api/targets/bypass/confirm',{method:'POST',body:JSON.stringify({
+        challengeId:challenge.challengeId,
+        confirmation:new FormData(event.currentTarget).get('confirmation')})});
+      setChallenge(null);notify('Bypass confirmed.',{type:'success'});details.load();
+    }catch(error){notify(error.message,{type:'error'});}
+  }
+
+  const social=target.type==='social_rule';
+  const verification=value?.policy?.humanVerification||'on';
+  return <div className="split">
+    <div className={`card${highlighted?' policy-highlighted':''}`}>
+      <div className="ch"><h2>{target.label} · policy</h2></div>
+      <Notice error={loadError(details,'Could not load this target policy.')}/>
+      {details.data===null&&!details.error?<Skeleton rows={2}/>:null}
+      {value&&<form onSubmit={update}>
+        <div className="g gm2 g2" style={{marginBottom:'11px'}}>
+          <label className="fl"><span>Blockchain trigger</span>
+            <select className="in" name="blockchainTrigger" defaultValue={value.policy.blockchainTrigger||'manual'}>
+              <option value="auto">Auto</option><option value="manual">Manual</option></select></label>
+          <label className="fl"><span>Social trigger</span>
+            <select className="in" name="socialTrigger" defaultValue={value.policy.socialTrigger||'manual'}>
+              <option value="manual">Manual</option><option value="auto">Auto</option></select></label>
+          <label className="fl"><span>Wallet that pays{social?'':' · optional'}</span>
+            <select className="in" name="walletLabel" required={social}
+              defaultValue={value.policy.walletLabel||(social?(wallets.data||[])[0]?.label||'':'')}>
+              {!social&&<option value="">This sniper’s own wallet</option>}
+              {(wallets.data||[]).map(item=><option key={item.label} value={item.label}>{item.label}</option>)}</select></label>
+          <label className="fl"><span>Mint preset{social?'':' · optional'}</span>
+            <select className="in" name="mintPresetName" required={social}
+              defaultValue={value.policy.mintPresetName||''}>
+              {!social&&<option value="">Auto — use the contract as detected</option>}
+              {(mintPresets.data||[]).map(item=><option key={item.name} value={item.name}>{item.name}</option>)}</select></label>
+        </div>
+        {social&&(!value.policy.walletLabel||!value.policy.mintPresetName)&&
+          <div className="nt w" style={{marginBottom:'11px'}}>{WARN_TRIANGLE_ICON}
+            <div>This rule cannot mint yet. A social trigger has no wallet of its own, so it needs
+              both a wallet and a mint preset — without them it fails when it fires, not now.</div></div>}
+        <div className="nt i">{INFO_ICON}
+          <div>A target policy cannot contain spend or gas ceilings. Those stay with the transaction
+            engine and your governance tier.</div></div>
+        <div className="br" style={{marginTop:'11px'}}><button className="b p sm">Save policy</button></div>
+      </form>}
+      {value&&<div className="sober" style={{marginTop:'11px'}}>
+        <div className="sh">Transaction mode</div>
+        <table className="led"><tbody>
+          <tr><td>Applies here</td><td>{value.governance?.preset?.displayName||'Normie'}</td></tr>
+          <tr className="tot"><td>Change it</td><td>Settings · Transaction mode</td></tr>
+        </tbody></table></div>}
+    </div>
+    <div className="g">
+      <div className="sober"><div className="sh">Human verification</div>
+        <table className="led"><tbody>
+          <tr><td>Current</td><td>{verification==='bypassed'
+            ?<span style={{color:'var(--warn-text)'}}>Bypassed</span>:'On'}</td></tr>
+          <tr><td>Blockchain-auto</td><td>Does not force verification</td></tr>
+          <tr><td>Social-auto</td><td>Verification on by default</td></tr>
+          <tr className="tot"><td>Bypass</td><td>Requires an explicit challenge</td></tr>
+        </tbody></table></div>
+      {challenge
+        ?<div className="chal">
+           <div className="chal-h">{WARN_TRIANGLE_ICON}Highest-risk configuration</div>
+           <div className="chal-b">
+             <p>Matching triggers will execute <b>immediately, with no manual check</b>. Funds can
+               move without you seeing the transaction first.</p>
+             <div className="cid mono">Challenge {challenge.challengeId}</div>
+             <form onSubmit={confirmBypass}>
+               <label className="fl" style={{marginBottom:'11px'}}>
+                 <span>Type <b>CONFIRM</b> exactly to enable</span>
+                 <input className="in mono" name="confirmation" placeholder="CONFIRM"/></label>
+               <div className="br"><button className="b d sm">Enable bypass</button>
+                 <button type="button" className="b g sm" onClick={()=>setChallenge(null)}>Cancel</button></div>
+             </form>
+           </div>
+         </div>
+        :verification!=='bypassed'&&<form onSubmit={requestBypass}>
+           <label style={{display:'flex',gap:'8px',alignItems:'flex-start',fontSize:'12px',
+             color:'var(--muted)',marginBottom:'12px'}}>
+             <input type="checkbox" name="dontAskAgain" style={{minHeight:'auto',width:'16px',height:'16px',marginTop:'2px'}}/>
+             <span>Do not ask again <b>for this target only</b>. Reset or removal clears this.</span></label>
+           <button className="b g sm">Request bypass</button>
+         </form>}
+    </div>
+  </div>;
+}
+
 // `target` arrives from a /dashboard/target-policies/:id deep link, rewritten to
 // ?target=:id. A bookmark that pointed at one policy still lands on that policy: the matching
 // card is rendered first and marked, rather than the user being dropped into an unordered grid
 // and left to find it. An id that no longer exists degrades to the plain list.
-function TargetPolicies({target}){
+// ONE policy form with a target picker, not one form per target. With four triggers the old shape
+// rendered four identical forms down the page, which is what made this tab read as noise. auto.html
+// shows a single policy card too -- "Copy 0x8f2a…1d90 · policy" -- so this is the prototype's own
+// shape as well as the calmer one. Picking a target refills every field from that target's policy.
+//
+// This is also what the Edit button on a trigger card now means: it deep-links here with that
+// target selected, rather than being a second editor somewhere else.
+// Same shape as consumePendingMintPrefill: a module-level handoff for a same-tab SPA navigation,
+// which go() does not carry a target through. Read once, so returning to the tab later does not
+// silently re-select a trigger the user has since moved on from.
+let pendingPolicyTarget=null;
+function openPolicyFor(id){pendingPolicyTarget=id;}
+function consumePendingPolicyTarget(){const value=pendingPolicyTarget;pendingPolicyTarget=null;return value;}
+function TargetPolicies({target,go}){
   const snipers=useLoad('/api/snipers',[],'snipers.changed');
   const rules=useLoad('/api/watch-rules',[],'watchrules.changed');
-  const all=[...(snipers.data?.items||[]).map(x=>({id:x.id,label:x.label,type:'sniper'})),...(rules.data?.items||[]).map(x=>({id:x.id,label:x.name,type:'social_rule'}))];
-  const targets=target?[...all.filter(item=>item.id===target),...all.filter(item=>item.id!==target)]:all;
-  const missing=Boolean(target)&&!all.some(item=>item.id===target)&&snipers.data!==null&&rules.data!==null;
+  const all=[
+    ...(snipers.data?.items||[]).map(item=>({id:item.id,label:item.label,type:'sniper'})),
+    ...(rules.data?.items||[]).map(item=>({id:item.id,label:item.name,type:'social_rule'})),
+  ];
+  const [chosen,setChosen]=useState(()=>consumePendingPolicyTarget());
+  const selected=all.find(item=>item.id===(chosen||target))||all[0]||null;
+  const loading=(snipers.data===null&&!snipers.error)||(rules.data===null&&!rules.error);
+  const missing=Boolean(target)&&!loading&&!all.some(item=>item.id===target);
   return <>
-    <p className="eyebrow">Per-target safety — trigger modes, verification, presets, and read-only effective governance ceilings.</p>
-    {missing&&<Notice error={`No target matches ${target}. It may have been removed. Showing all targets instead.`}/>}
-    {snipers.data!==null&&rules.data!==null&&all.length===0
+    <p className="eyebrow">Per-target safety — what happens when a trigger fires. Spend and gas
+      ceilings are not set here; they belong to your transaction mode and governance tier.</p>
+    <Notice error={loadError(snipers,'Could not load your triggers.')||loadError(rules,'Could not load your triggers.')}/>
+    {missing&&<Notice error={`No target matches ${target}. It may have been removed.`}/>}
+    {loading?<Skeleton rows={2}/>:null}
+    {!loading&&!snipers.error&&!rules.error&&all.length===0
       &&<Empty text="No triggers yet. Create a sniper or a social rule first — a policy configures an existing target, it does not create one."/>}
-    <div className="policy-grid">{targets.map(item=><PolicyEditor key={`${item.type}:${item.id}`} target={item} highlighted={item.id===target}/>)}</div>
+    {selected&&<>
+      <label className="fl" style={{maxWidth:'420px',marginBottom:'12px'}}>
+        <span>Target</span>
+        <select className="in" value={selected.id} onChange={event=>setChosen(event.target.value)}>
+          {all.map(item=><option key={`${item.type}:${item.id}`} value={item.id}>
+            {item.label} · {item.type==='sniper'?'copy sniper':'social rule'}</option>)}
+        </select>
+      </label>
+      <PolicyEditor key={`${selected.type}:${selected.id}`} target={selected} go={go}/>
+    </>}
   </>;
 }
+
 const BELL_ICON=<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M18 8A6 6 0 1 0 6 8c0 7-3 8-3 8h18s-3-1-3-8"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>;
 // The bell surfaces two different things: pending confirmations (actionable, drive the badge
 // count) and a short recent-notifications log (informational, sourced from the same notify() log
@@ -1630,10 +1811,14 @@ const MINT_TABS=[
 // nothing to count. The mechanism is general, so any of them can report the day they do.
 function scheduleBadge(counts){
   if(!counts)return null;
-  const failed=counts.failed||0,expired=counts.expired||0,paused=counts.paused||0;
-  const total=failed+expired+paused;
+  // Expired is deliberately absent, and this has to match the rail's own arithmetic or the tab
+  // and the rail summarising it disagree. An expired mint has no action left -- retry and resume
+  // both refuse it -- so it is history, not a to-do. Counting it made the badge permanent and
+  // ever-growing.
+  const failed=counts.failed||0,paused=counts.paused||0;
+  const total=failed+paused;
   if(!total)return null;
-  return {count:total,tone:failed>0?'bad':expired>0?'wn':'nu'};
+  return {count:total,tone:failed>0?'bad':'nu'};
 }
 function Mint({profile,go,tab,onTab}){
   // Falls back to 'now' for an unknown ?tab= rather than rendering an empty page -- a stale or
@@ -1657,27 +1842,454 @@ function Mint({profile,go,tab,onTab}){
 // As in unit 1, the three originals render UNCHANGED inside their tabs: same components, same
 // hooks, same routes with the same params. No API call changes.
 const AUTOMATION_TABS=[
+  {id:'all',label:'All'},
   {id:'snipers',label:'Snipers'},
   {id:'social',label:'Social rules',was:'Watch Rules'},
   {id:'policies',label:'Policies',was:'Target Policies'},
 ];
-function Automation({tab,onTab,target}){
-  const active=AUTOMATION_TABS.some(item=>item.id===tab)?tab:'snipers';
+// The prototype's Automation page has FOUR panels -- at-all, at-snp, at-soc, at-pol -- and "All" is
+// the default. Its own comment states the relationship: "Snipers / Social rules are filters over
+// the same list; Policies is the editor + challenge". The build had only the three narrow tabs, so
+// the populated/empty/loading/error states the prototype draws had nowhere to live at all. This is
+// that missing panel, and Snipers/Social render it with a filter rather than duplicating it.
+//
+// The card is .card.col: a header (.colh) and a body (.colb). Collapsing is MOBILE-ONLY --
+// prototype.css sets .colh{display:none} and only reveals it under .app[data-m] -- so both halves
+// are always emitted and the stylesheet decides. Nothing here toggles on width.
+//
+// Deliberately NOT built: the .dragh drag handle and data-reorder. Reordering needs a persisted
+// order the API does not expose, and a handle that forgets its order on reload is worse than none.
+// Only Ethereum and Base appear in the prototype (#627eea, #0052ff); the rest are each chain's own
+// brand colour, because a dot that is the WRONG colour is worse than the one thing it exists to do.
+const CHAIN_DOT={ethereum:'#627eea',base:'#0052ff',arbitrum:'#28a0f0',polygon:'#8247e5',robinhood:'#ccff00'};
+const CHAIN_LABEL={ethereum:'Ethereum',base:'Base',arbitrum:'Arbitrum',polygon:'Polygon',robinhood:'Robinhood'};
+const SOCIAL_LABEL={twitter:'Twitter',discord:'Discord',farcaster:'Farcaster'};
+const AUTOMATION_KIND={sniper:'Copy sniper',social:'Social rule'};
+
+// The prototype's "Policy · inline" rows are the REAL target policy, not a restatement of the
+// trigger's own fields: targetPolicyService stores blockchainTrigger, socialTrigger,
+// humanVerification and walletLabel, which is exactly what the card lists. Read them, do not invent
+// them -- an inline policy that shows something other than the policy is worse than showing none.
+//
+// The prototype also draws a .meter for "Daily cap used · 0.140 / 0.200". That figure is NOT
+// rendered here, deliberately. governanceService.js:315 records why spentTodayWei is withheld:
+// rollingSpendWei sums COALESCE(actual_network_cost_wei, estimated_cost_wei) and the actual column
+// holds gas only, so a confirmed mint's value drops out and the total is wrong in the user's
+// favour. The cap is real and is shown; the "used" half would be a known-wrong number on a money
+// surface, and Mint now already refuses the same figure for the same reason.
+function policyRows(row,policy){
+  if(!policy)return null;
+  const rows=[];
+  if(row.kind==='sniper')rows.push(['Blockchain trigger',titleCase(policy.blockchainTrigger||'manual')]);
+  else rows.push(['Social trigger',titleCase(policy.socialTrigger||'manual')]);
+  rows.push(['Human verification',policy.humanVerification==='bypassed'
+    ?<span style={{color:'var(--warn-text)'}}>Bypassed</span>:'On']);
+  if(policy.walletLabel||row.walletLabel)rows.push(['Wallet',policy.walletLabel||row.walletLabel]);
+  if(row.kind==='sniper'){
+    rows.push(['Max copied value',`${row.maxValueETH} ETH`]);
+    rows.push(['Daily cap used',`${row.spend.eth.toFixed(3)} / ${row.dailySpendingCapETH} ETH`]);
+  }
+  return rows;
+}
+// The prototype's "Daily cap used · 0.140 / 0.200" and its .meter. governanceService.js:315
+// withholds spentTodayWei because rollingSpendWei sums COALESCE(actual_network_cost_wei,
+// estimated_cost_wei) and the actual column holds gas only -- a confirmed mint's VALUE drops out.
+// sniper_seen_transactions.copied_value_wei is that missing value, per event, and it reaches the
+// dashboard through /api/snipers events. Summing today's copies gives the figure the server
+// refuses to publish, computed from the column that actually holds it rather than the one that
+// does not. Only states that really moved money count: a skipped or failed copy spent nothing.
+const SPENT_STATES=new Set(['confirmed','sent','submitted','pending']);
+function dailyCopySpend(events,sniperId){
+  const dayStart=new Date();dayStart.setHours(0,0,0,0);
+  const mine=(events||[]).filter(event=>event.sniperId===sniperId
+    &&SPENT_STATES.has(String(event.state||'').toLowerCase())
+    &&Number(event.seenAt||event.updatedAt||0)>=dayStart.getTime());
+  const wei=mine.reduce((total,event)=>total+(Number(event.copiedValueWei)||0),0);
+  return {copies:mine.length,eth:wei/1e18};
+}
+function titleCase(value){const s=String(value||'');return s.charAt(0).toUpperCase()+s.slice(1);}
+
+function triggerRows(snipers,rules){
+  const fromSnipers=(snipers?.items||[]).map(item=>{
+    const recent=(snipers.events||[]).find(event=>event.sniperId===item.id);
+    const failed=recent?.state==='failed';
+    return {kind:'sniper',id:item.id,title:item.label,chain:item.chain,
+      walletLabel:item.walletLabel,maxValueETH:item.maxValueETH,
+      dailySpendingCapETH:item.dailySpendingCapETH,
+      status:failed?'Failing':(item.active===false?'Paused':'Active'),
+      tone:failed?'bad':(item.active===false?'idle':'ok'),
+      spend:dailyCopySpend(snipers.events,item.id),
+      meta:`Post-confirmation · wallet ${item.walletLabel}`+(dailyCopySpend(snipers.events,item.id).copies?` · ${dailyCopySpend(snipers.events,item.id).copies} copies today`:''),
+      value:`${item.maxValueETH} ETH`,
+      search:[item.label,item.chain,item.walletLabel]};
+  });
+  const fromRules=(rules?.items||[]).map(item=>({
+    kind:'social',id:item.id,title:item.name,platform:String(item.type||'').split('_')[0],
+    status:item.enabled===false?'Paused':(item.consecutiveFailures>0?'Failing':'Active'),
+    tone:item.enabled===false?'idle':(item.consecutiveFailures>0?'bad':'ok'),
+    meta:`${String(item.type||'').replace(/_/g,' ')} · ${item.method}`+
+      (item.consecutiveFailures>0?` · ${item.consecutiveFailures} consecutive failures`:''),
+    value:item.consecutiveFailures>0?`${item.consecutiveFailures} failed polls`:'',
+    search:[item.name,item.type,item.method]}));
+  return [...fromSnipers,...fromRules];
+}
+
+function TriggerCard({row,onEdit,onToggle,onArchive}){
+  const [open,setOpen]=useState(false);
+  const [policy,setPolicy]=useState(undefined);
+  useEffect(()=>{let live=true;
+    api(`/api/targets/${row.id}?type=${row.kind==='sniper'?'sniper':'social_rule'}`)
+      .then(value=>{if(live)setPolicy(value.policy||null);})
+      .catch(()=>{if(live)setPolicy(null);});
+    return()=>{live=false;};},[row.id,row.kind]);
+  const rows=policyRows(row,policy);
+  // Active triggers offer Pause; a failing one offers Disable -- the prototype uses each verb on
+  // the card whose state it fits, and they are different actions, not a style choice.
+  const stopped=row.status==='Paused';
+  const stopLabel=stopped?'Resume':'Pause';
+  return <div className="blk">
+    <div className="card col" data-open={open?'1':'0'}
+      style={row.tone==='bad'?{borderColor:'var(--loss)'}:undefined}>
+      <button type="button" className="colh" aria-expanded={open} onClick={()=>setOpen(v=>!v)}>
+        <span className={`p ${row.tone}`}>{row.status}</span>
+        <span className="cti">{row.title}</span>
+        {row.value?<span className="ctv">{row.value}</span>:null}
+        <svg className="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"
+          strokeLinecap="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+      </button>
+      <div className="colb">
+        <div className="ch"><span className={`p ${row.tone}`}>
+          {row.status==='Paused'&&PAUSED_GLYPH}{row.status}</span><div className="sp"/>
+          {row.kind==='sniper'
+            ?<span className="chain"><i style={{background:CHAIN_DOT[row.chain]||'var(--faint)'}}/>
+               {CHAIN_LABEL[row.chain]||titleCase(row.chain)}</span>
+            :<span className="cw">{SOCIAL_LABEL[row.platform]||titleCase(row.platform)}</span>}
+        </div>
+        <h3 style={{fontSize:'14.5px',marginBottom:'2px'}}>{row.title}</h3>
+        <p style={{fontSize:'12px',color:'var(--muted)',marginBottom:'11px'}}>{row.meta}</p>
+        <div className="sober" style={{marginBottom:'11px'}}>
+          <div className="sh">Policy · inline</div>
+          {policy===undefined
+            ?<div style={{padding:'9px 13px'}}><div className="sk l w80"/><div className="sk l w60"/></div>
+            :rows
+              ?<table className="led"><tbody>{rows.map(([label,value])=>
+                 <tr key={label}><td>{label}</td><td>{value}</td></tr>)}</tbody></table>
+              :<p style={{padding:'9px 13px',fontSize:'12px',color:'var(--muted)'}}>
+                 Policy unavailable right now.</p>}
+        </div>
+        {row.kind==='sniper'&&row.dailySpendingCapETH>0&&(()=>{
+          const pct=Math.min(100,(row.spend.eth/row.dailySpendingCapETH)*100);
+          // .warn once most of the cap is gone, matching the prototype's amber fill at 70%.
+          return <div className="meter" style={{marginBottom:'11px'}} role="img"
+            aria-label={`${row.spend.eth.toFixed(3)} of ${row.dailySpendingCapETH} ETH daily cap used today`}>
+            <i className={pct>=60?'warn':undefined} style={{width:`${pct}%`}}/></div>;
+        })()}
+        <div className="br">
+          <button type="button" className="b sm" onClick={()=>onEdit?.(row)}>Edit</button>
+          <button type="button" className={`b g sm ${stopped?'trigger-start':'trigger-stop'}`}
+            onClick={()=>onToggle?.(row)}>{stopLabel}</button>
+          {/* Only once it is stopped. Archiving is the one action that removes a trigger from
+              every list, so requiring a pause first makes it a two-step decision rather than one
+              a stray tap can complete -- and a running trigger is exactly the one you would not
+              mean to archive. */}
+          {stopped&&<button type="button" className="b d sm"
+            onClick={()=>onArchive?.(row)}>Archive</button>}
+        </div>
+      </div>
+    </div>
+  </div>;
+}
+
+// A guided form, not a JSON textarea. The owner's point: a user should not have to hand-write
+// {"label":...,"targetAddress":...} to create a sniper, and should not have to know the field names
+// at all. The same object still goes to the API -- it is assembled here from selects and inputs
+// instead of typed. Chain and wallet are dropdowns because both are closed sets the app already
+// knows; typing either was a spelling test with a validation error as the prize.
+//
+// Collapsed by default and opened by New trigger, so the page starts as a list of what exists
+// rather than a form for something that does not.
+function SniperForm({wallets,chains,onCreated,onCancel,editing}){
+  const [busy,setBusy]=useState(false);
+  const formRef=useRef(null);
+  async function submit(event){
+    event.preventDefault();
+    const form=new FormData(event.currentTarget);
+    const body={
+      label:String(form.get('label')||'').trim(),
+      targetAddress:String(form.get('targetAddress')||'').trim(),
+      chain:form.get('chain'),
+      walletLabel:form.get('walletLabel'),
+      maxValueETH:Number(form.get('maxValueETH')),
+      maxGasGwei:Number(form.get('maxGasGwei')),
+      dailySpendingCapETH:Number(form.get('dailySpendingCapETH')),
+      cooldownMs:Number(form.get('cooldownSeconds'))*1000,
+      maxAttempts:Number(form.get('maxAttempts')),
+    };
+    setBusy(true);
+    try{
+      await api(editing?`/api/snipers/${editing}`:'/api/snipers',
+        {method:editing?'PUT':'POST',body:JSON.stringify(body)});
+      notify(editing?'Sniper updated.':'Sniper created.',{type:'success'});
+      // Cleared on success, as the owner asked: leaving the last target address sitting in the
+      // field is how you create the same sniper twice by accident.
+      formRef.current?.reset();
+      onCreated?.();
+    }catch(error){notify(error.message,{type:'error'});}
+    finally{setBusy(false);}
+  }
+  return <form ref={formRef} className="panel form" onSubmit={submit} aria-busy={busy||undefined}>
+    <h2>{editing?'Edit sniper':'New copy sniper'}</h2>
+    <p className="page-lead">Watch one wallet. When it mints and that transaction confirms, copy the
+      same call from yours — never before it confirms.</p>
+    <div className="g gm2 g2">
+      <label className="fl"><span>Name</span>
+        <input className="in" name="label" required placeholder="e.g. copy-whale-1"/></label>
+      <label className="fl"><span>Wallet that pays</span>
+        <select className="in" name="walletLabel" required>
+          {(wallets||[]).map(item=><option key={item.label} value={item.label}>{item.label}</option>)}
+        </select></label>
+      <label className="fl" style={{gridColumn:'1 / -1'}}><span>Wallet to watch</span>
+        <input className="in mono" name="targetAddress" required pattern="0x[0-9a-fA-F]{40}"
+          placeholder="0x… the address whose mints you want to copy"/></label>
+      <label className="fl"><span>Chain</span>
+        <select className="in" name="chain" required defaultValue="ethereum">
+          {(chains||[]).map(item=><option key={item} value={item}>{item}</option>)}
+        </select></label>
+      <label className="fl"><span>Max per copy (ETH)</span>
+        <input className="in tab" name="maxValueETH" type="number" step="any" min="0" required defaultValue="0.01"/></label>
+      <label className="fl"><span>Daily cap (ETH)</span>
+        <input className="in tab" name="dailySpendingCapETH" type="number" step="any" min="0" required defaultValue="0.05"/></label>
+      <label className="fl"><span>Gas ceiling (gwei)</span>
+        <input className="in tab" name="maxGasGwei" type="number" min="1" required defaultValue="50"/></label>
+      <label className="fl"><span>Cooldown (seconds)</span>
+        <input className="in tab" name="cooldownSeconds" type="number" min="0" required defaultValue="60"/></label>
+      <label className="fl"><span>Max attempts</span>
+        <input className="in tab" name="maxAttempts" type="number" min="1" required defaultValue="3"/></label>
+    </div>
+    <div className="nt i" style={{marginTop:'11px'}}>{INFO_ICON}
+      <div>These caps apply to this sniper alone. Your account gas ceiling and spending budget still
+        apply on top, and the lower of the two always wins.</div></div>
+    <div className="br" style={{marginTop:'11px'}}>
+      <button className="b p sm" disabled={busy}>{editing?'Save sniper':'Create sniper'}</button>
+      <button type="button" className="b g sm" onClick={()=>onCancel?.()}>Cancel</button>
+    </div>
+  </form>;
+}
+
+// Same treatment for watch rules. The config shape depends on the type -- an account rule needs a
+// handle, a channel rule needs a channel ID, a keyword rule needs keywords -- so the form shows
+// only the field that type actually uses instead of asking for a config object covering all three.
+const WATCH_TYPES=[
+  {value:'twitter_account',label:'X / Twitter · account'},
+  {value:'twitter_keyword',label:'X / Twitter · keyword'},
+  {value:'discord_channel',label:'Discord · channel'},
+  {value:'discord_keyword',label:'Discord · keyword'},
+  {value:'farcaster_account',label:'Farcaster · account'},
+  {value:'farcaster_keyword',label:'Farcaster · keyword'},
+];
+const WATCH_METHODS=[
+  {value:'official_api',label:'Official API'},
+  {value:'managed_service',label:'Managed service'},
+  {value:'scraper',label:'Scraper'},
+];
+function WatchRuleForm({onCreated,onCancel,editing}){
+  const [type,setType]=useState('twitter_account');
+  const [method,setMethod]=useState('official_api');
+  const [busy,setBusy]=useState(false);
+  const formRef=useRef(null);
+  const kind=type.endsWith('_account')?'account':type.endsWith('_channel')?'channel':'keyword';
+  async function submit(event){
+    event.preventDefault();
+    const form=new FormData(event.currentTarget);
+    const config={};
+    if(kind==='account')config.handle=String(form.get('handle')||'').trim().replace(/^@/,'');
+    if(kind==='channel')config.channelId=String(form.get('channelId')||'').trim();
+    if(kind==='keyword')config.keywords=String(form.get('keywords')||'')
+      .split(',').map(value=>value.trim()).filter(Boolean);
+    const sourceUrl=String(form.get('sourceUrl')||'').trim();
+    if(method==='scraper'&&sourceUrl)config.sourceUrl=sourceUrl;
+    setBusy(true);
+    try{
+      await api(editing?`/api/watch-rules/${editing}`:'/api/watch-rules',
+        {method:editing?'PUT':'POST',
+          body:JSON.stringify({name:String(form.get('name')||'').trim(),type,method,config})});
+      notify(editing?'Watch rule updated.':'Watch rule created.',{type:'success'});
+      formRef.current?.reset();
+      onCreated?.();
+    }catch(error){notify(error.message,{type:'error'});}
+    finally{setBusy(false);}
+  }
+  return <form ref={formRef} className="panel form" onSubmit={submit} aria-busy={busy||undefined}>
+    <h2>{editing?'Edit watch rule':'New social watch rule'}</h2>
+    <p className="page-lead">Watch an account or a keyword. When a contract address appears, it
+      becomes a trigger — manual by default, so nothing spends without you.</p>
+    <div className="g gm2 g2">
+      <label className="fl"><span>Name</span>
+        <input className="in" name="name" required placeholder="e.g. azuki-announcements"/></label>
+      <label className="fl"><span>Watch</span>
+        <select className="in" value={type} onChange={event=>setType(event.target.value)}>
+          {WATCH_TYPES.map(item=><option key={item.value} value={item.value}>{item.label}</option>)}
+        </select></label>
+      {kind==='account'&&<label className="fl" style={{gridColumn:'1 / -1'}}><span>Handle</span>
+        <input className="in" name="handle" required placeholder="zeneca_33 — without the @"/></label>}
+      {kind==='channel'&&<label className="fl" style={{gridColumn:'1 / -1'}}><span>Channel ID</span>
+        <input className="in mono" name="channelId" required placeholder="123456789012345678"/></label>}
+      {kind==='keyword'&&<label className="fl" style={{gridColumn:'1 / -1'}}><span>Keywords</span>
+        <input className="in" name="keywords" required placeholder="mint, drop, allowlist — comma separated"/></label>}
+      <label className="fl"><span>How to read it</span>
+        <select className="in" value={method} onChange={event=>setMethod(event.target.value)}>
+          {WATCH_METHODS.map(item=><option key={item.value} value={item.value}>{item.label}</option>)}
+        </select></label>
+      {method==='scraper'&&<label className="fl"><span>Source URL</span>
+        <input className="in" name="sourceUrl" placeholder="https://…"/></label>}
+    </div>
+    <div className="nt i" style={{marginTop:'11px'}}>{INFO_ICON}
+      <div>A social mention is not proof. Matches arrive as manual triggers you approve, unless you
+        change that in Policies for this rule specifically.</div></div>
+    <div className="br" style={{marginTop:'11px'}}>
+      <button className="b p sm" disabled={busy}>{editing?'Save rule':'Create watch rule'}</button>
+      <button type="button" className="b g sm" onClick={()=>onCancel?.()}>Cancel</button>
+    </div>
+  </form>;
+}
+
+function AutomationAll({filter=null,onTab}){
+  const snipers=useLoad('/api/snipers',[],'snipers.changed');
+  const rules=useLoad('/api/watch-rules',[],'watch.changed');
+  const [query,setQuery]=useState('');
+  const error=loadError(snipers,'Could not load your triggers.')||loadError(rules,'Could not load your triggers.');
+  const loading=(snipers.data===null&&!snipers.error)||(rules.data===null&&!rules.error);
+  const all=(!loading&&!error)?triggerRows(snipers.data,rules.data):[];
+  const scoped=filter?all.filter(row=>row.kind===filter):all;
+  async function toggleTrigger(row){
+    const stopping=row.status!=='Paused';
+    try{
+      if(row.kind==='social'){
+        // /disable only disables -- resuming goes through the ordinary update, or a paused rule
+        // would have no way back.
+        if(stopping)await api(`/api/watch-rules/${row.id}/disable`,{method:'POST',body:JSON.stringify({})});
+        else await api(`/api/watch-rules/${row.id}`,{method:'PUT',body:JSON.stringify({enabled:true})});
+        notify(stopping?'Watch rule paused.':'Watch rule resumed.',{type:'success'});rules.load();
+      }else{
+        await api(`/api/snipers/${row.id}`,{method:'PUT',body:JSON.stringify({active:!stopping})});
+        notify(stopping?'Sniper paused.':'Sniper resumed.',{type:'success'});snipers.load();
+      }
+    }catch(error){notify(error.message,{type:'error'});}
+  }
+  async function archiveTrigger(row){
+    const ok=await confirmDialog(`Archive ${row.title}? It stops running and leaves the list. `
+      +'Its history is kept, so past activity still resolves to it.');
+    if(!ok)return;
+    try{
+      await api(row.kind==='social'?`/api/watch-rules/${row.id}`:`/api/snipers/${row.id}`,
+        {method:'DELETE',body:JSON.stringify({confirmation:'CONFIRM'})});
+      notify('Archived. It stops running and keeps its history.',{type:'success'});
+      if(row.kind==='social')rules.load();else snipers.load();
+    }catch(error){notify(error.message,{type:'error'});}
+  }
+  const needle=query.trim().toLowerCase();
+  const rows=needle?scoped.filter(row=>row.search.filter(Boolean)
+    .some(value=>String(value).toLowerCase().includes(needle))):scoped;
+
   return <>
-    <div className="page-head"><div className="page-head-text"><p className="eyebrow">Automation</p><h1>Automation</h1></div></div>
-    {/* The post-confirmation disclosure is page-level and unconditional -- it must be visible
-        even with zero triggers configured, because it describes what this page's feature IS,
-        not what any particular row is doing. Previously it only appeared on sniper cards, so an
-        empty Snipers page disclosed nothing at all. */}
-    <p className="notice notice-warning" role="note">
-      Snipers copy <strong>confirmed</strong> wallet transactions after their confirmation
-      threshold. This is not mempool front-running, and nothing here submits before a transaction
-      the target made has already confirmed on chain.
-    </p>
-    <SubTabs tabs={AUTOMATION_TABS} active={active} onChange={onTab} label="Automation sections"/>
-    {active==='snipers'&&<Snipers/>}
-    {active==='social'&&<WatchRules/>}
+    {filter&&<div className="nt i">{INFO_ICON}
+      <div>Showing {filter==='sniper'?'wallet-copy snipers':'social watch rules'} only — the same
+        cards as <b>All</b>, filtered client-side over data the server already scoped to you.</div></div>}
+    <Notice error={error}/>
+    {!error&&!loading&&all.length>0&&<div className="sfrow">
+      {/* aria-label rather than a hidden span: there is no visually-hidden utility in this
+          stylesheet, and inventing one for a single input would be a new class the prototype
+          does not have. The prototype's .sf carries an icon and no visible label. */}
+      <div className="sf">
+        <input type="search" value={query} aria-label="Find a trigger"
+          placeholder="Target, address, chain…"
+          onChange={event=>setQuery(event.target.value)}/>
+      </div>
+    </div>}
+    {loading
+      ?<div className="ol"><div className="sk row"/><div className="sk row"/><div className="sk row"/><div className="sk row"/></div>
+      :error
+        ?null
+        :all.length===0&&!filter
+          /* The prototype's empty state: two explainer cards, one CTA each. It explains what the
+             page IS to someone who has never made a trigger, which a bare "nothing here" cannot. */
+          ?<div className="g g2">
+             <div className="card">
+               <div className="ch"><h2>Copy snipers</h2></div>
+               <p style={{fontSize:'12.5px',color:'var(--muted)',marginBottom:'12px'}}>Watch a wallet.
+                 When it mints something and that transaction confirms, GhostMint copies the same call
+                 from one of yours — with your own value, gas and daily caps.</p>
+               <button type="button" className="b p sm" onClick={()=>onTab?.('snipers')}>Create a sniper</button>
+             </div>
+             <div className="card">
+               <div className="ch"><h2>Social watch rules</h2></div>
+               <p style={{fontSize:'12.5px',color:'var(--muted)',marginBottom:'12px'}}>Watch an X,
+                 Discord or Farcaster account or keyword. When a contract address appears, it becomes
+                 a trigger — manual by default, so nothing spends without you.</p>
+               <button type="button" className="b p sm" onClick={()=>onTab?.('social')}>Create a watch rule</button>
+             </div>
+           </div>
+          :all.length===0
+            /* A filtered tab with nothing to show says nothing here -- the tab's own list and
+               create form render directly below, and an empty state on top of a form reads as
+               though the form is unavailable. */
+            ?null
+          :rows.length===0
+            ?<Empty text="No triggers match this search."/>
+            :<div className="g g2">{rows.map(row=><TriggerCard key={`${row.kind}:${row.id}`} row={row}
+                onEdit={item=>{openPolicyFor(item.id);onTab?.('policies');}}
+                onToggle={toggleTrigger} onArchive={archiveTrigger}/>)}</div>}
+  </>;
+}
+
+function Automation({tab,onTab,target}){
+  const active=AUTOMATION_TABS.some(item=>item.id===tab)?tab:'all';
+  // Collapsed until asked for: the page should open as a list of what exists, not a form for
+  // something that does not.
+  const [creating,setCreating]=useState(false);
+  // From All, New trigger has to change tab AND open the form. The close-on-tab-change effect
+  // below would otherwise undo that in the same render, so an intentional hand-off is flagged
+  // here and honoured once the new tab arrives.
+  const wantsCreate=useRef(false);
+  // Close it when the tab changes: opening New trigger on Snipers and then switching to Social
+  // otherwise left a watch-rule form already open, which reads as though the tab did it.
+  useEffect(()=>{setCreating(wantsCreate.current);wantsCreate.current=false;},[active]);
+  // Same helper the rail badge uses, so the tab numbers and the Automation total are one
+  // calculation rather than two that agree by luck.
+  const snipers=useLoad('/api/snipers',[],'snipers.changed');
+  const rules=useLoad('/api/watch-rules',[],'watchrules.changed');
+  const confirmations=useLoad('/api/confirmations',[],'confirmations.changed');
+  const wallets=useLoad('/api/wallets',[],'wallets.changed');
+  const badges=automationBadges({snipers:snipers.data,rules:rules.data,confirmations:confirmations.data}).tabs;
+  return <>
+    <div className="page-head"><div className="page-head-text"><p className="eyebrow">Automation</p><h1>Automation</h1></div>
+      <div className="page-head-actions">
+        {/* Becomes Close while the form is open, and drops to the quiet style, so the button
+            says which state you are in rather than offering to open what is already open. */}
+        <button type="button" className={creating?'b g':'b p'} onClick={()=>{
+          if(creating){setCreating(false);return;}
+          if(active==='snipers'||active==='social'){setCreating(true);return;}
+          wantsCreate.current=true;onTab?.('snipers');
+        }}>{creating?'Close':'New trigger'}</button>
+      </div></div>
+    <SubTabs tabs={AUTOMATION_TABS} active={active} onChange={onTab} label="Automation sections" badges={badges}/>
+    {active==='all'&&<AutomationAll onTab={onTab}/>}
+    {active==='snipers'&&<>{creating&&<SniperForm wallets={wallets.data} chains={EVM_CHAINS}
+      onCreated={()=>{setCreating(false);snipers.load();}} onCancel={()=>setCreating(false)}/>}
+      <AutomationAll filter="sniper" onTab={onTab}/></>}
+    {active==='social'&&<>{creating&&<WatchRuleForm
+      onCreated={()=>{setCreating(false);rules.load();}} onCancel={()=>setCreating(false)}/>}
+      <AutomationAll filter="social" onTab={onTab}/></>}
     {active==='policies'&&<TargetPolicies target={target}/>}
+    {/* Below the panels and outside every state, exactly as auto.html places it: its own comment
+        reads "disclosure stays visible in EVERY state, including zero triggers and errors". It
+        describes what this page's feature IS, so an empty or failed page must still say it.
+        .nt.w with the warning triangle, and the prototype's sentence verbatim as the bold claim --
+        the extra line after it is this app's own precision about WHEN a copy can be submitted,
+        which the prototype has no room for but which makes the same claim checkable. */}
+    <div className="nt w" role="note" style={{marginTop:'12px'}}>{WARN_TRIANGLE_ICON}
+      <div><b>Copying is post-confirmation, not mempool front-running.</b> Nothing here submits
+        until a transaction the target made has already confirmed on chain.</div></div>
   </>;
 }
 // Wallets = Wallets + P&L (brief §2). On its own page P&L was a table the user had to mentally
@@ -1934,6 +2546,7 @@ const BOTTOM_BAR_LABELS={Automation:'Auto'};
 // Admin is deliberately absent: it lives behind an owner check, and offering a control that
 // 403s is worse than not offering it.
 const MORE_PAGES=['History','Account','Settings'];
+const MORE_ADMIN='Admin';
 const MORE_ICON=<svg {...ICON_PROPS} fill="currentColor" stroke="none"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg>;
 const CHEVRON_LEFT=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 6l-6 6 6 6"/></svg>;
 const CHEVRON_RIGHT=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 6l6 6-6 6"/></svg>;
@@ -1948,11 +2561,28 @@ function BottomBar({page,go,onOpenMore,moreOpen}){
       <span className="nav-icon" aria-hidden="true">{MORE_ICON}</span>
       <span className="nav-label">More</span></button>
   </nav>;}
-function MoreSheet({open,page,go,onClose}){return <>{open&&<div className="sheet-backdrop" onClick={onClose}/>}<div className={`more-sheet${open?' open':''}`} role="dialog" aria-modal="true" aria-label="More" aria-hidden={!open}>
-  <button type="button" className="sheet-handle" aria-label="Close" onClick={onClose}/>
-  <h2>More</h2>
-  <div className="sheet-grid">{MORE_PAGES.map(item=><button type="button" key={item} aria-current={page===item?'page':undefined} onClick={()=>go(item)}><span className="nav-icon" aria-hidden="true">{NAV_ICONS[item]}</span><span className="nav-label">{item}</span></button>)}</div>
-</div></>;}
+function MoreSheet({open,page,go,onClose,isOwner,onSearch}){
+  const items=[...MORE_PAGES,...(isOwner?[MORE_ADMIN]:[])];
+  return <>{open&&<div className="sheet-backdrop" onClick={onClose}/>}
+    <div className={`more-sheet${open?' open':''}`} role="dialog" aria-modal="true"
+      aria-label="More" aria-hidden={!open}>
+      <button type="button" className="sheet-handle" aria-label="Close" onClick={onClose}/>
+      <div className="sheet-grid">
+        {items.map(item=><button type="button" key={item}
+          aria-current={page===item?'page':undefined} onClick={()=>{go(item);onClose?.();}}>
+          {/* RAIL_ICONS first: NAV_ICONS gives Admin a gear, which is the same glyph as
+              Settings, so the two tiles were indistinguishable. states.html gives Admin a
+              shield, which RAIL_ICONS already carries. */}
+          <span className="nav-icon" aria-hidden="true">{RAIL_ICONS[item]||NAV_ICONS[item]}</span>
+          <span className="nav-label">{item}</span></button>)}
+        {/* Search is an action, not a page: it opens the command palette the desktop header
+            already offers, which has no other route in on a phone. */}
+        <button type="button" onClick={()=>{onClose?.();onSearch?.();}}>
+          <span className="nav-icon" aria-hidden="true">{SEARCH_ICON}</span>
+          <span className="nav-label">Search</span></button>
+      </div>
+    </div></>;
+}
 // Prototype rail badges (ghostmint-redesign-v3.html:641,644): Mint carries a NEUTRAL .cnt and
 // Automation a RED .cnt.hot. The tones are the specification, not decoration:
 //   .cnt      surface-4 on muted -- "there are things here worth a look"
@@ -1963,10 +2593,40 @@ function MoreSheet({open,page,go,onClose}){return <>{open&&<div className="sheet
 //
 // Each source refreshes on the socket event it already owns, so the badges follow the same data
 // the pages do rather than a second, drifting copy of it.
+function automationBadges({snipers,rules,confirmations}){
+  const events=snipers?.events||[];
+  // A sniper counts as failing on its MOST RECENT event only: an old failure it has since
+  // recovered from is history, not an alert.
+  const failingSnipers=(snipers?.items||[]).filter(sniper=>{
+    if(sniper.active===false)return false;
+    const latest=events.find(event=>event.sniperId===sniper.id);
+    return latest&&['failed','error','skipped'].includes(String(latest.state||'').toLowerCase());
+  }).length;
+  const failingRules=(rules?.items||[]).filter(rule=>
+    rule.enabled!==false&&Number(rule.consecutiveFailures)>0).length;
+  const pausedRules=(rules?.items||[]).filter(rule=>rule.enabled===false).length;
+  const pausedSnipers=(snipers?.items||[]).filter(sniper=>sniper.active===false).length;
+  // Pending confirmations are 'needs you', not 'broke' -- amber, never red. A trigger waiting on
+  // a human is the system working as designed.
+  const pending=(confirmations||[]).length;
+  const total=failingSnipers+failingRules+pausedSnipers+pausedRules+pending;
+  return {
+    tabs:{
+      snipers:(failingSnipers+pausedSnipers)?{count:failingSnipers+pausedSnipers,
+        tone:failingSnipers?'bad':'nu'}:null,
+      social:(failingRules+pausedRules)?{count:failingRules+pausedRules,
+        tone:failingRules?'bad':'nu'}:null,
+      policies:pending?{count:pending,tone:'wn'}:null,
+    },
+    total,
+    hot:(failingSnipers+failingRules)>0,
+  };
+}
 function useNavBadges(){
   const tasks=useLoad('/api/tasks?page=1&pageSize=1',[],'tasks.changed');
   const rules=useLoad('/api/watch-rules',[],'watchrules.changed');
   const snipers=useLoad('/api/snipers',[],'snipers.changed');
+  const confirmations=useLoad('/api/confirmations',[],'confirmations.changed');
   const counts=tasks.data?.counts;
   // Mint counts schedules that have STOPPED and want a decision. It escalates to the red .cnt.hot
   // only when one of them actually failed -- paused and expired are states you can live with,
@@ -1977,18 +2637,20 @@ function useNavBadges(){
   // reading does not survive contact with real data: this account has 11 queued mints, so the
   // badge would sit at 11 permanently and stop carrying information. A badge that is always on is
   // wallpaper. Owner asked what could turn it red, which only makes sense under this reading.
-  const mint=counts?(counts.paused||0)+(counts.failed||0)+(counts.expired||0):0;
+  const mint=counts?(counts.paused||0)+(counts.failed||0):0;
   const mintFailing=Boolean(counts&&(counts.failed||0)>0);
-  const failingRules=(rules.data?.items||[]).filter(rule=>Number(rule.consecutiveFailures)>0).length;
-  // A sniper is failing when its most recent event failed -- an old failure it has since recovered
-  // from is history, not an alert.
-  const events=snipers.data?.events||[];
-  const failingSnipers=(snipers.data?.items||[]).filter(sniper=>{
-    const latest=events.find(event=>event.sniperId===sniper.id);
-    return latest&&['failed','error','skipped'].includes(String(latest.state||'').toLowerCase());
-  }).length;
-  return {Mint:mint,Automation:failingRules+failingSnipers,
-    hot:{Mint:mintFailing,Automation:true}};
+  const automation=automationBadges({snipers:snipers.data,rules:rules.data,confirmations:confirmations.data});
+  // Derived, not hardcoded. It was `Automation:true`, which is right only for as long as the
+  // count contains nothing but failures -- the moment anything merely-pending joins it, a red
+  // badge would be claiming a break that has not happened. Mint already derives its own flag the
+  // same way, and the owner's rule for these badges is that the colour tracks severity.
+  //
+  // The prototype's rail agrees with the count: _rail.html gives Automation `cnt hot of` reading
+  // 1 against its one Failing rule, while its Active sniper adds nothing. The Policies tab's
+  // "Bypass · Requires an explicit challenge" is a row inside a policy table, not a pending
+  // action, so it is deliberately not counted here.
+  return {Mint:mint,Automation:automation.total,
+    hot:{Mint:mintFailing,Automation:automation.hot}};
 }
 const TOP_RAIL_PAGES=['Home','Mint','Automation','Wallets','History'];
 // The prototype's .railfoot is Admin, Account, Settings, in that order. Settings had no rail entry
@@ -2143,7 +2805,8 @@ function Shell({profile,onLogout,onProfileChange}){const navBadges=useNavBadges(
       <main className="wrap" tabIndex="-1"><View profile={viewProfile} go={go} tab={tab} target={target} onTab={next=>go(page,next)} onThemeChange={changeTheme} onLogout={onLogout} onProfileChange={onProfileChange}/></main>
     </div>
     <BottomBar page={page} go={go} moreOpen={moreOpen} onOpenMore={()=>setMoreOpen(value=>!value)}/>
-    <MoreSheet open={moreOpen} page={page} go={go} onClose={()=>setMoreOpen(false)}/>
+    <MoreSheet open={moreOpen} page={page} go={go} onClose={()=>setMoreOpen(false)}
+      isOwner={profile.isOwner} onSearch={()=>setPaletteOpen(true)}/>
     <CommandPalette open={paletteOpen} onClose={()=>setPaletteOpen(false)} go={go} profile={profile} wallets={paletteWallets.data}/>
   </div>;
   const brandMark=<span className="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d={BOLT_PATH} fill="currentColor"/></svg></span>;

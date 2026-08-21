@@ -415,7 +415,7 @@ export function SubTabs({tabs=[],active,onChange,label='Sections',badges={}}){
         className={active===tab.id?'on':undefined} onClick={()=>onChange(tab.id)}>
         <span>{tab.label}</span>{tab.was&&<span className="was">was {tab.was}</span>}
         {badge&&badge.count>0&&<span className={`cnt sub${badge.tone==='bad'?' hot':badge.tone==='wn'?' warn':''}`}
-          aria-label={`${badge.count} ${badge.tone==='bad'?'failing':badge.tone==='wn'?'expired':'paused'}`}>
+          aria-label={`${badge.count} ${badge.tone==='bad'?'failing':'needing attention'}`}>
           {badge.count}</span>}
       </button>;
     })}
