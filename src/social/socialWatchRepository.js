@@ -25,11 +25,11 @@ function createSocialWatchRepository(pool) {
       return mapRule(result.rows[0]);
     },
     async get(userId, id) {
-      const result = await pool.query('SELECT * FROM social_watch_rules WHERE user_id=$1 AND rule_id=$2', [userId, id]);
+      const result = await pool.query('SELECT * FROM social_watch_rules WHERE user_id=$1 AND rule_id=$2 AND archived_at IS NULL', [userId, id]);
       return mapRule(result.rows[0]);
     },
     async list(userId) {
-      const result = await pool.query('SELECT * FROM social_watch_rules WHERE user_id=$1 ORDER BY created_at', [userId]);
+      const result = await pool.query('SELECT * FROM social_watch_rules WHERE user_id=$1 AND archived_at IS NULL ORDER BY created_at', [userId]);
       return result.rows.map(mapRule);
     },
     async update(userId, id, rule) {
@@ -39,16 +39,17 @@ function createSocialWatchRepository(pool) {
       return mapRule(result.rows[0]);
     },
     async remove(userId, id) {
-      const result = await pool.query('DELETE FROM social_watch_rules WHERE user_id=$1 AND rule_id=$2', [userId, id]);
+      const result = await pool.query(`UPDATE social_watch_rules SET archived_at=NOW(),enabled=FALSE
+        WHERE user_id=$1 AND rule_id=$2 AND archived_at IS NULL`, [userId, id]);
       return result.rowCount > 0;
     },
     async listEnabledForChannel(channelId) {
-      const result = await pool.query(`SELECT * FROM social_watch_rules WHERE enabled=TRUE
+      const result = await pool.query(`SELECT * FROM social_watch_rules WHERE enabled=TRUE AND archived_at IS NULL
         AND type='discord_channel' AND config->>'channelId'=$1`, [channelId]);
       return result.rows.map(mapRule);
     },
     async listDue(now, limit = 50) {
-      const result = await pool.query(`SELECT * FROM social_watch_rules WHERE enabled=TRUE
+      const result = await pool.query(`SELECT * FROM social_watch_rules WHERE enabled=TRUE AND archived_at IS NULL
         AND next_poll_at <= TO_TIMESTAMP($1 / 1000.0) ORDER BY next_poll_at LIMIT $2`, [now, limit]);
       return result.rows.map(mapRule);
     },

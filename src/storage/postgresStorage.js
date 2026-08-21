@@ -58,7 +58,7 @@ function createPostgresStorage(pool) {
       pool.query(`SELECT * FROM mint_tasks${where} ORDER BY created_at`, values),
       pool.query(`SELECT * FROM activity${where} ORDER BY occurred_at DESC LIMIT 200`, values),
       pool.query(`SELECT * FROM pnl_records${where} ORDER BY created_at DESC`, values),
-      pool.query(`SELECT * FROM snipers${where} ORDER BY created_at`, values),
+      pool.query(`SELECT * FROM snipers${where}${where?' AND':' WHERE'} archived_at IS NULL ORDER BY created_at`, values),
     ]);
     return { wallets: wallets.rows.map(mapWallet), tasks: tasks.rows.map(mapTask),
       activity: activity.rows.map(mapActivity), pnl: pnl.rows.map(mapPnl), snipers: snipers.rows.map(mapSniper) };
@@ -187,7 +187,8 @@ function createPostgresStorage(pool) {
       return result.rowCount > 0;
     },
     async deleteSniper(userId, id) {
-      const result = await pool.query('DELETE FROM snipers WHERE user_id=$1 AND id=$2', [userId, id]);
+      const result = await pool.query(`UPDATE snipers SET archived_at=NOW(),active=FALSE
+        WHERE user_id=$1 AND id=$2 AND archived_at IS NULL`, [userId, id]);
       return result.rowCount > 0;
     },
     close() { return pool.end(); },

@@ -1923,7 +1923,7 @@ function triggerRows(snipers,rules){
   return [...fromSnipers,...fromRules];
 }
 
-function TriggerCard({row,onEdit,onToggle}){
+function TriggerCard({row,onEdit,onToggle,onArchive}){
   const [open,setOpen]=useState(false);
   const [policy,setPolicy]=useState(undefined);
   useEffect(()=>{let live=true;
@@ -1976,6 +1976,7 @@ function TriggerCard({row,onEdit,onToggle}){
           <button type="button" className="b sm" onClick={()=>onEdit?.(row)}>Edit</button>
           <button type="button" className="b g sm"
             onClick={()=>onToggle?.(row)}>{stopLabel}</button>
+          <button type="button" className="b d sm" onClick={()=>onArchive?.(row)}>Archive</button>
         </div>
       </div>
     </div>
@@ -2158,6 +2159,17 @@ function AutomationAll({filter=null,onTab}){
       }
     }catch(error){notify(error.message,{type:'error'});}
   }
+  async function archiveTrigger(row){
+    const ok=await confirmDialog(`Archive ${row.title}? It stops running and leaves the list. `
+      +'Its history is kept, so past activity still resolves to it.');
+    if(!ok)return;
+    try{
+      await api(row.kind==='social'?`/api/watch-rules/${row.id}`:`/api/snipers/${row.id}`,
+        {method:'DELETE',body:JSON.stringify({confirmation:'CONFIRM'})});
+      notify('Archived. It stops running and keeps its history.',{type:'success'});
+      if(row.kind==='social')rules.load();else snipers.load();
+    }catch(error){notify(error.message,{type:'error'});}
+  }
   const needle=query.trim().toLowerCase();
   const rows=needle?scoped.filter(row=>row.search.filter(Boolean)
     .some(value=>String(value).toLowerCase().includes(needle))):scoped;
@@ -2209,7 +2221,7 @@ function AutomationAll({filter=null,onTab}){
             ?<Empty text="No triggers match this search."/>
             :<div className="g g2">{rows.map(row=><TriggerCard key={`${row.kind}:${row.id}`} row={row}
                 onEdit={item=>{openPolicyFor(item.id);onTab?.('policies');}}
-                onToggle={toggleTrigger}/>)}</div>}
+                onToggle={toggleTrigger} onArchive={archiveTrigger}/>)}</div>}
   </>;
 }
 
