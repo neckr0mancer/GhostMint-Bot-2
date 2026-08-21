@@ -1215,3 +1215,64 @@ Discord's `batch-mint` and `wallet batch-import` predate this work and were **no
 are wired, but I have not run them. The Telegram handlers are pattern- and payload-verified
 (including multi-line JSON, which matters for pasting a key list) but cannot be run from here at
 all. Both want a live pass on the real bots.
+
+## 15. Wallets — open items raised 2026-08-21
+
+### 15.1 Wallet display options — NOTED, NOT DESIGNED
+
+The owner's note, recorded so it isn't lost and deliberately **not** built yet: the Balances tab
+should eventually offer more than one way to display wallets. The current grid of `.card.col`
+cards is one option, not the only one. Candidates worth considering when this is picked up — a
+compact list/table row per wallet, and a dense mode showing more wallets per screen — but the
+owner has not chosen, so nothing here is a decision.
+
+**Where the control goes is decided.** On the wide view it belongs on the **same line as the
+search field and the performance-window `.seg`**, aligned to the **right** end of that row. That
+row is `.sfrow` in `Wallets` (`dashboard/src/App.jsx`); it is currently `display:flex` with the
+`.sf` search field and the window `.seg`, so a right-aligned control needs `margin-left:auto` on
+itself or a spacer, not a new row.
+
+Two things the implementer should know before starting:
+
+- **`.sfrow` is already at its width limit on a phone.** At 375px it measured 372px of content in
+  348px of box once the Balances badge was added — it scrolls (`overflow-x:auto`, scrollbar
+  hidden, prototype.css:431) rather than wrapping. A third control on that line will need a
+  mobile answer: either it folds into the More sheet, or `.sfrow` wraps below the breakpoint.
+- **The chosen display must survive the four states.** Loading renders three skeleton cards and
+  empty renders `.frun`, neither of which is a wallet card — so a display toggle is a property of
+  the populated state only, and should not render at all in the other three.
+
+### 15.2 Export rate limiting — REMOVED at owner request, 2026-08-21
+
+Removed on **both** surfaces: the dashboard's `/api/wallets/:label/export` and Telegram's
+`/exportkey`. Previously 2 per hour per platform.
+
+Still standing in front of a key export: the security password is verified against the stored
+hash on every attempt, `confirmation` must be the literal `CONFIRM`, and every attempt — success,
+wrong password, or no password set — is written to the security audit log.
+
+**What was given up, recorded so restoring it is a decision rather than a rediscovery:** the
+export endpoint verifies a password, so with no limiter it is an unmetered oracle for guessing the
+security password by anyone who already holds a live session cookie. The audit log records those
+attempts but does not stop them. `tests/dashboard.test.js` now asserts four consecutive exports
+all return 200, so the removal cannot silently regress — restoring the limit means changing that
+test deliberately.
+
+`setSecurityPassword` **keeps** its limiter. It shares the same `exportKeyRateLimiter` instance
+but is a different command in a different bucket, and nothing was asked about it.
+
+This supersedes the earlier finding that `createCommandRateLimiter` keys on
+`platform:userId:command` (`botSecurity.js:61`), so dashboard and Telegram never shared a bucket
+and the real ceiling across both was 4/hour rather than the 2 the code comment claimed. That
+discrepancy is moot now that neither surface limits at all.
+
+### 15.3 Wallet card — no repetition once expanded, 2026-08-21
+
+On mobile `.colh` stays on screen while `.colb` is open, so the expanded body was repeating the
+status pill, the wallet name and the balance one row down. Those three are now hidden inside
+`.colb` under `.app[data-m]` only — above that breakpoint `.colh` is hidden and `.colb` IS the
+whole card, so they must stay there.
+
+The Details control survives the cull (it has no equivalent in `.colh`) and is lifted out of the
+flow into the body's top-right corner, because stripped of its heading its row held one 28px icon
+and a lot of nothing.

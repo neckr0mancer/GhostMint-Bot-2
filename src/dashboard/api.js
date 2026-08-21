@@ -190,14 +190,19 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLo
     // encrypted blob ever comes back. That password is verified here, against the stored hash,
     // before it's trusted for anything -- and the same verified value then doubles as the keystore's
     // own encryption password, so there is exactly one password to remember for this whole flow.
-    // Rate limiter is shared with Telegram's /exportkey (same instance, passed in from server.js) so
-    // switching platforms doesn't double the effective rate.
+    // Export rate limiting REMOVED at the owner's request (2026-08-21), here and on Telegram's
+    // /exportkey. What still stands in front of a key export: the security password is verified
+    // against the stored hash on every attempt, confirmation must be the literal CONFIRM, and every
+    // attempt -- success or failure -- is written to the security audit log below.
+    //
+    // What was lost, stated so restoring it is a decision rather than a rediscovery: this endpoint
+    // verifies a password, so with no limiter it is an unmetered oracle for guessing the security
+    // password by anyone already holding a live session cookie. The audit log records those attempts
+    // but does not stop them.
+    //
+    // setSecurityPassword's own 'securitypassword' check KEEPS its limiter. It shares this instance
+    // but is a different command in a different bucket, and nothing was asked about it.
     exportWalletKey:action(async(req,res)=>{confirmation(req);noStore(res);
-      try{exportKeyRateLimiter.check('dashboard',user(req),'exportkey');}
-      catch(error){
-        if(error instanceof RateLimitError){await auditExportKey(req,'rate_limited','export key rate limit exceeded');res.set('Retry-After',String(Math.ceil(error.retryAfterMs/1000)));return res.status(429).json({error:'Too many export attempts'});}
-        throw error;
-      }
       const {securityPassword}=requestSchemas.walletExport(req.body||{});
       const storedHash=await identityRepository.getSecurityPasswordHash(user(req));
       if(!storedHash){await auditExportKey(req,'failure','no security password set');return res.status(400).json({error:'Set a security password first.',code:'SECURITY_PASSWORD_NOT_SET'});}

@@ -1521,7 +1521,6 @@ async function finishExportKeyExecution(chatId, messageId, userId, flowData, pla
   const backToMenu = telegramMenus.mainMenu({}).replyMarkup;
   const audit = value => Promise.resolve(botSecurityRepository.record(value)).catch(error => log(`Security audit write failed: ${safeError(error)}`));
   try {
-    exportKeyRateLimiter.check('telegram', userId, 'exportkey');
     const exported = await botCommands.exportWalletKeyRaw(userId, flowData.walletLabel);
     telegramFlowState.clear('telegram', chatId);
     await tgUpdate(chatId, messageId, { text: `✅ Key for <b>${escapeTelegramHtml(exported.label)}</b> sent below. It self-deletes in ${EXPORT_KEY_TTL_MS / 1000}s -- deletion is a courtesy, not a control.`, replyMarkup: backToMenu, parseMode: 'HTML' });

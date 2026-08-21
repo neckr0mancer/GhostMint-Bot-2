@@ -3039,7 +3039,8 @@ function WalletExport({profile,onProfileChange,walletList}){
             <input className="in mono" name="confirmation" required placeholder="CONFIRM"/></label>
           <div className="br"><button className="b d" disabled={busy||retry.blocked}>{busy?'Exporting…':retry.blocked?'Rate limited':'Export keystore'}</button></div>
           <p style={{fontSize:'11px',color:'var(--faint)'}}>Store the keystore and your security
-            password separately. Together they are the wallet; either one alone is not.</p>
+            password separately. Together they are the wallet; either one alone is not. Every
+            attempt is written to the security audit log.</p>
         </div>
       </form>:null}
     </div>
@@ -3049,16 +3050,13 @@ function WalletExport({profile,onProfileChange,walletList}){
         code:`429 · Retry-After: ${limited.retryAfter??'unknown'}`}}/>}
       <div className="sober"><div className="sh">Export policy</div>
         <table className="led"><tbody>
-          <tr><td>Rate limit</td><td>2 per hour</td></tr>
-          {/* NOT "shared with Telegram", which is what the prototype claims and what api.js:193's
-              own comment still says. createCommandRateLimiter keys on `platform:userId:command`
-              (botSecurity.js:61), so dashboard: and telegram: are separate buckets and the real
-              ceiling across both is 4 an hour. Stating the true number here rather than the
-              intended one -- whether the buckets SHOULD be shared is a security decision, not a
-              caption. */}
-          <tr><td>Telegram /exportkey</td><td>Counted separately</td></tr>
+          {/* The rate-limit rows are gone because the rate limit is: removed on both surfaces
+               at the owner's request. Leaving "2 per hour" on screen would have been the page
+               stating a rule the server no longer applies. */}
+          <tr><td>Rate limit</td><td>None</td></tr>
           <tr><td>Requires</td><td>Security password</td></tr>
-          <tr className="tot"><td>Audited</td><td>Always</td></tr>
+          <tr><td>Confirmation</td><td>Type CONFIRM</td></tr>
+          <tr className="tot"><td>Audited</td><td>Every attempt</td></tr>
         </tbody></table></div>
     </div>
   </div>;

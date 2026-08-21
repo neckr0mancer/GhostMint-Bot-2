@@ -1549,3 +1549,21 @@ html[data-theme="ghost-mint-light"] .sheet-handle{
 
 .b svg{width:13px;height:13px;flex:none}
 .b.sm svg{width:12px;height:12px}
+
+/* ── Wallet card: no repetition once expanded (mobile) ────────────────────────
+   .colh already states the wallet's status, name and balance, and on mobile it stays on screen
+   while .colb is open -- so the expanded body was repeating all three back, one row down. What the
+   expansion is actually FOR is the address and the performance table, so those are what it shows.
+
+   The Details control stays: it is the way into the overlay and has no equivalent in .colh. It
+   keeps .ch to itself, right-aligned by the .sp already in that row.
+
+   Scoped to .app[data-m] rather than a media query, matching how .colh itself is revealed
+   (prototype.css:505) -- above that breakpoint .colh is hidden and .colb IS the whole card, so
+   these three must stay. */
+.app[data-m] .card.col > .colb > .ch > h2,
+.app[data-m] .card.col > .colb > .ch > .p,
+.app[data-m] .card.col > .colb > .tv{display:none}
+.app[data-m] .card.col > .colb{position:relative}
+.app[data-m] .card.col > .colb > .ch{position:absolute;top:0;right:0;margin:0}
+.app[data-m] .card.col > .colb > .wallet-addr.mono{padding-right:32px}
