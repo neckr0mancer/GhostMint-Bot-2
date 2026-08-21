@@ -1068,13 +1068,12 @@ function PolicyEditor({target,onChanged,highlighted}){
             engine and your governance tier.</div></div>
         <div className="br" style={{marginTop:'11px'}}><button className="b p sm">Save policy</button></div>
       </form>}
-      {value&&<label className="fl" style={{marginTop:'11px'}}>
-        <span>Mode preset, applies that tier stance to this target only</span>
-        <select className="in" disabled={busy} defaultValue={value.policy.modePresetKey||''}
-          onChange={event=>applyMode(event.target.value)}>
-          <option value="">Not set</option>
-          {(modes.data||[]).map(item=><option key={item.key} value={item.key}>{item.displayName}</option>)}
-        </select></label>}
+      {value&&<div className="sober" style={{marginTop:'11px'}}>
+        <div className="sh">Transaction mode</div>
+        <table className="led"><tbody>
+          <tr><td>Applies here</td><td>{titleCase(value.governance?.preset||'normie')}</td></tr>
+          <tr className="tot"><td>Change it</td><td>Settings · Transaction mode</td></tr>
+        </tbody></table></div>}
     </div>
     <div className="g">
       <div className="sober"><div className="sh">Human verification</div>
@@ -1087,7 +1086,7 @@ function PolicyEditor({target,onChanged,highlighted}){
         </tbody></table></div>
       {challenge
         ?<div className="chal">
-           <div className="chal-h">{WARN_TRIANGLE_ICON}<span>Confirm bypass</span></div>
+           <div className="chal-h">{WARN_TRIANGLE_ICON}Highest-risk configuration</div>
            <div className="chal-b">
              <p>Matching triggers will execute <b>immediately, with no manual check</b>. Funds can
                move without you seeing the transaction first.</p>
@@ -1116,28 +1115,51 @@ function PolicyEditor({target,onChanged,highlighted}){
 // ?target=:id. A bookmark that pointed at one policy still lands on that policy: the matching
 // card is rendered first and marked, rather than the user being dropped into an unordered grid
 // and left to find it. An id that no longer exists degrades to the plain list.
-function TargetPolicies({target}){
+// ONE policy form with a target picker, not one form per target. With four triggers the old shape
+// rendered four identical forms down the page, which is what made this tab read as noise. auto.html
+// shows a single policy card too -- "Copy 0x8f2a…1d90 · policy" -- so this is the prototype's own
+// shape as well as the calmer one. Picking a target refills every field from that target's policy.
+//
+// This is also what the Edit button on a trigger card now means: it deep-links here with that
+// target selected, rather than being a second editor somewhere else.
+// Same shape as consumePendingMintPrefill: a module-level handoff for a same-tab SPA navigation,
+// which go() does not carry a target through. Read once, so returning to the tab later does not
+// silently re-select a trigger the user has since moved on from.
+let pendingPolicyTarget=null;
+function openPolicyFor(id){pendingPolicyTarget=id;}
+function consumePendingPolicyTarget(){const value=pendingPolicyTarget;pendingPolicyTarget=null;return value;}
+function TargetPolicies({target,go}){
   const snipers=useLoad('/api/snipers',[],'snipers.changed');
   const rules=useLoad('/api/watch-rules',[],'watchrules.changed');
-  const all=[...(snipers.data?.items||[]).map(x=>({id:x.id,label:x.label,type:'sniper'})),...(rules.data?.items||[]).map(x=>({id:x.id,label:x.name,type:'social_rule'}))];
-  const targets=target?[...all.filter(item=>item.id===target),...all.filter(item=>item.id!==target)]:all;
-  const missing=Boolean(target)&&!all.some(item=>item.id===target)&&snipers.data!==null&&rules.data!==null;
+  const all=[
+    ...(snipers.data?.items||[]).map(item=>({id:item.id,label:item.label,type:'sniper'})),
+    ...(rules.data?.items||[]).map(item=>({id:item.id,label:item.name,type:'social_rule'})),
+  ];
+  const [chosen,setChosen]=useState(()=>consumePendingPolicyTarget());
+  const selected=all.find(item=>item.id===(chosen||target))||all[0]||null;
+  const loading=(snipers.data===null&&!snipers.error)||(rules.data===null&&!rules.error);
+  const missing=Boolean(target)&&!loading&&!all.some(item=>item.id===target);
   return <>
-    <p className="eyebrow">Per-target safety — trigger modes, verification, presets, and read-only effective governance ceilings.</p>
-    {missing&&<Notice error={`No target matches ${target}. It may have been removed. Showing all targets instead.`}/>}
-    {/* Loading and error were both absent: while the two lists were in flight this rendered an
-        empty policy grid, and if either request failed it rendered the same empty grid and said
-        nothing at all. A silent failure on a SAFETY screen is the worst place to have one --
-        "no policies" and "could not read your policies" mean opposite things. */}
+    <p className="eyebrow">Per-target safety — what happens when a trigger fires. Spend and gas
+      ceilings are not set here; they belong to your transaction mode and governance tier.</p>
     <Notice error={loadError(snipers,'Could not load your triggers.')||loadError(rules,'Could not load your triggers.')}/>
-    {(snipers.data===null&&!snipers.error)||(rules.data===null&&!rules.error)
-      ?<Skeleton/>
-      :null}
-    {!snipers.error&&!rules.error&&snipers.data!==null&&rules.data!==null&&all.length===0
+    {missing&&<Notice error={`No target matches ${target}. It may have been removed.`}/>}
+    {loading?<Skeleton rows={2}/>:null}
+    {!loading&&!snipers.error&&!rules.error&&all.length===0
       &&<Empty text="No triggers yet. Create a sniper or a social rule first — a policy configures an existing target, it does not create one."/>}
-    <div className="policy-grid">{targets.map(item=><PolicyEditor key={`${item.type}:${item.id}`} target={item} highlighted={item.id===target}/>)}</div>
+    {selected&&<>
+      <label className="fl" style={{maxWidth:'420px',marginBottom:'12px'}}>
+        <span>Target</span>
+        <select className="in" value={selected.id} onChange={event=>setChosen(event.target.value)}>
+          {all.map(item=><option key={`${item.type}:${item.id}`} value={item.id}>
+            {item.label} · {item.type==='sniper'?'copy sniper':'social rule'}</option>)}
+        </select>
+      </label>
+      <PolicyEditor key={`${selected.type}:${selected.id}`} target={selected} go={go}/>
+    </>}
   </>;
 }
+
 const BELL_ICON=<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M18 8A6 6 0 1 0 6 8c0 7-3 8-3 8h18s-3-1-3-8"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>;
 // The bell surfaces two different things: pending confirmations (actionable, drive the badge
 // count) and a short recent-notifications log (informational, sourced from the same notify() log
@@ -2021,7 +2043,7 @@ function AutomationAll({filter=null,onTab}){
           :rows.length===0
             ?<Empty text="No triggers match this search."/>
             :<div className="g g2">{rows.map(row=><TriggerCard key={`${row.kind}:${row.id}`} row={row}
-                onEdit={item=>onTab?.(item.kind==='sniper'?'snipers':'social')}
+                onEdit={item=>{openPolicyFor(item.id);onTab?.('policies');}}
                 onToggle={toggleTrigger}/>)}</div>}
   </>;
 }
