@@ -60,12 +60,27 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLo
   // misaligning real values like ceiling amounts into the wrong slots. Reject it here, before the
   // join, while the original field name is still known -- by the time validation runs deeper in the
   // call chain the string has already been split apart and the original association is lost.
+  //
+  // Live-reported bug (both this and "also other admin stuff too"): a genuinely BLANK field passes
+  // the whitespace check above (there's no space to find in ''), but is exactly as dangerous once
+  // joined and re-split -- adminCommandService's split(/\s+/) collapses consecutive whitespace, so a
+  // blank field vanishes from the token stream entirely and every field after it silently shifts
+  // into the wrong slot instead of failing loudly. Confirmed live: leaving "Platform user ID" blank
+  // on the Advanced mode access form put the literal string "inherit" into platformUserId and left
+  // advancedModesAllowed undefined. Every field here must be a real, present, non-blank token --
+  // a field that's genuinely allowed to mean "leave this alone" (retention days, suspension
+  // duration) is the caller's job to fill with an explicit sentinel value ('off', 'indefinite',
+  // etc.) before it ever reaches this function, the same way RestrictAccountControl's durationDays
+  // already does; this function has no way to know which blanks are intentional.
   function adminInput(actionName,body={}){
     const fields=ADMIN_FIELDS[actionName];
     if(!fields)throw new ValidationError({field:'action',message:'is not supported'});
     for(const field of fields){
       if(field==='reason')continue;
       const value=body[field];
+      if(value===undefined||value===null||(typeof value==='string'&&value.trim()==='')){
+        throw new ValidationError({field,message:'is required'});
+      }
       if(typeof value==='string' && /\s/.test(value.trim())){
         throw new ValidationError({field,message:'must not contain spaces -- admin actions use a shared single-token command syntax; try hyphens or underscores instead'});
       }
