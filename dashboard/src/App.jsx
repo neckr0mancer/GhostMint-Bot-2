@@ -1040,6 +1040,7 @@ function PolicyEditor({target,onChanged,highlighted}){
     }catch(error){notify(error.message,{type:'error'});}
   }
 
+  const social=target.type==='social_rule';
   const verification=value?.policy?.humanVerification||'on';
   return <div className="split">
     <div className={`card${highlighted?' policy-highlighted':''}`}>
@@ -1054,15 +1055,21 @@ function PolicyEditor({target,onChanged,highlighted}){
           <label className="fl"><span>Social trigger</span>
             <select className="in" name="socialTrigger" defaultValue={value.policy.socialTrigger||'manual'}>
               <option value="manual">Manual</option><option value="auto">Auto</option></select></label>
-          <label className="fl"><span>Wallet</span>
-            <select className="in" name="walletLabel" defaultValue={value.policy.walletLabel||''}>
-              <option value="">Use the trigger own wallet</option>
+          <label className="fl"><span>Wallet that pays{social?'':' · optional'}</span>
+            <select className="in" name="walletLabel" required={social}
+              defaultValue={value.policy.walletLabel||(social?(wallets.data||[])[0]?.label||'':'')}>
+              {!social&&<option value="">This sniper’s own wallet</option>}
               {(wallets.data||[]).map(item=><option key={item.label} value={item.label}>{item.label}</option>)}</select></label>
-          <label className="fl"><span>Mint preset</span>
-            <select className="in" name="mintPresetName" defaultValue={value.policy.mintPresetName||''}>
-              <option value="">None, use the contract as detected</option>
+          <label className="fl"><span>Mint preset{social?'':' · optional'}</span>
+            <select className="in" name="mintPresetName" required={social}
+              defaultValue={value.policy.mintPresetName||''}>
+              {!social&&<option value="">Auto — use the contract as detected</option>}
               {(mintPresets.data||[]).map(item=><option key={item.name} value={item.name}>{item.name}</option>)}</select></label>
         </div>
+        {social&&(!value.policy.walletLabel||!value.policy.mintPresetName)&&
+          <div className="nt w" style={{marginBottom:'11px'}}>{WARN_TRIANGLE_ICON}
+            <div>This rule cannot mint yet. A social trigger has no wallet of its own, so it needs
+              both a wallet and a mint preset — without them it fails when it fires, not now.</div></div>}
         <div className="nt i">{INFO_ICON}
           <div>A target policy cannot contain spend or gas ceilings. Those stay with the transaction
             engine and your governance tier.</div></div>
@@ -1071,7 +1078,7 @@ function PolicyEditor({target,onChanged,highlighted}){
       {value&&<div className="sober" style={{marginTop:'11px'}}>
         <div className="sh">Transaction mode</div>
         <table className="led"><tbody>
-          <tr><td>Applies here</td><td>{titleCase(value.governance?.preset||'normie')}</td></tr>
+          <tr><td>Applies here</td><td>{value.governance?.preset?.displayName||'Normie'}</td></tr>
           <tr className="tot"><td>Change it</td><td>Settings · Transaction mode</td></tr>
         </tbody></table></div>}
     </div>
@@ -1907,8 +1914,8 @@ function triggerRows(snipers,rules){
   });
   const fromRules=(rules?.items||[]).map(item=>({
     kind:'social',id:item.id,title:item.name,platform:String(item.type||'').split('_')[0],
-    status:item.consecutiveFailures>0?'Failing':(item.enabled?'Active':'Paused'),
-    tone:item.consecutiveFailures>0?'bad':(item.enabled?'ok':'idle'),
+    status:item.enabled===false?'Paused':(item.consecutiveFailures>0?'Failing':'Active'),
+    tone:item.enabled===false?'idle':(item.consecutiveFailures>0?'bad':'ok'),
     meta:`${String(item.type||'').replace(/_/g,' ')} · ${item.method}`+
       (item.consecutiveFailures>0?` · ${item.consecutiveFailures} consecutive failures`:''),
     value:item.consecutiveFailures>0?`${item.consecutiveFailures} failed polls`:'',
@@ -1927,7 +1934,8 @@ function TriggerCard({row,onEdit,onToggle}){
   const rows=policyRows(row,policy);
   // Active triggers offer Pause; a failing one offers Disable -- the prototype uses each verb on
   // the card whose state it fits, and they are different actions, not a style choice.
-  const stopLabel=row.status==='Failing'?'Disable':'Pause';
+  const stopped=row.status==='Paused';
+  const stopLabel=stopped?'Resume':'Pause';
   return <div className="blk">
     <div className="card col" data-open={open?'1':'0'}
       style={row.tone==='bad'?{borderColor:'var(--loss)'}:undefined}>
@@ -1966,7 +1974,8 @@ function TriggerCard({row,onEdit,onToggle}){
         })()}
         <div className="br">
           <button type="button" className="b sm" onClick={()=>onEdit?.(row)}>Edit</button>
-          <button type="button" className="b g sm" onClick={()=>onToggle?.(row)}>{stopLabel}</button>
+          <button type="button" className={stopped?'b p sm':'b g sm'}
+            onClick={()=>onToggle?.(row)}>{stopLabel}</button>
         </div>
       </div>
     </div>
@@ -2138,8 +2147,11 @@ function AutomationAll({filter=null,onTab}){
     const stopping=row.status!=='Paused';
     try{
       if(row.kind==='social'){
-        await api(`/api/watch-rules/${row.id}/disable`,{method:'POST',body:JSON.stringify({})});
-        notify('Watch rule disabled.',{type:'success'});rules.load();
+        // /disable only disables -- resuming goes through the ordinary update, or a paused rule
+        // would have no way back.
+        if(stopping)await api(`/api/watch-rules/${row.id}/disable`,{method:'POST',body:JSON.stringify({})});
+        else await api(`/api/watch-rules/${row.id}`,{method:'PUT',body:JSON.stringify({enabled:true})});
+        notify(stopping?'Watch rule paused.':'Watch rule resumed.',{type:'success'});rules.load();
       }else{
         await api(`/api/snipers/${row.id}`,{method:'PUT',body:JSON.stringify({active:!stopping})});
         notify(stopping?'Sniper paused.':'Sniper resumed.',{type:'success'});snipers.load();
@@ -2206,9 +2218,13 @@ function Automation({tab,onTab,target}){
   // Collapsed until asked for: the page should open as a list of what exists, not a form for
   // something that does not.
   const [creating,setCreating]=useState(false);
+  // From All, New trigger has to change tab AND open the form. The close-on-tab-change effect
+  // below would otherwise undo that in the same render, so an intentional hand-off is flagged
+  // here and honoured once the new tab arrives.
+  const wantsCreate=useRef(false);
   // Close it when the tab changes: opening New trigger on Snipers and then switching to Social
   // otherwise left a watch-rule form already open, which reads as though the tab did it.
-  useEffect(()=>{setCreating(false);},[active]);
+  useEffect(()=>{setCreating(wantsCreate.current);wantsCreate.current=false;},[active]);
   // Same helper the rail badge uses, so the tab numbers and the Automation total are one
   // calculation rather than two that agree by luck.
   const snipers=useLoad('/api/snipers',[],'snipers.changed');
@@ -2218,10 +2234,15 @@ function Automation({tab,onTab,target}){
   const badges=automationBadges({snipers:snipers.data,rules:rules.data,confirmations:confirmations.data}).tabs;
   return <>
     <div className="page-head"><div className="page-head-text"><p className="eyebrow">Automation</p><h1>Automation</h1></div>
-      <button type="button" className="b p" onClick={()=>{
-        if(active==='snipers'||active==='social'){setCreating(true);return;}
-        onTab?.('snipers');setCreating(true);
-      }}>New trigger</button></div>
+      <div className="page-head-actions">
+        {/* Becomes Close while the form is open, and drops to the quiet style, so the button
+            says which state you are in rather than offering to open what is already open. */}
+        <button type="button" className={creating?'b g':'b p'} onClick={()=>{
+          if(creating){setCreating(false);return;}
+          if(active==='snipers'||active==='social'){setCreating(true);return;}
+          wantsCreate.current=true;onTab?.('snipers');
+        }}>{creating?'Close':'New trigger'}</button>
+      </div></div>
     <SubTabs tabs={AUTOMATION_TABS} active={active} onChange={onTab} label="Automation sections" badges={badges}/>
     {active==='all'&&<AutomationAll onTab={onTab}/>}
     {active==='snipers'&&<>{creating&&<SniperForm wallets={wallets.data} chains={EVM_CHAINS}
@@ -2530,10 +2551,12 @@ function automationBadges({snipers,rules,confirmations}){
   // A sniper counts as failing on its MOST RECENT event only: an old failure it has since
   // recovered from is history, not an alert.
   const failingSnipers=(snipers?.items||[]).filter(sniper=>{
+    if(sniper.active===false)return false;
     const latest=events.find(event=>event.sniperId===sniper.id);
     return latest&&['failed','error','skipped'].includes(String(latest.state||'').toLowerCase());
   }).length;
-  const failingRules=(rules?.items||[]).filter(rule=>Number(rule.consecutiveFailures)>0).length;
+  const failingRules=(rules?.items||[]).filter(rule=>
+    rule.enabled!==false&&Number(rule.consecutiveFailures)>0).length;
   // Pending confirmations are 'needs you', not 'broke' -- amber, never red. A trigger waiting on
   // a human is the system working as designed.
   const pending=(confirmations||[]).length;
