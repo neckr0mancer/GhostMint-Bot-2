@@ -58,6 +58,13 @@ shipped).
   paused pending real timing data rather than built speculatively. Worklist B (after A is stable):
   parallelized pre-arm, dynamic fee presets, RPC health scoring/failover, hot wallet session cache
   (security tradeoff, needs its own sign-off), and latency dashboards — none started.
+- **Round 21** (Section AX) fixes the live-reported "scheduled transactions always fail" —
+  diagnosed from production logs read directly through the Railway API, then live-probed against
+  OpenSea: OpenSea-backed scheduled tasks failed permanently whenever `buildMintTransaction`
+  couldn't serve calldata at fire time (contract not indexed by OpenSea at all, bare collection
+  with no drop-mint endpoint behind it, or plain OpenSea unavailability), with no fallback to this
+  app's own on-chain minting. Public stages now fall back; eligibility-gated stages still fail
+  honestly. Shipped 2026-08-22 — see Round 21 below.
 - **Round 20** (Section AF/AD follow-up) makes OpenSea phase detection show on every paste, not just
   `/info` — live-reported ("I need you to be able to detect and show phases, Telegram and Discord
   still doesn't do that") and confirmed live against a real drop (KIYO, contract
@@ -111,6 +118,60 @@ shipped).
   place) — fixed by the user directly in Discord, nothing to change here.
 
 Status legend: ✅ Done · 🟡 Partial · ❌ Not started
+
+---
+
+# Round 21 — "scheduled transactions always fail" (2026-08-22)
+
+## Section AX — OpenSea-backed scheduled mints no longer die when OpenSea can't serve them ✅
+
+Live-reported, absolute terms. Diagnosed from evidence rather than inspection, in three steps:
+
+1. **The dev Supabase `mint_tasks` table is all test debris** (879 failed rows against fake
+   contracts `0x…44`/`0x…22`, wallet labels like `scheduler-1787409370215`, mint times in 2027) —
+   integration tests run against the same `DATABASE_URL`. Nothing diagnosable there; production
+   writes to its own database.
+2. **Production logs via the Railway GraphQL API** (`deploymentLogs` on the current deployment):
+   `OpenSea buildMintTransaction (slug lookup) failed for ethereum:0x30cf…: HTTP 404` — and the same
+   for two more contracts — at exactly 12:00:00, 13:00:00 and 14:00:00 UTC. Round-the-hour stamps =
+   scheduled tasks firing on the hour and dying inside the one call an OpenSea-backed
+   (`via_opensea`) task hard-requires.
+3. **Live probes of those exact contracts with this app's own key**: two aren't indexed by OpenSea
+   at all ("Contract … not found" from the slug lookup), the third resolves as a bare,
+   address-named collection whose `POST /drops/{slug}/mint` 404s. The API behaved as documented;
+   the scheduler treated every one of these answers as a permanent validation failure.
+
+Root cause: since Section AR, a task scheduled through the OpenSea phase flow sets
+`via_opensea=true`, and `executeTask`'s whole branch was "ask OpenSea for calldata or throw
+permanently". Any OpenSea miss at fire time — unindexed contract, drop endpoint gone, transient
+outage — killed the task. No retry, no fallback, even though this app's own SeaDrop/on-chain
+calldata path sat directly below in the same function.
+
+Fix (`src/server.js` `executeTask`): when `buildMintTransaction` returns null (its own 409/422
+eligibility answers still throw inside it and keep their meaning), the task now falls through to
+the shared on-chain path — the same drift preflight + `prepareMintCall` + `executePrepared` a
+manual mint uses. One guard keeps honesty where falling back could only burn gas:
+`OPENSEA_ELIGIBILITY_ONLY_STAGES` (`allowlist`, `gtd`, `fcfs`, `presale`) refuses the fallback when
+the stage the task was created against is eligibility-gated (stored now, see below) or when
+OpenSea's live data says the currently-active stage is. For those, the failure message says why.
+
+Supporting change: `mint_tasks.stage_type` (migration `047`, nullable) records the OpenSea stage
+type at schedule time via `openSeaPhaseTaskData` → `createTask` → `saveTask`, mapped back through
+both repositories. This is what lets a gated-stage task keep failing honestly even when OpenSea is
+too unreachable at fire time to ask what's active.
+
+Verification: `node --check` clean on all five touched sources; migration applied and confirmed in
+`schema_migrations`; targeted suites 113/113 (scheduler unit + integration, openSeaService,
+botCommandService, dashboard); full suite 840 tests → 838 pass with only the two known
+by-design-open review repros failing, zero cancellations.
+
+## Also flagged during diagnosis, not fixed here
+
+- Production shows 102 tasks stuck in `claimed` (99 of them test fixtures) and a recurring
+  hourly `buildMintTransaction` 404 pair that may be TWO tasks per hour from one user retrying —
+  both worth a look once real users confirm the fix landed.
+- The dev DB doubles as the integration-test target; a cleanup script for fixture rows would make
+  future log/DB triage much faster.
 
 ---
 

@@ -286,6 +286,13 @@ triggerExecutionService=createTriggerExecutionService({repository:targetPolicyRe
   notify:(userId,value)=>notifyUser(userId,`Trigger requires confirmation.\n<code>${escapeTelegramHtml(JSON.stringify(value.preview))}</code>\nRun /confirmtrigger ${value.requestId} CONFIRM to approve or REJECT to reject within 10 minutes.`),
   onPending:(userId,request)=>dashboardWebSockets.broadcastToUser(userId,{type:'confirmation.pending',request}),
   onResolved:(userId,value)=>dashboardWebSockets.broadcastToUser(userId,{type:'confirmation.resolved',...value})});
+// OpenSea drop stages whose eligibility only OpenSea's own backend can resolve (allowlist/GTD/FCFS
+// need a per-wallet proof or signature this app has no on-chain way to construct). A scheduled task
+// against one of these cannot fall back to this app's own public-mint calldata when OpenSea fails to
+// serve it -- such a mint could only revert. Anything else (public_sale and friends, or no stage
+// data at all) may fall back. snake_case per the API, matched lowercased.
+const OPENSEA_ELIGIBILITY_ONLY_STAGES = new Set(['allowlist', 'gtd', 'fcfs', 'presale']);
+
 const schedulerWorker = createSchedulerWorker({
   repository: schedulerRepository,
   intentRepository: transactionIntentRepository,
@@ -319,20 +326,44 @@ const schedulerWorker = createSchedulerWorker({
     // OpenSea IS the honest drift/ineligibility answer for this path, surfaced as a ValidationError
     // (not in schedulerWorker's TRANSIENT_CODES, so it fails permanently rather than retrying
     // against a wallet that will never become eligible by retrying alone).
+    const qty = task.qty || 1;
     if (task.viaOpenSea) {
-      const qty = task.qty || 1;
       const built = await openSeaService.buildMintTransaction(wallet.chain, task.contract, wallet.address, qty);
-      if (!built) {
-        throw new ValidationError({ field: 'contractAddress', message: "OpenSea couldn't build a mint for this contract right now -- it may not track this as a drop, or OpenSea is temporarily unavailable" });
+      if (built) {
+        // Same check executeMintViaOpenSea applies to the manual path -- OpenSea's eligibility
+        // resolution is trusted, the mechanical shape of what it returned still is not.
+        validateOpenSeaMintCall({ built, contractAddress: task.contract, quantity: qty });
+        const prepared = { chain: wallet.chain, calldata: built.data, valueWei: BigInt(built.valueWei),
+          method: { signature: 'opensea:drops-mint' }, preview: { contractAddress: task.contract, callTarget: built.to } };
+        return mintExecution.executePrepared({ userId: task.userId, wallet, prepared, triggerSource: 'scheduled',
+          idempotencyKey: hooks.idempotencyKey, onIntentPersisted: hooks.onIntentPersisted,
+          onPreview: preview => notifyUser(task.userId, formatMintPreview(preview)) });
       }
-      // Same check executeMintViaOpenSea applies to the manual path -- OpenSea's eligibility
-      // resolution is trusted, the mechanical shape of what it returned still is not.
-      validateOpenSeaMintCall({ built, contractAddress: task.contract, quantity: qty });
-      const prepared = { chain: wallet.chain, calldata: built.data, valueWei: BigInt(built.valueWei),
-        method: { signature: 'opensea:drops-mint' }, preview: { contractAddress: task.contract, callTarget: built.to } };
-      return mintExecution.executePrepared({ userId: task.userId, wallet, prepared, triggerSource: 'scheduled',
-        idempotencyKey: hooks.idempotencyKey, onIntentPersisted: hooks.onIntentPersisted,
-        onPreview: preview => notifyUser(task.userId, formatMintPreview(preview)) });
+      // OpenSea couldn't serve calldata at all. Only its definitive eligibility answers (409/422)
+      // throw inside buildMintTransaction; null means "no calldata available": the contract isn't
+      // indexed by OpenSea at all ("Contract ... not found" on the slug lookup), resolves as a bare
+      // collection with no /drops/{slug}/mint behind it, or OpenSea itself is unreachable. All three
+      // used to fail the task permanently right here -- the dominant cause of production's
+      // "scheduled mints always fail" report (live-verified against today's failing contracts). Now:
+      // an eligibility-gated stage still fails honestly rather than falling back, because only
+      // OpenSea can prove that wallet is allowlisted and an on-chain public mint could only revert;
+      // everything else falls through to this app's own on-chain path below -- exactly what a manual
+      // mint against this contract would attempt.
+      const live = await openSeaService.getDrop(wallet.chain, task.contract);
+      // Gated if the task was CREATED against an eligibility-only stage (stored at schedule time --
+      // the only signal left when OpenSea is unreachable for the live check too) or if the stage
+      // OpenSea currently reports as active is one of them.
+      const taskGated = OPENSEA_ELIGIBILITY_ONLY_STAGES.has(String(task.stageType || '').toLowerCase());
+      const activeGated = Boolean(live?.activeStage
+        && OPENSEA_ELIGIBILITY_ONLY_STAGES.has(String(live.activeStage.stageType || '').toLowerCase()));
+      if (taskGated || activeGated) {
+        const stageName = live?.activeStage
+          ? (live.activeStage.label || telegramMenus.humanizeStageType(live.activeStage.stageType))
+          : null;
+        throw new ValidationError({ field: 'contractAddress',
+          message: `${stageName ? `the "${stageName}" stage` : 'this stage'} can only be minted through OpenSea, and OpenSea couldn't build the mint right now -- retry closer to the drop window, or reschedule` });
+      }
+      log(`Scheduled OpenSea-backed task "${task.name}" (${wallet.chain}:${task.contract}) falling back to on-chain calldata: OpenSea could not serve a mint`);
     }
     // Phase-drift preflight: the schedule was set against whatever SeaDrop's PublicDrop said at
     // scheduling time (or a hand-typed phase-2+ price/time -- Section AF, since nothing on-chain
@@ -1692,6 +1723,7 @@ function openSeaPhaseTaskData(mintFlowData, stage) {
   return {
     contractAddress: mintFlowData.contractAddress, chain: mintFlowData.chain, isSeaDrop: mintFlowData.isSeaDrop,
     priceETH: 0, priceUnknown: false, viaOpenSea: true, collection: mintFlowData.collection,
+    stageType: stage.stageType || null,
     mintTime: new Date(stage.startTime * 1000).toISOString(),
     name: openSeaPhaseTaskName(mintFlowData, stage),
     maxPerWallet: mintFlowData.maxPerWallet,
@@ -1740,7 +1772,7 @@ async function finishTaskSchedule(chatId, messageId, userId, flowData) {
     const task = await botCommands.createTask(userId, {
       name: flowData.name, walletLabel: flowData.walletLabel, contractAddress: flowData.contractAddress,
       chain: flowData.chain, quantity: flowData.quantity || 1, priceETH: flowData.priceETH, mintTime: flowData.mintTime,
-      viaOpenSea: flowData.viaOpenSea,
+      viaOpenSea: flowData.viaOpenSea, stageType: flowData.stageType,
     });
     telegramFlowState.clear('telegram', chatId);
     return tgUpdate(chatId, messageId, telegramMenus.taskScheduled({

@@ -404,7 +404,7 @@ function openSeaPhaseTaskName(mintFlowData, stage) {
 function openSeaPhaseTaskData(mintFlowData, stage) {
   return {
     contractAddress: mintFlowData.contractAddress, chain: mintFlowData.chain,
-    priceETH: 0, priceUnknown: false, viaOpenSea: true,
+    priceETH: 0, priceUnknown: false, viaOpenSea: true, stageType: stage.stageType || null,
     mintTime: new Date(stage.startTime * 1000).toISOString(),
     name: openSeaPhaseTaskName(mintFlowData, stage),
     // The chosen stage carries its own per-wallet cap (normalizeStage maps OpenSea's
@@ -471,7 +471,7 @@ async function finishTaskScheduleDiscord(ctx, respond, platformUserId, userId, f
     const task = await commands.createTask(userId, {
       name: flowData.name, walletLabel: flowData.walletLabel, contractAddress: flowData.contractAddress,
       chain: flowData.chain, quantity: flowData.quantity || 1, priceETH: flowData.priceETH, mintTime: flowData.mintTime,
-      viaOpenSea: flowData.viaOpenSea,
+      viaOpenSea: flowData.viaOpenSea, stageType: flowData.stageType,
     });
     flowState.clear('discord', platformUserId);
     // Reuses the same task:cancel:ask:<id> step tasksMenu/taskActions already use on Telegram -- a
