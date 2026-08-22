@@ -10,6 +10,7 @@ function mapSquad(row) {
     priceWei: row.price_wei === null || row.price_wei === undefined ? null : BigInt(row.price_wei),
     gasPriceWei: row.gas_price_wei === null || row.gas_price_wei === undefined ? null : BigInt(row.gas_price_wei),
     triggerType: row.trigger_type, fireAt: row.fire_at ? new Date(row.fire_at).getTime() : null,
+    targetBlock: row.target_block === null || row.target_block === undefined ? null : Number(row.target_block),
     status: row.status, waveSize: row.wave_size,
     createdAt: new Date(row.created_at).getTime(), firedAt: row.fired_at ? new Date(row.fired_at).getTime() : null,
     report: row.report || null,
@@ -89,12 +90,20 @@ function createLaunchRepository(pool) {
         [nowMs]);
       return result.rows.map(mapSquad);
     },
+    // Staged squads waiting on an event trigger (block height / pending tx). The launcher arms a
+    // live subscription for each of these; squads already armed are filtered by the caller.
+    async listTriggerCandidates() {
+      const result = await pool.query(
+        `SELECT * FROM launch_squads WHERE status='staged' AND trigger_type IN ('block','pending')`);
+      return result.rows.map(mapSquad);
+    },
     async updateSquad(id, fields = {}) {
       const sets = []; const params = []; let n = 1;
       for (const [key, value] of Object.entries(fields)) {
         const column = { status: 'status', firedAt: 'fired_at', report: 'report', seaDropAddress: 'sea_drop_address',
           feeRecipient: 'fee_recipient', priceWei: 'price_wei', methodSignature: 'method_signature',
-          gasPriceWei: 'gas_price_wei', triggerType: 'trigger_type', fireAt: 'fire_at' }[key];
+          gasPriceWei: 'gas_price_wei', triggerType: 'trigger_type', fireAt: 'fire_at',
+          targetBlock: 'target_block' }[key];
         if (!column) continue;
         sets.push(`${column}=$${n}`);
         params.push(value instanceof Date ? value.toISOString()

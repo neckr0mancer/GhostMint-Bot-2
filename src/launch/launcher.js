@@ -14,7 +14,7 @@ const { planWaves } = require('./planner');
 // writes the report card. Reconciliation reuses transactionEngine.reconcileIntent -- the same
 // mechanism the scheduler settles with -- so "what happened to my mint" has one source of truth.
 function createLauncher({ repository, stager, mintExecution, mintService, transactionEngine, intentRepository,
-  findWallet, notify = () => {}, log = () => {}, now = () => Date.now(),
+  findWallet, triggers = null, notify = () => {}, log = () => {}, now = () => Date.now(),
   // How long settlement keeps polling intents before giving up and marking them unknown-fate in the
   // report. Generous: finality on polygon alone can take minutes.
   settleTimeoutMs = 15 * 60_000, settleIntervalMs = 5_000 }) {
@@ -48,6 +48,7 @@ function createLauncher({ repository, stager, mintExecution, mintService, transa
     // into firing. Losing the race returns null -- the winner is already launching.
     const claimed = await repository.claimForFire(id);
     if (!claimed) return null;
+    if (triggers) triggers.dispose(id);
     // Re-read AFTER claiming: the caller's snapshot may be stale by seconds; members' statuses and
     // the squad's own fields must come from the same post-claim state the settlement will see.
     const squad = await repository.getSquadById(id);
@@ -140,8 +141,61 @@ function createLauncher({ repository, stager, mintExecution, mintService, transa
     notify({ type: 'launch.done', squad: fresh, report });
   }
 
+  // Attach (or clear) an event trigger on a staged squad. 'manual'/'timer' clears any live
+  // subscription; 'block'/'pending' persist the target and arm immediately -- an arm failure here
+  // is fatal to the request (the squad stays exactly as it was) because a trigger that silently
+  // never fires is worse than one that refuses to arm.
+  async function setTarget(squad, kind, targetBlock = null) {
+    if (squad.status !== 'staged') throw new Error(`squad is ${squad.status} -- triggers attach only while staged`);
+    if (kind === 'block') {
+      if (!Number.isFinite(Number(targetBlock)) || Number(targetBlock) <= 0) throw new Error('block trigger needs a positive block number');
+    } else if (!['pending', 'manual', 'timer'].includes(kind)) {
+      throw new Error(`unknown trigger: ${kind}`);
+    }
+    if (triggers && (squad.triggerType === 'block' || squad.triggerType === 'pending')) triggers.dispose(squad.id);
+    if (kind === 'block' || kind === 'pending') {
+      await repository.updateSquad(squad.id, { triggerType: kind, targetBlock: kind === 'block' ? Number(targetBlock) : null });
+      await triggers.arm({ squadId: squad.id, kind, chain: squad.chain,
+        contractAddress: squad.contractAddress, targetBlock: Number(targetBlock) },
+        () => { fire(squad.id).catch(error => log(`Launch trigger fire failed for "${squad.name}": ${error.message}`)); });
+      log(`Launch squad "${squad.name}" armed on ${kind} trigger`);
+    } else {
+      await repository.updateSquad(squad.id, { triggerType: kind, targetBlock: null });
+      if (triggers) triggers.dispose(squad.id);
+    }
+    return repository.getSquadById(squad.id);
+  }
+
+  // Abort from a command surface: disarm any live trigger first so a late event cannot fire an
+  // aborted squad (fire's own atomic claim would refuse it anyway -- this just stops the noise).
+  async function cancel(squad) {
+    if (triggers) triggers.dispose(squad.id);
+    if (!['staged', 'armed'].includes(squad.status)) throw new Error(`squad is already ${squad.status} -- too late to abort`);
+    await repository.updateSquad(squad.id, { status: 'aborted' });
+  }
+
+  // Boot/scan-time re-arm: staged squads whose trigger kind is block/pending get their live
+  // subscription back after a restart or if one dropped. An arm failure downgrades the squad to
+  // manual and says so -- never a silent dead subscription.
+  function armEligibleTriggers() {
+    if (!triggers) return;
+    repository.listTriggerCandidates().then(candidates => {
+      for (const squad of candidates) {
+        if (triggers.has(squad.id)) continue;
+        triggers.arm({ squadId: squad.id, kind: squad.triggerType, chain: squad.chain,
+          contractAddress: squad.contractAddress, targetBlock: squad.targetBlock },
+          () => { fire(squad.id).catch(error => log(`Launch trigger fire failed for "${squad.name}": ${error.message}`)); })
+          .catch(error => {
+            log(`Launch squad "${squad.name}" trigger re-arm failed (${error.message}) -- reverting to manual`);
+            repository.updateSquad(squad.id, { triggerType: 'manual', targetBlock: null }).catch(() => {});
+            notify({ type: 'launch.triggerFailed', squad, error });
+          });
+      }
+    }).catch(error => log(`Launch trigger scan failed: ${error.message}`));
+  }
+
   // Timer-triggered squads: a light poll (the scheduler's precise-timer machinery stays where it
-  // belongs; launches gain sub-second precision later via block-height triggers anyway).
+  // belongs; event-triggered squads arm through `triggers` instead of this loop).
   function start() {
     if (timer) return;
     timer = setInterval(() => {
@@ -150,12 +204,13 @@ function createLauncher({ repository, stager, mintExecution, mintService, transa
           fire(squad).catch(error => log(`Launch squad ${squad.name} failed to fire: ${error.message}`));
         }
       }).catch(error => log(`Launch timer scan failed: ${error.message}`));
+      armEligibleTriggers();
     }, 1000);
     timer.unref?.();
   }
-  function stop() { if (timer) clearInterval(timer); timer = null; }
+  function stop() { if (timer) clearInterval(timer); timer = null; if (triggers) triggers.disarmAll(); }
 
-  return { createAndStage, fire, start, stop };
+  return { createAndStage, fire, start, stop, setTarget, cancel };
 }
 
 module.exports = { createLauncher };

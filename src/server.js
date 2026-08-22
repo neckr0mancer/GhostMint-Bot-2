@@ -44,6 +44,7 @@ const { createSchedulerWorker } = require('./scheduler/schedulerWorker');
 const { createLaunchRepository } = require('./launch/launchRepository');
 const { createLaunchStager } = require('./launch/stager');
 const { createLauncher } = require('./launch/launcher');
+const { createLaunchTriggers } = require('./launch/triggers');
 const { createSocialAdapters } = require('./social/adapters');
 const { createSocialWatchRepository } = require('./social/socialWatchRepository');
 const { createSocialWatchService } = require('./social/socialWatchService');
@@ -893,7 +894,15 @@ function tg(chatId, msg, options = {}) {
 // a fire moment; firing fans ordinary executePrepared sends out in waves. The launcher composes the
 // same primitives as every other execution surface -- no new transaction path, just orchestration.
 const launchRepository = createLaunchRepository(pool);
+// Event triggers ride the sniper-class WebSocket lane per chain -- the low-latency endpoint this
+// deployment already maintains for exactly this class of time-critical watching.
+const launchTriggers = createLaunchTriggers({
+  wsUrlFor: chain => SNIPER_CHAINS[chain]?.rpcWsUrl || CHAINS[chain]?.rpcWsUrl || null,
+  log,
+});
 const launcher = createLauncher({
+  repository: launchRepository,
+  triggers: launchTriggers,
   repository: launchRepository,
   stager: createLaunchStager({
     checkAccountStatus: userId => governance.checkAccountStatus(userId),
@@ -2490,7 +2499,8 @@ if (BOT_TOKEN) {
       if (!squad) return tgEditMenu(chatId, messageId, { text: 'Launch squad not found.' });
       if (action === 'abort') {
         if (!['staged', 'armed'].includes(squad.status)) return tgEditMenu(chatId, messageId, { text: `Squad is already ${squad.status} -- too late to abort.` });
-        await launchRepository.updateSquad(id, { status: 'aborted' });
+        try { await launcher.cancel(squad); }
+        catch (error) { return tgEditMenu(chatId, messageId, { text: escapeTelegramHtml(String(error.message || error)) }); }
         return tgEditMenu(chatId, messageId, { text: `🛑 Launch squad "${escapeTelegramHtml(squad.name)}" aborted. Nothing was sent.` });
       }
       if (!['staged', 'armed'].includes(squad.status)) return tgEditMenu(chatId, messageId, { text: `Squad is ${squad.status} -- cannot fire.` });
@@ -3251,6 +3261,26 @@ send /mint with a contract address to get going.`;
       if (error instanceof ValidationError) return tg(msg.chat.id, escapeTelegramHtml(validationReply(error)), { parseMode: 'HTML' });
       log(`ACO staging failed: ${safeError(error)}`);
       return tg(msg.chat.id, `❌ Staging failed: ${escapeTelegramHtml(String(error.message || error).slice(0, 200))}`, { parseMode: 'HTML' });
+    }
+  }));
+
+  // Attach an event trigger to a staged squad: fire at a block height, or on the first pending tx
+  // touching the mint contract. `manual` clears a trigger back to button-fired.
+  bot.onText(/^\/acotarget(?:@\w+)?\s+([0-9a-fA-F-]{36})\s+(block|pending|manual)(?:\s+(\d+))?$/i, withTelegramUser(async (msg, match, userId) => {
+    commandRateLimiter.check('telegram', userId, 'aco');
+    const [, id, kindRaw, blockRaw] = match;
+    const kind = kindRaw.toLowerCase();
+    try {
+      const squad = await launchRepository.getSquad(userId, id);
+      if (!squad) return tg(msg.chat.id, 'Launch squad not found.', { parseMode: 'HTML' });
+      const fresh = await launcher.setTarget(squad, kind, blockRaw ? Number(blockRaw) : null);
+      const line = fresh.triggerType === 'block' ? `🎯 Will fire at block <b>${fresh.targetBlock}</b>`
+        : fresh.triggerType === 'pending' ? '🎯 Will fire on the first pending transaction to the contract'
+        : 'Manual -- use the FIRE NOW button.';
+      return tgRender(msg.chat.id, { text: `<b>${escapeTelegramHtml(fresh.name)}</b>\n${line}`, parseMode: 'HTML',
+        replyMarkup: telegramMenus.keyboard([[telegramMenus.button('❌ Abort', `aco:abort:${fresh.id}`)]] ) });
+    } catch (error) {
+      return tg(msg.chat.id, `❌ ${escapeTelegramHtml(String(error.message || error).slice(0, 200))}`, { parseMode: 'HTML' });
     }
   }));
 

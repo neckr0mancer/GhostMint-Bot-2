@@ -164,6 +164,18 @@ price requirement, failure isolation, settlement convergence, wave chunking); fu
 pass, failures unchanged (the two by-design review repros; two integration timeouts passed in
 isolation).
 
+## Incident (same day): lane wiring crashed production for ~5 minutes
+
+The RPC-grid wiring appended two URLs to `ETH_RPC_URLS` without checking the consuming
+constraint — config's `validateUrlList` enforces **1–5 unique URLs per pool** and throws at boot.
+Production crash-looped from 20:26 until 20:31 UTC (`ConfigurationError: ETH_RPC_URLS must contain
+1-5 unique URLs`). Fixed by trimming to 5 with diversity preserved (original alchemy primary +
+lane-2 alchemy + infura + the drpc/cloudflare lanes already present that this session didn't know
+about). Deploy `eff2e4ce` SUCCESS, all workers healthy. The cap is now documented in
+`.env.example`; rule for any future external-config writes: **read the consumer's validation
+before writing, and re-verify the deployment after every variableUpsert** — six upserts fired six
+redeploys and none were checked until a human noticed.
+
 Next in this round (days 3–7): block-height + pending-tx triggers (`trigger.js`, the front-running
 piece), multi-RPC broadcast race extension beyond sniper (owner-approved direction), accelerated
 bump/replace for launch sends, live monitor/report UI, load rehearsal.

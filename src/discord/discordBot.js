@@ -121,6 +121,13 @@ function commandDefinitions({ supportedChains = [], chains = {} } = {}) {
     .addIntegerOption(o => o.setName('quantity').setDescription('Quantity per wallet').setMinValue(1))
     .addNumberOption(o => o.setName('price').setDescription("Native price per item (only if the contract does not expose one)").setMinValue(0))
     .addStringOption(o => chainOption(o, { description: 'Chain (auto-detected when omitted)' })));
+  commands.push(new SlashCommandBuilder().setName('acotarget').setDescription('🎯 Arm a launch-squad event trigger')
+    .addStringOption(o => o.setName('id').setDescription('Launch squad id').setRequired(true))
+    .addStringOption(o => o.setName('kind').setDescription('When to fire').setRequired(true).addChoices(
+      { name: 'Block height', value: 'block' },
+      { name: 'First pending tx to contract', value: 'pending' },
+      { name: 'Manual (clear trigger)', value: 'manual' }))
+    .addIntegerOption(o => o.setName('block').setDescription('Target block height (required for kind=block)').setMinValue(1)));
   commands.push(new SlashCommandBuilder().setName('task').setDescription('🗓️ Manage durable scheduled mints')
     .addSubcommand(c => c.setName('create').setDescription('Create a UTC scheduled mint')
       .addStringOption(o => o.setName('input').setDescription('Validated task JSON; mintTime must include Z/offset').setRequired(true))
@@ -654,7 +661,8 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         if (!squad) return dcRespond(interaction, { content: 'Launch squad not found.' });
         if (acoAction === 'abort') {
           if (!['staged', 'armed'].includes(squad.status)) return dcRespond(interaction, { content: `Squad is already ${squad.status} — too late to abort.` });
-          await launchRepository.updateSquad(id, { status: 'aborted' });
+          try { await launcher.cancel(squad); }
+          catch (error) { return dcRespond(interaction, { content: `❌ ${escapeDiscord(String(error.message || error).slice(0, 250))}` }); }
           return dcRespond(interaction, { content: `🛑 Launch squad "${escapeDiscord(squad.name)}" aborted. Nothing was sent.` });
         }
         if (!['staged', 'armed'].includes(squad.status)) return dcRespond(interaction, { content: `Squad is ${squad.status} — cannot fire.` });
@@ -1841,6 +1849,23 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
               : `❌ Staging failed: ${escapeDiscord(String(error.message || error).slice(0, 250))}`;
             break;
           }
+        }
+        case 'acotarget': {
+          if (!launcher || !launchRepository) { message = 'Launch squads are not available in this deployment.'; break; }
+          const id = interaction.options.getString('id');
+          const kind = interaction.options.getString('kind');
+          const block = interaction.options.getInteger('block');
+          const squad = await launchRepository.getSquad(userId, id);
+          if (!squad) { message = 'Launch squad not found.'; break; }
+          try {
+            const fresh = await launcher.setTarget(squad, kind, block);
+            message = fresh.triggerType === 'block' ? `🎯 **${squad.name}** will fire at block **${fresh.targetBlock}**.`
+              : fresh.triggerType === 'pending' ? `🎯 **${squad.name}** will fire on the first pending transaction to the contract.`
+              : `**${squad.name}** is manual again — use FIRE NOW.`;
+          } catch (error) {
+            message = `❌ ${escapeDiscord(String(error.message || error).slice(0, 250))}`;
+          }
+          break;
         }
         case 'task': {
           const action = interaction.options.getSubcommand();
