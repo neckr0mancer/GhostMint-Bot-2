@@ -1,6 +1,15 @@
 const DISCORD_MARKDOWN=/([\\`*_{}\[\]()<>#+\-.!|~])/g;
 const TELEGRAM_MARKDOWN=/([\\_*\[\]()`])/g;
 
+// createCommandRateLimiter keys buckets on `${platform}:${userId}:${command}`, so two call sites
+// only share a ceiling if they pass the same first argument. Sensitive wallet-key exports are meant
+// to be limited per ACCOUNT, not per surface -- the dashboard and Telegram's /exportkey both pass
+// this in place of their own platform name so the two collapse onto one bucket. Safe because both
+// sides key on the same canonical users.user_id UUID (dashboard: req.dashboardSession.userId;
+// Telegram: identity.resolveOrCreate('telegram', ...)), not on a platform-native id. Anything that
+// SHOULD stay per-platform keeps passing its real platform string.
+const ACCOUNT_RATE_LIMIT_SCOPE='account';
+
 class BotContextError extends Error {
   constructor(message) { super(message); this.name='BotContextError'; }
 }
@@ -65,5 +74,5 @@ function createCommandRateLimiter({now=()=>Date.now(),limit=3,windowMs=30_000,sw
     recent.push(timestamp);buckets.set(key,recent);
   }};
 }
-module.exports={BotContextError,RateLimitError,commandName,createCommandRateLimiter,escapeDiscord,escapeTelegram,escapeTelegramHtml,
+module.exports={ACCOUNT_RATE_LIMIT_SCOPE,BotContextError,RateLimitError,commandName,createCommandRateLimiter,escapeDiscord,escapeTelegram,escapeTelegramHtml,
   requireTextConfirmation,verifyDiscordContext,verifyTelegramContext};

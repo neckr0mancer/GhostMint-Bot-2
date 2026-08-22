@@ -2,16 +2,46 @@ const { randomUUID } = require('node:crypto');
 const { ValidationError } = require('../validation/domain');
 const { TransactionSafetyError } = require('../transactions/transactionEngine');
 
+// OpenSea reports a drop stage that has not opened yet with the same 409 it uses for one already
+// over. Treated as transient because the common case by far is a stage flipping active a beat after
+// its advertised second -- the identical request then succeeds. Bounded tightly below so the
+// already-over case still fails fast instead of retrying into a window that will never reopen.
+const STAGE_NOT_OPEN = 'STAGE_NOT_OPEN';
+// One second apart, five retries after the first attempt. Waiting on an external system to cross a
+// known moment, not on congestion to clear, so backing off exponentially would only widen the miss.
+const STAGE_NOT_OPEN_RETRY_MS = 1_000;
+const STAGE_NOT_OPEN_MAX_ATTEMPTS = 6;
+// Once that burst is spent, the schedule is consulted once more: a stage whose real opening moved
+// (or was recorded wrongly when the task was created) is worth re-arming to rather than discarding,
+// since the task exists precisely to be there at the open. Exactly ONE re-arm, and only to a time
+// within a fixed window of what was originally scheduled -- a drop that keeps slipping must not
+// leave tasks chasing it indefinitely. The re-arm grants a second burst at the new time.
+const STAGE_REARM_MAX_ATTEMPTS = 12;
+const STAGE_REARM_WINDOW_MS = 24 * 60 * 60 * 1_000;
 const TRANSIENT_CODES = new Set(['RPC_UNAVAILABLE', 'BROADCAST_UNKNOWN', 'NETWORK_ERROR', 'SERVER_ERROR',
-  'TIMEOUT', 'ETIMEDOUT', 'ECONNRESET', 'ECONNREFUSED', 'EAI_AGAIN']);
+  'TIMEOUT', 'ETIMEDOUT', 'ECONNRESET', 'ECONNREFUSED', 'EAI_AGAIN', STAGE_NOT_OPEN]);
 const FINAL_TRANSACTION_STATES = new Set(['confirmed', 'reverted', 'replaced']);
 
 function errorReason(error) {
+  // A ValidationError's own `message` is always the constant 'Request validation failed' -- every
+  // distinct permanent cause (the wallet was deleted, OpenSea returned calldata this app cannot
+  // decode, OpenSea's quantity did not match what was requested, the chain is unsupported) reaches
+  // both the user's notification and the stored last_error as that same opaque sentence. A live
+  // "scheduled mints always fail" report was undiagnosable from either for exactly this reason --
+  // all 17 such rows in the database read identically. The specifics are already carried in
+  // `issues`; fold them in here, the single function both consumers read (server.js's failure
+  // notification via event.error, and repository.fail's stored reason below).
+  if (error instanceof ValidationError && Array.isArray(error.issues) && error.issues.length) {
+    const detail = error.issues.map(item => `${item.field} ${item.message}`).join('; ');
+    return `${error.message}: ${detail}`.slice(0, 500);
+  }
   return String(error?.message || 'Unknown scheduler failure').slice(0, 500);
 }
 
 function isTransientFailure(error) {
-  if (error instanceof ValidationError) return false;
+  // A ValidationError is permanent by default -- a malformed request stays malformed. The one
+  // exception carries its own code (STAGE_NOT_OPEN): the request is fine, it was simply early.
+  if (error instanceof ValidationError) return TRANSIENT_CODES.has(error.code);
   if (error instanceof TransactionSafetyError) return TRANSIENT_CODES.has(error.code);
   return TRANSIENT_CODES.has(error?.code);
 }
@@ -19,6 +49,10 @@ function isTransientFailure(error) {
 function createSchedulerWorker({ repository, intentRepository, transactionEngine, executeTask,
   workerId = randomUUID(), now = () => Date.now(), leaseMs = 120_000,
   pollIntervalMs = 1_000, retryBaseMs = 5_000, notify, log = () => {}, sanitizeError = errorReason,
+  // Optional: given a task whose stage would not open, returns the stage's real opening time in
+  // epoch ms, or null when it cannot be resolved. Injected rather than imported so this worker
+  // keeps knowing nothing about OpenSea; server.js supplies the lookup.
+  resolveStageStart = null,
   // A single in-flight task used to serialize every scheduled mint behind whichever one claimed
   // first, even though processTask() waits for full on-chain finality (up to policy's
   // transactionTimeoutMs, 10 minutes by default) before returning -- a second task whose own
@@ -38,6 +72,32 @@ function createSchedulerWorker({ repository, intentRepository, transactionEngine
   let inFlightCount = 0;
   let lastTickAt=null;let lastSuccessAt=null;let lastError=null;
   const armedTimers = new Map();
+
+  // Resolves the stage's real opening time, once, when the first burst is spent. Any failure here
+  // degrades to the ordinary outcome -- a lookup problem must never turn a handled failure into a
+  // throw, nor re-arm to something unverified.
+  async function stageReopenAt(task) {
+    if (!resolveStageStart) return null;
+    let startAt;
+    try { startAt = await resolveStageStart(task); } catch { return null; }
+    if (!Number.isFinite(startAt) || startAt <= now()) return null;
+    const scheduled = Number.isFinite(task.mintTime) ? task.mintTime : now();
+    if (startAt - scheduled > STAGE_REARM_WINDOW_MS) return null;
+    return startAt;
+  }
+
+  // How a stage-not-open failure is retried. Returns null to mean "handle it like anything else",
+  // which for an exhausted budget is a permanent failure.
+  async function stageWaitPlan(task) {
+    const rearmed = task.attemptCount > STAGE_NOT_OPEN_MAX_ATTEMPTS;
+    if (rearmed || task.attemptCount < STAGE_NOT_OPEN_MAX_ATTEMPTS) {
+      return { retryAt: now() + STAGE_NOT_OPEN_RETRY_MS,
+        maxAttempts: Math.max(task.maxAttempts, rearmed ? STAGE_REARM_MAX_ATTEMPTS : STAGE_NOT_OPEN_MAX_ATTEMPTS) };
+    }
+    const reopenAt = await stageReopenAt(task);
+    if (reopenAt === null) return null;
+    return { retryAt: reopenAt, maxAttempts: Math.max(task.maxAttempts, STAGE_REARM_MAX_ATTEMPTS) };
+  }
 
   function retryAt(attemptCount) {
     return now() + retryBaseMs * (2 ** Math.max(0, attemptCount - 1));
@@ -87,8 +147,15 @@ function createSchedulerWorker({ repository, intentRepository, transactionEngine
       return settleFromIntent(task, intent, false);
     } catch (error) {
       const transient = isTransientFailure(error);
-      const outcome = await repository.fail(task, { reason: sanitizeError(error).slice(0, 500), transient,
-        retryAt: transient ? retryAt(task.attemptCount) : null });
+      // A stage that has not opened is the one failure worth waiting on rather than abandoning:
+      // a tight fixed burst first, then a single re-arm to the stage's real opening time. Both
+      // budgeted apart from the task's own maxAttempts (default 3), which would otherwise be
+      // spent in three seconds and leave nothing for a genuine RPC failure later in the same task.
+      const stageWait = transient && error?.code === STAGE_NOT_OPEN;
+      const plan = stageWait ? await stageWaitPlan(task) : null;
+      const budgeted = plan ? { ...task, maxAttempts: plan.maxAttempts } : task;
+      const outcome = await repository.fail(budgeted, { reason: sanitizeError(error).slice(0, 500), transient,
+        retryAt: transient ? (plan ? plan.retryAt : retryAt(task.attemptCount)) : null });
       await Promise.resolve(notify?.({ task, outcome, error })).catch(() => {});
       return outcome;
     }
@@ -153,4 +220,6 @@ function createSchedulerWorker({ repository, intentRepository, transactionEngine
   return { armPreciseTimers, health,processTask, recoverStaleClaims, start, stop, tick, workerId };
 }
 
-module.exports = { TRANSIENT_CODES, createSchedulerWorker, errorReason, isTransientFailure };
+module.exports = { STAGE_NOT_OPEN, STAGE_NOT_OPEN_MAX_ATTEMPTS, STAGE_NOT_OPEN_RETRY_MS,
+  STAGE_REARM_MAX_ATTEMPTS, STAGE_REARM_WINDOW_MS, TRANSIENT_CODES,
+  createSchedulerWorker, errorReason, isTransientFailure };

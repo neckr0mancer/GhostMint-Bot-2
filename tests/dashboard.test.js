@@ -147,9 +147,10 @@ test('keystore export refuses when no security password is set, and rejects an i
 test('keystore export is rate limited independently of other sensitive commands',async t=>{const {base}=await operationsServer(t);const attempt=()=>fetch(`${base}/api/wallets/alpha/export`,{method:'POST',headers:authHeaders('a',true),body:JSON.stringify({securityPassword:'a-strong-enough-password',confirmation:'CONFIRM'})});assert.equal((await attempt()).status,200);assert.equal((await attempt()).status,200);const limited=await attempt();assert.equal(limited.status,429);assert.ok(limited.headers.get('retry-after'));});
 // Split across separate operationsServer(t) instances rather than firing several requests at the
 // same endpoint in one test -- each instance gets its own exportKeyRateLimiter (limit 2/60s in this
-// fixture), and 'securitypassword' shares that limiter's bucket with 'exportkey' by design (see
-// dashboard/api.js), so more than two calls in one instance hits 429 instead of exercising the
-// scenario being tested.
+// fixture), so a third call to the SAME endpoint in one instance hits 429 instead of exercising the
+// scenario being tested. ('securitypassword' and 'exportkey' share that limiter instance, and so its
+// 2/60s config, but not a bucket -- check() keys on the command too. They are also scoped
+// differently on purpose: see ACCOUNT_RATE_LIMIT_SCOPE in src/dashboard/api.js.)
 test('security password can be set for the first time without a current password',async t=>{const {base,securityPasswordHashes}=await operationsServer(t);securityPasswordHashes.delete('user-a');const firstSet=await fetch(`${base}/api/auth/security-password`,{method:'PUT',headers:authHeaders('a',true),body:JSON.stringify({newPassword:'a-brand-new-password'})});assert.equal(firstSet.status,200);});
 test('security password change is rejected without the current password',async t=>{const {base}=await operationsServer(t);const missingCurrent=await fetch(`${base}/api/auth/security-password`,{method:'PUT',headers:authHeaders('a',true),body:JSON.stringify({newPassword:'another-new-password'})});assert.equal(missingCurrent.status,401);});
 test('security password change is rejected with an incorrect current password',async t=>{const {base}=await operationsServer(t);const wrongCurrent=await fetch(`${base}/api/auth/security-password`,{method:'PUT',headers:authHeaders('a',true),body:JSON.stringify({currentPassword:'not-it-at-all',newPassword:'another-new-password'})});assert.equal(wrongCurrent.status,401);});

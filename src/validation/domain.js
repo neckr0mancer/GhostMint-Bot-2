@@ -40,10 +40,15 @@ const LIMITS = Object.freeze({
 });
 
 class ValidationError extends Error {
-  constructor(issues) {
+  // Defaults to VALIDATION_ERROR, which the scheduler treats as permanent. A caller overrides it
+  // only for a rejection shaped like a validation failure that is NOT permanent -- OpenSea saying
+  // a drop stage has not opened yet is the request being early, not wrong, and the same request
+  // succeeds unchanged once the stage opens. See STAGE_NOT_OPEN in openSeaService and
+  // schedulerWorker's TRANSIENT_CODES.
+  constructor(issues, code = 'VALIDATION_ERROR') {
     super('Request validation failed');
     this.name = 'ValidationError';
-    this.code = 'VALIDATION_ERROR';
+    this.code = code;
     this.issues = Array.isArray(issues) ? issues : [issues];
   }
 }

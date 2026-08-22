@@ -246,7 +246,12 @@ function createOpenSeaService({ apiKey, repository, baseUrl = 'https://api.opens
       const reasons = error?.response?.data?.errors;
       const detail = Array.isArray(reasons) && reasons.length ? reasons.join('; ') : null;
       if (status === 409) {
-        throw new ValidationError({ field: 'contractAddress', message: detail || 'this drop is not currently active for minting (not started, ended, or paused)' });
+        // Tagged STAGE_NOT_OPEN, unlike the 422 below: OpenSea returns this both for a stage that
+        // has not opened yet and for one already over, and its text does not distinguish them. The
+        // scheduler retries it a bounded number of times (a stage rarely flips active at exactly
+        // its advertised second), then gives up -- 422 stays permanent because no amount of
+        // retrying makes an ineligible or sold-out wallet eligible.
+        throw new ValidationError({ field: 'contractAddress', message: detail || 'this drop is not currently active for minting (not started, ended, or paused)' }, 'STAGE_NOT_OPEN');
       }
       if (status === 422) {
         throw new ValidationError({ field: 'contractAddress', message: detail || "this wallet can't mint right now (insufficient balance, not on the allowlist, limit reached, or sold out)" });
