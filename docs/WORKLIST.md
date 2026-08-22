@@ -121,6 +121,52 @@ Status legend: ✅ Done · 🟡 Partial · ❌ Not started
 
 ---
 
+# Round 22 — launch squads: the ACO/coordinated-burst service, day 1 of 9 (2026-08-22)
+
+## Section AZ — squads skeleton: plan → stage → fire → settle ✅ (D1–2 of the 9-day plan)
+
+Owner goal: `/batchmint`-class fan-outs that compete with dedicated mint scripts at hyped drops
+(guaranteed-spot + FCFS wallets fired together, as fast and as dependably as possible). Design
+decision recorded up front: **separate orchestrator (`src/launch/`), shared engine** — `/batchmint`
+stays a manual fan-out; launches get their own lifecycle (stage → arm → fire → settle) composed
+from the same primitives (`executePrepared`, intent idempotency, nonce safety, governance), so
+there is no second transaction path to keep correct.
+
+Shipped today:
+
+- **Migration `048`**: `launch_squads` + `launch_squad_members`. Deliberately no signed-tx column —
+  v1 signs inside `submit()` at fire time; pre-signing (a speed lever) stays a gated follow-up.
+- **`planner.js`** (pure): priority-ordered wave chunking — lower priority number fires earlier,
+  ties keep selection order.
+- **`stager.js`**: pre-fire verification — account status, SeaDrop detection (method + fee
+  recipient + live PublicDrop price captured once), per-wallet existence/chain/balance checks with
+  a 400k-gas buffer heuristic. Underfunded wallets are *skipped with a reason*, never fatal to the
+  squad. Nonces/simulation stay at fire time by design (freshness + idempotency).
+- **`launcher.js`**: waves fire back-to-back, all members within a wave simultaneously
+  (`Promise.allSettled`); one member's send failure marks just that member failed. Settlement
+  reconciles every sent member's intent in the background (same `reconcileIntent` mechanism the
+  scheduler uses) until final states or a 15-minute window elapses, then writes the report card
+  (`{counts:{confirmed,reverted,failed,skipped}}`) and notifies. Timer-triggered squads fire from a
+  light 1s poll; manual FIRE is instant.
+- **Telegram `/aco`** power syntax (`/aco <contract> <qty> w1,w2,...`) with staging summary +
+  🚀 FIRE NOW / ❌ ABORT inline buttons; guided picker flow is the next polish item.
+- **Engine**: `triggerSource 'launch'` joins scheduled/sniper on the fast RPC path (tight timeout,
+  fast pool) — a coordinated burst is exactly as time-critical as a scheduled fire.
+- **RPC grid wired live on Railway**: verified Alchemy lane #2 + Infura appended to ETH/Base
+  general+fast+sniper pools (ETH 4→6, Base 2→4, every FAST/SNIPER tier 1→3) — the multi-provider
+  broadcast race now has real backbones to race across.
+
+Verification: 11 new tests across planner/stager/launcher (ordering, skip-with-reason, plain-contract
+price requirement, failure isolation, settlement convergence, wave chunking); full suite 856 → 852
+pass, failures unchanged (the two by-design review repros; two integration timeouts passed in
+isolation).
+
+Next in this round (days 3–7): block-height + pending-tx triggers (`trigger.js`, the front-running
+piece), multi-RPC broadcast race extension beyond sniper (owner-approved direction), accelerated
+bump/replace for launch sends, live monitor/report UI, load rehearsal.
+
+---
+
 # Round 21 — "scheduled transactions always fail" (2026-08-22)
 
 ## Section AX — OpenSea-backed scheduled mints no longer die when OpenSea can't serve them ✅

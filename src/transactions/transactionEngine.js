@@ -264,8 +264,10 @@ function createTransactionEngine({
       const from = request.wallet.address;
       const base = { from, to: request.to, data: request.data || '0x', value: valueWei };
       // Scheduled mints, Degen-mode mints (policy.gasPriceMultiplier > 1 -- see feeDataCache.js's
-      // own note), and sniper fires (triggerSource === 'blockchain' -- Round 16, Section AV: sniper
-      // is its own execution profile, not gated on the mode preset at all) all get a tighter
+      // own note), sniper fires (triggerSource === 'blockchain' -- Round 16, Section AV: sniper
+      // is its own execution profile, not gated on the mode preset at all), and launch-squad sends
+      // (triggerSource === 'launch' -- src/launch: a coordinated burst is exactly as time-critical
+      // as a scheduled fire, and its staging phase already did every slow check) all get a tighter
       // per-call RPC budget on every pre-broadcast read below: a slow primary RPC is abandoned after
       // one fast attempt instead of eating the full default timeout across every retry before even
       // trying the next configured URL. Sniper additionally gets its own isolated pool
@@ -273,7 +275,8 @@ function createTransactionEngine({
       // sniper watching must never be able to queue behind a time-critical scheduled broadcast, the
       // whole reason these pools were split in the first place.
       const isSniperTrigger = request.triggerSource === 'blockchain';
-      const useFastPath = isSniperTrigger || (request.triggerSource || 'manual') === 'scheduled' || policy.gasPriceMultiplier > 1;
+      const trigger = request.triggerSource || 'manual';
+      const useFastPath = isSniperTrigger || trigger === 'scheduled' || trigger === 'launch' || policy.gasPriceMultiplier > 1;
       const fastRpcOptions = useFastPath ? { timeoutMs: FAST_RPC_TIMEOUT_MS, retries: FAST_RPC_RETRIES } : undefined;
       const activeService = isSniperTrigger && sniperProviderService ? sniperProviderService
         : (useFastPath && fastProviderService ? fastProviderService : providerService);

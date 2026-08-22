@@ -41,6 +41,9 @@ const sniperFlowDecision = require('./sniper/sniperFlowDecision');
 const { createSchedulerRepository } = require('./scheduler/schedulerRepository');
 const { DEFAULT_LEAD_MS, createScheduledReminder } = require('./scheduler/scheduledReminder');
 const { createSchedulerWorker } = require('./scheduler/schedulerWorker');
+const { createLaunchRepository } = require('./launch/launchRepository');
+const { createLaunchStager } = require('./launch/stager');
+const { createLauncher } = require('./launch/launcher');
 const { createSocialAdapters } = require('./social/adapters');
 const { createSocialWatchRepository } = require('./social/socialWatchRepository');
 const { createSocialWatchService } = require('./social/socialWatchService');
@@ -884,6 +887,40 @@ function tg(chatId, msg, options = {}) {
   if (bot && chatId) return bot.sendMessage(chatId, String(msg), options).catch(e => log('TG: '+safeError(e)));
   return Promise.resolve();
 }
+
+// ── Launch squads (src/launch) ────────────────────────────
+// Coordinated multi-wallet mints: staging verifies everything that can go stale-checks-free before
+// a fire moment; firing fans ordinary executePrepared sends out in waves. The launcher composes the
+// same primitives as every other execution surface -- no new transaction path, just orchestration.
+const launchRepository = createLaunchRepository(pool);
+const launcher = createLauncher({
+  repository: launchRepository,
+  stager: createLaunchStager({
+    checkAccountStatus: userId => governance.checkAccountStatus(userId),
+    findWallet: (userId, label) => DB.wallets.find(item => item.userId === userId && item.label === label),
+    seaDropDiscoveryService,
+    seaDropPublicDropResolver,
+    providerService,
+    log,
+  }),
+  mintExecution,
+  mintService,
+  transactionEngine,
+  intentRepository,
+  findWallet: (userId, label) => DB.wallets.find(item => item.userId === userId && item.label === label),
+  notify: event => {
+    if (event.type === 'launch.starting') {
+      const sendable = event.squad.members.filter(member => member.status !== 'skipped').length;
+      return notifyUser(event.squad.userId, `🚀 Launching <b>${escapeTelegramHtml(event.squad.name)}</b>: ${sendable} wallets going out now.`);
+    }
+    if (event.type === 'launch.done' && event.report) {
+      const c = event.report.counts;
+      return notifyUser(event.squad.userId, `🏁 Launch <b>${escapeTelegramHtml(event.squad.name)}</b> finished: ` +
+        `${c.confirmed || 0} confirmed, ${c.reverted || 0} reverted, ${c.failed || 0} failed, ${c.skipped || 0} skipped.`);
+    }
+  },
+  log,
+});
 
 const notificationService = createNotificationService({
   identityRepository,
@@ -2446,6 +2483,21 @@ if (BOT_TOKEN) {
     const data = query.data || '';
     const ownerFlag = async () => governanceRepository.isOwner(userId);
 
+    if (data.startsWith('aco:fire:') || data.startsWith('aco:abort:')) {
+      if (await gateBlocks({ chatId, messageId, userId, action: 'mint' })) return;
+      const [, action, id] = data.split(':');
+      const squad = await launchRepository.getSquad(userId, id);
+      if (!squad) return tgEditMenu(chatId, messageId, { text: 'Launch squad not found.' });
+      if (action === 'abort') {
+        if (!['staged', 'armed'].includes(squad.status)) return tgEditMenu(chatId, messageId, { text: `Squad is already ${squad.status} -- too late to abort.` });
+        await launchRepository.updateSquad(id, { status: 'aborted' });
+        return tgEditMenu(chatId, messageId, { text: `🛑 Launch squad "${escapeTelegramHtml(squad.name)}" aborted. Nothing was sent.` });
+      }
+      if (!['staged', 'armed'].includes(squad.status)) return tgEditMenu(chatId, messageId, { text: `Squad is ${squad.status} -- cannot fire.` });
+      void launcher.fire(squad).catch(error => log(`Launch fire error: ${error.message}`));
+      const sendable = squad.members.filter(member => member.status !== 'skipped').length;
+      return tgEditMenu(chatId, messageId, { text: `🚀 Firing "${escapeTelegramHtml(squad.name)}": ${sendable} wallets going out...` });
+    }
     if (data === 'menu:main') return tgEditMenu(chatId, messageId, telegramMenus.mainMenu({ isOwner: await ownerFlag(), security: await securityFlags(userId) }));
     if (data === 'menu:security') {
       return tgEditMenu(chatId, messageId, telegramMenus.securitySetupCard(await securityFlags(userId)));
@@ -3156,6 +3208,51 @@ send /mint with a contract address to get going.`;
       replyMarkup: telegramMenus.keyboard([[telegramMenus.button('⬅️ Back to base', 'menu:main')]]), parseMode: 'HTML' });
   }));
 
+  // Launch squads -- coordinated multi-wallet mints (src/launch). Power syntax first; a guided
+  // picker flow mirroring /batchmint's wallet multiselect is the D2 polish item.
+  bot.onText(/^\/aco(?:@\w+)?$/, withTelegramUser(async msg => {
+    tgRender(msg.chat.id, { text: [
+      '<b>Launch squads</b> — one mint, many wallets, fired together.',
+      '',
+      'Power syntax:',
+      '<code>/aco &lt;contract&gt; &lt;qty&gt; &lt;wallet1,wallet2,...&gt;</code>',
+      '',
+      'Staging verifies every wallet (balance, gas headroom) and resolves the mint price up front;',
+      'skipped wallets are reported instead of failing the launch. Then FIRE NOW -- or schedule it',
+      'and the squad fires itself at that moment.',
+    ].join('\n'), replyMarkup: telegramMenus.keyboard([[telegramMenus.button('⬅️ Back to base', 'menu:main')]]), parseMode: 'HTML' });
+  }));
+  bot.onText(/^\/aco(?:@\w+)?\s+(\S+)\s+(\d+)\s+(.+)$/, withTelegramUser(async (msg, match, userId) => {
+    const [, contractAddressRaw, qtyRaw, labelsRaw] = match;
+    const quantity = Math.max(1, parseInt(qtyRaw, 10) || 1);
+    const wallets = [...new Set(labelsRaw.split(',').map(item => item.trim()).filter(Boolean))];
+    if (!wallets.length) return tg(msg.chat.id, 'No wallets given -- comma-separate labels: <code>/aco 0x.. 1 main,alt1</code>', { parseMode: 'HTML' });
+    try {
+      const detected = await botCommands.detectMintContract(userId, { contractAddress: contractAddressRaw, quantity });
+      const chain = detected.chain;
+      if (!chain) return tg(msg.chat.id, `Couldn't resolve a supported chain for ${escapeTelegramHtml(contractAddressRaw)}.`, { parseMode: 'HTML' });
+      const squad = await launcher.createAndStage({ userId, chain,
+        contractAddress: detected.contractAddress || contractAddressRaw, quantity, wallets, triggerType: 'manual' });
+      const staged = squad.members.filter(member => member.status === 'staged').length;
+      const skipped = squad.members.length - staged;
+      const priceLine = squad.priceWei === null ? 'unknown' : `${(Number(squad.priceWei) / 1e18).toFixed(6)} each`;
+      return tgRender(msg.chat.id, { text: [
+        `<b>Launch squad ready</b> — ${escapeTelegramHtml(squad.name)}`,
+        `Chain: <code>${escapeTelegramHtml(chain)}</code> · Qty ${quantity} · Price: ${priceLine}`,
+        `Wallets staged: <b>${staged}</b>${skipped ? ` · skipped: ${skipped} (see report)` : ''}`,
+        '',
+        'FIRE NOW sends every wave immediately.',
+      ].join('\n'), replyMarkup: telegramMenus.keyboard([[
+        telegramMenus.button('🚀 FIRE NOW', `aco:fire:${squad.id}`),
+        telegramMenus.button('❌ Abort', `aco:abort:${squad.id}`),
+      ]]), parseMode: 'HTML' });
+    } catch (error) {
+      if (error instanceof ValidationError) return tg(msg.chat.id, escapeTelegramHtml(validationReply(error)), { parseMode: 'HTML' });
+      log(`ACO staging failed: ${safeError(error)}`);
+      return tg(msg.chat.id, `❌ Staging failed: ${escapeTelegramHtml(String(error.message || error).slice(0, 200))}`, { parseMode: 'HTML' });
+    }
+  }));
+
   bot.onText(/^\/link(?:@\w+)?$/, withTelegramUser(async (msg, match, userId) => {
     const link = await identity.createLinkCode(userId);
     tgRender(msg.chat.id, { text: `🔗 <b>Account link code</b>\n\n<pre>${link.code}</pre>\nTap or long-press the code above to copy it. Expires in 5 minutes and can be used once.`, parseMode: 'HTML' });
@@ -3666,6 +3763,7 @@ async function start() {
     }
   }
   schedulerWorker.start();
+  launcher.start();
   setInterval(()=>{scheduledReminder.sweep().catch(error=>log(`Scheduled-reminder sweep error: ${safeError(error)}`));},SCHEDULE_REMINDER_SWEEP_MS).unref?.();
   setInterval(()=>{expiredHistorySweep().catch(error=>log(`Expired-history sweep error: ${safeError(error)}`));},SCHEDULE_REMINDER_SWEEP_MS).unref?.();
   log('Started expired-mint history sweep');
@@ -3674,6 +3772,7 @@ async function start() {
   retentionWorker.start();
   log('Started social watch-rule worker');
   log('Started governance-group retention worker');
+  log('Started launch-squads timer worker');
   log(`Started durable scheduler with ${await schedulerRepository.countActive()} active tasks`);
   DB.snipers.filter(s => s.active).forEach(s => ensureChainWatcher(s.chain));
   log(`Restored ${DB.snipers.filter(s=>s.active).length} active snipers`);
