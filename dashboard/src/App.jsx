@@ -2,9 +2,10 @@
 import React,{useCallback,useEffect,useRef,useState} from 'react';
 import Admin from './Admin.jsx';
 import {shortAddress} from './dashboardWidgets/homeParts.jsx';
+import PnlBars from './PnlBars.jsx';
 import {loadError,batchRowDetail,useRetryAfter} from './shared.jsx';
 import {walletPerformance,pnlWalletLabel} from './walletPerformance.js';
-import {pnlDailyBuckets,pnlWindowTotals} from './pnlChart.js';
+import {pnlBarLayout,pnlRecordSeries,pnlWindowTotals} from './pnlChart.js';
 import {ACTIVITY_EVENTS,api,Ledger,NumberField,SectionCard,confirmDialog,ConfirmHost,consumePendingMintPrefill,CopyButton,csrf,downloadFile,Empty,EVM_CHAINS,Field,Form,getNotificationLog,notify,Notice,PageTitle,Pager,promptDialog,relativeTime,Select,Skeleton,StatusPill,SubTabs,subscribeNotificationLog,ToastHost,useLoad,useLiveSocket,setPendingMintPrefill,quantityPicks} from './shared.jsx';
 import Dashboard from './Dashboard.jsx';
 // Phase 4, unit 1 of 5 (brief §2). The 11->5 merge lands one page at a time so any single merge
@@ -1467,7 +1468,6 @@ function Activity(){const [page,setPage]=useState(1);const [search,setSearch]=us
 // src/server.js) with real cost+gas and sale left at 0 until something actually sells -- these
 // rollups are computed straight from that same already-loaded list, not a separate fetch, since
 // summing what's already on screen is simpler than a new endpoint for the same numbers.
-const PNL_PERIODS=[['day','Today',86400000],['week','7 days',7*86400000],['month','30 days',30*86400000],['year','365 days',365*86400000]];
 // ── P&L snapshot card ────────────────────────────────────────────────────────
 // The shareable-P&L-card pattern trading apps use (Tealstreet's PnL cards, Robinhood-style
 // summaries): one headline return, the period it covers, the few figures behind it, and a download.
@@ -1490,7 +1490,7 @@ function pnlSnapshotRange(days){
 // Drawn on a canvas rather than screenshotted from the DOM, so the export needs no library and no
 // network. Colours are read off the live theme at draw time, so the PNG matches whatever theme the
 // page is in rather than being hardcoded to one of them.
-function drawSnapshotCanvas({totals,days,label,range,buckets}){
+function drawSnapshotCanvas({totals,label,range,points}){
   const scale=2,width=560,height=320;
   const canvas=document.createElement('canvas');
   canvas.width=width*scale;canvas.height=height*scale;
@@ -1528,20 +1528,17 @@ function drawSnapshotCanvas({totals,days,label,range,buckets}){
     context.fillText(`${positive?'+':'−'}${Math.abs(totals.roi).toFixed(1)}% on outlay`,28,168);
   }
 
-  // Sparkline, same gains-up/losses-down reading as the page's own chart.
+  // Same one-record-per-bar geometry as both on-screen charts. The downloaded card cannot
+  // collapse or overlap outcomes that the user could see before pressing Download.
   const chartTop=190,chartHeight=54,mid=chartTop+chartHeight/2;
-  const peak=buckets.reduce((high,day)=>Math.max(high,day.gain,Math.abs(day.loss)),0);
-  const slot=(width-56)/Math.max(1,buckets.length);
+  const plotWidth=width-56;
+  const {bars}=pnlBarLayout(points,{width:plotWidth,height:chartHeight,maxBarWidth:9});
   context.strokeStyle=border;context.beginPath();
   context.moveTo(28,mid);context.lineTo(width-28,mid);context.stroke();
-  buckets.forEach((day,index)=>{
-    const x=28+index*slot+Math.max(0,(slot-Math.min(9,slot-1))/2);
-    const barWidth=Math.max(1,Math.min(9,slot-1));
-    const size=value=>peak?Math.max(value===0?0:1.2,(Math.abs(value)/peak)*(chartHeight/2-3)):0;
-    if(day.gain>0){context.fillStyle=token('--gain','#2ea043');
-      context.fillRect(x,mid-size(day.gain),barWidth,size(day.gain));}
-    if(day.loss<0){context.fillStyle=token('--loss','#da3633');
-      context.fillRect(x,mid,barWidth,size(day.loss));}
+  bars.forEach(bar=>{
+    context.fillStyle=bar.net<0?token('--loss','#da3633'):token('--gain','#2ea043');
+    const y=chartTop+Math.min(bar.end,chartHeight/2);
+    context.fillRect(28+bar.x,y,bar.width,bar.height);
   });
 
   const stats=[['Mints',String(totals.records)],['Cost',`${totals.cost.toFixed(4)} ETH`],
@@ -1562,13 +1559,13 @@ function PnlSnapshot({records,windowKey,onWindow,onClose}){
   const chosen=walletWindow(windowKey);
   const days=chosen.ms===null?null:Math.round(chosen.ms/86400000);
   const totals=pnlWindowTotals(records,days);
-  const {buckets}=pnlDailyBuckets(records,days);
+  const {points}=pnlRecordSeries(records,days);
   const range=pnlSnapshotRange(days);
   const positive=totals.net>=0;
   async function download(){
     setBusy(true);
     try{
-      const canvas=drawSnapshotCanvas({totals,days,label:chosen.label,range,buckets});
+      const canvas=drawSnapshotCanvas({totals,label:chosen.label,range,points});
       const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/png'));
       if(!blob)throw new Error('The browser could not render the card.');
       downloadFile(`ghostmint-pnl-${days===null?'all-time':`${days}d`}.png`,blob,'image/png');
@@ -1592,7 +1589,7 @@ function PnlSnapshot({records,windowKey,onWindow,onClose}){
         ?<p className="snap-roi" style={{color:'var(--faint)'}}>No outlay in this period</p>
         :<p className="snap-roi" style={{color:positive?'var(--gain-text)':'var(--loss-text)'}}>
           {positive?'+':'−'}{Math.abs(totals.roi).toFixed(1)}% on outlay</p>}
-      <div className="snap-c"><PnlChart buckets={buckets}/></div>
+      <div className="snap-c"><PnlBars points={points} className="chart" showLegend={false}/></div>
       <div className="snap-s">
         <div><span>Mints</span><b>{totals.records}</b></div>
         <div><span>Cost</span><b>{totals.cost.toFixed(4)}</b></div>
@@ -1609,32 +1606,6 @@ function PnlSnapshot({records,windowKey,onWindow,onClose}){
       <button type="button" className="b g" onClick={onClose}>Close</button>
     </div>
   </Overlay>;
-}
-function summarizePnlPeriod(records,windowMs){const cutoff=windowMs===null?-Infinity:Date.now()-windowMs;const inWindow=records.filter(item=>item.t>=cutoff);
-  return {count:inWindow.length,cost:inWindow.reduce((sum,item)=>sum+Number(item.cost),0),sale:inWindow.reduce((sum,item)=>sum+Number(item.sale),0),
-    gas:inWindow.reduce((sum,item)=>sum+Number(item.gas),0),net:inWindow.reduce((sum,item)=>sum+Number(item.net),0)};}
-// Gains above the baseline, losses below, per day -- see pnlChart.js for why they are not netted.
-// preserveAspectRatio="none" is the prototype's own choice: the bars stretch to the card width, so
-// the chart reads as a shape rather than as measurable heights, which is what the totals are for.
-function PnlChart({buckets}){
-  const width=620,height=112,baseline=56;
-  const peak=buckets.reduce((high,day)=>Math.max(high,day.gain,Math.abs(day.loss)),0);
-  const slot=width/Math.max(1,buckets.length);
-  const barWidth=Math.max(1,Math.min(14,slot-2));
-  const total=buckets.reduce((sum,day)=>sum+day.gain+day.loss,0);
-  const scale=value=>peak?Math.max(value===0?0:1.5,(Math.abs(value)/peak)*(baseline-6)):0;
-  return <svg className="chart" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" role="img"
-    aria-label={`Daily net over ${buckets.length} ${buckets.length===1?'day':'days'}. Net ${total<0?'negative':'positive'} ${Math.abs(total).toFixed(3)} ETH.`}>
-    <line x1="0" y1={baseline} x2={width} y2={baseline} stroke="var(--border-strong)" strokeWidth="1"/>
-    {buckets.map((day,index)=>{
-      const x=index*slot+(slot-barWidth)/2;
-      const up=scale(day.gain),down=scale(day.loss);
-      return <g key={index}>
-        {up>0&&<rect x={x} width={barWidth} y={baseline-up} height={up} rx="1" fill="var(--gain)"/>}
-        {down>0&&<rect x={x} width={barWidth} y={baseline} height={down} rx="1" fill="var(--loss)"/>}
-      </g>;
-    })}
-  </svg>;
 }
 // A record GhostMint wrote for itself carries the wallet in its name (autoRecordPnl, server.js:545)
 // -- that is the same signal walletPerformance.js parses, reused here to tell the two kinds apart.
@@ -1667,7 +1638,8 @@ function Pnl(){
   const filtered=records?(normalized?records.filter(item=>String(item.nm||'').toLowerCase().includes(normalized)):records):null;
   const chosen=walletWindow(windowKey);
   const days=chosen.ms===null?null:Math.round(chosen.ms/86400000);
-  const totals=records?summarizePnlPeriod(records,chosen.ms):null;
+  const windowTotals=records?pnlWindowTotals(records,days):null;
+  const totals=windowTotals?{...windowTotals,count:windowTotals.records}:null;
   const loading=records===null&&!listing.error;
   const empty=Array.isArray(records)&&records.length===0;
   const formOpen=adding||editing!==null;
@@ -1686,13 +1658,11 @@ function Pnl(){
         {empty&&<div className="emp"><div className="ei">{TREND_ICON}</div>
           <h3>No records yet</h3><p>Every confirmed mint creates a record with its real cost and gas.</p></div>}
         {!loading&&!empty&&<>
-          <PnlChart buckets={pnlDailyBuckets(records,days).buckets}/>
-          <div className="lgnd">
-            <span><i className="sw" style={{background:'var(--gain)'}}></i> Gain · above baseline · <b>+</b></span>
-            <span><i className="sw" style={{background:'var(--loss)'}}></i> Loss · below baseline · <b>−</b></span></div>
-          <p style={{fontSize:'11px',color:'var(--faint)',marginTop:'8px'}}>A day showing both bars
-            had gains and losses in it — they are drawn apart, not netted. Sale proceeds are entered
-            by hand, so a mint with no recorded sale counts as a loss.</p>
+          <PnlBars points={pnlRecordSeries(records,days).points} className="chart"/>
+          <p style={{fontSize:'11px',color:'var(--faint)',marginTop:'8px'}}>Each recorded mint has
+            its own bar, ordered within its day — gains and losses are never combined or drawn on
+            top of one another. Sale proceeds are entered by hand, so a mint with no recorded sale
+            counts as a loss.</p>
         </>}
       </div>
       <div className="g">
@@ -1993,9 +1963,16 @@ function NotificationBell(){const [items,setItems]=useState([]);const [open,setO
           }}});
       }
       if(message?.type==='task.lowBalance'){
-        notify(`${message.name} mints in ${message.minutes}m and ${message.walletLabel} is short by ${message.shortByEth} ETH.`,
+        notify(`${message.name} mints automatically in ${message.minutes}m and ${message.walletLabel} is short by ${message.shortByEth} ETH.`,
           {type:'error',category:'money',timeoutMs:12000,
            action:{label:'Top up wallet',run:async()=>{window.location.href='/dashboard/wallets';}}});
+      }
+      if(message?.type==='task.reminder'){
+        notify(`${message.name} mints automatically in ${message.minutes}m from ${message.walletLabel}. No approval is required.`,
+          {type:'info',category:'auto',timeoutMs:9000});
+      }
+      if(message?.type==='task.starting'){
+        notify(`${message.name} is starting now.`,{type:'info',category:'auto',timeoutMs:9000});
       }
       if(message?.type==='task.succeeded'){
         notify(`${message.name} minted.`,{type:'success',category:'money'});
@@ -3126,9 +3103,10 @@ function WalletSend(){
 // the key itself.
 //
 // One form with a wallet picker, per wallets.html, rather than an Export button on every wallet
-// card in a grid. The three fields are exactly what /api/wallets/:label/export takes
-// (securityPassword + confirmation:'CONFIRM'), so the form is the request rather than a prelude to
-// three sequential modal prompts.
+// card in a grid. The security password is the deliberate re-authentication step. The API keeps
+// its literal confirmation guard for direct callers, while this first-party form supplies that
+// constant itself: making a person type a known word after already entering the export password
+// adds friction without adding another secret or another security boundary.
 function walletExportRetryText(seconds){
   if(!(seconds>0))return 'Try again shortly.';
   if(seconds<90)return `Try again in ${seconds} ${seconds===1?'second':'seconds'}.`;
@@ -3139,7 +3117,14 @@ function WalletExport({profile,onProfileChange,walletList}){
   const wallets=walletList.data;
   const [busy,setBusy]=useState(false);
   const [limited,setLimited]=useState(null);
+  const [exportKind,setExportKind]=useState('keystore');
+  const [rawKey,setRawKey]=useState(null);
+  const [revealed,setRevealed]=useState(false);
+  const rawKeyTimer=useRef(null);
   const retry=useRetryAfter();
+  const clearRawKey=useCallback(()=>{clearTimeout(rawKeyTimer.current);rawKeyTimer.current=null;setRawKey(null);setRevealed(false);},[]);
+  useEffect(()=>clearRawKey,[clearRawKey]);
+  function chooseKind(kind){clearRawKey();setExportKind(kind);setLimited(null);}
   async function submitExport(event){
     event.preventDefault();
     const form=event.currentTarget;
@@ -3150,27 +3135,56 @@ function WalletExport({profile,onProfileChange,walletList}){
     }
     setBusy(true);setLimited(null);
     try{
-      const {keystore}=await api(`/api/wallets/${encodeURIComponent(values.label)}/export`,
+      const path=exportKind==='raw'
+        ?`/api/wallets/${encodeURIComponent(values.label)}/export/raw`
+        :`/api/wallets/${encodeURIComponent(values.label)}/export`;
+      const result=await api(path,
         {method:'POST',body:JSON.stringify({securityPassword:values.securityPassword,
-          confirmation:String(values.confirmation||'').trim()})});
-      downloadFile(`${values.label}-keystore.json`,keystore);
-      notify('Encrypted keystore downloaded. Store it and your security password separately and securely.',{type:'success'});
-      form.reset();
+          confirmation:'CONFIRM'})});
+      if(exportKind==='raw'){
+        setRawKey(result.privateKey);setRevealed(false);
+        clearTimeout(rawKeyTimer.current);
+        rawKeyTimer.current=setTimeout(()=>{setRawKey(null);setRevealed(false);},60_000);
+        notify('Private key is ready to copy for 60 seconds. It has not been displayed.',{type:'success',category:'security'});
+      }else{
+        downloadFile(`${values.label}-keystore.json`,result.keystore);
+        notify('Encrypted keystore downloaded. Store it and your security password separately and securely.',{type:'success'});
+      }
     }catch(error){
       // 429 is the one failure worth keeping on screen: it is not something a retry fixes, and the
       // only useful reply is when the window reopens. Everything else stays a toast.
       if(error.status===429){setLimited(error);retry.start(error.retryAfter);}
       else notify(error.message,{type:'error'});
-    }finally{setBusy(false);}
+    }finally{
+      // A security password should not remain in the DOM after any export attempt. In particular,
+      // clear it after server/deployment errors as well as successful exports; retaining it after
+      // a 404 made the failed attempt unnecessarily increase the secret's exposure time.
+      const passwordInput=form.elements.namedItem('securityPassword');
+      if(passwordInput&&'value' in passwordInput)passwordInput.value='';
+      setBusy(false);
+    }
+  }
+  async function copyRawKey(){
+    if(!rawKey)return;
+    try{await globalThis.navigator.clipboard.writeText(rawKey);notify('Exact private key copied. Clear your clipboard after storing it securely.',{type:'success',category:'security'});}
+    catch{notify('Clipboard access was refused by the browser.',{type:'error'});}
+  }
+  async function revealRawKey(){
+    if(!rawKey)return;
+    if(await confirmDialog('Warning: anyone who sees this private key can permanently control and drain the wallet. Reveal it on this screen anyway?'))setRevealed(true);
   }
   const loading=wallets===null&&!walletList.error;
   return <div className="split">
     <div className="card">
-      <div className="ch"><div className="chip-ico">{LOCK_ICON}</div><h2>Export an encrypted keystore</h2></div>
+      <div className="ch"><div className="chip-ico">{LOCK_ICON}</div><h2>Export a wallet</h2></div>
       <div className="nt w" style={{marginBottom:'12px'}}>{WARN_TRIANGLE_ICON}
-        <div><b>The raw key never reaches your browser.</b> The server decrypts the stored envelope
-          and immediately re-encrypts it as a standard V3 keystore under your security password.
-          Only that encrypted file is downloaded.</div></div>
+        {exportKind==='raw'
+          ?<div><b>A raw private key gives complete control of the wallet.</b> It enters browser
+            memory only after password verification, is never displayed automatically, and is
+            cleared from this page after 60 seconds.</div>
+          :<div><b>A keystore is your private key in encrypted form.</b> The raw key never reaches
+            your browser in this mode. GhostMint immediately re-encrypts it as a standard Ethereum
+            V3 keystore protected by your security password.</div>}</div>
       <Notice error={loadError(walletList,'Could not load wallets.')}/>
       {loading?<Skeleton rows={2}/>:null}
       {!loading&&!walletList.error&&wallets?.length===0
@@ -3178,7 +3192,12 @@ function WalletExport({profile,onProfileChange,walletList}){
       {!profile.securityPasswordSet&&<div className="nt i" style={{marginBottom:'12px'}}>{INFO_ICON}
         <div>You have no security password yet. Exporting asks you to set one first — it then gates
           every future sensitive action.</div></div>}
-      {wallets?.length?<form onSubmit={submitExport}>
+      {wallets?.length?<><div className="seg" role="group" aria-label="Export format" style={{marginBottom:'12px'}}>
+        <button type="button" className={exportKind==='keystore'?'on':undefined}
+          aria-pressed={exportKind==='keystore'} onClick={()=>chooseKind('keystore')}>Encrypted backup</button>
+        <button type="button" className={exportKind==='raw'?'on':undefined}
+          aria-pressed={exportKind==='raw'} onClick={()=>chooseKind('raw')}>Private key</button>
+      </div><form onSubmit={submitExport}>
         <div className="g" style={{gap:'11px'}}>
           <label className="fl"><span>Wallet</span>
             <select className="in" name="label" required>
@@ -3187,14 +3206,21 @@ function WalletExport({profile,onProfileChange,walletList}){
           <label className="fl"><span>Security password</span>
             <input className="in" type="password" name="securityPassword" required autoComplete="off"
               placeholder="Your account security password"/></label>
-          <label className="fl"><span>Type <b>CONFIRM</b> to proceed</span>
-            <input className="in mono" name="confirmation" required placeholder="CONFIRM"/></label>
-          <div className="br"><button className="b d" disabled={busy||retry.blocked}>{busy?'Exporting…':retry.blocked?'Rate limited':'Export keystore'}</button></div>
-          <p style={{fontSize:'11px',color:'var(--faint)'}}>Store the keystore and your security
-            password separately. Together they are the wallet; either one alone is not. Every
-            attempt is written to the security audit log.</p>
+          <button className="b p big" disabled={busy||retry.blocked}>{busy?'Preparing…':retry.blocked?'Rate limited'
+            :exportKind==='raw'?'Prepare private key':'Export encrypted backup'}</button>
+          <p style={{fontSize:'11px',color:'var(--faint)'}}>{exportKind==='raw'
+            ?'The exact key is kept in browser memory for 60 seconds and is not shown unless you separately choose Reveal.'
+            :'Store the keystore and your security password separately. Together they are the wallet; either one alone is not.'} Every attempt is written to the security audit log.</p>
         </div>
-      </form>:null}
+      </form>{rawKey&&<div className="sober" style={{marginTop:'12px'}}><div className="sh">Private key ready</div>
+        <div className="nt w" style={{marginBottom:'11px'}}>{WARN_TRIANGLE_ICON}<div>Copying places the
+          key on your system clipboard, where other software may be able to read it. It expires
+          from this page&apos;s memory in 60 seconds.</div></div>
+        {revealed&&<code className="mono" style={{display:'block',wordBreak:'break-all',padding:'10px',marginBottom:'11px',background:'var(--surface-2)',border:'1px solid var(--border)',borderRadius:'var(--radius-sm)'}}>{rawKey}</code>}
+        <div className="br"><button type="button" className="b p" onClick={copyRawKey}>Copy private key</button>
+          <button type="button" className="b g" onClick={revealed?()=>setRevealed(false):revealRawKey}>{revealed?'Hide':'Reveal'}</button>
+          <button type="button" className="b g" onClick={clearRawKey}>Clear now</button></div>
+      </div>}</>:null}
     </div>
     <div className="g">
       {limited&&<Notice error={{title:'Too many export attempts.',
@@ -3207,9 +3233,25 @@ function WalletExport({profile,onProfileChange,walletList}){
                stating a rule the server no longer applies. */}
           <tr><td>Rate limit</td><td>None</td></tr>
           <tr><td>Requires</td><td>Security password</td></tr>
-          <tr><td>Confirmation</td><td>Type CONFIRM</td></tr>
+          <tr><td>Private key</td><td>{exportKind==='raw'?'Raw on request':'Encrypted only'}</td></tr>
           <tr className="tot"><td>Audited</td><td>Every attempt</td></tr>
         </tbody></table></div>
+      {exportKind==='keystore'?<div className="sober"><div className="sh">What is in the keystore?</div>
+        <table className="led"><tbody>
+          <tr><td>Address</td><td>Your public wallet address</td></tr>
+          <tr><td>Ciphertext</td><td>The encrypted private key</td></tr>
+          <tr><td>Cipher / KDF</td><td>Password-encryption instructions</td></tr>
+          <tr><td>Salt / IV / MAC</td><td>Randomness and integrity checks</td></tr>
+          <tr className="tot"><td>Version / ID</td><td>File format and identifier</td></tr>
+        </tbody></table>
+        <div className="nt i" style={{marginTop:'10px'}}>{INFO_ICON}<div>Wallet software combines
+          these fields with your password to recover the key. The private key is encrypted inside
+          <code> ciphertext</code>; it never appears as readable text in the file.</div></div></div>
+        :<div className="sober"><div className="sh">Why not a seed phrase?</div>
+          <div className="nt i">{INFO_ICON}<div>GhostMint stores each wallet&apos;s encrypted private
+            key, not its original recovery phrase. Imported wallets may never have supplied a
+            phrase, and a phrase cannot be reconstructed from a private key. Export the exact
+            private key or the encrypted backup instead.</div></div></div>}
     </div>
   </div>;
 }

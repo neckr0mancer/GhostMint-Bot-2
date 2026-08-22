@@ -1,56 +1,107 @@
-// Daily P&L buckets for the Net-by-day chart.
-//
-// Gains and losses are kept APART per day rather than netted into one bar. Netting is what made
-// the chart look broken: a day holding a +0.398 record and a -0.361 record collapsed to a single
-// small green bar, so a records list full of reds and greens sat under a chart showing neither.
-// A day now draws its gains above the baseline and its losses below, which is also how every
-// trading surface draws this — green above for gain, red below for loss.
-//
-// One bucket per DAY, not per record: two mints on the same day are one day's result, and days
-// with nothing still occupy their slot so a gap reads as a quiet day rather than compressing the
-// timeline.
+// Shared P&L chart data and geometry. Performance, its PNG snapshot, and Home all consume these
+// helpers so they cannot quietly drift into three different interpretations.
 
 const DAY_MS = 86400000;
 
 function startOfDay(value) {
   const at = new Date(value);
-  at.setHours(0, 0, 0, 0);
-  return at.getTime();
+  return Date.UTC(at.getUTCFullYear(), at.getUTCMonth(), at.getUTCDate());
 }
 
-// days === null means all time, measured from the earliest record present.
-export function pnlDailyBuckets(records, days) {
+function timestamp(value) {
+  const numeric = Number(value);
+  if (Number.isFinite(numeric)) return numeric;
+  const parsed = new Date(value).getTime();
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+// A bar represents one real P&L record. Records from the same day stay next to one another instead
+// of being summed or drawn on top of each other. The day remains attached to every point for the
+// tooltip and accessible description, while every gain/loss remains visible in its own right.
+export function pnlRecordSeries(records, days) {
   const rows = Array.isArray(records) ? records : [];
   const today = startOfDay(Date.now());
-  const earliest = rows.length
-    ? rows.reduce((low, item) => Math.min(low, item.t), Infinity)
-    : Date.now();
+  const dated = rows.map((item, sourceIndex) => ({
+    item,
+    sourceIndex,
+    t: timestamp(item?.t),
+    net: Number(item?.net) || 0,
+  })).filter(row => row.t !== null);
+  const earliest = dated.length ? Math.min(...dated.map(row => row.t)) : Date.now();
   const first = startOfDay(days === null || days === undefined
     ? earliest
     : Date.now() - (days - 1) * DAY_MS);
-  const span = Math.max(1, Math.round((today - first) / DAY_MS) + 1);
-  const buckets = Array.from({ length: span }, () => ({ gain: 0, loss: 0 }));
-  for (const item of rows) {
-    const index = Math.round((startOfDay(item.t) - first) / DAY_MS);
-    if (index < 0 || index >= span) continue;
-    const net = Number(item.net) || 0;
-    if (net < 0) buckets[index].loss += net; else buckets[index].gain += net;
-  }
-  return { buckets, first, span };
+  const last = today + DAY_MS;
+  const points = dated
+    .filter(row => row.t >= first && row.t < last)
+    .sort((left, right) => left.t - right.t || left.sourceIndex - right.sourceIndex)
+    .map((row, index) => ({
+      id: row.item.id || `${row.t}-${row.sourceIndex}`,
+      day: new Date(row.t).toISOString().slice(0, 10),
+      label: row.item.nm || `Record ${index + 1}`,
+      net: row.net,
+      t: row.t,
+      index,
+    }));
+  return {
+    points,
+    first,
+    span: Math.max(1, Math.round((today - first) / DAY_MS) + 1),
+    dayCount: new Set(points.map(point => point.day)).size,
+  };
 }
 
-// The single figure the chart's aria-label and the snapshot headline both quote.
+// Geometry is shared with the PNG snapshot. Each record owns one equal-width slot and normally
+// fills that slot with a two-pixel gap, matching the prototype. Compact callers can still cap
+// maxBarWidth explicitly. No two records ever share an x-position.
+export function pnlBarLayout(points, { width = 620, height = 112, gap = 2, maxBarWidth = Infinity } = {}) {
+  const rows = Array.isArray(points) ? points : [];
+  const baseline = height / 2;
+  const peak = rows.reduce((high, point) => Math.max(high, Math.abs(point.net)), 0);
+  const slot = width / Math.max(1, rows.length);
+  const effectiveGap = Math.min(gap, slot / 3);
+  const barWidth = Math.max(0.5, Math.min(maxBarWidth, slot - effectiveGap));
+  const scale = peak > 0 ? (height / 2 - 4) / peak : 0;
+  return {
+    baseline,
+    peak,
+    bars: rows.map((point, index) => ({
+      ...point,
+      x: index * slot + (slot - barWidth) / 2,
+      width: barWidth,
+      end: baseline - point.net * scale,
+      height: Math.abs(point.net * scale),
+    })),
+  };
+}
+
+// The small Home-tile sparkline is a portfolio trend, not a second bar chart. Plotting each
+// record's isolated result made a positive total look as though it finished below where it began.
+// Starting at zero and accumulating every ordered record makes the end position agree with the
+// signed headline while still showing the losses encountered on the way there.
+export function cumulativePnlPoints(points) {
+  const rows = Array.isArray(points) ? points : [];
+  let total = 0;
+  return [0, ...rows.map(point => {
+    total += Number(point?.net) || 0;
+    return total;
+  })];
+}
+
 export function pnlWindowTotals(records, days) {
   const rows = Array.isArray(records) ? records : [];
-  const cutoff = days === null || days === undefined ? -Infinity : Date.now() - days * DAY_MS;
-  const inWindow = rows.filter(item => item.t >= cutoff);
+  const first = days === null || days === undefined
+    ? -Infinity
+    : startOfDay(Date.now() - (days - 1) * DAY_MS);
+  const last = startOfDay(Date.now()) + DAY_MS;
+  const inWindow = rows.filter(item => {
+    const at = timestamp(item?.t);
+    return at !== null && at >= first && at < last;
+  });
   const sum = key => inWindow.reduce((total, item) => total + (Number(item[key]) || 0), 0);
   const cost = sum('cost');
   const gas = sum('gas');
   const net = sum('net');
-  // Return on what was actually put in. Cost plus gas is the outlay -- gas is spent whether or not
-  // a token ever resells, so leaving it out would flatter every number here. Undefined rather than
-  // 0 when nothing was spent: no outlay means no return to express, not a 0% one.
   const outlay = cost + gas;
   return {
     records: inWindow.length,

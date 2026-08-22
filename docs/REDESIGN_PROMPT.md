@@ -499,7 +499,8 @@ Also in this phase, because it is what makes the merge safe:
                  + per-wallet results list), Presets (saved list + method registry)
      Wallets     Performance (ACCOUNT-level, not per-wallet — pnl_records has no
                  wallet column), Send (explanatory panel, no route exists),
-                 Export (keystore form, never the raw key)
+                 Export (encrypted-keystore or explicit raw-private-key mode; raw stays hidden by
+                 default, is copyable for 60 seconds, and Reveal requires a separate warning)
      History     Audit evidence (unavailable panel — triggerAudit is not routed),
                  Security log (OWNER ONLY — hide the tab for regular accounts)
      Automation  Snipers and Social rules are client-side filters of the same

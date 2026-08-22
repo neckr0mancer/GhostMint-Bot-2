@@ -140,6 +140,10 @@ function createSchedulerWorker({ repository, intentRepository, transactionEngine
           reason: 'expired claim had no transaction intent; safe idempotent retry scheduled' });
         return 'retry';
       }
+      // This is informational only: the task is already due and will execute without waiting for
+      // approval. Delivery is deliberately isolated from execution so a Telegram, Discord, or
+      // dashboard outage cannot prevent the mint or change its eventual transaction state.
+      try { Promise.resolve(notify?.({ task, outcome: 'starting' })).catch(() => {}); } catch { /* delivery is non-blocking */ }
       const intent = await executeTask(task, {
         idempotencyKey: task.idempotencyKey,
         onIntentPersisted: persisted => repository.attachIntent(task, persisted.intentId),

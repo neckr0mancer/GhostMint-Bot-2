@@ -60,7 +60,8 @@ Every route the dashboard can call, and what it returns. Routes are as mounted i
 | `POST /api/wallets/create` \| `import` | `201` `{label, address, chain, balances:[], minted:0}` |
 | `POST /api/wallets/batch-import` | `201` `{results:[{index, status:'success'\|'failed', label?, address?, error?}]}` — owner only |
 | `DELETE /api/wallets/:label` | `204`. Requires `{confirmation:"CONFIRM"}` |
-| `POST /api/wallets/:label/export` | `{keystore}` — never the raw key. Requires `confirmation` + `securityPassword` |
+| `POST /api/wallets/:label/export` | `{keystore}` — encrypted V3 backup. Requires `confirmation` + `securityPassword` |
+| `POST /api/wallets/:label/export/raw` | `{privateKey}` — explicit raw-key escape hatch. Requires authenticated user scope, CSRF, `confirmation` + verified `securityPassword`; `Cache-Control: no-store`. The dashboard keeps the value only in memory for 60 seconds, does not render it by default, and requires a separate warning confirmation before Reveal |
 
 **`balances` is one entry per *supported chain*, not per wallet chain:**
 `[{chain, balance:"1.234"|null, symbol}]`. `balance: null` means that chain's RPC

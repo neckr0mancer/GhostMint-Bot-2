@@ -1,7 +1,7 @@
 /* global Blob, clearTimeout, CustomEvent, navigator, URL, WebSocket, setTimeout */
 import React,{useCallback,useEffect,useRef,useState} from 'react';
 
-export const ACTIVITY_EVENTS=['snipers.changed','tasks.changed','watchrules.changed','wallets.changed'];
+export {ACTIVITY_EVENTS} from './activityFeed.js';
 
 // Drop-in async replacements for window.confirm/window.prompt -- native browser dialogs can't be
 // themed and look broken against the rest of the UI. Any component calls confirmDialog/promptDialog

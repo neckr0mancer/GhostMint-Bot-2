@@ -225,6 +225,26 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLo
       await auditExportKey(req,'success','keystore export delivered');
       res.json({keystore});
     }),
+    // Explicit raw-key escape hatch requested for the dashboard Export tab. Unlike the ordinary
+    // wallet APIs and the keystore route above, this response intentionally contains the exact
+    // private key so the browser can place it on the clipboard. Keep every surrounding control:
+    // authenticated user scope, CSRF, literal API confirmation, security-password verification,
+    // no-store headers, shared export throttling, and an audit record. The client never renders it
+    // until a second warning is accepted and clears its in-memory copy after a short window.
+    exportWalletRaw:action(async(req,res)=>{confirmation(req);noStore(res);
+      try{exportKeyRateLimiter.check(ACCOUNT_RATE_LIMIT_SCOPE,user(req),'exportkey');}
+      catch(error){
+        if(error instanceof RateLimitError){await auditExportKey(req,'rate_limited','raw key export rate limit exceeded');res.set('Retry-After',String(Math.ceil(error.retryAfterMs/1000)));return res.status(429).json({error:'Too many export attempts'});}
+        throw error;
+      }
+      const {securityPassword}=requestSchemas.walletExport(req.body||{});
+      const storedHash=await identityRepository.getSecurityPasswordHash(user(req));
+      if(!storedHash){await auditExportKey(req,'failure','no security password set');return res.status(400).json({error:'Set a security password first.',code:'SECURITY_PASSWORD_NOT_SET'});}
+      if(!verifySecurityPassword(securityPassword,storedHash)){await auditExportKey(req,'failure','incorrect security password');return res.status(401).json({error:'Incorrect security password'});}
+      const {privateKey}=await commands.exportWalletKeyRaw(user(req),req.params.label);
+      await auditExportKey(req,'success','raw private key delivered to dashboard');
+      res.json({privateKey});
+    }),
     mintPresets:action(async(req,res)=>res.json(jsonSafe(await commands.mintPresets(user(req))))),
     detectMint:action(async(req,res)=>{noStore(res);res.json(jsonSafe(await commands.detectMintContract(user(req),{contractAddress:req.query.contractAddress,quantity:req.query.quantity})));}),
     previewMint:action(async(req,res)=>{const labels=req.body.walletLabels||[req.body.walletLabel];const entries=[];for(const walletLabel of labels)entries.push(await commands.prepareMint(user(req),{...req.body,walletLabel}));const previewToken=issuePreview(user(req),entries);res.json({previewToken,expiresInSeconds:300,items:entries.map(value=>({wallet:value.wallet,preview:value.prepared.preview,simulation:jsonSafe(value.simulation)}))});}),
@@ -314,6 +334,7 @@ function mountDashboardRoutes(app,api){
   app.post('/api/wallets/batch-import',api.requireSession,api.requireCsrf,api.importWalletsBatch);
   app.delete('/api/wallets/:label',api.requireSession,api.requireCsrf,api.removeWallet);
   app.post('/api/wallets/:label/export',api.requireSession,api.requireCsrf,api.exportWalletKey);
+  app.post('/api/wallets/:label/export/raw',api.requireSession,api.requireCsrf,api.exportWalletRaw);
   app.get('/api/mint-presets',api.requireSession,api.mintPresets);
   app.post('/api/mint-presets',api.requireSession,api.requireCsrf,api.saveMintPreset);
   app.get('/api/mints/detect',api.requireSession,api.detectMint);

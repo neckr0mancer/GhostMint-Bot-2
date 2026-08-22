@@ -1150,6 +1150,53 @@ Two deliberate choices:
 - **The task is not altered.** A failed mint stays failed and stays retryable, exactly as the owner
   asked; the sweep only records that its window has gone.
 
+### 13.16 Deferred post-UI requirements — schedule retention, previews, and sniper actions (2026-08-22)
+
+**Owner direction: document these now, but do not implement them until the current UI fidelity
+work is finished.** None of the behavior below should be presented as shipped merely because its
+intended UI is described here.
+
+#### Schedule retention and history
+
+- Cancelled and expired schedules should remain visible in the main Schedule tab for a defined
+  recent period, proposed as **30 days**, then leave that operational list and appear in History.
+- Moving them must not destroy the durable task or its attempt/outcome records. This is an archive
+  transition, not a hard delete. History remains sorted by the authoritative event/task date.
+- The exact History placement (existing Activity stream, a Schedule-history filter, or a dedicated
+  schedule-history section) is deliberately **not decided yet**. Choose it during the later History
+  UI pass; do not invent a destination before that design exists.
+- Selecting an expired schedule should expose **Archive**. The owner mentioned Delete as an early
+  possibility but preferred Archive, consistent with the app-wide archive requirement in §13.8.
+- Selecting a cancelled schedule should expose **Retry** and **Archive**. Retry semantics need a
+  domain decision before implementation: a cancelled task's original due time may already be in
+  the past, so the UI must not silently re-arm an invalid/past schedule. Reuse the scheduler's
+  validation and require a valid future time where necessary.
+- Existing status controls remain status-aware; this request does not authorize generic buttons
+  that the server cannot safely accept.
+
+#### Receipt-style transaction previews
+
+- On **Mint now**, unresolved values must not masquerade as known zeroes. Until discovery/input has
+  resolved them, contract, method, chain, quantity, mint price, and gas should display an explicit
+  unknown/not-calculated state (for example `—`), not `0`.
+- **Total debits may remain `0`** before a real debit is known, because zero there represents the
+  current calculated total rather than a claim that each underlying field is known.
+- Schedule and Batch should eventually receive the same receipt-like, decoded transaction preview
+  used by Mint now, adapted to their context. A scheduled mint is still single-wallet today; this
+  requirement does not silently create batch scheduling.
+- A separate **batch scheduled mint** flow is a potential new feature and remains undecided. Keep
+  it out of the UI until it has its own product/domain design and validation rules.
+
+#### Automation/sniper state actions
+
+- A **failed sniper** card should expose **Edit · Retry · Archive**.
+- A **paused sniper** card should expose **Edit · Resume · Archive**.
+- Archive is a durable lifecycle state, not hard deletion. Retry must reuse the existing validated
+  sniper configuration and shared transaction/nonce safety layers.
+- During the later implementation/acceptance pass, deliberately create or safely simulate a failed
+  sniper so the failed-state card and all three actions can be observed. Do not fake a production
+  event in normal data merely to make the design look populated.
+
 ## 14. Batch parity across all three surfaces — 2026-08-19
 
 ### 14.1 The Discord wallet list was unreadable
@@ -1248,8 +1295,10 @@ Removed on **both** surfaces: the dashboard's `/api/wallets/:label/export` and T
 `/exportkey`. Previously 2 per hour per platform.
 
 Still standing in front of a key export: the security password is verified against the stored
-hash on every attempt, `confirmation` must be the literal `CONFIRM`, and every attempt — success,
-wrong password, or no password set — is written to the security audit log.
+hash on every attempt, the API requires `confirmation` to be the literal `CONFIRM`, and every
+attempt — success, wrong password, or no password set — is written to the security audit log.
+The dashboard now supplies that API constant itself rather than asking the person to type a known
+word; see §15.4. Telegram keeps its own platform flow.
 
 **What was given up, recorded so restoring it is a decision rather than a rediscovery:** the
 export endpoint verifies a password, so with no limiter it is an unmetered oracle for guessing the
@@ -1276,3 +1325,32 @@ whole card, so they must stay there.
 The Details control survives the cull (it has no equivalent in `.colh`) and is lifted out of the
 flow into the body's top-right corner, because stripped of its heading its row held one 28px icon
 and a lot of nothing.
+
+### 15.4 Wallet export formats, explanation, and confirmation-input removal — 2026-08-22
+
+Owner ruling after using a real exported file:
+
+- The dashboard's typed `CONFIRM` input was redundant beside the security-password
+  re-authentication and the explicit Export button, so it was removed. The endpoint still requires
+  the literal confirmation field for direct callers; the first-party dashboard sends it as a
+  constant. This changes the visible interaction, not the server's password verification, user
+  scoping, CSRF protection, encrypted response, or audit record.
+- Export is a sensitive backup operation but not a destructive delete, so its button now uses the
+  normal primary-action treatment instead of `.b.d` danger red. This intentionally supersedes
+  `prototype-pages/wallets.html`, whose own Export button used `.b.d` and was the inconsistency the
+  owner noticed.
+- The page now explains the actual Ethereum V3 keystore fields. `address` is public; `ciphertext`
+  is the private key in encrypted form; cipher/KDF parameters, salt, IV and MAC let compatible
+  wallet software derive the decryption key from the password and verify the result; version/id
+  describe the file format and identify the keystore. The raw private key is not a readable JSON
+  field. Keystore plus password is equivalent to possession of the wallet and must be stored
+  separately.
+- The Export tab now offers exactly the two formats the current storage model can produce:
+  **Encrypted backup** and **Private key**. It does not offer a seed phrase: GhostMint stores the
+  resulting encrypted private key for generated and imported wallets, not the original mnemonic,
+  and a BIP-39 phrase cannot be reconstructed from a private key.
+- Raw-key mode is an explicit exception to the previous dashboard invariant. It verifies the
+  security password and returns only `{privateKey}` from a user-scoped, CSRF-protected, audited,
+  `no-store` endpoint. The client does not render it automatically, offers an exact-value Copy
+  button, requires a separate high-risk warning before Reveal, and clears the in-memory value
+  after 60 seconds or immediately on request/tab change.
