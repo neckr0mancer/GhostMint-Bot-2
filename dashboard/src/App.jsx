@@ -2,7 +2,10 @@
 import React,{useCallback,useEffect,useRef,useState} from 'react';
 import Admin from './Admin.jsx';
 import {shortAddress} from './dashboardWidgets/homeParts.jsx';
-import {loadError,batchRowDetail} from './shared.jsx';
+import PnlBars from './PnlBars.jsx';
+import {loadError,batchRowDetail,useRetryAfter} from './shared.jsx';
+import {walletPerformance,pnlWalletLabel} from './walletPerformance.js';
+import {pnlBarLayout,pnlRecordSeries,pnlWindowTotals} from './pnlChart.js';
 import {ACTIVITY_EVENTS,api,Ledger,NumberField,SectionCard,confirmDialog,ConfirmHost,consumePendingMintPrefill,CopyButton,csrf,downloadFile,Empty,EVM_CHAINS,Field,Form,getNotificationLog,notify,Notice,PageTitle,Pager,promptDialog,relativeTime,Select,Skeleton,StatusPill,SubTabs,subscribeNotificationLog,ToastHost,useLoad,useLiveSocket,setPendingMintPrefill,quantityPicks} from './shared.jsx';
 import Dashboard from './Dashboard.jsx';
 // Phase 4, unit 1 of 5 (brief §2). The 11->5 merge lands one page at a time so any single merge
@@ -126,7 +129,7 @@ const RAIL_ICONS={
   History:<svg {...RAIL_ICON_PROPS}><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg>,
   Admin:<svg {...RAIL_ICON_PROPS}><path d="M12 3l7 3v5c0 5-3 8.5-7 10-4-1.5-7-5-7-10V6z"/></svg>,
   Account:<svg {...RAIL_ICON_PROPS}><circle cx="12" cy="8" r="3.6"/><path d="M4.5 20c.8-4 3.8-6 7.5-6s6.7 2 7.5 6"/></svg>,
-  Settings:<svg {...RAIL_ICON_PROPS}><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-2.7 1.1V21a2 2 0 1 1-4 0v-.1A1.6 1.6 0 0 0 7 19.4a1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.6 1.6 0 0 0 3 14.1H3a2 2 0 0 1 0-4h.1A1.6 1.6 0 0 0 4.6 7a1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.6 1.6 0 0 0 9.9 3H10a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 2.7 1.1l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0 1.1 2.7H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1.3z"/></svg>,
+  Settings:<svg {...RAIL_ICON_PROPS}><path d="M3 6h8.6M15.4 6H21"/><circle cx="13.5" cy="6" r="1.9"/><path d="M3 12h4.6M11.4 12H21"/><circle cx="9.5" cy="12" r="1.9"/><path d="M3 18h11.6M18.4 18H21"/><circle cx="16.5" cy="18" r="1.9"/></svg>,
 };
 const CMDK_ICON=<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" xmlns="http://www.w3.org/2000/svg"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>;
 // prototype.css expresses "mobile" as .app[data-m], set by the prototype's own Desktop/Mobile
@@ -199,57 +202,598 @@ async function exportWalletKeystore(label,{profile,onProfileChange}){
     notify('Encrypted keystore downloaded. Store it and your security password separately and securely.',{type:'success'});
   }catch(value){notify(value.message,{type:'error'});}
 }
-function Wallets({profile,onProfileChange}){const walletList=useLoad('/api/wallets',[],'wallets.changed');const {data:wallets,load}=walletList;const [createChain,setCreateChain]=useState('evm');const [importChain,setImportChain]=useState('evm');const [importMethod,setImportMethod]=useState('privateKey');const [query,setQuery]=useState('');async function submit(event,path){event.preventDefault();const form=event.currentTarget;const values=Object.fromEntries(new FormData(form));try{await api(path,{method:'POST',body:JSON.stringify(values)});form.reset();notify('Wallet saved securely.',{type:'success'});load();}catch(value){notify(value.message,{type:'error'});}}async function remove(label){if(!await confirmDialog(`Remove wallet ${label}? This cannot be undone.`))return;try{await api(`/api/wallets/${encodeURIComponent(label)}`,{method:'DELETE',body:JSON.stringify({confirmation:'CONFIRM'})});load();}catch(value){notify(value.message,{type:'error'});}}
-  const exportKey=label=>exportWalletKeystore(label,{profile,onProfileChange});
-  // Batch import. /api/wallets/batch-import has existed all along with no way to reach it from the
-  // dashboard, so importing more than one wallet meant using Telegram or Discord -- the two places
-  // a private key is LEAST safe. This is the one surface where the key does not cross a chat
-  // transit, which makes its absence here the wrong way round.
-  //
-  // Results are per key and partial success is normal: importWalletsBatch keeps going past a bad
-  // key and reports each entry, so the summary says which ones landed rather than failing the lot.
-  const [batchResults,setBatchResults]=useState(null);
-  const [batchBusy,setBatchBusy]=useState(false);
-  async function submitBatchImport(event){
-    event.preventDefault();
-    const form=event.currentTarget;
-    const values=Object.fromEntries(new FormData(form));
-    const privateKeys=String(values.privateKeys||'').split(/[\s,]+/).map(item=>item.trim()).filter(Boolean);
-    if(!privateKeys.length){notify('Paste at least one private key.',{type:'error'});return;}
-    setBatchBusy(true);
-    try{
-      // The route answers {results:[...]}, not a bare array -- reading it as one threw before
-      // anything rendered, so a 201 with real per-key results looked like nothing happening.
-      const response=await api('/api/wallets/batch-import',{method:'POST',
-        body:JSON.stringify({privateKeys,chain:values.chain,labelPrefix:values.labelPrefix})});
-      const results=Array.isArray(response)?response:(response?.results||[]);
-      setBatchResults(results);
-      const ok=results.filter(item=>item.status==='success').length;
-      notify(`Imported ${ok} of ${results.length} wallets.`,{type:ok?'success':'error'});
-      form.reset();
-      walletList.load();
-    }catch(value){notify(value.message,{type:'error'});}
-    finally{setBatchBusy(false);}
+// Zero renders as 0.000000, never blank -- the ??-not-truthiness rule wallets.html's own footnote
+// states. A chain whose RPC failed returns null, and that is Unavailable: a DIFFERENT fact from
+// zero. Conflating the two is how a funded wallet reads as empty during an RPC outage, which is
+// the one misreading here that could make someone top up a wallet that never needed it.
+function walletBalanceText(value,places){
+  if(value===null||value===undefined||value==='')return null;
+  const parsed=Number(value);
+  return Number.isFinite(parsed)?parsed.toFixed(places===undefined?6:places):String(value);
+}
+// The wallet's own chain carries the headline number; any others are the same address holding
+// funds elsewhere, which live in the details overlay.
+function walletHome(wallet){
+  const balances=wallet.balances||[];
+  return balances.find(item=>item.chain===wallet.chain)||balances[0]||null;
+}
+// The threshold the owner asked for. There is nothing in the data model that defines "low", so this
+// is a stated default rather than a derived fact: 0.01 ETH is roughly a mint's gas on mainnet, so
+// below it a wallet cannot reliably complete one. It deliberately covers zero too -- the owner's
+// call that the status reads "Low", not "Unfunded", and a wallet at 0.000000 is the lowest there
+// is. The figure is named on the page so it is a threshold the reader can see, not a secret.
+//
+// One number rather than per-chain: an L2 needs far less, so this is conservative on Base or
+// Arbitrum. Making it per-chain means a table of gas assumptions that goes stale quietly, and the
+// card already shows the real balance next to the badge for anyone who wants to judge it directly.
+const WALLET_LOW_ETH=0.01;
+function walletStatus(wallet){
+  const text=walletBalanceText(walletHome(wallet)?.balance);
+  if(text===null)return {label:'Unavailable',tone:''};
+  return Number(text)>=WALLET_LOW_ETH?{label:'Funded',tone:'ok'}:{label:'Low',tone:'wn'};
+}
+function lowWallets(wallets){
+  return Array.isArray(wallets)?wallets.filter(item=>walletStatus(item).tone==='wn').length:0;
+}
+function signedEth(value){
+  return `${value<0?'−':'+'}${Math.abs(value).toFixed(6)} ETH`;
+}
+
+// wallets.html's .blk > .card.col: a collapsed summary row on a phone, the whole card on a desktop.
+// prototype.css hides .colh above the mobile breakpoint, so this is one markup serving both rather
+// than a viewport branch in JS -- the same shape TriggerCard uses on Automation.
+//
+// The card is now only ever the short version. Details is an icon in the header and opens an
+// overlay, because the owner's point stands: a disclosure that grows the card pushes every card
+// below it down the page, and on a three-column grid it drags the whole row taller. An overlay
+// costs the card nothing.
+//
+// Export key is deliberately absent: the Export tab is the one place a keystore comes from, and a
+// second door here made that tab look optional. Remove lives in the overlay's Manage tab.
+function WalletCard({wallet,records,windowLabel,windowMs,onOpen}){
+  const [open,setOpen]=useState(false);
+  const home=walletHome(wallet);
+  const status=walletStatus(wallet);
+  const headline=walletBalanceText(home?.balance,3);
+  const performance=walletPerformance(records,wallet.label,windowMs);
+  const cell=value=>performance?value:'—';
+  return <div className="blk">
+    <div className="card col" data-open={open?'1':'0'}
+      style={status.tone==='wn'?{borderColor:'var(--warn)'}:undefined}>
+      <button type="button" className="colh" aria-expanded={open} onClick={()=>setOpen(value=>!value)}>
+        <span className={`p ${status.tone}`}>{status.label}</span>
+        <span className="cti">{wallet.label}</span>
+        <span className="ctv">{headline===null?'Unavailable':headline}</span>
+        <svg className="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"
+          strokeLinecap="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+      </button>
+      <div className="colb">
+        <div className="ch"><h2>{wallet.label}</h2><div className="sp"></div>
+          <span className={`p ${status.tone}`}>{status.label}</span>
+          <button type="button" className="ico-btn" onClick={onOpen}
+            aria-label={`Details for ${wallet.label}`} title="Details">{EXPAND_ICON}</button>
+        </div>
+        <div className="tv tab" style={{marginBottom:'3px',
+          color:status.tone==='wn'?'var(--warn-text)':undefined}}>
+          {headline===null?'Unavailable':headline}
+          {headline===null?null:<small>{home?.symbol||'ETH'}</small>}
+        </div>
+        {/* The prototype's funded wallets print the address as plain muted mono under the balance
+            -- no box, no border. Its Cold card wraps the same thing in a bordered row, which is an
+            inconsistency in the mock rather than a second style worth keeping. */}
+        <p className="mono wallet-addr">{shortHex(wallet.address)}
+          <CopyButton value={wallet.address} label="Copy wallet address"/></p>
+        <div className="sober">
+          <div className="sh">Performance · {windowLabel}</div>
+          <table className="led"><tbody>
+            <tr><td>Minted</td><td>{cell(performance?.minted)}</td></tr>
+            <tr><td>Cost</td><td>{cell(performance&&`${performance.cost.toFixed(6)} ETH`)}</td></tr>
+            <tr><td>Gas</td><td>{cell(performance&&`${performance.gas.toFixed(6)} ETH`)}</td></tr>
+            <tr className="tot"><td>Net</td><td style={{color:!performance?undefined
+              :performance.net<0?'var(--loss-text)':'var(--gain-text)'}}>
+              {cell(performance&&signedEth(performance.net))}</td></tr>
+          </tbody></table>
+        </div>
+      </div>
+    </div>
+  </div>;
+}
+// ── Overlay shell ────────────────────────────────────────────────────────────
+// Modelled on the prototype's .cmd-bd / .cmd command palette: a blurred scrim with a rounded panel
+// centred on it. On a phone it becomes a bottom sheet instead of a centre dialog, because a
+// centred box on a 375px screen is a full-screen panel with wasted margins pretending otherwise.
+//
+// Escape closes, the backdrop closes, focus moves in on open and the page behind stops scrolling.
+function Overlay({open,onClose,title,subtitle,children,wide}){
+  const panelRef=useRef(null);
+  // Keep the latest close handler available without making it an effect dependency. Several
+  // callers pass an inline function, so depending on onClose reran this effect after every input
+  // change and focused the panel again, stealing focus from the field after each keystroke.
+  const onCloseRef=useRef(onClose);
+  onCloseRef.current=onClose;
+  useEffect(()=>{
+    if(!open)return undefined;
+    function onKey(event){if(event.key==='Escape')onCloseRef.current();}
+    document.addEventListener('keydown',onKey);
+    const previous=document.body.style.overflow;
+    document.body.style.overflow='hidden';
+    panelRef.current?.focus();
+    return()=>{document.removeEventListener('keydown',onKey);document.body.style.overflow=previous;};
+  },[open]);
+  if(!open)return null;
+  return <div className="ovl-bd" onMouseDown={event=>{if(event.target===event.currentTarget)onClose();}}>
+    <div className={`ovl${wide?' wide':''}`} role="dialog" aria-modal="true" aria-label={title}
+      tabIndex={-1} ref={panelRef}>
+      <div className="ovl-h">
+        <div style={{minWidth:0}}>
+          <h2>{title}</h2>
+          {subtitle&&<p className="ovl-sub">{subtitle}</p>}
+        </div>
+        <div className="sp"></div>
+        <button type="button" className="ico-btn" onClick={onClose} aria-label="Close">{CROSS_ICON}</button>
+      </div>
+      <div className="ovl-b">{children}</div>
+    </div>
+  </div>;
+}
+
+// ── Wallet details ───────────────────────────────────────────────────────────
+// Summary is the default tab, per the owner. The others exist because the wallet genuinely has
+// more to say than a card should carry: what it has done (Activity), what that cost (Performance),
+// and the one destructive action (Manage), which is deliberately the furthest tab from the default
+// rather than a button sitting next to a balance.
+const WALLET_DETAIL_TABS=[
+  {id:'summary',label:'Summary'},
+  {id:'activity',label:'Activity'},
+  {id:'performance',label:'Performance'},
+  {id:'manage',label:'Manage'},
+];
+function walletCreatedText(wallet){
+  if(!wallet?.addedAt)return null;
+  const at=new Date(wallet.addedAt);
+  return Number.isFinite(at.getTime())?at.toLocaleDateString(undefined,
+    {year:'numeric',month:'short',day:'numeric'}):null;
+}
+// One activity event, in history.html's .r shape. The subtitle carries what identifies the event
+// rather than what it already says: the wallet is not repeated (the overlay is already that
+// wallet), so the room goes to the hash, what triggered it, the gas it actually cost, and when.
+//
+// activity rows only ever carry status 'success' or 'fail' (every logActivity call in server.js),
+// but an unknown value is rendered as itself rather than mapped to a wrong word -- a status this
+// does not recognise is not automatically a failure.
+const ACTIVITY_TONES={success:{tone:'ok',label:'Confirmed'},fail:{tone:'bad',label:'Failed'}};
+function ActivityRow({item}){
+  const verdict=ACTIVITY_TONES[item.status]
+    ||{tone:'wn',label:String(item.status||'unknown').replace(/^./,value=>value.toUpperCase())};
+  // actualNetworkCostWei is the gas that was really paid, not an estimate, and it is the one figure
+  // a wallet's own history is asked for most. Absent on anything that never broadcast.
+  const gas=item.actualNetworkCostWei===null||item.actualNetworkCostWei===undefined
+    ?null:`${Number(weiToEthDisplay(item.actualNetworkCostWei)).toFixed(6)} ETH gas`;
+  const details=[item.txHash?shortHex(item.txHash):null,item.triggerSource,gas,
+    item.time?relativeTime(item.time):null].filter(Boolean).join(' · ');
+  const href=item.txHash&&item.explorer?`${item.explorer}${item.txHash}`:null;
+  return <div className="r">
+    <div className="rm">
+      <div className="rt">{item.title}</div>
+      {details&&<div className="rs mono">{details}</div>}
+    </div>
+    <div className="rv" style={{display:'flex',alignItems:'center',gap:'7px'}}>
+      {/* noreferrer as well as noopener: the explorer does not need to be told which page sent
+          someone to a transaction of theirs. */}
+      {href&&<a className="ico-btn" href={href} target="_blank" rel="noopener noreferrer"
+        aria-label={`View ${shortHex(item.txHash)} on the block explorer`}
+        title="View on explorer">{EXTERNAL_ICON}</a>}
+      <span className={`p ${verdict.tone}`}>{verdict.label}</span>
+    </div>
+  </div>;
+}
+function WalletDetails({wallet,records,windowKey,onWindow,onRemove,onClose}){
+  const [tab,setTab]=useState('summary');
+  // Activity is scoped server-side by session and searched by wallet label. It is only fetched
+  // once that tab is opened -- opening a wallet to read its balance should not cost a request for
+  // a list nobody looked at.
+  const activity=useLoad(tab==='activity'
+    ?`/api/activity?page=1&pageSize=25&search=${encodeURIComponent(wallet.label)}`:null,
+    [tab,wallet.label],'activity.changed');
+  const status=walletStatus(wallet);
+  const home=walletHome(wallet);
+  const created=walletCreatedText(wallet);
+  const chosen=walletWindow(windowKey);
+  const performance=walletPerformance(records,wallet.label,chosen.ms);
+  const mine=Array.isArray(records)
+    ?records.filter(item=>pnlWalletLabel(item)===wallet.label):[];
+  return <Overlay open onClose={onClose} wide title={wallet.label}
+    subtitle={`${chainMeta(wallet.chain).label||wallet.chain} · ${status.label}`}>
+    <SubTabs tabs={WALLET_DETAIL_TABS} active={tab} onChange={setTab} label="Wallet details"/>
+
+    {tab==='summary'&&<div className="g">
+      <div className="tv tab" style={{color:status.tone==='wn'?'var(--warn-text)':undefined}}>
+        {walletBalanceText(home?.balance,3)??'Unavailable'}
+        {home?.balance===undefined||home?.balance===null?null:<small>{home?.symbol||'ETH'}</small>}
+      </div>
+      <p className="mono wallet-addr" style={{marginBottom:0}}>{wallet.address}
+        <CopyButton value={wallet.address} label="Copy full wallet address"/></p>
+      <div className="sober"><div className="sh">Balances · by chain</div>
+        <table className="led"><tbody>
+          {(wallet.balances||[]).map(item=><tr key={item.chain}>
+            <td>{chainMeta(item.chain).label||item.chain}</td>
+            <td>{walletBalanceText(item.balance)===null?'Unavailable'
+              :`${walletBalanceText(item.balance)} ${item.symbol||''}`.trim()}</td></tr>)}
+          {(wallet.balances||[]).length===0&&<tr><td>Balances</td><td>Unavailable</td></tr>}
+        </tbody></table></div>
+      <div className="sober"><div className="sh">Wallet</div>
+        <table className="led"><tbody>
+          <tr><td>Home chain</td><td>{chainMeta(wallet.chain).label||wallet.chain}</td></tr>
+          {/* Created reads Unknown until the deployed API carries addedAt -- publicWallet only
+              started returning it in this change, and the dev server proxies to production. */}
+          <tr><td>Created</td><td>{created||'Unknown'}</td></tr>
+          <tr className="tot"><td>Minted · lifetime</td><td>{wallet.minted??0}</td></tr>
+        </tbody></table></div>
+      {/* The two Minted figures come from different places and can legitimately disagree, which is
+          confusing enough to say outright rather than leave someone to discover. */}
+      <div className="nt i">{INFO_ICON}
+        <div><b>Lifetime</b> is the wallet's own counter, raised only by a mint this app actually
+          broadcast. <b>Performance</b> counts the mint records instead, so a record added or edited
+          by hand moves one and not the other.</div></div>
+    </div>}
+
+    {tab==='activity'&&(()=>{
+      // history.html's row vocabulary -- .r / .rm / .rt / .rs / .rv -- rather than the two-column
+      // ledger this was. A ledger is for figures that line up; an event has a title, a set of
+      // identifying details, and an outcome, which is exactly what .r lays out.
+      //
+      // The server's search matches title OR walletLabel, so a row could arrive because this label
+      // appears in some other wallet's title. Matching walletLabel exactly makes the list mean what
+      // its heading says.
+      const rows=(activity.data?.items||[]).filter(item=>item.walletLabel===wallet.label);
+      const loading=activity.data===null&&!activity.error;
+      return <>
+        <Notice error={activity.error?{title:'Could not load this wallet activity.',
+          detail:'The wallet and its balances are unaffected — this is a read failure only.',
+          code:`${activity.status||500} · Request failed safely`,onRetry:activity.load}:null}/>
+        {loading&&<div className="card" aria-busy="true">
+          {[0,1,2,3].map(index=><div className="sk row" key={index}></div>)}</div>}
+        {!loading&&!activity.error&&rows.length>0&&<div className="card">
+          {rows.map(item=><ActivityRow key={item.id} item={item}/>)}</div>}
+        {!loading&&!activity.error&&rows.length===0&&<div className="card"><div className="emp">
+          <div className="ei">{CLOCK_ICON_LG}</div>
+          <h3>Nothing yet</h3>
+          <p>Mints, sends and trigger fires for this wallet appear here. An empty list is evidence
+            that nothing has happened — not an error.</p>
+        </div></div>}
+        {rows.length>0&&<p style={{fontSize:'11px',color:'var(--faint)',marginTop:'9px'}}>
+          The {rows.length===1?'most recent event':`${rows.length} most recent events`} for this
+          wallet. The full feed, across every wallet, is on <b>History</b>.</p>}
+      </>;
+    })()}
+
+    {tab==='performance'&&<div className="g">
+      <div className="seg" role="group" aria-label="Performance window">
+        {WALLET_WINDOWS.map(([key])=><button type="button" key={key} className={windowKey===key?'on':undefined}
+          aria-pressed={windowKey===key} onClick={()=>onWindow(key)}>{key}</button>)}
+      </div>
+      <div className="sober"><div className="sh">Performance · {chosen.label}</div>
+        <table className="led"><tbody>
+          <tr><td>Minted</td><td>{performance?performance.minted:'—'}</td></tr>
+          <tr><td>Cost</td><td>{performance?`${performance.cost.toFixed(6)} ETH`:'—'}</td></tr>
+          <tr><td>Gas</td><td>{performance?`${performance.gas.toFixed(6)} ETH`:'—'}</td></tr>
+          <tr className="tot"><td>Net</td><td style={{color:!performance?undefined
+            :performance.net<0?'var(--loss-text)':'var(--gain-text)'}}>
+            {performance?signedEth(performance.net):'—'}</td></tr>
+        </tbody></table></div>
+      {mine.length
+        ?<div className="sober"><div className="sh">Records · all time</div>
+          <table className="led"><tbody>
+            {mine.map(item=><tr key={item.id}>
+              <td>{item.nm}</td>
+              <td style={{color:Number(item.net)<0?'var(--loss-text)':'var(--gain-text)'}}>
+                {signedEth(Number(item.net))}</td></tr>)}
+          </tbody></table></div>
+        :<Empty text="No mint records attributed to this wallet yet."/>}
+      <p style={{fontSize:'11px',color:'var(--faint)'}}>Sale proceeds are entered by hand in
+        Wallets · Performance. Until a resale is recorded, a mint's net is its cost plus gas, as a
+        loss — which is why a wallet can mint well and still read negative here.</p>
+    </div>}
+
+    {tab==='manage'&&<div className="g">
+      <div className="nt w">{WARN_TRIANGLE_ICON}
+        <div><b>Removing this wallet deletes its stored key.</b> The encrypted envelope is deleted
+          outright, not archived — if you might need this address again, take a keystore from the
+          <b> Export</b> tab first. Past transactions stay in your history either way.</div></div>
+      <div className="br"><button type="button" className="b d sm" onClick={onRemove}>Remove wallet</button></div>
+    </div>}
+  </Overlay>;
+}
+// ── New wallet: choose, then do ──────────────────────────────────────────────
+// Create wallet used to reveal three stacked forms below the list, which pushed the whole page
+// down and asked the reader to pick between them by reading their headings. The overlay asks the
+// one question that actually branches -- generate a key here, or bring one -- and then shows only
+// the form that answer needs.
+//
+// Batch stops being a separate form. One import form grows: add a second secret and it is a batch,
+// which is the same decision the owner described and removes the "which of these three?" step
+// entirely. The old paste-fifty-keys textarea is gone from here; /api/wallets/batch-import is still
+// what a genuinely bulk import wants, and Import many wallets stays reachable from the empty state.
+const WALLET_IMPORT_MAX=10;
+function NewWalletOverlay({open,onClose,onDone,chains}){
+  const [mode,setMode]=useState(null);          // null = the choice, then 'create' | 'import'
+  const [chain,setChain]=useState('evm');
+  const [method,setMethod]=useState('privateKey');
+  const [label,setLabel]=useState('');
+  const [rows,setRows]=useState([{key:0,secret:'',label:''}]);
+  const [busy,setBusy]=useState(false);
+  const [results,setResults]=useState(null);
+  const [createdRecovery,setCreatedRecovery]=useState(null);
+  const [recoveryRevealed,setRecoveryRevealed]=useState(false);
+  const nextKey=useRef(1);
+  function reset(){
+    setMode(null);setChain('evm');setMethod('privateKey');setLabel('');
+    setRows([{key:0,secret:'',label:''}]);setResults(null);setCreatedRecovery(null);
+    setRecoveryRevealed(false);nextKey.current=1;
   }
-  const normalized=query.trim().toLowerCase();const filtered=wallets?(normalized?wallets.filter(wallet=>[wallet.label,wallet.address,wallet.chain].filter(Boolean).some(value=>String(value).toLowerCase().includes(normalized))):wallets):[];return <><p className="page-lead">Create server-side encrypted wallets, check balances, and manage imports.</p><Notice error={loadError(walletList,'Could not load wallets.')}/><div className="page-toolbar"><label className="page-search">Find a wallet<input type="search" value={query} placeholder="Label, address, chain…" onChange={e=>setQuery(e.target.value)}/></label></div>{wallets===null?<Skeleton/>:<div className="card-grid wallet-grid">{filtered.map(wallet=><article className="card" key={wallet.label}><div><span className="pill">{wallet.chain}</span><h2>{wallet.label}</h2></div><div className="user-card-identity"><code>{wallet.address}</code><CopyButton value={wallet.address} label="Copy wallet address"/></div><div className="wallet-balances">{wallet.balances?.length?wallet.balances.map(b=><div className="wallet-balance-row" key={b.chain}><span>{chainMeta(b.chain).label}</span><strong>{b.balance??'Unavailable'} {b.symbol}</strong></div>):<div className="wallet-balance-row">Unavailable</div>}</div><div className="br"><button className="b g sm" onClick={()=>exportKey(wallet.label)}>Export key</button><button className="b d sm" onClick={()=>remove(wallet.label)}>Remove</button></div></article>)}{filtered.length===0&&<Empty text={normalized?'No wallets match this search.':'No wallets yet. Create the recommended server-side wallet below.'}/>}</div>}<div className="form-grid wallet-forms"><Form className="form-wallet-create" title="Create wallet" note="Recommended - the private key is generated, encrypted, and never returned." onSubmit={e=>submit(e,'/api/wallets/create')}><Field name="label" label="Label" placeholder="$1 and a dream"/><WalletChainSelect name="chain" label="Chain" value={createChain} onChange={e=>setCreateChain(e.target.value)}/><button className="b p">Create securely</button></Form><Form className="form-wallet-import" title="Import wallet" warning="Not recommended: your key or seed phrase crosses browser memory and network transit. Use HTTPS; it is encrypted immediately and never returned." onSubmit={e=>submit(e,'/api/wallets/import')}><Field name="label" label="Label" placeholder="$1 and a dream"/><WalletChainSelect name="chain" label="Chain" value={importChain} onChange={e=>setImportChain(e.target.value)}/><div className="method-toggle"><span>Import using</span><div className="seg" role="radiogroup" aria-label="Import method"><button type="button" aria-pressed={importMethod==='privateKey'} className={importMethod==='privateKey'?'on':undefined} onClick={()=>setImportMethod('privateKey')}>Private key</button><button type="button" aria-pressed={importMethod==='seedPhrase'} className={importMethod==='seedPhrase'?'on':undefined} onClick={()=>setImportMethod('seedPhrase')}>Seed phrase</button></div></div><input type="hidden" name="importMethod" value={importMethod}/>{importMethod==='privateKey'?<Field name="privateKey" label="Private key" type="password" autoComplete="off"/>:<label>Seed phrase (12-24 words)<textarea className="compact" name="seedPhrase" required autoComplete="off" placeholder="witch collapse practice feed shame open despair creek road again ice least"/></label>}<button className="b g">Import over HTTPS</button></Form>
-    <Form className="form-wallet-batch-import" title="Import many wallets"
-      warning="Same risk as a single import, multiplied. Every key crosses browser memory and network transit; each is encrypted on arrival and never returned."
-      onSubmit={submitBatchImport}>
-      <label>Private keys <span style={{color:'var(--faint)',fontWeight:500}}>· one per line, up to 50</span>
-        <textarea className="compact" name="privateKeys" required autoComplete="off" spellCheck="false"
-          placeholder="0xabc…   0xdef…   — one key per line"/></label>
-      <Field name="labelPrefix" label="Label prefix" placeholder="wallet"/>
-      <WalletChainSelect name="chain" label="Chain" value={importChain} onChange={e=>setImportChain(e.target.value)}/>
-      <button className="b g" disabled={batchBusy}>{batchBusy?'Importing…':'Import all over HTTPS'}</button>
-      {/* Per key, because partial success is the normal outcome and a single verdict would hide it. */}
-      {batchResults&&<div className="g" style={{gap:'4px',marginTop:'9px'}}>
-        {batchResults.map(item=><div className="bres" key={item.index}>
-          <span className={`p ${item.status==='success'?'ok':'bad'}`}>{item.status==='success'?'Imported':'Failed'}</span>
-          <span className="bl2">{item.status==='success'?item.label:`#${item.index+1}`}</span>
+  function finishRecovery(){reset();onClose();}
+  async function close(){
+    if(createdRecovery&&!await confirmDialog('This recovery phrase cannot be shown again after you close this window. Have you saved it securely?'))return;
+    finishRecovery();
+  }
+  const secretWord=method==='privateKey'?'private key':'seed phrase';
+
+  async function createWallet(event){
+    event.preventDefault();
+    setBusy(true);
+    try{
+      const wallet=await api('/api/wallets/create',{method:'POST',
+        body:JSON.stringify({label:label.trim(),chain:chain==='evm'?DEFAULT_EVM_CHAIN:chain})});
+      onDone();
+      if(!wallet.recoveryPhrase){
+        notify('Wallet created, but this server did not return its one-time recovery phrase. Use Wallets → Export to save the private key now.',{type:'error',category:'security'});
+        finishRecovery();return;
+      }
+      setCreatedRecovery({label:wallet.label,address:wallet.address,phrase:wallet.recoveryPhrase});
+      setRecoveryRevealed(false);
+      notify('Wallet created. Save its recovery phrase before closing this window.',{type:'success',category:'security'});
+    }catch(error){notify(error.message,{type:'error'});}
+    finally{setBusy(false);}
+  }
+
+  async function copyRecoveryPhrase(){
+    if(!createdRecovery)return;
+    try{
+      await globalThis.navigator.clipboard.writeText(createdRecovery.phrase);
+      notify('Recovery phrase copied. The clipboard can be read by other software — clear it after saving the phrase securely.',{type:'success',category:'security'});
+    }catch{notify('Clipboard access was refused by the browser.',{type:'error'});}
+  }
+  async function revealRecoveryPhrase(){
+    if(!createdRecovery)return;
+    if(await confirmDialog('Warning: revealing the recovery phrase on screen can expose it to screen capture, shoulder-surfing, browser tools, or remote-access software. Reveal it anyway?'))setRecoveryRevealed(true);
+  }
+
+  // One request per wallet rather than /api/wallets/batch-import, for two reasons: that route takes
+  // a label PREFIX and numbers the wallets itself, so per-row labels could not survive it, and it
+  // accepts private keys only -- it calls new Wallet(privateKey) directly, so a seed phrase cannot
+  // go through it at all. Looping the single-import route gives both secret kinds the same path and
+  // the same per-row reporting, which is what makes partial success legible.
+  async function importWallets(event){
+    event.preventDefault();
+    const entries=rows
+      .map((row,index)=>({index,secret:row.secret.trim(),
+        label:(row.label||(index===0?label:`${label}-${index+1}`)).trim()}))
+      .filter(row=>row.secret);
+    if(!entries.length){notify(`Enter at least one ${secretWord}.`,{type:'error'});return;}
+    const missing=entries.find(row=>!row.label);
+    if(missing){notify('Every wallet needs a label.',{type:'error'});return;}
+    setBusy(true);setResults(null);
+    const collected=[];
+    for(const entry of entries){
+      try{
+        const wallet=await api('/api/wallets/import',{method:'POST',body:JSON.stringify({
+          label:entry.label,chain:chain==='evm'?DEFAULT_EVM_CHAIN:chain,importMethod:method,
+          ...(method==='privateKey'?{privateKey:entry.secret}:{seedPhrase:entry.secret})})});
+        collected.push({index:entry.index,status:'success',label:entry.label,address:wallet.address});
+      }catch(error){
+        collected.push({index:entry.index,status:'failed',label:entry.label,error:error.message});
+      }
+    }
+    setResults(collected);
+    const ok=collected.filter(item=>item.status==='success').length;
+    notify(`Imported ${ok} of ${collected.length} ${collected.length===1?'wallet':'wallets'}.`,
+      {type:ok?'success':'error'});
+    onDone();
+    setBusy(false);
+    if(ok===collected.length)close();
+  }
+
+  const title=createdRecovery?'Save your recovery phrase':mode===null?'Add a wallet':mode==='create'?'Create a wallet':'Import a wallet';
+  return <Overlay open={open} onClose={close} title={title}
+    subtitle={createdRecovery?'Shown once during creation; never stored by GhostMint.':mode===null?'Two ways in, and they carry very different risk.':undefined}>
+    {createdRecovery&&<div className="g">
+      <div className="nt w">{WARN_TRIANGLE_ICON}<div><b>This is your only recovery-phrase view.</b>
+        GhostMint has encrypted the wallet&apos;s private key, but it does not store this phrase and
+        cannot reconstruct it later. Closing or reloading permanently removes it from this page.
+        Anyone who obtains these words can control and drain the wallet.</div></div>
+      <div className="sober"><div className="sh">{createdRecovery.label} · {createdRecovery.address}</div>
+        {recoveryRevealed
+          ?<code className="mono" style={{display:'block',wordBreak:'break-word',padding:'11px',background:'var(--surface-2)',border:'1px solid var(--border)',borderRadius:'var(--radius-sm)'}}>{createdRecovery.phrase}</code>
+          :<div className="nt i">{INFO_ICON}<div>The phrase is hidden. You can copy it without
+            displaying it, or choose Reveal and accept the on-screen exposure warning.</div></div>}
+      </div>
+      <div className="br">
+        <button type="button" className="b p" onClick={copyRecoveryPhrase}>Copy recovery phrase</button>
+        <button type="button" className="b g" onClick={recoveryRevealed?()=>setRecoveryRevealed(false):revealRecoveryPhrase}>{recoveryRevealed?'Hide':'Reveal'}</button>
+        <button type="button" className="b g" onClick={finishRecovery}>I saved it — close</button>
+      </div>
+      <p style={{fontSize:'11px',color:'var(--faint)'}}>Do not save it in chat, email, cloud notes,
+        screenshots, or any place other people or software can read. An offline written copy or a
+        dedicated secure backup is safer.</p>
+    </div>}
+    {!createdRecovery&&mode===null&&<div className="g">
+      <button type="button" className="pick" onClick={()=>setMode('create')}>
+        <span className="chip-ico">{PLUS_ICON}</span>
+        <span className="pick-t"><b>Create a new wallet</b>
+          <span>GhostMint generates the wallet on the server and encrypts its private key with
+            AES-256-GCM. Its recovery phrase is returned to this browser once so you can save it,
+            then discarded rather than stored.</span></span>
+        <span className="p ok">Recommended</span>
+      </button>
+      <button type="button" className="pick" onClick={()=>setMode('import')}>
+        <span className="chip-ico">{LOCK_ICON}</span>
+        <span className="pick-t"><b>Import an existing wallet</b>
+          <span>Your key or seed phrase crosses browser memory and network transit. It is encrypted
+            the moment it arrives and never returned — but creating one avoids that entirely.</span></span>
+        <span className="p wn">Not recommended</span>
+      </button>
+    </div>}
+
+    {!createdRecovery&&mode==='create'&&<form onSubmit={createWallet}>
+      <div className="g gm2 g2" style={{marginBottom:'13px'}}>
+        <label className="fl"><span>Label</span>
+          <input className="in" value={label} onChange={event=>setLabel(event.target.value)}
+            required autoFocus placeholder="e.g. Primary"/></label>
+        <WalletChainSelect name="chain" label="Chain" value={chain}
+          onChange={event=>setChain(event.target.value)}/>
+      </div>
+      <div className="nt i" style={{marginBottom:'12px'}}>{INFO_ICON}
+        <div>A key works on every EVM chain this app supports, so the chain here is only the
+          wallet's home — it can still mint on the others.</div></div>
+      <div className="br">
+        <button className="b p" disabled={busy}>{busy?'Creating…':'Create securely'}</button>
+        <button type="button" className="b g" onClick={()=>setMode(null)}>Back</button>
+      </div>
+    </form>}
+
+    {!createdRecovery&&mode==='import'&&<form onSubmit={importWallets}>
+      <div className="nt w" style={{marginBottom:'12px'}}>{WARN_TRIANGLE_ICON}
+        <div>Whatever you paste crosses this browser and the network. It is encrypted on arrival and
+          never returned, but creating a wallet avoids the exposure altogether.</div></div>
+      <div className="g gm2 g2" style={{marginBottom:'11px'}}>
+        <label className="fl"><span>Label</span>
+          <input className="in" value={label} onChange={event=>setLabel(event.target.value)}
+            required autoFocus placeholder="e.g. Primary"/></label>
+        <WalletChainSelect name="chain" label="Chain" value={chain}
+          onChange={event=>setChain(event.target.value)}/>
+      </div>
+      <div className="method-toggle" style={{marginBottom:'11px'}}><span>Importing using</span>
+        <div className="seg" role="radiogroup" aria-label="Import method">
+          <button type="button" aria-pressed={method==='privateKey'}
+            className={method==='privateKey'?'on':undefined}
+            onClick={()=>setMethod('privateKey')}>Private key</button>
+          <button type="button" aria-pressed={method==='seedPhrase'}
+            className={method==='seedPhrase'?'on':undefined}
+            onClick={()=>setMethod('seedPhrase')}>Seed phrase</button>
+        </div></div>
+      <div className="g" style={{gap:'9px',marginBottom:'11px'}}>
+        {rows.map((row,index)=><div className="secret-row" key={row.key}>
+          <label className="fl" style={{flex:1,minWidth:0}}>
+            <span>{index===0?(method==='privateKey'?'Private key':'Seed phrase (12-24 words)')
+              :`Wallet ${index+1} · ${secretWord}`}</span>
+            {method==='privateKey'
+              ?<input className="in mono" type="password" autoComplete="off" required={index===0}
+                value={row.secret} placeholder="0x…"
+                onChange={event=>setRows(list=>list.map(item=>item.key===row.key
+                  ?{...item,secret:event.target.value}:item))}/>
+              :<textarea className="in compact" autoComplete="off" required={index===0}
+                value={row.secret} placeholder="witch collapse practice feed shame open despair creek road again ice least"
+                onChange={event=>setRows(list=>list.map(item=>item.key===row.key
+                  ?{...item,secret:event.target.value}:item))}/>}
+            {index>0&&<input className="in" style={{marginTop:'6px'}}
+              value={row.label} placeholder={`${label||'wallet'}-${index+1}`}
+              aria-label={`Label for wallet ${index+1}`}
+              onChange={event=>setRows(list=>list.map(item=>item.key===row.key
+                ?{...item,label:event.target.value}:item))}/>}
+          </label>
+          {index>0&&<button type="button" className="ico-btn" aria-label={`Remove wallet ${index+1}`}
+            onClick={()=>setRows(list=>list.filter(item=>item.key!==row.key))}>{CROSS_ICON}</button>}
+        </div>)}
+      </div>
+      {rows.length<WALLET_IMPORT_MAX&&<button type="button" className="b g sm" style={{marginBottom:'12px'}}
+        onClick={()=>{setRows(list=>[...list,{key:nextKey.current,secret:'',label:''}]);nextKey.current+=1;}}>
+        {PLUS_ICON} Add another {secretWord}</button>}
+      {results&&<div className="g" style={{gap:'4px',marginBottom:'11px'}}>
+        {results.map(item=><div className="bres" key={item.index}>
+          <span className={`p ${item.status==='success'?'ok':'bad'}`}>
+            {item.status==='success'?'Imported':'Failed'}</span>
+          <span className="bl2">{item.label}</span>
           <span className="be mono">{item.status==='success'?item.address:item.error}</span>
         </div>)}
       </div>}
-    </Form></div></>}
+      <div className="br">
+        <button className="b g" disabled={busy}>{busy?'Importing…'
+          :rows.length>1?`Import ${rows.length} wallets over HTTPS`:'Import over HTTPS'}</button>
+        <button type="button" className="b g" onClick={()=>setMode(null)}>Back</button>
+      </div>
+    </form>}
+  </Overlay>;
+}
+function Wallets({profile,onProfileChange,walletList,pnl,windowKey,onWindow,formsOpen,onFormsOpen}){
+  const {data:wallets,load}=walletList;
+  const [query,setQuery]=useState('');
+  const [detailLabel,setDetailLabel]=useState(null);
+  async function remove(label){
+    if(!await confirmDialog(`Remove wallet ${label}? This cannot be undone.`))return;
+    try{
+      await api(`/api/wallets/${encodeURIComponent(label)}`,{method:'DELETE',
+        body:JSON.stringify({confirmation:'CONFIRM'})});
+      setDetailLabel(null);
+      notify(`Removed ${label}.`,{type:'success'});
+      load();
+    }catch(value){notify(value.message,{type:'error'});}
+  }
+  const normalized=query.trim().toLowerCase();
+  const filtered=wallets?(normalized?wallets.filter(wallet=>[wallet.label,wallet.address,wallet.chain]
+    .filter(Boolean).some(value=>String(value).toLowerCase().includes(normalized))):wallets):[];
+  const loading=wallets===null&&!walletList.error;
+  const empty=Array.isArray(wallets)&&wallets.length===0;
+  // Re-read from the live list rather than holding the wallet object: a balance refresh or a
+  // rename while the overlay is open should be reflected in it, not frozen at the moment it opened.
+  const detail=detailLabel?(wallets||[]).find(item=>item.label===detailLabel)||null:null;
+  return <>
+    {/* The error state says what did NOT happen as well as what did: a read failing is not a
+        wallet being lost, and that is the first thing anyone seeing this needs to know. */}
+    <Notice error={walletList.error?{title:'Could not load wallets.',
+      detail:'Your wallets and their keys are unaffected — this is a read failure only.',
+      code:`${walletList.status||500} · Request failed safely`,onRetry:walletList.load}:null}/>
+    {loading&&<div className="g g3" aria-busy="true">{[0,1,2].map(index=><div className="card" key={index}>
+      <div className="sk big"></div><div className="sk l w80"></div><div className="sk row"></div></div>)}</div>}
+    {empty&&<div className="g">
+      <div className="frun">
+        <h2>Create your first wallet</h2>
+        <p>GhostMint generates the private key on the server, encrypts it immediately with
+          AES-256-GCM, and returns only the public address. The key is never sent to your browser.</p>
+        <div className="br">
+          <button type="button" className="b p" onClick={()=>onFormsOpen(true)}>Create securely</button>
+          <button type="button" className="b g" onClick={()=>onFormsOpen(true)}>Import instead</button>
+        </div>
+      </div>
+    </div>}
+    {!loading&&!empty&&!walletList.error&&<>
+      <div className="sfrow"><div className="sf">
+        <span className="si" aria-hidden="true">{SEARCH_ICON}</span>
+        <input type="search" value={query} placeholder="Label, address, chain…"
+          aria-label="Find a wallet" onChange={event=>setQuery(event.target.value)}/>
+        {query&&<button type="button" className="sx" aria-label="Clear search"
+          onClick={()=>setQuery('')}>×</button>}
+      </div>
+      {/* One window for every card. Per-card pickers would mean four cards disagreeing about what
+          period they show, which is exactly the confusion the figures are meant to resolve. */}
+      <div className="seg" role="group" aria-label="Performance window">
+        {WALLET_WINDOWS.map(([key])=><button type="button" key={key} className={windowKey===key?'on':undefined}
+          aria-pressed={windowKey===key} onClick={()=>onWindow(key)}>{key}</button>)}
+      </div></div>
+      {filtered.length
+        ?<div className="g g3">{filtered.map(wallet=><WalletCard key={wallet.label} wallet={wallet}
+            records={pnl?.data} windowLabel={walletWindow(windowKey).label}
+            windowMs={walletWindow(windowKey).ms} onOpen={()=>setDetailLabel(wallet.label)}/>)}</div>
+        :<Empty text="No wallets match this search."/>}
+      <p style={{fontSize:'11.5px',color:'var(--faint)',marginTop:'10px'}}>Zero renders
+        as <b>0.000000</b>, never blank. A chain whose RPC failed shows <b>Unavailable</b>, which is
+        not the same as zero. <b>Low</b> means under {WALLET_LOW_ETH} ETH — roughly a mint's gas on
+        mainnet, so below it a mint may not complete. Performance counts the mint records GhostMint
+        wrote for each wallet; a record renamed or added by hand stops being attributable to one.</p>
+    </>}
+    {detail&&<WalletDetails wallet={detail} records={pnl?.data} windowKey={windowKey}
+      onWindow={onWindow} onRemove={()=>remove(detail.label)} onClose={()=>setDetailLabel(null)}/>}
+    <NewWalletOverlay open={formsOpen} onClose={()=>onFormsOpen(false)} onDone={load}/>
+  </>;}
 const SEADROP_SIGNATURE='mintPublic(address,address,address,uint256)';
 const ADDRESS_SHAPE=/^0x[0-9a-fA-F]{40}$/;
 function weiToEthDisplay(wei){
@@ -300,6 +844,11 @@ const PAUSE_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stro
 // (mint.html:215) and a wallet for "No wallets to batch" (mint.html:192).
 const PRESET_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><path d="M5 5h14v14H5z"/><path d="M9 9h6v6H9z"/></svg>;
 const WALLET_EMPTY_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><rect x="3" y="6" width="18" height="13" rx="2.5"/></svg>;
+const TREND_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><path d="M3 17l5-6 4 3 5-8"/></svg>;
+const EXPAND_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><path d="M9 3H3v6M15 21h6v-6"/><path d="M3 3l7 7M21 21l-7-7"/></svg>;
+const PLUS_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><path d="M12 5v14M5 12h14"/></svg>;
+const EXTERNAL_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M14 4h6v6"/><path d="M20 4l-8.5 8.5"/><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg>;
+const CARD_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M7 9h6M7 13h4M15 16.5l2.5-3 2.5 3"/></svg>;
 const CROSS_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><path d="M18 6 6 18M6 6l12 12"/></svg>;
 const LOCK_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><rect x="4" y="10.5" width="16" height="10.5" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/></svg>;
 function shortHex(value){const v=String(value||"");return v.length>12?`${v.slice(0,6)}…${v.slice(-4)}`:v;}
@@ -970,11 +1519,278 @@ function Activity(){const [page,setPage]=useState(1);const [search,setSearch]=us
 // src/server.js) with real cost+gas and sale left at 0 until something actually sells -- these
 // rollups are computed straight from that same already-loaded list, not a separate fetch, since
 // summing what's already on screen is simpler than a new endpoint for the same numbers.
-const PNL_PERIODS=[['day','Today',86400000],['week','7 days',7*86400000],['month','30 days',30*86400000],['year','365 days',365*86400000]];
-function summarizePnlPeriod(records,windowMs){const cutoff=Date.now()-windowMs;const inWindow=records.filter(item=>item.t>=cutoff);
-  return {count:inWindow.length,cost:inWindow.reduce((sum,item)=>sum+Number(item.cost),0),sale:inWindow.reduce((sum,item)=>sum+Number(item.sale),0),
-    gas:inWindow.reduce((sum,item)=>sum+Number(item.gas),0),net:inWindow.reduce((sum,item)=>sum+Number(item.net),0)};}
-function Pnl(){const listing=useLoad('/api/pnl',[],'pnl.changed');const [editing,setEditing]=useState(null);const [query,setQuery]=useState('');async function save(event){event.preventDefault();const form=event.currentTarget;const wasEditing=editing;const body=JSON.stringify(Object.fromEntries(new FormData(form)));try{await api(wasEditing?`/api/pnl/${wasEditing}`:'/api/pnl',{method:wasEditing?'PUT':'POST',body});setEditing(null);form.reset();notify(wasEditing?'Record updated.':'Record added.',{type:'success'});listing.load();}catch(value){notify(value.message,{type:'error'});}}async function remove(id){if(!await confirmDialog('Delete this P&L record?'))return;try{await api(`/api/pnl/${id}`,{method:'DELETE',body:JSON.stringify({confirmation:'CONFIRM'})});listing.load();}catch(value){notify(value.message,{type:'error'});}}const current=listing.data?.find(x=>x.id===editing);const normalized=query.trim().toLowerCase();const filtered=listing.data?(normalized?listing.data.filter(item=>String(item.nm||'').toLowerCase().includes(normalized)):listing.data):null;return <><p className="page-lead">Cost and gas are recorded automatically on every confirmed mint; sale stays editable below once something actually sells.</p><Notice error={loadError(listing,'Could not load your P&L records.')}/>{listing.data&&<div className="card-grid pnl-summary-grid">{PNL_PERIODS.map(([key,label,windowMs])=>{const summary=summarizePnlPeriod(listing.data,windowMs);return <article className="card pnl-summary-card" key={key}><span className="eyebrow">{label}</span><strong className={summary.net<0?'net-loss':'net-gain'}>Net {summary.net>0?'+':''}{summary.net.toFixed(4)}</strong><p>{summary.count} record{summary.count===1?'':'s'} · Cost {summary.cost.toFixed(4)} · Sale {summary.sale.toFixed(4)} · Gas {summary.gas.toFixed(4)}</p></article>;})}</div>}<div className="page-toolbar"><label className="page-search">Find a record<input type="search" value={query} placeholder="Name…" onChange={e=>setQuery(e.target.value)}/></label></div><Form className="form-pnl" key={editing||'new'} title={editing?'Edit record':'Add record'} note="Auto-created records can be edited here too -- fill in Sale once an NFT actually resells." onSubmit={save}><Field name="name" label="Name" defaultValue={current?.nm}/><Field name="cost" label="Cost" type="number" step="any" defaultValue={current?.cost??0}/><Field name="sale" label="Sale" type="number" step="any" defaultValue={current?.sale??0}/><Field name="gas" label="Gas" type="number" step="any" defaultValue={current?.gas??0}/><button className="b p">{editing?'Save changes':'Add record'}</button>{editing&&<button type="button" className="b g" onClick={()=>setEditing(null)}>Cancel edit</button>}</Form>{listing.data===null?<Skeleton/>:<div className="card-grid pnl-grid">{filtered.map(item=><article className="card" key={item.id}><h2>{item.nm}</h2><p>Cost {item.cost} · Sale {item.sale} · Gas {item.gas}</p><strong className={Number(item.net)<0?'net-loss':'net-gain'}>Net {Number(item.net)>0?'+':''}{item.net}</strong><div className="br"><button className="b g sm" onClick={()=>setEditing(item.id)}>Edit</button><button className="b d sm" onClick={()=>remove(item.id)}>Delete</button></div></article>)}{filtered.length===0&&<Empty text={normalized?'No P&L records match this search.':'No P&L records yet.'}/>}</div>}</>}
+// ── P&L snapshot card ────────────────────────────────────────────────────────
+// The shareable-P&L-card pattern trading apps use (Tealstreet's PnL cards, Robinhood-style
+// summaries): one headline return, the period it covers, the few figures behind it, and a download.
+// The conventions worth borrowing are the ones those all share -- green for gain and red for loss,
+// a return expressed as a percentage next to the absolute figure, and few enough numbers that the
+// card reads at a glance.
+//
+// What is NOT borrowed: backgrounds, stickers and layout pickers. This card reports what happened
+// with the user's money; decorating it invites reading it as promotion rather than as a record.
+//
+// ROI is net over cost PLUS gas. Gas is spent whether or not a token ever resells, so a return
+// measured against cost alone would flatter every card this ever draws.
+function pnlSnapshotRange(days){
+  if(days===null)return 'All time';
+  const end=new Date();
+  const start=new Date(Date.now()-(days-1)*86400000);
+  const fmt=value=>value.toLocaleDateString(undefined,{month:'short',day:'numeric'});
+  return `${fmt(start)} — ${fmt(end)}`;
+}
+// Drawn on a canvas rather than screenshotted from the DOM, so the export needs no library and no
+// network. Colours are read off the live theme at draw time, so the PNG matches whatever theme the
+// page is in rather than being hardcoded to one of them.
+function drawSnapshotCanvas({totals,label,range,points}){
+  const scale=2,width=560,height=320;
+  const canvas=document.createElement('canvas');
+  canvas.width=width*scale;canvas.height=height*scale;
+  const context=canvas.getContext('2d');
+  context.scale(scale,scale);
+  const styles=window.getComputedStyle(document.documentElement);
+  const token=(name,fallback)=>{const value=styles.getPropertyValue(name).trim();return value||fallback;};
+  const surface=token('--surface','#111'),border=token('--border-strong','#333');
+  const text=token('--text','#eee'),muted=token('--muted','#9aa2a9'),faint=token('--faint','#767e79');
+  const gain=token('--gain-text','#3fb950'),loss=token('--loss-text','#f85149');
+  const accent=token('--accent','#2ea67f');
+  const positive=totals.net>=0;
+  const verdict=positive?gain:loss;
+
+  context.fillStyle=surface;context.fillRect(0,0,width,height);
+  context.strokeStyle=border;context.lineWidth=1;
+  context.strokeRect(.5,.5,width-1,height-1);
+
+  context.fillStyle=accent;
+  context.font='700 12px ui-sans-serif, system-ui, sans-serif';
+  context.fillText('GHOSTMINT · P&L',28,40);
+  context.fillStyle=faint;
+  context.font='500 12px ui-sans-serif, system-ui, sans-serif';
+  context.fillText(range,28,60);
+
+  context.fillStyle=muted;
+  context.font='600 13px ui-sans-serif, system-ui, sans-serif';
+  context.fillText(`Net · ${label}`,28,100);
+  context.fillStyle=verdict;
+  context.font='750 44px ui-sans-serif, system-ui, sans-serif';
+  const headline=`${positive?'+':'−'}${Math.abs(totals.net).toFixed(6)} ETH`;
+  context.fillText(headline,28,142);
+  if(totals.roi!==undefined){
+    context.font='700 16px ui-sans-serif, system-ui, sans-serif';
+    context.fillText(`${positive?'+':'−'}${Math.abs(totals.roi).toFixed(1)}% on outlay`,28,168);
+  }
+
+  // Same one-record-per-bar geometry as both on-screen charts. The downloaded card cannot
+  // collapse or overlap outcomes that the user could see before pressing Download.
+  const chartTop=190,chartHeight=54,mid=chartTop+chartHeight/2;
+  const plotWidth=width-56;
+  const {bars}=pnlBarLayout(points,{width:plotWidth,height:chartHeight,maxBarWidth:9});
+  context.strokeStyle=border;context.beginPath();
+  context.moveTo(28,mid);context.lineTo(width-28,mid);context.stroke();
+  bars.forEach(bar=>{
+    context.fillStyle=bar.net<0?token('--loss','#da3633'):token('--gain','#2ea043');
+    const y=chartTop+Math.min(bar.end,chartHeight/2);
+    context.fillRect(28+bar.x,y,bar.width,bar.height);
+  });
+
+  const stats=[['Mints',String(totals.records)],['Cost',`${totals.cost.toFixed(4)} ETH`],
+    ['Gas',`${totals.gas.toFixed(4)} ETH`],['Sale',`${totals.sale.toFixed(4)} ETH`]];
+  stats.forEach(([name,value],index)=>{
+    const x=28+index*((width-56)/stats.length);
+    context.fillStyle=faint;
+    context.font='600 10px ui-sans-serif, system-ui, sans-serif';
+    context.fillText(name.toUpperCase(),x,278);
+    context.fillStyle=text;
+    context.font='700 14px ui-sans-serif, system-ui, sans-serif';
+    context.fillText(value,x,297);
+  });
+  return canvas;
+}
+function PnlSnapshot({records,windowKey,onWindow,onClose}){
+  const [busy,setBusy]=useState(false);
+  const chosen=walletWindow(windowKey);
+  const days=chosen.ms===null?null:Math.round(chosen.ms/86400000);
+  const totals=pnlWindowTotals(records,days);
+  const {points}=pnlRecordSeries(records,days);
+  const range=pnlSnapshotRange(days);
+  const positive=totals.net>=0;
+  async function download(){
+    setBusy(true);
+    try{
+      const canvas=drawSnapshotCanvas({totals,label:chosen.label,range,points});
+      const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/png'));
+      if(!blob)throw new Error('The browser could not render the card.');
+      downloadFile(`ghostmint-pnl-${days===null?'all-time':`${days}d`}.png`,blob,'image/png');
+      notify('Snapshot saved as a PNG.',{type:'success'});
+    }catch(error){notify(error.message,{type:'error'});}
+    finally{setBusy(false);}
+  }
+  return <Overlay open onClose={onClose} title="P&L snapshot"
+    subtitle="A single card for the selected period, to keep or to share.">
+    <div className="seg" role="group" aria-label="Snapshot period" style={{marginBottom:'12px'}}>
+      {WALLET_WINDOWS.map(([key])=><button type="button" key={key} className={windowKey===key?'on':undefined}
+        aria-pressed={windowKey===key} onClick={()=>onWindow(key)}>{key}</button>)}
+    </div>
+    <div className="snap">
+      <div className="snap-h"><span className="snap-brand">GHOSTMINT · P&amp;L</span>
+        <div className="sp"></div><span className="snap-range">{range}</span></div>
+      <p className="snap-l">Net · {chosen.label}</p>
+      <div className="snap-v" style={{color:positive?'var(--gain-text)':'var(--loss-text)'}}>
+        {positive?'+':'−'}{Math.abs(totals.net).toFixed(6)}<small>ETH</small></div>
+      {totals.roi===undefined
+        ?<p className="snap-roi" style={{color:'var(--faint)'}}>No outlay in this period</p>
+        :<p className="snap-roi" style={{color:positive?'var(--gain-text)':'var(--loss-text)'}}>
+          {positive?'+':'−'}{Math.abs(totals.roi).toFixed(1)}% on outlay</p>}
+      <div className="snap-c"><PnlBars points={points} className="chart" showLegend={false}/></div>
+      <div className="snap-s">
+        <div><span>Mints</span><b>{totals.records}</b></div>
+        <div><span>Cost</span><b>{totals.cost.toFixed(4)}</b></div>
+        <div><span>Gas</span><b>{totals.gas.toFixed(4)}</b></div>
+        <div><span>Sale</span><b>{totals.sale.toFixed(4)}</b></div>
+      </div>
+    </div>
+    <div className="nt i" style={{marginTop:'12px'}}>{INFO_ICON}
+      <div>Return is measured against <b>cost plus gas</b>. Gas is spent whether or not a token
+        resells, so a figure against cost alone would flatter every card.</div></div>
+    <div className="br" style={{marginTop:'12px'}}>
+      <button type="button" className="b p" disabled={busy} onClick={download}>
+        {busy?'Rendering…':'Download PNG'}</button>
+      <button type="button" className="b g" onClick={onClose}>Close</button>
+    </div>
+  </Overlay>;
+}
+// A record GhostMint wrote for itself carries the wallet in its name (autoRecordPnl, server.js:545)
+// -- that is the same signal walletPerformance.js parses, reused here to tell the two kinds apart.
+function isAutoPnlRecord(record){return pnlWalletLabel(record)!==null;}
+function Pnl(){
+  const listing=useLoad('/api/pnl',[],'pnl.changed');
+  const [editing,setEditing]=useState(null);
+  const [query,setQuery]=useState('');
+  const [windowKey,setWindowKey]=useState('30d');
+  const [adding,setAdding]=useState(false);
+  const [snapshot,setSnapshot]=useState(false);
+  async function save(event){
+    event.preventDefault();const form=event.currentTarget;const wasEditing=editing;
+    const body=JSON.stringify(Object.fromEntries(new FormData(form)));
+    try{
+      await api(wasEditing?`/api/pnl/${wasEditing}`:'/api/pnl',{method:wasEditing?'PUT':'POST',body});
+      setEditing(null);setAdding(false);form.reset();
+      notify(wasEditing?'Record updated.':'Record added.',{type:'success'});listing.load();
+    }catch(value){notify(value.message,{type:'error'});}
+  }
+  async function remove(id){
+    if(!await confirmDialog('Delete this P&L record?'))return;
+    try{await api(`/api/pnl/${id}`,{method:'DELETE',body:JSON.stringify({confirmation:'CONFIRM'})});listing.load();}
+    catch(value){notify(value.message,{type:'error'});}
+  }
+  const records=listing.data;
+  const current=records?.find(item=>item.id===editing);
+  const currentIsAuto=current?isAutoPnlRecord(current):false;
+  const normalized=query.trim().toLowerCase();
+  const filtered=records?(normalized?records.filter(item=>String(item.nm||'').toLowerCase().includes(normalized)):records):null;
+  const chosen=walletWindow(windowKey);
+  const days=chosen.ms===null?null:Math.round(chosen.ms/86400000);
+  const windowTotals=records?pnlWindowTotals(records,days):null;
+  const totals=windowTotals?{...windowTotals,count:windowTotals.records}:null;
+  const loading=records===null&&!listing.error;
+  const empty=Array.isArray(records)&&records.length===0;
+  const formOpen=adding||editing!==null;
+  return <>
+    <Notice error={listing.error?{title:'Could not load your P&L records.',
+      detail:'Nothing was changed — this is a read failure only.',
+      code:`${listing.status||500} · Request failed safely`,onRetry:listing.load}:null}/>
+    {!listing.error&&<div className="split">
+      <div className="card">
+        <div className="ch"><h2>Net by day</h2><div className="sp"></div>
+          <div className="seg" role="group" aria-label="Chart window">
+            {WALLET_WINDOWS.map(([key])=><button type="button" key={key} className={windowKey===key?'on':undefined}
+              aria-pressed={windowKey===key} onClick={()=>setWindowKey(key)}>{key}</button>)}
+          </div></div>
+        {loading&&<div className="sk chart"></div>}
+        {empty&&<div className="emp"><div className="ei">{TREND_ICON}</div>
+          <h3>No records yet</h3><p>Every confirmed mint creates a record with its real cost and gas.</p></div>}
+        {!loading&&!empty&&<>
+          <PnlBars points={pnlRecordSeries(records,days).points} className="chart"/>
+          <p style={{fontSize:'11px',color:'var(--faint)',marginTop:'8px'}}>Each recorded mint has
+            its own bar, ordered within its day — gains and losses are never combined or drawn on
+            top of one another. Sale proceeds are entered by hand, so a mint with no recorded sale
+            counts as a loss.</p>
+        </>}
+      </div>
+      <div className="g">
+        <div className="sober"><div className="sh">Totals · {chosen.label}</div>
+          <table className="led"><tbody>
+            <tr><td>Mints</td><td>{loading?'—':totals.count}</td></tr>
+            <tr><td>Cost</td><td>{loading?'—':`${totals.cost.toFixed(6)} ETH`}</td></tr>
+            <tr><td>Gas</td><td>{loading?'—':`${totals.gas.toFixed(6)} ETH`}</td></tr>
+            <tr><td>Sale proceeds</td><td>{loading?'—':`${totals.sale.toFixed(6)} ETH`}</td></tr>
+            <tr className="tot"><td>Net</td><td style={{color:loading?undefined
+              :totals.net<0?'var(--loss-text)':'var(--gain-text)'}}>
+              {loading?'—':signedEth(totals.net)}</td></tr>
+          </tbody></table></div>
+        <div className="card tight">
+          <div className="ch"><h2>Records</h2><div className="sp"></div>
+            <button type="button" className="b g sm" aria-expanded={formOpen}
+              onClick={()=>{setEditing(null);setAdding(value=>!value);}}>
+              {formOpen?'Close':'Add manually'}</button></div>
+          <p style={{fontSize:'12px',color:'var(--muted)',marginBottom:'11px'}}>Records GhostMint
+            wrote are locked: their cost and gas came off the confirmed receipt. Only <b>sale</b> is
+            yours to fill in, once a token actually resells.</p>
+          <button type="button" className="b p sm" disabled={empty||loading}
+            onClick={()=>setSnapshot(true)}>{CARD_ICON} Snapshot</button>
+        </div>
+      </div>
+    </div>}
+    {formOpen&&<Form className="form-pnl" key={editing||'new'}
+      title={currentIsAuto?`Record a sale · ${current.nm}`:editing?'Edit record':'Add record'}
+      note={currentIsAuto
+        ?'GhostMint wrote this record, so its name, cost and gas are fixed — they came off the confirmed transaction. Enter what the token resold for and the net recalculates.'
+        :'Auto-created records can be edited here too -- fill in Sale once an NFT actually resells.'}
+      onSubmit={save}>
+      {/* An auto-created record's name, cost and gas are facts off a confirmed receipt. They stay
+          submittable (the PUT recomputes net from all four) but not editable, so the only thing a
+          person can change here is the one field that never had a data source. */}
+      <Field name="name" label="Name" defaultValue={current?.nm} readOnly={currentIsAuto||undefined}/>
+      <Field name="cost" label="Cost" type="number" step="any" defaultValue={current?.cost??0} readOnly={currentIsAuto||undefined}/>
+      <Field name="sale" label={currentIsAuto?'Sale — what it resold for':'Sale'} type="number" step="any" defaultValue={current?.sale??0} autoFocus={currentIsAuto||undefined}/>
+      <Field name="gas" label="Gas" type="number" step="any" defaultValue={current?.gas??0} readOnly={currentIsAuto||undefined}/>
+      <button className="b p">{editing?'Save changes':'Add record'}</button>
+      <button type="button" className="b g" onClick={()=>{setEditing(null);setAdding(false);}}>Cancel</button>
+    </Form>}
+    {!loading&&!empty&&!listing.error&&<>
+      <div className="sfrow" style={{marginTop:'12px'}}><div className="sf">
+        <span className="si" aria-hidden="true">{SEARCH_ICON}</span>
+        <input type="search" value={query} placeholder="Name…" aria-label="Find a record"
+          onChange={event=>setQuery(event.target.value)}/>
+        {query&&<button type="button" className="sx" aria-label="Clear search" onClick={()=>setQuery('')}>×</button>}
+      </div></div>
+      {filtered.length?<div className="g g3">{filtered.map(item=>{
+        const auto=isAutoPnlRecord(item);
+        return <div className="card" key={item.id}>
+          <div className="ch"><h2>{item.nm}</h2><div className="sp"></div>
+            <span className={`p ${auto?'nu':'wn'}`}>{auto?'Automatic':'Manual'}</span></div>
+          <div className="tv tab" style={{marginBottom:'3px',
+            color:Number(item.net)<0?'var(--loss-text)':'var(--gain-text)'}}>
+            {Number(item.net)<0?'−':'+'}{Math.abs(Number(item.net)).toFixed(6)}<small>ETH</small></div>
+          <div className="sober" style={{marginTop:'9px'}}>
+            <table className="led"><tbody>
+              <tr><td>Cost</td><td>{Number(item.cost).toFixed(6)} ETH</td></tr>
+              <tr><td>Sale</td><td>{Number(item.sale).toFixed(6)} ETH</td></tr>
+              <tr className="tot"><td>Gas</td><td>{Number(item.gas).toFixed(6)} ETH</td></tr>
+            </tbody></table></div>
+          {/* A record GhostMint wrote is evidence of a transaction that happened. Deleting it would
+              put a hole in the very history the totals and the chart are drawn from, so it offers
+              the one edit that makes sense instead. */}
+          <div className="br" style={{marginTop:'11px'}}>
+            <button type="button" className="b g sm" onClick={()=>{setAdding(false);setEditing(item.id);}}>
+              {auto?'Record sale':'Edit'}</button>
+            {auto?null:<button type="button" className="b d sm" onClick={()=>remove(item.id)}>Delete</button>}
+          </div>
+        </div>;})}</div>:<Empty text="No P&L records match this search."/>}
+    </>}
+    {snapshot&&<PnlSnapshot records={records} windowKey={windowKey} onWindow={setWindowKey}
+      onClose={()=>setSnapshot(false)}/>}
+  </>;
+}
 function jsonForm(event){event.preventDefault();const form=event.currentTarget;return {form,value:JSON.parse(new FormData(form).get('json'))};}
 // policyFor: which card has its policy expanded. A policy configures an existing target, so it
 // now lives ON that target's card rather than on a page of its own (brief §2). Same PolicyEditor,
@@ -1198,9 +2014,16 @@ function NotificationBell(){const [items,setItems]=useState([]);const [open,setO
           }}});
       }
       if(message?.type==='task.lowBalance'){
-        notify(`${message.name} mints in ${message.minutes}m and ${message.walletLabel} is short by ${message.shortByEth} ETH.`,
+        notify(`${message.name} mints automatically in ${message.minutes}m and ${message.walletLabel} is short by ${message.shortByEth} ETH.`,
           {type:'error',category:'money',timeoutMs:12000,
            action:{label:'Top up wallet',run:async()=>{window.location.href='/dashboard/wallets';}}});
+      }
+      if(message?.type==='task.reminder'){
+        notify(`${message.name} mints automatically in ${message.minutes}m from ${message.walletLabel}. No approval is required.`,
+          {type:'info',category:'auto',timeoutMs:9000});
+      }
+      if(message?.type==='task.starting'){
+        notify(`${message.name} is starting now.`,{type:'info',category:'auto',timeoutMs:9000});
       }
       if(message?.type==='task.succeeded'){
         notify(`${message.name} minted.`,{type:'success',category:'money'});
@@ -2192,7 +3015,9 @@ function AutomationAll({filter=null,onTab}){
     .some(value=>String(value).toLowerCase().includes(needle))):scoped;
 
   return <>
-    {filter&&<div className="nt i">{INFO_ICON}
+    {/* auto.html gives this note margin-bottom:12px; without it the search row below sits
+        against its border. */}
+    {filter&&<div className="nt i" style={{marginBottom:'12px'}}>{INFO_ICON}
       <div>Showing {filter==='sniper'?'wallet-copy snipers':'social watch rules'} only — the same
         cards as <b>All</b>, filtered client-side over data the server already scoped to you.</div></div>}
     <Notice error={error}/>
@@ -2301,45 +3126,191 @@ function Automation({tab,onTab,target}){
 // §5.10) and adding one is a value-moving path that deserves its own review rather than a slot
 // in a restyle. So this says plainly where sending DOES work today instead of rendering a
 // disabled form that looks like a bug, or worse, one that looks live and silently fails.
+// wallets.html's .unav block. Telegram ONLY, not "either platform" as this panel used to say:
+// /send is registered in server.js:2842 and there is no Discord equivalent anywhere in
+// src/discord/ -- checked rather than assumed, because naming a platform that cannot do it sends
+// someone to a bot that will not answer.
+//
+// The prototype puts a "How sending works" button here. Dropped: there is no page for it to open,
+// and a button that goes nowhere is worse than the sentence it would have replaced.
+const SEND_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><path d="M21 4 3 11l7 3 3 7z"/></svg>;
 function WalletSend(){
-  return <div className="panel">
-    <h2>Sending is available from the bots, not the dashboard yet</h2>
-    <p>The conversational send flow — pick a wallet, enter a destination and an amount, confirm
-      against your spending ceiling — runs on Telegram and Discord today. Use <code>/send</code>
-      on either platform.</p>
-    <p>It is deliberately not duplicated here yet. Moving value is the one path where a second,
-      differently-built implementation could disagree with the first, so it gets its own review
-      rather than arriving alongside a visual change.</p>
-  </div>;
-}
-
-// Export. The raw private key NEVER reaches the browser: the server re-encrypts the stored key
-// into a standard V3 keystore under the account's security password, and only that encrypted
-// blob is returned. This panel deliberately restates that, because "export key" reasonably
-// sounds like it hands over the key itself.
-function WalletExport({profile,onProfileChange}){
-  const wallets=useLoad('/api/wallets',[],'wallets.changed');
   return <>
-    <div className="panel">
-      <h2>Encrypted keystore export</h2>
-      <p>The raw private key is never sent to your browser. The server re-encrypts it into a
-        standard V3 keystore file using your security password, and only that encrypted file is
-        downloaded.</p>
-      <p className="warning">Store the keystore and your security password separately. Together
-        they are the wallet; either one alone is not.</p>
-      {!profile.securityPasswordSet&&<p className="notice notice-warning">Set a security password
-        first — exporting needs one, and it then gates every future sensitive action.</p>}
+    <div className="unav">
+      <div className="ei">{SEND_ICON}</div>
+      <h3>Sending is available from Telegram</h3>
+      <p>There is no dashboard send route yet. <code>/send</code> on Telegram walks through wallet,
+        amount, destination and a confirm screen, using the same spend caps and gas ceiling.</p>
     </div>
-    {wallets.data===null?<Skeleton rows={2}/>
-      :wallets.data.length===0?<Empty text="No wallets to export yet."/>
-        :<div className="card-grid">{wallets.data.map(wallet=><article className="card" key={wallet.label}>
-          <h2>{wallet.label}</h2>
-          <div className="user-card-identity"><p className="mono">{wallet.address}</p><CopyButton value={wallet.address} label="Copy wallet address"/></div>
-          <div className="br"><button className="b g sm" onClick={()=>exportWalletKeystore(wallet.label,{profile,onProfileChange})}>Export keystore</button></div>
-        </article>)}</div>}
+    <div className="nt i" style={{marginTop:'12px'}}>{INFO_ICON}
+      <div>Deliberate: a value-moving path gets its own review rather than arriving inside a
+        restyle.</div></div>
   </>;
 }
 
+// Export. The raw private key NEVER reaches the browser: the server re-encrypts the stored key
+// into a standard V3 keystore under the account's security password, and only that encrypted blob
+// is returned. This panel restates that, because "export key" reasonably sounds like it hands over
+// the key itself.
+//
+// One form with a wallet picker, per wallets.html, rather than an Export button on every wallet
+// card in a grid. The security password is the deliberate re-authentication step. The API keeps
+// its literal confirmation guard for direct callers, while this first-party form supplies that
+// constant itself: making a person type a known word after already entering the export password
+// adds friction without adding another secret or another security boundary.
+function walletExportRetryText(seconds){
+  if(!(seconds>0))return 'Try again shortly.';
+  if(seconds<90)return `Try again in ${seconds} ${seconds===1?'second':'seconds'}.`;
+  const minutes=Math.ceil(seconds/60);
+  return `Try again in ${minutes} ${minutes===1?'minute':'minutes'}.`;
+}
+function WalletExport({profile,onProfileChange,walletList}){
+  const wallets=walletList.data;
+  const [busy,setBusy]=useState(false);
+  const [limited,setLimited]=useState(null);
+  const [exportKind,setExportKind]=useState('raw');
+  const [rawKey,setRawKey]=useState(null);
+  const [revealed,setRevealed]=useState(false);
+  const rawKeyTimer=useRef(null);
+  const retry=useRetryAfter();
+  const clearRawKey=useCallback(()=>{clearTimeout(rawKeyTimer.current);rawKeyTimer.current=null;setRawKey(null);setRevealed(false);},[]);
+  useEffect(()=>clearRawKey,[clearRawKey]);
+  function chooseKind(kind){clearRawKey();setExportKind(kind);setLimited(null);}
+  async function submitExport(event){
+    event.preventDefault();
+    const form=event.currentTarget;
+    const values=Object.fromEntries(new FormData(form));
+    if(!profile.securityPasswordSet){
+      if(!await confirmDialog('Exporting a key needs a security password first. It will then be required for this and every future sensitive action. Set it now?'))return;
+      if(!await promptSetSecurityPassword({isChange:false,onProfileChange}))return;
+    }
+    setBusy(true);setLimited(null);
+    try{
+      const path=exportKind==='raw'
+        ?`/api/wallets/${encodeURIComponent(values.label)}/export/raw`
+        :`/api/wallets/${encodeURIComponent(values.label)}/export`;
+      const result=await api(path,
+        {method:'POST',body:JSON.stringify({securityPassword:values.securityPassword,
+          confirmation:'CONFIRM'})});
+      if(exportKind==='raw'){
+        setRawKey(result.privateKey);setRevealed(false);
+        clearTimeout(rawKeyTimer.current);
+        rawKeyTimer.current=setTimeout(()=>{setRawKey(null);setRevealed(false);},60_000);
+        notify('Private key is ready to copy for 60 seconds. It has not been displayed.',{type:'success',category:'security'});
+      }else{
+        downloadFile(`${values.label}-keystore.json`,result.keystore);
+        notify('Encrypted keystore downloaded. Store it and your security password separately and securely.',{type:'success'});
+      }
+    }catch(error){
+      // 429 is the one failure worth keeping on screen: it is not something a retry fixes, and the
+      // only useful reply is when the window reopens. Everything else stays a toast.
+      if(error.status===429){setLimited(error);retry.start(error.retryAfter);}
+      else notify(error.message,{type:'error'});
+    }finally{
+      // A security password should not remain in the DOM after any export attempt. In particular,
+      // clear it after server/deployment errors as well as successful exports; retaining it after
+      // a 404 made the failed attempt unnecessarily increase the secret's exposure time.
+      const passwordInput=form.elements.namedItem('securityPassword');
+      if(passwordInput&&'value' in passwordInput)passwordInput.value='';
+      setBusy(false);
+    }
+  }
+  async function copyRawKey(){
+    if(!rawKey)return;
+    try{await globalThis.navigator.clipboard.writeText(rawKey);notify('Exact private key copied. Clear your clipboard after storing it securely.',{type:'success',category:'security'});}
+    catch{notify('Clipboard access was refused by the browser.',{type:'error'});}
+  }
+  async function revealRawKey(){
+    if(!rawKey)return;
+    if(await confirmDialog('Warning: anyone who sees this private key can permanently control and drain the wallet. Reveal it on this screen anyway?'))setRevealed(true);
+  }
+  const loading=wallets===null&&!walletList.error;
+  return <div className="split">
+    <div className="card">
+      <div className="ch"><div className="chip-ico">{LOCK_ICON}</div><h2>Export a wallet</h2></div>
+      <div className="nt w" style={{marginBottom:'12px'}}>{WARN_TRIANGLE_ICON}
+        {exportKind==='raw'
+          ?<div><b>A raw private key gives complete control of the wallet.</b> It enters browser
+            memory only after password verification, is never displayed automatically, and is
+            cleared from this page after 60 seconds.</div>
+          :<div><b>A keystore is your private key in encrypted form.</b> The raw key never reaches
+            your browser in this mode. GhostMint immediately re-encrypts it as a standard Ethereum
+            V3 keystore protected by your security password.</div>}</div>
+      <Notice error={loadError(walletList,'Could not load wallets.')}/>
+      {loading?<Skeleton rows={2}/>:null}
+      {!loading&&!walletList.error&&wallets?.length===0
+        &&<Empty text="No wallets to export yet. Create one on Balances first."/>}
+      {!profile.securityPasswordSet&&<div className="nt i" style={{marginBottom:'12px'}}>{INFO_ICON}
+        <div>You have no security password yet. Exporting asks you to set one first — it then gates
+          every future sensitive action.</div></div>}
+      {wallets?.length?<><div className="seg" role="group" aria-label="Export format" style={{marginBottom:'12px'}}>
+        <button type="button" className={exportKind==='raw'?'on':undefined}
+          aria-pressed={exportKind==='raw'} onClick={()=>chooseKind('raw')}>Private key</button>
+        <button type="button" className={exportKind==='keystore'?'on':undefined}
+          aria-pressed={exportKind==='keystore'} onClick={()=>chooseKind('keystore')}>Encrypted backup</button>
+      </div><form onSubmit={submitExport}>
+        <div className="g" style={{gap:'11px'}}>
+          <label className="fl"><span>Wallet</span>
+            <select className="in" name="label" required>
+              {wallets.map(item=><option key={item.label} value={item.label}>{item.label}</option>)}
+            </select></label>
+          <label className="fl"><span>Security password</span>
+            <input className="in" type="password" name="securityPassword" required autoComplete="off"
+              placeholder="Your account security password"/></label>
+          <button className="b p big" disabled={busy}>{busy?'Preparing…'
+            :exportKind==='raw'?'Prepare private key':'Export encrypted backup'}</button>
+          <p style={{fontSize:'11px',color:'var(--faint)'}}>{exportKind==='raw'
+            ?'The exact key is kept in browser memory for 60 seconds and is not shown unless you separately choose Reveal.'
+            :'Store the keystore and your security password separately. Together they are the wallet; either one alone is not.'} Every attempt is written to the security audit log.</p>
+        </div>
+      </form><Overlay open={Boolean(rawKey)} onClose={clearRawKey} title="Private key ready"
+        subtitle="Available in this browser for 60 seconds.">
+        <div className="nt w" style={{marginBottom:'11px'}}>{WARN_TRIANGLE_ICON}<div>Copying places the
+          key on your system clipboard, where other software may be able to read it. It expires
+          from this page&apos;s memory in 60 seconds.</div></div>
+        {revealed&&<code className="mono" style={{display:'block',wordBreak:'break-all',padding:'10px',marginBottom:'11px',background:'var(--surface-2)',border:'1px solid var(--border)',borderRadius:'var(--radius-sm)'}}>{rawKey}</code>}
+        <div className="br"><button type="button" className="b p" onClick={copyRawKey}>Copy private key</button>
+          <button type="button" className="b g" onClick={revealed?()=>setRevealed(false):revealRawKey}>{revealed?'Hide':'Reveal'}</button>
+          <button type="button" className="b g" onClick={clearRawKey}>Clear now</button></div>
+      </Overlay></>:null}
+    </div>
+    <div className="g">
+      {limited&&<Notice error={{title:'Incorrect password attempts are throttled.',
+        detail:`${walletExportRetryText(retry.seconds)} A correct password can still export now.`,
+        code:`429 · Retry-After: ${limited.retryAfter??'unknown'}`}}/>}
+      <div className="sober"><div className="sh">Export policy</div>
+        <table className="led"><tbody>
+          <tr><td>Correct-password exports</td><td>No wallet-count limit</td></tr>
+          <tr><td>Wrong passwords</td><td>Throttled and audited</td></tr>
+          <tr><td>Requires</td><td>Security password</td></tr>
+          <tr><td>Private key</td><td>{exportKind==='raw'?'Raw on request':'Encrypted only'}</td></tr>
+          <tr className="tot"><td>Audited</td><td>Every attempt</td></tr>
+        </tbody></table></div>
+      {exportKind==='keystore'?<div className="sober"><div className="sh">What is in the keystore?</div>
+        <table className="led"><tbody>
+          <tr><td>Address</td><td>Your public wallet address</td></tr>
+          <tr><td>Ciphertext</td><td>The encrypted private key</td></tr>
+          <tr><td>Cipher / KDF</td><td>Password-encryption instructions</td></tr>
+          <tr><td>Salt / IV / MAC</td><td>Randomness and integrity checks</td></tr>
+          <tr className="tot"><td>Version / ID</td><td>File format and identifier</td></tr>
+        </tbody></table>
+        <div className="nt i" style={{marginTop:'10px'}}>{INFO_ICON}<div>Wallet software combines
+          these fields with your password to recover the key. The private key is encrypted inside
+          <code> ciphertext</code>; it never appears as readable text in the file.</div></div></div>
+        :<div className="sober"><div className="sh">Why not a seed phrase?</div>
+          <div className="nt i">{INFO_ICON}<div>New dashboard-created wallets show their recovery
+            phrase once during creation, but GhostMint does not store it. Imported wallets may
+            never have supplied a phrase, and a phrase cannot be reconstructed from a private key.
+            For an existing wallet, export the exact private key or encrypted backup instead.</div></div></div>}
+    </div>
+  </div>;
+}
+
+const WALLET_WINDOWS=[['7d',7],['30d',30],['90d',90],['All',null]];
+function walletWindow(key){
+  const found=WALLET_WINDOWS.find(([name])=>name===key)||WALLET_WINDOWS[1];
+  return {label:found[1]===null?'all time':`${found[1]}d`,ms:found[1]===null?null:found[1]*86400000};
+}
 const WALLET_TABS=[
   {id:'balances',label:'Balances'},
   {id:'performance',label:'Performance',was:'P&L'},
@@ -2348,17 +3319,38 @@ const WALLET_TABS=[
 ];
 function WalletsPage({profile,onProfileChange,tab,onTab}){
   const active=WALLET_TABS.some(item=>item.id===tab)?tab:'balances';
+  // One load for the whole page, not one per tab. wallets.html shows Create wallet in the header
+  // only in the populated state (.of), so the header has to know whether any wallet exists -- and
+  // Export reads the same list. Three components each calling /api/wallets was also three requests.
+  const walletList=useLoad('/api/wallets',[],'wallets.changed');
+  const pnl=useLoad('/api/pnl',[],'pnl.changed');
+  const [formsOpen,setFormsOpen]=useState(false);
+  const [windowKey,setWindowKey]=useState('30d');
+  const populated=Array.isArray(walletList.data)&&walletList.data.length>0;
+  // Unfunded wallets get a badge on Balances and on the rail, in the card's own warn colour rather
+  // than red: a wallet with no funds is not broken, it just cannot mint until it is topped up.
+  const unfunded=lowWallets(walletList.data);
   return <>
-    <div className="page-head"><div className="page-head-text"><p className="eyebrow">Wallets</p><h1>Wallets</h1></div></div>
-    <SubTabs tabs={WALLET_TABS} active={active} onChange={onTab} label="Wallet sections"/>
-    {active==='balances'&&<Wallets profile={profile} onProfileChange={onProfileChange}/>}
-    {active==='performance'&&<><p className="notice notice-warning" role="note">
-      Performance is <strong>account-level</strong>, across every wallet together. Per-wallet
-      cost and return cannot be shown: P&amp;L records carry no wallet, so splitting the totals
-      would mean inventing an attribution the data does not support.
-    </p><Pnl/></>}
+    <div className="page-head">
+      <div className="page-head-text"><p className="eyebrow">Wallets</p><h1>Wallets</h1></div>
+      {active==='balances'&&populated&&<div className="page-head-actions">
+        <button type="button" className="b p" aria-expanded={formsOpen}
+          onClick={()=>setFormsOpen(value=>!value)}>{formsOpen?'Close':'Create wallet'}</button>
+      </div>}
+    </div>
+    <SubTabs tabs={WALLET_TABS} active={active} onChange={onTab} label="Wallet sections"
+      badges={{balances:unfunded?{count:unfunded,tone:'wn'}:null}}/>
+    {active==='balances'&&<Wallets profile={profile} onProfileChange={onProfileChange}
+      walletList={walletList} pnl={pnl} windowKey={windowKey} onWindow={setWindowKey}
+      formsOpen={formsOpen} onFormsOpen={setFormsOpen}/>}
+    {active==='performance'&&<>
+      <div className="nt i" style={{marginBottom:'12px'}}>{INFO_ICON}
+        <div>Performance is <b>account-level</b>. P&amp;L records carry no wallet, so cost and
+          gas cannot be split per wallet — only <b>minted</b> can, and it is on each wallet card.</div></div>
+      <Pnl/></>}
     {active==='send'&&<WalletSend/>}
-    {active==='export'&&<WalletExport profile={profile} onProfileChange={onProfileChange}/>}
+    {active==='export'&&<WalletExport profile={profile} onProfileChange={onProfileChange}
+      walletList={walletList}/>}
   </>;
 }
 // History = Activity + the audit surfaces (brief §2). Activity is a mutable feed; audit is
@@ -2475,6 +3467,7 @@ function CommandPalette({open,onClose,go,profile,wallets}){
   const [query,setQuery]=useState('');
   const [active,setActive]=useState(0);
   const inputRef=useRef(null);
+  const resultsRef=useRef(null);
   useEffect(()=>{if(open){setQuery('');setActive(0);inputRef.current?.focus();}},[open]);
   const term=query.trim().toLowerCase();
   const match=label=>!term||label.toLowerCase().includes(term);
@@ -2493,6 +3486,13 @@ function CommandPalette({open,onClose,go,profile,wallets}){
   if(walletHits.length)groups.push({name:'Wallets',items:walletHits});
   const flat=groups.flatMap(group=>group.items);
   const clamped=Math.min(active,Math.max(0,flat.length-1));
+  // Keyboard selection can move beyond the visible portion of the results. Keep the selected
+  // option inside the scrollport while preserving mouse-driven scrolling and selection.
+  useEffect(()=>{
+    if(!open)return;
+    resultsRef.current?.querySelector('[aria-selected="true"]')
+      ?.scrollIntoView({block:'nearest'});
+  },[open,clamped,query]);
   function choose(item){
     if(!item)return;
     onClose();
@@ -2514,7 +3514,7 @@ function CommandPalette({open,onClose,go,profile,wallets}){
       <input ref={inputRef} type="search" className="palette-input" placeholder="Jump to a page, or search what moved…"
         value={query} onChange={event=>{setQuery(event.target.value);setActive(0);}} onKeyDown={onKeyDown}
         aria-label="Search pages and actions"/>
-      <div className="palette-results" role="listbox">
+      <div className="palette-results" role="listbox" ref={resultsRef}>
         {flat.length===0&&<p className="palette-empty">Nothing matches “{query}”.</p>}
         {groups.map(group=><div className="palette-group" key={group.name}>
           <div className="palette-group-name">{group.name}</div>
@@ -2627,6 +3627,7 @@ function useNavBadges(){
   const rules=useLoad('/api/watch-rules',[],'watchrules.changed');
   const snipers=useLoad('/api/snipers',[],'snipers.changed');
   const confirmations=useLoad('/api/confirmations',[],'confirmations.changed');
+  const wallets=useLoad('/api/wallets',[],'wallets.changed');
   const counts=tasks.data?.counts;
   // Mint counts schedules that have STOPPED and want a decision. It escalates to the red .cnt.hot
   // only when one of them actually failed -- paused and expired are states you can live with,
@@ -2649,7 +3650,7 @@ function useNavBadges(){
   // 1 against its one Failing rule, while its Active sniper adds nothing. The Policies tab's
   // "Bypass · Requires an explicit challenge" is a row inside a policy table, not a pending
   // action, so it is deliberately not counted here.
-  return {Mint:mint,Automation:automation.total,
+  return {Mint:mint,Automation:automation.total,Wallets:lowWallets(wallets.data),
     hot:{Mint:mintFailing,Automation:automation.hot}};
 }
 const TOP_RAIL_PAGES=['Home','Mint','Automation','Wallets','History'];

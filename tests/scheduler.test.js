@@ -105,6 +105,36 @@ test('notification failure cannot change a confirmed task outcome', async () => 
   assert.deepEqual(repository.calls.at(-1), ['complete', 'intent-2']);
 });
 
+test('a due task announces that execution is starting before it broadcasts', async () => {
+  const repository = repositoryFixture();
+  const order = [];
+  const worker = createSchedulerWorker({
+    repository,
+    intentRepository:{ get:async () => null, getByIdempotencyKey:async () => null },
+    transactionEngine:{ reconcileIntent:async intent => intent },
+    executeTask:async () => { order.push('execute'); return { intentId:'intent-start', state:'confirmed' }; },
+    notify:async event => order.push(event.outcome),
+  });
+
+  assert.equal(await worker.processTask(task()), 'succeeded');
+  assert.deepEqual(order, ['starting', 'execute', 'success']);
+});
+
+test('a failed start notification cannot prevent automatic execution', async () => {
+  const repository = repositoryFixture();
+  let executed = false;
+  const worker = createSchedulerWorker({
+    repository,
+    intentRepository:{ get:async () => null, getByIdempotencyKey:async () => null },
+    transactionEngine:{ reconcileIntent:async intent => intent },
+    executeTask:async () => { executed = true; return { intentId:'intent-start-failure', state:'confirmed' }; },
+    notify:async event => { if (event.outcome === 'starting') throw new Error('all notification transports unavailable'); },
+  });
+
+  assert.equal(await worker.processTask(task()), 'succeeded');
+  assert.equal(executed, true);
+});
+
 test('Round 16 (Section AV, item 4): precise timers fire tick() the instant a lookahead task becomes due, without waiting for the next poll interval', async t => {
   await t.test('an imminent task gets a precise setTimeout that calls tick() at its exact due time', async () => {
     const imminentTask = task({ nextAttemptAt: Date.now() + 20 });

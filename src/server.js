@@ -39,6 +39,7 @@ const mintFlowDecision = require('./mint/mintFlowDecision');
 const watchRuleFlowDecision = require('./social/watchRuleFlowDecision');
 const sniperFlowDecision = require('./sniper/sniperFlowDecision');
 const { createSchedulerRepository } = require('./scheduler/schedulerRepository');
+const { DEFAULT_LEAD_MS, createScheduledReminder } = require('./scheduler/scheduledReminder');
 const { createSchedulerWorker } = require('./scheduler/schedulerWorker');
 const { createSocialAdapters } = require('./social/adapters');
 const { createSocialWatchRepository } = require('./social/socialWatchRepository');
@@ -366,6 +367,12 @@ const schedulerWorker = createSchedulerWorker({
   },
   notify: async event => {
     const wallet = DB.wallets.find(item => item.userId === event.task.userId && item.label === event.task.walletLabel);
+    if (event.outcome === 'starting') {
+      dashboardWebSockets.broadcastToUser(event.task.userId, { type:'task.starting',
+        taskId:event.task.id, name:event.task.name, walletLabel:event.task.walletLabel });
+      await notifyUser(event.task.userId,
+        `🚀 Scheduled mint <b>${escapeTelegramHtml(event.task.name)}</b> is starting now. No approval is required.`);
+    }
     if (event.outcome === 'success') {
       if (wallet) {
         wallet.minted = (wallet.minted || 0) + event.task.qty;
@@ -414,22 +421,19 @@ ${escapeTelegramHtml(detail)}` : '';
   sanitizeError:safeError,
 });
 
-// ── Low-balance pre-flight ────────────────────────────────
-// A scheduled mint that fails for insufficient funds fails at the one moment nobody is watching.
-// This looks ahead instead: shortly before a mint is due, compare the wallet's balance against what
-// the mint will cost and say so while there is still time to top up.
+// ── Scheduled-mint reminder and low-balance pre-flight ────
+// Every scheduled mint gets an informational five-minute reminder while remaining fully automatic.
+// The same sweep compares the live wallet balance against the mint value and adds an actionable
+// warning when funds are already short or become short after the first reminder.
 //
 // Deliberately compares against the mint VALUE only (price × quantity), not value + gas. That makes
 // it a lower bound: falling short of it is certain failure, so the warning is never a false alarm.
 // A wallet that clears this bar can still fail on gas, which is the failure notification's job.
 //
-// Warned ids are held in memory rather than a new column. A restart can therefore re-warn a task
-// once, which is a far cheaper cost than a migration on the hot path -- and re-warning is harmless
-// where missing a warning is not.
-const LOW_BALANCE_LEAD_MS = 5 * 60 * 1000;
-const LOW_BALANCE_SWEEP_MS = 60 * 1000;
-const lowBalanceWarned = new Set();
-const PENDING_FOR_WARNING = new Set(['scheduled', 'retry', 'claimed']);
+// Delivery bookkeeping is held in memory. A restart can therefore re-remind a task once, which is
+// harmless and safer than suppressing a time-sensitive warning after a crash.
+const SCHEDULE_REMINDER_LEAD_MS = DEFAULT_LEAD_MS;
+const SCHEDULE_REMINDER_SWEEP_MS = 60 * 1000;
 
 // An expired scheduled mint is something that happened TO the user and then quietly vanished:
 // expiry is derived from the clock, so nothing is written when it occurs. A failure at least leaves
@@ -460,60 +464,27 @@ async function expiredHistorySweep() {
   return recorded;
 }
 
-async function lowBalanceSweep(now = Date.now()) {
-  const due = DB.tasks.filter(task =>
-    PENDING_FOR_WARNING.has(String(task.status || '').toLowerCase())
-    && typeof task.mintTime === 'number'
-    && task.mintTime > now
-    && task.mintTime - now <= LOW_BALANCE_LEAD_MS
-    && !lowBalanceWarned.has(task.id));
-  for (const task of due) {
+const scheduledReminder = createScheduledReminder({
+  getTasks: () => DB.tasks,
+  findWallet: task => DB.wallets.find(item => item.userId === task.userId && item.label === task.walletLabel),
+  detectSoldOut: async task => {
+    if (!task.contract) return false;
     try {
-      const wallet = DB.wallets.find(item => item.userId === task.userId && item.label === task.walletLabel);
-      if (!wallet) continue;
-      // Live-reported: the pre-flight fired "short by 0.003 ETH" for a collection that had already
-      // sold out, which is a needless and confusing alarm -- a wallet can never be topped up in time
-      // for a mint that can no longer succeed regardless of balance. Checked here, right before the
-      // balance comparison, using the same soldOut signal the guided-mint card already computes
-      // (SeaDrop's PublicDrop endTime having passed, or totalMinted >= maxSupply for a plain
-      // contract) -- an undetectable contract (RPC hiccup, chain no longer resolvable) falls through
-      // to the ordinary balance check below rather than silently skipping the task.
-      let detected = null;
-      if (task.contract) {
-        try { detected = await botCommands.detectMintContract(task.userId, { contractAddress: task.contract, quantity: task.qty || 1 }); }
-        catch { detected = null; }
-      }
-      if (detected?.soldOut) {
-        try { await botCommands.controlTask(task.userId, 'cancel', task.id); }
-        catch (error) { log(`Auto-cancel of sold-out task ${task.id} failed: ${safeError(error)}`); continue; }
-        await notifyUser(task.userId, `🛑 <b>${escapeTelegramHtml(task.name)}</b> was auto-cancelled -- the collection already sold out.`);
-        dashboardWebSockets.broadcastToUser(task.userId, { type: 'task.autoCancelled', taskId: task.id, name: task.name, reason: 'sold_out' });
-        continue;
-      }
-      const needed = ethers.parseEther(String((Number(task.price) || 0) * (Number(task.qty) || 1)));
-      if (needed <= 0n) { lowBalanceWarned.add(task.id); continue; }
-      const balance = await providerService.perform(wallet.chain, 'lowBalanceCheck',
-        provider => provider.getBalance(wallet.address));
-      // Marked ONLY once a warning actually goes out. Marking on every check -- which this did at
-      // first -- wrote off a wallet that was healthy five minutes out as "handled" and never looked
-      // at it again, so funds leaving at T-2min produced no warning at all. That is a MISSED
-      // warning, and a missed warning costs a failed mint where a duplicate costs a line of text.
-      // The re-check is one getBalance per sweep for the few minutes a task sits in the window.
-      if (balance >= needed) continue;
-      lowBalanceWarned.add(task.id);
-      const short = ethers.formatEther(needed - balance);
-      const minutes = Math.max(1, Math.round((task.mintTime - now) / 60000));
-      await notifyUser(task.userId,
-        `⚠️ <b>${escapeTelegramHtml(task.name)}</b> mints in ${minutes}m and <b>${escapeTelegramHtml(wallet.label)}</b> is short by ${escapeTelegramHtml(short)} ETH.`);
-      dashboardWebSockets.broadcastToUser(task.userId, { type: 'task.lowBalance', taskId: task.id,
-        name: task.name, walletLabel: wallet.label, shortByEth: short, minutes });
-    } catch (error) {
-      // A pre-flight warning must never be able to disturb the mint it is warning about.
-      log(`Low-balance sweep failed for task ${task.id}: ${safeError(error)}`);
-    }
-  }
-  return due.length;
-}
+      const detected = await botCommands.detectMintContract(task.userId,
+        { contractAddress: task.contract, quantity: task.qty || 1 });
+      return Boolean(detected?.soldOut);
+    } catch { return false; }
+  },
+  cancelTask: task => botCommands.controlTask(task.userId, 'cancel', task.id),
+  calculateNeededWei: task => ethers.parseEther(String((Number(task.price) || 0) * (Number(task.qty) || 1))),
+  getBalance: wallet => providerService.perform(wallet.chain, 'lowBalanceCheck', provider => provider.getBalance(wallet.address)),
+  formatWei: value => ethers.formatEther(value),
+  escape: escapeTelegramHtml,
+  notify: notifyUser,
+  broadcast: (userId, message) => dashboardWebSockets.broadcastToUser(userId, message),
+  log: message => log(message),
+  leadMs: SCHEDULE_REMINDER_LEAD_MS,
+});
 
 // ── Activity ──────────────────────────────────────────────
 async function logActivity(userId, status, title, walletLabel, txHash, chain,context={}) {
@@ -3599,10 +3570,10 @@ async function start() {
     }
   }
   schedulerWorker.start();
-  setInterval(()=>{lowBalanceSweep().catch(error=>log(`Low-balance sweep error: ${safeError(error)}`));},LOW_BALANCE_SWEEP_MS).unref?.();
-  setInterval(()=>{expiredHistorySweep().catch(error=>log(`Expired-history sweep error: ${safeError(error)}`));},LOW_BALANCE_SWEEP_MS).unref?.();
+  setInterval(()=>{scheduledReminder.sweep().catch(error=>log(`Scheduled-reminder sweep error: ${safeError(error)}`));},SCHEDULE_REMINDER_SWEEP_MS).unref?.();
+  setInterval(()=>{expiredHistorySweep().catch(error=>log(`Expired-history sweep error: ${safeError(error)}`));},SCHEDULE_REMINDER_SWEEP_MS).unref?.();
   log('Started expired-mint history sweep');
-  log(`Started low-balance pre-flight (${LOW_BALANCE_LEAD_MS/60000}m lead)`);
+  log(`Started scheduled-mint reminders and low-balance pre-flight (${SCHEDULE_REMINDER_LEAD_MS/60000}m lead)`);
   socialWatchWorker.start();
   retentionWorker.start();
   log('Started social watch-rule worker');

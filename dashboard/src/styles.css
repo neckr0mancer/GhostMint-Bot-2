@@ -159,9 +159,9 @@ code{font-family:ui-monospace,'SF Mono',Consolas,monospace;font-size:.9em}
 .form select option{background-color:var(--surface-deep);color:var(--text)}
 .form select optgroup{background-color:var(--surface-deep);color:var(--text-muted);font-weight:700;font-style:normal}
 
-/* Themed confirm()/prompt() replacement -- sits above everything else (including the user detail
-   overlay below), matching how a native dialog would always be the topmost, most urgent thing. */
-.confirm-modal-backdrop{position:fixed;inset:0;z-index:95;background:var(--scrim);display:flex;align-items:center;justify-content:center;padding:1rem;animation:fadeIn var(--fast) var(--ease)}
+/* Themed confirm()/prompt() replacement. Shared overlays live at 9100 and notifications at 9200;
+   confirmations deliberately sit above both because they are the blocking, actionable layer. */
+.confirm-modal-backdrop{position:fixed;inset:0;z-index:9300;background:var(--scrim);display:flex;align-items:center;justify-content:center;padding:1rem;animation:fadeIn var(--fast) var(--ease)}
 .confirm-modal{width:min(26rem,100%);background:linear-gradient(180deg,var(--surface-2),var(--surface));border:1px solid var(--border-strong);border-radius:var(--radius-lg);box-shadow:var(--shadow-lg);padding:1.5rem}
 .confirm-modal p{margin:0 0 1.1rem;line-height:1.5}
 .confirm-modal input{width:100%;padding:.75rem .85rem;border:1px solid var(--border-strong);border-radius:var(--radius-sm);background:var(--surface-deep);color:var(--text);font-size:.95rem;margin-bottom:1.1rem}
@@ -172,7 +172,7 @@ code{font-family:ui-monospace,'SF Mono',Consolas,monospace;font-size:.9em}
    in shared.jsx) so it can animate back out instead of just vanishing. */
 @keyframes toastIn{from{opacity:0;transform:translateY(12px) scale(.96)}to{opacity:1;transform:translateY(0) scale(1)}}
 @keyframes toastOut{from{opacity:1;transform:translateX(0)}to{opacity:0;transform:translateX(110%)}}
-.toast-host{position:fixed;right:1.1rem;bottom:1.1rem;z-index:200;display:flex;flex-direction:column-reverse;
+.toast-host{position:fixed;right:1.1rem;bottom:1.1rem;z-index:9200;display:flex;flex-direction:column-reverse;
   gap:.6rem;width:min(22rem,calc(100vw - 2.2rem));pointer-events:none}
 .toast{pointer-events:auto;display:flex;align-items:flex-start;gap:.6rem;padding:.8rem .9rem;
   border-radius:var(--radius);background:linear-gradient(180deg,var(--surface-2),var(--surface));
@@ -1327,7 +1327,8 @@ html[data-theme="ghost-mint"] .dash-hero button,html[data-theme="ghost-mint-ligh
   font-weight:700;letter-spacing:.06em;text-transform:uppercase}
 .palette-item{display:flex;align-items:baseline;gap:.6rem;width:100%;padding:.5rem .65rem;
   border:0;border-radius:.45rem;background:none;color:var(--text);text-align:left;
-  font-size:.85rem;font-weight:600;min-height:var(--tap-min);box-shadow:none}
+  font-size:.85rem;font-weight:600;min-height:var(--tap-min);box-shadow:none;
+  scroll-margin-block:.35rem}
 .palette-item.active{background:var(--surface-hover);color:var(--accent)}
 .palette-item-where{margin-left:auto;color:var(--text-faint);font-size:.72rem;font-weight:500;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -1484,3 +1485,114 @@ html[data-theme="ghost-mint-light"] .sheet-grid button .nav-icon{
 html[data-theme="ghost-mint"] .sheet-handle,
 html[data-theme="ghost-mint-light"] .sheet-handle{
   height:4px;min-height:4px;background-clip:padding-box}
+
+
+/* ── Wallet address ───────────────────────────────────────────────────────────
+   wallets.html prints a funded wallet's address as plain muted mono under the balance: no box, no
+   border. The copy mark sits inline with it rather than at the far edge of a full-width row. */
+.wallet-addr.mono{display:flex;align-items:center;gap:4px;font-size:11px;color:var(--faint);
+  margin-top:0;margin-bottom:11px;min-width:0}
+.wallet-addr .user-card-copy{color:var(--faint)}
+
+/* ── Icon button ──────────────────────────────────────────────────────────────
+   A bare glyph control: no fill, no border, sized to the touch target rather than to its text.
+   Used for Details on a wallet card and Close on an overlay. */
+.ico-btn{display:inline-grid;place-items:center;width:28px;height:28px;min-height:28px;padding:0;
+  flex:none;background:transparent;border:1px solid transparent;border-radius:var(--radius-sm);
+  color:var(--muted);box-shadow:none}
+.ico-btn:hover:not(:disabled){background:var(--surface-hover);border-color:var(--border);
+  color:var(--text);filter:none}
+.ico-btn svg{width:15px;height:15px;display:block}
+
+/* ── Overlay ──────────────────────────────────────────────────────────────────
+   The prototype's .cmd-bd/.cmd palette treatment, reused for panels that must not push the page
+   around: a blurred scrim and a rounded panel. On a phone it becomes a bottom sheet, since a
+   centred dialog at 375px is a full-screen panel with wasted margins pretending otherwise. */
+.ovl-bd{position:fixed;inset:0;z-index:9100;background:#000a;backdrop-filter:blur(3px);
+  display:flex;align-items:center;justify-content:center;padding:24px}
+.ovl{width:min(560px,100%);max-height:min(84vh,760px);display:flex;flex-direction:column;
+  background:var(--surface);border:1px solid var(--border-strong);border-radius:var(--radius-lg);
+  box-shadow:0 30px 70px -20px #000;overflow:hidden}
+.ovl.wide{width:min(680px,100%)}
+.ovl:focus{outline:none}
+.ovl-h{display:flex;align-items:flex-start;gap:10px;padding:14px 16px;
+  border-bottom:1px solid var(--border);flex:none}
+.ovl-h h2{font-size:15px;font-weight:750;letter-spacing:-.02em;margin:0;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ovl-sub{margin:2px 0 0;font-size:11.5px;color:var(--faint)}
+.ovl-b{padding:14px 16px 16px;overflow-y:auto;flex:1}
+.ovl-b .subtabs{margin-bottom:12px}
+@media(max-width:700px){
+  .ovl-bd{align-items:flex-end;padding:0}
+  .ovl,.ovl.wide{width:100%;max-height:90vh;border-radius:var(--radius-lg) var(--radius-lg) 0 0;
+    border-bottom:none}
+}
+
+/* ── Pick list ────────────────────────────────────────────────────────────────
+   The create-or-import choice. One row per answer, each carrying the consequence of picking it,
+   because that difference is the entire reason the question is asked. */
+.pick{display:flex;align-items:flex-start;gap:11px;width:100%;text-align:left;padding:13px;
+  border:1px solid var(--border);border-radius:var(--radius);background:var(--surface-2);
+  color:var(--text);min-height:0;box-shadow:none}
+.pick:hover:not(:disabled){border-color:var(--border-strong);background:var(--surface-3);filter:none}
+.pick .chip-ico{margin-top:1px}
+.pick-t{flex:1;min-width:0;display:block}
+.pick-t b{display:block;font-size:13px;font-weight:700;margin-bottom:3px}
+.pick-t span{display:block;font-size:11.5px;color:var(--muted);line-height:1.45}
+.pick .p{flex:none;margin-top:1px}
+@media(max-width:520px){.pick{flex-wrap:wrap}.pick .p{margin-left:37px}}
+
+/* Each secret gets its own row so a batch import is the same form with more of them, and any one
+   row can be removed without disturbing the rest. */
+.secret-row{display:flex;align-items:flex-start;gap:7px}
+.secret-row .ico-btn{margin-top:19px}
+.secret-row textarea.in{min-height:62px;resize:vertical}
+
+.b svg{width:13px;height:13px;flex:none}
+.b.sm svg{width:12px;height:12px}
+
+/* ── Wallet card: no repetition once expanded (mobile) ────────────────────────
+   .colh already states the wallet's status, name and balance, and on mobile it stays on screen
+   while .colb is open -- so the expanded body was repeating all three back, one row down. What the
+   expansion is actually FOR is the address and the performance table, so those are what it shows.
+
+   The Details control stays: it is the way into the overlay and has no equivalent in .colh. It
+   keeps .ch to itself, right-aligned by the .sp already in that row.
+
+   Scoped to .app[data-m] rather than a media query, matching how .colh itself is revealed
+   (prototype.css:505) -- above that breakpoint .colh is hidden and .colb IS the whole card, so
+   these three must stay. */
+.app[data-m] .card.col > .colb > .ch > h2,
+.app[data-m] .card.col > .colb > .ch > .p,
+.app[data-m] .card.col > .colb > .tv{display:none}
+.app[data-m] .card.col > .colb{position:relative}
+.app[data-m] .card.col > .colb > .ch{position:absolute;top:11px;right:0;height:28px;margin:0;
+  align-items:center}
+.app[data-m] .card.col > .colb > .wallet-addr.mono{min-height:28px;padding-right:34px;
+  margin-bottom:9px}
+
+/* ── P&L snapshot card ────────────────────────────────────────────────────────
+   The on-screen twin of the exported PNG. Deliberately plain: this reports what happened to real
+   money, and the backgrounds and stickers those shareable trading cards offer would invite reading
+   it as promotion rather than as a record. */
+.snap{border:1px solid var(--border-strong);border-radius:var(--radius);background:var(--surface-2);
+  padding:16px 18px}
+.snap-h{display:flex;align-items:center;gap:9px;margin-bottom:14px}
+.snap-brand{font-size:11px;font-weight:800;letter-spacing:.07em;color:var(--accent)}
+.snap-range{font-size:11px;color:var(--faint)}
+.snap-l{font-size:12px;font-weight:600;color:var(--muted);margin:0 0 4px}
+.snap-v{font-size:32px;font-weight:780;letter-spacing:-.035em;line-height:1;
+  font-variant-numeric:tabular-nums}
+.snap-v small{font-size:13px;font-weight:600;color:var(--muted);margin-left:4px;letter-spacing:0}
+.snap-roi{font-size:14px;font-weight:700;margin:5px 0 0;font-variant-numeric:tabular-nums}
+.snap-c{margin:14px 0 4px}
+.snap-c .chart{height:64px}
+.snap-s{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:12px;
+  padding-top:12px;border-top:1px solid var(--border)}
+.snap-s span{display:block;font-size:9.5px;font-weight:700;letter-spacing:.07em;
+  text-transform:uppercase;color:var(--faint);margin-bottom:3px}
+.snap-s b{font-size:13px;font-weight:700;font-variant-numeric:tabular-nums}
+@media(max-width:520px){
+  .snap-s{grid-template-columns:repeat(2,1fr)}
+  .snap-v{font-size:26px}
+}

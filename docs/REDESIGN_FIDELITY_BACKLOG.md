@@ -1150,6 +1150,74 @@ Two deliberate choices:
 - **The task is not altered.** A failed mint stays failed and stays retryable, exactly as the owner
   asked; the sweep only records that its window has gone.
 
+### 13.16 Deferred post-UI requirements — schedule retention, previews, and sniper actions (2026-08-22)
+
+**Owner direction: document these now, but do not implement them until the current UI fidelity
+work is finished.** None of the behavior below should be presented as shipped merely because its
+intended UI is described here.
+
+#### Schedule retention and history
+
+- Cancelled and expired schedules should remain visible in the main Schedule tab for a defined
+  recent period, proposed as **30 days**, then leave that operational list and appear in History.
+- Moving them must not destroy the durable task or its attempt/outcome records. This is an archive
+  transition, not a hard delete. History remains sorted by the authoritative event/task date.
+- The exact History placement (existing Activity stream, a Schedule-history filter, or a dedicated
+  schedule-history section) is deliberately **not decided yet**. Choose it during the later History
+  UI pass; do not invent a destination before that design exists.
+- Selecting an expired schedule should expose **Archive**. The owner mentioned Delete as an early
+  possibility but preferred Archive, consistent with the app-wide archive requirement in §13.8.
+- Selecting a cancelled schedule should expose **Retry** and **Archive**. Retry semantics need a
+  domain decision before implementation: a cancelled task's original due time may already be in
+  the past, so the UI must not silently re-arm an invalid/past schedule. Reuse the scheduler's
+  validation and require a valid future time where necessary.
+- Existing status controls remain status-aware; this request does not authorize generic buttons
+  that the server cannot safely accept.
+
+#### Select all / Unselect all for existing multi-select lists
+
+- Add a master selection control to the Schedule list and every other surface that already permits
+  selecting multiple items. It must provide both **Select all on this page** and **Unselect all**;
+  wording it as page-scoped is important because Schedule selection currently clears on pagination.
+- Schedule keeps its homogeneous-action safety rule. In a status-specific bucket, Select all may
+  select every visible compatible task. In the mixed **All** bucket, it must never silently select
+  only an unexplained subset: after one row is chosen it may select all other visible rows with the
+  same action set; before that, the control must require a first row unless every visible row is
+  compatible. Explain that constraint next to the control rather than pretending mixed task states
+  can all accept the same bulk action.
+- Use a master checkbox with checked / unchecked / indeterminate states where the platform supports
+  it, plus an explicit **Clear selection** action on compact/mobile layouts where that is easier to
+  reach than a tiny checkbox. The existing sidebar behavior remains untouched.
+- Apply this only to genuine existing multi-select surfaces (for example Schedule rows and batch-
+  mint wallet selection). It does not authorize bulk wallet deletion, bulk sends, bulk P&L deletion,
+  or a new bulk backend route. Existing client-side loops may continue to call the validated,
+  user-scoped single-item action for each selected task.
+- **Documentation only as of 2026-08-22.** Implement after the current UI-fidelity pass, with tests
+  for select-all, indeterminate state, clearing, pagination scope, and incompatible Schedule states.
+
+#### Receipt-style transaction previews
+
+- On **Mint now**, unresolved values must not masquerade as known zeroes. Until discovery/input has
+  resolved them, contract, method, chain, quantity, mint price, and gas should display an explicit
+  unknown/not-calculated state (for example `—`), not `0`.
+- **Total debits may remain `0`** before a real debit is known, because zero there represents the
+  current calculated total rather than a claim that each underlying field is known.
+- Schedule and Batch should eventually receive the same receipt-like, decoded transaction preview
+  used by Mint now, adapted to their context. A scheduled mint is still single-wallet today; this
+  requirement does not silently create batch scheduling.
+- A separate **batch scheduled mint** flow is a potential new feature and remains undecided. Keep
+  it out of the UI until it has its own product/domain design and validation rules.
+
+#### Automation/sniper state actions
+
+- A **failed sniper** card should expose **Edit · Retry · Archive**.
+- A **paused sniper** card should expose **Edit · Resume · Archive**.
+- Archive is a durable lifecycle state, not hard deletion. Retry must reuse the existing validated
+  sniper configuration and shared transaction/nonce safety layers.
+- During the later implementation/acceptance pass, deliberately create or safely simulate a failed
+  sniper so the failed-state card and all three actions can be observed. Do not fake a production
+  event in normal data merely to make the design look populated.
+
 ## 14. Batch parity across all three surfaces — 2026-08-19
 
 ### 14.1 The Discord wallet list was unreadable
@@ -1215,3 +1283,101 @@ Discord's `batch-mint` and `wallet batch-import` predate this work and were **no
 are wired, but I have not run them. The Telegram handlers are pattern- and payload-verified
 (including multi-line JSON, which matters for pasting a key list) but cannot be run from here at
 all. Both want a live pass on the real bots.
+
+## 15. Wallets — open items raised 2026-08-21
+
+### 15.1 Wallet display options — NOTED, NOT DESIGNED
+
+The owner's note, recorded so it isn't lost and deliberately **not** built yet: the Balances tab
+should eventually offer more than one way to display wallets. The current grid of `.card.col`
+cards is one option, not the only one. Candidates worth considering when this is picked up — a
+compact list/table row per wallet, and a dense mode showing more wallets per screen — but the
+owner has not chosen, so nothing here is a decision.
+
+**Where the control goes is decided.** On the wide view it belongs on the **same line as the
+search field and the performance-window `.seg`**, aligned to the **right** end of that row. That
+row is `.sfrow` in `Wallets` (`dashboard/src/App.jsx`); it is currently `display:flex` with the
+`.sf` search field and the window `.seg`, so a right-aligned control needs `margin-left:auto` on
+itself or a spacer, not a new row.
+
+Two things the implementer should know before starting:
+
+- **`.sfrow` is already at its width limit on a phone.** At 375px it measured 372px of content in
+  348px of box once the Balances badge was added — it scrolls (`overflow-x:auto`, scrollbar
+  hidden, prototype.css:431) rather than wrapping. A third control on that line will need a
+  mobile answer: either it folds into the More sheet, or `.sfrow` wraps below the breakpoint.
+- **The chosen display must survive the four states.** Loading renders three skeleton cards and
+  empty renders `.frun`, neither of which is a wallet card — so a display toggle is a property of
+  the populated state only, and should not render at all in the other three.
+
+### 15.2 Export limiting — successful dashboard backups are unlimited, failed guesses remain throttled
+
+Correct-password dashboard exports have no wallet-count ceiling. An account with five wallets can
+export all five in one sitting; changing the selected wallet does not inherit an account-wide
+"two exports" lock. Telegram's chat-based `/exportkey` retains its existing delivery ceiling and is
+not weakened by this dashboard change.
+
+Still standing in front of a dashboard key export: the security password is verified against the
+stored hash on every attempt, the API requires `confirmation` to be the literal `CONFIRM`, and every
+attempt — success, wrong password, or no password set — is written to the security audit log.
+The dashboard now supplies that API constant itself rather than asking the person to type a known
+word; see §15.4. Telegram keeps its own platform flow.
+
+Only **incorrect password guesses** consume the dashboard failure bucket. Repeated guesses become
+429 responses and are audited, but a correct password continues to work immediately even after
+that failure throttle activates. This preserves brute-force resistance without treating successful
+backups as abuse. `tests/dashboard.test.js` asserts five consecutive correct-password exports, then
+the wrong-password throttle, then another successful correct-password export.
+
+`setSecurityPassword` **keeps** its limiter. It shares the same `exportKeyRateLimiter` instance
+but is a different command in a different bucket, and nothing was asked about it.
+
+The Telegram delivery ceiling and dashboard password-failure throttle intentionally use different
+buckets, so exhausting one cannot prevent a legitimate action on the other surface.
+
+### 15.3 Wallet card — no repetition once expanded, 2026-08-21
+
+On mobile `.colh` stays on screen while `.colb` is open, so the expanded body was repeating the
+status pill, the wallet name and the balance one row down. Those three are now hidden inside
+`.colb` under `.app[data-m]` only — above that breakpoint `.colh` is hidden and `.colb` IS the
+whole card, so they must stay there.
+
+The Details control survives the cull (it has no equivalent in `.colh`) and is lifted out of the
+flow into the body's top-right corner, because stripped of its heading its row held one 28px icon
+and a lot of nothing.
+
+### 15.4 Wallet export formats, explanation, and confirmation-input removal — 2026-08-22
+
+Owner ruling after using a real exported file:
+
+- The dashboard's typed `CONFIRM` input was redundant beside the security-password
+  re-authentication and the explicit Export button, so it was removed. The endpoint still requires
+  the literal confirmation field for direct callers; the first-party dashboard sends it as a
+  constant. This changes the visible interaction, not the server's password verification, user
+  scoping, CSRF protection, encrypted response, or audit record.
+- Export is a sensitive backup operation but not a destructive delete, so its button now uses the
+  normal primary-action treatment instead of `.b.d` danger red. This intentionally supersedes
+  `prototype-pages/wallets.html`, whose own Export button used `.b.d` and was the inconsistency the
+  owner noticed.
+- The page now explains the actual Ethereum V3 keystore fields. `address` is public; `ciphertext`
+  is the private key in encrypted form; cipher/KDF parameters, salt, IV and MAC let compatible
+  wallet software derive the decryption key from the password and verify the result; version/id
+  describe the file format and identify the keystore. The raw private key is not a readable JSON
+  field. Keystore plus password is equivalent to possession of the wallet and must be stored
+  separately.
+- The Export tab now offers exactly the two formats the current storage model can produce, with
+  **Private key** first and selected by default, followed by **Encrypted backup**. It does not offer
+  a seed phrase for an existing wallet: GhostMint stores the resulting encrypted private key for
+  generated and imported wallets, not the original mnemonic, and a BIP-39 phrase cannot be
+  reconstructed from a private key. Newly dashboard-generated wallets receive their phrase once
+  in the creation response; it is not stored and therefore does not become a later export format.
+- Raw-key mode is an explicit exception to the previous dashboard invariant. It verifies the
+  security password and returns only `{privateKey}` from a user-scoped, CSRF-protected, audited,
+  `no-store` endpoint. The client does not render it automatically, offers an exact-value Copy
+  button, requires a separate high-risk warning before Reveal, and clears the in-memory value
+  after 60 seconds or immediately on request/tab change. The prepared value now appears in the
+  shared overlay shell rather than lengthening the Export page.
+- Dashboard wallet creation now returns the generated BIP-39 phrase exactly once, after the private
+  key has already been encrypted and persisted. The phrase is attached after persistence, is absent
+  from storage/state/logs and every Telegram/Discord creation response, and disappears when the
+  creation overlay closes or reloads. Copy works without display; Reveal requires a separate warning.

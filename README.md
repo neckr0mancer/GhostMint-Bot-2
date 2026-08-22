@@ -87,6 +87,14 @@ Wallet generation is the recommended onboarding path on both platforms: use Tele
 
 Private-key import remains available through Telegram `/importwallet <label> <chain> <private-key>` and Discord `/wallet import`, but both commands are explicitly marked **not recommended**. The key necessarily passes through Telegram or Discord infrastructure and may appear in client chat history or notification previews before GhostMint receives and encrypts it. Use imports only when an existing wallet is unavoidable, delete the originating platform message where possible, and prefer the future HTTPS Milestone 13 dashboard import flow when it becomes available.
 
+The dashboard Wallets → Export tab supports two real formats: a password-encrypted Ethereum V3
+keystore download, or the exact raw private key. Raw export is deliberately explicit and
+high-risk: it requires the account security password, is user-scoped/CSRF-protected/audited with
+`no-store`, stays hidden by default, and is retained in page memory for only 60 seconds; revealing
+it requires a separate warning confirmation. Copying still places the key on the operating-system
+clipboard. Seed-phrase export is unavailable because GhostMint stores encrypted private keys, not
+the original mnemonic, and a mnemonic cannot be reconstructed from a private key.
+
 Transaction and scheduler notifications are delivered independently to every linked platform account. A delivery failure on one platform is logged but cannot change transaction state or suppress delivery to another platform.
 
 ### Social watcher adapters

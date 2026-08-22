@@ -1,5 +1,6 @@
 import React,{useEffect,useMemo,useState} from 'react';
-import {api,notify,promptDialog,useLoad} from './shared.jsx';
+import {ACTIVITY_EVENTS,api,notify,promptDialog,useLoad} from './shared.jsx';
+import {cumulativePnlPoints,pnlRecordSeries,pnlWindowTotals} from './pnlChart.js';
 import {THEME_WIDGETS} from './dashboardWidgets/index.js';
 import Home from './dashboardWidgets/home.jsx';
 
@@ -88,24 +89,12 @@ function summarizeWallets(walletList){
   return {decorated,ethTotal,unavailable,other:[...other].map(([symbol,total])=>({symbol,total}))};
 }
 
-// Client-side window filter over /api/pnl, which returns everything unfiltered (contract §5.5).
-// EXPECT NEGATIVE TOTALS: autoRecordPnl writes sale:0 on every confirmed mint, so every
-// auto-created record is a loss until the user edits a sale in by hand. That is the data being
-// incomplete, not this derivation being wrong -- do not "correct" the sign.
-function bucketPnlByDay(items,windowDays){
-  const cutoff=windowDays===null?null:Date.now()-windowDays*24*60*60*1000;
-  const inWindow=items.filter(item=>{
-    const at=new Date(item.t).getTime();
-    return Number.isFinite(at)&&(cutoff===null||at>=cutoff);
-  });
-  const byDay=new Map();
-  for(const item of inWindow){
-    const day=new Date(item.t).toISOString().slice(0,10);
-    byDay.set(day,(byDay.get(day)||0)+(numeric(item.net)||0));
-  }
-  const days=[...byDay.entries()].sort((a,b)=>a[0]<b[0]?-1:1)
-    .map(([day,net],index)=>({day,net,index}));
-  return {days,net:inWindow.reduce((sum,item)=>sum+(numeric(item.net)||0),0),mints:inWindow.length};
+// The Home card uses the exact record series and totals as Wallets → Performance. Keeping this
+// adapter tiny prevents Home from returning to the old netted-per-day chart by accident.
+function pnlViewFor(items,windowDays){
+  const {points}=pnlRecordSeries(items,windowDays);
+  const totals=pnlWindowTotals(items,windowDays);
+  return {points,trend:cumulativePnlPoints(points),net:totals.net,sale:totals.sale,mints:totals.records};
 }
 
 // Counts back from the newest activity row until the first non-success. Hidden below 2 rather
@@ -178,7 +167,7 @@ export default function Dashboard({profile,go,onProfileChange}){
   const tasks=useLoad('/api/tasks?page=1&pageSize=5&status=pending',[],'tasks.changed');
   const snipers=useLoad('/api/snipers',[],'snipers.changed');
   const watchRules=useLoad('/api/watch-rules',[],'watchrules.changed');
-  const activity=useLoad(`/api/activity?page=1&pageSize=${ACTIVITY_PAGE_SIZE}`,[],['snipers.changed','tasks.changed','watchrules.changed','wallets.changed']);
+  const activity=useLoad(`/api/activity?page=1&pageSize=${ACTIVITY_PAGE_SIZE}`,[],ACTIVITY_EVENTS);
   const pnl=useLoad('/api/pnl',[],'pnl.changed');
   const confirmations=useLoad('/api/confirmations',[],['confirmation.pending','confirmation.resolved']);
   // The caller's own effective ceilings, resolved server-side user override -> group -> chain
@@ -190,8 +179,8 @@ export default function Dashboard({profile,go,onProfileChange}){
   const summary=useMemo(()=>summarize(sources),
     [wallets.data,tasks.data,snipers.data,watchRules.data,activity.data,pnl.data,confirmations.data,limits.data]);
   const [pnlWindow,setPnlWindow]=useState(30);
-  const pnlView=useMemo(()=>bucketPnlByDay(summary.pnlItems,pnlWindow),[summary.pnlItems,pnlWindow]);
-  const pnl30=useMemo(()=>bucketPnlByDay(summary.pnlItems,30),[summary.pnlItems]);
+  const pnlView=useMemo(()=>pnlViewFor(summary.pnlItems,pnlWindow),[summary.pnlItems,pnlWindow]);
+  const pnl30=useMemo(()=>pnlViewFor(summary.pnlItems,30),[summary.pnlItems]);
 
   const greeting=<DashboardGreeting displayName={profile.displayName} onNamed={name=>onProfileChange?.(current=>({...current,displayName:name}))}/>;
 

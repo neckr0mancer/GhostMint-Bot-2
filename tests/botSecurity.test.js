@@ -41,23 +41,17 @@ test('rate limiter buckets that have fully aged out are pruned instead of growin
     'pruning must not weaken the limit -- the two fresh checks just above still count toward it');
 });
 
-// Regression test: the dashboard and Telegram's /exportkey were documented as sharing one export
-// ceiling, and did share the limiter INSTANCE -- but check() keys on `platform:userId:command`, and
-// the two call sites passed 'dashboard' and 'telegram', so each got its own bucket and the real
-// ceiling was 2x the intended one. Both now pass ACCOUNT_RATE_LIMIT_SCOPE instead. This works only
-// because both sides key on the same canonical account UUID, which is asserted here by using one
-// userId across both calls -- if either side ever reverts to a platform-native id, the buckets
-// silently split again and this test fails.
-test('wallet key exports share one ceiling across the dashboard and Telegram instead of one each',()=>{
+// Telegram retains its raw-key delivery ceiling. Dashboard correct-password exports no longer use
+// this bucket (an account may have more wallets than the old limit); its incorrect password guesses
+// use a separate dashboard bucket. Prove the two protections cannot accidentally lock each other.
+test('Telegram export limiting stays isolated from dashboard password-failure throttling',()=>{
   let now=1000;const limiter=createCommandRateLimiter({now:()=>now,limit:2,windowMs:100});
   const userId='11111111-2222-3333-4444-555555555555';
-  limiter.check(ACCOUNT_RATE_LIMIT_SCOPE,userId,'exportkey'); // dashboard's exportWalletKey
-  limiter.check(ACCOUNT_RATE_LIMIT_SCOPE,userId,'exportkey'); // Telegram's /exportkey, same account
+  limiter.check(ACCOUNT_RATE_LIMIT_SCOPE,userId,'exportkey');
+  limiter.check(ACCOUNT_RATE_LIMIT_SCOPE,userId,'exportkey');
   assert.throws(()=>limiter.check(ACCOUNT_RATE_LIMIT_SCOPE,userId,'exportkey'),RateLimitError,
-    'the third export must be refused no matter which surface it came from');
-  // The scope is deliberately narrow: 'securitypassword' still buckets per platform, and a
-  // different account is unaffected by this one exhausting its exports.
-  assert.doesNotThrow(()=>limiter.check('dashboard',userId,'securitypassword'));
+    'Telegram raw-key delivery retains its existing ceiling');
+  assert.doesNotThrow(()=>limiter.check('dashboard',userId,'exportkey-password-failure'));
   assert.doesNotThrow(()=>limiter.check(ACCOUNT_RATE_LIMIT_SCOPE,'99999999-8888-7777-6666-555555555555','exportkey'));
 });
 

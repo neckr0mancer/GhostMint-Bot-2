@@ -1,5 +1,6 @@
 /* global clearInterval, setInterval */
 import React,{useEffect,useState} from 'react';
+import {countdownState} from '../countdown.js';
 
 /* ==========================================================================
    Home page presentational parts (brief §3.3, §4; contract §3).
@@ -97,15 +98,9 @@ export function CountdownRing({target,from,title,meta}){
     const timer=setInterval(()=>setNow(Date.now()),1000);
     return()=>clearInterval(timer);
   },[target]);
-  const targetMs=target?new Date(target).getTime():NaN;
-  if(!Number.isFinite(targetMs))return null;
-  const remaining=Math.max(0,targetMs-now);
-  const totalSeconds=Math.floor(remaining/1000);
-  const hours=Math.floor(totalSeconds/3600);
-  const minutes=Math.floor((totalSeconds%3600)/60);
-  const seconds=totalSeconds%60;
-  const clock=hours>0?`${hours}:${String(minutes).padStart(2,'0')}:${String(seconds).padStart(2,'0')}`
-    :`${String(minutes).padStart(2,'0')}:${String(seconds).padStart(2,'0')}`;
+  const state=countdownState(target,from,now);
+  if(!state)return null;
+  const {targetMs,remaining,clock,progress}=state;
   // The arc fills across THIS mint's own wait -- from the moment it was scheduled to the moment
   // it fires -- so it starts empty and ends full whatever the distance.
   //
@@ -114,9 +109,6 @@ export function CountdownRing({target,from,title,meta}){
   // "filling as it approaches", but on screen it was a stuck green ring. A mint days out sat at
   // exactly zero for days. Scaling to the actual wait fixes both, and needs nothing the row does
   // not already carry -- createdAt is set when the task is written.
-  const startMs=from?new Date(from).getTime():NaN;
-  const span=Number.isFinite(startMs)&&targetMs>startMs?targetMs-startMs:60*60*1000;
-  const progress=Math.min(1,Math.max(0,1-remaining/span));
   return <div className="ring">
     <svg viewBox="0 0 40 40" aria-hidden="true">
       <circle cx="20" cy="20" r="17" fill="none" stroke="var(--surface-4)" strokeWidth="4"/>
@@ -127,63 +119,10 @@ export function CountdownRing({target,from,title,meta}){
     <div>
       <div className="ring-time tab">{remaining===0?'due now':clock}</div>
       <div className="ring-sub">{title}</div>
+      <div className="ring-meta">Due {new Date(targetMs).toLocaleString()}</div>
       {meta&&<div className="ring-meta"><span className="pill">{meta}</span></div>}
     </div>
   </div>;
-}
-
-/* --- P&L chart (brief §4) -------------------------------------------------
-   The one real data-viz surface. Inline SVG, no charting library, single measure,
-   one axis, diverging by sign. All five of §4's conditions are load-bearing:
-   direction from the baseline and the +/- character are the PRIMARY channel and
-   colour is secondary, because green/red alone fails colourblind separation
-   (ΔE 6.1 deutan). Do not "simplify" this into colour-only bars. */
-const CHART_WIDTH=620;
-const CHART_HEIGHT=112;
-const BAR_GAP=2;
-const BAR_RADIUS=4;
-
-// Only the data-end is rounded; the baseline end stays square so the bar reads as anchored to
-// the axis rather than floating. rx on a <rect> would round all four corners, hence a path.
-function barPath(x,width,baseline,end,radius){
-  const height=Math.abs(end-baseline);
-  const r=Math.max(0,Math.min(radius,height,width/2));
-  const up=end<baseline;
-  const tip=up?baseline-height:baseline+height;
-  const inner=up?tip+r:tip-r;
-  return `M ${x} ${baseline} L ${x} ${inner} Q ${x} ${tip} ${x+r} ${tip} L ${x+width-r} ${tip} Q ${x+width} ${tip} ${x+width} ${inner} L ${x+width} ${baseline} Z`;
-}
-
-export function PnlChart({days=[]}){
-  if(!days.length)return null;
-  const magnitudes=days.map(day=>Math.abs(day.net));
-  const peak=Math.max(...magnitudes,0);
-  const baseline=CHART_HEIGHT/2;
-  const slot=CHART_WIDTH/days.length;
-  const width=Math.max(1,slot-BAR_GAP);
-  const total=days.reduce((sum,day)=>sum+day.net,0);
-  // A flat all-zero series would divide by zero; render every bar at the baseline instead.
-  const scale=peak>0?(CHART_HEIGHT/2-4)/peak:0;
-  return <>
-    <svg className="pnl-chart" viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`} preserveAspectRatio="none" role="img"
-      aria-label={`Daily net profit and loss across ${days.length} ${days.length===1?'day':'days'}. Net ${formatSigned(total)} ETH.`}>
-      <line x1="0" y1={baseline} x2={CHART_WIDTH} y2={baseline} stroke="var(--border-strong)" strokeWidth="1"/>
-      <g>
-        {days.map(day=>{
-          const end=baseline-day.net*scale;
-          const isLoss=day.net<0;
-          return <path key={day.day} d={barPath(day.index*slot,width,baseline,end,BAR_RADIUS)}
-            fill={isLoss?'var(--loss)':'var(--gain)'}>
-            <title>{`${day.day}: ${formatSigned(day.net)} ETH`}</title>
-          </path>;
-        })}
-      </g>
-    </svg>
-    <div className="chart-legend">
-      <span><i className="swatch" style={{background:'var(--gain)'}} aria-hidden="true"/> Gain · above baseline · <b>+</b></span>
-      <span><i className="swatch" style={{background:'var(--loss)'}} aria-hidden="true"/> Loss · below baseline · <b>−</b></span>
-    </div>
-  </>;
 }
 
 /* --- Rows ---------------------------------------------------------------- */

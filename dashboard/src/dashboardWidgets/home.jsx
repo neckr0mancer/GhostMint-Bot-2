@@ -1,6 +1,8 @@
 import React from 'react';
 import {Celebrate,FirstRun,Meter,Notice,SectionCard,Skeleton,Sparkline,StatTile} from '../shared.jsx';
-import {ChainDot,chainFromExplorer,CountdownRing,EmptyState,formatEth,formatSigned,ICONS,PnlChart,Row,shortAddress,weiToEth} from './homeParts.jsx';
+import {activitySucceeded} from '../activityFeed.js';
+import PnlBars from '../PnlBars.jsx';
+import {ChainDot,chainFromExplorer,CountdownRing,EmptyState,formatEth,formatSigned,ICONS,Row,shortAddress,weiToEth} from './homeParts.jsx';
 
 /* ==========================================================================
    Home — the redesigned page for the two primary themes (brief §9.1-D15).
@@ -69,9 +71,10 @@ function Tiles({summary,sources,pnl30}){
       meta={pnlState==='error'?'Could not load'
         :pnlState==='loading'?'Loading…'
         :pnl30.mints===0?'0 mints'
-        :`${pnl30.mints} ${pnl30.mints===1?'mint':'mints'} · no sales recorded`}>
-      {pnlState==='ready'&&pnl30.days.length>1
-        &&<Sparkline points={pnl30.days.map(day=>day.net)} tone={pnl30.net<0?'loss':'gain'}/>}
+        :`${pnl30.mints} ${pnl30.mints===1?'mint':'mints'} · ${pnl30.sale>0
+          ?`${pnl30.sale.toFixed(3)} ETH sales`:'no sales recorded'}`}>
+      {pnlState==='ready'&&pnl30.points.length>1
+        &&<Sparkline points={pnl30.trend} tone={pnl30.net<0?'loss':'gain'}/>}
     </StatTile>
 
     {/* Daily budget. The CEILING is real -- GET /api/profile/limits resolves the caller's own
@@ -95,14 +98,14 @@ function Tiles({summary,sources,pnl30}){
 
     {/* Scope is in the LABEL, not just the tooltip: stats() is not routed, so this is one page
         of activity, and an unqualified "Success rate" would misstate the denominator (§5.6). */}
-    <StatTile label={`Success · last ${summary.successScopeSize||20}`}
+    <StatTile label="Success · up to 20"
       value={activityState!=='ready'?'—'
         :summary.successScopeSize===0?0
         :summary.successRate===null?'—':summary.successRate}
       unit={activityState==='ready'&&(summary.successScopeSize===0||summary.successRate!==null)?'%':undefined}
       meta={activityState==='error'?'Could not load'
         :activityState==='loading'?'Loading…'
-        :summary.successScopeSize===0?'No mints yet':`${summary.successCount} of ${summary.successScopeSize} confirmed`}>
+        :summary.successScopeSize===0?'No activity yet':`${summary.successCount} of ${summary.successScopeSize} successful`}>
       {activityState==='ready'&&(summary.successScopeSize===0||summary.successRate!==null)
         &&<Meter value={summary.successRate??0} max={100}/>}
     </StatTile>
@@ -125,7 +128,7 @@ function CelebrateCard({summary,go}){
   </Celebrate>;
 }
 
-const PNL_WINDOWS=[{id:30,label:'30d'},{id:90,label:'90d'},{id:null,label:'All'}];
+const PNL_WINDOWS=[{id:7,label:'7d'},{id:30,label:'30d'},{id:90,label:'90d'},{id:null,label:'All'}];
 
 function PnlCard({summary,sources,pnlView,pnlWindow,onPnlWindow,go}){
   const windows=<div className="seg" role="group" aria-label="P&L window">
@@ -135,11 +138,11 @@ function PnlCard({summary,sources,pnlView,pnlWindow,onPnlWindow,go}){
   </div>;
   return <SectionCard title="P&L by day" icon={ICONS.chart} actions={windows}>
     <CardBody source={sources.pnl} skeleton="chart" rows={1}
-      empty={pnlView.days.length===0?<EmptyState icon={ICONS.chart} title="No profit or loss yet"
+      empty={pnlView.points.length===0?<EmptyState icon={ICONS.chart} title="No profit or loss yet"
         action={<button type="button" className="b sm" onClick={()=>go('Mint')}>Go to Mint</button>}>
         Once you mint, each day&apos;s net lands here — cost and gas from the confirmed receipt, nothing guessed.
       </EmptyState>:null}>
-      <PnlChart days={pnlView.days}/>
+      <PnlBars points={pnlView.points}/>
       <p className="card-note">Sale proceeds are entered manually — a mint with no recorded sale shows as a loss.</p>
     </CardBody>
   </SectionCard>;
@@ -154,16 +157,19 @@ function ActivityCard({summary,sources,go}){
         Your first mint will appear here, with its transaction hash and real gas cost.
       </EmptyState>:null}>
       {summary.activityItems.map(item=>{
-        const success=item.status&&String(item.status).toLowerCase()!=='failed';
+        // Activity uses `success`/`fail`; transaction-derived rows can use confirmed/submitted.
+        // The old "anything except failed" check incorrectly painted `fail` as a green success.
+        const success=activitySucceeded(item.status);
         const chain=chainFromExplorer(item.explorer);
         const gas=weiToEth(item.actualNetworkCostWei);
+        const gasText=gas!==null?gas.toFixed(6):item.txHash?'unavailable':'not spent';
         return <Row key={item.id} icon={success?ICONS.check:ICONS.cross} tone={success?'gain':'loss'}
           title={item.title||'Untitled'}
           sub={<>{item.walletLabel&&<>{item.walletLabel} · </>}{chain&&<><ChainDot chain={chain}/> · </>}
             {item.time?new Date(item.time).toLocaleString():'No timestamp'}</>}
           /* actual_network_cost_wei is GAS ONLY, not the mint price -- labelled so it can
              never be read as the cost of the mint (contract §5.8). */
-          valueLabel="gas" value={gas===null?'—':gas.toFixed(6)}/>;
+          valueLabel="gas" value={gasText}/>;
       })}
     </CardBody>
   </SectionCard>;
@@ -171,16 +177,18 @@ function ActivityCard({summary,sources,go}){
 
 /* --- Right column --------------------------------------------------------- */
 function NextDropCard({summary,sources,go}){
+  const displayed=summary.nextTask;
+  const actions=<button type="button" className="b g sm" onClick={()=>go('Mint','schedule')}>Schedule</button>;
   return <SectionCard title="Next scheduled mint" icon={ICONS.clock}
-    actions={<button type="button" className="b g sm" onClick={()=>go('Mint','schedule')}>Schedule</button>}>
+    actions={actions}>
     <CardBody source={sources.tasks} skeleton="big-value" rows={1}
-      empty={!summary.nextTask?<EmptyState icon={ICONS.clock} title="Nothing scheduled"
+      empty={!displayed?<EmptyState icon={ICONS.clock} title="Nothing scheduled"
         action={<button type="button" className="b sm" onClick={()=>go('Mint','schedule')}>Schedule a mint</button>}>
         A scheduled mint submits itself at the time you set — it is not a reminder.
       </EmptyState>:null}>
-      {summary.nextTask&&<CountdownRing target={summary.nextTask.mintTime} from={summary.nextTask.createdAt}
-        title={summary.nextTask.name||'Scheduled mint'}
-        meta={[summary.nextTask.walletLabel,summary.nextTask.price?`${summary.nextTask.price} ETH`:null]
+      {displayed&&<CountdownRing target={displayed.mintTime} from={displayed.createdAt}
+        title={displayed.name||'Scheduled mint'}
+        meta={[displayed.walletLabel,displayed.price?`${displayed.price} ETH`:null]
           .filter(Boolean).join(' · ')||null}/>}
     </CardBody>
   </SectionCard>;

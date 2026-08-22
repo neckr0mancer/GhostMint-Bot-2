@@ -1,7 +1,7 @@
 /* global Blob, clearTimeout, CustomEvent, navigator, URL, WebSocket, setTimeout */
 import React,{useCallback,useEffect,useRef,useState} from 'react';
 
-export const ACTIVITY_EVENTS=['snipers.changed','tasks.changed','watchrules.changed','wallets.changed'];
+export {ACTIVITY_EVENTS} from './activityFeed.js';
 
 // Drop-in async replacements for window.confirm/window.prompt -- native browser dialogs can't be
 // themed and look broken against the rest of the UI. Any component calls confirmDialog/promptDialog
@@ -138,7 +138,7 @@ export function GroupedChainOptions({options=[],labelFor=value=>value}){return <
 
 export function csrf(){return document.cookie.split(';').map(value=>value.trim()).find(value=>value.startsWith('ghostmint_csrf='))?.split('=').slice(1).join('=')||'';}
 export async function api(path,options={}){const response=await fetch(path,{...options,headers:{'Content-Type':'application/json',...(options.method&&options.method!=='GET'?{'X-CSRF-Token':decodeURIComponent(csrf())}:{})}});const body=response.status===204?null:await response.json().catch(()=>({}));if(!response.ok){const error=new Error(body?.issues?.map(item=>`${item.field} ${item.message}`).join('; ')||body?.error||'Request failed');error.status=response.status;error.code=body?.code;// The per-field issues are kept ON the error, not just flattened into its message. The prototype's validation state (.in.bad + .fielderr under the offending field) needs to know WHICH field failed; without this it could never fire, and both Mint now and Schedule were silently falling back to a toast.
-  error.issues=body?.issues;throw error;}return body;}
+  error.issues=body?.issues;error.retryAfter=response.headers.get('Retry-After');throw error;}return body;}
 
 // Triggers a client-side file save (used for the exported wallet keystore) via the standard
 // Blob-URL-plus-synthetic-<a>-click pattern -- content never leaves the browser except through the
@@ -155,7 +155,10 @@ export function downloadFile(filename,content,mimeType='application/json'){
 // code (brief §3.8 requires it visible: "it said 429" is the single most useful thing a user can
 // report back). It was being discarded here -- api() sets .status on the thrown Error, and this
 // catch kept only .message, so no caller could ever show it.
-export function useLoad(path,dependencies=[],wsEvents){const [data,setData]=useState(null);const [error,setError]=useState('');const [status,setStatus]=useState(null);const load=useCallback(()=>{setError('');setStatus(null);return api(path).then(setData).catch(value=>{setError(value.message);setStatus(value.status??null);});},[path,...dependencies]);useEffect(()=>{load();},[load]);useEffect(()=>{if(!wsEvents)return;const watched=[].concat(wsEvents);const listener=event=>{if(watched.includes(event.detail?.type))load();};window.addEventListener('ghostmint-ws',listener);return()=>window.removeEventListener('ghostmint-ws',listener);},[load,wsEvents]);return {data,error,status,load};}
+// A null path means "not yet" -- the caller has nothing to fetch for the current state (a tab that
+// has not been opened, an id that is not chosen). It stays in the loading shape rather than firing
+// a request for the string "null", so a panel can defer its own load until someone looks at it.
+export function useLoad(path,dependencies=[],wsEvents){const [data,setData]=useState(null);const [error,setError]=useState('');const [status,setStatus]=useState(null);const load=useCallback(()=>{if(!path)return Promise.resolve();setError('');setStatus(null);return api(path).then(setData).catch(value=>{setError(value.message);setStatus(value.status??null);});},[path,...dependencies]);useEffect(()=>{load();},[load]);useEffect(()=>{if(!wsEvents)return;const watched=[].concat(wsEvents);const listener=event=>{if(watched.includes(event.detail?.type))load();};window.addEventListener('ghostmint-ws',listener);return()=>window.removeEventListener('ghostmint-ws',listener);},[load,wsEvents]);return {data,error,status,load};}
 // Opens the one live-update socket for the whole session (shared by both the regular dashboard
 // shell and the admin shell, which previously never opened one at all -- so admin pages had no live
 // listener). Every server-side change is broadcast as a 'ghostmint-ws' window CustomEvent; useLoad's

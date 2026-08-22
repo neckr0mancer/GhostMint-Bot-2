@@ -66,13 +66,19 @@ in the plan below is going to surprise you, it's most likely here.
 
 ## M3-M4: Wallets
 
-- [ ] Create a wallet (`/createwallet` on Telegram, or the dashboard's "Generate
-      wallet" flow). Confirm the response never includes the private key, only the
-      address.
+- [ ] Create a wallet through Telegram/Discord. Confirm the response never includes the private
+      key or recovery phrase, only the public address.
+- [ ] Create a wallet through the dashboard. Confirm its one-time recovery phrase is initially
+      hidden, Copy works without revealing it, Reveal requires the warning, closing warns before
+      discarding it, and neither a reload nor `GET /api/wallets` can retrieve it again. Confirm the
+      creation response never includes the raw private key.
 - [ ] Import a wallet by private key. Confirm same -- key never echoed back.
 - [ ] Import a wallet by seed phrase. Confirm the derived address matches what an
       independent wallet tool (e.g. MetaMask, imported temporarily) derives from
       the same phrase, then discard that phrase/wallet.
+- [ ] Export every wallet in an account consecutively with the correct security password; confirm
+      there is no successful-export count ceiling. Then enter the wrong password repeatedly,
+      confirm only those guesses become `429`, and confirm the correct password still works.
 - [ ] Try importing a duplicate label -- expect a clear "label already used" error,
       case-insensitively (`MyWallet` vs `mywallet`).
 - [ ] Check balance (`/wallets` or dashboard) for a real funded wallet -- confirm
@@ -134,6 +140,18 @@ in the plan below is going to surprise you, it's most likely here.
       creation time.
 - [ ] After a task fails (e.g. point it at a bad contract), use Retry -- confirm
       it's attempted again rather than staying permanently failed.
+- [ ] **Deferred until the post-UI archive work:** verify expired and cancelled
+      schedules remain in the main Schedule list for the chosen retention period
+      (proposed: 30 days), then appear exactly once in the eventual History
+      destination in correct chronological order without losing attempt records.
+- [ ] **Deferred until the post-UI archive work:** verify an expired schedule can
+      be archived, and a cancelled schedule offers Retry and Archive. A retry
+      whose original time is now in the past must require a valid future time;
+      it must never fire immediately merely because the old time elapsed.
+- [ ] **Deferred preview parity:** on Mint now, verify unresolved contract/method/
+      chain/quantity/price/gas fields render as unknown rather than numeric zero,
+      while total debits may remain zero. Repeat the decoded receipt-preview
+      check for Schedule and Batch once those previews are implemented.
 
 ## M10-M10c: Snipers, social watch, triggers
 
@@ -156,6 +174,10 @@ in the plan below is going to surprise you, it's most likely here.
       target (or use Reset) and confirm the don't-ask-again flag is cleared.
 - [ ] Deactivate a sniper (not delete) -- confirm it stops evaluating new blocks
       for that target immediately, and the dashboard reflects `active: false`.
+- [ ] **Deferred until the post-UI sniper lifecycle work:** safely create or
+      simulate a failed sniper and verify its card offers Edit, Retry, Archive;
+      verify a paused sniper offers Edit, Resume, Archive. Exercise every action
+      and confirm Archive preserves history instead of hard-deleting the record.
 
 ## M11: Bot security
 
