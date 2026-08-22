@@ -58,7 +58,7 @@ const { formatAdminOverview } = require('./governance/adminOverviewFormat');
 const { createKeyEncryption } = require('./security/keyEncryption');
 const { createRedactor } = require('./security/redaction');
 const { BotContextError, RateLimitError, commandName, createCommandRateLimiter,
-  escapeTelegramHtml, requireTextConfirmation,verifyTelegramContext } = require('./security/botSecurity');
+  escapeTelegramHtml, requireTextConfirmation,verifyTelegramContext, ACCOUNT_RATE_LIMIT_SCOPE } = require('./security/botSecurity');
 const { createActionGate, GateLockedError } = require('./security/actionGate');
 const { verifySecurityPassword } = require('./security/securityPassword');
 const { createBotSecurityRepository } = require('./security/botSecurityRepository');
@@ -1614,7 +1614,12 @@ async function finishExportKeyExecution(chatId, messageId, userId, flowData, pla
   const backToMenu = telegramMenus.mainMenu({}).replyMarkup;
   const audit = value => Promise.resolve(botSecurityRepository.record(value)).catch(error => log(`Security audit write failed: ${safeError(error)}`));
   try {
-    exportKeyRateLimiter.check('telegram', userId, 'exportkey');
+    // Scoped to the account, not to Telegram -- see ACCOUNT_RATE_LIMIT_SCOPE in botSecurity.js and
+    // the matching check in src/dashboard/api.js's exportWalletKey. userId here is already the
+    // canonical account UUID (withTelegramCallback resolves it via identity.resolveOrCreate), which
+    // is what lets the two surfaces share one bucket; platformUserId stays Telegram-native and is
+    // used only for the audit row below.
+    exportKeyRateLimiter.check(ACCOUNT_RATE_LIMIT_SCOPE, userId, 'exportkey');
     const exported = await botCommands.exportWalletKeyRaw(userId, flowData.walletLabel);
     telegramFlowState.clear('telegram', chatId);
     await tgUpdate(chatId, messageId, { text: `✅ Key for <b>${escapeTelegramHtml(exported.label)}</b> sent below. It self-deletes in ${EXPORT_KEY_TTL_MS / 1000}s -- deletion is a courtesy, not a control.`, replyMarkup: backToMenu, parseMode: 'HTML' });
