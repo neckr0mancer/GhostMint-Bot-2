@@ -31,19 +31,34 @@ Before any redesign work, run the full suite on a clean tree and record the resu
 
 Report the exact pass/fail counts and the name of every failing test.
 
-Expected as of 2026-08-17: the non-integration suite is GREEN — 360 pass, 0 fail.
-Five stale tests were fixed on 2026-08-17 (brief §9.2-O1, now closed) and those
-fixes are uncommitted in your working tree:
+RECORDED BASELINE — re-measured 2026-08-18, on branch redesign/dashboard with
+Phases 1 and 2 in the tree: the non-integration suite is GREEN at
 
-  tests/validation.test.js      walletExport field renamed password -> securityPassword
-  tests/governance.test.js      upsertGroup now requires advancedModesAllowed
-  tests/dashboardAdmin.test.js  5 group-set bodies needed advancedModes, AND the
-                                fixture never wired broadcastToUsers, which
-                                adminWrite actually calls
+  474 pass, 0 fail, 0 skipped   (49 files, ~22s, --test-concurrency=1)
 
-Commit those three files FIRST, on their own, before starting the redesign branch.
-They are test-only, touch no src/**, and keeping them separate means the redesign
-diff stays clean.
+That is the number every later phase compares against. Reproduce it with the
+49 non-integration files, not a bare `node --test`, which also collects the
+DB-bound files below:
+
+  node --test --test-concurrency=1 $(ls tests/*.test.js | grep -v integration | grep -v smoke)
+
+Two earlier corrections are folded in, both already committed — do NOT redo them:
+
+  - The five stale tests this document once told you to commit first (brief
+    §9.2-O1) shipped in commit 908e09e. The working tree is clean of them.
+  - tests/chainGrouping.test.js was left red by commit 3ebaa62, which dropped
+    `sepolia` from EVM_CHAINS but updated only tests/discordMenus.test.js. Its
+    assertion now compares EVM_CHAINS against the NON-TESTNET keys of
+    CHAIN_DEFINITIONS, plus a companion test asserting no testnet is ever
+    selectable. Sepolia stays in CHAIN_DEFINITIONS for the Milestone 14
+    acceptance run; it is deliberately not user-selectable.
+
+This document previously recorded 360 pass. That figure predated Rounds 4-9 and
+is superseded by the 474 above.
+
+KNOWN FLAKE: tests/dashboardAdmin.test.js binds an ephemeral port with listen(0) and
+occasionally draws one undici refuses, failing with "fetch failed / bad port". It is
+environmental -- re-run the file before treating it as a regression.
 
 tests/smoke.test.js and the *.integration.test.js files need a reachable database
 and will fail with EAI_AGAIN if you run them somewhere the DB is not routable.
@@ -82,6 +97,102 @@ THE SINGLE MOST IMPORTANT RULE IN THIS SESSION:
 
   Where the prototype and the data contract disagree, THE CONTRACT WINS. The
   prototype shows some figures aspirationally; the contract says which.
+
+THE PROTOTYPE IS THE TARGET — restated 2026-08-18 after a build drifted from it.
+
+  docs/ghostmint-redesign-v3.html is not a mood board. It is the spec for
+  LAYOUT, LABELS, ORDER and STRUCTURE. Open it and match it element for element:
+  the rail's "Operate" group and its Home/Mint/Automation/Wallets/History order,
+  the ruled footer, the page header shape (eyebrow + h1, no subtitle paragraph),
+  the tab NAMES ("Balances", not "Holdings"), the card order in each column.
+
+  The contract still wins on WHICH NUMBER a tile shows and where it comes from.
+  It does not override how the page is arranged or what a control is called.
+
+  If a form exists in this app but has no counterpart in the prototype, do NOT
+  ship the old form untouched. Restyle it to the prototype's form language and
+  mark it visibly as not-yet-designed, so it reads as a known gap rather than as
+  something that was missed.
+
+  Where prototype and brief conflict, ASK. Do not silently pick the brief.
+
+RULE 1 — NOTHING THAT IS NOT IN THE PROTOTYPE (stated 2026-08-18, after a review
+found legacy buttons, a legacy error panel and a glowing active sub-tab still on
+screen alongside ported chrome):
+
+  Take EVERYTHING from the prototype: colours, buttons, inputs, icons, headers,
+  dropdowns, panels, empty states, error states, and anything not listed here.
+  Do not design. Do not invent a variant. Do not keep a legacy control because
+  it "already works" — if the prototype has a counterpart, the counterpart wins.
+
+  Specifically banned: the old accent-filled `button` look anywhere the prototype
+  uses .b / .b.p / .b.g / .b.d / .b.sm; any active-state GLOW (the prototype's
+  active sub-tab is `background:var(--surface)` + `box-shadow:var(--shadow)`, a
+  dark drop shadow, never an accent halo).
+
+  If something in this app has no prototype counterpart at all, do not style it
+  from imagination — restyle it in the prototype's language and mark it visibly
+  as not-yet-designed, per the paragraph above.
+
+RULE 1b — "EXACTLY" MEANS EVERY AXIS (restated 2026-08-18, third time of asking):
+
+  text · size · border width · border radius · padding · gap · font-size/weight ·
+  the responsive transition from wide to tablet to phone · light AND dark ·
+  populated AND loading AND empty AND error.
+
+  A unit is done when all of those match, not when it looks close. The prototype
+  marks its own states inline -- .of populated, .ol loading, .oe empty, .ox error --
+  so grepping a prototype page for "oe" and "ox" enumerates exactly what is owed.
+
+  The itemised checklist this produces is docs/REDESIGN_FIDELITY_BACKLOG.md. Read
+  it with this file; it records every point the owner has raised, the prototype
+  element each one maps to, and the decisions still outstanding.
+
+RULE 1c — RE-READ THE PROTOTYPE PAGE BEFORE YOU TOUCH THAT PAGE (2026-08-18, after
+shipping quantity quick-picks of "1 2 5 10" when the prototype plainly says "1 2 3 Max"):
+
+  Open docs/prototype-pages/<page>.html and read the section you are about to change,
+  every time, immediately before changing it. Not the brief, not your memory of the
+  prototype, not a similar section on another page. The file.
+
+  THE REASONING, which matters more than the rule: the owner designed this prototype
+  themselves. Every value in it is a decision that has already been made. When a
+  detail looks arbitrary, that is a signal you have not understood it yet, NOT
+  licence to substitute something reasonable. The quantity picks are literally
+  different on each of the three forms -- "1 2 3 Max" on Mint now, "1 2 5" on
+  Schedule, "1 2 3" on Batch -- because the caps differ. Deriving them from a
+  variable looked smarter and was wrong on all three.
+
+  A "sensible default" invented at the keyboard is the single most common way this
+  work drifts, and every one of them costs the owner another round of review.
+
+RULE 1d — DOCUMENT THE REASONING, NOT JUST THE INSTRUCTION (2026-08-18):
+
+  When the owner gives an instruction, write down WHY it exists alongside what it
+  says. A bare directive gets followed literally and then misapplied at the first
+  case it does not literally cover; the reasoning generalises, the directive does
+  not. Every entry in docs/REDESIGN_FIDELITY_BACKLOG.md carries its rationale for
+  this reason, and §10 collects the principles behind all of them.
+
+  The owner should never have to say the same thing twice. If they do, the fault is
+  that the first time was recorded as a rule instead of as an understanding.
+
+RULE 2 — ALL FOUR STATES, EVERY TIME (stated 2026-08-18, after a wallet was
+deleted and Home showed no first-run panel because only the populated state had
+ever been built):
+
+  Every page and every card ships POPULATED, LOADING, EMPTY and ERROR. A unit is
+  not done when the populated state renders. Verify all four before reporting,
+  and say which of the four you actually saw.
+
+  The states must be LIVE, not one-way: empty -> populated when the user creates
+  the thing, and populated -> empty when the user deletes the last one. Gate on
+  `data !== null` so loading never renders as empty, and use ?? not truthiness so
+  0 / 0.000000 ETH / 0% render as themselves.
+
+  The prototype's own harness has Populated/Loading/Empty/Error toggles and
+  docs/prototype-pages/states.html is the extracted reference. Build against
+  those four renderings, not against the populated one plus an assumption.
 
 House rules for this whole session:
 
@@ -388,7 +499,8 @@ Also in this phase, because it is what makes the merge safe:
                  + per-wallet results list), Presets (saved list + method registry)
      Wallets     Performance (ACCOUNT-level, not per-wallet — pnl_records has no
                  wallet column), Send (explanatory panel, no route exists),
-                 Export (keystore form, never the raw key)
+                 Export (encrypted-keystore or explicit raw-private-key mode; raw stays hidden by
+                 default, is copyable for 60 seconds, and Reveal requires a separate warning)
      History     Audit evidence (unavailable panel — triggerAudit is not routed),
                  Security log (OWNER ONLY — hide the tab for regular accounts)
      Automation  Snipers and Social rules are client-side filters of the same
@@ -726,3 +838,49 @@ failure mode, not a feature.
 The fourth, new in v2, is **Phase 8b** growing beyond two `localStorage` keys.
 Order and rail state, nothing else. If a third key appears, something has been
 misfiled as a layout preference.
+
+---
+
+## Rebuild — starting state (2026-08-18)
+
+Phases 1-4 are committed (`09aab3d`, `3a066ee`) with **behaviour done and design
+fidelity unfinished**. The restyle-toward-the-prototype approach produced
+approximations that never converged. The rebuild inverts it: take the prototype's
+markup and stylesheet as given, then bind data into them.
+
+On disk already:
+
+- `dashboard/src/prototype.css` — the prototype's stylesheet, extracted verbatim.
+  207 classes, 28 tokens, 8 media queries. **Do not hand-edit.**
+- `docs/prototype-pages/*.html` — each page extracted verbatim, plus `_rail.html`.
+  Build against these, not against a description of them.
+
+### The collision finding — read before importing anything
+
+`prototype.css` and `styles.css` **cannot both be loaded**. 23 class names collide,
+and they are load-bearing on both sides:
+
+  blk brand brand-mark card col danger dragh g meter mono notice ok pager ring
+  row sheet-grid spark streak subtabs tab tile tiles toast
+
+`.card`, `.tile`, `.row`, `.notice`, `.g` and `.tab` mean different things in each.
+Importing prototype.css alongside the current stylesheet silently repaints half the
+app with the other file's rules, and which one wins depends on import order — the
+worst possible failure mode, because it looks almost right.
+
+Three tokens exist only in the prototype and must be added when its blocks are
+adopted: `--muted`, `--faint`, `--accent-ink`.
+
+### Therefore, migrate a page at a time, never both stylesheets at once
+
+1. Adopt prototype.css as the ONLY stylesheet for the shell chrome (rail + top bar),
+   porting `_rail.html`'s markup exactly. Fixes search / live chip / bell / avatar
+   in one move, since they stop being reconstructions.
+2. Then Mint, then Wallets, then Home — each from its own `docs/prototype-pages/`
+   file, deleting the corresponding rules from styles.css as each page lands.
+3. Bind the existing data in last. That behaviour is built and tested (477 tests):
+   useLoad, summarize(), /api/profile/limits, the redirects, the palette.
+
+Secondary themes (Clean Vault, Neon Arcade, Quiet Ledger) are released from scope
+by decision on 2026-08-18. Their blocks stay in themes.css and in git history and
+can be restored if one is ever promoted. Light and Dark are the target.

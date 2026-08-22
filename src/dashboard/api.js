@@ -1,7 +1,7 @@
 const {randomBytes,randomUUID}=require('node:crypto');
 const {LinkCodeError}=require('../identity/identityService');
 const {UsernameTakenError}=require('../identity/postgresIdentityRepository');
-const {BotContextError,RateLimitError,requireTextConfirmation}=require('../security/botSecurity');
+const {ACCOUNT_RATE_LIMIT_SCOPE,BotContextError,RateLimitError,requireTextConfirmation}=require('../security/botSecurity');
 const {ValidationError,sendValidationError,requestSchemas}=require('../validation/domain');
 const {AccountBlockedError,AuthorizationError}=require('../governance/governanceService');
 const {GasLookupError}=require('../gas/etherscanGasService');
@@ -16,7 +16,7 @@ const SECURITY_HEADERS=Object.freeze({
 // enumerate which usernames are registered before ever guessing a password.
 const DUMMY_SECURITY_PASSWORD_HASH=hashSecurityPassword(randomBytes(32).toString('hex'));
 function noStore(res){res.set('Cache-Control','no-store, private');}
-function publicWallet(value){return {label:value.label,address:value.address,chain:value.chain,balances:value.balances??[],minted:value.minted??0};}
+function publicWallet(value){return {label:value.label,address:value.address,chain:value.chain,balances:value.balances??[],minted:value.minted??0,addedAt:value.addedAt??null};}
 function jsonSafe(value){return JSON.parse(JSON.stringify(value,(_key,item)=>typeof item==='bigint'?item.toString():item));}
 
 function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLoginRateLimiter,exportKeyRateLimiter,commands,securityAudit={record:async()=>{}},broadcast=()=>{},broadcastToUsers=()=>{},supportedChains=[],now=()=>Date.now(),checkAccountStatus}) {
@@ -60,12 +60,27 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLo
   // misaligning real values like ceiling amounts into the wrong slots. Reject it here, before the
   // join, while the original field name is still known -- by the time validation runs deeper in the
   // call chain the string has already been split apart and the original association is lost.
+  //
+  // Live-reported bug (both this and "also other admin stuff too"): a genuinely BLANK field passes
+  // the whitespace check above (there's no space to find in ''), but is exactly as dangerous once
+  // joined and re-split -- adminCommandService's split(/\s+/) collapses consecutive whitespace, so a
+  // blank field vanishes from the token stream entirely and every field after it silently shifts
+  // into the wrong slot instead of failing loudly. Confirmed live: leaving "Platform user ID" blank
+  // on the Advanced mode access form put the literal string "inherit" into platformUserId and left
+  // advancedModesAllowed undefined. Every field here must be a real, present, non-blank token --
+  // a field that's genuinely allowed to mean "leave this alone" (retention days, suspension
+  // duration) is the caller's job to fill with an explicit sentinel value ('off', 'indefinite',
+  // etc.) before it ever reaches this function, the same way RestrictAccountControl's durationDays
+  // already does; this function has no way to know which blanks are intentional.
   function adminInput(actionName,body={}){
     const fields=ADMIN_FIELDS[actionName];
     if(!fields)throw new ValidationError({field:'action',message:'is not supported'});
     for(const field of fields){
       if(field==='reason')continue;
       const value=body[field];
+      if(value===undefined||value===null||(typeof value==='string'&&value.trim()==='')){
+        throw new ValidationError({field,message:'is required'});
+      }
       if(typeof value==='string' && /\s/.test(value.trim())){
         throw new ValidationError({field,message:'must not contain spaces -- admin actions use a shared single-token command syntax; try hyphens or underscores instead'});
       }
@@ -115,11 +130,31 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLo
     },
     logout:async(req,res)=>{noStore(res);await auth.revoke(req.dashboardSession);res.setHeader('Set-Cookie',auth.clearCookies());res.status(204).end();},
     logoutAll:async(req,res)=>{noStore(res);await auth.revokeAll(req.dashboardSession);res.setHeader('Set-Cookie',auth.clearCookies());res.status(204).end();},
-    profile:async(req,res)=>{noStore(res);res.json({userId:user(req),isOwner:commands?.isOwner?await commands.isOwner(user(req)):false,isRootOwner:commands?.isRootOwner?await commands.isRootOwner(user(req)):false,linkedAccounts:await identityRepository.listLinkedAccounts(user(req)),supportedChains,theme:await identityRepository.getTheme(user(req)),displayName:identityRepository.getDisplayName?await identityRepository.getDisplayName(user(req)):null,defaultChain:identityRepository.getDefaultChain?await identityRepository.getDefaultChain(user(req)):null,securityPasswordSet:identityRepository.getSecurityPasswordHash?Boolean(await identityRepository.getSecurityPasswordHash(user(req))):false,username:identityRepository.getUsername?await identityRepository.getUsername(user(req)):null,currentMode:commands?.currentMode?await commands.currentMode(user(req)):null,advancedModesAllowed:commands?.advancedModesAllowed?await commands.advancedModesAllowed(user(req)):false});},
+    profile:async(req,res)=>{noStore(res);res.json({userId:user(req),isOwner:commands?.isOwner?await commands.isOwner(user(req)):false,isRootOwner:commands?.isRootOwner?await commands.isRootOwner(user(req)):false,linkedAccounts:await identityRepository.listLinkedAccounts(user(req)),supportedChains,theme:await identityRepository.getTheme(user(req)),displayName:identityRepository.getDisplayName?await identityRepository.getDisplayName(user(req)):null,defaultChain:identityRepository.getDefaultChain?await identityRepository.getDefaultChain(user(req)):null,securityPasswordSet:identityRepository.getSecurityPasswordHash?Boolean(await identityRepository.getSecurityPasswordHash(user(req))):false,botGateLevel:identityRepository.getBotGateLevel?await identityRepository.getBotGateLevel(user(req)):'off',botGateSkipMint:identityRepository.getBotGateSkipMint?await identityRepository.getBotGateSkipMint(user(req)):false,username:identityRepository.getUsername?await identityRepository.getUsername(user(req)):null,currentMode:commands?.currentMode?await commands.currentMode(user(req)):null,advancedModesAllowed:commands?.advancedModesAllowed?await commands.advancedModesAllowed(user(req)):false});},
     updateMode:action(async(req,res)=>{res.json({mode:await commands.selectMode(user(req),req.body.preset)});}),
     updateTheme:action(async(req,res)=>{const {theme}=requestSchemas.themeUpdate(req.body||{});res.json({theme:await identityRepository.setTheme(user(req),theme)});}),
+    // The bot action gate is changed HERE and nowhere else. If it could be switched off from
+    // Telegram or Discord, whoever picked up an unlocked phone would simply switch it off before
+    // removing the wallets -- the gate would be decorative. The dashboard is already an
+    // authenticated surface (session + CSRF below), which is the whole point.
+    updateBotGate:action(async(req,res)=>{const {level}=requestSchemas.botGateUpdate(req.body||{});
+      await identityRepository.setBotGateLevel(user(req),level);res.json({botGateLevel:level});}),
+    // Exempts interactive minting only. Scheduled mints, snipers and watch triggers never consult
+    // the gate at all, so this cannot affect them.
+    updateBotGateMint:action(async(req,res)=>{const {skipMint}=requestSchemas.botGateMintUpdate(req.body||{});
+      await identityRepository.setBotGateSkipMint(user(req),skipMint);res.json({botGateSkipMint:skipMint});}),
     updateDisplayName:action(async(req,res)=>{const {displayName}=requestSchemas.displayNameUpdate(req.body||{});res.json({displayName:await identityRepository.setDisplayName(user(req),displayName)});}),
     updateDefaultChain:action(async(req,res)=>{const {defaultChain}=requestSchemas.defaultChainUpdate(req.body||{},{supportedChains});res.json({defaultChain:await identityRepository.setDefaultChain(user(req),defaultChain)});}),
+    // The caller's own effective ceilings, resolved user override -> group -> chain defaults.
+    // No owner gate: these are the limits already being enforced against this caller.
+    // Chain defaults to the account's saved default, then the first supported chain, because
+    // gasCeilingGwei is per-chain and an unqualified "your gas ceiling" has no meaning.
+    // jsonSafe because maxTransactionValueWei / dailySpendingBudgetWei are BigInt.
+    profileLimits:action(async(req,res)=>{noStore(res);
+      const requested=req.query?.chain
+        ||(identityRepository.getDefaultChain?await identityRepository.getDefaultChain(user(req)):null)
+        ||supportedChains[0];
+      res.json(jsonSafe(await commands.profileLimits(user(req),requested)));}),
     // Sets or changes the one account password that gates every sensitive dashboard action (see
     // exportWalletKey below). Changing an existing password requires the current one; setting it for
     // the first time does not, since there is nothing yet to authenticate against.
@@ -170,10 +205,14 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLo
     // encrypted blob ever comes back. That password is verified here, against the stored hash,
     // before it's trusted for anything -- and the same verified value then doubles as the keystore's
     // own encryption password, so there is exactly one password to remember for this whole flow.
-    // Rate limiter is shared with Telegram's /exportkey (same instance, passed in from server.js) so
-    // switching platforms doesn't double the effective rate.
+    // Rate limiting is scoped to the ACCOUNT, not to this surface: the check below passes
+    // ACCOUNT_RATE_LIMIT_SCOPE where it would normally pass 'dashboard', and Telegram's /exportkey
+    // passes the same constant, so both land on one `account:<userId>:exportkey` bucket rather than
+    // one bucket each. Sharing the limiter instance alone was never enough -- createCommandRateLimiter
+    // keys on platform too, so a per-platform string silently doubled the real ceiling. Note this is
+    // deliberately NOT done for 'securitypassword' above, which stays per-platform.
     exportWalletKey:action(async(req,res)=>{confirmation(req);noStore(res);
-      try{exportKeyRateLimiter.check('dashboard',user(req),'exportkey');}
+      try{exportKeyRateLimiter.check(ACCOUNT_RATE_LIMIT_SCOPE,user(req),'exportkey');}
       catch(error){
         if(error instanceof RateLimitError){await auditExportKey(req,'rate_limited','export key rate limit exceeded');res.set('Retry-After',String(Math.ceil(error.retryAfterMs/1000)));return res.status(429).json({error:'Too many export attempts'});}
         throw error;
@@ -185,6 +224,26 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLo
       const {keystore}=await commands.exportWalletKeystore(user(req),req.params.label,securityPassword);
       await auditExportKey(req,'success','keystore export delivered');
       res.json({keystore});
+    }),
+    // Explicit raw-key escape hatch requested for the dashboard Export tab. Unlike the ordinary
+    // wallet APIs and the keystore route above, this response intentionally contains the exact
+    // private key so the browser can place it on the clipboard. Keep every surrounding control:
+    // authenticated user scope, CSRF, literal API confirmation, security-password verification,
+    // no-store headers, shared export throttling, and an audit record. The client never renders it
+    // until a second warning is accepted and clears its in-memory copy after a short window.
+    exportWalletRaw:action(async(req,res)=>{confirmation(req);noStore(res);
+      try{exportKeyRateLimiter.check(ACCOUNT_RATE_LIMIT_SCOPE,user(req),'exportkey');}
+      catch(error){
+        if(error instanceof RateLimitError){await auditExportKey(req,'rate_limited','raw key export rate limit exceeded');res.set('Retry-After',String(Math.ceil(error.retryAfterMs/1000)));return res.status(429).json({error:'Too many export attempts'});}
+        throw error;
+      }
+      const {securityPassword}=requestSchemas.walletExport(req.body||{});
+      const storedHash=await identityRepository.getSecurityPasswordHash(user(req));
+      if(!storedHash){await auditExportKey(req,'failure','no security password set');return res.status(400).json({error:'Set a security password first.',code:'SECURITY_PASSWORD_NOT_SET'});}
+      if(!verifySecurityPassword(securityPassword,storedHash)){await auditExportKey(req,'failure','incorrect security password');return res.status(401).json({error:'Incorrect security password'});}
+      const {privateKey}=await commands.exportWalletKeyRaw(user(req),req.params.label);
+      await auditExportKey(req,'success','raw private key delivered to dashboard');
+      res.json({privateKey});
     }),
     mintPresets:action(async(req,res)=>res.json(jsonSafe(await commands.mintPresets(user(req))))),
     detectMint:action(async(req,res)=>{noStore(res);res.json(jsonSafe(await commands.detectMintContract(user(req),{contractAddress:req.query.contractAddress,quantity:req.query.quantity})));}),
@@ -226,6 +285,10 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLo
     adminOverview:action(async(req,res)=>res.json(jsonSafe(await commands.adminOverview(user(req))))),
     adminEffective:action(async(req,res)=>res.json(jsonSafe(await commands.adminEffective(user(req),req.query)))),
     adminSecurityAudit:action(async(req,res)=>res.json(jsonSafe(await commands.adminSecurityAudit(user(req),req.query)))),
+    securityAudit:action(async(req,res)=>res.json(jsonSafe(await commands.securityAudit(user(req),req.query)))),
+    mintMethods:action(async(req,res)=>res.json(await commands.mintMethods())),
+    saveMintPreset:action(async(req,res)=>{const preset=await commands.saveMintPreset(user(req),req.body);
+      res.status(201).json(jsonSafe(preset));}),
     // Same balance-merge-then-sanitize shape as the self-service wallets route (see publicWallet
     // above) -- the only difference is which userId's wallets get looked up.
     adminUserWallets:action(async(req,res)=>{const values=await commands.adminUserWallets(user(req),req.params.userId);
@@ -253,7 +316,10 @@ function mountDashboardRoutes(app,api){
   app.post('/api/auth/logout',api.requireSession,api.requireCsrf,api.logout);
   app.post('/api/auth/logout-all',api.requireSession,api.requireCsrf,api.logoutAll);
   app.get('/api/profile',api.requireSession,api.profile);
+  app.get('/api/profile/limits',api.requireSession,api.profileLimits);
   app.put('/api/profile/theme',api.requireSession,api.requireCsrf,api.updateTheme);
+  app.put('/api/profile/bot-gate',api.requireSession,api.requireCsrf,api.updateBotGate);
+  app.put('/api/profile/bot-gate-mint',api.requireSession,api.requireCsrf,api.updateBotGateMint);
   app.put('/api/profile/display-name',api.requireSession,api.requireCsrf,api.updateDisplayName);
   app.put('/api/profile/default-chain',api.requireSession,api.requireCsrf,api.updateDefaultChain);
   app.put('/api/auth/security-password',api.requireSession,api.requireCsrf,api.securityPasswordSet);
@@ -268,7 +334,9 @@ function mountDashboardRoutes(app,api){
   app.post('/api/wallets/batch-import',api.requireSession,api.requireCsrf,api.importWalletsBatch);
   app.delete('/api/wallets/:label',api.requireSession,api.requireCsrf,api.removeWallet);
   app.post('/api/wallets/:label/export',api.requireSession,api.requireCsrf,api.exportWalletKey);
+  app.post('/api/wallets/:label/export/raw',api.requireSession,api.requireCsrf,api.exportWalletRaw);
   app.get('/api/mint-presets',api.requireSession,api.mintPresets);
+  app.post('/api/mint-presets',api.requireSession,api.requireCsrf,api.saveMintPreset);
   app.get('/api/mints/detect',api.requireSession,api.detectMint);
   app.post('/api/mints/preview',api.requireSession,api.requireCsrf,api.previewMint);
   app.post('/api/mints/confirm',api.requireSession,api.requireCsrf,api.confirmMint);
@@ -300,6 +368,8 @@ function mountDashboardRoutes(app,api){
   app.get('/api/admin',api.requireSession,api.adminOverview);
   app.get('/api/admin/effective',api.requireSession,api.adminEffective);
   app.get('/api/admin/security-audit',api.requireSession,api.adminSecurityAudit);
+  app.get('/api/security-audit',api.requireSession,api.securityAudit);
+  app.get('/api/mint-methods',api.requireSession,api.mintMethods);
   app.get('/api/admin/users/:userId/wallets',api.requireSession,api.adminUserWallets);
   app.get('/api/admin/users/:userId/activity',api.requireSession,api.adminUserActivity);
   app.get('/api/admin/users/:userId/tasks',api.requireSession,api.adminUserTasks);

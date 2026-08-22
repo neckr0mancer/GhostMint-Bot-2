@@ -49,6 +49,33 @@ test('reports only whether the Etherscan key is configured', () => {
   assert.doesNotMatch(result.stdout,new RegExp(key));
 });
 
+// Round 20 follow-up: OPENSEA_READ_API_KEY is optional and aliases OPENSEA_API_KEY when unset --
+// same "unconfigured means zero behavior change" shape as Round 15's RPC pool splits.
+test('OPENSEA_READ_API_KEY unconfigured aliases the main OpenSea key -- reports as not separate', () => {
+  const key='opensea-main-key';
+  // Explicit empty string, not just omitted: process.env already has this vars-from-the-real-.env
+  // problem for every optional key in this suite, but dotenv.config() (called by src/config itself)
+  // only fills in variables ABSENT from process.env -- an explicit empty string here is enough to
+  // count as "already set" and stops the real .env file's own OPENSEA_READ_API_KEY from leaking in.
+  const result=probeConfig({OPENSEA_API_KEY:key, OPENSEA_READ_API_KEY:''});
+  assert.equal(result.status,0,result.stderr);
+  const summary=JSON.parse(result.stdout).summary;
+  assert.equal(summary.openSeaConfigured,true);
+  assert.equal(summary.openSeaReadKeySeparate,false);
+});
+
+test('OPENSEA_READ_API_KEY configured is reported as a genuinely separate key, and neither key leaks into the summary', () => {
+  const mainKey='opensea-main-key';
+  const readKey='opensea-read-only-key';
+  const result=probeConfig({OPENSEA_API_KEY:mainKey, OPENSEA_READ_API_KEY:readKey});
+  assert.equal(result.status,0,result.stderr);
+  const summary=JSON.parse(result.stdout).summary;
+  assert.equal(summary.openSeaConfigured,true);
+  assert.equal(summary.openSeaReadKeySeparate,true);
+  assert.doesNotMatch(result.stdout,new RegExp(mainKey));
+  assert.doesNotMatch(result.stdout,new RegExp(readKey));
+});
+
 function probeConfig(overrides = {}) {
   return spawnSync(process.execPath, ['--eval', CONFIG_PROBE], {
     cwd: PROJECT_ROOT,
@@ -148,6 +175,73 @@ test('accepts ordered RPC fallback lists and reports only endpoint counts', () =
   assert.doesNotMatch(result.stdout, /first-rpc|second-rpc/);
 });
 
+test('Round 15: an unconfigured {CHAIN}_FAST_URLS reports no fast chains at all -- the fast pool is just an alias for the general one', () => {
+  const result = probeConfig();
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout).summary.fastRpcChainsConfigured, []);
+});
+
+test('Round 15: a configured {CHAIN}_FAST_URLS reports that chain as covered, without exposing the URL itself', () => {
+  const fast = 'https://fast-rpc.example.com';
+  const result = probeConfig({ ETH_RPC_FAST_URLS: fast });
+  assert.equal(result.status, 0, result.stderr);
+  const summary = JSON.parse(result.stdout).summary;
+  assert.deepEqual(summary.fastRpcChainsConfigured, ['ethereum']);
+  assert.doesNotMatch(result.stdout, /fast-rpc/);
+});
+
+test('Round 15: a malformed {CHAIN}_FAST_URLS is refused the same way a malformed general URL is', () => {
+  const result = probeConfig({ ETH_RPC_FAST_URLS: 'not-a-url' });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /ETH_RPC_FAST_URLS must contain valid HTTP or HTTPS URLs/);
+});
+
+test('Round 16: an unconfigured {CHAIN}_SNIPER_URLS/_SNIPER_WS reports no sniper chains at all -- same alias-by-default shape as the fast pool', () => {
+  const result = probeConfig();
+  assert.equal(result.status, 0, result.stderr);
+  const summary = JSON.parse(result.stdout).summary;
+  assert.deepEqual(summary.sniperRpcChainsConfigured, []);
+  assert.deepEqual(summary.sniperWebSocketConfigured, []);
+});
+
+test('Round 16: a configured {CHAIN}_RPC_SNIPER_URLS reports that chain as covered, without exposing the URL itself', () => {
+  const sniper = 'https://sniper-rpc.example.com';
+  const result = probeConfig({ ETH_RPC_SNIPER_URLS: sniper });
+  assert.equal(result.status, 0, result.stderr);
+  const summary = JSON.parse(result.stdout).summary;
+  assert.deepEqual(summary.sniperRpcChainsConfigured, ['ethereum']);
+  assert.deepEqual(summary.sniperWebSocketConfigured, []);
+  assert.doesNotMatch(result.stdout, /sniper-rpc/);
+});
+
+test('Round 16: a configured {CHAIN}_RPC_SNIPER_WS reports that chain\'s WebSocket as covered independently of the URL list', () => {
+  const ws = 'wss://sniper-ws.example.com';
+  const result = probeConfig({ ETH_RPC_SNIPER_WS: ws });
+  assert.equal(result.status, 0, result.stderr);
+  const summary = JSON.parse(result.stdout).summary;
+  assert.deepEqual(summary.sniperRpcChainsConfigured, []);
+  assert.deepEqual(summary.sniperWebSocketConfigured, ['ethereum']);
+  assert.doesNotMatch(result.stdout, /sniper-ws/);
+});
+
+test('Round 16: sniper and fast pools are independent -- configuring one does not affect the other', () => {
+  const result = probeConfig({ ETH_RPC_FAST_URLS: 'https://fast-rpc.example.com', ETH_RPC_SNIPER_URLS: 'https://sniper-rpc.example.com' });
+  assert.equal(result.status, 0, result.stderr);
+  const summary = JSON.parse(result.stdout).summary;
+  assert.deepEqual(summary.fastRpcChainsConfigured, ['ethereum']);
+  assert.deepEqual(summary.sniperRpcChainsConfigured, ['ethereum']);
+});
+
+test('Round 16: a malformed {CHAIN}_RPC_SNIPER_URLS or _SNIPER_WS is refused the same way as the fast pool', () => {
+  const badUrl = probeConfig({ ETH_RPC_SNIPER_URLS: 'not-a-url' });
+  assert.notEqual(badUrl.status, 0);
+  assert.match(badUrl.stderr, /ETH_RPC_SNIPER_URLS must contain valid HTTP or HTTPS URLs/);
+
+  const badWs = probeConfig({ ETH_RPC_SNIPER_WS: 'https://not-a-ws-url.example.com' });
+  assert.notEqual(badWs.status, 0);
+  assert.match(badWs.stderr, /ETH_RPC_SNIPER_WS must be a WS or WSS URL without embedded credentials/);
+});
+
 test('refuses unsupported and duplicate chain names', () => {
   const unsupported = probeConfig({ SUPPORTED_CHAINS: 'ethereum,solana' });
   assert.notEqual(unsupported.status, 0);
@@ -173,6 +267,14 @@ test('accepts a complete Discord configuration and never exposes its token', () 
   assert.doesNotMatch(result.stdout, new RegExp(token));
 });
 
+// DISCORD_DEV_GUILD_ID is what makes it a *development* bot (one guild for registration and the
+// same guild as a hard restriction); a normal bot serving every server it is in leaves it empty.
+test('accepts a Discord configuration with no dev guild, which is the serve-every-server case', () => {
+  const result = probeConfig({ DISCORD_BOT_TOKEN: 'discord-token', DISCORD_APPLICATION_ID: '123456789012345678' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).summary.discordEnabled, true);
+});
+
 test('rejects partial or malformed Discord configuration', () => {
   const partial = probeConfig({ DISCORD_BOT_TOKEN: 'token-only' });
   assert.notEqual(partial.status, 0);
@@ -181,4 +283,24 @@ test('rejects partial or malformed Discord configuration', () => {
     DISCORD_DEV_GUILD_ID: '223456789012345678' });
   assert.notEqual(malformed.status, 0);
   assert.match(malformed.stderr, /valid Discord snowflake/);
+});
+
+// Real Discord snowflakes are digit strings -- this is the case a broken `\d` escape (matching the
+// literal letter "d" instead of a digit) would silently fail on every real value.
+test('accepts a real-shaped DISCORD_CHANNEL_IDS snowflake list, comma-separated and independent of a dev guild', () => {
+  const result = probeConfig({ DISCORD_BOT_TOKEN: 'discord-token', DISCORD_APPLICATION_ID: '123456789012345678',
+    DISCORD_CHANNEL_IDS: '111111111111111111,222222222222222222' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).summary.discordEnabled, true);
+});
+
+test('rejects a malformed DISCORD_CHANNEL_IDS entry and requires the bot token/application ID', () => {
+  const malformed = probeConfig({ DISCORD_BOT_TOKEN: 'token', DISCORD_APPLICATION_ID: '123456789012345678',
+    DISCORD_CHANNEL_IDS: 'not-a-snowflake' });
+  assert.notEqual(malformed.status, 0);
+  assert.match(malformed.stderr, /DISCORD_CHANNEL_IDS must be a comma-separated list of Discord snowflakes/);
+
+  const orphaned = probeConfig({ DISCORD_CHANNEL_IDS: '111111111111111111' });
+  assert.notEqual(orphaned.status, 0);
+  assert.match(orphaned.stderr, /DISCORD_CHANNEL_IDS requires DISCORD_BOT_TOKEN/);
 });

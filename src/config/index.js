@@ -38,7 +38,10 @@ const CHAIN_DEFINITIONS = Object.freeze({
     name: 'Polygon',
     chainId: 137,
     envName: 'POLYGON_RPC',
-    defaultRpc: 'https://polygon-rpc.com',
+    // polygon-rpc.com started returning "API key disabled, tenant disabled" (403) for anonymous
+    // requests -- confirmed live 2026-08-18, no longer usable as a free public default. Same
+    // PublicNode family already used for the ethereum default above, confirmed live working.
+    defaultRpc: 'https://polygon.publicnode.com',
     sym: 'MATIC',
     ex: 'https://polygonscan.com/tx/',
     isTestnet: false,
@@ -52,6 +55,11 @@ const CHAIN_DEFINITIONS = Object.freeze({
     ex: 'https://robinhoodchain.blockscout.com/tx/',
     isTestnet: false,
   }),
+  // Not part of the default SUPPORTED_CHAINS (no longer user-selectable for wallets/mints) --
+  // kept here only so it can still be opted into temporarily for a Milestone 14 live acceptance
+  // run (see docs/LIVE_ACCEPTANCE_RUNBOOK.md), the sole feature that requires a chain flagged
+  // isTestnet: true. Add it back to SUPPORTED_CHAINS (and set SEPOLIA_RPC) only for that run, then
+  // revert -- exactly as the runbook already documents.
   sepolia: Object.freeze({
     name: 'Sepolia',
     chainId: 11155111,
@@ -214,6 +222,29 @@ function parseSupportedChains() {
   return Object.freeze(names);
 }
 
+// `plural` picks the error phrasing: true for an actual comma-separated list ("must contain...
+// URLs"), false for parseRpcUrls' own single-value legacy fallback ("must be a valid... URL").
+function validateUrlList(rawUrls, sourceName, listLabel, plural) {
+  if (rawUrls.length < 1 || rawUrls.length > 5 || new Set(rawUrls).size !== rawUrls.length) {
+    throw new ConfigurationError(`${listLabel} must contain 1-5 unique URLs`);
+  }
+  return Object.freeze(rawUrls.map(raw => {
+    let parsed;
+    try { parsed = new URL(raw); }
+    catch {
+      throw new ConfigurationError(plural
+        ? `${sourceName} must contain valid HTTP or HTTPS URLs`
+        : `${sourceName} must be a valid HTTP or HTTPS URL`);
+    }
+    if (!['http:', 'https:'].includes(parsed.protocol) || !parsed.hostname || parsed.username || parsed.password) {
+      throw new ConfigurationError(plural
+        ? `${sourceName} must contain HTTP or HTTPS URLs without embedded credentials`
+        : `${sourceName} must be a valid HTTP or HTTPS URL without embedded credentials`);
+    }
+    return parsed.toString();
+  }));
+}
+
 function parseRpcUrls(definition) {
   const listName = `${definition.envName}_URLS`;
   const configuredList = optionalString(listName);
@@ -221,30 +252,33 @@ function parseRpcUrls(definition) {
   const rawUrls = configuredList
     ? configuredList.split(',').map(value => value.trim()).filter(Boolean)
     : [legacy || definition.defaultRpc];
-  const sourceName = configuredList ? listName : definition.envName;
-  if (rawUrls.length < 1 || rawUrls.length > 5 || new Set(rawUrls).size !== rawUrls.length) {
-    throw new ConfigurationError(`${listName} must contain 1-5 unique URLs`);
-  }
-  const urls = rawUrls.map(raw => {
-    let parsed;
-    try { parsed = new URL(raw); }
-    catch {
-      throw new ConfigurationError(configuredList
-        ? `${sourceName} must contain valid HTTP or HTTPS URLs`
-        : `${sourceName} must be a valid HTTP or HTTPS URL`);
-    }
-    if (!['http:', 'https:'].includes(parsed.protocol) || !parsed.hostname || parsed.username || parsed.password) {
-      throw new ConfigurationError(configuredList
-        ? `${sourceName} must contain HTTP or HTTPS URLs without embedded credentials`
-        : `${sourceName} must be a valid HTTP or HTTPS URL without embedded credentials`);
-    }
-    return parsed.toString();
-  });
-  return { urls: Object.freeze(urls), overridden: configuredList !== null || legacy !== null };
+  const urls = validateUrlList(rawUrls, configuredList ? listName : definition.envName, listName, Boolean(configuredList));
+  return { urls, overridden: configuredList !== null || legacy !== null };
 }
 
-function parseWsRpcUrl(definition) {
-  const name = `${definition.envName}_WS`;
+// Round 15 (docs/WORKLIST.md Section AU) introduced {ENVNAME}_FAST_URLS for scheduled/Degen mints'
+// pre-broadcast reads; Round 16 (Section AV) adds {ENVNAME}_SNIPER_URLS for sniper's own pool, same
+// shape, different suffix -- both entirely opt-in per chain, not tied to any specific provider (the
+// owner picks whatever they want here, paid or free). Unset for a chain, that pool is just an alias
+// for the general one, same safe-by-default shape parseRpcUrls itself already has. Prepended ahead
+// of the chain's own general-pool URLs rather than replacing them, so providerService.perform()'s
+// existing per-candidate retry/fallback already degrades to the general pool on a rate limit or
+// outage -- no new resilience code needed for either pool.
+function parseNamedRpcUrls(definition, generalUrls, suffix) {
+  const listName = `${definition.envName}${suffix}`;
+  const configuredList = optionalString(listName);
+  if (!configuredList) return generalUrls;
+  const rawUrls = configuredList.split(',').map(value => value.trim()).filter(Boolean);
+  const namedUrls = validateUrlList(rawUrls, listName, listName, true);
+  return Object.freeze([...namedUrls, ...generalUrls]);
+}
+
+// suffix lets a caller ask for a named WS pool ({ENVNAME}{suffix}_WS) instead of the general one
+// ({ENVNAME}_WS) -- Round 16's sniper pool wants its own WebSocket endpoint, separate from whatever
+// (if anything) is configured for general use, since chainWatcher.js's WS mode is specifically what
+// sniper needs and nothing else in this app currently uses a WS connection at all.
+function parseWsRpcUrl(definition, suffix = '') {
+  const name = `${definition.envName}${suffix}_WS`;
   const raw = optionalString(name);
   if (!raw) return null;
   let parsed;
@@ -260,18 +294,38 @@ function parseTelegram() {
   return { botToken: optionalString('TELEGRAM_BOT_TOKEN') };
 }
 
+const SNOWFLAKE = /^\d{17,20}$/;
+
 function parseDiscord() {
   const botToken = optionalString('DISCORD_BOT_TOKEN');
   const applicationId = optionalString('DISCORD_APPLICATION_ID');
+  // Optional, and it does two things at once when set: slash commands register to that one guild
+  // (instant, instead of global registration's propagation delay) AND every command is restricted
+  // to it. That pairing is what makes it a *dev* guild. Leave it empty for a bot that serves every
+  // server it has been added to, plus DMs -- see createDiscordBot's start().
   const devGuildId = optionalString('DISCORD_DEV_GUILD_ID');
-  const values = [botToken, applicationId, devGuildId];
+  const values = [botToken, applicationId];
   if (values.some(Boolean) && !values.every(Boolean)) {
-    throw new ConfigurationError('DISCORD_BOT_TOKEN, DISCORD_APPLICATION_ID, and DISCORD_DEV_GUILD_ID must be configured together');
+    throw new ConfigurationError('DISCORD_BOT_TOKEN and DISCORD_APPLICATION_ID must be configured together');
+  }
+  if (devGuildId && !botToken) {
+    throw new ConfigurationError('DISCORD_DEV_GUILD_ID requires DISCORD_BOT_TOKEN and DISCORD_APPLICATION_ID');
   }
   for (const [name, value] of [['DISCORD_APPLICATION_ID', applicationId], ['DISCORD_DEV_GUILD_ID', devGuildId]]) {
     if (value && !/^\d{17,20}$/.test(value)) throw new ConfigurationError(`${name} must be a valid Discord snowflake`);
   }
-  return { botToken, applicationId, devGuildId };
+  // Independent of the dev guild: this narrows which channels the bot answers in without pinning
+  // it to a single server. Empty means every channel it can see. DMs are never filtered by it.
+  const channelIds = (optionalString('DISCORD_CHANNEL_IDS') || '')
+    .split(',').map(value => value.trim()).filter(Boolean);
+  for (const value of channelIds) {
+    if (!SNOWFLAKE.test(value)) throw new ConfigurationError(
+      'DISCORD_CHANNEL_IDS must be a comma-separated list of Discord snowflakes');
+  }
+  if (channelIds.length && !botToken) {
+    throw new ConfigurationError('DISCORD_CHANNEL_IDS requires DISCORD_BOT_TOKEN and DISCORD_APPLICATION_ID');
+  }
+  return { botToken, applicationId, devGuildId, channelIds };
 }
 
 function parseSocialAdapters() {
@@ -290,10 +344,21 @@ const discord = parseDiscord();
 const socialAdapters = parseSocialAdapters();
 const etherscanApiKey = optionalString('ETHERSCAN_API_KEY');
 const openSeaApiKey = optionalString('OPENSEA_API_KEY');
+// Round 20 follow-up: read (display) calls -- getDrop/getCollectionMetadata/getCollectionStats,
+// now hit on every paste, not just /info -- separated from write (buildMintTransaction, the actual
+// OpenSea-backed mint) onto its own account, since a rate-limit hit on the read side should never
+// have any chance of touching the account that executes real mints. OpenSea pools its rate limit
+// per ACCOUNT regardless of key count (live-verified against their docs), so this only helps
+// because it's a genuinely separate account/key, not just a second key on the same one. Optional
+// and provider-agnostic like every other opt-in split in this app (Round 15's RPC pools): unset
+// means read traffic keeps sharing the one existing key, zero behavior change.
+const openSeaReadApiKey = optionalString('OPENSEA_READ_API_KEY') || openSeaApiKey;
 const database = parseDatabaseConfig(environment);
 const encryption = parseEncryptionKeys(environment);
 const rpcOverrides = {};
 const CHAINS = {};
+const FAST_CHAINS = {};
+const SNIPER_CHAINS = {};
 
 for (const chainName of supportedChains) {
   const definition = CHAIN_DEFINITIONS[chainName];
@@ -309,6 +374,16 @@ for (const chainName of supportedChains) {
     ex: definition.ex,
     isTestnet: definition.isTestnet,
   });
+  const fastUrls = parseNamedRpcUrls(definition, CHAINS[chainName].rpcUrls, '_FAST_URLS');
+  FAST_CHAINS[chainName] = fastUrls === CHAINS[chainName].rpcUrls
+    ? CHAINS[chainName]
+    : Object.freeze({ ...CHAINS[chainName], rpcUrls: fastUrls });
+
+  const sniperUrls = parseNamedRpcUrls(definition, CHAINS[chainName].rpcUrls, '_SNIPER_URLS');
+  const sniperWsUrl = parseWsRpcUrl(definition, '_SNIPER');
+  SNIPER_CHAINS[chainName] = (sniperUrls === CHAINS[chainName].rpcUrls && sniperWsUrl === null)
+    ? CHAINS[chainName]
+    : Object.freeze({ ...CHAINS[chainName], rpcUrls: sniperUrls, rpcWsUrl: sniperWsUrl ?? CHAINS[chainName].rpcWsUrl });
 }
 
 const CONFIG = Object.freeze({
@@ -321,12 +396,14 @@ const CONFIG = Object.freeze({
   discordBotToken: discord.botToken,
   discordApplicationId: discord.applicationId,
   discordDevGuildId: discord.devGuildId,
+  discordChannelIds: discord.channelIds,
   socialOfficialApiUrl: socialAdapters.officialApiEndpoint,
   socialOfficialApiToken: socialAdapters.officialApiToken,
   socialManagedServiceUrl: socialAdapters.managedServiceEndpoint,
   socialManagedServiceToken: socialAdapters.managedServiceToken,
   etherscanApiKey,
   openSeaApiKey,
+  openSeaReadApiKey,
   socialPollIntervalMs: parseInteger('SOCIAL_POLL_INTERVAL_MS', 30_000, 5_000, 3_600_000),
   socialPricing: Object.freeze({ officialReadUsd:0.005, officialPostUsd:0.015,
     managedMonthlyTiersUsd:Object.freeze([199, 499]) }),
@@ -342,6 +419,8 @@ const CONFIG = Object.freeze({
 });
 
 Object.freeze(CHAINS);
+Object.freeze(FAST_CHAINS);
+Object.freeze(SNIPER_CHAINS);
 Object.freeze(rpcOverrides);
 
 function getSafeConfigSummary() {
@@ -356,6 +435,10 @@ function getSafeConfigSummary() {
     socialScraperAvailable: true,
     etherscanGasConfigured: CONFIG.etherscanApiKey !== null,
     openSeaConfigured: CONFIG.openSeaApiKey !== null,
+    openSeaReadKeySeparate: CONFIG.openSeaReadApiKey !== CONFIG.openSeaApiKey,
+    fastRpcChainsConfigured: Object.entries(FAST_CHAINS).filter(([name, chain]) => chain.rpcUrls[0] !== CHAINS[name].rpcUrls[0]).map(([name]) => name),
+    sniperRpcChainsConfigured: Object.entries(SNIPER_CHAINS).filter(([name, chain]) => chain.rpcUrls[0] !== CHAINS[name].rpcUrls[0]).map(([name]) => name),
+    sniperWebSocketConfigured: Object.entries(SNIPER_CHAINS).filter(([name, chain]) => chain.rpcWsUrl !== CHAINS[name].rpcWsUrl).map(([name]) => name),
     databaseConfigured: CONFIG.databaseUrl !== null,
     migrationConnectionConfigured: CONFIG.databaseUrlUnpooled !== null,
     databasePoolMax: CONFIG.databasePoolMax,
@@ -370,6 +453,8 @@ function getSafeConfigSummary() {
 module.exports = {
   CHAIN_DEFINITIONS,
   CHAINS,
+  FAST_CHAINS,
+  SNIPER_CHAINS,
   CONFIG,
   ConfigurationError,
   getSafeConfigSummary,

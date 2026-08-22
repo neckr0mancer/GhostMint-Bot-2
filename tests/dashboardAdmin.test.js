@@ -25,7 +25,7 @@ async function server(t){const data=fixture();const governance=createGovernanceS
 function headers(user='owner'){return {cookie:`ghostmint_session=${user}`,'content-type':'application/json','x-csrf-token':'csrf'};}
 async function write(base,user,action,body){return fetch(`${base}/api/admin/${action}`,{method:'POST',headers:headers(user),body:JSON.stringify(body)});}
 
-test('every dashboard admin write rejects a non-owner session',async t=>{const {base}=await server(t);const cases=[['group-set',{name:'G',maxWei:'1',dailyWei:'2',gasGwei:'3',simulation:'forced'}],['group-delete',{name:'G',confirmation:'CONFIRM'}],['assign',{platform:'telegram',platformUserId:'2',group:'G'}],['unassign',{platform:'telegram',platformUserId:'2'}],['user-ceilings',{platform:'telegram',platformUserId:'2',maxWei:'1',dailyWei:'2',gasGwei:'3'}],['user-ceilings-clear',{platform:'telegram',platformUserId:'2'}],['user-simulation',{platform:'telegram',platformUserId:'2',simulation:'forced'}],['group-simulation',{group:'G',simulation:'forced'}],['preset-set',{preset:'safe',simulation:'on',confirmations:'12',verification:'on'}],['owner',{platform:'telegram',platformUserId:'2',enabled:'on',confirmation:'CONFIRM'}]];for(const [action,body] of cases)assert.equal((await write(base,'member',action,body)).status,403,action);});
+test('every dashboard admin write rejects a non-owner session',async t=>{const {base}=await server(t);const cases=[['group-set',{name:'G',maxWei:'1',dailyWei:'2',gasGwei:'3',simulation:'forced',advancedModes:'not-allowed'}],['group-delete',{name:'G',confirmation:'CONFIRM'}],['assign',{platform:'telegram',platformUserId:'2',group:'G'}],['unassign',{platform:'telegram',platformUserId:'2'}],['user-ceilings',{platform:'telegram',platformUserId:'2',maxWei:'1',dailyWei:'2',gasGwei:'3'}],['user-ceilings-clear',{platform:'telegram',platformUserId:'2'}],['user-simulation',{platform:'telegram',platformUserId:'2',simulation:'forced'}],['group-simulation',{group:'G',simulation:'forced'}],['preset-set',{preset:'safe',simulation:'on',confirmations:'12',verification:'on',gasMultiplier:'1.2'}],['owner',{platform:'telegram',platformUserId:'2',enabled:'on',confirmation:'CONFIRM'}]];for(const [action,body] of cases)assert.equal((await write(base,'member',action,body)).status,403,action);});
 
 test('owner overview returns truthful database-backed identity and activity metrics',async t=>{const {base}=await server(t);const response=await fetch(`${base}/api/admin`,{headers:headers()});assert.equal(response.status,200);const body=await response.json();assert.deepEqual(body.metrics,{totalUsers:2,activeUsers:1,activeAnyPlatform24h:1,linkedAccounts:2,groups:0,owners:1,activeWindowMinutes:15});assert.equal(body.users.length,2);});
 
@@ -61,7 +61,7 @@ test('unban, unsuspend, and reactivate require the same explicit CONFIRM as ban,
 // as before -- this isn't a ban on the characters just typing rendered as spaces.
 test('a group name containing a space is rejected before it can corrupt the fields after it, but a hyphenated name still works',async t=>{
   const {base}=await server(t);
-  const spaced=await write(base,'owner','group-set',{name:'VIP Members',maxWei:'100',dailyWei:'200',gasGwei:'10',simulation:'optional',advancedModes:'not-allowed'});
+  const spaced=await write(base,'owner','group-set',{name:'VIP Members',maxWei:'100',dailyWei:'200',gasGwei:'10',simulation:'optional'});
   assert.equal(spaced.status,400);
   const spacedBody=await spaced.json();
   assert.equal(spacedBody.issues?.[0]?.field,'name');
@@ -70,6 +70,30 @@ test('a group name containing a space is rejected before it can corrupt the fiel
 
   const hyphenated=await write(base,'owner','group-set',{name:'VIP-Members',maxWei:'100',dailyWei:'200',gasGwei:'10',simulation:'optional',advancedModes:'not-allowed'});
   assert.equal(hyphenated.status,200);
+});
+
+// Live-reported: the "Advanced mode access" form did nothing useful when Platform user ID was left
+// blank. A blank field passes the space-check above (there's no space to find in ''), but is exactly
+// as dangerous once joined and re-split -- adminCommandService's split(/\s+/) collapses consecutive
+// whitespace, so the blank vanishes and every field after it silently shifts into the wrong slot.
+// Confirmed live: platformUserId ended up holding the literal string "inherit" (the advancedModes
+// value), and advancedModesAllowed became undefined. This must now be rejected immediately, naming
+// the actual blank field, the same as the space-check does for a field containing one.
+test('a blank required field is rejected before it can silently shift every field after it out of position',async t=>{
+  const {base}=await server(t);
+  const blank=await write(base,'owner','user-advanced-modes',{platform:'telegram',platformUserId:'',advancedModes:'inherit'});
+  assert.equal(blank.status,400);
+  const blankBody=await blank.json();
+  assert.equal(blankBody.issues?.[0]?.field,'platformUserId');
+  assert.doesNotMatch(JSON.stringify(blankBody),/no linked GhostMint account/i,
+    'must fail as a clear "is required" error on the actual blank field, not a confusing downstream lookup error for a shifted-in value like "inherit"');
+
+  // A field genuinely omitted from the request body (not just an empty string) must be caught the
+  // same way -- Object.fromEntries(new FormData(...)) always includes every named field as at least
+  // '', but a hand-built request (or a future form regression) could omit the key entirely.
+  const missing=await write(base,'owner','user-advanced-modes',{platform:'telegram',advancedModes:'inherit'});
+  assert.equal(missing.status,400);
+  assert.equal((await missing.json()).issues?.[0]?.field,'platformUserId');
 });
 
 test('group edits immediately change an assigned user effective ceiling and successful writes are audited',async t=>{const {base,audits}=await server(t);assert.equal((await write(base,'owner','group-set',{name:'Standard',maxWei:'100',dailyWei:'200',gasGwei:'10',simulation:'optional',advancedModes:'not-allowed'})).status,200);assert.equal((await write(base,'owner','assign',{platform:'telegram',platformUserId:'2',group:'Standard'})).status,200);let effective=await (await fetch(`${base}/api/admin/effective?platform=telegram&platformUserId=2&chain=ethereum`,{headers:headers()})).json();assert.equal(effective.gasCeilingGwei,10);assert.equal((await write(base,'owner','group-set',{name:'standard',maxWei:'100',dailyWei:'200',gasGwei:'25',simulation:'optional',advancedModes:'not-allowed'})).status,200);effective=await (await fetch(`${base}/api/admin/effective?platform=telegram&platformUserId=2&chain=ethereum`,{headers:headers()})).json();assert.equal(effective.gasCeilingGwei,25);assert.equal(audits.length,3);assert.ok(audits.every(value=>value.platform==='dashboard'&&value.outcome==='success'));});

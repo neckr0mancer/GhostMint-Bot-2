@@ -1,6 +1,15 @@
 const DISCORD_MARKDOWN=/([\\`*_{}\[\]()<>#+\-.!|~])/g;
 const TELEGRAM_MARKDOWN=/([\\_*\[\]()`])/g;
 
+// createCommandRateLimiter keys buckets on `${platform}:${userId}:${command}`, so two call sites
+// only share a ceiling if they pass the same first argument. Sensitive wallet-key exports are meant
+// to be limited per ACCOUNT, not per surface -- the dashboard and Telegram's /exportkey both pass
+// this in place of their own platform name so the two collapse onto one bucket. Safe because both
+// sides key on the same canonical users.user_id UUID (dashboard: req.dashboardSession.userId;
+// Telegram: identity.resolveOrCreate('telegram', ...)), not on a platform-native id. Anything that
+// SHOULD stay per-platform keeps passing its real platform string.
+const ACCOUNT_RATE_LIMIT_SCOPE='account';
+
 class BotContextError extends Error {
   constructor(message) { super(message); this.name='BotContextError'; }
 }
@@ -28,10 +37,18 @@ function verifyTelegramContext(message) {
   }
   return {platformUserId:String(message.from.id),contextId:String(message.chat.id)};
 }
-function verifyDiscordContext(interaction,allowedGuildId) {
+// allowedChannelIds narrows the bot to specific channels without pinning it to one guild the way
+// allowedGuildId does -- the two are independent and compose. A DM has no guildId and is never
+// filtered by either: it is already a private, one-to-one surface, and it is where a wallet bot is
+// safest to use, so restricting public channels must not take it away.
+function verifyDiscordContext(interaction,allowedGuildId,{allowedChannelIds=null}={}) {
   if (!interaction?.user?.id || interaction.user.bot) throw new BotContextError('Discord sender is missing or is a bot');
   if (allowedGuildId&&(!interaction.guildId || !interaction.channelId || String(interaction.guildId)!==String(allowedGuildId))) {
     throw new BotContextError('Discord command came from an unauthorized guild or channel');
+  }
+  if (allowedChannelIds&&allowedChannelIds.length&&interaction.guildId
+    &&!allowedChannelIds.map(String).includes(String(interaction.channelId))) {
+    throw new BotContextError('Discord command came from a channel this bot is not enabled in');
   }
   return {platformUserId:String(interaction.user.id),contextId:`${interaction.guildId}:${interaction.channelId}`};
 }
@@ -57,5 +74,5 @@ function createCommandRateLimiter({now=()=>Date.now(),limit=3,windowMs=30_000,sw
     recent.push(timestamp);buckets.set(key,recent);
   }};
 }
-module.exports={BotContextError,RateLimitError,commandName,createCommandRateLimiter,escapeDiscord,escapeTelegram,escapeTelegramHtml,
+module.exports={ACCOUNT_RATE_LIMIT_SCOPE,BotContextError,RateLimitError,commandName,createCommandRateLimiter,escapeDiscord,escapeTelegram,escapeTelegramHtml,
   requireTextConfirmation,verifyDiscordContext,verifyTelegramContext};

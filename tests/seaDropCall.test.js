@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { buildSeaDropMintCall, computeSeaDropValueWei, decodeSeaDropMintCall } = require('../src/mint/seaDropCall');
+const { buildSeaDropMintCall, computeSeaDropValueWei, decodeSeaDropMintCall, validateOpenSeaMintCall } = require('../src/mint/seaDropCall');
 const { formatMintPreview } = require('../src/mint/mintCall');
 const { SEADROP_CORE_INTERFACE, SEADROP_MINT_SIGNATURE } = require('../src/mint/seaDropRegistry');
 const { ValidationError } = require('../src/validation/domain');
@@ -69,6 +69,38 @@ test('decodeSeaDropMintCall round-trips a previously built call and rejects non-
   assert.equal(decoded.callTarget, SEADROP);
   assert.equal(decoded.arguments[3].value, '2');
   assert.throws(() => decodeSeaDropMintCall({ contractAddress: CONTRACT, seaDropAddress: SEADROP, calldata: '0x12345678', valueWei: 0n }), ValidationError);
+});
+
+// Round 21 (Item U): OpenSea's own POST /drops/{slug}/mint calldata was being signed and broadcast
+// entirely as-is -- no check it actually targets the requested contract/quantity. These simulate
+// OpenSea's response shape ({to, data, valueWei}) using calldata this app itself can build/decode,
+// since the real thing requires a live OpenSea call.
+function fakeOpenSeaResponse({ contractAddress = CONTRACT, quantity = 2 } = {}) {
+  const built = buildSeaDropMintCall({ contractAddress, seaDropAddress: SEADROP,
+    arguments: [FEE_RECIPIENT, '$wallet', quantity], walletAddress: WALLET, valueWei: 0n });
+  return { to: SEADROP, data: built.calldata, valueWei: '0' };
+}
+
+test('validateOpenSeaMintCall accepts calldata matching the requested contract and quantity', () => {
+  const decoded = validateOpenSeaMintCall({ built: fakeOpenSeaResponse({ quantity: 2 }), contractAddress: CONTRACT, quantity: 2 });
+  assert.equal(decoded.contractAddress.toLowerCase(), CONTRACT.toLowerCase());
+  assert.equal(decoded.arguments.find(a => a.name === 'quantity').value, '2');
+});
+
+test('validateOpenSeaMintCall refuses calldata that targets a different contract than requested', () => {
+  const otherContract = '0x00000000000000000000000000000000000000F6';
+  assert.throws(() => validateOpenSeaMintCall({ built: fakeOpenSeaResponse({ contractAddress: otherContract, quantity: 1 }),
+    contractAddress: CONTRACT, quantity: 1 }), ValidationError);
+});
+
+test('validateOpenSeaMintCall refuses calldata that mints a different quantity than requested', () => {
+  assert.throws(() => validateOpenSeaMintCall({ built: fakeOpenSeaResponse({ quantity: 5 }),
+    contractAddress: CONTRACT, quantity: 3 }), ValidationError);
+});
+
+test('validateOpenSeaMintCall refuses calldata that is not a mintPublic call at all', () => {
+  assert.throws(() => validateOpenSeaMintCall({ built: { to: SEADROP, data: '0x12345678', valueWei: '0' },
+    contractAddress: CONTRACT, quantity: 1 }), ValidationError);
 });
 
 test('formatMintPreview shows a distinct call-target line for SeaDrop previews and stays unchanged otherwise', () => {

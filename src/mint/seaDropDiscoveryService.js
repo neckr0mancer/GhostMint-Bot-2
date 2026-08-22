@@ -7,11 +7,19 @@ const { TOKEN_ALLOWED_SEADROP_EVENT_INTERFACE } = require('./seaDropRegistry');
 // eth_call with no history to scan -- reliable even for a token whose AllowedSeaDropUpdated event
 // was never emitted (e.g. set once in the constructor and never updated since, which some deployed
 // tokens genuinely do), where log-scanning below can never find anything no matter how well it runs.
+// robinhood was missing here entirely -- live-confirmed 2026-08-19 that the same core address has
+// real code on Robinhood chain and correctly answers getPublicDrop for a real drop there, so every
+// SeaDrop mint on that chain was silently falling through to the two much weaker discovery tiers
+// below (Etherscan's Logs API doesn't cover this chain; eth_getLogs needs archive-node access most
+// public RPCs reject), then further through to the plain mint(uint256) assumption once neither
+// found anything -- producing a 0-value call to a contract that has no such function at all, which
+// is exactly the "simulating this call failed with no reason given" error this was root-caused from.
 const CANONICAL_SEADROP_CORE = Object.freeze({
   ethereum: '0x00005EA00Ac477B1030CE78506496e8C2dE24bf5',
   base: '0x00005EA00Ac477B1030CE78506496e8C2dE24bf5',
   arbitrum: '0x00005EA00Ac477B1030CE78506496e8C2dE24bf5',
   polygon: '0x00005EA00Ac477B1030CE78506496e8C2dE24bf5',
+  robinhood: '0x00005EA00Ac477B1030CE78506496e8C2dE24bf5',
 });
 
 // Discovers which SeaDrop core contract a token has configured as allowed to mint it. Three tiers,
@@ -58,7 +66,7 @@ function createSeaDropDiscoveryService({ providerService, publicDropResolver, ch
     const definition = chains[chain];
     if (!definition) return undefined;
     try {
-      const response = await http.get(endpoint, { timeout: timeoutMs, params: {
+      const response = await http.get(endpoint, { timeout: timeoutMs, maxContentLength: 1_000_000, params: {
         chainid: String(definition.chainId), module: 'logs', action: 'getLogs',
         address: contractAddress, topic0, fromBlock: 0, toBlock: 'latest', apikey: apiKey,
       } });

@@ -21,6 +21,10 @@ const WATCH_TYPE_PLATFORMS = Object.freeze({
   farcaster_keyword: 'farcaster',
 });
 const MAX_SCHEDULE_AHEAD_MS = 5 * 365 * 24 * 60 * 60 * 1000;
+// A batch of one is allowed: it simply behaves like a single mint. This stays a named constant
+// (rather than a bare 1) because every surface reads it, so the rule can move in one place if
+// that judgement changes again. The dashboard keeps its own stricter UI gate.
+const MIN_BATCH_WALLETS = 1;
 const LIMITS = Object.freeze({
   quantity: 100,
   priceEth: 1_000,
@@ -36,10 +40,15 @@ const LIMITS = Object.freeze({
 });
 
 class ValidationError extends Error {
-  constructor(issues) {
+  // Defaults to VALIDATION_ERROR, which the scheduler treats as permanent. A caller overrides it
+  // only for a rejection shaped like a validation failure that is NOT permanent -- OpenSea saying
+  // a drop stage has not opened yet is the request being early, not wrong, and the same request
+  // succeeds unchanged once the stage opens. See STAGE_NOT_OPEN in openSeaService and
+  // schedulerWorker's TRANSIENT_CODES.
+  constructor(issues, code = 'VALIDATION_ERROR') {
     super('Request validation failed');
     this.name = 'ValidationError';
-    this.code = 'VALIDATION_ERROR';
+    this.code = code;
     this.issues = Array.isArray(issues) ? issues : [issues];
   }
 }
@@ -89,6 +98,17 @@ function addressList(value, field) {
 function chainName(value, supportedChains, field = 'chain') {
   const normalized = string(value, field, { max: 32 }).toLowerCase();
   if (!supportedChains.includes(normalized)) fail(field, `must be one of: ${supportedChains.join(', ')}`);
+  return normalized;
+}
+
+// The bot action gate's level. Rejects anything unrecognised rather than silently coercing to
+// 'off': quietly turning someone's gate off because a value was misspelled is the one failure
+// mode this must not have. (The gate's own reader coerces to 'off' -- that is a read path,
+// where failing open is correct; this is a write path, where it is not.)
+const BOT_GATE_LEVELS = new Set(['off', 'sensitive', 'strict']);
+function botGateLevel(value, field = 'level') {
+  const normalized = string(value, field, { max: 16 }).toLowerCase();
+  if (!BOT_GATE_LEVELS.has(normalized)) fail(field, `must be one of: ${[...BOT_GATE_LEVELS].join(', ')}`);
   return normalized;
 }
 
@@ -251,6 +271,11 @@ function validateMintRequest(input, context) {
     gasGwei: fee(input.gasGwei ?? input.gas, 'gasGwei'),
     maxFeePerGasGwei: fee(input.maxFeePerGasGwei, 'maxFeePerGasGwei'),
     maxPriorityFeePerGasGwei: fee(input.maxPriorityFeePerGasGwei, 'maxPriorityFeePerGasGwei'),
+    // A per-request ceiling distinct from gasGwei (an exact price override) -- lets a caller (the
+    // guided batch-mint flow's gas-tolerance step) cap what this specific mint is willing to pay
+    // without forcing an exact price, enforced independently of governance's own gasCeilingGwei in
+    // transactionEngine.submit.
+    maxGasGwei: fee(input.maxGasGwei, 'maxGasGwei'),
     chain: chainName(input.chain, context.supportedChains),
   };
 }
@@ -279,8 +304,8 @@ function validateTaskCreate(input, context) {
 }
 
 function validateBatchMint(input, context) {
-  if (!Array.isArray(input.walletLabels) || input.walletLabels.length < 1 || input.walletLabels.length > LIMITS.batchWallets) {
-    fail('walletLabels', `must contain 1-${LIMITS.batchWallets} wallet labels`);
+  if (!Array.isArray(input.walletLabels) || input.walletLabels.length < MIN_BATCH_WALLETS || input.walletLabels.length > LIMITS.batchWallets) {
+    fail('walletLabels', `must contain ${MIN_BATCH_WALLETS}-${LIMITS.batchWallets} wallet labels`);
   }
   const labels = input.walletLabels.map(label => walletLabel(label));
   if (new Set(labels.map(label => label.toLowerCase())).size !== labels.length) fail('walletLabels', 'must not contain duplicates');
@@ -400,6 +425,8 @@ const requestSchemas = Object.freeze({
   watchRulePatch: input => validateWatchRule(input, { partial: true }),
   watchRuleDeletion: input => ({ id: uuid(input.id, 'id') }),
   themeUpdate: input => ({ theme: dashboardTheme(input.theme) }),
+  botGateUpdate: input => ({ level: botGateLevel(input.level) }),
+  botGateMintUpdate: input => ({ skipMint: input.skipMint === true || input.skipMint === 'true' }),
   displayNameUpdate: input => ({ displayName: displayName(input.displayName) }),
   defaultChainUpdate: (input, context) => ({ defaultChain: chainName(input.defaultChain, context.supportedChains, 'defaultChain') }),
   socialUsagePeriod: input => ({ period: usagePeriod(input.period) }),
@@ -422,6 +449,7 @@ function sendValidationError(response, error) {
 
 module.exports = {
   LIMITS,
+  MIN_BATCH_WALLETS,
   MAX_SCHEDULE_AHEAD_MS,
   ValidationError,
   WATCH_TYPE_PLATFORMS,

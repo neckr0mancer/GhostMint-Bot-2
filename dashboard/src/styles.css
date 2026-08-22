@@ -5,6 +5,22 @@
    variables; it does not define theme colors itself.
    ========================================================================== */
 @import './themes.css';
+/* prototype.css is imported HERE, between themes.css and this file's own rules, and the position
+   is load-bearing in both directions (see docs/REDESIGN_PROMPT.md, "the collision finding"):
+
+   - AFTER themes.css, so the prototype's five `html[data-theme=...]` blocks win for every token
+     they declare. That is the point of adopting them: prototype.css paints its chrome from
+     --surface / --border / --radius / --shadow, and those resolve to the prototype's values only
+     if its blocks come last. It brings --muted, --faint and --accent-ink in with it. themes.css
+     keeps sole ownership of every token the prototype does not declare (--bg-glow,
+     --surface-hover, --text-muted, --card-pad, the density scale...), which unmigrated pages read.
+   - BEFORE this file's own rules, so that where a class name is declared in both -- 19 of them:
+     brand brand-mark card danger meter mono notice ok pager ring row sheet-grid spark streak
+     subtabs tab tile tiles toast -- the rule in THIS file still wins on equal specificity.
+     Unmigrated pages keep the look they have today, and a surface transfers to prototype.css at
+     the moment its rule is deleted from this file: one page at a time, never both stylesheets
+     owning one surface. */
+@import './prototype.css';
 *{box-sizing:border-box}
 html{transition:background-color var(--normal) var(--ease)}
 body{margin:0;min-width:320px;background:var(--bg-glow);-webkit-font-smoothing:antialiased;transition:background var(--normal) var(--ease),color var(--normal) var(--ease)}
@@ -32,11 +48,18 @@ code{font-family:ui-monospace,'SF Mono',Consolas,monospace;font-size:.9em}
   padding:0 1.5rem;border-bottom:1px solid var(--border);background:var(--header-bg);backdrop-filter:blur(10px);
   position:sticky;top:0;z-index:20}
 .header-left{display:flex;align-items:center;gap:.75rem}
-.brand{display:flex;align-items:center;gap:.55rem;font-size:1.2rem;color:var(--text);text-decoration:none;font-weight:800;letter-spacing:-.01em}
-.brand-mark{width:1.9rem;height:1.9rem;border-radius:.6rem;display:grid;place-items:center;flex-shrink:0;
+/* .brand / .brand-mark are two of the 19 names declared in both stylesheets, and the rail
+   surrenders them to prototype.css in this pass. They are SCOPED rather than deleted because two
+   surfaces that have not migrated yet still render this markup: the admin shell (.shell
+   .rail-shell .admin-shell) and the sign-in card, whose brand-mark holds an <svg> that prototype
+   .brand-mark -- a 28px grid box sized for the letter "G" -- has no rule to size. Scoping ends
+   this file's ownership of the rail's brand without breaking either, since the ported rail root
+   is .app and matches neither selector. Delete outright when admin and login land. */
+.shell .brand,.login-card .brand{display:flex;align-items:center;gap:.55rem;font-size:1.2rem;color:var(--text);text-decoration:none;font-weight:800;letter-spacing:-.01em}
+.shell .brand-mark,.login-card .brand-mark{width:1.9rem;height:1.9rem;border-radius:.6rem;display:grid;place-items:center;flex-shrink:0;
   background:var(--icon-badge-bg);border:var(--icon-badge-border);box-shadow:var(--icon-badge-shadow);color:var(--icon-badge-fg);
   transition:box-shadow var(--fast) var(--ease)}
-.brand-mark svg{width:1.1rem;height:1.1rem}
+.shell .brand-mark svg,.login-card .brand-mark svg{width:1.1rem;height:1.1rem}
 .header-right{display:flex;align-items:center;gap:1rem}
 .identity{display:flex;align-items:center;gap:.6rem;color:var(--text-muted);font-size:.88rem}
 .identity .owner-badge{color:var(--warning);font-weight:700}
@@ -65,7 +88,7 @@ code{font-family:ui-monospace,'SF Mono',Consolas,monospace;font-size:.9em}
 .nav-icon svg{width:1.1rem;height:1.1rem;display:block}
 .shell nav button[aria-current=page] .nav-icon{box-shadow:0 0 0 2px var(--accent-soft),var(--icon-badge-shadow);transform:scale(1.04)}
 
-.content{grid-area:content;padding:clamp(1.5rem,4vw,3.25rem);outline:none;overflow:hidden}
+.content{grid-area:content;padding:var(--page-pad);outline:none;overflow:hidden}
 .backdrop{display:none}
 
 .admin-shell{grid-template-columns:13.125rem minmax(0,1fr);grid-template-rows:1fr;grid-template-areas:'aside content';min-height:100vh}
@@ -91,8 +114,8 @@ code{font-family:ui-monospace,'SF Mono',Consolas,monospace;font-size:.9em}
    Typography / page title
    ========================================================================== */
 .eyebrow{text-transform:uppercase;letter-spacing:.16em;color:var(--accent-2);font-size:.72rem;font-weight:800}
-.page-title{margin-bottom:2rem;animation:fadeIn var(--normal) var(--ease)}
-.page-title h1{font-size:clamp(1.9rem,4vw,3.2rem);margin:.25rem 0 .5rem;letter-spacing:-.02em;font-weight:800}
+.page-title{margin-bottom:1.1rem;animation:fadeIn var(--normal) var(--ease)}
+.page-title h1{font-size:var(--h1-size);margin:.25rem 0 .5rem;letter-spacing:-.02em;font-weight:800}
 .page-title>p:last-child{color:var(--text-muted);max-width:44rem;line-height:1.5}
 
 /* ==========================================================================
@@ -102,14 +125,14 @@ code{font-family:ui-monospace,'SF Mono',Consolas,monospace;font-size:.9em}
   background:linear-gradient(180deg,var(--surface-2),var(--surface));box-shadow:var(--shadow-sm);
   transition:border-color var(--fast) var(--ease),box-shadow var(--fast) var(--ease),transform var(--fast) var(--ease)}
 .card:hover{border-color:var(--border-strong);box-shadow:var(--shadow);transform:translateY(-2px)}
-.card,.panel{padding:1.4rem}
+.card,.panel{padding:var(--card-pad)}
 .card h2,.panel h2,.feed-item h2{margin:.25rem 0 .6rem;font-size:1.05rem;font-weight:700}
 .card code,.preview p{overflow-wrap:anywhere;color:var(--text-muted)}
 .card strong{display:block;margin:1rem 0;font-size:1.15rem}
 .wallet-balances{display:grid;gap:.3rem;margin:.85rem 0}
 .wallet-balance-row{display:flex;align-items:baseline;justify-content:space-between;gap:.75rem;font-size:.82rem;color:var(--text-muted)}
 .wallet-balance-row strong{display:inline;margin:0;font-size:.92rem;color:var(--text)}
-.card-grid,.form-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,20rem),1fr));gap:1rem;margin:1.1rem 0}
+.card-grid,.form-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,20rem),1fr));gap:var(--grid-gap);margin:1.1rem 0}
 .pnl-summary-grid{grid-template-columns:repeat(auto-fit,minmax(min(100%,11rem),1fr))}
 .pnl-summary-card{gap:.3rem}
 .pnl-summary-card strong{font-size:1.3rem}
@@ -138,7 +161,7 @@ code{font-family:ui-monospace,'SF Mono',Consolas,monospace;font-size:.9em}
 
 /* Themed confirm()/prompt() replacement -- sits above everything else (including the user detail
    overlay below), matching how a native dialog would always be the topmost, most urgent thing. */
-.confirm-modal-backdrop{position:fixed;inset:0;z-index:95;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:1rem;animation:fadeIn var(--fast) var(--ease)}
+.confirm-modal-backdrop{position:fixed;inset:0;z-index:95;background:var(--scrim);display:flex;align-items:center;justify-content:center;padding:1rem;animation:fadeIn var(--fast) var(--ease)}
 .confirm-modal{width:min(26rem,100%);background:linear-gradient(180deg,var(--surface-2),var(--surface));border:1px solid var(--border-strong);border-radius:var(--radius-lg);box-shadow:var(--shadow-lg);padding:1.5rem}
 .confirm-modal p{margin:0 0 1.1rem;line-height:1.5}
 .confirm-modal input{width:100%;padding:.75rem .85rem;border:1px solid var(--border-strong);border-radius:var(--radius-sm);background:var(--surface-deep);color:var(--text);font-size:.95rem;margin-bottom:1.1rem}
@@ -167,7 +190,7 @@ code{font-family:ui-monospace,'SF Mono',Consolas,monospace;font-size:.9em}
 .toast-dismiss:hover{background:var(--surface-hover);color:var(--text)}
 
 /* Admin user detail overlay + inline card quick actions */
-.user-detail-backdrop{position:fixed;inset:0;z-index:80;background:rgba(0,0,0,.55);display:flex;align-items:flex-start;justify-content:center;padding:4vh 1rem;overflow:auto}
+.user-detail-backdrop{position:fixed;inset:0;z-index:80;background:var(--scrim);display:flex;align-items:flex-start;justify-content:center;padding:4vh 1rem;overflow:auto}
 .user-detail-panel{position:relative;width:min(34rem,100%);background:var(--surface);border:1px solid var(--border-strong);border-radius:var(--radius-lg);box-shadow:var(--shadow-lg);padding:1.5rem}
 .user-detail-close{position:absolute;top:1rem;right:1rem}
 .user-detail-panel h2{margin:0 0 .2rem}
@@ -260,43 +283,35 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
 
 /* Private key / seed phrase toggle */
 .method-toggle{display:grid;gap:.45rem;font-weight:700;font-size:.88rem;color:var(--text-muted)}
-.segmented{display:flex;gap:.4rem;background:var(--surface-deep);padding:.25rem;border-radius:var(--radius-sm);border:1px solid var(--border-strong)}
-.segmented button{flex:1;background:transparent;color:var(--text-muted);font-weight:600;padding:.55rem;border:0;
-  border-radius:.4rem;box-shadow:none;transition:background var(--fast) var(--ease),color var(--fast) var(--ease)}
-.segmented button.active{background:var(--accent);color:var(--accent-contrast)}
 
 /* ==========================================================================
    Buttons
    ========================================================================== */
-button{padding:.75rem 1.1rem;border:0;border-radius:var(--radius-sm);background:var(--accent);color:var(--accent-contrast);
-  font-weight:700;font-size:.92rem;cursor:pointer;box-shadow:var(--shadow-sm);min-height:var(--tap-min);
-  transition:filter var(--fast) var(--ease),transform var(--fast) var(--ease),box-shadow var(--fast) var(--ease)}
-button:hover:not(:disabled){filter:brightness(1.1);box-shadow:0 6px 18px -6px color-mix(in srgb,var(--accent) 44%,transparent)}
-button:active:not(:disabled){transform:translateY(1px)}
-button:disabled{opacity:.45;cursor:not-allowed;box-shadow:none}
-.quiet{background:var(--surface-2);color:var(--text-muted);box-shadow:none}
-.quiet:hover:not(:disabled){filter:none;background:var(--surface-hover);color:var(--text)}
+
+/* The bare-element collision that used to need a :where() boundary here is GONE: styles.css no
+   longer declares a `button` rule at all, so prototype.css .b / .b.p / .b.g / .b.d / .b.sm owns
+   every button in the app outright. Kept as a note because the reasoning is worth not re-deriving:
+   the 23-class collision list in docs/REDESIGN_PROMPT.md omitted the element-level overlap
+   (body, button, input, select, textarea, h1-h3, *), and while both files declared `button`
+   neither import order was safe -- one file always repainted the other half of the app. */
 .admin-link{display:inline-block;padding:.75rem 1.1rem;border-radius:var(--radius-sm);font-weight:700;font-size:.92rem;
   text-decoration:none;min-height:var(--tap-min);transition:background var(--fast) var(--ease),color var(--fast) var(--ease)}
-.danger{background:linear-gradient(135deg,var(--danger),color-mix(in srgb,var(--danger) 65%,black));color:#fff}
-.danger:hover:not(:disabled){filter:brightness(1.12)}
-.small{padding:.45rem .7rem;font-size:.8rem;border-radius:.5rem;min-height:auto}
-.actions{display:flex;gap:.4rem;flex-wrap:wrap}
 /* Systemic rule: any card/panel body text is always followed by breathing
    room before its action row, not just the specific widgets flagged during
    review - applies to every current and future card/panel automatically. */
-.card p,.panel p{margin:.35rem 0}
+/* :where() drops this to zero specificity so ANY prototype rule beats it. .card is one of the
+   19 colliding class names, so at (0,2,0) this was reaching into prototype-owned cards and
+   overriding .emp p{margin:0 auto 13px} -- which is what left the "Nothing scheduled" copy hard
+   left instead of centred, since losing the rule loses the auto margins that centre the 34ch
+   block. Legacy cards keep the breathing room; nothing else targets those paragraphs. */
+:where(.card,.panel) p{margin:.35rem 0}
 .card>.actions,.panel>.actions{margin-top:.75rem}
 
 /* ==========================================================================
    Alerts / notices
    ========================================================================== */
-.notice{display:flex;align-items:flex-start;gap:.6rem;padding:.85rem 1rem;border-radius:var(--radius-sm);
-  background:var(--surface-2);border:1px solid var(--border);margin-bottom:1rem;animation:fadeIn var(--fast) var(--ease);
-  font-size:.9rem;line-height:1.5}
-.notice.error{background:var(--danger-soft);border-color:color-mix(in srgb,var(--danger) 30%,transparent);color:var(--danger)}
-.notice.ok{background:var(--success-soft);border-color:color-mix(in srgb,var(--success) 30%,transparent);color:var(--success)}
-.notice.notice-warning{background:var(--warning-soft);border-color:color-mix(in srgb,var(--warning) 30%,transparent);color:var(--warning)}
+/* .notice and its variants now come from prototype.css (.notice for the error panel, .nt.i/.w/.e
+   for informational and warning notes). Only the bare .error / .ok text colours stay here. */
 .error{color:var(--danger)}
 .ok{color:var(--success)}
 .warning{color:var(--warning);border-left:3px solid var(--warning);padding-left:.85rem;font-size:.88rem;line-height:1.5}
@@ -345,17 +360,22 @@ button:disabled{opacity:.45;cursor:not-allowed;box-shadow:none}
    Tables / lists
    ========================================================================== */
 .table-wrap{overflow:auto;margin-top:1rem;border:1px solid var(--border);border-radius:var(--radius)}
-table{width:100%;border-collapse:collapse;background:var(--surface)}
-th,td{text-align:left;padding:.85rem 1rem;border-bottom:1px solid var(--border);white-space:nowrap;font-size:.9rem}
+table:not(.led){width:100%;border-collapse:collapse;background:var(--surface)}
+/* Scoped off .led, which prototype.css owns. An INHERITED font-size always loses to a rule that
+   targets the element directly, so a bare `td` rule silently overrode .led's 12.5px with .9rem
+   (12.8px) -- the same class of element-level leak as the `button` collision, and just as
+   invisible in a diff. Legacy tables keep these rules until their pages migrate. */
+table:not(.led) th,table:not(.led) td{text-align:left;padding:var(--row-pad) 1rem;border-bottom:1px solid var(--border);white-space:nowrap;font-size:.9rem}
 th{color:var(--text-muted);font-weight:700;font-size:.76rem;text-transform:uppercase;letter-spacing:.04em;
   background:var(--surface-deep)}
 tbody tr{transition:background var(--fast) var(--ease)}
 tbody tr:hover{background:var(--surface-hover)}
 tbody tr:last-child td{border-bottom:0}
 
-.pager{display:flex;align-items:center;justify-content:center;gap:1rem;margin:1.5rem 0;color:var(--text-muted);font-size:.88rem}
+/* .pager is prototype.css's now -- centred "Previous / Page 1 of 3 / Next" is replaced by the
+   prototype's left-aligned .pinfo + numbered buttons. */
 
-.feed{display:grid;gap:.8rem}
+.feed{display:grid;gap:var(--grid-gap)}
 .feed-item{display:flex;justify-content:space-between;gap:1.5rem;padding:1.1rem 1.3rem;flex-wrap:wrap}
 .feed-item p{margin:.3rem 0;color:var(--text-muted);font-size:.88rem}
 .preview{padding:1rem 0;border-top:1px solid var(--border)}
@@ -372,13 +392,19 @@ tbody tr:last-child td{border-bottom:0}
    Notification bell (replaces the old always-expanded confirmations panel)
    ========================================================================== */
 .notification-bell{position:relative}
-.bell-trigger{position:relative;width:2.2rem;height:2.2rem;padding:0;border-radius:50%;display:grid;place-items:center;
-  background:var(--surface-2);color:var(--text-muted);box-shadow:none}
-.bell-trigger:hover:not(:disabled){filter:none;background:var(--surface-hover);color:var(--text)}
-.bell-trigger svg{width:1.05rem;height:1.05rem}
-.bell-count{position:absolute;top:-.2rem;right:-.2rem;min-width:1.05rem;height:1.05rem;padding:0 .25rem;
-  border-radius:999px;background:var(--warning);color:var(--accent-contrast);font-size:.62rem;font-weight:800;
-  display:grid;place-items:center;line-height:1}
+/* The prototype anchors .bell-pop to the app SHELL (top:52px;right:14px), so its
+   width:min(360px,calc(100% - 28px)) measures the shell. Here the panel lives inside
+   .notification-bell, which has to stay positioned for the auto-preview that shares it -- so 100%
+   was the bell button, about 34px, and the panel rendered 6px wide. Measured against the viewport
+   instead, which is what the prototype's calc was reaching for. Overrides only geometry; every
+   colour, radius and border still comes from prototype.css. */
+.notification-bell .bell-pop{top:calc(100% + 8px);right:0;width:min(360px,calc(100vw - 28px))}
+@media(max-width:700px){.notification-bell .bell-pop{position:fixed;top:54px;left:13px;right:13px;width:auto}}
+/* The bell TRIGGER is top-bar chrome and moves to prototype.css's .ib + .badge in this pass;
+   .bell-trigger / .bell-count are deleted rather than scoped because nothing renders them any
+   more. NotificationBell is shared with the admin shell, so admin's bell adopts the prototype
+   trigger at the same time -- chrome only, and the dropdown below is untouched. The two-tab
+   .bell-pop rewrite is Phase 7 and is NOT part of this pass; .bell-dropdown still owns the panel. */
 .bell-backdrop{position:fixed;inset:0;z-index:49;background:transparent}
 .bell-dropdown{position:absolute;top:calc(100% + .6rem);right:0;z-index:50;width:min(22rem,90vw);max-height:70vh;overflow:auto;
   padding:1rem 1.1rem;border-radius:var(--radius-lg);border:1px solid var(--border-strong);
@@ -418,7 +444,7 @@ tbody tr:last-child td{border-bottom:0}
    Dashboard overview (new compulsory landing page, pinned above Wallets)
    ========================================================================== */
 .dashboard-greeting{margin:0 0 .75rem;font-size:1.1rem;font-weight:600;color:var(--text)}
-.dashboard-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,18rem),1fr));gap:1rem;margin-top:1.5rem}
+.dashboard-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,18rem),1fr));gap:var(--grid-gap);margin-top:1.1rem}
 .dash-statusbar{margin-bottom:0}
 .dash-statusbar-wallet{display:flex;flex-wrap:wrap;align-items:center;gap:.75rem;padding:1rem 1.3rem;
   width:fit-content;max-width:100%;
@@ -438,7 +464,7 @@ tbody tr:last-child td{border-bottom:0}
 .dash-stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(7rem,1fr));gap:.75rem;margin:1rem 0}
 .dash-stat-grid-2col{grid-template-columns:1fr 1fr}
 .dash-stat-grid div{display:grid;gap:.2rem;padding:.85rem;border-radius:var(--radius-sm);background:var(--surface-2);border:1px solid var(--border)}
-.dash-stat-grid strong{font-size:1.3rem}
+.dash-stat-grid strong{font-size:var(--stat-value)}
 .dash-stat-grid strong.stat-accent{color:var(--accent)}
 .dash-stat-grid strong.stat-accent-2{color:var(--accent-2)}
 .dash-stat-grid span{color:var(--text-muted);font-size:.78rem;text-transform:uppercase;letter-spacing:.03em}
@@ -526,6 +552,10 @@ tbody tr:last-child td{border-bottom:0}
   box-shadow:none;justify-content:flex-start;transition:border-color var(--fast) var(--ease),box-shadow var(--fast) var(--ease)}
 .theme-option:hover:not(:disabled){filter:none;border-color:var(--accent)}
 .theme-option.active{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+/* The only literal colours left in this file, and deliberately so: these swatches PREVIEW a
+   specific theme in the picker, so they must render that theme's palette regardless of which
+   theme is currently active. Tokenising them would make every swatch show the same colour --
+   the one theme the user is already looking at -- which defeats the control entirely. */
 .theme-swatch{width:1.9rem;height:1.9rem;border-radius:.45rem;flex-shrink:0;display:grid;place-items:center;
   border:1px solid rgba(0,0,0,.15)}
 .theme-swatch-accent{width:.6rem;height:.6rem;border-radius:50%}
@@ -564,7 +594,10 @@ tbody tr:last-child td{border-bottom:0}
 .shell .rail-mobile-header{display:none}
 html[data-theme="ghost-mint"] .rail-shell,
 html[data-theme="ghost-mint-light"] .rail-shell{
-  grid-template-columns:4.5rem minmax(0,1fr);grid-template-rows:1fr;grid-template-areas:'aside content';
+  /* Two rows now: the top bar spans the content column only, so the rail stays full-height and
+     the brand keeps its own corner rather than being cut in half by a bar across the whole app. */
+  grid-template-columns:4.5rem minmax(0,1fr);grid-template-rows:auto 1fr;
+  grid-template-areas:'aside topbar' 'aside content';
   min-height:100vh;transition:grid-template-columns var(--normal) var(--ease)}
 html[data-theme="ghost-mint"] .rail-shell[data-rail="expanded"],
 html[data-theme="ghost-mint-light"] .rail-shell[data-rail="expanded"]{
@@ -628,18 +661,15 @@ html[data-theme="ghost-mint"] .notification-bell-desktop,
 html[data-theme="ghost-mint-light"] .notification-bell-desktop{
   display:block;position:fixed;top:1rem;right:1.25rem;z-index:30}
 
-/* Tighter spacing for this theme pair — dense, not decorative */
-html[data-theme="ghost-mint"] .content,html[data-theme="ghost-mint-light"] .content{
-  padding:clamp(1.1rem,2.5vw,2rem)}
-html[data-theme="ghost-mint"] .page-title,html[data-theme="ghost-mint-light"] .page-title{
-  margin-bottom:1.2rem}
-html[data-theme="ghost-mint"] .card,html[data-theme="ghost-mint"] .panel,
-html[data-theme="ghost-mint-light"] .card,html[data-theme="ghost-mint-light"] .panel{
-  padding:1.1rem}
+/* Tighter spacing for this theme pair — dense, not decorative.
+   Most of this block is gone as of the token pass: it was a per-theme attempt at exactly the
+   density brief §3.4 now specifies globally, and while it existed it silently OUTRANKED the
+   tokens (--card-pad resolved to 15px but rendered at 17.6px, because `html[data-theme=…] .card`
+   beats `.card`). The base rules in this file read --card-pad / --page-pad / --grid-gap and those
+   are now the single source of truth. Only .dash-hero keeps a local value, because it is one
+   feature panel that is deliberately roomier than an ordinary card, not a density default. */
 html[data-theme="ghost-mint"] .dash-hero,html[data-theme="ghost-mint-light"] .dash-hero{
   padding:1.2rem}
-html[data-theme="ghost-mint"] .dashboard-grid,html[data-theme="ghost-mint-light"] .dashboard-grid{
-  margin-top:1rem}
 html[data-theme="ghost-mint"] .dash-statusbar-wallet,html[data-theme="ghost-mint-light"] .dash-statusbar-wallet{
   padding:.7rem 1rem}
 
@@ -683,9 +713,6 @@ html[data-theme="ghost-mint"] .dash-hero button,html[data-theme="ghost-mint-ligh
     position:sticky;top:0;z-index:20}
   html[data-theme="ghost-mint"] .rail-mobile-header .brand-mark,html[data-theme="ghost-mint-light"] .rail-mobile-header .brand-mark{width:1.9rem;height:1.9rem}
   html[data-theme="ghost-mint"] .content,html[data-theme="ghost-mint-light"] .content{padding-bottom:6.5rem}
-  html[data-theme="ghost-mint"] .rail-mobile-header .bell-trigger,html[data-theme="ghost-mint-light"] .rail-mobile-header .bell-trigger{
-    width:1.875rem;height:1.875rem;background:var(--surface-hover)}
-  html[data-theme="ghost-mint"] .rail-mobile-header .bell-trigger svg,html[data-theme="ghost-mint-light"] .rail-mobile-header .bell-trigger svg{width:.9rem;height:.9rem}
   html[data-theme="ghost-mint"] .rail-mobile-header .bell-dropdown,html[data-theme="ghost-mint-light"] .rail-mobile-header .bell-dropdown{
     width:min(20rem,88vw)}
   html[data-theme="ghost-mint"] .header-avatar,html[data-theme="ghost-mint-light"] .header-avatar{
@@ -694,8 +721,11 @@ html[data-theme="ghost-mint"] .dash-hero button,html[data-theme="ghost-mint-ligh
   html[data-theme="ghost-mint"] .header-avatar svg,html[data-theme="ghost-mint-light"] .header-avatar svg{width:.9375rem;height:.9375rem}
   html[data-theme="ghost-mint"] .header-avatar[aria-current=page],html[data-theme="ghost-mint-light"] .header-avatar[aria-current=page]{
     background:var(--accent-soft);border-color:transparent;color:var(--accent)}
+  /* Five EQUAL columns, as prototype.css:544 has it (grid-template-columns:repeat(5,1fr)).
+     space-around on flex sized each button to its own label, so "Wallets" got 33px and "Mint" 21px
+     and the row read as ragged rather than as a nav bar. */
   html[data-theme="ghost-mint"] .mobile-bottombar,html[data-theme="ghost-mint-light"] .mobile-bottombar{
-    display:flex;align-items:center;justify-content:space-around;height:4.125rem;padding:0 .375rem;
+    display:grid;grid-template-columns:repeat(5,1fr);align-items:center;height:4.125rem;padding:0 .375rem;
     border-top:1px solid var(--border);background:var(--surface-deep);position:fixed;left:0;right:0;bottom:0;z-index:40}
   html[data-theme="ghost-mint"] .mobile-bottombar>button,html[data-theme="ghost-mint-light"] .mobile-bottombar>button{
     background:transparent;box-shadow:none;padding:0;color:var(--text-faint);display:flex;flex-direction:column;
@@ -704,22 +734,14 @@ html[data-theme="ghost-mint"] .dash-hero button,html[data-theme="ghost-mint-ligh
     width:1.25rem;height:1.25rem;background:transparent;box-shadow:none;color:inherit}
   html[data-theme="ghost-mint"] .mobile-bottombar>button[aria-current=page],html[data-theme="ghost-mint-light"] .mobile-bottombar>button[aria-current=page]{
     color:var(--accent);font-weight:700}
-  html[data-theme="ghost-mint"] .bottombar-fab-gap,html[data-theme="ghost-mint-light"] .bottombar-fab-gap{width:3.75rem;flex:none}
-  html[data-theme="ghost-mint"] .bottombar-fab,html[data-theme="ghost-mint-light"] .bottombar-fab{
-    position:absolute;left:50%;top:-1.75rem;width:3.75rem;transform:translateX(-50%);display:flex;flex-direction:column;
-    align-items:center;gap:.2rem;color:var(--accent);font-size:.625rem;font-weight:700}
-  html[data-theme="ghost-mint"] .fab-circle,html[data-theme="ghost-mint-light"] .fab-circle{
-    width:3.75rem;height:3.75rem;border-radius:50%;background:var(--accent);border:4px solid var(--bg);
-    display:grid;place-items:center;box-shadow:0 8px 18px -4px #0006;color:var(--accent-contrast)}
-  html[data-theme="ghost-mint"] .fab-circle svg,html[data-theme="ghost-mint-light"] .fab-circle svg{width:1.6rem;height:1.6rem}
-  html[data-theme="ghost-mint"] .bottombar-fab.active .fab-circle,html[data-theme="ghost-mint-light"] .bottombar-fab.active .fab-circle{
-    box-shadow:0 6px 14px -2px var(--accent)}
+  /* The .bottombar-fab rules that lived here are gone with the FAB itself: the prototype's
+     .bbar is five flat equal columns, with no floating button over it. */
   html[data-theme="ghost-mint"] .sheet-backdrop,html[data-theme="ghost-mint-light"] .sheet-backdrop{
-    display:block;position:fixed;inset:0;background:#000000a0;z-index:45;animation:fadeIn var(--fast) var(--ease)}
+    display:block;position:fixed;inset:0;background:var(--scrim);z-index:45;animation:fadeIn var(--fast) var(--ease)}
   html[data-theme="ghost-mint"] .more-sheet,html[data-theme="ghost-mint-light"] .more-sheet{
     display:flex;flex-direction:column;position:fixed;left:0;right:0;bottom:0;z-index:46;
     padding:.625rem 1.1rem 1.5rem;border-top:1px solid var(--border);border-radius:1.25rem 1.25rem 0 0;
-    background:var(--surface-deep);box-shadow:0 -12px 30px -10px #000a;
+    background:var(--surface-deep);box-shadow:var(--shadow-lg);
     transform:translateY(100%);transition:transform var(--normal) var(--ease);max-height:58vh;overflow:auto}
   html[data-theme="ghost-mint"] .more-sheet.open,html[data-theme="ghost-mint-light"] .more-sheet.open{transform:translateY(0)}
   html[data-theme="ghost-mint"] .sheet-handle,html[data-theme="ghost-mint-light"] .sheet-handle{
@@ -727,12 +749,18 @@ html[data-theme="ghost-mint"] .dash-hero button,html[data-theme="ghost-mint-ligh
     margin:0 auto .875rem;box-shadow:none}
   html[data-theme="ghost-mint"] .more-sheet h2,html[data-theme="ghost-mint-light"] .more-sheet h2{margin:0 0 .75rem;font-size:.95rem}
   html[data-theme="ghost-mint"] .sheet-grid,html[data-theme="ghost-mint-light"] .sheet-grid{
-    display:grid;grid-template-columns:1fr 1fr;gap:.625rem}
+    display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
   html[data-theme="ghost-mint"] .sheet-grid button,html[data-theme="ghost-mint-light"] .sheet-grid button{
-    display:flex;align-items:center;gap:.625rem;padding:.7rem;border-radius:var(--radius);background:var(--surface);
-    border:1px solid var(--border);box-shadow:none;color:var(--text);font-weight:600;font-size:.82rem;justify-content:flex-start}
+    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;padding:13px 6px;
+    border-radius:var(--radius);background:var(--surface-2);border:1px solid var(--border);box-shadow:none;
+    font-size:11px;font-weight:650;color:var(--muted);text-align:center}
+  html[data-theme="ghost-mint"] .sheet-grid button[aria-current="page"],
+  html[data-theme="ghost-mint-light"] .sheet-grid button[aria-current="page"]{
+    border-color:var(--accent);color:var(--text)}
   html[data-theme="ghost-mint"] .sheet-grid button .nav-icon,html[data-theme="ghost-mint-light"] .sheet-grid button .nav-icon{
-    width:1.7rem;height:1.7rem}
+    width:18px;height:18px;color:var(--faint);display:block}
+  html[data-theme="ghost-mint"] .sheet-grid button .nav-icon svg,
+  html[data-theme="ghost-mint-light"] .sheet-grid button .nav-icon svg{width:18px;height:18px}
   html[data-theme="ghost-mint"] .sheet-grid button .nav-label,html[data-theme="ghost-mint-light"] .sheet-grid button .nav-label{
     position:static;width:auto;height:auto;padding:0;margin:0;overflow:visible;clip:auto}
 }
@@ -764,9 +792,9 @@ html[data-theme="ghost-mint"] .dash-hero button,html[data-theme="ghost-mint-ligh
   .shell aside{position:fixed;top:4.5rem;left:0;bottom:0;width:min(80vw,18rem);border-right:1px solid var(--border);
     overflow:auto;transform:translateX(-100%);transition:transform var(--normal) var(--ease);z-index:40;background:var(--surface-deep)}
   .shell.nav-open aside{transform:translateX(0)}
-  .content{padding:1.25rem}
+  .content{padding:var(--page-pad)}
   .feed-item{display:block}
-  .backdrop{display:block;position:fixed;inset:4.5rem 0 0 0;background:#000000a0;z-index:30;animation:fadeIn var(--fast) var(--ease)}
+  .backdrop{display:block;position:fixed;inset:4.5rem 0 0 0;background:var(--scrim);z-index:30;animation:fadeIn var(--fast) var(--ease)}
 }
 
 /* ==========================================================================
@@ -775,11 +803,14 @@ html[data-theme="ghost-mint"] .dash-hero button,html[data-theme="ghost-mint-ligh
    overrides bring the real page content onto the handoff's compact type,
    field, card, table, and column rhythm for dark and light Ghost Mint only.
    ========================================================================== */
+/* Width and max-width are layout and stay; the padding and the h1 size are density and now come
+   from the tokens. Both used to be hardcoded here and, being theme-scoped, outranked the base
+   rule — .content rendered at 28px/32px against a --page-pad of 20px, and the h1 at 24px against
+   a --h1-size of 23px. */
 :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .rail-shell .content{
-  width:100%;max-width:80rem;padding:1.75rem 2rem}
-:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .page-title{margin-bottom:1.25rem}
+  width:100%;max-width:80rem;padding:var(--page-pad)}
 :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .page-title h1{
-  margin:.125rem 0 .375rem;font-size:1.5rem;line-height:1.15;letter-spacing:-.015em}
+  margin:.125rem 0 .375rem;font-size:var(--h1-size);line-height:1.15;letter-spacing:-.015em}
 :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .page-title>p:last-child{
   max-width:35rem;font-size:.84rem;line-height:1.45}
 :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .eyebrow{
@@ -787,7 +818,7 @@ html[data-theme="ghost-mint"] .dash-hero button,html[data-theme="ghost-mint-ligh
 
 :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .card-grid,
 :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .form-grid{
-  gap:.875rem;margin:1.125rem 0}
+  gap:var(--grid-gap);margin:1.125rem 0}
 :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .wallet-grid{
   grid-template-columns:repeat(3,minmax(0,1fr));margin-bottom:1.375rem}
 :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .wallet-forms{
@@ -870,13 +901,11 @@ html[data-theme="ghost-mint"] .dash-hero button,html[data-theme="ghost-mint-ligh
 
 :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .table-wrap{
   margin-top:1.125rem;border-radius:.875rem}
-:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) th,
-:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) td{
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) table:not(.led) th,
+:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) table:not(.led) td{
   padding:.75rem 1rem;font-size:.8rem}
 :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) th{
   font-size:.68rem;background:var(--surface)}
-:where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .pager{
-  gap:1rem;margin:1.25rem 0;font-size:.8rem}
 :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .activity-feed{gap:.625rem}
 :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .activity-feed .feed-item{
   padding:1rem 1.125rem}
@@ -976,9 +1005,11 @@ html[data-theme="ghost-mint"] .dash-hero button,html[data-theme="ghost-mint-ligh
 
 @media(max-width:700px){
   :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .rail-shell .content{
-    max-width:none;padding:1rem 1rem 6.75rem}
+    max-width:none;padding:var(--page-pad) var(--page-pad) 6.75rem}
   :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .page-title{margin-bottom:1rem}
-  :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .page-title h1{font-size:1.375rem}
+  /* h1 sizing is a token now (--h1-size, 23px desktop / 20px mobile via the viewport override in
+     themes.css), so the per-theme mobile override that used to live here is gone -- one source of
+     truth rather than a component rule racing the token. */
   :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .page-title>p:last-child{font-size:.78rem}
   :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .wallet-grid,
   :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .wallet-forms,
@@ -1054,4 +1085,513 @@ html[data-theme="ghost-mint"] .dash-hero button,html[data-theme="ghost-mint-ligh
   .admin-group-grid,.admin-user-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
   .admin-owner-layout{grid-template-columns:1fr}
   .settings-usage-tables{grid-template-columns:1fr}
+}
+
+/* ==========================================================================
+   Phase 2 — shared component family (brief §5)
+   Presentational only. Every colour here is a token; the data marks (--gain /
+   --loss / --warn) are deliberately NOT the status colours, so a chart bar and
+   a status pill can never be mistaken for one another.
+   ========================================================================== */
+
+/* Numeric utilities. Figures that sit in a column must not jitter as digits change. */
+.tab{font-variant-numeric:tabular-nums}
+.mono{font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace}
+
+/* --- SectionCard --- */
+.section-head{display:flex;align-items:center;gap:.55rem;margin-bottom:.7rem}
+.section-head h2{margin:0;font-size:.98rem;font-weight:700}
+.section-icon{display:grid;place-items:center;width:1.625rem;height:1.625rem;flex:none;
+  border-radius:.5rem;background:var(--accent-soft);color:var(--accent)}
+.section-icon svg{width:.95rem;height:.95rem}
+.section-actions{margin-left:auto;display:flex;align-items:center;gap:.4rem}
+
+/* --- StatTile --- */
+.tiles{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:var(--grid-gap)}
+.tile{position:relative;overflow:hidden;padding:var(--card-pad);border:1px solid var(--border);
+  border-radius:var(--radius);background:var(--surface)}
+.tile::before{content:'';position:absolute;inset:0 0 auto;height:3.5rem;background:var(--sheen);pointer-events:none}
+.tile-label{position:relative;color:var(--text-muted);font-size:.7rem;font-weight:700;
+  letter-spacing:.04em;text-transform:uppercase}
+.tile-value{position:relative;margin-top:.3rem;font-size:var(--stat-value);font-weight:700;letter-spacing:-.02em}
+.tile-value small{margin-left:.25rem;font-size:.62em;font-weight:600;color:var(--text-muted)}
+.tile-gain{color:var(--gain-text)}
+.tile-loss{color:var(--loss-text)}
+.tile-warn{color:var(--warn-text)}
+.tile-meta{position:relative;margin-top:.2rem;color:var(--text-faint);font-size:.72rem}
+.tile .spark{position:absolute;right:0;bottom:0;width:44%;height:1.9rem;opacity:.85}
+
+/* --- Ledger (register 1) --- */
+.ledger{margin:0;border-top:1px solid var(--border)}
+.ledger-row{display:grid;grid-template-columns:46% minmax(0,1fr);align-items:baseline;gap:.75rem;
+  padding:var(--row-pad) 0;border-bottom:1px solid var(--border)}
+.ledger-row dt{color:var(--text-muted);font-size:.78rem}
+.ledger-value{margin:0;text-align:right;font-size:.8rem;font-weight:600;color:var(--text)}
+.ledger-gain{color:var(--gain-text)}
+.ledger-loss{color:var(--loss-text)}
+.ledger-warn{color:var(--warn-text)}
+.ledger-total{border-bottom:0;border-top:1px solid var(--border-strong)}
+/* The total row deliberately does NOT set a colour on its value. It used to, as
+   `.ledger-total .ledger-value{color:var(--text)}` -- two classes, which outranks the one-class
+   .ledger-loss / .ledger-gain tone and silently repainted every total back to plain text. The
+   total row is precisely where a net loss appears, so that bug ate the red on the one figure
+   most worth colouring. The base .ledger-value already supplies --text, so this only needs the
+   weight. Caught by rendering it, not by reading it. */
+.ledger-total dt{font-weight:700;color:var(--text)}
+.ledger-total .ledger-value{font-weight:700}
+
+/* --- Celebrate (register 4, the one warm surface) --- */
+.celebrate{padding:var(--card-pad);border:1px solid var(--accent-line);border-radius:var(--radius);
+  background:linear-gradient(135deg,var(--accent-soft),transparent 70%)}
+.celebrate strong{display:block;font-size:1rem}
+.celebrate p{margin-top:.2rem;color:var(--text-muted);font-size:.8rem}
+
+/* --- SearchField --- */
+.search-field-control{position:relative;display:block}
+.search-field-control input{width:100%;padding-right:2.5rem}
+/* The clear control keeps a full 44px hit box via padding even when the field itself is 40px on
+   mobile (brief §3.2.1 / §9.1-D3) -- the box you must hit precisely never shrinks. */
+.search-clear{position:absolute;top:50%;right:0;transform:translateY(-50%);display:grid;place-items:center;
+  width:2.75rem;height:2.75rem;min-height:0;padding:0;border:0;background:none;border-radius:.5rem;
+  color:var(--text-faint);font-size:1.05rem;line-height:1}
+.search-clear:hover{color:var(--text)}
+
+
+/* --- Sparkline --- */
+.spark{display:block}
+.spark-accent path{stroke:var(--accent)}
+.spark-gain path{stroke:var(--gain)}
+.spark-loss path{stroke:var(--loss)}
+
+/* --- Meter --- */
+.meter{height:3px;border-radius:2px;background:var(--surface-4);overflow:hidden;margin-top:.4rem}
+.meter i{display:block;height:100%;background:var(--accent);border-radius:2px}
+.meter-warn i{background:var(--warn)}
+
+/* --- NumberField --- */
+.numfield{display:flex;align-items:flex-end;gap:.5rem}
+.numfield-label{display:grid;gap:.35rem;flex:1;min-width:0;color:var(--text-muted);font-size:.72rem;font-weight:700}
+.numfield-quick{display:flex;gap:.3rem;flex:none}
+.numfield-quick .active{border-color:var(--accent);color:var(--accent);background:var(--accent-soft)}
+
+/* --- Skeleton variants --- */
+.skeleton-row,.skeleton-big,.skeleton-chart{border:1px solid var(--border);
+  background:linear-gradient(90deg,var(--surface),var(--surface-hover),var(--surface));
+  background-size:40rem 100%;animation:shimmer 1.4s infinite linear}
+.skeleton-row{height:2.5rem;border-radius:.5rem}
+.skeleton-big{height:2rem;width:60%;border-radius:.4rem}
+.skeleton-chart{height:9rem;border-radius:var(--radius)}
+
+@media(max-width:700px){
+  /* Stat tiles are 2-up on mobile, never 1-up -- four numbers must not cost four screens. */
+  .tiles{grid-template-columns:repeat(2,minmax(0,1fr))}
+  /* Sub-tab rows scroll rather than wrap, so a five-tab page keeps one tab row. */
+  .subtabs{overflow-x:auto;scrollbar-width:none}
+  .subtabs::-webkit-scrollbar{display:none}
+  /* 40px, full width. A DELIBERATE documented exception to the 44px rule (brief §9.1-D3): a text
+     input is a region you tap into and then type, not a discrete target you must hit precisely.
+     40px still clears WCAG 2.2 AA's 24px minimum, and the one precise target in the control --
+     the clear button -- keeps its full 44px above. Do not "fix" this back to 44px. */
+  .search-field{max-width:none;width:100%}
+  .search-field-control input{min-height:40px}
+  /* The input gets its own full-width row and the quick buttons divide the width beneath it.
+     Sharing a row squeezes the input to nothing and overflows the buttons. */
+  .numfield{flex-direction:column;align-items:stretch;gap:.4rem}
+  .numfield-quick{width:100%}
+  .numfield-quick button{flex:1}
+  .ledger-row{grid-template-columns:52% minmax(0,1fr);padding:6px 0}
+  .ledger-row dt{font-size:.75rem}
+  .ledger-value{font-size:.75rem}
+  /* Sparklines are decorative and go first when space is scarce -- but they survive in stat
+     tiles, where they occupy an otherwise dead corner. */
+  .section-card .spark{display:none}
+}
+
+/* ==========================================================================
+   Phase 3 — Home (brief §3.3 richness, §4 chart; contract §3)
+
+   SCOPE NOTE: the phase prompt scopes Phase 3 to "Dashboard.jsx and
+   dashboardWidgets/* only", but new markup needs styling and this file is where
+   component CSS lives -- the same shape Phase 2 took when it added the shared
+   family's styles here. Only additive rules below; nothing above is edited.
+
+   The collapse/reorder chrome the prototype draws around these cards (.blk,
+   .dragh, .col) is Phase 8's work and is deliberately absent here.
+   ========================================================================== */
+
+.home-split{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(0,1fr);gap:var(--grid-gap);align-items:start}
+.home-col{display:grid;gap:var(--grid-gap);align-content:start;min-width:0}
+.tiles{margin-bottom:var(--grid-gap)}
+
+/* --- Rows (activity, wallets) --- */
+.row{display:flex;align-items:center;gap:.6rem;padding:var(--row-pad) 0;border-bottom:1px solid var(--border)}
+.row:last-child{border-bottom:0}
+.row-icon{display:grid;place-items:center;width:1.5rem;height:1.5rem;flex:none;border-radius:.45rem;background:var(--surface-3)}
+.row-icon svg{width:.85rem;height:.85rem}
+.row-icon-gain{color:var(--gain-text)}
+.row-icon-loss{color:var(--loss-text)}
+.row-main{min-width:0;flex:1}
+.row-title{font-size:.83rem;font-weight:600;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row-sub{margin-top:.1rem;color:var(--text-faint);font-size:.72rem;display:flex;align-items:center;gap:.25rem;flex-wrap:wrap}
+.row-value{flex:none;font-size:.8rem;font-weight:600;color:var(--text);text-align:right}
+.row-value-label{margin-right:.3rem;color:var(--text-faint);font-size:.62rem;font-weight:600;text-transform:uppercase}
+.row-value-warn{color:var(--warn-text)}
+
+/* --- Chain identity dot (brief §3.3) ---
+   The dot is an aid, never the identity: the chain NAME is always rendered beside it, so this
+   never becomes status-by-colour-alone. */
+.chain-tag{display:inline-flex;align-items:center;gap:.28rem;white-space:nowrap}
+.chain-tag i{width:.44rem;height:.44rem;border-radius:50%;flex:none}
+
+/* --- Countdown ring (brief §3.3) --- */
+.ring{display:flex;align-items:center;gap:.75rem}
+.ring svg{width:3.25rem;height:3.25rem;flex:none}
+.ring-time{font-size:1.25rem;font-weight:700;letter-spacing:-.01em}
+.ring-sub{margin-top:.05rem;color:var(--text-muted);font-size:.78rem}
+.ring-meta{margin-top:.35rem}
+
+/* --- P&L chart (brief §4) ---
+   Height is fixed rather than aspect-driven: preserveAspectRatio="none" means the viewBox
+   stretches, and a percentage height would let the bars' apparent magnitude change with the
+   column width. */
+.pnl-chart{display:block;width:100%;height:7rem}
+.chart-legend{display:flex;flex-wrap:wrap;gap:.75rem;margin-top:.5rem;color:var(--text-muted);font-size:.7rem}
+.chart-legend span{display:inline-flex;align-items:center;gap:.3rem}
+.chart-legend .swatch{width:.55rem;height:.55rem;border-radius:.15rem;flex:none}
+.card-note{margin-top:.5rem;color:var(--text-faint);font-size:.7rem}
+.card-more{margin-top:.5rem}
+
+
+/* --- Celebrate extras (register 4) --- */
+.streak{margin-top:.5rem;font-size:.78rem;font-weight:600}
+.celebrate-actions{display:flex;flex-wrap:wrap;gap:.4rem;margin-top:.7rem}
+
+/* --- Inline alert note --- */
+.alert-note{display:flex;gap:.6rem;padding:var(--card-pad);border:1px solid var(--border);
+  border-left:3px solid var(--warn);border-radius:var(--radius);background:var(--surface);font-size:.8rem}
+.alert-icon{flex:none;color:var(--warn-text)}
+.alert-icon svg{width:1.05rem;height:1.05rem}
+.alert-actions{margin-top:.5rem}
+
+/* --- Chips (pending queue) --- */
+.chip-row{display:flex;flex-wrap:wrap;gap:.35rem}
+.chip{padding:.25rem .55rem;border:1px solid var(--border);border-radius:999px;
+  background:var(--surface-3);color:var(--text-muted);font-size:.72rem;font-weight:600}
+
+/* --- Empty state as a screen, not a sentence (brief §3.7) --- */
+.empty-state{padding:1.25rem .75rem;text-align:center}
+.empty-icon{display:grid;place-items:center;width:2.25rem;height:2.25rem;margin:0 auto .55rem;
+  border-radius:.6rem;background:var(--surface-3);color:var(--text-faint)}
+.empty-icon svg{width:1.15rem;height:1.15rem}
+.empty-state h3{font-size:.88rem;font-weight:700}
+.empty-state p{margin:.3rem auto 0;max-width:34ch;color:var(--text-muted);font-size:.76rem;line-height:1.45}
+.empty-state button,.empty-state .button{margin-top:.7rem}
+
+@media(max-width:700px){
+  /* Single column below 700px -- but the stat tiles stay 2-up, which the Phase 2 block above
+     already enforces. Four numbers must not cost four screens. */
+  .home-split{grid-template-columns:minmax(0,1fr)}
+  .ring svg{width:2.75rem;height:2.75rem}
+  .ring-time{font-size:1.1rem}
+  .pnl-chart{height:5.5rem}
+  .row{padding:6px 0}
+  .row-title{font-size:.8rem}
+  .empty-state{padding:1rem .5rem}
+}
+
+/* An anchor that must read as a button. Kept as a real <a href> rather than a <button> +
+   window.open so middle-click, "copy link" and "open in new tab" all still work on a link out
+   to a block explorer -- the styling follows the element's role, the semantics follow the
+   action. Mirrors the base button rule; .admin-link is the same idea scoped to the admin shell. */
+.link-button{display:inline-flex;align-items:center;justify-content:center;padding:.4rem .7rem;
+  border-radius:var(--radius-sm);background:var(--accent);color:var(--accent-contrast);
+  font-weight:700;font-size:.8rem;text-decoration:none;min-height:var(--tap-min);
+  box-shadow:var(--shadow-sm);transition:filter var(--fast) var(--ease)}
+.link-button:hover{filter:brightness(1.1)}
+
+/* Phase 4 unit 2 — the policy a deep link asked for. Ordered first in the grid, and marked so
+   the eye lands on it: arriving from a bookmark to one specific policy and being shown an
+   unordered grid of every policy is the failure this avoids. */
+.policy-highlighted{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent-line)}
+
+/* --- Command palette (brief §2.2) — Phase 4 unit 5 --- */
+.palette-backdrop{position:fixed;inset:0;z-index:60;display:flex;justify-content:center;
+  padding:12vh 1rem 1rem;background:var(--scrim)}
+.palette{width:min(34rem,100%);max-height:70vh;display:flex;flex-direction:column;overflow:hidden;
+  border:1px solid var(--border-strong);border-radius:var(--radius);background:var(--surface);box-shadow:var(--lift)}
+.palette-input{width:100%;padding:.85rem 1rem;border:0;border-bottom:1px solid var(--border);
+  background:none;color:var(--text);font-size:.95rem}
+.palette-input:focus{outline:none}
+.palette-results{overflow-y:auto;padding:.35rem}
+.palette-group-name{padding:.5rem .65rem .25rem;color:var(--text-faint);font-size:.66rem;
+  font-weight:700;letter-spacing:.06em;text-transform:uppercase}
+.palette-item{display:flex;align-items:baseline;gap:.6rem;width:100%;padding:.5rem .65rem;
+  border:0;border-radius:.45rem;background:none;color:var(--text);text-align:left;
+  font-size:.85rem;font-weight:600;min-height:var(--tap-min);box-shadow:none}
+.palette-item.active{background:var(--surface-hover);color:var(--accent)}
+.palette-item-where{margin-left:auto;color:var(--text-faint);font-size:.72rem;font-weight:500;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.palette-empty{padding:1rem .65rem;color:var(--text-muted);font-size:.82rem}
+.palette-foot{padding:.5rem .8rem;border-top:1px solid var(--border);color:var(--text-faint);font-size:.7rem}
+@media(max-width:700px){
+  .palette-backdrop{padding:4vh .75rem .75rem}
+  .palette{max-height:82vh}
+  /* The where-line wraps under the label instead of competing for one row at 375px. */
+  .palette-item{flex-wrap:wrap;gap:.15rem}
+  .palette-item-where{margin-left:0;width:100%}
+}
+
+/* --- Batch wallet picker (Phase 4, Mint → Batch) --- */
+.batch-legend{display:flex;align-items:center;gap:.4rem;margin-bottom:.4rem;
+  color:var(--text-muted);font-size:.72rem;font-weight:700;letter-spacing:.04em;text-transform:uppercase}
+.batch-wallets{display:grid;gap:.3rem;max-height:14rem;overflow-y:auto;padding:.3rem;
+  border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface-2)}
+.batch-wallet{display:flex;align-items:center;gap:.55rem;padding:.45rem .55rem;border-radius:.4rem;
+  font-size:.83rem;min-height:var(--tap-min);cursor:pointer}
+.batch-wallet:hover{background:var(--surface-hover)}
+.batch-wallet input{width:auto;margin:0;flex:none}
+.batch-wallet-balance{margin-left:auto;color:var(--text-faint);font-size:.76rem}
+
+/* --- Preview expiry countdown (Phase 4) ---
+   Amber, not red: an unexpired simulation is not an error state. It turns urgent only inside the
+   final minute, which is when the distinction actually matters. */
+.preview-expiry{margin-bottom:.6rem;padding:.45rem .6rem;border-radius:.4rem;
+  background:var(--surface-3);color:var(--text-muted);font-size:.78rem}
+.preview-expiry-soon{color:var(--warn-text);background:color-mix(in srgb,var(--warn) 12%,transparent)}
+
+
+/* A merged page's <h1> comes from the merged page itself; the absorbed component contributes a
+   lead line under the sub-tab row, not a second title. Two h1s on one page is both a visual
+   mistake and an accessibility one. */
+.page-lead{margin-bottom:.9rem;color:var(--text-muted);font-size:.83rem;line-height:1.5;max-width:70ch}
+
+/* --- Prototype page header: eyebrow + h1, with actions on the right --- */
+.page-head{display:flex;align-items:flex-start;gap:1rem;margin-bottom:1rem}
+.page-head-text{min-width:0}
+.page-head-text h1{margin:.1rem 0 0;font-size:var(--h1-size);font-weight:800;letter-spacing:-.02em}
+.page-head-actions{margin-left:auto;display:flex;gap:.4rem;flex:none}
+/* --- Rail group label + footer rule (prototype) --- */
+.rail-group-label{padding:.75rem .9rem .3rem;color:var(--text-faint);font-size:.64rem;
+  font-weight:700;letter-spacing:.08em;text-transform:uppercase}
+html[data-theme="ghost-mint"] .rail-shell[data-rail="collapsed"] .rail-group-label,
+html[data-theme="ghost-mint-light"] .rail-shell[data-rail="collapsed"] .rail-group-label{
+  /* A word cannot fit a 4.5rem rail; the rule below still carries the grouping. */
+  overflow:hidden;text-indent:-999px;padding-top:.6rem;padding-bottom:0}
+html[data-theme="ghost-mint"] .rail-bottom-nav,
+html[data-theme="ghost-mint-light"] .rail-bottom-nav{
+  margin-top:auto;border-top:1px solid var(--border);padding-top:.4rem}
+@media(max-width:700px){.page-head{flex-direction:column;gap:.6rem}.page-head-actions{margin-left:0;width:100%}.page-head-actions button{flex:1}}
+
+/* --- Mint now, prototype layout (#mt-now) --- */
+.mint-split{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);gap:var(--grid-gap);align-items:start}
+.mint-col{display:grid;gap:var(--grid-gap);align-content:start;min-width:0}
+.field-hint{color:var(--text-faint);font-weight:500}
+/* The detected/cross-link banner. Informational, so it borders on accent rather than warn --
+   it is telling you what was found, not warning you about it. */
+.inline-note{display:flex;gap:.55rem;padding:.6rem .7rem;border:1px solid var(--border);
+  border-left:3px solid var(--accent);border-radius:var(--radius-sm);background:var(--surface-2);
+  font-size:.8rem;line-height:1.45}
+.inline-note-icon{flex:none;color:var(--accent)}
+.inline-note-icon svg{width:1rem;height:1rem;display:block}
+.inline-note-actions{margin-top:.5rem}
+@media(max-width:700px){.mint-split{grid-template-columns:minmax(0,1fr)}}
+/* .fields is a multi-column grid by default (it serves the wide admin forms). Inside the Mint
+   column it must be a single stack, or Wallet/Price/Advanced land side by side in a narrow
+   column and the form reads as scattered rather than sequential. */
+.mint-col .fields{grid-template-columns:minmax(0,1fr);gap:.7rem}
+.mint-col .field-row{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.7rem}
+.mint-col .fields>button{justify-self:start}
+
+/* Same containing-block correction the bell needed: the prototype anchors .acct-pop to the app
+   shell (top:52px;right:14px), but here it hangs off the avatar so it can close on outside click
+   without a portal. Geometry only -- colours, radius and borders stay prototype.css's. */
+.account-menu{position:relative;display:flex}
+.account-menu .acct-pop{top:calc(100% + 8px);right:0;width:min(268px,calc(100vw - 28px))}
+@media(max-width:700px){.account-menu .acct-pop{position:fixed;top:54px;right:13px;left:auto;width:min(268px,calc(100vw - 26px))}}
+
+/* Bot password gate panel (Settings). Reuses the prototype's own .seg segmented control and .panel
+   shell rather than introducing a new visual language -- the only additions are a disabled state
+   for the segments (unavailable until a security password exists) and the hint line under them. */
+.settings-bot-gate .gate-picker{margin-top:10px}
+.settings-bot-gate .gate-picker button[disabled]{opacity:.45;cursor:not-allowed}
+.settings-bot-gate .settings-hint{margin-top:8px;color:var(--muted);font-size:12px}
+
+/* Mint exemption, shown only once the gate is on. Indented under the level picker because it
+   qualifies that choice rather than standing beside it. */
+.settings-bot-gate .gate-mint-row{margin-top:12px;padding-top:12px;border-top:1px solid var(--border)}
+.settings-bot-gate .gate-mint-row label{display:flex;align-items:center;gap:8px;font-weight:650;font-size:13px;cursor:pointer}
+.settings-bot-gate .gate-mint-row input[disabled]{cursor:not-allowed}
+
+/* ── Horizontal overflow guard ────────────────────────────────────────────
+   Reported from a phone: expanding the Presets "Method registry" made the whole
+   PAGE wider than the screen. The cause is structural, not cosmetic — a long
+   unbreakable string (a method signature in .led td.mono) sets its cell's
+   min-content width, and grid/flex children default to min-width:auto, so every
+   ancestor refuses to shrink below it and the page grows instead. .sober's
+   overflow:hidden cannot help: the box has already been sized by its content.
+
+   Two rules, in the order they matter:
+   1. Let the containers shrink at all. Without min-width:0 no amount of
+      overflow handling on the inner element can work.
+   2. Let long signatures wrap rather than demand a wider column. Wrapping is
+      right here — a signature is readable across two lines, and a horizontal
+      scrollbar inside a card on a phone is easy to miss entirely.  */
+/* .g>* and .blk added after the Automation All tab shipped: a trigger card is a .blk inside a
+   .g grid, and a long social handle pushed the PAGE to 429px at a 375px viewport -- the same
+   grid min-width:auto root cause as the Presets table, just a container the first pass missed.
+   Any new grid child needs to be here, or it can widen the page on a phone. */
+.card,.panel,.split>*,.settings-layout>*,.card-grid>*,.g>*,.blk{min-width:0}
+/* The card title is the long unbreakable part; the prototype already ellipsises it in the
+   collapsed header (.cti), so the expanded body's heading gets the same treatment. */
+.card.col .colb h3{overflow-wrap:anywhere}
+.led{table-layout:fixed}
+.led td{overflow-wrap:anywhere}
+.led td.mono{white-space:normal;word-break:break-word}
+
+/* A quick-pick with nothing left to offer (Max at a cap of one) stays visible but reads as
+   unavailable, rather than inviting a tap that changes nothing. */
+.qb button[disabled]{opacity:.4;cursor:not-allowed}
+
+/* .p is two different things in this vocabulary: the status pill (.p.ok / .p.bad) and the primary
+   BUTTON modifier (.b.p). prototype.css declares .b.p without a radius, so the pill's 20px bleeds
+   into every primary button and they render noticeably rounder than the .b.g / .b.sm buttons beside
+   them. .b sets one radius for all its variants deliberately, so this restores that intent rather
+   than choosing a new look. Reported from the Resume button sitting next to Edit. */
+.b.p{border-radius:var(--radius-sm)}
+
+/* The stop/start button previews the state it moves you TO, using that state's own pill colour:
+   Pause is tinted with --idle (the Paused pill's colour) and Resume with --gain (the Active
+   pill's). Tint and border only, never a filled button -- these sit beside Edit and must stay the
+   same weight of control, which is what went wrong when Resume was the filled primary. */
+.trigger-stop{border-color:var(--idle);color:var(--idle-text)}
+.trigger-stop:hover{border-color:var(--idle);background:color-mix(in srgb,var(--idle) 10%,transparent)}
+.trigger-start{border-color:var(--gain);color:var(--gain-text)}
+.trigger-start:hover{border-color:var(--gain);background:color-mix(in srgb,var(--gain) 10%,transparent)}
+
+/* .p already sizes an svg child in the prototype's own pills; this keeps the paused glyph to the
+   same 11px rhythm rather than inheriting a default that would tower over the label. */
+.p svg{width:11px;height:11px;flex:none}
+
+/* .nav-icon is the RAIL's icon chip: it carries an accent background and a radius so the active
+   rail item reads as a tile. In the sheet that chip renders as a solid green blob behind each
+   glyph, which is what made the menu look wrong. The sheet wants the bare glyph. */
+html[data-theme="ghost-mint"] .sheet-grid button .nav-icon,
+html[data-theme="ghost-mint-light"] .sheet-grid button .nav-icon{
+  background:none;border:0;border-radius:0;box-shadow:none;padding:0}
+/* The grab handle is a <button>, so the global tap-target min-height stretched it to 44px and it
+   rendered as a grey block rather than the prototype's 4px bar. The tap target moves to a padded
+   wrapper height instead, so it stays easy to hit without looking like a control. */
+html[data-theme="ghost-mint"] .sheet-handle,
+html[data-theme="ghost-mint-light"] .sheet-handle{
+  height:4px;min-height:4px;background-clip:padding-box}
+
+
+/* ── Wallet address ───────────────────────────────────────────────────────────
+   wallets.html prints a funded wallet's address as plain muted mono under the balance: no box, no
+   border. The copy mark sits inline with it rather than at the far edge of a full-width row. */
+.wallet-addr.mono{display:flex;align-items:center;gap:4px;font-size:11px;color:var(--faint);
+  margin-top:0;margin-bottom:11px;min-width:0}
+.wallet-addr .user-card-copy{color:var(--faint)}
+
+/* ── Icon button ──────────────────────────────────────────────────────────────
+   A bare glyph control: no fill, no border, sized to the touch target rather than to its text.
+   Used for Details on a wallet card and Close on an overlay. */
+.ico-btn{display:inline-grid;place-items:center;width:28px;height:28px;min-height:28px;padding:0;
+  flex:none;background:transparent;border:1px solid transparent;border-radius:var(--radius-sm);
+  color:var(--muted);box-shadow:none}
+.ico-btn:hover:not(:disabled){background:var(--surface-hover);border-color:var(--border);
+  color:var(--text);filter:none}
+.ico-btn svg{width:15px;height:15px;display:block}
+
+/* ── Overlay ──────────────────────────────────────────────────────────────────
+   The prototype's .cmd-bd/.cmd palette treatment, reused for panels that must not push the page
+   around: a blurred scrim and a rounded panel. On a phone it becomes a bottom sheet, since a
+   centred dialog at 375px is a full-screen panel with wasted margins pretending otherwise. */
+.ovl-bd{position:fixed;inset:0;z-index:9100;background:#000a;backdrop-filter:blur(3px);
+  display:flex;align-items:center;justify-content:center;padding:24px}
+.ovl{width:min(560px,100%);max-height:min(84vh,760px);display:flex;flex-direction:column;
+  background:var(--surface);border:1px solid var(--border-strong);border-radius:var(--radius-lg);
+  box-shadow:0 30px 70px -20px #000;overflow:hidden}
+.ovl.wide{width:min(680px,100%)}
+.ovl:focus{outline:none}
+.ovl-h{display:flex;align-items:flex-start;gap:10px;padding:14px 16px;
+  border-bottom:1px solid var(--border);flex:none}
+.ovl-h h2{font-size:15px;font-weight:750;letter-spacing:-.02em;margin:0;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ovl-sub{margin:2px 0 0;font-size:11.5px;color:var(--faint)}
+.ovl-b{padding:14px 16px 16px;overflow-y:auto;flex:1}
+.ovl-b .subtabs{margin-bottom:12px}
+@media(max-width:700px){
+  .ovl-bd{align-items:flex-end;padding:0}
+  .ovl,.ovl.wide{width:100%;max-height:90vh;border-radius:var(--radius-lg) var(--radius-lg) 0 0;
+    border-bottom:none}
+}
+
+/* ── Pick list ────────────────────────────────────────────────────────────────
+   The create-or-import choice. One row per answer, each carrying the consequence of picking it,
+   because that difference is the entire reason the question is asked. */
+.pick{display:flex;align-items:flex-start;gap:11px;width:100%;text-align:left;padding:13px;
+  border:1px solid var(--border);border-radius:var(--radius);background:var(--surface-2);
+  color:var(--text);min-height:0;box-shadow:none}
+.pick:hover:not(:disabled){border-color:var(--border-strong);background:var(--surface-3);filter:none}
+.pick .chip-ico{margin-top:1px}
+.pick-t{flex:1;min-width:0;display:block}
+.pick-t b{display:block;font-size:13px;font-weight:700;margin-bottom:3px}
+.pick-t span{display:block;font-size:11.5px;color:var(--muted);line-height:1.45}
+.pick .p{flex:none;margin-top:1px}
+@media(max-width:520px){.pick{flex-wrap:wrap}.pick .p{margin-left:37px}}
+
+/* Each secret gets its own row so a batch import is the same form with more of them, and any one
+   row can be removed without disturbing the rest. */
+.secret-row{display:flex;align-items:flex-start;gap:7px}
+.secret-row .ico-btn{margin-top:19px}
+.secret-row textarea.in{min-height:62px;resize:vertical}
+
+.b svg{width:13px;height:13px;flex:none}
+.b.sm svg{width:12px;height:12px}
+
+/* ── Wallet card: no repetition once expanded (mobile) ────────────────────────
+   .colh already states the wallet's status, name and balance, and on mobile it stays on screen
+   while .colb is open -- so the expanded body was repeating all three back, one row down. What the
+   expansion is actually FOR is the address and the performance table, so those are what it shows.
+
+   The Details control stays: it is the way into the overlay and has no equivalent in .colh. It
+   keeps .ch to itself, right-aligned by the .sp already in that row.
+
+   Scoped to .app[data-m] rather than a media query, matching how .colh itself is revealed
+   (prototype.css:505) -- above that breakpoint .colh is hidden and .colb IS the whole card, so
+   these three must stay. */
+.app[data-m] .card.col > .colb > .ch > h2,
+.app[data-m] .card.col > .colb > .ch > .p,
+.app[data-m] .card.col > .colb > .tv{display:none}
+.app[data-m] .card.col > .colb{position:relative}
+.app[data-m] .card.col > .colb > .ch{position:absolute;top:11px;right:0;height:28px;margin:0;
+  align-items:center}
+.app[data-m] .card.col > .colb > .wallet-addr.mono{min-height:28px;padding-right:34px;
+  margin-bottom:9px}
+
+/* ── P&L snapshot card ────────────────────────────────────────────────────────
+   The on-screen twin of the exported PNG. Deliberately plain: this reports what happened to real
+   money, and the backgrounds and stickers those shareable trading cards offer would invite reading
+   it as promotion rather than as a record. */
+.snap{border:1px solid var(--border-strong);border-radius:var(--radius);background:var(--surface-2);
+  padding:16px 18px}
+.snap-h{display:flex;align-items:center;gap:9px;margin-bottom:14px}
+.snap-brand{font-size:11px;font-weight:800;letter-spacing:.07em;color:var(--accent)}
+.snap-range{font-size:11px;color:var(--faint)}
+.snap-l{font-size:12px;font-weight:600;color:var(--muted);margin:0 0 4px}
+.snap-v{font-size:32px;font-weight:780;letter-spacing:-.035em;line-height:1;
+  font-variant-numeric:tabular-nums}
+.snap-v small{font-size:13px;font-weight:600;color:var(--muted);margin-left:4px;letter-spacing:0}
+.snap-roi{font-size:14px;font-weight:700;margin:5px 0 0;font-variant-numeric:tabular-nums}
+.snap-c{margin:14px 0 4px}
+.snap-c .chart{height:64px}
+.snap-s{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:12px;
+  padding-top:12px;border-top:1px solid var(--border)}
+.snap-s span{display:block;font-size:9.5px;font-weight:700;letter-spacing:.07em;
+  text-transform:uppercase;color:var(--faint);margin-bottom:3px}
+.snap-s b{font-size:13px;font-weight:700;font-variant-numeric:tabular-nums}
+@media(max-width:520px){
+  .snap-s{grid-template-columns:repeat(2,1fr)}
+  .snap-v{font-size:26px}
 }

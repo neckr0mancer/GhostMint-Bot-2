@@ -21,6 +21,7 @@ function mapIntent(row) {
     gasUsed: row.gas_used === null || row.gas_used === undefined ? null : BigInt(row.gas_used),
     effectiveGasPriceWei: row.effective_gas_price_wei === null || row.effective_gas_price_wei === undefined ? null : BigInt(row.effective_gas_price_wei),
     actualNetworkCostWei: row.actual_network_cost_wei === null || row.actual_network_cost_wei === undefined ? null : BigInt(row.actual_network_cost_wei),
+    tokenIds: row.token_ids ?? null,
     simulationEnabled: row.simulation_enabled,
     requiredConfirmations: row.required_confirmations,
     transactionTimeoutMs: row.transaction_timeout_ms,
@@ -87,7 +88,7 @@ function createTransactionIntentRepository(pool) {
     },
 
     async transition(intentId, toState, { reason = null, replacementTxHash = null, blockNumber = null,
-      gasUsed=null,effectiveGasPriceWei=null,actualNetworkCostWei=null } = {}) {
+      gasUsed=null,effectiveGasPriceWei=null,actualNetworkCostWei=null,tokenIds=null } = {}) {
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
@@ -97,12 +98,14 @@ function createTransactionIntentRepository(pool) {
         const result = await client.query(`UPDATE transaction_intents SET state=$2,
           failure_reason=$3,replacement_tx_hash=COALESCE($4,replacement_tx_hash),
           block_number=COALESCE($5,block_number),gas_used=COALESCE($6,gas_used),
-          effective_gas_price_wei=COALESCE($7,effective_gas_price_wei),actual_network_cost_wei=COALESCE($8,actual_network_cost_wei),last_reconciled_at=NOW(),
+          effective_gas_price_wei=COALESCE($7,effective_gas_price_wei),actual_network_cost_wei=COALESCE($8,actual_network_cost_wei),
+          token_ids=COALESCE($9,token_ids),last_reconciled_at=NOW(),
           pending_at=CASE WHEN $2='pending' THEN COALESCE(pending_at,NOW()) ELSE pending_at END,
           finalized_at=CASE WHEN $2 IN ('confirmed','reverted','replaced') THEN NOW() ELSE finalized_at END
           WHERE intent_id=$1 RETURNING *`,
         [intentId, toState, reason, replacementTxHash, blockNumber,gasUsed?.toString()??null,
-          effectiveGasPriceWei?.toString()??null,actualNetworkCostWei?.toString()??null]);
+          effectiveGasPriceWei?.toString()??null,actualNetworkCostWei?.toString()??null,
+          tokenIds&&tokenIds.length?tokenIds:null]);
         if (fromState !== toState || reason) {
           await client.query(`INSERT INTO transaction_state_transitions (intent_id,from_state,to_state,reason)
             VALUES ($1,$2,$3,$4)`, [intentId, fromState, toState, reason]);

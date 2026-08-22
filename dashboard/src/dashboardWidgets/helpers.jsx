@@ -101,14 +101,14 @@ export function QuickMint({go}){
         {detected.soldOut
           ?(detected.displayPrice?` · Sold out — floor ${detected.displayPrice.eth} ETH${usdSuffix(detected.displayPrice.usd)}`:' · Sold out — floor price unavailable')
           :(detected.displayPrice?usdSuffix(detected.displayPrice.usd):'')}</p>}
-      <button type="submit" disabled={!detected||busy}>{detected&&!detected.priceKnown?'Open full page to set price':'Preview mint'}</button>
+      <button type="submit" className="b p" disabled={!detected||busy}>{detected&&!detected.priceKnown?'Open full page to set price':'Preview mint'}</button>
     </fieldset>
     {preview&&<div className="preview" ref={previewRef}>
       <h2>Simulation passed</h2>
       <p>Estimated total: {preview.items[0].simulation.estimatedCostWei} wei | Gas: {preview.items[0].simulation.gasLimit}</p>
-      {confirmResult?<p className="warning">❌ Failed: {confirmResult.error}</p>:<button className="quiet" disabled={busy} onClick={confirmMint}>Confirm and broadcast</button>}
+      {confirmResult?<p className="warning">❌ Failed: {confirmResult.error}</p>:<button className="b g" disabled={busy} onClick={confirmMint}>Confirm and broadcast</button>}
     </div>}
-    <button type="button" className="quiet panel-cta" onClick={goToFullMint}>Advanced options →</button>
+    <button type="button" className="b g panel-cta" onClick={goToFullMint}>Advanced options →</button>
   </Form>;
 }
 
@@ -119,7 +119,7 @@ export function QuickMint({go}){
 export function QuickMintToggle({go}){
   const [open,setOpen]=useState(false);
   return <>
-    <button type="button" className="quiet dash-hero-quickmint-toggle" aria-expanded={open} onClick={()=>setOpen(value=>!value)}>{open?'Hide quick mint':'Quick mint'}</button>
+    <button type="button" className="b g dash-hero-quickmint-toggle" aria-expanded={open} onClick={()=>setOpen(value=>!value)}>{open?'Hide quick mint':'Quick mint'}</button>
     {open&&<QuickMint go={go}/>}
   </>;
 }

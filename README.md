@@ -48,7 +48,8 @@ GET http://localhost:3000/health
 | `TELEGRAM_BOT_TOKEN` | No | Enables Telegram polling when supplied. |
 | `DISCORD_BOT_TOKEN` | No* | Enables the Discord bot. Must be supplied with both Discord IDs. |
 | `DISCORD_APPLICATION_ID` | No* | Discord application snowflake used for slash-command registration. |
-| `DISCORD_DEV_GUILD_ID` | No* | Development guild snowflake for immediate command registration. |
+| `DISCORD_CHANNEL_IDS` | No | Comma-separated channel snowflakes the bot will answer in. Independent of the dev guild, so it works across many servers. DMs are never filtered by it. Empty means every channel it can see. |
+| `DISCORD_DEV_GUILD_ID` | No | Development guild snowflake. When set, commands register to that guild only (immediate) **and** are refused from anywhere else, DMs included. Leave empty to serve every server the bot is in, plus DMs. |
 | `ENCRYPTION_SECRET` | Yes | Encrypts stored wallet private keys; subject to the secret-strength policy below. |
 | `ENCRYPTION_KEY_VERSION` | No | Positive integer identifying the active master key; defaults to `1`. |
 | `ENCRYPTION_OLD_KEYS` | No | JSON object mapping prior key versions to their secrets for decryption during rotation. |
@@ -78,13 +79,21 @@ Telegram `/link` creates a cryptographically random code that expires after five
 
 ### Discord bot
 
-Configure all three Discord variables together. Startup registers guild-scoped slash commands immediately and logs in the bot. `/menu`, `/wallet`, `/mint`, `/batch-mint`, `/task`, `/activity`, `/pnl`, `/gas`, `/sniper`, `/mode`, `/admin`, and `/link` use the same identity, validation, governance, transaction, scheduler, and storage services as Telegram. Replies are ephemeral; destructive and value-bearing commands require an explicit `confirm` option. Sniper output states that copying is post-confirmation and is not mempool front-running.
+Configure `DISCORD_BOT_TOKEN` and `DISCORD_APPLICATION_ID` together. `DISCORD_DEV_GUILD_ID` is optional and makes it a development bot: startup registers guild-scoped slash commands to that one guild (immediate, where global registration can take up to an hour to propagate) and every command is refused from any other guild. Leave it empty and startup registers commands globally instead, so the bot serves every server it has been added to and DMs. Switching from a dev guild to global would otherwise leave the old guild's commands registered alongside the global ones, and Discord renders both sets; startup clears any such leftovers so this resolves itself. `/menu`, `/wallet`, `/mint`, `/batch-mint`, `/task`, `/activity`, `/pnl`, `/gas`, `/sniper`, `/mode`, `/admin`, and `/link` use the same identity, validation, governance, transaction, scheduler, and storage services as Telegram. Replies are ephemeral; destructive and value-bearing commands require an explicit `confirm` option. Sniper output states that copying is post-confirmation and is not mempool front-running.
 
 Run `/menu` for a button-driven main menu (Milestone 15c) instead of typing full slash commands. It covers Wallets (list, guided create/import, balance, remove), and Settings, including a "Link another platform" button that generates a `/link` code inline. Mint/Tasks/Snipers/Watch Rules/Activity/Gas currently show a placeholder pointing at their slash command; guided wizards for those are unscheduled follow-up work. Wallet create/import walks through a modal for the label (and, for import, the private key) and a select menu for the chain. Clicking a different menu button or running another slash command mid-flow prompts for confirmation before the in-progress flow is discarded.
 
 Wallet generation is the recommended onboarding path on both platforms: use Telegram `/createwallet <label> <chain>` or Discord `/wallet create`. GhostMint generates the key server-side, immediately envelope-encrypts it, stores only the encrypted envelope, and returns only the public funding address.
 
 Private-key import remains available through Telegram `/importwallet <label> <chain> <private-key>` and Discord `/wallet import`, but both commands are explicitly marked **not recommended**. The key necessarily passes through Telegram or Discord infrastructure and may appear in client chat history or notification previews before GhostMint receives and encrypts it. Use imports only when an existing wallet is unavoidable, delete the originating platform message where possible, and prefer the future HTTPS Milestone 13 dashboard import flow when it becomes available.
+
+The dashboard Wallets → Export tab supports two real formats: a password-encrypted Ethereum V3
+keystore download, or the exact raw private key. Raw export is deliberately explicit and
+high-risk: it requires the account security password, is user-scoped/CSRF-protected/audited with
+`no-store`, stays hidden by default, and is retained in page memory for only 60 seconds; revealing
+it requires a separate warning confirmation. Copying still places the key on the operating-system
+clipboard. Seed-phrase export is unavailable because GhostMint stores encrypted private keys, not
+the original mnemonic, and a mnemonic cannot be reconstructed from a private key.
 
 Transaction and scheduler notifications are delivered independently to every linked platform account. A delivery failure on one platform is logged but cannot change transaction state or suppress delivery to another platform.
 
@@ -114,7 +123,7 @@ Blockchain auto copy events proceed through existing sniper execution without fo
 
 ### Bot security and command confirmation
 
-Telegram commands are accepted only from the immutable sender's private chat; Discord commands are accepted only from the configured development guild and an originating channel. Every command resolves that platform identity to the internal user before accessing repositories. Owner denials, invalid command contexts, and sensitive-command rate-limit events are persisted in `bot_security_audit` with platform identity, context, command, outcome, and reason.
+Telegram commands are accepted only from the immutable sender's private chat; Discord commands are accepted only from the configured development guild and an originating channel when `DISCORD_DEV_GUILD_ID` is set, and from any guild or DM when it is not. Ownership, account status, governance ceilings, and per-user wallet scoping are enforced from the resolved internal identity in every case, so the guild restriction is a deployment boundary rather than the authorization model. Every command resolves that platform identity to the internal user before accessing repositories. Owner denials, invalid command contexts, and sensitive-command rate-limit events are persisted in `bot_security_audit` with platform identity, context, command, outcome, and reason.
 
 Destructive and value-moving commands require explicit confirmation on both platforms. Discord uses required `confirm` options; Telegram uses the exact final token `CONFIRM` (or a `confirmation: "CONFIRM"` field for JSON mint calls). Sensitive mint, admin, watch-rule, sniper, and target-policy operations are throttled per platform identity. `/pending` and Discord `/pending` show user-scoped non-final transactions and trigger confirmations. Bot responses use plain Telegram text and escaped Discord content to prevent formatting/mention injection. SIGINT/SIGTERM stop polling, Discord, scheduler/social workers, chain watchers, HTTP acceptance, and the database pool in order.
 
@@ -174,18 +183,21 @@ The editable presets are `Ultra Fast`, `Fast`, `Semi-Safe`, and `Safe`. Their st
 Admin syntax uses precise wei values for monetary ceilings:
 
 ```text
-/admin group-set <name> <maxWei> <dailyWei> <gasGwei> <forced|optional>
+/admin group-set <name> <maxWei> <dailyWei> <gasGwei> <forced|optional> <allowed|not-allowed>
 /admin group-delete <name>
 /admin assign <telegram|discord> <platformUserId> <group>
 /admin unassign <telegram|discord> <platformUserId>
 /admin user-ceilings <platform> <platformUserId> <maxWei> <dailyWei> <gasGwei>
 /admin user-ceilings-clear <platform> <platformUserId>
 /admin user-simulation <platform> <platformUserId> <forced|optional|inherit>
+/admin user-advanced-modes <platform> <platformUserId> <allowed|not-allowed|inherit>
 /admin group-simulation <group> <forced|optional|inherit>
 /admin preset-set <preset> <on|off|blockchain_off> <confirmations> <on|bypass>
 /admin owner <platform> <platformUserId> <on|off>
 /mode <ultra_fast|fast|semi_safe|safe>
 ```
+
+The trailing `<allowed|not-allowed>` on `group-set` and `<allowed|not-allowed|inherit>` on `user-advanced-modes` gate access to the `Ultra Fast`/`Fast` presets (see below) -- group-level and per-user, respectively, the same override precedence as ceilings and simulation-forcing.
 
 Admin commands never bootstrap ownership. Before the first deployment, a database administrator must designate the initial trusted linked user directly, for example with a reviewed one-time `UPDATE users SET is_owner=TRUE WHERE user_id=...`. Thereafter, only an existing owner can add or remove owners, and the last owner cannot be removed.
 

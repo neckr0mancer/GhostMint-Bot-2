@@ -1,5 +1,5 @@
 function createMintExecutionService({ mintService, transactionEngine }) {
-  async function executePrepared({ userId, wallet, prepared, triggerSource = 'manual', gasPriceWei, onPreview,
+  async function executePrepared({ userId, wallet, prepared, triggerSource = 'manual', gasPriceWei, maxGasGwei, onPreview,
     idempotencyKey, onIntentPersisted }) {
     if (onPreview) await onPreview(prepared.preview);
     return transactionEngine.submit({
@@ -13,6 +13,7 @@ function createMintExecutionService({ mintService, transactionEngine }) {
       methodSignature: prepared.method.signature,
       callPreview: prepared.preview,
       gasPriceWei,
+      maxGasGwei,
       idempotencyKey,
       onIntentPersisted,
     });
@@ -25,9 +26,9 @@ function createMintExecutionService({ mintService, transactionEngine }) {
         callPreview:prepared.preview,gasPriceWei,forceSimulation:true});
     },
     executePrepared,
-    async execute({ userId, wallet, input, triggerSource, gasPriceWei, onPreview, idempotencyKey, onIntentPersisted }) {
+    async execute({ userId, wallet, input, triggerSource, gasPriceWei, maxGasGwei, onPreview, idempotencyKey, onIntentPersisted }) {
       const prepared = await mintService.prepare({ ...input, walletAddress: wallet.address });
-      return executePrepared({ userId, wallet, prepared, triggerSource, gasPriceWei, onPreview, idempotencyKey, onIntentPersisted });
+      return executePrepared({ userId, wallet, prepared, triggerSource, gasPriceWei, maxGasGwei, onPreview, idempotencyKey, onIntentPersisted });
     },
   };
 }

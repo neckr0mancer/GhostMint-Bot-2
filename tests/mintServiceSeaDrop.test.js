@@ -75,6 +75,7 @@ function commandServiceFixture({ contractValueResolver, seaDropDiscoveryService,
     supportedChains: ['ethereum'], chains: { ethereum: { sym: 'ETH' } }, getState: () => state,
     contractValueResolver, seaDropDiscoveryService, openSeaService, priceFeedService,
     executeMint: async ({ userId, wallet, request }) => { calls.push(['executeMint', userId, wallet.label, request]); return { txHash: '0xabc' }; },
+    executeMintViaOpenSea: async ({ userId, wallet, request, built }) => { calls.push(['executeMintViaOpenSea', userId, wallet.label, request, built]); return { txHash: '0xdef' }; },
   });
   return { calls, service };
 }
@@ -107,9 +108,65 @@ test('mint() still requires a manual price when neither resolver finds anything'
   assert.equal(calls.length, 0);
 });
 
+// Section AF -- the point of the whole feature: an allowlist/GTD/FCFS SeaDrop stage has no on-chain
+// proof this app can construct, because eligibility lives entirely in OpenSea's own backend.
+// mintViaOpenSea asks OpenSea to build the calldata (openSeaService.buildMintTransaction) instead of
+// this app's own prepareMintCall, then hands it to executeMintViaOpenSea -- the exact same execution
+// path (governance ceilings, simulation, gas ceiling, activity recording) every other mint uses.
+test('mintViaOpenSea builds calldata through OpenSea and executes it via executeMintViaOpenSea, not the normal calldata path', async () => {
+  const built = { to: SEADROP, data: '0xabcd', valueWei: '50000000000000000', chain: 'ethereum' };
+  const buildCalls = [];
+  const { calls, service } = commandServiceFixture({
+    openSeaService: { buildMintTransaction: async (...args) => { buildCalls.push(args); return built; } },
+  });
+  const result = await service.mintViaOpenSea('user-a', { walletLabel: 'main', contractAddress: CONTRACT, quantity: 2, chain: 'ethereum' });
+  assert.deepEqual(buildCalls, [['ethereum', CONTRACT, WALLET, 2]]);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], 'executeMintViaOpenSea');
+  assert.equal(calls[0][2], 'main');
+  assert.equal(calls[0][3].quantity, 2);
+  assert.deepEqual(calls[0][4], built);
+  assert.equal(result.txHash, '0xdef');
+});
+
+test('mintViaOpenSea throws instead of executing when OpenSea cannot build a mint for this contract', async () => {
+  const { calls, service } = commandServiceFixture({
+    openSeaService: { buildMintTransaction: async () => null },
+  });
+  await assert.rejects(
+    service.mintViaOpenSea('user-a', { walletLabel: 'main', contractAddress: CONTRACT, quantity: 1, chain: 'ethereum' }),
+    ValidationError,
+  );
+  assert.equal(calls.length, 0);
+});
+
+// buildMintTransaction itself throws ValidationError for a real 409/422 ineligibility (see
+// openSeaService.test.js) -- that propagates through mintViaOpenSea unchanged, since it's already
+// the exact honest reason to show the user, not something to wrap or reinterpret.
+test('mintViaOpenSea propagates OpenSea\'s own ineligibility reason unchanged, rather than executing or masking it', async () => {
+  const { calls, service } = commandServiceFixture({
+    openSeaService: { buildMintTransaction: async () => { throw new ValidationError({ field: 'contractAddress', message: 'wallet is not on the allowlist' }); } },
+  });
+  await assert.rejects(
+    service.mintViaOpenSea('user-a', { walletLabel: 'main', contractAddress: CONTRACT, quantity: 1, chain: 'ethereum' }),
+    error => { assert.equal(error.issues[0].message, 'wallet is not on the allowlist'); return true; },
+  );
+  assert.equal(calls.length, 0);
+});
+
+test('mintViaOpenSea throws when no OpenSea integration is configured at all, instead of silently doing nothing', async () => {
+  const { calls, service } = commandServiceFixture({});
+  await assert.rejects(
+    service.mintViaOpenSea('user-a', { walletLabel: 'main', contractAddress: CONTRACT, quantity: 1, chain: 'ethereum' }),
+    ValidationError,
+  );
+  assert.equal(calls.length, 0);
+});
+
 test('detectMintContract tries SeaDrop first and returns a SeaDrop-shaped result when a core is found, including opening time and OpenSea metadata', async () => {
   const { service } = commandServiceFixture({
-    contractValueResolver: { resolve: async () => { throw new Error('should not be reached -- SeaDrop was found first'); } },
+    contractValueResolver: { resolve: async () => { throw new Error('should not be reached -- SeaDrop was found first'); },
+      probeMaxSupply: async () => ({ value: '10000', source: 'maxSupply' }) },
     seaDropDiscoveryService: { resolve: async () => ({ address: SEADROP, publicDrop: { mintPriceWei: '1000', maxTotalMintableByWallet: 5, startTime: 1_700_000_000, endTime: 1_700_100_000 }, feeRecipient: FEE_RECIPIENT }) },
     openSeaService: { getCollectionMetadata: async () => ({ name: 'Cool Cats', floorPrice: 0.5 }) },
   });
@@ -120,6 +177,10 @@ test('detectMintContract tries SeaDrop first and returns a SeaDrop-shaped result
   assert.equal(result.priceKnown, true);
   assert.equal(result.valueWei, '2000');
   assert.equal(result.maxPerWallet, 5);
+  // SeaDrop's PublicDrop struct has no supply-cap field -- probed separately from the token
+  // contract itself (Section AD Tier 1 follow-up: this used to be hardcoded null for every
+  // SeaDrop drop, silently dropping "Max supply" from the collection card).
+  assert.equal(result.maxSupply, 10000);
   assert.equal(result.startTime, 1_700_000_000);
   assert.equal(result.endTime, 1_700_100_000);
   assert.deepEqual(result.collection, { name: 'Cool Cats', floorPrice: 0.5 });
@@ -142,10 +203,115 @@ test('detectMintContract falls back to the plain mint(uint256) assumption when n
   assert.equal(result.collection, null);
 });
 
+// Section AF -- the on-chain SeaDrop PublicDrop struct only ever exposes ONE currently-configured
+// stage, so it can never say what's coming next; OpenSea's Drops API is the real source for that.
+// Gated on includeStats (same as the stats block) -- display-only, opt-in, not paid for by every
+// plain paste. getDrop is not called at all when includeStats is omitted/false.
+test('detectMintContract attaches real phase data from OpenSea when includeStats is true, converting stage prices from wei to ETH', async () => {
+  const getDropCalls = [];
+  const { service } = commandServiceFixture({
+    contractValueResolver: { resolve: async () => { throw new Error('should not be reached'); }, probeMaxSupply: async () => null, probeTotalMinted: async () => null },
+    seaDropDiscoveryService: { resolve: async () => ({ address: SEADROP, publicDrop: { mintPriceWei: '1000', maxTotalMintableByWallet: 5 }, feeRecipient: FEE_RECIPIENT }) },
+    openSeaService: {
+      getCollectionMetadata: async () => ({ name: 'Cool Cats' }),
+      getCollectionStats: async () => null,
+      getDrop: async (...args) => { getDropCalls.push(args); return {
+        isMinting: true, dropType: 'seadrop_v1_erc721', maxSupply: 10000, openSeaUrl: 'https://opensea.io/collection/cool-cats',
+        activeStage: { uuid: 'a1', label: 'Public sale', startTime: 1_700_000_000, endTime: 1_700_100_000, priceWei: '50000000000000000', maxPerWallet: 5, stageType: 'public_sale' },
+        nextStage: null,
+        stages: [{ uuid: 'a1', label: 'Public sale', startTime: 1_700_000_000, endTime: 1_700_100_000, priceWei: '50000000000000000', maxPerWallet: 5, stageType: 'public_sale' }],
+      }; },
+    },
+  });
+  const result = await service.detectMintContract('user-a', { contractAddress: CONTRACT, quantity: 1, includeStats: true });
+  assert.deepEqual(getDropCalls, [['ethereum', CONTRACT]]);
+  assert.equal(result.drop.isMinting, true);
+  assert.equal(result.drop.dropType, 'seadrop_v1_erc721');
+  assert.equal(result.drop.maxSupply, 10000);
+  assert.equal(result.drop.activeStage.priceETH, 0.05);
+  assert.equal(result.drop.activeStage.priceWei, '50000000000000000');
+  assert.equal(result.drop.nextStage, null);
+  assert.equal(result.drop.stages[0].priceETH, 0.05);
+});
+
+test('detectMintContract never calls getDrop (or attaches drop) when neither includeDrop nor includeStats is requested', async () => {
+  const getDropCalls = [];
+  const { service } = commandServiceFixture({
+    contractValueResolver: { resolve: async () => { throw new Error('should not be reached'); }, probeMaxSupply: async () => null },
+    seaDropDiscoveryService: { resolve: async () => ({ address: SEADROP, publicDrop: { mintPriceWei: '1000', maxTotalMintableByWallet: 5 }, feeRecipient: FEE_RECIPIENT }) },
+    openSeaService: { getCollectionMetadata: async () => null, getDrop: async (...args) => { getDropCalls.push(args); return null; } },
+  });
+  const result = await service.detectMintContract('user-a', { contractAddress: CONTRACT, quantity: 1 });
+  assert.equal(getDropCalls.length, 0);
+  assert.equal(result.drop, null);
+});
+
+// Round 20: phases now show on every paste, not just /info -- includeDrop is its own opt-in flag,
+// independent of includeStats (the heavier floor/holders/volume table), so this must work with
+// includeStats left at its default false.
+test('detectMintContract attaches drop data via includeDrop alone, without needing includeStats too', async () => {
+  const getDropCalls = [];
+  const { service } = commandServiceFixture({
+    contractValueResolver: { resolve: async () => { throw new Error('should not be reached'); }, probeMaxSupply: async () => null },
+    seaDropDiscoveryService: { resolve: async () => ({ address: SEADROP, publicDrop: { mintPriceWei: '1000', maxTotalMintableByWallet: 5 }, feeRecipient: FEE_RECIPIENT }) },
+    openSeaService: { getCollectionMetadata: async () => null, getDrop: async (...args) => { getDropCalls.push(args); return {
+      isMinting: false, dropType: 'seadrop_v1_erc721', maxSupply: 4444, openSeaUrl: 'https://opensea.io/collection/kiyo',
+      activeStage: null, nextStage: { uuid: 'n1', label: 'Early birds', startTime: 1_800_000_000, endTime: 1_800_001_800, priceWei: '0', maxPerWallet: 1, stageType: 'signed_presale' },
+      stages: [],
+    }; } },
+  });
+  const result = await service.detectMintContract('user-a', { contractAddress: CONTRACT, quantity: 1, includeDrop: true });
+  assert.deepEqual(getDropCalls, [['ethereum', CONTRACT]]);
+  assert.equal(result.drop.nextStage.label, 'Early birds');
+  assert.equal(result.drop.nextStage.priceETH, 0);
+  assert.equal(result.stats, null, 'includeDrop alone must not also pull in the heavier stats block');
+});
+
+test('detectMintContract skips getDrop when includeDrop is explicitly false, even if includeStats is true', async () => {
+  const getDropCalls = [];
+  const { service } = commandServiceFixture({
+    contractValueResolver: { resolve: async () => { throw new Error('should not be reached'); }, probeMaxSupply: async () => null, probeTotalMinted: async () => null },
+    seaDropDiscoveryService: { resolve: async () => ({ address: SEADROP, publicDrop: { mintPriceWei: '1000', maxTotalMintableByWallet: 5 }, feeRecipient: FEE_RECIPIENT }) },
+    openSeaService: { getCollectionMetadata: async () => null, getCollectionStats: async () => null, getDrop: async (...args) => { getDropCalls.push(args); return null; } },
+  });
+  const result = await service.detectMintContract('user-a', { contractAddress: CONTRACT, quantity: 1, includeStats: true, includeDrop: false });
+  assert.equal(getDropCalls.length, 0);
+  assert.equal(result.drop, null);
+});
+
+test('detectMintContract leaves drop null when the contract is not an OpenSea-tracked drop, without throwing', async () => {
+  const { service } = commandServiceFixture({
+    contractValueResolver: { resolve: async () => { throw new Error('should not be reached'); }, probeMaxSupply: async () => null, probeTotalMinted: async () => null },
+    seaDropDiscoveryService: { resolve: async () => ({ address: SEADROP, publicDrop: { mintPriceWei: '1000', maxTotalMintableByWallet: 5 }, feeRecipient: FEE_RECIPIENT }) },
+    openSeaService: { getCollectionMetadata: async () => null, getCollectionStats: async () => null, getDrop: async () => null },
+  });
+  const result = await service.detectMintContract('user-a', { contractAddress: CONTRACT, quantity: 1, includeStats: true });
+  assert.equal(result.drop, null);
+});
+
+// The plain mint(uint256) branch shares the same includeStats-gated drop fetch as the SeaDrop
+// branch above -- computed once, before either branch, so it must reach the non-SeaDrop return too.
+test('detectMintContract attaches drop data on the plain mint(uint256) branch too, not just SeaDrop', async () => {
+  const { service } = commandServiceFixture({
+    contractValueResolver: { resolve: async () => ({ price: { value: '500' }, maxSupply: { value: '10000' }, maxPerWallet: { value: '3' } }), probeTotalMinted: async () => null },
+    seaDropDiscoveryService: { resolve: async () => ({ address: null, publicDrop: null, feeRecipient: null }) },
+    openSeaService: { getCollectionMetadata: async () => null, getCollectionStats: async () => null, getDrop: async () => ({
+      isMinting: false, dropType: 'self_mint', maxSupply: 500, openSeaUrl: null,
+      activeStage: null,
+      nextStage: { uuid: 'n1', label: null, startTime: 1_700_000_000, endTime: 1_700_100_000, priceWei: '0', maxPerWallet: 2, stageType: 'presale' },
+      stages: [],
+    }) },
+  });
+  const result = await service.detectMintContract('user-a', { contractAddress: CONTRACT, quantity: 1, includeStats: true });
+  assert.equal(result.isSeaDrop, false);
+  assert.equal(result.drop.nextStage.priceETH, 0);
+  assert.equal(result.drop.nextStage.startTime, 1_700_000_000);
+});
+
 test('detectMintContract shows the mint price as displayPrice while a SeaDrop drop is still open', async () => {
   const futureEndTime = Math.floor(Date.now() / 1000) + 3_600;
   const { service } = commandServiceFixture({
-    contractValueResolver: { resolve: async () => { throw new Error('should not be reached'); } },
+    contractValueResolver: { resolve: async () => { throw new Error('should not be reached'); }, probeMaxSupply: async () => null },
     seaDropDiscoveryService: { resolve: async () => ({ address: SEADROP, publicDrop: { mintPriceWei: '1000000000000000000', endTime: futureEndTime }, feeRecipient: FEE_RECIPIENT }) },
     openSeaService: { getCollectionMetadata: async () => ({ floorPrice: 5 }) },
   });
@@ -157,7 +323,7 @@ test('detectMintContract shows the mint price as displayPrice while a SeaDrop dr
 test('detectMintContract switches displayPrice to the OpenSea floor once a SeaDrop drop\'s endTime has passed', async () => {
   const pastEndTime = Math.floor(Date.now() / 1000) - 3_600;
   const { service } = commandServiceFixture({
-    contractValueResolver: { resolve: async () => { throw new Error('should not be reached'); } },
+    contractValueResolver: { resolve: async () => { throw new Error('should not be reached'); }, probeMaxSupply: async () => null },
     seaDropDiscoveryService: { resolve: async () => ({ address: SEADROP, publicDrop: { mintPriceWei: '1000000000000000000', endTime: pastEndTime }, feeRecipient: FEE_RECIPIENT }) },
     openSeaService: { getCollectionMetadata: async () => ({ floorPrice: 2.5 }) },
   });
@@ -239,6 +405,117 @@ test('detectMintContract never fails just because no openSeaService is wired in'
   assert.equal(result.collection, null);
 });
 
+// Section AD Tier 1 -- stats is opt-in via includeStats, computed live (never the cached
+// resolve()/getCollectionMetadata values this function already uses elsewhere), and shared by
+// both the SeaDrop and plain-mint branches.
+test('detectMintContract omits stats entirely when includeStats is not set, for both branches', async () => {
+  const seaDropResult = await commandServiceFixture({
+    // probeMaxSupply is unconditional (unlike probeTotalMinted/getCollectionStats below) -- the
+    // card's "Max supply" limits line needs it even on a plain paste with no includeStats, same as
+    // the plain-mint branch's contractValueResolver.resolve() already runs unconditionally.
+    contractValueResolver: { resolve: async () => { throw new Error('should not be reached'); },
+      probeTotalMinted: async () => { throw new Error('must not be called without includeStats'); },
+      probeMaxSupply: async () => ({ value: '5000', source: 'maxSupply' }) },
+    seaDropDiscoveryService: { resolve: async () => ({ address: SEADROP, publicDrop: { mintPriceWei: '1000' }, feeRecipient: FEE_RECIPIENT }) },
+    openSeaService: { getCollectionMetadata: async () => null, getCollectionStats: async () => { throw new Error('must not be called without includeStats'); } },
+  }).service.detectMintContract('user-a', { contractAddress: CONTRACT, quantity: 1 });
+  assert.equal(seaDropResult.stats, null);
+  assert.equal(seaDropResult.maxSupply, 5000);
+
+  const plainResult = await commandServiceFixture({
+    contractValueResolver: { resolve: async () => ({ price: { value: '500' }, maxSupply: null, maxPerWallet: null }), probeTotalMinted: async () => { throw new Error('must not be called without includeStats'); } },
+    seaDropDiscoveryService: { resolve: async () => ({ address: null, publicDrop: null, feeRecipient: null }) },
+  }).service.detectMintContract('user-a', { contractAddress: CONTRACT, quantity: 1 });
+  assert.equal(plainResult.stats, null);
+});
+
+test('detectMintContract computes live stats and market cap (floor x current minted supply) when includeStats is set, for a SeaDrop drop', async () => {
+  const { service } = commandServiceFixture({
+    contractValueResolver: { resolve: async () => { throw new Error('should not be reached -- SeaDrop was found first'); },
+      probeTotalMinted: async () => ({ value: '4000', source: 'totalSupply' }), probeMaxSupply: async () => null },
+    seaDropDiscoveryService: { resolve: async () => ({ address: SEADROP, publicDrop: { mintPriceWei: '1000' }, feeRecipient: FEE_RECIPIENT }) },
+    openSeaService: {
+      getCollectionMetadata: async () => ({ name: 'Cool Cats' }),
+      getCollectionStats: async () => ({ floorPrice: 1.5, floorPriceSymbol: 'ETH', numOwners: 900,
+        volume: { oneDay: 10, sevenDay: 50, thirtyDay: 200, allTime: 5000 },
+        sales: { oneDay: 2, sevenDay: 9, thirtyDay: 40, allTime: 1200 } }),
+    },
+  });
+  const result = await service.detectMintContract('user-a', { contractAddress: CONTRACT, quantity: 1, includeStats: true });
+  assert.equal(result.stats.totalMinted, 4000);
+  assert.equal(result.stats.floorPrice, 1.5);
+  assert.equal(result.stats.numOwners, 900);
+  assert.deepEqual(result.stats.volume, { oneDay: 10, sevenDay: 50, thirtyDay: 200, allTime: 5000 });
+  assert.equal(result.stats.marketCap, 6000); // 1.5 ETH floor x 4000 minted
+});
+
+// Round 17 (Section AW): a SeaDrop collection that sells out well before its stage window closes
+// used to keep showing the real mint price -- soldOut only ever checked endTime, never
+// totalMinted>=maxSupply, unlike the plain-mint branch a few lines below in the source. Reproduces
+// the live report against phoenix-in-the-hood: sold out (totalMinted === maxSupply) but endTime
+// still in the future.
+test('detectMintContract treats a SeaDrop drop as sold out once totalMinted reaches maxSupply, even while its stage window is still open', async () => {
+  const futureEndTime = Math.floor(Date.now() / 1000) + 3_600;
+  const { service } = commandServiceFixture({
+    contractValueResolver: { resolve: async () => { throw new Error('should not be reached -- SeaDrop was found first'); },
+      probeTotalMinted: async () => ({ value: '4444', source: 'totalSupply' }), probeMaxSupply: async () => ({ value: '4444', source: 'maxSupply' }) },
+    seaDropDiscoveryService: { resolve: async () => ({ address: SEADROP, publicDrop: { mintPriceWei: '2000000000000000', endTime: futureEndTime }, feeRecipient: FEE_RECIPIENT }) },
+    openSeaService: { getCollectionMetadata: async () => ({ floorPrice: 0 }), getCollectionStats: async () => ({ floorPrice: 0 }) },
+  });
+  const result = await service.detectMintContract('user-a', { contractAddress: CONTRACT, quantity: 1, includeStats: true });
+  assert.equal(result.soldOut, true);
+  assert.equal(result.displayPrice.source, 'floor');
+});
+
+// Outside includeStats there is no live totalMinted to compare against (see the comment in
+// detectMintContract) -- soldOut correctly falls back to the time-window check alone, same
+// limitation this function already had before this fix, just no longer silently wrong when stats
+// ARE available.
+test('detectMintContract cannot detect a sold-out SeaDrop drop by supply alone when includeStats is not set', async () => {
+  const futureEndTime = Math.floor(Date.now() / 1000) + 3_600;
+  const { service } = commandServiceFixture({
+    contractValueResolver: { resolve: async () => { throw new Error('should not be reached -- SeaDrop was found first'); },
+      probeMaxSupply: async () => ({ value: '4444', source: 'maxSupply' }) },
+    seaDropDiscoveryService: { resolve: async () => ({ address: SEADROP, publicDrop: { mintPriceWei: '2000000000000000', endTime: futureEndTime }, feeRecipient: FEE_RECIPIENT }) },
+  });
+  const result = await service.detectMintContract('user-a', { contractAddress: CONTRACT, quantity: 1 });
+  assert.equal(result.soldOut, false);
+});
+
+test('detectMintContract computes live stats for a plain (non-SeaDrop) contract too, reusing the same stats shape', async () => {
+  const { service } = commandServiceFixture({
+    contractValueResolver: {
+      resolve: async () => ({ price: { value: '500' }, maxSupply: { value: '10000' }, maxPerWallet: null, totalMinted: { value: '1' } }),
+      probeTotalMinted: async () => ({ value: '3333', source: 'totalSupply' }),
+    },
+    seaDropDiscoveryService: { resolve: async () => ({ address: null, publicDrop: null, feeRecipient: null }) },
+    openSeaService: { getCollectionMetadata: async () => null, getCollectionStats: async () => ({ floorPrice: 0.2, floorPriceSymbol: 'ETH', numOwners: 500,
+      volume: { oneDay: null, sevenDay: null, thirtyDay: null, allTime: null }, sales: { oneDay: null, sevenDay: null, thirtyDay: null, allTime: null } }) },
+  });
+  const result = await service.detectMintContract('user-a', { contractAddress: CONTRACT, quantity: 1, includeStats: true });
+  // Live-probed totalMinted (3333), not resolve()'s separately-cached totalMinted (1) used for soldOut.
+  assert.equal(result.stats.totalMinted, 3333);
+  assert.equal(result.stats.marketCap, 666.6);
+});
+
+test('market cap is null (not a guess) when either the floor price or the live minted count is unknown', async () => {
+  const noFloor = await commandServiceFixture({
+    contractValueResolver: { resolve: async () => ({ price: { value: '500' }, maxSupply: null, maxPerWallet: null }), probeTotalMinted: async () => ({ value: '100', source: 'totalSupply' }) },
+    seaDropDiscoveryService: { resolve: async () => ({ address: null, publicDrop: null, feeRecipient: null }) },
+    openSeaService: { getCollectionMetadata: async () => null, getCollectionStats: async () => ({ floorPrice: null, floorPriceSymbol: null, numOwners: null,
+      volume: { oneDay: null, sevenDay: null, thirtyDay: null, allTime: null }, sales: { oneDay: null, sevenDay: null, thirtyDay: null, allTime: null } }) },
+  }).service.detectMintContract('user-a', { contractAddress: CONTRACT, quantity: 1, includeStats: true });
+  assert.equal(noFloor.stats.marketCap, null);
+
+  const noSupply = await commandServiceFixture({
+    contractValueResolver: { resolve: async () => ({ price: { value: '500' }, maxSupply: null, maxPerWallet: null }), probeTotalMinted: async () => null },
+    seaDropDiscoveryService: { resolve: async () => ({ address: null, publicDrop: null, feeRecipient: null }) },
+    openSeaService: { getCollectionMetadata: async () => null, getCollectionStats: async () => ({ floorPrice: 1, floorPriceSymbol: 'ETH', numOwners: null,
+      volume: { oneDay: null, sevenDay: null, thirtyDay: null, allTime: null }, sales: { oneDay: null, sevenDay: null, thirtyDay: null, allTime: null } }) },
+  }).service.detectMintContract('user-a', { contractAddress: CONTRACT, quantity: 1, includeStats: true });
+  assert.equal(noSupply.stats.marketCap, null);
+});
+
 function taskServiceFixture({ contractValueResolver, seaDropDiscoveryService }) {
   const state = { wallets: [{ id: 1, userId: 'user-a', label: 'main', address: WALLET, chain: 'ethereum' }], tasks: [], activity: [], pnl: [], snipers: [] };
   const saved = [];
@@ -286,4 +563,39 @@ test('createTask still requires mintTime for a plain (non-SeaDrop) contract -- t
     seaDropDiscoveryService: { resolve: async () => ({ address: null, publicDrop: null, feeRecipient: null }) },
   });
   await assert.rejects(service.createTask('user-a', { name: 'drop', walletLabel: 'main', contractAddress: CONTRACT, quantity: 1 }), ValidationError);
+});
+
+// Section AF -- scheduling an OpenSea-backed mint (an allowlist/GTD/FCFS stage this app has no
+// on-chain proof for). priceETH is forced to 0 and never resolved from the contract -- OpenSea's
+// own response at execution time determines the real value, so resolvePriceIfMissing (which would
+// throw for a price that genuinely can't be read on-chain, exactly this path's normal case) must
+// never even run for a viaOpenSea task.
+test('createTask forces priceETH to 0 and skips price resolution entirely for a viaOpenSea task, storing viaOpenSea on the saved row', async () => {
+  const { saved, service } = taskServiceFixture({
+    contractValueResolver: { resolve: async () => { throw new Error('must not be called for a viaOpenSea task'); } },
+    seaDropDiscoveryService: { resolve: async () => ({ address: null, publicDrop: null, feeRecipient: null }) },
+  });
+  const mintTime = new Date(Date.now() + 60_000).toISOString();
+  const task = await service.createTask('user-a', { name: 'allowlist phase', walletLabel: 'main', contractAddress: CONTRACT, quantity: 1, mintTime, viaOpenSea: true });
+  assert.equal(saved[0].price, 0);
+  assert.equal(saved[0].viaOpenSea, true);
+  assert.equal(task.viaOpenSea, true);
+});
+
+test('createTask still requires an explicit mintTime for a viaOpenSea task -- there is no PublicDrop opening time to auto-fill from', async () => {
+  const { service } = taskServiceFixture({
+    contractValueResolver: { resolve: async () => { throw new Error('must not be called'); } },
+    seaDropDiscoveryService: { resolve: async () => ({ address: null, publicDrop: null, feeRecipient: null }) },
+  });
+  await assert.rejects(service.createTask('user-a', { name: 'allowlist phase', walletLabel: 'main', contractAddress: CONTRACT, quantity: 1, viaOpenSea: true }), ValidationError);
+});
+
+test('a non-viaOpenSea task never has viaOpenSea set on the saved row', async () => {
+  const { saved, service } = taskServiceFixture({
+    contractValueResolver: { resolve: async () => ({ price: { value: '500' }, maxSupply: null, maxPerWallet: null }) },
+    seaDropDiscoveryService: { resolve: async () => ({ address: null, publicDrop: null, feeRecipient: null }) },
+  });
+  const mintTime = new Date(Date.now() + 60_000).toISOString();
+  await service.createTask('user-a', { name: 'plain', walletLabel: 'main', contractAddress: CONTRACT, quantity: 1, mintTime });
+  assert.equal(saved[0].viaOpenSea, false);
 });

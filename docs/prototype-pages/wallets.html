@@ -1,0 +1,175 @@
+<section class="pg" id="p-wallets">
+      <div class="hd"><div class="hd-t"><p class="eb">Wallets</p><h1>Wallets</h1></div>
+        <button class="b p of">Create wallet</button></div>
+      <div class="subtabs" id="wltabs">
+        <button class="on" data-wl="bal">Balances</button>
+        <button data-wl="perf">Performance <span class="was">was P&amp;L</span></button>
+        <button data-wl="snd">Send</button><button data-wl="exp">Export</button>
+      </div>
+
+      <!-- ── PERFORMANCE (account-level: pnl_records has no wallet column, contract §5.9) ── -->
+      <div class="wlp" id="wl-perf">
+        <div class="nt i" style="margin-bottom:12px">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
+          <div>Performance is <b>account-level</b>. P&amp;L records carry no wallet, so cost and gas can't yet be split per wallet — only <b>minted</b> can, and it's on each wallet card.</div></div>
+        <div class="split">
+          <div class="card">
+            <div class="ch"><h2>Net by day</h2><div class="sp"></div>
+              <div class="seg"><button class="on">30d</button><button>90d</button><button>All</button></div></div>
+            <div class="of">
+              <svg class="chart" viewBox="0 0 620 112" preserveAspectRatio="none" role="img" aria-label="Daily net over 30 days. Net negative 0.208 ETH.">
+                <line x1="0" y1="56" x2="620" y2="56" stroke="var(--border-strong)" stroke-width="1"/><g id="bars2"></g></svg>
+              <div class="lgnd">
+                <span><i class="sw" style="background:var(--gain)"></i> Gain · above baseline · <b>+</b></span>
+                <span><i class="sw" style="background:var(--loss)"></i> Loss · below baseline · <b>−</b></span></div>
+              <p style="font-size:11px;color:var(--faint);margin-top:8px">Sale proceeds are entered manually — a mint with no recorded sale shows as a loss.</p>
+            </div>
+            <div class="ol"><div class="sk chart"></div></div>
+            <div class="emp oe"><div class="ei"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 17l5-6 4 3 5-8"/></svg></div>
+              <h3>No records yet</h3><p>Every confirmed mint creates a record with its real cost and gas.</p></div>
+          </div>
+          <div class="g">
+            <div class="sober"><div class="sh">Totals · 30 days</div>
+              <table class="led">
+                <tr><td>Mints</td><td>23</td></tr>
+                <tr><td>Cost</td><td>0.996000 ETH</td></tr>
+                <tr><td>Gas</td><td>0.208000 ETH</td></tr>
+                <tr><td>Sale proceeds</td><td>0.000000 ETH</td></tr>
+                <tr class="tot"><td>Net</td><td style="color:var(--loss-text)">−1.204000 ETH</td></tr>
+              </table></div>
+            <div class="card tight"><div class="ch"><h2>Records</h2><div class="sp"></div><button class="b g sm">Add manually</button></div>
+              <p style="font-size:12px;color:var(--muted)">Edit a record to enter what a token actually resold for. Until then its net is cost + gas as a loss.</p></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── SEND (no dashboard route today — contract §5.10) ── -->
+      <div class="wlp" id="wl-snd">
+        <div class="unav">
+          <div class="ei"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M21 4 3 11l7 3 3 7z"/></svg></div>
+          <h3>Sending is available from Telegram</h3>
+          <p>There is no dashboard send route yet. <code>/send</code> on Telegram walks through wallet, amount, destination and a confirm screen, using the same spend caps and gas ceiling.</p>
+          <button class="b sm">How sending works</button>
+        </div>
+        <div class="nt i" style="margin-top:12px">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
+          <div>Deliberate: a value-moving path gets its own review rather than arriving inside a restyle.</div></div>
+      </div>
+
+      <!-- ── EXPORT ── -->
+      <div class="wlp" id="wl-exp">
+        <div class="split">
+          <div class="card">
+            <div class="ch"><div class="chip-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="4" y="10.5" width="16" height="10.5" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/></svg></div><h2>Export a keystore</h2></div>
+            <div class="nt w" style="margin-bottom:12px">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>
+              <div><b>The raw key never reaches your browser.</b> The server decrypts the stored envelope and immediately re-encrypts it as a standard V3 keystore under your security password. Only that encrypted file is downloaded.</div></div>
+            <div class="g" style="gap:11px">
+              <label class="fl"><span>Wallet</span><select class="in"><option>Primary</option><option>Trading</option><option>Cold</option></select></label>
+              <label class="fl"><span>Security password</span><input class="in" type="password" placeholder="Your account security password"></label>
+              <label class="fl"><span>Type <b>CONFIRM</b> to proceed</span><input class="in mono" placeholder="CONFIRM"></label>
+              <button class="b d">Export keystore</button>
+              <p style="font-size:11px;color:var(--faint)">Limited to 2 exports per hour, shared with Telegram. Every attempt is written to the security audit log.</p>
+            </div>
+          </div>
+          <div class="g">
+            <div class="notice ox"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>
+              <div class="nb"><b>Too many export attempts.</b> Try again in 46 minutes.<code>429 · Retry-After: 2760</code></div></div>
+            <div class="sober"><div class="sh">Export policy</div>
+              <table class="led">
+                <tr><td>Rate limit</td><td>2 per hour</td></tr>
+                <tr><td>Shared with</td><td>Telegram /exportkey</td></tr>
+                <tr><td>Requires</td><td>Security password</td></tr>
+                <tr class="tot"><td>Audited</td><td>Always</td></tr>
+              </table></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="wlp on" id="wl-bal">
+      <div class="sfrow of"><div class="sf">
+        <svg class="si" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <input type="search" placeholder="Label, address, chain…"><button class="sx" aria-label="Clear search">×</button></div></div>
+
+      <!-- EMPTY: create form promoted to full width -->
+      <div class="oe g">
+        <div class="frun">
+          <h2>Create your first wallet</h2>
+          <p>GhostMint generates the private key on the server, encrypts it immediately with AES-256-GCM, and returns only the public address. The key is never sent to your browser.</p>
+          <div class="g gm2 g2" style="margin-bottom:13px">
+            <label class="fl"><span>Label</span><input class="in" placeholder="e.g. Primary"></label>
+            <label class="fl"><span>Chain</span><select class="in"><optgroup label="EVM"><option>Ethereum</option><option>Base</option><option>Arbitrum</option><option>Polygon</option></optgroup></select></label>
+          </div>
+          <button class="b p">Create securely</button>
+        </div>
+        <div class="card">
+          <div class="ch"><h2>Import an existing wallet</h2><div class="sp"></div><span class="p wn">Not recommended</span></div>
+          <p style="font-size:12.5px;color:var(--muted);margin-bottom:12px">Your key or seed phrase crosses browser memory and network transit. It is encrypted the moment it arrives and never returned — but creating a wallet above avoids the exposure entirely.</p>
+          <button class="b g sm">Import over HTTPS</button>
+        </div>
+      </div>
+
+      <div class="g g3 of" data-reorder="wallets">
+        <div class="blk">
+          <button class="dragh" title="Move up · arrow keys to reorder" aria-label="Reorder this wallet"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg></button>
+          <div class="card col" data-open="1">
+            <button class="colh"><span class="p ok">Funded</span><span class="cti">Primary</span><span class="ctv">2.410</span>
+              <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg></button>
+            <div class="colb">
+              <div class="ch"><h2>Primary</h2><div class="sp"></div><span class="p ok">Funded</span></div>
+              <div class="tv tab" style="margin-bottom:3px">2.410<small>ETH</small></div>
+              <p class="mono" style="font-size:11px;color:var(--faint);margin-bottom:11px">0x7a3f…9c21</p>
+              <div class="sober"><div class="sh">Performance · 30d</div>
+                <table class="led"><tr><td>Minted</td><td>14</td></tr><tr><td>Cost</td><td>0.712000 ETH</td></tr>
+                  <tr><td>Gas</td><td>0.131000 ETH</td></tr>
+                  <tr class="tot"><td>Net</td><td style="color:var(--gain-text)">+0.418000 ETH</td></tr></table></div>
+            </div>
+          </div>
+        </div>
+        <div class="blk">
+          <button class="dragh" title="Move up · arrow keys to reorder" aria-label="Reorder this wallet"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg></button>
+          <div class="card col" data-open="0">
+            <button class="colh"><span class="p ok">Funded</span><span class="cti">Trading</span><span class="ctv">1.664</span>
+              <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg></button>
+            <div class="colb">
+              <div class="ch"><h2>Trading</h2><div class="sp"></div><span class="p ok">Funded</span></div>
+              <div class="tv tab" style="margin-bottom:3px">1.664<small>ETH</small></div>
+              <p class="mono" style="font-size:11px;color:var(--faint);margin-bottom:11px">0x11bd…4e08</p>
+              <div class="sober"><div class="sh">Performance · 30d</div>
+                <table class="led"><tr><td>Minted</td><td>9</td></tr><tr><td>Cost</td><td>0.284000 ETH</td></tr>
+                  <tr><td>Gas</td><td>0.077000 ETH</td></tr>
+                  <tr class="tot"><td>Net</td><td style="color:var(--gain-text)">+0.199000 ETH</td></tr></table></div>
+            </div>
+          </div>
+        </div>
+        <!-- UNFUNDED: the most common real state -->
+        <div class="blk">
+          <button class="dragh" title="Move up · arrow keys to reorder" aria-label="Reorder this wallet"><svg viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg></button>
+          <div class="card col" data-open="0" style="border-color:var(--warn)">
+            <button class="colh"><span class="p wn">Unfunded</span><span class="cti">Cold</span><span class="ctv">0.008</span>
+              <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg></button>
+            <div class="colb">
+              <div class="ch"><h2>Cold</h2><div class="sp"></div><span class="p wn">Low</span></div>
+              <div class="tv tab" style="margin-bottom:3px;color:var(--warn-text)">0.008<small>ETH</small></div>
+              <div class="addr"><code class="mono">0x9e42…7f13</code><button class="b sm">Copy</button></div>
+              <div class="sober"><div class="sh">Performance · 30d</div>
+                <table class="led"><tr><td>Minted</td><td>0</td></tr><tr><td>Cost</td><td>0.000000 ETH</td></tr>
+                  <tr><td>Gas</td><td>0.000000 ETH</td></tr>
+                  <tr class="tot"><td>Net</td><td>0.000000 ETH</td></tr></table></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="g g3 ol"><div class="card"><div class="sk big"></div><div class="sk l w80"></div><div class="sk row"></div></div>
+        <div class="card"><div class="sk big"></div><div class="sk l w80"></div><div class="sk row"></div></div>
+        <div class="card"><div class="sk big"></div><div class="sk l w80"></div><div class="sk row"></div></div></div>
+      <div class="notice ox"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>
+        <div class="nb"><b>Could not load wallets.</b> Your wallets and their keys are unaffected — this is a read failure only.
+          <code>500 · Request failed safely</code>
+          <div class="br" style="margin-top:9px"><button class="b sm">Retry</button></div></div></div>
+      <p class="of" style="font-size:11.5px;color:var(--faint);margin-top:10px">Zero renders as <b>0.000000</b>, never blank — the <code>??</code>-not-truthiness rule, shown on Cold. A chain whose RPC failed shows <b>Unavailable</b>, which is not the same as zero.</p>
+      </div>
+    </section>
+
+    <!-- ══════════ HISTORY ══════════ -->
+    

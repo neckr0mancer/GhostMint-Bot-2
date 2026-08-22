@@ -8,14 +8,24 @@ const { createFlowStateStore } = require('../src/telegram/flowState');
 // on top of the already-tested slash commands.
 
 function baseInteraction(userId) {
-  return {
+  const state = {
     user: { id: userId }, guildId: 'guild', channelId: 'channel',
-    updates: [], replies: [], modal: null,
+    updates: [], replies: [], modal: null, deferred: false, replied: false, deferredMode: null,
     isChatInputCommand: () => false, isButton: () => false, isStringSelectMenu: () => false, isModalSubmit: () => false,
     async update(payload) { this.updates.push(payload); },
-    async reply(payload) { this.replies.push(payload); },
+    async reply(payload) { this.replied = true; this.replies.push(payload); },
     async showModal(payload) { this.modal = payload; },
+    // handleComponent defers every tap up front except the ones reserved for showModal (see
+    // willShowModal in discordBot.js) -- editReply() routes to whichever array matches what the
+    // real Discord client would show (deferUpdate -> the original message, i.e. updates;
+    // deferReply -> a fresh reply, i.e. replies), and followUp() always posts an additional
+    // ephemeral message for the public-origin-message-to-ephemeral transition.
+    async deferUpdate() { this.deferred = true; this.deferredMode = 'update'; },
+    async deferReply(options) { this.deferred = true; this.deferredMode = 'reply'; this.deferOptions = options; },
+    async editReply(payload) { (this.deferredMode === 'update' ? this.updates : this.replies).push(payload); },
+    async followUp(payload) { this.replies.push(payload); },
   };
+  return state;
 }
 
 function buttonInteraction(customId, userId = 'discord-user') {
@@ -68,8 +78,45 @@ test('clicking Wallets edits the message in place with the wallets submenu', asy
   const handler = createDiscordInteractionHandler({ identity: { resolveOrCreate: async () => 'user-a' }, commands: {} });
   const btn = buttonInteraction('menu:wallets');
   await handler(btn);
+  // Deferred via deferUpdate() (edits the original message), then answered via editReply() -- the
+  // same eventual visual effect as a bare update() would have had, just acknowledged up front.
+  assert.equal(btn.deferred, true);
   assert.equal(btn.updates.length, 1);
   assert.match(btn.updates[0].content, /Wallets/);
+});
+
+// The real bug this guards against: "GHOST_1.0 didn't respond in time" was seen even on
+// menu:wallets, which does no RPC/DB work of its own -- identity.resolveOrCreate (a DB round trip
+// every handler runs before its own branch) was apparently slow enough on its own, some of the
+// time, to occasionally blow Discord's 3s component-ack window. handleComponent now defers every
+// tap unconditionally, before identity resolution even runs, rather than only deferring the
+// specific handlers already known to do slow work.
+test('every ordinary button defers before identity resolution runs, not after', async () => {
+  const order = [];
+  const handler = createDiscordInteractionHandler({
+    identity: { resolveOrCreate: async () => { order.push('resolve'); return 'user-a'; } },
+    commands: {},
+  });
+  const btn = buttonInteraction('menu:wallets');
+  const originalDefer = btn.deferUpdate.bind(btn);
+  btn.deferUpdate = async () => { order.push('defer'); return originalDefer(); };
+  await handler(btn);
+  assert.deepEqual(order, ['defer', 'resolve']);
+});
+
+// showModal() is mutually exclusive with defer/reply -- a handler that opens a modal must never
+// have been pre-deferred, or Discord rejects the modal call as "already acknowledged".
+test('a button that opens a modal is never pre-deferred', async () => {
+  const handler = createDiscordInteractionHandler({ identity: { resolveOrCreate: async () => 'user-a' }, commands: {} });
+  // menu:mint now asks single-or-batch first, so the modal openers are its two answers. The
+  // invariant is unchanged and still worth guarding: whatever opens a modal must not be deferred,
+  // because a deferred interaction can no longer show one.
+  for (const [id, expected] of [['menu:mint:single', 'menu:mint:submit'], ['menu:mint:batch', 'menu:mint:batch:submit']]) {
+    const btn = buttonInteraction(id);
+    await handler(btn);
+    assert.equal(btn.deferred, false, `${id} must not be pre-deferred`);
+    assert.equal(btn.modal.custom_id, expected);
+  }
 });
 
 test('the create-wallet button starts a guided flow and shows a label modal', async () => {
@@ -88,7 +135,7 @@ test('submitting the label modal advances the flow to chain selection', async ()
   const modal = modalInteraction('flow:label:submit', { value: 'my-wallet' }, 'flow-user-2');
   await handler(modal);
   assert.equal(modal.replies.length, 1);
-  assert.match(modal.replies[0].content, /Choose a chain/);
+  assert.match(modal.replies[0].content, /Choose a network/);
 });
 
 test('selecting a chain completes wallet creation through the shared botCommandService and clears the flow', async () => {
@@ -106,52 +153,59 @@ test('selecting a chain completes wallet creation through the shared botCommandS
   assert.match(select.updates[0].content, /generated securely/);
 
   // the flow must be fully cleared: a later divergent click should not think a flow is active
-  const after = buttonInteraction('menu:mint', 'flow-user-3');
+  // (menu:wallets, not menu:mint/menu:tasks, since Section O now makes both of those perform a
+  // real action requiring their own command mocks -- this probe just needs any other menu tap
+  // that still renders a static, no-data-fetch screen)
+  const after = buttonInteraction('menu:wallets', 'flow-user-3');
   await handler(after);
-  assert.match(after.updates[0].content, /Mint/);
+  assert.match(after.updates[0].content, /Wallets/);
 });
 
-test('navigating to a different menu mid-flow prompts for cancel confirmation instead of silently switching', async () => {
-  const handler = createDiscordInteractionHandler({ identity: { resolveOrCreate: async () => 'internal-user' }, commands: {} });
-  await handler(buttonInteraction('wallet:create:start', 'flow-user-4'));
-  const divert = buttonInteraction('menu:mint', 'flow-user-4');
-  await handler(divert);
-  assert.match(divert.updates[0].content, /creating a wallet/);
-  assert.deepEqual(divert.updates[0].components[0].components.map(b => b.custom_id), ['flow:cancel:confirm', 'flow:cancel:resume']);
-});
-
-test('confirming the cancel fully clears the flow and returns to the main menu', async () => {
-  const handler = createDiscordInteractionHandler({ identity: { resolveOrCreate: async () => 'internal-user' }, commands: {} });
-  await handler(buttonInteraction('wallet:create:start', 'flow-user-5'));
-  await handler(buttonInteraction('menu:mint', 'flow-user-5'));
-  const confirm = buttonInteraction('flow:cancel:confirm', 'flow-user-5');
-  await handler(confirm);
-  assert.match(confirm.updates[0].content, /GhostMint/);
-  const afterCancel = buttonInteraction('menu:wallets', 'flow-user-5');
-  await handler(afterCancel);
-  assert.match(afterCancel.updates[0].content, /Wallets/);
-});
-
-test('choosing to keep going resumes the exact step the flow was on', async () => {
+test('picking "Solana (coming soon)" re-shows the chain select with an explanation instead of doing nothing, and does not touch flow state', async () => {
+  const created = [];
   const handler = createDiscordInteractionHandler({
-    identity: { resolveOrCreate: async () => 'internal-user' }, commands: {},
+    identity: { resolveOrCreate: async () => 'internal-user' },
+    commands: { createWallet: async (userId, input) => { created.push({ userId, input }); return { label: input.label, address: '0xabc', chain: input.chain }; } },
     supportedChains: ['ethereum'], chains: { ethereum: { name: 'Ethereum' } },
   });
-  await handler(buttonInteraction('wallet:create:start', 'flow-user-6'));
-  await handler(modalInteraction('flow:label:submit', { value: 'resumed' }, 'flow-user-6'));
-  await handler(buttonInteraction('menu:mint', 'flow-user-6'));
-  const resume = buttonInteraction('flow:cancel:resume', 'flow-user-6');
-  await handler(resume);
-  assert.match(resume.updates[0].content, /Choose a chain/);
+  await handler(buttonInteraction('wallet:create:start', 'flow-user-4'));
+  await handler(modalInteraction('flow:label:submit', { value: 'main' }, 'flow-user-4'));
+  const solanaPick = selectInteraction('flow:chain:select', ['solana-soon'], 'flow-user-4');
+  await handler(solanaPick);
+  assert.equal(created.length, 0, 'must not create a wallet for an unsupported chain');
+  assert.match(solanaPick.updates[0].content, /Solana wallets aren't supported yet/);
+
+  // the flow must still be alive -- picking Solana was a no-op, not an abandonment
+  const evmPick = selectInteraction('flow:chain:select', ['ethereum'], 'flow-user-4');
+  await handler(evmPick);
+  assert.deepEqual(created[0], { userId: 'internal-user', input: { label: 'main', chain: 'ethereum' } });
 });
 
-test('a slash command issued mid-flow is intercepted with a cancel-confirmation prompt instead of running', async () => {
-  const handler = createDiscordInteractionHandler({ identity: { resolveOrCreate: async () => 'internal-user' }, commands: { wallets: () => [] } });
+test('navigating to a different menu mid-flow silently abandons it and switches immediately, no confirmation', async () => {
+  const handler = createDiscordInteractionHandler({ identity: { resolveOrCreate: async () => 'internal-user' }, commands: {} });
+  await handler(buttonInteraction('wallet:create:start', 'flow-user-4'));
+  const divert = buttonInteraction('menu:wallets', 'flow-user-4');
+  await handler(divert);
+  assert.match(divert.updates[0].content, /Wallets/);
+
+  // the abandoned flow must actually be gone -- a follow-up tap that only makes sense mid-wallet-
+  // creation (submitting the label modal) must not still be honored.
+  const stray = modalInteraction('flow:label:submit', { value: 'late' }, 'flow-user-4');
+  await handler(stray);
+  assert.match(stray.replies[0].content, /expired/);
+});
+
+test('a slash command issued mid-flow silently abandons the flow and runs normally, no confirmation', async () => {
+  const handler = createDiscordInteractionHandler({ identity: { resolveOrCreate: async () => 'internal-user' }, commands: {} });
   await handler(buttonInteraction('wallet:create:start', 'flow-user-7'));
-  const slash = chatInteraction('wallet', 'flow-user-7');
+  const slash = chatInteraction('menu', 'flow-user-7');
   await handler(slash);
-  assert.equal(slash.deferred, false);
-  assert.match(slash.replies[0].content, /creating a wallet/);
+  assert.equal(slash.deferred, true, 'the command actually ran (deferred+replied), not intercepted');
+  assert.match(slash.replies[0].content, /GhostMint/);
+
+  const stray = modalInteraction('flow:label:submit', { value: 'late' }, 'flow-user-7');
+  await handler(stray);
+  assert.match(stray.replies[0].content, /expired/);
 });
 
 test('the remove-wallet select flow requires an explicit confirmation before permanently removing it', async () => {
@@ -163,7 +217,7 @@ test('the remove-wallet select flow requires an explicit confirmation before per
   await handler(buttonInteraction('wallet:remove:pick', 'flow-user-8'));
   const select = selectInteraction('wallet:remove:select', ['cold'], 'flow-user-8');
   await handler(select);
-  assert.match(select.updates[0].content, /Remove wallet \*\*cold\*\*/);
+  assert.match(select.updates[0].content, /Remove wallet cold\?/);
   assert.equal(removed, null);
   const confirm = buttonInteraction('wallet:remove:do:cold', 'flow-user-8');
   await handler(confirm);

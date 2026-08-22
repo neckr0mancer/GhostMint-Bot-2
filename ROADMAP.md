@@ -129,6 +129,14 @@ Milestone 13 is divided into these ordered, independently testable build phases:
 - **13d — Admin/governance:** Groups, ceilings, editable presets, and owner management.
 - **13e — Settings/reporting:** Gas, social API usage statistics, and general settings.
 
+Deferred until the dashboard UI-fidelity pass is complete (recorded in detail in
+`docs/REDESIGN_FIDELITY_BACKLOG.md` §13.16 and `docs/TEST_PLAN.md`): archive expired/cancelled
+schedules out of the operational Schedule list after a proposed 30-day retention period while
+preserving chronological History; replace unresolved Mint-now preview zeroes with unknown states;
+add receipt-style preview parity for Schedule and Batch; and add status-correct sniper actions
+(failed: Edit/Retry/Archive, paused: Edit/Resume/Archive). Batch scheduling remains an undecided
+separate feature, not implied by preview parity.
+
 Technology decisions for all Milestone 13 phases:
 
 - Frontend: React with Vite using plain JavaScript.

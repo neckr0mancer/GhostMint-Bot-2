@@ -1,21 +1,81 @@
-/* global clearTimeout, CustomEvent, FormData, localStorage, setTimeout */
+/* global clearInterval, clearTimeout, CustomEvent, FormData, localStorage, setInterval, setTimeout, URLSearchParams */
 import React,{useCallback,useEffect,useRef,useState} from 'react';
 import Admin from './Admin.jsx';
-import {ACTIVITY_EVENTS,api,confirmDialog,ConfirmHost,consumePendingMintPrefill,CopyButton,csrf,downloadFile,Empty,EVM_CHAINS,Field,Form,getNotificationLog,notify,Notice,PageTitle,Pager,promptDialog,relativeTime,Select,Skeleton,StatusPill,subscribeNotificationLog,ToastHost,useLoad,useLiveSocket} from './shared.jsx';
+import {shortAddress} from './dashboardWidgets/homeParts.jsx';
+import PnlBars from './PnlBars.jsx';
+import {loadError,batchRowDetail,useRetryAfter} from './shared.jsx';
+import {walletPerformance,pnlWalletLabel} from './walletPerformance.js';
+import {pnlBarLayout,pnlRecordSeries,pnlWindowTotals} from './pnlChart.js';
+import {ACTIVITY_EVENTS,api,Ledger,NumberField,SectionCard,confirmDialog,ConfirmHost,consumePendingMintPrefill,CopyButton,csrf,downloadFile,Empty,EVM_CHAINS,Field,Form,getNotificationLog,notify,Notice,PageTitle,Pager,promptDialog,relativeTime,Select,Skeleton,StatusPill,SubTabs,subscribeNotificationLog,ToastHost,useLoad,useLiveSocket,setPendingMintPrefill,quantityPicks} from './shared.jsx';
 import Dashboard from './Dashboard.jsx';
-const PAGES=['Dashboard','Wallets','Minting','Tasks','Snipers','Watch Rules','Target Policies','Activity','P&L','Settings','Account'];
+// Phase 4, unit 1 of 5 (brief §2). The 11->5 merge lands one page at a time so any single merge
+// can be reverted alone. Mint = Minting + Tasks is done; Automation, Wallets+P&L and History are
+// still their own pages and stay fully routable until their own unit lands, so nothing is ever
+// unreachable mid-migration.
+// Order, labels and grouping are the prototype's, not the old app's: Operate holds the five
+// places you work, the footer holds the three account-level ones.
+const PAGES=['Home','Mint','Automation','Wallets','History','Settings','Account'];
 // Plain History API routing (no router dependency): each page maps to a real /dashboard/<slug>
 // URL so a reload lands back where you were instead of always resetting to Dashboard. The server
 // already serves index.html for every /dashboard/* path (src/server.js), so this needs no backend
 // route changes.
-const PAGE_SLUGS={Dashboard:'',Wallets:'wallets',Minting:'minting',Tasks:'tasks',Snipers:'snipers','Watch Rules':'watch-rules','Target Policies':'target-policies',Activity:'activity','P&L':'pnl',Settings:'settings',Account:'account'};
+const PAGE_SLUGS={Home:'',Mint:'mint',Automation:'automation',Wallets:'wallets',History:'history',Settings:'settings',Account:'account'};
 const SLUG_PAGES=Object.fromEntries(Object.entries(PAGE_SLUGS).map(([page,slug])=>[slug,page]));
-function pageFromLocation(){const segment=window.location.pathname.replace(/^\/dashboard\/?/,'').replace(/\/+$/,'');return SLUG_PAGES[segment]||'Dashboard';}
+// A bookmark that worked yesterday works tomorrow (brief §2, "Non-negotiable on routing"). A
+// retired slug resolves to its new page WITH the right sub-tab pre-selected, so /dashboard/tasks
+// lands on Mint's Schedule tab rather than dumping the user on Mint now and making them hunt for
+// what moved. The URL is rewritten rather than left showing the dead slug, so what gets
+// re-bookmarked is the new location.
+const RETIRED_SLUGS={
+  minting:{page:'Mint',tab:'now'},
+  tasks:{page:'Mint',tab:'schedule'},
+  snipers:{page:'Automation',tab:'snipers'},
+  'watch-rules':{page:'Automation',tab:'social'},
+  'target-policies':{page:'Automation',tab:'policies'},
+  pnl:{page:'Wallets',tab:'performance'},
+  activity:{page:'History',tab:'activity'},
+};
+// The same redirect, for in-app go() calls rather than URLs. ~14 call sites across the four
+// legacy theme widget packs, the mobile FAB and Home still say go('Minting') / go('Tasks') --
+// with those names gone from PAGE_SLUGS and VIEWS, each would have produced /dashboard/undefined
+// and a blank page. Aliasing inside go() fixes every one of them at a single point INCLUDING the
+// three secondary theme packs, which brief §9.1-D15 says to carry unmodified. Each later merge
+// unit adds its own aliases here rather than editing call sites it does not otherwise own.
+const PAGE_ALIASES={
+  Minting:{page:'Mint',tab:'now'},Tasks:{page:'Mint',tab:'schedule'},
+  Snipers:{page:'Automation',tab:'snipers'},'Watch Rules':{page:'Automation',tab:'social'},
+  'Target Policies':{page:'Automation',tab:'policies'},'P&L':{page:'Wallets',tab:'performance'},Activity:{page:'History',tab:'activity'},
+};
+// The sub-tab lives in ?tab= rather than a path segment: it is view state within one page, and a
+// query param keeps SLUG_PAGES a flat one-level map instead of needing nested route parsing.
+function pageFromLocation(){
+  const path=window.location.pathname.replace(/^\/dashboard\/?/,'').replace(/\/+$/,'');
+  const query=new URLSearchParams(window.location.search);
+  const tab=query.get('tab')||null;
+  const target=query.get('target')||null;
+  // Deep links carry an id as a second segment (/dashboard/target-policies/:id). Split it off so
+  // the slug still resolves, and carry the id through as ?target= so the bookmark keeps working
+  // rather than 404ing into Dashboard (brief §2, "including deep links").
+  const [segment,deepId]=path.split('/');
+  const retired=RETIRED_SLUGS[segment];
+  if(retired)return {page:retired.page,tab:retired.tab,target:deepId||target,redirected:true};
+  return {page:SLUG_PAGES[segment]||'Home',tab,target,redirected:false};
+}
+function pathFor(page,tab,target){
+  const query=new URLSearchParams();
+  if(tab)query.set('tab',tab);
+  if(target)query.set('target',target);
+  const search=query.toString();
+  return `/dashboard/${PAGE_SLUGS[page]}${search?`?${search}`:''}`;
+}
 // The collapsible rail's expanded/collapsed state is a standing layout preference (like an editor's
 // sidebar), not per-session UI state -- persisted in localStorage so it survives a reload, shared
 // between the regular dashboard and the admin shell since it's visually the same rail.
 const RAIL_EXPANDED_KEY='ghostmint-rail-expanded';
-function readRailExpanded(){try{return localStorage.getItem(RAIL_EXPANDED_KEY)==='true';}catch{return false;}}
+// Pinned expanded while the design is being matched to the prototype. The collapsed rail is a
+// second layout that would have to be kept identical too, and it is not the state the prototype
+// shows. Restore the stored preference once the expanded rail matches.
+function readRailExpanded(){return true;}
 function writeRailExpanded(value){try{localStorage.setItem(RAIL_EXPANDED_KEY,String(value));}catch{/* private browsing or storage disabled -- falls back to session-only */}}
 const RAIL_THEMES=new Set(['ghost-mint','ghost-mint-light']);
 const THEME_OPTIONS=[{value:'ghost-mint',label:'Ghost Mint'},{value:'ghost-mint-light',label:'Ghost Mint Light'},{value:'clean-vault',label:'Clean Vault'},{value:'neon-arcade',label:'Neon Arcade'},{value:'quiet-ledger',label:'Quiet Ledger'}];
@@ -25,7 +85,6 @@ const CHAIN_META={
   arbitrum:{label:'Arbitrum',icon:<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 3 4 20h5l3-7 3 7h5z" fill="#28a0f0"/></svg>},
   polygon:{label:'Polygon',icon:<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 2 21 7v10l-9 5-9-5V7z" fill="#c084fc"/></svg>},
   robinhood:{label:'Robinhood Chain',icon:<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><rect x="3" y="3" width="18" height="18" rx="6" fill="#00C805"/></svg>},
-  sepolia:{label:'Sepolia',icon:<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 2 5 12.5 12 16.5 19 12.5z" fill="#8ea8ff" opacity=".3"/><path d="M12 17.75 5 13.75 12 22 19 13.75z" fill="#8ea8ff" opacity=".55"/></svg>,testnet:true},
 };
 function chainMeta(value){return CHAIN_META[value]||{label:value,icon:null};}
 const CHAIN_CHEVRON_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 9l6 6 6-6"/></svg>;
@@ -33,20 +92,62 @@ const CHAIN_CHECK_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor
 const SOLANA_ICON=<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 2 20 7v10l-8 5-8-5V7z" fill="none" stroke="currentColor" strokeWidth="1.8"/></svg>;
 const BOLT_PATH="M13 2 4 14h6l-1 8 9-12h-6z";
 const ICON_PROPS={viewBox:"0 0 24 24",fill:"none",stroke:"currentColor",strokeWidth:"1.8",strokeLinecap:"round",strokeLinejoin:"round",xmlns:"http://www.w3.org/2000/svg"};
+// Carried by the Paused pill alone. Active and Failing already read as themselves through colour
+// -- green and red -- but Paused is a quiet grey that scans as "nothing to see", which is the
+// one state where that is wrong: it means the trigger is not running.
+const PAUSED_GLYPH=<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"
+  xmlns="http://www.w3.org/2000/svg"><rect x="7" y="6" width="3.4" height="12" rx="1"/><rect x="13.6" y="6" width="3.4" height="12" rx="1"/></svg>;
+const SEARCH_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9"
+  strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>;
 const NAV_ICONS={
-  Dashboard:<svg {...ICON_PROPS}><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>,
+  Home:<svg {...ICON_PROPS}><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>,
   Wallets:<svg {...ICON_PROPS}><rect x="3" y="6" width="18" height="13" rx="2.5"/><path d="M3 10h18"/><circle cx="16.5" cy="14.5" r="1" fill="currentColor" stroke="none"/></svg>,
-  Minting:<svg {...ICON_PROPS}><path d={BOLT_PATH}/></svg>,
+  Mint:<svg {...ICON_PROPS}><path d={BOLT_PATH}/></svg>,
   Tasks:<svg {...ICON_PROPS}><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg>,
+  Automation:<svg {...ICON_PROPS}><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>,
   Snipers:<svg {...ICON_PROPS}><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>,
   'Watch Rules':<svg {...ICON_PROPS}><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="2.5"/></svg>,
   'Target Policies':<svg {...ICON_PROPS}><path d="M12 2 4 5v6c0 5 3.4 8.7 8 9 4.6-.3 8-4 8-9V5z"/></svg>,
+  History:<svg {...ICON_PROPS}><path d="M2 12h4l2 7 4-14 2 7h8"/></svg>,
   Activity:<svg {...ICON_PROPS}><path d="M2 12h4l2 7 4-14 2 7h8"/></svg>,
   'P&L':<svg {...ICON_PROPS}><path d="M5 19v-6M12 19V8M19 19v-10"/></svg>,
   Settings:<svg {...ICON_PROPS}><circle cx="12" cy="12" r="3.2"/><path d="M12 3v2.5M12 18.5V21M4.5 7.5l2.2 1.3M17.3 15.2l2.2 1.3M3 12h2.5M18.5 12H21M4.5 16.5l2.2-1.3M17.3 8.8l2.2-1.3"/></svg>,
   Account:<svg {...ICON_PROPS}><circle cx="12" cy="8.5" r="3.2"/><path d="M5 20c1.2-3.5 4-5.2 7-5.2s5.8 1.7 7 5.2"/></svg>,
   Admin:<svg {...ICON_PROPS}><circle cx="12" cy="12" r="3.2"/><path d="M12 3v2.5M12 18.5V21M4.5 7.5l2.2 1.3M17.3 15.2l2.2 1.3M3 12h2.5M18.5 12H21M4.5 16.5l2.2-1.3M17.3 8.8l2.2-1.3"/></svg>,
 };
+/* ── Ported shell chrome (docs/prototype-pages/_rail.html) ────────────────────────────────────
+   These are the prototype's own icons, copied path-for-path, at its stroke-width of 1.9 and under
+   its .ico class. They are deliberately NOT reused from NAV_ICONS above: that set is drawn at 1.8
+   inside a filled .nav-icon badge, which is the look this pass replaces. NAV_ICONS stays because
+   the admin shell, the bottom bar and the More sheet still render it. */
+const RAIL_ICON_PROPS={className:"ico",viewBox:"0 0 24 24",fill:"none",stroke:"currentColor",strokeWidth:"1.9",strokeLinecap:"round",strokeLinejoin:"round",xmlns:"http://www.w3.org/2000/svg"};
+const RAIL_ICONS={
+  Home:<svg {...RAIL_ICON_PROPS}><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.8V20h14V9.8"/></svg>,
+  Mint:<svg {...RAIL_ICON_PROPS}><path d="M13 2 4.5 13H11l-1 9 8.5-11H12l1-9Z"/></svg>,
+  Automation:<svg {...RAIL_ICON_PROPS}><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9 7 7M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1"/></svg>,
+  Wallets:<svg {...RAIL_ICON_PROPS}><rect x="3" y="6" width="18" height="13" rx="2.5"/><path d="M3 10h18M16.5 14.5h.01"/></svg>,
+  History:<svg {...RAIL_ICON_PROPS}><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg>,
+  Admin:<svg {...RAIL_ICON_PROPS}><path d="M12 3l7 3v5c0 5-3 8.5-7 10-4-1.5-7-5-7-10V6z"/></svg>,
+  Account:<svg {...RAIL_ICON_PROPS}><circle cx="12" cy="8" r="3.6"/><path d="M4.5 20c.8-4 3.8-6 7.5-6s6.7 2 7.5 6"/></svg>,
+  Settings:<svg {...RAIL_ICON_PROPS}><path d="M3 6h8.6M15.4 6H21"/><circle cx="13.5" cy="6" r="1.9"/><path d="M3 12h4.6M11.4 12H21"/><circle cx="9.5" cy="12" r="1.9"/><path d="M3 18h11.6M18.4 18H21"/><circle cx="16.5" cy="18" r="1.9"/></svg>,
+};
+const CMDK_ICON=<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" xmlns="http://www.w3.org/2000/svg"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>;
+// prototype.css expresses "mobile" as .app[data-m], set by the prototype's own Desktop/Mobile
+// harness toggle rather than by a media query, so the real app has to supply the attribute. 700px
+// is this app's existing mobile breakpoint -- the one .mobile-bottombar and .more-sheet already
+// use -- so the rail, the bottom bar and the sheet all still change over on the same line.
+const MOBILE_QUERY="(max-width:700px)";
+function useIsMobile(){
+  const [mobile,setMobile]=useState(()=>typeof window!=="undefined"&&window.matchMedia(MOBILE_QUERY).matches);
+  useEffect(()=>{
+    const mq=window.matchMedia(MOBILE_QUERY);
+    const onChange=event=>setMobile(event.matches);
+    mq.addEventListener("change",onChange);
+    setMobile(mq.matches);
+    return()=>mq.removeEventListener("change",onChange);
+  },[]);
+  return mobile;
+}
 function ChainSelect({name,label,options,value,onChange}){const [open,setOpen]=useState(false);const [activeIndex,setActiveIndex]=useState(0);const rootRef=useRef(null);const panelRef=useRef(null);const meta=chainMeta(value);const evmOptions=(options||[]).filter(option=>EVM_CHAINS.includes(option));useEffect(()=>{if(!open)return;function onDocClick(event){if(rootRef.current&&!rootRef.current.contains(event.target))setOpen(false);}function onKey(event){if(event.key==='Escape')setOpen(false);}document.addEventListener('mousedown',onDocClick);document.addEventListener('keydown',onKey);return()=>{document.removeEventListener('mousedown',onDocClick);document.removeEventListener('keydown',onKey);};},[open]);useEffect(()=>{if(open)panelRef.current?.focus();},[open]);function choose(next){onChange({target:{name,value:next}});setOpen(false);}function openList(){setActiveIndex(Math.max(0,evmOptions.indexOf(value)));setOpen(true);}function onTriggerKeyDown(event){if(event.key==='ArrowDown'||event.key==='Enter'||event.key===' '){event.preventDefault();openList();}}function onListKeyDown(event){if(event.key==='ArrowDown'){event.preventDefault();setActiveIndex(index=>Math.min(evmOptions.length-1,index+1));}else if(event.key==='ArrowUp'){event.preventDefault();setActiveIndex(index=>Math.max(0,index-1));}else if(event.key==='Enter'||event.key===' '){event.preventDefault();choose(evmOptions[activeIndex]);}else if(event.key==='Escape'){event.preventDefault();setOpen(false);}else if(event.key==='Tab'){setOpen(false);}}return <div className="chain-select">{label}<div className="chain-select-control" ref={rootRef}><input type="hidden" name={name} value={value}/><button type="button" className="chain-select-trigger" aria-haspopup="listbox" aria-expanded={open} aria-label={label} onClick={()=>open?setOpen(false):openList()} onKeyDown={onTriggerKeyDown}><span className="chain-icon" aria-hidden="true">{meta.icon}</span><span className="chain-select-value">{meta.label}</span>{meta.testnet&&<span className="chain-select-tag">Testnet</span>}<span className="chain-select-chevron" aria-hidden="true">{CHAIN_CHEVRON_ICON}</span></button>{open&&<ul className="chain-select-panel" role="listbox" aria-label={label} tabIndex="-1" ref={panelRef} onKeyDown={onListKeyDown}><li className="chain-select-group-label" role="presentation">EVM</li>{evmOptions.map((option,index)=>{const optionMeta=chainMeta(option);return <li key={option} role="option" aria-selected={option===value} className={`chain-select-option${option===value?' selected':''}${index===activeIndex?' active':''}`} onMouseEnter={()=>setActiveIndex(index)} onClick={()=>choose(option)}><span className="chain-icon" aria-hidden="true">{optionMeta.icon}</span><span>{optionMeta.label}</span><span className="chain-select-option-end">{optionMeta.testnet&&<span className="chain-select-tag">Testnet</span>}{option===value&&<span className="chain-select-option-check" aria-hidden="true">{CHAIN_CHECK_ICON}</span>}</span></li>;})}<li className="chain-select-group-label" role="presentation">Other networks</li><li className="chain-select-option disabled" role="option" aria-disabled="true" aria-selected="false"><span className="chain-icon" aria-hidden="true">{SOLANA_ICON}</span><span>Solana</span><span className="chain-select-option-end"><span className="chain-select-tag">Coming soon</span></span></li></ul>}</div></div>;}
 // Wallet create/import only need to distinguish the chain family (EVM vs Solana), not a specific
 // EVM chain -- one address already works on every EVM chain, so wallets store DEFAULT_EVM_CHAIN
@@ -79,26 +180,569 @@ async function promptSetSecurityPassword({isChange,onProfileChange}){
     return true;
   }catch(value){notify(value.message,{type:'error'});return false;}
 }
-function Wallets({profile,onProfileChange}){const {data:wallets,error,load}=useLoad('/api/wallets',[],'wallets.changed');const [createChain,setCreateChain]=useState('evm');const [importChain,setImportChain]=useState('evm');const [importMethod,setImportMethod]=useState('privateKey');const [query,setQuery]=useState('');async function submit(event,path){event.preventDefault();const form=event.currentTarget;const values=Object.fromEntries(new FormData(form));try{await api(path,{method:'POST',body:JSON.stringify(values)});form.reset();notify('Wallet saved securely.',{type:'success'});load();}catch(value){notify(value.message,{type:'error'});}}async function remove(label){if(!await confirmDialog(`Remove wallet ${label}? This cannot be undone.`))return;try{await api(`/api/wallets/${encodeURIComponent(label)}`,{method:'DELETE',body:JSON.stringify({confirmation:'CONFIRM'})});load();}catch(value){notify(value.message,{type:'error'});}}
-  // The server never returns a raw private key to the browser -- it re-encrypts the stored key
-  // server-side into a standard V3 keystore, encrypted under the account's own security password
-  // (set once via promptSetSecurityPassword, reused for every export) rather than a fresh one chosen
-  // per export, so there is exactly one password to remember for every sensitive action.
-  async function exportKey(label){
-    if(!profile.securityPasswordSet){
-      if(!await confirmDialog('Exporting a key needs a security password first. It will then be required for this and every future sensitive action. Set it now?'))return;
-      if(!await promptSetSecurityPassword({isChange:false,onProfileChange}))return;
-    }
-    if(!await confirmDialog(`Export the encrypted keystore for ${label}? Your security password will encrypt it.`))return;
-    const securityPassword=await promptDialog('Enter your security password.',{placeholder:'Security password',masked:true});
-    if(!securityPassword)return;
+// Module-level so both the Holdings tab's per-wallet action and the Export tab share ONE
+// implementation. Two copies of a key-export flow is exactly the kind of divergence that ends
+// with one of them missing a confirmation step.
+//
+// The server never returns a raw private key to the browser -- it re-encrypts the stored key
+// server-side into a standard V3 keystore, encrypted under the account's own security password
+// (set once via promptSetSecurityPassword, reused for every export) rather than a fresh one chosen
+// per export, so there is exactly one password to remember for every sensitive action.
+async function exportWalletKeystore(label,{profile,onProfileChange}){
+  if(!profile.securityPasswordSet){
+    if(!await confirmDialog('Exporting a key needs a security password first. It will then be required for this and every future sensitive action. Set it now?'))return;
+    if(!await promptSetSecurityPassword({isChange:false,onProfileChange}))return;
+  }
+  if(!await confirmDialog(`Export the encrypted keystore for ${label}? Your security password will encrypt it.`))return;
+  const securityPassword=await promptDialog('Enter your security password.',{placeholder:'Security password',masked:true});
+  if(!securityPassword)return;
+  try{
+    const {keystore}=await api(`/api/wallets/${encodeURIComponent(label)}/export`,{method:'POST',body:JSON.stringify({securityPassword,confirmation:'CONFIRM'})});
+    downloadFile(`${label}-keystore.json`,keystore);
+    notify('Encrypted keystore downloaded. Store it and your security password separately and securely.',{type:'success'});
+  }catch(value){notify(value.message,{type:'error'});}
+}
+// Zero renders as 0.000000, never blank -- the ??-not-truthiness rule wallets.html's own footnote
+// states. A chain whose RPC failed returns null, and that is Unavailable: a DIFFERENT fact from
+// zero. Conflating the two is how a funded wallet reads as empty during an RPC outage, which is
+// the one misreading here that could make someone top up a wallet that never needed it.
+function walletBalanceText(value,places){
+  if(value===null||value===undefined||value==='')return null;
+  const parsed=Number(value);
+  return Number.isFinite(parsed)?parsed.toFixed(places===undefined?6:places):String(value);
+}
+// The wallet's own chain carries the headline number; any others are the same address holding
+// funds elsewhere, which live in the details overlay.
+function walletHome(wallet){
+  const balances=wallet.balances||[];
+  return balances.find(item=>item.chain===wallet.chain)||balances[0]||null;
+}
+// The threshold the owner asked for. There is nothing in the data model that defines "low", so this
+// is a stated default rather than a derived fact: 0.01 ETH is roughly a mint's gas on mainnet, so
+// below it a wallet cannot reliably complete one. It deliberately covers zero too -- the owner's
+// call that the status reads "Low", not "Unfunded", and a wallet at 0.000000 is the lowest there
+// is. The figure is named on the page so it is a threshold the reader can see, not a secret.
+//
+// One number rather than per-chain: an L2 needs far less, so this is conservative on Base or
+// Arbitrum. Making it per-chain means a table of gas assumptions that goes stale quietly, and the
+// card already shows the real balance next to the badge for anyone who wants to judge it directly.
+const WALLET_LOW_ETH=0.01;
+function walletStatus(wallet){
+  const text=walletBalanceText(walletHome(wallet)?.balance);
+  if(text===null)return {label:'Unavailable',tone:''};
+  return Number(text)>=WALLET_LOW_ETH?{label:'Funded',tone:'ok'}:{label:'Low',tone:'wn'};
+}
+function lowWallets(wallets){
+  return Array.isArray(wallets)?wallets.filter(item=>walletStatus(item).tone==='wn').length:0;
+}
+function signedEth(value){
+  return `${value<0?'−':'+'}${Math.abs(value).toFixed(6)} ETH`;
+}
+
+// wallets.html's .blk > .card.col: a collapsed summary row on a phone, the whole card on a desktop.
+// prototype.css hides .colh above the mobile breakpoint, so this is one markup serving both rather
+// than a viewport branch in JS -- the same shape TriggerCard uses on Automation.
+//
+// The card is now only ever the short version. Details is an icon in the header and opens an
+// overlay, because the owner's point stands: a disclosure that grows the card pushes every card
+// below it down the page, and on a three-column grid it drags the whole row taller. An overlay
+// costs the card nothing.
+//
+// Export key is deliberately absent: the Export tab is the one place a keystore comes from, and a
+// second door here made that tab look optional. Remove lives in the overlay's Manage tab.
+function WalletCard({wallet,records,windowLabel,windowMs,onOpen}){
+  const [open,setOpen]=useState(false);
+  const home=walletHome(wallet);
+  const status=walletStatus(wallet);
+  const headline=walletBalanceText(home?.balance,3);
+  const performance=walletPerformance(records,wallet.label,windowMs);
+  const cell=value=>performance?value:'—';
+  return <div className="blk">
+    <div className="card col" data-open={open?'1':'0'}
+      style={status.tone==='wn'?{borderColor:'var(--warn)'}:undefined}>
+      <button type="button" className="colh" aria-expanded={open} onClick={()=>setOpen(value=>!value)}>
+        <span className={`p ${status.tone}`}>{status.label}</span>
+        <span className="cti">{wallet.label}</span>
+        <span className="ctv">{headline===null?'Unavailable':headline}</span>
+        <svg className="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"
+          strokeLinecap="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+      </button>
+      <div className="colb">
+        <div className="ch"><h2>{wallet.label}</h2><div className="sp"></div>
+          <span className={`p ${status.tone}`}>{status.label}</span>
+          <button type="button" className="ico-btn" onClick={onOpen}
+            aria-label={`Details for ${wallet.label}`} title="Details">{EXPAND_ICON}</button>
+        </div>
+        <div className="tv tab" style={{marginBottom:'3px',
+          color:status.tone==='wn'?'var(--warn-text)':undefined}}>
+          {headline===null?'Unavailable':headline}
+          {headline===null?null:<small>{home?.symbol||'ETH'}</small>}
+        </div>
+        {/* The prototype's funded wallets print the address as plain muted mono under the balance
+            -- no box, no border. Its Cold card wraps the same thing in a bordered row, which is an
+            inconsistency in the mock rather than a second style worth keeping. */}
+        <p className="mono wallet-addr">{shortHex(wallet.address)}
+          <CopyButton value={wallet.address} label="Copy wallet address"/></p>
+        <div className="sober">
+          <div className="sh">Performance · {windowLabel}</div>
+          <table className="led"><tbody>
+            <tr><td>Minted</td><td>{cell(performance?.minted)}</td></tr>
+            <tr><td>Cost</td><td>{cell(performance&&`${performance.cost.toFixed(6)} ETH`)}</td></tr>
+            <tr><td>Gas</td><td>{cell(performance&&`${performance.gas.toFixed(6)} ETH`)}</td></tr>
+            <tr className="tot"><td>Net</td><td style={{color:!performance?undefined
+              :performance.net<0?'var(--loss-text)':'var(--gain-text)'}}>
+              {cell(performance&&signedEth(performance.net))}</td></tr>
+          </tbody></table>
+        </div>
+      </div>
+    </div>
+  </div>;
+}
+// ── Overlay shell ────────────────────────────────────────────────────────────
+// Modelled on the prototype's .cmd-bd / .cmd command palette: a blurred scrim with a rounded panel
+// centred on it. On a phone it becomes a bottom sheet instead of a centre dialog, because a
+// centred box on a 375px screen is a full-screen panel with wasted margins pretending otherwise.
+//
+// Escape closes, the backdrop closes, focus moves in on open and the page behind stops scrolling.
+function Overlay({open,onClose,title,subtitle,children,wide}){
+  const panelRef=useRef(null);
+  useEffect(()=>{
+    if(!open)return undefined;
+    function onKey(event){if(event.key==='Escape')onClose();}
+    document.addEventListener('keydown',onKey);
+    const previous=document.body.style.overflow;
+    document.body.style.overflow='hidden';
+    panelRef.current?.focus();
+    return()=>{document.removeEventListener('keydown',onKey);document.body.style.overflow=previous;};
+  },[open,onClose]);
+  if(!open)return null;
+  return <div className="ovl-bd" onMouseDown={event=>{if(event.target===event.currentTarget)onClose();}}>
+    <div className={`ovl${wide?' wide':''}`} role="dialog" aria-modal="true" aria-label={title}
+      tabIndex={-1} ref={panelRef}>
+      <div className="ovl-h">
+        <div style={{minWidth:0}}>
+          <h2>{title}</h2>
+          {subtitle&&<p className="ovl-sub">{subtitle}</p>}
+        </div>
+        <div className="sp"></div>
+        <button type="button" className="ico-btn" onClick={onClose} aria-label="Close">{CROSS_ICON}</button>
+      </div>
+      <div className="ovl-b">{children}</div>
+    </div>
+  </div>;
+}
+
+// ── Wallet details ───────────────────────────────────────────────────────────
+// Summary is the default tab, per the owner. The others exist because the wallet genuinely has
+// more to say than a card should carry: what it has done (Activity), what that cost (Performance),
+// and the one destructive action (Manage), which is deliberately the furthest tab from the default
+// rather than a button sitting next to a balance.
+const WALLET_DETAIL_TABS=[
+  {id:'summary',label:'Summary'},
+  {id:'activity',label:'Activity'},
+  {id:'performance',label:'Performance'},
+  {id:'manage',label:'Manage'},
+];
+function walletCreatedText(wallet){
+  if(!wallet?.addedAt)return null;
+  const at=new Date(wallet.addedAt);
+  return Number.isFinite(at.getTime())?at.toLocaleDateString(undefined,
+    {year:'numeric',month:'short',day:'numeric'}):null;
+}
+// One activity event, in history.html's .r shape. The subtitle carries what identifies the event
+// rather than what it already says: the wallet is not repeated (the overlay is already that
+// wallet), so the room goes to the hash, what triggered it, the gas it actually cost, and when.
+//
+// activity rows only ever carry status 'success' or 'fail' (every logActivity call in server.js),
+// but an unknown value is rendered as itself rather than mapped to a wrong word -- a status this
+// does not recognise is not automatically a failure.
+const ACTIVITY_TONES={success:{tone:'ok',label:'Confirmed'},fail:{tone:'bad',label:'Failed'}};
+function ActivityRow({item}){
+  const verdict=ACTIVITY_TONES[item.status]
+    ||{tone:'wn',label:String(item.status||'unknown').replace(/^./,value=>value.toUpperCase())};
+  // actualNetworkCostWei is the gas that was really paid, not an estimate, and it is the one figure
+  // a wallet's own history is asked for most. Absent on anything that never broadcast.
+  const gas=item.actualNetworkCostWei===null||item.actualNetworkCostWei===undefined
+    ?null:`${Number(weiToEthDisplay(item.actualNetworkCostWei)).toFixed(6)} ETH gas`;
+  const details=[item.txHash?shortHex(item.txHash):null,item.triggerSource,gas,
+    item.time?relativeTime(item.time):null].filter(Boolean).join(' · ');
+  const href=item.txHash&&item.explorer?`${item.explorer}${item.txHash}`:null;
+  return <div className="r">
+    <div className="rm">
+      <div className="rt">{item.title}</div>
+      {details&&<div className="rs mono">{details}</div>}
+    </div>
+    <div className="rv" style={{display:'flex',alignItems:'center',gap:'7px'}}>
+      {/* noreferrer as well as noopener: the explorer does not need to be told which page sent
+          someone to a transaction of theirs. */}
+      {href&&<a className="ico-btn" href={href} target="_blank" rel="noopener noreferrer"
+        aria-label={`View ${shortHex(item.txHash)} on the block explorer`}
+        title="View on explorer">{EXTERNAL_ICON}</a>}
+      <span className={`p ${verdict.tone}`}>{verdict.label}</span>
+    </div>
+  </div>;
+}
+function WalletDetails({wallet,records,windowKey,onWindow,onRemove,onClose}){
+  const [tab,setTab]=useState('summary');
+  // Activity is scoped server-side by session and searched by wallet label. It is only fetched
+  // once that tab is opened -- opening a wallet to read its balance should not cost a request for
+  // a list nobody looked at.
+  const activity=useLoad(tab==='activity'
+    ?`/api/activity?page=1&pageSize=25&search=${encodeURIComponent(wallet.label)}`:null,
+    [tab,wallet.label],'activity.changed');
+  const status=walletStatus(wallet);
+  const home=walletHome(wallet);
+  const created=walletCreatedText(wallet);
+  const chosen=walletWindow(windowKey);
+  const performance=walletPerformance(records,wallet.label,chosen.ms);
+  const mine=Array.isArray(records)
+    ?records.filter(item=>pnlWalletLabel(item)===wallet.label):[];
+  return <Overlay open onClose={onClose} wide title={wallet.label}
+    subtitle={`${chainMeta(wallet.chain).label||wallet.chain} · ${status.label}`}>
+    <SubTabs tabs={WALLET_DETAIL_TABS} active={tab} onChange={setTab} label="Wallet details"/>
+
+    {tab==='summary'&&<div className="g">
+      <div className="tv tab" style={{color:status.tone==='wn'?'var(--warn-text)':undefined}}>
+        {walletBalanceText(home?.balance,3)??'Unavailable'}
+        {home?.balance===undefined||home?.balance===null?null:<small>{home?.symbol||'ETH'}</small>}
+      </div>
+      <p className="mono wallet-addr" style={{marginBottom:0}}>{wallet.address}
+        <CopyButton value={wallet.address} label="Copy full wallet address"/></p>
+      <div className="sober"><div className="sh">Balances · by chain</div>
+        <table className="led"><tbody>
+          {(wallet.balances||[]).map(item=><tr key={item.chain}>
+            <td>{chainMeta(item.chain).label||item.chain}</td>
+            <td>{walletBalanceText(item.balance)===null?'Unavailable'
+              :`${walletBalanceText(item.balance)} ${item.symbol||''}`.trim()}</td></tr>)}
+          {(wallet.balances||[]).length===0&&<tr><td>Balances</td><td>Unavailable</td></tr>}
+        </tbody></table></div>
+      <div className="sober"><div className="sh">Wallet</div>
+        <table className="led"><tbody>
+          <tr><td>Home chain</td><td>{chainMeta(wallet.chain).label||wallet.chain}</td></tr>
+          {/* Created reads Unknown until the deployed API carries addedAt -- publicWallet only
+              started returning it in this change, and the dev server proxies to production. */}
+          <tr><td>Created</td><td>{created||'Unknown'}</td></tr>
+          <tr className="tot"><td>Minted · lifetime</td><td>{wallet.minted??0}</td></tr>
+        </tbody></table></div>
+      {/* The two Minted figures come from different places and can legitimately disagree, which is
+          confusing enough to say outright rather than leave someone to discover. */}
+      <div className="nt i">{INFO_ICON}
+        <div><b>Lifetime</b> is the wallet's own counter, raised only by a mint this app actually
+          broadcast. <b>Performance</b> counts the mint records instead, so a record added or edited
+          by hand moves one and not the other.</div></div>
+    </div>}
+
+    {tab==='activity'&&(()=>{
+      // history.html's row vocabulary -- .r / .rm / .rt / .rs / .rv -- rather than the two-column
+      // ledger this was. A ledger is for figures that line up; an event has a title, a set of
+      // identifying details, and an outcome, which is exactly what .r lays out.
+      //
+      // The server's search matches title OR walletLabel, so a row could arrive because this label
+      // appears in some other wallet's title. Matching walletLabel exactly makes the list mean what
+      // its heading says.
+      const rows=(activity.data?.items||[]).filter(item=>item.walletLabel===wallet.label);
+      const loading=activity.data===null&&!activity.error;
+      return <>
+        <Notice error={activity.error?{title:'Could not load this wallet activity.',
+          detail:'The wallet and its balances are unaffected — this is a read failure only.',
+          code:`${activity.status||500} · Request failed safely`,onRetry:activity.load}:null}/>
+        {loading&&<div className="card" aria-busy="true">
+          {[0,1,2,3].map(index=><div className="sk row" key={index}></div>)}</div>}
+        {!loading&&!activity.error&&rows.length>0&&<div className="card">
+          {rows.map(item=><ActivityRow key={item.id} item={item}/>)}</div>}
+        {!loading&&!activity.error&&rows.length===0&&<div className="card"><div className="emp">
+          <div className="ei">{CLOCK_ICON_LG}</div>
+          <h3>Nothing yet</h3>
+          <p>Mints, sends and trigger fires for this wallet appear here. An empty list is evidence
+            that nothing has happened — not an error.</p>
+        </div></div>}
+        {rows.length>0&&<p style={{fontSize:'11px',color:'var(--faint)',marginTop:'9px'}}>
+          The {rows.length===1?'most recent event':`${rows.length} most recent events`} for this
+          wallet. The full feed, across every wallet, is on <b>History</b>.</p>}
+      </>;
+    })()}
+
+    {tab==='performance'&&<div className="g">
+      <div className="seg" role="group" aria-label="Performance window">
+        {WALLET_WINDOWS.map(([key])=><button type="button" key={key} className={windowKey===key?'on':undefined}
+          aria-pressed={windowKey===key} onClick={()=>onWindow(key)}>{key}</button>)}
+      </div>
+      <div className="sober"><div className="sh">Performance · {chosen.label}</div>
+        <table className="led"><tbody>
+          <tr><td>Minted</td><td>{performance?performance.minted:'—'}</td></tr>
+          <tr><td>Cost</td><td>{performance?`${performance.cost.toFixed(6)} ETH`:'—'}</td></tr>
+          <tr><td>Gas</td><td>{performance?`${performance.gas.toFixed(6)} ETH`:'—'}</td></tr>
+          <tr className="tot"><td>Net</td><td style={{color:!performance?undefined
+            :performance.net<0?'var(--loss-text)':'var(--gain-text)'}}>
+            {performance?signedEth(performance.net):'—'}</td></tr>
+        </tbody></table></div>
+      {mine.length
+        ?<div className="sober"><div className="sh">Records · all time</div>
+          <table className="led"><tbody>
+            {mine.map(item=><tr key={item.id}>
+              <td>{item.nm}</td>
+              <td style={{color:Number(item.net)<0?'var(--loss-text)':'var(--gain-text)'}}>
+                {signedEth(Number(item.net))}</td></tr>)}
+          </tbody></table></div>
+        :<Empty text="No mint records attributed to this wallet yet."/>}
+      <p style={{fontSize:'11px',color:'var(--faint)'}}>Sale proceeds are entered by hand in
+        Wallets · Performance. Until a resale is recorded, a mint's net is its cost plus gas, as a
+        loss — which is why a wallet can mint well and still read negative here.</p>
+    </div>}
+
+    {tab==='manage'&&<div className="g">
+      <div className="nt w">{WARN_TRIANGLE_ICON}
+        <div><b>Removing this wallet deletes its stored key.</b> The encrypted envelope is deleted
+          outright, not archived — if you might need this address again, take a keystore from the
+          <b> Export</b> tab first. Past transactions stay in your history either way.</div></div>
+      <div className="br"><button type="button" className="b d sm" onClick={onRemove}>Remove wallet</button></div>
+    </div>}
+  </Overlay>;
+}
+// ── New wallet: choose, then do ──────────────────────────────────────────────
+// Create wallet used to reveal three stacked forms below the list, which pushed the whole page
+// down and asked the reader to pick between them by reading their headings. The overlay asks the
+// one question that actually branches -- generate a key here, or bring one -- and then shows only
+// the form that answer needs.
+//
+// Batch stops being a separate form. One import form grows: add a second secret and it is a batch,
+// which is the same decision the owner described and removes the "which of these three?" step
+// entirely. The old paste-fifty-keys textarea is gone from here; /api/wallets/batch-import is still
+// what a genuinely bulk import wants, and Import many wallets stays reachable from the empty state.
+const WALLET_IMPORT_MAX=10;
+function NewWalletOverlay({open,onClose,onDone,chains}){
+  const [mode,setMode]=useState(null);          // null = the choice, then 'create' | 'import'
+  const [chain,setChain]=useState('evm');
+  const [method,setMethod]=useState('privateKey');
+  const [label,setLabel]=useState('');
+  const [rows,setRows]=useState([{key:0,secret:'',label:''}]);
+  const [busy,setBusy]=useState(false);
+  const [results,setResults]=useState(null);
+  const nextKey=useRef(1);
+  function reset(){
+    setMode(null);setChain('evm');setMethod('privateKey');setLabel('');
+    setRows([{key:0,secret:'',label:''}]);setResults(null);nextKey.current=1;
+  }
+  function close(){reset();onClose();}
+  const secretWord=method==='privateKey'?'private key':'seed phrase';
+
+  async function createWallet(event){
+    event.preventDefault();
+    setBusy(true);
     try{
-      const {keystore}=await api(`/api/wallets/${encodeURIComponent(label)}/export`,{method:'POST',body:JSON.stringify({securityPassword,confirmation:'CONFIRM'})});
-      downloadFile(`${label}-keystore.json`,keystore);
-      notify('Encrypted keystore downloaded. Store it and your security password separately and securely.',{type:'success'});
+      await api('/api/wallets/create',{method:'POST',
+        body:JSON.stringify({label:label.trim(),chain:chain==='evm'?DEFAULT_EVM_CHAIN:chain})});
+      notify('Wallet created. The private key was generated and encrypted on the server.',{type:'success'});
+      onDone();close();
+    }catch(error){notify(error.message,{type:'error'});}
+    finally{setBusy(false);}
+  }
+
+  // One request per wallet rather than /api/wallets/batch-import, for two reasons: that route takes
+  // a label PREFIX and numbers the wallets itself, so per-row labels could not survive it, and it
+  // accepts private keys only -- it calls new Wallet(privateKey) directly, so a seed phrase cannot
+  // go through it at all. Looping the single-import route gives both secret kinds the same path and
+  // the same per-row reporting, which is what makes partial success legible.
+  async function importWallets(event){
+    event.preventDefault();
+    const entries=rows
+      .map((row,index)=>({index,secret:row.secret.trim(),
+        label:(row.label||(index===0?label:`${label}-${index+1}`)).trim()}))
+      .filter(row=>row.secret);
+    if(!entries.length){notify(`Enter at least one ${secretWord}.`,{type:'error'});return;}
+    const missing=entries.find(row=>!row.label);
+    if(missing){notify('Every wallet needs a label.',{type:'error'});return;}
+    setBusy(true);setResults(null);
+    const collected=[];
+    for(const entry of entries){
+      try{
+        const wallet=await api('/api/wallets/import',{method:'POST',body:JSON.stringify({
+          label:entry.label,chain:chain==='evm'?DEFAULT_EVM_CHAIN:chain,importMethod:method,
+          ...(method==='privateKey'?{privateKey:entry.secret}:{seedPhrase:entry.secret})})});
+        collected.push({index:entry.index,status:'success',label:entry.label,address:wallet.address});
+      }catch(error){
+        collected.push({index:entry.index,status:'failed',label:entry.label,error:error.message});
+      }
+    }
+    setResults(collected);
+    const ok=collected.filter(item=>item.status==='success').length;
+    notify(`Imported ${ok} of ${collected.length} ${collected.length===1?'wallet':'wallets'}.`,
+      {type:ok?'success':'error'});
+    onDone();
+    setBusy(false);
+    if(ok===collected.length)close();
+  }
+
+  const title=mode===null?'Add a wallet':mode==='create'?'Create a wallet':'Import a wallet';
+  return <Overlay open={open} onClose={close} title={title}
+    subtitle={mode===null?'Two ways in, and they carry very different risk.':undefined}>
+    {mode===null&&<div className="g">
+      <button type="button" className="pick" onClick={()=>setMode('create')}>
+        <span className="chip-ico">{PLUS_ICON}</span>
+        <span className="pick-t"><b>Create a new wallet</b>
+          <span>GhostMint generates the key on the server, encrypts it with AES-256-GCM, and returns
+            only the address. The key never reaches your browser.</span></span>
+        <span className="p ok">Recommended</span>
+      </button>
+      <button type="button" className="pick" onClick={()=>setMode('import')}>
+        <span className="chip-ico">{LOCK_ICON}</span>
+        <span className="pick-t"><b>Import an existing wallet</b>
+          <span>Your key or seed phrase crosses browser memory and network transit. It is encrypted
+            the moment it arrives and never returned — but creating one avoids that entirely.</span></span>
+        <span className="p wn">Not recommended</span>
+      </button>
+    </div>}
+
+    {mode==='create'&&<form onSubmit={createWallet}>
+      <div className="g gm2 g2" style={{marginBottom:'13px'}}>
+        <label className="fl"><span>Label</span>
+          <input className="in" value={label} onChange={event=>setLabel(event.target.value)}
+            required autoFocus placeholder="e.g. Primary"/></label>
+        <WalletChainSelect name="chain" label="Chain" value={chain}
+          onChange={event=>setChain(event.target.value)}/>
+      </div>
+      <div className="nt i" style={{marginBottom:'12px'}}>{INFO_ICON}
+        <div>A key works on every EVM chain this app supports, so the chain here is only the
+          wallet's home — it can still mint on the others.</div></div>
+      <div className="br">
+        <button className="b p" disabled={busy}>{busy?'Creating…':'Create securely'}</button>
+        <button type="button" className="b g" onClick={()=>setMode(null)}>Back</button>
+      </div>
+    </form>}
+
+    {mode==='import'&&<form onSubmit={importWallets}>
+      <div className="nt w" style={{marginBottom:'12px'}}>{WARN_TRIANGLE_ICON}
+        <div>Whatever you paste crosses this browser and the network. It is encrypted on arrival and
+          never returned, but creating a wallet avoids the exposure altogether.</div></div>
+      <div className="g gm2 g2" style={{marginBottom:'11px'}}>
+        <label className="fl"><span>Label</span>
+          <input className="in" value={label} onChange={event=>setLabel(event.target.value)}
+            required autoFocus placeholder="e.g. Primary"/></label>
+        <WalletChainSelect name="chain" label="Chain" value={chain}
+          onChange={event=>setChain(event.target.value)}/>
+      </div>
+      <div className="method-toggle" style={{marginBottom:'11px'}}><span>Importing using</span>
+        <div className="seg" role="radiogroup" aria-label="Import method">
+          <button type="button" aria-pressed={method==='privateKey'}
+            className={method==='privateKey'?'on':undefined}
+            onClick={()=>setMethod('privateKey')}>Private key</button>
+          <button type="button" aria-pressed={method==='seedPhrase'}
+            className={method==='seedPhrase'?'on':undefined}
+            onClick={()=>setMethod('seedPhrase')}>Seed phrase</button>
+        </div></div>
+      <div className="g" style={{gap:'9px',marginBottom:'11px'}}>
+        {rows.map((row,index)=><div className="secret-row" key={row.key}>
+          <label className="fl" style={{flex:1,minWidth:0}}>
+            <span>{index===0?(method==='privateKey'?'Private key':'Seed phrase (12-24 words)')
+              :`Wallet ${index+1} · ${secretWord}`}</span>
+            {method==='privateKey'
+              ?<input className="in mono" type="password" autoComplete="off" required={index===0}
+                value={row.secret} placeholder="0x…"
+                onChange={event=>setRows(list=>list.map(item=>item.key===row.key
+                  ?{...item,secret:event.target.value}:item))}/>
+              :<textarea className="in compact" autoComplete="off" required={index===0}
+                value={row.secret} placeholder="witch collapse practice feed shame open despair creek road again ice least"
+                onChange={event=>setRows(list=>list.map(item=>item.key===row.key
+                  ?{...item,secret:event.target.value}:item))}/>}
+            {index>0&&<input className="in" style={{marginTop:'6px'}}
+              value={row.label} placeholder={`${label||'wallet'}-${index+1}`}
+              aria-label={`Label for wallet ${index+1}`}
+              onChange={event=>setRows(list=>list.map(item=>item.key===row.key
+                ?{...item,label:event.target.value}:item))}/>}
+          </label>
+          {index>0&&<button type="button" className="ico-btn" aria-label={`Remove wallet ${index+1}`}
+            onClick={()=>setRows(list=>list.filter(item=>item.key!==row.key))}>{CROSS_ICON}</button>}
+        </div>)}
+      </div>
+      {rows.length<WALLET_IMPORT_MAX&&<button type="button" className="b g sm" style={{marginBottom:'12px'}}
+        onClick={()=>{setRows(list=>[...list,{key:nextKey.current,secret:'',label:''}]);nextKey.current+=1;}}>
+        {PLUS_ICON} Add another {secretWord}</button>}
+      {results&&<div className="g" style={{gap:'4px',marginBottom:'11px'}}>
+        {results.map(item=><div className="bres" key={item.index}>
+          <span className={`p ${item.status==='success'?'ok':'bad'}`}>
+            {item.status==='success'?'Imported':'Failed'}</span>
+          <span className="bl2">{item.label}</span>
+          <span className="be mono">{item.status==='success'?item.address:item.error}</span>
+        </div>)}
+      </div>}
+      <div className="br">
+        <button className="b g" disabled={busy}>{busy?'Importing…'
+          :rows.length>1?`Import ${rows.length} wallets over HTTPS`:'Import over HTTPS'}</button>
+        <button type="button" className="b g" onClick={()=>setMode(null)}>Back</button>
+      </div>
+    </form>}
+  </Overlay>;
+}
+function Wallets({profile,onProfileChange,walletList,pnl,windowKey,onWindow,formsOpen,onFormsOpen}){
+  const {data:wallets,load}=walletList;
+  const [query,setQuery]=useState('');
+  const [detailLabel,setDetailLabel]=useState(null);
+  async function remove(label){
+    if(!await confirmDialog(`Remove wallet ${label}? This cannot be undone.`))return;
+    try{
+      await api(`/api/wallets/${encodeURIComponent(label)}`,{method:'DELETE',
+        body:JSON.stringify({confirmation:'CONFIRM'})});
+      setDetailLabel(null);
+      notify(`Removed ${label}.`,{type:'success'});
+      load();
     }catch(value){notify(value.message,{type:'error'});}
   }
-  const normalized=query.trim().toLowerCase();const filtered=wallets?(normalized?wallets.filter(wallet=>[wallet.label,wallet.address,wallet.chain].filter(Boolean).some(value=>String(value).toLowerCase().includes(normalized))):wallets):[];return <><PageTitle eyebrow="Core operations" title="Wallets" subtitle="Create server-side encrypted wallets, check balances, and manage imports."/><Notice error={error}/><div className="page-toolbar"><label className="page-search">Find a wallet<input type="search" value={query} placeholder="Label, address, chain…" onChange={e=>setQuery(e.target.value)}/></label></div>{wallets===null?<Skeleton/>:<div className="card-grid wallet-grid">{filtered.map(wallet=><article className="card" key={wallet.label}><div><span className="pill">{wallet.chain}</span><h2>{wallet.label}</h2></div><div className="user-card-identity"><code>{wallet.address}</code><CopyButton value={wallet.address} label="Copy wallet address"/></div><div className="wallet-balances">{wallet.balances?.length?wallet.balances.map(b=><div className="wallet-balance-row" key={b.chain}><span>{chainMeta(b.chain).label}</span><strong>{b.balance??'Unavailable'} {b.symbol}</strong></div>):<div className="wallet-balance-row">Unavailable</div>}</div><div className="actions"><button className="small quiet" onClick={()=>exportKey(wallet.label)}>Export key</button><button className="small danger" onClick={()=>remove(wallet.label)}>Remove</button></div></article>)}{filtered.length===0&&<Empty text={normalized?'No wallets match this search.':'No wallets yet. Create the recommended server-side wallet below.'}/>}</div>}<div className="form-grid wallet-forms"><Form className="form-wallet-create" title="Create wallet" note="Recommended - the private key is generated, encrypted, and never returned." onSubmit={e=>submit(e,'/api/wallets/create')}><Field name="label" label="Label" placeholder="$1 and a dream"/><WalletChainSelect name="chain" label="Chain" value={createChain} onChange={e=>setCreateChain(e.target.value)}/><button>Create securely</button></Form><Form className="form-wallet-import" title="Import wallet" warning="Not recommended: your key or seed phrase crosses browser memory and network transit. Use HTTPS; it is encrypted immediately and never returned." onSubmit={e=>submit(e,'/api/wallets/import')}><Field name="label" label="Label" placeholder="$1 and a dream"/><WalletChainSelect name="chain" label="Chain" value={importChain} onChange={e=>setImportChain(e.target.value)}/><div className="method-toggle"><span>Import using</span><div className="segmented" role="radiogroup" aria-label="Import method"><button type="button" aria-pressed={importMethod==='privateKey'} className={importMethod==='privateKey'?'active':''} onClick={()=>setImportMethod('privateKey')}>Private key</button><button type="button" aria-pressed={importMethod==='seedPhrase'} className={importMethod==='seedPhrase'?'active':''} onClick={()=>setImportMethod('seedPhrase')}>Seed phrase</button></div></div><input type="hidden" name="importMethod" value={importMethod}/>{importMethod==='privateKey'?<Field name="privateKey" label="Private key" type="password" autoComplete="off"/>:<label>Seed phrase (12-24 words)<textarea className="compact" name="seedPhrase" required autoComplete="off" placeholder="witch collapse practice feed shame open despair creek road again ice least"/></label>}<button className="quiet">Import over HTTPS</button></Form></div></>}
+  const normalized=query.trim().toLowerCase();
+  const filtered=wallets?(normalized?wallets.filter(wallet=>[wallet.label,wallet.address,wallet.chain]
+    .filter(Boolean).some(value=>String(value).toLowerCase().includes(normalized))):wallets):[];
+  const loading=wallets===null&&!walletList.error;
+  const empty=Array.isArray(wallets)&&wallets.length===0;
+  // Re-read from the live list rather than holding the wallet object: a balance refresh or a
+  // rename while the overlay is open should be reflected in it, not frozen at the moment it opened.
+  const detail=detailLabel?(wallets||[]).find(item=>item.label===detailLabel)||null:null;
+  return <>
+    {/* The error state says what did NOT happen as well as what did: a read failing is not a
+        wallet being lost, and that is the first thing anyone seeing this needs to know. */}
+    <Notice error={walletList.error?{title:'Could not load wallets.',
+      detail:'Your wallets and their keys are unaffected — this is a read failure only.',
+      code:`${walletList.status||500} · Request failed safely`,onRetry:walletList.load}:null}/>
+    {loading&&<div className="g g3" aria-busy="true">{[0,1,2].map(index=><div className="card" key={index}>
+      <div className="sk big"></div><div className="sk l w80"></div><div className="sk row"></div></div>)}</div>}
+    {empty&&<div className="g">
+      <div className="frun">
+        <h2>Create your first wallet</h2>
+        <p>GhostMint generates the private key on the server, encrypts it immediately with
+          AES-256-GCM, and returns only the public address. The key is never sent to your browser.</p>
+        <div className="br">
+          <button type="button" className="b p" onClick={()=>onFormsOpen(true)}>Create securely</button>
+          <button type="button" className="b g" onClick={()=>onFormsOpen(true)}>Import instead</button>
+        </div>
+      </div>
+    </div>}
+    {!loading&&!empty&&!walletList.error&&<>
+      <div className="sfrow"><div className="sf">
+        <span className="si" aria-hidden="true">{SEARCH_ICON}</span>
+        <input type="search" value={query} placeholder="Label, address, chain…"
+          aria-label="Find a wallet" onChange={event=>setQuery(event.target.value)}/>
+        {query&&<button type="button" className="sx" aria-label="Clear search"
+          onClick={()=>setQuery('')}>×</button>}
+      </div>
+      {/* One window for every card. Per-card pickers would mean four cards disagreeing about what
+          period they show, which is exactly the confusion the figures are meant to resolve. */}
+      <div className="seg" role="group" aria-label="Performance window">
+        {WALLET_WINDOWS.map(([key])=><button type="button" key={key} className={windowKey===key?'on':undefined}
+          aria-pressed={windowKey===key} onClick={()=>onWindow(key)}>{key}</button>)}
+      </div></div>
+      {filtered.length
+        ?<div className="g g3">{filtered.map(wallet=><WalletCard key={wallet.label} wallet={wallet}
+            records={pnl?.data} windowLabel={walletWindow(windowKey).label}
+            windowMs={walletWindow(windowKey).ms} onOpen={()=>setDetailLabel(wallet.label)}/>)}</div>
+        :<Empty text="No wallets match this search."/>}
+      <p style={{fontSize:'11.5px',color:'var(--faint)',marginTop:'10px'}}>Zero renders
+        as <b>0.000000</b>, never blank. A chain whose RPC failed shows <b>Unavailable</b>, which is
+        not the same as zero. <b>Low</b> means under {WALLET_LOW_ETH} ETH — roughly a mint's gas on
+        mainnet, so below it a mint may not complete. Performance counts the mint records GhostMint
+        wrote for each wallet; a record renamed or added by hand stops being attributable to one.</p>
+    </>}
+    {detail&&<WalletDetails wallet={detail} records={pnl?.data} windowKey={windowKey}
+      onWindow={onWindow} onRemove={()=>remove(detail.label)} onClose={()=>setDetailLabel(null)}/>}
+    <NewWalletOverlay open={formsOpen} onClose={()=>onFormsOpen(false)} onDone={load}/>
+  </>;}
 const SEADROP_SIGNATURE='mintPublic(address,address,address,uint256)';
 const ADDRESS_SHAPE=/^0x[0-9a-fA-F]{40}$/;
 function weiToEthDisplay(wei){
@@ -130,7 +774,42 @@ function ethToWei(eth){
 // that themselves. There is deliberately no manual "Detect" button: pasting a contract address and
 // tabbing away is enough, and changing the quantity re-runs it the same way (see
 // handleAutoDetectBlur).
-function Minting(){const wallets=useLoad('/api/wallets',[],'wallets.changed');const presets=useLoad('/api/mint-presets');const [preview,setPreview]=useState(null);const [confirmResults,setConfirmResults]=useState(null);const formRef=useRef(null);const previewRef=useRef(null);const [walletLabel,setWalletLabel]=useState('');const [contractAddress,setContractAddress]=useState('');const [quantity,setQuantity]=useState('1');const [methodSignature,setMethodSignature]=useState('');const [argumentsJson,setArgumentsJson]=useState('');const [priceEth,setPriceEth]=useState('0');const [seaDropAddress,setSeaDropAddress]=useState('');const [detectedChain,setDetectedChain]=useState('');const [maxPerWallet,setMaxPerWallet]=useState(null);const [detecting,setDetecting]=useState(false);const [advancedOpen,setAdvancedOpen]=useState(false);const lastDetected=useRef('');
+const CONTRACT_ICON=<svg {...ICON_PROPS}><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 9h6v6H9z"/></svg>;
+const LEDGER_ICON=<svg {...ICON_PROPS}><rect x="4" y="3" width="16" height="18" rx="1.5"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>;
+const INFO_ICON=<svg {...ICON_PROPS}><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>;
+// The prototype's own glyphs, copied path-for-path from docs/prototype-pages/mint.html so the
+// notices, field errors and the preview header carry the same marks as the design.
+const WARN_TRIANGLE_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>;
+const ALERT_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>;
+const BATCH_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>;
+const CLOCK_ICON=<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg>;
+// Schedule-row glyphs, copied from docs/prototype-pages/mint.html:134-140: a clock for a
+// scheduled row, pause bars for a paused one, and a cross (tinted --loss-text at the call site)
+// for a failed one. CLOCK_ICON_LG is the 24px .ri/.chip-ico variant; CLOCK_ICON above is the 13px
+// one the .tokbar uses.
+const CLOCK_ICON_LG=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg>;
+const PAUSE_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><path d="M6 4h4v16H6zM14 4h4v16h-4z"/></svg>;
+// Empty-state glyphs, from the prototype: a nested square for "No presets saved"
+// (mint.html:215) and a wallet for "No wallets to batch" (mint.html:192).
+const PRESET_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><path d="M5 5h14v14H5z"/><path d="M9 9h6v6H9z"/></svg>;
+const WALLET_EMPTY_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><rect x="3" y="6" width="18" height="13" rx="2.5"/></svg>;
+const TREND_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><path d="M3 17l5-6 4 3 5-8"/></svg>;
+const EXPAND_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><path d="M9 3H3v6M15 21h6v-6"/><path d="M3 3l7 7M21 21l-7-7"/></svg>;
+const PLUS_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><path d="M12 5v14M5 12h14"/></svg>;
+const EXTERNAL_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M14 4h6v6"/><path d="M20 4l-8.5 8.5"/><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg>;
+const CARD_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M7 9h6M7 13h4M15 16.5l2.5-3 2.5 3"/></svg>;
+const CROSS_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><path d="M18 6 6 18M6 6l12 12"/></svg>;
+const LOCK_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><rect x="4" y="10.5" width="16" height="10.5" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/></svg>;
+function shortHex(value){const v=String(value||"");return v.length>12?`${v.slice(0,6)}…${v.slice(-4)}`:v;}
+function Minting({onSwitchToBatch,onGoWallets}){const wallets=useLoad('/api/wallets',[],'wallets.changed');const limits=useLoad('/api/profile/limits');const [preview,setPreview]=useState(null);const [confirmResults,setConfirmResults]=useState(null);const formRef=useRef(null);const previewRef=useRef(null);const [walletLabel,setWalletLabel]=useState('');const [contractAddress,setContractAddress]=useState('');const [quantity,setQuantity]=useState('1');const [methodSignature,setMethodSignature]=useState('');const [argumentsJson,setArgumentsJson]=useState('');const [priceEth,setPriceEth]=useState('');const [seaDropAddress,setSeaDropAddress]=useState('');const [detectedChain,setDetectedChain]=useState('');const [maxPerWallet,setMaxPerWallet]=useState(null);const [detecting,setDetecting]=useState(false);const lastDetected=useRef('');
+  // Simulation is no longer user-triggered (backlog §7.2): the prototype has no "Validate and
+  // simulate" control, only a Re-simulate on an expired quote, so the first simulation runs on its
+  // own. Debounced, because otherwise typing an address would fire one /api/mints/preview per
+  // keystroke and each call issues a 300s preview token.
+  const [simulating,setSimulating]=useState(false);
+  const [mintError,setMintError]=useState(null);
+  const [quantityIssue,setQuantityIssue]=useState(null);
+  const simulateTimer=useRef(null);
   useEffect(()=>{if(!walletLabel&&wallets.data?.length)setWalletLabel(wallets.data[0].label);},[wallets.data]);
   // Picks up whatever Quick Mint already had typed in (see Dashboard.jsx's goToFullMint) so landing
   // here isn't a dead end with an empty contract field -- detects immediately rather than waiting
@@ -171,7 +850,7 @@ function Minting(){const wallets=useLoad('/api/wallets',[],'wallets.changed');co
       // stuck facing a required-but-hidden field, rather than quietly clearing it to something that
       // reads as optional (see the "never let an unresolved price look free" note this mirrors).
       if(result.priceKnown){setPriceEth(weiToEthDisplay(result.valueWei));notify(`Detected ${label} on ${result.chain} — price read from the contract.`,{type:'success'});}
-      else{setPriceEth('');setAdvancedOpen(true);notify(`Detected ${label} on ${result.chain}, but this contract doesn't expose a recognized price function. Enter the price per NFT in ETH below — enter 0 if it's free.`,{type:'info'});}
+      else{setPriceEth('');notify(`Detected ${label} on ${result.chain}, but this contract doesn't expose a recognized price function. Enter the price per NFT in ETH below — enter 0 if it's free.`,{type:'info'});}
     }catch(value){notify(value.message,{type:'error'});}
     finally{setDetecting(false);}
   }
@@ -184,7 +863,26 @@ function Minting(){const wallets=useLoad('/api/wallets',[],'wallets.changed');co
   function autoDetectIfReady(value=contractAddress,quantityValue=quantity){const trimmed=value.trim();if(ADDRESS_SHAPE.test(trimmed)&&`${trimmed}:${quantityValue}`!==lastDetected.current)detect(trimmed,quantityValue);}
   function handleAutoDetectBlur(){autoDetectIfReady();}
   function resetDetectedFields(){setContractAddress('');setQuantity('1');setMethodSignature('');setArgumentsJson('');setPriceEth('0');setSeaDropAddress('');setDetectedChain('');setMaxPerWallet(null);lastDetected.current='';}
-  async function inspect(event){event.preventDefault();formRef.current=event.currentTarget;const raw=Object.fromEntries(new FormData(event.currentTarget));try{const valueWei=ethToWei(raw.priceEth);if(valueWei===null){notify('Price (ETH) must be a plain non-negative number -- 0.01 for example, or 0 if the mint is free.',{type:'error'});return;}const batch=raw.walletLabels?.split(/[,\n]+/).map(x=>x.trim()).filter(Boolean);const input={walletLabel:raw.walletLabel,walletLabels:batch?.length?batch:undefined,presetName:raw.presetName||undefined,contractAddress:raw.contractAddress||undefined,methodSignature:raw.methodSignature||undefined,seaDropAddress:raw.seaDropAddress||undefined,arguments:raw.arguments?JSON.parse(raw.arguments):[],valueWei:valueWei.toString(),chain:detectedChain||undefined};setPreview(await api('/api/mints/preview',{method:'POST',body:JSON.stringify(input)}));setConfirmResults(null);notify('Simulation passed -- review the details below and confirm to broadcast.',{type:'success'});previewRef.current?.scrollIntoView({behavior:'smooth',block:'start'});}catch(value){notify(value.message,{type:'error'});}}
+  // Auto-simulate driver (backlog §7.2). Fires 600ms after the inputs settle, and only when the
+  // form could actually produce a preview: a detected contract, a chosen wallet, a quantity.
+  // Clears any previous quote first so a stale total can never sit under fresh inputs.
+  useEffect(()=>{
+    clearTimeout(simulateTimer.current);
+    if(!methodSignature||!walletLabel||!quantity||detecting)return;
+    simulateTimer.current=setTimeout(()=>{inspect();},600);
+    return()=>clearTimeout(simulateTimer.current);
+  },[methodSignature,argumentsJson,seaDropAddress,walletLabel,quantity,priceEth,detectedChain,detecting]);
+  useEffect(()=>()=>clearTimeout(simulateTimer.current),[]);
+  async function inspect(event){event?.preventDefault?.();const raw={walletLabel,presetName:undefined,contractAddress,methodSignature,seaDropAddress,arguments:argumentsJson,priceEth};try{const valueWei=ethToWei(raw.priceEth);if(valueWei===null){notify('Price (ETH) must be a plain non-negative number -- 0.01 for example, or 0 if the mint is free.',{type:'error'});return;}const batch=raw.walletLabels?.split(/[,\n]+/).map(x=>x.trim()).filter(Boolean);const input={walletLabel:raw.walletLabel,walletLabels:batch?.length?batch:undefined,presetName:raw.presetName||undefined,contractAddress:raw.contractAddress||undefined,methodSignature:raw.methodSignature||undefined,seaDropAddress:raw.seaDropAddress||undefined,arguments:raw.arguments?JSON.parse(raw.arguments):[],valueWei:valueWei.toString(),chain:detectedChain||undefined};setSimulating(true);setMintError(null);setQuantityIssue(null);
+    setPreview(await api('/api/mints/preview',{method:'POST',body:JSON.stringify(input)}));setConfirmResults(null);
+  }catch(value){
+    setPreview(null);
+    // A field-scoped validation issue belongs on the field (.in.bad + .fielderr), everything else
+    // is a money-surface failure and gets the .notice panel -- never a toast alone.
+    const issue=value.issues?.find(entry=>entry.field==='quantity');
+    if(issue)setQuantityIssue(issue.message);
+    else setMintError({title:value.message||'Could not simulate this mint.',detail:'Nothing was broadcast.',code:value.status,onRetry:()=>inspect()});
+  }finally{setSimulating(false);}}
   // Each wallet in the batch is annotated with its own outcome (see confirmResults, rendered per
   // item below) rather than one pass/fail for the whole batch -- a failure on one wallet no longer
   // hides whether the others actually went through.
@@ -195,8 +893,231 @@ function Minting(){const wallets=useLoad('/api/wallets',[],'wallets.changed');co
     if(succeeded===total){notify(total>1?`All ${total} mints submitted.`:'Mint submitted.',{type:'success'});setPreview(null);setConfirmResults(null);formRef.current?.reset();resetDetectedFields();}
     else{setConfirmResults(Object.fromEntries(response.results.map(entry=>[entry.label,entry])));notify(succeeded===0?'Mint failed -- see the reason below.':`${succeeded}/${total} mints submitted -- see details below for the rest.`,{type:succeeded===0?'error':'info'});}
   }catch(value){notify(value.message,{type:'error'});}}
-  return <><PageTitle eyebrow="Auto-detected" title="Minting" subtitle="Enter a contract and quantity -- price, method, and the real call target are found automatically."/><Form className="form-mint" title="Mint" note="Choose one wallet, or enter comma-separated wallet labels for a batch. Saved presets share the same path." onSubmit={inspect}><div className="field-row"><Select name="walletLabel" label="Wallet" options={wallets.data?.map(x=>x.label)} value={walletLabel} onChange={e=>setWalletLabel(e.target.value)}/><Select name="presetName" label="Saved preset (optional)" optional options={presets.data?.map(x=>x.name)}/></div><label className="field-full">Batch wallet labels (optional)<textarea name="walletLabels" placeholder={'wallet-1\nwallet-2\nwallet-3'}/></label><div className="field-row"><Field name="contractAddress" label="Contract (when not using preset)" required={false} value={contractAddress} onChange={e=>{setContractAddress(e.target.value);autoDetectIfReady(e.target.value,quantity);}} onBlur={handleAutoDetectBlur}/><label>{maxPerWallet?`Quantity (max ${maxPerWallet} per wallet)`:'Quantity'}<input type="number" min="1" max={maxPerWallet||100} value={quantity} onChange={e=>{setQuantity(e.target.value);autoDetectIfReady(contractAddress,e.target.value);}} onBlur={handleAutoDetectBlur}/></label></div>{detecting&&<p className="mint-detecting"><span className="spinner spinner-quiet" aria-hidden="true"/>Detecting…</p>}{!detecting&&methodSignature&&<p className="mint-detected-summary">Detected <code>{methodSignature}</code>{detectedChain&&` on ${detectedChain}`}{priceEth&&priceEth!=='0'&&` · ${priceEth} ETH total`}{seaDropAddress&&<> · SeaDrop core <code>{seaDropAddress}</code></>}</p>}<details className="mint-advanced" open={advancedOpen} onToggle={e=>setAdvancedOpen(e.target.open)}><summary>Advanced: edit detected calldata directly</summary><div className="field-row"><Field name="methodSignature" label="Method signature" placeholder="mint(uint256)" required={false} value={methodSignature} onChange={e=>setMethodSignature(e.target.value)}/><Field name="arguments" label="Arguments JSON" placeholder='[1]' required={false} value={argumentsJson} onChange={e=>setArgumentsJson(e.target.value)}/><Field name="priceEth" label="Price (ETH)" placeholder="0 if free" type="number" step="any" min="0" value={priceEth} onChange={e=>setPriceEth(e.target.value)}/></div>{methodSignature===SEADROP_SIGNATURE&&<Field name="seaDropAddress" label="SeaDrop core address" placeholder="0x… (auto-filled by auto-detect)" required={false} value={seaDropAddress} onChange={e=>setSeaDropAddress(e.target.value)}/>}</details><button>Validate and simulate</button></Form>{preview&&<section className="panel mint-preview" ref={previewRef}><h2>Simulation passed</h2>{preview.items.map(item=>{const result=confirmResults?.[item.wallet.label];return <div className="preview" key={item.wallet.label}><strong>{item.wallet.label}</strong><div className="user-card-identity"><p>{item.preview.contractAddress}</p><CopyButton value={item.preview.contractAddress} label="Copy contract address"/></div>{item.preview.callTarget&&item.preview.callTarget!==item.preview.contractAddress&&<div className="user-card-identity"><p>Call target: {item.preview.callTarget}</p><CopyButton value={item.preview.callTarget} label="Copy call target address"/></div>}<p>{item.preview.methodSignature} | value {item.preview.nativeValue}</p><ul>{item.preview.arguments.map(arg=><li key={arg.name}>{arg.name}: <code>{String(arg.value)}</code></li>)}</ul><p>Estimated total: {item.simulation.estimatedCostWei} wei | Gas: {item.simulation.gasLimit}</p>{result&&<p className={result.status==='success'?'ok':'warning'}>{result.status==='success'?'✅ Submitted successfully.':`❌ Failed: ${result.error}`}</p>}</div>;})}{!confirmResults&&<button className="quiet" onClick={confirmMint}>Confirm and broadcast</button>}{confirmResults&&<p>Run Validate and simulate again to retry any failed wallets.</p>}</section>}</>;}
-function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSearch]=useState('');const listing=useLoad(`/api/tasks?page=${page}&pageSize=10&search=${encodeURIComponent(search)}`,[page,search],'tasks.changed');const wallets=useLoad('/api/wallets',[],'wallets.changed');const [chain,setChain]=useState(profile.defaultChain||profile.supportedChains[0]);const [contractAddress,setContractAddress]=useState('');const [quantity,setQuantity]=useState('1');const [priceETH,setPriceETH]=useState('');const [mintTime,setMintTime]=useState('');const [detecting,setDetecting]=useState(false);const lastDetected=useRef('');
+  const detected=Boolean(methodSignature);
+  const item=preview?.items?.[0];
+  const totalDebitWei=item?item.simulation.estimatedCostWei:null;
+  // The prototype's four states for this page, resolved once so every element below reads the
+  // same answer. EMPTY is "no wallet exists" -- the prototype shows the form DISABLED in that
+  // state rather than hiding it, so you can see what minting looks like before you have one.
+  const walletsArrived=wallets.data!==null&&wallets.data!==undefined;
+  const noWallets=walletsArrived&&wallets.data.length===0;
+  // Same shape as loadError() everywhere else -- the prototype puts the whole line inside the
+  // <code>, and Mint now was splitting it between the body and a bare status, so the same page
+  // showed two different error layouts depending on which tab you were on. Not on the helper
+  // itself because this one falls through to mintError, a second source the helper knows nothing
+  // about.
+  const pageError=wallets.error?{title:'Could not load your wallets.',
+    code:wallets.status?`${wallets.status} · Request failed safely`:'Request failed safely',
+    onRetry:wallets.load}:mintError;
+  // Derived from the cap by the shared rule (shared.jsx quantityPicks). At a cap of 3 this
+  // returns exactly the prototype's "1 2 3"; at 10 it returns "1 2 5". Backlog §13.
+  const maxPick=maxPerWallet||100;
+  const quickPicks=quantityPicks(maxPick);
+  const ceilingWei=limits.data?.dailySpendingBudgetWei;
+  return <>
+    {/* Prototype mint.html: a .nt.w banner above the form when no wallet exists. The form stays
+        VISIBLE and disabled underneath -- "shown disabled so you can see what minting looks like". */}
+    {noWallets&&<div className="nt w" style={{marginBottom:'12px'}}>
+      {WARN_TRIANGLE_ICON}
+      <div><b>Create a wallet before minting.</b> The form below is shown disabled so you can see what minting looks like.
+        <div style={{marginTop:'8px'}}><button type="button" className="b sm" onClick={()=>onGoWallets?.()}>Create a wallet</button></div></div>
+    </div>}
+    <div className="split">
+      <div className="card">
+        <div className="ch"><div className="chip-ico">{CONTRACT_ICON}</div><h2>Contract</h2></div>
+        <div className="g" style={{gap:'11px'}}>
+          <label className="fl"><span>Contract address</span>
+            <input className={`in mono${detected?' ok':''}`} disabled={noWallets}
+              placeholder="0x… paste a contract address" value={contractAddress}
+              onChange={e=>{setContractAddress(e.target.value);autoDetectIfReady(e.target.value,quantity);}}
+              onBlur={handleAutoDetectBlur}/>
+          </label>
+          {/* Detection summary, the prototype's .nt.i one-liner. */}
+          {!detecting&&detected&&<div className="nt i">{INFO_ICON}
+            <div>Detected <b>{methodSignature===SEADROP_SIGNATURE?'SeaDrop drop':'contract'}</b>
+              {detectedChain&&<> · {detectedChain}</>}
+              {priceEth&&priceEth!=='0'?<> · {priceEth} ETH</>:<> · free</>}
+              {maxPerWallet?<> · max {maxPerWallet}/wallet</>:null}
+            </div></div>}
+          <div className="g gm2 g2">
+            <label className="fl"><span>Wallet</span>
+              {/* Grouped exactly as the prototype: an EVM optgroup of real wallets, and a Solana
+                  group carrying one disabled option so the roadmap is visible without implying
+                  it works. Empty state is a single disabled "No wallets yet". */}
+              {noWallets
+                ?<select className="in" disabled><option>No wallets yet</option></select>
+                :<select className="in" value={walletLabel} disabled={!walletsArrived}
+                    onChange={e=>setWalletLabel(e.target.value)}>
+                    <optgroup label="EVM">
+                      {(wallets.data||[]).map(entry=><option key={entry.label} value={entry.label}>{entry.label}</option>)}
+                    </optgroup>
+                    <optgroup label="Solana"><option disabled>Solana (not yet supported)</option></optgroup>
+                  </select>}
+            </label>
+            <label className="fl"><span>Quantity{maxPerWallet?<span style={{color:'var(--faint)',fontWeight:500}}> · max {maxPerWallet}</span>:null}</span>
+              <div className="qty">
+                <input className={`in tab${quantityIssue?' bad':''}`} type="number" min={1} max={maxPerWallet||100}
+                  disabled={noWallets} placeholder={`Enter quantity (1–${maxPerWallet||100})`} value={quantity}
+                  onChange={e=>{setQuantity(e.target.value);autoDetectIfReady(contractAddress,e.target.value);}}/>
+                <div className="qb">
+                  {quickPicks.map(pick=><button type="button" key={pick} disabled={noWallets}
+                    className={String(pick)===String(quantity)?'on':undefined}
+                    onClick={()=>{setQuantity(String(pick));autoDetectIfReady(contractAddress,String(pick));}}>{pick}</button>)}
+                  {/* At a cap of ONE there is a single legal quantity, so Max sets exactly what
+                      the "1" beside it already does -- two controls offering the same value,
+                      which reads as a choice that is not there. Disabled rather than removed, so
+                      the control keeps its shape and it stays visible that Max exists and simply
+                      has nothing left to do. Only at a cap of one: the prototype draws
+                      "1 2 3 Max" at a cap of three, so a Max that duplicates a pick is its own
+                      deliberate choice at every cap above this one. */}
+                  <button type="button" disabled={noWallets||maxPick===1}
+                  title={maxPick===1?'This drop allows one per wallet':undefined}
+                    className={String(maxPick)===String(quantity)?'on':undefined}
+                    onClick={()=>{setQuantity(String(maxPick));autoDetectIfReady(contractAddress,String(maxPick));}}>Max</button>
+                </div>
+              </div>
+              {/* Server-side validation surfaces as .in.bad + .fielderr, per the prototype's .ox. */}
+              {quantityIssue&&<div className="fielderr">{ALERT_ICON}{quantityIssue}</div>}
+            </label>
+          </div>
+          <label className="fl"><span>Price per mint <span style={{color:'var(--faint)',fontWeight:500}}>· auto-detected</span></span>
+            <input className="in tab" type="number" step="any" min="0" value={priceEth} disabled={noWallets}
+              placeholder={detected?'e.g. 0.08 — leave blank to use detected price':'Detected once a contract is entered'}
+              onChange={e=>setPriceEth(e.target.value)}/>
+          </label>
+          {/* Batch cross-link -- the prototype keeps this on the single-wallet form, where the
+              intent actually arises, rather than leaving Batch buried as a sub-tab. */}
+          <div className="nt i">{BATCH_ICON}
+            <div>Minting from more than one wallet? <b>Batch</b> simulates and submits each wallet independently, so one failure doesn&apos;t cancel the rest.
+              <div style={{marginTop:'8px'}}><button type="button" className="b sm" onClick={()=>onSwitchToBatch?.()}>Switch to batch</button></div></div></div>
+        </div>
+      </div>
+
+      <div className="g">
+        {preview&&<PreviewExpiry preview={preview} onExpire={()=>{setPreview(null);notify('That simulation expired before it was confirmed. Nothing was submitted — simulate again.',{type:'error'});}} onResimulate={inspect}/>}
+        <div className="sober">
+          <div className="sh">{LOCK_ICON}Transaction preview</div>
+          {/* Register 1: label left, figure right, tabular numerals. The EMPTY state renders the
+              same rows with em dashes and 0.000000 ETH rather than collapsing -- the prototype's
+              note is that "a collapsed total is a hidden total". */}
+          <table className="led">
+            <tbody>
+              {/* These four are known from DETECTION and the form, before any simulation runs.
+                  They used to be gated on `item` -- the result of a SUCCESSFUL simulation -- so a
+                  failed simulation blanked facts already on screen, and the panel read as "the app
+                  knows nothing" when it had just reported detecting the drop. Chain was the only
+                  row wired to what was actually known, which is why it was the only one that
+                  filled in. Only gas, Simulation and Total debit genuinely depend on simulating. */}
+              <tr><td>Contract</td><td className="mono">{item?shortHex(item.preview.contractAddress):(contractAddress?shortHex(contractAddress):'—')}</td></tr>
+              <tr><td>Method</td><td className="mono">{item?item.preview.methodSignature:(methodSignature||'—')}</td></tr>
+              <tr><td>Chain</td><td>{detectedChain||'—'}</td></tr>
+              <tr><td>Quantity</td><td>{item?quantity:(detected?quantity:'—')}</td></tr>
+              <tr><td>Mint price</td><td>{item?`${weiToEthDisplay(item.preview.nativeValue)} ETH`
+                :(priceEth!==''&&priceEth!==null&&priceEth!==undefined?`${Number(priceEth).toFixed(6)} ETH`:'0.000000 ETH')}</td></tr>
+              {/* Only these three depend on simulating. Before one has run they show an em dash
+                  rather than 0.000000 ETH: gas is never actually zero, so printing a confident
+                  zero claims something untrue -- and next to a genuinely free mint price it is
+                  exactly what made the panel look like it had failed to compute anything. The
+                  rows still render, so the prototype's "a collapsed total is a hidden total"
+                  still holds; only the unknown VALUE is withheld. */}
+              <tr><td>Est. gas</td><td>{item?`${weiToEthDisplay(item.simulation.estimatedGasCostWei??0)} ETH`:(detected?'—':'0.000000 ETH')}</td></tr>
+              <tr><td>Simulation</td><td>{simulating?'Running…':item?'Passed':'Not run'}</td></tr>
+              <tr className="tot"><td>Total debit</td><td>{totalDebitWei?`${weiToEthDisplay(totalDebitWei)} ETH`:(detected?'—':'0.000000 ETH')}</td></tr>
+            </tbody>
+          </table>
+        </div>
+        {/* Prototype mint.html:85 -- while /api/mints/preview is in flight the column shows
+            skeletons, not a half-filled ledger. Three row bars and a 60% line, exactly. */}
+        {simulating&&<div>
+          <div className="sk row"/><div className="sk row"/><div className="sk row"/><div className="sk l w60"/>
+        </div>}
+        {/* Ceiling only -- no meter and no "used" figure, because nothing exposes rolling spend
+            (data contract §5.1). */}
+        {ceilingWei!==undefined&&<div className="card tight">
+          <div style={{display:'flex',alignItems:'center',gap:'8px',fontSize:'11.5px',color:'var(--muted)'}}>
+            <span>Your daily ceiling</span><span className="sp"/>
+            {/* null is not "zero" and not "unknown": /api/profile/limits returns a null budget
+                with ceilingExempt true for an owner, and weiToEthDisplay(null) is an empty string,
+                so this rendered as "Your daily ceiling    ETH" -- a unit with no number, which
+                reads as a broken field rather than as having no ceiling. */}
+            <b className="tab" style={{color:'var(--text)'}}>{ceilingWei===null||ceilingWei===''
+              ?(limits.data?.ceilingExempt?'Exempt':'No limit')
+              :`${weiToEthDisplay(ceilingWei)} ETH`}</b></div>
+        </div>}
+        {pageError&&<Notice error={pageError}/>}
+        {/* One CTA per state, all .big.bl, copy verbatim from the prototype. */}
+        {noWallets
+          ?<button type="button" className="b big bl" disabled>Create a wallet to mint</button>
+          :simulating
+            ?<button type="button" className="b big bl" disabled>Simulating…</button>
+            :pageError
+              ?<button type="button" className="b big bl" disabled>Cannot mint · see above</button>
+              :<button type="button" className="b p big bl" disabled={!item} onClick={confirmMint}>
+                 {item?`Confirm and mint · ${weiToEthDisplay(totalDebitWei)} ETH`:'Confirm and mint'}</button>}
+        <p style={{fontSize:'11px',color:'var(--faint)',textAlign:'center'}}>
+          {noWallets
+            ?'Preview stays visible at all times — a collapsed total is a hidden total.'
+            :'Broadcast is irreversible. Intent persisted before send.'}</p>
+      </div>
+    </div>
+  </>;
+}
+
+/* --- Schedule status vocabulary -------------------------------------------------------------
+   Mirrors TASK_BUCKETS / bucketFor() in src/scheduler/schedulerRepository.js. Module scope on
+   purpose: these are constants and pure functions, and holding them inside the component put them
+   in the temporal dead zone of the filtering code that runs earlier in the same body -- which
+   threw "Cannot access 'EXPIRABLE' before initialization" and blanked the page.
+
+   'all' is a view, not a status: it sends no filter. 'expired' is derived from the clock rather
+   than stored -- the schema allows seven statuses and this is not one of them -- and it takes
+   precedence over paused/failed so every row lands in exactly one bucket. Ordered by lifecycle
+   (waiting -> suspended -> broke -> missed -> abandoned -> finished), the order a queue is read in.
+   Tone follows meaning: red is failure only, amber is a window that went past, and cancelled stays
+   neutral because the user chose it. */
+const BUCKETS=[['all','All'],['pending','Pending'],['paused','Paused'],['failed','Failed'],
+  ['expired','Expired'],['cancelled','Cancelled'],['succeeded','Successful']];
+const BUCKET_STATUSES={pending:['scheduled','claimed','retry'],paused:['paused'],
+  failed:['failed'],cancelled:['cancelled'],succeeded:['succeeded']};
+const BUCKET_KEYS=['pending','paused','failed','expired','cancelled','succeeded'];
+// One colour per state, so no two chips read as the same thing. Owner's ruling 2026-08-19:
+// grey was doing too much work -- All, Paused, Cancelled and Successful all shared it, which made
+// Cancelled indistinguishable from the "no filter" view sitting right next to it.
+//   all        neutral   -- it is the absence of a filter, so it should not compete
+//   pending    green     -- live and coming
+//   paused     blue      -- deliberately held, not broken
+//   failed     red       -- the only one that went wrong on its own
+//   expired    amber     -- a window that went past
+//   cancelled  violet    -- ended by choice, distinct from both grey and red
+//   succeeded  accent    -- the theme's signature, the liveliest colour it has
+const BUCKET_TONE={all:'nu',pending:'ok',paused:'info',failed:'bad',expired:'wn',
+  cancelled:'idle',succeeded:'ac'};
+const EXPIRABLE=['paused','failed'];
+// Must match EXPIRY_GRACE_MS in src/scheduler/schedulerRepository.js. Expiry is not "the time has
+// passed" -- a mint fails BECAUSE its time arrived, so that test would empty the failed bucket
+// entirely and pile every failure into expired. It is "passed long enough ago that retrying or
+// resuming is pointless": inside the hour a failure is worth another go, past it the drop is over.
+const EXPIRY_GRACE_MS=60*60*1000;
+function isExpired(task){
+  const value=String(task?.status||'').toLowerCase();
+  if(!EXPIRABLE.includes(value))return false;
+  const at=task?.mintTime?new Date(task.mintTime).getTime():NaN;
+  return Number.isFinite(at)&&at<Date.now()-EXPIRY_GRACE_MS;
+}
+function bucketOf(task){
+  if(isExpired(task))return 'expired';
+  const value=String(task?.status||'').toLowerCase();
+  return Object.keys(BUCKET_STATUSES).find(key=>BUCKET_STATUSES[key].includes(value))||null;
+}
+function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSearch]=useState('');const [bucket,setBucket]=useState('pending');const [filtersOpen,setFiltersOpen]=useState(false);const [serverFilters,setServerFilters]=useState(null);const PAGE_SIZE=10;const COMPAT_LIMIT=50;const listing=useLoad(serverFilters===false?`/api/tasks?page=1&pageSize=${COMPAT_LIMIT}&search=${encodeURIComponent(search)}`:`/api/tasks?page=${page}&pageSize=${PAGE_SIZE}&status=${bucket}&search=${encodeURIComponent(search)}`,[page,bucket,search,serverFilters],'tasks.changed');const wallets=useLoad('/api/wallets',[],'wallets.changed');const [chain,setChain]=useState(profile.defaultChain||profile.supportedChains[0]);const [contractAddress,setContractAddress]=useState('');const [quantity,setQuantity]=useState('1');const [priceETH,setPriceETH]=useState('');const [mintTime,setMintTime]=useState('');const [detecting,setDetecting]=useState(false);const lastDetected=useRef('');
+  // The prototype's Schedule form has no price field, because it assumes the contract can be
+  // priced automatically. Some cannot -- the server then rejects with a priceETH issue and there
+  // is nowhere to type one, which left the form unsubmittable for those contracts. So the field
+  // appears ONLY once that has happened, carrying the server's own message in the prototype's
+  // .fielderr. A gap in the design rather than a departure from it; see backlog §14.
+  const [priceIssue,setPriceIssue]=useState(null);
+  const [selectedIds,setSelectedIds]=useState([]);
+  function toggleSelected(id){setSelectedIds(current=>current.includes(id)?current.filter(x=>x!==id):[...current,id]);}
   // Mirrors Minting's auto-detect: a scheduled mint needs the same price/opening-time knowledge an
   // immediate mint does, so this reuses the identical /api/mints/detect endpoint rather than making
   // the user look those up by hand. Price and time stay editable afterward -- detection pre-fills,
@@ -226,27 +1147,840 @@ function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSear
   // just-changed value directly since setState hasn't applied yet inside the same onChange handler.
   function autoDetectIfReady(value=contractAddress){const trimmed=value.trim();if(ADDRESS_SHAPE.test(trimmed)&&trimmed!==lastDetected.current)detect(trimmed);}
   function handleContractBlur(){autoDetectIfReady();}
-  async function create(event){event.preventDefault();const form=event.currentTarget;try{const input=Object.fromEntries(new FormData(form));if(!input.priceETH)delete input.priceETH;if(input.mintTime)input.mintTime=new Date(input.mintTime).toISOString();else delete input.mintTime;await api('/api/tasks',{method:'POST',body:JSON.stringify(input)});form.reset();setContractAddress('');setQuantity('1');setPriceETH('');setMintTime('');lastDetected.current='';notify('Task scheduled.',{type:'success'});listing.load();}catch(value){notify(value.message,{type:'error'});}}async function control(id,action){if(action==='cancel'&&!await confirmDialog('Cancel this scheduled task?'))return;try{await api(`/api/tasks/${id}/control`,{method:'POST',body:JSON.stringify({action,confirmation:action==='cancel'?'CONFIRM':undefined})});listing.load();}catch(value){notify(value.message,{type:'error'});}}return <><PageTitle eyebrow="Durable UTC scheduler" title="Scheduled tasks" subtitle="Jobs use the same crash-safe M9 queue consumed by the worker."/><Notice error={listing.error}/><div className="page-toolbar"><label className="page-search">Find a task<input type="search" value={search} placeholder="Name or wallet…" onChange={e=>{setSearch(e.target.value);setPage(1);}}/></label></div><Form className="form-task" title="Schedule mint" note="Enter a contract and auto-detect its price and opening time, same as Minting. Local browser time is converted to an explicit UTC timestamp before submission." onSubmit={create}><Field name="name" label="Name"/><Select name="walletLabel" label="Wallet" options={wallets.data?.map(x=>x.label)}/><ChainSelect name="chain" label="Chain" options={profile.supportedChains} value={chain} onChange={e=>setChain(e.target.value)}/><div className="field-row"><Field name="contractAddress" label="Contract" placeholder="0x…" value={contractAddress} onChange={e=>{setContractAddress(e.target.value);autoDetectIfReady(e.target.value);}} onBlur={handleContractBlur}/><label>Quantity<input type="number" min="1" max="100" value={quantity} onChange={e=>setQuantity(e.target.value)}/></label></div>{detecting&&<p className="mint-detecting"><span className="spinner spinner-quiet" aria-hidden="true"/>Detecting…</p>}<div className="field-row"><Field name="priceETH" label="Price (ETH)" type="number" step="any" required={false} placeholder="Leave blank to auto-resolve" value={priceETH} onChange={e=>setPriceETH(e.target.value)}/><Field name="mintTime" label="Schedule time" type="datetime-local" required={false} value={mintTime} onChange={e=>setMintTime(e.target.value)}/></div><button>Schedule durably</button></Form>{listing.data===null?<Skeleton variant="lines" rows={4}/>:<><div className="table-wrap task-table"><table><thead><tr><th>Name</th><th>Wallet</th><th>UTC due</th><th>Status</th><th>Controls</th></tr></thead><tbody>{listing.data.items.map(task=><tr key={task.id}><td data-label="Name">{task.name}</td><td data-label="Wallet">{task.walletLabel}</td><td data-label="UTC due">{new Date(task.mintTime).toISOString()}</td><td data-label="Status"><StatusPill status={task.status}/></td><td data-label="Controls" className="actions">{['cancel','pause','resume','retry'].map(action=><button className="small" key={action} onClick={()=>control(task.id,action)}>{action}</button>)}</td></tr>)}</tbody></table></div>{listing.data.items.length===0&&<Empty text={search?'No tasks match this search.':'No scheduled tasks yet.'}/>}<Pager value={listing.data} page={page} setPage={setPage}/></>}</>}
-function Activity(){const [page,setPage]=useState(1);const [search,setSearch]=useState('');const listing=useLoad(`/api/activity?page=${page}&pageSize=10&search=${encodeURIComponent(search)}`,[page,search],ACTIVITY_EVENTS);return <><PageTitle eyebrow="User-scoped history" title="Activity" subtitle="Paginated execution history with trigger and verification context where recorded."/><Notice error={listing.error}/><div className="page-toolbar"><label className="page-search">Find activity<input type="search" value={search} placeholder="Title or wallet…" onChange={e=>{setSearch(e.target.value);setPage(1);}}/></label></div>{listing.data===null?<Skeleton variant="lines" rows={4}/>:<><div className="feed activity-feed">{listing.data.items.map(item=><article className="feed-item" key={item.id}><div><StatusPill status={item.status}/><h2>{item.title}</h2><p>{item.walletLabel||'No wallet'} · {new Date(item.time).toLocaleString()}</p></div><div className="activity-context"><p>Trigger: {item.triggerSource||'legacy/unrecorded'}</p><p>Verification: {item.verificationState||'not applicable'}</p></div></article>)}</div>{listing.data.items.length===0&&<Empty text={search?'No activity matches this search.':'No activity recorded yet.'}/>}<Pager value={listing.data} page={page} setPage={setPage}/></>}</>}
+  async function create(event){event.preventDefault();const form=event.currentTarget;try{const input=Object.fromEntries(new FormData(form));if(!input.priceETH)delete input.priceETH;if(input.mintTime)input.mintTime=new Date(input.mintTime).toISOString();else delete input.mintTime;await api('/api/tasks',{method:'POST',body:JSON.stringify(input)});setPriceIssue(null);form.reset();setContractAddress('');setQuantity('1');setPriceETH('');setMintTime('');lastDetected.current='';notify('Task scheduled.',{type:'success'});listing.load();}catch(value){const issue=value.issues?.find(entry=>entry.field==='priceETH');if(issue)setPriceIssue(issue.message);notify(value.message,{type:'error'});}}async function control(id,action){try{await api(`/api/tasks/${id}/control`,{method:'POST',body:JSON.stringify({action,confirmation:action==='cancel'?'CONFIRM':undefined})});}catch(value){notify(value.message,{type:'error'});}}
+  // Prototype docs/prototype-pages/mint.html:111-158. The Schedule tab is a .split: the form on
+  // the left, the "Scheduled" list on the right. The old page-lead, the search toolbar, the chain
+  // select and the table UNDER the form are all gone -- none of them exist in the design, and the
+  // table in particular was the thing the owner asked to have removed.
+  const walletsArrived=wallets.data!==null&&wallets.data!==undefined;
+  const noWallets=walletsArrived&&wallets.data.length===0;
+  // ---- Filtering, and where it happens -------------------------------------------------------
+  // The server does this: it filters by bucket and counts all of them in one round trip. But
+  // dashboard/vite.config.js proxies /api to the DEPLOYED instance, which does not have that code
+  // yet, so on localhost the filter was sent and ignored -- the list never narrowed.
+  //
+  // So: detect it. A response carrying `counts` is a server that filters; one without is not.
+  // When it is not, fetch up to COMPAT_LIMIT rows unfiltered and do the filtering and the paging
+  // here instead. This is a SHIM with a real limit -- past 50 rows it can only see the first 50 --
+  // and it disables itself the moment the server starts answering with counts. It is not a second
+  // implementation to maintain: it reuses bucketOf, the same function the rows are labelled with.
+  const compat=serverFilters===false;
+  useEffect(()=>{
+    if(listing.data&&serverFilters===null)setServerFilters(Boolean(listing.data.counts));
+  },[listing.data,serverFilters]);
+  const served=listing.data?.items;
+  const matching=compat&&served
+    ?served.filter(task=>bucket==='all'||bucketOf(task)===bucket)
+    :null;
+  const items=compat
+    ?(matching?matching.slice((page-1)*PAGE_SIZE,page*PAGE_SIZE):undefined)
+    :served;
+  const compatTotal=matching?matching.length:0;
+  const pagerValue=compat
+    ?{page,pageSize:PAGE_SIZE,total:compatTotal,totalPages:Math.max(1,Math.ceil(compatTotal/PAGE_SIZE))}
+    :listing.data;
+  // Truthful about its own blind spot rather than quietly showing a subset.
+  const compatTruncated=compat&&listing.data?.total>COMPAT_LIMIT;
+  // The prototype's chip reads "2 pending" above THREE rows -- Scheduled, Paused, Failed. So
+  // "pending" means not-yet-fired: a paused mint still counts, a failed one does not. Counting
+  // only status==="scheduled" would have printed 1 against the same three rows.
+  // The five buckets partition every status the schema allows, so a row is always reachable under
+  // exactly one filter. 'done' is not in the owner's original four -- without it a mint that
+  // actually fired would be invisible under all of them. Mirrors TASK_BUCKETS in
+  // src/scheduler/schedulerRepository.js; the server does the filtering and the counting.
+  // 'all' is a view, not a status -- it sends no filter at all. Ordered by lifecycle (waiting ->
+  // suspended -> broke -> abandoned -> finished) rather than by the order they were dictated,
+  // because that is the order someone reads a queue in.
+  // Counts come from the server because they describe the whole collection, not this page. The
+  // fallback is load-bearing rather than defensive: dashboard/vite.config.js proxies /api to the
+  // deployed instance, so until this ships the response carries no counts at all. Counting the
+  // page keeps a wrong-but-plausible number instead of rendering "undefined", and it corrects
+  // itself the moment the server catches up.
+  const rawCounts=listing.data?.counts||(served?Object.fromEntries(BUCKET_KEYS.map(key=>
+    [key,served.filter(task=>bucketOf(task)===key).length]))
+    :Object.fromEntries(BUCKET_KEYS.map(key=>[key,0])));
+  const counts={...rawCounts,all:Object.values(rawCounts).reduce((sum,value)=>sum+value,0)};
+  // Tone follows meaning, not novelty. Failed is the only one that went wrong on its own, so it is
+  // the only red: cancelled is something the user chose, and colouring a deliberate act like an
+  // error teaches people to ignore red. Owner's ruling 2026-08-19.
+  function rowIcon(status){
+    const value=String(status||'').toLowerCase();
+    if(value==='paused')return <div className="ri">{PAUSE_ICON}</div>;
+    if(value==='failed'||value==='error')return <div className="ri" style={{color:'var(--loss-text)'}}>{CROSS_ICON}</div>;
+    return <div className="ri">{CLOCK_ICON_LG}</div>;
+  }
+  function selectBucket(next){setBucket(next);setPage(1);setSelectedIds([]);setFiltersOpen(false);}
+  // Collapsed, the control is ONE chip: the filter currently applied. Pressing it opens the rest,
+  // pressing one of those applies it and closes again. The owner asked for the states not to sit
+  // on screen all at once -- six permanent chips is a legend nobody reads, and it pushed the list
+  // down a line. Escape and any outside click close it, so it never traps focus in the header.
+  useEffect(()=>{
+    if(!filtersOpen)return;
+    const close=event=>{if(!event.target.closest?.('.fils'))setFiltersOpen(false);};
+    const onKey=event=>{if(event.key==='Escape')setFiltersOpen(false);};
+    document.addEventListener('click',close);
+    document.addEventListener('keydown',onKey);
+    return()=>{document.removeEventListener('click',close);document.removeEventListener('keydown',onKey);};
+  },[filtersOpen]);
+  // The server is the authority on which control a status accepts, so this mirrors the WHERE
+  // clauses in src/scheduler/schedulerRepository.js (pause/resume/retry/cancel, lines 137-155)
+  // rather than reasoning about it independently. Cancel used to be treated as always available;
+  // it is not -- the server takes it only for a mint that is still going to fire, and offering it
+  // on an already-cancelled row just produced a rejection the user could do nothing about.
+  const ACTIONS_BY_STATUS={
+    scheduled:['pause','cancel'],
+    retry:['pause','cancel'],
+    paused:['resume','cancel'],
+    failed:['retry'],
+  };
+  // Takes the whole task, not just its status, because expiry decides this as much as status
+  // does. Resume and Retry are withheld once the mint time has gone: resuming or retrying then
+  // only re-runs something whose drop is already over, which is the owner's point -- expired is a
+  // state, not an action. An expired PAUSED mint can still be cancelled (the server's cancel
+  // accepts 'paused'); an expired FAILED one accepts nothing, since retry is its only route.
+  function actionsFor(task){
+    const status=String(task?.status||'').toLowerCase();
+    if(isExpired(task))return status==='paused'?['cancel']:[];
+    return ACTIONS_BY_STATUS[status]||[];
+  }
+  // Selection is scoped to the page in view -- it clears on paging and on changing filter -- and
+  // intersecting here as well is what stops a control being enabled with nothing behind it.
+  const selected=(items||[]).filter(task=>selectedIds.includes(task.id));
+  // The FIRST row selected fixes what the selection IS: only rows offering exactly the same set
+  // of actions can join it. Mixing was previously allowed, with an action quietly applying to the
+  // subset that could take it -- press Cancel on a scheduled row and a cancelled one together and
+  // one changes while the other silently does not, with nothing on screen saying so. The owner
+  // ruled that out: "I cannot select a scheduled item, then also select another one, and it now
+  // be cancelled." Rows that cannot join are left inert rather than hidden, so the list does not
+  // reshuffle under the cursor as a selection is built.
+  const selectionKey=selected.length?actionsFor(selected[0]).join('+'):null;
+  const canSelect=task=>selectionKey===null||actionsFor(task).join('+')===selectionKey;
+  function chooseRow(task){if(canSelect(task))toggleSelected(task.id);}
+  // Because the selection is homogeneous, "this action is offered" and "this action will run
+  // against every selected row" are now the same statement -- which is what makes the button
+  // labels honest.
+  function selectionSupports(action){
+    return selected.length>0&&actionsFor(selected[0]).includes(action);
+  }
+  async function controlSelected(action){
+    if(!selectionSupports(action))return;
+    const targets=selected;
+    if(!targets.length)return;
+    if(action==='cancel'&&!await confirmDialog(targets.length===1
+      ?'Cancel this scheduled mint? It will not fire, and this cannot be undone.'
+      :`Cancel ${targets.length} scheduled mints? They will not fire, and this cannot be undone.`))return;
+    for(const task of targets)await control(task.id,action);
+    setSelectedIds([]);
+    listing.load();
+  }
+  // The prototype writes a DIFFERENT meta line per state, and the failed one is the reason:
+  //   scheduled  "Primary · fires in 42m · 2026-08-20T18:00:00Z"
+  //   paused     "Trading · paused"
+  //   failed     "attempt 3 of 3 · sale not active"
+  // The build printed wallet + timestamp on every row regardless, so a failure said only that it
+  // failed. lastError has carried the reason all along -- "Simulating this call failed:
+  // insufficient funds" -- it was simply never shown. A state the user cannot act on because it
+  // will not say what went wrong is the thing the owner asked to end.
+  function rowMeta(task){
+    const key=bucketOf(task);
+    if((key==='failed'||key==='expired')&&task.lastError){
+      const attempt=task.attemptCount||0,cap=task.maxAttempts||3;
+      return `attempt ${attempt} of ${cap} · ${task.lastError}`;
+    }
+    if(key==='paused')return `${task.walletLabel} · paused`;
+    const at=task.mintTime?new Date(task.mintTime):null;
+    if(!at||Number.isNaN(at.getTime()))return String(task.walletLabel||'');
+    const ms=at.getTime()-Date.now();
+    if(ms>0){
+      const mins=Math.round(ms/60000);
+      const when=mins<60?`fires in ${mins}m`:mins<1440?`fires in ${Math.round(mins/60)}h`:`fires in ${Math.round(mins/1440)}d`;
+      return `${task.walletLabel} · ${when} · ${at.toISOString()}`;
+    }
+    return `${task.walletLabel} · ${at.toISOString()}`;
+  }
+  function rowPill(task){
+    const key=bucketOf(task);
+    // An expired row says "expired" rather than "paused"/"failed", because that is the fact that
+    // decides what you can do with it.
+    return <span className={`p ${key?BUCKET_TONE[key]:'nu'}`}>{key==='expired'?'expired':task.status}</span>;
+  }
+  return <div className="split">
+    <div className="card">
+      <div className="ch"><div className="chip-ico">{CLOCK_ICON_LG}</div><h2>Schedule a mint</h2></div>
+      <form className="g" style={{gap:'11px'}} onSubmit={create}>
+        <label className="fl"><span>Name</span>
+          <input className="in" name="name" required disabled={noWallets} placeholder="e.g. Pudgy Rods public"/></label>
+        <label className="fl"><span>Contract address</span>
+          <input className="in mono" name="contractAddress" required disabled={noWallets} placeholder="0x…"
+            value={contractAddress}
+            onChange={e=>{setContractAddress(e.target.value);autoDetectIfReady(e.target.value);}}
+            onBlur={handleContractBlur}/></label>
+        <div className="nt i">{INFO_ICON}
+          <div>SeaDrop drops expose their own opening time on-chain — it is filled in automatically. A plain <code>mint(uint256)</code> contract has no equivalent, so you set the time yourself.</div></div>
+        <div className="g gm2 g2">
+          <label className="fl"><span>Wallet</span>
+            {noWallets
+              ?<select className="in" disabled><option>No wallets yet</option></select>
+              :<select className="in" name="walletLabel" disabled={!walletsArrived}>
+                <optgroup label="EVM">{(wallets.data||[]).map(entry=><option key={entry.label} value={entry.label}>{entry.label}</option>)}</optgroup>
+              </select>}
+          </label>
+          <label className="fl"><span>Quantity</span>
+            <div className="qty">
+              <input className="in tab" name="quantity" type="number" min={1} max={100} disabled={noWallets}
+                placeholder="Enter quantity (1–100)" value={quantity} onChange={e=>setQuantity(e.target.value)}/>
+              {/* Shared rule against this form's cap of 100 -> 1, 2, 50, Max. Backlog §13. */}
+              <div className="qb">{quantityPicks(100).map(pick=><button type="button" key={pick} disabled={noWallets}
+                className={String(pick)===String(quantity)?'on':undefined}
+                onClick={()=>setQuantity(String(pick))}>{pick}</button>)}
+                <button type="button" disabled={noWallets}
+                  className={String(quantity)==='100'?'on':undefined}
+                  onClick={()=>setQuantity('100')}>Max</button></div>
+            </div></label>
+        </div>
+        <label className="fl"><span>Mint time <span style={{color:'var(--faint)',fontWeight:500}}>· UTC, explicit offset or Z</span></span>
+          <input className="in tab mono" name="mintTime" type="datetime-local" disabled={noWallets}
+            value={mintTime} onChange={e=>setMintTime(e.target.value)}/></label>
+        {priceIssue
+          ?<label className="fl"><span>Price per mint <span style={{color:'var(--faint)',fontWeight:500}}>· ETH</span></span>
+             <input className="in tab bad" name="priceETH" type="number" step="any" min="0" required
+               placeholder="e.g. 0.08" value={priceETH} onChange={e=>setPriceETH(e.target.value)}/>
+             <div className="fielderr">{ALERT_ICON}{priceIssue}</div></label>
+          :priceETH?<input type="hidden" name="priceETH" value={priceETH}/>:null}
+        <input type="hidden" name="chain" value={chain}/>
+        <button className="b p" disabled={noWallets}>Schedule mint</button>
+      </form>
+    </div>
+
+    <div className="g">
+      <div className="card">
+        {/* The prototype's static "2 pending" chip, now the filter. It stays ON THE TITLE LINE
+            where that chip was, and stays a SINGLE chip until pressed -- see selectBucket's note.
+            Each chip carries its own count, which is why the server scopes counts to the search
+            but NOT to the active filter: a chip reading 0 only because it is not the current view
+            would be worse than no chip at all. */}
+        <div className="ch"><h2>Scheduled</h2><div className="sp"/>
+          <div className={`fils${filtersOpen?' open':''}`}>
+            {/* The trigger never leaves the title line -- it IS the chip that used to live here,
+                now reading whichever filter is applied. The alternatives open beneath it rather
+                than expanding inline, because .ch does not wrap (prototype.css:281) and six chips
+                would either overflow the header or force the list down a row. */}
+            <button type="button" className={`p ${BUCKET_TONE[bucket]} fil on`}
+              aria-haspopup="listbox" aria-expanded={filtersOpen}
+              onClick={()=>setFiltersOpen(open=>!open)}>
+              {counts[bucket]??0} {(BUCKETS.find(([key])=>key===bucket)?.[1]||'').toLowerCase()}
+              <span className="fil-caret" aria-hidden="true">▾</span>
+            </button>
+            {filtersOpen&&<div className="fil-pop" role="listbox" aria-label="Filter by state">
+              {BUCKETS.map(([key,label])=><button type="button" key={key} role="option"
+                aria-selected={bucket===key}
+                className={`p ${BUCKET_TONE[key]} fil${bucket===key?' on':''}`}
+                onClick={()=>selectBucket(key)}>
+                {counts[key]??0} {label.toLowerCase()}</button>)}
+            </div>}
+          </div>
+        </div>
+        {listing.error
+          ?<Notice error={loadError(listing,'Could not load scheduled mints.')}/>
+          :items===undefined||items===null
+            ?<div><div className="sk row"/><div className="sk row"/><div className="sk row"/></div>
+            :items.length===0
+              ?<div className="emp">
+                 <div className="ei">{CLOCK_ICON_LG}</div>
+                 {/* The prototype's empty state assumed an unfiltered list. With a filter applied,
+                     "Nothing scheduled" would be a lie about the collection rather than a fact
+                     about the view, so the filtered case says which view is empty. */}
+                 {bucket==='pending'||bucket==='all'
+                   ?<><h3>Nothing scheduled</h3>
+                     <p>A scheduled mint is a database row, not a browser timer — it fires whether or not this tab is open.</p></>
+                   :<><h3>No {BUCKETS.find(([key])=>key===bucket)?.[1].toLowerCase()} mints</h3>
+                     <p>Nothing here right now. Other states may still have mints — the counts above show which.</p></>}
+               </div>
+              :<div>
+                 {/* Says so out loud rather than quietly showing a subset. Only reachable before
+                     the server-side filter deploys, and only past the 50-row window. */}
+                 {compatTruncated&&<div className="nt i" style={{marginBottom:'9px'}}>{INFO_ICON}
+                   <div>Filtering the newest {COMPAT_LIMIT} of {listing.data.total} scheduled mints.
+                   The full-collection filter arrives with the next deploy.</div></div>}
+                 {/* The whole row is the control: click to select, click again to drop it. The
+                     checkboxes that were here are gone at the owner's instruction -- selection now
+                     reads as a highlight on the row itself (.r.on), which is why the row carries
+                     role="button" and aria-pressed rather than hiding an input inside it.
+                     A row that cannot join the current selection gets .r.off and is not focusable,
+                     so the rule is visible before it is discovered by clicking. */}
+                 {items.map(task=>{
+                   const chosen=selectedIds.includes(task.id);
+                   const selectable=canSelect(task);
+                   return <div key={task.id}
+                     className={`r${chosen?' on':''}${selectable?'':' off'}`}
+                     role="button" tabIndex={selectable?0:-1}
+                     aria-pressed={chosen} aria-disabled={selectable?undefined:true}
+                     onClick={()=>chooseRow(task)}
+                     onKeyDown={event=>{if(event.key==='Enter'||event.key===' '){
+                       event.preventDefault();chooseRow(task);}}}>
+                     {rowIcon(task.status)}
+                     <div className="rm">
+                       <div className="rt">{task.name}</div>
+                       <div className="rs fold">{rowMeta(task)}</div>
+                     </div>
+                     <div className="rv">{rowPill(task)}</div>
+                   </div>;
+                 })}
+                 {/* All four always present, as the prototype draws them; the ones that cannot
+                     apply to the current selection are disabled rather than hidden, so the row
+                     does not reflow as the selection changes. .b[disabled] is the prototype's
+                     own treatment for exactly this. */}
+                 <div className="br" style={{marginTop:'11px'}}>
+                   {['pause','resume','retry'].map(action=><button type="button" key={action} className="b sm"
+                     disabled={!selectionSupports(action)} onClick={()=>controlSelected(action)}>
+                     {action[0].toUpperCase()+action.slice(1)}</button>)}
+                   <button type="button" className="b d sm" disabled={!selectionSupports('cancel')}
+                     onClick={()=>controlSelected('cancel')}>Cancel…</button>
+                 </div>
+                 {/* A selection belongs to the page it was made on, so leaving the page drops it.
+                     Guarded on an ACTUAL change: pressing the number you are already on is a no-op,
+                     and a no-op that silently throws away a selection is just a trap. */}
+                 <Pager value={pagerValue} page={page}
+                   setPage={value=>{if(value!==page)setSelectedIds([]);setPage(value);}}/>
+               </div>}
+      </div>
+    </div>
+  </div>;
+}
+// One tone per outcome, so a list reads the same way everywhere. Extends the Schedule card's
+// vocabulary to the other lists at the owner's request: green for something that worked, red for
+// something that failed, and AMBER for a refusal -- which was previously indistinguishable from a
+// failure even though it means something quite different (the system said no, rather than broke).
+const OUTCOME_TONE={
+  success:'ok', confirmed:'ok', succeeded:'ok', allowed:'ok', ok:'ok',
+  fail:'bad', failed:'bad', failure:'bad', error:'bad', reverted:'bad',
+  unauthorized:'wn', denied:'wn', rejected:'wn', blocked:'wn', 'rate-limited':'wn',
+};
+function outcomeTone(value){return OUTCOME_TONE[String(value||'').toLowerCase()]||'nu';}
+// Platform is a source, not an outcome, so it gets its own neutral chip rather than competing
+// with the colour that carries meaning.
+function PlatformChip({platform}){
+  if(!platform)return null;
+  return <span className="p nu" style={{textTransform:'capitalize'}}>{platform}</span>;
+}
+function Activity(){const [page,setPage]=useState(1);const [search,setSearch]=useState('');const listing=useLoad(`/api/activity?page=${page}&pageSize=10&search=${encodeURIComponent(search)}`,[page,search],ACTIVITY_EVENTS);return <><p className="page-lead">Paginated execution history with trigger and verification context where recorded.</p><Notice error={loadError(listing,'Could not load activity.')}/><div className="page-toolbar"><label className="page-search">Find activity<input type="search" value={search} placeholder="Title or wallet…" onChange={e=>{setSearch(e.target.value);setPage(1);}}/></label></div>{listing.data===null?<Skeleton variant="lines" rows={4}/>:<><div className="feed activity-feed">{listing.data.items.map(item=><article className="feed-item" key={item.id}><div><span className={`p ${outcomeTone(item.status)}`}>{item.status}</span><h2>{item.title}</h2><p>{item.walletLabel||'No wallet'} · {new Date(item.time).toLocaleString()}</p></div><div className="activity-context"><p>Trigger: {item.triggerSource||'legacy/unrecorded'}</p><p>Verification: {item.verificationState||'not applicable'}</p></div></article>)}</div>{listing.data.items.length===0&&<Empty text={search?'No activity matches this search.':'No activity recorded yet.'}/>}<Pager value={listing.data} page={page} setPage={setPage}/></>}</>}
 // Every confirmed mint auto-creates its own record now (see recordMintActivity/autoRecordPnl in
 // src/server.js) with real cost+gas and sale left at 0 until something actually sells -- these
 // rollups are computed straight from that same already-loaded list, not a separate fetch, since
 // summing what's already on screen is simpler than a new endpoint for the same numbers.
-const PNL_PERIODS=[['day','Today',86400000],['week','7 days',7*86400000],['month','30 days',30*86400000],['year','365 days',365*86400000]];
-function summarizePnlPeriod(records,windowMs){const cutoff=Date.now()-windowMs;const inWindow=records.filter(item=>item.t>=cutoff);
-  return {count:inWindow.length,cost:inWindow.reduce((sum,item)=>sum+Number(item.cost),0),sale:inWindow.reduce((sum,item)=>sum+Number(item.sale),0),
-    gas:inWindow.reduce((sum,item)=>sum+Number(item.gas),0),net:inWindow.reduce((sum,item)=>sum+Number(item.net),0)};}
-function Pnl(){const listing=useLoad('/api/pnl',[],'pnl.changed');const [editing,setEditing]=useState(null);const [query,setQuery]=useState('');async function save(event){event.preventDefault();const form=event.currentTarget;const wasEditing=editing;const body=JSON.stringify(Object.fromEntries(new FormData(form)));try{await api(wasEditing?`/api/pnl/${wasEditing}`:'/api/pnl',{method:wasEditing?'PUT':'POST',body});setEditing(null);form.reset();notify(wasEditing?'Record updated.':'Record added.',{type:'success'});listing.load();}catch(value){notify(value.message,{type:'error'});}}async function remove(id){if(!await confirmDialog('Delete this P&L record?'))return;try{await api(`/api/pnl/${id}`,{method:'DELETE',body:JSON.stringify({confirmation:'CONFIRM'})});listing.load();}catch(value){notify(value.message,{type:'error'});}}const current=listing.data?.find(x=>x.id===editing);const normalized=query.trim().toLowerCase();const filtered=listing.data?(normalized?listing.data.filter(item=>String(item.nm||'').toLowerCase().includes(normalized)):listing.data):null;return <><PageTitle eyebrow="Durable UUID records" title="P&L" subtitle="Cost and gas are recorded automatically on every confirmed mint; sale stays editable below once something actually sells."/><Notice error={listing.error}/>{listing.data&&<div className="card-grid pnl-summary-grid">{PNL_PERIODS.map(([key,label,windowMs])=>{const summary=summarizePnlPeriod(listing.data,windowMs);return <article className="card pnl-summary-card" key={key}><span className="eyebrow">{label}</span><strong className={summary.net<0?'net-loss':'net-gain'}>Net {summary.net>0?'+':''}{summary.net.toFixed(4)}</strong><p>{summary.count} record{summary.count===1?'':'s'} · Cost {summary.cost.toFixed(4)} · Sale {summary.sale.toFixed(4)} · Gas {summary.gas.toFixed(4)}</p></article>;})}</div>}<div className="page-toolbar"><label className="page-search">Find a record<input type="search" value={query} placeholder="Name…" onChange={e=>setQuery(e.target.value)}/></label></div><Form className="form-pnl" key={editing||'new'} title={editing?'Edit record':'Add record'} note="Auto-created records can be edited here too -- fill in Sale once an NFT actually resells." onSubmit={save}><Field name="name" label="Name" defaultValue={current?.nm}/><Field name="cost" label="Cost" type="number" step="any" defaultValue={current?.cost??0}/><Field name="sale" label="Sale" type="number" step="any" defaultValue={current?.sale??0}/><Field name="gas" label="Gas" type="number" step="any" defaultValue={current?.gas??0}/><button>{editing?'Save changes':'Add record'}</button>{editing&&<button type="button" className="quiet" onClick={()=>setEditing(null)}>Cancel edit</button>}</Form>{listing.data===null?<Skeleton/>:<div className="card-grid pnl-grid">{filtered.map(item=><article className="card" key={item.id}><h2>{item.nm}</h2><p>Cost {item.cost} · Sale {item.sale} · Gas {item.gas}</p><strong className={Number(item.net)<0?'net-loss':'net-gain'}>Net {Number(item.net)>0?'+':''}{item.net}</strong><div className="actions"><button className="small quiet" onClick={()=>setEditing(item.id)}>Edit</button><button className="small danger" onClick={()=>remove(item.id)}>Delete</button></div></article>)}{filtered.length===0&&<Empty text={normalized?'No P&L records match this search.':'No P&L records yet.'}/>}</div>}</>}
+// ── P&L snapshot card ────────────────────────────────────────────────────────
+// The shareable-P&L-card pattern trading apps use (Tealstreet's PnL cards, Robinhood-style
+// summaries): one headline return, the period it covers, the few figures behind it, and a download.
+// The conventions worth borrowing are the ones those all share -- green for gain and red for loss,
+// a return expressed as a percentage next to the absolute figure, and few enough numbers that the
+// card reads at a glance.
+//
+// What is NOT borrowed: backgrounds, stickers and layout pickers. This card reports what happened
+// with the user's money; decorating it invites reading it as promotion rather than as a record.
+//
+// ROI is net over cost PLUS gas. Gas is spent whether or not a token ever resells, so a return
+// measured against cost alone would flatter every card this ever draws.
+function pnlSnapshotRange(days){
+  if(days===null)return 'All time';
+  const end=new Date();
+  const start=new Date(Date.now()-(days-1)*86400000);
+  const fmt=value=>value.toLocaleDateString(undefined,{month:'short',day:'numeric'});
+  return `${fmt(start)} — ${fmt(end)}`;
+}
+// Drawn on a canvas rather than screenshotted from the DOM, so the export needs no library and no
+// network. Colours are read off the live theme at draw time, so the PNG matches whatever theme the
+// page is in rather than being hardcoded to one of them.
+function drawSnapshotCanvas({totals,label,range,points}){
+  const scale=2,width=560,height=320;
+  const canvas=document.createElement('canvas');
+  canvas.width=width*scale;canvas.height=height*scale;
+  const context=canvas.getContext('2d');
+  context.scale(scale,scale);
+  const styles=window.getComputedStyle(document.documentElement);
+  const token=(name,fallback)=>{const value=styles.getPropertyValue(name).trim();return value||fallback;};
+  const surface=token('--surface','#111'),border=token('--border-strong','#333');
+  const text=token('--text','#eee'),muted=token('--muted','#9aa2a9'),faint=token('--faint','#767e79');
+  const gain=token('--gain-text','#3fb950'),loss=token('--loss-text','#f85149');
+  const accent=token('--accent','#2ea67f');
+  const positive=totals.net>=0;
+  const verdict=positive?gain:loss;
+
+  context.fillStyle=surface;context.fillRect(0,0,width,height);
+  context.strokeStyle=border;context.lineWidth=1;
+  context.strokeRect(.5,.5,width-1,height-1);
+
+  context.fillStyle=accent;
+  context.font='700 12px ui-sans-serif, system-ui, sans-serif';
+  context.fillText('GHOSTMINT · P&L',28,40);
+  context.fillStyle=faint;
+  context.font='500 12px ui-sans-serif, system-ui, sans-serif';
+  context.fillText(range,28,60);
+
+  context.fillStyle=muted;
+  context.font='600 13px ui-sans-serif, system-ui, sans-serif';
+  context.fillText(`Net · ${label}`,28,100);
+  context.fillStyle=verdict;
+  context.font='750 44px ui-sans-serif, system-ui, sans-serif';
+  const headline=`${positive?'+':'−'}${Math.abs(totals.net).toFixed(6)} ETH`;
+  context.fillText(headline,28,142);
+  if(totals.roi!==undefined){
+    context.font='700 16px ui-sans-serif, system-ui, sans-serif';
+    context.fillText(`${positive?'+':'−'}${Math.abs(totals.roi).toFixed(1)}% on outlay`,28,168);
+  }
+
+  // Same one-record-per-bar geometry as both on-screen charts. The downloaded card cannot
+  // collapse or overlap outcomes that the user could see before pressing Download.
+  const chartTop=190,chartHeight=54,mid=chartTop+chartHeight/2;
+  const plotWidth=width-56;
+  const {bars}=pnlBarLayout(points,{width:plotWidth,height:chartHeight,maxBarWidth:9});
+  context.strokeStyle=border;context.beginPath();
+  context.moveTo(28,mid);context.lineTo(width-28,mid);context.stroke();
+  bars.forEach(bar=>{
+    context.fillStyle=bar.net<0?token('--loss','#da3633'):token('--gain','#2ea043');
+    const y=chartTop+Math.min(bar.end,chartHeight/2);
+    context.fillRect(28+bar.x,y,bar.width,bar.height);
+  });
+
+  const stats=[['Mints',String(totals.records)],['Cost',`${totals.cost.toFixed(4)} ETH`],
+    ['Gas',`${totals.gas.toFixed(4)} ETH`],['Sale',`${totals.sale.toFixed(4)} ETH`]];
+  stats.forEach(([name,value],index)=>{
+    const x=28+index*((width-56)/stats.length);
+    context.fillStyle=faint;
+    context.font='600 10px ui-sans-serif, system-ui, sans-serif';
+    context.fillText(name.toUpperCase(),x,278);
+    context.fillStyle=text;
+    context.font='700 14px ui-sans-serif, system-ui, sans-serif';
+    context.fillText(value,x,297);
+  });
+  return canvas;
+}
+function PnlSnapshot({records,windowKey,onWindow,onClose}){
+  const [busy,setBusy]=useState(false);
+  const chosen=walletWindow(windowKey);
+  const days=chosen.ms===null?null:Math.round(chosen.ms/86400000);
+  const totals=pnlWindowTotals(records,days);
+  const {points}=pnlRecordSeries(records,days);
+  const range=pnlSnapshotRange(days);
+  const positive=totals.net>=0;
+  async function download(){
+    setBusy(true);
+    try{
+      const canvas=drawSnapshotCanvas({totals,label:chosen.label,range,points});
+      const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/png'));
+      if(!blob)throw new Error('The browser could not render the card.');
+      downloadFile(`ghostmint-pnl-${days===null?'all-time':`${days}d`}.png`,blob,'image/png');
+      notify('Snapshot saved as a PNG.',{type:'success'});
+    }catch(error){notify(error.message,{type:'error'});}
+    finally{setBusy(false);}
+  }
+  return <Overlay open onClose={onClose} title="P&L snapshot"
+    subtitle="A single card for the selected period, to keep or to share.">
+    <div className="seg" role="group" aria-label="Snapshot period" style={{marginBottom:'12px'}}>
+      {WALLET_WINDOWS.map(([key])=><button type="button" key={key} className={windowKey===key?'on':undefined}
+        aria-pressed={windowKey===key} onClick={()=>onWindow(key)}>{key}</button>)}
+    </div>
+    <div className="snap">
+      <div className="snap-h"><span className="snap-brand">GHOSTMINT · P&amp;L</span>
+        <div className="sp"></div><span className="snap-range">{range}</span></div>
+      <p className="snap-l">Net · {chosen.label}</p>
+      <div className="snap-v" style={{color:positive?'var(--gain-text)':'var(--loss-text)'}}>
+        {positive?'+':'−'}{Math.abs(totals.net).toFixed(6)}<small>ETH</small></div>
+      {totals.roi===undefined
+        ?<p className="snap-roi" style={{color:'var(--faint)'}}>No outlay in this period</p>
+        :<p className="snap-roi" style={{color:positive?'var(--gain-text)':'var(--loss-text)'}}>
+          {positive?'+':'−'}{Math.abs(totals.roi).toFixed(1)}% on outlay</p>}
+      <div className="snap-c"><PnlBars points={points} className="chart" showLegend={false}/></div>
+      <div className="snap-s">
+        <div><span>Mints</span><b>{totals.records}</b></div>
+        <div><span>Cost</span><b>{totals.cost.toFixed(4)}</b></div>
+        <div><span>Gas</span><b>{totals.gas.toFixed(4)}</b></div>
+        <div><span>Sale</span><b>{totals.sale.toFixed(4)}</b></div>
+      </div>
+    </div>
+    <div className="nt i" style={{marginTop:'12px'}}>{INFO_ICON}
+      <div>Return is measured against <b>cost plus gas</b>. Gas is spent whether or not a token
+        resells, so a figure against cost alone would flatter every card.</div></div>
+    <div className="br" style={{marginTop:'12px'}}>
+      <button type="button" className="b p" disabled={busy} onClick={download}>
+        {busy?'Rendering…':'Download PNG'}</button>
+      <button type="button" className="b g" onClick={onClose}>Close</button>
+    </div>
+  </Overlay>;
+}
+// A record GhostMint wrote for itself carries the wallet in its name (autoRecordPnl, server.js:545)
+// -- that is the same signal walletPerformance.js parses, reused here to tell the two kinds apart.
+function isAutoPnlRecord(record){return pnlWalletLabel(record)!==null;}
+function Pnl(){
+  const listing=useLoad('/api/pnl',[],'pnl.changed');
+  const [editing,setEditing]=useState(null);
+  const [query,setQuery]=useState('');
+  const [windowKey,setWindowKey]=useState('30d');
+  const [adding,setAdding]=useState(false);
+  const [snapshot,setSnapshot]=useState(false);
+  async function save(event){
+    event.preventDefault();const form=event.currentTarget;const wasEditing=editing;
+    const body=JSON.stringify(Object.fromEntries(new FormData(form)));
+    try{
+      await api(wasEditing?`/api/pnl/${wasEditing}`:'/api/pnl',{method:wasEditing?'PUT':'POST',body});
+      setEditing(null);setAdding(false);form.reset();
+      notify(wasEditing?'Record updated.':'Record added.',{type:'success'});listing.load();
+    }catch(value){notify(value.message,{type:'error'});}
+  }
+  async function remove(id){
+    if(!await confirmDialog('Delete this P&L record?'))return;
+    try{await api(`/api/pnl/${id}`,{method:'DELETE',body:JSON.stringify({confirmation:'CONFIRM'})});listing.load();}
+    catch(value){notify(value.message,{type:'error'});}
+  }
+  const records=listing.data;
+  const current=records?.find(item=>item.id===editing);
+  const currentIsAuto=current?isAutoPnlRecord(current):false;
+  const normalized=query.trim().toLowerCase();
+  const filtered=records?(normalized?records.filter(item=>String(item.nm||'').toLowerCase().includes(normalized)):records):null;
+  const chosen=walletWindow(windowKey);
+  const days=chosen.ms===null?null:Math.round(chosen.ms/86400000);
+  const windowTotals=records?pnlWindowTotals(records,days):null;
+  const totals=windowTotals?{...windowTotals,count:windowTotals.records}:null;
+  const loading=records===null&&!listing.error;
+  const empty=Array.isArray(records)&&records.length===0;
+  const formOpen=adding||editing!==null;
+  return <>
+    <Notice error={listing.error?{title:'Could not load your P&L records.',
+      detail:'Nothing was changed — this is a read failure only.',
+      code:`${listing.status||500} · Request failed safely`,onRetry:listing.load}:null}/>
+    {!listing.error&&<div className="split">
+      <div className="card">
+        <div className="ch"><h2>Net by day</h2><div className="sp"></div>
+          <div className="seg" role="group" aria-label="Chart window">
+            {WALLET_WINDOWS.map(([key])=><button type="button" key={key} className={windowKey===key?'on':undefined}
+              aria-pressed={windowKey===key} onClick={()=>setWindowKey(key)}>{key}</button>)}
+          </div></div>
+        {loading&&<div className="sk chart"></div>}
+        {empty&&<div className="emp"><div className="ei">{TREND_ICON}</div>
+          <h3>No records yet</h3><p>Every confirmed mint creates a record with its real cost and gas.</p></div>}
+        {!loading&&!empty&&<>
+          <PnlBars points={pnlRecordSeries(records,days).points} className="chart"/>
+          <p style={{fontSize:'11px',color:'var(--faint)',marginTop:'8px'}}>Each recorded mint has
+            its own bar, ordered within its day — gains and losses are never combined or drawn on
+            top of one another. Sale proceeds are entered by hand, so a mint with no recorded sale
+            counts as a loss.</p>
+        </>}
+      </div>
+      <div className="g">
+        <div className="sober"><div className="sh">Totals · {chosen.label}</div>
+          <table className="led"><tbody>
+            <tr><td>Mints</td><td>{loading?'—':totals.count}</td></tr>
+            <tr><td>Cost</td><td>{loading?'—':`${totals.cost.toFixed(6)} ETH`}</td></tr>
+            <tr><td>Gas</td><td>{loading?'—':`${totals.gas.toFixed(6)} ETH`}</td></tr>
+            <tr><td>Sale proceeds</td><td>{loading?'—':`${totals.sale.toFixed(6)} ETH`}</td></tr>
+            <tr className="tot"><td>Net</td><td style={{color:loading?undefined
+              :totals.net<0?'var(--loss-text)':'var(--gain-text)'}}>
+              {loading?'—':signedEth(totals.net)}</td></tr>
+          </tbody></table></div>
+        <div className="card tight">
+          <div className="ch"><h2>Records</h2><div className="sp"></div>
+            <button type="button" className="b g sm" aria-expanded={formOpen}
+              onClick={()=>{setEditing(null);setAdding(value=>!value);}}>
+              {formOpen?'Close':'Add manually'}</button></div>
+          <p style={{fontSize:'12px',color:'var(--muted)',marginBottom:'11px'}}>Records GhostMint
+            wrote are locked: their cost and gas came off the confirmed receipt. Only <b>sale</b> is
+            yours to fill in, once a token actually resells.</p>
+          <button type="button" className="b p sm" disabled={empty||loading}
+            onClick={()=>setSnapshot(true)}>{CARD_ICON} Snapshot</button>
+        </div>
+      </div>
+    </div>}
+    {formOpen&&<Form className="form-pnl" key={editing||'new'}
+      title={currentIsAuto?`Record a sale · ${current.nm}`:editing?'Edit record':'Add record'}
+      note={currentIsAuto
+        ?'GhostMint wrote this record, so its name, cost and gas are fixed — they came off the confirmed transaction. Enter what the token resold for and the net recalculates.'
+        :'Auto-created records can be edited here too -- fill in Sale once an NFT actually resells.'}
+      onSubmit={save}>
+      {/* An auto-created record's name, cost and gas are facts off a confirmed receipt. They stay
+          submittable (the PUT recomputes net from all four) but not editable, so the only thing a
+          person can change here is the one field that never had a data source. */}
+      <Field name="name" label="Name" defaultValue={current?.nm} readOnly={currentIsAuto||undefined}/>
+      <Field name="cost" label="Cost" type="number" step="any" defaultValue={current?.cost??0} readOnly={currentIsAuto||undefined}/>
+      <Field name="sale" label={currentIsAuto?'Sale — what it resold for':'Sale'} type="number" step="any" defaultValue={current?.sale??0} autoFocus={currentIsAuto||undefined}/>
+      <Field name="gas" label="Gas" type="number" step="any" defaultValue={current?.gas??0} readOnly={currentIsAuto||undefined}/>
+      <button className="b p">{editing?'Save changes':'Add record'}</button>
+      <button type="button" className="b g" onClick={()=>{setEditing(null);setAdding(false);}}>Cancel</button>
+    </Form>}
+    {!loading&&!empty&&!listing.error&&<>
+      <div className="sfrow" style={{marginTop:'12px'}}><div className="sf">
+        <span className="si" aria-hidden="true">{SEARCH_ICON}</span>
+        <input type="search" value={query} placeholder="Name…" aria-label="Find a record"
+          onChange={event=>setQuery(event.target.value)}/>
+        {query&&<button type="button" className="sx" aria-label="Clear search" onClick={()=>setQuery('')}>×</button>}
+      </div></div>
+      {filtered.length?<div className="g g3">{filtered.map(item=>{
+        const auto=isAutoPnlRecord(item);
+        return <div className="card" key={item.id}>
+          <div className="ch"><h2>{item.nm}</h2><div className="sp"></div>
+            <span className={`p ${auto?'nu':'wn'}`}>{auto?'Automatic':'Manual'}</span></div>
+          <div className="tv tab" style={{marginBottom:'3px',
+            color:Number(item.net)<0?'var(--loss-text)':'var(--gain-text)'}}>
+            {Number(item.net)<0?'−':'+'}{Math.abs(Number(item.net)).toFixed(6)}<small>ETH</small></div>
+          <div className="sober" style={{marginTop:'9px'}}>
+            <table className="led"><tbody>
+              <tr><td>Cost</td><td>{Number(item.cost).toFixed(6)} ETH</td></tr>
+              <tr><td>Sale</td><td>{Number(item.sale).toFixed(6)} ETH</td></tr>
+              <tr className="tot"><td>Gas</td><td>{Number(item.gas).toFixed(6)} ETH</td></tr>
+            </tbody></table></div>
+          {/* A record GhostMint wrote is evidence of a transaction that happened. Deleting it would
+              put a hole in the very history the totals and the chart are drawn from, so it offers
+              the one edit that makes sense instead. */}
+          <div className="br" style={{marginTop:'11px'}}>
+            <button type="button" className="b g sm" onClick={()=>{setAdding(false);setEditing(item.id);}}>
+              {auto?'Record sale':'Edit'}</button>
+            {auto?null:<button type="button" className="b d sm" onClick={()=>remove(item.id)}>Delete</button>}
+          </div>
+        </div>;})}</div>:<Empty text="No P&L records match this search."/>}
+    </>}
+    {snapshot&&<PnlSnapshot records={records} windowKey={windowKey} onWindow={setWindowKey}
+      onClose={()=>setSnapshot(false)}/>}
+  </>;
+}
 function jsonForm(event){event.preventDefault();const form=event.currentTarget;return {form,value:JSON.parse(new FormData(form).get('json'))};}
-function Snipers(){const listing=useLoad('/api/snipers',[],'snipers.changed');const [editing,setEditing]=useState(null);const [query,setQuery]=useState('');async function save(event){try{const {form,value}=jsonForm(event);const wasEditing=editing;await api(editing?`/api/snipers/${editing}`:'/api/snipers',{method:editing?'PUT':'POST',body:JSON.stringify(value)});form.reset();setEditing(null);notify(wasEditing?'Sniper updated.':'Sniper created.',{type:'success'});listing.load();}catch(value){notify(value.message,{type:'error'});}}async function remove(id){if(!await confirmDialog('Remove this post-confirmation copy sniper?'))return;try{await api(`/api/snipers/${id}`,{method:'DELETE',body:JSON.stringify({confirmation:'CONFIRM'})});listing.load();}catch(value){notify(value.message,{type:'error'});}}const normalized=query.trim().toLowerCase();const filtered=listing.data?{...listing.data,items:normalized?listing.data.items.filter(item=>[item.label,item.chain,item.walletLabel].filter(Boolean).some(value=>String(value).toLowerCase().includes(normalized))):listing.data.items}:null;return <><PageTitle eyebrow="Post-confirmation copying" title="Snipers" subtitle="Copies confirmed wallet transactions after their confirmation threshold. This is not mempool front-running."/><Notice error={listing.error}/><div className="page-toolbar"><label className="page-search">Find a sniper<input type="search" value={query} placeholder="Label, chain, wallet…" onChange={e=>setQuery(e.target.value)}/></label></div><Form className="form-json" title={editing?'Edit sniper patch':'Create sniper'} note="The same M10 validation and M7a ceilings used by Telegram and Discord apply here." onSubmit={save}><label>Configuration JSON<textarea name="json" required defaultValue={editing?'{}':'{"label":"copy","targetAddress":"0x0000000000000000000000000000000000000001","chain":"ethereum","walletLabel":"wallet","maxValueETH":0.01,"maxGasGwei":50,"dailySpendingCapETH":0.05,"cooldownMs":60000,"maxAttempts":3}'}/></label><button>{editing?'Apply validated patch':'Create sniper'}</button></Form>{listing.data===null?<Skeleton/>:<div className="card-grid sniper-grid">{filtered.items.map(item=>{const recent=listing.data.events.filter(event=>event.sniperId===item.id)[0];return <article className="card" key={item.id}><StatusPill status={recent?.state||'no events'}/><h2>{item.label}</h2><p className="warning">Post-confirmation copy; not front-running.</p><p>{item.chain} · wallet {item.walletLabel}</p><p>Max {item.maxValueETH} ETH · Gas {item.maxGasGwei} gwei · Daily {item.dailySpendingCapETH} ETH</p><p>Cooldown {item.cooldownMs} ms · Attempts {item.maxAttempts}</p><p>Allow: {item.contractAllowlist.join(', ')||'any'}<br/>Deny: {item.contractDenylist.join(', ')||'none'}</p><div className="actions"><button className="small quiet" onClick={()=>setEditing(item.id)}>Edit</button><button className="small danger" onClick={()=>remove(item.id)}>Remove</button></div></article>})}{filtered.items.length===0&&<Empty text={normalized?'No snipers match this search.':'No snipers yet. Create one above to start post-confirmation copying.'}/>}</div>}</>}
-function WatchRules(){const listing=useLoad('/api/watch-rules',[],'watchrules.changed');const [editing,setEditing]=useState(null);const [query,setQuery]=useState('');async function save(event){try{const {form,value}=jsonForm(event);const wasEditing=editing;await api(editing?`/api/watch-rules/${editing}`:'/api/watch-rules',{method:editing?'PUT':'POST',body:JSON.stringify(value)});form.reset();setEditing(null);notify(wasEditing?'Watch rule updated.':'Watch rule created.',{type:'success'});listing.load();}catch(value){notify(value.message,{type:'error'});}}async function action(id,name){try{await api(`/api/watch-rules/${id}${name==='disable'?'/disable':''}`,{method:name==='remove'?'DELETE':'POST',body:JSON.stringify(name==='remove'?{confirmation:'CONFIRM'}:{})});listing.load();}catch(value){notify(value.message,{type:'error'});}}const normalized=query.trim().toLowerCase();const filtered=listing.data?{...listing.data,items:normalized?listing.data.items.filter(item=>[item.name,item.type,item.method].filter(Boolean).some(value=>String(value).toLowerCase().includes(normalized))):listing.data.items}:null;return <><PageTitle eyebrow="Social-trigger detection" title="Watch Rules" subtitle="Manage adapter-backed Twitter/X and Discord source monitoring."/><Notice error={listing.error}/><div className="page-toolbar"><label className="page-search">Find a watch rule<input type="search" value={query} placeholder="Name, type, method…" onChange={e=>setQuery(e.target.value)}/></label></div><Form className="form-json" title={editing?'Edit watch rule patch':'Create watch rule'} onSubmit={save}><label>Configuration JSON<textarea name="json" required defaultValue={editing?'{}':'{"name":"announcements","type":"discord_channel","method":"scraper","config":{"channelId":"123","keywords":["mint"],"sourceUrl":"https://example.com/feed"}}'}/></label><button>{editing?'Apply validated patch':'Create rule'}</button></Form>{listing.data===null?<Skeleton/>:<div className="card-grid watch-grid">{filtered.items.map(item=>{const events=listing.data.events.filter(event=>event.matchedRuleIds.includes(item.id)).slice(0,3);return <article className="card" key={item.id}><StatusPill status={item.enabled?'enabled':'disabled'}/><h2>{item.name}</h2><p>{item.type} · {item.method}</p><p className={item.consecutiveFailures?'warning':''}>Adapter health: {item.consecutiveFailures?`failing (${item.consecutiveFailures} consecutive)`:'healthy'} </p>{events.map(event=><p key={event.id}><code>{event.address}</code><br/>{new Date(event.detectedAt).toLocaleString()}</p>)}<div className="actions"><button className="small quiet" onClick={()=>setEditing(item.id)}>Edit</button><button className="small quiet" onClick={()=>action(item.id,'disable')}>Disable</button><button className="small danger" onClick={async()=>{if(await confirmDialog('Remove this watch rule?'))action(item.id,'remove');}}>Remove</button></div></article>})}{filtered.items.length===0&&<Empty text={normalized?'No watch rules match this search.':'No watch rules yet. Create one above to start social-trigger detection.'}/>}</div>}</>}
-function PolicyEditor({target,onChanged}){const details=useLoad(`/api/targets/${target.id}?type=${target.type}`,[target.id,target.type]);const presets=useLoad('/api/mode-presets');const [challenge,setChallenge]=useState(null);async function update(event){event.preventDefault();const value=Object.fromEntries(new FormData(event.currentTarget));try{await api(`/api/targets/${target.id}`,{method:'PUT',body:JSON.stringify({...value,targetType:target.type})});notify('Policy saved.',{type:'success'});details.load();onChanged?.();}catch(x){notify(x.message,{type:'error'});}}async function bypass(event){event.preventDefault();try{setChallenge(await api(`/api/targets/${target.id}/bypass`,{method:'POST',body:JSON.stringify({targetType:target.type,dontAskAgain:new FormData(event.currentTarget).get('dontAskAgain')==='on'})}));}catch(x){notify(x.message,{type:'error'});}}async function confirmBypass(event){event.preventDefault();try{await api('/api/targets/bypass/confirm',{method:'POST',body:JSON.stringify({challengeId:challenge.challengeId,confirmation:new FormData(event.currentTarget).get('confirmation')})});setChallenge(null);notify('Bypass confirmed.',{type:'success'});details.load();}catch(x){notify(x.message,{type:'error'});}}async function preset(key){try{const result=await api(`/api/targets/${target.id}/preset`,{method:'POST',body:JSON.stringify({targetType:target.type,presetKey:key})});if(result.requiresConfirmation)setChallenge(result);else notify('Preset applied.',{type:'success'});details.load();}catch(x){notify(x.message,{type:'error'});}}const value=details.data;return <article className="panel"><h2>{target.label}</h2><Notice error={details.error}/>{value&&<><p>Effective ceiling (read only): {value.governance.maxTransactionValueWei} wei/tx, {value.governance.dailySpendingBudgetWei} wei/day, {value.governance.gasCeilingGwei} gwei gas.</p><Form title="Trigger behavior" onSubmit={update}><input type="hidden" name="targetType" value={target.type}/><Select name="blockchainTrigger" label="Blockchain trigger" options={['auto','manual']} defaultValue={value.policy.blockchainTrigger}/><Select name="socialTrigger" label="Social trigger" options={['auto','manual']} defaultValue={value.policy.socialTrigger}/><Select name="humanVerification" label="Verification" options={['on']} defaultValue="on"/><button>Save policy</button></Form><div className="actions">{presets.data?.map(p=><button className="small" key={p.key} onClick={()=>preset(p.key)}>{p.displayName}</button>)}</div><form className="bypass" onSubmit={bypass}><label><input type="checkbox" name="dontAskAgain"/> Don&apos;t ask again for this target only</label><button className="danger">Request bypass</button></form>{challenge?.requiresConfirmation&&<form className="warning-box" onSubmit={confirmBypass}><strong>{challenge.warning}</strong><p>Type CONFIRM exactly to enable the highest-risk configuration.</p><input name="confirmation" autoComplete="off"/><button className="danger">Confirm bypass</button></form>}</>}</article>}
-function TargetPolicies(){const snipers=useLoad('/api/snipers',[],'snipers.changed');const rules=useLoad('/api/watch-rules',[],'watchrules.changed');const targets=[...(snipers.data?.items||[]).map(x=>({id:x.id,label:x.label,type:'sniper'})),...(rules.data?.items||[]).map(x=>({id:x.id,label:x.name,type:'social_rule'}))];return <><PageTitle eyebrow="Per-target safety" title="Target Policies" subtitle="Trigger modes, verification, presets, and read-only effective governance ceilings."/><div className="policy-grid">{targets.map(target=><PolicyEditor key={`${target.type}:${target.id}`} target={target}/>)}</div></>}
-const BELL_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>;
+// policyFor: which card has its policy expanded. A policy configures an existing target, so it
+// now lives ON that target's card rather than on a page of its own (brief §2). Same PolicyEditor,
+// same routes, new place -- including the bypass challenge, which keeps its explicit CONFIRM step.
+function Snipers({formOnly=false}={}){const listing=useLoad('/api/snipers',[],'snipers.changed');const [editing,setEditing]=useState(null);const [query,setQuery]=useState('');const [policyFor,setPolicyFor]=useState(null);async function save(event){try{const {form,value}=jsonForm(event);const wasEditing=editing;await api(editing?`/api/snipers/${editing}`:'/api/snipers',{method:editing?'PUT':'POST',body:JSON.stringify(value)});form.reset();setEditing(null);notify(wasEditing?'Sniper updated.':'Sniper created.',{type:'success'});listing.load();}catch(value){notify(value.message,{type:'error'});}}async function remove(id){if(!await confirmDialog('Remove this post-confirmation copy sniper?'))return;try{await api(`/api/snipers/${id}`,{method:'DELETE',body:JSON.stringify({confirmation:'CONFIRM'})});listing.load();}catch(value){notify(value.message,{type:'error'});}}const normalized=query.trim().toLowerCase();const filtered=listing.data?{...listing.data,items:normalized?listing.data.items.filter(item=>[item.label,item.chain,item.walletLabel].filter(Boolean).some(value=>String(value).toLowerCase().includes(normalized))):listing.data.items}:null;return <>{!formOnly&&<><p className="page-lead">Copies confirmed wallet transactions after their confirmation threshold. This is not mempool front-running.</p><Notice error={loadError(listing,'Could not load your triggers.')}/><div className="page-toolbar"><label className="page-search">Find a sniper<input type="search" value={query} placeholder="Label, chain, wallet…" onChange={e=>setQuery(e.target.value)}/></label></div></>}<Form className="form-json" title={editing?'Edit sniper patch':'Create sniper'} note="The same M10 validation and M7a ceilings used by Telegram and Discord apply here." onSubmit={save}><label>Configuration JSON<textarea name="json" required defaultValue={editing?'{}':'{"label":"copy","targetAddress":"0x0000000000000000000000000000000000000001","chain":"ethereum","walletLabel":"wallet","maxValueETH":0.01,"maxGasGwei":50,"dailySpendingCapETH":0.05,"cooldownMs":60000,"maxAttempts":3}'}/></label><button className="b p">{editing?'Apply validated patch':'Create sniper'}</button></Form>{!formOnly&&(listing.data===null?<Skeleton/>:<div className="card-grid sniper-grid">{filtered.items.map(item=>{const recent=listing.data.events.filter(event=>event.sniperId===item.id)[0];return <article className="card" key={item.id}><StatusPill status={recent?.state||'no events'}/><h2>{item.label}</h2><p className="warning">Post-confirmation copy; not front-running.</p><p>{item.chain} · wallet {item.walletLabel}</p><p>Max {item.maxValueETH} ETH · Gas {item.maxGasGwei} gwei · Daily {item.dailySpendingCapETH} ETH</p><p>Cooldown {item.cooldownMs} ms · Attempts {item.maxAttempts}</p><p>Allow: {item.contractAllowlist.join(', ')||'any'}<br/>Deny: {item.contractDenylist.join(', ')||'none'}</p><div className="br"><button className="b g sm" onClick={()=>setEditing(item.id)}>Edit</button><button className="b g sm" aria-expanded={policyFor===item.id} onClick={()=>setPolicyFor(policyFor===item.id?null:item.id)}>{policyFor===item.id?'Hide policy':'Policy'}</button><button className="b d sm" onClick={()=>remove(item.id)}>Remove</button></div>{policyFor===item.id&&<PolicyEditor target={{id:item.id,label:item.label,type:'sniper'}}/>}</article>})}{filtered.items.length===0&&<Empty text={normalized?'No snipers match this search.':'No snipers yet. Create one above to start post-confirmation copying.'}/>}</div>)}</>}
+function WatchRules({formOnly=false}={}){const listing=useLoad('/api/watch-rules',[],'watchrules.changed');const [editing,setEditing]=useState(null);const [query,setQuery]=useState('');const [policyFor,setPolicyFor]=useState(null);async function save(event){try{const {form,value}=jsonForm(event);const wasEditing=editing;await api(editing?`/api/watch-rules/${editing}`:'/api/watch-rules',{method:editing?'PUT':'POST',body:JSON.stringify(value)});form.reset();setEditing(null);notify(wasEditing?'Watch rule updated.':'Watch rule created.',{type:'success'});listing.load();}catch(value){notify(value.message,{type:'error'});}}async function action(id,name){try{await api(`/api/watch-rules/${id}${name==='disable'?'/disable':''}`,{method:name==='remove'?'DELETE':'POST',body:JSON.stringify(name==='remove'?{confirmation:'CONFIRM'}:{})});listing.load();}catch(value){notify(value.message,{type:'error'});}}const normalized=query.trim().toLowerCase();const filtered=listing.data?{...listing.data,items:normalized?listing.data.items.filter(item=>[item.name,item.type,item.method].filter(Boolean).some(value=>String(value).toLowerCase().includes(normalized))):listing.data.items}:null;return <>{!formOnly&&<><p className="page-lead">Manage adapter-backed Twitter/X and Discord source monitoring.</p><Notice error={loadError(listing,'Could not load your triggers.')}/><div className="page-toolbar"><label className="page-search">Find a watch rule<input type="search" value={query} placeholder="Name, type, method…" onChange={e=>setQuery(e.target.value)}/></label></div></>}<Form className="form-json" title={editing?'Edit watch rule patch':'Create watch rule'} onSubmit={save}><label>Configuration JSON<textarea name="json" required defaultValue={editing?'{}':'{"name":"announcements","type":"discord_channel","method":"scraper","config":{"channelId":"123","keywords":["mint"],"sourceUrl":"https://example.com/feed"}}'}/></label><button className="b p">{editing?'Apply validated patch':'Create rule'}</button></Form>{!formOnly&&(listing.data===null?<Skeleton/>:<div className="card-grid watch-grid">{filtered.items.map(item=>{const events=listing.data.events.filter(event=>event.matchedRuleIds.includes(item.id)).slice(0,3);return <article className="card" key={item.id}><StatusPill status={item.enabled?'enabled':'disabled'}/><h2>{item.name}</h2><p>{item.type} · {item.method}</p><p className={item.consecutiveFailures?'warning':''}>Adapter health: {item.consecutiveFailures?`failing (${item.consecutiveFailures} consecutive)`:'healthy'} </p>{events.map(event=><p key={event.id}><code>{event.address}</code><br/>{new Date(event.detectedAt).toLocaleString()}</p>)}<div className="br"><button className="b g sm" onClick={()=>setEditing(item.id)}>Edit</button><button className="b g sm" onClick={()=>action(item.id,'disable')}>Disable</button><button className="b g sm" aria-expanded={policyFor===item.id} onClick={()=>setPolicyFor(policyFor===item.id?null:item.id)}>{policyFor===item.id?'Hide policy':'Policy'}</button><button className="b d sm" onClick={async()=>{if(await confirmDialog('Remove this watch rule?'))action(item.id,'remove');}}>Remove</button></div>{policyFor===item.id&&<PolicyEditor target={{id:item.id,label:item.name,type:'social_rule'}}/>}</article>})}{filtered.items.length===0&&<Empty text={normalized?'No watch rules match this search.':'No watch rules yet. Create one above to start social-trigger detection.'}/>}</div>)}</>}
+// Laid out as auto.html's at-pol panel: a .split with the policy form on the left and, on the
+// right, a read-only Human verification table above the bypass challenge.
+//
+// What a target policy IS, and is not. It answers one question per trigger -- when this fires, what
+// happens: does it go automatically or wait for you (blockchainTrigger / socialTrigger), which
+// wallet pays, and which saved Mint preset to use. It is NOT where spend or gas limits live; the
+// prototype's own note says so and is reproduced verbatim below, because this is the distinction
+// users get wrong. Ceilings belong to the transaction engine and the governance tier, and the
+// account-wide Degen/Fast/Cautious/Normie choice belongs to Settings > Transaction mode.
+//
+// The mode preset select stays, and is NOT a duplicate of that Settings control: applyPreset()
+// stamps modePresetKey onto THIS target's policy, so it means "apply that tier's stance to this one
+// trigger". It is a select in the same grid rather than a row of loose buttons, which is what made
+// the panel read as a second control panel.
+//
+// Verification is deliberately read-only. Turning it off is the one change that lets funds move
+// with no human check, so it goes through the explicit challenge rather than a dropdown.
+function PolicyEditor({target,onChanged,highlighted}){
+  const details=useLoad(`/api/targets/${target.id}?type=${target.type}`,[target.id,target.type]);
+  const modes=useLoad('/api/mode-presets');
+  const wallets=useLoad('/api/wallets',[],'wallets.changed');
+  const mintPresets=useLoad('/api/mint-presets',[],'presets.changed');
+  const [challenge,setChallenge]=useState(null);
+  const [busy,setBusy]=useState(false);
+  const value=details.data;
+
+  async function update(event){
+    event.preventDefault();
+    const form=new FormData(event.currentTarget);
+    const body={targetType:target.type};
+    for(const [key,entry] of form.entries())if(entry!=='')body[key]=entry;
+    try{
+      await api(`/api/targets/${target.id}`,{method:'PUT',body:JSON.stringify(body)});
+      notify('Policy saved.',{type:'success'});details.load();onChanged?.();
+    }catch(error){notify(error.message,{type:'error'});}
+  }
+  async function applyMode(key){
+    if(!key)return;
+    setBusy(true);
+    try{
+      const result=await api(`/api/targets/${target.id}/preset`,
+        {method:'POST',body:JSON.stringify({targetType:target.type,presetKey:key})});
+      if(result.requiresConfirmation)setChallenge(result);
+      else notify('Mode preset applied to this target.',{type:'success'});
+      details.load();
+    }catch(error){notify(error.message,{type:'error'});}
+    finally{setBusy(false);}
+  }
+  async function requestBypass(event){
+    event.preventDefault();
+    try{
+      setChallenge(await api(`/api/targets/${target.id}/bypass`,{method:'POST',
+        body:JSON.stringify({targetType:target.type,
+          dontAskAgain:new FormData(event.currentTarget).get('dontAskAgain')==='on'})}));
+    }catch(error){notify(error.message,{type:'error'});}
+  }
+  async function confirmBypass(event){
+    event.preventDefault();
+    try{
+      await api('/api/targets/bypass/confirm',{method:'POST',body:JSON.stringify({
+        challengeId:challenge.challengeId,
+        confirmation:new FormData(event.currentTarget).get('confirmation')})});
+      setChallenge(null);notify('Bypass confirmed.',{type:'success'});details.load();
+    }catch(error){notify(error.message,{type:'error'});}
+  }
+
+  const social=target.type==='social_rule';
+  const verification=value?.policy?.humanVerification||'on';
+  return <div className="split">
+    <div className={`card${highlighted?' policy-highlighted':''}`}>
+      <div className="ch"><h2>{target.label} · policy</h2></div>
+      <Notice error={loadError(details,'Could not load this target policy.')}/>
+      {details.data===null&&!details.error?<Skeleton rows={2}/>:null}
+      {value&&<form onSubmit={update}>
+        <div className="g gm2 g2" style={{marginBottom:'11px'}}>
+          <label className="fl"><span>Blockchain trigger</span>
+            <select className="in" name="blockchainTrigger" defaultValue={value.policy.blockchainTrigger||'manual'}>
+              <option value="auto">Auto</option><option value="manual">Manual</option></select></label>
+          <label className="fl"><span>Social trigger</span>
+            <select className="in" name="socialTrigger" defaultValue={value.policy.socialTrigger||'manual'}>
+              <option value="manual">Manual</option><option value="auto">Auto</option></select></label>
+          <label className="fl"><span>Wallet that pays{social?'':' · optional'}</span>
+            <select className="in" name="walletLabel" required={social}
+              defaultValue={value.policy.walletLabel||(social?(wallets.data||[])[0]?.label||'':'')}>
+              {!social&&<option value="">This sniper’s own wallet</option>}
+              {(wallets.data||[]).map(item=><option key={item.label} value={item.label}>{item.label}</option>)}</select></label>
+          <label className="fl"><span>Mint preset{social?'':' · optional'}</span>
+            <select className="in" name="mintPresetName" required={social}
+              defaultValue={value.policy.mintPresetName||''}>
+              {!social&&<option value="">Auto — use the contract as detected</option>}
+              {(mintPresets.data||[]).map(item=><option key={item.name} value={item.name}>{item.name}</option>)}</select></label>
+        </div>
+        {social&&(!value.policy.walletLabel||!value.policy.mintPresetName)&&
+          <div className="nt w" style={{marginBottom:'11px'}}>{WARN_TRIANGLE_ICON}
+            <div>This rule cannot mint yet. A social trigger has no wallet of its own, so it needs
+              both a wallet and a mint preset — without them it fails when it fires, not now.</div></div>}
+        <div className="nt i">{INFO_ICON}
+          <div>A target policy cannot contain spend or gas ceilings. Those stay with the transaction
+            engine and your governance tier.</div></div>
+        <div className="br" style={{marginTop:'11px'}}><button className="b p sm">Save policy</button></div>
+      </form>}
+      {value&&<div className="sober" style={{marginTop:'11px'}}>
+        <div className="sh">Transaction mode</div>
+        <table className="led"><tbody>
+          <tr><td>Applies here</td><td>{value.governance?.preset?.displayName||'Normie'}</td></tr>
+          <tr className="tot"><td>Change it</td><td>Settings · Transaction mode</td></tr>
+        </tbody></table></div>}
+    </div>
+    <div className="g">
+      <div className="sober"><div className="sh">Human verification</div>
+        <table className="led"><tbody>
+          <tr><td>Current</td><td>{verification==='bypassed'
+            ?<span style={{color:'var(--warn-text)'}}>Bypassed</span>:'On'}</td></tr>
+          <tr><td>Blockchain-auto</td><td>Does not force verification</td></tr>
+          <tr><td>Social-auto</td><td>Verification on by default</td></tr>
+          <tr className="tot"><td>Bypass</td><td>Requires an explicit challenge</td></tr>
+        </tbody></table></div>
+      {challenge
+        ?<div className="chal">
+           <div className="chal-h">{WARN_TRIANGLE_ICON}Highest-risk configuration</div>
+           <div className="chal-b">
+             <p>Matching triggers will execute <b>immediately, with no manual check</b>. Funds can
+               move without you seeing the transaction first.</p>
+             <div className="cid mono">Challenge {challenge.challengeId}</div>
+             <form onSubmit={confirmBypass}>
+               <label className="fl" style={{marginBottom:'11px'}}>
+                 <span>Type <b>CONFIRM</b> exactly to enable</span>
+                 <input className="in mono" name="confirmation" placeholder="CONFIRM"/></label>
+               <div className="br"><button className="b d sm">Enable bypass</button>
+                 <button type="button" className="b g sm" onClick={()=>setChallenge(null)}>Cancel</button></div>
+             </form>
+           </div>
+         </div>
+        :verification!=='bypassed'&&<form onSubmit={requestBypass}>
+           <label style={{display:'flex',gap:'8px',alignItems:'flex-start',fontSize:'12px',
+             color:'var(--muted)',marginBottom:'12px'}}>
+             <input type="checkbox" name="dontAskAgain" style={{minHeight:'auto',width:'16px',height:'16px',marginTop:'2px'}}/>
+             <span>Do not ask again <b>for this target only</b>. Reset or removal clears this.</span></label>
+           <button className="b g sm">Request bypass</button>
+         </form>}
+    </div>
+  </div>;
+}
+
+// `target` arrives from a /dashboard/target-policies/:id deep link, rewritten to
+// ?target=:id. A bookmark that pointed at one policy still lands on that policy: the matching
+// card is rendered first and marked, rather than the user being dropped into an unordered grid
+// and left to find it. An id that no longer exists degrades to the plain list.
+// ONE policy form with a target picker, not one form per target. With four triggers the old shape
+// rendered four identical forms down the page, which is what made this tab read as noise. auto.html
+// shows a single policy card too -- "Copy 0x8f2a…1d90 · policy" -- so this is the prototype's own
+// shape as well as the calmer one. Picking a target refills every field from that target's policy.
+//
+// This is also what the Edit button on a trigger card now means: it deep-links here with that
+// target selected, rather than being a second editor somewhere else.
+// Same shape as consumePendingMintPrefill: a module-level handoff for a same-tab SPA navigation,
+// which go() does not carry a target through. Read once, so returning to the tab later does not
+// silently re-select a trigger the user has since moved on from.
+let pendingPolicyTarget=null;
+function openPolicyFor(id){pendingPolicyTarget=id;}
+function consumePendingPolicyTarget(){const value=pendingPolicyTarget;pendingPolicyTarget=null;return value;}
+function TargetPolicies({target,go}){
+  const snipers=useLoad('/api/snipers',[],'snipers.changed');
+  const rules=useLoad('/api/watch-rules',[],'watchrules.changed');
+  const all=[
+    ...(snipers.data?.items||[]).map(item=>({id:item.id,label:item.label,type:'sniper'})),
+    ...(rules.data?.items||[]).map(item=>({id:item.id,label:item.name,type:'social_rule'})),
+  ];
+  const [chosen,setChosen]=useState(()=>consumePendingPolicyTarget());
+  const selected=all.find(item=>item.id===(chosen||target))||all[0]||null;
+  const loading=(snipers.data===null&&!snipers.error)||(rules.data===null&&!rules.error);
+  const missing=Boolean(target)&&!loading&&!all.some(item=>item.id===target);
+  return <>
+    <p className="eyebrow">Per-target safety — what happens when a trigger fires. Spend and gas
+      ceilings are not set here; they belong to your transaction mode and governance tier.</p>
+    <Notice error={loadError(snipers,'Could not load your triggers.')||loadError(rules,'Could not load your triggers.')}/>
+    {missing&&<Notice error={`No target matches ${target}. It may have been removed.`}/>}
+    {loading?<Skeleton rows={2}/>:null}
+    {!loading&&!snipers.error&&!rules.error&&all.length===0
+      &&<Empty text="No triggers yet. Create a sniper or a social rule first — a policy configures an existing target, it does not create one."/>}
+    {selected&&<>
+      <label className="fl" style={{maxWidth:'420px',marginBottom:'12px'}}>
+        <span>Target</span>
+        <select className="in" value={selected.id} onChange={event=>setChosen(event.target.value)}>
+          {all.map(item=><option key={`${item.type}:${item.id}`} value={item.id}>
+            {item.label} · {item.type==='sniper'?'copy sniper':'social rule'}</option>)}
+        </select>
+      </label>
+      <PolicyEditor key={`${selected.type}:${selected.id}`} target={selected} go={go}/>
+    </>}
+  </>;
+}
+
+const BELL_ICON=<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M18 8A6 6 0 1 0 6 8c0 7-3 8-3 8h18s-3-1-3-8"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>;
 // The bell surfaces two different things: pending confirmations (actionable, drive the badge
 // count) and a short recent-notifications log (informational, sourced from the same notify() log
 // the toast host reads -- so anything a toast reported is still checkable here after it auto-dismisses).
 function NotificationBell(){const [items,setItems]=useState([]);const [open,setOpen]=useState(false);const [log,setLog]=useState(getNotificationLog());const [autoPreview,setAutoPreview]=useState(null);const seenIds=useRef(new Set(getNotificationLog().map(entry=>entry.id)));const autoPreviewTimer=useRef(null);const load=useCallback(()=>api('/api/confirmations').then(setItems).catch(x=>notify(x.message,{type:'error'})),[]);useEffect(()=>{load();const listener=event=>{const message=event.detail;if(message.type==='confirmation.pending')setItems(current=>[message.request,...current.filter(x=>x.id!==message.request.id)]);if(message.type==='confirmation.resolved')setItems(current=>current.filter(x=>x.id!==message.requestId));};window.addEventListener('ghostmint-ws',listener);return()=>window.removeEventListener('ghostmint-ws',listener);},[load]);
+  // Server-side outcomes become actionable notifications here. The scheduler already knew a mint
+  // had failed and why; until now that only reached Telegram, so on the dashboard a scheduled
+  // mint just quietly changed colour in a list you had to already be looking at.
+  //
+  // Each one carries the control the owner asked for: a failure retries, a low balance opens the
+  // wallet that is short. Retry goes through the same /control endpoint the Schedule tab uses, so
+  // the server's own status guards still apply -- a mint that is no longer retryable is refused
+  // here exactly as it would be there.
+  useEffect(()=>{
+    function onMessage(event){
+      const message=event.detail;
+      if(message?.type==='task.failed'){
+        notify(`${message.name} failed — ${message.reason}`,{type:'error',category:'auto',timeoutMs:9000,
+          action:{label:'Retry',run:async()=>{
+            await api(`/api/tasks/${message.taskId}/control`,{method:'POST',body:JSON.stringify({action:'retry'})});
+            notify(`${message.name} queued for another attempt.`,{type:'success',category:'auto'});
+          }}});
+      }
+      if(message?.type==='task.lowBalance'){
+        notify(`${message.name} mints automatically in ${message.minutes}m and ${message.walletLabel} is short by ${message.shortByEth} ETH.`,
+          {type:'error',category:'money',timeoutMs:12000,
+           action:{label:'Top up wallet',run:async()=>{window.location.href='/dashboard/wallets';}}});
+      }
+      if(message?.type==='task.reminder'){
+        notify(`${message.name} mints automatically in ${message.minutes}m from ${message.walletLabel}. No approval is required.`,
+          {type:'info',category:'auto',timeoutMs:9000});
+      }
+      if(message?.type==='task.starting'){
+        notify(`${message.name} is starting now.`,{type:'info',category:'auto',timeoutMs:9000});
+      }
+      if(message?.type==='task.succeeded'){
+        notify(`${message.name} minted.`,{type:'success',category:'money'});
+      }
+    }
+    window.addEventListener('ghostmint-ws',onMessage);
+    return()=>window.removeEventListener('ghostmint-ws',onMessage);
+  },[]);
   // New notifications pop a compact preview off the bell itself (not the full dropdown) for a few
   // seconds, so you don't have to open the list to notice something just happened. Suppressed while
   // the full dropdown is already open, since the new entry is already visible there.
@@ -266,14 +2000,79 @@ function NotificationBell(){const [items,setItems]=useState([]);const [open,setO
   async function resolve(id,decision){try{await api(`/api/confirmations/${id}`,{method:'POST',body:JSON.stringify({decision})});setItems(current=>current.filter(x=>x.id!==id));}catch(x){notify(x.message,{type:'error'});load();}}
   function dismissAutoPreview(){setAutoPreview(null);clearTimeout(autoPreviewTimer.current);}
   function toggleBell(){if(autoPreview){dismissAutoPreview();return;}setOpen(value=>!value);}
+  // Prototype .bell-pop (ghostmint-redesign-v3.html:2147), backlog §3. Two tabs, not two stacked
+  // headings: "Needs you" is the actionable queue and is the ONLY thing the badge counts; "Recent"
+  // is the capped session log the toasts also write to. The footer says exactly that, because the
+  // distinction is the whole point of the design -- Recent is a scratchpad, never an inbox.
+  const [tab,setTab]=useState('needs');
+  const [runningAction,setRunningAction]=useState(null);
+  async function runEntryAction(entry){
+    if(!entry.action||runningAction)return;
+    setRunningAction(entry.id);
+    try{await entry.action.run();}catch(error){notify(error.message,{type:'error'});}
+    finally{setRunningAction(null);}
+  }
+  const CATEGORY_LABELS={money:'Money',auto:'Auto',security:'Security'};
+  const DOT_FOR_TYPE={success:'var(--gain)',error:'var(--loss)',info:'var(--accent)'};
   return <div className="notification-bell">
-    <button type="button" className="bell-trigger" aria-label={`${items.length} pending confirmations`} aria-expanded={open} onClick={toggleBell}>{BELL_ICON}{items.length>0&&<span className="bell-count">{items.length}</span>}</button>
+    <button type="button" className="ib" aria-label="Notifications" aria-expanded={open} onClick={toggleBell}>
+      {BELL_ICON}{items.length>0&&<span className="badge">{items.length}</span>}</button>
     {open&&<div className="bell-backdrop" onClick={()=>setOpen(false)}/>}
-    {open&&<div className="bell-dropdown" role="dialog" aria-label="Notifications">
-      <h2>Pending confirmations</h2>
-      {items.length===0?<p className="bell-empty">Nothing pending confirmation right now.</p>:items.map(item=><article className="preview" key={item.id}><strong>{item.triggerSource} | {item.targetType}:{item.targetId}</strong><p className="user-card-identity">{item.preview?.contractAddress}{item.preview?.contractAddress&&<CopyButton value={item.preview.contractAddress} label="Copy contract address"/>} | {item.preview?.methodSignature}</p>{item.preview?.arguments?.map(arg=><p key={arg.name}>{arg.name}: <code>{String(arg.value)}</code></p>)}<div className="actions"><button onClick={()=>resolve(item.id,'CONFIRM')}>Approve</button><button className="danger" onClick={()=>resolve(item.id,'REJECT')}>Reject</button></div></article>)}
-      <h2 className="bell-section">Recent notifications</h2>
-      {log.length===0?<p className="bell-empty">Nothing recent.</p>:<ul className="bell-log">{log.map(entry=><li key={entry.id} className={`bell-log-item bell-log-${entry.type}`}><span className="bell-log-dot" aria-hidden="true"/><span className="bell-log-message">{entry.message}</span><span className="bell-log-time">{relativeTime(entry.at)}</span></li>)}</ul>}
+    {open&&<div className="bell-pop on" role="dialog" aria-label="Notifications">
+      <div className="bell-h"><h3>Notifications</h3></div>
+      <div className="bell-tabs">
+        <button type="button" className={tab==='needs'?'on':undefined} aria-pressed={tab==='needs'}
+          onClick={()=>setTab('needs')}>Needs you{items.length>0&&
+          <span className="cnt hot" style={{marginLeft:'3px'}}>{items.length}</span>}</button>
+        <button type="button" className={tab==='recent'?'on':undefined} aria-pressed={tab==='recent'}
+          onClick={()=>setTab('recent')}>Recent</button>
+      </div>
+      <div className="bell-body">
+        {tab==='needs'
+          ?<>
+             <div className="bell-sec">Pending confirmations · durable
+               {items.length>0&&<span className="cnt hot">{items.length}</span>}</div>
+             {items.length===0
+               ?<div className="bell-i"><div className="bell-m">
+                  <div className="bs">Nothing is waiting on you.</div></div></div>
+               :items.map(item=><div className="bell-i" key={item.id}>
+                  <span className="bell-d" style={{background:'var(--warn)'}}/>
+                  <div className="bell-m">
+                    <div className="bm">Approve {item.triggerSource||'triggered'} mint</div>
+                    <div className="bs">{item.targetType}:{item.targetId}
+                      {item.preview?.contractAddress&&<> · {shortAddress(item.preview.contractAddress)}</>}
+                      {item.preview?.methodSignature&&<> · {item.preview.methodSignature}</>}</div>
+                    <div className="br" style={{marginTop:'7px'}}>
+                      <button type="button" className="b p sm" onClick={()=>resolve(item.id,'CONFIRM')}>Approve</button>
+                      <button type="button" className="b g sm" onClick={()=>resolve(item.id,'REJECT')}>Reject</button>
+                    </div>
+                  </div>
+                </div>)}
+           </>
+          :<>
+             <div className="bell-sec">Recent · session scratchpad</div>
+             {log.length===0
+               ?<div className="bell-i"><div className="bell-m">
+                  <div className="bs">Nothing recent.</div></div></div>
+               :log.map(entry=><div className="bell-i" key={entry.id}>
+                  <span className="bell-d" style={{background:DOT_FOR_TYPE[entry.type]||'var(--accent)'}}/>
+                  <div className="bell-m">
+                    <div className="bm">{entry.message}</div>
+                    <div className="bs">{relativeTime(entry.at)}</div>
+                    {/* The whole point of the owner's rule: act where you read it. */}
+                    {entry.action&&<div className="br" style={{marginTop:'7px'}}>
+                      <button type="button" className="b sm" disabled={runningAction===entry.id}
+                        onClick={()=>runEntryAction(entry)}>
+                        {runningAction===entry.id?'Working…':entry.action.label}</button></div>}
+                  </div>
+                  {/* Only entries whose call site declared a domain get a chip -- see notify(). */}
+                  {entry.category&&CATEGORY_LABELS[entry.category]&&
+                    <span className="bell-cat">{CATEGORY_LABELS[entry.category]}</span>}
+                </div>)}
+           </>}
+      </div>
+      <div className="bell-act"><p style={{fontSize:'11px',color:'var(--faint)'}}>
+        The badge counts pending confirmations only. Recent is a capped session scratchpad — never an inbox.</p></div>
     </div>}
     {!open&&autoPreview&&<div className={`bell-auto-preview bell-log-${autoPreview.type}`} role="status" aria-live="polite" onClick={dismissAutoPreview}>
       <span className="bell-log-dot" aria-hidden="true"/>
@@ -296,14 +2095,87 @@ async function promptSetUsername({isChange,onProfileChange}){
     return true;
   }catch(error){notify(error.message,{type:'error'});return false;}
 }
-function Account({profile,onLogout,onProfileChange}){const [linking,setLinking]=useState(null);async function generate(){try{setLinking(await api('/api/auth/link-code',{method:'POST',body:JSON.stringify({})}));}catch(value){notify(value.message,{type:'error'});}}return <><PageTitle eyebrow="Identity" title="Account" subtitle="One account, shared across Telegram, Discord, and this dashboard."/><div className="card-grid">{profile.linkedAccounts.map(account=><article className="card" key={account.platform}><span className="pill">{account.platform}</span><div className="user-card-identity"><h2>{account.platformUserId}</h2><CopyButton value={account.platformUserId} label="Copy platform user ID"/></div></article>)}</div><div className="panel"><h2>Connect another platform</h2><p>Generate a five-minute, single-use code, then run <code>/link code:&lt;code&gt;</code> in Discord (or <code>/link</code> generates the same kind of code directly from Telegram) to connect it to this same account instead of creating a separate one.</p><button className="panel-cta" onClick={generate}>Generate link code</button>{linking&&<div className="link-code-result"><strong>{linking.code}</strong><p>Expires at {new Date(linking.expiresAt).toLocaleTimeString()}</p></div>}</div><div className="panel"><h2>Login credentials</h2><p>A username and security password together let you sign in with a password instead of a Telegram/Discord code. The same password also gates sensitive actions like exporting a wallet key.</p><div className="account-credential-row"><span>Username</span><strong>{profile.username||'Not set'}</strong><button className="quiet small" disabled={!profile.securityPasswordSet} onClick={()=>promptSetUsername({isChange:Boolean(profile.username),onProfileChange})}>{profile.username?'Change':'Set'}</button></div><div className="account-credential-row"><span>Security password</span><strong>{profile.securityPasswordSet?'Set':'Not set'}</strong><button className="quiet small" onClick={()=>promptSetSecurityPassword({isChange:profile.securityPasswordSet,onProfileChange})}>{profile.securityPasswordSet?'Change':'Set'}</button></div>{!profile.securityPasswordSet&&<p className="notice notice-warning">Set a security password first -- a username needs one to be useful for signing in.</p>}</div>{profile.isOwner&&<div className="panel"><h2>Admin</h2><p>Owner-only controls for groups, ceilings, presets, and platform-wide governance live on a separate screen.</p><a className="quiet admin-link panel-cta" href="/dashboard/admin">Open admin dashboard</a></div>}<div className="panel"><h2>Session</h2><p>Signed in {profile.linkedAccounts.map(item=>item.platform).join(' + ')||'as a linked user'}.</p><button className="quiet panel-cta" onClick={onLogout}>Log out</button></div></>}
+function Account({profile,onLogout,onProfileChange}){const [linking,setLinking]=useState(null);async function generate(){try{setLinking(await api('/api/auth/link-code',{method:'POST',body:JSON.stringify({})}));}catch(value){notify(value.message,{type:'error'});}}return <><PageTitle eyebrow="Identity" title="Account" subtitle="One account, shared across Telegram, Discord, and this dashboard."/><div className="card-grid">{profile.linkedAccounts.map(account=><article className="card" key={account.platform}><span className="pill">{account.platform}</span><div className="user-card-identity"><h2>{account.platformUserId}</h2><CopyButton value={account.platformUserId} label="Copy platform user ID"/></div></article>)}</div><div className="panel"><h2>Connect another platform</h2><p>Generate a five-minute, single-use code, then run <code>/link code:&lt;code&gt;</code> in Discord (or <code>/link</code> generates the same kind of code directly from Telegram) to connect it to this same account instead of creating a separate one.</p><button className="panel-cta" onClick={generate}>Generate link code</button>{linking&&<div className="link-code-result"><strong>{linking.code}</strong><p>Expires at {new Date(linking.expiresAt).toLocaleTimeString()}</p></div>}</div><div className="panel"><h2>Login credentials</h2><p>A username and security password together let you sign in with a password instead of a Telegram/Discord code. The same password also gates sensitive actions like exporting a wallet key.</p><div className="account-credential-row"><span>Username</span><strong>{profile.username||'Not set'}</strong><button className="b g sm" disabled={!profile.securityPasswordSet} onClick={()=>promptSetUsername({isChange:Boolean(profile.username),onProfileChange})}>{profile.username?'Change':'Set'}</button></div><div className="account-credential-row"><span>Security password</span><strong>{profile.securityPasswordSet?'Set':'Not set'}</strong><button className="b g sm" onClick={()=>promptSetSecurityPassword({isChange:profile.securityPasswordSet,onProfileChange})}>{profile.securityPasswordSet?'Change':'Set'}</button></div>{!profile.securityPasswordSet&&<p className="notice notice-warning">Set a security password first -- a username needs one to be useful for signing in.</p>}</div>{profile.isOwner&&<div className="panel"><h2>Admin</h2><p>Owner-only controls for groups, ceilings, presets, and platform-wide governance live on a separate screen.</p><a className="b g admin-link panel-cta" href="/dashboard/admin">Open admin dashboard</a></div>}<div className="panel"><h2>Session</h2><p>Signed in {profile.linkedAccounts.map(item=>item.platform).join(' + ')||'as a linked user'}.</p><button className="b g panel-cta" onClick={onLogout}>Log out</button></div></>}
 const SUN_ICON=<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.2 4.2l1.4 1.4M18.4 18.4l1.4 1.4M1 12h2M21 12h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" fill="none"/></svg>;
 const MOON_ICON=<svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a7 7 0 0 0 10.5 10.5z"/></svg>;
 const PRIMARY_THEMES=[{value:'ghost-mint-light',label:'Light',icon:SUN_ICON},{value:'ghost-mint',label:'Dark',icon:MOON_ICON}];
 const SECONDARY_THEMES=THEME_OPTIONS.filter(option=>option.value!=='ghost-mint'&&option.value!=='ghost-mint-light');
 function ThemeSwatch({value}){return <span className={`theme-swatch theme-swatch-${value}`} aria-hidden="true"><span className="theme-swatch-accent"/></span>}
 function DefaultChainPanel({profile}){const [value,setValue]=useState(profile.defaultChain||profile.supportedChains[0]);async function change(event){const next=event.target.value;const previous=value;setValue(next);try{await api('/api/profile/default-chain',{method:'PUT',body:JSON.stringify({defaultChain:next})});notify('Default chain saved.',{type:'success'});}catch(error){setValue(previous);notify(error.message,{type:'error'});}}return <div className="panel settings-chain"><div className="settings-panel-heading"><div><p className="eyebrow">Network preference</p><h2>Default chain</h2></div><span className="pill">Account setting</span></div><p>Pre-selects this chain on wallet and scheduled-task forms.</p><ChainSelect name="defaultChain" label="Default chain" options={profile.supportedChains} value={value} onChange={change}/></div>}
-function GasPanel({profile}){const [chain,setChain]=useState(profile.defaultChain||profile.supportedChains[0]);const [result,setResult]=useState(null);const [error,setError]=useState('');const [unavailable,setUnavailable]=useState('');const [loading,setLoading]=useState(false);const load=useCallback(async next=>{setLoading(true);setError('');setUnavailable('');setResult(null);try{setResult(await api(`/api/gas/${next}`));}catch(err){if(['MISSING_API_KEY','PROVIDER_ERROR','TIMEOUT','UNAVAILABLE'].includes(err.code))setUnavailable(err.message);else setError(err.message);}finally{setLoading(false);}},[]);useEffect(()=>{load(chain);},[chain,load]);return <div className="panel settings-gas"><div className="settings-panel-heading"><div><p className="eyebrow">Live network data</p><h2>Gas prices</h2></div><ChainSelect name="gasChain" label="Chain" options={profile.supportedChains} value={chain} onChange={e=>setChain(e.target.value)}/></div><p>Etherscan V2 gas oracle. An unavailable provider never blocks the rest of Settings.</p><Notice error={error}/>{unavailable&&<p className="notice notice-warning" role="status">{unavailable}</p>}{loading&&<Skeleton variant="lines" rows={1}/>}{result&&<div className="gas-readout"><div><span>Safe</span><strong>{result.safeGasPriceGwei} gwei</strong></div><div><span>Standard</span><strong>{result.gasPriceGwei} gwei</strong></div><div><span>Fast</span><strong>{result.maxFeePerGasGwei} gwei</strong></div></div>}</div>}
+// The ONLY place the bot action gate can be changed. Deliberately not a Telegram or Discord
+// control: if the gate could be switched off from chat, whoever picked up an unlocked phone would
+// switch it off and then remove the wallets, and the gate would protect nothing. The dashboard is
+// already behind a session, which is exactly the property this needs.
+const BOT_GATE_OPTIONS=[
+  {value:'off',label:'Off',hint:'No password is asked for in Telegram or Discord. This is the default.'},
+  {value:'sensitive',label:'Sensitive',hint:'Ask before exporting a key, removing a wallet, sending funds, or importing.'},
+  {value:'strict',label:'Strict',hint:'Everything above, plus reading your wallet list, balances, and activity.'},
+];
+function BotSecurityPanel({profile,onProfileChange}){
+  const [level,setLevel]=useState(profile.botGateLevel||'off');
+  const [saving,setSaving]=useState(false);
+  const [skipMint,setSkipMint]=useState(Boolean(profile.botGateSkipMint));
+  const [savingMint,setSavingMint]=useState(false);
+  async function changeMint(next){
+    const previous=skipMint;setSkipMint(next);setSavingMint(true);
+    try{
+      await api('/api/profile/bot-gate-mint',{method:'PUT',body:JSON.stringify({skipMint:next})});
+      onProfileChange?.(current=>({...current,botGateSkipMint:next}));
+      notify(next?'Minting will no longer ask for your password.':'Minting will ask for your password.',{type:next?'error':'success'});
+    }catch(error){setSkipMint(previous);notify(error.message,{type:'error'});}
+    finally{setSavingMint(false);}
+  }
+  const noPassword=!profile.securityPasswordSet;
+  async function change(next){
+    if(next===level)return;
+    const previous=level;setLevel(next);setSaving(true);
+    try{
+      await api('/api/profile/bot-gate',{method:'PUT',body:JSON.stringify({level:next})});
+      onProfileChange?.(current=>({...current,botGateLevel:next}));
+      notify(next==='off'?'Bot password gate turned off.':`Bot password gate set to ${next}.`,{type:'success'});
+    }catch(error){setLevel(previous);notify(error.message,{type:'error'});}
+    finally{setSaving(false);}
+  }
+  return <div className="panel settings-bot-gate">
+    <div className="settings-panel-heading">
+      <div><p className="eyebrow">Bot security</p><h2>Password gate</h2></div>
+      <span className={`p ${level==='off'?'idle':'ok'}`}>{level==='off'?'Off':'On'}</span>
+    </div>
+    <p>Requires your security password before sensitive actions taken from Telegram or Discord. It
+    uses the same password as this dashboard, and each conversation stays unlocked for 10 minutes.</p>
+    {noPassword&&<p className="notice notice-warning">Set a security password on the Account page
+    first. It cannot be set from a chat, because a password typed there stays in your message
+    history.</p>}
+    <div className="seg gate-picker" role="radiogroup" aria-label="Bot password gate level">
+      {BOT_GATE_OPTIONS.map(option=><button type="button" key={option.value} role="radio"
+        aria-checked={level===option.value} disabled={saving||(noPassword&&option.value!=='off')}
+        className={level===option.value?'on':undefined} onClick={()=>change(option.value)}>{option.label}</button>)}
+    </div>
+    <p className="settings-hint">{BOT_GATE_OPTIONS.find(option=>option.value===level)?.hint}</p>
+    {/* .notice is the prototype's WARNING style (loss-red border and tint) -- this caveat is
+        informational, so it uses the same muted hint style as the level description above it
+        rather than borrowing an alarm colour or inventing an "info" variant the prototype has no
+        equivalent for. The genuine warning above (no password set) keeps .notice-warning. */}
+    {level!=='off'&&<div className="gate-mint-row">
+      <label>
+        <input type="checkbox" checked={!skipMint} disabled={savingMint}
+          onChange={event=>changeMint(!event.target.checked)}/>
+        <span>Ask before minting</span>
+      </label>
+      <p className="settings-hint">On, minting asks for your password like every other sensitive
+      action. Turn it off only if the prompt is costing you drops — minting is competitive, and the
+      seconds between tapping mint and the transaction going out matter. The risk of turning it off:
+      anyone who reaches your Telegram or Discord could spend from your wallets on a contract of
+      their choosing, without knowing your password. Everything else stays gated either way.</p>
+      <p className="settings-hint">Scheduled mints, snipers and watch rules are unaffected either
+      way — they run unattended and never ask for a password.</p>
+    </div>}
+    <p className="settings-hint">Typing a password into a chat is weaker than typing it here. Discord asks
+    in a pop-up window that never becomes a message; Telegram has no such window, so the bot deletes
+    your message the moment it arrives.</p>
+  </div>;
+}
+function GasPanel({profile}){const [chain,setChain]=useState(profile.defaultChain||profile.supportedChains[0]);const [result,setResult]=useState(null);const [error,setError]=useState('');const [unavailable,setUnavailable]=useState('');const [loading,setLoading]=useState(false);const load=useCallback(async next=>{setLoading(true);setError('');setUnavailable('');setResult(null);try{setResult(await api(`/api/gas/${next}`));}catch(err){if(['MISSING_API_KEY','PROVIDER_ERROR','TIMEOUT','UNAVAILABLE'].includes(err.code))setUnavailable(err.message);else setError(err.message);}finally{setLoading(false);}},[]);useEffect(()=>{load(chain);},[chain,load]);return <div className="panel settings-gas"><div className="settings-panel-heading"><div><p className="eyebrow">Live network data</p><h2>Gas prices</h2></div><ChainSelect name="gasChain" label="Chain" options={profile.supportedChains} value={chain} onChange={e=>setChain(e.target.value)}/></div><p>Etherscan V2 gas oracle. An unavailable provider never blocks the rest of Settings.</p><Notice error={error?{title:'Could not load gas prices.',code:'Request failed safely',onRetry:()=>load(chain)}:null}/>{unavailable&&<p className="notice notice-warning" role="status">{unavailable}</p>}{loading&&<Skeleton variant="lines" rows={1}/>}{result&&<div className="gas-readout"><div><span>Safe</span><strong>{result.safeGasPriceGwei} gwei</strong></div><div><span>Standard</span><strong>{result.gasPriceGwei} gwei</strong></div><div><span>Fast</span><strong>{result.maxFeePerGasGwei} gwei</strong></div></div>}</div>}
 // Self-service counterpart to Admin > Mode presets (which edits the four shared preset
 // definitions) -- this only ever picks which of those four the signed-in user is currently on,
 // same PUT /api/profile/mode -> commands.selectMode every platform's /mode command already calls.
@@ -340,7 +2212,7 @@ function TransactionModePanel({profile}){
   }
   return <div className="panel settings-mode">
     <div className="settings-panel-heading"><div><p className="eyebrow">Speed vs. safety</p><h2>Transaction mode</h2></div>
-      <button type="button" className="quiet small" disabled={busy||!defaultKey||current===defaultKey} onClick={resetToDefault}>Reset to default</button>
+      <button type="button" className="b g sm" disabled={busy||!defaultKey||current===defaultKey} onClick={resetToDefault}>Reset to default</button>
     </div>
     <p>Controls confirmation prompts and gas aggression for every mint on every platform. Ceilings and forced simulation (Section 7a governance) always take precedence regardless of mode.</p>
     {presets.data===null?<Skeleton variant="lines" rows={1}/>:<div className="card-grid mode-grid">{presets.data.map(preset=>{
@@ -355,8 +2227,8 @@ function TransactionModePanel({profile}){
   </div>;
 }
 const USAGE_PERIODS=[['today','Today'],['day','24 hours'],['week','7 days'],['month','Month']];
-function ApiUsagePanel(){const [period,setPeriod]=useState('month');const {data,error}=useLoad(`/api/social-usage?period=${period}`,[period]);return <div className="panel settings-usage"><div className="settings-panel-heading"><div><p className="eyebrow">Owner reporting</p><h2>Social API usage</h2></div><div className="segmented usage-period" role="radiogroup" aria-label="Usage period">{USAGE_PERIODS.map(([value,label])=><button type="button" key={value} className={period===value?'active':''} aria-pressed={period===value} onClick={()=>setPeriod(value)}>{label}</button>)}</div></div><p>Observed adapter requests, provider-reported consumption, and current pricing estimates.</p><Notice error={error}/>{data===null?<Skeleton variant="lines" rows={4}/>:<><div className="usage-stats"><div><span>Total requests</span><strong>{data.requests}</strong></div><div><span>Reported cost</span><strong>${data.reportedCostUsd.toFixed(4)}</strong></div><div><span>Reported credits</span><strong>{data.reportedCredits.toFixed(2)}</strong></div><div><span>Pay-per-use estimate</span><strong>${data.payPerUseEstimateUsd.toFixed(2)}</strong></div><div><span>Projected monthly</span><strong>{Math.round(data.projectedMonthlyRequests).toLocaleString()}</strong></div></div><div className="settings-usage-tables"><div className="table-wrap"><table><thead><tr><th>Rule</th><th>Method</th><th>Type</th><th>Requests</th></tr></thead><tbody>{data.rows.map(row=><tr key={`${row.ruleId}-${row.method}-${row.requestType}`}><td>{row.ruleName}</td><td>{row.method}</td><td>{row.requestType}</td><td>{row.requests}</td></tr>)}</tbody></table>{data.rows.length===0&&<Empty text="No social adapter requests recorded for this period."/>}</div><div className="table-wrap"><table><thead><tr><th>Managed tier</th><th>Break-even reads</th><th>Break-even posts</th></tr></thead><tbody>{data.breakEvenRequests.map(tier=><tr key={tier.price}><td>${tier.price}/mo</td><td>{tier.atReadRate.toLocaleString()}</td><td>{tier.atPostRate.toLocaleString()}</td></tr>)}</tbody></table></div></div></>}</div>}
-function Settings({profile,onThemeChange}){const secondaryActive=SECONDARY_THEMES.some(option=>option.value===profile.theme);return <><PageTitle eyebrow="Preferences" title="Settings" subtitle="Display, network defaults, live gas information, and owner reporting."/><div className="settings-layout"><div className="panel settings-appearance"><div className="settings-panel-heading"><div><p className="eyebrow">Display</p><h2>Appearance</h2></div><div className="segmented theme-picker" role="radiogroup" aria-label="Dashboard appearance">{PRIMARY_THEMES.map(option=><button type="button" key={option.value} aria-pressed={profile.theme===option.value} className={profile.theme===option.value?'active':''} onClick={()=>onThemeChange(option.value)}><span className="theme-picker-icon" aria-hidden="true">{option.icon}</span>{option.label}</button>)}</div></div><details className="settings-more-themes" open={secondaryActive}><summary>More themes</summary><div className="theme-grid" role="radiogroup" aria-label="More dashboard themes">{SECONDARY_THEMES.map(option=><button type="button" key={option.value} aria-pressed={profile.theme===option.value} className={`theme-option${profile.theme===option.value?' active':''}`} onClick={()=>onThemeChange(option.value)}><ThemeSwatch value={option.value}/><span className="theme-option-label">{option.label}</span></button>)}</div></details></div><DefaultChainPanel profile={profile}/><TransactionModePanel profile={profile}/><GasPanel profile={profile}/>{profile.isOwner&&<ApiUsagePanel/>}</div></>}
+function ApiUsagePanel(){const [period,setPeriod]=useState('month');const usage=useLoad(`/api/social-usage?period=${period}`,[period]);const {data}=usage;return <div className="panel settings-usage"><div className="settings-panel-heading"><div><p className="eyebrow">Owner reporting</p><h2>Social API usage</h2></div><div className="seg usage-period" role="radiogroup" aria-label="Usage period">{USAGE_PERIODS.map(([value,label])=><button type="button" key={value} className={period===value?'on':undefined} aria-pressed={period===value} onClick={()=>setPeriod(value)}>{label}</button>)}</div></div><p>Observed adapter requests, provider-reported consumption, and current pricing estimates.</p><Notice error={loadError(usage,'Could not load social API usage.')}/>{data===null?<Skeleton variant="lines" rows={4}/>:<><div className="usage-stats"><div><span>Total requests</span><strong>{data.requests}</strong></div><div><span>Reported cost</span><strong>${data.reportedCostUsd.toFixed(4)}</strong></div><div><span>Reported credits</span><strong>{data.reportedCredits.toFixed(2)}</strong></div><div><span>Pay-per-use estimate</span><strong>${data.payPerUseEstimateUsd.toFixed(2)}</strong></div><div><span>Projected monthly</span><strong>{Math.round(data.projectedMonthlyRequests).toLocaleString()}</strong></div></div><div className="settings-usage-tables"><div className="table-wrap"><table><thead><tr><th>Rule</th><th>Method</th><th>Type</th><th>Requests</th></tr></thead><tbody>{data.rows.map(row=><tr key={`${row.ruleId}-${row.method}-${row.requestType}`}><td>{row.ruleName}</td><td>{row.method}</td><td>{row.requestType}</td><td>{row.requests}</td></tr>)}</tbody></table>{data.rows.length===0&&<Empty text="No social adapter requests recorded for this period."/>}</div><div className="table-wrap"><table><thead><tr><th>Managed tier</th><th>Break-even reads</th><th>Break-even posts</th></tr></thead><tbody>{data.breakEvenRequests.map(tier=><tr key={tier.price}><td>${tier.price}/mo</td><td>{tier.atReadRate.toLocaleString()}</td><td>{tier.atPostRate.toLocaleString()}</td></tr>)}</tbody></table></div></div></>}</div>}
+function Settings({profile,onThemeChange,onProfileChange}){const secondaryActive=SECONDARY_THEMES.some(option=>option.value===profile.theme);return <><PageTitle eyebrow="Preferences" title="Settings" subtitle="Display, network defaults, live gas information, and owner reporting."/><div className="settings-layout"><div className="panel settings-appearance"><div className="settings-panel-heading"><div><p className="eyebrow">Display</p><h2>Appearance</h2></div><div className="seg theme-picker" role="radiogroup" aria-label="Dashboard appearance">{PRIMARY_THEMES.map(option=><button type="button" key={option.value} aria-pressed={profile.theme===option.value} className={profile.theme===option.value?'on':undefined} onClick={()=>onThemeChange(option.value)}><span className="theme-picker-icon" aria-hidden="true">{option.icon}</span>{option.label}</button>)}</div></div><details className="settings-more-themes" open={secondaryActive}><summary>More themes</summary><div className="theme-grid" role="radiogroup" aria-label="More dashboard themes">{SECONDARY_THEMES.map(option=><button type="button" key={option.value} aria-pressed={profile.theme===option.value} className={`theme-option${profile.theme===option.value?' active':''}`} onClick={()=>onThemeChange(option.value)}><ThemeSwatch value={option.value}/><span className="theme-option-label">{option.label}</span></button>)}</div></details></div><DefaultChainPanel profile={profile}/><TransactionModePanel profile={profile}/><BotSecurityPanel profile={profile} onProfileChange={onProfileChange}/><GasPanel profile={profile}/>{profile.isOwner&&<ApiUsagePanel/>}</div></>}
 function Login({onLogin}){
   const [mode,setMode]=useState('code');
   const [code,setCode]=useState('');
@@ -370,9 +2242,9 @@ function Login({onLogin}){
   return <main className="login-page"><form className="login-card" onSubmit={mode==='code'?submitCode:submitPassword}>
     <span className="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d={BOLT_PATH} fill="currentColor"/></svg></span>
     <p className="eyebrow">Linked identity access</p><h1>GhostMint</h1>
-    <div className="segmented login-mode-toggle" role="radiogroup" aria-label="Sign-in method">
-      <button type="button" aria-pressed={mode==='code'} className={mode==='code'?'active':''} onClick={()=>chooseMode('code')}>Authentication code</button>
-      <button type="button" aria-pressed={mode==='password'} className={mode==='password'?'active':''} onClick={()=>chooseMode('password')}>Username &amp; password</button>
+    <div className="seg login-mode-toggle" role="radiogroup" aria-label="Sign-in method">
+      <button type="button" aria-pressed={mode==='code'} className={mode==='code'?'on':undefined} onClick={()=>chooseMode('code')}>Authentication code</button>
+      <button type="button" aria-pressed={mode==='password'} className={mode==='password'?'on':undefined} onClick={()=>chooseMode('password')}>Username &amp; password</button>
     </div>
     {mode==='code'?<>
       <p>Generate a five-minute code with <code>/link</code> in Telegram, then enter it here. (Discord's <code>/link</code> only consumes a code generated on Telegram — it can't generate one.)</p>
@@ -385,67 +2257,1519 @@ function Login({onLogin}){
       <label htmlFor="login-password">Password</label>
       <input id="login-password" type="password" value={password} onChange={event=>setPassword(event.target.value)} autoComplete="current-password" required maxLength="200"/>
     </>}
-    <button disabled={busy}>{busy?'Signing in...':'Sign in securely'}</button>
+    <button className="b p" disabled={busy}>{busy?'Signing in...':'Sign in securely'}</button>
     {error&&<p className="error" role="alert">{error}</p>}
   </form></main>;
 }
-const VIEWS={Dashboard,Wallets,Minting,Tasks,Snipers,'Watch Rules':WatchRules,'Target Policies':TargetPolicies,Activity,'P&L':Pnl,Settings,Account};
-const MORE_PAGES=['Tasks','Snipers','Watch Rules','Target Policies','P&L','Settings'];
-const BOTTOM_BAR_PAGES=['Dashboard','Wallets','Activity'];
+// Mint = Minting + Tasks (brief §2): "mint now" and "mint at 14:00" are one intent with a time
+// field. The two originals are rendered UNCHANGED inside their tabs -- same components, same
+// hooks, same routes with the same params. This merge is navigation, not a rewrite, which is what
+// keeps it revertible on its own.
+//
+// `Schedule · was Tasks` carries the retired page name in muted text (brief §2.1, mechanism 1) so
+// somebody who knew the old IA can still find it. Drop the "was" labels after a release.
+// The preview token's real lifetime, surfaced. /api/mints/preview issues a token valid for 300
+// seconds (issuePreview in src/dashboard/api.js) and /api/mints/confirm consumes it exactly once;
+// past that the confirm fails with "invalid or expired", which previously arrived as a mystery
+// error after the user had already committed to broadcasting.
+//
+// On expiry the preview is DISCARDED rather than left on screen with a dead button: a stale
+// simulation is not evidence about current gas or a still-open mint, and re-simulating is the
+// correct action, not retrying a confirm that cannot succeed.
+const PREVIEW_TTL_SECONDS=300;
+function PreviewExpiry({preview,onExpire,onResimulate}){
+  const [remaining,setRemaining]=useState(PREVIEW_TTL_SECONDS);
+  useEffect(()=>{
+    setRemaining(PREVIEW_TTL_SECONDS);
+    const timer=setInterval(()=>setRemaining(value=>{
+      if(value<=1){clearInterval(timer);onExpire();return 0;}
+      return value-1;
+    }),1000);
+    return()=>clearInterval(timer);
+  },[preview?.previewToken]);
+  if(remaining<=0)return null;
+  const minutes=Math.floor(remaining/60);
+  const seconds=remaining%60;
+  // Prototype .tokbar: label, spacer, then the countdown in .tk. Its .warn variant swaps the
+  // label for "Quote expired — re-simulate before confirming" and carries a Re-simulate button --
+  // the only simulate control the prototype has anywhere.
+  return <div className={`tokbar${remaining<=60?' warn':''}`} role="status">
+    {CLOCK_ICON}
+    {remaining<=60
+      ?<><span>Quote expires in</span><span className="sp"/><span className="tk">{minutes}:{String(seconds).padStart(2,'0')}</span>
+        <button type="button" className="b sm" onClick={()=>onResimulate?.()}>Re-simulate</button></>
+      :<><span>Simulated quote expires in</span><span className="sp"/><span className="tk">{minutes}:{String(seconds).padStart(2,'0')}</span></>}
+  </div>;
+}
+
+// Batch. Its own panel rather than the free-text "Batch wallet labels" textarea buried in the
+// Mint now form, which required typing labels exactly right with no confirmation you had.
+// /api/mints/preview and /api/mints/confirm are the SAME routes Mint now uses, with walletLabels
+// instead of walletLabel -- no new API surface.
+//
+// Each wallet reports its OWN outcome. confirm never throws on a single wallet's failure, so one
+// bad wallet must not read as a failed batch: results are per row, and a partial success says so.
+// /api/wallets returns balances PER CHAIN, never a scalar `balance`. Reading wallet.balance meant
+// this list always printed "—" for every wallet and, worse, the low-balance tint could never fire
+// -- which is precisely the row the prototype colours --warn-text so a wallet that cannot cover
+// the mint is legible before you submit.
+function nativeBalance(wallet){
+  const rows=wallet?.balances||[];
+  const match=rows.find(entry=>entry.chain===wallet.chain)||rows[0];
+  if(!match||match.balance===null||match.balance===undefined)return null;
+  return {amount:Number(match.balance),symbol:match.symbol||'ETH'};
+}
+function MintBatch({onGoWallets}){
+  const wallets=useLoad('/api/wallets',[],'wallets.changed');
+  const [selected,setSelected]=useState([]);
+  const [contractAddress,setContractAddress]=useState('');
+  const [quantity,setQuantity]=useState('1');
+  const [priceEth,setPriceEth]=useState('0');
+  const [preview,setPreview]=useState(null);
+  const [results,setResults]=useState(null);
+  const [busy,setBusy]=useState(false);
+  // The prototype batch form carries no price field (mint.html:161-181), so the price is detected
+  // from the contract exactly as Mint now does it. lastDetected guards against re-detecting the
+  // same address on every keystroke.
+  const [detectedPrice,setDetectedPrice]=useState(null);
+  const lastDetected=useRef("");
+  async function detectPrice(address){
+    const trimmed=address.trim();
+    if(!ADDRESS_SHAPE.test(trimmed)||trimmed===lastDetected.current)return;
+    lastDetected.current=trimmed;
+    try{
+      const result=await api(`/api/mints/detect?contractAddress=${encodeURIComponent(trimmed)}&quantity=${encodeURIComponent(quantity)}`);
+      setDetectedPrice(result.priceKnown?weiToEthDisplay(result.valueWei):"0");
+    }catch{setDetectedPrice(null);}
+  }
+  function autoDetectIfReady(value){detectPrice(value);}
+  function toggle(label){setSelected(current=>current.includes(label)?current.filter(item=>item!==label):[...current,label]);}
+  async function simulate(event){
+    event.preventDefault();
+    if(!selected.length){notify('Select at least one wallet.',{type:'error'});return;}
+    const valueWei=ethToWei(detectedPrice??"0");
+    if(valueWei===null){notify('Could not resolve a price for this contract — check the address.',{type:'error'});return;}
+    setBusy(true);
+    try{
+      setPreview(await api('/api/mints/preview',{method:'POST',body:JSON.stringify({
+        walletLabels:selected,contractAddress:contractAddress.trim(),arguments:[],valueWei:valueWei.toString()})}));
+      setResults(null);
+      notify(`Simulation passed for ${selected.length} wallets — review and confirm.`,{type:'success'});
+    }catch(value){
+      // The server's own words here are "methodSignature is not one of the supported mint
+      // signatures", which is true and useless to whoever pasted the address. It happens for a
+      // whole class of real drops -- SeaDrop ones -- because buildMintCall only encodes the
+      // audited plain-mint signatures, so batch genuinely cannot do them. Say THAT, and say what
+      // still works, rather than naming a field the user never filled in.
+      const unsupported=(value.issues||[]).some(issue=>issue.field==='methodSignature');
+      notify(unsupported
+        ?'This contract uses a mint method batch cannot encode (SeaDrop drops are the usual case). Mint now handles it one wallet at a time.'
+        :value.message,{type:'error',timeoutMs:unsupported?12000:5000});
+    }
+    finally{setBusy(false);}
+  }
+  async function confirmBatch(){
+    if(!await confirmDialog(`Broadcast this mint from ${selected.length} wallets? Each is submitted independently.`))return;
+    setBusy(true);
+    try{
+      const response=await api('/api/mints/confirm',{method:'POST',body:JSON.stringify({previewToken:preview.previewToken,confirmation:'CONFIRM'})});
+      setResults(response.results);
+      const failed=response.results.filter(item=>item.status!=='success').length;
+      notify(failed?`${response.results.length-failed} of ${response.results.length} submitted; ${failed} failed.`:'All wallets submitted.',{type:failed?'error':'success'});
+    }catch(value){notify(value.message,{type:'error'});}
+    finally{setBusy(false);}
+  }
+  // Prototype docs/prototype-pages/mint.html:161-197. .split -- the Batch mint form left, the
+  // independence note and result panel right. The prototype's form has three fields only:
+  // Contract address, the wallet checkbox list, and Quantity per wallet. There is no price field,
+  // so the price comes from detection, exactly as it does on Mint now.
+  const walletsArrived=wallets.data!==null&&wallets.data!==undefined;
+  const noWallets=walletsArrived&&wallets.data.length<2;
+  // Owner's rule: batch with one wallet is not a batch, it is Mint now with extra steps. So the
+  // gate is on how many are SELECTED, not how many exist -- the contract address stays inert until
+  // there are two, because entering a target you cannot yet act on is the part that felt broken.
+  //
+  // readOnly rather than disabled on purpose: a disabled input fires no events at all, so clicking
+  // it to find out why would tell you nothing. readOnly still looks inert, still refuses typing,
+  // and can explain itself.
+  const BATCH_MIN_WALLETS=2;
+  const enoughSelected=selected.length>=BATCH_MIN_WALLETS;
+  const gateMessage=`Select at least ${BATCH_MIN_WALLETS} wallets — batching one wallet is just a single mint.`;
+  // No toast. This fired from onFocus AND onClick, so a single click raised TWO of them, and every
+  // notify() also writes a bell entry -- one click, four pieces of noise. The rule is already
+  // stated permanently under the field, which is the version that cannot be missed or dismissed;
+  // a toast repeating it was only ever redundant.
+  const resultCount=results?results.length:0;
+  const succeeded=results?results.filter(entry=>entry.status==='success').length:0;
+  return <div className="split">
+    <div className="card">
+      <div className="ch"><div className="chip-ico">{BATCH_ICON}</div><h2>Batch mint</h2></div>
+      <form className="g" style={{gap:'11px'}} onSubmit={simulate}>
+        <label className="fl"><span>Contract address</span>
+          <input className={`in mono${detectedPrice?' ok':''}`}
+            disabled={noWallets} readOnly={!noWallets&&!enoughSelected}
+            aria-describedby={!noWallets&&!enoughSelected?'batch-gate':undefined}
+            placeholder={enoughSelected?'0x…':`Select ${BATCH_MIN_WALLETS} wallets first`}
+            value={contractAddress}
+            onChange={e=>{if(!enoughSelected)return;setContractAddress(e.target.value);autoDetectIfReady(e.target.value);}}/>
+          {/* Stated up front as well as on click -- a rule you can only discover by bumping into it
+              is a rule the page kept to itself. */}
+          {!noWallets&&!enoughSelected&&<div className="fielderr" id="batch-gate">{ALERT_ICON}{gateMessage}</div>}</label>
+        <label className="fl"><span>Wallets <span style={{color:'var(--faint)',fontWeight:500}}>· up to 100 unique</span></span>
+          {!walletsArrived
+            ?<div><div className="sk row"/><div className="sk row"/></div>
+            :<div className="g" style={{gap:'6px'}}>
+              {wallets.data.map(wallet=>{
+                // The prototype tints a wallet whose balance will not cover the mint in
+                // --warn-text, so the row that is going to fail is legible before you submit.
+                const balance=nativeBalance(wallet);
+                const low=balance!==null&&balance.amount<=0;
+                return <label key={wallet.label}
+                  style={{display:'flex',gap:'8px',alignItems:'center',fontSize:'12.5px',
+                    color:low?'var(--warn-text)':undefined}}>
+                  <input type="checkbox" style={{minHeight:'auto',width:'16px',height:'16px'}}
+                    checked={selected.includes(wallet.label)} onChange={()=>toggle(wallet.label)}/>
+                  {wallet.label} — {balance?`${balance.amount.toFixed(3)} ${balance.symbol}`:'balance unavailable'}
+                </label>;
+              })}
+            </div>}
+        </label>
+        <label className="fl"><span>Quantity per wallet</span>
+          <div className="qty">
+            <input className="in tab" type="number" min={1} max={3} disabled={noWallets}
+              placeholder="Enter quantity (1–3)" value={quantity} onChange={e=>setQuantity(e.target.value)}/>
+            {/* Shared rule against this form's cap of 3 -> 1, 2, 3, Max. Backlog §13. */}
+            <div className="qb">{quantityPicks(3).map(pick=><button type="button" key={pick} disabled={noWallets}
+              className={String(pick)===String(quantity)?'on':undefined}
+              onClick={()=>setQuantity(String(pick))}>{pick}</button>)}
+              <button type="button" disabled={noWallets}
+                className={String(quantity)==='3'?'on':undefined}
+                onClick={()=>setQuantity('3')}>Max</button></div>
+          </div></label>
+        <button className="b p" disabled={busy||!enoughSelected}>Simulate all {selected.length||0}</button>
+      </form>
+    </div>
+
+    <div className="g">
+      <div className="nt i">{INFO_ICON}
+        <div>Each wallet is simulated and submitted <b>independently</b>. One wallet failing does not cancel the others.</div></div>
+      <Notice error={loadError(wallets,'Could not load wallets.')}/>
+      {busy||(!walletsArrived&&!wallets.error)
+        ?<div><div className="sk row"/><div className="sk row"/><div className="sk row"/></div>
+        :wallets.error
+          ?null
+          :noWallets
+          ?<div className="emp">
+             <div className="ei">{WALLET_EMPTY_ICON}</div>
+             <h3>No wallets to batch</h3>
+             <p>Batch minting needs at least two wallets. Create them first.</p>
+             <button type="button" className="b p sm" onClick={()=>onGoWallets?.()}>Create a wallet</button>
+           </div>
+          :results
+            ?<div className="card">
+               <div className="ch"><h2>Result</h2><div className="sp"/>
+                 <span className={`p ${succeeded===resultCount?'ok':'wn'}`}>{succeeded} of {resultCount} succeeded</span></div>
+               {results.map(entry=><div className="bres" key={entry.walletLabel||entry.label}>
+                 <span className={`p ${entry.status==='success'?'ok':'bad'}`}>{entry.status==='success'?'Confirmed':'Failed'}</span>
+                 <span className="bl2">{entry.walletLabel||entry.label}</span>
+                 <span className={entry.status==='success'?'be mono':'be'}>
+                   {entry.status==='success'?shortHex(batchRowDetail(entry)):batchRowDetail(entry)}</span>
+               </div>)}
+               <p style={{fontSize:'11px',color:'var(--faint)',marginTop:'9px'}}>
+                 {succeeded} {succeeded===1?'transaction was':'transactions were'} broadcast.
+                 {resultCount-succeeded>0?` The ${resultCount-succeeded===1?'other':'others'} never left the server.`:''}</p>
+             </div>
+            :preview
+              ?<div className="g">
+                 <PreviewExpiry preview={preview} onExpire={()=>setPreview(null)} onResimulate={simulate}/>
+                 <div className="sober">
+                   <div className="sh">{LOCK_ICON}Simulation passed</div>
+                   <table className="led"><tbody>
+                     {preview.items.map(item=><tr key={item.wallet.label}>
+                       <td>{item.wallet.label}</td>
+                       <td>{weiToEthDisplay(item.simulation.estimatedCostWei)} ETH</td></tr>)}
+                     <tr className="tot"><td>Wallets</td><td>{preview.items.length}</td></tr>
+                   </tbody></table>
+                 </div>
+                 <button type="button" className="b p big bl" disabled={busy} onClick={confirmBatch}>
+                   Confirm and mint · {preview.items.length} {preview.items.length===1?'wallet':'wallets'}</button>
+               </div>
+              :null}
+    </div>
+  </div>;
+}
+
+// Presets: the saved mint configurations, plus the method registry they resolve against. Read-only
+// here -- presets are created from the bots, and adding a create form would be a new write path,
+// not a restyle.
+// Prototype docs/prototype-pages/mint.html:200-232: a .split of "Saved presets" and "Method
+// registry". The registry list is static in the design and static here; nothing exposes the
+// server's signature table to the dashboard, so it is a reference panel, not live data (noted in
+// the backlog so it gets bound if a route ever appears).
+// The prototype shows five rows and a "+4 more" summary. The five were hardcoded here to match,
+// which meant the page asserted what the encoder supports without ever asking it -- add a
+// signature to mintRegistry and this list silently starts lying. It now reads the real table from
+// /api/mint-methods, and "+N more" is a control rather than a caption: the owner's ruling is that
+// this is reference material consulted MID-FORM, so it expands in place. Sending someone to
+// another page to check a signature would abandon a half-filled preset.
+const METHOD_PREVIEW_COUNT=5;
+function MintPresets({onUsePreset}){
+  const presets=useLoad('/api/mint-presets',[],'presets.changed');
+  const methods=useLoad('/api/mint-methods');
+  const [showAllMethods,setShowAllMethods]=useState(false);
+  const items=presets.data;
+  const methodRows=methods.data||[];
+  const visibleMethods=showAllMethods?methodRows:methodRows.slice(0,METHOD_PREVIEW_COUNT);
+  const hiddenMethodCount=Math.max(0,methodRows.length-METHOD_PREVIEW_COUNT);
+  return <div className="split">
+    <div className="card">
+      <div className="ch"><h2>Saved presets</h2><div className="sp"/>
+        {items&&items.length>0&&<span className="p nu">{items.length}</span>}</div>
+      {presets.error
+        ?<Notice error={loadError(presets,'Could not load saved presets.')}/>
+        :items===null||items===undefined
+          ?<div><div className="sk row"/><div className="sk row"/></div>
+          :items.length===0
+            ?<div className="emp">
+               <div className="ei">{PRESET_ICON}</div>
+               <h3>No presets saved</h3>
+               <p>A preset stores a contract, method and arguments so a repeat mint is one tap.</p>
+             </div>
+            :<div>{items.map(preset=><div className="r" key={preset.name}>
+                <div className="rm">
+                  <div className="rt">{preset.name}</div>
+                  <div className="rs mono fold">{preset.methodSignature} · {shortHex(preset.contractAddress)}</div>
+                </div>
+                <div className="rv"><button type="button" className="b g sm"
+                  onClick={()=>onUsePreset?.(preset)}>Use</button></div>
+              </div>)}</div>}
+    </div>
+    <div className="card">
+      <div className="ch"><h2>Method registry</h2></div>
+      <p style={{fontSize:'12.5px',color:'var(--muted)',marginBottom:'11px'}}>Only audited signatures can be encoded. Arbitrary ABI fragments and raw calldata are rejected.</p>
+      <div className="sober">
+        <div className="sh">Supported signatures</div>
+        {methods.data===null
+          ?<div><div className="sk l w80"/><div className="sk l w60"/><div className="sk l w40"/></div>
+          :<table className="led">
+            <tbody>
+              {visibleMethods.map(method=><tr key={method.signature}>
+                <td className="mono">{method.signature}</td><td>{method.standard}</td></tr>)}
+              {hiddenMethodCount>0&&<tr className="tot">
+                <td colSpan={2}>
+                  <button type="button" className="b g sm" aria-expanded={showAllMethods}
+                    onClick={()=>setShowAllMethods(value=>!value)}>
+                    {showAllMethods?'Show fewer':`+${hiddenMethodCount} more`}</button>
+                </td></tr>}
+            </tbody>
+          </table>}
+      </div>
+    </div>
+  </div>;
+}
+
+const MINT_TABS=[
+  {id:'now',label:'Mint now'},
+  {id:'schedule',label:'Schedule',was:'Tasks'},
+  {id:'batch',label:'Batch'},
+  {id:'presets',label:'Presets'},
+];
+// Severity, worst first. A red badge on the rail says the Mint page has a problem; these say WHICH
+// of its four screens owns it, which is the whole point of putting them on the tabs as well.
+//
+// Only Schedule can currently carry one, and that is a fact about the data rather than a gap in
+// the mechanism: Mint now, Batch and Presets hold no state that outlives the request. A batch
+// result and a failed simulation are gone the moment you leave, so a badge for them would have
+// nothing to count. The mechanism is general, so any of them can report the day they do.
+function scheduleBadge(counts){
+  if(!counts)return null;
+  // Expired is deliberately absent, and this has to match the rail's own arithmetic or the tab
+  // and the rail summarising it disagree. An expired mint has no action left -- retry and resume
+  // both refuse it -- so it is history, not a to-do. Counting it made the badge permanent and
+  // ever-growing.
+  const failed=counts.failed||0,paused=counts.paused||0;
+  const total=failed+paused;
+  if(!total)return null;
+  return {count:total,tone:failed>0?'bad':'nu'};
+}
+function Mint({profile,go,tab,onTab}){
+  // Falls back to 'now' for an unknown ?tab= rather than rendering an empty page -- a stale or
+  // hand-edited tab value should land somewhere useful, not nowhere.
+  const active=MINT_TABS.some(item=>item.id===tab)?tab:'now';
+  const tasks=useLoad('/api/tasks?page=1&pageSize=1',[],'tasks.changed');
+  const badges={schedule:scheduleBadge(tasks.data?.counts)};
+  return <>
+    <div className="page-head"><div className="page-head-text"><p className="eyebrow">Mint</p><h1>Mint</h1></div></div>
+    <SubTabs tabs={MINT_TABS} active={active} onChange={onTab} label="Mint sections" badges={badges}/>
+    {active==='now'&&<Minting onSwitchToBatch={()=>onTab('batch')} onGoWallets={()=>go('Wallets')}/>}
+    {active==='schedule'&&<Tasks profile={profile} go={go}/>}
+    {active==='batch'&&<MintBatch onGoWallets={()=>go('Wallets')}/>}
+    {active==='presets'&&<MintPresets onUsePreset={preset=>{setPendingMintPrefill({contractAddress:preset.contractAddress});onTab('now');}}/>}
+  </>;
+}
+// Automation = Snipers + Watch Rules + Target Policies (brief §2). A sniper and a watch rule are
+// the same shape -- a source that listens and a mint it can fire -- and a policy has no
+// independent existence, so it belongs on its target rather than on a page of its own.
+//
+// As in unit 1, the three originals render UNCHANGED inside their tabs: same components, same
+// hooks, same routes with the same params. No API call changes.
+const AUTOMATION_TABS=[
+  {id:'all',label:'All'},
+  {id:'snipers',label:'Snipers'},
+  {id:'social',label:'Social rules',was:'Watch Rules'},
+  {id:'policies',label:'Policies',was:'Target Policies'},
+];
+// The prototype's Automation page has FOUR panels -- at-all, at-snp, at-soc, at-pol -- and "All" is
+// the default. Its own comment states the relationship: "Snipers / Social rules are filters over
+// the same list; Policies is the editor + challenge". The build had only the three narrow tabs, so
+// the populated/empty/loading/error states the prototype draws had nowhere to live at all. This is
+// that missing panel, and Snipers/Social render it with a filter rather than duplicating it.
+//
+// The card is .card.col: a header (.colh) and a body (.colb). Collapsing is MOBILE-ONLY --
+// prototype.css sets .colh{display:none} and only reveals it under .app[data-m] -- so both halves
+// are always emitted and the stylesheet decides. Nothing here toggles on width.
+//
+// Deliberately NOT built: the .dragh drag handle and data-reorder. Reordering needs a persisted
+// order the API does not expose, and a handle that forgets its order on reload is worse than none.
+// Only Ethereum and Base appear in the prototype (#627eea, #0052ff); the rest are each chain's own
+// brand colour, because a dot that is the WRONG colour is worse than the one thing it exists to do.
+const CHAIN_DOT={ethereum:'#627eea',base:'#0052ff',arbitrum:'#28a0f0',polygon:'#8247e5',robinhood:'#ccff00'};
+const CHAIN_LABEL={ethereum:'Ethereum',base:'Base',arbitrum:'Arbitrum',polygon:'Polygon',robinhood:'Robinhood'};
+const SOCIAL_LABEL={twitter:'Twitter',discord:'Discord',farcaster:'Farcaster'};
+const AUTOMATION_KIND={sniper:'Copy sniper',social:'Social rule'};
+
+// The prototype's "Policy · inline" rows are the REAL target policy, not a restatement of the
+// trigger's own fields: targetPolicyService stores blockchainTrigger, socialTrigger,
+// humanVerification and walletLabel, which is exactly what the card lists. Read them, do not invent
+// them -- an inline policy that shows something other than the policy is worse than showing none.
+//
+// The prototype also draws a .meter for "Daily cap used · 0.140 / 0.200". That figure is NOT
+// rendered here, deliberately. governanceService.js:315 records why spentTodayWei is withheld:
+// rollingSpendWei sums COALESCE(actual_network_cost_wei, estimated_cost_wei) and the actual column
+// holds gas only, so a confirmed mint's value drops out and the total is wrong in the user's
+// favour. The cap is real and is shown; the "used" half would be a known-wrong number on a money
+// surface, and Mint now already refuses the same figure for the same reason.
+function policyRows(row,policy){
+  if(!policy)return null;
+  const rows=[];
+  if(row.kind==='sniper')rows.push(['Blockchain trigger',titleCase(policy.blockchainTrigger||'manual')]);
+  else rows.push(['Social trigger',titleCase(policy.socialTrigger||'manual')]);
+  rows.push(['Human verification',policy.humanVerification==='bypassed'
+    ?<span style={{color:'var(--warn-text)'}}>Bypassed</span>:'On']);
+  if(policy.walletLabel||row.walletLabel)rows.push(['Wallet',policy.walletLabel||row.walletLabel]);
+  if(row.kind==='sniper'){
+    rows.push(['Max copied value',`${row.maxValueETH} ETH`]);
+    rows.push(['Daily cap used',`${row.spend.eth.toFixed(3)} / ${row.dailySpendingCapETH} ETH`]);
+  }
+  return rows;
+}
+// The prototype's "Daily cap used · 0.140 / 0.200" and its .meter. governanceService.js:315
+// withholds spentTodayWei because rollingSpendWei sums COALESCE(actual_network_cost_wei,
+// estimated_cost_wei) and the actual column holds gas only -- a confirmed mint's VALUE drops out.
+// sniper_seen_transactions.copied_value_wei is that missing value, per event, and it reaches the
+// dashboard through /api/snipers events. Summing today's copies gives the figure the server
+// refuses to publish, computed from the column that actually holds it rather than the one that
+// does not. Only states that really moved money count: a skipped or failed copy spent nothing.
+const SPENT_STATES=new Set(['confirmed','sent','submitted','pending']);
+function dailyCopySpend(events,sniperId){
+  const dayStart=new Date();dayStart.setHours(0,0,0,0);
+  const mine=(events||[]).filter(event=>event.sniperId===sniperId
+    &&SPENT_STATES.has(String(event.state||'').toLowerCase())
+    &&Number(event.seenAt||event.updatedAt||0)>=dayStart.getTime());
+  const wei=mine.reduce((total,event)=>total+(Number(event.copiedValueWei)||0),0);
+  return {copies:mine.length,eth:wei/1e18};
+}
+function titleCase(value){const s=String(value||'');return s.charAt(0).toUpperCase()+s.slice(1);}
+
+function triggerRows(snipers,rules){
+  const fromSnipers=(snipers?.items||[]).map(item=>{
+    const recent=(snipers.events||[]).find(event=>event.sniperId===item.id);
+    const failed=recent?.state==='failed';
+    return {kind:'sniper',id:item.id,title:item.label,chain:item.chain,
+      walletLabel:item.walletLabel,maxValueETH:item.maxValueETH,
+      dailySpendingCapETH:item.dailySpendingCapETH,
+      status:failed?'Failing':(item.active===false?'Paused':'Active'),
+      tone:failed?'bad':(item.active===false?'idle':'ok'),
+      spend:dailyCopySpend(snipers.events,item.id),
+      meta:`Post-confirmation · wallet ${item.walletLabel}`+(dailyCopySpend(snipers.events,item.id).copies?` · ${dailyCopySpend(snipers.events,item.id).copies} copies today`:''),
+      value:`${item.maxValueETH} ETH`,
+      search:[item.label,item.chain,item.walletLabel]};
+  });
+  const fromRules=(rules?.items||[]).map(item=>({
+    kind:'social',id:item.id,title:item.name,platform:String(item.type||'').split('_')[0],
+    status:item.enabled===false?'Paused':(item.consecutiveFailures>0?'Failing':'Active'),
+    tone:item.enabled===false?'idle':(item.consecutiveFailures>0?'bad':'ok'),
+    meta:`${String(item.type||'').replace(/_/g,' ')} · ${item.method}`+
+      (item.consecutiveFailures>0?` · ${item.consecutiveFailures} consecutive failures`:''),
+    value:item.consecutiveFailures>0?`${item.consecutiveFailures} failed polls`:'',
+    search:[item.name,item.type,item.method]}));
+  return [...fromSnipers,...fromRules];
+}
+
+function TriggerCard({row,onEdit,onToggle,onArchive}){
+  const [open,setOpen]=useState(false);
+  const [policy,setPolicy]=useState(undefined);
+  useEffect(()=>{let live=true;
+    api(`/api/targets/${row.id}?type=${row.kind==='sniper'?'sniper':'social_rule'}`)
+      .then(value=>{if(live)setPolicy(value.policy||null);})
+      .catch(()=>{if(live)setPolicy(null);});
+    return()=>{live=false;};},[row.id,row.kind]);
+  const rows=policyRows(row,policy);
+  // Active triggers offer Pause; a failing one offers Disable -- the prototype uses each verb on
+  // the card whose state it fits, and they are different actions, not a style choice.
+  const stopped=row.status==='Paused';
+  const stopLabel=stopped?'Resume':'Pause';
+  return <div className="blk">
+    <div className="card col" data-open={open?'1':'0'}
+      style={row.tone==='bad'?{borderColor:'var(--loss)'}:undefined}>
+      <button type="button" className="colh" aria-expanded={open} onClick={()=>setOpen(v=>!v)}>
+        <span className={`p ${row.tone}`}>{row.status}</span>
+        <span className="cti">{row.title}</span>
+        {row.value?<span className="ctv">{row.value}</span>:null}
+        <svg className="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"
+          strokeLinecap="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+      </button>
+      <div className="colb">
+        <div className="ch"><span className={`p ${row.tone}`}>
+          {row.status==='Paused'&&PAUSED_GLYPH}{row.status}</span><div className="sp"/>
+          {row.kind==='sniper'
+            ?<span className="chain"><i style={{background:CHAIN_DOT[row.chain]||'var(--faint)'}}/>
+               {CHAIN_LABEL[row.chain]||titleCase(row.chain)}</span>
+            :<span className="cw">{SOCIAL_LABEL[row.platform]||titleCase(row.platform)}</span>}
+        </div>
+        <h3 style={{fontSize:'14.5px',marginBottom:'2px'}}>{row.title}</h3>
+        <p style={{fontSize:'12px',color:'var(--muted)',marginBottom:'11px'}}>{row.meta}</p>
+        <div className="sober" style={{marginBottom:'11px'}}>
+          <div className="sh">Policy · inline</div>
+          {policy===undefined
+            ?<div style={{padding:'9px 13px'}}><div className="sk l w80"/><div className="sk l w60"/></div>
+            :rows
+              ?<table className="led"><tbody>{rows.map(([label,value])=>
+                 <tr key={label}><td>{label}</td><td>{value}</td></tr>)}</tbody></table>
+              :<p style={{padding:'9px 13px',fontSize:'12px',color:'var(--muted)'}}>
+                 Policy unavailable right now.</p>}
+        </div>
+        {row.kind==='sniper'&&row.dailySpendingCapETH>0&&(()=>{
+          const pct=Math.min(100,(row.spend.eth/row.dailySpendingCapETH)*100);
+          // .warn once most of the cap is gone, matching the prototype's amber fill at 70%.
+          return <div className="meter" style={{marginBottom:'11px'}} role="img"
+            aria-label={`${row.spend.eth.toFixed(3)} of ${row.dailySpendingCapETH} ETH daily cap used today`}>
+            <i className={pct>=60?'warn':undefined} style={{width:`${pct}%`}}/></div>;
+        })()}
+        <div className="br">
+          <button type="button" className="b sm" onClick={()=>onEdit?.(row)}>Edit</button>
+          <button type="button" className={`b g sm ${stopped?'trigger-start':'trigger-stop'}`}
+            onClick={()=>onToggle?.(row)}>{stopLabel}</button>
+          {/* Only once it is stopped. Archiving is the one action that removes a trigger from
+              every list, so requiring a pause first makes it a two-step decision rather than one
+              a stray tap can complete -- and a running trigger is exactly the one you would not
+              mean to archive. */}
+          {stopped&&<button type="button" className="b d sm"
+            onClick={()=>onArchive?.(row)}>Archive</button>}
+        </div>
+      </div>
+    </div>
+  </div>;
+}
+
+// A guided form, not a JSON textarea. The owner's point: a user should not have to hand-write
+// {"label":...,"targetAddress":...} to create a sniper, and should not have to know the field names
+// at all. The same object still goes to the API -- it is assembled here from selects and inputs
+// instead of typed. Chain and wallet are dropdowns because both are closed sets the app already
+// knows; typing either was a spelling test with a validation error as the prize.
+//
+// Collapsed by default and opened by New trigger, so the page starts as a list of what exists
+// rather than a form for something that does not.
+function SniperForm({wallets,chains,onCreated,onCancel,editing}){
+  const [busy,setBusy]=useState(false);
+  const formRef=useRef(null);
+  async function submit(event){
+    event.preventDefault();
+    const form=new FormData(event.currentTarget);
+    const body={
+      label:String(form.get('label')||'').trim(),
+      targetAddress:String(form.get('targetAddress')||'').trim(),
+      chain:form.get('chain'),
+      walletLabel:form.get('walletLabel'),
+      maxValueETH:Number(form.get('maxValueETH')),
+      maxGasGwei:Number(form.get('maxGasGwei')),
+      dailySpendingCapETH:Number(form.get('dailySpendingCapETH')),
+      cooldownMs:Number(form.get('cooldownSeconds'))*1000,
+      maxAttempts:Number(form.get('maxAttempts')),
+    };
+    setBusy(true);
+    try{
+      await api(editing?`/api/snipers/${editing}`:'/api/snipers',
+        {method:editing?'PUT':'POST',body:JSON.stringify(body)});
+      notify(editing?'Sniper updated.':'Sniper created.',{type:'success'});
+      // Cleared on success, as the owner asked: leaving the last target address sitting in the
+      // field is how you create the same sniper twice by accident.
+      formRef.current?.reset();
+      onCreated?.();
+    }catch(error){notify(error.message,{type:'error'});}
+    finally{setBusy(false);}
+  }
+  return <form ref={formRef} className="panel form" onSubmit={submit} aria-busy={busy||undefined}>
+    <h2>{editing?'Edit sniper':'New copy sniper'}</h2>
+    <p className="page-lead">Watch one wallet. When it mints and that transaction confirms, copy the
+      same call from yours — never before it confirms.</p>
+    <div className="g gm2 g2">
+      <label className="fl"><span>Name</span>
+        <input className="in" name="label" required placeholder="e.g. copy-whale-1"/></label>
+      <label className="fl"><span>Wallet that pays</span>
+        <select className="in" name="walletLabel" required>
+          {(wallets||[]).map(item=><option key={item.label} value={item.label}>{item.label}</option>)}
+        </select></label>
+      <label className="fl" style={{gridColumn:'1 / -1'}}><span>Wallet to watch</span>
+        <input className="in mono" name="targetAddress" required pattern="0x[0-9a-fA-F]{40}"
+          placeholder="0x… the address whose mints you want to copy"/></label>
+      <label className="fl"><span>Chain</span>
+        <select className="in" name="chain" required defaultValue="ethereum">
+          {(chains||[]).map(item=><option key={item} value={item}>{item}</option>)}
+        </select></label>
+      <label className="fl"><span>Max per copy (ETH)</span>
+        <input className="in tab" name="maxValueETH" type="number" step="any" min="0" required defaultValue="0.01"/></label>
+      <label className="fl"><span>Daily cap (ETH)</span>
+        <input className="in tab" name="dailySpendingCapETH" type="number" step="any" min="0" required defaultValue="0.05"/></label>
+      <label className="fl"><span>Gas ceiling (gwei)</span>
+        <input className="in tab" name="maxGasGwei" type="number" min="1" required defaultValue="50"/></label>
+      <label className="fl"><span>Cooldown (seconds)</span>
+        <input className="in tab" name="cooldownSeconds" type="number" min="0" required defaultValue="60"/></label>
+      <label className="fl"><span>Max attempts</span>
+        <input className="in tab" name="maxAttempts" type="number" min="1" required defaultValue="3"/></label>
+    </div>
+    <div className="nt i" style={{marginTop:'11px'}}>{INFO_ICON}
+      <div>These caps apply to this sniper alone. Your account gas ceiling and spending budget still
+        apply on top, and the lower of the two always wins.</div></div>
+    <div className="br" style={{marginTop:'11px'}}>
+      <button className="b p sm" disabled={busy}>{editing?'Save sniper':'Create sniper'}</button>
+      <button type="button" className="b g sm" onClick={()=>onCancel?.()}>Cancel</button>
+    </div>
+  </form>;
+}
+
+// Same treatment for watch rules. The config shape depends on the type -- an account rule needs a
+// handle, a channel rule needs a channel ID, a keyword rule needs keywords -- so the form shows
+// only the field that type actually uses instead of asking for a config object covering all three.
+const WATCH_TYPES=[
+  {value:'twitter_account',label:'X / Twitter · account'},
+  {value:'twitter_keyword',label:'X / Twitter · keyword'},
+  {value:'discord_channel',label:'Discord · channel'},
+  {value:'discord_keyword',label:'Discord · keyword'},
+  {value:'farcaster_account',label:'Farcaster · account'},
+  {value:'farcaster_keyword',label:'Farcaster · keyword'},
+];
+const WATCH_METHODS=[
+  {value:'official_api',label:'Official API'},
+  {value:'managed_service',label:'Managed service'},
+  {value:'scraper',label:'Scraper'},
+];
+function WatchRuleForm({onCreated,onCancel,editing}){
+  const [type,setType]=useState('twitter_account');
+  const [method,setMethod]=useState('official_api');
+  const [busy,setBusy]=useState(false);
+  const formRef=useRef(null);
+  const kind=type.endsWith('_account')?'account':type.endsWith('_channel')?'channel':'keyword';
+  async function submit(event){
+    event.preventDefault();
+    const form=new FormData(event.currentTarget);
+    const config={};
+    if(kind==='account')config.handle=String(form.get('handle')||'').trim().replace(/^@/,'');
+    if(kind==='channel')config.channelId=String(form.get('channelId')||'').trim();
+    if(kind==='keyword')config.keywords=String(form.get('keywords')||'')
+      .split(',').map(value=>value.trim()).filter(Boolean);
+    const sourceUrl=String(form.get('sourceUrl')||'').trim();
+    if(method==='scraper'&&sourceUrl)config.sourceUrl=sourceUrl;
+    setBusy(true);
+    try{
+      await api(editing?`/api/watch-rules/${editing}`:'/api/watch-rules',
+        {method:editing?'PUT':'POST',
+          body:JSON.stringify({name:String(form.get('name')||'').trim(),type,method,config})});
+      notify(editing?'Watch rule updated.':'Watch rule created.',{type:'success'});
+      formRef.current?.reset();
+      onCreated?.();
+    }catch(error){notify(error.message,{type:'error'});}
+    finally{setBusy(false);}
+  }
+  return <form ref={formRef} className="panel form" onSubmit={submit} aria-busy={busy||undefined}>
+    <h2>{editing?'Edit watch rule':'New social watch rule'}</h2>
+    <p className="page-lead">Watch an account or a keyword. When a contract address appears, it
+      becomes a trigger — manual by default, so nothing spends without you.</p>
+    <div className="g gm2 g2">
+      <label className="fl"><span>Name</span>
+        <input className="in" name="name" required placeholder="e.g. azuki-announcements"/></label>
+      <label className="fl"><span>Watch</span>
+        <select className="in" value={type} onChange={event=>setType(event.target.value)}>
+          {WATCH_TYPES.map(item=><option key={item.value} value={item.value}>{item.label}</option>)}
+        </select></label>
+      {kind==='account'&&<label className="fl" style={{gridColumn:'1 / -1'}}><span>Handle</span>
+        <input className="in" name="handle" required placeholder="zeneca_33 — without the @"/></label>}
+      {kind==='channel'&&<label className="fl" style={{gridColumn:'1 / -1'}}><span>Channel ID</span>
+        <input className="in mono" name="channelId" required placeholder="123456789012345678"/></label>}
+      {kind==='keyword'&&<label className="fl" style={{gridColumn:'1 / -1'}}><span>Keywords</span>
+        <input className="in" name="keywords" required placeholder="mint, drop, allowlist — comma separated"/></label>}
+      <label className="fl"><span>How to read it</span>
+        <select className="in" value={method} onChange={event=>setMethod(event.target.value)}>
+          {WATCH_METHODS.map(item=><option key={item.value} value={item.value}>{item.label}</option>)}
+        </select></label>
+      {method==='scraper'&&<label className="fl"><span>Source URL</span>
+        <input className="in" name="sourceUrl" placeholder="https://…"/></label>}
+    </div>
+    <div className="nt i" style={{marginTop:'11px'}}>{INFO_ICON}
+      <div>A social mention is not proof. Matches arrive as manual triggers you approve, unless you
+        change that in Policies for this rule specifically.</div></div>
+    <div className="br" style={{marginTop:'11px'}}>
+      <button className="b p sm" disabled={busy}>{editing?'Save rule':'Create watch rule'}</button>
+      <button type="button" className="b g sm" onClick={()=>onCancel?.()}>Cancel</button>
+    </div>
+  </form>;
+}
+
+function AutomationAll({filter=null,onTab}){
+  const snipers=useLoad('/api/snipers',[],'snipers.changed');
+  const rules=useLoad('/api/watch-rules',[],'watch.changed');
+  const [query,setQuery]=useState('');
+  const error=loadError(snipers,'Could not load your triggers.')||loadError(rules,'Could not load your triggers.');
+  const loading=(snipers.data===null&&!snipers.error)||(rules.data===null&&!rules.error);
+  const all=(!loading&&!error)?triggerRows(snipers.data,rules.data):[];
+  const scoped=filter?all.filter(row=>row.kind===filter):all;
+  async function toggleTrigger(row){
+    const stopping=row.status!=='Paused';
+    try{
+      if(row.kind==='social'){
+        // /disable only disables -- resuming goes through the ordinary update, or a paused rule
+        // would have no way back.
+        if(stopping)await api(`/api/watch-rules/${row.id}/disable`,{method:'POST',body:JSON.stringify({})});
+        else await api(`/api/watch-rules/${row.id}`,{method:'PUT',body:JSON.stringify({enabled:true})});
+        notify(stopping?'Watch rule paused.':'Watch rule resumed.',{type:'success'});rules.load();
+      }else{
+        await api(`/api/snipers/${row.id}`,{method:'PUT',body:JSON.stringify({active:!stopping})});
+        notify(stopping?'Sniper paused.':'Sniper resumed.',{type:'success'});snipers.load();
+      }
+    }catch(error){notify(error.message,{type:'error'});}
+  }
+  async function archiveTrigger(row){
+    const ok=await confirmDialog(`Archive ${row.title}? It stops running and leaves the list. `
+      +'Its history is kept, so past activity still resolves to it.');
+    if(!ok)return;
+    try{
+      await api(row.kind==='social'?`/api/watch-rules/${row.id}`:`/api/snipers/${row.id}`,
+        {method:'DELETE',body:JSON.stringify({confirmation:'CONFIRM'})});
+      notify('Archived. It stops running and keeps its history.',{type:'success'});
+      if(row.kind==='social')rules.load();else snipers.load();
+    }catch(error){notify(error.message,{type:'error'});}
+  }
+  const needle=query.trim().toLowerCase();
+  const rows=needle?scoped.filter(row=>row.search.filter(Boolean)
+    .some(value=>String(value).toLowerCase().includes(needle))):scoped;
+
+  return <>
+    {/* auto.html gives this note margin-bottom:12px; without it the search row below sits
+        against its border. */}
+    {filter&&<div className="nt i" style={{marginBottom:'12px'}}>{INFO_ICON}
+      <div>Showing {filter==='sniper'?'wallet-copy snipers':'social watch rules'} only — the same
+        cards as <b>All</b>, filtered client-side over data the server already scoped to you.</div></div>}
+    <Notice error={error}/>
+    {!error&&!loading&&all.length>0&&<div className="sfrow">
+      {/* aria-label rather than a hidden span: there is no visually-hidden utility in this
+          stylesheet, and inventing one for a single input would be a new class the prototype
+          does not have. The prototype's .sf carries an icon and no visible label. */}
+      <div className="sf">
+        <input type="search" value={query} aria-label="Find a trigger"
+          placeholder="Target, address, chain…"
+          onChange={event=>setQuery(event.target.value)}/>
+      </div>
+    </div>}
+    {loading
+      ?<div className="ol"><div className="sk row"/><div className="sk row"/><div className="sk row"/><div className="sk row"/></div>
+      :error
+        ?null
+        :all.length===0&&!filter
+          /* The prototype's empty state: two explainer cards, one CTA each. It explains what the
+             page IS to someone who has never made a trigger, which a bare "nothing here" cannot. */
+          ?<div className="g g2">
+             <div className="card">
+               <div className="ch"><h2>Copy snipers</h2></div>
+               <p style={{fontSize:'12.5px',color:'var(--muted)',marginBottom:'12px'}}>Watch a wallet.
+                 When it mints something and that transaction confirms, GhostMint copies the same call
+                 from one of yours — with your own value, gas and daily caps.</p>
+               <button type="button" className="b p sm" onClick={()=>onTab?.('snipers')}>Create a sniper</button>
+             </div>
+             <div className="card">
+               <div className="ch"><h2>Social watch rules</h2></div>
+               <p style={{fontSize:'12.5px',color:'var(--muted)',marginBottom:'12px'}}>Watch an X,
+                 Discord or Farcaster account or keyword. When a contract address appears, it becomes
+                 a trigger — manual by default, so nothing spends without you.</p>
+               <button type="button" className="b p sm" onClick={()=>onTab?.('social')}>Create a watch rule</button>
+             </div>
+           </div>
+          :all.length===0
+            /* A filtered tab with nothing to show says nothing here -- the tab's own list and
+               create form render directly below, and an empty state on top of a form reads as
+               though the form is unavailable. */
+            ?null
+          :rows.length===0
+            ?<Empty text="No triggers match this search."/>
+            :<div className="g g2">{rows.map(row=><TriggerCard key={`${row.kind}:${row.id}`} row={row}
+                onEdit={item=>{openPolicyFor(item.id);onTab?.('policies');}}
+                onToggle={toggleTrigger} onArchive={archiveTrigger}/>)}</div>}
+  </>;
+}
+
+function Automation({tab,onTab,target}){
+  const active=AUTOMATION_TABS.some(item=>item.id===tab)?tab:'all';
+  // Collapsed until asked for: the page should open as a list of what exists, not a form for
+  // something that does not.
+  const [creating,setCreating]=useState(false);
+  // From All, New trigger has to change tab AND open the form. The close-on-tab-change effect
+  // below would otherwise undo that in the same render, so an intentional hand-off is flagged
+  // here and honoured once the new tab arrives.
+  const wantsCreate=useRef(false);
+  // Close it when the tab changes: opening New trigger on Snipers and then switching to Social
+  // otherwise left a watch-rule form already open, which reads as though the tab did it.
+  useEffect(()=>{setCreating(wantsCreate.current);wantsCreate.current=false;},[active]);
+  // Same helper the rail badge uses, so the tab numbers and the Automation total are one
+  // calculation rather than two that agree by luck.
+  const snipers=useLoad('/api/snipers',[],'snipers.changed');
+  const rules=useLoad('/api/watch-rules',[],'watchrules.changed');
+  const confirmations=useLoad('/api/confirmations',[],'confirmations.changed');
+  const wallets=useLoad('/api/wallets',[],'wallets.changed');
+  const badges=automationBadges({snipers:snipers.data,rules:rules.data,confirmations:confirmations.data}).tabs;
+  return <>
+    <div className="page-head"><div className="page-head-text"><p className="eyebrow">Automation</p><h1>Automation</h1></div>
+      <div className="page-head-actions">
+        {/* Becomes Close while the form is open, and drops to the quiet style, so the button
+            says which state you are in rather than offering to open what is already open. */}
+        <button type="button" className={creating?'b g':'b p'} onClick={()=>{
+          if(creating){setCreating(false);return;}
+          if(active==='snipers'||active==='social'){setCreating(true);return;}
+          wantsCreate.current=true;onTab?.('snipers');
+        }}>{creating?'Close':'New trigger'}</button>
+      </div></div>
+    <SubTabs tabs={AUTOMATION_TABS} active={active} onChange={onTab} label="Automation sections" badges={badges}/>
+    {active==='all'&&<AutomationAll onTab={onTab}/>}
+    {active==='snipers'&&<>{creating&&<SniperForm wallets={wallets.data} chains={EVM_CHAINS}
+      onCreated={()=>{setCreating(false);snipers.load();}} onCancel={()=>setCreating(false)}/>}
+      <AutomationAll filter="sniper" onTab={onTab}/></>}
+    {active==='social'&&<>{creating&&<WatchRuleForm
+      onCreated={()=>{setCreating(false);rules.load();}} onCancel={()=>setCreating(false)}/>}
+      <AutomationAll filter="social" onTab={onTab}/></>}
+    {active==='policies'&&<TargetPolicies target={target}/>}
+    {/* Below the panels and outside every state, exactly as auto.html places it: its own comment
+        reads "disclosure stays visible in EVERY state, including zero triggers and errors". It
+        describes what this page's feature IS, so an empty or failed page must still say it.
+        .nt.w with the warning triangle, and the prototype's sentence verbatim as the bold claim --
+        the extra line after it is this app's own precision about WHEN a copy can be submitted,
+        which the prototype has no room for but which makes the same claim checkable. */}
+    <div className="nt w" role="note" style={{marginTop:'12px'}}>{WARN_TRIANGLE_ICON}
+      <div><b>Copying is post-confirmation, not mempool front-running.</b> Nothing here submits
+        until a transaction the target made has already confirmed on chain.</div></div>
+  </>;
+}
+// Wallets = Wallets + P&L (brief §2). On its own page P&L was a table the user had to mentally
+// join back to their wallets.
+//
+// Performance is ACCOUNT-level, not per-wallet, and the tab says so: pnl_records has no wallet
+// column (contract §5.9), so a per-wallet split cannot be computed and must not be implied.
+// Send ships as an explanatory panel, not a form. No dashboard route exists for it (contract
+// §5.10) and adding one is a value-moving path that deserves its own review rather than a slot
+// in a restyle. So this says plainly where sending DOES work today instead of rendering a
+// disabled form that looks like a bug, or worse, one that looks live and silently fails.
+// wallets.html's .unav block. Telegram ONLY, not "either platform" as this panel used to say:
+// /send is registered in server.js:2842 and there is no Discord equivalent anywhere in
+// src/discord/ -- checked rather than assumed, because naming a platform that cannot do it sends
+// someone to a bot that will not answer.
+//
+// The prototype puts a "How sending works" button here. Dropped: there is no page for it to open,
+// and a button that goes nowhere is worse than the sentence it would have replaced.
+const SEND_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><path d="M21 4 3 11l7 3 3 7z"/></svg>;
+function WalletSend(){
+  return <>
+    <div className="unav">
+      <div className="ei">{SEND_ICON}</div>
+      <h3>Sending is available from Telegram</h3>
+      <p>There is no dashboard send route yet. <code>/send</code> on Telegram walks through wallet,
+        amount, destination and a confirm screen, using the same spend caps and gas ceiling.</p>
+    </div>
+    <div className="nt i" style={{marginTop:'12px'}}>{INFO_ICON}
+      <div>Deliberate: a value-moving path gets its own review rather than arriving inside a
+        restyle.</div></div>
+  </>;
+}
+
+// Export. The raw private key NEVER reaches the browser: the server re-encrypts the stored key
+// into a standard V3 keystore under the account's security password, and only that encrypted blob
+// is returned. This panel restates that, because "export key" reasonably sounds like it hands over
+// the key itself.
+//
+// One form with a wallet picker, per wallets.html, rather than an Export button on every wallet
+// card in a grid. The security password is the deliberate re-authentication step. The API keeps
+// its literal confirmation guard for direct callers, while this first-party form supplies that
+// constant itself: making a person type a known word after already entering the export password
+// adds friction without adding another secret or another security boundary.
+function walletExportRetryText(seconds){
+  if(!(seconds>0))return 'Try again shortly.';
+  if(seconds<90)return `Try again in ${seconds} ${seconds===1?'second':'seconds'}.`;
+  const minutes=Math.ceil(seconds/60);
+  return `Try again in ${minutes} ${minutes===1?'minute':'minutes'}.`;
+}
+function WalletExport({profile,onProfileChange,walletList}){
+  const wallets=walletList.data;
+  const [busy,setBusy]=useState(false);
+  const [limited,setLimited]=useState(null);
+  const [exportKind,setExportKind]=useState('keystore');
+  const [rawKey,setRawKey]=useState(null);
+  const [revealed,setRevealed]=useState(false);
+  const rawKeyTimer=useRef(null);
+  const retry=useRetryAfter();
+  const clearRawKey=useCallback(()=>{clearTimeout(rawKeyTimer.current);rawKeyTimer.current=null;setRawKey(null);setRevealed(false);},[]);
+  useEffect(()=>clearRawKey,[clearRawKey]);
+  function chooseKind(kind){clearRawKey();setExportKind(kind);setLimited(null);}
+  async function submitExport(event){
+    event.preventDefault();
+    const form=event.currentTarget;
+    const values=Object.fromEntries(new FormData(form));
+    if(!profile.securityPasswordSet){
+      if(!await confirmDialog('Exporting a key needs a security password first. It will then be required for this and every future sensitive action. Set it now?'))return;
+      if(!await promptSetSecurityPassword({isChange:false,onProfileChange}))return;
+    }
+    setBusy(true);setLimited(null);
+    try{
+      const path=exportKind==='raw'
+        ?`/api/wallets/${encodeURIComponent(values.label)}/export/raw`
+        :`/api/wallets/${encodeURIComponent(values.label)}/export`;
+      const result=await api(path,
+        {method:'POST',body:JSON.stringify({securityPassword:values.securityPassword,
+          confirmation:'CONFIRM'})});
+      if(exportKind==='raw'){
+        setRawKey(result.privateKey);setRevealed(false);
+        clearTimeout(rawKeyTimer.current);
+        rawKeyTimer.current=setTimeout(()=>{setRawKey(null);setRevealed(false);},60_000);
+        notify('Private key is ready to copy for 60 seconds. It has not been displayed.',{type:'success',category:'security'});
+      }else{
+        downloadFile(`${values.label}-keystore.json`,result.keystore);
+        notify('Encrypted keystore downloaded. Store it and your security password separately and securely.',{type:'success'});
+      }
+    }catch(error){
+      // 429 is the one failure worth keeping on screen: it is not something a retry fixes, and the
+      // only useful reply is when the window reopens. Everything else stays a toast.
+      if(error.status===429){setLimited(error);retry.start(error.retryAfter);}
+      else notify(error.message,{type:'error'});
+    }finally{
+      // A security password should not remain in the DOM after any export attempt. In particular,
+      // clear it after server/deployment errors as well as successful exports; retaining it after
+      // a 404 made the failed attempt unnecessarily increase the secret's exposure time.
+      const passwordInput=form.elements.namedItem('securityPassword');
+      if(passwordInput&&'value' in passwordInput)passwordInput.value='';
+      setBusy(false);
+    }
+  }
+  async function copyRawKey(){
+    if(!rawKey)return;
+    try{await globalThis.navigator.clipboard.writeText(rawKey);notify('Exact private key copied. Clear your clipboard after storing it securely.',{type:'success',category:'security'});}
+    catch{notify('Clipboard access was refused by the browser.',{type:'error'});}
+  }
+  async function revealRawKey(){
+    if(!rawKey)return;
+    if(await confirmDialog('Warning: anyone who sees this private key can permanently control and drain the wallet. Reveal it on this screen anyway?'))setRevealed(true);
+  }
+  const loading=wallets===null&&!walletList.error;
+  return <div className="split">
+    <div className="card">
+      <div className="ch"><div className="chip-ico">{LOCK_ICON}</div><h2>Export a wallet</h2></div>
+      <div className="nt w" style={{marginBottom:'12px'}}>{WARN_TRIANGLE_ICON}
+        {exportKind==='raw'
+          ?<div><b>A raw private key gives complete control of the wallet.</b> It enters browser
+            memory only after password verification, is never displayed automatically, and is
+            cleared from this page after 60 seconds.</div>
+          :<div><b>A keystore is your private key in encrypted form.</b> The raw key never reaches
+            your browser in this mode. GhostMint immediately re-encrypts it as a standard Ethereum
+            V3 keystore protected by your security password.</div>}</div>
+      <Notice error={loadError(walletList,'Could not load wallets.')}/>
+      {loading?<Skeleton rows={2}/>:null}
+      {!loading&&!walletList.error&&wallets?.length===0
+        &&<Empty text="No wallets to export yet. Create one on Balances first."/>}
+      {!profile.securityPasswordSet&&<div className="nt i" style={{marginBottom:'12px'}}>{INFO_ICON}
+        <div>You have no security password yet. Exporting asks you to set one first — it then gates
+          every future sensitive action.</div></div>}
+      {wallets?.length?<><div className="seg" role="group" aria-label="Export format" style={{marginBottom:'12px'}}>
+        <button type="button" className={exportKind==='keystore'?'on':undefined}
+          aria-pressed={exportKind==='keystore'} onClick={()=>chooseKind('keystore')}>Encrypted backup</button>
+        <button type="button" className={exportKind==='raw'?'on':undefined}
+          aria-pressed={exportKind==='raw'} onClick={()=>chooseKind('raw')}>Private key</button>
+      </div><form onSubmit={submitExport}>
+        <div className="g" style={{gap:'11px'}}>
+          <label className="fl"><span>Wallet</span>
+            <select className="in" name="label" required>
+              {wallets.map(item=><option key={item.label} value={item.label}>{item.label}</option>)}
+            </select></label>
+          <label className="fl"><span>Security password</span>
+            <input className="in" type="password" name="securityPassword" required autoComplete="off"
+              placeholder="Your account security password"/></label>
+          <button className="b p big" disabled={busy||retry.blocked}>{busy?'Preparing…':retry.blocked?'Rate limited'
+            :exportKind==='raw'?'Prepare private key':'Export encrypted backup'}</button>
+          <p style={{fontSize:'11px',color:'var(--faint)'}}>{exportKind==='raw'
+            ?'The exact key is kept in browser memory for 60 seconds and is not shown unless you separately choose Reveal.'
+            :'Store the keystore and your security password separately. Together they are the wallet; either one alone is not.'} Every attempt is written to the security audit log.</p>
+        </div>
+      </form>{rawKey&&<div className="sober" style={{marginTop:'12px'}}><div className="sh">Private key ready</div>
+        <div className="nt w" style={{marginBottom:'11px'}}>{WARN_TRIANGLE_ICON}<div>Copying places the
+          key on your system clipboard, where other software may be able to read it. It expires
+          from this page&apos;s memory in 60 seconds.</div></div>
+        {revealed&&<code className="mono" style={{display:'block',wordBreak:'break-all',padding:'10px',marginBottom:'11px',background:'var(--surface-2)',border:'1px solid var(--border)',borderRadius:'var(--radius-sm)'}}>{rawKey}</code>}
+        <div className="br"><button type="button" className="b p" onClick={copyRawKey}>Copy private key</button>
+          <button type="button" className="b g" onClick={revealed?()=>setRevealed(false):revealRawKey}>{revealed?'Hide':'Reveal'}</button>
+          <button type="button" className="b g" onClick={clearRawKey}>Clear now</button></div>
+      </div>}</>:null}
+    </div>
+    <div className="g">
+      {limited&&<Notice error={{title:'Too many export attempts.',
+        detail:walletExportRetryText(retry.seconds),
+        code:`429 · Retry-After: ${limited.retryAfter??'unknown'}`}}/>}
+      <div className="sober"><div className="sh">Export policy</div>
+        <table className="led"><tbody>
+          {/* The rate-limit rows are gone because the rate limit is: removed on both surfaces
+               at the owner's request. Leaving "2 per hour" on screen would have been the page
+               stating a rule the server no longer applies. */}
+          <tr><td>Rate limit</td><td>None</td></tr>
+          <tr><td>Requires</td><td>Security password</td></tr>
+          <tr><td>Private key</td><td>{exportKind==='raw'?'Raw on request':'Encrypted only'}</td></tr>
+          <tr className="tot"><td>Audited</td><td>Every attempt</td></tr>
+        </tbody></table></div>
+      {exportKind==='keystore'?<div className="sober"><div className="sh">What is in the keystore?</div>
+        <table className="led"><tbody>
+          <tr><td>Address</td><td>Your public wallet address</td></tr>
+          <tr><td>Ciphertext</td><td>The encrypted private key</td></tr>
+          <tr><td>Cipher / KDF</td><td>Password-encryption instructions</td></tr>
+          <tr><td>Salt / IV / MAC</td><td>Randomness and integrity checks</td></tr>
+          <tr className="tot"><td>Version / ID</td><td>File format and identifier</td></tr>
+        </tbody></table>
+        <div className="nt i" style={{marginTop:'10px'}}>{INFO_ICON}<div>Wallet software combines
+          these fields with your password to recover the key. The private key is encrypted inside
+          <code> ciphertext</code>; it never appears as readable text in the file.</div></div></div>
+        :<div className="sober"><div className="sh">Why not a seed phrase?</div>
+          <div className="nt i">{INFO_ICON}<div>GhostMint stores each wallet&apos;s encrypted private
+            key, not its original recovery phrase. Imported wallets may never have supplied a
+            phrase, and a phrase cannot be reconstructed from a private key. Export the exact
+            private key or the encrypted backup instead.</div></div></div>}
+    </div>
+  </div>;
+}
+
+const WALLET_WINDOWS=[['7d',7],['30d',30],['90d',90],['All',null]];
+function walletWindow(key){
+  const found=WALLET_WINDOWS.find(([name])=>name===key)||WALLET_WINDOWS[1];
+  return {label:found[1]===null?'all time':`${found[1]}d`,ms:found[1]===null?null:found[1]*86400000};
+}
+const WALLET_TABS=[
+  {id:'balances',label:'Balances'},
+  {id:'performance',label:'Performance',was:'P&L'},
+  {id:'send',label:'Send'},
+  {id:'export',label:'Export'},
+];
+function WalletsPage({profile,onProfileChange,tab,onTab}){
+  const active=WALLET_TABS.some(item=>item.id===tab)?tab:'balances';
+  // One load for the whole page, not one per tab. wallets.html shows Create wallet in the header
+  // only in the populated state (.of), so the header has to know whether any wallet exists -- and
+  // Export reads the same list. Three components each calling /api/wallets was also three requests.
+  const walletList=useLoad('/api/wallets',[],'wallets.changed');
+  const pnl=useLoad('/api/pnl',[],'pnl.changed');
+  const [formsOpen,setFormsOpen]=useState(false);
+  const [windowKey,setWindowKey]=useState('30d');
+  const populated=Array.isArray(walletList.data)&&walletList.data.length>0;
+  // Unfunded wallets get a badge on Balances and on the rail, in the card's own warn colour rather
+  // than red: a wallet with no funds is not broken, it just cannot mint until it is topped up.
+  const unfunded=lowWallets(walletList.data);
+  return <>
+    <div className="page-head">
+      <div className="page-head-text"><p className="eyebrow">Wallets</p><h1>Wallets</h1></div>
+      {active==='balances'&&populated&&<div className="page-head-actions">
+        <button type="button" className="b p" aria-expanded={formsOpen}
+          onClick={()=>setFormsOpen(value=>!value)}>{formsOpen?'Close':'Create wallet'}</button>
+      </div>}
+    </div>
+    <SubTabs tabs={WALLET_TABS} active={active} onChange={onTab} label="Wallet sections"
+      badges={{balances:unfunded?{count:unfunded,tone:'wn'}:null}}/>
+    {active==='balances'&&<Wallets profile={profile} onProfileChange={onProfileChange}
+      walletList={walletList} pnl={pnl} windowKey={windowKey} onWindow={setWindowKey}
+      formsOpen={formsOpen} onFormsOpen={setFormsOpen}/>}
+    {active==='performance'&&<>
+      <div className="nt i" style={{marginBottom:'12px'}}>{INFO_ICON}
+        <div>Performance is <b>account-level</b>. P&amp;L records carry no wallet, so cost and
+          gas cannot be split per wallet — only <b>minted</b> can, and it is on each wallet card.</div></div>
+      <Pnl/></>}
+    {active==='send'&&<WalletSend/>}
+    {active==='export'&&<WalletExport profile={profile} onProfileChange={onProfileChange}
+      walletList={walletList}/>}
+  </>;
+}
+// History = Activity + the audit surfaces (brief §2). Activity is a mutable feed; audit is
+// append-only evidence. They become sibling tabs rather than one being reskinned as the other,
+// which is the separation GHOSTMINT_UI_RULES.md requires.
+//
+// Security log is OWNER-ONLY and the tab is HIDDEN, not disabled, for a regular account:
+// /api/security-audit is the PERSONAL feed: scoped to the session's own user server-side, with no
+// parameter that could widen it. This tab used to call the owner-gated admin route, so it showed
+// every account's events to the owner and 403'd for everyone else. Backlog §13.1.
+// (kept: the old note about owner-gating applied to the admin view, which still exists)
+// would 403 on load. Offering a control that cannot work is worse than not offering it
+// (contract §6.1).
+const SECURITY_PAGE_SIZE=20;
+function SecurityLogTab(){
+  const listing=useLoad('/api/security-audit?limit=200');
+  const [page,setPage]=useState(1);
+  const rows=listing.data||[];
+  // 200 rows in one scroll was the whole list. Paged client-side because the endpoint returns a
+  // capped recent window rather than a paginated collection -- the shared Pager still drives it,
+  // so it behaves and looks like every other list (§11.3).
+  const totalPages=Math.max(1,Math.ceil(rows.length/SECURITY_PAGE_SIZE));
+  const shown=rows.slice((page-1)*SECURITY_PAGE_SIZE,page*SECURITY_PAGE_SIZE);
+  const pagerValue={page,pageSize:SECURITY_PAGE_SIZE,total:rows.length,totalPages};
+  return <>
+    <p className="eyebrow">Your recent authorization outcomes across Telegram, Discord and the dashboard — successes, rejections and failures.</p>
+    <Notice error={loadError(listing,'Could not load governance data.')}/>
+    {listing.data===null?<Skeleton variant="lines" rows={6}/>
+      :rows.length===0?<Empty text="No security events recorded yet."/>
+        :<><div className="table-wrap"><table>
+          <thead><tr><th>When</th><th>Platform</th><th>Command</th><th>Outcome</th><th>Reason</th></tr></thead>
+          <tbody>{shown.map(row=><tr key={row.auditId}>
+            <td>{new Date(row.attemptedAt).toLocaleString()}</td>
+            <td><PlatformChip platform={row.platform}/>{row.platformUserId?` ${row.platformUserId}`:''}</td>
+            <td>{row.command}</td>
+            {/* Amber for a refusal, which used to render identically to a failure even though the
+                two mean different things: refused is the system working, failed is it not. */}
+            <td><span className={`p ${outcomeTone(row.outcome)}`}>{row.outcome}</span></td>
+            <td>{row.reason}</td>
+          </tr>)}</tbody></table></div>
+        <Pager value={pagerValue} page={page} setPage={setPage}/></>}
+  </>;
+}
+function History({profile,tab,onTab}){
+  // Built from profile.isOwner so the tab list itself differs -- a non-owner never sees a tab
+  // they cannot open, and `active` falls back to Activity if a stale ?tab=security is bookmarked
+  // by someone who has since lost owner access.
+  const tabs=[
+    {id:'activity',label:'Activity'},
+    {id:'audit',label:'Audit evidence'},
+    ...(profile.isOwner?[{id:'security',label:'Security log'}]:[]),
+  ];
+  const active=tabs.some(item=>item.id===tab)?tab:'activity';
+  return <>
+    <div className="page-head"><div className="page-head-text"><p className="eyebrow">History</p><h1>History</h1></div></div>
+    <SubTabs tabs={tabs} active={active} onChange={onTab} label="History sections"/>
+    {active==='activity'&&<Activity/>}
+    {active==='audit'&&<div className="panel">
+      <h2>Audit evidence is not available on the dashboard yet</h2>
+      {/* Honest unavailable state, not a placeholder pretending to be a feature: triggerAudit
+          exists in botCommandService but has no dashboard route (contract §5.11). Routing it is
+          a src/** change with its own review, so this says where the data IS reachable today
+          rather than rendering an empty table that looks like "no evidence exists". */}
+      <p>Every automated trigger records append-only evidence — what was detected, which rule
+        matched, and what was submitted as a result. That record exists and is intact.</p>
+      <p>It is currently reachable only from the bots: run <code>/triggeraudit</code> in Telegram
+        or Discord. There is no dashboard route for it yet, and this panel deliberately shows
+        nothing rather than an empty table that would read as &ldquo;no evidence recorded&rdquo;.</p>
+    </div>}
+    {active==='security'&&<SecurityLogTab/>}
+  </>;
+}
+/* ==========================================================================
+   Command palette (brief §2.2) — unit 5 of Phase 4.
+
+   HARD CONSTRAINT, and the reason this component holds no api() call at all:
+   THE PALETTE NAVIGATES ONLY. It never mutates, never submits a form, never
+   triggers a transaction. Every entry below resolves to a go() call — a route
+   plus pre-selected state — and the user performs the actual action on the page
+   it lands on. "Mint now" goes TO the mint form; it does not mint. If you are
+   ever tempted to wire an action handler in here, that is the line.
+
+   The Moved group is what makes the 11->5 merge safe: someone who types "P&L"
+   out of habit lands in the right place AND is shown where it now lives, so the
+   next search is unnecessary.
+   ========================================================================== */
+const PALETTE_PAGES=[
+  {label:'Home',page:'Home'},
+  {label:'Mint',page:'Mint'},
+  {label:'Automation',page:'Automation'},
+  {label:'Wallets',page:'Wallets'},
+  {label:'History',page:'History'},
+  {label:'Settings',page:'Settings'},
+  {label:'Account',page:'Account'},
+];
+const PALETTE_MOVED=[
+  {label:'Minting',page:'Mint',tab:'now',where:'Mint → Mint now'},
+  {label:'Tasks',page:'Mint',tab:'schedule',where:'Mint → Schedule'},
+  {label:'Snipers',page:'Automation',tab:'snipers',where:'Automation → Snipers'},
+  {label:'Watch Rules',page:'Automation',tab:'social',where:'Automation → Social rules'},
+  {label:'Target Policies',page:'Automation',tab:'policies',where:'Automation → Policies'},
+  {label:'P&L',page:'Wallets',tab:'performance',where:'Wallets → Performance'},
+  {label:'Activity',page:'History',tab:'activity',where:'History → Activity'},
+];
+const PALETTE_ACTIONS=[
+  {label:'Mint now',page:'Mint',tab:'now',where:'Go to the mint form'},
+  {label:'Schedule a mint',page:'Mint',tab:'schedule',where:'Go to the schedule form'},
+  {label:'Create a wallet',page:'Wallets',tab:'balances',where:'Go to wallet creation'},
+  {label:'Create a sniper',page:'Automation',tab:'snipers',where:'Go to sniper creation'},
+  {label:'Create a social rule',page:'Automation',tab:'social',where:'Go to watch-rule creation'},
+  {label:'View performance',page:'Wallets',tab:'performance',where:'Go to account P&L'},
+];
+function CommandPalette({open,onClose,go,profile,wallets}){
+  const [query,setQuery]=useState('');
+  const [active,setActive]=useState(0);
+  const inputRef=useRef(null);
+  useEffect(()=>{if(open){setQuery('');setActive(0);inputRef.current?.focus();}},[open]);
+  const term=query.trim().toLowerCase();
+  const match=label=>!term||label.toLowerCase().includes(term);
+  const groups=[];
+  const pages=PALETTE_PAGES.filter(item=>match(item.label))
+    // Admin is owner-only everywhere else; the palette must not advertise a door that opens
+    // onto AdminDenied for a regular account.
+    .concat(profile.isOwner&&match('Admin')?[{label:'Admin',href:'/dashboard/admin'}]:[]);
+  if(pages.length)groups.push({name:'Pages',items:pages});
+  const moved=PALETTE_MOVED.filter(item=>match(item.label));
+  if(moved.length)groups.push({name:'Moved',items:moved});
+  const actions=PALETTE_ACTIONS.filter(item=>match(item.label));
+  if(actions.length)groups.push({name:'Actions',items:actions});
+  const walletHits=(wallets||[]).filter(wallet=>match(wallet.label)||match(wallet.address||''))
+    .slice(0,5).map(wallet=>({label:wallet.label,where:wallet.address,page:'Wallets',tab:'balances'}));
+  if(walletHits.length)groups.push({name:'Wallets',items:walletHits});
+  const flat=groups.flatMap(group=>group.items);
+  const clamped=Math.min(active,Math.max(0,flat.length-1));
+  function choose(item){
+    if(!item)return;
+    onClose();
+    // An href entry is a real document navigation (the admin shell is a separate mount), not a
+    // go() route -- still navigation, still no mutation.
+    if(item.href){window.location.href=item.href;return;}
+    go(item.page,item.tab||null);
+  }
+  function onKeyDown(event){
+    if(event.key==='Escape'){event.preventDefault();onClose();}
+    else if(event.key==='ArrowDown'){event.preventDefault();setActive(index=>Math.min(flat.length-1,index+1));}
+    else if(event.key==='ArrowUp'){event.preventDefault();setActive(index=>Math.max(0,index-1));}
+    else if(event.key==='Enter'){event.preventDefault();choose(flat[clamped]);}
+  }
+  if(!open)return null;
+  let cursor=-1;
+  return <div className="palette-backdrop" onClick={onClose}>
+    <div className="palette" role="dialog" aria-modal="true" aria-label="Command palette" onClick={event=>event.stopPropagation()}>
+      <input ref={inputRef} type="search" className="palette-input" placeholder="Jump to a page, or search what moved…"
+        value={query} onChange={event=>{setQuery(event.target.value);setActive(0);}} onKeyDown={onKeyDown}
+        aria-label="Search pages and actions"/>
+      <div className="palette-results" role="listbox">
+        {flat.length===0&&<p className="palette-empty">Nothing matches “{query}”.</p>}
+        {groups.map(group=><div className="palette-group" key={group.name}>
+          <div className="palette-group-name">{group.name}</div>
+          {group.items.map(item=>{cursor+=1;const index=cursor;return <button type="button" key={`${group.name}:${item.label}`}
+            role="option" aria-selected={index===clamped}
+            className={`palette-item${index===clamped?' active':''}`}
+            onMouseEnter={()=>setActive(index)} onClick={()=>choose(item)}>
+            <span className="palette-item-label">{item.label}</span>
+            {item.where&&<span className="palette-item-where">{item.where}</span>}
+          </button>;})}
+        </div>)}
+      </div>
+      <div className="palette-foot">↑↓ to move · Enter to open · Esc to close</div>
+    </div>
+  </div>;
+}
+const VIEWS={Home:Dashboard,Mint,Automation,Wallets:WalletsPage,History,Settings,Account};
+// Prototype .bbar (ghostmint-redesign-v3.html:2098): FIVE equal columns --
+// Home, Mint, Auto, Wallets, More -- and nothing else. The build had Home, Wallets, History, a
+// spacer, More, plus a floating circular Mint button hovering above the bar. That FAB is not in
+// the design at all: .bbar is grid-template-columns:repeat(5,1fr) with flat buttons whose only
+// active treatment is color:var(--accent).
+//
+// The label is "Auto", not "Automation" -- at 9.5px in a fifth of a phone screen the full word is
+// what forced the odd layout in the first place.
+const BOTTOM_BAR_PAGES=['Home','Mint','Automation','Wallets'];
+const BOTTOM_BAR_LABELS={Automation:'Auto'};
+// What the prototype's sheet holds, minus its two prototype-only entries (Auth states, Search).
+// Admin is deliberately absent: it lives behind an owner check, and offering a control that
+// 403s is worse than not offering it.
+const MORE_PAGES=['History','Account','Settings'];
+const MORE_ADMIN='Admin';
 const MORE_ICON=<svg {...ICON_PROPS} fill="currentColor" stroke="none"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg>;
 const CHEVRON_LEFT=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 6l-6 6 6 6"/></svg>;
 const CHEVRON_RIGHT=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 6l6 6-6 6"/></svg>;
-function BottomBar({page,go,onOpenMore,moreOpen}){const moreActive=moreOpen||(!BOTTOM_BAR_PAGES.includes(page)&&page!=='Minting'&&page!=='Account');return <nav className="mobile-bottombar" aria-label="Primary">
-  {BOTTOM_BAR_PAGES.slice(0,2).map(item=><button key={item} type="button" aria-current={page===item?'page':undefined} onClick={()=>go(item)}><span className="nav-icon" aria-hidden="true">{NAV_ICONS[item]}</span><span className="nav-label">{item}</span></button>)}
-  <span className="bottombar-fab-gap" aria-hidden="true"/>
-  {BOTTOM_BAR_PAGES.slice(2).map(item=><button key={item} type="button" aria-current={page===item?'page':undefined} onClick={()=>go(item)}><span className="nav-icon" aria-hidden="true">{NAV_ICONS[item]}</span><span className="nav-label">{item}</span></button>)}
-  <button type="button" aria-current={moreActive?'page':undefined} onClick={onOpenMore}><span className="nav-icon" aria-hidden="true">{MORE_ICON}</span><span className="nav-label">More</span></button>
-  <button type="button" className={`bottombar-fab${page==='Minting'?' active':''}`} onClick={()=>go('Minting')}><span className="fab-circle" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><path d={BOLT_PATH}/></svg></span><span className="nav-label">Mint</span></button>
-</nav>;}
-function MoreSheet({open,page,go,onClose}){return <>{open&&<div className="sheet-backdrop" onClick={onClose}/>}<div className={`more-sheet${open?' open':''}`} role="dialog" aria-modal="true" aria-label="More" aria-hidden={!open}>
-  <button type="button" className="sheet-handle" aria-label="Close" onClick={onClose}/>
-  <h2>More</h2>
-  <div className="sheet-grid">{MORE_PAGES.map(item=><button type="button" key={item} aria-current={page===item?'page':undefined} onClick={()=>go(item)}><span className="nav-icon" aria-hidden="true">{NAV_ICONS[item]}</span><span className="nav-label">{item}</span></button>)}</div>
-</div></>;}
-const TOP_RAIL_PAGES=PAGES.filter(item=>item!=='Settings'&&item!=='Account');
-const BOTTOM_RAIL_PAGES=['Settings','Account'];
+function BottomBar({page,go,onOpenMore,moreOpen}){
+  const moreActive=moreOpen||!BOTTOM_BAR_PAGES.includes(page);
+  return <nav className="mobile-bottombar" aria-label="Primary">
+    {BOTTOM_BAR_PAGES.map(item=><button key={item} type="button"
+      aria-current={page===item?'page':undefined} onClick={()=>go(item)}>
+      <span className="nav-icon" aria-hidden="true">{NAV_ICONS[item]}</span>
+      <span className="nav-label">{BOTTOM_BAR_LABELS[item]||item}</span></button>)}
+    <button type="button" aria-current={moreActive?'page':undefined} onClick={onOpenMore}>
+      <span className="nav-icon" aria-hidden="true">{MORE_ICON}</span>
+      <span className="nav-label">More</span></button>
+  </nav>;}
+function MoreSheet({open,page,go,onClose,isOwner,onSearch}){
+  const items=[...MORE_PAGES,...(isOwner?[MORE_ADMIN]:[])];
+  return <>{open&&<div className="sheet-backdrop" onClick={onClose}/>}
+    <div className={`more-sheet${open?' open':''}`} role="dialog" aria-modal="true"
+      aria-label="More" aria-hidden={!open}>
+      <button type="button" className="sheet-handle" aria-label="Close" onClick={onClose}/>
+      <div className="sheet-grid">
+        {items.map(item=><button type="button" key={item}
+          aria-current={page===item?'page':undefined} onClick={()=>{go(item);onClose?.();}}>
+          {/* RAIL_ICONS first: NAV_ICONS gives Admin a gear, which is the same glyph as
+              Settings, so the two tiles were indistinguishable. states.html gives Admin a
+              shield, which RAIL_ICONS already carries. */}
+          <span className="nav-icon" aria-hidden="true">{RAIL_ICONS[item]||NAV_ICONS[item]}</span>
+          <span className="nav-label">{item}</span></button>)}
+        {/* Search is an action, not a page: it opens the command palette the desktop header
+            already offers, which has no other route in on a phone. */}
+        <button type="button" onClick={()=>{onClose?.();onSearch?.();}}>
+          <span className="nav-icon" aria-hidden="true">{SEARCH_ICON}</span>
+          <span className="nav-label">Search</span></button>
+      </div>
+    </div></>;
+}
+// Prototype rail badges (ghostmint-redesign-v3.html:641,644): Mint carries a NEUTRAL .cnt and
+// Automation a RED .cnt.hot. The tones are the specification, not decoration:
+//   .cnt      surface-4 on muted -- "there are things here worth a look"
+//   .cnt.hot  loss on white      -- "something is broken and wants you now"
+// So Mint counts schedules that have stopped moving (paused, failed, expired) and Automation
+// counts triggers that are actually failing. A count of healthy things would make the badge
+// permanent, and a permanent badge is wallpaper.
+//
+// Each source refreshes on the socket event it already owns, so the badges follow the same data
+// the pages do rather than a second, drifting copy of it.
+function automationBadges({snipers,rules,confirmations}){
+  const events=snipers?.events||[];
+  // A sniper counts as failing on its MOST RECENT event only: an old failure it has since
+  // recovered from is history, not an alert.
+  const failingSnipers=(snipers?.items||[]).filter(sniper=>{
+    if(sniper.active===false)return false;
+    const latest=events.find(event=>event.sniperId===sniper.id);
+    return latest&&['failed','error','skipped'].includes(String(latest.state||'').toLowerCase());
+  }).length;
+  const failingRules=(rules?.items||[]).filter(rule=>
+    rule.enabled!==false&&Number(rule.consecutiveFailures)>0).length;
+  const pausedRules=(rules?.items||[]).filter(rule=>rule.enabled===false).length;
+  const pausedSnipers=(snipers?.items||[]).filter(sniper=>sniper.active===false).length;
+  // Pending confirmations are 'needs you', not 'broke' -- amber, never red. A trigger waiting on
+  // a human is the system working as designed.
+  const pending=(confirmations||[]).length;
+  const total=failingSnipers+failingRules+pausedSnipers+pausedRules+pending;
+  return {
+    tabs:{
+      snipers:(failingSnipers+pausedSnipers)?{count:failingSnipers+pausedSnipers,
+        tone:failingSnipers?'bad':'nu'}:null,
+      social:(failingRules+pausedRules)?{count:failingRules+pausedRules,
+        tone:failingRules?'bad':'nu'}:null,
+      policies:pending?{count:pending,tone:'wn'}:null,
+    },
+    total,
+    hot:(failingSnipers+failingRules)>0,
+  };
+}
+function useNavBadges(){
+  const tasks=useLoad('/api/tasks?page=1&pageSize=1',[],'tasks.changed');
+  const rules=useLoad('/api/watch-rules',[],'watchrules.changed');
+  const snipers=useLoad('/api/snipers',[],'snipers.changed');
+  const confirmations=useLoad('/api/confirmations',[],'confirmations.changed');
+  const wallets=useLoad('/api/wallets',[],'wallets.changed');
+  const counts=tasks.data?.counts;
+  // Mint counts schedules that have STOPPED and want a decision. It escalates to the red .cnt.hot
+  // only when one of them actually failed -- paused and expired are states you can live with,
+  // a failure is one that broke on its own.
+  //
+  // Note this is NOT what the untouched prototype draws. There the Mint badge reads 2 and its
+  // Scheduled chip also reads "2 pending", so in that frame the badge is the QUEUED count. That
+  // reading does not survive contact with real data: this account has 11 queued mints, so the
+  // badge would sit at 11 permanently and stop carrying information. A badge that is always on is
+  // wallpaper. Owner asked what could turn it red, which only makes sense under this reading.
+  const mint=counts?(counts.paused||0)+(counts.failed||0):0;
+  const mintFailing=Boolean(counts&&(counts.failed||0)>0);
+  const automation=automationBadges({snipers:snipers.data,rules:rules.data,confirmations:confirmations.data});
+  // Derived, not hardcoded. It was `Automation:true`, which is right only for as long as the
+  // count contains nothing but failures -- the moment anything merely-pending joins it, a red
+  // badge would be claiming a break that has not happened. Mint already derives its own flag the
+  // same way, and the owner's rule for these badges is that the colour tracks severity.
+  //
+  // The prototype's rail agrees with the count: _rail.html gives Automation `cnt hot of` reading
+  // 1 against its one Failing rule, while its Active sniper adds nothing. The Policies tab's
+  // "Bypass · Requires an explicit challenge" is a row inside a policy table, not a pending
+  // action, so it is deliberately not counted here.
+  return {Mint:mint,Automation:automation.total,Wallets:lowWallets(wallets.data),
+    hot:{Mint:mintFailing,Automation:automation.hot}};
+}
+const TOP_RAIL_PAGES=['Home','Mint','Automation','Wallets','History'];
+// The prototype's .railfoot is Admin, Account, Settings, in that order. Settings had no rail entry
+// at all before this pass -- on desktop it was reachable only by URL.
+const RAIL_FOOTER_PAGES=['Account','Settings'];
+const BOTTOM_RAIL_PAGES=['Account'];
 function NavList({items,page,go,className}){return <nav aria-label="Dashboard" className={className}><ul>{items.map(item=><li key={item}><button aria-current={page===item?'page':undefined} onClick={()=>go(item)}><span className="nav-icon" aria-hidden="true">{NAV_ICONS[item]}</span><span className="nav-label">{item}</span></button></li>)}</ul></nav>;}
-function Shell({profile,onLogout,onProfileChange}){const [page,setPage]=useState(pageFromLocation());const live=useLiveSocket();const [navOpen,setNavOpen]=useState(false);const [moreOpen,setMoreOpen]=useState(false);const [railExpanded,setRailExpandedState]=useState(readRailExpanded);function setRailExpanded(next){setRailExpandedState(value=>{const resolved=typeof next==='function'?next(value):next;writeRailExpanded(resolved);return resolved;});}const [theme,setTheme]=useState(profile.theme||'ghost-mint');useEffect(()=>{document.documentElement.dataset.theme=theme;},[theme]);useEffect(()=>{function onPopState(){setPage(pageFromLocation());}window.addEventListener('popstate',onPopState);return()=>window.removeEventListener('popstate',onPopState);},[]);useEffect(()=>{function onMessage(event){if(event.detail?.type==='identity.changed')api('/api/profile').then(onProfileChange).catch(()=>{});}window.addEventListener('ghostmint-ws',onMessage);return()=>window.removeEventListener('ghostmint-ws',onMessage);},[onProfileChange]);async function changeTheme(next){const previous=theme;setTheme(next);try{await api('/api/profile/theme',{method:'PUT',body:JSON.stringify({theme:next})});}catch{setTheme(previous);}}const View=VIEWS[page];const isRail=RAIL_THEMES.has(theme);const viewProfile=profile.theme===theme?profile:{...profile,theme};function go(item){const path=`/dashboard/${PAGE_SLUGS[item]}`;if(window.location.pathname!==path)window.history.pushState(null,'',path);setPage(item);setNavOpen(false);setMoreOpen(false);window.scrollTo({top:0});}
-  const brandMark=<span className="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d={BOLT_PATH} fill="currentColor"/></svg></span>;
-  if(isRail)return <div className={`shell rail-shell${moreOpen?' more-open':''}`} data-rail={railExpanded?'expanded':'collapsed'}>
+// Prototype .acct-pop (ghostmint-redesign-v3.html), backlog §2. The avatar used to route straight
+// to the Account page, which the backlog says explicitly it must NOT: it opens this.
+//
+// Only Light and Dark appear in the appearance toggle. The three secondary themes (clean-vault,
+// neon-arcade, quiet-ledger) live in Settings and are deliberately absent here -- backlog §2 is
+// explicit, and a two-state control that can silently be in a third state would be lying about
+// which one is on. Hence neither button is marked .on while a secondary theme is active.
+const ACCT_ICONS={
+  mode:<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round"><path d="M13 2 4.5 13H11l-1 9 8.5-11H12l1-9Z"/></svg>,
+  account:<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round"><circle cx="12" cy="8" r="3.6"/><path d="M4.5 20c.8-4 3.8-6 7.5-6s6.7 2 7.5 6"/></svg>,
+  settings:<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round"><circle cx="12" cy="12" r="3"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2"/></svg>,
+  logout:<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round"><path d="M15 17l5-5-5-5M20 12H9M11 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h5"/></svg>,
+  light:<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.2 4.2l1.4 1.4M18.4 18.4l1.4 1.4M1 12h2M21 12h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" fill="none"/></svg>,
+  dark:<svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a7 7 0 0 0 10.5 10.5z"/></svg>,
+};
+function AccountMenu({profile,theme,initial,go,onChangeTheme,onLogout}){
+  const [open,setOpen]=useState(false);
+  useEffect(()=>{
+    if(!open)return;
+    const close=event=>{if(!event.target.closest?.('.account-menu'))setOpen(false);};
+    const onKey=event=>{if(event.key==='Escape')setOpen(false);};
+    document.addEventListener('click',close);document.addEventListener('keydown',onKey);
+    return()=>{document.removeEventListener('click',close);document.removeEventListener('keydown',onKey);};
+  },[open]);
+  function choose(action){setOpen(false);action();}
+  // The prototype prints "user 4f9c…21ab": the account's own id, elided. It is the one identifier
+  // that is the same on Telegram, Discord and here, which is what makes it worth showing at all.
+  const id=String(profile.userId||'');
+  const shortId=id.length>12?id.slice(0,4)+'…'+id.slice(-4):id;
+  const mode=profile.currentMode?.displayName||profile.currentMode?.key||null;
+  return <div className="account-menu">
+    <button type="button" className="av" aria-haspopup="menu" aria-expanded={open}
+      aria-label="Account menu" onClick={()=>setOpen(value=>!value)}>{initial}</button>
+    {open&&<div className="acct-pop on" role="menu" aria-label="Account">
+      <div className="acct-h">
+        <div className="an">{profile.displayName||profile.username||'GhostMint user'}</div>
+        {shortId&&<div className="ai mono">user {shortId}</div>}
+      </div>
+      <button type="button" className="acct-i" role="menuitem" onClick={()=>choose(()=>go('Settings'))}>
+        {ACCT_ICONS.mode}<span className="sp">Transaction mode</span>
+        {/* Having chosen no mode yet is a real state; the prototype only ever draws a chosen one. */}
+        {mode&&<span className="mchip">{mode}</span>}</button>
+      <button type="button" className="acct-i" role="menuitem" onClick={()=>choose(()=>go('Account'))}>
+        {ACCT_ICONS.account}<span className="sp">Account</span></button>
+      <button type="button" className="acct-i" role="menuitem" onClick={()=>choose(()=>go('Settings'))}>
+        {ACCT_ICONS.settings}<span className="sp">Settings</span></button>
+      <div className="acct-tog"><span className="sp">Appearance</span>
+        <div className="tmode">
+          <button type="button" className={theme==='ghost-mint-light'?'on':undefined} title="Light"
+            aria-label="Light theme" aria-pressed={theme==='ghost-mint-light'}
+            onClick={()=>onChangeTheme('ghost-mint-light')}>{ACCT_ICONS.light}</button>
+          <button type="button" className={theme==='ghost-mint'?'on':undefined} title="Dark"
+            aria-label="Dark theme" aria-pressed={theme==='ghost-mint'}
+            onClick={()=>onChangeTheme('ghost-mint')}>{ACCT_ICONS.dark}</button>
+        </div></div>
+      <button type="button" className="acct-i danger" role="menuitem"
+        onClick={()=>choose(onLogout)}>{ACCT_ICONS.logout}<span className="sp">Log out</span></button>
+    </div>}
+  </div>;
+}
+function Shell({profile,onLogout,onProfileChange}){const navBadges=useNavBadges();const [route,setRoute]=useState(pageFromLocation);const {page,tab,target}=route;const live=useLiveSocket();
+  // A retired slug is rewritten in place with replaceState, not pushState: the dead URL must not
+  // become a history entry, or Back from the new page would land on the old slug and redirect
+  // straight forward again, trapping the user.
+  useEffect(()=>{if(route.redirected)window.history.replaceState(null,'',pathFor(route.page,route.tab,route.target));},[]);
+  // Command palette (brief §2.2). The wallet list feeds its Wallets group; it is already loaded
+  // and cached by useLoad, so opening the palette costs no extra request.
+  const [paletteOpen,setPaletteOpen]=useState(false);
+  const paletteWallets=useLoad('/api/wallets',[],'wallets.changed');
+  useEffect(()=>{
+    function onKey(event){
+      // metaKey for macOS, ctrlKey elsewhere. Prevented so the browser's own Ctrl+K
+      // (focus-address-bar in several browsers) does not steal it.
+      if((event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==='k'){event.preventDefault();setPaletteOpen(value=>!value);}
+    }
+    window.addEventListener('keydown',onKey);
+    return()=>window.removeEventListener('keydown',onKey);
+  },[]);const [navOpen,setNavOpen]=useState(false);const [moreOpen,setMoreOpen]=useState(false);const mobile=useIsMobile();const [theme,setTheme]=useState(profile.theme||'ghost-mint');useEffect(()=>{document.documentElement.dataset.theme=theme;},[theme]);useEffect(()=>{function onPopState(){setRoute(pageFromLocation());}window.addEventListener('popstate',onPopState);return()=>window.removeEventListener('popstate',onPopState);},[]);useEffect(()=>{function onMessage(event){if(event.detail?.type==='identity.changed')api('/api/profile').then(onProfileChange).catch(()=>{});}window.addEventListener('ghostmint-ws',onMessage);return()=>window.removeEventListener('ghostmint-ws',onMessage);},[onProfileChange]);async function changeTheme(next){const previous=theme;setTheme(next);try{await api('/api/profile/theme',{method:'PUT',body:JSON.stringify({theme:next})});}catch{setTheme(previous);}}const View=VIEWS[page];const isRail=RAIL_THEMES.has(theme);const viewProfile=profile.theme===theme?profile:{...profile,theme};
+  // The prototype's .av carries a single letter ("D" for deon). Nothing in /api/profile is
+  // guaranteed non-empty, so this falls through displayName -> username -> userId and only then
+  // to a neutral glyph, rather than rendering an empty circle.
+  const avatarInitial=(profile.displayName||profile.username||profile.userId||'?').trim().charAt(0).toUpperCase()||'?';// go(page) still behaves exactly as before for all ~40 existing callers; the optional second
+  // argument is what lets a redirect, a nav item or (in unit 5) the command palette land on a
+  // specific sub-tab. Compared against pathname+search rather than pathname alone, so switching
+  // tabs on the same page is a real history entry -- Back from Schedule returns to Mint now
+  // instead of leaving the page entirely.
+  function go(item,nextTab=null){
+    const alias=PAGE_ALIASES[item];
+    const page=alias?alias.page:item;
+    const tabValue=alias&&nextTab===null?alias.tab:nextTab;
+    const path=pathFor(page,tabValue);
+    if(`${window.location.pathname}${window.location.search}`!==path)window.history.pushState(null,'',path);
+    setRoute({page,tab:tabValue,redirected:false});setNavOpen(false);setMoreOpen(false);window.scrollTo({top:0});
+  }
+  // Ported verbatim from docs/prototype-pages/_rail.html and the prototype's .top bar. The root is
+  // .app, NOT .shell/.rail-shell: dropping those two class names is what stops every `.shell ...`
+  // and `.rail-shell ...` rule in styles.css from reaching this subtree, so prototype.css owns the
+  // chrome outright without those rules having to be deleted out from under the admin shell, which
+  // still renders them. .app is prototype.css's own grid (auto 1fr), and [data-m] is its mobile
+  // switch -- the rail hides itself there and .bbar/.more-sheet take over.
+  if(isRail)return <div className="app" data-m={mobile?'':undefined}>
     <ConfirmHost/>
     <ToastHost/>
-    <header className="rail-mobile-header">
-      <a className="brand" href="/dashboard/">{brandMark}GhostMint</a>
-      <div className="header-right"><NotificationBell/><button type="button" className="header-avatar" aria-current={page==='Account'?'page':undefined} aria-label="Account" onClick={()=>go('Account')}>{NAV_ICONS.Account}</button></div>
-    </header>
-    <aside>
-      <div className="rail-top"><a className="brand" href="/dashboard/">{brandMark}<span className="nav-label">GhostMint</span></a></div>
-      <NavList items={TOP_RAIL_PAGES} page={page} go={go} className="rail-main-nav"/>
-      <NavList items={BOTTOM_RAIL_PAGES} page={page} go={go} className="rail-bottom-nav"/>
+    {/* The prototype's rail is a flex column whose nav buttons are DIRECT children -- wrapping them
+        in a <nav><ul> would make them one flex item and collapse the 2px gap, so the landmark goes
+        on the aside itself instead. Two ARIA attributes, no structural change. */}
+    <aside className="rail" role="navigation" aria-label="Dashboard">
+      <div className="brand"><div className="brand-mark">G</div><div className="brand-name">GhostMint</div></div>
+      <div className="grp">Operate</div>
+      {TOP_RAIL_PAGES.map(item=>{
+        const badge=navBadges[item]||0;
+        const hot=Boolean(navBadges.hot?.[item]);
+        return <button type="button" className="nav" key={item}
+          aria-current={page===item?'page':undefined} onClick={()=>go(item)}>
+          {RAIL_ICONS[item]}<span className="nav-l">{item}</span>
+          {badge>0&&<span className={`cnt${hot?' hot':''}`}
+            aria-label={`${badge} ${hot?'failing':'needing attention'}`}>{badge}</span>}
+        </button>;
+      })}
+      <div className="railfoot">
+        {/* Admin is unconditional here, matching both the prototype and the data contract §6's
+            note that hiding it "makes a legitimate owner think the app broke after a permission
+            change"; a non-owner who follows it still lands on AdminDenied. It is a full document
+            navigation because the admin shell is a separate mount with its own routing. */}
+        <button type="button" className="nav" onClick={()=>{window.location.href='/dashboard/admin';}}>
+          {RAIL_ICONS.Admin}<span className="nav-l">Admin</span></button>
+        {RAIL_FOOTER_PAGES.map(item=><button type="button" className="nav" key={item} aria-current={page===item?'page':undefined} onClick={()=>go(item)}>
+          {RAIL_ICONS[item]}<span className="nav-l">{item}</span></button>)}
+      </div>
     </aside>
-    <button type="button" className="rail-edge-toggle" aria-label={railExpanded?'Collapse sidebar':'Expand sidebar'} onClick={()=>setRailExpanded(value=>!value)}>{railExpanded?CHEVRON_LEFT:CHEVRON_RIGHT}</button>
-    <div className="notification-bell-desktop"><NotificationBell/></div>
-    <main className="content" tabIndex="-1"><View profile={viewProfile} go={go} onThemeChange={changeTheme} onLogout={onLogout} onProfileChange={onProfileChange}/></main>
+    <div className="body">
+      <div className="top">
+        <button type="button" className="cmdk" onClick={()=>setPaletteOpen(true)}>
+          {CMDK_ICON}<span>Search or jump to…</span><kbd>⌘K</kbd>
+        </button>
+        <div className="sp"/>
+        {/* .dot is painted var(--gain) by prototype.css. While the socket is still connecting that
+            would assert a live link that isn't there, so the dot drops to --faint until it is --
+            an inline style, which is how the prototype itself expresses one-off colour. */}
+        <div className="livechip"><span className="dot" style={live?undefined:{background:'var(--faint)'}}/> <span aria-live="polite">{live?'Live':'Connecting'}</span></div>
+        <NotificationBell/>
+        <AccountMenu profile={viewProfile} theme={theme} initial={avatarInitial} go={go}
+          onChangeTheme={changeTheme} onLogout={onLogout}/>
+      </div>
+      <main className="wrap" tabIndex="-1"><View profile={viewProfile} go={go} tab={tab} target={target} onTab={next=>go(page,next)} onThemeChange={changeTheme} onLogout={onLogout} onProfileChange={onProfileChange}/></main>
+    </div>
     <BottomBar page={page} go={go} moreOpen={moreOpen} onOpenMore={()=>setMoreOpen(value=>!value)}/>
-    <MoreSheet open={moreOpen} page={page} go={go} onClose={()=>setMoreOpen(false)}/>
+    <MoreSheet open={moreOpen} page={page} go={go} onClose={()=>setMoreOpen(false)}
+      isOwner={profile.isOwner} onSearch={()=>setPaletteOpen(true)}/>
+    <CommandPalette open={paletteOpen} onClose={()=>setPaletteOpen(false)} go={go} profile={profile} wallets={paletteWallets.data}/>
   </div>;
+  const brandMark=<span className="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d={BOLT_PATH} fill="currentColor"/></svg></span>;
   return <div className={`shell${navOpen?' nav-open':''}`}>
     <ConfirmHost/>
     <ToastHost/>
+    <CommandPalette open={paletteOpen} onClose={()=>setPaletteOpen(false)} go={go} profile={profile} wallets={paletteWallets.data}/>
   <header>
     <div className="header-left"><button className="hamburger" type="button" aria-label="Toggle navigation" aria-expanded={navOpen} onClick={()=>setNavOpen(open=>!open)}><span/><span/><span/></button><a className="brand" href="/dashboard/">{brandMark}GhostMint</a></div>
     <div className="header-right">
       <span className="identity">{profile.linkedAccounts.map(item=>item.platform).join(' + ')||'Linked user'}{profile.isOwner?<span className="owner-badge"> | Owner</span>:null}<span className="status-pill"><span className={`status-dot${live?' live':''}`} aria-hidden="true"/><span aria-live="polite">{live?'Live':'Connecting'}</span></span></span>
       <NotificationBell/>
-      <button className="quiet" onClick={onLogout}>Log out</button>
+      <button className="b g" onClick={onLogout}>Log out</button>
     </div>
   </header>
   {navOpen&&<div className="backdrop" onClick={()=>setNavOpen(false)}/>}
   <aside><NavList items={PAGES} page={page} go={go}/></aside>
-  <main className="content" tabIndex="-1"><View profile={viewProfile} go={go} onThemeChange={changeTheme} onLogout={onLogout} onProfileChange={onProfileChange}/></main>
+  <main className="content" tabIndex="-1"><View profile={viewProfile} go={go} tab={tab} target={target} onTab={next=>go(page,next)} onThemeChange={changeTheme} onLogout={onLogout} onProfileChange={onProfileChange}/></main>
   </div>;}
-function AdminDenied(){return <main className="login-page"><div className="login-card"><p className="eyebrow">Restricted</p><h1>Admin access required</h1><p>This account is not an owner. Return to the dashboard to continue.</p><a className="admin-link quiet" href="/dashboard/">Return to dashboard</a></div></main>;}
+function AdminDenied(){return <main className="login-page"><div className="login-card"><p className="eyebrow">Restricted</p><h1>Admin access required</h1><p>This account is not an owner. Return to the dashboard to continue.</p><a className="b g admin-link" href="/dashboard/">Return to dashboard</a></div></main>;}
 const ADMIN_SECTIONS=[
   {id:'Overview',label:'Overview',icon:NAV_ICONS.Dashboard},
   {id:'Groups',label:'Groups',icon:<svg {...ICON_PROPS}><circle cx="9" cy="9" r="2.8"/><circle cx="16" cy="10" r="2.2"/><path d="M4 19c.6-3 2.6-4.7 5-4.7s4.4 1.7 5 4.7M14.5 14.6c2 .3 3.4 1.7 3.9 4.4"/></svg>},
@@ -464,7 +3788,7 @@ const ADMIN_MOBILE_PRIMARY=['Overview','Groups','Users'];
 const ADMIN_MOBILE_MORE=['Effective','Presets','Owners','Wallets','Audit','Health'];
 function AdminNav({page,go}){return <nav aria-label="Admin sections" className="rail-main-nav"><ul>{ADMIN_SECTIONS.map(section=><li key={section.id}><button aria-current={page===section.id?'page':undefined} onClick={()=>go(section.id)}><span className="nav-icon" aria-hidden="true">{section.icon}</span><span className="nav-label">{section.label}</span></button></li>)}</ul></nav>}
 function AdminBottomBar({page,go,moreOpen,onOpenMore}){return <nav className="mobile-bottombar admin-mobile-bottombar" aria-label="Admin primary">{ADMIN_MOBILE_PRIMARY.map(id=>{const item=ADMIN_SECTIONS.find(section=>section.id===id);return <button key={id} type="button" aria-current={page===id?'page':undefined} onClick={()=>go(id)}><span className="nav-icon" aria-hidden="true">{item.icon}</span><span className="nav-label">{item.label}</span></button>})}<button type="button" aria-current={moreOpen||ADMIN_MOBILE_MORE.includes(page)?'page':undefined} onClick={onOpenMore}><span className="nav-icon" aria-hidden="true">{MORE_ICON}</span><span className="nav-label">More</span></button></nav>}
-function AdminMoreSheet({open,page,go,onClose,onLogout}){return <>{open&&<div className="sheet-backdrop" onClick={onClose}/>}<div className={`more-sheet admin-more-sheet${open?' open':''}`} role="dialog" aria-modal="true" aria-label="More admin pages" aria-hidden={!open}><button type="button" className="sheet-handle" aria-label="Close" onClick={onClose}/><h2>More admin pages</h2><div className="sheet-grid">{ADMIN_MOBILE_MORE.map(id=>{const item=ADMIN_SECTIONS.find(section=>section.id===id);return <button type="button" key={id} aria-current={page===id?'page':undefined} onClick={()=>go(id)}><span className="nav-icon" aria-hidden="true">{item.icon}</span><span className="nav-label">{item.label}</span></button>})}</div><div className="admin-sheet-actions"><a className="quiet admin-link" href="/dashboard/">Back to user dashboard</a><button className="quiet" onClick={onLogout}>Log out</button></div></div></>}
+function AdminMoreSheet({open,page,go,onClose,onLogout}){return <>{open&&<div className="sheet-backdrop" onClick={onClose}/>}<div className={`more-sheet admin-more-sheet${open?' open':''}`} role="dialog" aria-modal="true" aria-label="More admin pages" aria-hidden={!open}><button type="button" className="sheet-handle" aria-label="Close" onClick={onClose}/><h2>More admin pages</h2><div className="sheet-grid">{ADMIN_MOBILE_MORE.map(id=>{const item=ADMIN_SECTIONS.find(section=>section.id===id);return <button type="button" key={id} aria-current={page===id?'page':undefined} onClick={()=>go(id)}><span className="nav-icon" aria-hidden="true">{item.icon}</span><span className="nav-label">{item.label}</span></button>})}</div><div className="admin-sheet-actions"><a className="b g admin-link" href="/dashboard/">Back to user dashboard</a><button className="b g" onClick={onLogout}>Log out</button></div></div></>}
 function ScrollTop(){const [visible,setVisible]=useState(false);useEffect(()=>{const update=()=>setVisible(window.scrollY>480);update();window.addEventListener('scroll',update,{passive:true});return()=>window.removeEventListener('scroll',update);},[]);return visible?<button type="button" className="scroll-top" aria-label="Scroll to top" onClick={()=>window.scrollTo({top:0,behavior:'smooth'})}>↑</button>:null;}
 function AdminShell({profile,onLogout}){const theme=profile.theme||'ghost-mint';const [page,setPage]=useState(adminSectionFromLocation());const [moreOpen,setMoreOpen]=useState(false);const [railExpanded,setRailExpandedState]=useState(readRailExpanded);function setRailExpanded(next){setRailExpandedState(value=>{const resolved=typeof next==='function'?next(value):next;writeRailExpanded(resolved);return resolved;});}const live=useLiveSocket();
   // Transient (not URL-based, unlike the section itself) -- which of the 4 user-related stat

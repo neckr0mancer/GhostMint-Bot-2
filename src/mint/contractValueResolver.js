@@ -50,7 +50,32 @@ function createContractValueResolver({ providerService, repository }) {
     return repository.save(chain, contractAddress, { price, maxSupply, maxPerWallet, totalMinted });
   }
 
-  return { resolve };
+  // Section AD Tier 1 (collection info card): current minted supply needs to be live on every
+  // card view/Refresh tap, unlike price/maxSupply which this app treats as effectively static and
+  // caches forever via resolve() above. Deliberately bypasses repository.get()/save() entirely --
+  // reusing resolve()'s cache would be actively wrong here, not just stale: contract_value_cache
+  // is one shared row per (chain, contractAddress), and a SeaDrop or OpenSea-only save may have
+  // already created that row with total_minted left NULL, which would make repository.get() return
+  // that row as "cached" forever and resolve() would never probe totalMinted for it at all.
+  async function probeTotalMinted(chain, contractAddress) {
+    return resolveOne(chain, contractAddress, 'totalMinted');
+  }
+
+  // For a SeaDrop-detected contract, called instead of resolve() -- SeaDrop's own PublicDrop struct
+  // has no supply-cap field (confirmed against the real ABI: mintPrice/startTime/endTime/
+  // maxTotalMintableByWallet/feeBps/restrictFeeRecipients only), so a SeaDrop contract's maxSupply
+  // was previously hardcoded null everywhere, silently dropping the "Max supply" line and the
+  // Minted stat's "/maxSupply" denominator from every SeaDrop collection card on both platforms.
+  // The cap, if the token exposes one at all, still lives on the NFT token contract itself under
+  // one of the same conventional getters non-SeaDrop contracts use -- but reusing resolve()'s full
+  // probe (and its cache) here would also probe price/maxPerWallet against a SeaDrop token contract
+  // that never exposes its real public mint price on itself, same cache-collision risk
+  // probeTotalMinted above already avoids by bypassing repository.get()/save() entirely.
+  async function probeMaxSupply(chain, contractAddress) {
+    return resolveOne(chain, contractAddress, 'maxSupply');
+  }
+
+  return { resolve, probeTotalMinted, probeMaxSupply };
 }
 
 module.exports = { createContractValueResolver, CANDIDATES };

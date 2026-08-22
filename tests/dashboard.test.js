@@ -116,6 +116,7 @@ async function operationsServer(t){const sessions=new Map([['token-a',{userId:'u
   walletBalance:async(userId,label)=>({label,address:'0x0000000000000000000000000000000000000001',chain:'ethereum',balances:[{chain:'ethereum',balance:'1.0',symbol:'ETH'}]}),
   createWallet:async()=>({label:'new',address:'0x0000000000000000000000000000000000000002',chain:'ethereum',privateKey}),
   importWallet:async()=>{throw Object.assign(new Error(`bad key ${privateKey}`),{privateKey});},removeWallet:async(userId,label)=>{if(userId!=='user-a')throw new ValidationError({field:'label',message:'was not found'});calls.push(['remove',userId,label]);},
+  exportWalletKeyRaw:async(userId,label)=>{if(userId!=='user-a'||label!=='alpha')throw new ValidationError({field:'label',message:'was not found'});calls.push(['export-raw',userId,label]);return {label,privateKey};},
   exportWalletKeystore:async(userId,label,password)=>{if(userId!=='user-a'||label!=='alpha')throw new ValidationError({field:'label',message:'was not found'});if(String(password||'').length<12)throw new ValidationError({field:'securityPassword',message:'must contain 12-200 characters'});calls.push(['export',userId,label]);return {label,keystore:'{"encrypted":"keystore-json"}'};},
   mintPresets:async()=>[],prepareMint:async(userId,input)=>({wallet:{label:input.walletLabel,address:'0x0000000000000000000000000000000000000001',chain:'ethereum'},prepared:{preview:{contractAddress:'0x0000000000000000000000000000000000000003',methodSignature:'mint(uint256)',nativeValue:'0 ETH',arguments:[{name:'quantity',value:'1'}]}},simulation:{simulationEnabled:false,simulationPerformed:true,simulationPassed:true,gasLimit:21000n,estimatedCostWei:1n}}),
   submitPreparedMint:async(userId,value)=>{if(value.wallet.label==='broken')throw new ValidationError({field:'walletLabel',message:'insufficient funds'});calls.push(['mint',userId,value.simulation.simulationPassed]);return {state:'pending'};},
@@ -141,15 +142,20 @@ async function operationsServer(t){const sessions=new Map([['token-a',{userId:'u
    findUserIdByUsername:async value=>[...usernames.entries()].find(([,name])=>name===value)?.[0]||null,
  },loginRateLimiter:createCommandRateLimiter(),passwordLoginRateLimiter:createCommandRateLimiter({limit:2,windowMs:60_000}),exportKeyRateLimiter:createCommandRateLimiter({limit:2,windowMs:60_000})});const app=express();app.use(express.json());app.use(api.securityHeaders);mountDashboardRoutes(app,api);app.use(api.error);const server=http.createServer(app);await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>server.close(resolve)));return {base:`http://127.0.0.1:${server.address().port}`,calls,privateKey,securityPasswordHashes,usernames};}
 function authHeaders(user='a',write=false){return {cookie:`ghostmint_session=token-${user}`,...(write?{'content-type':'application/json','x-csrf-token':'csrf'}:{})};}
-test('dashboard wallet responses and errors never expose private keys',async t=>{const {base,privateKey}=await operationsServer(t);const created=await fetch(`${base}/api/wallets/create`,{method:'POST',headers:authHeaders('a',true),body:'{}'});assert.equal(created.status,201);assert.equal((await created.text()).includes(privateKey),false);const failed=await fetch(`${base}/api/wallets/import`,{method:'POST',headers:authHeaders('a',true),body:JSON.stringify({privateKey})});assert.equal(failed.status,500);assert.equal((await failed.text()).includes(privateKey),false);});
+test('ordinary dashboard wallet responses and errors never expose private keys',async t=>{const {base,privateKey}=await operationsServer(t);const created=await fetch(`${base}/api/wallets/create`,{method:'POST',headers:authHeaders('a',true),body:'{}'});assert.equal(created.status,201);assert.equal((await created.text()).includes(privateKey),false);const body=JSON.parse(await (await fetch(`${base}/api/wallets`,{headers:authHeaders('a')})).text());assert.deepEqual(Object.keys(body[0]).sort(),['addedAt','address','balances','chain','label','minted'],'publicWallet projects exactly these fields -- addedAt is needed by the wallet details overlay, and nothing from the key envelope may ever join them');const failed=await fetch(`${base}/api/wallets/import`,{method:'POST',headers:authHeaders('a',true),body:JSON.stringify({privateKey})});assert.equal(failed.status,500);assert.equal((await failed.text()).includes(privateKey),false);});
 test('keystore export requires confirmation, is user-scoped, enforces a minimum password, and never returns raw key material',async t=>{const {base,calls,privateKey}=await operationsServer(t);const noConfirm=await fetch(`${base}/api/wallets/alpha/export`,{method:'POST',headers:authHeaders('a',true),body:JSON.stringify({securityPassword:'a-strong-enough-password'})});assert.equal(noConfirm.status,400);const shortPassword=await fetch(`${base}/api/wallets/alpha/export`,{method:'POST',headers:authHeaders('a',true),body:JSON.stringify({securityPassword:'short',confirmation:'CONFIRM'})});assert.equal(shortPassword.status,400);const crossUser=await fetch(`${base}/api/wallets/alpha/export`,{method:'POST',headers:authHeaders('b',true),body:JSON.stringify({securityPassword:'a-strong-enough-password',confirmation:'CONFIRM'})});assert.equal(crossUser.status,400);const ok=await fetch(`${base}/api/wallets/alpha/export`,{method:'POST',headers:authHeaders('a',true),body:JSON.stringify({securityPassword:'a-strong-enough-password',confirmation:'CONFIRM'})});assert.equal(ok.status,200);const body=await ok.json();assert.deepEqual(Object.keys(body),['keystore']);assert.equal(body.keystore,'{"encrypted":"keystore-json"}');assert.equal(JSON.stringify(body).includes(privateKey),false);assert.deepEqual(calls.filter(call=>call[0]==='export'),[['export','user-a','alpha']]);});
 test('keystore export refuses when no security password is set, and rejects an incorrect one',async t=>{const {base,securityPasswordHashes}=await operationsServer(t);securityPasswordHashes.delete('user-a');const notSet=await fetch(`${base}/api/wallets/alpha/export`,{method:'POST',headers:authHeaders('a',true),body:JSON.stringify({securityPassword:'a-strong-enough-password',confirmation:'CONFIRM'})});assert.equal(notSet.status,400);assert.equal((await notSet.json()).code,'SECURITY_PASSWORD_NOT_SET');securityPasswordHashes.set('user-a',hashSecurityPassword('a-strong-enough-password'));const wrong=await fetch(`${base}/api/wallets/alpha/export`,{method:'POST',headers:authHeaders('a',true),body:JSON.stringify({securityPassword:'a-different-password',confirmation:'CONFIRM'})});assert.equal(wrong.status,401);});
-test('keystore export is rate limited independently of other sensitive commands',async t=>{const {base}=await operationsServer(t);const attempt=()=>fetch(`${base}/api/wallets/alpha/export`,{method:'POST',headers:authHeaders('a',true),body:JSON.stringify({securityPassword:'a-strong-enough-password',confirmation:'CONFIRM'})});assert.equal((await attempt()).status,200);assert.equal((await attempt()).status,200);const limited=await attempt();assert.equal(limited.status,429);assert.ok(limited.headers.get('retry-after'));});
+test('raw-key export is explicit, password-verified, user-scoped, and returns only the exact private key',async t=>{const {base,calls,privateKey}=await operationsServer(t);const path=`${base}/api/wallets/alpha/export/raw`;const noConfirm=await fetch(path,{method:'POST',headers:authHeaders('a',true),body:JSON.stringify({securityPassword:'a-strong-enough-password'})});assert.equal(noConfirm.status,400);const wrongPassword=await fetch(path,{method:'POST',headers:authHeaders('a',true),body:JSON.stringify({securityPassword:'wrong-password-value',confirmation:'CONFIRM'})});assert.equal(wrongPassword.status,401);assert.equal((await wrongPassword.text()).includes(privateKey),false);const crossUser=await fetch(path,{method:'POST',headers:authHeaders('b',true),body:JSON.stringify({securityPassword:'a-strong-enough-password',confirmation:'CONFIRM'})});assert.equal(crossUser.status,400);assert.equal((await crossUser.text()).includes(privateKey),false);const ok=await fetch(path,{method:'POST',headers:authHeaders('a',true),body:JSON.stringify({securityPassword:'a-strong-enough-password',confirmation:'CONFIRM'})});assert.equal(ok.status,200);assert.deepEqual(await ok.json(),{privateKey});assert.deepEqual(calls.filter(call=>call[0]==='export-raw'),[['export-raw','user-a','alpha']]);});
+// Private-key export is deliberately throttled account-wide. Password verification and auditing
+// remain independently covered above; this guard proves a valid password cannot turn a stolen
+// dashboard session into an unlimited export/password-guessing endpoint.
+test('keystore export enforces the shared account-wide ceiling',async t=>{const {base}=await operationsServer(t);const attempt=()=>fetch(`${base}/api/wallets/alpha/export`,{method:'POST',headers:authHeaders('a',true),body:JSON.stringify({securityPassword:'a-strong-enough-password',confirmation:'CONFIRM'})});assert.equal((await attempt()).status,200);assert.equal((await attempt()).status,200);const limited=await attempt();assert.equal(limited.status,429);assert.equal(limited.headers.get('retry-after'),'60');assert.equal((await limited.json()).error,'Too many export attempts');});
 // Split across separate operationsServer(t) instances rather than firing several requests at the
 // same endpoint in one test -- each instance gets its own exportKeyRateLimiter (limit 2/60s in this
-// fixture), and 'securitypassword' shares that limiter's bucket with 'exportkey' by design (see
-// dashboard/api.js), so more than two calls in one instance hits 429 instead of exercising the
-// scenario being tested.
+// fixture), so a third call to the SAME endpoint in one instance hits 429 instead of exercising the
+// scenario being tested. ('securitypassword' and 'exportkey' share that limiter instance, and so its
+// 2/60s config, but not a bucket -- check() keys on the command too. They are also scoped
+// differently on purpose: see ACCOUNT_RATE_LIMIT_SCOPE in src/dashboard/api.js.)
 test('security password can be set for the first time without a current password',async t=>{const {base,securityPasswordHashes}=await operationsServer(t);securityPasswordHashes.delete('user-a');const firstSet=await fetch(`${base}/api/auth/security-password`,{method:'PUT',headers:authHeaders('a',true),body:JSON.stringify({newPassword:'a-brand-new-password'})});assert.equal(firstSet.status,200);});
 test('security password change is rejected without the current password',async t=>{const {base}=await operationsServer(t);const missingCurrent=await fetch(`${base}/api/auth/security-password`,{method:'PUT',headers:authHeaders('a',true),body:JSON.stringify({newPassword:'another-new-password'})});assert.equal(missingCurrent.status,401);});
 test('security password change is rejected with an incorrect current password',async t=>{const {base}=await operationsServer(t);const wrongCurrent=await fetch(`${base}/api/auth/security-password`,{method:'PUT',headers:authHeaders('a',true),body:JSON.stringify({currentPassword:'not-it-at-all',newPassword:'another-new-password'})});assert.equal(wrongCurrent.status,401);});
@@ -249,6 +255,37 @@ test('username+password login creates a working, cookie-authenticated session fo
   assert.ok(setCookie&&setCookie.startsWith('ghostmint_session='));
   const profile=await (await fetch(`${base}/api/profile`,{headers:{cookie:setCookie}})).json();
   assert.equal(profile.username,'ghostuser');
+});
+
+test('an out-of-range page or pageSize is a 400 naming the field, not a 500',async t=>{
+  // operationsServer stubs the commands layer, so it never reaches the real pagination(). This
+  // wires the actual command service to prove the status the CALLER sees: ?pageSize=100 used to
+  // surface as 500 "Request failed safely", indistinguishable from the database being down.
+  const state={wallets:[],tasks:[],activity:[],pnl:[],snipers:[]};
+  const commands=createBotCommandService({storage:{},schedulerRepository:{},providerService:{},governance:{},
+    adminCommands:{},sniperService:{},supportedChains:['ethereum'],chains:{ethereum:{}},encryptPrivateKey:()=>({}),getState:()=>state});
+  const sessions=new Map([['token-a',{userId:'user-a',csrfTokenHash:'csrf'}]]);
+  const auth={authenticate:async header=>sessions.get(String(header||'').split('=')[1])||null,verifyCsrf:()=>true,
+    loginWithUserId:async()=>({token:'token-a'}),sessionCookies:()=>[],clearCookies:()=>[],revoke:async()=>{},revokeAll:async()=>{}};
+  const api=createDashboardApi({auth,commands,supportedChains:['ethereum'],
+    identityRepository:{listLinkedAccounts:async()=>[],getTheme:async()=>'ghost-mint',getDisplayName:async()=>null},
+    loginRateLimiter:createCommandRateLimiter()});
+  const app=express();app.use(express.json());app.use(api.securityHeaders);mountDashboardRoutes(app,api);app.use(api.error);
+  const server=http.createServer(app);await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  t.after(()=>new Promise(resolve=>server.close(resolve)));
+  const base=`http://127.0.0.1:${server.address().port}`;const headers={cookie:'ghostmint_session=token-a'};
+  for(const [query,field] of [['pageSize=100','pageSize'],['pageSize=0','pageSize'],['page=0','page'],['page=abc','page']]){
+    for(const route of ['/api/tasks','/api/activity']){
+      const response=await fetch(`${base}${route}?${query}`,{headers});
+      assert.equal(response.status,400,`${route}?${query} should be 400`);
+      const body=await response.json();
+      assert.equal(body.code,'VALIDATION_ERROR');
+      assert.deepEqual(body.issues.map(value=>value.field),[field]);
+    }
+  }
+  // The cap itself is still a valid request, as is asking for nothing in particular.
+  assert.equal((await fetch(`${base}/api/tasks?pageSize=50`,{headers})).status,200);
+  assert.equal((await fetch(`${base}/api/activity`,{headers})).status,200);
 });
 
 test('task created by the dashboard service is consumed by the existing durable worker path',async()=>{const now=Date.now();const state={wallets:[{id:1,userId:'user-a',label:'alpha',address:'0x0000000000000000000000000000000000000001',chain:'ethereum'}],tasks:[],activity:[],pnl:[],snipers:[]};const rows=[];const repository={

@@ -268,6 +268,21 @@ test('forced simulation overrides presets and direct settings', () => {
   }
 });
 
+test('a scheduled Degen mint skips simulation even with simulationForced on, but nothing else does', () => {
+  const degenPreset = { key: 'ultra_fast', simulationMode: 'off', confirmationCount: 1, humanVerification: 'bypass', gasPriceMultiplier: 1.5 };
+  const governance = { isOwner: false, maxTransactionValueWei: 1000n, dailySpendingBudgetWei: 2000n, gasCeilingGwei: 100, simulationForced: true, preset: degenPreset };
+
+  assert.equal(applyGovernance(basePolicy, governance, 'scheduled').simulationEnabled, false,
+    'the scheduled+Degen combination is the one deliberate exception to simulationForced');
+
+  assert.equal(applyGovernance(basePolicy, governance, 'manual').simulationEnabled, true,
+    'a manual Degen mint keeps its human-in-the-loop safety net -- only scheduled Degen skips it');
+
+  const otherPreset = { key: 'safe', simulationMode: 'off', confirmationCount: 1, humanVerification: 'bypass' };
+  assert.equal(applyGovernance(basePolicy, { ...governance, preset: otherPreset }, 'scheduled').simulationEnabled, true,
+    'scheduling alone is not the trigger -- a scheduled mint on any other preset still respects simulationForced');
+});
+
 test('owners are marked ceiling-exempt without disabling other safety settings', () => {
   const effective = applyGovernance(basePolicy, {
     isOwner: true, maxTransactionValueWei: 1n, dailySpendingBudgetWei: 1n,
@@ -277,4 +292,61 @@ test('owners are marked ceiling-exempt without disabling other safety settings',
   assert.equal(effective.ceilingExempt, true);
   assert.equal(effective.simulationEnabled, true);
   assert.equal(effective.requiredConfirmations, 3);
+});
+
+// ── GET /api/profile/limits — a caller reading their OWN effective ceilings ──
+// Added alongside the dashboard's daily-budget tile. The point of these is that this path is
+// deliberately NOT owner-gated (it is the caller's own limits) while effectiveForLinkedUser,
+// which reads somebody else's, still is.
+function selfLimitsFixture({ isOwner = false, governance = {} } = {}) {
+  const repository = {
+    isOwner: async () => isOwner,
+    getEffectiveGovernance: async () => ({
+      isOwner,
+      maxTransactionValueWei: 5000000000000000n,
+      dailySpendingBudgetWei: 250000000000000000n,
+      gasCeilingGwei: 200,
+      simulationForced: true,
+      ...governance,
+    }),
+  };
+  return createGovernanceService(repository);
+}
+
+test('a regular user can read their own effective ceilings without being an owner', async () => {
+  const service = selfLimitsFixture();
+  const limits = await service.limitsForSelf('regular-user', 'ethereum');
+  assert.equal(limits.isOwner, false);
+  assert.equal(limits.ceilingExempt, false);
+  assert.equal(limits.chain, 'ethereum');
+  assert.equal(limits.dailySpendingBudgetWei, 250000000000000000n);
+  assert.equal(limits.maxTransactionValueWei, 5000000000000000n);
+  assert.equal(limits.gasCeilingGwei, 200);
+});
+
+test('an owner reads back as ceiling-exempt with null ceilings rather than a number', async () => {
+  const service = selfLimitsFixture({ isOwner: true });
+  const limits = await service.limitsForSelf('owner-user', 'ethereum');
+  assert.equal(limits.isOwner, true);
+  assert.equal(limits.ceilingExempt, true);
+  assert.equal(limits.dailySpendingBudgetWei, null);
+  assert.equal(limits.maxTransactionValueWei, null);
+  assert.equal(limits.gasCeilingGwei, null);
+});
+
+// The whole reason the route withholds spentTodayWei: rollingSpendWei under-counts by the full
+// transaction value (PROJECT_REVIEW §1.1), so shipping a "used" figure would put a known-wrong
+// number on a money surface. If someone adds it later, this test should fail and make them think.
+test('limitsForSelf returns a ceiling only and never a spent-so-far figure', async () => {
+  const service = selfLimitsFixture();
+  const limits = await service.limitsForSelf('regular-user', 'ethereum');
+  assert.equal('spentTodayWei' in limits, false);
+  assert.equal('rollingSpendWei' in limits, false);
+});
+
+test('reading somebody else\'s effective limits still requires owner', async () => {
+  const service = selfLimitsFixture();
+  await assert.rejects(
+    service.effectiveForLinkedUser('regular-user', { platform: 'telegram', platformUserId: '123', chain: 'ethereum' }),
+    error => error instanceof AuthorizationError && error.code === 'OWNER_REQUIRED');
 });

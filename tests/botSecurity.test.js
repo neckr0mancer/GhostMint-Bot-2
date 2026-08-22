@@ -1,6 +1,6 @@
 const assert=require('node:assert/strict');
 const test=require('node:test');
-const {BotContextError,RateLimitError,createCommandRateLimiter,escapeDiscord,escapeTelegram,
+const {ACCOUNT_RATE_LIMIT_SCOPE,BotContextError,RateLimitError,createCommandRateLimiter,escapeDiscord,escapeTelegram,
   requireTextConfirmation,verifyDiscordContext,verifyTelegramContext}=require('../src/security/botSecurity');
 const {createTriggerExecutionService}=require('../src/triggers/triggerExecutionService');
 const {createGracefulShutdown}=require('../src/security/gracefulShutdown');
@@ -41,6 +41,26 @@ test('rate limiter buckets that have fully aged out are pruned instead of growin
     'pruning must not weaken the limit -- the two fresh checks just above still count toward it');
 });
 
+// Regression test: the dashboard and Telegram's /exportkey were documented as sharing one export
+// ceiling, and did share the limiter INSTANCE -- but check() keys on `platform:userId:command`, and
+// the two call sites passed 'dashboard' and 'telegram', so each got its own bucket and the real
+// ceiling was 2x the intended one. Both now pass ACCOUNT_RATE_LIMIT_SCOPE instead. This works only
+// because both sides key on the same canonical account UUID, which is asserted here by using one
+// userId across both calls -- if either side ever reverts to a platform-native id, the buckets
+// silently split again and this test fails.
+test('wallet key exports share one ceiling across the dashboard and Telegram instead of one each',()=>{
+  let now=1000;const limiter=createCommandRateLimiter({now:()=>now,limit:2,windowMs:100});
+  const userId='11111111-2222-3333-4444-555555555555';
+  limiter.check(ACCOUNT_RATE_LIMIT_SCOPE,userId,'exportkey'); // dashboard's exportWalletKey
+  limiter.check(ACCOUNT_RATE_LIMIT_SCOPE,userId,'exportkey'); // Telegram's /exportkey, same account
+  assert.throws(()=>limiter.check(ACCOUNT_RATE_LIMIT_SCOPE,userId,'exportkey'),RateLimitError,
+    'the third export must be refused no matter which surface it came from');
+  // The scope is deliberately narrow: 'securitypassword' still buckets per platform, and a
+  // different account is unaffected by this one exhausting its exports.
+  assert.doesNotThrow(()=>limiter.check('dashboard',userId,'securitypassword'));
+  assert.doesNotThrow(()=>limiter.check(ACCOUNT_RATE_LIMIT_SCOPE,'99999999-8888-7777-6666-555555555555','exportkey'));
+});
+
 test('user content escaping neutralizes Telegram, Discord, and mention formatting',()=>{
  assert.equal(escapeTelegram('*bold*_[x]'),'\\*bold\\*\\_\\[x\\]');
  const discord=escapeDiscord('**boom** @everyone `code`');
@@ -63,4 +83,41 @@ test('graceful shutdown stops both bots, workers, watchers, HTTP, and database o
   socialWatchWorker:{stop:()=>calls.push('social')},stopWatchers:()=>calls.push('watchers'),pool:{end:async()=>calls.push('pool')}});
  await Promise.all([shutdown('SIGTERM'),shutdown('SIGINT')]);
  assert.deepEqual(calls.sort(),['discord','http','pool','scheduler','social','telegram','watchers'].sort());
+});
+
+// The Telegram single-instance advisory lock (telegramSingleInstanceLock.js) must be released
+// before a new deploy's instance can start polling -- otherwise a rolling deploy overlap leaves
+// the replacement blocked forever waiting on a lock its predecessor never gave up.
+test('graceful shutdown releases the Telegram polling lock after stopping Telegram, before closing the pool',async()=>{
+ const calls=[];
+ const shutdown=createGracefulShutdown({getHttpServer:()=>null,
+  telegramBot:{stopPolling:async()=>calls.push('telegram-stop')},discordBot:{stop:async()=>calls.push('discord')},
+  releasePollingLock:async()=>calls.push('lock-released'),pool:{end:async()=>calls.push('pool')}});
+ await shutdown('SIGTERM');
+ assert.deepEqual(calls,['telegram-stop','discord','lock-released','pool']);
+});
+
+test('graceful shutdown works with no releasePollingLock at all (Telegram disabled)',async()=>{
+ const shutdown=createGracefulShutdown({getHttpServer:()=>null,pool:{end:async()=>{}}});
+ await assert.doesNotReject(shutdown('SIGTERM'));
+});
+
+test('a channel allowlist narrows guild channels without touching DMs or other guilds', () => {
+  const allowed = { allowedChannelIds: ['111111111111111111'] };
+  // In an allowed channel: fine, regardless of which guild it is.
+  assert.equal(verifyDiscordContext({ user: { id: 'u' }, guildId: 'g', channelId: '111111111111111111' }, null, allowed).platformUserId, 'u');
+  // Any other guild channel is refused.
+  assert.throws(() => verifyDiscordContext({ user: { id: 'u' }, guildId: 'g', channelId: '222222222222222222' }, null, allowed), BotContextError);
+  // A DM has no guildId and must stay reachable -- it is the private surface a wallet bot belongs on.
+  assert.equal(verifyDiscordContext({ user: { id: 'u' }, guildId: null, channelId: 'dm' }, null, allowed).platformUserId, 'u');
+  // Empty or absent list means no channel filtering at all.
+  assert.equal(verifyDiscordContext({ user: { id: 'u' }, guildId: 'g', channelId: 'anything' }, null, { allowedChannelIds: [] }).platformUserId, 'u');
+  assert.equal(verifyDiscordContext({ user: { id: 'u' }, guildId: 'g', channelId: 'anything' }, null).platformUserId, 'u');
+});
+
+test('the channel allowlist composes with a dev guild rather than replacing it', () => {
+  const opts = { allowedChannelIds: ['111111111111111111'] };
+  // Right channel but wrong guild is still refused by the guild rule.
+  assert.throws(() => verifyDiscordContext({ user: { id: 'u' }, guildId: 'other', channelId: '111111111111111111' }, 'dev-guild', opts), BotContextError);
+  assert.equal(verifyDiscordContext({ user: { id: 'u' }, guildId: 'dev-guild', channelId: '111111111111111111' }, 'dev-guild', opts).contextId, 'dev-guild:111111111111111111');
 });

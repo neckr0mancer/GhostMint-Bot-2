@@ -13,3 +13,10 @@ public/dashboard/
 .DS_Store
 Thumbs.db
 pwd.txt
+PROJECT_REVIEW_*.md
+.tmp-review/
+
+# Scratch files kept beside the repo, not in it. "next prompt.txt" was swept in by
+# git add -A on 2026-08-19 and carried through several commits before anyone noticed.
+next prompt.txt
+*.local.md

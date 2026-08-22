@@ -69,6 +69,24 @@ test('resolves directly against the canonical SeaDrop core when the token is con
   assert.equal(result.publicDrop.mintPriceWei, '1000');
 });
 
+// Root-caused live 2026-08-19 from a real "simulating this call failed with no reason given"
+// report: robinhood was missing from CANONICAL_SEADROP_CORE entirely even though the same core
+// address is live there too, so every SeaDrop mint on that chain fell through canonical-core
+// (skipped), Etherscan (doesn't cover this chain), and eth_getLogs (needs archive access most
+// public RPCs reject) to the wrong plain mint(uint256) assumption.
+test('resolves directly against the canonical SeaDrop core on robinhood too, not just the original four chains', async () => {
+  const repository = fakeRepository();
+  const publicDropResolver = fakePublicDropResolver({ configuredAt: { [CANONICAL_CORE]: REAL_DROP } });
+  const service = createSeaDropDiscoveryService({
+    providerService: { perform: async () => { throw new Error('should not reach log scanning at all'); } },
+    publicDropResolver, chains: { robinhood: { chainId: 137893 } }, apiKey: null, repository, http: { get: async () => { throw new Error('should not be called'); } },
+  });
+  const result = await service.resolve('robinhood', CONTRACT);
+  assert.equal(result.address, CANONICAL_CORE);
+  assert.equal(result.discoverySource, 'canonical-core');
+  assert.equal(result.publicDrop.mintPriceWei, '1000');
+});
+
 test('falls back to raw eth_getLogs when Etherscan is unavailable (no API key)', async () => {
   const repository = fakeRepository();
   const publicDropResolver = fakePublicDropResolver({ configuredAt: { [SEADROP]: REAL_DROP } });

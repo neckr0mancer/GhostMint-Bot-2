@@ -38,16 +38,23 @@ function createProviderService({ chains, timeoutMs = 10_000, retries = 1, provid
     return result;
   }
 
-  async function perform(chain, operationName, operation) {
+  // timeoutMs/retries overrides let a caller opt into a tighter failover budget for one call --
+  // used for scheduled and Degen-mode mints (transactionEngine.js), where a slow primary RPC
+  // should be abandoned quickly rather than eating the full default timeout on every retry before
+  // even reaching the next configured URL. Every other caller is unaffected: omitting the third
+  // argument keeps the constructor's own defaults exactly as before this existed.
+  async function perform(chain, operationName, operation, { timeoutMs: timeoutOverride, retries: retriesOverride } = {}) {
     const candidates = chainProviders(chain);
+    const effectiveTimeoutMs = timeoutOverride ?? timeoutMs;
+    const effectiveRetries = retriesOverride ?? retries;
     let attempts = 0;
     for (const candidate of candidates) {
-      for (let retry = 0; retry <= retries; retry += 1) {
+      for (let retry = 0; retry <= effectiveRetries; retry += 1) {
         attempts += 1;
         try {
           return await withTimeout(
             Promise.resolve().then(() => operation(candidate.provider)),
-            timeoutMs,
+            effectiveTimeoutMs,
             `${chain} ${operationName}`,
           );
         } catch (error) {
@@ -56,6 +63,32 @@ function createProviderService({ chains, timeoutMs = 10_000, retries = 1, provid
       }
     }
     throw new RpcUnavailableError(chain, attempts);
+  }
+
+  // Round 16 (docs/WORKLIST.md Section AV): fans one operation out to EVERY configured candidate
+  // concurrently, resolving with whichever succeeds first, instead of perform()'s sequential
+  // try-then-fallback. Used only for sniper's same-signed-tx broadcast: the same nonce+signature
+  // can't double-spend across endpoints, so racing all of them beats waiting on one at a time when
+  // shaving inclusion latency is the entire point. Every other caller stays on perform().
+  async function performAll(chain, operationName, operation, { timeoutMs: timeoutOverride } = {}) {
+    const candidates = chainProviders(chain);
+    const effectiveTimeoutMs = timeoutOverride ?? timeoutMs;
+    return new Promise((resolve, reject) => {
+      let pending = candidates.length;
+      let settled = false;
+      for (const candidate of candidates) {
+        withTimeout(
+          Promise.resolve().then(() => operation(candidate.provider)),
+          effectiveTimeoutMs,
+          `${chain} ${operationName}`,
+        ).then(value => {
+          if (!settled) { settled = true; resolve(value); }
+        }).catch(() => {
+          pending -= 1;
+          if (!settled && pending === 0) { settled = true; reject(new RpcUnavailableError(chain, candidates.length)); }
+        });
+      }
+    });
   }
 
   function destroy() {
@@ -69,7 +102,7 @@ function createProviderService({ chains, timeoutMs = 10_000, retries = 1, provid
     return chains[chain]?.chainId ?? null;
   }
 
-  return { destroy, expectedChainId, perform };
+  return { destroy, expectedChainId, perform, performAll };
 }
 
 module.exports = { RpcUnavailableError, createProviderService, withTimeout };

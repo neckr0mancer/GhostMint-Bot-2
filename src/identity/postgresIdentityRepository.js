@@ -275,6 +275,41 @@ function createPostgresIdentityRepository(pool) {
       return defaultChain;
     },
 
+    // Bot action gate (migration 041). Defaults to 'off' for a row that somehow has no value:
+    // the gate must fail open to today's behaviour rather than locking someone out of their own
+    // wallets because a read went wrong.
+    async getBotGateLevel(userId) {
+      // Swallows the read error deliberately. This is consulted before every gated action, and a
+      // gate that ships off must never be the reason an owner cannot reach their own wallets -- if
+      // the column is missing (migration not yet applied) or the read fails, the honest answer is
+      // the default everyone already has rather than an outage on wallet removal.
+      try {
+        const result = await pool.query('SELECT bot_gate_level FROM users WHERE user_id=$1', [userId]);
+        return result.rows[0]?.bot_gate_level || 'off';
+      } catch {
+        return 'off';
+      }
+    },
+
+    // Exempts interactive minting from the gate. Falls back to FALSE (still gated) on a read
+    // failure: an exemption only ever opens a door, so the safe fallback is not to open it.
+    async getBotGateSkipMint(userId) {
+      try {
+        const result = await pool.query('SELECT bot_gate_skip_mint FROM users WHERE user_id=$1', [userId]);
+        return Boolean(result.rows[0]?.bot_gate_skip_mint);
+      } catch {
+        return false;
+      }
+    },
+
+    async setBotGateSkipMint(userId, value) {
+      await pool.query('UPDATE users SET bot_gate_skip_mint=$2 WHERE user_id=$1', [userId, Boolean(value)]);
+    },
+
+    async setBotGateLevel(userId, level) {
+      await pool.query('UPDATE users SET bot_gate_level=$2 WHERE user_id=$1', [userId, level]);
+    },
+
     async getSecurityPasswordHash(userId) {
       const result = await pool.query('SELECT security_password_hash FROM users WHERE user_id=$1', [userId]);
       return result.rows[0]?.security_password_hash || null;

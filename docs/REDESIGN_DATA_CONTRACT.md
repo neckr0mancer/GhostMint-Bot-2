@@ -60,7 +60,8 @@ Every route the dashboard can call, and what it returns. Routes are as mounted i
 | `POST /api/wallets/create` \| `import` | `201` `{label, address, chain, balances:[], minted:0}` |
 | `POST /api/wallets/batch-import` | `201` `{results:[{index, status:'success'\|'failed', label?, address?, error?}]}` — owner only |
 | `DELETE /api/wallets/:label` | `204`. Requires `{confirmation:"CONFIRM"}` |
-| `POST /api/wallets/:label/export` | `{keystore}` — never the raw key. Requires `confirmation` + `securityPassword` |
+| `POST /api/wallets/:label/export` | `{keystore}` — encrypted V3 backup. Requires `confirmation` + `securityPassword` |
+| `POST /api/wallets/:label/export/raw` | `{privateKey}` — explicit raw-key escape hatch. Requires authenticated user scope, CSRF, `confirmation` + verified `securityPassword`; `Cache-Control: no-store`. The dashboard keeps the value only in memory for 60 seconds, does not render it by default, and requires a separate warning confirmation before Reveal |
 
 **`balances` is one entry per *supported chain*, not per wallet chain:**
 `[{chain, balance:"1.234"|null, symbol}]`. `balance: null` means that chain's RPC
@@ -328,6 +329,23 @@ that adds ETH to MATIC.
 > `Σ balances.filter(b => b.symbol === 'ETH').balance`, with a secondary line for
 > any non-ETH holdings. Skip `balance === null` entries (RPC failure) rather than
 > treating them as zero, and say so: "2 chains unavailable".
+
+**Verified against production 2026-08-17** (dev proxy → `ghostmint-bot-2-production`,
+signed in as a root owner). The six-chain claim above is `src/config`'s *maximum*,
+not what this deployment runs. Live, `GET /api/profile` returns
+`supportedChains: ["ethereum","sepolia","robinhood"]` — **three chains, and all
+three carry `symbol: "ETH"`.** No Polygon, so **no MATIC, so no currency mixing
+in production today.**
+
+This does **not** change the recommendation. Keep the `symbol === 'ETH'` filter:
+it is driven by config, a chain can be added by an env change without touching the
+dashboard, and a filter that is currently a no-op is the correct defensive shape.
+What it does change is the emphasis — **the `balance === null` case is the one that
+actually bites here, not the mixing.** The live wallet returns
+`ethereum=null, sepolia=null, robinhood="0.0"`: two of three chains are failing at
+the RPC and the headline ETH total is derived from a single chain. Build and verify
+the "N chains unavailable" line as a first-class state, not an edge case — on this
+deployment it is the *normal* render.
 
 ### 5.4 Portfolio 7-day delta and sparkline
 
