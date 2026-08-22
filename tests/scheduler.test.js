@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const { ValidationError } = require('../src/validation/domain');
-const { createSchedulerWorker, isTransientFailure } = require('../src/scheduler/schedulerWorker');
+const { createSchedulerWorker, errorReason, isTransientFailure } = require('../src/scheduler/schedulerWorker');
 
 function task(overrides = {}) {
   return {
@@ -148,4 +148,41 @@ test('Round 16 (Section AV, item 4): precise timers fire tick() the instant a lo
     await worker.armPreciseTimers();
     assert.equal(worker.health().armedCount, 0);
   });
+});
+
+// Live-reported: scheduled mints failing with a Telegram/Discord notification reading only
+// "Request validation failed", and the stored last_error saying the same -- for four genuinely
+// different causes. Every ValidationError carries that one constant as its Error message, so
+// neither the user nor a later investigation could tell which check rejected the mint. The reason
+// string is the only diagnostic that survives (deployment logs are purged once a deploy is
+// replaced), so it has to carry the issue itself.
+test('a permanent validation failure records which check rejected the mint, not just that one did', async () => {
+  const repository = repositoryFixture();
+  const worker = createSchedulerWorker({
+    repository,
+    intentRepository:{ get:async () => null, getByIdempotencyKey:async () => null },
+    transactionEngine:{},
+    executeTask:async () => { throw new ValidationError({ field:'calldata', message:'does not match the SeaDrop mintPublic signature' }); },
+  });
+
+  assert.equal(await worker.processTask(task()), 'failed');
+  const details = repository.calls.at(-1)[1];
+  assert.equal(details.transient, false, 'a validation failure is still permanent');
+  assert.match(details.reason, /calldata does not match the SeaDrop mintPublic signature/,
+    'the failing check must survive into the reason the user and the database both see');
+});
+
+test('errorReason folds in every validation issue and leaves other errors untouched', () => {
+  const many = new ValidationError([
+    { field:'quantity', message:'is invalid' },
+    { field:'chain', message:'is not supported' },
+  ]);
+  assert.equal(errorReason(many), 'Request validation failed: quantity is invalid; chain is not supported');
+  // Non-validation errors already carried a useful message and must not be reshaped.
+  assert.equal(errorReason(Object.assign(new Error('RPC unavailable'), { code:'RPC_UNAVAILABLE' })), 'RPC unavailable');
+  assert.equal(errorReason(undefined), 'Unknown scheduler failure');
+  // A ValidationError with no usable issues must still degrade to the plain message.
+  const empty = new ValidationError([]);
+  empty.issues = [];
+  assert.equal(errorReason(empty), 'Request validation failed');
 });

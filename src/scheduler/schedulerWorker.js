@@ -7,6 +7,18 @@ const TRANSIENT_CODES = new Set(['RPC_UNAVAILABLE', 'BROADCAST_UNKNOWN', 'NETWOR
 const FINAL_TRANSACTION_STATES = new Set(['confirmed', 'reverted', 'replaced']);
 
 function errorReason(error) {
+  // A ValidationError's own `message` is always the constant 'Request validation failed' -- every
+  // distinct permanent cause (the wallet was deleted, OpenSea returned calldata this app cannot
+  // decode, OpenSea's quantity did not match what was requested, the chain is unsupported) reaches
+  // both the user's notification and the stored last_error as that same opaque sentence. A live
+  // "scheduled mints always fail" report was undiagnosable from either for exactly this reason --
+  // all 17 such rows in the database read identically. The specifics are already carried in
+  // `issues`; fold them in here, the single function both consumers read (server.js's failure
+  // notification via event.error, and repository.fail's stored reason below).
+  if (error instanceof ValidationError && Array.isArray(error.issues) && error.issues.length) {
+    const detail = error.issues.map(item => `${item.field} ${item.message}`).join('; ');
+    return `${error.message}: ${detail}`.slice(0, 500);
+  }
   return String(error?.message || 'Unknown scheduler failure').slice(0, 500);
 }
 
