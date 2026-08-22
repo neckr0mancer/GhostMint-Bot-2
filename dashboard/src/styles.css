@@ -1490,7 +1490,7 @@ html[data-theme="ghost-mint-light"] .sheet-handle{
    wallets.html prints a funded wallet's address as plain muted mono under the balance: no box, no
    border. The copy mark sits inline with it rather than at the far edge of a full-width row. */
 .wallet-addr.mono{display:flex;align-items:center;gap:4px;font-size:11px;color:var(--faint);
-  margin-bottom:11px;min-width:0}
+  margin-top:0;margin-bottom:11px;min-width:0}
 .wallet-addr .user-card-copy{color:var(--faint)}
 
 /* ── Icon button ──────────────────────────────────────────────────────────────
@@ -1565,5 +1565,33 @@ html[data-theme="ghost-mint-light"] .sheet-handle{
 .app[data-m] .card.col > .colb > .ch > .p,
 .app[data-m] .card.col > .colb > .tv{display:none}
 .app[data-m] .card.col > .colb{position:relative}
-.app[data-m] .card.col > .colb > .ch{position:absolute;top:0;right:0;margin:0}
-.app[data-m] .card.col > .colb > .wallet-addr.mono{padding-right:32px}
+.app[data-m] .card.col > .colb > .ch{position:absolute;top:11px;right:0;height:28px;margin:0;
+  align-items:center}
+.app[data-m] .card.col > .colb > .wallet-addr.mono{min-height:28px;padding-right:34px;
+  margin-bottom:9px}
+
+/* ── P&L snapshot card ────────────────────────────────────────────────────────
+   The on-screen twin of the exported PNG. Deliberately plain: this reports what happened to real
+   money, and the backgrounds and stickers those shareable trading cards offer would invite reading
+   it as promotion rather than as a record. */
+.snap{border:1px solid var(--border-strong);border-radius:var(--radius);background:var(--surface-2);
+  padding:16px 18px}
+.snap-h{display:flex;align-items:center;gap:9px;margin-bottom:14px}
+.snap-brand{font-size:11px;font-weight:800;letter-spacing:.07em;color:var(--accent)}
+.snap-range{font-size:11px;color:var(--faint)}
+.snap-l{font-size:12px;font-weight:600;color:var(--muted);margin:0 0 4px}
+.snap-v{font-size:32px;font-weight:780;letter-spacing:-.035em;line-height:1;
+  font-variant-numeric:tabular-nums}
+.snap-v small{font-size:13px;font-weight:600;color:var(--muted);margin-left:4px;letter-spacing:0}
+.snap-roi{font-size:14px;font-weight:700;margin:5px 0 0;font-variant-numeric:tabular-nums}
+.snap-c{margin:14px 0 4px}
+.snap-c .chart{height:64px}
+.snap-s{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:12px;
+  padding-top:12px;border-top:1px solid var(--border)}
+.snap-s span{display:block;font-size:9.5px;font-weight:700;letter-spacing:.07em;
+  text-transform:uppercase;color:var(--faint);margin-bottom:3px}
+.snap-s b{font-size:13px;font-weight:700;font-variant-numeric:tabular-nums}
+@media(max-width:520px){
+  .snap-s{grid-template-columns:repeat(2,1fr)}
+  .snap-v{font-size:26px}
+}

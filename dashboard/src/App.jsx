@@ -4,6 +4,7 @@ import Admin from './Admin.jsx';
 import {shortAddress} from './dashboardWidgets/homeParts.jsx';
 import {loadError,batchRowDetail,useRetryAfter} from './shared.jsx';
 import {walletPerformance,pnlWalletLabel} from './walletPerformance.js';
+import {pnlDailyBuckets,pnlWindowTotals} from './pnlChart.js';
 import {ACTIVITY_EVENTS,api,Ledger,NumberField,SectionCard,confirmDialog,ConfirmHost,consumePendingMintPrefill,CopyButton,csrf,downloadFile,Empty,EVM_CHAINS,Field,Form,getNotificationLog,notify,Notice,PageTitle,Pager,promptDialog,relativeTime,Select,Skeleton,StatusPill,SubTabs,subscribeNotificationLog,ToastHost,useLoad,useLiveSocket,setPendingMintPrefill,quantityPicks} from './shared.jsx';
 import Dashboard from './Dashboard.jsx';
 // Phase 4, unit 1 of 5 (brief §2). The 11->5 merge lands one page at a time so any single merge
@@ -795,6 +796,7 @@ const TREND_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stro
 const EXPAND_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><path d="M9 3H3v6M15 21h6v-6"/><path d="M3 3l7 7M21 21l-7-7"/></svg>;
 const PLUS_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><path d="M12 5v14M5 12h14"/></svg>;
 const EXTERNAL_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M14 4h6v6"/><path d="M20 4l-8.5 8.5"/><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg>;
+const CARD_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M7 9h6M7 13h4M15 16.5l2.5-3 2.5 3"/></svg>;
 const CROSS_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><path d="M18 6 6 18M6 6l12 12"/></svg>;
 const LOCK_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><rect x="4" y="10.5" width="16" height="10.5" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/></svg>;
 function shortHex(value){const v=String(value||"");return v.length>12?`${v.slice(0,6)}…${v.slice(-4)}`:v;}
@@ -1466,56 +1468,184 @@ function Activity(){const [page,setPage]=useState(1);const [search,setSearch]=us
 // rollups are computed straight from that same already-loaded list, not a separate fetch, since
 // summing what's already on screen is simpler than a new endpoint for the same numbers.
 const PNL_PERIODS=[['day','Today',86400000],['week','7 days',7*86400000],['month','30 days',30*86400000],['year','365 days',365*86400000]];
+// ── P&L snapshot card ────────────────────────────────────────────────────────
+// The shareable-P&L-card pattern trading apps use (Tealstreet's PnL cards, Robinhood-style
+// summaries): one headline return, the period it covers, the few figures behind it, and a download.
+// The conventions worth borrowing are the ones those all share -- green for gain and red for loss,
+// a return expressed as a percentage next to the absolute figure, and few enough numbers that the
+// card reads at a glance.
+//
+// What is NOT borrowed: backgrounds, stickers and layout pickers. This card reports what happened
+// with the user's money; decorating it invites reading it as promotion rather than as a record.
+//
+// ROI is net over cost PLUS gas. Gas is spent whether or not a token ever resells, so a return
+// measured against cost alone would flatter every card this ever draws.
+function pnlSnapshotRange(days){
+  if(days===null)return 'All time';
+  const end=new Date();
+  const start=new Date(Date.now()-(days-1)*86400000);
+  const fmt=value=>value.toLocaleDateString(undefined,{month:'short',day:'numeric'});
+  return `${fmt(start)} — ${fmt(end)}`;
+}
+// Drawn on a canvas rather than screenshotted from the DOM, so the export needs no library and no
+// network. Colours are read off the live theme at draw time, so the PNG matches whatever theme the
+// page is in rather than being hardcoded to one of them.
+function drawSnapshotCanvas({totals,days,label,range,buckets}){
+  const scale=2,width=560,height=320;
+  const canvas=document.createElement('canvas');
+  canvas.width=width*scale;canvas.height=height*scale;
+  const context=canvas.getContext('2d');
+  context.scale(scale,scale);
+  const styles=window.getComputedStyle(document.documentElement);
+  const token=(name,fallback)=>{const value=styles.getPropertyValue(name).trim();return value||fallback;};
+  const surface=token('--surface','#111'),border=token('--border-strong','#333');
+  const text=token('--text','#eee'),muted=token('--muted','#9aa2a9'),faint=token('--faint','#767e79');
+  const gain=token('--gain-text','#3fb950'),loss=token('--loss-text','#f85149');
+  const accent=token('--accent','#2ea67f');
+  const positive=totals.net>=0;
+  const verdict=positive?gain:loss;
+
+  context.fillStyle=surface;context.fillRect(0,0,width,height);
+  context.strokeStyle=border;context.lineWidth=1;
+  context.strokeRect(.5,.5,width-1,height-1);
+
+  context.fillStyle=accent;
+  context.font='700 12px ui-sans-serif, system-ui, sans-serif';
+  context.fillText('GHOSTMINT · P&L',28,40);
+  context.fillStyle=faint;
+  context.font='500 12px ui-sans-serif, system-ui, sans-serif';
+  context.fillText(range,28,60);
+
+  context.fillStyle=muted;
+  context.font='600 13px ui-sans-serif, system-ui, sans-serif';
+  context.fillText(`Net · ${label}`,28,100);
+  context.fillStyle=verdict;
+  context.font='750 44px ui-sans-serif, system-ui, sans-serif';
+  const headline=`${positive?'+':'−'}${Math.abs(totals.net).toFixed(6)} ETH`;
+  context.fillText(headline,28,142);
+  if(totals.roi!==undefined){
+    context.font='700 16px ui-sans-serif, system-ui, sans-serif';
+    context.fillText(`${positive?'+':'−'}${Math.abs(totals.roi).toFixed(1)}% on outlay`,28,168);
+  }
+
+  // Sparkline, same gains-up/losses-down reading as the page's own chart.
+  const chartTop=190,chartHeight=54,mid=chartTop+chartHeight/2;
+  const peak=buckets.reduce((high,day)=>Math.max(high,day.gain,Math.abs(day.loss)),0);
+  const slot=(width-56)/Math.max(1,buckets.length);
+  context.strokeStyle=border;context.beginPath();
+  context.moveTo(28,mid);context.lineTo(width-28,mid);context.stroke();
+  buckets.forEach((day,index)=>{
+    const x=28+index*slot+Math.max(0,(slot-Math.min(9,slot-1))/2);
+    const barWidth=Math.max(1,Math.min(9,slot-1));
+    const size=value=>peak?Math.max(value===0?0:1.2,(Math.abs(value)/peak)*(chartHeight/2-3)):0;
+    if(day.gain>0){context.fillStyle=token('--gain','#2ea043');
+      context.fillRect(x,mid-size(day.gain),barWidth,size(day.gain));}
+    if(day.loss<0){context.fillStyle=token('--loss','#da3633');
+      context.fillRect(x,mid,barWidth,size(day.loss));}
+  });
+
+  const stats=[['Mints',String(totals.records)],['Cost',`${totals.cost.toFixed(4)} ETH`],
+    ['Gas',`${totals.gas.toFixed(4)} ETH`],['Sale',`${totals.sale.toFixed(4)} ETH`]];
+  stats.forEach(([name,value],index)=>{
+    const x=28+index*((width-56)/stats.length);
+    context.fillStyle=faint;
+    context.font='600 10px ui-sans-serif, system-ui, sans-serif';
+    context.fillText(name.toUpperCase(),x,278);
+    context.fillStyle=text;
+    context.font='700 14px ui-sans-serif, system-ui, sans-serif';
+    context.fillText(value,x,297);
+  });
+  return canvas;
+}
+function PnlSnapshot({records,windowKey,onWindow,onClose}){
+  const [busy,setBusy]=useState(false);
+  const chosen=walletWindow(windowKey);
+  const days=chosen.ms===null?null:Math.round(chosen.ms/86400000);
+  const totals=pnlWindowTotals(records,days);
+  const {buckets}=pnlDailyBuckets(records,days);
+  const range=pnlSnapshotRange(days);
+  const positive=totals.net>=0;
+  async function download(){
+    setBusy(true);
+    try{
+      const canvas=drawSnapshotCanvas({totals,days,label:chosen.label,range,buckets});
+      const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/png'));
+      if(!blob)throw new Error('The browser could not render the card.');
+      downloadFile(`ghostmint-pnl-${days===null?'all-time':`${days}d`}.png`,blob,'image/png');
+      notify('Snapshot saved as a PNG.',{type:'success'});
+    }catch(error){notify(error.message,{type:'error'});}
+    finally{setBusy(false);}
+  }
+  return <Overlay open onClose={onClose} title="P&L snapshot"
+    subtitle="A single card for the selected period, to keep or to share.">
+    <div className="seg" role="group" aria-label="Snapshot period" style={{marginBottom:'12px'}}>
+      {WALLET_WINDOWS.map(([key])=><button type="button" key={key} className={windowKey===key?'on':undefined}
+        aria-pressed={windowKey===key} onClick={()=>onWindow(key)}>{key}</button>)}
+    </div>
+    <div className="snap">
+      <div className="snap-h"><span className="snap-brand">GHOSTMINT · P&amp;L</span>
+        <div className="sp"></div><span className="snap-range">{range}</span></div>
+      <p className="snap-l">Net · {chosen.label}</p>
+      <div className="snap-v" style={{color:positive?'var(--gain-text)':'var(--loss-text)'}}>
+        {positive?'+':'−'}{Math.abs(totals.net).toFixed(6)}<small>ETH</small></div>
+      {totals.roi===undefined
+        ?<p className="snap-roi" style={{color:'var(--faint)'}}>No outlay in this period</p>
+        :<p className="snap-roi" style={{color:positive?'var(--gain-text)':'var(--loss-text)'}}>
+          {positive?'+':'−'}{Math.abs(totals.roi).toFixed(1)}% on outlay</p>}
+      <div className="snap-c"><PnlChart buckets={buckets}/></div>
+      <div className="snap-s">
+        <div><span>Mints</span><b>{totals.records}</b></div>
+        <div><span>Cost</span><b>{totals.cost.toFixed(4)}</b></div>
+        <div><span>Gas</span><b>{totals.gas.toFixed(4)}</b></div>
+        <div><span>Sale</span><b>{totals.sale.toFixed(4)}</b></div>
+      </div>
+    </div>
+    <div className="nt i" style={{marginTop:'12px'}}>{INFO_ICON}
+      <div>Return is measured against <b>cost plus gas</b>. Gas is spent whether or not a token
+        resells, so a figure against cost alone would flatter every card.</div></div>
+    <div className="br" style={{marginTop:'12px'}}>
+      <button type="button" className="b p" disabled={busy} onClick={download}>
+        {busy?'Rendering…':'Download PNG'}</button>
+      <button type="button" className="b g" onClick={onClose}>Close</button>
+    </div>
+  </Overlay>;
+}
 function summarizePnlPeriod(records,windowMs){const cutoff=windowMs===null?-Infinity:Date.now()-windowMs;const inWindow=records.filter(item=>item.t>=cutoff);
   return {count:inWindow.length,cost:inWindow.reduce((sum,item)=>sum+Number(item.cost),0),sale:inWindow.reduce((sum,item)=>sum+Number(item.sale),0),
     gas:inWindow.reduce((sum,item)=>sum+Number(item.gas),0),net:inWindow.reduce((sum,item)=>sum+Number(item.net),0)};}
-// wallets.html's Net-by-day chart. One bar per DAY in the window, not per record: two mints on the
-// same day are one day's result, which is the question "how am I doing" actually asks. Days with no
-// records still occupy their slot, so a gap reads as a quiet day rather than silently compressing
-// the timeline.
-//
-// Drawn from records the page already loaded rather than a new endpoint -- pnl_records carries
-// created_at (mapped to `t`), so the grouping is arithmetic, not a request.
-const PNL_WINDOWS=[['30d',30],['90d',90],['All',null]];
-function pnlDailyNet(records,days){
-  const dayMs=86400000;
-  const end=new Date();end.setHours(0,0,0,0);
-  const earliest=records.reduce((low,item)=>Math.min(low,item.t),Date.now());
-  const first=new Date(days===null?earliest:Date.now()-(days-1)*dayMs);first.setHours(0,0,0,0);
-  const span=Math.max(1,Math.round((end.getTime()-first.getTime())/dayMs)+1);
-  const buckets=new Array(span).fill(0);
-  for(const item of records){
-    const at=new Date(item.t);at.setHours(0,0,0,0);
-    const index=Math.round((at.getTime()-first.getTime())/dayMs);
-    if(index>=0&&index<span)buckets[index]+=Number(item.net)||0;
-  }
-  return buckets;
-}
-function PnlChart({values}){
+// Gains above the baseline, losses below, per day -- see pnlChart.js for why they are not netted.
+// preserveAspectRatio="none" is the prototype's own choice: the bars stretch to the card width, so
+// the chart reads as a shape rather than as measurable heights, which is what the totals are for.
+function PnlChart({buckets}){
   const width=620,height=112,baseline=56;
-  const peak=values.reduce((high,value)=>Math.max(high,Math.abs(value)),0);
-  const slot=width/Math.max(1,values.length);
+  const peak=buckets.reduce((high,day)=>Math.max(high,day.gain,Math.abs(day.loss)),0);
+  const slot=width/Math.max(1,buckets.length);
   const barWidth=Math.max(1,Math.min(14,slot-2));
-  const total=values.reduce((sum,value)=>sum+value,0);
+  const total=buckets.reduce((sum,day)=>sum+day.gain+day.loss,0);
+  const scale=value=>peak?Math.max(value===0?0:1.5,(Math.abs(value)/peak)*(baseline-6)):0;
   return <svg className="chart" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" role="img"
-    aria-label={`Daily net over ${values.length} ${values.length===1?'day':'days'}. Net ${total<0?'negative':'positive'} ${Math.abs(total).toFixed(3)} ETH.`}>
+    aria-label={`Daily net over ${buckets.length} ${buckets.length===1?'day':'days'}. Net ${total<0?'negative':'positive'} ${Math.abs(total).toFixed(3)} ETH.`}>
     <line x1="0" y1={baseline} x2={width} y2={baseline} stroke="var(--border-strong)" strokeWidth="1"/>
-    {values.map((value,index)=>{
-      // A zero day still gets a hairline: no bar at all is indistinguishable from a day that fell
-      // outside the window, and those are different facts.
-      const size=peak?Math.max(value===0?0.5:1.5,(Math.abs(value)/peak)*(baseline-6)):0.5;
-      return <rect key={index} x={index*slot+(slot-barWidth)/2} width={barWidth}
-        y={value<0?baseline:baseline-size} height={size} rx="1"
-        fill={value<0?'var(--loss)':'var(--gain)'}/>;
+    {buckets.map((day,index)=>{
+      const x=index*slot+(slot-barWidth)/2;
+      const up=scale(day.gain),down=scale(day.loss);
+      return <g key={index}>
+        {up>0&&<rect x={x} width={barWidth} y={baseline-up} height={up} rx="1" fill="var(--gain)"/>}
+        {down>0&&<rect x={x} width={barWidth} y={baseline} height={down} rx="1" fill="var(--loss)"/>}
+      </g>;
     })}
   </svg>;
 }
+// A record GhostMint wrote for itself carries the wallet in its name (autoRecordPnl, server.js:545)
+// -- that is the same signal walletPerformance.js parses, reused here to tell the two kinds apart.
+function isAutoPnlRecord(record){return pnlWalletLabel(record)!==null;}
 function Pnl(){
   const listing=useLoad('/api/pnl',[],'pnl.changed');
   const [editing,setEditing]=useState(null);
   const [query,setQuery]=useState('');
-  const [window_,setWindow]=useState('30d');
+  const [windowKey,setWindowKey]=useState('30d');
   const [adding,setAdding]=useState(false);
+  const [snapshot,setSnapshot]=useState(false);
   async function save(event){
     event.preventDefault();const form=event.currentTarget;const wasEditing=editing;
     const body=JSON.stringify(Object.fromEntries(new FormData(form)));
@@ -1532,10 +1662,12 @@ function Pnl(){
   }
   const records=listing.data;
   const current=records?.find(item=>item.id===editing);
+  const currentIsAuto=current?isAutoPnlRecord(current):false;
   const normalized=query.trim().toLowerCase();
   const filtered=records?(normalized?records.filter(item=>String(item.nm||'').toLowerCase().includes(normalized)):records):null;
-  const days=PNL_WINDOWS.find(([key])=>key===window_)?.[1]??30;
-  const totals=records?summarizePnlPeriod(records,days===null?null:days*86400000):null;
+  const chosen=walletWindow(windowKey);
+  const days=chosen.ms===null?null:Math.round(chosen.ms/86400000);
+  const totals=records?summarizePnlPeriod(records,chosen.ms):null;
   const loading=records===null&&!listing.error;
   const empty=Array.isArray(records)&&records.length===0;
   const formOpen=adding||editing!==null;
@@ -1547,23 +1679,24 @@ function Pnl(){
       <div className="card">
         <div className="ch"><h2>Net by day</h2><div className="sp"></div>
           <div className="seg" role="group" aria-label="Chart window">
-            {PNL_WINDOWS.map(([key])=><button type="button" key={key} className={window_===key?'on':undefined}
-              aria-pressed={window_===key} onClick={()=>setWindow(key)}>{key}</button>)}
+            {WALLET_WINDOWS.map(([key])=><button type="button" key={key} className={windowKey===key?'on':undefined}
+              aria-pressed={windowKey===key} onClick={()=>setWindowKey(key)}>{key}</button>)}
           </div></div>
         {loading&&<div className="sk chart"></div>}
         {empty&&<div className="emp"><div className="ei">{TREND_ICON}</div>
           <h3>No records yet</h3><p>Every confirmed mint creates a record with its real cost and gas.</p></div>}
         {!loading&&!empty&&<>
-          <PnlChart values={pnlDailyNet(records,days)}/>
+          <PnlChart buckets={pnlDailyBuckets(records,days).buckets}/>
           <div className="lgnd">
             <span><i className="sw" style={{background:'var(--gain)'}}></i> Gain · above baseline · <b>+</b></span>
             <span><i className="sw" style={{background:'var(--loss)'}}></i> Loss · below baseline · <b>−</b></span></div>
-          <p style={{fontSize:'11px',color:'var(--faint)',marginTop:'8px'}}>Sale proceeds are entered
-            manually — a mint with no recorded sale shows as a loss.</p>
+          <p style={{fontSize:'11px',color:'var(--faint)',marginTop:'8px'}}>A day showing both bars
+            had gains and losses in it — they are drawn apart, not netted. Sale proceeds are entered
+            by hand, so a mint with no recorded sale counts as a loss.</p>
         </>}
       </div>
       <div className="g">
-        <div className="sober"><div className="sh">Totals · {days===null?'all time':`${days} days`}</div>
+        <div className="sober"><div className="sh">Totals · {chosen.label}</div>
           <table className="led"><tbody>
             <tr><td>Mints</td><td>{loading?'—':totals.count}</td></tr>
             <tr><td>Cost</td><td>{loading?'—':`${totals.cost.toFixed(6)} ETH`}</td></tr>
@@ -1571,25 +1704,34 @@ function Pnl(){
             <tr><td>Sale proceeds</td><td>{loading?'—':`${totals.sale.toFixed(6)} ETH`}</td></tr>
             <tr className="tot"><td>Net</td><td style={{color:loading?undefined
               :totals.net<0?'var(--loss-text)':'var(--gain-text)'}}>
-              {loading?'—':`${totals.net<0?'−':'+'}${Math.abs(totals.net).toFixed(6)} ETH`}</td></tr>
+              {loading?'—':signedEth(totals.net)}</td></tr>
           </tbody></table></div>
         <div className="card tight">
           <div className="ch"><h2>Records</h2><div className="sp"></div>
             <button type="button" className="b g sm" aria-expanded={formOpen}
               onClick={()=>{setEditing(null);setAdding(value=>!value);}}>
               {formOpen?'Close':'Add manually'}</button></div>
-          <p style={{fontSize:'12px',color:'var(--muted)'}}>Edit a record to enter what a token
-            actually resold for. Until then its net is cost + gas as a loss.</p>
+          <p style={{fontSize:'12px',color:'var(--muted)',marginBottom:'11px'}}>Records GhostMint
+            wrote are locked: their cost and gas came off the confirmed receipt. Only <b>sale</b> is
+            yours to fill in, once a token actually resells.</p>
+          <button type="button" className="b p sm" disabled={empty||loading}
+            onClick={()=>setSnapshot(true)}>{CARD_ICON} Snapshot</button>
         </div>
       </div>
     </div>}
-    {formOpen&&<Form className="form-pnl" key={editing||'new'} title={editing?'Edit record':'Add record'}
-      note="Auto-created records can be edited here too -- fill in Sale once an NFT actually resells."
+    {formOpen&&<Form className="form-pnl" key={editing||'new'}
+      title={currentIsAuto?`Record a sale · ${current.nm}`:editing?'Edit record':'Add record'}
+      note={currentIsAuto
+        ?'GhostMint wrote this record, so its name, cost and gas are fixed — they came off the confirmed transaction. Enter what the token resold for and the net recalculates.'
+        :'Auto-created records can be edited here too -- fill in Sale once an NFT actually resells.'}
       onSubmit={save}>
-      <Field name="name" label="Name" defaultValue={current?.nm}/>
-      <Field name="cost" label="Cost" type="number" step="any" defaultValue={current?.cost??0}/>
-      <Field name="sale" label="Sale" type="number" step="any" defaultValue={current?.sale??0}/>
-      <Field name="gas" label="Gas" type="number" step="any" defaultValue={current?.gas??0}/>
+      {/* An auto-created record's name, cost and gas are facts off a confirmed receipt. They stay
+          submittable (the PUT recomputes net from all four) but not editable, so the only thing a
+          person can change here is the one field that never had a data source. */}
+      <Field name="name" label="Name" defaultValue={current?.nm} readOnly={currentIsAuto||undefined}/>
+      <Field name="cost" label="Cost" type="number" step="any" defaultValue={current?.cost??0} readOnly={currentIsAuto||undefined}/>
+      <Field name="sale" label={currentIsAuto?'Sale — what it resold for':'Sale'} type="number" step="any" defaultValue={current?.sale??0} autoFocus={currentIsAuto||undefined}/>
+      <Field name="gas" label="Gas" type="number" step="any" defaultValue={current?.gas??0} readOnly={currentIsAuto||undefined}/>
       <button className="b p">{editing?'Save changes':'Add record'}</button>
       <button type="button" className="b g" onClick={()=>{setEditing(null);setAdding(false);}}>Cancel</button>
     </Form>}
@@ -1600,22 +1742,32 @@ function Pnl(){
           onChange={event=>setQuery(event.target.value)}/>
         {query&&<button type="button" className="sx" aria-label="Clear search" onClick={()=>setQuery('')}>×</button>}
       </div></div>
-      {filtered.length?<div className="g g3">{filtered.map(item=><div className="card" key={item.id}>
-        <div className="ch"><h2>{item.nm}</h2></div>
-        <div className="tv tab" style={{marginBottom:'3px',
-          color:Number(item.net)<0?'var(--loss-text)':'var(--gain-text)'}}>
-          {Number(item.net)<0?'−':'+'}{Math.abs(Number(item.net)).toFixed(6)}<small>ETH</small></div>
-        <div className="sober" style={{marginTop:'9px'}}>
-          <table className="led"><tbody>
-            <tr><td>Cost</td><td>{Number(item.cost).toFixed(6)} ETH</td></tr>
-            <tr><td>Sale</td><td>{Number(item.sale).toFixed(6)} ETH</td></tr>
-            <tr className="tot"><td>Gas</td><td>{Number(item.gas).toFixed(6)} ETH</td></tr>
-          </tbody></table></div>
-        <div className="br" style={{marginTop:'11px'}}>
-          <button type="button" className="b g sm" onClick={()=>{setAdding(false);setEditing(item.id);}}>Edit</button>
-          <button type="button" className="b d sm" onClick={()=>remove(item.id)}>Delete</button></div>
-      </div>)}</div>:<Empty text="No P&L records match this search."/>}
+      {filtered.length?<div className="g g3">{filtered.map(item=>{
+        const auto=isAutoPnlRecord(item);
+        return <div className="card" key={item.id}>
+          <div className="ch"><h2>{item.nm}</h2><div className="sp"></div>
+            <span className={`p ${auto?'nu':'wn'}`}>{auto?'Automatic':'Manual'}</span></div>
+          <div className="tv tab" style={{marginBottom:'3px',
+            color:Number(item.net)<0?'var(--loss-text)':'var(--gain-text)'}}>
+            {Number(item.net)<0?'−':'+'}{Math.abs(Number(item.net)).toFixed(6)}<small>ETH</small></div>
+          <div className="sober" style={{marginTop:'9px'}}>
+            <table className="led"><tbody>
+              <tr><td>Cost</td><td>{Number(item.cost).toFixed(6)} ETH</td></tr>
+              <tr><td>Sale</td><td>{Number(item.sale).toFixed(6)} ETH</td></tr>
+              <tr className="tot"><td>Gas</td><td>{Number(item.gas).toFixed(6)} ETH</td></tr>
+            </tbody></table></div>
+          {/* A record GhostMint wrote is evidence of a transaction that happened. Deleting it would
+              put a hole in the very history the totals and the chart are drawn from, so it offers
+              the one edit that makes sense instead. */}
+          <div className="br" style={{marginTop:'11px'}}>
+            <button type="button" className="b g sm" onClick={()=>{setAdding(false);setEditing(item.id);}}>
+              {auto?'Record sale':'Edit'}</button>
+            {auto?null:<button type="button" className="b d sm" onClick={()=>remove(item.id)}>Delete</button>}
+          </div>
+        </div>;})}</div>:<Empty text="No P&L records match this search."/>}
     </>}
+    {snapshot&&<PnlSnapshot records={records} windowKey={windowKey} onWindow={setWindowKey}
+      onClose={()=>setSnapshot(false)}/>}
   </>;
 }
 function jsonForm(event){event.preventDefault();const form=event.currentTarget;return {form,value:JSON.parse(new FormData(form).get('json'))};}
