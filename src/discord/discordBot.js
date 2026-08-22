@@ -112,6 +112,15 @@ function commandDefinitions({ supportedChains = [], chains = {} } = {}) {
     .addIntegerOption(o => o.setName('quantity').setDescription('Quantity per wallet (omit to see the collection card first)').setMinValue(1))
     .addNumberOption(o => o.setName('price').setDescription('Native price per item (only if the contract does not expose one)').setMinValue(0))
     .addStringOption(o => chainOption(o, { description: 'Chain (auto-detected when omitted)' })));
+  // Launch squads -- staged multi-wallet bursts with a FIRE NOW moment and a report card
+  // (src/launch). Unlike batch-mint (immediate), staging happens up front so wallet problems
+  // surface before anyone spends gas.
+  commands.push(new SlashCommandBuilder().setName('aco').setDescription('🚀 Launch squad: one mint, many wallets, fired together')
+    .addStringOption(o => o.setName('contract').setDescription('Contract address').setRequired(true))
+    .addStringOption(o => o.setName('wallets').setDescription('Comma-separated wallet labels').setRequired(true).setAutocomplete(true))
+    .addIntegerOption(o => o.setName('quantity').setDescription('Quantity per wallet').setMinValue(1))
+    .addNumberOption(o => o.setName('price').setDescription("Native price per item (only if the contract does not expose one)").setMinValue(0))
+    .addStringOption(o => chainOption(o, { description: 'Chain (auto-detected when omitted)' })));
   commands.push(new SlashCommandBuilder().setName('task').setDescription('🗓️ Manage durable scheduled mints')
     .addSubcommand(c => c.setName('create').setDescription('Create a UTC scheduled mint')
       .addStringOption(o => o.setName('input').setDescription('Validated task JSON; mintTime must include Z/offset').setRequired(true))
@@ -631,6 +640,27 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
       if (data === 'flow:cancel:ask') {
         flowState.clear('discord', platformUserId);
         return dcRespond(interaction, discordMenus.mainMenu({ isOwner: await ownerFlag(userId), security: await securityStatus(userId) }));
+      }
+
+      // Launch squad FIRE NOW / ABORT -- same semantics as the Telegram buttons: only staged or
+      // armed squads may fire, abort is free until firing starts, and firing itself is
+      // fire-and-forget here so the 3-second component window never bounds a launch.
+      if (data.startsWith('aco:fire:') || data.startsWith('aco:abort:')) {
+        if (!await actionGate.allows(userId, 'discord', platformUserId, 'mint')) {
+          return dcRespond(interaction, discordMenus.gateUnlockCard({ action: 'mint' }));
+        }
+        const [, acoAction, id] = data.split(':');
+        const squad = await launchRepository.getSquad(userId, id);
+        if (!squad) return dcRespond(interaction, { content: 'Launch squad not found.' });
+        if (acoAction === 'abort') {
+          if (!['staged', 'armed'].includes(squad.status)) return dcRespond(interaction, { content: `Squad is already ${squad.status} — too late to abort.` });
+          await launchRepository.updateSquad(id, { status: 'aborted' });
+          return dcRespond(interaction, { content: `🛑 Launch squad "${escapeDiscord(squad.name)}" aborted. Nothing was sent.` });
+        }
+        if (!['staged', 'armed'].includes(squad.status)) return dcRespond(interaction, { content: `Squad is ${squad.status} — cannot fire.` });
+        void launcher.fire(squad).catch(error => log(`Launch fire error: ${error.message}`));
+        const sendable = squad.members.filter(member => member.status !== 'skipped').length;
+        return dcRespond(interaction, { content: `🚀 Firing "${escapeDiscord(squad.name)}": ${sendable} wallets going out...` });
       }
 
       if (data === 'menu:main') return dcRespond(interaction, discordMenus.mainMenu({ isOwner: await ownerFlag(userId), security: await securityStatus(userId) }));
@@ -1639,7 +1669,7 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
       }
       userId = await identity.resolveOrCreate('discord', discordId);
       await enforceAccountStatus(userId);
-      if(['wallet','mint','mintnow','batch-mint','admin','watch','sniper','confirm-trigger','target-policy'].includes(interaction.commandName)) {
+      if(['wallet','mint','mintnow','batch-mint','aco','admin','watch','sniper','confirm-trigger','target-policy'].includes(interaction.commandName)) {
         rateLimiter.check('discord',userId,interaction.commandName);
       }
       let message;
@@ -1773,6 +1803,44 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
             message = `**Batch mint — ${ok.length} of ${results.length} submitted**\n${lines.join('\n')}`;
           }
           break;
+        }
+        case 'aco': {
+          if (!launcher || !launchRepository) { message = 'Launch squads are not available in this deployment.'; break; }
+          const contractAddressRaw = interaction.options.getString('contract');
+          const quantity = Math.max(1, interaction.options.getInteger('quantity') || 1);
+          const manualPrice = interaction.options.getNumber('price');
+          const wallets = [...new Set((interaction.options.getString('wallets') || '').split(',').map(v => v.trim()).filter(Boolean))];
+          if (!wallets.length) { message = 'No wallets given — comma-separate labels.'; break; }
+          let chain = interaction.options.getString('chain');
+          try {
+            if (!chain) {
+              const detected = await commands.detectMintContract(userId, { contractAddress: contractAddressRaw, quantity });
+              chain = detected?.chain;
+              if (!chain) { message = `Could not resolve a supported chain for \`${escapeDiscord(contractAddressRaw)}\`.`; break; }
+            }
+            const squad = await launcher.createAndStage({ userId, chain,
+              contractAddress: contractAddressRaw, quantity,
+              manualPriceWei: manualPrice == null ? null : BigInt(Math.round(manualPrice * 1e18)),
+              wallets, triggerType: 'manual' });
+            const staged = squad.members.filter(member => member.status === 'staged').length;
+            const skipped = squad.members.length - staged;
+            const priceLine = squad.priceWei === null ? 'unknown' : `${(Number(squad.priceWei) / 1e18).toFixed(6)} each`;
+            await interaction.editReply({ content: [
+              `## 🚀 Launch squad ready — ${squad.name}`,
+              `Chain: \`${chain}\` · Qty ${quantity} · Price: ${priceLine}`,
+              `Wallets staged: **${staged}**${skipped ? ` · skipped: ${skipped}` : ''}`,
+              '',
+              'FIRE NOW sends every wave immediately.',
+            ].join('\n'), components: [discordMenus.row([
+              discordMenus.button('🔥 FIRE NOW', `aco:fire:${squad.id}`, 'danger'),
+              discordMenus.button('✖ Abort', `aco:abort:${squad.id}`),
+            ])] });
+            return;
+          } catch (error) {
+            message = error instanceof ValidationError ? validationReply(error)
+              : `❌ Staging failed: ${escapeDiscord(String(error.message || error).slice(0, 250))}`;
+            break;
+          }
         }
         case 'task': {
           const action = interaction.options.getSubcommand();
@@ -1925,7 +1993,7 @@ async function clearLeftoverGuildCommands({ api, applicationId, log }) {
   }
 }
 
-function createDiscordBot({ token, applicationId, devGuildId, allowedChannelIds=null, identity, commands, securityAudit, rateLimiter, log = () => {}, client, rest, isOwner, checkAccountStatus, supportedChains, chains, actionGate, securityStatus }) {
+function createDiscordBot({ token, applicationId, devGuildId, allowedChannelIds=null, identity, commands, securityAudit, rateLimiter, log = () => {}, client, rest, isOwner, checkAccountStatus, supportedChains, chains, actionGate, securityStatus, launcher = null, launchRepository = null }) {
   const discordClient = client || new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.DirectMessages,
     GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent] });
   const api = rest || new REST({ version: '10' }).setToken(token);

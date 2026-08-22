@@ -3695,7 +3695,8 @@ if (CONFIG.discordBotToken) {
     isOwner: userId => governanceRepository.isOwner(userId),
     checkAccountStatus: userId => governance.checkAccountStatus(userId),
     supportedChains: CONFIG.supportedChains, chains: CHAINS, actionGate,
-    securityStatus: userId => securityFlags(userId) });
+    securityStatus: userId => securityFlags(userId),
+    launcher, launchRepository });
   // Live push: skip the 30s social-watch poll for discord_channel rules by reacting
   // to the Gateway's messageCreate event directly. The scheduled poller keeps running
   // as a fallback, so a dropped Gateway connection never stops detection, just slows it.

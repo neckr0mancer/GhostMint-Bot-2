@@ -149,7 +149,10 @@ Shipped today:
   (`{counts:{confirmed,reverted,failed,skipped}}`) and notifies. Timer-triggered squads fire from a
   light 1s poll; manual FIRE is instant.
 - **Telegram `/aco`** power syntax (`/aco <contract> <qty> w1,w2,...`) with staging summary +
-  🚀 FIRE NOW / ❌ ABORT inline buttons; guided picker flow is the next polish item.
+  🚀 FIRE NOW / ❌ ABORT inline buttons; **Discord `/aco`** slash command mirrors it fully
+  (contract/wallets/quantity/price/chain options, comma-separated wallet autocomplete reused from
+  batch-mint, FIRE/ABORT components) — Discord is the owner's primary surface, both shipped same-day.
+  Guided picker flow is the next polish item.
 - **Engine**: `triggerSource 'launch'` joins scheduled/sniper on the fast RPC path (tight timeout,
   fast pool) — a coordinated burst is exactly as time-critical as a scheduled fire.
 - **RPC grid wired live on Railway**: verified Alchemy lane #2 + Infura appended to ETH/Base
