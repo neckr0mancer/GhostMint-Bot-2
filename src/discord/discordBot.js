@@ -1982,9 +1982,19 @@ async function handleMintPasteMessage({ identity, commands, flowState, chains, r
   const where = `guild=${message.guildId || 'dm'} channel=${message.channelId || 'unknown'}`;
   try {
     if (!message.author || message.author.bot) return;
-    const trimmed = String(message.content || '').trim();
-    const looksAddressOrLink = /^0x[0-9a-fA-F]{40}$/.test(trimmed) || commands.parseOpenSeaCollectionSlug(trimmed);
-    if (!looksAddressOrLink) return;
+    // Per-LINE matching: users routinely paste several entities at once -- an address twice and an
+    // OpenSea link, say -- and the old whole-message test (`/^0x..{40}$/.test(trimmed)` plus
+    // parseOpenSeaCollectionSlug on the entire trimmed body) matched none of it, silently dropping
+    // the paste before even the diagnostic log ran. Scan each line instead; wrapping decorations
+    // (backticks, <>, bold markers) get stripped so code-formatted pastes still land. First
+    // matching line wins.
+    const lines = String(message.content || '').split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+    let target = null;
+    for (const line of lines) {
+      const cleaned = line.replace(/^[<`*~\s]+/, '').replace(/[>`*~\s]+$/, '');
+      if (/^0x[0-9a-fA-F]{40}$/.test(cleaned) || commands.parseOpenSeaCollectionSlug(cleaned)) { target = cleaned; break; }
+    }
+    if (!target) return;
     log(`Paste-detect: address/link-shaped message received (${where})`);
     const context = verifyDiscordContext({ user: message.author, guildId: message.guildId, channelId: message.channelId }, allowedGuildId, { allowedChannelIds });
     const userId = await identity.resolveOrCreate('discord', context.platformUserId);
@@ -1996,7 +2006,7 @@ async function handleMintPasteMessage({ identity, commands, flowState, chains, r
     if (flowState.get('discord', platformUserId)) flowState.clear('discord', platformUserId);
     await startMintGuidedFlow({ commands, flowState, chains, rateLimiter },
       payload => message.reply(payload).catch(error => log(`Paste-detect: reply failed (${where}): ${error?.message || error}`)),
-      platformUserId, userId, trimmed);
+      platformUserId, userId, target);
   } catch (error) { log(`Paste-detect: dropped before reply (${where}): ${error?.message || error}`); }
 }
 
@@ -2028,8 +2038,16 @@ function createDiscordBot({ token, applicationId, devGuildId, allowedChannelIds=
   const flowState = createFlowStateStore();
   discordClient.on('interactionCreate', createDiscordInteractionHandler({ identity, commands, allowedGuildId:devGuildId || null, allowedChannelIds,
     securityAudit,rateLimiter,log,isOwner,checkAccountStatus,supportedChains,chains,flowState,actionGate,securityStatus }));
-  discordClient.on('messageCreate', message =>
-    handleMintPasteMessage({ identity, commands, flowState, chains, rateLimiter, checkAccountStatus, allowedGuildId: devGuildId || null, allowedChannelIds, log }, message));
+  discordClient.on('messageCreate', message => {
+    // TEMPORARY diagnosis for the silent paste-detect drop (2026-08-22): interactions reach this
+    // deployment but zero Paste-detect lines appeared for real pastes. This line distinguishes,
+    // from logs alone, between "gateway not delivering messages", "content arriving empty"
+    // (privileged-intent class), and "delivered but shape-mismatched". Remove once paste-detect is
+    // confirmed healthy in production.
+    log(`messageCreate: author=${message.author?.id || 'unknown'} bot=${Boolean(message.author?.bot)} ` +
+      `guild=${message.guildId || 'dm'} channel=${message.channelId} len=${String(message.content || '').length}`);
+    return handleMintPasteMessage({ identity, commands, flowState, chains, rateLimiter, checkAccountStatus, allowedGuildId: devGuildId || null, allowedChannelIds, log }, message);
+  });
   return {
     client: discordClient,
     // devGuildId set = development bot: commands register to that one guild only (which is instant,
