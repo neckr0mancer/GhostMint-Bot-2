@@ -591,7 +591,11 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
   // Defaults to a gate that permits everything, so a caller that does not wire one (and every
   // existing test) behaves exactly as before this existed.
   actionGate={ allows: async () => true, submit: async () => ({ ok: true }) },
-  securityStatus=async () => ({ passwordSet: true, gateLevel: 'sensitive' }) }) {
+  securityStatus=async () => ({ passwordSet: true, gateLevel: 'sensitive' }),
+  // Launch squads (src/launch). Optional so existing test harnesses that build this handler
+  // without a launcher keep working -- the /aco and acotarget surfaces degrade to a clear
+  // "not available in this deployment" message instead of crashing.
+  launcher=null, launchRepository=null }) {
   const audit=value=>Promise.resolve(securityAudit.record(value)).catch(error=>log(`Security audit write failed: ${error.message}`));
   const ownerFlag = async userId => (typeof isOwner === 'function' ? Boolean(await isOwner(userId)) : false);
   const enforceAccountStatus = async userId => { if (typeof checkAccountStatus === 'function') await checkAccountStatus(userId); };
@@ -2042,7 +2046,8 @@ function createDiscordBot({ token, applicationId, devGuildId, allowedChannelIds=
   // visible to the other -- they'd otherwise be two independent, non-communicating stores.
   const flowState = createFlowStateStore();
   discordClient.on('interactionCreate', createDiscordInteractionHandler({ identity, commands, allowedGuildId:devGuildId || null, allowedChannelIds,
-    securityAudit,rateLimiter,log,isOwner,checkAccountStatus,supportedChains,chains,flowState,actionGate,securityStatus }));
+    securityAudit,rateLimiter,log,isOwner,checkAccountStatus,supportedChains,chains,flowState,actionGate,securityStatus,
+    launcher,launchRepository }));
   discordClient.on('messageCreate', message => {
     // TEMPORARY diagnosis for the silent paste-detect drop (2026-08-22): interactions reach this
     // deployment but zero Paste-detect lines appeared for real pastes. This line distinguishes,

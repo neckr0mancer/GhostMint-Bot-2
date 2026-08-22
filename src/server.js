@@ -903,7 +903,8 @@ const launchTriggers = createLaunchTriggers({
 const launcher = createLauncher({
   repository: launchRepository,
   triggers: launchTriggers,
-  repository: launchRepository,
+  // server.js binds this service under its full name -- there is no bare `intentRepository` here.
+  intentRepository: transactionIntentRepository,
   stager: createLaunchStager({
     checkAccountStatus: userId => governance.checkAccountStatus(userId),
     findWallet: (userId, label) => DB.wallets.find(item => item.userId === userId && item.label === label),
@@ -915,7 +916,6 @@ const launcher = createLauncher({
   mintExecution,
   mintService,
   transactionEngine,
-  intentRepository,
   findWallet: (userId, label) => DB.wallets.find(item => item.userId === userId && item.label === label),
   notify: event => {
     if (event.type === 'launch.starting') {
