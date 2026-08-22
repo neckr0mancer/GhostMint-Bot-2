@@ -1,7 +1,12 @@
 function createMintExecutionService({ mintService, transactionEngine }) {
   async function executePrepared({ userId, wallet, prepared, triggerSource = 'manual', gasPriceWei, maxGasGwei, onPreview,
     idempotencyKey, onIntentPersisted }) {
-    if (onPreview) await onPreview(prepared.preview);
+    // Fire-and-forget, deliberately not awaited: the preview notification is informational, and an
+    // await here sat directly between "launch moment arrived" and "submit()" -- meaning Telegram's
+    // or Discord's full HTTPS round trip was on the critical path of every scheduled and sniper
+    // fire (and an exception in the send aborted the mint outright). The send still starts before
+    // submit() does, so delivery ordering is preserved best-effort; only the blocking is gone.
+    if (onPreview) Promise.resolve().then(() => onPreview(prepared.preview)).catch(() => {});
     return transactionEngine.submit({
       userId,
       wallet,

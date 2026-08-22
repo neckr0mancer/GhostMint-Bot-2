@@ -276,7 +276,16 @@ function createTransactionEngine({
       const fastRpcOptions = useFastPath ? { timeoutMs: FAST_RPC_TIMEOUT_MS, retries: FAST_RPC_RETRIES } : undefined;
       const activeService = isSniperTrigger && sniperProviderService ? sniperProviderService
         : (useFastPath && fastProviderService ? fastProviderService : providerService);
-      const feeData = await resolveFeeData(request.chain, useFastPath, fastRpcOptions, activeService);
+      // Hot-path batching: policy has to land first because it selects the pool and the per-call
+      // timeout budget used by every RPC below, but after that the three independent reads -- fee
+      // data, wallet balance, rolling daily spend -- were awaited strictly one after another even
+      // though nothing links them. They leave together now; every validation further down keeps its
+      // original order and operands, so only wall-clock latency changes, never which error surfaces.
+      const [feeData, balance, spent] = await Promise.all([
+        resolveFeeData(request.chain, useFastPath, fastRpcOptions, activeService),
+        providerCall(request.chain, 'getBalance', provider => provider.getBalance(from), fastRpcOptions, activeService),
+        intentRepository.rollingSpendWei(request.userId, request.wallet.id, now() - 86_400_000),
+      ]);
       const hasExplicitLegacyFee = request.gasPriceWei !== undefined && request.gasPriceWei !== null;
       const hasExplicitMaxFee = request.maxFeePerGasWei !== undefined && request.maxFeePerGasWei !== null;
       const gasPriceWei = hasExplicitLegacyFee
@@ -324,11 +333,9 @@ function createTransactionEngine({
         : asBigInt(request.gasLimitWei, 'gasLimitWei');
       if (gasLimit <= 0n) throw new TransactionSafetyError('INVALID_TRANSACTION', 'Gas limit must be positive');
       const estimatedCostWei = valueWei + gasLimit * selectedFee;
-      const balance = await providerCall(request.chain, 'getBalance', provider => provider.getBalance(from), fastRpcOptions, activeService);
       if (BigInt(balance) < estimatedCostWei) {
         throw new TransactionSafetyError('INSUFFICIENT_BALANCE', 'Wallet balance is below the estimated transaction cost');
       }
-      const spent = await intentRepository.rollingSpendWei(request.userId, request.wallet.id, now() - 86_400_000);
       if (!policy.ceilingExempt && spent + estimatedCostWei > policy.dailySpendingBudgetWei) {
         throw new TransactionSafetyError('DAILY_BUDGET_EXCEEDED', 'Transaction would exceed the wallet daily spending budget');
       }
@@ -336,8 +343,14 @@ function createTransactionEngine({
         await simulateCallSafely(request.chain, { ...base, ...feeFields, gasLimit }, fastRpcOptions, activeService);
       }
 
-      const providerNonce = Number(await providerCall(request.chain, 'getTransactionCount', provider => provider.getTransactionCount(from, 'pending'), fastRpcOptions, activeService));
-      const network = await providerCall(request.chain, 'getNetwork', provider => provider.getNetwork(), fastRpcOptions, activeService);
+      // Same batching one step later: the pending-nonce read and the chain-identity check share no
+      // dependency either -- the network answer only feeds the WRONG_CHAIN guard and the signed
+      // transaction's own chainId -- and both were serial legs between simulation and signing.
+      const [pendingNonceRaw, network] = await Promise.all([
+        providerCall(request.chain, 'getTransactionCount', provider => provider.getTransactionCount(from, 'pending'), fastRpcOptions, activeService),
+        providerCall(request.chain, 'getNetwork', provider => provider.getNetwork(), fastRpcOptions, activeService),
+      ]);
+      const providerNonce = Number(pendingNonceRaw);
       const expectedChainId = providerService.expectedChainId?.(request.chain);
       if (expectedChainId !== null && expectedChainId !== undefined && BigInt(network.chainId) !== BigInt(expectedChainId)) {
         throw new TransactionSafetyError('WRONG_CHAIN', 'RPC provider is connected to the wrong chain');

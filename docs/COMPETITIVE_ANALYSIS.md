@@ -241,3 +241,22 @@ human-verification/allowlist rails around snipers.
 **Where to start:** Day 1 items are all small, independently shippable, and produce the evidence
 that de-risks Day 2–3 (pre-arm), which is the centerpiece. If you only have one shot at a PR this
 week, make it pre-arm with the nonce-queue release folded in.
+
+## 7. Shipped from this plan (log — newest last)
+
+- **2026-08-22 — Day 1 quick wins.** Two changes on `ox-alpha/competitive-speed`:
+  (1) `mintExecutionService.executePrepared` no longer awaits `onPreview` — the Telegram/Discord
+  send is fire-and-forget now, so no platform's HTTPS round trip sits between "phase opened" and
+  "submit()" on scheduled/sniper fires (it also used to abort the mint outright if the send threw).
+  (2) `transactionEngine.submit` batches its independent reads: `[feeData, balance, rollingSpend]`
+  together right after policy resolution, and `[nonceCount, getNetwork]` together after simulation.
+  Validation order and operands are untouched, so error precedence can't shift; only wall-clock
+  latency does. Serial pre-broadcast stages drop from up to 8 awaits to 4.
+  **Correction to §3.5/§3.1:** "drop the getNetwork RPC" was tested against reality first — ethers
+  v6 re-detects the network on *every* `getNetwork()` call (`abstract-provider.js` calls
+  `_detectNetwork()` each time; measured ~190ms/call against publicnode), so it genuinely was one
+  serial round trip per submit. But removing the WRONG_CHAIN guard would break a pinned safety
+  contract (`tests/transactionEngine.test.js:175`) for near-zero gain once the read is off the
+  serial path — so it ships parallelized-away instead of deleted. Verification: full suite
+  792/792 (after building the dashboard bundle once — `dashboardReporting.test.js` requires
+  `public/dashboard/` to exist), smoke 3/3, lint clean.
