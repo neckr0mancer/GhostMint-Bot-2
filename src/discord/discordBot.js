@@ -1988,7 +1988,12 @@ async function handleMintPasteMessage({ identity, commands, flowState, chains, r
     // the paste before even the diagnostic log ran. Scan each line instead; wrapping decorations
     // (backticks, <>, bold markers) get stripped so code-formatted pastes still land. First
     // matching line wins.
-    const lines = String(message.content || '').split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+    const lines = String(message.content || '')
+      // Zero-width/invisible characters ride along with mobile copy-paste constantly and are
+      // invisible in the client -- an otherwise-perfect address with one \u200B inside matches
+      // nothing. Strip them everywhere, decorations at the edges.
+      .replace(/[\u200B-\u200F\u2060\uFEFF]/g, '')
+      .split(/\r?\n/).map(line => line.trim()).filter(Boolean);
     let target = null;
     for (const line of lines) {
       const cleaned = line.replace(/^[<`*~\s]+/, '').replace(/[>`*~\s]+$/, '');
