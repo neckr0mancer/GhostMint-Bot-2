@@ -1,7 +1,9 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const { ValidationError } = require('../src/validation/domain');
-const { createSchedulerWorker, isTransientFailure } = require('../src/scheduler/schedulerWorker');
+const { STAGE_NOT_OPEN, STAGE_NOT_OPEN_MAX_ATTEMPTS, STAGE_NOT_OPEN_RETRY_MS,
+  STAGE_REARM_MAX_ATTEMPTS, STAGE_REARM_WINDOW_MS, createSchedulerWorker,
+  errorReason, isTransientFailure } = require('../src/scheduler/schedulerWorker');
 
 function task(overrides = {}) {
   return {
@@ -19,7 +21,13 @@ function repositoryFixture(stale = [], { imminent = [] } = {}) {
     async attachIntent(value, intentId) { calls.push(['attach', intentId]); },
     async complete(value, intentId) { calls.push(['complete', intentId]); },
     async recoverWithoutExecution(value, details) { calls.push(['recover', details]); },
-    async fail(value, details) { calls.push(['fail', details]); return details.transient ? 'retry' : 'failed'; },
+    // Records the task as a third element too: the stage-not-open path raises maxAttempts on the
+    // object it hands the repository, and that is the only place the widened budget is observable.
+    // Mirrors schedulerRepository.fail's real rule -- retry only while the budget holds. Without
+    // the attemptCount check this returned 'retry' for anything transient, which cannot express an
+    // exhausted budget at all, so a test for "gives up" could never fail honestly.
+    async fail(value, details) { calls.push(['fail', details, value]);
+      return details.transient && value.attemptCount < value.maxAttempts ? 'retry' : 'failed'; },
     async claimDue() { calls.push(['claimDue']); return null; },
     async listImminent() { return imminent; },
   };
@@ -148,4 +156,155 @@ test('Round 16 (Section AV, item 4): precise timers fire tick() the instant a lo
     await worker.armPreciseTimers();
     assert.equal(worker.health().armedCount, 0);
   });
+});
+
+// Live-reported: scheduled mints failing with a Telegram/Discord notification reading only
+// "Request validation failed", and the stored last_error saying the same -- for four genuinely
+// different causes. Every ValidationError carries that one constant as its Error message, so
+// neither the user nor a later investigation could tell which check rejected the mint. The reason
+// string is the only diagnostic that survives (deployment logs are purged once a deploy is
+// replaced), so it has to carry the issue itself.
+test('a permanent validation failure records which check rejected the mint, not just that one did', async () => {
+  const repository = repositoryFixture();
+  const worker = createSchedulerWorker({
+    repository,
+    intentRepository:{ get:async () => null, getByIdempotencyKey:async () => null },
+    transactionEngine:{},
+    executeTask:async () => { throw new ValidationError({ field:'calldata', message:'does not match the SeaDrop mintPublic signature' }); },
+  });
+
+  assert.equal(await worker.processTask(task()), 'failed');
+  const details = repository.calls.at(-1)[1];
+  assert.equal(details.transient, false, 'a validation failure is still permanent');
+  assert.match(details.reason, /calldata does not match the SeaDrop mintPublic signature/,
+    'the failing check must survive into the reason the user and the database both see');
+});
+
+test('errorReason folds in every validation issue and leaves other errors untouched', () => {
+  const many = new ValidationError([
+    { field:'quantity', message:'is invalid' },
+    { field:'chain', message:'is not supported' },
+  ]);
+  assert.equal(errorReason(many), 'Request validation failed: quantity is invalid; chain is not supported');
+  // Non-validation errors already carried a useful message and must not be reshaped.
+  assert.equal(errorReason(Object.assign(new Error('RPC unavailable'), { code:'RPC_UNAVAILABLE' })), 'RPC unavailable');
+  assert.equal(errorReason(undefined), 'Unknown scheduler failure');
+  // A ValidationError with no usable issues must still degrade to the plain message.
+  const empty = new ValidationError([]);
+  empty.issues = [];
+  assert.equal(errorReason(empty), 'Request validation failed');
+});
+
+// Live-reported: a phase schedule fired, OpenSea answered 409 "Drop is not currently active for
+// minting", and the task failed permanently and expired an hour later without ever retrying. A
+// stage rarely flips active at exactly its advertised second, so the request was early rather than
+// wrong -- the identical call succeeds once the stage opens.
+test('a stage that has not opened yet retries on a tight fixed interval instead of failing permanently', async () => {
+  const repository = repositoryFixture();
+  const notOpen = new ValidationError({ field:'contractAddress', message:'Drop is not currently active for minting' }, STAGE_NOT_OPEN);
+  const worker = createSchedulerWorker({
+    repository,
+    intentRepository:{ get:async () => null, getByIdempotencyKey:async () => null },
+    transactionEngine:{}, executeTask:async () => { throw notOpen; },
+    now:() => 1_000, retryBaseMs:5_000,
+  });
+
+  assert.equal(await worker.processTask(task()), 'retry', 'an unopened stage must not fail permanently');
+  const [, details, handed] = repository.calls.at(-1);
+  assert.equal(details.transient, true);
+  assert.equal(details.retryAt, 1_000 + STAGE_NOT_OPEN_RETRY_MS,
+    'retries one second out, not on the exponential backoff meant for congestion');
+  assert.equal(handed.maxAttempts, STAGE_NOT_OPEN_MAX_ATTEMPTS,
+    "the widened budget must reach the repository, since that is where retry-vs-fail is decided");
+});
+
+test('the widened stage budget is a ceiling, and never shrinks a task that already allows more', async () => {
+  const repository = repositoryFixture();
+  const worker = createSchedulerWorker({
+    repository,
+    intentRepository:{ get:async () => null, getByIdempotencyKey:async () => null },
+    transactionEngine:{},
+    executeTask:async () => { throw new ValidationError({ field:'contractAddress', message:'not active' }, STAGE_NOT_OPEN); },
+    now:() => 1_000,
+  });
+
+  await worker.processTask(task({ maxAttempts: 12 }));
+  assert.equal(repository.calls.at(-1)[2].maxAttempts, 12, 'a task configured with more attempts keeps them');
+});
+
+test('an ordinary validation failure stays permanent and keeps the exponential backoff for real transients', async () => {
+  assert.equal(isTransientFailure(new ValidationError({ field:'quantity', message:'is invalid' })), false,
+    'a malformed request stays malformed -- only the stage-not-open code is exempt');
+  assert.equal(isTransientFailure(new ValidationError({ field:'contractAddress', message:'not active' }, STAGE_NOT_OPEN)), true);
+
+  // A genuine transient must still back off exponentially rather than inheriting the 1s interval.
+  const repository = repositoryFixture();
+  const worker = createSchedulerWorker({
+    repository,
+    intentRepository:{ get:async () => null, getByIdempotencyKey:async () => null },
+    transactionEngine:{},
+    executeTask:async () => { throw Object.assign(new Error('RPC unavailable'), { code:'RPC_UNAVAILABLE' }); },
+    now:() => 1_000, retryBaseMs:100,
+  });
+  await worker.processTask(task({ attemptCount: 3 }));
+  assert.equal(repository.calls.at(-1)[1].retryAt, 1_000 + 400, 'exponential backoff is unchanged');
+  assert.equal(repository.calls.at(-1)[2].maxAttempts, 3, 'and its budget is untouched');
+});
+
+// The reported task fired well outside its stage's window and burned. The owner confirmed the phase
+// itself was not moved, so the stored time was wrong rather than stale -- which is the same recovery
+// either way: read the stage's real opening from OpenSea and re-arm to it, once.
+function stageWaitWorker(repository, { resolveStageStart, now = () => 1_000, mintTime = 1_000 } = {}) {
+  return {
+    worker: createSchedulerWorker({
+      repository,
+      intentRepository:{ get:async () => null, getByIdempotencyKey:async () => null },
+      transactionEngine:{},
+      executeTask:async () => { throw new ValidationError({ field:'contractAddress', message:'not active' }, STAGE_NOT_OPEN); },
+      now, resolveStageStart,
+    }),
+    spent: task({ attemptCount: STAGE_NOT_OPEN_MAX_ATTEMPTS, mintTime }),
+  };
+}
+
+test('once the retry burst is spent, the task re-arms to the stage\'s real opening time', async () => {
+  const repository = repositoryFixture();
+  const reopensAt = 1_000 + 90_000;
+  const { worker, spent } = stageWaitWorker(repository, { resolveStageStart: async () => reopensAt });
+
+  assert.equal(await worker.processTask(spent), 'retry', 'a resolvable opening must not be discarded');
+  const [, details, handed] = repository.calls.at(-1);
+  assert.equal(details.retryAt, reopensAt, 'it waits for the real opening, not another one-second tick');
+  assert.equal(handed.maxAttempts, STAGE_REARM_MAX_ATTEMPTS, 'the re-arm grants a second burst at the new time');
+});
+
+test('the re-arm happens at most once, and never consults the schedule again afterwards', async () => {
+  const repository = repositoryFixture();
+  let lookups = 0;
+  const { worker } = stageWaitWorker(repository, { resolveStageStart: async () => { lookups += 1; return 1_000 + 90_000; } });
+
+  // An attempt past the first burst is by definition already re-armed.
+  await worker.processTask(task({ attemptCount: STAGE_NOT_OPEN_MAX_ATTEMPTS + 1, mintTime: 1_000 }));
+  assert.equal(lookups, 0, 'a second lookup would mean a task could chase a stage indefinitely');
+  assert.equal(repository.calls.at(-1)[1].retryAt, 1_000 + STAGE_NOT_OPEN_RETRY_MS, 'back to the tight burst');
+  assert.equal(repository.calls.at(-1)[2].maxAttempts, STAGE_REARM_MAX_ATTEMPTS);
+});
+
+test('an opening beyond the fixed window, or none at all, fails instead of re-arming', async () => {
+  const beyond = repositoryFixture();
+  const { worker: farWorker, spent: farTask } = stageWaitWorker(beyond, {
+    resolveStageStart: async () => 1_000 + STAGE_REARM_WINDOW_MS + 60_000,
+  });
+  assert.equal(await farWorker.processTask(farTask), 'failed', 'a stage a day-plus out is not worth holding a task for');
+
+  const none = repositoryFixture();
+  const { worker: noneWorker, spent: noneTask } = stageWaitWorker(none, { resolveStageStart: async () => null });
+  assert.equal(await noneWorker.processTask(noneTask), 'failed');
+
+  // A lookup that throws must degrade to the ordinary outcome, never escape processTask.
+  const broken = repositoryFixture();
+  const { worker: brokenWorker, spent: brokenTask } = stageWaitWorker(broken, {
+    resolveStageStart: async () => { throw new Error('OpenSea unreachable'); },
+  });
+  assert.equal(await brokenWorker.processTask(brokenTask), 'failed');
 });

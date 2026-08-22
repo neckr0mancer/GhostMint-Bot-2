@@ -349,9 +349,14 @@ function contractDetailsText({ contractAddress, chainLabel, isSeaDrop, priceETH,
 // into whatever the first actionable mint screen turns out to be instead), but the schedule flow
 // is unchanged and still wants a plain details-then-Continue screen.
 function contractDetails(data) {
+  // Sold out means there is nothing left to schedule a mint against -- Continue would only lead
+  // into a task that could never fire successfully, so it drops the same way Mint Now does on
+  // collectionInfoCard, leaving Cancel as the only way forward.
+  const rows = data.soldOut ? [] : [[button('▶️ Continue', 'flow:mintdetailscontinue')]];
+  rows.push([button('❌ Cancel', 'flow:cancel:ask')]);
   return {
     text: contractDetailsText(data),
-    replyMarkup: keyboard([[button('▶️ Continue', 'flow:mintdetailscontinue')], [button('❌ Cancel', 'flow:cancel:ask')]]),
+    replyMarkup: keyboard(rows),
     parseMode: 'HTML',
   };
 }
@@ -367,16 +372,22 @@ function formatEthAmount(value, sym) {
 // between GMT+1 and GMT+2 across the year. Every stored/scheduled instant (task.mintTime, the
 // scheduler's own clock, startTime from the contract) stays true UTC; this only reformats what the
 // user reads on screen, so shifting it can never change when a mint actually fires.
+const SHORT_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 function formatGmtPlus1(value) {
   const date = value instanceof Date ? value : new Date(value);
   const shifted = new Date(date.getTime() + 60 * 60 * 1000);
-  return `${shifted.toISOString().slice(0, 19).replace('T', ' ')} GMT+1`;
+  const month = SHORT_MONTHS[shifted.getUTCMonth()];
+  const day = String(shifted.getUTCDate()).padStart(2, '0');
+  const hh = String(shifted.getUTCHours()).padStart(2, '0');
+  const mm = String(shifted.getUTCMinutes()).padStart(2, '0');
+  return `${month} ${day}, ${hh}:${mm} GMT+1`;
 }
 
 // Section AD Tier 1: the collection info card mint_guided's first screen renders instead of the
 // old merged-details-header (Section M) -- market cap, live floor, and volume alongside the
-// existing mint-specific fields, with "🪙 Mint Now" as one of several actions (Refresh, Copy CA,
-// View on OpenSea) rather than the screen's only purpose. stats is null until
+// existing mint-specific fields, with "🪙 Mint Now" as one of several actions (Refresh,
+// View on OpenSea) rather than the screen's only purpose. No dedicated Copy CA button -- the
+// contract address is already <code>-wrapped a few lines up, tap-to-copy without one. stats is null until
 // detectMintContract has been called with includeStats:true (server.js's job, not this file's);
 // every stats-derived line is simply omitted rather than shown as a placeholder when a field is
 // unavailable, the same "unknown is fine" convention contractDetailsText above already uses.
@@ -395,6 +406,41 @@ function stageSummaryLine(stage, sym) {
   const price = stage.priceETH !== null && stage.priceETH !== undefined ? `${stage.priceETH} ${sym}` : 'price TBD';
   const cap = stage.maxPerWallet !== null && stage.maxPerWallet !== undefined ? ` · max ${stage.maxPerWallet}/wallet` : '';
   return `${escapeTelegramHtml(label)} — ${price}${cap}`;
+}
+
+// Classifies a stage against the current time -- the only source of truth for "what's live/upcoming"
+// once a drop has more than the two OpenSea happens to name (activeStage/nextStage are just its own
+// convenience pointers into this same list). Mirrors mintFlowDecision.schedulableStages' own
+// "startTime in the future" definition of upcoming, without importing it (see the no-cross-import
+// note above collectionInfoCard).
+function classifyStage(stage, now) {
+  if (stage.endTime && stage.endTime * 1000 <= now) return 'ended';
+  if (stage.startTime && stage.startTime * 1000 > now) return 'upcoming';
+  return 'live';
+}
+
+const PHASE_STATUS_EMOJI = { ended: '⚫', live: '🟢', upcoming: '🔵' };
+const MAX_PHASE_LINES = 10;
+
+// One compact line per stage, capped so a drop with an unusually long stage list can't blow up the
+// card -- the phase picker (openSeaPhasePicker) shows every schedulable stage regardless, up to a
+// generous cap of its own, so nothing schedulable is actually hidden here, only summarized.
+function phaseLines(stages, sym, now) {
+  const lines = stages.slice(0, MAX_PHASE_LINES).map(stage => {
+    const status = classifyStage(stage, now);
+    const label = escapeTelegramHtml(stage.label || humanizeStageType(stage.stageType));
+    if (status === 'ended') {
+      const price = stage.priceETH !== null && stage.priceETH !== undefined ? (Number(stage.priceETH) === 0 ? 'Free' : `${stage.priceETH} ${sym}`) : 'price unknown';
+      return `${PHASE_STATUS_EMOJI.ended} ${label} — ${price} (ended)`;
+    }
+    const price = stage.priceETH !== null && stage.priceETH !== undefined ? (Number(stage.priceETH) === 0 ? 'Free' : `${stage.priceETH} ${sym}`) : 'price TBD';
+    const time = status === 'live'
+      ? (stage.endTime ? ` · ends ${formatGmtPlus1(stage.endTime * 1000)}` : '')
+      : ` · opens ${formatGmtPlus1(stage.startTime * 1000)}`;
+    return `${PHASE_STATUS_EMOJI[status]} ${label} — ${price}${time}`;
+  });
+  if (stages.length > MAX_PHASE_LINES) lines.push(`+${stages.length - MAX_PHASE_LINES} more — pick a phase to schedule to see the rest`);
+  return lines;
 }
 
 function collectionInfoCard({ contractAddress, chainLabel, chainSym, isSeaDrop, priceETH, priceUnknown, maxSupply, maxPerWallet, startTime, collection, soldOut, displayPrice, stats, drop, openSeaUrl }) {
@@ -445,19 +491,11 @@ function collectionInfoCard({ contractAddress, chainLabel, chainSym, isSeaDrop, 
   // Section AF -- "can't you read the phases from OpenSea and the contract?" On-chain SeaDrop only
   // ever exposes the ONE currently-configured PublicDrop struct (the Opens/Opened line below), so it
   // can never say what's coming after that. drop is null unless OpenSea actually tracks this
-  // contract as a drop -- omitted entirely rather than shown as a broken/empty section.
-  if (drop && (drop.activeStage || drop.nextStage || drop.stages.length > 1)) {
-    const phaseLines = [];
-    if (drop.stages.length > 1) phaseLines.push(`${drop.stages.length} phases total`);
-    if (drop.activeStage) {
-      const endsAt = drop.activeStage.endTime ? ` · ends ${formatGmtPlus1(drop.activeStage.endTime * 1000)}` : '';
-      phaseLines.push(`🟢 Live: ${stageSummaryLine(drop.activeStage, sym)}${endsAt}`);
-    }
-    if (drop.nextStage) {
-      const opensAt = drop.nextStage.startTime ? ` · opens ${formatGmtPlus1(drop.nextStage.startTime * 1000)}` : '';
-      phaseLines.push(`🔵 Next: ${stageSummaryLine(drop.nextStage, sym)}${opensAt}`);
-    }
-    lines.push('', '🎟️ <b>Phases (via OpenSea)</b>', ...phaseLines);
+  // contract as a drop -- omitted entirely rather than shown as a broken/empty section. Once sold
+  // out there is nothing left for a phase to gate access to, so the section is dropped even if OpenSea
+  // still hands back stale stage data for it.
+  if (!soldOut && drop?.stages?.length) {
+    lines.push('', `🎟️ <b>Phases (${drop.stages.length})</b>`, ...phaseLines(drop.stages, sym, Date.now()));
   }
 
   const limits = [];
@@ -480,25 +518,59 @@ function collectionInfoCard({ contractAddress, chainLabel, chainSym, isSeaDrop, 
   const utilityRow = [button('🔄 Refresh', 'flow:detailsrefresh')];
   if (openSeaUrl) utilityRow.push(urlButton('🔗 OpenSea', openSeaUrl));
 
-  const rows = [[button('🔥 Ape In', 'flow:mintdetailscontinue')]];
-  if (opensInFuture) rows.push([button('📅 Schedule for opening', `flow:schedulesuggest:${contractAddress}`)]);
-  // Section AF -- an allowlist/GTD/FCFS stage has no on-chain proof this app can construct itself;
-  // OpenSea's own backend resolves eligibility, so this is the path that actually works for those.
-  // Shown only when OpenSea confirms a stage is live right now -- there is nothing for it to mint
-  // against otherwise.
-  if (drop?.activeStage) rows.push([button('🎫 Mint via OpenSea', 'flow:mintviaopensea')]);
-  // A phase that hasn't opened yet has nothing to mint against -- being tapped-in and ready at the
-  // exact open is what cuts the time wasted, not a pre-check OpenSea has no way to answer ahead of
-  // time (see mintViaOpenSea's own notes). OpenSea only ever returns nextStage when nothing is
-  // currently minting, so this and the button above are never both shown at once.
-  if (drop?.nextStage) rows.push([button('🎫📅 Schedule for OpenSea phase', 'flow:scheduleviaopensea')]);
-  rows.push(utilityRow, [button('📋 Copy CA', 'flow:copyca')], [button('❌ Cancel', 'flow:cancel:ask')]);
+  // Sold out means there is nothing left to mint or schedule against -- only the info-only utility/
+  // cancel row below remains. Mint via OpenSea and Schedule for OpenSea phase are NOT mutually
+  // exclusive -- a stage can be live right now while a later one is separately upcoming, and both
+  // actions are genuinely useful at once; the generic on-chain "Schedule for opening" fallback (no
+  // eligibility proof this app can construct itself) is the only one gated on OpenSea having
+  // nothing to say at all, same reasoning as Discord's own row-budget-driven version of this.
+  const schedulable = (drop?.stages || []).filter(stage => stage.startTime && stage.startTime * 1000 > Date.now());
+  const rows = [];
+  if (!soldOut) {
+    rows.push([button('🔥 Ape In', 'flow:mintdetailscontinue')]);
+    // Section AF -- an allowlist/GTD/FCFS stage has no on-chain proof this app can construct itself;
+    // OpenSea's own backend resolves eligibility, so this is the path that actually works for those.
+    // Shown only when OpenSea confirms a stage is live right now -- there is nothing for it to mint
+    // against otherwise.
+    if (drop?.activeStage) rows.push([button('🎫 Mint via OpenSea', 'flow:mintviaopensea')]);
+    if (schedulable.length > 0) {
+      // A phase that hasn't opened yet has nothing to mint against -- being tapped-in and ready at
+      // the exact open is what cuts the time wasted, not a pre-check OpenSea has no way to answer
+      // ahead of time (see mintViaOpenSea's own notes). The count only shows once there's an actual
+      // choice to make (see afterScheduleViaOpenSeaTap) -- a single upcoming stage schedules itself.
+      const label = schedulable.length > 1 ? `🎫📅 Schedule OpenSea phase (${schedulable.length})` : '🎫📅 Schedule for OpenSea phase';
+      rows.push([button(label, 'flow:scheduleviaopensea')]);
+    } else if (opensInFuture) {
+      rows.push([button('📅 Schedule for opening', `flow:schedulesuggest:${contractAddress}`)]);
+    }
+  }
+  rows.push(utilityRow, [button('❌ Cancel', 'flow:cancel:ask')]);
 
   return {
     text: lines.join('\n'),
     replyMarkup: keyboard(rows),
     parseMode: 'HTML',
   };
+}
+
+// Section AF -- shown only when there's a genuine choice (see mintFlowDecision.afterScheduleViaOpenSeaTap);
+// a single upcoming stage schedules itself with no picker at all. One button per stage -- Telegram
+// has no hard row cap the way Discord does, but a soft cap still applies so an unusually long stage
+// list doesn't turn into a wall of buttons; callback_data carries the stage's index into
+// drop.stages (not its OpenSea uuid -- a 36-char uuid plus this prefix would blow past Telegram's
+// 64-byte callback_data limit, same reasoning Section AF's own flow:phase:<n>:<address> already
+// relies on).
+function openSeaPhasePicker(stages) {
+  const shown = stages.slice(0, MAX_PHASE_LINES);
+  const rows = shown.map(stage => [button(
+    `🎫📅 ${stage.label || humanizeStageType(stage.stageType)} — opens ${formatGmtPlus1(stage.startTime * 1000)}`,
+    `flow:scheduleviaopenseaphase:${stage.index}`,
+  )]);
+  const text = stages.length > MAX_PHASE_LINES
+    ? `Which phase should this be scheduled against? Showing the first ${MAX_PHASE_LINES} of ${stages.length}.`
+    : 'Which phase should this be scheduled against?';
+  rows.push([button('❌ Cancel', 'flow:cancel:ask')]);
+  return { text, replyMarkup: keyboard(rows), parseMode: 'HTML' };
 }
 
 // phaseNumber > 1 means this task is a later stage of a multi-stage drop (Section AF). Its price and
@@ -529,7 +601,7 @@ function taskConfirmation({ name, contractAddress, chainLabel, walletLabel, quan
 // stage that is live right now), so the only way to pre-arm every stage is one task per stage, each
 // with its own hand-entered time and price. Offering that as the obvious next tap is the feature --
 // the contract address rides in the callback data so the next phase skips straight past re-pasting.
-function taskScheduled({ name, contractAddress, mintTime, phaseNumber, viaOpenSea }) {
+function taskScheduled({ id, name, contractAddress, mintTime, phaseNumber, viaOpenSea }) {
   const phase = Number(phaseNumber) > 1 ? Number(phaseNumber) : 1;
   const armed = viaOpenSea
     ? `✅🎫 Armed via OpenSea: <b>${escapeTelegramHtml(name)}</b>`
@@ -544,6 +616,10 @@ function taskScheduled({ name, contractAddress, mintTime, phaseNumber, viaOpenSe
     ? "Got another OpenSea phase coming up? Head back to that contract's card and tap Schedule for OpenSea phase again once the next one shows."
     : 'Got another public stage? Stack another task for it: different time, different price, and the bot works down the list. An allowlist/GTD stage still can\'t go through Add phase (it has no price/time for you to type by hand) -- if OpenSea tracks the drop, use "Schedule for OpenSea phase" on its collection card instead.';
   const rows = viaOpenSea ? [] : [[button(`➕ Add phase ${phase + 1}`, `flow:phase:${phase + 1}:${contractAddress}`)]];
+  // Reuses the same task:cancel:ask:<id> step tasksMenu/taskActions already use -- a freshly
+  // scheduled task starts life in the 'scheduled' status, always cancellable, so no status check
+  // is needed here the way CANCELLABLE_TASK_STATUSES gates it elsewhere.
+  rows.push([button('❌ Cancel this schedule', `task:cancel:ask:${id}`)]);
   rows.push([button('🗓️ See all tasks', 'menu:tasks')], [button('⬅️ Back to base', 'menu:main')]);
   return {
     text: `${armed}\nFires: <b>${formatGmtPlus1(mintTime)}</b>\n\n${nextStageHint}`,
@@ -647,16 +723,18 @@ function sniperMenu(snipers) {
   if (!snipers.length) {
     return {
       text: '<b>🎯 Snipers</b>\n\nNo snipers configured.\n<i>Post-confirmation copy snipers replicate a target wallet\'s confirmed mint from one of yours -- not mempool front-running.</i>',
-      replyMarkup: keyboard([[button('⬅️ Back to base', 'menu:main')]]),
+      replyMarkup: keyboard([[button('➕ Create sniper', 'sniper:create:start')], [button('⬅️ Back to base', 'menu:main')]]),
       parseMode: 'HTML',
     };
   }
+  // The full address, never truncated -- a shortened display would still be <code>-wrapped and look
+  // tap-to-copy, but copying it hands back a truncated string that isn't a usable address at all.
   const list = snipers.map(s =>
-    `${s.active ? '🟢' : '⚪'} <b>${escapeTelegramHtml(s.label)}</b>\nTarget: <code>${s.targetAddress.slice(0, 10)}...</code>\nChain: ${s.chain} · Wallet: ${escapeTelegramHtml(s.walletLabel)}\nHits: ${s.hits || 0} · Fails: ${s.fails || 0}`,
+    `${s.active ? '🟢' : '⚪'} <b>${escapeTelegramHtml(s.label)}</b>\nTarget: <code>${s.targetAddress}</code>\nChain: ${s.chain} · Wallet: ${escapeTelegramHtml(s.walletLabel)}\nHits: ${s.hits || 0} · Fails: ${s.fails || 0}`,
   ).join('\n\n');
   return {
     text: `<b>🎯 Post-confirmation copy snipers (${snipers.length})</b>\n<i>Not mempool front-running: copying begins only after the source transaction confirms.</i>\n\n${list}`,
-    replyMarkup: keyboard([[button('⬅️ Back to base', 'menu:main')]]),
+    replyMarkup: keyboard([[button('➕ Create sniper', 'sniper:create:start')], [button('⬅️ Back to base', 'menu:main')]]),
     parseMode: 'HTML',
   };
 }
@@ -770,6 +848,49 @@ function gasTolerancePrompt({ currentGasGwei, ceilingGwei }) {
     replyMarkup: keyboard([
       [button(`✅ No extra limit (up to ${ceilingGwei} gwei)`, 'flow:gastoleranceaccept')],
       [button('✏️ Set my own gwei cap', 'flow:gastolerancemanual')],
+      [button('❌ Cancel', 'flow:cancel:ask')],
+    ]),
+    parseMode: 'HTML',
+  };
+}
+
+// Guided sniper-creation flow (mirrors src/sniper/sniperFlowDecision.js's step ordering). Only the
+// genuinely structured steps live here -- awaiting_label/awaiting_target and the tolerance
+// customize sub-fields are plain free-text prompts, inlined directly in server.js's renderFlowStep
+// the same way watch_guided's own awaiting_name step already is.
+
+// A real per-chain choice, unlike wallet create/import's EVM/Solana-collapsed chainPicker above --
+// the sniper's chain determines which chain's watcher/RPC pool ends up watching the target wallet,
+// so it has to be a specific chain, not an EVM-wide default. Mirrors gasMenu's own per-chain button
+// grid (chunk(items, 3)) rather than reusing chainPicker.
+function sniperChainSelect(supportedChains, chains) {
+  const chainButtons = supportedChains.map(value => button(chainButtonLabel(value, chains), `flow:sniperchain:${value}`));
+  const rows = chunk(chainButtons, 3);
+  rows.push([button('❌ Cancel', 'flow:cancel:ask')]);
+  return { text: 'Which chain does that wallet operate on?', replyMarkup: keyboard(rows), parseMode: 'HTML' };
+}
+
+// Every field here already has a working default in validateSniper -- accepting them is one tap;
+// customizing walks the three fields one at a time (awaiting_tolerance_gas/_value/_cap in
+// server.js), the same free-text-with-a-default-hint shape watch_guided's awaiting_config uses.
+function sniperTolerancePrompt({ maxGasGwei, maxValueETH, dailySpendingCapETH }) {
+  return {
+    text: `<b>⛽ Fee tolerance & caps</b>\nDefaults: max gas <b>${maxGasGwei} gwei</b> · max value per fire <b>${maxValueETH} ETH</b> · daily spend cap <b>${dailySpendingCapETH} ETH</b>.\n\nUse these, or set your own?`,
+    replyMarkup: keyboard([
+      [button('✅ Use these defaults', 'flow:snipertoleranceaccept')],
+      [button('✏️ Set my own', 'flow:snipertolerancemanual')],
+      [button('❌ Cancel', 'flow:cancel:ask')],
+    ]),
+    parseMode: 'HTML',
+  };
+}
+
+function sniperConfirmation(data) {
+  const fmt = (value, fallback) => (value === undefined || value === null ? `default (${fallback})` : value);
+  return {
+    text: `<b>🎯 Confirm sniper</b>\nLabel: <b>${escapeTelegramHtml(data.label)}</b>\nTarget: <code>${data.targetAddress}</code>\nChain: ${data.chain}\nWallet: ${escapeTelegramHtml(data.walletLabel)}\nMax gas: ${fmt(data.maxGasGwei, '200 gwei')}\nMax value/fire: ${fmt(data.maxValueETH, '0.1 ETH')}\nDaily cap: ${fmt(data.dailySpendingCapETH, '0.25 ETH')}\n\nCreate this sniper?`,
+    replyMarkup: keyboard([
+      [button('✅ Create', 'flow:sniperconfirm')],
       [button('❌ Cancel', 'flow:cancel:ask')],
     ]),
     parseMode: 'HTML',
@@ -890,6 +1011,8 @@ module.exports = {
   contractDetails,
   contractDetailsText,
   collectionInfoCard,
+  openSeaPhasePicker,
+  humanizeStageType,
   mintConfirmation,
   gasTolerancePrompt,
   sendConfirmation,
@@ -908,6 +1031,9 @@ module.exports = {
   MODE_META,
   gasMenu,
   sniperMenu,
+  sniperChainSelect,
+  sniperTolerancePrompt,
+  sniperConfirmation,
   activityMenu,
   adminOverviewMenu,
   formatGmtPlus1,

@@ -32,10 +32,11 @@ const { createSeaDropDiscoveryService } = require('./mint/seaDropDiscoveryServic
 const { createSeaDropPublicDropResolver } = require('./mint/seaDropPublicDropResolver');
 const { createOpenSeaService, OPENSEA_CHAIN_SLUGS } = require('./mint/openSeaService');
 const { createPriceFeedService } = require('./mint/priceFeedService');
-const { computeSeaDropValueWei } = require('./mint/seaDropCall');
+const { computeSeaDropValueWei, validateOpenSeaMintCall } = require('./mint/seaDropCall');
 const { SEADROP_MINT_SIGNATURE } = require('./mint/seaDropRegistry');
 const mintFlowDecision = require('./mint/mintFlowDecision');
 const watchRuleFlowDecision = require('./social/watchRuleFlowDecision');
+const sniperFlowDecision = require('./sniper/sniperFlowDecision');
 const { createSchedulerRepository } = require('./scheduler/schedulerRepository');
 const { createSchedulerWorker } = require('./scheduler/schedulerWorker');
 const { createSocialAdapters } = require('./social/adapters');
@@ -57,7 +58,7 @@ const { formatAdminOverview } = require('./governance/adminOverviewFormat');
 const { createKeyEncryption } = require('./security/keyEncryption');
 const { createRedactor } = require('./security/redaction');
 const { BotContextError, RateLimitError, commandName, createCommandRateLimiter,
-  escapeTelegramHtml, requireTextConfirmation,verifyTelegramContext } = require('./security/botSecurity');
+  escapeTelegramHtml, requireTextConfirmation,verifyTelegramContext, ACCOUNT_RATE_LIMIT_SCOPE } = require('./security/botSecurity');
 const { createActionGate, GateLockedError } = require('./security/actionGate');
 const { verifySecurityPassword } = require('./security/securityPassword');
 const { createBotSecurityRepository } = require('./security/botSecurityRepository');
@@ -155,13 +156,31 @@ const seaDropDiscoveryService = createSeaDropDiscoveryService({
   apiKey: CONFIG.etherscanApiKey,
   repository: contractValueRepository,
 });
-const openSeaService = createOpenSeaService({
+// Round 20 follow-up: read/display calls (getDrop/getCollectionMetadata/getCollectionStats/
+// resolveCollectionContract -- now hit on every paste, not just /info) route through a genuinely
+// separate OpenSea account's key when OPENSEA_READ_API_KEY is configured, so a rate-limit hit on
+// that side can never touch the account buildMintTransaction actually mints through. Unconfigured,
+// openSeaReadApiKey === openSeaApiKey (see config/index.js), so this composes down to the same
+// single-key behavior as before -- zero change for anyone who hasn't set the new var.
+const openSeaReadService = createOpenSeaService({
+  apiKey: CONFIG.openSeaReadApiKey,
+  repository: contractValueRepository,
+  log: msg => log(msg),
+});
+const openSeaWriteService = CONFIG.openSeaReadApiKey === CONFIG.openSeaApiKey ? openSeaReadService : createOpenSeaService({
   apiKey: CONFIG.openSeaApiKey,
   repository: contractValueRepository,
   // log is defined further below in this file (module-load order, not a real circular dependency)
   // -- safe because this closure isn't called until a real request comes in, long after log exists.
   log: msg => log(msg),
 });
+const openSeaService = {
+  getCollectionMetadata: openSeaReadService.getCollectionMetadata,
+  resolveCollectionContract: openSeaReadService.resolveCollectionContract,
+  getCollectionStats: openSeaReadService.getCollectionStats,
+  getDrop: openSeaReadService.getDrop,
+  buildMintTransaction: openSeaWriteService.buildMintTransaction,
+};
 const priceFeedService = createPriceFeedService();
 const governanceRepository = createPostgresGovernanceRepository(pool);
 const governance = createGovernanceService(governanceRepository);
@@ -269,6 +288,19 @@ const schedulerWorker = createSchedulerWorker({
   repository: schedulerRepository,
   intentRepository: transactionIntentRepository,
   transactionEngine,
+  // Answers "when does this task's stage actually open?" after the stage-not-open retry burst is
+  // spent, so the worker can re-arm once instead of discarding a task that exists precisely to be
+  // there at the open. Read live from OpenSea rather than from the time stored when the task was
+  // created -- a stored time that was wrong, or has since moved, is the whole case worth recovering.
+  // Matched on the stage label, which is what openSeaPhaseTaskData named the task after.
+  resolveStageStart: async task => {
+    if (!task.viaOpenSea) return null;
+    const wallet = DB.wallets.find(item => item.userId === task.userId && item.label === task.walletLabel);
+    if (!wallet) return null;
+    const drop = await openSeaService.getDrop(wallet.chain, task.contract);
+    const stage = drop?.stages?.find(item => item.label === task.name);
+    return stage?.startTime ? stage.startTime * 1_000 : null;
+  },
   executeTask: async (task, hooks) => {
     // Scheduled tasks are created while the owning account is in good standing, but the account can
     // be banned/suspended/deactivated afterward -- account-status enforcement otherwise only runs at
@@ -286,10 +318,14 @@ const schedulerWorker = createSchedulerWorker({
     // (not in schedulerWorker's TRANSIENT_CODES, so it fails permanently rather than retrying
     // against a wallet that will never become eligible by retrying alone).
     if (task.viaOpenSea) {
-      const built = await openSeaService.buildMintTransaction(wallet.chain, task.contract, wallet.address, task.qty || 1);
+      const qty = task.qty || 1;
+      const built = await openSeaService.buildMintTransaction(wallet.chain, task.contract, wallet.address, qty);
       if (!built) {
         throw new ValidationError({ field: 'contractAddress', message: "OpenSea couldn't build a mint for this contract right now -- it may not track this as a drop, or OpenSea is temporarily unavailable" });
       }
+      // Same check executeMintViaOpenSea applies to the manual path -- OpenSea's eligibility
+      // resolution is trusted, the mechanical shape of what it returned still is not.
+      validateOpenSeaMintCall({ built, contractAddress: task.contract, quantity: qty });
       const prepared = { chain: wallet.chain, calldata: built.data, valueWei: BigInt(built.valueWei),
         method: { signature: 'opensea:drops-mint' }, preview: { contractAddress: task.contract, callTarget: built.to } };
       return mintExecution.executePrepared({ userId: task.userId, wallet, prepared, triggerSource: 'scheduled',
@@ -624,7 +660,11 @@ async function executeMint({ wallet, contractAddr, fnName='mint', qty=1, priceET
 // transactionEngine.submit path as executeMint above, so governance ceilings, simulation, and gas
 // ceiling are all still enforced; OpenSea only ever supplies to/data/value. methodSignature is a
 // label for display/error-decoding purposes only, not a real ABI signature this app encoded.
-async function executeMintViaOpenSea({ wallet, contractAddr, chain, built, triggerSource='manual', gasGwei=null, maxGasGwei=null, onPreview }) {
+async function executeMintViaOpenSea({ wallet, contractAddr, chain, quantity, built, triggerSource='manual', gasGwei=null, maxGasGwei=null, onPreview }) {
+  // OpenSea's own eligibility resolution is trusted by design (see buildMintTransaction's own
+  // comment) -- this only checks the mechanical shape of what it handed back actually matches what
+  // was requested, before it gets signed and broadcast with real funds.
+  validateOpenSeaMintCall({ built, contractAddress: contractAddr, quantity });
   const prepared = {
     chain,
     calldata: built.data,
@@ -867,7 +907,7 @@ async function gateBlocks({ chatId, messageId, userId, action }) {
   await tgEditMenu(chatId, messageId, telegramMenus.gateUnlockPrompt({ action }));
   return true;
 }
-const FLOW_LABELS = { wallet_create: 'creating a wallet', wallet_import: 'importing a wallet', mint_guided: 'minting', send_guided: 'sending funds', export_guided: 'exporting a private key', task_guided: 'scheduling a mint', watch_guided: 'adding a watch rule' };
+const FLOW_LABELS = { wallet_create: 'creating a wallet', wallet_import: 'importing a wallet', mint_guided: 'minting', send_guided: 'sending funds', export_guided: 'exporting a private key', task_guided: 'scheduling a mint', watch_guided: 'adding a watch rule', sniper_guided: 'creating a sniper' };
 const FLOW_CONTINUATION_PREFIXES = { wallet_create: ['flow:chain:'], wallet_import: ['flow:chain:'],
   // Without this the abandon gate below would clear the flow on the very next tap -- including
   // the chain pick and the Import button the flow itself renders.
@@ -875,7 +915,7 @@ const FLOW_CONTINUATION_PREFIXES = { wallet_create: ['flow:chain:'], wallet_impo
   // No continuation buttons of its own -- the only tap it offers is Cancel, which the gate
   // above already exempts. Listed so the flow is not silently absent from this map.
   gate_unlock: [],
-  mint_guided: ['flow:mintdetailscontinue', 'flow:mintviaopensea', 'flow:scheduleviaopensea', 'flow:detailsrefresh', 'flow:copyca', 'flow:schedulesuggest:', 'flow:mintqty:', 'flow:priceaccept', 'flow:pricemanual', 'flow:wallettoggle:', 'flow:walletpick:', 'flow:walletcontinue', 'flow:gastoleranceaccept', 'flow:gastolerancemanual', 'flow:mintconfirm'],
+  mint_guided: ['flow:mintdetailscontinue', 'flow:mintviaopensea', 'flow:scheduleviaopensea', 'flow:scheduleviaopenseaphase:', 'flow:detailsrefresh', 'flow:schedulesuggest:', 'flow:mintqty:', 'flow:priceaccept', 'flow:pricemanual', 'flow:wallettoggle:', 'flow:walletpick:', 'flow:walletcontinue', 'flow:gastoleranceaccept', 'flow:gastolerancemanual', 'flow:mintconfirm'],
   send_guided: ['flow:sendwalletpick:', 'flow:sendamount:', 'flow:sendconfirm'],
   export_guided: ['flow:exportwalletpick:', 'flow:exportconfirm'],
   // Shares flow:mintdetailscontinue with mint_guided -- the contract-details screen and its
@@ -885,7 +925,8 @@ const FLOW_CONTINUATION_PREFIXES = { wallet_create: ['flow:chain:'], wallet_impo
   // flow:phase: is deliberately NOT listed: tapping "add phase N" on an older success screen while
   // some other flow is mid-air should raise the usual abandon prompt, not silently replace it.
   task_guided: ['flow:mintdetailscontinue', 'flow:mintqty:', 'flow:priceaccept', 'flow:pricemanual', 'flow:phasepriceaccept', 'flow:phasetimeaccept', 'flow:taskname:', 'flow:taskwalletpick:', 'flow:taskconfirm'],
-  watch_guided: ['flow:watchtype:', 'flow:watchmethod:', 'flow:watchconfirm'] };
+  watch_guided: ['flow:watchtype:', 'flow:watchmethod:', 'flow:watchconfirm'],
+  sniper_guided: ['flow:sniperchain:', 'flow:sniperwalletpick:', 'flow:snipertoleranceaccept', 'flow:snipertolerancemanual', 'flow:sniperconfirm'] };
 
 // Generic one-shot confirmation gate for simple "<command> <id> CONFIRM"-shaped destructive actions
 // (remove wallet, cancel/resume/retry task, remove watch rule) -- replaces typing the literal word
@@ -1018,7 +1059,8 @@ function renderFlowStep(flow, step, { userId, data = {} } = {}) {
     if (step === 'awaiting_contract') return { text: 'Send the contract address to mint from.', replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' };
     // Section AD Tier 1: the flow's real first screen -- market cap, volume, floor, holders
     // alongside the existing mint-specific fields, with Mint Now as one of several actions
-    // (Refresh, Copy CA, View on OpenSea) rather than a dead "tap to continue" pass-through.
+    // (Refresh, View on OpenSea) rather than a dead "tap to continue" pass-through. The contract
+    // address itself is already <code>-wrapped in the card text -- tap-to-copy without a button.
     if (step === 'awaiting_details') {
       return telegramMenus.collectionInfoCard({
         contractAddress: data.contractAddress,
@@ -1037,6 +1079,12 @@ function renderFlowStep(flow, step, { userId, data = {} } = {}) {
         drop: data.drop,
         openSeaUrl: data.openSeaUrl,
       });
+    }
+    // Section AF -- reached only when flow:scheduleviaopensea found more than one schedulable
+    // stage (mintFlowDecision.afterScheduleViaOpenSeaTap); re-derived from data.drop rather than
+    // stored separately, so a re-render (e.g. after a bot restart) shows the same list.
+    if (step === 'awaiting_phase_pick') {
+      return telegramMenus.openSeaPhasePicker(mintFlowDecision.schedulableStages({ drop: data.drop }));
     }
     if (step === 'awaiting_wallet') {
       const wallets = botCommands.wallets(userId);
@@ -1155,6 +1203,25 @@ function renderFlowStep(flow, step, { userId, data = {} } = {}) {
     }
     if (step === 'awaiting_confirm') return telegramMenus.watchRuleConfirmation(data);
   }
+  if (flow === 'sniper_guided') {
+    if (step === 'awaiting_label') return { text: 'What should we call this sniper? A short label to recognize it by.', replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' };
+    if (step === 'awaiting_target') return { text: 'Which wallet address should this sniper copy? Paste the address to watch.', replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' };
+    if (step === 'awaiting_chain') return telegramMenus.sniperChainSelect(CONFIG.supportedChains, CHAINS);
+    if (step === 'awaiting_wallet') {
+      return telegramMenus.walletPicker(botCommands.wallets(userId), { prefix: 'flow:sniperwalletpick', emptyHint: 'No wallets yet. Create one first from the Wallets menu.' });
+    }
+    if (step === 'awaiting_tolerance') {
+      return telegramMenus.sniperTolerancePrompt({ maxGasGwei: sniperFlowDecision.DEFAULTS.maxGasGwei,
+        maxValueETH: sniperFlowDecision.DEFAULTS.maxValueETH, dailySpendingCapETH: sniperFlowDecision.DEFAULTS.dailySpendingCapETH });
+    }
+    // Customize walks the three fields one at a time -- the same free-text-with-a-default-hint
+    // shape watch_guided's awaiting_config already uses, just a fixed 3-field sequence instead of
+    // a type-dependent list, since every sniper's tolerance step asks for the same three things.
+    if (step === 'awaiting_tolerance_gas') return { text: `Max gas, in gwei. Default is ${sniperFlowDecision.DEFAULTS.maxGasGwei}. Type a number, or send "default" to keep it.`, replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' };
+    if (step === 'awaiting_tolerance_value') return { text: `Max value per fire, in ETH. Default is ${sniperFlowDecision.DEFAULTS.maxValueETH}. Type a number, or send "default" to keep it.`, replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' };
+    if (step === 'awaiting_tolerance_cap') return { text: `Daily spending cap, in ETH. Default is ${sniperFlowDecision.DEFAULTS.dailySpendingCapETH}. Type a number, or send "default" to keep it.`, replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' };
+    if (step === 'awaiting_confirm') return telegramMenus.sniperConfirmation(data);
+  }
   return telegramMenus.mainMenu({});
 }
 
@@ -1196,7 +1263,10 @@ async function startMintFlow({ chatId, messageId, userId, multi, contractAddress
   }
   let detected;
   try {
-    detected = await botCommands.detectMintContract(userId, { contractAddress, quantity: 1, includeStats });
+    // includeDrop is unconditional for the card-rendering path -- but oneShot (/mintnow) reaches
+    // execution with zero taps in the common case and never shows this card at all, so fetching
+    // phases there is usually pure waste on a path whose whole point is speed.
+    detected = await botCommands.detectMintContract(userId, { contractAddress, quantity: 1, includeStats, includeDrop: !oneShot });
   } catch (error) {
     if (error instanceof ValidationError) {
       return send({ text: 'Could not find this contract on any supported chain. Double-check the address.', replyMarkup: telegramMenus.mainMenu({}).replyMarkup });
@@ -1411,6 +1481,29 @@ async function finishWatchRuleCreation(chatId, messageId, userId, flowData) {
   }
 }
 
+// Guided sniper-creation flow (Section R, Phase 1) -- Telegram had no way to create a sniper at
+// all before this (only /updatesniper to patch one that already exists), unlike every other
+// guided-flow feature here. Mirrors startWatchRuleFlow's shape exactly.
+async function startSniperFlow(chatId, messageId, userId) {
+  telegramFlowState.start('telegram', chatId, 'sniper_guided', 'awaiting_label', {});
+  return tgUpdate(chatId, messageId, renderFlowStep('sniper_guided', 'awaiting_label'));
+}
+
+async function finishSniperCreation(chatId, messageId, userId, flowData) {
+  const backToMenu = telegramMenus.mainMenu({}).replyMarkup;
+  try {
+    const sniper = await botCommands.createSniper(userId, { label: flowData.label, targetAddress: flowData.targetAddress,
+      chain: flowData.chain, walletLabel: flowData.walletLabel, maxGasGwei: flowData.maxGasGwei,
+      maxValueETH: flowData.maxValueETH, dailySpendingCapETH: flowData.dailySpendingCapETH });
+    telegramFlowState.clear('telegram', chatId);
+    return tgUpdate(chatId, messageId, { text: `✅ Sniper <b>${escapeTelegramHtml(sniper.label)}</b> is live, watching <code>${sniper.targetAddress}</code> on ${sniper.chain}.`, replyMarkup: backToMenu, parseMode: 'HTML' });
+  } catch (error) {
+    telegramFlowState.clear('telegram', chatId);
+    if (error instanceof ValidationError) return tgUpdate(chatId, messageId, { text: escapeTelegramHtml(validationReply(error)), replyMarkup: backToMenu, parseMode: 'HTML' });
+    throw error;
+  }
+}
+
 // Entry point for /send and the "Send" menu button. Single-wallet users (the common case, since
 // /start already auto-creates one) skip straight to the amount prompt -- same TG-05 auto-select
 // idiom startMintFlow already uses for wallet selection.
@@ -1521,6 +1614,12 @@ async function finishExportKeyExecution(chatId, messageId, userId, flowData, pla
   const backToMenu = telegramMenus.mainMenu({}).replyMarkup;
   const audit = value => Promise.resolve(botSecurityRepository.record(value)).catch(error => log(`Security audit write failed: ${safeError(error)}`));
   try {
+    // Scoped to the account, not to Telegram -- see ACCOUNT_RATE_LIMIT_SCOPE in botSecurity.js and
+    // the matching check in src/dashboard/api.js's exportWalletKey. userId here is already the
+    // canonical account UUID (withTelegramCallback resolves it via identity.resolveOrCreate), which
+    // is what lets the two surfaces share one bucket; platformUserId stays Telegram-native and is
+    // used only for the audit row below.
+    exportKeyRateLimiter.check(ACCOUNT_RATE_LIMIT_SCOPE, userId, 'exportkey');
     const exported = await botCommands.exportWalletKeyRaw(userId, flowData.walletLabel);
     telegramFlowState.clear('telegram', chatId);
     await tgUpdate(chatId, messageId, { text: `✅ Key for <b>${escapeTelegramHtml(exported.label)}</b> sent below. It self-deletes in ${EXPORT_KEY_TTL_MS / 1000}s -- deletion is a courtesy, not a control.`, replyMarkup: backToMenu, parseMode: 'HTML' });
@@ -1603,6 +1702,21 @@ async function advanceFromTaskDetails(chatId, messageId, userId, flow) {
   return advanceFromTaskQuantity(chatId, messageId, userId, flow, 1);
 }
 
+// Section AF -- shared shape for both the direct (single-stage) and picked (multi-stage) paths out
+// of flow:scheduleviaopensea, so they build identical task data from whichever stage was settled on.
+// name is the stage's own real label (or a humanized fallback from its stage_type) -- which phase
+// this is is a known fact now, not a guess, so advanceFromTaskWallet skips the manual naming step
+// entirely for a viaOpenSea task rather than asking the user to re-type something already known.
+function openSeaPhaseTaskData(mintFlowData, stage) {
+  return {
+    contractAddress: mintFlowData.contractAddress, chain: mintFlowData.chain, isSeaDrop: mintFlowData.isSeaDrop,
+    priceETH: 0, priceUnknown: false, viaOpenSea: true, collection: mintFlowData.collection,
+    mintTime: new Date(stage.startTime * 1000).toISOString(),
+    name: stage.label || telegramMenus.humanizeStageType(stage.stageType),
+    maxPerWallet: mintFlowData.maxPerWallet,
+  };
+}
+
 // Scheduling is always single-wallet (createTask has no batch concept), so this always shows a
 // picker rather than the mint flow's multi/single branching -- except the auto-select-with-one-
 // wallet shortcut, which still applies.
@@ -1618,14 +1732,21 @@ async function advanceFromTaskQuantity(chatId, messageId, userId, flow, quantity
 
 // After the wallet is picked: a price createTask can't resolve server-side either (Section G) is
 // asked for here rather than surfacing as a late validation error at the very end of the flow.
-// Otherwise, always ask for a name (there's no way to auto-detect that), then skip straight to
-// confirm if mintTime was already auto-filled from the contract's own opening time, or ask for it
-// by hand when it wasn't.
+// A viaOpenSea task already carries a real name (the actual stage's own label -- see
+// openSeaPhaseTaskData) since which phase this is is now a known fact, not a guess; asking the user
+// to name it themselves would be asking them to re-type something this app already knows for
+// certain. Every other task still asks (there's no way to auto-detect a name for those), then skips
+// straight to confirm if mintTime was already auto-filled from the contract's own opening time, or
+// asks for it by hand when it wasn't.
 async function advanceFromTaskWallet(chatId, messageId, userId, flow, walletLabel) {
   const data = { ...flow.data, walletLabel };
   if (data.priceUnknown && data.priceETH === undefined) {
     telegramFlowState.advance('telegram', chatId, 'awaiting_price', data);
     return tgUpdate(chatId, messageId, renderFlowStep('task_guided', 'awaiting_price', { userId, data }));
+  }
+  if (data.viaOpenSea && data.name) {
+    telegramFlowState.advance('telegram', chatId, 'awaiting_confirm', data);
+    return tgUpdate(chatId, messageId, renderFlowStep('task_guided', 'awaiting_confirm', { userId, data }));
   }
   telegramFlowState.advance('telegram', chatId, 'awaiting_name', data);
   return tgUpdate(chatId, messageId, renderFlowStep('task_guided', 'awaiting_name', { userId, data }));
@@ -1642,7 +1763,7 @@ async function finishTaskSchedule(chatId, messageId, userId, flowData) {
     });
     telegramFlowState.clear('telegram', chatId);
     return tgUpdate(chatId, messageId, telegramMenus.taskScheduled({
-      name: task.name, contractAddress: flowData.contractAddress,
+      id: task.id, name: task.name, contractAddress: flowData.contractAddress,
       mintTime: new Date(task.mintTime).toISOString(), phaseNumber: flowData.phaseNumber, viaOpenSea: task.viaOpenSea,
     }));
   } catch (error) {
@@ -1808,6 +1929,7 @@ async function handleFlowTextMessage(msg) {
     || (flow.flow === 'send_guided' && (flow.step === 'awaiting_amount' || flow.step === 'awaiting_destination'))
     || (flow.flow === 'task_guided' && ['awaiting_contract', 'awaiting_quantity', 'awaiting_price', 'awaiting_name', 'awaiting_time'].includes(flow.step))
     || (flow.flow === 'watch_guided' && ['awaiting_name', 'awaiting_config'].includes(flow.step))
+    || (flow.flow === 'sniper_guided' && ['awaiting_label', 'awaiting_target', 'awaiting_tolerance_gas', 'awaiting_tolerance_value', 'awaiting_tolerance_cap'].includes(flow.step))
   );
   if (!flow || !isTextStep) {
     // A bare contract address, or an opensea.io collection link (Section Q), wins over whatever
@@ -2008,6 +2130,50 @@ async function handleFlowTextMessage(msg) {
     }
     const data = { ...flow.data, config: { ...flow.data.config, [field]: parsed } };
     await advanceWatchConfigStep(chatId, null, userId, { data });
+  }
+  if (flow.flow === 'sniper_guided' && flow.step === 'awaiting_label') {
+    if (!value || value.length > 100) {
+      tgRender(chatId, { text: 'Label must be 1-100 characters. Try again.', replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' });
+      return;
+    }
+    const decision = sniperFlowDecision.afterLabel({ data: { ...flow.data, label: value } });
+    telegramFlowState.advance('telegram', chatId, decision.step, decision.data);
+    tgRender(chatId, renderFlowStep('sniper_guided', decision.step, { userId, data: decision.data }));
+    return;
+  }
+  if (flow.flow === 'sniper_guided' && flow.step === 'awaiting_target') {
+    if (!ethers.isAddress(value)) {
+      tgRender(chatId, { text: 'That does not look like a valid address. Try again.', replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' });
+      return;
+    }
+    const decision = sniperFlowDecision.afterTarget({ data: { ...flow.data, targetAddress: value } });
+    telegramFlowState.advance('telegram', chatId, decision.step, decision.data);
+    tgRender(chatId, renderFlowStep('sniper_guided', decision.step, { userId, data: decision.data }));
+    return;
+  }
+  if (flow.flow === 'sniper_guided' && ['awaiting_tolerance_gas', 'awaiting_tolerance_value', 'awaiting_tolerance_cap'].includes(flow.step)) {
+    // "default" (or an empty send) keeps validateSniper's own fallback for that field -- undefined
+    // reaches createSniper as "not provided", same as accepting all three defaults up front does.
+    const parsed = /^default$/i.test(value) ? undefined : Number(value);
+    if (parsed !== undefined && (!Number.isFinite(parsed) || parsed < 0)) {
+      tgRender(chatId, { text: 'Send a non-negative number, or "default" to keep the default.', replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' });
+      return;
+    }
+    if (flow.step === 'awaiting_tolerance_gas') {
+      const data = { ...flow.data, maxGasGwei: parsed };
+      telegramFlowState.advance('telegram', chatId, 'awaiting_tolerance_value', data);
+      tgRender(chatId, renderFlowStep('sniper_guided', 'awaiting_tolerance_value', { userId, data }));
+      return;
+    }
+    if (flow.step === 'awaiting_tolerance_value') {
+      const data = { ...flow.data, maxValueETH: parsed };
+      telegramFlowState.advance('telegram', chatId, 'awaiting_tolerance_cap', data);
+      tgRender(chatId, renderFlowStep('sniper_guided', 'awaiting_tolerance_cap', { userId, data }));
+      return;
+    }
+    const decision = sniperFlowDecision.afterTolerance({ data: flow.data, maxGasGwei: flow.data.maxGasGwei, maxValueETH: flow.data.maxValueETH, dailySpendingCapETH: parsed });
+    telegramFlowState.advance('telegram', chatId, decision.step, decision.data);
+    tgRender(chatId, renderFlowStep('sniper_guided', decision.step, { userId, data: decision.data }));
   }
 }
 
@@ -2281,6 +2447,10 @@ if (BOT_TOKEN) {
       if (await gateBlocks({ chatId, messageId, userId, action: 'snipers' })) return;
       return tgEditMenu(chatId, messageId, telegramMenus.sniperMenu(botCommands.snipers(userId)));
     }
+    if (data === 'sniper:create:start') {
+      if (await gateBlocks({ chatId, messageId, userId, action: 'snipers' })) return;
+      return startSniperFlow(chatId, messageId, userId);
+    }
     if (data === 'menu:watch' || data === 'watch:list') {
       if (await gateBlocks({ chatId, messageId, userId, action: 'watchrules' })) return;
       return tgEditMenu(chatId, messageId, telegramMenus.watchRulesList(await botCommands.watchRules(userId)));
@@ -2469,26 +2639,39 @@ if (BOT_TOKEN) {
     // Section AF -- a phase that hasn't opened yet has nothing to mint against, so there's no
     // eligibility to pre-check (see mintViaOpenSea's own notes); being scheduled and ready right at
     // open is what actually cuts the wasted time. Switches from mint_guided to a task_guided flow
-    // pre-filled with the next stage's own opening time (mirrors startTaskScheduleFlow's own
+    // pre-filled with the chosen stage's own opening time (mirrors startTaskScheduleFlow's own
     // phaseNumber>1 branch) -- quantity is always 1, no price step (OpenSea determines it), no time
-    // step (already known from drop.nextStage).
+    // step (already known from the stage). A single schedulable stage goes straight there
+    // (afterScheduleViaOpenSeaTap); more than one shows a picker first (awaiting_phase_pick).
     if (data === 'flow:scheduleviaopensea') {
       const flow = telegramFlowState.get('telegram', chatId);
-      if (!flow || flow.flow !== 'mint_guided' || flow.step !== 'awaiting_details' || !flow.data.drop?.nextStage) return;
-      const taskData = {
-        contractAddress: flow.data.contractAddress, chain: flow.data.chain, isSeaDrop: flow.data.isSeaDrop,
-        priceETH: 0, priceUnknown: false, viaOpenSea: true, collection: flow.data.collection,
-        mintTime: new Date(flow.data.drop.nextStage.startTime * 1000).toISOString(),
-      };
-      const started = telegramFlowState.start('telegram', chatId, 'task_guided', 'awaiting_wallet', taskData);
-      return advanceFromTaskQuantity(chatId, messageId, userId, started, 1);
+      if (!flow || flow.flow !== 'mint_guided' || flow.step !== 'awaiting_details') return;
+      const decision = mintFlowDecision.afterScheduleViaOpenSeaTap({ drop: flow.data.drop });
+      if (decision.type === 'pick') {
+        telegramFlowState.advance('telegram', chatId, 'awaiting_phase_pick', flow.data);
+        return tgUpdate(chatId, messageId, telegramMenus.openSeaPhasePicker(decision.stages));
+      }
+      if (!decision.stage) return;
+      const taskData = openSeaPhaseTaskData(flow.data, decision.stage);
+      const started = telegramFlowState.start('telegram', chatId, 'task_guided', 'awaiting_details', taskData);
+      return advanceFromTaskDetails(chatId, messageId, userId, started);
+    }
+    if (data.startsWith('flow:scheduleviaopenseaphase:')) {
+      const flow = telegramFlowState.get('telegram', chatId);
+      if (!flow || flow.flow !== 'mint_guided' || flow.step !== 'awaiting_phase_pick') return;
+      const index = Number(data.slice('flow:scheduleviaopenseaphase:'.length));
+      const stage = flow.data.drop?.stages?.[index];
+      if (!stage) return;
+      const taskData = openSeaPhaseTaskData(flow.data, stage);
+      const started = telegramFlowState.start('telegram', chatId, 'task_guided', 'awaiting_details', taskData);
+      return advanceFromTaskDetails(chatId, messageId, userId, started);
     }
     if (data === 'flow:detailsrefresh') {
       const flow = telegramFlowState.get('telegram', chatId);
       if (!flow || flow.flow !== 'mint_guided' || flow.step !== 'awaiting_details') return;
       let detected;
       try {
-        detected = await botCommands.detectMintContract(userId, { contractAddress: flow.data.contractAddress, quantity: 1, includeStats: Boolean(flow.data.includeStats) });
+        detected = await botCommands.detectMintContract(userId, { contractAddress: flow.data.contractAddress, quantity: 1, includeStats: Boolean(flow.data.includeStats), includeDrop: true });
       } catch {
         return; // Transient lookup failure -- leave the card showing its last-known values.
       }
@@ -2504,13 +2687,6 @@ if (BOT_TOKEN) {
       };
       telegramFlowState.advance('telegram', chatId, 'awaiting_details', refreshed);
       return tgEditMenu(chatId, messageId, renderFlowStep('mint_guided', 'awaiting_details', { userId, data: refreshed }));
-    }
-    if (data === 'flow:copyca') {
-      const flow = telegramFlowState.get('telegram', chatId);
-      if (!flow || flow.flow !== 'mint_guided' || !flow.data.contractAddress) return;
-      // A plain, untracked message (not the anchored panel) -- purely a copy-friendly echo of the
-      // address already shown on the card, so tapping it never moves or replaces the live panel.
-      return tgMenu(chatId, { text: `<code>${flow.data.contractAddress}</code>`, parseMode: 'HTML' });
     }
     if (data === 'flow:mintqty:x') {
       const flow = telegramFlowState.get('telegram', chatId);
@@ -2618,6 +2794,41 @@ if (BOT_TOKEN) {
       const flow = telegramFlowState.get('telegram', chatId);
       if (!flow || flow.flow !== 'watch_guided') return;
       return finishWatchRuleCreation(chatId, messageId, userId, flow.data);
+    }
+    if (data.startsWith('flow:sniperchain:')) {
+      const chain = data.slice('flow:sniperchain:'.length);
+      const flow = telegramFlowState.get('telegram', chatId);
+      if (!flow || flow.flow !== 'sniper_guided' || flow.step !== 'awaiting_chain') return;
+      const wallets = botCommands.wallets(userId);
+      const decision = sniperFlowDecision.afterChain({ data: { ...flow.data, chain }, wallets });
+      telegramFlowState.advance('telegram', chatId, decision.step, decision.data);
+      return tgEditMenu(chatId, messageId, renderFlowStep('sniper_guided', decision.step, { userId, data: decision.data }));
+    }
+    if (data.startsWith('flow:sniperwalletpick:')) {
+      const label = data.slice('flow:sniperwalletpick:'.length);
+      const flow = telegramFlowState.get('telegram', chatId);
+      if (!flow || flow.flow !== 'sniper_guided' || flow.step !== 'awaiting_wallet') return;
+      const decision = sniperFlowDecision.afterWalletSelection({ data: { ...flow.data, walletLabel: label } });
+      telegramFlowState.advance('telegram', chatId, decision.step, decision.data);
+      return tgEditMenu(chatId, messageId, renderFlowStep('sniper_guided', decision.step, { userId, data: decision.data }));
+    }
+    if (data === 'flow:snipertoleranceaccept') {
+      const flow = telegramFlowState.get('telegram', chatId);
+      if (!flow || flow.flow !== 'sniper_guided' || flow.step !== 'awaiting_tolerance') return;
+      const decision = sniperFlowDecision.afterTolerance({ data: flow.data, maxGasGwei: undefined, maxValueETH: undefined, dailySpendingCapETH: undefined });
+      telegramFlowState.advance('telegram', chatId, decision.step, decision.data);
+      return tgEditMenu(chatId, messageId, renderFlowStep('sniper_guided', decision.step, { userId, data: decision.data }));
+    }
+    if (data === 'flow:snipertolerancemanual') {
+      const flow = telegramFlowState.get('telegram', chatId);
+      if (!flow || flow.flow !== 'sniper_guided' || flow.step !== 'awaiting_tolerance') return;
+      telegramFlowState.advance('telegram', chatId, 'awaiting_tolerance_gas', flow.data);
+      return tgEditMenu(chatId, messageId, renderFlowStep('sniper_guided', 'awaiting_tolerance_gas'));
+    }
+    if (data === 'flow:sniperconfirm') {
+      const flow = telegramFlowState.get('telegram', chatId);
+      if (!flow || flow.flow !== 'sniper_guided') return;
+      return finishSniperCreation(chatId, messageId, userId, flow.data);
     }
     if (data.startsWith('flow:walletpick:')) {
       const label = data.slice('flow:walletpick:'.length);
@@ -3272,7 +3483,7 @@ const botCommands = createBotCommandService({
     return intent;
   },
   executeMintViaOpenSea: async ({ userId, wallet, request, built }) => {
-    const intent = await executeMintViaOpenSea({ wallet, contractAddr: request.contractAddress, chain: request.chain, built,
+    const intent = await executeMintViaOpenSea({ wallet, contractAddr: request.contractAddress, chain: request.chain, quantity: request.quantity, built,
       triggerSource: 'manual', gasGwei: request.gasGwei, maxGasGwei: request.maxGasGwei });
     await recordMintActivity({ userId, wallet, quantity: request.quantity, intent, chain: request.chain });
     return intent;

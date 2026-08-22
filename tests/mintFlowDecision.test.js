@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { afterDetails, afterQuantity, afterWalletSelection, afterPriceResolved, afterGasToleranceResolved } = require('../src/mint/mintFlowDecision');
+const { afterDetails, afterQuantity, afterWalletSelection, afterPriceResolved, afterGasToleranceResolved, schedulableStages, afterScheduleViaOpenSeaTap } = require('../src/mint/mintFlowDecision');
 
 test('afterDetails asks quantity when maxPerWallet > 1', () => {
   const result = afterDetails({ data: { maxPerWallet: 3 }, wallets: [{ label: 'a' }] });
@@ -80,4 +80,41 @@ test('afterGasToleranceResolved always lands on confirm and carries the chosen (
   const noLimit = afterGasToleranceResolved({ data: { multi: true, selectedWallets: ['a', 'b'] }, maxGasGwei: null });
   assert.equal(noLimit.step, 'awaiting_confirm');
   assert.equal(noLimit.data.maxGasGwei, null);
+});
+
+const NOW = 1_800_000_000_000; // fixed instant so past/future is deterministic regardless of when the suite runs
+
+function stage(startTime, overrides = {}) {
+  return { uuid: `s${startTime}`, label: null, startTime, endTime: startTime + 3600, priceETH: 0.05, maxPerWallet: 1, stageType: 'public_sale', ...overrides };
+}
+
+test('schedulableStages returns only future-starting stages, chronological, each carrying its original index into drop.stages', () => {
+  const now = NOW / 1000;
+  const drop = { stages: [stage(now - 100), stage(now + 200), stage(now - 50), stage(now + 100)] };
+  const result = schedulableStages({ drop, now: NOW });
+  assert.deepEqual(result.map(s => s.index), [3, 1], 'index 3 (now+100) sorts before index 1 (now+200), original positions preserved');
+});
+
+test('schedulableStages treats a stage with no startTime at all as unschedulable, and a missing/null drop as empty', () => {
+  const now = NOW / 1000;
+  const drop = { stages: [stage(now + 100, { startTime: null }), stage(now + 200)] };
+  assert.deepEqual(schedulableStages({ drop, now: NOW }).map(s => s.uuid), [`s${now + 200}`]);
+  assert.deepEqual(schedulableStages({ drop: null, now: NOW }), []);
+  assert.deepEqual(schedulableStages({ drop: { stages: [] }, now: NOW }), []);
+});
+
+test('afterScheduleViaOpenSeaTap goes direct with zero or one schedulable stage, and asks the caller to pick with more than one', () => {
+  const now = NOW / 1000;
+  const none = afterScheduleViaOpenSeaTap({ drop: { stages: [] }, now: NOW });
+  assert.equal(none.type, 'direct');
+  assert.equal(none.stage, null);
+
+  const single = stage(now + 100);
+  const one = afterScheduleViaOpenSeaTap({ drop: { stages: [single] }, now: NOW });
+  assert.equal(one.type, 'direct');
+  assert.equal(one.stage.uuid, single.uuid);
+
+  const two = afterScheduleViaOpenSeaTap({ drop: { stages: [stage(now + 100), stage(now + 200)] }, now: NOW });
+  assert.equal(two.type, 'pick');
+  assert.equal(two.stages.length, 2);
 });

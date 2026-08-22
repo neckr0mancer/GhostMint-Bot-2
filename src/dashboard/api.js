@@ -1,7 +1,7 @@
 const {randomBytes,randomUUID}=require('node:crypto');
 const {LinkCodeError}=require('../identity/identityService');
 const {UsernameTakenError}=require('../identity/postgresIdentityRepository');
-const {BotContextError,RateLimitError,requireTextConfirmation}=require('../security/botSecurity');
+const {ACCOUNT_RATE_LIMIT_SCOPE,BotContextError,RateLimitError,requireTextConfirmation}=require('../security/botSecurity');
 const {ValidationError,sendValidationError,requestSchemas}=require('../validation/domain');
 const {AccountBlockedError,AuthorizationError}=require('../governance/governanceService');
 const {GasLookupError}=require('../gas/etherscanGasService');
@@ -60,12 +60,27 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLo
   // misaligning real values like ceiling amounts into the wrong slots. Reject it here, before the
   // join, while the original field name is still known -- by the time validation runs deeper in the
   // call chain the string has already been split apart and the original association is lost.
+  //
+  // Live-reported bug (both this and "also other admin stuff too"): a genuinely BLANK field passes
+  // the whitespace check above (there's no space to find in ''), but is exactly as dangerous once
+  // joined and re-split -- adminCommandService's split(/\s+/) collapses consecutive whitespace, so a
+  // blank field vanishes from the token stream entirely and every field after it silently shifts
+  // into the wrong slot instead of failing loudly. Confirmed live: leaving "Platform user ID" blank
+  // on the Advanced mode access form put the literal string "inherit" into platformUserId and left
+  // advancedModesAllowed undefined. Every field here must be a real, present, non-blank token --
+  // a field that's genuinely allowed to mean "leave this alone" (retention days, suspension
+  // duration) is the caller's job to fill with an explicit sentinel value ('off', 'indefinite',
+  // etc.) before it ever reaches this function, the same way RestrictAccountControl's durationDays
+  // already does; this function has no way to know which blanks are intentional.
   function adminInput(actionName,body={}){
     const fields=ADMIN_FIELDS[actionName];
     if(!fields)throw new ValidationError({field:'action',message:'is not supported'});
     for(const field of fields){
       if(field==='reason')continue;
       const value=body[field];
+      if(value===undefined||value===null||(typeof value==='string'&&value.trim()==='')){
+        throw new ValidationError({field,message:'is required'});
+      }
       if(typeof value==='string' && /\s/.test(value.trim())){
         throw new ValidationError({field,message:'must not contain spaces -- admin actions use a shared single-token command syntax; try hyphens or underscores instead'});
       }
@@ -190,19 +205,18 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLo
     // encrypted blob ever comes back. That password is verified here, against the stored hash,
     // before it's trusted for anything -- and the same verified value then doubles as the keystore's
     // own encryption password, so there is exactly one password to remember for this whole flow.
-    // Export rate limiting REMOVED at the owner's request (2026-08-21), here and on Telegram's
-    // /exportkey. What still stands in front of a key export: the security password is verified
-    // against the stored hash on every attempt, confirmation must be the literal CONFIRM, and every
-    // attempt -- success or failure -- is written to the security audit log below.
-    //
-    // What was lost, stated so restoring it is a decision rather than a rediscovery: this endpoint
-    // verifies a password, so with no limiter it is an unmetered oracle for guessing the security
-    // password by anyone already holding a live session cookie. The audit log records those attempts
-    // but does not stop them.
-    //
-    // setSecurityPassword's own 'securitypassword' check KEEPS its limiter. It shares this instance
-    // but is a different command in a different bucket, and nothing was asked about it.
+    // Rate limiting is scoped to the ACCOUNT, not to this surface: the check below passes
+    // ACCOUNT_RATE_LIMIT_SCOPE where it would normally pass 'dashboard', and Telegram's /exportkey
+    // passes the same constant, so both land on one `account:<userId>:exportkey` bucket rather than
+    // one bucket each. Sharing the limiter instance alone was never enough -- createCommandRateLimiter
+    // keys on platform too, so a per-platform string silently doubled the real ceiling. Note this is
+    // deliberately NOT done for 'securitypassword' above, which stays per-platform.
     exportWalletKey:action(async(req,res)=>{confirmation(req);noStore(res);
+      try{exportKeyRateLimiter.check(ACCOUNT_RATE_LIMIT_SCOPE,user(req),'exportkey');}
+      catch(error){
+        if(error instanceof RateLimitError){await auditExportKey(req,'rate_limited','export key rate limit exceeded');res.set('Retry-After',String(Math.ceil(error.retryAfterMs/1000)));return res.status(429).json({error:'Too many export attempts'});}
+        throw error;
+      }
       const {securityPassword}=requestSchemas.walletExport(req.body||{});
       const storedHash=await identityRepository.getSecurityPasswordHash(user(req));
       if(!storedHash){await auditExportKey(req,'failure','no security password set');return res.status(400).json({error:'Set a security password first.',code:'SECURITY_PASSWORD_NOT_SET'});}

@@ -69,4 +69,30 @@ function afterGasToleranceResolved({ data, maxGasGwei }) {
   return { step: 'awaiting_confirm', data: { ...data, maxGasGwei } };
 }
 
-module.exports = { afterDetails, afterQuantity, afterWalletSelection, afterPriceResolved, afterGasToleranceResolved };
+// Section AF -- every entry in drop.stages that hasn't opened yet, chronological. The only source
+// of truth for "what's schedulable" is real start times compared against now: OpenSea's own
+// activeStage/nextStage are just its convenience pointers into this same list (nextStage is
+// whichever one it calls next by start_time), not an exhaustive answer to "what's upcoming" once a
+// drop has more than two stages.
+function schedulableStages({ drop, now = Date.now() }) {
+  // index is the stage's position in the ORIGINAL drop.stages array (attached before filter/sort
+  // reorders things) -- it's what a picker's callback carries back, short enough to fit Telegram's
+  // 64-byte callback_data budget unlike OpenSea's own 36-char stage uuid, and the handler indexes
+  // back into drop.stages with it rather than trusting a re-fetched/re-ordered list.
+  return (drop?.stages || [])
+    .map((stage, index) => ({ ...stage, index }))
+    .filter(stage => stage.startTime && stage.startTime * 1000 > now)
+    .sort((a, b) => a.startTime - b.startTime);
+}
+
+// Tapping "Schedule for OpenSea phase": a single schedulable stage has nothing to choose between
+// (same "don't ask when there's only one option" principle afterQuantity already applies to wallet
+// auto-select), so it goes straight to scheduling that one. More than one genuinely needs the
+// user's own choice -- OpenSea drops aren't capped at any fixed stage count.
+function afterScheduleViaOpenSeaTap({ drop, now = Date.now() }) {
+  const stages = schedulableStages({ drop, now });
+  if (stages.length <= 1) return { type: 'direct', stage: stages[0] || null };
+  return { type: 'pick', stages };
+}
+
+module.exports = { afterDetails, afterQuantity, afterWalletSelection, afterPriceResolved, afterGasToleranceResolved, schedulableStages, afterScheduleViaOpenSeaTap };

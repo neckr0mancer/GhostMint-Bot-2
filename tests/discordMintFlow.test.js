@@ -166,7 +166,7 @@ test('multi:true reaches a genuine multi-select (min 2, max = wallet count) at t
   assert.deepEqual(select.options.map(o => o.value), ['alpha', 'beta', 'gamma']);
 });
 
-test('full batch-mint happy path: selecting more than one wallet in one tap reaches confirm with every wallet, and batchMint receives all of them', async () => {
+test('full batch-mint happy path: selecting wallets stays on the picker until Continue is tapped, then reaches confirm with every wallet, and batchMint receives all of them', async () => {
   const flowState = createFlowStateStore();
   const batches = [];
   const commands = baseCommands({
@@ -183,10 +183,28 @@ test('full batch-mint happy path: selecting more than one wallet in one tap reac
   await handler(slash);
   await handler(buttonInteraction('flow:mintdetailscontinue', 'batcher-3'));
 
-  const select = selectInteraction('flow:mintwalletmulti:select', ['alpha', 'gamma'], 'batcher-3');
-  await handler(select);
-  assert.match(select.updates[0].content, /Gas tolerance for this batch/);
-  // A batch mint asks for a gas tolerance before confirm -- a plain single mint never does.
+  // Each select submission only carries what Discord's dropdown had checked in that one session --
+  // picking 'alpha' first must not advance the flow, and must re-render the same picker (still
+  // 'awaiting_wallet') with 'alpha' pre-checked (default: true) and selected wallets recorded, not
+  // silently dropped.
+  const firstPick = selectInteraction('flow:mintwalletmulti:select', ['alpha'], 'batcher-3');
+  await handler(firstPick);
+  assert.equal(flowState.get('discord', 'batcher-3').step, 'awaiting_wallet');
+  assert.deepEqual(flowState.get('discord', 'batcher-3').data.selectedWallets, ['alpha']);
+  const reRenderedSelect = firstPick.updates[0].components[0].components[0];
+  assert.deepEqual(reRenderedSelect.options.filter(o => o.default).map(o => o.value), ['alpha']);
+  assert.match(firstPick.updates[0].content, /Selected so far: alpha/);
+
+  // Reopening the dropdown and checking 'gamma' too (Discord's real client would show 'alpha'
+  // already checked from `default: true` above, so the submitted values carry both).
+  const secondPick = selectInteraction('flow:mintwalletmulti:select', ['alpha', 'gamma'], 'batcher-3');
+  await handler(secondPick);
+  assert.equal(flowState.get('discord', 'batcher-3').step, 'awaiting_wallet');
+  assert.deepEqual(flowState.get('discord', 'batcher-3').data.selectedWallets, ['alpha', 'gamma']);
+  const continueButton = secondPick.updates[0].components[1].components[0];
+  assert.equal(continueButton.custom_id, 'flow:mintwalletmulti:continue');
+
+  await handler(buttonInteraction('flow:mintwalletmulti:continue', 'batcher-3'));
   assert.equal(flowState.get('discord', 'batcher-3').step, 'awaiting_gastolerance');
 
   const noLimit = buttonInteraction('flow:gastoleranceaccept', 'batcher-3');
@@ -370,11 +388,13 @@ test('flow:mintviaopensea is a no-op when the card has no live OpenSea stage, in
 // The full OpenSea floor/holders/volume table is reserved for /info's explicit, no-mint-intent
 // lookup -- a plain paste and /mint's own under-specified path get the leaner card (still real
 // live price/timing/sold-out status), matching Telegram's own startMintFlow(includeStats).
-test('a plain paste requests the leaner card (includeStats false), unlike /info', async () => {
+test('a plain paste requests the leaner card (includeStats false), unlike /info -- but both now request phases (includeDrop true)', async () => {
   const flowState = createFlowStateStore();
   const seenIncludeStats = [];
+  const seenIncludeDrop = [];
   const commands = baseCommands({ detectMintContract: async (userId, input) => {
     seenIncludeStats.push(input.includeStats);
+    seenIncludeDrop.push(input.includeDrop);
     return { chain: 'ethereum', isSeaDrop: false, priceKnown: true, valueWei: '1000000000000000000',
       maxSupply: 100, maxPerWallet: 1, startTime: null, endTime: null, collection: null, soldOut: false, displayPrice: null };
   } });
@@ -382,11 +402,13 @@ test('a plain paste requests the leaner card (includeStats false), unlike /info'
   const ctx = { identity, commands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT };
   await handleMintPasteMessage(ctx, mockMessage('0x0000000000000000000000000000000000000001', 'paster-stats-1'));
   assert.equal(seenIncludeStats[0], false);
+  assert.equal(seenIncludeDrop[0], true);
 
   const handler = createDiscordInteractionHandler(ctx);
   const info = chatInteraction('info', 'paster-stats-2', { contract: '0x0000000000000000000000000000000000000002' });
   await handler(info);
   assert.equal(seenIncludeStats[1], true);
+  assert.equal(seenIncludeDrop[1], true);
 });
 
 test('flow:detailsrefresh keeps requesting stats for an /info-opened card, and stays lean for a pasted one', async () => {
@@ -460,25 +482,6 @@ test('a transient failure during flow:detailsrefresh leaves the last-known card 
   assert.equal(refresh.updates.length, 1);
   assert.match(refresh.updates[0].content, /0x0000000000000000000000000000000000000001/);
   assert.equal(flowState.get('discord', 'paster-12').step, 'awaiting_details');
-});
-
-test('flow:copyca replies with a copy-friendly echo of the address without touching flow state or the origin message', async () => {
-  const flowState = createFlowStateStore();
-  const commands = baseCommands();
-  const identity = { resolveOrCreate: async () => 'internal-user' };
-  const ctx = { identity, commands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT };
-  const message = mockMessage('0x0000000000000000000000000000000000000001', 'paster-13');
-  await handleMintPasteMessage(ctx, message);
-
-  const handler = createDiscordInteractionHandler(ctx);
-  const copy = buttonInteraction('flow:copyca', 'paster-13');
-  await handler(copy);
-  assert.equal(copy.replies.length, 1);
-  assert.equal(copy.replies[0].ephemeral, true);
-  assert.match(copy.replies[0].content, /0x0000000000000000000000000000000000000001/);
-  assert.equal(copy.messageEdits.length, 0);
-  assert.equal(copy.updates.length, 0);
-  assert.equal(flowState.get('discord', 'paster-13').step, 'awaiting_details');
 });
 
 test('tapping Mint Now on a single wallet, maxPerWallet 1, known-price contract reaches the confirm screen with no further taps', async () => {

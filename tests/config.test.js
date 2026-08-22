@@ -49,6 +49,33 @@ test('reports only whether the Etherscan key is configured', () => {
   assert.doesNotMatch(result.stdout,new RegExp(key));
 });
 
+// Round 20 follow-up: OPENSEA_READ_API_KEY is optional and aliases OPENSEA_API_KEY when unset --
+// same "unconfigured means zero behavior change" shape as Round 15's RPC pool splits.
+test('OPENSEA_READ_API_KEY unconfigured aliases the main OpenSea key -- reports as not separate', () => {
+  const key='opensea-main-key';
+  // Explicit empty string, not just omitted: process.env already has this vars-from-the-real-.env
+  // problem for every optional key in this suite, but dotenv.config() (called by src/config itself)
+  // only fills in variables ABSENT from process.env -- an explicit empty string here is enough to
+  // count as "already set" and stops the real .env file's own OPENSEA_READ_API_KEY from leaking in.
+  const result=probeConfig({OPENSEA_API_KEY:key, OPENSEA_READ_API_KEY:''});
+  assert.equal(result.status,0,result.stderr);
+  const summary=JSON.parse(result.stdout).summary;
+  assert.equal(summary.openSeaConfigured,true);
+  assert.equal(summary.openSeaReadKeySeparate,false);
+});
+
+test('OPENSEA_READ_API_KEY configured is reported as a genuinely separate key, and neither key leaks into the summary', () => {
+  const mainKey='opensea-main-key';
+  const readKey='opensea-read-only-key';
+  const result=probeConfig({OPENSEA_API_KEY:mainKey, OPENSEA_READ_API_KEY:readKey});
+  assert.equal(result.status,0,result.stderr);
+  const summary=JSON.parse(result.stdout).summary;
+  assert.equal(summary.openSeaConfigured,true);
+  assert.equal(summary.openSeaReadKeySeparate,true);
+  assert.doesNotMatch(result.stdout,new RegExp(mainKey));
+  assert.doesNotMatch(result.stdout,new RegExp(readKey));
+});
+
 function probeConfig(overrides = {}) {
   return spawnSync(process.execPath, ['--eval', CONFIG_PROBE], {
     cwd: PROJECT_ROOT,

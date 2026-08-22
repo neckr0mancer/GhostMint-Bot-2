@@ -151,10 +151,15 @@ function formatEthAmount(value, sym) {
 // scheduler's own clock, startTime from the contract) stays true UTC; this only reformats what the
 // user reads on screen, so shifting it can never change when a mint actually fires. Mirrors
 // src/telegram/menus.js's formatGmtPlus1.
+const SHORT_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 function formatGmtPlus1(value) {
   const date = value instanceof Date ? value : new Date(value);
   const shifted = new Date(date.getTime() + 60 * 60 * 1000);
-  return `${shifted.toISOString().slice(0, 19).replace('T', ' ')} GMT+1`;
+  const month = SHORT_MONTHS[shifted.getUTCMonth()];
+  const day = String(shifted.getUTCDate()).padStart(2, '0');
+  const hh = String(shifted.getUTCHours()).padStart(2, '0');
+  const mm = String(shifted.getUTCMinutes()).padStart(2, '0');
+  return `${month} ${day}, ${hh}:${mm} GMT+1`;
 }
 
 // Section AD Tier 1 -- Discord counterpart to Telegram's collectionInfoCard: market cap, live
@@ -178,6 +183,42 @@ function stageSummaryLine(stage, sym) {
   const price = stage.priceETH !== null && stage.priceETH !== undefined ? `${stage.priceETH} ${sym}` : 'price TBD';
   const cap = stage.maxPerWallet !== null && stage.maxPerWallet !== undefined ? ` · max ${stage.maxPerWallet}/wallet` : '';
   return `${label} — ${price}${cap}`;
+}
+
+// Classifies a stage against the current time -- the only source of truth for "what's live/upcoming"
+// once a drop has more than the two OpenSea happens to name (activeStage/nextStage are just its own
+// convenience pointers into this same list). Mirrors mintFlowDecision.schedulableStages' own
+// "startTime in the future" definition of upcoming, without importing it (see the no-cross-import
+// note above collectionInfoCard).
+function classifyStage(stage, now) {
+  if (stage.endTime && stage.endTime * 1000 <= now) return 'ended';
+  if (stage.startTime && stage.startTime * 1000 > now) return 'upcoming';
+  return 'live';
+}
+
+const PHASE_STATUS_EMOJI = { ended: '⚫', live: '🟢', upcoming: '🔵' };
+const MAX_PHASE_LINES = 10;
+
+// One compact line per stage, capped so a drop with an unusually long stage list can't blow up the
+// card -- the phase picker (openSeaPhasePicker) shows every schedulable stage regardless, up to
+// Discord's own 25-option select limit, so nothing schedulable is actually hidden here, only
+// summarized.
+function phaseLines(stages, sym, now) {
+  const lines = stages.slice(0, MAX_PHASE_LINES).map(stage => {
+    const status = classifyStage(stage, now);
+    const label = stage.label || humanizeStageType(stage.stageType);
+    if (status === 'ended') {
+      const price = stage.priceETH !== null && stage.priceETH !== undefined ? (Number(stage.priceETH) === 0 ? 'Free' : `${stage.priceETH} ${sym}`) : 'price unknown';
+      return `${PHASE_STATUS_EMOJI.ended} ${label} — ${price} (ended)`;
+    }
+    const price = stage.priceETH !== null && stage.priceETH !== undefined ? (Number(stage.priceETH) === 0 ? 'Free' : `${stage.priceETH} ${sym}`) : 'price TBD';
+    const time = status === 'live'
+      ? (stage.endTime ? ` · ends ${formatGmtPlus1(stage.endTime * 1000)}` : '')
+      : ` · opens ${formatGmtPlus1(stage.startTime * 1000)}`;
+    return `${PHASE_STATUS_EMOJI[status]} ${label} — ${price}${time}`;
+  });
+  if (stages.length > MAX_PHASE_LINES) lines.push(`+${stages.length - MAX_PHASE_LINES} more — pick a phase to schedule to see the rest`);
+  return lines;
 }
 
 function collectionInfoCard({ contractAddress, chain, chainLabel, chainSym, isSeaDrop, priceETH, priceUnknown, maxSupply, maxPerWallet, startTime, collection, soldOut, displayPrice, stats, drop, openSeaUrl }) {
@@ -224,19 +265,12 @@ function collectionInfoCard({ contractAddress, chain, chainLabel, chainSym, isSe
   // Section AF -- "can't you read the phases from OpenSea and the contract?" On-chain SeaDrop only
   // ever exposes the ONE currently-configured PublicDrop struct (the Opens/Opened line below), so it
   // can never say what's coming after that. drop is null unless OpenSea actually tracks this
-  // contract as a drop -- omitted entirely rather than shown as a broken/empty section.
-  if (drop && (drop.activeStage || drop.nextStage || drop.stages.length > 1)) {
-    const phaseLines = [];
-    if (drop.stages.length > 1) phaseLines.push(`${drop.stages.length} phases total`);
-    if (drop.activeStage) {
-      const endsAt = drop.activeStage.endTime ? ` · ends ${formatGmtPlus1(drop.activeStage.endTime * 1000)}` : '';
-      phaseLines.push(`🟢 Live: ${stageSummaryLine(drop.activeStage, sym)}${endsAt}`);
-    }
-    if (drop.nextStage) {
-      const opensAt = drop.nextStage.startTime ? ` · opens ${formatGmtPlus1(drop.nextStage.startTime * 1000)}` : '';
-      phaseLines.push(`🔵 Next: ${stageSummaryLine(drop.nextStage, sym)}${opensAt}`);
-    }
-    lines.push('', '### Phases (via OpenSea)', ...phaseLines);
+  // contract as a drop -- omitted entirely rather than shown as a broken/empty section. Once sold
+  // out there is nothing left for a phase to gate access to, so the section is dropped even if OpenSea
+  // still hands back stale stage data for it. Shows every stage OpenSea knows about, not just
+  // whichever two it names active/next -- a drop isn't capped at any fixed stage count.
+  if (!soldOut && drop?.stages?.length) {
+    lines.push('', `### Phases (${drop.stages.length})`, ...phaseLines(drop.stages, sym, Date.now()));
   }
 
   const limits = [];
@@ -259,21 +293,59 @@ function collectionInfoCard({ contractAddress, chain, chainLabel, chainSym, isSe
   const utilityRow = [button('🔄 Refresh', 'flow:detailsrefresh')];
   if (openSeaUrl) utilityRow.push(urlButton('🔗 OpenSea', openSeaUrl));
 
-  const rows = [row([button('🪙 Mint Now', 'flow:mintdetailscontinue', 'success')])];
-  if (opensInFuture) rows.push(row([button('📅 Schedule for opening', 'flow:schedulesuggest', 'success')]));
-  // Section AF -- an allowlist/GTD/FCFS stage has no on-chain proof this app can construct itself;
-  // OpenSea's own backend resolves eligibility, so this is the path that actually works for those.
-  // Shown only when OpenSea confirms a stage is live right now -- there is nothing for it to mint
-  // against otherwise.
-  if (drop?.activeStage) rows.push(row([button('🎫 Mint via OpenSea', 'flow:mintviaopensea')]));
-  // A phase that hasn't opened yet has nothing to mint against -- being tapped-in and ready at the
-  // exact open is what cuts the time wasted, not a pre-check OpenSea has no way to answer ahead of
-  // time (see mintViaOpenSea's own notes). OpenSea only ever returns nextStage when nothing is
-  // currently minting, so this and the button above are never both shown at once.
-  if (drop?.nextStage) rows.push(row([button('🎫📅 Schedule for OpenSea phase', 'flow:scheduleviaopensea')]));
-  rows.push(row(utilityRow), row([button('📋 Copy CA', 'flow:copyca')]), row([button('❌ Cancel', 'flow:cancel:ask', 'danger')]));
+  // Discord hard-caps a message at 5 action rows: Mint Now + Mint via OpenSea + Schedule for
+  // OpenSea phase + the utility row (Refresh/OpenSea) + Cancel is the worst case, exactly 5 -- see
+  // menuShape.test.js's pinned case for this combination. Copy CA was dropped entirely for the same
+  // budget reason -- the contract address is already shown as inline code at the top of the card,
+  // which Discord's own client already lets you tap-to-copy, so the button was a convenience
+  // shortcut, not the only way to get it. Mint via OpenSea and Schedule for OpenSea phase are NOT
+  // mutually exclusive -- a stage can be live right now while a later one is separately upcoming,
+  // and both actions are genuinely useful at once; the generic on-chain "Schedule for opening"
+  // fallback (no eligibility proof this app can construct itself) is the only one gated on OpenSea
+  // having nothing to say at all. Sold out means there is nothing left to mint or schedule against,
+  // so none of this block applies -- only the info-only utility/cancel rows below remain.
+  const schedulable = (drop?.stages || []).filter(stage => stage.startTime && stage.startTime * 1000 > Date.now());
+  const rows = [];
+  if (!soldOut) {
+    rows.push(row([button('🪙 Mint Now', 'flow:mintdetailscontinue', 'success')]));
+    if (drop?.activeStage) {
+      // Shown only when OpenSea confirms a stage is live right now -- there is nothing for it to
+      // mint against otherwise.
+      rows.push(row([button('🎫 Mint via OpenSea', 'flow:mintviaopensea')]));
+    }
+    if (schedulable.length > 0) {
+      // A phase that hasn't opened yet has nothing to mint against -- being tapped-in and ready at
+      // the exact open is what cuts the time wasted, not a pre-check OpenSea has no way to answer
+      // ahead of time (see mintViaOpenSea's own notes). The count only shows once there's an actual
+      // choice to make (see afterScheduleViaOpenSeaTap) -- a single upcoming stage schedules itself.
+      const label = schedulable.length > 1 ? `🎫📅 Schedule OpenSea phase (${schedulable.length})` : '🎫📅 Schedule for OpenSea phase';
+      rows.push(row([button(label, 'flow:scheduleviaopensea')]));
+    } else if (opensInFuture) {
+      rows.push(row([button('📅 Schedule for opening', 'flow:schedulesuggest', 'success')]));
+    }
+  }
+  rows.push(row(utilityRow), row([button('❌ Cancel', 'flow:cancel:ask', 'danger')]));
 
   return { content: lines.join('\n'), components: rows };
+}
+
+// Section AF -- shown only when there's a genuine choice (see mintFlowDecision.afterScheduleViaOpenSeaTap);
+// a single upcoming stage schedules itself with no picker at all. A select menu, not one button per
+// stage, keeps this at Discord's actual limit (25 options) rather than the 5-row cap a button-per-
+// stage layout would hit almost immediately -- same reasoning as walletMultiSelect's own choice of a
+// select over buttons. The option VALUE carries the stage's index into drop.stages (not its OpenSea
+// uuid -- irrelevant here, but kept consistent with Telegram's own byte-budget reason for using an
+// index, see flow:scheduleviaopenseaphase's handler).
+function openSeaPhasePicker(stages, sym) {
+  const options = stages.map(stage => ({
+    label: `${stage.label || humanizeStageType(stage.stageType)} — opens ${formatGmtPlus1(stage.startTime * 1000)}`.slice(0, 100),
+    description: stageSummaryLine(stage, sym).slice(0, 100),
+    value: String(stage.index),
+  }));
+  return {
+    content: 'Which phase should this be scheduled against?',
+    components: [select('flow:scheduleviaopenseaphase:select', options, 'Select a phase'), row([button('❌ Cancel', 'flow:cancel:ask', 'danger')])],
+  };
 }
 
 // Section AA -- Discord counterpart to Telegram's quantityStepPayload/Section L. A select menu
@@ -636,7 +708,62 @@ function snipersMenu(snipers) {
     : 'No matching snipers.';
   return {
     content: `🎯 Post-confirmation copying only; not mempool front-running.\n${lines}`,
-    components: [row([button('⬅️ Back to menu', 'menu:main')])],
+    components: [row([button('➕ Create sniper', 'sniper:create:start')]), row([button('⬅️ Back to menu', 'menu:main')])],
+  };
+}
+
+// Guided sniper-creation flow (mirrors src/sniper/sniperFlowDecision.js's step ordering).
+// Chain/wallet steps reuse chainSelect/walletSelect as-is; only the tolerance prompt/modal and the
+// confirm screen are new here.
+
+// Every field here already has a working default in validateSniper -- accepting them is one tap;
+// customizing opens sniperToleranceModal below. Mirrors mint_guided's own gasTolerancePrompt shape
+// (accept-default button vs a "set my own" button that opens a modal).
+function sniperTolerancePrompt(defaults) {
+  return {
+    content: `⛽ Fee tolerance & caps\nDefaults: max gas **${defaults.maxGasGwei} gwei** · max value per fire **${defaults.maxValueETH} ETH** · daily spend cap **${defaults.dailySpendingCapETH} ETH**.\n\nUse these, or set your own?`,
+    components: [row([
+      button('✅ Use these defaults', 'flow:snipertoleranceaccept', 'success'),
+      button('✏️ Set my own', 'flow:snipertolerancemanual'),
+    ])],
+  };
+}
+
+// Label and target address land in one modal, not two -- a modal cannot be opened directly from
+// another modal's own submit handler (only from a button/select interaction), the same constraint
+// watchConfigModal's own "combine several fields into one modal" comment already documents. Both
+// are required, unlike the tolerance modal below.
+function sniperDetailsModal() {
+  return {
+    custom_id: 'flow:snipercreate:submit', title: 'New sniper',
+    components: [
+      row([{ type: TEXT_INPUT, custom_id: 'label', style: TEXT_STYLE.short, label: 'Label', placeholder: 'A name to recognize this sniper by', required: true, max_length: 100 }]),
+      row([{ type: TEXT_INPUT, custom_id: 'targetAddress', style: TEXT_STYLE.short, label: 'Target wallet address to copy', placeholder: '0x...', required: true, max_length: 42 }]),
+    ],
+  };
+}
+
+// All three fields are optional (validateSniper already has a working default for each), unlike
+// watchConfigModal's fields which are always required -- shown as the placeholder text instead, so
+// leaving a field blank on submit means "use the default", not a rejected empty required field.
+function sniperToleranceModal(defaults) {
+  const fields = [
+    { id: 'maxGasGwei', label: 'Max gas (gwei)', hint: `Default ${defaults.maxGasGwei}` },
+    { id: 'maxValueETH', label: 'Max value per fire (ETH)', hint: `Default ${defaults.maxValueETH}` },
+    { id: 'dailySpendingCapETH', label: 'Daily spending cap (ETH)', hint: `Default ${defaults.dailySpendingCapETH}` },
+  ];
+  const rows = fields.map(field => row([{
+    type: TEXT_INPUT, custom_id: field.id, style: TEXT_STYLE.short,
+    label: field.label, placeholder: field.hint, required: false, max_length: 20,
+  }]));
+  return { custom_id: 'flow:snipertolerance:submit', title: 'Fee tolerance & caps', components: rows };
+}
+
+function sniperConfirmation(data) {
+  const fmt = (value, fallback) => (value === undefined || value === null || Number.isNaN(value) ? `default (${fallback})` : value);
+  return {
+    content: `## 🎯 Confirm sniper\nLabel: ${data.label}\nTarget: \`${data.targetAddress}\`\nChain: ${data.chain}\nWallet: ${data.walletLabel}\nMax gas: ${fmt(data.maxGasGwei, '200 gwei')}\nMax value/fire: ${fmt(data.maxValueETH, '0.1 ETH')}\nDaily cap: ${fmt(data.dailySpendingCapETH, '0.25 ETH')}\n\nCreate this sniper?`,
+    components: [row([button('✅ Create', 'flow:sniperconfirm', 'success'), button('❌ Cancel', 'flow:cancel:ask', 'danger')])],
   };
 }
 
@@ -666,11 +793,15 @@ function walletSelect(wallets, { customId, emptyHint }) {
   return { content: 'Choose a wallet:', components: [select(customId, options, 'Select a wallet'), row([button('⬅️ Back to menu', 'menu:wallets')])] };
 }
 
-// Batch mint (multi:true) needs more than one wallet -- Discord's select menu supports true
-// multi-select in one component (min_values/max_values), unlike Telegram's toggle-then-Continue
-// button list (no equivalent component exists there), so this is a single tap-to-submit select
-// rather than a dedicated multi-step picker.
-function walletMultiSelect(wallets, { customId, emptyHint }) {
+// Batch mint (multi:true) needs more than one wallet. Discord's select menu supports checking
+// several options in one open-dropdown session, but each *submission* (closing the dropdown) is
+// its own interaction carrying only whatever was checked in that session -- picking one wallet,
+// having the dropdown close, then reopening it does NOT remember the earlier pick unless this menu
+// marks it `default: true`. So this stays open across submissions: every select fires flow state
+// forward via `selectedLabels`, re-renders this same menu with those options pre-checked, and a
+// separate Continue button (mirroring Telegram's toggle-then-flow:walletcontinue shape, the closest
+// real equivalent Discord has) is what actually advances the flow -- not the select itself.
+function walletMultiSelect(wallets, selectedLabels, { customId, emptyHint }) {
   if (!wallets.length) return placeholderMenu('Wallets', emptyHint);
   if (wallets.length < MIN_BATCH_WALLETS) {
     return {
@@ -679,10 +810,15 @@ You have ${wallets.length}. A batch of one is just a single mint -- use that ins
       components: [row([button('🎯 Single mint instead', 'menu:mint:single', 'success'), button('➕ Add a wallet', 'wallet:create:start'), button('⬅️ Back', 'menu:main')])],
     };
   }
-  const options = wallets.map(w => ({ label: `${w.label} (${w.chain})`, value: w.label, emoji: CHAIN_EMOJI[w.chain] || undefined }));
+  const options = wallets.map(w => ({ label: `${w.label} (${w.chain})`, value: w.label, emoji: CHAIN_EMOJI[w.chain] || undefined, default: selectedLabels.includes(w.label) }));
+  const continueRow = selectedLabels.length >= MIN_BATCH_WALLETS
+    ? row([button(`▶️ Continue with ${selectedLabels.length}`, 'flow:mintwalletmulti:continue', 'success'), button('❌ Cancel', 'flow:cancel:ask', 'danger')])
+    : row([button('❌ Cancel', 'flow:cancel:ask', 'danger')]);
   return {
-    content: 'Choose every wallet to include in this batch:',
-    components: [select(customId, options, `Select at least ${MIN_BATCH_WALLETS} wallets`, { minValues: MIN_BATCH_WALLETS, maxValues: wallets.length }), row([button('❌ Cancel', 'flow:cancel:ask', 'danger')])],
+    content: selectedLabels.length
+      ? `Choose every wallet to include in this batch.\nSelected so far: ${selectedLabels.join(', ')}`
+      : 'Choose every wallet to include in this batch:',
+    components: [select(customId, options, `Select at least ${MIN_BATCH_WALLETS} wallets`, { minValues: MIN_BATCH_WALLETS, maxValues: wallets.length }), continueRow],
   };
 }
 
@@ -791,6 +927,18 @@ function confirmRemoveWallet(label) {
   };
 }
 
+// Discord counterpart to Telegram's confirmCancelTask -- same task:cancel:ask:<id>/task:cancel:do:<id>
+// step shape, so both platforms' handlers can share the exact same commands.tasks/controlTask calls.
+function confirmCancelTask(task) {
+  return {
+    content: `Cancel **${task.name}**? This cannot be undone.`,
+    components: [row([
+      button('✅ Yes, cancel it', `task:cancel:do:${task.id}`, 'danger'),
+      button('❌ No, keep it', 'menu:main'),
+    ])],
+  };
+}
+
 function labelModal({ customId, title, placeholder = '', style = 'short', maxLength = 64 }) {
   return {
     custom_id: customId,
@@ -805,9 +953,10 @@ function labelModal({ customId, title, placeholder = '', style = 'short', maxLen
 module.exports = {
   button, row, select, mainMenu, mintModeMenu, batchImportMenu, gateUnlockCard,
   securityBanner, securityNeedsAttention, securitySetupCard, walletsMenu, settingsMenu, placeholderMenu,
-  chainSelect, walletSelect, walletMultiSelect, confirmRemoveWallet, labelModal, gasMenu, activityMenu, tasksMenu, snipersMenu, adminOverviewMenu,
+  chainSelect, walletSelect, walletMultiSelect, confirmRemoveWallet, confirmCancelTask, labelModal, gasMenu, activityMenu, tasksMenu, snipersMenu, adminOverviewMenu,
+  sniperDetailsModal, sniperTolerancePrompt, sniperToleranceModal, sniperConfirmation,
   modeMenu, MODE_META,
-  contractDetailsText, collectionInfoCard, mintQuantitySelect, mintPriceStep, gasTolerancePrompt, mintConfirmation, numberModal,
+  contractDetailsText, collectionInfoCard, openSeaPhasePicker, humanizeStageType, mintQuantitySelect, mintPriceStep, gasTolerancePrompt, mintConfirmation, numberModal,
   taskNameQuickPicks, taskConfirmation,
   watchTypeSelect, watchMethodSelect, watchConfigModal, watchRuleConfirmation,
   watchRulesList, watchRuleActions, confirmRemoveWatchRule,

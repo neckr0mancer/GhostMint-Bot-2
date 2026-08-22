@@ -7,8 +7,9 @@ shipped).
 
 - **Round 1** (Sections A–K) was scoped and implemented on 2026-08-16; 9 of 11 sections shipped in
   commit `423c7c1`. Kept below as the record of what exists.
-- **Round 2** (Sections L–S) is the newer batch of requirements; L, M, N, and Q have shipped,
-  O/P/R/S remain open.
+- **Round 2** (Sections L–S) is the newer batch of requirements; L, M, N, Q, and O have shipped.
+  R is partial (Phase 1, guided sniper creation, shipped 2026-08-20 — see Round 19 below); P and
+  R's own Phase 2 (contract-open detection) remain open; S remains open.
 - **Round 3** (Sections T–Z) is candidate work sourced from studying an external reference project,
   not yet scoped or estimated.
 - **Round 4** (Section AA) is a follow-up requirement raised while shipping Round 2's Section Q;
@@ -57,6 +58,44 @@ shipped).
   paused pending real timing data rather than built speculatively. Worklist B (after A is stable):
   parallelized pre-arm, dynamic fee presets, RPC health scoring/failover, hot wallet session cache
   (security tradeoff, needs its own sign-off), and latency dashboards — none started.
+- **Round 20** (Section AF/AD follow-up) makes OpenSea phase detection show on every paste, not just
+  `/info` — live-reported ("I need you to be able to detect and show phases, Telegram and Discord
+  still doesn't do that") and confirmed live against a real drop (KIYO, contract
+  `0x90c888ea77194e52c97c3692e715e276bb68931b`, Robinhood Chain): the backend detection already
+  worked (`openSeaService.getDrop` correctly returned three real, named stages), it just never ran
+  outside `/info` — `includeStats`'s gate covered `drop` too, so a bare paste got the leaner card by
+  design. Split into its own opt-in flag; shipped 2026-08-21.
+  **Follow-up, same day:** the owner flagged that this multiplies read-call volume against OpenSea's
+  API (every paste now, not just `/info`) and asked whether splitting into separate keys/accounts
+  would help. Live-verified against OpenSea's own docs (two independent pages): rate limits pool
+  **per account**, not per key — "creating multiple API keys will not increase your overall rate
+  limit" — so a second key on the *same* account buys nothing. What already exists for free: OpenSea
+  splits its limit into separate read (600/h) and write (30/h) buckets, and this app's only write
+  call is `buildMintTransaction` (the actual OpenSea-backed mint) — so the increased read volume was
+  never actually threatening mint execution in the first place. Built anyway, as a genuine
+  least-privilege/blast-radius improvement the owner wanted regardless: a **second, real OpenSea
+  account's key**, `OPENSEA_READ_API_KEY` (optional, aliases the main key when unset — same
+  zero-behavior-change-if-unconfigured shape as Round 15's RPC pool split), now carries every read
+  call (`getDrop`/`getCollectionMetadata`/`getCollectionStats`/`resolveCollectionContract`);
+  `OPENSEA_API_KEY` keeps handling `buildMintTransaction` alone. `server.js` composes one
+  `openSeaService`-shaped object from two underlying `createOpenSeaService` instances so every
+  existing caller (both platforms, the scheduler) needed zero changes. Live-verified the new key
+  actually works (real `getDrop` call against the same KIYO contract, correct data back) before
+  setting it on Railway via `variableUpsert`. New tests in `tests/config.test.js` covering both the
+  aliased-when-unset and genuinely-separate-when-configured cases, keys never leaking into the
+  summary either way.
+- **Round 19** (Section R, Phase 1) is the guided sniper-creation flow on both platforms — Telegram
+  had no way to create a sniper at all before this, Discord's only path was a hand-typed JSON blob.
+  Scoped explicitly to just this against the existing copy-mode schema (no new DB migration);
+  contract-open detection (Phase 2) and Section P's tx-watching are real, separate pieces deferred
+  on purpose. Shipped 2026-08-20 — see Section R below for the full write-up.
+- **Round 18** (no section letter yet — folded into Section AH's batch-mint work) fixes a live-found
+  regression in Discord's batch-mint wallet multi-select: picking one wallet from the dropdown
+  advanced the flow immediately instead of letting more be added, since each dropdown submission
+  only carries what was checked in that one session and the menu never marked earlier picks
+  `default: true` on re-render. Now stays on the picker (showing the running selection, pre-checked)
+  until an explicit Continue tap, mirroring Telegram's toggle-then-`flow:walletcontinue` shape;
+  2026-08-20.
 - **Round 17** (Section AW) is a run of live-reported bugs found via real production use,
   2026-08-20. Shipped: Telegram's `/batchmint` — the one command Telegram's own "/" autocomplete
   actually advertises — was wired only to a raw-JSON power-user path and silently did nothing when
@@ -77,7 +116,7 @@ Status legend: ✅ Done · 🟡 Partial · ❌ Not started
 
 # Round 17 — live-reported bug run (2026-08-20)
 
-## Section AW — Batch-mint command/button parity, SeaDrop sold-out price 🟡
+## Section AW — Batch-mint command/button parity, SeaDrop sold-out price ✅
 
 Three separate live reports came in back to back while Round 16 was wrapping up. Tracked together
 since they surfaced the same way (a real user hitting a real drop or a real command), not because
@@ -102,7 +141,7 @@ already coexist. `src/server.js`. Verified: `node --check`, `npx eslint --max-wa
 clean. `/batch` still works as a hidden alias; left in place rather than removed since it's harmless
 and other in-flight sessions may reference it.
 
-### SeaDrop mint price wrong once a collection sells out ❌ (diagnosed, fix not yet written)
+### SeaDrop mint price wrong once a collection sells out ✅
 
 Reported live against `phoenix-in-the-hood` (contract `0x6209e8d1e28cc40427f8e7ec8cc1e9410a35612a`,
 Robinhood Chain): both Telegram and Discord showed "Mint price: 0.002 ETH per item" despite the
@@ -119,12 +158,10 @@ This collection is sold out but its stage window hasn't closed, so `soldOut` eva
 `resolveDisplayPrice` falls through to the real (non-zero-looking, stale) per-item price instead of
 reporting sold-out/free.
 
-Planned fix: add an unconditional `contractValueResolver.probeTotalMinted(chain, contractAddress)`
-call alongside the existing `probeMaxSupply` one, resolve both *before* computing `soldOut` (today
-`resolveDisplayPrice` and `probeMaxSupply` run in the same `Promise.all`, which doesn't work once
-`soldOut` needs `totalMinted` too — needs reordering), then combine:
-`Boolean(timeWindowClosed || (maxSupply !== null && totalMinted !== null && totalMinted >= maxSupply))`.
-Not yet written to disk.
+**Fixed** — this doc's own "not yet written" note was stale (caught and corrected 2026-08-21):
+`botCommandService.js`'s SeaDrop branch (line ~211) does compute `soldOut` as
+`Boolean(timeWindowClosed || (maxSupplyValue !== null && typeof stats?.totalMinted === 'number' &&
+stats.totalMinted >= maxSupplyValue))`, confirmed live against the actual code, not just this doc.
 
 ### Discord `/batch-mint` reported as the same symptom — not a bug, but a real trap ✅
 
@@ -985,6 +1022,96 @@ flow — stays open and is where this would land if it's ever wanted there.)
   them, which is the whole of what was buildable without the merkle-proof capability shape 2
   describes.
 
+### Refinement (Round 22, 2026-08-21) — show every OpenSea phase, schedule any of them ✅
+
+Separate from shapes 1/2 above: Section AR (Round 13) later gave `collectionInfoCard` real,
+non-manual phase data via OpenSea's own Drops API (`drop.activeStage`/`drop.nextStage`/`drop.stages`),
+and let "Schedule for OpenSea phase" pre-fill a task from it with no proof or manual entry needed.
+Live user report: "it only shows the next phase. all phases should be shown and i should be able to
+schedule a phase of my choice" plus "opensea doesnt always have 3 stages. some might have more than
+3" — the card only ever showed OpenSea's own `activeStage`/`nextStage` convenience pointers (at most
+two of potentially many stages), and the schedule button was hardcoded to `nextStage` specifically,
+with no way to reach any other upcoming phase. Also flagged as "jam packed" -- verbose per-phase
+lines and a full ISO timestamp with seconds.
+
+**Fixed.** Source of truth switched from `activeStage`/`nextStage` to every entry in `drop.stages`,
+classified against the current time (ended/live/upcoming) rather than trusting OpenSea's own two
+pointers to be exhaustive. `collectionInfoCard` now lists every stage (capped at 10 lines, with an
+overflow note) instead of at most two, in a shorter format (`Aug 21, 12:56 GMT+1`, no seconds --
+`formatGmtPlus1` itself was shortened, benefiting the existing Opens/Opened line too). New shared
+`schedulableStages`/`afterScheduleViaOpenSeaTap` in `src/mint/mintFlowDecision.js`: a single
+upcoming stage still schedules itself directly (zero behavior change from before this round, and
+the existing test fixture for it needed correcting -- it had `nextStage` set but `stages: []`,
+unrealistic against a real OpenSea response where `nextStage` is always also an entry in `stages`);
+more than one shows a new picker screen (`openSeaPhasePicker` on both platforms -- a select menu on
+Discord, one button per stage on Telegram) so the user picks which phase, not just whichever one
+OpenSea calls "next." The picker's option `value`/`callback_data` carries the stage's *index* into
+`drop.stages`, not its OpenSea `uuid` -- a 36-char uuid would blow past Telegram's 64-byte
+`callback_data` budget alongside the handler's own prefix, the same reasoning the existing
+`flow:phase:<n>:<address>` button already relies on.
+
+Also fixed in the same pass: "Mint via OpenSea" and "Schedule for OpenSea phase" were wrongly
+mutually exclusive (an `if/else if` added by this session's own earlier Discord row-limit crash
+fix) even though a stage can be live right now *while* a separate stage is upcoming later -- both
+actions are genuinely useful at once. They're independent again; the Discord worst case (Mint Now +
+Mint via OpenSea + Schedule for OpenSea phase + utility row + Cancel) is exactly 5 rows, still
+inside the cap, pinned in `menuShape.test.js`.
+
+### Follow-up (same day) -- drop the manual naming step for OpenSea-backed schedules ✅
+
+Live-reported immediately after the above shipped: "the last name stuff for schedulers should be
+removed because you can now actually schedule for phases." The manual "name this task"
+GTD/FCFS/PUBLIC/custom quick-pick step (`TASK_NAME_QUICK_PICKS`) existed because nothing on-chain or
+via any API said which real phase a scheduled task was for -- the user had to guess/type a label
+themselves. That's no longer true for the OpenSea-backed path specifically: the actual stage (direct
+or picked) now carries its own real label.
+
+Fixed: `openSeaPhaseTaskData` (both platforms) now sets `name: stage.label || humanizeStageType(stage
+.stageType)` -- the same label/fallback `collectionInfoCard`'s phase list and the picker already use,
+now exported from both `menus.js` files for this purpose. Telegram's `advanceFromTaskWallet` and
+Discord's `advanceFromTaskQuantity`/`flow:taskwallet:select` handler skip `awaiting_name` entirely
+and go straight to `awaiting_confirm` whenever `data.viaOpenSea && data.name` -- every other
+scheduling path (manual `/schedule`, the "Add phase N" shape-1 flow) is unaffected and still asks,
+since those genuinely still can't know the phase automatically (see Section AF's own phase-
+determinability research above, unchanged). Discord gained a small `taskConfirmPayload` helper so
+the two new skip-to-confirm call sites and the existing `flow:taskname:select` handler all render
+the confirm screen identically.
+
+### Follow-up (same day) -- cancel button missing from the post-schedule success screen ✅
+
+Reported live: "after a mint is scheduled, theres no cancel schedule button." Telegram's
+`taskScheduled` success screen offered Add phase / See all tasks / Back to base but no way to undo
+the very schedule it was just confirming (the cancel action existed, just only reachable via
+`/tasks` afterward). Discord's gap was larger: `finishTaskScheduleDiscord`'s success message had
+only "Back to menu," and Discord had **no button-based task cancellation anywhere** -- `tasksMenu`
+is a read-only list, and the only way to cancel was the raw `/task cancel <id> <confirm>` command.
+
+Fixed: Telegram's `taskScheduled` gained an `id` param and a `❌ Cancel this schedule` button
+reusing the existing `task:cancel:ask:<id>`/`task:cancel:do:<id>` steps `tasksMenu`/`taskActions`
+already have -- a freshly created task is always in the `scheduled` status, so no cancellability
+check is needed here the way `CANCELLABLE_TASK_STATUSES` gates it elsewhere. Discord needed the
+handlers built: new `confirmCancelTask` menu function (mirrors Telegram's), and two new standalone
+handlers (`task:cancel:ask:`/`task:cancel:do:`, not part of any flow) sharing the exact same
+`commands.tasks`/`controlTask` calls Telegram's version uses. Deliberately scoped to just the
+success-screen button, not a full port of Telegram's `tasksMenu`/`taskActions` button surface to
+Discord -- that remains the larger, still-unbuilt Section S gap.
+
+### Follow-up (same day) -- OpenSea-backed scheduling couldn't ask for a quantity ✅
+
+Reported live: "when scheduling for phases, i can't select how many i want to mint." Both
+`flow:scheduleviaopensea` (direct) and `flow:scheduleviaopenseaphase` (picked) called
+`advanceFromTaskQuantity` with a hardcoded `quantity: 1`, unlike `flow:schedulesuggest`'s own
+re-detection branch, which already checks `maxPerWallet > 1` and shows a quantity selector first.
+The OpenSea path simply never carried `maxPerWallet` into its task data at all, so there was nothing
+for it to branch on even if it had checked.
+
+Fixed: `openSeaPhaseTaskData` now threads `maxPerWallet` through from the mint flow's own detected
+value. New `advanceFromTaskDetails` (Discord; Telegram already had one from the regular schedule
+flow, reused as-is) replicates `mintFlowDecision.afterDetails`' shape: `maxPerWallet > 1` shows
+`awaiting_quantity` first, otherwise defaults to 1 same as before. Discord's existing
+`flow:schedulesuggest` handler now calls the same shared helper instead of its own inlined copy of
+the same check, removing a duplicate.
+
 ## Also flagged: "Confirm Scheduled Mint" copy reads like a reminder, not an execution ✅
 
 From the same 2026-08-17 message, and from the then-in-flight Telegram copy-tone pass —
@@ -1393,25 +1520,82 @@ directory by mistake and moved out to a sibling directory
 (`C:\Users\hp\Documents\osnm-z-main`, outside this repo). It was reviewed for patterns GhostMint
 could adopt. None of the items below are scoped or estimated; they're candidates only.
 
-## Section T — Extract token IDs from mint receipts ❌
+## Section T — Extract token IDs from mint receipts 🟡
 
 `osnm-z-main/src/nft.rs`'s `extract_minted_assets()` parses `receipt.logs` for the ERC-721
 `Transfer` and ERC-1155 `TransferSingle`/`TransferBatch` events, filtered to `from == 0x0`,
-`to == wallet`, on the target contract, and decodes the minted token ID(s). This is a working,
-tested reference for exactly blocker #1 in this file's own deferred P&L sales-detection note
-under Section G + K: "no token ID is captured from a mint receipt today." Would land in
-`transactionEngine.js`'s `inspectChain`, alongside the existing `gasUsed`/`gasPrice`/`blockNumber`
-read, and unblocks that deferred work.
+`to == wallet`, on the target contract, and decodes the minted token ID(s). Confirmed as blocker #1
+in this file's own deferred P&L sales-detection note under Section G + K: "no token ID is captured
+from a mint receipt today" — `inspectChain` only ever read `gasUsed`/`gasPrice`/`blockNumber`.
 
-## Section U — Validate mint calldata before signing, not just before broadcasting ❌
+**Shipped: the capture-and-persist piece.** New `src/transactions/mintReceiptTokens.js`
+(`extractMintedTokenIds`) — pure function, parses `receipt.logs` for `Transfer`/`TransferSingle`/
+`TransferBatch`, filtered to `from === zero address` (a genuine mint) landing on the wallet that
+submitted the transaction, **on the contract that was actually minted** (`intent.callPreview
+.contractAddress`) — deliberately never the transaction's own `to`, which for a SeaDrop mint is the
+SeaDrop core/router, not the NFT contract; only the NFT contract itself ever emits `Transfer` for
+its own tokens. A malformed/unrelated log is silently skipped, same "augment a receipt that already
+confirmed, never fail one" philosophy the existing `gasUsed`/cost computation already follows.
+Wired into `transactionEngine.js`'s `inspectChain` (computed once alongside the existing
+`receiptCost`, only carried on the final `'confirmed'` state — no point re-persisting on every
+`'pending'` reconciliation poll before the state settles). New `token_ids TEXT[]` column on
+`transaction_intents` (migration `046_intent_token_ids.sql`, `ADD COLUMN IF NOT EXISTS`, purely
+additive), threaded through `intentRepository.js`'s `transition()`/`mapIntent` the same way
+`gasUsed`/`effectiveGasPriceWei` already are.
+
+Verified: `node --check` + `npx eslint --max-warnings=0`, clean. 11 new tests in
+`tests/mintReceiptTokens.test.js` (single/batch ERC-721, ERC-1155 single/batch, non-mint transfers
+ignored, wrong-recipient ignored, a log from a different contract than the one minted correctly
+ignored — the exact "never trust the tx's own `to`" case — malformed logs skipped not thrown,
+deduplication, and the missing-input/no-logs cases), plus the full existing transactionEngine/
+scheduler/sniper suite (79 tests) unaffected. Migration applied to and verified against the real
+dev database (`transactionEngine.integration.test.js`/`storage.integration.test.js` both still
+pass with real DB writes through the updated `transition()` SQL). **Still needs the migration
+applied to production** before this actually starts capturing anything there — flagged, not done
+by this session without a separate go-ahead, same as every other production infrastructure change.
+
+**Not done, and deliberately out of scope for this pass:** actually wiring captured token IDs into
+`activity`/`pnl_records` (neither has a `token_id`/`contract_address` column yet) or building the
+OpenSea per-token sales-lookup this was always meant to feed — those are the other two blockers the
+original G+K note names, real separate pieces of work, not something this pass claims to close.
+
+## Section U — Validate mint calldata before signing, not just before broadcasting ✅
 
 `osnm-z-main/src/opensea.rs`'s `validate_stage_calldata`/`validate_mint_transaction` decode the
 ABI words of any externally supplied calldata (contract address, minter, quantity, selector) and
 cross-check them against what was actually requested, rejecting anything that doesn't match,
-before it's ever signed. Needs confirming whether `src/mint/seaDropCall.js`/`mintCall.js` already
-do the equivalent for GhostMint's own constructed calls — matters most wherever calldata comes
-from an external source (OpenSea price/eligibility lookups) rather than being built entirely
-in-house.
+before it's ever signed.
+
+Investigated first, confirmed a real gap: GhostMint's own in-house calldata builders
+(`buildSeaDropMintCall`/`buildMintCall`) encode already-validated arguments through a known ABI
+fragment — decoding that back to "verify" it would be a tautology, correctly out of scope. But
+OpenSea's own `POST /drops/{slug}/mint` response (`openSeaService.js`'s `buildMintTransaction`) —
+calldata it constructs itself and hands back — was signed and broadcast entirely as OpenSea
+supplied it, with nothing decoded or cross-checked against what the user actually asked to mint.
+Both real call sites (`executeMintViaOpenSea` in `src/server.js`, and the scheduler's own
+`task.viaOpenSea` execution branch) built `prepared` straight from `built.data`/`built.to`.
+
+**Fixed:** new `validateOpenSeaMintCall({ built, contractAddress, quantity })` in
+`src/mint/seaDropCall.js`, reusing the already-written-but-previously-unused
+`decodeSeaDropMintCall` rather than a second decoder. Checks the two facts that are unambiguous
+either way — the NFT contract actually being minted (`nftContract` from the decoded calldata must
+equal what was requested) and the quantity — and throws a `ValidationError` if either doesn't
+match, before signing. **Deliberately does not check `minterIfNotPayer`/`feeRecipient`**: OpenSea's
+exact encoding for "payer is minter" (zero address vs. an explicit wallet address) isn't confirmed
+against a real live response, and a wrong guess there would reject legitimate mints rather than
+just catch bad ones — narrower-but-certain over wider-but-guessed on a path that signs and spends
+real funds. Wired into both real call sites; OpenSea's eligibility *decision* (which this app has
+no independent way to verify — the whole reason this feature exists) stays trusted exactly as
+before, only the mechanical shape of the response is now checked.
+
+Verified: `node --check` + `npx eslint --max-warnings=0`, clean. 4 new tests in
+`tests/seaDropCall.test.js` (accepts a match; rejects wrong contract; rejects wrong quantity;
+rejects non-`mintPublic` calldata entirely), plus the full existing SeaDrop/OpenSea/scheduler/
+botCommandService suite (120+98 tests across the touched areas) still passing unchanged — none of
+it exercises `server.js`'s real `executeMintViaOpenSea`/scheduler `task.viaOpenSea` branch directly
+(that layer has no integration-test harness in this repo, same gap noted for Telegram's guided-flow
+orchestration elsewhere in this file), so coverage lives at the `validateOpenSeaMintCall` function
+level, where the actual logic is.
 
 ## Section V — Verify bytecode, not just the address, for canonical contracts ❌
 
@@ -1445,12 +1629,34 @@ asserts a struct's debug/string formatting can't contain a raw private key. Chea
 insurance worth adding to GhostMint's own test suite for whatever in-memory structure carries a
 decrypted private key during signing, against an accidental future log/error-message leak.
 
-## Section Z — Bounded response reads and selective retry for external HTTP calls ❌
+## Section Z — Bounded response reads and selective retry for external HTTP calls ✅
 
 `osnm-z-main/src/opensea.rs`'s `read_limited_body` hard-caps response size to avoid unbounded
 memory growth from a malformed/oversized response, and `is_retryable_request_error` retries only
-429/5xx/408/409/425, failing fast on everything else. Needs confirming `openSeaService.js`/
+429/5xx/408/409/425, failing fast on everything else. Needed confirming `openSeaService.js`/
 `priceFeedService.js` don't retry indiscriminately or buffer unbounded response bodies.
+
+**Retry half: nothing to fix.** Grepped every outbound-HTTP file in `src/` for retry/backoff
+logic — none exists anywhere in this codebase. Every external call (OpenSea, Etherscan, price
+feed, social adapters) either succeeds, throws, or is caught and returned as a typed error to the
+caller. No indiscriminate-retry problem to have.
+
+**Body-size half: fixed.** `axios` has no default response-size cap — a malformed or malicious
+response (or a misbehaving `scraper` watch-rule target, since that one fetches an arbitrary
+user-supplied URL) could buffer an unbounded body into memory. Added `maxContentLength: 1_000_000`
+(1MB — every real response these calls expect is JSON on the order of KB) to every bare `axios`/
+`http.get`/`request()` call in the app that didn't already have a cap:
+`openSeaService.js` (all 7 call sites — collection slug/details lookups, stats, drop data, mint-tx
+build), `priceFeedService.js` (`getUsdPrice`), `seaDropDiscoveryService.js` (`viaEtherscan`'s
+`eth_getLogs` call), `etherscanGasService.js` (`gasoracle` lookup), and `social/adapters.js`'s
+`createHttpAdapter` (covers `official_api`/`managed_service`/`scraper` — the last being the one
+with a genuinely untrusted, user-configured target URL, the highest-risk case in this list).
+
+Verified: `node --check` on all five files, clean. No existing test in this repo asserts on axios
+call options for any of these five services (confirmed by grep before editing), so nothing broke;
+the full suites covering all five (`seaDropDiscoveryService.test.js`, `gasService.test.js`,
+`socialWatch.test.js`, `socialWatch.integration.test.js`, `socialUsage.test.js` — 33 tests) still
+pass unchanged.
 
 ## Considered and explicitly not recommended
 
@@ -1619,16 +1825,10 @@ prompt, that's a different (and contradictory) requirement.
 
 ## Section P — Watch specific transactions ❌
 
-Today's watching is wallet-level (`sniperService` copies a target wallet's confirmed transactions;
-`socialWatch` monitors social sources). Wanted: watch a **specific transaction** tied to a wallet
-address and notify on occurrence/state change.
-
-- Delivery routes to whichever platform is configured — Discord if configured, Telegram if
-  configured. `notificationService` already resolves a user's linked platforms, so the delivery
-  half largely exists; the tracking half does not.
-- Overlaps with Section R (sniper contract-open detection) — both want a poller watching chain
-  state and firing a notification/action. Worth building one watcher abstraction for both rather
-  than two.
+Always overlapped with Section R (sniper contract-open detection) — both want a poller watching
+chain state and firing a notification/action off the same watcher abstraction — so scoped and
+written up together under Section R below rather than duplicated here; see Section R's own "Section
+P — watch a specific wallet's transactions" write-up.
 
 ## Section Q — Accept OpenSea collection links ✅
 
@@ -1671,17 +1871,97 @@ its collection/contract, then continue into the normal contract/mint workflow.
   `resolveMintContractInput` passthrough/resolve/unresolvable/no-service-configured), plus the
   full existing suite (107 tests total) still passing.
 
-## Section R — Sniper guided config + contract-open auto-detection ❌
+## Section R — Sniper guided config + contract-open auto-detection 🟡
 
-Carried over from Round 1, still the largest single item.
+Carried over from Round 1, the largest single item — scoped into phases 2026-08-20 rather than
+built all at once (contract-open detection and Section P's tx-watching each need their own
+architecture decision, and are real, separate pieces of work from the guided-creation gap).
 
-- No guided config flow: Telegram has no sniper-creation command at all; Discord's `/sniper create`
-  takes one pre-validated JSON blob.
-- No mint-open detection. Plan: guided flow (contract → chain → wallet → fee tolerance → caps), a
-  `sniper_mode: 'copy' | 'contract_open'` field, and for `contract_open` a poller on
-  `PublicDrop.startTime` (SeaDrop) or a `paused()`/`saleActive()` getter, firing through the same
-  transaction engine once open and respecting the sniper's own caps. Share the watcher with
-  Section P.
+### Phase 1 — guided sniper-creation flow (copy-mode), both platforms ✅
+
+Before this: Telegram had **no way to create a sniper at all** (only `/updatesniper <id>
+<patch-json>` to patch one that already exists, and a read-only `/snipers` list); Discord's only
+path was `/sniper create input:<json>`, one free-text option holding a hand-typed JSON blob.
+Against the *existing* copy-mode sniper schema only — no new DB migration, no new sniper fields.
+
+- **New shared decision core**: `src/sniper/sniperFlowDecision.js` — pure `{step, data}` functions
+  mirroring `mintFlowDecision.js`'s auto-skip shape (skips the wallet-pick step when the user owns
+  exactly one), not `watchRuleFlowDecision.js`'s flat field-list walker, since this flow needs
+  conditional skipping the same way `mint_guided` does. Also exports `DEFAULTS`, mirroring
+  `validateSniper`'s own `??` fallbacks (`maxGasGwei: 200`, `maxValueETH: 0.1`,
+  `dailySpendingCapETH: 0.25`) so both platforms' "here's the default" text reads from one source.
+- **Correction made mid-scoping**: the flow's second field is a **wallet address to copy from**
+  (`targetAddress`), not a contract — copy-mode snipers watch a target wallet and mirror whatever
+  it does, they don't target a mint contract at all.
+- **Scope, deliberately**: only asks for what `validateSniper` has no default for (`label`,
+  `targetAddress`, `chain`, `walletLabel`) plus one combined fee-tolerance-and-caps step
+  (`maxGasGwei`/`maxValueETH`/`dailySpendingCapETH` — accept all three defaults in one tap, or set
+  your own). Everything else (`valueMode`, `gasBoostPercent`, `cooldownMs`, `maxAttempts`,
+  contract allow/deny lists, `sourceConfirmations`) stays default-only in this flow, same scope
+  line `mint_guided`'s own gas-tolerance step already draws against the rest of governance config —
+  editable later via the existing `/updatesniper`.
+- **Telegram** (`src/server.js`, `src/telegram/menus.js`): new `sniper_guided` flow, started from a
+  new "➕ Create sniper" button on `sniperMenu` (mirrors how `watch_guided` starts from
+  `watchRulesList`'s own Add button, not a slash command). Steps: label → target (free text, both
+  inlined in `renderFlowStep` the same way `watch_guided`'s `awaiting_name` already is) → chain (new
+  `sniperChainSelect`, a real per-chain button grid reusing `gasMenu`'s `chunk(items, 3)` pattern —
+  deliberately *not* the wallet-import `chainPicker`, which collapses to EVM/Solana and would be
+  wrong here since the chain determines which chain's watcher/RPC pool ends up watching the target)
+  → wallet (existing `walletPicker`, auto-skipped for a single wallet) → tolerance (new
+  `sniperTolerancePrompt` accept/customize; customizing walks the three fields one at a time,
+  `awaiting_tolerance_gas/_value/_cap`, the same free-text-with-a-default-hint shape
+  `watch_guided`'s `awaiting_config` already uses) → confirm (new `sniperConfirmation`) →
+  `botCommands.createSniper(...)`.
+- **Discord** (`src/discord/discordBot.js`, `src/discord/menus.js`): `sniper:create:start` button →
+  one combined modal for label+target (new `sniperDetailsModal` — two fields in one modal, not two
+  modals, since a modal can only be opened from a button/select interaction, never chained directly
+  off another modal's own submit — the same constraint `watchConfigModal`'s existing comment
+  documents) → `chainSelect`/`walletSelect` (existing, reused as-is) → tolerance (new
+  `sniperTolerancePrompt` accept/customize button pair; customizing opens `sniperToleranceModal`,
+  three optional numeric fields with the default shown as each one's placeholder) → confirm (new
+  `sniperConfirmation`) → `commands.createSniper(...)`.
+- Verified: `node --check` + `npx eslint --max-warnings=0` on every new/touched file, all clean.
+  New tests: `tests/sniperFlowDecision.test.js` (7, pure decision-core unit tests),
+  `tests/discordSniperFlow.test.js` (7, full integration coverage — happy path, wallet auto-skip,
+  invalid target address, tolerance customize with a blank field falling back to its default,
+  negative/non-numeric tolerance rejection, a `ValidationError` from `createSniper` surfacing
+  plainly instead of throwing), plus new render-function coverage in `tests/telegramMenus.test.js`
+  and `tests/discordMenus.test.js`. Every existing Discord/Telegram menu and flow test still passes
+  unchanged (152 Discord-side, 54 Telegram-menu-side). No live Telegram/Discord click-through from
+  here (no real bot session) — flagged rather than claimed, same as Section M's own verification
+  note; Telegram's guided-flow orchestration in `server.js` has no integration-test harness in this
+  repo at all (not even `watch_guided` does — only its render functions and the pure decision core
+  are unit-tested), so this is at parity with the existing precedent, not a regression in rigor.
+
+### Phase 2 — contract-open auto-detection, still open ❌
+
+A new `sniper_mode`/`trigger_mode`-style field (needs a name distinct from the existing
+`value_mode` field, which already uses the literal string `'copy'` for a different axis — a real
+naming trap flagged during scoping) and, for the `contract_open` mode, a poller on
+`PublicDrop.startTime` (SeaDrop — reuse `seaDropDiscoveryService.resolve()` +
+`seaDropPublicDropResolver.getPublicDrop()`, already used exactly this way in
+`schedulerWorker.js`'s own drift-check) or a `paused()`/`saleActive()` getter for a non-SeaDrop
+contract (genuinely new code — no existing getter-probe to mirror beyond
+`contractValueResolver.js`'s general "probe, treat revert as unknown, never throw" philosophy).
+Firing plugs into the same `transactionEngine.submit({triggerSource: 'blockchain', ...})` path
+`sniperService.execute()` already uses, so Round 16's dedicated sniper RPC pool, fast-path
+timeouts, and Degen's blockchain-simulation-skip all apply automatically with no new plumbing.
+Recommended extension point: `server.js`'s existing per-chain `onBlock(chain, blockNumber,
+provider)` (the same function `chainWatcher`'s sniper detection already runs through) — one extra
+provider call per relevant block per watched contract, gated by the sniper RPC pool, rather than a
+second parallel poller.
+
+### Section P — watch a specific wallet's transactions, notification-only — still open ❌
+
+"Watch a specific transaction tied to a wallet address, notify on occurrence/state change" reads,
+on closer inspection, as sniper's own copy-detection (matching `tx.from === targetAddress` per
+block via the same `onBlock`/`chainWatcher` infra) minus the copy-execution step — occurrence
+notified via the existing `notificationService.sendToUser(userId, message)` (the one notification
+front door every existing background worker — `schedulerWorker`, `sniperService` — already routes
+through), state-change notified by lifting the receipt/confirmation-counting technique from
+`transactionEngine.js`'s `inspectChain`/`waitForFinality` (built for the app's own tracked intents,
+so needs adapting for an arbitrary externally-supplied wallet/tx, not reused as-is). Shares the
+watcher with Phase 2 above, per this section's own original "share one watcher abstraction" note.
 
 ## Section S — Discord guided task-schedule ❌
 

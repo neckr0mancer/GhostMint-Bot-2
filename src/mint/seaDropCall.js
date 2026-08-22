@@ -93,4 +93,27 @@ function decodeSeaDropMintCall({ contractAddress, seaDropAddress, calldata, valu
   };
 }
 
-module.exports = { buildSeaDropMintCall, computeSeaDropValueWei, decodeSeaDropMintCall };
+// OpenSea's own POST /drops/{slug}/mint resolves stage eligibility server-side (allowlist/GTD/FCFS
+// proofs this app has no independent way to construct) and hands back ready-to-sign calldata --
+// but that trust only ever covered the eligibility DECISION, not the mechanical shape of what came
+// back. Before this, `to`/`data` were signed and broadcast entirely as OpenSea supplied them, with
+// nothing decoded or compared against what was actually requested. Verifies the two facts that are
+// unambiguous either way -- the NFT contract actually being minted, and the quantity -- reusing
+// decodeSeaDropMintCall rather than a second decoder. Deliberately does NOT check
+// minterIfNotPayer/feeRecipient: OpenSea's exact encoding for "payer is minter" (zero address vs.
+// an explicit wallet address) isn't confirmed against a real live response yet, and a wrong guess
+// there would reject legitimate mints, not just catch bad ones -- narrower but certain beats wider
+// but guessed on a path that signs and spends real funds.
+function validateOpenSeaMintCall({ built, contractAddress, quantity: expectedQuantity }) {
+  const decoded = decodeSeaDropMintCall({ contractAddress: built.to, seaDropAddress: built.to, calldata: built.data, valueWei: built.valueWei });
+  if (decoded.contractAddress.toLowerCase() !== contractAddress.toLowerCase()) {
+    invalid('contractAddress', "OpenSea's calldata targets a different contract than requested -- refusing to sign");
+  }
+  const decodedQuantity = decoded.arguments.find(arg => arg.name === 'quantity')?.value;
+  if (decodedQuantity !== String(expectedQuantity)) {
+    invalid('quantity', "OpenSea's calldata mints a different quantity than requested -- refusing to sign");
+  }
+  return decoded;
+}
+
+module.exports = { buildSeaDropMintCall, computeSeaDropValueWei, decodeSeaDropMintCall, validateOpenSeaMintCall };

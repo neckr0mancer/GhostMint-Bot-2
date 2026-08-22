@@ -4,7 +4,7 @@ const {
   mainMenu, walletsMenu, settingsMenu, chainSelect, walletSelect,
   confirmRemoveWallet, placeholderMenu, labelModal, collectionInfoCard,
   taskNameQuickPicks, taskConfirmation, tasksMenu, snipersMenu, adminOverviewMenu,
-  modeMenu, MODE_META,
+  modeMenu, MODE_META, sniperDetailsModal, sniperTolerancePrompt, sniperToleranceModal, sniperConfirmation,
 } = require('../src/discord/menus');
 
 function flatButtons(components) {
@@ -119,12 +119,12 @@ test('placeholder menu always offers a way back to the main menu', () => {
   assert.deepEqual(flatButtons(menu.components).map(b => b.custom_id), ['menu:main']);
 });
 
-test('collectionInfoCard renders the mint_guided flow\'s real first screen: Mint Now, Refresh, Copy CA, Cancel, with OpenSea only when a link is given', () => {
+test('collectionInfoCard renders the mint_guided flow\'s real first screen: Mint Now, Refresh, Cancel, with OpenSea only when a link is given', () => {
   const withoutOpenSea = collectionInfoCard({
     contractAddress: '0xabc', chainLabel: 'Ethereum', chainSym: 'ETH', isSeaDrop: false, priceETH: 0.05, priceUnknown: false,
     maxSupply: 100, maxPerWallet: 1, startTime: null, collection: null, soldOut: false, displayPrice: null, stats: null, openSeaUrl: null,
   });
-  assert.deepEqual(flatButtons(withoutOpenSea.components).map(b => b.custom_id || b.url), ['flow:mintdetailscontinue', 'flow:detailsrefresh', 'flow:copyca', 'flow:cancel:ask']);
+  assert.deepEqual(flatButtons(withoutOpenSea.components).map(b => b.custom_id || b.url), ['flow:mintdetailscontinue', 'flow:detailsrefresh', 'flow:cancel:ask']);
 
   const withOpenSea = collectionInfoCard({
     contractAddress: '0xabc', chainLabel: 'Ethereum', chainSym: 'ETH', isSeaDrop: false, priceETH: 0.05, priceUnknown: false,
@@ -132,7 +132,7 @@ test('collectionInfoCard renders the mint_guided flow\'s real first screen: Mint
     openSeaUrl: 'https://opensea.io/assets/ethereum/0xabc',
   });
   const buttons = flatButtons(withOpenSea.components);
-  assert.deepEqual(buttons.map(b => b.custom_id || b.url), ['flow:mintdetailscontinue', 'flow:detailsrefresh', 'https://opensea.io/assets/ethereum/0xabc', 'flow:copyca', 'flow:cancel:ask']);
+  assert.deepEqual(buttons.map(b => b.custom_id || b.url), ['flow:mintdetailscontinue', 'flow:detailsrefresh', 'https://opensea.io/assets/ethereum/0xabc', 'flow:cancel:ask']);
   assert.equal(buttons.find(b => b.url)?.label, '🔗 OpenSea');
 });
 
@@ -163,7 +163,7 @@ test('collectionInfoCard suggests scheduling only when the detected opening time
     maxSupply: 100, maxPerWallet: 1, startTime: future, collection: null, soldOut: false, displayPrice: null, stats: null, openSeaUrl: null,
   });
   assert.deepEqual(flatButtons(notYetOpen.components).map(b => b.custom_id),
-    ['flow:mintdetailscontinue', 'flow:schedulesuggest', 'flow:detailsrefresh', 'flow:copyca', 'flow:cancel:ask']);
+    ['flow:mintdetailscontinue', 'flow:schedulesuggest', 'flow:detailsrefresh', 'flow:cancel:ask']);
   assert.match(notYetOpen.content, /Opens:/);
 
   const alreadyOpen = collectionInfoCard({
@@ -177,16 +177,76 @@ test('collectionInfoCard suggests scheduling only when the detected opening time
 // Section AF -- mirrors telegramMenus.test.js's coverage. On-chain SeaDrop only ever exposes the
 // ONE currently-configured stage (the Opens/Opened line above), so it can never say what's coming
 // after that; drop carries OpenSea's own real stage data (null unless OpenSea tracks this contract).
-test('collectionInfoCard shows the live and next OpenSea phase when drop data is available, and omits the section entirely when it is not', () => {
+test('collectionInfoCard shows every stage (ended/live/upcoming), not just OpenSea\'s own active/next pointers, and omits the section entirely when there is no drop', () => {
   const noDrop = collectionInfoCard({
     contractAddress: '0xabc', chainLabel: 'Ethereum', chainSym: 'ETH', isSeaDrop: true, priceETH: 0.05, priceUnknown: false,
     maxSupply: 100, maxPerWallet: 1, startTime: null, collection: null, soldOut: false, displayPrice: null, stats: null, drop: null, openSeaUrl: null,
   });
   assert.equal(noDrop.content.includes('Phases'), false);
 
+  const now = Math.floor(Date.now() / 1000);
   const withDrop = collectionInfoCard({
     contractAddress: '0xabc', chainLabel: 'Ethereum', chainSym: 'ETH', isSeaDrop: true, priceETH: 0.05, priceUnknown: false,
     maxSupply: 100, maxPerWallet: 1, startTime: null, collection: null, soldOut: false, displayPrice: null, stats: null, openSeaUrl: null,
+    drop: {
+      isMinting: true, dropType: 'seadrop_v1_erc721', maxSupply: 100, openSeaUrl: null,
+      activeStage: { uuid: 'a1', label: 'Public sale', startTime: now - 100, endTime: now + 100, priceETH: 0.05, maxPerWallet: 5, stageType: 'public_sale' },
+      nextStage: { uuid: 'a2', label: 'Late FCFS', startTime: now + 3600, endTime: now + 7200, priceETH: 0.08, maxPerWallet: 3, stageType: 'fcfs' },
+      stages: [
+        { uuid: 'a0', label: 'Allowlist', startTime: now - 7200, endTime: now - 3600, priceETH: 0, maxPerWallet: 2, stageType: 'presale' },
+        { uuid: 'a1', label: 'Public sale', startTime: now - 100, endTime: now + 100, priceETH: 0.05, maxPerWallet: 5, stageType: 'public_sale' },
+        { uuid: 'a2', label: 'Late FCFS', startTime: now + 3600, endTime: now + 7200, priceETH: 0.08, maxPerWallet: 3, stageType: 'fcfs' },
+      ],
+    },
+  });
+  assert.match(withDrop.content, /### Phases \(3\)/);
+  assert.match(withDrop.content, /⚫ Allowlist — Free \(ended\)/, 'a stage whose endTime has passed shows as ended, not silently omitted');
+  assert.match(withDrop.content, /🟢 Public sale — 0\.05 ETH · ends/);
+  assert.match(withDrop.content, /🔵 Late FCFS — 0\.08 ETH · opens/, 'a THIRD stage beyond active/next still shows -- a drop is not capped at two phases');
+  // Section AF -- an allowlist/GTD/FCFS stage has no on-chain proof this app can construct; this
+  // button is the only path that actually works for those, shown whenever OpenSea confirms a
+  // stage is live right now.
+  assert.equal(flatButtons(noDrop.components).some(b => b.custom_id === 'flow:mintviaopensea'), false);
+  assert.equal(flatButtons(withDrop.components).some(b => b.custom_id === 'flow:mintviaopensea'), true);
+  // A live stage and a separately upcoming one are not mutually exclusive -- both actions are
+  // genuinely useful at once (the exact case an earlier if/else-if wrongly collapsed).
+  assert.equal(flatButtons(withDrop.components).some(b => b.custom_id === 'flow:scheduleviaopensea'), true);
+});
+
+test('collectionInfoCard shows an upcoming OpenSea phase with a fallback label built from stage_type when the stage has no name', () => {
+  const now = Math.floor(Date.now() / 1000);
+  const stage = { uuid: 'n1', label: null, startTime: now + 3600, endTime: now + 7200, priceETH: 0.05, maxPerWallet: 5, stageType: 'public_sale' };
+  const withNext = collectionInfoCard({
+    contractAddress: '0xabc', chainLabel: 'Ethereum', chainSym: 'ETH', isSeaDrop: true, priceETH: 0.05, priceUnknown: true,
+    maxSupply: 100, maxPerWallet: 1, startTime: null, collection: null, soldOut: false, displayPrice: null, stats: null, openSeaUrl: null,
+    drop: { isMinting: false, dropType: 'seadrop_v1_erc721', maxSupply: 100, openSeaUrl: null, activeStage: null, nextStage: stage, stages: [stage] },
+  });
+  assert.match(withNext.content, /🔵 Public Sale — 0\.05 ETH · opens/);
+  assert.equal(withNext.content.includes('max 5/wallet'), false, 'per-phase max/wallet lives on the picker, not the summary line');
+  // Nothing is minting yet -- OpenSea has nothing to build a mint transaction against, so the
+  // button stays hidden until activeStage is real, not merely because drop data exists at all.
+  assert.equal(flatButtons(withNext.components).some(b => b.custom_id === 'flow:mintviaopensea'), false);
+  // A phase that hasn't opened yet has nothing to mint against but IS schedulable -- OpenSea's own
+  // response at the exact open time is what determines eligibility and price, live. A single
+  // schedulable stage shows no count -- it schedules itself with no picker needed.
+  const scheduleBtn = flatButtons(withNext.components).find(b => b.custom_id === 'flow:scheduleviaopensea');
+  assert.ok(scheduleBtn);
+  assert.equal(scheduleBtn.label, '🎫📅 Schedule for OpenSea phase');
+});
+
+test('collectionInfoCard never offers Schedule for OpenSea phase when there is no upcoming stage to schedule against', () => {
+  const noDrop = collectionInfoCard({
+    contractAddress: '0xabc', chainLabel: 'Ethereum', chainSym: 'ETH', isSeaDrop: true, priceETH: 0.05, priceUnknown: false,
+    maxSupply: 100, maxPerWallet: 1, startTime: null, collection: null, soldOut: false, displayPrice: null, stats: null, drop: null, openSeaUrl: null,
+  });
+  assert.equal(flatButtons(noDrop.components).some(b => b.custom_id === 'flow:scheduleviaopensea'), false);
+});
+
+test('a sold-out collection shows no phases and no mint/schedule actions, even when OpenSea still hands back stale stage data for it', () => {
+  const card = collectionInfoCard({
+    contractAddress: '0xabc', chainLabel: 'Ethereum', chainSym: 'ETH', isSeaDrop: true, priceETH: 0.05, priceUnknown: false,
+    maxSupply: 100, maxPerWallet: 1, startTime: Math.floor(Date.now() / 1000) - 3_600, collection: null,
+    soldOut: true, displayPrice: null, stats: null, openSeaUrl: 'https://opensea.io/assets/ethereum/0xabc',
     drop: {
       isMinting: true, dropType: 'seadrop_v1_erc721', maxSupply: 100, openSeaUrl: null,
       activeStage: { uuid: 'a1', label: 'Public sale', startTime: 1_700_000_000, endTime: 1_700_100_000, priceETH: 0.05, maxPerWallet: 5, stageType: 'public_sale' },
@@ -197,44 +257,10 @@ test('collectionInfoCard shows the live and next OpenSea phase when drop data is
       ],
     },
   });
-  assert.match(withDrop.content, /### Phases \(via OpenSea\)/);
-  assert.match(withDrop.content, /2 phases total/);
-  assert.match(withDrop.content, /🟢 Live: Public sale — 0\.05 ETH · max 5\/wallet/);
-  assert.equal(withDrop.content.includes('🔵 Next'), false);
-  // Section AF -- an allowlist/GTD/FCFS stage has no on-chain proof this app can construct; this
-  // button is the only path that actually works for those, shown whenever OpenSea confirms a
-  // stage is live right now.
-  assert.equal(flatButtons(noDrop.components).some(b => b.custom_id === 'flow:mintviaopensea'), false);
-  assert.equal(flatButtons(withDrop.components).some(b => b.custom_id === 'flow:mintviaopensea'), true);
-});
-
-test('collectionInfoCard shows an upcoming OpenSea phase with a fallback label built from stage_type when the stage has no name', () => {
-  const withNext = collectionInfoCard({
-    contractAddress: '0xabc', chainLabel: 'Ethereum', chainSym: 'ETH', isSeaDrop: true, priceETH: 0.05, priceUnknown: true,
-    maxSupply: 100, maxPerWallet: 1, startTime: null, collection: null, soldOut: false, displayPrice: null, stats: null, openSeaUrl: null,
-    drop: {
-      isMinting: false, dropType: 'seadrop_v1_erc721', maxSupply: 100, openSeaUrl: null,
-      activeStage: null,
-      nextStage: { uuid: 'n1', label: null, startTime: 1_700_000_000, endTime: 1_700_100_000, priceETH: 0.05, maxPerWallet: 5, stageType: 'public_sale' },
-      stages: [],
-    },
-  });
-  assert.match(withNext.content, /🔵 Next: Public Sale — 0\.05 ETH · max 5\/wallet · opens/);
-  assert.equal(withNext.content.includes('phases total'), false, 'must not show a phase count for a single-stage next-only drop');
-  // Nothing is minting yet -- OpenSea has nothing to build a mint transaction against, so the
-  // button stays hidden until activeStage is real, not merely because drop data exists at all.
-  assert.equal(flatButtons(withNext.components).some(b => b.custom_id === 'flow:mintviaopensea'), false);
-  // A phase that hasn't opened yet has nothing to mint against but IS schedulable -- OpenSea's own
-  // response at the exact open time is what determines eligibility and price, live.
-  assert.equal(flatButtons(withNext.components).some(b => b.custom_id === 'flow:scheduleviaopensea'), true);
-});
-
-test('collectionInfoCard never offers Schedule for OpenSea phase when there is no upcoming stage to schedule against', () => {
-  const noDrop = collectionInfoCard({
-    contractAddress: '0xabc', chainLabel: 'Ethereum', chainSym: 'ETH', isSeaDrop: true, priceETH: 0.05, priceUnknown: false,
-    maxSupply: 100, maxPerWallet: 1, startTime: null, collection: null, soldOut: false, displayPrice: null, stats: null, drop: null, openSeaUrl: null,
-  });
-  assert.equal(flatButtons(noDrop.components).some(b => b.custom_id === 'flow:scheduleviaopensea'), false);
+  assert.equal(card.content.includes('Phases'), false, 'phases section must not render once sold out');
+  const ids = flatButtons(card.components).map(b => b.custom_id || b.url);
+  assert.deepEqual(ids, ['flow:detailsrefresh', 'https://opensea.io/assets/ethereum/0xabc', 'flow:cancel:ask'],
+    'only the info-only Refresh/OpenSea/Cancel actions remain -- no Mint Now, no OpenSea phase action, no Schedule for opening');
 });
 
 test('taskNameQuickPicks offers GTD/FCFS/PUBLIC and a custom option in one select, with an unverified-labels caveat', () => {
@@ -323,6 +349,43 @@ test('snipersMenu matches /sniper list\'s exact format and disclaimer', () => {
 
   const empty = snipersMenu([]);
   assert.match(empty.content, /No matching snipers/);
+  assert.ok(flatButtons(list.components).some(b => b.custom_id === 'sniper:create:start'));
+  assert.ok(flatButtons(empty.components).some(b => b.custom_id === 'sniper:create:start'));
+});
+
+test('sniperDetailsModal asks for both label and target address, both required', () => {
+  const modal = sniperDetailsModal();
+  assert.equal(modal.custom_id, 'flow:snipercreate:submit');
+  const fields = modal.components.map(r => r.components[0]);
+  assert.deepEqual(fields.map(f => f.custom_id), ['label', 'targetAddress']);
+  assert.ok(fields.every(f => f.required === true));
+});
+
+test('sniperTolerancePrompt shows every default and offers accept-defaults alongside set-my-own', () => {
+  const prompt = sniperTolerancePrompt({ maxGasGwei: 200, maxValueETH: 0.1, dailySpendingCapETH: 0.25 });
+  assert.match(prompt.content, /max gas \*\*200 gwei\*\*/);
+  assert.match(prompt.content, /max value per fire \*\*0\.1 ETH\*\*/);
+  assert.match(prompt.content, /daily spend cap \*\*0\.25 ETH\*\*/);
+  assert.deepEqual(flatButtons(prompt.components).map(b => b.custom_id), ['flow:snipertoleranceaccept', 'flow:snipertolerancemanual']);
+});
+
+test('sniperToleranceModal offers all three fields as optional, showing the default in each placeholder', () => {
+  const modal = sniperToleranceModal({ maxGasGwei: 200, maxValueETH: 0.1, dailySpendingCapETH: 0.25 });
+  const fields = modal.components.map(r => r.components[0]);
+  assert.deepEqual(fields.map(f => f.custom_id), ['maxGasGwei', 'maxValueETH', 'dailySpendingCapETH']);
+  assert.ok(fields.every(f => f.required === false));
+  assert.match(fields[0].placeholder, /200/);
+  assert.match(fields[1].placeholder, /0\.1/);
+  assert.match(fields[2].placeholder, /0\.25/);
+});
+
+test('sniperConfirmation shows every field, naming defaults explicitly rather than a blank', () => {
+  const withCustom = sniperConfirmation({ label: 'Whale copy', targetAddress: '0xabc', chain: 'ethereum', walletLabel: 'main', maxGasGwei: 80 });
+  assert.match(withCustom.content, /Whale copy/);
+  assert.match(withCustom.content, /Max gas: 80/);
+  assert.match(withCustom.content, /Max value\/fire: default \(0\.1 ETH\)/);
+  assert.match(withCustom.content, /Daily cap: default \(0\.25 ETH\)/);
+  assert.deepEqual(flatButtons(withCustom.components).map(b => b.custom_id), ['flow:sniperconfirm', 'flow:cancel:ask']);
 });
 
 test('adminOverviewMenu shows metrics and per-group ceilings, wording "no ceiling" for a null value', () => {

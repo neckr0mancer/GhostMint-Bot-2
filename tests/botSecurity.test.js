@@ -1,6 +1,6 @@
 const assert=require('node:assert/strict');
 const test=require('node:test');
-const {BotContextError,RateLimitError,createCommandRateLimiter,escapeDiscord,escapeTelegram,
+const {ACCOUNT_RATE_LIMIT_SCOPE,BotContextError,RateLimitError,createCommandRateLimiter,escapeDiscord,escapeTelegram,
   requireTextConfirmation,verifyDiscordContext,verifyTelegramContext}=require('../src/security/botSecurity');
 const {createTriggerExecutionService}=require('../src/triggers/triggerExecutionService');
 const {createGracefulShutdown}=require('../src/security/gracefulShutdown');
@@ -39,6 +39,26 @@ test('rate limiter buckets that have fully aged out are pruned instead of growin
     'a swept-out bucket must behave exactly like a fresh one, not carry over stale state');
   assert.throws(() => limiter.check('telegram', 'stale-user-1', 'mint'), RateLimitError,
     'pruning must not weaken the limit -- the two fresh checks just above still count toward it');
+});
+
+// Regression test: the dashboard and Telegram's /exportkey were documented as sharing one export
+// ceiling, and did share the limiter INSTANCE -- but check() keys on `platform:userId:command`, and
+// the two call sites passed 'dashboard' and 'telegram', so each got its own bucket and the real
+// ceiling was 2x the intended one. Both now pass ACCOUNT_RATE_LIMIT_SCOPE instead. This works only
+// because both sides key on the same canonical account UUID, which is asserted here by using one
+// userId across both calls -- if either side ever reverts to a platform-native id, the buckets
+// silently split again and this test fails.
+test('wallet key exports share one ceiling across the dashboard and Telegram instead of one each',()=>{
+  let now=1000;const limiter=createCommandRateLimiter({now:()=>now,limit:2,windowMs:100});
+  const userId='11111111-2222-3333-4444-555555555555';
+  limiter.check(ACCOUNT_RATE_LIMIT_SCOPE,userId,'exportkey'); // dashboard's exportWalletKey
+  limiter.check(ACCOUNT_RATE_LIMIT_SCOPE,userId,'exportkey'); // Telegram's /exportkey, same account
+  assert.throws(()=>limiter.check(ACCOUNT_RATE_LIMIT_SCOPE,userId,'exportkey'),RateLimitError,
+    'the third export must be refused no matter which surface it came from');
+  // The scope is deliberately narrow: 'securitypassword' still buckets per platform, and a
+  // different account is unaffected by this one exhausting its exports.
+  assert.doesNotThrow(()=>limiter.check('dashboard',userId,'securitypassword'));
+  assert.doesNotThrow(()=>limiter.check(ACCOUNT_RATE_LIMIT_SCOPE,'99999999-8888-7777-6666-555555555555','exportkey'));
 });
 
 test('user content escaping neutralizes Telegram, Discord, and mention formatting',()=>{
