@@ -12,6 +12,12 @@ const FINAL_STATES = new Set(['confirmed', 'reverted', 'replaced']);
 const FAST_RPC_TIMEOUT_MS = 3_000;
 const FAST_RPC_RETRIES = 0;
 
+// How long a pre-arm snapshot's fee quote may be reused at fire time before a fresh getFeeData
+// replaces it. Shorter than feeDataCache's own 5s TTL on purpose: that cache bounds how stale a
+// hot shared entry can be, while this bounds a quote handed across two separate phases -- its age
+// grows with the whole arming lead time, so it earns less trust per millisecond.
+const ARMED_FEE_MAX_AGE_MS = 4_000;
+
 class TransactionSafetyError extends Error {
   constructor(code, message) {
     super(message);
@@ -344,108 +350,333 @@ function createTransactionEngine({
         await simulateCallSafely(request.chain, { ...base, ...feeFields, gasLimit }, fastRpcOptions, activeService);
       }
 
-      // Same batching one step later: the pending-nonce read and the chain-identity check share no
-      // dependency either -- the network answer only feeds the WRONG_CHAIN guard and the signed
-      // transaction's own chainId -- and both were serial legs between simulation and signing.
-      const [pendingNonceRaw, network] = await Promise.all([
-        providerCall(request.chain, 'getTransactionCount', provider => provider.getTransactionCount(from, 'pending'), fastRpcOptions, activeService),
-        providerCall(request.chain, 'getNetwork', provider => provider.getNetwork(), fastRpcOptions, activeService),
-      ]);
-      const providerNonce = Number(pendingNonceRaw);
-      const expectedChainId = providerService.expectedChainId?.(request.chain);
-      if (expectedChainId !== null && expectedChainId !== undefined && BigInt(network.chainId) !== BigInt(expectedChainId)) {
-        throw new TransactionSafetyError('WRONG_CHAIN', 'RPC provider is connected to the wrong chain');
-      }
-      const signer = new Wallet(decryptPrivateKey(request.wallet));
-      if (signer.address.toLowerCase() !== from.toLowerCase()) {
-        throw new TransactionSafetyError('WALLET_KEY_MISMATCH', 'Stored private key does not match the wallet address');
-      }
-      let nonce;
-      let intent;
-      for (let attempt = 0; attempt < 5 && !intent; attempt += 1) {
-        nonce = intentRepository.nextNonce
-          ? await intentRepository.nextNonce({ chain: request.chain, from, providerNonce })
-          : providerNonce;
-        try {
-          intent = await intentRepository.createSubmitted({
-            userId: request.userId,
-            walletId: request.wallet.id,
-            targetId: request.targetId || null,
-            chain: request.chain,
-            from,
-            to: request.to,
-            data: request.data || '0x',
-            valueWei,
-            nonce,
-            gasLimit,
-            gasPriceWei,
-            maxFeePerGasWei,
-            maxPriorityFeePerGasWei,
-            estimatedCostWei,
-            simulationEnabled: policy.simulationEnabled,
-            requiredConfirmations: policy.requiredConfirmations,
-            transactionTimeoutMs: policy.transactionTimeoutMs,
-            timeoutAt: now() + policy.transactionTimeoutMs,
-            methodSignature: request.methodSignature || null,
-            callPreview: request.callPreview || null,
-            idempotencyKey: request.idempotencyKey || null,
-          });
-        } catch (error) {
-          if (error?.code !== '23505') throw error;
-          if (request.idempotencyKey && intentRepository.getByIdempotencyKey) {
-            const existing = await intentRepository.getByIdempotencyKey(request.idempotencyKey);
-            if (existing) return existing;
-          }
-        }
-      }
-      if (!intent) throw new TransactionSafetyError('NONCE_RESERVATION_FAILED', 'Could not reserve a unique wallet nonce');
-      if (request.onIntentPersisted) await request.onIntentPersisted(intent);
-      timings.preparedAt = now();
-      const transaction = {
-        to: request.to,
-        data: request.data || '0x',
-        value: valueWei,
-        nonce,
-        gasLimit,
-        chainId: BigInt(network.chainId),
-        ...feeFields,
-      };
+      const outcome = await reserveSignAndDeliver({
+        request, policy, valueWei, gasLimit, gasPriceWei, maxFeePerGasWei,
+        maxPriorityFeePerGasWei, feeFields, estimatedCostWei, timings,
+        fastRpcOptions, activeService,
+      });
+      finalityPromise = outcome.finalityPromise;
+      return outcome.intent;
+    });
+    return finalityPromise ?? queuedResult;
+  }
 
-      const signedTransaction = await signer.signTransaction(transaction);
-      timings.signedAt = now();
-      const txHash = keccak256(signedTransaction);
-      intent = await intentRepository.attachSignedHash(intent.intentId, txHash);
+  // Shared tail of both submission paths (submit and submitArmed): everything from "who owns the
+  // next nonce" through broadcast acceptance, the pending transition, and the detached finality
+  // tracker. One copy on purpose -- nonce reservation, the WRONG_CHAIN guard, the key-mismatch
+  // check, the idempotent-replay exit, and the sniper broadcast race are safety-relevant and must
+  // never drift between the plain and pre-armed paths. ctx carries what the caller's front half
+  // already resolved; this function intentionally re-validates none of it. Returns
+  // { intent, finalityPromise }; finalityPromise is undefined only for an idempotent replay of an
+  // already-persisted intent, where callers return that intent as-is without tracking, exactly as
+  // submit() has always done.
+  async function reserveSignAndDeliver(ctx) {
+    const { request, policy, valueWei, gasLimit, gasPriceWei, maxFeePerGasWei,
+      maxPriorityFeePerGasWei, feeFields, estimatedCostWei, timings,
+      fastRpcOptions, activeService } = ctx;
+    const isSniperTrigger = request.triggerSource === 'blockchain';
+    const from = request.wallet.address;
+    // Same batching one step later: the pending-nonce read and the chain-identity check share no
+    // dependency either -- the network answer only feeds the WRONG_CHAIN guard and the signed
+    // transaction's own chainId -- and both were serial legs between simulation and signing.
+    const [pendingNonceRaw, network] = await Promise.all([
+      providerCall(request.chain, 'getTransactionCount', provider => provider.getTransactionCount(from, 'pending'), fastRpcOptions, activeService),
+      providerCall(request.chain, 'getNetwork', provider => provider.getNetwork(), fastRpcOptions, activeService),
+    ]);
+    const providerNonce = Number(pendingNonceRaw);
+    const expectedChainId = providerService.expectedChainId?.(request.chain);
+    if (expectedChainId !== null && expectedChainId !== undefined && BigInt(network.chainId) !== BigInt(expectedChainId)) {
+      throw new TransactionSafetyError('WRONG_CHAIN', 'RPC provider is connected to the wrong chain');
+    }
+    const signer = new Wallet(decryptPrivateKey(request.wallet));
+    if (signer.address.toLowerCase() !== from.toLowerCase()) {
+      throw new TransactionSafetyError('WALLET_KEY_MISMATCH', 'Stored private key does not match the wallet address');
+    }
+    let nonce;
+    let intent;
+    for (let attempt = 0; attempt < 5 && !intent; attempt += 1) {
+      nonce = intentRepository.nextNonce
+        ? await intentRepository.nextNonce({ chain: request.chain, from, providerNonce })
+        : providerNonce;
       try {
-        // Round 16 (Section AV): sniper races the same signed transaction across every candidate
-        // in its own pool concurrently instead of trying one at a time -- safe because it's the
-        // same nonce+signature everywhere, so a losing endpoint's own response (often just
-        // "already known") is harmless to discard. Every other trigger source keeps the
-        // conservative sequential default; a failed/slow broadcast is too costly to get wrong to
-        // race it without a reason as strong as sniper's actual competitive-inclusion use case.
-        if (isSniperTrigger && sniperProviderService) {
-          await sniperProviderService.performAll(request.chain, 'broadcastTransaction', provider => provider.broadcastTransaction(signedTransaction));
-        } else {
-          await providerCall(request.chain, 'broadcastTransaction', provider => provider.broadcastTransaction(signedTransaction));
-        }
+        intent = await intentRepository.createSubmitted({
+          userId: request.userId,
+          walletId: request.wallet.id,
+          targetId: request.targetId || null,
+          chain: request.chain,
+          from,
+          to: request.to,
+          data: request.data || '0x',
+          valueWei,
+          nonce,
+          gasLimit,
+          gasPriceWei,
+          maxFeePerGasWei,
+          maxPriorityFeePerGasWei,
+          estimatedCostWei,
+          simulationEnabled: policy.simulationEnabled,
+          requiredConfirmations: policy.requiredConfirmations,
+          transactionTimeoutMs: policy.transactionTimeoutMs,
+          timeoutAt: now() + policy.transactionTimeoutMs,
+          methodSignature: request.methodSignature || null,
+          callPreview: request.callPreview || null,
+          idempotencyKey: request.idempotencyKey || null,
+        });
       } catch (error) {
-        await transition(intent.intentId, 'unknown', { reason: 'broadcast result was not observable' });
-        throw new TransactionSafetyError('BROADCAST_UNKNOWN', 'Transaction broadcast outcome is unknown; reconciliation will continue');
+        if (error?.code !== '23505') throw error;
+        if (request.idempotencyKey && intentRepository.getByIdempotencyKey) {
+          const existing = await intentRepository.getByIdempotencyKey(request.idempotencyKey);
+          if (existing) return { intent: existing };
+        }
       }
-      timings.broadcastAt = now();
-      await safeNotify(notify, { intent, event: 'timing', triggerSource: request.triggerSource || 'manual', chain: request.chain, timings });
-      intent = await transition(intent.intentId, 'pending', { reason: 'raw signed transaction broadcast accepted' });
-      // Finality tracking starts here but is deliberately NOT awaited inside this callback: the
-      // wallet queue releases the moment the callback resolves, and previously it stayed locked
-      // through every confirmation poll -- up to the full transaction timeout on slow-finality
-      // chains -- so a rapid-fire second mint from the same wallet couldn't even begin its
-      // pre-broadcast reads until the first was fully final. Overlapping submissions are safe
-      // without that lock: the next one's nonce comes from nextNonce()'s GREATEST(provider
-      // pending count, MAX(persisted nonce)+1), backed by the unique-constraint retry loop, so a
-      // provider read that lags behind an in-flight transaction can never reissue its nonce.
-      // Callers still receive the final-state intent exactly as before (submit() awaits the
-      // tracking promise outside the queue); only the lock-hold time shrinks.
-      finalityPromise = waitForFinality(intent);
-      return intent;
+    }
+    if (!intent) throw new TransactionSafetyError('NONCE_RESERVATION_FAILED', 'Could not reserve a unique wallet nonce');
+    if (request.onIntentPersisted) await request.onIntentPersisted(intent);
+    timings.preparedAt = now();
+    const transaction = {
+      to: request.to,
+      data: request.data || '0x',
+      value: valueWei,
+      nonce,
+      gasLimit,
+      chainId: BigInt(network.chainId),
+      ...feeFields,
+    };
+
+    const signedTransaction = await signer.signTransaction(transaction);
+    timings.signedAt = now();
+    const txHash = keccak256(signedTransaction);
+    intent = await intentRepository.attachSignedHash(intent.intentId, txHash);
+    try {
+      // Round 16 (Section AV): sniper races the same signed transaction across every candidate
+      // in its own pool concurrently instead of trying one at a time -- safe because it's the
+      // same nonce+signature everywhere, so a losing endpoint's own response (often just
+      // "already known") is harmless to discard. Every other trigger source keeps the
+      // conservative sequential default; a failed/slow broadcast is too costly to get wrong to
+      // race it without a reason as strong as sniper's actual competitive-inclusion use case.
+      if (isSniperTrigger && sniperProviderService) {
+        await sniperProviderService.performAll(request.chain, 'broadcastTransaction', provider => provider.broadcastTransaction(signedTransaction));
+      } else {
+        await providerCall(request.chain, 'broadcastTransaction', provider => provider.broadcastTransaction(signedTransaction));
+      }
+    } catch (error) {
+      await transition(intent.intentId, 'unknown', { reason: 'broadcast result was not observable' });
+      throw new TransactionSafetyError('BROADCAST_UNKNOWN', 'Transaction broadcast outcome is unknown; reconciliation will continue');
+    }
+    timings.broadcastAt = now();
+    await safeNotify(notify, { intent, event: 'timing', triggerSource: request.triggerSource || 'manual', chain: request.chain, timings });
+    intent = await transition(intent.intentId, 'pending', { reason: 'raw signed transaction broadcast accepted' });
+    // Finality tracking starts here but is deliberately NOT awaited by this function's caller
+    // inside the wallet queue: the queue releases the moment the queue callback resolves, and it
+    // previously stayed locked through every confirmation poll -- up to the full transaction
+    // timeout on slow-finality chains -- so a rapid-fire second mint from the same wallet
+    // couldn't even begin its pre-broadcast reads until the first was fully final. Overlapping
+    // submissions are safe without that lock: the next one's nonce comes from nextNonce()'s
+    // GREATEST(provider pending count, MAX(persisted nonce)+1), backed by the unique-constraint
+    // retry loop, so a provider read that lags behind an in-flight transaction can never reissue
+    // its nonce. Callers await the tracking promise outside the queue and hand callers of THEIRS
+    // the final-state intent exactly as before; only the lock-hold time shrinks.
+    return { intent, finalityPromise: waitForFinality(intent) };
+  }
+
+  // Pre-arm (docs/COMPETITIVE_ANALYSIS.md Day 2-3 / Worklist A3): run every launch-path step that
+  // does not have to happen at the fire moment, ahead of time, and hand back a snapshot that
+  // submitArmed() consumes at T=0. State-dependent reads failing here is NOT an error: a task
+  // scheduled for the exact moment a phase opens reverts its estimateGas/call until that moment
+  // arrives -- expected, normal -- so those outcomes are recorded on the snapshot and the fire
+  // path re-runs them just like the ordinary path would. Reserves nothing: no nonce, no intent
+  // row, no budget commitment exists after this resolves. A snapshot never gates anything on its
+  // own; submitArmed decides at fire time what is still trustworthy.
+  async function preArm(request) {
+    const timings = { preArmStartedAt: now() };
+    const policy = await policyRepository.resolvePolicy({
+      userId: request.userId,
+      walletId: request.wallet.id,
+      targetId: request.targetId,
+      chain: request.chain,
+      triggerSource: request.triggerSource || 'manual',
+    });
+    const valueWei = asBigInt(request.valueWei ?? 0n, 'valueWei');
+    if (valueWei < 0n) throw new TransactionSafetyError('INVALID_TRANSACTION', 'Transaction value cannot be negative');
+    if (!policy.ceilingExempt && valueWei > policy.maxTransactionValueWei) {
+      throw new TransactionSafetyError('VALUE_CEILING_EXCEEDED', 'Transaction value exceeds the configured maximum');
+    }
+    const isSniperTrigger = request.triggerSource === 'blockchain';
+    const useFastPath = isSniperTrigger || (request.triggerSource || 'manual') === 'scheduled' || policy.gasPriceMultiplier > 1;
+    const fastRpcOptions = useFastPath ? { timeoutMs: FAST_RPC_TIMEOUT_MS, retries: FAST_RPC_RETRIES } : undefined;
+    const activeService = isSniperTrigger && sniperProviderService ? sniperProviderService
+      : (useFastPath && fastProviderService ? fastProviderService : providerService);
+    const from = request.wallet.address;
+    const base = { from, to: request.to, data: request.data || '0x', value: valueWei };
+    // Raw provider fee data is snapshotted unmultiplied on purpose: fire time re-derives the
+    // final fields through the exact explicit-override/multiplier rules submit() uses, so an aged
+    // snapshot can never smuggle in fees current policy would not allow.
+    const [feeSnapshot, balance, spent] = await Promise.all([
+      resolveFeeData(request.chain, useFastPath, fastRpcOptions, activeService),
+      providerCall(request.chain, 'getBalance', provider => provider.getBalance(from), fastRpcOptions, activeService),
+      intentRepository.rollingSpendWei(request.userId, request.wallet.id, now() - 86_400_000),
+    ]);
+    let gasLimit = null;
+    let simulationPassed = false;
+    let note = null;
+    if (request.gasLimitWei !== undefined) {
+      gasLimit = asBigInt(request.gasLimitWei, 'gasLimitWei');
+      if (gasLimit <= 0n) throw new TransactionSafetyError('INVALID_TRANSACTION', 'Gas limit must be positive');
+    } else {
+      try {
+        gasLimit = BigInt(await providerCall(request.chain, 'estimateGas', provider => provider.estimateGas(base), fastRpcOptions, activeService));
+      } catch (error) {
+        note = explainCallFailure(error, { chain: request.chain, params: base });
+      }
+    }
+    if (gasLimit !== null && !note && policy.simulationEnabled) {
+      try {
+        await simulateCallSafely(request.chain, { ...base, gasLimit }, fastRpcOptions, activeService);
+        simulationPassed = true;
+      } catch (error) {
+        note = error instanceof TransactionSafetyError ? error.message : explainCallFailure(error, { chain: request.chain, params: base });
+      }
+    }
+    timings.preArmFinishedAt = now();
+    return {
+      kind: 'ghostmint-prearm',
+      version: 1,
+      chain: request.chain,
+      walletId: request.wallet.id,
+      from,
+      armedAt: timings.preArmStartedAt,
+      finishedAt: timings.preArmFinishedAt,
+      policy,
+      feeSnapshot,
+      feeCapturedAt: timings.preArmFinishedAt,
+      gasLimit,
+      balanceWei: balance === null || balance === undefined ? null : BigInt(balance),
+      spentWei: spent === null || spent === undefined ? null : BigInt(spent),
+      simulationPassed,
+      note,
+      timings,
+    };
+  }
+
+  // Fires a submission using a preArm() snapshot: reuses whatever the snapshot still proves (fee
+  // quote while younger than ARMED_FEE_MAX_AGE_MS, gas estimate, a passed simulation), re-reads
+  // whatever gates real money regardless (balance, rolling spend -- fresh every time), and
+  // silently falls back to the ordinary leg wherever the arm came up short (no gas estimate
+  // because the phase was not open yet, stale fees, failed simulation). Throws ARMED_MISMATCH
+  // before touching anything if the snapshot does not belong to this exact chain+wallet -- the
+  // signal callers catch to fall back to plain submit(). Everything downstream of validation runs
+  // through the SAME reserveSignAndDeliver tail as submit(), so the two paths cannot diverge on
+  // nonce reservation, chain identity, key checks, or broadcast behavior.
+  async function submitArmed(request, armed) {
+    if (!armed || armed.kind !== 'ghostmint-prearm' || armed.version !== 1
+      || armed.chain !== request.chain || armed.walletId !== request.wallet.id
+      || String(armed.from).toLowerCase() !== String(request.wallet.address).toLowerCase()
+      || !armed.policy) {
+      throw new TransactionSafetyError('ARMED_MISMATCH', 'Pre-arm snapshot is missing or belongs to a different chain or wallet');
+    }
+    const walletKey = `${request.chain}:${request.wallet.id}`;
+    const timings = { submitStartedAt: now(), preArmCapturedAt: armed.feeCapturedAt };
+    let finalityPromise;
+    const queuedResult = await nonceQueue.run(walletKey, async () => {
+      if (request.idempotencyKey && intentRepository.getByIdempotencyKey) {
+        const existing = await intentRepository.getByIdempotencyKey(request.idempotencyKey);
+        if (existing) return existing;
+      }
+      const policy = armed.policy;
+      const valueWei = asBigInt(request.valueWei ?? 0n, 'valueWei');
+      if (valueWei < 0n) throw new TransactionSafetyError('INVALID_TRANSACTION', 'Transaction value cannot be negative');
+      if (!policy.ceilingExempt && valueWei > policy.maxTransactionValueWei) {
+        throw new TransactionSafetyError('VALUE_CEILING_EXCEEDED', 'Transaction value exceeds the configured maximum');
+      }
+      const isSniperTrigger = request.triggerSource === 'blockchain';
+      const useFastPath = isSniperTrigger || (request.triggerSource || 'manual') === 'scheduled' || policy.gasPriceMultiplier > 1;
+      const fastRpcOptions = useFastPath ? { timeoutMs: FAST_RPC_TIMEOUT_MS, retries: FAST_RPC_RETRIES } : undefined;
+      const activeService = isSniperTrigger && sniperProviderService ? sniperProviderService
+        : (useFastPath && fastProviderService ? fastProviderService : providerService);
+      const from = request.wallet.address;
+      const base = { from, to: request.to, data: request.data || '0x', value: valueWei };
+      // Balance and rolling spend are ALWAYS read fresh -- they gate real money decisions and
+      // their values say nothing about whether a snapshot has aged. Only the fee quote earns age
+      // trust, and only up to ARMED_FEE_MAX_AGE_MS.
+      const [feeData, balance, spent] = await Promise.all([
+        (now() - armed.feeCapturedAt) <= ARMED_FEE_MAX_AGE_MS ? armed.feeSnapshot
+          : resolveFeeData(request.chain, useFastPath, fastRpcOptions, activeService),
+        providerCall(request.chain, 'getBalance', provider => provider.getBalance(from), fastRpcOptions, activeService),
+        intentRepository.rollingSpendWei(request.userId, request.wallet.id, now() - 86_400_000),
+      ]);
+      // Fee derivation below is intentionally identical to submit()'s block-for-block: explicit
+      // per-request overrides win untouched, otherwise the policy multiplier applies to the raw
+      // quote (snapshot or fresh alike). If submit()'s rules ever change, change them here in the
+      // same commit or fold both into a helper -- divergence between these two paths is the bug
+      // class this whole shared-tail structure exists to prevent.
+      const hasExplicitLegacyFee = request.gasPriceWei !== undefined && request.gasPriceWei !== null;
+      const hasExplicitMaxFee = request.maxFeePerGasWei !== undefined && request.maxFeePerGasWei !== null;
+      const gasPriceWei = hasExplicitLegacyFee
+        ? asBigInt(request.gasPriceWei, 'gasPriceWei')
+        : (hasExplicitMaxFee || feeData.maxFeePerGas ? null : applyGasMultiplier(feeData.gasPrice, policy.gasPriceMultiplier));
+      const maxFeePerGasWei = hasExplicitLegacyFee
+        ? null
+        : (hasExplicitMaxFee ? asBigInt(request.maxFeePerGasWei, 'maxFeePerGasWei') : applyGasMultiplier(feeData.maxFeePerGas, policy.gasPriceMultiplier));
+      const maxPriorityFeePerGasWei = hasExplicitLegacyFee
+        ? null
+        : (request.maxPriorityFeePerGasWei !== undefined && request.maxPriorityFeePerGasWei !== null
+          ? asBigInt(request.maxPriorityFeePerGasWei, 'maxPriorityFeePerGasWei')
+          : applyGasMultiplier(feeData.maxPriorityFeePerGas, policy.gasPriceMultiplier));
+      const selectedFee = maxFeePerGasWei ?? gasPriceWei;
+      if (selectedFee === null || selectedFee === undefined) {
+        throw new TransactionSafetyError('FEE_UNAVAILABLE', 'RPC provider did not return usable fee data');
+      }
+      if (selectedFee < 0n || (maxPriorityFeePerGasWei !== null && maxPriorityFeePerGasWei !== undefined && maxPriorityFeePerGasWei < 0n)) {
+        throw new TransactionSafetyError('INVALID_TRANSACTION', 'Transaction fees cannot be negative');
+      }
+      if (maxFeePerGasWei !== null && maxFeePerGasWei !== undefined
+        && maxPriorityFeePerGasWei !== null && maxPriorityFeePerGasWei !== undefined
+        && maxPriorityFeePerGasWei > maxFeePerGasWei) {
+        throw new TransactionSafetyError('INVALID_TRANSACTION', 'Priority fee cannot exceed the maximum fee');
+      }
+      const gasCeilingWei = parseUnits(String(policy.gasCeilingGwei), 'gwei');
+      if (!policy.ceilingExempt && selectedFee > gasCeilingWei) {
+        throw new TransactionSafetyError('GAS_CEILING_EXCEEDED', 'Transaction fee exceeds the configured gas ceiling');
+      }
+      if (request.maxGasGwei !== undefined && request.maxGasGwei !== null) {
+        const toleranceWei = parseUnits(String(request.maxGasGwei), 'gwei');
+        if (selectedFee > toleranceWei) {
+          throw new TransactionSafetyError('GAS_TOLERANCE_EXCEEDED', 'Transaction fee exceeds the gas tolerance set for this batch');
+        }
+      }
+      const feeFields = maxFeePerGasWei !== null && maxFeePerGasWei !== undefined
+        ? { maxFeePerGas: maxFeePerGasWei, maxPriorityFeePerGas: maxPriorityFeePerGasWei ?? 0n, type: 2 }
+        : { gasPrice: gasPriceWei };
+      let gasLimit = request.gasLimitWei !== undefined
+        ? asBigInt(request.gasLimitWei, 'gasLimitWei')
+        : armed.gasLimit;
+      if (gasLimit === null || gasLimit === undefined) {
+        // The arm could not estimate -- typically the drop simply was not open yet. Estimate now:
+        // this is the ordinary path quietly resuming, not a failure.
+        gasLimit = await estimateGasSafely(request.chain, { ...base, ...feeFields }, fastRpcOptions, activeService);
+      }
+      if (gasLimit <= 0n) throw new TransactionSafetyError('INVALID_TRANSACTION', 'Gas limit must be positive');
+      const estimatedCostWei = valueWei + gasLimit * selectedFee;
+      if (BigInt(balance) < estimatedCostWei) {
+        throw new TransactionSafetyError('INSUFFICIENT_BALANCE', 'Wallet balance is below the estimated transaction cost');
+      }
+      if (!policy.ceilingExempt && spent + estimatedCostWei > policy.dailySpendingBudgetWei) {
+        throw new TransactionSafetyError('DAILY_BUDGET_EXCEEDED', 'Transaction would exceed the wallet daily spending budget');
+      }
+      // Skip re-simulation only when the arm proved THIS exact calldata at THIS exact gas limit
+      // executes; any deviation (fresh estimate after an arm-time revert, different gas) sends it
+      // back through the ordinary policy-driven simulation decision.
+      if (policy.simulationEnabled
+        && !(armed.simulationPassed && armed.gasLimit !== null && BigInt(armed.gasLimit) === BigInt(gasLimit))) {
+        await simulateCallSafely(request.chain, { ...base, ...feeFields, gasLimit }, fastRpcOptions, activeService);
+      }
+      const outcome = await reserveSignAndDeliver({
+        request, policy, valueWei, gasLimit, gasPriceWei, maxFeePerGasWei,
+        maxPriorityFeePerGasWei, feeFields, estimatedCostWei, timings,
+        fastRpcOptions, activeService,
+      });
+      finalityPromise = outcome.finalityPromise;
+      return outcome.intent;
     });
     return finalityPromise ?? queuedResult;
   }
@@ -469,7 +700,7 @@ function createTransactionEngine({
     return results;
   }
 
-  return { preview,reconcileIntent, reconcileNonFinal, submit, waitForFinality };
+  return { preview,reconcileIntent, reconcileNonFinal, submit, submitArmed, preArm, waitForFinality };
 }
 
 module.exports = { FINAL_STATES, TransactionSafetyError, createTransactionEngine, explainCallFailure };

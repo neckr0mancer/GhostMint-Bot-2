@@ -271,3 +271,25 @@ week, make it pre-arm with the nonce-queue release folded in.
   still receive final-state intents. New test pins the overlap: second broadcast observed while
   first is provably non-final (mempool-visible/receipt-gated fixture), distinct nonces [0,1].
   Full suite 796/796 including smoke, lint clean.
+- **2026-08-22 — Pre-arm engine half (Day 2-3 centerpiece), minus its wiring.** `transactionEngine`
+  gained `preArm(request)` → inert snapshot (policy, raw unmultiplied fee quote, gas estimate,
+  simulation outcome, balance/spend readings; reserves nothing) and
+  `submitArmed(request, armed)` → fire. Design points that matter: submit()'s tail (nonce
+  reservation, WRONG_CHAIN, key check, idempotent replay, sniper broadcast race, pending
+  transition, detached finality) was extracted verbatim into one shared `reserveSignAndDeliver()`
+  both paths run through, so plain and pre-armed execution cannot drift on anything
+  safety-relevant; fee quotes age out at fire time after 4s (`ARMED_FEE_MAX_AGE_MS`, deliberately
+  tighter than feeDataCache's 5s because a handed-over snapshot earns less trust than a hot
+  cache); balance/rolling-spend are ALWAYS re-read fresh; arm-time estimate/simulation reverts
+  are expected (phase not open yet is the normal case for a T-lead arming) and simply fall back
+  to ordinary legs at fire; a mismatched snapshot throws `ARMED_MISMATCH` — the caller's signal to
+  fall back to plain `submit()`. Deliberate deviation from the original plan: no separate
+  `src/mint/preArmService.js` module — the engine already owned every dependency, and a sibling
+  module would have had to reach into engine internals. **Not yet wired:** `server.js`'s
+  `executeTask` still fires everything at T0; wiring it means hoisting the OpenSea build /
+  SeaDrop drift preflight / calldata prepare into a lead window (~10-15s before `openAt`) and
+  calling `preArm` then, `submitArmed` at T0 with plain-`submit` fallback on any arm failure.
+  That wiring is intentionally deferred while another session holds uncommitted `server.js`
+  changes — it's a small, mechanical edit whenever the coast is clear. Five new tests cover: inert
+  arm, reuse-with-skipped-legs, aged-fee refetch, phase-closed arm fallback, mismatch refusal.
+  Full suite 801/801 including smoke, lint clean.

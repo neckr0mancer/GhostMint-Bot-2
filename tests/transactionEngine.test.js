@@ -53,14 +53,14 @@ function policy(overrides = {}) {
   };
 }
 
-function fixture({ policyOverrides, notification, simulationError, feeData, feeDataCache, fastProviderService, sniperProviderService, receipts: receiptsOverride } = {}) {
+function fixture({ policyOverrides, notification, simulationError, feeData, feeDataCache, fastProviderService, sniperProviderService, now: nowOverride, receipts: receiptsOverride } = {}) {
   const repository = new MemoryIntentRepository();
-  const calls = { broadcasts: [], simulations: 0, feeDataFetches: 0 };
+  const calls = { broadcasts: [], simulations: 0, feeDataFetches: 0, estimates: 0 };
   let pendingNonce = 0;
   const receipts = receiptsOverride || new Map();
   const provider = {
     async getFeeData() { calls.feeDataFetches += 1; return feeData || { gasPrice: parseUnits('2', 'gwei'), maxFeePerGas: null, maxPriorityFeePerGas: null }; },
-    async estimateGas() { return 21_000n; },
+    async estimateGas() { calls.estimates += 1; return 21_000n; },
     async getBalance() { return parseEther('10'); },
     async call() {
       calls.simulations += 1;
@@ -89,6 +89,7 @@ function fixture({ policyOverrides, notification, simulationError, feeData, feeD
     policyRepository: { resolvePolicy: async () => policy(policyOverrides) },
     decryptPrivateKey: () => PRIVATE_KEY,
     notify: notification,
+    ...(nowOverride ? { now: nowOverride } : {}),
     pollIntervalMs: 1,
     ...(feeDataCache ? { feeDataCache } : {}),
     ...(fastProviderService ? { fastProviderService } : {}),
@@ -155,6 +156,78 @@ test('a same-wallet mint broadcasts while the previous one is still awaiting fin
   revealConfirmation = true;
   const results = await Promise.all([firstPromise, secondPromise]);
   assert.deepEqual(results.map(result => result.state), ['confirmed', 'confirmed']);
+});
+
+// Pre-arm (analysis doc Day 2-3): the arm pass must be completely inert -- no intent row, no
+// broadcast -- and the fire pass must reuse what the snapshot proves while re-reading everything
+// that gates real money.
+test('pre-arm resolves a full snapshot without reserving anything', async () => {
+  const { calls, engine, repository, request } = fixture();
+  const armed = await engine.preArm({ ...request, triggerSource: 'scheduled' });
+  assert.equal(armed.kind, 'ghostmint-prearm');
+  assert.equal(armed.version, 1);
+  assert.equal(armed.chain, 'ethereum');
+  assert.equal(armed.gasLimit, 21_000n);
+  assert.equal(armed.simulationPassed, true);
+  assert.equal(armed.note, null);
+  assert.equal(repository.intents.length, 0, 'arming must not persist an intent');
+  assert.equal(calls.broadcasts.length, 0, 'arming never broadcasts');
+});
+
+test('a fired pre-armed mint reuses the snapshot and skips the redundant legs', async () => {
+  const { calls, engine, request } = fixture();
+  const armed = await engine.preArm({ ...request, triggerSource: 'scheduled' });
+  const result = await engine.submitArmed({ ...request, triggerSource: 'scheduled' }, armed);
+  assert.equal(result.state, 'confirmed');
+  assert.equal(calls.feeDataFetches, 1, 'fee quote comes from the snapshot while within its age budget');
+  assert.equal(calls.estimates, 1, 'gas estimate is reused from the snapshot');
+  assert.equal(calls.simulations, 1, 'fire-time simulation skipped because the arm already proved it');
+  assert.deepEqual(calls.broadcasts, [0]);
+});
+
+test('an aged-out snapshot fee is refetched at fire time, but the gas estimate stays reusable', async () => {
+  let clock = 1_000_000;
+  const { calls, engine, request } = fixture({ now: () => clock });
+  const armed = await engine.preArm({ ...request, triggerSource: 'scheduled' });
+  // Past BOTH the pre-arm age budget and feeDataCache's own 5s TTL: the arm's read also warmed
+  // that cache, so jumping past only the snapshot budget would still hit the warm cache here.
+  clock += 6_001;
+  await engine.submitArmed({ ...request, triggerSource: 'scheduled' }, armed);
+  assert.equal(calls.feeDataFetches, 2, 'a stale snapshot quote must not survive to the broadcast');
+  assert.equal(calls.estimates, 1);
+  assert.equal(calls.simulations, 1);
+});
+
+test('an arm whose estimate reverted because the phase was not open yet falls back at fire time', async () => {
+  const { calls, engine, provider, request, repository } = fixture();
+  const realEstimate = provider.estimateGas.bind(provider);
+  provider.estimateGas = async () => { throw Object.assign(new Error('execution reverted'), { reason: 'MINT_NOT_OPEN' }); };
+  const armed = await engine.preArm(request);
+  assert.equal(armed.gasLimit, null, 'arming records the failure instead of failing itself');
+  assert.match(armed.note, /MINT_NOT_OPEN/);
+  assert.equal(armed.simulationPassed, false);
+  provider.estimateGas = realEstimate;
+  const result = await engine.submitArmed(request, armed);
+  assert.equal(result.state, 'confirmed', 'the fire path estimates on its own when the arm could not');
+  assert.equal(calls.estimates, 1);
+  assert.equal(calls.simulations, 1, 'simulation runs at fire time because the arm proved nothing');
+  assert.deepEqual(calls.broadcasts, [0]);
+  assert.equal(repository.intents.length, 1);
+});
+
+test('a snapshot belonging to another chain or wallet is refused before anything happens', async () => {
+  const { calls, engine, repository, request } = fixture();
+  const armed = await engine.preArm(request);
+  await assert.rejects(
+    engine.submitArmed({ ...request, chain: 'base' }, armed),
+    error => error instanceof TransactionSafetyError && error.code === 'ARMED_MISMATCH',
+  );
+  await assert.rejects(
+    engine.submitArmed({ ...request, wallet: { ...request.wallet, id: 999 } }, armed),
+    error => error instanceof TransactionSafetyError && error.code === 'ARMED_MISMATCH',
+  );
+  assert.equal(repository.intents.length, 0);
+  assert.equal(calls.broadcasts.length, 0);
 });
 
 test('value and gas ceilings reject before broadcast', async t => {
