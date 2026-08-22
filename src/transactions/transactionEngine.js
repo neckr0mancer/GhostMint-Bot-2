@@ -242,7 +242,8 @@ function createTransactionEngine({
     // and confirmedAt is already available for free from the existing state:'confirmed' notify
     // reconcileIntent already fires, no new instrumentation needed for that half.
     const timings = { submitStartedAt: now() };
-    return nonceQueue.run(walletKey, async () => {
+    let finalityPromise;
+    const queuedResult = await nonceQueue.run(walletKey, async () => {
       if (request.idempotencyKey && intentRepository.getByIdempotencyKey) {
         const existing = await intentRepository.getByIdempotencyKey(request.idempotencyKey);
         if (existing) return existing;
@@ -433,8 +434,20 @@ function createTransactionEngine({
       timings.broadcastAt = now();
       await safeNotify(notify, { intent, event: 'timing', triggerSource: request.triggerSource || 'manual', chain: request.chain, timings });
       intent = await transition(intent.intentId, 'pending', { reason: 'raw signed transaction broadcast accepted' });
-      return waitForFinality(intent);
+      // Finality tracking starts here but is deliberately NOT awaited inside this callback: the
+      // wallet queue releases the moment the callback resolves, and previously it stayed locked
+      // through every confirmation poll -- up to the full transaction timeout on slow-finality
+      // chains -- so a rapid-fire second mint from the same wallet couldn't even begin its
+      // pre-broadcast reads until the first was fully final. Overlapping submissions are safe
+      // without that lock: the next one's nonce comes from nextNonce()'s GREATEST(provider
+      // pending count, MAX(persisted nonce)+1), backed by the unique-constraint retry loop, so a
+      // provider read that lags behind an in-flight transaction can never reissue its nonce.
+      // Callers still receive the final-state intent exactly as before (submit() awaits the
+      // tracking promise outside the queue); only the lock-hold time shrinks.
+      finalityPromise = waitForFinality(intent);
+      return intent;
     });
+    return finalityPromise ?? queuedResult;
   }
 
   async function reconcileNonFinal() {

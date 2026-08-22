@@ -260,3 +260,14 @@ week, make it pre-arm with the nonce-queue release folded in.
   serial path — so it ships parallelized-away instead of deleted. Verification: full suite
   792/792 (after building the dashboard bundle once — `dashboardReporting.test.js` requires
   `public/dashboard/` to exist), smoke 3/3, lint clean.
+- **2026-08-22 — Day 3 nonce-queue release (pulled forward, it was one edit).** The wallet queue
+  now releases the moment a submission is broadcast and marked `pending`; finality tracking starts
+  inside the slot but is awaited by `submit()` *after* the slot is freed. Previously a same-wallet
+  rapid-fire mint waited out the previous transaction's entire confirmation window before even
+  starting pre-broadcast reads — on Polygon-style finality that was minutes of dead lock time.
+  Overlap safety doesn't depend on the lock: `nextNonce()` takes `GREATEST(provider pending count,
+  MAX(persisted nonce)+1)` over recorded intents, backed by the unique-constraint retry loop, so a
+  lagging provider read cannot reissue an in-flight nonce. Callers' contracts unchanged — they
+  still receive final-state intents. New test pins the overlap: second broadcast observed while
+  first is provably non-final (mempool-visible/receipt-gated fixture), distinct nonces [0,1].
+  Full suite 796/796 including smoke, lint clean.
