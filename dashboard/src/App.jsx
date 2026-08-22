@@ -306,15 +306,20 @@ function WalletCard({wallet,records,windowLabel,windowMs,onOpen}){
 // Escape closes, the backdrop closes, focus moves in on open and the page behind stops scrolling.
 function Overlay({open,onClose,title,subtitle,children,wide}){
   const panelRef=useRef(null);
+  // Keep the latest close handler available without making it an effect dependency. Several
+  // callers pass an inline function, so depending on onClose reran this effect after every input
+  // change and focused the panel again, stealing focus from the field after each keystroke.
+  const onCloseRef=useRef(onClose);
+  onCloseRef.current=onClose;
   useEffect(()=>{
     if(!open)return undefined;
-    function onKey(event){if(event.key==='Escape')onClose();}
+    function onKey(event){if(event.key==='Escape')onCloseRef.current();}
     document.addEventListener('keydown',onKey);
     const previous=document.body.style.overflow;
     document.body.style.overflow='hidden';
     panelRef.current?.focus();
     return()=>{document.removeEventListener('keydown',onKey);document.body.style.overflow=previous;};
-  },[open,onClose]);
+  },[open]);
   if(!open)return null;
   return <div className="ovl-bd" onMouseDown={event=>{if(event.target===event.currentTarget)onClose();}}>
     <div className={`ovl${wide?' wide':''}`} role="dialog" aria-modal="true" aria-label={title}
@@ -3462,6 +3467,7 @@ function CommandPalette({open,onClose,go,profile,wallets}){
   const [query,setQuery]=useState('');
   const [active,setActive]=useState(0);
   const inputRef=useRef(null);
+  const resultsRef=useRef(null);
   useEffect(()=>{if(open){setQuery('');setActive(0);inputRef.current?.focus();}},[open]);
   const term=query.trim().toLowerCase();
   const match=label=>!term||label.toLowerCase().includes(term);
@@ -3480,6 +3486,13 @@ function CommandPalette({open,onClose,go,profile,wallets}){
   if(walletHits.length)groups.push({name:'Wallets',items:walletHits});
   const flat=groups.flatMap(group=>group.items);
   const clamped=Math.min(active,Math.max(0,flat.length-1));
+  // Keyboard selection can move beyond the visible portion of the results. Keep the selected
+  // option inside the scrollport while preserving mouse-driven scrolling and selection.
+  useEffect(()=>{
+    if(!open)return;
+    resultsRef.current?.querySelector('[aria-selected="true"]')
+      ?.scrollIntoView({block:'nearest'});
+  },[open,clamped,query]);
   function choose(item){
     if(!item)return;
     onClose();
@@ -3501,7 +3514,7 @@ function CommandPalette({open,onClose,go,profile,wallets}){
       <input ref={inputRef} type="search" className="palette-input" placeholder="Jump to a page, or search what moved…"
         value={query} onChange={event=>{setQuery(event.target.value);setActive(0);}} onKeyDown={onKeyDown}
         aria-label="Search pages and actions"/>
-      <div className="palette-results" role="listbox">
+      <div className="palette-results" role="listbox" ref={resultsRef}>
         {flat.length===0&&<p className="palette-empty">Nothing matches “{query}”.</p>}
         {groups.map(group=><div className="palette-group" key={group.name}>
           <div className="palette-group-name">{group.name}</div>

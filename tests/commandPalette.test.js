@@ -35,6 +35,17 @@ test('the palette indexes the Moved group, which is what makes the 11->5 merge s
   }
 });
 
+test('keyboard selection remains visible while moving through scrollable palette results', () => {
+  const body = paletteSource();
+  assert.match(body, /querySelector\('\[aria-selected="true"\]'\)/,
+    'the palette must locate the currently selected option after keyboard navigation');
+  assert.match(body, /scrollIntoView\(\{block:'nearest'\}\)/,
+    'the selected option must scroll into the nearest visible edge instead of moving off-screen');
+  const css = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'src', 'styles.css'), 'utf8');
+  assert.match(css, /\.palette-item\{[^}]*scroll-margin-block:\.35rem/s,
+    'keyboard scrolling must leave enough edge room to show the selected item completely');
+});
+
 // Every retired slug and every retired in-app page name must resolve somewhere real, or a
 // bookmark breaks and a go() call lands on /dashboard/undefined.
 test('every retired slug and page alias resolves to a live page', () => {
