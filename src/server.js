@@ -288,6 +288,19 @@ const schedulerWorker = createSchedulerWorker({
   repository: schedulerRepository,
   intentRepository: transactionIntentRepository,
   transactionEngine,
+  // Answers "when does this task's stage actually open?" after the stage-not-open retry burst is
+  // spent, so the worker can re-arm once instead of discarding a task that exists precisely to be
+  // there at the open. Read live from OpenSea rather than from the time stored when the task was
+  // created -- a stored time that was wrong, or has since moved, is the whole case worth recovering.
+  // Matched on the stage label, which is what openSeaPhaseTaskData named the task after.
+  resolveStageStart: async task => {
+    if (!task.viaOpenSea) return null;
+    const wallet = DB.wallets.find(item => item.userId === task.userId && item.label === task.walletLabel);
+    if (!wallet) return null;
+    const drop = await openSeaService.getDrop(wallet.chain, task.contract);
+    const stage = drop?.stages?.find(item => item.label === task.name);
+    return stage?.startTime ? stage.startTime * 1_000 : null;
+  },
   executeTask: async (task, hooks) => {
     // Scheduled tasks are created while the owning account is in good standing, but the account can
     // be banned/suspended/deactivated afterward -- account-status enforcement otherwise only runs at
