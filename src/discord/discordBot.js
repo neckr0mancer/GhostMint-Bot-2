@@ -401,7 +401,13 @@ function openSeaPhaseTaskData(mintFlowData, stage) {
     priceETH: 0, priceUnknown: false, viaOpenSea: true,
     mintTime: new Date(stage.startTime * 1000).toISOString(),
     name: stage.label || discordMenus.humanizeStageType(stage.stageType),
-    maxPerWallet: mintFlowData.maxPerWallet,
+    // The chosen stage carries its own per-wallet cap (normalizeStage maps OpenSea's
+    // max_per_wallet); mintFlowData's came from the collection card, which reads the on-chain
+    // PublicDrop -- a single MUTABLE struct holding whichever phase the project configured last,
+    // not the stage being scheduled. Using it asked "how many?" against the wrong stage entirely
+    // (live-reported on a 1-per-wallet PUBLIC phase). Falls back to the card value only when
+    // OpenSea gave no cap for this stage, so the gate never silently disappears.
+    maxPerWallet: stage.maxPerWallet ?? mintFlowData.maxPerWallet,
   };
 }
 

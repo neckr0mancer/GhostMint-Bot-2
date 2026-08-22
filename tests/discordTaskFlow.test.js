@@ -328,11 +328,11 @@ test('flow:scheduleviaopensea pre-fills the next stage\'s own opening time AND i
 test('flow:scheduleviaopensea asks for a quantity when the contract allows more than 1 per wallet, instead of hardcoding 1', async () => {
   const flowState = createFlowStateStore();
   const created = [];
-  const stage = { uuid: 'n1', label: 'Allowlist', startTime: FUTURE_START, endTime: FUTURE_START + 3600, priceETH: 0.05, maxPerWallet: 1, stageType: 'presale' };
+  const stage = { uuid: 'n1', label: 'Allowlist', startTime: FUTURE_START, endTime: FUTURE_START + 3600, priceETH: 0.05, maxPerWallet: 5, stageType: 'presale' };
   const commands = baseCommands({
     detectMintContract: async () => ({
       chain: 'ethereum', isSeaDrop: true, priceKnown: false, valueWei: '0',
-      maxSupply: 100, maxPerWallet: 5, startTime: null, endTime: null, collection: null, soldOut: false, displayPrice: null,
+      maxSupply: 100, maxPerWallet: 1, startTime: null, endTime: null, collection: null, soldOut: false, displayPrice: null,
       drop: { isMinting: false, dropType: 'seadrop_v1_erc721', maxSupply: 100, openSeaUrl: null,
         activeStage: null, nextStage: stage, stages: [stage] },
     }),
@@ -347,9 +347,9 @@ test('flow:scheduleviaopensea asks for a quantity when the contract allows more 
   const tap = buttonInteraction('flow:scheduleviaopensea', 'osea-qty-1');
   await handler(tap);
   assert.equal(flowState.get('discord', 'osea-qty-1').flow, 'task_guided');
-  assert.equal(flowState.get('discord', 'osea-qty-1').step, 'awaiting_quantity', 'maxPerWallet 5 must offer a quantity choice, not silently default to 1');
+  assert.equal(flowState.get('discord', 'osea-qty-1').step, 'awaiting_quantity', "the STAGE's cap of 5 must offer a quantity choice, even though the card's PublicDrop reading says 1");
   const options = tap.replies[0].components[0].components[0].options;
-  assert.ok(options.some(o => o.value === '5'), 'the max quantity the contract allows must be offered');
+  assert.ok(options.some(o => o.value === '5'), "the chosen stage's own cap must be what is offered, not the collection card's");
 
   const pick = selectInteraction('flow:mintqty:select', ['3'], 'osea-qty-1');
   await handler(pick);
@@ -415,9 +415,15 @@ test('flow:scheduleviaopensea shows a picker with more than one upcoming stage, 
   const pick = selectInteraction('flow:scheduleviaopenseaphase:select', ['1'], 'osea-pick-1');
   await handler(pick);
   assert.equal(flowState.get('discord', 'osea-pick-1').flow, 'task_guided');
+  // The picked stage (Late FCFS) allows 3 per wallet while the collection card reads 1, so the
+  // quantity step is offered off the STAGE's cap -- the card's reading would have silently forced
+  // 1 here, which is the same defect as the 1-per-wallet case asking for a quantity it cannot use.
+  assert.equal(flowState.get('discord', 'osea-pick-1').step, 'awaiting_quantity');
+  await handler(selectInteraction('flow:mintqty:select', ['2'], 'osea-pick-1'));
   // Round 22 follow-up: the picked stage's own label ("Late FCFS") is a known fact, so this skips
   // straight to confirm rather than asking the user to name a phase this app already knows.
   assert.equal(flowState.get('discord', 'osea-pick-1').step, 'awaiting_confirm');
+  assert.equal(flowState.get('discord', 'osea-pick-1').data.quantity, 2);
   assert.equal(flowState.get('discord', 'osea-pick-1').data.name, 'Late FCFS');
   assert.equal(flowState.get('discord', 'osea-pick-1').data.mintTime, new Date((FUTURE_START + 90_000) * 1000).toISOString(),
     'the LATER stage (index 1) was chosen, not index 0');
@@ -525,4 +531,43 @@ test('a different user\'s click on the flow\'s public message is rejected epheme
   const ownerTap = buttonInteraction('flow:schedulesuggest', 'owner-1');
   await handler(ownerTap);
   assert.equal(ownerTap.messageEdits.length, 1, 'the real owner can still continue normally afterward');
+});
+
+// Live-reported, the mirror image of the test above: "it asked how many should i mint where in
+// fact its 1/wallet". Confirmed against the real drop (opensea.io/collection/frenstersrh): its
+// PUBLIC stage is max_per_wallet 1, and OpenSea already hands that per-stage cap back on every
+// stage. openSeaPhaseTaskData was carrying mintFlowData.maxPerWallet instead -- the collection
+// card's number, read from the on-chain PublicDrop, which is a single MUTABLE struct describing
+// whichever phase the project configured last, not the stage being scheduled. So a phase schedule
+// asked about the wrong stage entirely, and any quantity above the real cap would then be refused
+// at fire time by validateOpenSeaMintCall.
+test('a phase whose own cap is 1 never asks for a quantity, even when the collection card reads higher', async () => {
+  const flowState = createFlowStateStore();
+  const created = [];
+  const stage = { uuid: 'n1', label: 'PUBLIC', startTime: FUTURE_START, endTime: FUTURE_START + 3600, priceETH: 0, maxPerWallet: 1, stageType: 'public_sale' };
+  const commands = baseCommands({
+    detectMintContract: async () => ({
+      chain: 'ethereum', isSeaDrop: true, priceKnown: false, valueWei: '0',
+      // The stale/other-phase reading that used to win.
+      maxSupply: 100, maxPerWallet: 5, startTime: null, endTime: null, collection: null, soldOut: false, displayPrice: null,
+      drop: { isMinting: false, dropType: 'seadrop_v1_erc721', maxSupply: 100, openSeaUrl: null,
+        activeStage: null, nextStage: stage, stages: [stage] },
+    }),
+    createTask: async (userId, input) => { created.push({ userId, input }); return { id: 'task-1', name: input.name, mintTime: input.mintTime, viaOpenSea: input.viaOpenSea }; },
+  });
+  const identity = { resolveOrCreate: async () => 'internal-user' };
+  const ctx = { identity, commands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT };
+
+  const message = mockMessage('0x0000000000000000000000000000000000000001', 'osea-cap-1');
+  await handleMintPasteMessage(ctx, message);
+  const handler = createDiscordInteractionHandler(ctx);
+  await handler(buttonInteraction('flow:scheduleviaopensea', 'osea-cap-1'));
+
+  assert.equal(flowState.get('discord', 'osea-cap-1').step, 'awaiting_confirm',
+    'a 1-per-wallet stage must go straight to confirm, not ask a question with only one valid answer');
+  assert.equal(flowState.get('discord', 'osea-cap-1').data.quantity, 1);
+
+  await handler(buttonInteraction('flow:taskconfirm', 'osea-cap-1'));
+  assert.equal(created.length, 1);
+  assert.equal(created[0].input.quantity, 1, 'the stage cap must reach createTask, not the card reading');
 });
