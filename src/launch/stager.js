@@ -46,7 +46,11 @@ function createLaunchStager({ checkAccountStatus, findWallet, seaDropDiscoverySe
 
     const feeData = await providerService.perform(chain, 'launchStagingFee', provider => provider.getFeeData())
       .catch(() => null);
-    const gasBufferWei = feeData?.maxFeePerGas ? feeData.maxFeePerGas * GAS_BUFFER_GAS_UNITS : null;
+    // 1559 chains report maxFeePerGas; some legacy-only providers report gasPrice only -- use
+    // whichever exists so the buffer never silently disappears (a null buffer would let a wallet
+    // that cannot pay its own gas pass staging and fail later at send).
+    const feePerGas = feeData?.maxFeePerGas ?? feeData?.gasPrice ?? null;
+    const gasBufferWei = feePerGas ? feePerGas * GAS_BUFFER_GAS_UNITS : null;
 
     const results = [];
     for (const member of members) {

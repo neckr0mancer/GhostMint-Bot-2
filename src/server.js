@@ -3223,6 +3223,7 @@ send /mint with a contract address to get going.`;
     ].join('\n'), replyMarkup: telegramMenus.keyboard([[telegramMenus.button('⬅️ Back to base', 'menu:main')]]), parseMode: 'HTML' });
   }));
   bot.onText(/^\/aco(?:@\w+)?\s+(\S+)\s+(\d+)\s+(.+)$/, withTelegramUser(async (msg, match, userId) => {
+    commandRateLimiter.check('telegram', userId, 'aco');
     const [, contractAddressRaw, qtyRaw, labelsRaw] = match;
     const quantity = Math.max(1, parseInt(qtyRaw, 10) || 1);
     const wallets = [...new Set(labelsRaw.split(',').map(item => item.trim()).filter(Boolean))];

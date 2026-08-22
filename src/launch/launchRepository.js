@@ -58,6 +58,24 @@ function createLaunchRepository(pool) {
       const members = await pool.query('SELECT * FROM launch_squad_members WHERE squad_id=$1 ORDER BY wave,priority,sent_at', [id]);
       return { ...squad, members: members.rows.map(mapMember) };
     },
+    // Internal (non-user-scoped) load for the launcher itself -- command surfaces must keep using
+    // getSquad so ownership is always enforced where user input enters.
+    async getSquadById(id) {
+      const result = await pool.query('SELECT * FROM launch_squads WHERE id=$1', [id]);
+      const squad = mapSquad(result.rows[0]);
+      if (!squad) return null;
+      const members = await pool.query('SELECT * FROM launch_squad_members WHERE squad_id=$1 ORDER BY wave,priority,sent_at', [id]);
+      return { ...squad, members: members.rows.map(mapMember) };
+    },
+    // Atomic fire claim, same shape as schedulerRepository.claimDue's WHERE-guarded UPDATE: only
+    // one caller ever moves a squad from staged/armed into firing, so a timer tick and an eager
+    // FIRE button (or two ticks) racing each other cannot start the burst twice.
+    async claimForFire(id) {
+      const result = await pool.query(
+        `UPDATE launch_squads SET status='firing', fired_at=NOW(), updated_at=NOW()
+         WHERE id=$1 AND status IN ('staged','armed') RETURNING *`, [id]);
+      return result.rowCount > 0;
+    },
     async listSquads(userId, { limit = 20 } = {}) {
       const result = await pool.query('SELECT * FROM launch_squads WHERE user_id=$1 ORDER BY created_at DESC LIMIT $2', [userId, limit]);
       return result.rows.map(mapSquad);

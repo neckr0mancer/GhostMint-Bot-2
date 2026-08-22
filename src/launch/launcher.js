@@ -42,12 +42,22 @@ function createLauncher({ repository, stager, mintExecution, mintService, transa
     return repository.getSquad(userId, id);
   }
 
-  async function fire(squad) {
+  async function fire(squadOrId) {
+    const id = typeof squadOrId === 'string' ? squadOrId : squadOrId?.id;
+    // Atomic claim first: exactly one caller (timer tick, Telegram, Discord) ever moves a squad
+    // into firing. Losing the race returns null -- the winner is already launching.
+    const claimed = await repository.claimForFire(id);
+    if (!claimed) return null;
+    // Re-read AFTER claiming: the caller's snapshot may be stale by seconds; members' statuses and
+    // the squad's own fields must come from the same post-claim state the settlement will see.
+    const squad = await repository.getSquadById(id);
     if (!squad.members?.length) throw new Error('squad has no members');
     const sendable = squad.members.filter(member => member.status !== 'skipped' && member.status !== 'failed');
-    if (!sendable.length) throw new Error('every member was skipped or already failed -- nothing to fire');
+    if (!sendable.length) {
+      await repository.updateSquad(squad.id, { status: 'failed', report: { error: 'every member was skipped or already failed' } });
+      throw new Error('every member was skipped or already failed -- nothing to fire');
+    }
     const size = Math.max(1, squad.waveSize || 25);
-    await repository.updateSquad(squad.id, { status: 'firing', firedAt: new Date(now()) });
     notify({ type: 'launch.starting', squad });
 
     const outcomes = [];

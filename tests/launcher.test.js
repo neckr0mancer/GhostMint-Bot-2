@@ -16,6 +16,14 @@ function fixture({ members = ['w1', 'w2', 'w3'], failLabels = [], settleStates =
       squads.set(squad.id, { ...squad, members: squad.members.map(m => ({ status: 'pending', ...m })) });
     },
     async getSquad(userId, id) { return squads.get(id); },
+    async getSquadById(id) { return squads.get(id); },
+    // Mirror of the real atomic claim: first caller wins, later ones get nothing.
+    async claimForFire(id) {
+      const squad = squads.get(id);
+      if (!squad || !['staged', 'armed'].includes(squad.status)) return false;
+      squad.status = 'firing';
+      return true;
+    },
     async updateSquad(id, fields) {
       const squad = squads.get(id);
       Object.assign(squad, fields, { firedAt: fields.firedAt instanceof Date ? fields.firedAt.getTime() : squad.firedAt });
@@ -103,5 +111,17 @@ test('firing sends every staged member, tolerates individual failures, and settl
     const squad = [...squads.values()][0];
     await launcher.fire(squad);
     assert.equal(sent.length, 7);
+  });
+
+  await t.test('a second fire of the same squad is refused -- exactly one caller ever launches it', async () => {
+    const { launcher, squads, sent } = fixture({ members: ['a', 'b'] });
+    await launcher.createAndStage({ userId: 'u1', name: 'race', chain: 'base', contractAddress: '0xnft',
+      quantity: 1, manualPriceWei: '0', wallets: ['a', 'b'] });
+    const squad = [...squads.values()][0];
+    const first = await launcher.fire(squad);
+    const second = await launcher.fire(squad);
+    assert.ok(first, 'the winning caller proceeds');
+    assert.equal(second, null, 'the losing caller must be told another launch already started');
+    assert.equal(sent.length, 2, 'members must not be sent twice');
   });
 });
