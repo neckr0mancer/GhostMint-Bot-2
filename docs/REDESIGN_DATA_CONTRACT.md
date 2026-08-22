@@ -57,11 +57,12 @@ Every route the dashboard can call, and what it returns. Routes are as mounted i
 | Route | Returns |
 |---|---|
 | `GET /api/wallets` | `[{label, address, chain, balances[], minted}]` — `publicWallet()` strips the key envelope |
-| `POST /api/wallets/create` \| `import` | `201` `{label, address, chain, balances:[], minted:0}` |
+| `POST /api/wallets/create` | `201` `{label, address, chain, balances:[], minted:0, recoveryPhrase}` — the phrase exists only in this `Cache-Control: no-store` creation response, is never persisted, and cannot be fetched again |
+| `POST /api/wallets/import` | `201` `{label, address, chain, balances:[], minted:0}` — never echoes the supplied private key or phrase |
 | `POST /api/wallets/batch-import` | `201` `{results:[{index, status:'success'\|'failed', label?, address?, error?}]}` — owner only |
 | `DELETE /api/wallets/:label` | `204`. Requires `{confirmation:"CONFIRM"}` |
-| `POST /api/wallets/:label/export` | `{keystore}` — encrypted V3 backup. Requires `confirmation` + `securityPassword` |
-| `POST /api/wallets/:label/export/raw` | `{privateKey}` — explicit raw-key escape hatch. Requires authenticated user scope, CSRF, `confirmation` + verified `securityPassword`; `Cache-Control: no-store`. The dashboard keeps the value only in memory for 60 seconds, does not render it by default, and requires a separate warning confirmation before Reveal |
+| `POST /api/wallets/:label/export` | `{keystore}` — encrypted V3 backup. Requires `confirmation` + `securityPassword`; correct-password exports have no wallet-count ceiling, while repeated incorrect passwords are throttled |
+| `POST /api/wallets/:label/export/raw` | `{privateKey}` — explicit raw-key escape hatch. Requires authenticated user scope, CSRF, `confirmation` + verified `securityPassword`; `Cache-Control: no-store`. Correct-password exports have no wallet-count ceiling, while repeated incorrect passwords are throttled. The dashboard keeps the value only in memory for 60 seconds, does not render it by default, and requires a separate warning confirmation before Reveal |
 
 **`balances` is one entry per *supported chain*, not per wallet chain:**
 `[{chain, balance:"1.234"|null, symbol}]`. `balance: null` means that chain's RPC
@@ -542,7 +543,7 @@ is `null` until the first response resolves.
 | `403` | `{error, code:'ACCOUNT_BLOCKED', status}` | banned / suspended / deactivated | Full-page block naming the status and reason. Not dismissible |
 | `403` | `{error:'Invalid CSRF token'}` | stale CSRF cookie | Reload prompt |
 | `409` | `{error}` | username taken | Inline on the username field |
-| `429` | `{error}` + `Retry-After` header | login, key export, security password | Countdown using the header, disabled control until it elapses |
+| `429` | `{error}` + `Retry-After` header | login, repeated incorrect export passwords, security password | Countdown using the header. Export remains enabled because a correct password bypasses the failed-guess bucket |
 | `503` | `{error, code}` | gas lookup unavailable | Inline "unavailable", not an error banner — this is expected without a key |
 | `500` | `{error:'Request failed safely'}` | anything unhandled | Generic `Notice` + Retry |
 

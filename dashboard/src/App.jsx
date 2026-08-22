@@ -518,24 +518,49 @@ function NewWalletOverlay({open,onClose,onDone,chains}){
   const [rows,setRows]=useState([{key:0,secret:'',label:''}]);
   const [busy,setBusy]=useState(false);
   const [results,setResults]=useState(null);
+  const [createdRecovery,setCreatedRecovery]=useState(null);
+  const [recoveryRevealed,setRecoveryRevealed]=useState(false);
   const nextKey=useRef(1);
   function reset(){
     setMode(null);setChain('evm');setMethod('privateKey');setLabel('');
-    setRows([{key:0,secret:'',label:''}]);setResults(null);nextKey.current=1;
+    setRows([{key:0,secret:'',label:''}]);setResults(null);setCreatedRecovery(null);
+    setRecoveryRevealed(false);nextKey.current=1;
   }
-  function close(){reset();onClose();}
+  function finishRecovery(){reset();onClose();}
+  async function close(){
+    if(createdRecovery&&!await confirmDialog('This recovery phrase cannot be shown again after you close this window. Have you saved it securely?'))return;
+    finishRecovery();
+  }
   const secretWord=method==='privateKey'?'private key':'seed phrase';
 
   async function createWallet(event){
     event.preventDefault();
     setBusy(true);
     try{
-      await api('/api/wallets/create',{method:'POST',
+      const wallet=await api('/api/wallets/create',{method:'POST',
         body:JSON.stringify({label:label.trim(),chain:chain==='evm'?DEFAULT_EVM_CHAIN:chain})});
-      notify('Wallet created. The private key was generated and encrypted on the server.',{type:'success'});
-      onDone();close();
+      onDone();
+      if(!wallet.recoveryPhrase){
+        notify('Wallet created, but this server did not return its one-time recovery phrase. Use Wallets → Export to save the private key now.',{type:'error',category:'security'});
+        finishRecovery();return;
+      }
+      setCreatedRecovery({label:wallet.label,address:wallet.address,phrase:wallet.recoveryPhrase});
+      setRecoveryRevealed(false);
+      notify('Wallet created. Save its recovery phrase before closing this window.',{type:'success',category:'security'});
     }catch(error){notify(error.message,{type:'error'});}
     finally{setBusy(false);}
+  }
+
+  async function copyRecoveryPhrase(){
+    if(!createdRecovery)return;
+    try{
+      await globalThis.navigator.clipboard.writeText(createdRecovery.phrase);
+      notify('Recovery phrase copied. The clipboard can be read by other software — clear it after saving the phrase securely.',{type:'success',category:'security'});
+    }catch{notify('Clipboard access was refused by the browser.',{type:'error'});}
+  }
+  async function revealRecoveryPhrase(){
+    if(!createdRecovery)return;
+    if(await confirmDialog('Warning: revealing the recovery phrase on screen can expose it to screen capture, shoulder-surfing, browser tools, or remote-access software. Reveal it anyway?'))setRecoveryRevealed(true);
   }
 
   // One request per wallet rather than /api/wallets/batch-import, for two reasons: that route takes
@@ -573,15 +598,36 @@ function NewWalletOverlay({open,onClose,onDone,chains}){
     if(ok===collected.length)close();
   }
 
-  const title=mode===null?'Add a wallet':mode==='create'?'Create a wallet':'Import a wallet';
+  const title=createdRecovery?'Save your recovery phrase':mode===null?'Add a wallet':mode==='create'?'Create a wallet':'Import a wallet';
   return <Overlay open={open} onClose={close} title={title}
-    subtitle={mode===null?'Two ways in, and they carry very different risk.':undefined}>
-    {mode===null&&<div className="g">
+    subtitle={createdRecovery?'Shown once during creation; never stored by GhostMint.':mode===null?'Two ways in, and they carry very different risk.':undefined}>
+    {createdRecovery&&<div className="g">
+      <div className="nt w">{WARN_TRIANGLE_ICON}<div><b>This is your only recovery-phrase view.</b>
+        GhostMint has encrypted the wallet&apos;s private key, but it does not store this phrase and
+        cannot reconstruct it later. Closing or reloading permanently removes it from this page.
+        Anyone who obtains these words can control and drain the wallet.</div></div>
+      <div className="sober"><div className="sh">{createdRecovery.label} · {createdRecovery.address}</div>
+        {recoveryRevealed
+          ?<code className="mono" style={{display:'block',wordBreak:'break-word',padding:'11px',background:'var(--surface-2)',border:'1px solid var(--border)',borderRadius:'var(--radius-sm)'}}>{createdRecovery.phrase}</code>
+          :<div className="nt i">{INFO_ICON}<div>The phrase is hidden. You can copy it without
+            displaying it, or choose Reveal and accept the on-screen exposure warning.</div></div>}
+      </div>
+      <div className="br">
+        <button type="button" className="b p" onClick={copyRecoveryPhrase}>Copy recovery phrase</button>
+        <button type="button" className="b g" onClick={recoveryRevealed?()=>setRecoveryRevealed(false):revealRecoveryPhrase}>{recoveryRevealed?'Hide':'Reveal'}</button>
+        <button type="button" className="b g" onClick={finishRecovery}>I saved it — close</button>
+      </div>
+      <p style={{fontSize:'11px',color:'var(--faint)'}}>Do not save it in chat, email, cloud notes,
+        screenshots, or any place other people or software can read. An offline written copy or a
+        dedicated secure backup is safer.</p>
+    </div>}
+    {!createdRecovery&&mode===null&&<div className="g">
       <button type="button" className="pick" onClick={()=>setMode('create')}>
         <span className="chip-ico">{PLUS_ICON}</span>
         <span className="pick-t"><b>Create a new wallet</b>
-          <span>GhostMint generates the key on the server, encrypts it with AES-256-GCM, and returns
-            only the address. The key never reaches your browser.</span></span>
+          <span>GhostMint generates the wallet on the server and encrypts its private key with
+            AES-256-GCM. Its recovery phrase is returned to this browser once so you can save it,
+            then discarded rather than stored.</span></span>
         <span className="p ok">Recommended</span>
       </button>
       <button type="button" className="pick" onClick={()=>setMode('import')}>
@@ -593,7 +639,7 @@ function NewWalletOverlay({open,onClose,onDone,chains}){
       </button>
     </div>}
 
-    {mode==='create'&&<form onSubmit={createWallet}>
+    {!createdRecovery&&mode==='create'&&<form onSubmit={createWallet}>
       <div className="g gm2 g2" style={{marginBottom:'13px'}}>
         <label className="fl"><span>Label</span>
           <input className="in" value={label} onChange={event=>setLabel(event.target.value)}
@@ -610,7 +656,7 @@ function NewWalletOverlay({open,onClose,onDone,chains}){
       </div>
     </form>}
 
-    {mode==='import'&&<form onSubmit={importWallets}>
+    {!createdRecovery&&mode==='import'&&<form onSubmit={importWallets}>
       <div className="nt w" style={{marginBottom:'12px'}}>{WARN_TRIANGLE_ICON}
         <div>Whatever you paste crosses this browser and the network. It is encrypted on arrival and
           never returned, but creating a wallet avoids the exposure altogether.</div></div>
@@ -3117,7 +3163,7 @@ function WalletExport({profile,onProfileChange,walletList}){
   const wallets=walletList.data;
   const [busy,setBusy]=useState(false);
   const [limited,setLimited]=useState(null);
-  const [exportKind,setExportKind]=useState('keystore');
+  const [exportKind,setExportKind]=useState('raw');
   const [rawKey,setRawKey]=useState(null);
   const [revealed,setRevealed]=useState(false);
   const rawKeyTimer=useRef(null);
@@ -3193,10 +3239,10 @@ function WalletExport({profile,onProfileChange,walletList}){
         <div>You have no security password yet. Exporting asks you to set one first — it then gates
           every future sensitive action.</div></div>}
       {wallets?.length?<><div className="seg" role="group" aria-label="Export format" style={{marginBottom:'12px'}}>
-        <button type="button" className={exportKind==='keystore'?'on':undefined}
-          aria-pressed={exportKind==='keystore'} onClick={()=>chooseKind('keystore')}>Encrypted backup</button>
         <button type="button" className={exportKind==='raw'?'on':undefined}
           aria-pressed={exportKind==='raw'} onClick={()=>chooseKind('raw')}>Private key</button>
+        <button type="button" className={exportKind==='keystore'?'on':undefined}
+          aria-pressed={exportKind==='keystore'} onClick={()=>chooseKind('keystore')}>Encrypted backup</button>
       </div><form onSubmit={submitExport}>
         <div className="g" style={{gap:'11px'}}>
           <label className="fl"><span>Wallet</span>
@@ -3206,13 +3252,14 @@ function WalletExport({profile,onProfileChange,walletList}){
           <label className="fl"><span>Security password</span>
             <input className="in" type="password" name="securityPassword" required autoComplete="off"
               placeholder="Your account security password"/></label>
-          <button className="b p big" disabled={busy||retry.blocked}>{busy?'Preparing…':retry.blocked?'Rate limited'
+          <button className="b p big" disabled={busy}>{busy?'Preparing…'
             :exportKind==='raw'?'Prepare private key':'Export encrypted backup'}</button>
           <p style={{fontSize:'11px',color:'var(--faint)'}}>{exportKind==='raw'
             ?'The exact key is kept in browser memory for 60 seconds and is not shown unless you separately choose Reveal.'
             :'Store the keystore and your security password separately. Together they are the wallet; either one alone is not.'} Every attempt is written to the security audit log.</p>
         </div>
-      </form>{rawKey&&<div className="sober" style={{marginTop:'12px'}}><div className="sh">Private key ready</div>
+      </form><Overlay open={Boolean(rawKey)} onClose={clearRawKey} title="Private key ready"
+        subtitle="Available in this browser for 60 seconds.">
         <div className="nt w" style={{marginBottom:'11px'}}>{WARN_TRIANGLE_ICON}<div>Copying places the
           key on your system clipboard, where other software may be able to read it. It expires
           from this page&apos;s memory in 60 seconds.</div></div>
@@ -3220,18 +3267,16 @@ function WalletExport({profile,onProfileChange,walletList}){
         <div className="br"><button type="button" className="b p" onClick={copyRawKey}>Copy private key</button>
           <button type="button" className="b g" onClick={revealed?()=>setRevealed(false):revealRawKey}>{revealed?'Hide':'Reveal'}</button>
           <button type="button" className="b g" onClick={clearRawKey}>Clear now</button></div>
-      </div>}</>:null}
+      </Overlay></>:null}
     </div>
     <div className="g">
-      {limited&&<Notice error={{title:'Too many export attempts.',
-        detail:walletExportRetryText(retry.seconds),
+      {limited&&<Notice error={{title:'Incorrect password attempts are throttled.',
+        detail:`${walletExportRetryText(retry.seconds)} A correct password can still export now.`,
         code:`429 · Retry-After: ${limited.retryAfter??'unknown'}`}}/>}
       <div className="sober"><div className="sh">Export policy</div>
         <table className="led"><tbody>
-          {/* The rate-limit rows are gone because the rate limit is: removed on both surfaces
-               at the owner's request. Leaving "2 per hour" on screen would have been the page
-               stating a rule the server no longer applies. */}
-          <tr><td>Rate limit</td><td>None</td></tr>
+          <tr><td>Correct-password exports</td><td>No wallet-count limit</td></tr>
+          <tr><td>Wrong passwords</td><td>Throttled and audited</td></tr>
           <tr><td>Requires</td><td>Security password</td></tr>
           <tr><td>Private key</td><td>{exportKind==='raw'?'Raw on request':'Encrypted only'}</td></tr>
           <tr className="tot"><td>Audited</td><td>Every attempt</td></tr>
@@ -3248,10 +3293,10 @@ function WalletExport({profile,onProfileChange,walletList}){
           these fields with your password to recover the key. The private key is encrypted inside
           <code> ciphertext</code>; it never appears as readable text in the file.</div></div></div>
         :<div className="sober"><div className="sh">Why not a seed phrase?</div>
-          <div className="nt i">{INFO_ICON}<div>GhostMint stores each wallet&apos;s encrypted private
-            key, not its original recovery phrase. Imported wallets may never have supplied a
-            phrase, and a phrase cannot be reconstructed from a private key. Export the exact
-            private key or the encrypted backup instead.</div></div></div>}
+          <div className="nt i">{INFO_ICON}<div>New dashboard-created wallets show their recovery
+            phrase once during creation, but GhostMint does not store it. Imported wallets may
+            never have supplied a phrase, and a phrase cannot be reconstructed from a private key.
+            For an existing wallet, export the exact private key or encrypted backup instead.</div></div></div>}
     </div>
   </div>;
 }

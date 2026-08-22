@@ -289,9 +289,24 @@ function createBotCommandService(dependencies) {
     return { label: saved.label, address: saved.address, chain: saved.chain };
   }
 
-  async function createWallet(userId, input) {
+  async function createGeneratedWallet(userId, input, includeRecoveryPhrase) {
     const generated = Wallet.createRandom();
-    return persistWallet(userId, { ...input, privateKey: generated.privateKey });
+    const wallet = await persistWallet(userId, { ...input, privateKey: generated.privateKey });
+    // The dashboard may hand the BIP-39 phrase to the user exactly once, as part of the creation
+    // response. It is deliberately added only AFTER persistWallet has finished so it can never
+    // enter storage, the encrypted wallet envelope, the in-memory state mirror, or an ordinary
+    // wallet response. Telegram and Discord continue to call createWallet(), which returns only
+    // the public wallet fields and therefore cannot echo a recovery phrase into chat history.
+    if (includeRecoveryPhrase) return { ...wallet, recoveryPhrase: generated.mnemonic.phrase };
+    return wallet;
+  }
+
+  async function createWallet(userId, input) {
+    return createGeneratedWallet(userId, input, false);
+  }
+
+  async function createWalletWithRecoveryPhrase(userId, input) {
+    return createGeneratedWallet(userId, input, true);
   }
 
   // Every platform's import UI (Telegram's guided flow and /importwallet, Discord's modal and
@@ -718,7 +733,7 @@ function createBotCommandService(dependencies) {
     return calculateStatistics({activity:state(userId).activity,sniperEvents});}
 
   return {
-    createWallet, importWallet, importWalletsBatch, detectHomeChain, removeWallet, walletBalance, invalidateBalance, exportWalletKeyRaw, exportWalletKeystore, mint, mintViaOpenSea, batchMint, send, createTask, controlTask, addPnl, updatePnl, deletePnl,
+    createWallet, createWalletWithRecoveryPhrase, importWallet, importWalletsBatch, detectHomeChain, removeWallet, walletBalance, invalidateBalance, exportWalletKeyRaw, exportWalletKeystore, mint, mintViaOpenSea, batchMint, send, createTask, controlTask, addPnl, updatePnl, deletePnl,
     prepareMint,submitPreparedMint,detectMintContract,resolveMintContractInput,parseOpenSeaCollectionSlug,mintPresets:userId=>mintService.listPresets(userId),
     // The dashboard could LIST presets but never create one -- the only save path was
     // /mintpreset save on Telegram (server.js:2492), so the Presets tab displayed a thing the

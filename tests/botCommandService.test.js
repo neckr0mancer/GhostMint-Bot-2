@@ -1,5 +1,6 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
+const { Wallet } = require('ethers');
 const { createBotCommandService } = require('../src/commands/botCommandService');
 const { ValidationError } = require('../src/validation/domain');
 
@@ -42,6 +43,19 @@ test('wallet creation generates a valid key server-side and returns only the pub
   const encryption = calls.find(call => call[0] === 'encrypt');
   assert.match(encryption[1], /^0x[0-9a-f]{64}$/);
   assert.equal(JSON.stringify(created).includes(encryption[1]), false);
+});
+
+test('dashboard wallet creation returns a valid recovery phrase once without persisting it', async () => {
+  const { calls, service, state } = fixture();
+  const created = await service.createWalletWithRecoveryPhrase('user-a',
+    { label: 'recoverable', chain: 'ethereum' });
+  assert.deepEqual(Object.keys(created).sort(), ['address', 'chain', 'label', 'recoveryPhrase']);
+  assert.equal(Wallet.fromPhrase(created.recoveryPhrase).address, created.address);
+  const encryption = calls.find(call => call[0] === 'encrypt');
+  assert.equal(Wallet.fromPhrase(created.recoveryPhrase).privateKey, encryption[1]);
+  const persisted = calls.find(call => call[0] === 'addWallet')[1];
+  assert.equal('recoveryPhrase' in persisted, false);
+  assert.equal(JSON.stringify(state.wallets).includes(created.recoveryPhrase), false);
 });
 
 test('wallet import remains available through the separate fallback operation', async () => {

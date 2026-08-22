@@ -1,7 +1,7 @@
 const {randomBytes,randomUUID}=require('node:crypto');
 const {LinkCodeError}=require('../identity/identityService');
 const {UsernameTakenError}=require('../identity/postgresIdentityRepository');
-const {ACCOUNT_RATE_LIMIT_SCOPE,BotContextError,RateLimitError,requireTextConfirmation}=require('../security/botSecurity');
+const {BotContextError,RateLimitError,requireTextConfirmation}=require('../security/botSecurity');
 const {ValidationError,sendValidationError,requestSchemas}=require('../validation/domain');
 const {AccountBlockedError,AuthorizationError}=require('../governance/governanceService');
 const {GasLookupError}=require('../gas/etherscanGasService');
@@ -91,6 +91,22 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLo
     contextId:req.dashboardSession.sessionId,command:`admin:${actionName}`,outcome:'success',reason:'Governance write completed'})).catch(()=>{});}
   async function auditExportKey(req,outcome,reason){await Promise.resolve(securityAudit.record({userId:user(req),platform:'dashboard',
     contextId:req.dashboardSession.sessionId,command:'exportkey',outcome,reason})).catch(()=>{});}
+  // A correct password may export every wallet in one sitting. Throttle only failed password
+  // guesses, which protects a stolen authenticated session from becoming an unlimited password
+  // oracle without turning the number of wallets in an account into an accidental backup limit.
+  async function rejectIncorrectExportPassword(req,res){
+    try{exportKeyRateLimiter.check('dashboard',user(req),'exportkey-password-failure');}
+    catch(error){
+      if(error instanceof RateLimitError){
+        await auditExportKey(req,'rate_limited','incorrect export password attempts throttled');
+        res.set('Retry-After',String(Math.ceil(error.retryAfterMs/1000)));
+        return res.status(429).json({error:'Too many incorrect password attempts'});
+      }
+      throw error;
+    }
+    await auditExportKey(req,'failure','incorrect security password');
+    return res.status(401).json({error:'Incorrect security password'});
+  }
   async function auditSecurityPassword(req,outcome,reason){await Promise.resolve(securityAudit.record({userId:user(req),platform:'dashboard',
     contextId:req.dashboardSession.sessionId,command:'securitypassword',outcome,reason})).catch(()=>{});}
   // No session exists yet at login, so this can't key off req.dashboardSession like the others --
@@ -195,7 +211,13 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLo
     socialUsage:action(async(req,res)=>{noStore(res);const {period}=requestSchemas.socialUsagePeriod(req.query);res.json(jsonSafe(await commands.socialUsage(user(req),period)));}),
     linkCode:action(async(req,res)=>{noStore(res);res.json(await commands.linkCode(user(req)));}),
     wallets:action(async(req,res)=>{const values=commands.wallets(user(req));const settled=await Promise.allSettled(values.map(value=>commands.walletBalance(user(req),value.label)));res.json(settled.map((result,index)=>publicWallet(result.status==='fulfilled'?result.value:values[index])));}),
-    createWallet:action(async(req,res)=>{const wallet=await commands.createWallet(user(req),req.body);res.status(201).json(publicWallet(wallet));}),
+    // Dashboard generation is the sole creation surface that receives the mnemonic. The shared
+    // service persists only the encrypted private key and attaches recoveryPhrase after storage;
+    // this no-store response is therefore the user's one opportunity to save it. Bot creation
+    // keeps using commands.createWallet(), whose response remains public-only.
+    createWallet:action(async(req,res)=>{noStore(res);
+      const wallet=await commands.createWalletWithRecoveryPhrase(user(req),req.body);
+      res.status(201).json({...publicWallet(wallet),recoveryPhrase:wallet.recoveryPhrase});}),
     importWallet:action(async(req,res)=>{const wallet=await commands.importWallet(user(req),req.body);res.status(201).json(publicWallet(wallet));}),
     importWalletsBatch:action(async(req,res)=>{const results=await commands.importWalletsBatch(user(req),req.body);res.status(201).json({results});}),
     removeWallet:action(async(req,res)=>{confirmation(req);await commands.removeWallet(user(req),req.params.label);res.status(204).end();}),
@@ -205,22 +227,11 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLo
     // encrypted blob ever comes back. That password is verified here, against the stored hash,
     // before it's trusted for anything -- and the same verified value then doubles as the keystore's
     // own encryption password, so there is exactly one password to remember for this whole flow.
-    // Rate limiting is scoped to the ACCOUNT, not to this surface: the check below passes
-    // ACCOUNT_RATE_LIMIT_SCOPE where it would normally pass 'dashboard', and Telegram's /exportkey
-    // passes the same constant, so both land on one `account:<userId>:exportkey` bucket rather than
-    // one bucket each. Sharing the limiter instance alone was never enough -- createCommandRateLimiter
-    // keys on platform too, so a per-platform string silently doubled the real ceiling. Note this is
-    // deliberately NOT done for 'securitypassword' above, which stays per-platform.
     exportWalletKey:action(async(req,res)=>{confirmation(req);noStore(res);
-      try{exportKeyRateLimiter.check(ACCOUNT_RATE_LIMIT_SCOPE,user(req),'exportkey');}
-      catch(error){
-        if(error instanceof RateLimitError){await auditExportKey(req,'rate_limited','export key rate limit exceeded');res.set('Retry-After',String(Math.ceil(error.retryAfterMs/1000)));return res.status(429).json({error:'Too many export attempts'});}
-        throw error;
-      }
       const {securityPassword}=requestSchemas.walletExport(req.body||{});
       const storedHash=await identityRepository.getSecurityPasswordHash(user(req));
       if(!storedHash){await auditExportKey(req,'failure','no security password set');return res.status(400).json({error:'Set a security password first.',code:'SECURITY_PASSWORD_NOT_SET'});}
-      if(!verifySecurityPassword(securityPassword,storedHash)){await auditExportKey(req,'failure','incorrect security password');return res.status(401).json({error:'Incorrect security password'});}
+      if(!verifySecurityPassword(securityPassword,storedHash))return rejectIncorrectExportPassword(req,res);
       const {keystore}=await commands.exportWalletKeystore(user(req),req.params.label,securityPassword);
       await auditExportKey(req,'success','keystore export delivered');
       res.json({keystore});
@@ -229,18 +240,13 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLo
     // wallet APIs and the keystore route above, this response intentionally contains the exact
     // private key so the browser can place it on the clipboard. Keep every surrounding control:
     // authenticated user scope, CSRF, literal API confirmation, security-password verification,
-    // no-store headers, shared export throttling, and an audit record. The client never renders it
+    // no-store headers, failed-password throttling, and an audit record. The client never renders it
     // until a second warning is accepted and clears its in-memory copy after a short window.
     exportWalletRaw:action(async(req,res)=>{confirmation(req);noStore(res);
-      try{exportKeyRateLimiter.check(ACCOUNT_RATE_LIMIT_SCOPE,user(req),'exportkey');}
-      catch(error){
-        if(error instanceof RateLimitError){await auditExportKey(req,'rate_limited','raw key export rate limit exceeded');res.set('Retry-After',String(Math.ceil(error.retryAfterMs/1000)));return res.status(429).json({error:'Too many export attempts'});}
-        throw error;
-      }
       const {securityPassword}=requestSchemas.walletExport(req.body||{});
       const storedHash=await identityRepository.getSecurityPasswordHash(user(req));
       if(!storedHash){await auditExportKey(req,'failure','no security password set');return res.status(400).json({error:'Set a security password first.',code:'SECURITY_PASSWORD_NOT_SET'});}
-      if(!verifySecurityPassword(securityPassword,storedHash)){await auditExportKey(req,'failure','incorrect security password');return res.status(401).json({error:'Incorrect security password'});}
+      if(!verifySecurityPassword(securityPassword,storedHash))return rejectIncorrectExportPassword(req,res);
       const {privateKey}=await commands.exportWalletKeyRaw(user(req),req.params.label);
       await auditExportKey(req,'success','raw private key delivered to dashboard');
       res.json({privateKey});

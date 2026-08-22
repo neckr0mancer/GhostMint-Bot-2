@@ -2,12 +2,10 @@ const DISCORD_MARKDOWN=/([\\`*_{}\[\]()<>#+\-.!|~])/g;
 const TELEGRAM_MARKDOWN=/([\\_*\[\]()`])/g;
 
 // createCommandRateLimiter keys buckets on `${platform}:${userId}:${command}`, so two call sites
-// only share a ceiling if they pass the same first argument. Sensitive wallet-key exports are meant
-// to be limited per ACCOUNT, not per surface -- the dashboard and Telegram's /exportkey both pass
-// this in place of their own platform name so the two collapse onto one bucket. Safe because both
-// sides key on the same canonical users.user_id UUID (dashboard: req.dashboardSession.userId;
-// Telegram: identity.resolveOrCreate('telegram', ...)), not on a platform-native id. Anything that
-// SHOULD stay per-platform keeps passing its real platform string.
+// only share a ceiling if they pass the same first argument. Telegram raw-key delivery uses this
+// account scope with the canonical users.user_id UUID. Dashboard correct-password exports are not
+// wallet-count limited; only its wrong-password guesses use a separate dashboard-scoped bucket.
+// Anything that SHOULD stay per-platform keeps passing its real platform string.
 const ACCOUNT_RATE_LIMIT_SCOPE='account';
 
 class BotContextError extends Error {

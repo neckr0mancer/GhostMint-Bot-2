@@ -1174,6 +1174,27 @@ intended UI is described here.
 - Existing status controls remain status-aware; this request does not authorize generic buttons
   that the server cannot safely accept.
 
+#### Select all / Unselect all for existing multi-select lists
+
+- Add a master selection control to the Schedule list and every other surface that already permits
+  selecting multiple items. It must provide both **Select all on this page** and **Unselect all**;
+  wording it as page-scoped is important because Schedule selection currently clears on pagination.
+- Schedule keeps its homogeneous-action safety rule. In a status-specific bucket, Select all may
+  select every visible compatible task. In the mixed **All** bucket, it must never silently select
+  only an unexplained subset: after one row is chosen it may select all other visible rows with the
+  same action set; before that, the control must require a first row unless every visible row is
+  compatible. Explain that constraint next to the control rather than pretending mixed task states
+  can all accept the same bulk action.
+- Use a master checkbox with checked / unchecked / indeterminate states where the platform supports
+  it, plus an explicit **Clear selection** action on compact/mobile layouts where that is easier to
+  reach than a tiny checkbox. The existing sidebar behavior remains untouched.
+- Apply this only to genuine existing multi-select surfaces (for example Schedule rows and batch-
+  mint wallet selection). It does not authorize bulk wallet deletion, bulk sends, bulk P&L deletion,
+  or a new bulk backend route. Existing client-side loops may continue to call the validated,
+  user-scoped single-item action for each selected task.
+- **Documentation only as of 2026-08-22.** Implement after the current UI-fidelity pass, with tests
+  for select-all, indeterminate state, clearing, pagination scope, and incompatible Schedule states.
+
 #### Receipt-style transaction previews
 
 - On **Mint now**, unresolved values must not masquerade as known zeroes. Until discovery/input has
@@ -1289,31 +1310,30 @@ Two things the implementer should know before starting:
   empty renders `.frun`, neither of which is a wallet card — so a display toggle is a property of
   the populated state only, and should not render at all in the other three.
 
-### 15.2 Export rate limiting — REMOVED at owner request, 2026-08-21
+### 15.2 Export limiting — successful dashboard backups are unlimited, failed guesses remain throttled
 
-Removed on **both** surfaces: the dashboard's `/api/wallets/:label/export` and Telegram's
-`/exportkey`. Previously 2 per hour per platform.
+Correct-password dashboard exports have no wallet-count ceiling. An account with five wallets can
+export all five in one sitting; changing the selected wallet does not inherit an account-wide
+"two exports" lock. Telegram's chat-based `/exportkey` retains its existing delivery ceiling and is
+not weakened by this dashboard change.
 
-Still standing in front of a key export: the security password is verified against the stored
-hash on every attempt, the API requires `confirmation` to be the literal `CONFIRM`, and every
+Still standing in front of a dashboard key export: the security password is verified against the
+stored hash on every attempt, the API requires `confirmation` to be the literal `CONFIRM`, and every
 attempt — success, wrong password, or no password set — is written to the security audit log.
 The dashboard now supplies that API constant itself rather than asking the person to type a known
 word; see §15.4. Telegram keeps its own platform flow.
 
-**What was given up, recorded so restoring it is a decision rather than a rediscovery:** the
-export endpoint verifies a password, so with no limiter it is an unmetered oracle for guessing the
-security password by anyone who already holds a live session cookie. The audit log records those
-attempts but does not stop them. `tests/dashboard.test.js` now asserts four consecutive exports
-all return 200, so the removal cannot silently regress — restoring the limit means changing that
-test deliberately.
+Only **incorrect password guesses** consume the dashboard failure bucket. Repeated guesses become
+429 responses and are audited, but a correct password continues to work immediately even after
+that failure throttle activates. This preserves brute-force resistance without treating successful
+backups as abuse. `tests/dashboard.test.js` asserts five consecutive correct-password exports, then
+the wrong-password throttle, then another successful correct-password export.
 
 `setSecurityPassword` **keeps** its limiter. It shares the same `exportKeyRateLimiter` instance
 but is a different command in a different bucket, and nothing was asked about it.
 
-This supersedes the earlier finding that `createCommandRateLimiter` keys on
-`platform:userId:command` (`botSecurity.js:61`), so dashboard and Telegram never shared a bucket
-and the real ceiling across both was 4/hour rather than the 2 the code comment claimed. That
-discrepancy is moot now that neither surface limits at all.
+The Telegram delivery ceiling and dashboard password-failure throttle intentionally use different
+buckets, so exhausting one cannot prevent a legitimate action on the other surface.
 
 ### 15.3 Wallet card — no repetition once expanded, 2026-08-21
 
@@ -1345,12 +1365,19 @@ Owner ruling after using a real exported file:
   describe the file format and identify the keystore. The raw private key is not a readable JSON
   field. Keystore plus password is equivalent to possession of the wallet and must be stored
   separately.
-- The Export tab now offers exactly the two formats the current storage model can produce:
-  **Encrypted backup** and **Private key**. It does not offer a seed phrase: GhostMint stores the
-  resulting encrypted private key for generated and imported wallets, not the original mnemonic,
-  and a BIP-39 phrase cannot be reconstructed from a private key.
+- The Export tab now offers exactly the two formats the current storage model can produce, with
+  **Private key** first and selected by default, followed by **Encrypted backup**. It does not offer
+  a seed phrase for an existing wallet: GhostMint stores the resulting encrypted private key for
+  generated and imported wallets, not the original mnemonic, and a BIP-39 phrase cannot be
+  reconstructed from a private key. Newly dashboard-generated wallets receive their phrase once
+  in the creation response; it is not stored and therefore does not become a later export format.
 - Raw-key mode is an explicit exception to the previous dashboard invariant. It verifies the
   security password and returns only `{privateKey}` from a user-scoped, CSRF-protected, audited,
   `no-store` endpoint. The client does not render it automatically, offers an exact-value Copy
   button, requires a separate high-risk warning before Reveal, and clears the in-memory value
-  after 60 seconds or immediately on request/tab change.
+  after 60 seconds or immediately on request/tab change. The prepared value now appears in the
+  shared overlay shell rather than lengthening the Export page.
+- Dashboard wallet creation now returns the generated BIP-39 phrase exactly once, after the private
+  key has already been encrypted and persisted. The phrase is attached after persistence, is absent
+  from storage/state/logs and every Telegram/Discord creation response, and disappears when the
+  creation overlay closes or reloads. Copy works without display; Reveal requires a separate warning.

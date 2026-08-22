@@ -66,13 +66,19 @@ in the plan below is going to surprise you, it's most likely here.
 
 ## M3-M4: Wallets
 
-- [ ] Create a wallet (`/createwallet` on Telegram, or the dashboard's "Generate
-      wallet" flow). Confirm the response never includes the private key, only the
-      address.
+- [ ] Create a wallet through Telegram/Discord. Confirm the response never includes the private
+      key or recovery phrase, only the public address.
+- [ ] Create a wallet through the dashboard. Confirm its one-time recovery phrase is initially
+      hidden, Copy works without revealing it, Reveal requires the warning, closing warns before
+      discarding it, and neither a reload nor `GET /api/wallets` can retrieve it again. Confirm the
+      creation response never includes the raw private key.
 - [ ] Import a wallet by private key. Confirm same -- key never echoed back.
 - [ ] Import a wallet by seed phrase. Confirm the derived address matches what an
       independent wallet tool (e.g. MetaMask, imported temporarily) derives from
       the same phrase, then discard that phrase/wallet.
+- [ ] Export every wallet in an account consecutively with the correct security password; confirm
+      there is no successful-export count ceiling. Then enter the wrong password repeatedly,
+      confirm only those guesses become `429`, and confirm the correct password still works.
 - [ ] Try importing a duplicate label -- expect a clear "label already used" error,
       case-insensitively (`MyWallet` vs `mywallet`).
 - [ ] Check balance (`/wallets` or dashboard) for a real funded wallet -- confirm
