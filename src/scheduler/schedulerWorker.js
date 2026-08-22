@@ -2,8 +2,17 @@ const { randomUUID } = require('node:crypto');
 const { ValidationError } = require('../validation/domain');
 const { TransactionSafetyError } = require('../transactions/transactionEngine');
 
+// OpenSea reports a drop stage that has not opened yet with the same 409 it uses for one already
+// over. Treated as transient because the common case by far is a stage flipping active a beat after
+// its advertised second -- the identical request then succeeds. Bounded tightly below so the
+// already-over case still fails fast instead of retrying into a window that will never reopen.
+const STAGE_NOT_OPEN = 'STAGE_NOT_OPEN';
+// One second apart, five retries after the first attempt. Waiting on an external system to cross a
+// known moment, not on congestion to clear, so backing off exponentially would only widen the miss.
+const STAGE_NOT_OPEN_RETRY_MS = 1_000;
+const STAGE_NOT_OPEN_MAX_ATTEMPTS = 6;
 const TRANSIENT_CODES = new Set(['RPC_UNAVAILABLE', 'BROADCAST_UNKNOWN', 'NETWORK_ERROR', 'SERVER_ERROR',
-  'TIMEOUT', 'ETIMEDOUT', 'ECONNRESET', 'ECONNREFUSED', 'EAI_AGAIN']);
+  'TIMEOUT', 'ETIMEDOUT', 'ECONNRESET', 'ECONNREFUSED', 'EAI_AGAIN', STAGE_NOT_OPEN]);
 const FINAL_TRANSACTION_STATES = new Set(['confirmed', 'reverted', 'replaced']);
 
 function errorReason(error) {
@@ -23,7 +32,9 @@ function errorReason(error) {
 }
 
 function isTransientFailure(error) {
-  if (error instanceof ValidationError) return false;
+  // A ValidationError is permanent by default -- a malformed request stays malformed. The one
+  // exception carries its own code (STAGE_NOT_OPEN): the request is fine, it was simply early.
+  if (error instanceof ValidationError) return TRANSIENT_CODES.has(error.code);
   if (error instanceof TransactionSafetyError) return TRANSIENT_CODES.has(error.code);
   return TRANSIENT_CODES.has(error?.code);
 }
@@ -99,8 +110,20 @@ function createSchedulerWorker({ repository, intentRepository, transactionEngine
       return settleFromIntent(task, intent, false);
     } catch (error) {
       const transient = isTransientFailure(error);
-      const outcome = await repository.fail(task, { reason: sanitizeError(error).slice(0, 500), transient,
-        retryAt: transient ? retryAt(task.attemptCount) : null });
+      // A stage-not-open failure gets a fixed one-second retry instead of the ordinary exponential
+      // backoff, and its own attempt budget. Budgeted separately because absorbing an opening delay
+      // must not quietly consume the allowance that exists for real transient RPC failures -- a task
+      // whose maxAttempts is the default 3 would otherwise burn it in three seconds and then be
+      // unable to retry anything else. Kept as a ceiling (Math.max) so a task configured with more
+      // attempts than this keeps them.
+      const stageWait = transient && error?.code === STAGE_NOT_OPEN;
+      const budgeted = stageWait
+        ? { ...task, maxAttempts: Math.max(task.maxAttempts, STAGE_NOT_OPEN_MAX_ATTEMPTS) }
+        : task;
+      const outcome = await repository.fail(budgeted, { reason: sanitizeError(error).slice(0, 500), transient,
+        retryAt: transient
+          ? (stageWait ? now() + STAGE_NOT_OPEN_RETRY_MS : retryAt(task.attemptCount))
+          : null });
       await Promise.resolve(notify?.({ task, outcome, error })).catch(() => {});
       return outcome;
     }
@@ -165,4 +188,5 @@ function createSchedulerWorker({ repository, intentRepository, transactionEngine
   return { armPreciseTimers, health,processTask, recoverStaleClaims, start, stop, tick, workerId };
 }
 
-module.exports = { TRANSIENT_CODES, createSchedulerWorker, errorReason, isTransientFailure };
+module.exports = { STAGE_NOT_OPEN, STAGE_NOT_OPEN_MAX_ATTEMPTS, STAGE_NOT_OPEN_RETRY_MS, TRANSIENT_CODES,
+  createSchedulerWorker, errorReason, isTransientFailure };

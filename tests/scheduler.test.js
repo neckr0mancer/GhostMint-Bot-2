@@ -1,7 +1,8 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const { ValidationError } = require('../src/validation/domain');
-const { createSchedulerWorker, errorReason, isTransientFailure } = require('../src/scheduler/schedulerWorker');
+const { STAGE_NOT_OPEN, STAGE_NOT_OPEN_MAX_ATTEMPTS, STAGE_NOT_OPEN_RETRY_MS, createSchedulerWorker,
+  errorReason, isTransientFailure } = require('../src/scheduler/schedulerWorker');
 
 function task(overrides = {}) {
   return {
@@ -19,7 +20,9 @@ function repositoryFixture(stale = [], { imminent = [] } = {}) {
     async attachIntent(value, intentId) { calls.push(['attach', intentId]); },
     async complete(value, intentId) { calls.push(['complete', intentId]); },
     async recoverWithoutExecution(value, details) { calls.push(['recover', details]); },
-    async fail(value, details) { calls.push(['fail', details]); return details.transient ? 'retry' : 'failed'; },
+    // Records the task as a third element too: the stage-not-open path raises maxAttempts on the
+    // object it hands the repository, and that is the only place the widened budget is observable.
+    async fail(value, details) { calls.push(['fail', details, value]); return details.transient ? 'retry' : 'failed'; },
     async claimDue() { calls.push(['claimDue']); return null; },
     async listImminent() { return imminent; },
   };
@@ -185,4 +188,60 @@ test('errorReason folds in every validation issue and leaves other errors untouc
   const empty = new ValidationError([]);
   empty.issues = [];
   assert.equal(errorReason(empty), 'Request validation failed');
+});
+
+// Live-reported: a phase schedule fired, OpenSea answered 409 "Drop is not currently active for
+// minting", and the task failed permanently and expired an hour later without ever retrying. A
+// stage rarely flips active at exactly its advertised second, so the request was early rather than
+// wrong -- the identical call succeeds once the stage opens.
+test('a stage that has not opened yet retries on a tight fixed interval instead of failing permanently', async () => {
+  const repository = repositoryFixture();
+  const notOpen = new ValidationError({ field:'contractAddress', message:'Drop is not currently active for minting' }, STAGE_NOT_OPEN);
+  const worker = createSchedulerWorker({
+    repository,
+    intentRepository:{ get:async () => null, getByIdempotencyKey:async () => null },
+    transactionEngine:{}, executeTask:async () => { throw notOpen; },
+    now:() => 1_000, retryBaseMs:5_000,
+  });
+
+  assert.equal(await worker.processTask(task()), 'retry', 'an unopened stage must not fail permanently');
+  const [, details, handed] = repository.calls.at(-1);
+  assert.equal(details.transient, true);
+  assert.equal(details.retryAt, 1_000 + STAGE_NOT_OPEN_RETRY_MS,
+    'retries one second out, not on the exponential backoff meant for congestion');
+  assert.equal(handed.maxAttempts, STAGE_NOT_OPEN_MAX_ATTEMPTS,
+    "the widened budget must reach the repository, since that is where retry-vs-fail is decided");
+});
+
+test('the widened stage budget is a ceiling, and never shrinks a task that already allows more', async () => {
+  const repository = repositoryFixture();
+  const worker = createSchedulerWorker({
+    repository,
+    intentRepository:{ get:async () => null, getByIdempotencyKey:async () => null },
+    transactionEngine:{},
+    executeTask:async () => { throw new ValidationError({ field:'contractAddress', message:'not active' }, STAGE_NOT_OPEN); },
+    now:() => 1_000,
+  });
+
+  await worker.processTask(task({ maxAttempts: 12 }));
+  assert.equal(repository.calls.at(-1)[2].maxAttempts, 12, 'a task configured with more attempts keeps them');
+});
+
+test('an ordinary validation failure stays permanent and keeps the exponential backoff for real transients', async () => {
+  assert.equal(isTransientFailure(new ValidationError({ field:'quantity', message:'is invalid' })), false,
+    'a malformed request stays malformed -- only the stage-not-open code is exempt');
+  assert.equal(isTransientFailure(new ValidationError({ field:'contractAddress', message:'not active' }, STAGE_NOT_OPEN)), true);
+
+  // A genuine transient must still back off exponentially rather than inheriting the 1s interval.
+  const repository = repositoryFixture();
+  const worker = createSchedulerWorker({
+    repository,
+    intentRepository:{ get:async () => null, getByIdempotencyKey:async () => null },
+    transactionEngine:{},
+    executeTask:async () => { throw Object.assign(new Error('RPC unavailable'), { code:'RPC_UNAVAILABLE' }); },
+    now:() => 1_000, retryBaseMs:100,
+  });
+  await worker.processTask(task({ attemptCount: 3 }));
+  assert.equal(repository.calls.at(-1)[1].retryAt, 1_000 + 400, 'exponential backoff is unchanged');
+  assert.equal(repository.calls.at(-1)[2].maxAttempts, 3, 'and its budget is untouched');
 });
