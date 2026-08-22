@@ -67,11 +67,19 @@ function createSchedulerWorker({ repository, intentRepository, transactionEngine
   // only one about to become due gets an exact setTimeout instead of waiting for the next tick.
   // Defaults to twice the poll interval so nothing can slip through the gap between one lookahead
   // scan and the next, even if a scan itself runs a little late.
-  preciseArmWindowMs = pollIntervalMs * 2 }) {
+  preciseArmWindowMs = pollIntervalMs * 2,
+  // Optional pre-fire preparation hook (Round 16 item A3 follow-through): when prearmLeadMs > 0 and
+  // a prearm fn is injected, every imminent task also gets a second timer prearmLeadMs ahead of its
+  // fire moment. The worker knows nothing about what preparation means -- it never claims, never
+  // mutates task state, and its failures are logged and forgotten, because executeTask must remain
+  // able to do the whole job itself when no preparation happened (worker restart, lead just
+  // introduced, task created inside the lead window). Re-arms automatically if mintTime moves.
+  prearmLeadMs = 0, prearm = null }) {
   let timer = null;
   let inFlightCount = 0;
   let lastTickAt=null;let lastSuccessAt=null;let lastError=null;
   const armedTimers = new Map();
+  const prearmTimers = new Map();
 
   // Resolves the stage's real opening time, once, when the first burst is spent. Any failure here
   // degrades to the ordinary outcome -- a lookup problem must never turn a handled failure into a
@@ -190,17 +198,43 @@ function createSchedulerWorker({ repository, intentRepository, transactionEngine
   // next poll tick. A task whose own state changes before its timer fires (claimed by a regular
   // tick, cancelled, rescheduled) is harmless: the timer just calls tick(), and claimDue()'s own
   // WHERE clause simply won't match it anymore -- no cancellation bookkeeping needed for that.
+  // When pre-arming is configured, the scan widens to cover the lead window too, and each scanned
+  // task additionally gets a preparation timer at fire-moment-minus-lead (replacing an earlier one
+  // if the task's mintTime moved). Fire timers stay gated to their own window so a far-out task
+  // doesn't burn a pointless early tick().
   async function armPreciseTimers() {
-    const tasks = await repository.listImminent({ now: now(), withinMs: preciseArmWindowMs });
+    const prearmActive = Boolean(prearm) && prearmLeadMs > 0;
+    // Without pre-arming this is byte-for-byte the original scan: everything listImminent returns
+    // (already filtered to preciseArmWindowMs by the repository) gets a fire timer. Only an active
+    // lead widens the scan -- and then fire timers stay gated to their own window, so a task seen
+    // early purely for preparation doesn't burn a pointless premature tick().
+    const withinMs = prearmActive ? Math.max(preciseArmWindowMs, prearmLeadMs) : preciseArmWindowMs;
+    const tasks = await repository.listImminent({ now: now(), withinMs });
     for (const task of tasks) {
-      if (armedTimers.has(task.id)) continue;
-      const delay = Math.max(0, task.nextAttemptAt - now());
-      const handle = setTimeout(() => {
-        armedTimers.delete(task.id);
-        tick().catch(error => log(`Scheduler precise-fire failed: ${sanitizeError(error)}`));
-      }, delay);
-      handle.unref?.();
-      armedTimers.set(task.id, handle);
+      if (!prearmActive || task.nextAttemptAt - now() <= preciseArmWindowMs) {
+        if (!armedTimers.has(task.id)) {
+          const delay = Math.max(0, task.nextAttemptAt - now());
+          const handle = setTimeout(() => {
+            armedTimers.delete(task.id);
+            tick().catch(error => log(`Scheduler precise-fire failed: ${sanitizeError(error)}`));
+          }, delay);
+          handle.unref?.();
+          armedTimers.set(task.id, handle);
+        }
+      }
+      if (prearmActive) {
+        const key = `${task.userId}:${task.id}`;
+        const existing = prearmTimers.get(key);
+        if (existing && existing.mintTime === task.mintTime) continue;
+        if (existing) clearTimeout(existing.handle);
+        const handle = setTimeout(() => {
+          prearmTimers.delete(key);
+          Promise.resolve(prearm(task))
+            .catch(error => log(`Scheduler pre-arm failed for "${task.name}": ${sanitizeError(error)}`));
+        }, Math.max(0, task.nextAttemptAt - prearmLeadMs - now()));
+        handle.unref?.();
+        prearmTimers.set(key, { handle, mintTime: task.mintTime });
+      }
     }
   }
 
@@ -218,9 +252,11 @@ function createSchedulerWorker({ repository, intentRepository, transactionEngine
     timer = null;
     for (const handle of armedTimers.values()) clearTimeout(handle);
     armedTimers.clear();
+    for (const entry of prearmTimers.values()) clearTimeout(entry.handle);
+    prearmTimers.clear();
   }
 
-  function health(){return {status:timer&&(!lastError||lastSuccessAt>=lastTickAt)?'up':'down',running:Boolean(timer),active:inFlightCount>0,inFlightCount,armedCount:armedTimers.size,lastTickAt,lastSuccessAt,lastError};}
+  function health(){return {status:timer&&(!lastError||lastSuccessAt>=lastTickAt)?'up':'down',running:Boolean(timer),active:inFlightCount>0,inFlightCount,armedCount:armedTimers.size,prearmedCount:prearmTimers.size,lastTickAt,lastSuccessAt,lastError};}
   return { armPreciseTimers, health,processTask, recoverStaleClaims, start, stop, tick, workerId };
 }
 

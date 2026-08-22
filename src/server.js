@@ -293,10 +293,59 @@ triggerExecutionService=createTriggerExecutionService({repository:targetPolicyRe
 // data at all) may fall back. snake_case per the API, matched lowercased.
 const OPENSEA_ELIGIBILITY_ONLY_STAGES = new Set(['allowlist', 'gtd', 'fcfs', 'presale']);
 
+// Round 16 item A3 follow-through -- pre-arming scheduled mints. When SCHEDULE_PREARM_LEAD_MS is
+// set, the scheduler calls prearmScheduledTask that long before each imminent fire: account-status
+// enforcement, wallet resolution and SeaDrop discovery all happen while there is still time to
+// spare, so the fire moment itself starts closer to the broadcast. Deliberately NOT cached here:
+// calldata and the PublicDrop price/window. Both are read fresh at fire time by design --
+// SeaDrop's PublicDrop is a single mutable struct projects update exactly around launches (price
+// finalization!), and msg.value carrying a stale mint price could only buy an on-chain revert.
+// Preparation is therefore limited to work whose result cannot go stale: checks, lookups, and
+// warming caches. viaOpenSea tasks are skipped entirely -- their one expensive step
+// (buildMintTransaction) must run at T0 regardless, since eligibility is resolved server-side at
+// call time, and everything in front of it is single-digit milliseconds.
+// How far off a task's own scheduled time its live SeaDrop window may sit before pre-arm logs a
+// heads-up. Purely informational -- the fire-time drift check remains the real gate; a mismatch
+// here just makes mis-scheduled tasks visible in logs BEFORE they fail silently at T0.
+const PREARM_WINDOW_TOLERANCE_MS = 10 * 60_000;
+const armedPreparations = new Map();
+async function prearmScheduledTask(task) {
+  try {
+    if (task.viaOpenSea) return;
+    await governance.checkAccountStatus(task.userId);
+    const wallet = DB.wallets.find(item => item.userId === task.userId && item.label === task.walletLabel);
+    if (!wallet) return; // deleted after scheduling -- executeTask surfaces the real failure at T0
+    const seaDrop = await seaDropDiscoveryService.resolve(wallet.chain, task.contract);
+    if (seaDrop.address) {
+      const livePublicDrop = await seaDropPublicDropResolver.getPublicDrop(wallet.chain, seaDrop.address, task.contract);
+      if (livePublicDrop && Math.abs(livePublicDrop.startTime * 1000 - task.mintTime) > PREARM_WINDOW_TOLERANCE_MS) {
+        log(`Pre-arm notice: "${task.name}" (${wallet.chain}:${task.contract}) fires at ${new Date(task.mintTime).toISOString()}, but its live SeaDrop window starts ${new Date(livePublicDrop.startTime * 1000).toISOString()} -- the fire-time drift check may reject it`);
+      }
+    }
+    armedPreparations.set(`${task.userId}:${task.id}`, { mintTime: task.mintTime, at: Date.now() });
+  } catch (error) {
+    // Preparation is best-effort by contract: any failure here just means fire time does things
+    // the old way. Never throw into the scheduler's timer loop.
+    log(`Scheduler pre-arm skipped for "${task.name}": ${error?.message || 'unknown error'}`);
+  }
+}
+// Consumed once by executeTask: true means "front matter was verified inside the lead window for
+// exactly this firing" (same mintTime guards against a moved/re-armed task; freshness ceiling
+// guards against a stale entry surviving past several leads).
+function takeArmedPreparation(task) {
+  const key = `${task.userId}:${task.id}`;
+  const entry = armedPreparations.get(key);
+  if (!entry) return false;
+  armedPreparations.delete(key);
+  return entry.mintTime === task.mintTime && Date.now() - entry.at <= Math.max(CONFIG.schedulePrearmLeadMs * 3, 60_000);
+}
+
 const schedulerWorker = createSchedulerWorker({
   repository: schedulerRepository,
   intentRepository: transactionIntentRepository,
   transactionEngine,
+  prearmLeadMs: CONFIG.schedulePrearmLeadMs,
+  prearm: task => prearmScheduledTask(task),
   // Answers "when does this task's stage actually open?" after the stage-not-open retry burst is
   // spent, so the worker can re-arm once instead of discarding a task that exists precisely to be
   // there at the open. Read live from OpenSea rather than from the time stored when the task was
@@ -316,7 +365,10 @@ const schedulerWorker = createSchedulerWorker({
     // the per-command choke point (identity.resolveOrCreate), which this background worker loop never
     // passes through. AccountBlockedError isn't in schedulerWorker's TRANSIENT_CODES, so this is
     // correctly classified as a permanent (non-retried) failure rather than retried indefinitely.
-    await governance.checkAccountStatus(task.userId);
+    // Pre-armed tasks had this exact enforcement seconds earlier inside prearmScheduledTask (the
+    // cache entry is consumed exactly once, and only when it matches this firing's mintTime) -- the
+    // check itself is identical either way; this only decides whether it runs twice.
+    if (!takeArmedPreparation(task)) await governance.checkAccountStatus(task.userId);
     const wallet = DB.wallets.find(item => item.userId === task.userId && item.label === task.walletLabel);
     if (!wallet) throw new ValidationError({ field:'walletLabel', message:'was not found' });
     // Section AF -- an allowlist/GTD/FCFS stage this app has no on-chain proof for (see
@@ -373,9 +425,13 @@ const schedulerWorker = createSchedulerWorker({
     // on-chain revert instead of the real story (simulation-on modes). Read live, not from
     // seaDropDiscoveryService's cached snapshot, since the whole point is catching drift since that
     // snapshot was taken; a non-SeaDrop contract has no on-chain window concept to check at all.
+    // This same fresh read is handed straight to prepareMintCall below -- it used to read
+    // PublicDrop a SECOND time itself, an identical serial RPC round trip back to back with this
+    // one; one read serves both the drift gate and the calldata value.
     const seaDrop = await seaDropDiscoveryService.resolve(wallet.chain, task.contract);
+    let livePublicDrop = null;
     if (seaDrop.address) {
-      const livePublicDrop = await seaDropPublicDropResolver.getPublicDrop(wallet.chain, seaDrop.address, task.contract);
+      livePublicDrop = await seaDropPublicDropResolver.getPublicDrop(wallet.chain, seaDrop.address, task.contract);
       if (livePublicDrop) {
         const nowSec = Math.floor(Date.now() / 1000);
         if (nowSec < livePublicDrop.startTime || (livePublicDrop.endTime && nowSec > livePublicDrop.endTime)) {
@@ -390,7 +446,8 @@ const schedulerWorker = createSchedulerWorker({
       functionName:task.fn || 'mint', quantity:task.qty, priceETH:task.price || 0,
       gasGwei:task.gas, chain:wallet.chain }, { supportedChains:CONFIG.supportedChains });
     const prepared = await prepareMintCall({ contractAddress:request.contractAddress,
-      walletAddress:wallet.address, chain:request.chain, quantity:request.quantity, priceETH:request.priceETH });
+      walletAddress:wallet.address, chain:request.chain, quantity:request.quantity, priceETH:request.priceETH,
+      resolvedSeaDrop: seaDrop, resolvedPublicDrop: livePublicDrop });
     return mintExecution.executePrepared({ userId:task.userId, wallet, prepared, triggerSource:'scheduled',
       gasPriceWei:request.gasGwei === null ? undefined : ethers.parseUnits(String(request.gasGwei), 'gwei'),
       idempotencyKey:hooks.idempotencyKey, onIntentPersisted:hooks.onIntentPersisted,
@@ -609,10 +666,17 @@ async function executePreparedMint({ wallet, prepared, chain, triggerSource='man
 // PublicDrop fresh here every call (seaDropPublicDropResolver never caches) so a scheduled task
 // firing well after the contract was first pasted/detected still mints at whatever price and window
 // are really live right now, not whatever was live back when it was first resolved.
-async function prepareMintCall({ contractAddress, walletAddress, chain, quantity, priceETH }) {
-  const seaDrop = await seaDropDiscoveryService.resolve(chain, contractAddress);
+// resolvedSeaDrop/resolvedPublicDrop: a caller that ALREADY holds this exact pair from its own
+// immediately-preceding fresh read (executeTask's drift preflight) passes it in instead of paying
+// for an identical second read. undefined means "not supplied -- read as usual"; null is a real
+// "read succeeded, nothing there" answer and is honored as such.
+async function prepareMintCall({ contractAddress, walletAddress, chain, quantity, priceETH,
+  resolvedSeaDrop = undefined, resolvedPublicDrop = undefined }) {
+  const seaDrop = resolvedSeaDrop !== undefined ? resolvedSeaDrop : await seaDropDiscoveryService.resolve(chain, contractAddress);
+  const livePublicDrop = !seaDrop.address ? null
+    : (resolvedPublicDrop !== undefined ? resolvedPublicDrop
+      : await seaDropPublicDropResolver.getPublicDrop(chain, seaDrop.address, contractAddress));
   if (seaDrop.address) {
-    const livePublicDrop = await seaDropPublicDropResolver.getPublicDrop(chain, seaDrop.address, contractAddress);
     return mintService.prepare({
       contractAddress,
       methodSignature: SEADROP_MINT_SIGNATURE,

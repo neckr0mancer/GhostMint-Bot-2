@@ -414,6 +414,11 @@ const CONFIG = Object.freeze({
   databasePoolMax: parseInteger('DATABASE_POOL_MAX', 5, 1, 10),
   rpcTimeoutMs: parseInteger('RPC_TIMEOUT_MS', 10_000, 1_000, 60_000),
   rpcRetries: parseInteger('RPC_RETRIES', 1, 0, 5),
+  // How long before a scheduled task's fire moment the scheduler runs its preparation hook
+  // (account status, wallet resolution, SeaDrop discovery warm-up -- see server.js's
+  // prearmScheduledTask). 0 disables pre-arming entirely and keeps today's do-everything-at-fire
+  // behavior; a recommended production value is 10_000-15_000ms.
+  schedulePrearmLeadMs: parseInteger('SCHEDULE_PREARM_LEAD_MS', 0, 0, 300_000),
   projectRoot: PROJECT_ROOT,
   supportedChains,
 });

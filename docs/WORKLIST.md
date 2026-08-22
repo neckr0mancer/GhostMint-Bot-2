@@ -165,6 +165,40 @@ Verification: `node --check` clean on all five touched sources; migration applie
 botCommandService, dashboard); full suite 840 tests → 838 pass with only the two known
 by-design-open review repros failing, zero cancellations.
 
+## Section AY — pre-arming scheduled mints (Round 16 item A3, un-paused) ✅
+
+The competitive analysis paused item A3 "pending real timing data." That data can't exist yet —
+Railway retains only the current deployment's logs, and the only timing line in it is a manual
+robinhood mint (prep 357ms, sign 3ms, broadcast 114ms). Every scheduled fire in retained memory
+died at the OpenSea 404s before submit() could log anything. Rather than stay blocked on evidence
+that cannot accumulate, this ships the analysis's own fallback reasoning: the fire path provably
+still runs checks/lookups that cannot change between T−lead and T0, so moving them is pure win.
+
+Two changes:
+
+1. **True pre-arm, opt-in via `SCHEDULE_PREARM_LEAD_MS`** (0 = off; zero behavior change when
+   unset). `schedulerWorker` arms a second timer per imminent task at fire-moment-minus-lead,
+   calling an injected `prearm(task)` hook that never claims, never mutates task state, and whose
+   failures are logged and swallowed — `executeTask` must remain able to do everything itself.
+   `server.js`'s hook runs account-status enforcement, wallet resolution and SeaDrop discovery
+   warm-up, plus a PublicDrop sanity read whose only output is a log line when a task's scheduled
+   time sits more than 10 minutes off its contract's live window (mis-scheduled tasks become
+   visible BEFORE their silent T0 failure). Deliberately NOT cached: calldata and price. SeaDrop's
+   PublicDrop is one mutable struct projects update around launches — msg.value carrying a stale
+   mint price could only buy an on-chain revert. The cache entry just marks front matter verified;
+   consumed exactly once by executeTask when its mintTime still matches. viaOpenSea tasks are not
+   pre-armed: their expensive step must run at T0 anyway.
+2. **One fresh PublicDrop read instead of two identical ones.** executeTask's drift preflight read
+   PublicDrop live, then prepareMintCall read it again immediately after — two identical serial
+   RPC round trips back to back on every non-OpenSea scheduled fire. prepareMintCall now accepts
+   the already-read pair; freshness semantics unchanged (the single read still happens right
+   before broadcast), one round trip gone.
+
+Tests: four new schedulerWorker cases (prearm fires at lead time without claiming; moved mintTime
+replaces the old timer without double-firing; throwing hooks are logged and forgotten; no options
+means zero new behavior) + the repository fixture gained a live state box for scan-window moves.
+Full suite 845 → 843 pass with only the two known by-design review repros failing.
+
 ## Also flagged during diagnosis, not fixed here
 
 - Production shows 102 tasks stuck in `claimed` (99 of them test fixtures) and a recurring
