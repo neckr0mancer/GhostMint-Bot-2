@@ -28,6 +28,12 @@ function reservePort() {
 }
 
 async function waitForHealth(url, child, output) {
+  // Deliberately short: a server that has not answered /health within 10s of spawning is treated
+  // as broken, and the thrown error carries the child's full output for diagnosis. The OUTER test
+  // timeouts below must be budgeted independently and generously -- migrations plus boot against
+  // the remote database swing 3-5x between runs on slow links, so an outer ceiling near the happy
+  // path kills tests that are working, which reads exactly like the failures these smokes exist
+  // to catch.
   const deadline = Date.now() + 10_000;
 
   while (Date.now() < deadline) {
@@ -50,7 +56,7 @@ async function waitForHealth(url, child, output) {
 
 const smokeTest = LOCAL_ENV.DATABASE_URL && LOCAL_ENV.DATABASE_URL_UNPOOLED ? test : test.skip;
 
-smokeTest('the application starts and exposes a healthy database-backed service', { timeout: 20_000 }, async t => {
+smokeTest('the application starts and exposes a healthy database-backed service', { timeout: 60_000 }, async t => {
   await runMigrations({
     connectionString: LOCAL_ENV.DATABASE_URL_UNPOOLED,
     migrationsDirectory: path.join(PROJECT_ROOT, 'migrations'),
@@ -97,7 +103,7 @@ smokeTest('the application starts and exposes a healthy database-backed service'
 // start() function -- meaning the HTTP server (including /health and the dashboard), the scheduler,
 // the social watch worker, the retention worker, and sniper-watcher restoration never ran either,
 // even though every one of those is otherwise fully independent of Discord.
-smokeTest('a Discord login failure does not prevent the HTTP server and workers from starting', { timeout: 20_000 }, async t => {
+smokeTest('a Discord login failure does not prevent the HTTP server and workers from starting', { timeout: 60_000 }, async t => {
   await runMigrations({
     connectionString: LOCAL_ENV.DATABASE_URL_UNPOOLED,
     migrationsDirectory: path.join(PROJECT_ROOT, 'migrations'),
@@ -147,7 +153,7 @@ smokeTest('a Discord login failure does not prevent the HTTP server and workers 
 // scheduled task picked up by the background scheduler loop never passes through -- so a task
 // created while the owner was in good standing kept executing and spending from their wallet even
 // after they were banned. This proves the real, running scheduler now refuses the task instead.
-smokeTest('a banned account\'s due scheduled task fails without executing, instead of spending funds', { timeout: 45_000 }, async t => {
+smokeTest('a banned account\'s due scheduled task fails without executing, instead of spending funds', { timeout: 120_000 }, async t => {
   await runMigrations({
     connectionString: LOCAL_ENV.DATABASE_URL_UNPOOLED,
     migrationsDirectory: path.join(PROJECT_ROOT, 'migrations'),
@@ -199,6 +205,10 @@ smokeTest('a banned account\'s due scheduled task fails without executing, inste
     // hammering the same connection pool -- a timeout here was reported as a scheduler failure
     // when nothing was actually broken. Widening only changes how long we wait for a verdict; it
     // does not weaken any assertion below, and a genuinely stuck task still fails the run.
+    // The verdict budget below is 60s, so the test's own outer ceiling must exceed the worst-case
+    // SUM -- migrations + up to 10s of health waiting + this poll + cleanup -- or the runner kills
+    // the test before its own deadline can conclude (45s used to do exactly that on slow links,
+    // reporting the test cancelled while it was still legitimately working).
     const deadline = Date.now() + 60_000;
     let row;
     do {
