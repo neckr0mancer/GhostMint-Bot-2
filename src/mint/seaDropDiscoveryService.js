@@ -42,6 +42,12 @@ function createSeaDropDiscoveryService({ providerService, publicDropResolver, ch
   endpoint = 'https://api.etherscan.io/v2/api', http = axios, timeoutMs = 10_000 }) {
   const topic0 = TOKEN_ALLOWED_SEADROP_EVENT_INTERFACE.getEvent('AllowedSeaDropUpdated').topicHash;
 
+  function isTransientDiscoveryError(error) {
+    const code = error?.code;
+    const msg = String(error?.message || '').toLowerCase();
+    return code === 'RPC_UNAVAILABLE' || code === 'NETWORK_ERROR' || code === 'SERVER_ERROR' || code === 'TIMEOUT' || msg.includes('timed out');
+  }
+
   async function viaCanonicalCore(chain, contractAddress) {
     const address = CANONICAL_SEADROP_CORE[chain];
     if (!address) return undefined;
@@ -50,7 +56,8 @@ function createSeaDropDiscoveryService({ providerService, publicDropResolver, ch
       if (!publicDrop) return undefined;
       if (!publicDrop.startTime && !publicDrop.endTime && !publicDrop.maxTotalMintableByWallet) return undefined;
       return address;
-    } catch {
+    } catch (error) {
+      if (isTransientDiscoveryError(error)) throw error;
       return undefined;
     }
   }
@@ -76,7 +83,8 @@ function createSeaDropDiscoveryService({ providerService, publicDropResolver, ch
       } });
       if (String(response.data?.status) !== '1' || !Array.isArray(response.data?.result)) return undefined;
       return decodeLatestAddress(response.data.result);
-    } catch {
+    } catch (error) {
+      if (isTransientDiscoveryError(error)) throw error;
       return undefined;
     }
   }
@@ -86,7 +94,8 @@ function createSeaDropDiscoveryService({ providerService, publicDropResolver, ch
       const logs = await providerService.perform(chain, 'seaDropAllowedSeaDropLogs', provider =>
         provider.getLogs({ address: contractAddress, topics: [topic0], fromBlock: 0, toBlock: 'latest' }));
       return decodeLatestAddress(logs);
-    } catch {
+    } catch (error) {
+      if (isTransientDiscoveryError(error)) throw error;
       return undefined;
     }
   }
@@ -95,14 +104,31 @@ function createSeaDropDiscoveryService({ providerService, publicDropResolver, ch
     const cached = await repository.getSeaDrop(chain, contractAddress);
     if (cached) return cached;
 
-    let address = await viaCanonicalCore(chain, contractAddress);
+    let transientFailure = false;
+    let address;
+    try {
+      address = await viaCanonicalCore(chain, contractAddress);
+    } catch (error) {
+      if (isTransientDiscoveryError(error)) { transientFailure = true; address = undefined; }
+      else throw error;
+    }
     let discoverySource = address ? 'canonical-core' : null;
     if (!address) {
-      address = await viaEtherscan(chain, contractAddress);
+      try {
+        address = await viaEtherscan(chain, contractAddress);
+      } catch (error) {
+        if (isTransientDiscoveryError(error)) { transientFailure = true; address = undefined; }
+        else throw error;
+      }
       discoverySource = address ? 'etherscan-logs' : null;
     }
     if (!address) {
-      address = await viaRpc(chain, contractAddress);
+      try {
+        address = await viaRpc(chain, contractAddress);
+      } catch (error) {
+        if (isTransientDiscoveryError(error)) { transientFailure = true; address = undefined; }
+        else throw error;
+      }
       discoverySource = address ? 'eth_getLogs' : null;
     }
 
@@ -112,6 +138,12 @@ function createSeaDropDiscoveryService({ providerService, publicDropResolver, ch
       publicDrop = await publicDropResolver.getPublicDrop(chain, address, contractAddress);
       const allowed = await publicDropResolver.getAllowedFeeRecipients(chain, address, contractAddress);
       feeRecipient = allowed[0] ?? null;
+    }
+
+    // If every tier failed transiently, do not cache the negative result forever -- the next
+    // call should retry discovery instead of serving a permanently poisoned "not SeaDrop" entry.
+    if (!address && transientFailure) {
+      return { address: null, discoverySource: null, publicDrop: null, feeRecipient: null };
     }
 
     return repository.saveSeaDrop(chain, contractAddress, { address: address || null, discoverySource, publicDrop, feeRecipient });

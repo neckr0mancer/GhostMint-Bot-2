@@ -141,7 +141,7 @@ function createTransactionEngine({
   async function estimateGasSafely(chain, params, options, service = providerService) {
     try { return await providerCall(chain, 'estimateGas', provider => provider.estimateGas(params), options, service); }
     catch (error) {
-      if (error?.code === 'RPC_UNAVAILABLE' || error?.code === 'NETWORK_ERROR' || error?.code === 'SERVER_ERROR') throw error;
+      if (error?.code === 'RPC_UNAVAILABLE' || error?.code === 'NETWORK_ERROR' || error?.code === 'SERVER_ERROR' || error?.code === 'TIMEOUT' || String(error?.message || '').toLowerCase().includes('timed out')) throw error;
       throw new TransactionSafetyError('SIMULATION_FAILED', explainCallFailure(error, { chain, params }));
     }
   }
@@ -149,7 +149,7 @@ function createTransactionEngine({
   async function simulateCallSafely(chain, params, options, service = providerService) {
     try { return await providerCall(chain, 'simulate', provider => provider.call(params), options, service); }
     catch (error) {
-      if (error?.code === 'RPC_UNAVAILABLE' || error?.code === 'NETWORK_ERROR' || error?.code === 'SERVER_ERROR') throw error;
+      if (error?.code === 'RPC_UNAVAILABLE' || error?.code === 'NETWORK_ERROR' || error?.code === 'SERVER_ERROR' || error?.code === 'TIMEOUT' || String(error?.message || '').toLowerCase().includes('timed out')) throw error;
       throw new TransactionSafetyError('SIMULATION_FAILED', explainCallFailure(error, { chain, params }));
     }
   }

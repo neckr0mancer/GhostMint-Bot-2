@@ -1,5 +1,6 @@
 const { isAddress, Wallet } = require('ethers');
 const { randomUUID } = require('node:crypto');
+const net = require('node:net');
 const { URL } = require('node:url');
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -11,16 +12,49 @@ const WATCH_RULE_TYPES = new Set(['twitter_account', 'twitter_keyword', 'discord
 const WATCH_METHODS = new Set(['official_api', 'managed_service', 'scraper']);
 
 function isPrivateScraperHostname(hostname) {
-  const h = String(hostname || '').toLowerCase();
+  const raw = String(hostname || '').toLowerCase();
+  // Handle numeric IP forms that bypass string-prefix checks: 2130706433 (decimal),
+  // 0x7f000001 (hex), 017700000001 (octal), and mixed hex dotted like 0x7f.0.0.1.
+  // Normalise to dotted-decimal first if the whole hostname looks numeric.
+  let h = raw;
+  if (/^\d+$/.test(h)) {
+    const n = Number(h);
+    if (Number.isFinite(n) && n >= 0 && n <= 0xffffffff) {
+      h = `${(n >>> 24) & 255}.${(n >>> 16) & 255}.${(n >>> 8) & 255}.${n & 255}`;
+    }
+  } else if (/^0x[0-9a-f]+$/i.test(h)) {
+    const n = Number.parseInt(h, 16);
+    if (Number.isFinite(n) && n >= 0 && n <= 0xffffffff) {
+      h = `${(n >>> 24) & 255}.${(n >>> 16) & 255}.${(n >>> 8) & 255}.${n & 255}`;
+    }
+  }
+  // net.isIP handles standard dotted, hex, and IPv6 forms; for mixed hex dotted like
+  // 0x7f.0.0.1, check each label separately for hex encoding.
+  if (h.includes('.') && h.split('.').some(part => /^0x[0-9a-f]+$/i.test(part))) {
+    h = h.split('.').map(part => /^0x[0-9a-f]+$/i.test(part) ? String(Number.parseInt(part, 16)) : part).join('.');
+  }
+  const ipVersion = net.isIP(h);
+  if (ipVersion === 4) {
+    if (h === '0.0.0.0' || h === '127.0.0.1') return true;
+    if (/^127\./.test(h)) return true;
+    if (/^10\./.test(h)) return true;
+    if (/^192\.168\./.test(h)) return true;
+    if (/^172\.(1[6-9]|2\d|3[01])\./.test(h)) return true;
+    if (/^169\.254\./.test(h)) return true;
+    if (/^0\./.test(h)) return true;
+    if (h === '169.254.169.254') return true;
+    return false;
+  }
+  if (ipVersion === 6) {
+    const lower = h.toLowerCase();
+    if (lower === '::1' || lower === '::ffff:127.0.0.1' || lower === '::ffff:10.0.0.1') return true;
+    if (lower.startsWith('fc') || lower.startsWith('fd') || lower.startsWith('fe80:') || lower.startsWith('::ffff:10.') || lower.startsWith('::ffff:192.168.') || lower.startsWith('::ffff:172.')) return true;
+    return false;
+  }
+  // Hostname string checks (non-IP)
   if (h === 'localhost' || h === '0.0.0.0' || h === '::1') return true;
-  if (/^127\./.test(h)) return true;
-  if (/^10\./.test(h)) return true;
-  if (/^192\.168\./.test(h)) return true;
-  if (/^172\.(1[6-9]|2\d|3[01])\./.test(h)) return true;
-  if (/^169\.254\./.test(h)) return true;
-  if (/^0\./.test(h)) return true;
-  if (h.startsWith('fc') || h.startsWith('fd') || h.startsWith('fe80:')) return true;
   if (h === '169.254.169.254' || h === 'metadata.google.internal' || h.endsWith('.internal')) return true;
+  if (h.endsWith('.localhost')) return true;
   return false;
 }
 // Single source of truth for which platform a watch-rule type belongs to. Adapters use this

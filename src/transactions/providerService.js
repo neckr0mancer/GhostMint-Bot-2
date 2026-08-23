@@ -2,10 +2,16 @@ const { JsonRpcProvider } = require('ethers');
 
 // Error codes ethers uses for a definitive answer from a provider that was actually reached --
 // retrying or failing over to a different RPC endpoint cannot change these (a different node won't
-// suddenly know the wallet has funds, or that the call wouldn't revert), so they should propagate
-// immediately with their real reason intact rather than being swallowed into a generic
-// "RPC providers failed" message after wasting retries.
-const NON_RETRYABLE_ERROR_CODES = new Set(['CALL_EXCEPTION', 'INSUFFICIENT_FUNDS']);
+// suddenly know the wallet has funds, that the call wouldn't revert, or that the nonce/replacement
+// is permanently unpriceable), so they should propagate immediately with their real reason intact
+// rather than being swallowed into a generic "RPC providers failed" message after wasting retries.
+const NON_RETRYABLE_ERROR_CODES = new Set([
+  'CALL_EXCEPTION',
+  'INSUFFICIENT_FUNDS',
+  'NONCE_EXPIRED',
+  'REPLACEMENT_UNDERPRICED',
+  'UNPREDICTABLE_GAS_LIMIT',
+]);
 
 class RpcUnavailableError extends Error {
   constructor(chain, attempts) {
