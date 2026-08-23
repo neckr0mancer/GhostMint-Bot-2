@@ -116,6 +116,37 @@ test('a paste always lands on the collection details card first', async () => {
   assert.deepEqual(message.replies[0].components[0].components.map(b => b.custom_id), ['flow:mintdetailscontinue']);
 });
 
+test('a multi-entity paste (several lines in one message) starts the flow on its first matching line', async () => {
+  const flowState = createFlowStateStore();
+  const seen = [];
+  const commands = baseCommands({ detectMintContract: async (userId, input) => {
+    seen.push(input.contractAddress);
+    return { chain: 'ethereum', isSeaDrop: false, priceKnown: true, valueWei: '1',
+      maxSupply: 10, maxPerWallet: 1, startTime: null, endTime: null, collection: null, soldOut: false, displayPrice: null };
+  } });
+  const message = mockMessage([
+    '0x00000000000000000000000000000000000000aa',
+    '0x00000000000000000000000000000000000000bb',
+    'https://opensea.io/collection/jpeg-brokers/overview',
+  ].join('\n'));
+  await handleMintPasteMessage({ identity: { resolveOrCreate: async () => 'internal-user' }, commands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT }, message);
+  assert.deepEqual(seen, ['0x00000000000000000000000000000000000000aa'], 'first matching line wins');
+  assert.equal(message.replies.length, 1);
+});
+
+test('a wrapped or code-formatted paste still detects (backticks and angle brackets stripped)', async () => {
+  const flowState = createFlowStateStore();
+  const seen = [];
+  const commands = baseCommands({ detectMintContract: async (userId, input) => {
+    seen.push(input.contractAddress);
+    return { chain: 'ethereum', isSeaDrop: false, priceKnown: true, valueWei: '1',
+      maxSupply: 10, maxPerWallet: 1, startTime: null, endTime: null, collection: null, soldOut: false, displayPrice: null };
+  } });
+  await handleMintPasteMessage({ identity: { resolveOrCreate: async () => 'internal-user' }, commands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT },
+    mockMessage('<0x00000000000000000000000000000000000000cc>'));
+  assert.deepEqual(seen, ['0x00000000000000000000000000000000000000cc']);
+});
+
 test('/info shows the same collection card as a paste, with no mint intent implied', async () => {
   const flowState = createFlowStateStore();
   const commands = baseCommands();

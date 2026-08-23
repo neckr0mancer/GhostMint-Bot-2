@@ -112,6 +112,51 @@ test('concurrent requests for one wallet serialize and use distinct nonces', asy
   assert.deepEqual(results.map(result => result.state), ['confirmed', 'confirmed']);
 });
 
+// The wallet queue must release at broadcast acceptance ('pending'), not hold through finality --
+// otherwise a rapid-fire same-wallet mint waits out the previous transaction's entire confirmation
+// window (up to the full timeout on slow-finality chains) before even starting its own
+// pre-broadcast reads. Distinct nonces stay guaranteed by nextNonce()'s DB-side MAX+1 plus the
+// unique-constraint retry, so overlap costs nothing.
+test('a same-wallet mint broadcasts while the previous one is still awaiting finality', async () => {
+  const { calls, engine, provider, request, repository } = fixture();
+  // Keep both transactions visible-but-unconfirmed (mempool yes, receipts no) until released:
+  // that is exactly the real-node state two overlapping same-wallet mints sit in, and it forces
+  // finality polling to keep waiting rather than resolving early through the receipt path.
+  let revealConfirmation = false;
+  const realGetTransactionReceipt = provider.getTransactionReceipt.bind(provider);
+  provider.getTransactionReceipt = async hash => (revealConfirmation ? realGetTransactionReceipt(hash) : null);
+  provider.getTransaction = async () => (revealConfirmation ? null : { hash: '0xmempool' });
+
+  const firstPromise = engine.submit(request);
+  await new Promise((resolve, reject) => {
+    const started = Date.now();
+    const check = () => {
+      if (repository.transitions.some(entry => entry.toState === 'pending')) resolve();
+      else if (Date.now() - started > 2_000) reject(new Error('first mint never reached pending'));
+      else setTimeout(check, 2);
+    };
+    check();
+  });
+
+  const secondPromise = engine.submit(request);
+  await new Promise((resolve, reject) => {
+    const started = Date.now();
+    const check = () => {
+      if (calls.broadcasts.length === 2) resolve();
+      else if (Date.now() - started > 2_000) reject(new Error('second mint never broadcast'));
+      else setTimeout(check, 2);
+    };
+    check();
+  });
+
+  assert.equal(repository.intents[0].state, 'pending', 'first mint had not finalized when the second broadcast');
+  assert.deepEqual(calls.broadcasts, [0, 1], 'overlapping submissions still reserve distinct nonces');
+
+  revealConfirmation = true;
+  const results = await Promise.all([firstPromise, secondPromise]);
+  assert.deepEqual(results.map(result => result.state), ['confirmed', 'confirmed']);
+});
+
 test('value and gas ceilings reject before broadcast', async t => {
   await t.test('value ceiling', async () => {
     const { calls, engine, request } = fixture({ policyOverrides: { maxTransactionValueWei: 1n } });

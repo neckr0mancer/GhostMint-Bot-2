@@ -573,7 +573,8 @@ function createBotCommandService(dependencies) {
       contract: validated.contractAddress, fn: validated.functionName, qty: validated.quantity,
       price: validated.priceETH, gas: validated.gasGwei, mintTime: validated.mintTime,
       nextAttemptAt: validated.mintTime, status: 'scheduled', createdAt: Date.now(), maxAttempts: 3,
-      idempotencyKey: `scheduled-mint:${userId}:${validated.id}`, viaOpenSea: Boolean(input.viaOpenSea) };
+      idempotencyKey: `scheduled-mint:${userId}:${validated.id}`, viaOpenSea: Boolean(input.viaOpenSea),
+      stageType: input.stageType ?? null };
     await storage.saveTask(task);
     getState().tasks.push(task);
     broadcast(userId, 'tasks');

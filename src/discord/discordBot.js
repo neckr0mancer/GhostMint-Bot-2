@@ -112,6 +112,22 @@ function commandDefinitions({ supportedChains = [], chains = {} } = {}) {
     .addIntegerOption(o => o.setName('quantity').setDescription('Quantity per wallet (omit to see the collection card first)').setMinValue(1))
     .addNumberOption(o => o.setName('price').setDescription('Native price per item (only if the contract does not expose one)').setMinValue(0))
     .addStringOption(o => chainOption(o, { description: 'Chain (auto-detected when omitted)' })));
+  // Launch squads -- staged multi-wallet bursts with a FIRE NOW moment and a report card
+  // (src/launch). Unlike batch-mint (immediate), staging happens up front so wallet problems
+  // surface before anyone spends gas.
+  commands.push(new SlashCommandBuilder().setName('aco').setDescription('🚀 Launch squad: one mint, many wallets, fired together')
+    .addStringOption(o => o.setName('contract').setDescription('Contract address').setRequired(true))
+    .addStringOption(o => o.setName('wallets').setDescription('Comma-separated wallet labels').setRequired(true).setAutocomplete(true))
+    .addIntegerOption(o => o.setName('quantity').setDescription('Quantity per wallet').setMinValue(1))
+    .addNumberOption(o => o.setName('price').setDescription("Native price per item (only if the contract does not expose one)").setMinValue(0))
+    .addStringOption(o => chainOption(o, { description: 'Chain (auto-detected when omitted)' })));
+  commands.push(new SlashCommandBuilder().setName('acotarget').setDescription('🎯 Arm a launch-squad event trigger')
+    .addStringOption(o => o.setName('id').setDescription('Launch squad id').setRequired(true))
+    .addStringOption(o => o.setName('kind').setDescription('When to fire').setRequired(true).addChoices(
+      { name: 'Block height', value: 'block' },
+      { name: 'First pending tx to contract', value: 'pending' },
+      { name: 'Manual (clear trigger)', value: 'manual' }))
+    .addIntegerOption(o => o.setName('block').setDescription('Target block height (required for kind=block)').setMinValue(1)));
   commands.push(new SlashCommandBuilder().setName('task').setDescription('🗓️ Manage durable scheduled mints')
     .addSubcommand(c => c.setName('create').setDescription('Create a UTC scheduled mint')
       .addStringOption(o => o.setName('input').setDescription('Validated task JSON; mintTime must include Z/offset').setRequired(true))
@@ -390,17 +406,23 @@ async function finishMintExecutionDiscord(ctx, respond, platformUserId, userId, 
 
 // Section AF -- shared shape for both the direct (single-stage) and picked (multi-stage) paths out
 // of flow:scheduleviaopensea, so they build identical task data from whichever stage was settled
-// on. Mirrors server.js's openSeaPhaseTaskData.
-// name is the stage's own real label (or a humanized fallback from its stage_type) -- which phase
-// this is is a known fact now, not a guess, so both advanceFromTaskQuantity and flow:taskwallet:select
-// skip the manual naming step entirely for a viaOpenSea task rather than asking the user to re-type
-// something already known.
+// on. Mirrors server.js's openSeaPhaseTaskData/openSeaPhaseTaskName.
+// name is "<collection> — <phase>" (the stage's own real label, or a humanized fallback from its
+// stage_type) -- which phase this is is a known fact now, not a guess, so both
+// advanceFromTaskQuantity and flow:taskwallet:select skip the manual naming step entirely for a
+// viaOpenSea task rather than asking the user to re-type something already known. The collection
+// name makes each row identifiable in /task list once more than one collection is staged at once;
+// falls back to the phase name alone when OpenSea has no collection name for this contract.
+function openSeaPhaseTaskName(mintFlowData, stage) {
+  const phase = stage.label || discordMenus.humanizeStageType(stage.stageType);
+  return mintFlowData.collection?.name ? `${mintFlowData.collection.name} — ${phase}` : phase;
+}
 function openSeaPhaseTaskData(mintFlowData, stage) {
   return {
     contractAddress: mintFlowData.contractAddress, chain: mintFlowData.chain,
-    priceETH: 0, priceUnknown: false, viaOpenSea: true,
+    priceETH: 0, priceUnknown: false, viaOpenSea: true, stageType: stage.stageType || null,
     mintTime: new Date(stage.startTime * 1000).toISOString(),
-    name: stage.label || discordMenus.humanizeStageType(stage.stageType),
+    name: openSeaPhaseTaskName(mintFlowData, stage),
     // The chosen stage carries its own per-wallet cap (normalizeStage maps OpenSea's
     // max_per_wallet); mintFlowData's came from the collection card, which reads the on-chain
     // PublicDrop -- a single MUTABLE struct holding whichever phase the project configured last,
@@ -465,7 +487,7 @@ async function finishTaskScheduleDiscord(ctx, respond, platformUserId, userId, f
     const task = await commands.createTask(userId, {
       name: flowData.name, walletLabel: flowData.walletLabel, contractAddress: flowData.contractAddress,
       chain: flowData.chain, quantity: flowData.quantity || 1, priceETH: flowData.priceETH, mintTime: flowData.mintTime,
-      viaOpenSea: flowData.viaOpenSea,
+      viaOpenSea: flowData.viaOpenSea, stageType: flowData.stageType,
     });
     flowState.clear('discord', platformUserId);
     // Reuses the same task:cancel:ask:<id> step tasksMenu/taskActions already use on Telegram -- a
@@ -569,7 +591,11 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
   // Defaults to a gate that permits everything, so a caller that does not wire one (and every
   // existing test) behaves exactly as before this existed.
   actionGate={ allows: async () => true, submit: async () => ({ ok: true }) },
-  securityStatus=async () => ({ passwordSet: true, gateLevel: 'sensitive' }) }) {
+  securityStatus=async () => ({ passwordSet: true, gateLevel: 'sensitive' }),
+  // Launch squads (src/launch). Optional so existing test harnesses that build this handler
+  // without a launcher keep working -- the /aco and acotarget surfaces degrade to a clear
+  // "not available in this deployment" message instead of crashing.
+  launcher=null, launchRepository=null }) {
   const audit=value=>Promise.resolve(securityAudit.record(value)).catch(error=>log(`Security audit write failed: ${error.message}`));
   const ownerFlag = async userId => (typeof isOwner === 'function' ? Boolean(await isOwner(userId)) : false);
   const enforceAccountStatus = async userId => { if (typeof checkAccountStatus === 'function') await checkAccountStatus(userId); };
@@ -625,6 +651,28 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
       if (data === 'flow:cancel:ask') {
         flowState.clear('discord', platformUserId);
         return dcRespond(interaction, discordMenus.mainMenu({ isOwner: await ownerFlag(userId), security: await securityStatus(userId) }));
+      }
+
+      // Launch squad FIRE NOW / ABORT -- same semantics as the Telegram buttons: only staged or
+      // armed squads may fire, abort is free until firing starts, and firing itself is
+      // fire-and-forget here so the 3-second component window never bounds a launch.
+      if (data.startsWith('aco:fire:') || data.startsWith('aco:abort:')) {
+        if (!await actionGate.allows(userId, 'discord', platformUserId, 'mint')) {
+          return dcRespond(interaction, discordMenus.gateUnlockCard({ action: 'mint' }));
+        }
+        const [, acoAction, id] = data.split(':');
+        const squad = await launchRepository.getSquad(userId, id);
+        if (!squad) return dcRespond(interaction, { content: 'Launch squad not found.' });
+        if (acoAction === 'abort') {
+          if (!['staged', 'armed'].includes(squad.status)) return dcRespond(interaction, { content: `Squad is already ${squad.status} — too late to abort.` });
+          try { await launcher.cancel(squad); }
+          catch (error) { return dcRespond(interaction, { content: `❌ ${escapeDiscord(String(error.message || error).slice(0, 250))}` }); }
+          return dcRespond(interaction, { content: `🛑 Launch squad "${escapeDiscord(squad.name)}" aborted. Nothing was sent.` });
+        }
+        if (!['staged', 'armed'].includes(squad.status)) return dcRespond(interaction, { content: `Squad is ${squad.status} — cannot fire.` });
+        void launcher.fire(squad).catch(error => log(`Launch fire error: ${error.message}`));
+        const sendable = squad.members.filter(member => member.status !== 'skipped').length;
+        return dcRespond(interaction, { content: `🚀 Firing "${escapeDiscord(squad.name)}": ${sendable} wallets going out...` });
       }
 
       if (data === 'menu:main') return dcRespond(interaction, discordMenus.mainMenu({ isOwner: await ownerFlag(userId), security: await securityStatus(userId) }));
@@ -1633,7 +1681,7 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
       }
       userId = await identity.resolveOrCreate('discord', discordId);
       await enforceAccountStatus(userId);
-      if(['wallet','mint','mintnow','batch-mint','admin','watch','sniper','confirm-trigger','target-policy'].includes(interaction.commandName)) {
+      if(['wallet','mint','mintnow','batch-mint','aco','admin','watch','sniper','confirm-trigger','target-policy'].includes(interaction.commandName)) {
         rateLimiter.check('discord',userId,interaction.commandName);
       }
       let message;
@@ -1768,6 +1816,61 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
           }
           break;
         }
+        case 'aco': {
+          if (!launcher || !launchRepository) { message = 'Launch squads are not available in this deployment.'; break; }
+          const contractAddressRaw = interaction.options.getString('contract');
+          const quantity = Math.max(1, interaction.options.getInteger('quantity') || 1);
+          const manualPrice = interaction.options.getNumber('price');
+          const wallets = [...new Set((interaction.options.getString('wallets') || '').split(',').map(v => v.trim()).filter(Boolean))];
+          if (!wallets.length) { message = 'No wallets given — comma-separate labels.'; break; }
+          let chain = interaction.options.getString('chain');
+          try {
+            if (!chain) {
+              const detected = await commands.detectMintContract(userId, { contractAddress: contractAddressRaw, quantity });
+              chain = detected?.chain;
+              if (!chain) { message = `Could not resolve a supported chain for \`${escapeDiscord(contractAddressRaw)}\`.`; break; }
+            }
+            const squad = await launcher.createAndStage({ userId, chain,
+              contractAddress: contractAddressRaw, quantity,
+              manualPriceWei: manualPrice == null ? null : BigInt(Math.round(manualPrice * 1e18)),
+              wallets, triggerType: 'manual' });
+            const staged = squad.members.filter(member => member.status === 'staged').length;
+            const skipped = squad.members.length - staged;
+            const priceLine = squad.priceWei === null ? 'unknown' : `${(Number(squad.priceWei) / 1e18).toFixed(6)} each`;
+            await interaction.editReply({ content: [
+              `## 🚀 Launch squad ready — ${squad.name}`,
+              `Chain: \`${chain}\` · Qty ${quantity} · Price: ${priceLine}`,
+              `Wallets staged: **${staged}**${skipped ? ` · skipped: ${skipped}` : ''}`,
+              '',
+              'FIRE NOW sends every wave immediately.',
+            ].join('\n'), components: [discordMenus.row([
+              discordMenus.button('🔥 FIRE NOW', `aco:fire:${squad.id}`, 'danger'),
+              discordMenus.button('✖ Abort', `aco:abort:${squad.id}`),
+            ])] });
+            return;
+          } catch (error) {
+            message = error instanceof ValidationError ? validationReply(error)
+              : `❌ Staging failed: ${escapeDiscord(String(error.message || error).slice(0, 250))}`;
+            break;
+          }
+        }
+        case 'acotarget': {
+          if (!launcher || !launchRepository) { message = 'Launch squads are not available in this deployment.'; break; }
+          const id = interaction.options.getString('id');
+          const kind = interaction.options.getString('kind');
+          const block = interaction.options.getInteger('block');
+          const squad = await launchRepository.getSquad(userId, id);
+          if (!squad) { message = 'Launch squad not found.'; break; }
+          try {
+            const fresh = await launcher.setTarget(squad, kind, block);
+            message = fresh.triggerType === 'block' ? `🎯 **${squad.name}** will fire at block **${fresh.targetBlock}**.`
+              : fresh.triggerType === 'pending' ? `🎯 **${squad.name}** will fire on the first pending transaction to the contract.`
+              : `**${squad.name}** is manual again — use FIRE NOW.`;
+          } catch (error) {
+            message = `❌ ${escapeDiscord(String(error.message || error).slice(0, 250))}`;
+          }
+          break;
+        }
         case 'task': {
           const action = interaction.options.getSubcommand();
           if (action === 'create') { confirmation(interaction); const task = await commands.createTask(userId, json(interaction.options.getString('input'))); message = `Task ${task.name} scheduled for ${discordMenus.formatGmtPlus1(task.mintTime)} (ID: ${task.id}).`; }
@@ -1883,9 +1986,24 @@ async function handleMintPasteMessage({ identity, commands, flowState, chains, r
   const where = `guild=${message.guildId || 'dm'} channel=${message.channelId || 'unknown'}`;
   try {
     if (!message.author || message.author.bot) return;
-    const trimmed = String(message.content || '').trim();
-    const looksAddressOrLink = /^0x[0-9a-fA-F]{40}$/.test(trimmed) || commands.parseOpenSeaCollectionSlug(trimmed);
-    if (!looksAddressOrLink) return;
+    // Per-LINE matching: users routinely paste several entities at once -- an address twice and an
+    // OpenSea link, say -- and the old whole-message test (`/^0x..{40}$/.test(trimmed)` plus
+    // parseOpenSeaCollectionSlug on the entire trimmed body) matched none of it, silently dropping
+    // the paste before even the diagnostic log ran. Scan each line instead; wrapping decorations
+    // (backticks, <>, bold markers) get stripped so code-formatted pastes still land. First
+    // matching line wins.
+    const lines = String(message.content || '')
+      // Zero-width/invisible characters ride along with mobile copy-paste constantly and are
+      // invisible in the client -- an otherwise-perfect address with one \u200B inside matches
+      // nothing. Strip them everywhere, decorations at the edges.
+      .replace(/[\u200B-\u200F\u2060\uFEFF]/g, '')
+      .split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+    let target = null;
+    for (const line of lines) {
+      const cleaned = line.replace(/^[<`*~\s]+/, '').replace(/[>`*~\s]+$/, '');
+      if (/^0x[0-9a-fA-F]{40}$/.test(cleaned) || commands.parseOpenSeaCollectionSlug(cleaned)) { target = cleaned; break; }
+    }
+    if (!target) return;
     log(`Paste-detect: address/link-shaped message received (${where})`);
     const context = verifyDiscordContext({ user: message.author, guildId: message.guildId, channelId: message.channelId }, allowedGuildId, { allowedChannelIds });
     const userId = await identity.resolveOrCreate('discord', context.platformUserId);
@@ -1897,7 +2015,7 @@ async function handleMintPasteMessage({ identity, commands, flowState, chains, r
     if (flowState.get('discord', platformUserId)) flowState.clear('discord', platformUserId);
     await startMintGuidedFlow({ commands, flowState, chains, rateLimiter },
       payload => message.reply(payload).catch(error => log(`Paste-detect: reply failed (${where}): ${error?.message || error}`)),
-      platformUserId, userId, trimmed);
+      platformUserId, userId, target);
   } catch (error) { log(`Paste-detect: dropped before reply (${where}): ${error?.message || error}`); }
 }
 
@@ -1919,7 +2037,7 @@ async function clearLeftoverGuildCommands({ api, applicationId, log }) {
   }
 }
 
-function createDiscordBot({ token, applicationId, devGuildId, allowedChannelIds=null, identity, commands, securityAudit, rateLimiter, log = () => {}, client, rest, isOwner, checkAccountStatus, supportedChains, chains, actionGate, securityStatus }) {
+function createDiscordBot({ token, applicationId, devGuildId, allowedChannelIds=null, identity, commands, securityAudit, rateLimiter, log = () => {}, client, rest, isOwner, checkAccountStatus, supportedChains, chains, actionGate, securityStatus, launcher = null, launchRepository = null }) {
   const discordClient = client || new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.DirectMessages,
     GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent] });
   const api = rest || new REST({ version: '10' }).setToken(token);
@@ -1928,9 +2046,18 @@ function createDiscordBot({ token, applicationId, devGuildId, allowedChannelIds=
   // visible to the other -- they'd otherwise be two independent, non-communicating stores.
   const flowState = createFlowStateStore();
   discordClient.on('interactionCreate', createDiscordInteractionHandler({ identity, commands, allowedGuildId:devGuildId || null, allowedChannelIds,
-    securityAudit,rateLimiter,log,isOwner,checkAccountStatus,supportedChains,chains,flowState,actionGate,securityStatus }));
-  discordClient.on('messageCreate', message =>
-    handleMintPasteMessage({ identity, commands, flowState, chains, rateLimiter, checkAccountStatus, allowedGuildId: devGuildId || null, allowedChannelIds, log }, message));
+    securityAudit,rateLimiter,log,isOwner,checkAccountStatus,supportedChains,chains,flowState,actionGate,securityStatus,
+    launcher,launchRepository }));
+  discordClient.on('messageCreate', message => {
+    // TEMPORARY diagnosis for the silent paste-detect drop (2026-08-22): interactions reach this
+    // deployment but zero Paste-detect lines appeared for real pastes. This line distinguishes,
+    // from logs alone, between "gateway not delivering messages", "content arriving empty"
+    // (privileged-intent class), and "delivered but shape-mismatched". Remove once paste-detect is
+    // confirmed healthy in production.
+    log(`messageCreate: author=${message.author?.id || 'unknown'} bot=${Boolean(message.author?.bot)} ` +
+      `guild=${message.guildId || 'dm'} channel=${message.channelId} len=${String(message.content || '').length}`);
+    return handleMintPasteMessage({ identity, commands, flowState, chains, rateLimiter, checkAccountStatus, allowedGuildId: devGuildId || null, allowedChannelIds, log }, message);
+  });
   return {
     client: discordClient,
     // devGuildId set = development bot: commands register to that one guild only (which is instant,

@@ -71,6 +71,13 @@ shipped).
   paused pending real timing data rather than built speculatively. Worklist B (after A is stable):
   parallelized pre-arm, dynamic fee presets, RPC health scoring/failover, hot wallet session cache
   (security tradeoff, needs its own sign-off), and latency dashboards — none started.
+- **Round 21** (Section AX) fixes the live-reported "scheduled transactions always fail" —
+  diagnosed from production logs read directly through the Railway API, then live-probed against
+  OpenSea: OpenSea-backed scheduled tasks failed permanently whenever `buildMintTransaction`
+  couldn't serve calldata at fire time (contract not indexed by OpenSea at all, bare collection
+  with no drop-mint endpoint behind it, or plain OpenSea unavailability), with no fallback to this
+  app's own on-chain minting. Public stages now fall back; eligibility-gated stages still fail
+  honestly. Shipped 2026-08-22 — see Round 21 below.
 - **Round 20** (Section AF/AD follow-up) makes OpenSea phase detection show on every paste, not just
   `/info` — live-reported ("I need you to be able to detect and show phases, Telegram and Discord
   still doesn't do that") and confirmed live against a real drop (KIYO, contract
@@ -124,6 +131,155 @@ shipped).
   place) — fixed by the user directly in Discord, nothing to change here.
 
 Status legend: ✅ Done · 🟡 Partial · ❌ Not started
+
+---
+
+# Round 22 — launch squads: the ACO/coordinated-burst service, day 1 of 9 (2026-08-22)
+
+## Section AZ — squads skeleton: plan → stage → fire → settle ✅ (D1–2 of the 9-day plan)
+
+Owner goal: `/batchmint`-class fan-outs that compete with dedicated mint scripts at hyped drops
+(guaranteed-spot + FCFS wallets fired together, as fast and as dependably as possible). Design
+decision recorded up front: **separate orchestrator (`src/launch/`), shared engine** — `/batchmint`
+stays a manual fan-out; launches get their own lifecycle (stage → arm → fire → settle) composed
+from the same primitives (`executePrepared`, intent idempotency, nonce safety, governance), so
+there is no second transaction path to keep correct.
+
+Shipped today:
+
+- **Migration `048`**: `launch_squads` + `launch_squad_members`. Deliberately no signed-tx column —
+  v1 signs inside `submit()` at fire time; pre-signing (a speed lever) stays a gated follow-up.
+- **`planner.js`** (pure): priority-ordered wave chunking — lower priority number fires earlier,
+  ties keep selection order.
+- **`stager.js`**: pre-fire verification — account status, SeaDrop detection (method + fee
+  recipient + live PublicDrop price captured once), per-wallet existence/chain/balance checks with
+  a 400k-gas buffer heuristic. Underfunded wallets are *skipped with a reason*, never fatal to the
+  squad. Nonces/simulation stay at fire time by design (freshness + idempotency).
+- **`launcher.js`**: waves fire back-to-back, all members within a wave simultaneously
+  (`Promise.allSettled`); one member's send failure marks just that member failed. Settlement
+  reconciles every sent member's intent in the background (same `reconcileIntent` mechanism the
+  scheduler uses) until final states or a 15-minute window elapses, then writes the report card
+  (`{counts:{confirmed,reverted,failed,skipped}}`) and notifies. Timer-triggered squads fire from a
+  light 1s poll; manual FIRE is instant.
+- **Telegram `/aco`** power syntax (`/aco <contract> <qty> w1,w2,...`) with staging summary +
+  🚀 FIRE NOW / ❌ ABORT inline buttons; **Discord `/aco`** slash command mirrors it fully
+  (contract/wallets/quantity/price/chain options, comma-separated wallet autocomplete reused from
+  batch-mint, FIRE/ABORT components) — Discord is the owner's primary surface, both shipped same-day.
+  Guided picker flow is the next polish item.
+- **Engine**: `triggerSource 'launch'` joins scheduled/sniper on the fast RPC path (tight timeout,
+  fast pool) — a coordinated burst is exactly as time-critical as a scheduled fire.
+- **RPC grid wired live on Railway**: verified Alchemy lane #2 + Infura appended to ETH/Base
+  general+fast+sniper pools (ETH 4→6, Base 2→4, every FAST/SNIPER tier 1→3) — the multi-provider
+  broadcast race now has real backbones to race across.
+
+Verification: 11 new tests across planner/stager/launcher (ordering, skip-with-reason, plain-contract
+price requirement, failure isolation, settlement convergence, wave chunking); full suite 856 → 852
+pass, failures unchanged (the two by-design review repros; two integration timeouts passed in
+isolation).
+
+## Incident (same day): lane wiring crashed production for ~5 minutes
+
+The RPC-grid wiring appended two URLs to `ETH_RPC_URLS` without checking the consuming
+constraint — config's `validateUrlList` enforces **1–5 unique URLs per pool** and throws at boot.
+Production crash-looped from 20:26 until 20:31 UTC (`ConfigurationError: ETH_RPC_URLS must contain
+1-5 unique URLs`). Fixed by trimming to 5 with diversity preserved (original alchemy primary +
+lane-2 alchemy + infura + the drpc/cloudflare lanes already present that this session didn't know
+about). Deploy `eff2e4ce` SUCCESS, all workers healthy. The cap is now documented in
+`.env.example`; rule for any future external-config writes: **read the consumer's validation
+before writing, and re-verify the deployment after every variableUpsert** — six upserts fired six
+redeploys and none were checked until a human noticed.
+
+Next in this round (days 3–7): block-height + pending-tx triggers (`trigger.js`, the front-running
+piece), multi-RPC broadcast race extension beyond sniper (owner-approved direction), accelerated
+bump/replace for launch sends, live monitor/report UI, load rehearsal.
+
+---
+
+# Round 21 — "scheduled transactions always fail" (2026-08-22)
+
+## Section AX — OpenSea-backed scheduled mints no longer die when OpenSea can't serve them ✅
+
+Live-reported, absolute terms. Diagnosed from evidence rather than inspection, in three steps:
+
+1. **The dev Supabase `mint_tasks` table is all test debris** (879 failed rows against fake
+   contracts `0x…44`/`0x…22`, wallet labels like `scheduler-1787409370215`, mint times in 2027) —
+   integration tests run against the same `DATABASE_URL`. Nothing diagnosable there; production
+   writes to its own database.
+2. **Production logs via the Railway GraphQL API** (`deploymentLogs` on the current deployment):
+   `OpenSea buildMintTransaction (slug lookup) failed for ethereum:0x30cf…: HTTP 404` — and the same
+   for two more contracts — at exactly 12:00:00, 13:00:00 and 14:00:00 UTC. Round-the-hour stamps =
+   scheduled tasks firing on the hour and dying inside the one call an OpenSea-backed
+   (`via_opensea`) task hard-requires.
+3. **Live probes of those exact contracts with this app's own key**: two aren't indexed by OpenSea
+   at all ("Contract … not found" from the slug lookup), the third resolves as a bare,
+   address-named collection whose `POST /drops/{slug}/mint` 404s. The API behaved as documented;
+   the scheduler treated every one of these answers as a permanent validation failure.
+
+Root cause: since Section AR, a task scheduled through the OpenSea phase flow sets
+`via_opensea=true`, and `executeTask`'s whole branch was "ask OpenSea for calldata or throw
+permanently". Any OpenSea miss at fire time — unindexed contract, drop endpoint gone, transient
+outage — killed the task. No retry, no fallback, even though this app's own SeaDrop/on-chain
+calldata path sat directly below in the same function.
+
+Fix (`src/server.js` `executeTask`): when `buildMintTransaction` returns null (its own 409/422
+eligibility answers still throw inside it and keep their meaning), the task now falls through to
+the shared on-chain path — the same drift preflight + `prepareMintCall` + `executePrepared` a
+manual mint uses. One guard keeps honesty where falling back could only burn gas:
+`OPENSEA_ELIGIBILITY_ONLY_STAGES` (`allowlist`, `gtd`, `fcfs`, `presale`) refuses the fallback when
+the stage the task was created against is eligibility-gated (stored now, see below) or when
+OpenSea's live data says the currently-active stage is. For those, the failure message says why.
+
+Supporting change: `mint_tasks.stage_type` (migration `047`, nullable) records the OpenSea stage
+type at schedule time via `openSeaPhaseTaskData` → `createTask` → `saveTask`, mapped back through
+both repositories. This is what lets a gated-stage task keep failing honestly even when OpenSea is
+too unreachable at fire time to ask what's active.
+
+Verification: `node --check` clean on all five touched sources; migration applied and confirmed in
+`schema_migrations`; targeted suites 113/113 (scheduler unit + integration, openSeaService,
+botCommandService, dashboard); full suite 840 tests → 838 pass with only the two known
+by-design-open review repros failing, zero cancellations.
+
+## Section AY — pre-arming scheduled mints (Round 16 item A3, un-paused) ✅
+
+The competitive analysis paused item A3 "pending real timing data." That data can't exist yet —
+Railway retains only the current deployment's logs, and the only timing line in it is a manual
+robinhood mint (prep 357ms, sign 3ms, broadcast 114ms). Every scheduled fire in retained memory
+died at the OpenSea 404s before submit() could log anything. Rather than stay blocked on evidence
+that cannot accumulate, this ships the analysis's own fallback reasoning: the fire path provably
+still runs checks/lookups that cannot change between T−lead and T0, so moving them is pure win.
+
+Two changes:
+
+1. **True pre-arm, opt-in via `SCHEDULE_PREARM_LEAD_MS`** (0 = off; zero behavior change when
+   unset). `schedulerWorker` arms a second timer per imminent task at fire-moment-minus-lead,
+   calling an injected `prearm(task)` hook that never claims, never mutates task state, and whose
+   failures are logged and swallowed — `executeTask` must remain able to do everything itself.
+   `server.js`'s hook runs account-status enforcement, wallet resolution and SeaDrop discovery
+   warm-up, plus a PublicDrop sanity read whose only output is a log line when a task's scheduled
+   time sits more than 10 minutes off its contract's live window (mis-scheduled tasks become
+   visible BEFORE their silent T0 failure). Deliberately NOT cached: calldata and price. SeaDrop's
+   PublicDrop is one mutable struct projects update around launches — msg.value carrying a stale
+   mint price could only buy an on-chain revert. The cache entry just marks front matter verified;
+   consumed exactly once by executeTask when its mintTime still matches. viaOpenSea tasks are not
+   pre-armed: their expensive step must run at T0 anyway.
+2. **One fresh PublicDrop read instead of two identical ones.** executeTask's drift preflight read
+   PublicDrop live, then prepareMintCall read it again immediately after — two identical serial
+   RPC round trips back to back on every non-OpenSea scheduled fire. prepareMintCall now accepts
+   the already-read pair; freshness semantics unchanged (the single read still happens right
+   before broadcast), one round trip gone.
+
+Tests: four new schedulerWorker cases (prearm fires at lead time without claiming; moved mintTime
+replaces the old timer without double-firing; throwing hooks are logged and forgotten; no options
+means zero new behavior) + the repository fixture gained a live state box for scan-window moves.
+Full suite 845 → 843 pass with only the two known by-design review repros failing.
+
+## Also flagged during diagnosis, not fixed here
+
+- Production shows 102 tasks stuck in `claimed` (99 of them test fixtures) and a recurring
+  hourly `buildMintTransaction` 404 pair that may be TWO tasks per hour from one user retrying —
+  both worth a look once real users confirm the fix landed.
+- The dev DB doubles as the integration-test target; a cleanup script for fixture rows would make
+  future log/DB triage much faster.
 
 ---
 
@@ -1130,6 +1286,58 @@ flow, reused as-is) replicates `mintFlowDecision.afterDetails`' shape: `maxPerWa
 `awaiting_quantity` first, otherwise defaults to 1 same as before. Discord's existing
 `flow:schedulesuggest` handler now calls the same shared helper instead of its own inlined copy of
 the same check, removing a duplicate.
+
+### Follow-up (same day) -- auto-derived names now lead with the collection ✅
+
+Live-reported: "you can actually schedule phases now [so] the task names should inherit the name of
+the phase & collection in an easy to remember way." The phase-only name from the previous follow-up
+("Public sale", "Allowlist") is ambiguous once more than one collection has a task staged --
+`/tasks`/`/task list` had no way to tell them apart without opening each one. `openSeaPhaseTaskName`
+(both platforms) now builds `"<collection> — <phase>"` when OpenSea has a collection name for the
+contract, falling back to the phase name alone otherwise (an untracked or unnamed collection),
+same "unknown is fine" convention the rest of this card already follows.
+
+### Follow-up (same day) -- Discord notifications showed raw HTML tags instead of formatting ✅
+
+Live-reported, with a screenshot: a Discord DM read "❌ Scheduled mint <b>PUBLIC</b> failed." with
+the tags shown literally. Root cause: every `notifyUser` message (scheduled-mint success/failure,
+sold-out auto-cancel, trigger confirmations, sniper alerts) is built once as Telegram HTML
+(`escapeTelegramHtml` + `<b>`/`<code>` markup) and fanned out unchanged to every linked platform by
+`notificationService.sendToUser` -- correct for Telegram (sent with `parse_mode:'HTML'`), but
+Discord has no HTML parser at all.
+
+Fixed at the single choke point every Discord DM passes through (`sendDirectMessage`, confirmed via
+grep to have exactly one caller): new `src/notifications/discordMarkdown.js`
+(`telegramHtmlToDiscordMarkdown`) converts the small, fixed set of tags these messages actually use
+(`<b>`, `<code>`, `<i>`, `<pre>`) into Discord markdown, then reverses `escapeTelegramHtml`'s own
+entity-escaping (`&amp;`/`&lt;`/`&gt;`) -- those were only ever needed to keep dynamic content (task
+names, error text) safe inside Telegram's HTML parser, and Discord doesn't decode HTML entities
+either. Tags convert before entities decode, so a task literally named `<b>` round-trips to literal
+text on Discord, not a stray unmatched delimiter. 5 new tests.
+
+### Follow-up (same day) -- dashboard admin writes silently corrupted on a blank field ✅
+
+Live-reported: the dashboard's "Advanced mode access" form (and, per the user, "other admin stuff
+too") appeared to do nothing when submitted. Root cause, found by testing the real write pipeline
+directly rather than guessing: `adminInput` (`src/dashboard/api.js`) joins every dashboard form field
+into one whitespace-separated string (the same shared syntax Telegram/Discord's own `/admin` text
+command produces), which `adminCommandService.execute` then re-splits on `/\s+/`. A field containing
+internal whitespace was already guarded against (a prior regression fix) -- but a genuinely **blank**
+field passes that check trivially (there's no space to find in `''`), and `split(/\s+/)` collapses
+consecutive whitespace, so the blank vanishes from the token stream and every field after it silently
+shifts one slot to the left. Confirmed live: leaving "Platform user ID" blank put the literal string
+`"inherit"` (the *next* field's value) into `platformUserId` and left `advancedModesAllowed`
+`undefined` -- the write didn't fail, it silently applied to the wrong target with a garbled value.
+
+Fixed: `adminInput` now rejects any blank/missing required field immediately, naming the actual
+field, the same way the existing space-guard does. One field genuinely needed to accept blank as
+"leave this alone" (`group-retention`'s `retentionPeriodDays`/`requireRecentActivityDays`, per the
+form's own "leave as 'off' to disable" note) -- `durationDays` (suspend) already substituted a real
+sentinel client-side before this ever mattered; the retention form gained the same pattern
+(`retentionSubmit`) instead of relying on `formWrite`'s generic pass-through. 2 new regression tests
+(matching the existing space-in-a-field test's shape) plus 2 pre-existing test fixtures fixed --
+they'd always submitted incomplete bodies for `group-set`/`preset-set`, silently tolerated before
+this fix since nothing validated field completeness at all.
 
 ## Also flagged: "Confirm Scheduled Mint" copy reads like a reminder, not an execution ✅
 

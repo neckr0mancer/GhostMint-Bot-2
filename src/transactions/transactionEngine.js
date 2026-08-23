@@ -242,7 +242,8 @@ function createTransactionEngine({
     // and confirmedAt is already available for free from the existing state:'confirmed' notify
     // reconcileIntent already fires, no new instrumentation needed for that half.
     const timings = { submitStartedAt: now() };
-    return nonceQueue.run(walletKey, async () => {
+    let finalityPromise;
+    const queuedResult = await nonceQueue.run(walletKey, async () => {
       if (request.idempotencyKey && intentRepository.getByIdempotencyKey) {
         const existing = await intentRepository.getByIdempotencyKey(request.idempotencyKey);
         if (existing) return existing;
@@ -263,8 +264,10 @@ function createTransactionEngine({
       const from = request.wallet.address;
       const base = { from, to: request.to, data: request.data || '0x', value: valueWei };
       // Scheduled mints, Degen-mode mints (policy.gasPriceMultiplier > 1 -- see feeDataCache.js's
-      // own note), and sniper fires (triggerSource === 'blockchain' -- Round 16, Section AV: sniper
-      // is its own execution profile, not gated on the mode preset at all) all get a tighter
+      // own note), sniper fires (triggerSource === 'blockchain' -- Round 16, Section AV: sniper
+      // is its own execution profile, not gated on the mode preset at all), and launch-squad sends
+      // (triggerSource === 'launch' -- src/launch: a coordinated burst is exactly as time-critical
+      // as a scheduled fire, and its staging phase already did every slow check) all get a tighter
       // per-call RPC budget on every pre-broadcast read below: a slow primary RPC is abandoned after
       // one fast attempt instead of eating the full default timeout across every retry before even
       // trying the next configured URL. Sniper additionally gets its own isolated pool
@@ -272,11 +275,21 @@ function createTransactionEngine({
       // sniper watching must never be able to queue behind a time-critical scheduled broadcast, the
       // whole reason these pools were split in the first place.
       const isSniperTrigger = request.triggerSource === 'blockchain';
-      const useFastPath = isSniperTrigger || (request.triggerSource || 'manual') === 'scheduled' || policy.gasPriceMultiplier > 1;
+      const trigger = request.triggerSource || 'manual';
+      const useFastPath = isSniperTrigger || trigger === 'scheduled' || trigger === 'launch' || policy.gasPriceMultiplier > 1;
       const fastRpcOptions = useFastPath ? { timeoutMs: FAST_RPC_TIMEOUT_MS, retries: FAST_RPC_RETRIES } : undefined;
       const activeService = isSniperTrigger && sniperProviderService ? sniperProviderService
         : (useFastPath && fastProviderService ? fastProviderService : providerService);
-      const feeData = await resolveFeeData(request.chain, useFastPath, fastRpcOptions, activeService);
+      // Hot-path batching: policy has to land first because it selects the pool and the per-call
+      // timeout budget used by every RPC below, but after that the three independent reads -- fee
+      // data, wallet balance, rolling daily spend -- were awaited strictly one after another even
+      // though nothing links them. They leave together now; every validation further down keeps its
+      // original order and operands, so only wall-clock latency changes, never which error surfaces.
+      const [feeData, balance, spent] = await Promise.all([
+        resolveFeeData(request.chain, useFastPath, fastRpcOptions, activeService),
+        providerCall(request.chain, 'getBalance', provider => provider.getBalance(from), fastRpcOptions, activeService),
+        intentRepository.rollingSpendWei(request.userId, request.wallet.id, now() - 86_400_000),
+      ]);
       const hasExplicitLegacyFee = request.gasPriceWei !== undefined && request.gasPriceWei !== null;
       const hasExplicitMaxFee = request.maxFeePerGasWei !== undefined && request.maxFeePerGasWei !== null;
       const gasPriceWei = hasExplicitLegacyFee
@@ -324,11 +337,9 @@ function createTransactionEngine({
         : asBigInt(request.gasLimitWei, 'gasLimitWei');
       if (gasLimit <= 0n) throw new TransactionSafetyError('INVALID_TRANSACTION', 'Gas limit must be positive');
       const estimatedCostWei = valueWei + gasLimit * selectedFee;
-      const balance = await providerCall(request.chain, 'getBalance', provider => provider.getBalance(from), fastRpcOptions, activeService);
       if (BigInt(balance) < estimatedCostWei) {
         throw new TransactionSafetyError('INSUFFICIENT_BALANCE', 'Wallet balance is below the estimated transaction cost');
       }
-      const spent = await intentRepository.rollingSpendWei(request.userId, request.wallet.id, now() - 86_400_000);
       if (!policy.ceilingExempt && spent + estimatedCostWei > policy.dailySpendingBudgetWei) {
         throw new TransactionSafetyError('DAILY_BUDGET_EXCEEDED', 'Transaction would exceed the wallet daily spending budget');
       }
@@ -336,8 +347,14 @@ function createTransactionEngine({
         await simulateCallSafely(request.chain, { ...base, ...feeFields, gasLimit }, fastRpcOptions, activeService);
       }
 
-      const providerNonce = Number(await providerCall(request.chain, 'getTransactionCount', provider => provider.getTransactionCount(from, 'pending'), fastRpcOptions, activeService));
-      const network = await providerCall(request.chain, 'getNetwork', provider => provider.getNetwork(), fastRpcOptions, activeService);
+      // Same batching one step later: the pending-nonce read and the chain-identity check share no
+      // dependency either -- the network answer only feeds the WRONG_CHAIN guard and the signed
+      // transaction's own chainId -- and both were serial legs between simulation and signing.
+      const [pendingNonceRaw, network] = await Promise.all([
+        providerCall(request.chain, 'getTransactionCount', provider => provider.getTransactionCount(from, 'pending'), fastRpcOptions, activeService),
+        providerCall(request.chain, 'getNetwork', provider => provider.getNetwork(), fastRpcOptions, activeService),
+      ]);
+      const providerNonce = Number(pendingNonceRaw);
       const expectedChainId = providerService.expectedChainId?.(request.chain);
       if (expectedChainId !== null && expectedChainId !== undefined && BigInt(network.chainId) !== BigInt(expectedChainId)) {
         throw new TransactionSafetyError('WRONG_CHAIN', 'RPC provider is connected to the wrong chain');
@@ -420,8 +437,20 @@ function createTransactionEngine({
       timings.broadcastAt = now();
       await safeNotify(notify, { intent, event: 'timing', triggerSource: request.triggerSource || 'manual', chain: request.chain, timings });
       intent = await transition(intent.intentId, 'pending', { reason: 'raw signed transaction broadcast accepted' });
-      return waitForFinality(intent);
+      // Finality tracking starts here but is deliberately NOT awaited inside this callback: the
+      // wallet queue releases the moment the callback resolves, and previously it stayed locked
+      // through every confirmation poll -- up to the full transaction timeout on slow-finality
+      // chains -- so a rapid-fire second mint from the same wallet couldn't even begin its
+      // pre-broadcast reads until the first was fully final. Overlapping submissions are safe
+      // without that lock: the next one's nonce comes from nextNonce()'s GREATEST(provider
+      // pending count, MAX(persisted nonce)+1), backed by the unique-constraint retry loop, so a
+      // provider read that lags behind an in-flight transaction can never reissue its nonce.
+      // Callers still receive the final-state intent exactly as before (submit() awaits the
+      // tracking promise outside the queue); only the lock-hold time shrinks.
+      finalityPromise = waitForFinality(intent);
+      return intent;
     });
+    return finalityPromise ?? queuedResult;
   }
 
   async function reconcileNonFinal() {

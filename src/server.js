@@ -24,6 +24,7 @@ const { decodeMintCall, formatMintPreview } = require('./mint/mintCall');
 const { createMintExecutionService } = require('./mint/mintExecutionService');
 const { createMintService } = require('./mint/mintService');
 const { createNotificationService } = require('./notifications/notificationService');
+const { telegramHtmlToDiscordMarkdown } = require('./notifications/discordMarkdown');
 const { createPostgresMintPresetRepository } = require('./mint/postgresMintPresetRepository');
 const { createProofResolver, ProofResolutionError } = require('./mint/proofResolver');
 const { createContractValueRepository } = require('./mint/contractValueRepository');
@@ -40,6 +41,10 @@ const sniperFlowDecision = require('./sniper/sniperFlowDecision');
 const { createSchedulerRepository } = require('./scheduler/schedulerRepository');
 const { DEFAULT_LEAD_MS, createScheduledReminder } = require('./scheduler/scheduledReminder');
 const { createSchedulerWorker } = require('./scheduler/schedulerWorker');
+const { createLaunchRepository } = require('./launch/launchRepository');
+const { createLaunchStager } = require('./launch/stager');
+const { createLauncher } = require('./launch/launcher');
+const { createLaunchTriggers } = require('./launch/triggers');
 const { createSocialAdapters } = require('./social/adapters');
 const { createSocialWatchRepository } = require('./social/socialWatchRepository');
 const { createSocialWatchService } = require('./social/socialWatchService');
@@ -285,10 +290,66 @@ triggerExecutionService=createTriggerExecutionService({repository:targetPolicyRe
   notify:(userId,value)=>notifyUser(userId,`Trigger requires confirmation.\n<code>${escapeTelegramHtml(JSON.stringify(value.preview))}</code>\nRun /confirmtrigger ${value.requestId} CONFIRM to approve or REJECT to reject within 10 minutes.`),
   onPending:(userId,request)=>dashboardWebSockets.broadcastToUser(userId,{type:'confirmation.pending',request}),
   onResolved:(userId,value)=>dashboardWebSockets.broadcastToUser(userId,{type:'confirmation.resolved',...value})});
+// OpenSea drop stages whose eligibility only OpenSea's own backend can resolve (allowlist/GTD/FCFS
+// need a per-wallet proof or signature this app has no on-chain way to construct). A scheduled task
+// against one of these cannot fall back to this app's own public-mint calldata when OpenSea fails to
+// serve it -- such a mint could only revert. Anything else (public_sale and friends, or no stage
+// data at all) may fall back. snake_case per the API, matched lowercased.
+const OPENSEA_ELIGIBILITY_ONLY_STAGES = new Set(['allowlist', 'gtd', 'fcfs', 'presale']);
+
+// Round 16 item A3 follow-through -- pre-arming scheduled mints. When SCHEDULE_PREARM_LEAD_MS is
+// set, the scheduler calls prearmScheduledTask that long before each imminent fire: account-status
+// enforcement, wallet resolution and SeaDrop discovery all happen while there is still time to
+// spare, so the fire moment itself starts closer to the broadcast. Deliberately NOT cached here:
+// calldata and the PublicDrop price/window. Both are read fresh at fire time by design --
+// SeaDrop's PublicDrop is a single mutable struct projects update exactly around launches (price
+// finalization!), and msg.value carrying a stale mint price could only buy an on-chain revert.
+// Preparation is therefore limited to work whose result cannot go stale: checks, lookups, and
+// warming caches. viaOpenSea tasks are skipped entirely -- their one expensive step
+// (buildMintTransaction) must run at T0 regardless, since eligibility is resolved server-side at
+// call time, and everything in front of it is single-digit milliseconds.
+// How far off a task's own scheduled time its live SeaDrop window may sit before pre-arm logs a
+// heads-up. Purely informational -- the fire-time drift check remains the real gate; a mismatch
+// here just makes mis-scheduled tasks visible in logs BEFORE they fail silently at T0.
+const PREARM_WINDOW_TOLERANCE_MS = 10 * 60_000;
+const armedPreparations = new Map();
+async function prearmScheduledTask(task) {
+  try {
+    if (task.viaOpenSea) return;
+    await governance.checkAccountStatus(task.userId);
+    const wallet = DB.wallets.find(item => item.userId === task.userId && item.label === task.walletLabel);
+    if (!wallet) return; // deleted after scheduling -- executeTask surfaces the real failure at T0
+    const seaDrop = await seaDropDiscoveryService.resolve(wallet.chain, task.contract);
+    if (seaDrop.address) {
+      const livePublicDrop = await seaDropPublicDropResolver.getPublicDrop(wallet.chain, seaDrop.address, task.contract);
+      if (livePublicDrop && Math.abs(livePublicDrop.startTime * 1000 - task.mintTime) > PREARM_WINDOW_TOLERANCE_MS) {
+        log(`Pre-arm notice: "${task.name}" (${wallet.chain}:${task.contract}) fires at ${new Date(task.mintTime).toISOString()}, but its live SeaDrop window starts ${new Date(livePublicDrop.startTime * 1000).toISOString()} -- the fire-time drift check may reject it`);
+      }
+    }
+    armedPreparations.set(`${task.userId}:${task.id}`, { mintTime: task.mintTime, at: Date.now() });
+  } catch (error) {
+    // Preparation is best-effort by contract: any failure here just means fire time does things
+    // the old way. Never throw into the scheduler's timer loop.
+    log(`Scheduler pre-arm skipped for "${task.name}": ${error?.message || 'unknown error'}`);
+  }
+}
+// Consumed once by executeTask: true means "front matter was verified inside the lead window for
+// exactly this firing" (same mintTime guards against a moved/re-armed task; freshness ceiling
+// guards against a stale entry surviving past several leads).
+function takeArmedPreparation(task) {
+  const key = `${task.userId}:${task.id}`;
+  const entry = armedPreparations.get(key);
+  if (!entry) return false;
+  armedPreparations.delete(key);
+  return entry.mintTime === task.mintTime && Date.now() - entry.at <= Math.max(CONFIG.schedulePrearmLeadMs * 3, 60_000);
+}
+
 const schedulerWorker = createSchedulerWorker({
   repository: schedulerRepository,
   intentRepository: transactionIntentRepository,
   transactionEngine,
+  prearmLeadMs: CONFIG.schedulePrearmLeadMs,
+  prearm: task => prearmScheduledTask(task),
   // Answers "when does this task's stage actually open?" after the stage-not-open retry burst is
   // spent, so the worker can re-arm once instead of discarding a task that exists precisely to be
   // there at the open. Read live from OpenSea rather than from the time stored when the task was
@@ -308,7 +369,10 @@ const schedulerWorker = createSchedulerWorker({
     // the per-command choke point (identity.resolveOrCreate), which this background worker loop never
     // passes through. AccountBlockedError isn't in schedulerWorker's TRANSIENT_CODES, so this is
     // correctly classified as a permanent (non-retried) failure rather than retried indefinitely.
-    await governance.checkAccountStatus(task.userId);
+    // Pre-armed tasks had this exact enforcement seconds earlier inside prearmScheduledTask (the
+    // cache entry is consumed exactly once, and only when it matches this firing's mintTime) -- the
+    // check itself is identical either way; this only decides whether it runs twice.
+    if (!takeArmedPreparation(task)) await governance.checkAccountStatus(task.userId);
     const wallet = DB.wallets.find(item => item.userId === task.userId && item.label === task.walletLabel);
     if (!wallet) throw new ValidationError({ field:'walletLabel', message:'was not found' });
     // Section AF -- an allowlist/GTD/FCFS stage this app has no on-chain proof for (see
@@ -318,20 +382,44 @@ const schedulerWorker = createSchedulerWorker({
     // OpenSea IS the honest drift/ineligibility answer for this path, surfaced as a ValidationError
     // (not in schedulerWorker's TRANSIENT_CODES, so it fails permanently rather than retrying
     // against a wallet that will never become eligible by retrying alone).
+    const qty = task.qty || 1;
     if (task.viaOpenSea) {
-      const qty = task.qty || 1;
       const built = await openSeaService.buildMintTransaction(wallet.chain, task.contract, wallet.address, qty);
-      if (!built) {
-        throw new ValidationError({ field: 'contractAddress', message: "OpenSea couldn't build a mint for this contract right now -- it may not track this as a drop, or OpenSea is temporarily unavailable" });
+      if (built) {
+        // Same check executeMintViaOpenSea applies to the manual path -- OpenSea's eligibility
+        // resolution is trusted, the mechanical shape of what it returned still is not.
+        validateOpenSeaMintCall({ built, contractAddress: task.contract, quantity: qty, minterAddress: wallet.address });
+        const prepared = { chain: wallet.chain, calldata: built.data, valueWei: BigInt(built.valueWei),
+          method: { signature: 'opensea:drops-mint' }, preview: { contractAddress: task.contract, callTarget: built.to } };
+        return mintExecution.executePrepared({ userId: task.userId, wallet, prepared, triggerSource: 'scheduled',
+          idempotencyKey: hooks.idempotencyKey, onIntentPersisted: hooks.onIntentPersisted,
+          onPreview: preview => notifyUser(task.userId, formatMintPreview(preview)) });
       }
-      // Same check executeMintViaOpenSea applies to the manual path -- OpenSea's eligibility
-      // resolution is trusted, the mechanical shape of what it returned still is not.
-      validateOpenSeaMintCall({ built, contractAddress: task.contract, quantity: qty, minterAddress: wallet.address });
-      const prepared = { chain: wallet.chain, calldata: built.data, valueWei: BigInt(built.valueWei),
-        method: { signature: 'opensea:drops-mint' }, preview: { contractAddress: task.contract, callTarget: built.to } };
-      return mintExecution.executePrepared({ userId: task.userId, wallet, prepared, triggerSource: 'scheduled',
-        idempotencyKey: hooks.idempotencyKey, onIntentPersisted: hooks.onIntentPersisted,
-        onPreview: preview => notifyUser(task.userId, formatMintPreview(preview)) });
+      // OpenSea couldn't serve calldata at all. Only its definitive eligibility answers (409/422)
+      // throw inside buildMintTransaction; null means "no calldata available": the contract isn't
+      // indexed by OpenSea at all ("Contract ... not found" on the slug lookup), resolves as a bare
+      // collection with no /drops/{slug}/mint behind it, or OpenSea itself is unreachable. All three
+      // used to fail the task permanently right here -- the dominant cause of production's
+      // "scheduled mints always fail" report (live-verified against today's failing contracts). Now:
+      // an eligibility-gated stage still fails honestly rather than falling back, because only
+      // OpenSea can prove that wallet is allowlisted and an on-chain public mint could only revert;
+      // everything else falls through to this app's own on-chain path below -- exactly what a manual
+      // mint against this contract would attempt.
+      const live = await openSeaService.getDrop(wallet.chain, task.contract);
+      // Gated if the task was CREATED against an eligibility-only stage (stored at schedule time --
+      // the only signal left when OpenSea is unreachable for the live check too) or if the stage
+      // OpenSea currently reports as active is one of them.
+      const taskGated = OPENSEA_ELIGIBILITY_ONLY_STAGES.has(String(task.stageType || '').toLowerCase());
+      const activeGated = Boolean(live?.activeStage
+        && OPENSEA_ELIGIBILITY_ONLY_STAGES.has(String(live.activeStage.stageType || '').toLowerCase()));
+      if (taskGated || activeGated) {
+        const stageName = live?.activeStage
+          ? (live.activeStage.label || telegramMenus.humanizeStageType(live.activeStage.stageType))
+          : null;
+        throw new ValidationError({ field: 'contractAddress',
+          message: `${stageName ? `the "${stageName}" stage` : 'this stage'} can only be minted through OpenSea, and OpenSea couldn't build the mint right now -- retry closer to the drop window, or reschedule` });
+      }
+      log(`Scheduled OpenSea-backed task "${task.name}" (${wallet.chain}:${task.contract}) falling back to on-chain calldata: OpenSea could not serve a mint`);
     }
     // Phase-drift preflight: the schedule was set against whatever SeaDrop's PublicDrop said at
     // scheduling time (or a hand-typed phase-2+ price/time -- Section AF, since nothing on-chain
@@ -341,9 +429,13 @@ const schedulerWorker = createSchedulerWorker({
     // on-chain revert instead of the real story (simulation-on modes). Read live, not from
     // seaDropDiscoveryService's cached snapshot, since the whole point is catching drift since that
     // snapshot was taken; a non-SeaDrop contract has no on-chain window concept to check at all.
+    // This same fresh read is handed straight to prepareMintCall below -- it used to read
+    // PublicDrop a SECOND time itself, an identical serial RPC round trip back to back with this
+    // one; one read serves both the drift gate and the calldata value.
     const seaDrop = await seaDropDiscoveryService.resolve(wallet.chain, task.contract);
+    let livePublicDrop = null;
     if (seaDrop.address) {
-      const livePublicDrop = await seaDropPublicDropResolver.getPublicDrop(wallet.chain, seaDrop.address, task.contract);
+      livePublicDrop = await seaDropPublicDropResolver.getPublicDrop(wallet.chain, seaDrop.address, task.contract);
       if (livePublicDrop) {
         const nowSec = Math.floor(Date.now() / 1000);
         if (nowSec < livePublicDrop.startTime || (livePublicDrop.endTime && nowSec > livePublicDrop.endTime)) {
@@ -358,7 +450,8 @@ const schedulerWorker = createSchedulerWorker({
       functionName:task.fn || 'mint', quantity:task.qty, priceETH:task.price || 0,
       gasGwei:task.gas, chain:wallet.chain }, { supportedChains:CONFIG.supportedChains });
     const prepared = await prepareMintCall({ contractAddress:request.contractAddress,
-      walletAddress:wallet.address, chain:request.chain, quantity:request.quantity, priceETH:request.priceETH });
+      walletAddress:wallet.address, chain:request.chain, quantity:request.quantity, priceETH:request.priceETH,
+      resolvedSeaDrop: seaDrop, resolvedPublicDrop: livePublicDrop });
     return mintExecution.executePrepared({ userId:task.userId, wallet, prepared, triggerSource:'scheduled',
       gasPriceWei:request.gasGwei === null ? undefined : ethers.parseUnits(String(request.gasGwei), 'gwei'),
       idempotencyKey:hooks.idempotencyKey, onIntentPersisted:hooks.onIntentPersisted,
@@ -577,10 +670,17 @@ async function executePreparedMint({ wallet, prepared, chain, triggerSource='man
 // PublicDrop fresh here every call (seaDropPublicDropResolver never caches) so a scheduled task
 // firing well after the contract was first pasted/detected still mints at whatever price and window
 // are really live right now, not whatever was live back when it was first resolved.
-async function prepareMintCall({ contractAddress, walletAddress, chain, quantity, priceETH }) {
-  const seaDrop = await seaDropDiscoveryService.resolve(chain, contractAddress);
+// resolvedSeaDrop/resolvedPublicDrop: a caller that ALREADY holds this exact pair from its own
+// immediately-preceding fresh read (executeTask's drift preflight) passes it in instead of paying
+// for an identical second read. undefined means "not supplied -- read as usual"; null is a real
+// "read succeeded, nothing there" answer and is honored as such.
+async function prepareMintCall({ contractAddress, walletAddress, chain, quantity, priceETH,
+  resolvedSeaDrop = undefined, resolvedPublicDrop = undefined }) {
+  const seaDrop = resolvedSeaDrop !== undefined ? resolvedSeaDrop : await seaDropDiscoveryService.resolve(chain, contractAddress);
+  const livePublicDrop = !seaDrop.address ? null
+    : (resolvedPublicDrop !== undefined ? resolvedPublicDrop
+      : await seaDropPublicDropResolver.getPublicDrop(chain, seaDrop.address, contractAddress));
   if (seaDrop.address) {
-    const livePublicDrop = await seaDropPublicDropResolver.getPublicDrop(chain, seaDrop.address, contractAddress);
     return mintService.prepare({
       contractAddress,
       methodSignature: SEADROP_MINT_SIGNATURE,
@@ -789,11 +889,53 @@ function tg(chatId, msg, options = {}) {
   return Promise.resolve();
 }
 
+// ── Launch squads (src/launch) ────────────────────────────
+// Coordinated multi-wallet mints: staging verifies everything that can go stale-checks-free before
+// a fire moment; firing fans ordinary executePrepared sends out in waves. The launcher composes the
+// same primitives as every other execution surface -- no new transaction path, just orchestration.
+const launchRepository = createLaunchRepository(pool);
+// Event triggers ride the sniper-class WebSocket lane per chain -- the low-latency endpoint this
+// deployment already maintains for exactly this class of time-critical watching.
+const launchTriggers = createLaunchTriggers({
+  wsUrlFor: chain => SNIPER_CHAINS[chain]?.rpcWsUrl || CHAINS[chain]?.rpcWsUrl || null,
+  log,
+});
+const launcher = createLauncher({
+  repository: launchRepository,
+  triggers: launchTriggers,
+  // server.js binds this service under its full name -- there is no bare `intentRepository` here.
+  intentRepository: transactionIntentRepository,
+  stager: createLaunchStager({
+    checkAccountStatus: userId => governance.checkAccountStatus(userId),
+    findWallet: (userId, label) => DB.wallets.find(item => item.userId === userId && item.label === label),
+    seaDropDiscoveryService,
+    seaDropPublicDropResolver,
+    providerService,
+    log,
+  }),
+  mintExecution,
+  mintService,
+  transactionEngine,
+  findWallet: (userId, label) => DB.wallets.find(item => item.userId === userId && item.label === label),
+  notify: event => {
+    if (event.type === 'launch.starting') {
+      const sendable = event.squad.members.filter(member => member.status !== 'skipped').length;
+      return notifyUser(event.squad.userId, `🚀 Launching <b>${escapeTelegramHtml(event.squad.name)}</b>: ${sendable} wallets going out now.`);
+    }
+    if (event.type === 'launch.done' && event.report) {
+      const c = event.report.counts;
+      return notifyUser(event.squad.userId, `🏁 Launch <b>${escapeTelegramHtml(event.squad.name)}</b> finished: ` +
+        `${c.confirmed || 0} confirmed, ${c.reverted || 0} reverted, ${c.failed || 0} failed, ${c.skipped || 0} skipped.`);
+    }
+  },
+  log,
+});
+
 const notificationService = createNotificationService({
   identityRepository,
   transports: {
     telegram: (platformUserId, message) => tg(platformUserId, message, { parse_mode: 'HTML' }),
-    discord: (platformUserId, message) => discordBot?.sendDirectMessage(platformUserId, message),
+    discord: (platformUserId, message) => discordBot?.sendDirectMessage(platformUserId, telegramHtmlToDiscordMarkdown(message)),
   },
   log,
 });
@@ -1675,15 +1817,25 @@ async function advanceFromTaskDetails(chatId, messageId, userId, flow) {
 
 // Section AF -- shared shape for both the direct (single-stage) and picked (multi-stage) paths out
 // of flow:scheduleviaopensea, so they build identical task data from whichever stage was settled on.
-// name is the stage's own real label (or a humanized fallback from its stage_type) -- which phase
-// this is is a known fact now, not a guess, so advanceFromTaskWallet skips the manual naming step
-// entirely for a viaOpenSea task rather than asking the user to re-type something already known.
+// name is "<collection> — <phase>" (the stage's own real label, or a humanized fallback from its
+// stage_type) -- which phase this is is a known fact now, not a guess, so advanceFromTaskWallet
+// skips the manual naming step entirely for a viaOpenSea task rather than asking the user to re-type
+// something already known. Live-reported follow-up: the phase label alone ("Public sale") isn't
+// enough to tell two different collections' tasks apart in /tasks once more than one is staged --
+// the collection name makes each row identifiable at a glance without opening it. Falls back to the
+// phase name alone when OpenSea has no collection name for this contract, same "unknown is fine"
+// convention the rest of this card already follows.
+function openSeaPhaseTaskName(mintFlowData, stage) {
+  const phase = stage.label || telegramMenus.humanizeStageType(stage.stageType);
+  return mintFlowData.collection?.name ? `${mintFlowData.collection.name} — ${phase}` : phase;
+}
 function openSeaPhaseTaskData(mintFlowData, stage) {
   return {
     contractAddress: mintFlowData.contractAddress, chain: mintFlowData.chain, isSeaDrop: mintFlowData.isSeaDrop,
     priceETH: 0, priceUnknown: false, viaOpenSea: true, collection: mintFlowData.collection,
+    stageType: stage.stageType || null,
     mintTime: new Date(stage.startTime * 1000).toISOString(),
-    name: stage.label || telegramMenus.humanizeStageType(stage.stageType),
+    name: openSeaPhaseTaskName(mintFlowData, stage),
     maxPerWallet: mintFlowData.maxPerWallet,
   };
 }
@@ -1730,7 +1882,7 @@ async function finishTaskSchedule(chatId, messageId, userId, flowData) {
     const task = await botCommands.createTask(userId, {
       name: flowData.name, walletLabel: flowData.walletLabel, contractAddress: flowData.contractAddress,
       chain: flowData.chain, quantity: flowData.quantity || 1, priceETH: flowData.priceETH, mintTime: flowData.mintTime,
-      viaOpenSea: flowData.viaOpenSea,
+      viaOpenSea: flowData.viaOpenSea, stageType: flowData.stageType,
     });
     telegramFlowState.clear('telegram', chatId);
     return tgUpdate(chatId, messageId, telegramMenus.taskScheduled({
@@ -2340,6 +2492,22 @@ if (BOT_TOKEN) {
     const data = query.data || '';
     const ownerFlag = async () => governanceRepository.isOwner(userId);
 
+    if (data.startsWith('aco:fire:') || data.startsWith('aco:abort:')) {
+      if (await gateBlocks({ chatId, messageId, userId, action: 'mint' })) return;
+      const [, action, id] = data.split(':');
+      const squad = await launchRepository.getSquad(userId, id);
+      if (!squad) return tgEditMenu(chatId, messageId, { text: 'Launch squad not found.' });
+      if (action === 'abort') {
+        if (!['staged', 'armed'].includes(squad.status)) return tgEditMenu(chatId, messageId, { text: `Squad is already ${squad.status} -- too late to abort.` });
+        try { await launcher.cancel(squad); }
+        catch (error) { return tgEditMenu(chatId, messageId, { text: escapeTelegramHtml(String(error.message || error)) }); }
+        return tgEditMenu(chatId, messageId, { text: `🛑 Launch squad "${escapeTelegramHtml(squad.name)}" aborted. Nothing was sent.` });
+      }
+      if (!['staged', 'armed'].includes(squad.status)) return tgEditMenu(chatId, messageId, { text: `Squad is ${squad.status} -- cannot fire.` });
+      void launcher.fire(squad).catch(error => log(`Launch fire error: ${error.message}`));
+      const sendable = squad.members.filter(member => member.status !== 'skipped').length;
+      return tgEditMenu(chatId, messageId, { text: `🚀 Firing "${escapeTelegramHtml(squad.name)}": ${sendable} wallets going out...` });
+    }
     if (data === 'menu:main') return tgEditMenu(chatId, messageId, telegramMenus.mainMenu({ isOwner: await ownerFlag(), security: await securityFlags(userId) }));
     if (data === 'menu:security') {
       return tgEditMenu(chatId, messageId, telegramMenus.securitySetupCard(await securityFlags(userId)));
@@ -3050,6 +3218,72 @@ send /mint with a contract address to get going.`;
       replyMarkup: telegramMenus.keyboard([[telegramMenus.button('⬅️ Back to base', 'menu:main')]]), parseMode: 'HTML' });
   }));
 
+  // Launch squads -- coordinated multi-wallet mints (src/launch). Power syntax first; a guided
+  // picker flow mirroring /batchmint's wallet multiselect is the D2 polish item.
+  bot.onText(/^\/aco(?:@\w+)?$/, withTelegramUser(async msg => {
+    tgRender(msg.chat.id, { text: [
+      '<b>Launch squads</b> — one mint, many wallets, fired together.',
+      '',
+      'Power syntax:',
+      '<code>/aco &lt;contract&gt; &lt;qty&gt; &lt;wallet1,wallet2,...&gt;</code>',
+      '',
+      'Staging verifies every wallet (balance, gas headroom) and resolves the mint price up front;',
+      'skipped wallets are reported instead of failing the launch. Then FIRE NOW -- or schedule it',
+      'and the squad fires itself at that moment.',
+    ].join('\n'), replyMarkup: telegramMenus.keyboard([[telegramMenus.button('⬅️ Back to base', 'menu:main')]]), parseMode: 'HTML' });
+  }));
+  bot.onText(/^\/aco(?:@\w+)?\s+(\S+)\s+(\d+)\s+(.+)$/, withTelegramUser(async (msg, match, userId) => {
+    commandRateLimiter.check('telegram', userId, 'aco');
+    const [, contractAddressRaw, qtyRaw, labelsRaw] = match;
+    const quantity = Math.max(1, parseInt(qtyRaw, 10) || 1);
+    const wallets = [...new Set(labelsRaw.split(',').map(item => item.trim()).filter(Boolean))];
+    if (!wallets.length) return tg(msg.chat.id, 'No wallets given -- comma-separate labels: <code>/aco 0x.. 1 main,alt1</code>', { parseMode: 'HTML' });
+    try {
+      const detected = await botCommands.detectMintContract(userId, { contractAddress: contractAddressRaw, quantity });
+      const chain = detected.chain;
+      if (!chain) return tg(msg.chat.id, `Couldn't resolve a supported chain for ${escapeTelegramHtml(contractAddressRaw)}.`, { parseMode: 'HTML' });
+      const squad = await launcher.createAndStage({ userId, chain,
+        contractAddress: detected.contractAddress || contractAddressRaw, quantity, wallets, triggerType: 'manual' });
+      const staged = squad.members.filter(member => member.status === 'staged').length;
+      const skipped = squad.members.length - staged;
+      const priceLine = squad.priceWei === null ? 'unknown' : `${(Number(squad.priceWei) / 1e18).toFixed(6)} each`;
+      return tgRender(msg.chat.id, { text: [
+        `<b>Launch squad ready</b> — ${escapeTelegramHtml(squad.name)}`,
+        `Chain: <code>${escapeTelegramHtml(chain)}</code> · Qty ${quantity} · Price: ${priceLine}`,
+        `Wallets staged: <b>${staged}</b>${skipped ? ` · skipped: ${skipped} (see report)` : ''}`,
+        '',
+        'FIRE NOW sends every wave immediately.',
+      ].join('\n'), replyMarkup: telegramMenus.keyboard([[
+        telegramMenus.button('🚀 FIRE NOW', `aco:fire:${squad.id}`),
+        telegramMenus.button('❌ Abort', `aco:abort:${squad.id}`),
+      ]]), parseMode: 'HTML' });
+    } catch (error) {
+      if (error instanceof ValidationError) return tg(msg.chat.id, escapeTelegramHtml(validationReply(error)), { parseMode: 'HTML' });
+      log(`ACO staging failed: ${safeError(error)}`);
+      return tg(msg.chat.id, `❌ Staging failed: ${escapeTelegramHtml(String(error.message || error).slice(0, 200))}`, { parseMode: 'HTML' });
+    }
+  }));
+
+  // Attach an event trigger to a staged squad: fire at a block height, or on the first pending tx
+  // touching the mint contract. `manual` clears a trigger back to button-fired.
+  bot.onText(/^\/acotarget(?:@\w+)?\s+([0-9a-fA-F-]{36})\s+(block|pending|manual)(?:\s+(\d+))?$/i, withTelegramUser(async (msg, match, userId) => {
+    commandRateLimiter.check('telegram', userId, 'aco');
+    const [, id, kindRaw, blockRaw] = match;
+    const kind = kindRaw.toLowerCase();
+    try {
+      const squad = await launchRepository.getSquad(userId, id);
+      if (!squad) return tg(msg.chat.id, 'Launch squad not found.', { parseMode: 'HTML' });
+      const fresh = await launcher.setTarget(squad, kind, blockRaw ? Number(blockRaw) : null);
+      const line = fresh.triggerType === 'block' ? `🎯 Will fire at block <b>${fresh.targetBlock}</b>`
+        : fresh.triggerType === 'pending' ? '🎯 Will fire on the first pending transaction to the contract'
+        : 'Manual -- use the FIRE NOW button.';
+      return tgRender(msg.chat.id, { text: `<b>${escapeTelegramHtml(fresh.name)}</b>\n${line}`, parseMode: 'HTML',
+        replyMarkup: telegramMenus.keyboard([[telegramMenus.button('❌ Abort', `aco:abort:${fresh.id}`)]] ) });
+    } catch (error) {
+      return tg(msg.chat.id, `❌ ${escapeTelegramHtml(String(error.message || error).slice(0, 200))}`, { parseMode: 'HTML' });
+    }
+  }));
+
   bot.onText(/^\/link(?:@\w+)?$/, withTelegramUser(async (msg, match, userId) => {
     const link = await identity.createLinkCode(userId);
     tgRender(msg.chat.id, { text: `🔗 <b>Account link code</b>\n\n<pre>${link.code}</pre>\nTap or long-press the code above to copy it. Expires in 5 minutes and can be used once.`, parseMode: 'HTML' });
@@ -3492,7 +3726,8 @@ if (CONFIG.discordBotToken) {
     isOwner: userId => governanceRepository.isOwner(userId),
     checkAccountStatus: userId => governance.checkAccountStatus(userId),
     supportedChains: CONFIG.supportedChains, chains: CHAINS, actionGate,
-    securityStatus: userId => securityFlags(userId) });
+    securityStatus: userId => securityFlags(userId),
+    launcher, launchRepository });
   // Live push: skip the 30s social-watch poll for discord_channel rules by reacting
   // to the Gateway's messageCreate event directly. The scheduled poller keeps running
   // as a fallback, so a dropped Gateway connection never stops detection, just slows it.
@@ -3560,6 +3795,7 @@ async function start() {
     }
   }
   schedulerWorker.start();
+  launcher.start();
   setInterval(()=>{scheduledReminder.sweep().catch(error=>log(`Scheduled-reminder sweep error: ${safeError(error)}`));},SCHEDULE_REMINDER_SWEEP_MS).unref?.();
   setInterval(()=>{expiredHistorySweep().catch(error=>log(`Expired-history sweep error: ${safeError(error)}`));},SCHEDULE_REMINDER_SWEEP_MS).unref?.();
   log('Started expired-mint history sweep');
@@ -3568,6 +3804,7 @@ async function start() {
   retentionWorker.start();
   log('Started social watch-rule worker');
   log('Started governance-group retention worker');
+  log('Started launch-squads timer worker');
   log(`Started durable scheduler with ${await schedulerRepository.countActive()} active tasks`);
   DB.snipers.filter(s => s.active).forEach(s => ensureChainWatcher(s.chain));
   log(`Restored ${DB.snipers.filter(s=>s.active).length} active snipers`);

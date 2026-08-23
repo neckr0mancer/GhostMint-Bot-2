@@ -15,8 +15,12 @@ function task(overrides = {}) {
 
 function repositoryFixture(stale = [], { imminent = [] } = {}) {
   const calls = [];
+  // Live box so tests can move the imminent set between scans (the pre-arm tests re-arm against a
+  // moved mintTime); every pre-existing caller just reads it through listImminent as before.
+  const state = { imminent };
   return {
     calls,
+    state,
     async listStaleClaims() { return stale; },
     async attachIntent(value, intentId) { calls.push(['attach', intentId]); },
     async complete(value, intentId) { calls.push(['complete', intentId]); },
@@ -29,7 +33,7 @@ function repositoryFixture(stale = [], { imminent = [] } = {}) {
     async fail(value, details) { calls.push(['fail', details, value]);
       return details.transient && value.attemptCount < value.maxAttempts ? 'retry' : 'failed'; },
     async claimDue() { calls.push(['claimDue']); return null; },
-    async listImminent() { return imminent; },
+    async listImminent() { return state.imminent; },
   };
 }
 
@@ -185,6 +189,81 @@ test('Round 16 (Section AV, item 4): precise timers fire tick() the instant a lo
     });
     await worker.armPreciseTimers();
     assert.equal(worker.health().armedCount, 0);
+  });
+});
+
+test('Round 16 (Section AV, item A3): pre-arm timers run the preparation hook ahead of the fire moment', async t => {
+  await t.test('a configured prearm hook fires once per task at fire-moment-minus-lead, without claiming anything', async () => {
+    const imminentTask = task({ nextAttemptAt: Date.now() + 60, mintTime: Date.now() + 60 });
+    const repository = repositoryFixture([], { imminent: [imminentTask] });
+    const prearmed = [];
+    const worker = createSchedulerWorker({
+      repository, intentRepository: { get: async () => null, getByIdempotencyKey: async () => null },
+      transactionEngine: {}, executeTask: async () => ({ intentId: 'x', state: 'confirmed' }),
+      prearmLeadMs: 30,
+      prearm: async value => { prearmed.push(value.id); },
+    });
+    // The scan window widens to cover the lead, so a single armPreciseTimers() call arms both
+    // timers; start() is never called and claimDue() is only ever reached by the fire timer.
+    await worker.armPreciseTimers();
+    assert.equal(worker.health().prearmedCount, 1, 'the preparation timer must be armed');
+    assert.equal(prearmed.length, 0, 'preparation must not run before its lead moment');
+    await new Promise(resolve => setTimeout(resolve, 50));
+    assert.deepEqual(prearmed, [imminentTask.id], 'the pre-arm hook must have run by lead time');
+    assert.equal(repository.calls.filter(c => c[0] === 'claimDue').length, 0, 'preparation must not claim or mutate task state');
+    worker.stop();
+  });
+
+  await t.test('a moved mintTime replaces the old preparation timer instead of double-firing', async () => {
+    const original = Date.now() + 5_000;
+    const imminentTask = task({ nextAttemptAt: original, mintTime: original });
+    const repository = repositoryFixture([], { imminent: [imminentTask] });
+    const prearmed = [];
+    const worker = createSchedulerWorker({
+      repository, intentRepository: { get: async () => null, getByIdempotencyKey: async () => null },
+      transactionEngine: {}, executeTask: async () => ({ intentId: 'x', state: 'confirmed' }),
+      prearmLeadMs: 4_900,
+      prearm: async value => { prearmed.push(value.mintTime); },
+    });
+    await worker.armPreciseTimers();
+    const moved = Date.now() + 40;
+    repository.state.imminent = [{ ...imminentTask, nextAttemptAt: moved, mintTime: moved }];
+    await worker.armPreciseTimers();
+    assert.equal(worker.health().prearmedCount, 1, 'the replacement must not stack on top of the old timer');
+    await new Promise(resolve => setTimeout(resolve, 70));
+    assert.deepEqual(prearmed, [moved], 'only the re-armed firing may prepare');
+    worker.stop();
+  });
+
+  await t.test('a throwing prearm hook is logged and forgotten -- it can never break the fire path', async () => {
+    const imminentTask = task({ nextAttemptAt: Date.now() + 60 });
+    const repository = repositoryFixture([], { imminent: [imminentTask] });
+    const logged = [];
+    let calls = 0;
+    const worker = createSchedulerWorker({
+      repository, intentRepository: { get: async () => null, getByIdempotencyKey: async () => null },
+      transactionEngine: {}, executeTask: async () => ({ intentId: 'x', state: 'confirmed' }),
+      prearmLeadMs: 30,
+      prearm: async () => { calls += 1; throw new Error('preparation exploded'); },
+      log: message => logged.push(message),
+    });
+    await worker.armPreciseTimers();
+    await new Promise(resolve => setTimeout(resolve, 50));
+    assert.equal(calls, 1);
+    assert.ok(logged.some(message => /pre-arm failed/i.test(message)), 'the failure must be traced');
+    worker.stop();
+  });
+
+  await t.test('no prearm options means no preparation machinery runs at all (zero behavior change)', async () => {
+    const imminentTask = task({ nextAttemptAt: Date.now() + 10_000 });
+    const repository = repositoryFixture([], { imminent: [imminentTask] });
+    const worker = createSchedulerWorker({
+      repository, intentRepository: { get: async () => null, getByIdempotencyKey: async () => null },
+      transactionEngine: {}, executeTask: async () => ({ intentId: 'x', state: 'confirmed' }),
+    });
+    await worker.armPreciseTimers();
+    assert.equal(worker.health().prearmedCount, 0);
+    worker.stop();
   });
 });
 
