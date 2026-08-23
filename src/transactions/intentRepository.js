@@ -35,6 +35,7 @@ function mapIntent(row) {
     failureReason: row.failure_reason,
     methodSignature: row.method_signature,
     callPreview: row.call_preview,
+    walletLabel: row.wallet_label ?? null,
     idempotencyKey: row.idempotency_key,
     createdAt: new Date(row.created_at).getTime(),
     timeoutAt: new Date(row.timeout_at).getTime(),
@@ -194,6 +195,19 @@ function createTransactionIntentRepository(pool) {
       const [rows,count]=await Promise.all([pool.query(`SELECT * FROM transaction_intents WHERE user_id=$1
         ORDER BY created_at DESC,intent_id DESC LIMIT $2 OFFSET $3`,[userId,limit,offset]),
       pool.query('SELECT COUNT(*)::INTEGER AS total FROM transaction_intents WHERE user_id=$1',[userId])]);
+      return {items:rows.rows.map(mapIntent),total:count.rows[0].total};
+    },
+
+    async listMintPageForUser(userId,{limit,offset}) {
+      const [rows,count]=await Promise.all([
+        pool.query(`SELECT intent.*,wallet.label AS wallet_label
+          FROM transaction_intents intent
+          LEFT JOIN wallets wallet ON wallet.user_id=intent.user_id AND wallet.id=intent.wallet_id
+          WHERE intent.user_id=$1 AND intent.method_signature IS NOT NULL
+          ORDER BY intent.created_at DESC,intent.intent_id DESC LIMIT $2 OFFSET $3`,[userId,limit,offset]),
+        pool.query(`SELECT COUNT(*)::INTEGER AS total FROM transaction_intents
+          WHERE user_id=$1 AND method_signature IS NOT NULL`,[userId]),
+      ]);
       return {items:rows.rows.map(mapIntent),total:count.rows[0].total};
     },
 

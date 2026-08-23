@@ -45,6 +45,12 @@ export const CHAIN_LOOK={
   robinhood:{label:'Robinhood',color:'#00c805'},
   sepolia:{label:'Sepolia',color:'#8f9aa6'},
 };
+const CHAIN_EXPLORERS={
+  ethereum:'https://etherscan.io/tx/',base:'https://basescan.org/tx/',
+  arbitrum:'https://arbiscan.io/tx/',polygon:'https://polygonscan.com/tx/',
+  robinhood:'https://robinhoodchain.blockscout.com/tx/',sepolia:'https://sepolia.etherscan.io/tx/',
+};
+export function explorerForChain(chain){return CHAIN_EXPLORERS[chain]||null;}
 export function chainFromExplorer(explorer){
   if(!explorer)return null;
   const value=String(explorer).toLowerCase();

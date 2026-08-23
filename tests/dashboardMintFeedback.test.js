@@ -6,6 +6,7 @@ const {mintPriceStep}=require('../src/discord/menus');
 const {pathToFileURL}=require('node:url');
 
 const appSource=fs.readFileSync(path.join(__dirname,'..','dashboard','src','App.jsx'),'utf8');
+const serverSource=fs.readFileSync(path.join(__dirname,'..','src','server.js'),'utf8');
 
 test('dashboard address detection deduplicates overlapping paste and blur requests',()=>{
   assert.match(appSource,/requestKey===lastDetected\.current\|\|requestKey===detectingKey\.current/);
@@ -21,6 +22,18 @@ test('dashboard waits for an unknown price instead of raising a red simulation e
 test('notification bell records toast messages without rendering a second pop-up',()=>{
   assert.match(appSource,/subscribeNotificationLog\(setLog\)/);
   assert.doesNotMatch(appSource,/bell-auto-preview/);
+});
+
+test('dashboard mint completion records the chain actually prepared, not the wallet default chain',()=>{
+  assert.match(serverSource,/recordMintActivity\(\{ userId, wallet, quantity: previewQuantity\(prepared\.preview\), intent, chain: prepared\.chain \}\)/);
+  assert.doesNotMatch(serverSource,/recordMintActivity\(\{ userId, wallet, quantity: previewQuantity\(prepared\.preview\), intent, chain: wallet\.chain \}\)/);
+});
+
+test('History exposes durable mint records and Robinhood links use its own explorer',()=>{
+  assert.match(appSource,/api\/mints\/history/);
+  assert.match(appSource,/robinhood:'https:\/\/robinhoodchain\.blockscout\.com\/tx\/'/);
+  assert.match(appSource,/All \$\{total\} mints confirmed\./);
+  assert.match(appSource,/Mint confirmed\./);
 });
 
 test('Discord uses the same calm manual-price guidance',()=>{

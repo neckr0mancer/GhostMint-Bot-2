@@ -89,6 +89,12 @@ const CHAIN_META={
   robinhood:{label:'Robinhood Chain',icon:<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><rect x="3" y="3" width="18" height="18" rx="6" fill="#00C805"/></svg>},
 };
 function chainMeta(value){return CHAIN_META[value]||{label:value,icon:null};}
+const CHAIN_EXPLORERS={
+  ethereum:'https://etherscan.io/tx/',base:'https://basescan.org/tx/',
+  arbitrum:'https://arbiscan.io/tx/',polygon:'https://polygonscan.com/tx/',
+  robinhood:'https://robinhoodchain.blockscout.com/tx/',
+};
+function explorerForChain(chain){return CHAIN_EXPLORERS[chain]||null;}
 const CHAIN_CHEVRON_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 9l6 6 6-6"/></svg>;
 const CHAIN_CHECK_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M5 13l4 4L19 7"/></svg>;
 const SOLANA_ICON=<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 2 20 7v10l-8 5-8-5V7z" fill="none" stroke="currentColor" strokeWidth="1.8"/></svg>;
@@ -391,7 +397,8 @@ function ActivityRow({item,scope='wallet'}){
     ?(VERIFICATION_LABELS[item.verificationState]||String(item.verificationState)):null;
   const details=[...source,item.txHash?shortHex(item.txHash):null,item.triggerSource,gas,
     verification,item.time?relativeTime(item.time):null].filter(Boolean).join(' · ');
-  const href=item.txHash&&item.explorer?`${item.explorer}${item.txHash}`:null;
+  const explorer=explorerForChain(item.chain)||item.explorer;
+  const href=item.txHash&&explorer?`${explorer}${item.txHash}`:null;
   return <div className="r">
     <div className="rm">
       <div className="rt">{item.title}</div>
@@ -977,8 +984,8 @@ function Minting({onSwitchToBatch,onGoWallets}){const wallets=useLoad('/api/wall
     const response=await api('/api/mints/confirm',{method:'POST',body:JSON.stringify({previewToken:preview.previewToken,confirmation:'CONFIRM'})});
     const succeeded=response.results.filter(entry=>entry.status==='success').length;
     const total=response.results.length;
-    if(succeeded===total){notify(total>1?`All ${total} mints submitted.`:'Mint submitted.',{type:'success'});setPreview(null);setConfirmResults(null);formRef.current?.reset();resetDetectedFields();}
-    else{setConfirmResults(Object.fromEntries(response.results.map(entry=>[entry.label,entry])));notify(succeeded===0?'Mint failed -- see the reason below.':`${succeeded}/${total} mints submitted -- see details below for the rest.`,{type:succeeded===0?'error':'info'});}
+    if(succeeded===total){notify(total>1?`All ${total} mints confirmed.`:'Mint confirmed.',{type:'success',category:'money'});setPreview(null);setConfirmResults(null);formRef.current?.reset();resetDetectedFields();}
+    else{setConfirmResults(Object.fromEntries(response.results.map(entry=>[entry.label,entry])));notify(succeeded===0?'Mint failed -- see the reason below.':`${succeeded}/${total} mints confirmed; see details below for the rest.`,{type:succeeded===0?'error':'info',category:'money'});}
   }catch(value){const friendly=mintPreviewError(value,{chain:detectedChain,quantity});notify(`${friendly.title} ${friendly.detail}`,{type:'error'});}}
   const detected=Boolean(methodSignature);
   const item=preview?.items?.[0];
@@ -3526,12 +3533,55 @@ function SecurityLogTab(){
         </div>}
   </>;
 }
+function MintHistory(){
+  const [page,setPage]=useState(1);
+  const listing=useLoad(`/api/mints/history?page=${page}&pageSize=10`,[page],'activity.changed');
+  const rows=listing.data?.items||[];
+  const loading=listing.data===null&&!listing.error;
+  return <>
+    <Notice error={listing.error?{title:'Could not load your mints.',
+      detail:'Your transactions are unaffected — this list could not be read.',
+      code:`${listing.status||500} · Request failed safely`,onRetry:listing.load}:null}/>
+    {loading&&<div className="card history-list-state" aria-busy="true">
+      {Array.from({length:4}).map((_,index)=><div className="sk row" key={index}/>)}</div>}
+    {!loading&&!listing.error&&rows.length===0&&<div className="card"><div className="emp">
+      <div className="ei">{CARD_ICON}</div><h3>No mints yet</h3>
+      <p>Your confirmed, pending, and failed mint transactions will appear here.</p>
+    </div></div>}
+    {!loading&&!listing.error&&rows.length>0&&<div className="card">
+      {rows.map(item=>{
+        const contract=item.callPreview?.contractAddress||item.to;
+        const quantity=item.callPreview?.arguments?.find(argument=>['quantity','amount'].includes(argument.name))?.value;
+        const tokenIds=Array.isArray(item.tokenIds)&&item.tokenIds.length?item.tokenIds:null;
+        const gas=item.actualNetworkCostWei===null||item.actualNetworkCostWei===undefined
+          ?null:`${Number(weiToEthDisplay(item.actualNetworkCostWei)).toFixed(6)} ETH gas`;
+        const details=[item.walletLabel,chainMeta(item.chain).label,quantity?`quantity ${quantity}`:null,
+          tokenIds?`token ${tokenIds.join(', ')}`:null,gas,item.createdAt?relativeTime(item.createdAt):null]
+          .filter(Boolean).join(' · ');
+        const explorer=explorerForChain(item.chain);
+        const href=item.txHash&&explorer?`${explorer}${item.txHash}`:null;
+        return <div className="r" key={item.intentId}>
+          <div className="rm"><div className="rt">{contract?shortHex(contract):'Mint transaction'}</div>
+            <div className="rs mono">{details}</div></div>
+          <div className="rv" style={{display:'flex',alignItems:'center',gap:'7px'}}>
+            {href&&<a className="ico-btn" href={href} target="_blank" rel="noopener noreferrer"
+              aria-label={`View ${shortHex(item.txHash)} on ${chainMeta(item.chain).label}`}
+              title={`View on ${chainMeta(item.chain).label}`}>{EXTERNAL_ICON}</a>}
+            <span className={`p ${outcomeTone(item.state)}`}>{item.state}</span>
+          </div>
+        </div>;
+      })}
+      <HistoryPager value={listing.data} page={page} setPage={setPage} visibleCount={rows.length}/>
+    </div>}
+  </>;
+}
 function History({profile,tab,onTab,go}){
   // Built from profile.isOwner so the tab list itself differs -- a non-owner never sees a tab
   // they cannot open, and `active` falls back to Activity if a stale ?tab=security is bookmarked
   // by someone who has since lost owner access.
   const tabs=[
     {id:'activity',label:'Activity'},
+    {id:'mints',label:'Mints'},
     {id:'audit',label:'Audit evidence'},
     ...(profile.isOwner?[{id:'security',label:'Security log',tag:'owner only'}]:[]),
   ];
@@ -3543,6 +3593,7 @@ function History({profile,tab,onTab,go}){
     <SubTabs tabs={tabs} active={active} onChange={onTab} label="History sections"/>
     <div className="history-flow">
       {active==='activity'&&<Activity go={go}/>}
+      {active==='mints'&&<MintHistory/>}
       {active==='audit'&&<div className="unav">
         <div className="ei">{AUDIT_ICON}</div>
         <h3>Trigger audit is available from Telegram and Discord</h3>

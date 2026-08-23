@@ -1,7 +1,7 @@
 const {randomBytes,randomUUID}=require('node:crypto');
 const {LinkCodeError}=require('../identity/identityService');
 const {UsernameTakenError}=require('../identity/postgresIdentityRepository');
-const {BotContextError,RateLimitError,requireTextConfirmation}=require('../security/botSecurity');
+const {BotContextError,RateLimitError,escapeTelegramHtml,requireTextConfirmation}=require('../security/botSecurity');
 const {ValidationError,sendValidationError,requestSchemas}=require('../validation/domain');
 const {AccountBlockedError,AuthorizationError}=require('../governance/governanceService');
 const {GasLookupError}=require('../gas/etherscanGasService');
@@ -28,7 +28,7 @@ const SESSION_END_MESSAGES=Object.freeze({
 });
 function clientLabel(req){return String(req.get('user-agent')||'Unknown browser').replace(/[\r\n]/g,' ').slice(0,160)||'Unknown browser';}
 
-function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLoginRateLimiter,exportKeyRateLimiter,commands,securityAudit={record:async()=>{}},broadcast=()=>{},broadcastToUsers=()=>{},supportedChains=[],now=()=>Date.now(),checkAccountStatus}) {
+function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLoginRateLimiter,exportKeyRateLimiter,commands,securityAudit={record:async()=>{}},broadcast=()=>{},broadcastToUsers=()=>{},notifyUser=async()=>{},chains={},supportedChains=[],now=()=>Date.now(),checkAccountStatus}) {
   const previews=new Map();
   const requireSession=async(req,res,next)=>{try{const result=auth.authenticateDetailed?await auth.authenticateDetailed(req.headers.cookie):{session:await auth.authenticate(req.headers.cookie),reason:'invalid'};const {session}=result;if(!session){const reason=result.reason||'invalid';return res.status(401).json({error:SESSION_END_MESSAGES[reason]||SESSION_END_MESSAGES.invalid,code:`SESSION_${reason.toUpperCase()}`,reason});}
       if(typeof checkAccountStatus==='function'){try{await checkAccountStatus(session.userId);}catch(error){if(error instanceof AccountBlockedError)return res.status(403).json({error:error.message,code:error.code,status:error.status});throw error;}}
@@ -267,15 +267,20 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLo
     // wallet shouldn't cancel the rest, which had already simulated fine and may have nothing wrong
     // with them at all (same per-entry try/catch shape as importWalletsBatch's batch key import).
     confirmMint:action(async(req,res)=>{confirmation(req);const value=consumePreview(user(req),req.body.previewToken);const results=[];for(const entry of value.entries){
-      try{results.push({label:entry.wallet.label,status:'success',result:await commands.submitPreparedMint(user(req),entry)});}
+      try{const result=await commands.submitPreparedMint(user(req),entry);results.push({label:entry.wallet.label,status:'success',result});
+        const chain=entry.prepared.chain;const network=chains[chain];const link=result.txHash&&network?.ex?`\n<a href="${network.ex}${result.txHash}">View transaction</a>`:'';
+        Promise.resolve().then(()=>notifyUser(user(req),`✅ <b>Mint confirmed on ${network?.name||chain}.</b>${link}`)).catch(()=>{});}
       catch(error){const reason=error instanceof ValidationError?error.issues.map(issue=>`${issue.field} ${issue.message}`).join('; ')
         :error instanceof TransactionSafetyError?error.message:'Mint failed unexpectedly -- check activity for details.';
-        results.push({label:entry.wallet.label,status:'failed',error:reason});}
+        results.push({label:entry.wallet.label,status:'failed',error:reason});
+        const chain=entry.prepared.chain;const network=chains[chain];
+        Promise.resolve().then(()=>notifyUser(user(req),`❌ <b>Mint failed on ${network?.name||chain}.</b> ${escapeTelegramHtml(reason)}`)).catch(()=>{});}
     }res.status(202).json(jsonSafe({results}));}),
     tasks:action(async(req,res)=>res.json(await commands.tasksPage(user(req),req.query))),
     createTask:action(async(req,res)=>{const task=await commands.createTask(user(req),req.body);res.status(201).json(task);}),
     controlTask:action(async(req,res)=>{if(req.body?.action==='cancel')confirmation(req);const result=await commands.controlTask(user(req),req.body?.action,req.params.id);res.json(result);}),
     activity:action(async(req,res)=>res.json(jsonSafe(await commands.activityPage(user(req),req.query)))),
+    mints:action(async(req,res)=>res.json(jsonSafe(await commands.mintsPage(user(req),req.query)))),
     pnl:action(async(req,res)=>res.json(await commands.pnl(user(req)))),
     addPnl:action(async(req,res)=>{const record=await commands.addPnl(user(req),req.body);res.status(201).json(record);}),
     updatePnl:action(async(req,res)=>{const record=await commands.updatePnl(user(req),req.params.id,req.body);res.json(record);}),
@@ -359,6 +364,7 @@ function mountDashboardRoutes(app,api){
   app.post('/api/tasks',api.requireSession,api.requireCsrf,api.createTask);
   app.post('/api/tasks/:id/control',api.requireSession,api.requireCsrf,api.controlTask);
   app.get('/api/activity',api.requireSession,api.activity);
+  app.get('/api/mints/history',api.requireSession,api.mints);
   app.get('/api/pnl',api.requireSession,api.pnl);
   app.post('/api/pnl',api.requireSession,api.requireCsrf,api.addPnl);
   app.put('/api/pnl/:id',api.requireSession,api.requireCsrf,api.updatePnl);

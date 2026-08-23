@@ -3699,7 +3699,7 @@ const botCommands = createBotCommandService({
   executePreparedMint:async({userId,wallet,prepared,gasGwei})=>{
     const intent=await mintExecution.executePrepared({userId,wallet,prepared,triggerSource:'manual',
       gasPriceWei:gasGwei===undefined||gasGwei===null?undefined:ethers.parseUnits(String(gasGwei),'gwei')});
-    await recordMintActivity({ userId, wallet, quantity: previewQuantity(prepared.preview), intent, chain: wallet.chain });
+    await recordMintActivity({ userId, wallet, quantity: previewQuantity(prepared.preview), intent, chain: prepared.chain });
     return intent;
   },
   executeMint: async ({ userId, wallet, request }) => {
@@ -3734,6 +3734,8 @@ const botCommands = createBotCommandService({
 const dashboardApi=createDashboardApi({auth:dashboardAuth,identityRepository,commands:botCommands,
   securityAudit:botSecurityRepository,broadcast:(userId,message)=>dashboardWebSockets.broadcastToUser(userId,message),
   broadcastToUsers:(userIds,message)=>dashboardWebSockets.broadcastToUsers(userIds,message),
+  notifyUser,
+  chains:CHAINS,
   supportedChains:CONFIG.supportedChains,
   checkAccountStatus:userId=>governance.checkAccountStatus(userId),
   loginRateLimiter:createCommandRateLimiter({limit:5,windowMs:60_000}),

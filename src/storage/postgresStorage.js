@@ -27,7 +27,7 @@ function mapActivity(row) {
     walletLabel: row.wallet_label, txHash: row.tx_hash, explorer: row.explorer, time: time(row.occurred_at),
     actualNetworkCostWei:row.actual_network_cost_wei===null?null:BigInt(row.actual_network_cost_wei),
     triggerSource:row.trigger_source || null, verificationState:row.verification_state || null,
-    address: row.address || null };
+    address: row.address || null, chain: row.transaction_chain || null };
 }
 
 function mapPnl(row) {
@@ -77,8 +77,13 @@ function createPostgresStorage(pool) {
       const mainParams=term?[userId,limit,offset,term]:[userId,limit,offset];
       const countWhere=term?'WHERE user_id=$1 AND (title ILIKE $2 OR wallet_label ILIKE $2)':'WHERE user_id=$1';
       const countParams=term?[userId,term]:[userId];
-      const [rows,count]=await Promise.all([pool.query(`SELECT * FROM activity ${mainWhere}
-        ORDER BY occurred_at DESC,id DESC LIMIT $2 OFFSET $3`,mainParams),
+      const qualifiedMainWhere=mainWhere.replaceAll('user_id','activity.user_id')
+        .replaceAll('title','activity.title').replaceAll('wallet_label','activity.wallet_label');
+      const [rows,count]=await Promise.all([pool.query(`SELECT activity.*,
+        transaction_intents.chain AS transaction_chain FROM activity
+        LEFT JOIN transaction_intents ON transaction_intents.user_id=activity.user_id
+          AND transaction_intents.tx_hash=activity.tx_hash ${qualifiedMainWhere}
+        ORDER BY activity.occurred_at DESC,activity.id DESC LIMIT $2 OFFSET $3`,mainParams),
       pool.query(`SELECT COUNT(*)::INTEGER AS total FROM activity ${countWhere}`,countParams)]);
       return {items:rows.rows.map(mapActivity),total:count.rows[0].total};
     },
