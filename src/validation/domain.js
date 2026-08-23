@@ -9,6 +9,20 @@ const DASHBOARD_THEMES = new Set(['ghost-mint', 'ghost-mint-light', 'clean-vault
 const WATCH_RULE_TYPES = new Set(['twitter_account', 'twitter_keyword', 'discord_channel', 'discord_keyword',
   'farcaster_account', 'farcaster_keyword']);
 const WATCH_METHODS = new Set(['official_api', 'managed_service', 'scraper']);
+
+function isPrivateScraperHostname(hostname) {
+  const h = String(hostname || '').toLowerCase();
+  if (h === 'localhost' || h === '0.0.0.0' || h === '::1') return true;
+  if (/^127\./.test(h)) return true;
+  if (/^10\./.test(h)) return true;
+  if (/^192\.168\./.test(h)) return true;
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(h)) return true;
+  if (/^169\.254\./.test(h)) return true;
+  if (/^0\./.test(h)) return true;
+  if (h.startsWith('fc') || h.startsWith('fd') || h.startsWith('fe80:')) return true;
+  if (h === '169.254.169.254' || h === 'metadata.google.internal' || h.endsWith('.internal')) return true;
+  return false;
+}
 // Single source of truth for which platform a watch-rule type belongs to. Adapters use this
 // instead of inferring platform from the type string, so adding a type can never silently
 // mislabel events with the wrong platform.
@@ -369,6 +383,9 @@ function watchRuleConfig(type, method, value) {
     try { parsed = new URL(raw); } catch { fail('config.sourceUrl', 'must be a valid HTTP or HTTPS URL'); }
     if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) {
       fail('config.sourceUrl', 'must be an HTTP or HTTPS URL without embedded credentials');
+    }
+    if (isPrivateScraperHostname(parsed.hostname)) {
+      fail('config.sourceUrl', 'must not target a private or internal address');
     }
     config.sourceUrl = parsed.toString();
   }

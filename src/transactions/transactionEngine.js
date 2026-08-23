@@ -479,6 +479,16 @@ function createTransactionEngine({
           await providerCall(request.chain, 'broadcastTransaction', provider => provider.broadcastTransaction(signedTransaction));
         }
       } catch (error) {
+        // Definitive provider answers (insufficient funds, reverted call, nonce errors) must not be
+        // laundered into BROADCAST_UNKNOWN -- that code is treated as transient and retried, while
+        // these are permanent and must surface with their real reason so the scheduler fails the
+        // task instead of retrying a mint that can never succeed.
+        const definitiveBroadcastCodes = new Set(['CALL_EXCEPTION', 'INSUFFICIENT_FUNDS', 'NONCE_EXPIRED', 'REPLACEMENT_UNDERPRICED', 'UNPREDICTABLE_GAS_LIMIT']);
+        if (definitiveBroadcastCodes.has(error?.code)) {
+          await transition(intent.intentId, 'reverted', { reason: (error.message || String(error)).slice(0, 500) });
+          if (error instanceof TransactionSafetyError) throw error;
+          throw new TransactionSafetyError(error.code || 'CALL_EXCEPTION', error.message || String(error));
+        }
         await transition(intent.intentId, 'unknown', { reason: 'broadcast result was not observable' });
         throw new TransactionSafetyError('BROADCAST_UNKNOWN', 'Transaction broadcast outcome is unknown; reconciliation will continue');
       }

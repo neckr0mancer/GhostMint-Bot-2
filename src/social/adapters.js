@@ -28,6 +28,20 @@ function metric(response, header, field) {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
 }
 
+function isPrivateScraperHostname(hostname) {
+  const h = String(hostname || '').toLowerCase();
+  if (h === 'localhost' || h === '0.0.0.0' || h === '::1') return true;
+  if (/^127\./.test(h)) return true;
+  if (/^10\./.test(h)) return true;
+  if (/^192\.168\./.test(h)) return true;
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(h)) return true;
+  if (/^169\.254\./.test(h)) return true;
+  if (/^0\./.test(h)) return true;
+  if (h.startsWith('fc') || h.startsWith('fd') || h.startsWith('fe80:')) return true;
+  if (h === '169.254.169.254' || h === 'metadata.google.internal' || h.endsWith('.internal')) return true;
+  return false;
+}
+
 function createHttpAdapter(method, { request, endpoint, token, recordUsage = async () => {},
   now = () => Date.now(), defaultPlatform = null }) {
   return {
@@ -35,6 +49,17 @@ function createHttpAdapter(method, { request, endpoint, token, recordUsage = asy
     async poll(rule) {
       if (method !== 'scraper' && !endpoint) throw new AdapterError(method, `${method} endpoint is not configured`);
       if (!token && method !== 'scraper') throw new AdapterError(method, `${method} credential is not configured`);
+      if (method === 'scraper' && rule.config?.sourceUrl) {
+        try {
+          const parsed = new URL(rule.config.sourceUrl);
+          if (isPrivateScraperHostname(parsed.hostname)) {
+            throw new AdapterError(method, 'scraper sourceUrl must not target a private or internal address');
+          }
+        } catch (error) {
+          if (error instanceof AdapterError) throw error;
+          throw new AdapterError(method, 'scraper sourceUrl must be a valid HTTP or HTTPS URL');
+        }
+      }
       const platform = defaultPlatform || WATCH_TYPE_PLATFORMS[rule.type];
       if (!platform) throw new AdapterError(method, `no platform is registered for watch type ${rule.type}`);
       let response;
