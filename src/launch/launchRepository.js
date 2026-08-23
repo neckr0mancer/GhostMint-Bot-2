@@ -43,9 +43,13 @@ function createLaunchRepository(pool) {
           squad.triggerType || 'manual', squad.fireAt ? new Date(squad.fireAt).toISOString() : null,
           squad.status || 'drafting', squad.waveSize || 25]);
         for (const member of squad.members || []) {
+          // Persist the STAGING verdict (staged/skipped + reason), not a blanket 'pending': fire()
+          // filters on these statuses, so writing every member as 'pending' would erase the
+          // staging decision and send from wallets staging already rejected as unfundable.
           await client.query(`INSERT INTO launch_squad_members
-            (squad_id,wallet_label,wave,priority,status) VALUES ($1,$2,$3,$4,'pending')`,
-          [squad.id, member.walletLabel ?? member.label, member.wave, member.priority]);
+            (squad_id,wallet_label,wave,priority,status,error) VALUES ($1,$2,$3,$4,$5,$6)`,
+          [squad.id, member.walletLabel ?? member.label, member.wave, member.priority,
+            member.status || 'pending', member.error ?? null]);
         }
         await client.query('COMMIT');
         return squad.id;
