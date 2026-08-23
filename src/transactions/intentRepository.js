@@ -22,6 +22,9 @@ function mapIntent(row) {
     effectiveGasPriceWei: row.effective_gas_price_wei === null || row.effective_gas_price_wei === undefined ? null : BigInt(row.effective_gas_price_wei),
     actualNetworkCostWei: row.actual_network_cost_wei === null || row.actual_network_cost_wei === undefined ? null : BigInt(row.actual_network_cost_wei),
     tokenIds: row.token_ids ?? null,
+    bumpCount: row.bump_count === null || row.bump_count === undefined ? 0 : Number(row.bump_count),
+    bumpedFromTxHash: row.bumped_from_tx_hash ?? null,
+    triggerSource: row.trigger_source ?? null,
     simulationEnabled: row.simulation_enabled,
     requiredConfirmations: row.required_confirmations,
     transactionTimeoutMs: row.transaction_timeout_ms,
@@ -48,16 +51,17 @@ function createTransactionIntentRepository(pool) {
           (user_id,wallet_id,target_id,chain,from_address,to_address,calldata,value_wei,nonce,
             gas_limit,gas_price_wei,max_fee_per_gas_wei,max_priority_fee_per_gas_wei,
           estimated_cost_wei,simulation_enabled,required_confirmations,transaction_timeout_ms,
-          state,timeout_at,method_signature,call_preview,idempotency_key)
+          state,timeout_at,method_signature,call_preview,idempotency_key,trigger_source)
           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,'submitted',
-            TO_TIMESTAMP($18 / 1000.0),$19,$20::JSONB,$21) RETURNING *`,
+            TO_TIMESTAMP($18 / 1000.0),$19,$20::JSONB,$21,$22) RETURNING *`,
         [intent.userId, intent.walletId, intent.targetId, intent.chain, intent.from, intent.to,
           intent.data, intent.valueWei.toString(), intent.nonce, intent.gasLimit.toString(),
           intent.gasPriceWei?.toString() ?? null, intent.maxFeePerGasWei?.toString() ?? null,
           intent.maxPriorityFeePerGasWei?.toString() ?? null, intent.estimatedCostWei.toString(),
           intent.simulationEnabled, intent.requiredConfirmations, intent.transactionTimeoutMs,
           intent.timeoutAt, intent.methodSignature || null,
-          intent.callPreview ? JSON.stringify(intent.callPreview) : null, intent.idempotencyKey || null]);
+          intent.callPreview ? JSON.stringify(intent.callPreview) : null, intent.idempotencyKey || null,
+          intent.triggerSource || 'manual']);
         const created = mapIntent(result.rows[0]);
         await client.query(`INSERT INTO transaction_state_transitions (intent_id,from_state,to_state,reason)
           VALUES ($1,NULL,'submitted','intent persisted before broadcast')`, [created.intentId]);
@@ -84,6 +88,48 @@ function createTransactionIntentRepository(pool) {
         `UPDATE transaction_intents SET tx_hash=$2 WHERE intent_id=$1 AND state='submitted' RETURNING *`,
         [intentId, txHash],
       );
+      return mapIntent(result.rows[0]);
+    },
+
+    // Bump-ladder candidates: pending intents whose current broadcast has sat past the staleness
+    // window, scoped to the trigger sources the operator enabled, and not already bumped to the
+    // ladder's ceiling. Staleness measures from pending_at -- which attachBump resets on every
+    // bump -- so each rung of the ladder gets its own full window.
+    async listBumpCandidates({ sources, cutoffMs, maxBumpCount, limit = 25 }) {
+      const result = await pool.query(
+        `SELECT * FROM transaction_intents
+         WHERE state='pending' AND bump_count < $1
+           AND trigger_source = ANY($2::TEXT[])
+           AND COALESCE(pending_at, submitted_at) <= TO_TIMESTAMP($3 / 1000.0)
+         ORDER BY COALESCE(pending_at, submitted_at) ASC LIMIT $4`,
+        [maxBumpCount, sources, cutoffMs / 1000.0, limit],
+      );
+      return result.rows.map(mapIntent);
+    },
+
+    // Move an intent onto its re-bid: new hash becomes primary (the superseded one is preserved in
+    // bumped_from_tx_hash), fees advance, bump_count increments, and pending_at resets so the next
+    // staleness window starts from this bump rather than from the original fire.
+    async attachBump(intentId, { txHash, bumpedFromTxHash, gasPriceWei, maxFeePerGasWei, maxPriorityFeePerGasWei }) {
+      const result = await pool.query(
+        `UPDATE transaction_intents SET tx_hash=$2, bumped_from_tx_hash=$3,
+           gas_price_wei=COALESCE($4,gas_price_wei),
+           max_fee_per_gas_wei=COALESCE($5,max_fee_per_gas_wei),
+           max_priority_fee_per_gas_wei=COALESCE($6,max_priority_fee_per_gas_wei),
+           bump_count=bump_count+1,
+           -- Each rung buys its own full timeout window: reconciliation must not declare the
+           -- intent unknown mid-ladder just because the ORIGINAL broadcast is old.
+           timeout_at = NOW() + (transaction_timeout_ms * INTERVAL '1 millisecond'),
+           pending_at=NOW(), last_reconciled_at=NOW()
+         WHERE intent_id=$1 AND state='pending' RETURNING *`,
+        [intentId, txHash, bumpedFromTxHash,
+          gasPriceWei ? gasPriceWei.toString() : null,
+          maxFeePerGasWei ? maxFeePerGasWei.toString() : null,
+          maxPriorityFeePerGasWei ? maxPriorityFeePerGasWei.toString() : null],
+      );
+      if (!result.rowCount) throw new Error(`attachBump: intent ${intentId} is no longer pending`);
+      await pool.query(`INSERT INTO transaction_state_transitions (intent_id,from_state,to_state,reason)
+        VALUES ($1,'pending','pending','bumped to a higher fee')`, [intentId]);
       return mapIntent(result.rows[0]);
     },
 

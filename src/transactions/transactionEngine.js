@@ -392,6 +392,9 @@ function createTransactionEngine({
             methodSignature: request.methodSignature || null,
             callPreview: request.callPreview || null,
             idempotencyKey: request.idempotencyKey || null,
+            // The bump ladder scopes its candidates by this column -- without it every intent
+            // would read 'manual' and launch/scheduled re-bids would never find their targets.
+            triggerSource: trigger,
           });
         } catch (error) {
           if (error?.code !== '23505') throw error;
@@ -427,6 +430,13 @@ function createTransactionEngine({
         // race it without a reason as strong as sniper's actual competitive-inclusion use case.
         if (isSniperTrigger && sniperProviderService) {
           await sniperProviderService.performAll(request.chain, 'broadcastTransaction', provider => provider.broadcastTransaction(signedTransaction));
+        } else if (trigger === 'launch') {
+          // Launch squads race too (Round 22, day 4): a coordinated burst is the exact competitive
+          // use case sniper's race was built for -- same nonce+signature everywhere, losing
+          // endpoints' "already known" responses are harmless -- and its staging phase did all the
+          // slow verification up front, so there is no sequential-fallback safety argument left.
+          const racing = useFastPath && fastProviderService ? fastProviderService : providerService;
+          await racing.performAll(request.chain, 'broadcastTransaction', provider => provider.broadcastTransaction(signedTransaction));
         } else {
           await providerCall(request.chain, 'broadcastTransaction', provider => provider.broadcastTransaction(signedTransaction));
         }

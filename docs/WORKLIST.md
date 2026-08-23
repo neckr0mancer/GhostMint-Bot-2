@@ -177,6 +177,29 @@ price requirement, failure isolation, settlement convergence, wave chunking); fu
 pass, failures unchanged (the two by-design review repros; two integration timeouts passed in
 isolation).
 
+## Section BA — broadcast race for launches + the bump ladder ✅ (D4–5)
+
+1. **Launch broadcasts now race across the fast pool** (`transactionEngine`): same signed bytes to
+   every endpoint concurrently, identical nonce+signature so losers' "already known" responses are
+   discarded -- the sniper's competitive-inclusion argument applies verbatim to a coordinated
+   burst whose staging already did every slow check.
+2. **The bump ladder** (`src/transactions/bumper.js`): a pending broadcast stuck past
+   `TX_BUMP_AFTER_MS` (45s default) gets re-bid same-nonce at +15% (`TX_BUMP_INCREMENT_PCT`),
+   floored by the live fee, capped by the wallet's effective governance gas ceiling, at most three
+   rungs (`TX_BUMP_MAX_ATTEMPTS`), scoped to launch+scheduled sources (`TX_BUMP_SOURCES`). Same-
+   nonce replacement is safe under uncertainty; a consumed nonce is skipped (reconciliation owns
+   it); `attachBump` moves the new hash primary, preserves the old in `bumped_from_tx_hash`
+   (migration `050`), resets `pending_at` so each rung gets a full window, and logs a
+   pending→pending transition for the audit trail.
+
+Verification: 5 new bumper tests (fee math both fee models, floor-wins branch, ceiling refusal,
+consumed-nonce skip, attempt ceiling); eslint clean on touched files -- which would have caught
+today's two boot crashes (`no-undef`) and is now a hard pre-push gate; full suite 868 → 866 with
+only the two by-design review repros failing.
+
+Next in this round (days 6–7): live monitor/report UI for running launches, load rehearsal
+(50+ synthetic wallets), then D9 acceptance run -- internetmonkes on Aug 28 is the natural target.
+
 ## Incident (same day): lane wiring crashed production for ~5 minutes
 
 The RPC-grid wiring appended two URLs to `ETH_RPC_URLS` without checking the consuming
@@ -188,6 +211,23 @@ about). Deploy `eff2e4ce` SUCCESS, all workers healthy. The cap is now documente
 `.env.example`; rule for any future external-config writes: **read the consumer's validation
 before writing, and re-verify the deployment after every variableUpsert** — six upserts fired six
 redeploys and none were checked until a human noticed.
+
+## Incident (same day): paste-detect dead on Discord — zombie gateway session + latent matcher gap
+
+Reported as "paste for info no longer works on Discord." Diagnosis chain, from logs alone thanks
+to the Round 17 diagnostic logging plus a temporary gateway-entry probe:
+
+1. Zero Paste-detect lines despite real pastes, while slash interactions worked — the message
+   stream was silently dead. Root cause: **a half-dead Discord gateway session after ~7 deploys of
+   churn** (two crash windows today). A clean container restart forced a fresh session; delivery
+   returned instantly and a real paste flowed through detection end-to-end (logged live).
+2. The report also exposed a **latent matcher gap**, now fixed: detection tested the ENTIRE
+   message body against anchored patterns, so multi-entity pastes (address + address + OpenSea
+   link) or wrapped/backticked/zero-width-poisoned lines matched nothing — silently. Detection now
+   scans per line (first match wins), strips edge decorations and invisible characters.
+
+The temporary `messageCreate` entry log shipped with the fix and is removed now that delivery is
+confirmed healthy; the per-line matching and its two regression tests stay permanently.
 
 Next in this round (days 3–7): block-height + pending-tx triggers (`trigger.js`, the front-running
 piece), multi-RPC broadcast race extension beyond sniper (owner-approved direction), accelerated

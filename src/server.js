@@ -45,6 +45,7 @@ const { createLaunchRepository } = require('./launch/launchRepository');
 const { createLaunchStager } = require('./launch/stager');
 const { createLauncher } = require('./launch/launcher');
 const { createLaunchTriggers } = require('./launch/triggers');
+const { createBumpSweeper } = require('./transactions/bumper');
 const { createSocialAdapters } = require('./social/adapters');
 const { createSocialWatchRepository } = require('./social/socialWatchRepository');
 const { createSocialWatchService } = require('./social/socialWatchService');
@@ -928,6 +929,27 @@ const launcher = createLauncher({
         `${c.confirmed || 0} confirmed, ${c.reverted || 0} reverted, ${c.failed || 0} failed, ${c.skipped || 0} skipped.`);
     }
   },
+  log,
+});
+
+// Bump ladder: a pending broadcast stuck past TX_BUMP_AFTER_MS gets re-bid same-nonce at
+// +incrementPct (floored by the live fee), raced across the fast pool, at most maxAttempts times.
+// Same-nonce replacement is safe under uncertainty -- if the original mined, the re-bid is simply
+// rejected -- so this runs without needing to know why a transaction is stuck. Scoped to launch +
+// scheduled fires by default; snipers and manual sends keep today's behavior unless
+// TX_BUMP_SOURCES says otherwise. Fee ceiling comes from the user's effective governance group,
+// same number /mint already enforces, so a bump can never bid past what a fresh mint could.
+const bumpSweeper = createBumpSweeper({
+  intentRepository: transactionIntentRepository,
+  findWalletById: (userId, walletId) => DB.wallets.find(item => item.userId === userId && item.id === Number(walletId)),
+  decryptPrivateKey: wallet => decryptPK(wallet),
+  providerService,
+  fastProviderService,
+  resolveFeeCapGwei: userId => botCommands.gasCeiling(userId),
+  bumpAfterMs: CONFIG.transactionBumpAfterMs,
+  incrementPct: CONFIG.transactionBumpIncrementPct,
+  maxAttempts: CONFIG.transactionBumpMaxAttempts,
+  sources: CONFIG.transactionBumpSources.split(',').map(v => v.trim()).filter(Boolean),
   log,
 });
 
@@ -3796,6 +3818,7 @@ async function start() {
   }
   schedulerWorker.start();
   launcher.start();
+  bumpSweeper.start();
   setInterval(()=>{scheduledReminder.sweep().catch(error=>log(`Scheduled-reminder sweep error: ${safeError(error)}`));},SCHEDULE_REMINDER_SWEEP_MS).unref?.();
   setInterval(()=>{expiredHistorySweep().catch(error=>log(`Expired-history sweep error: ${safeError(error)}`));},SCHEDULE_REMINDER_SWEEP_MS).unref?.();
   log('Started expired-mint history sweep');

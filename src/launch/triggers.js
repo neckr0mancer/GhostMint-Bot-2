@@ -86,7 +86,16 @@ function createLaunchTriggers({ wsUrlFor, makeSocket = url => new globalThis.Web
         }
       };
       socket.onerror = () => fail(`${kind} trigger websocket error for ${chain}`);
-      socket.onclose = () => { if (!settled) fail(`${kind} trigger websocket closed before subscribing`); };
+      socket.onclose = () => {
+        if (!settled) return fail(`${kind} trigger websocket closed before subscribing`);
+        // A mid-life drop (provider restart, network blip) after a successful arm: release the
+        // armed slot so the launcher's scan re-arms a fresh subscription instead of the map
+        // forever reporting "armed" on a dead socket.
+        if (!entry.disposed) {
+          armed.delete(squadId);
+          log(`Launch trigger '${kind}' socket dropped for squad ${squadId} -- will re-arm on next scan`);
+        }
+      };
     });
   }
 
