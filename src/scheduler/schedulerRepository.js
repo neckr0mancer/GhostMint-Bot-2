@@ -140,14 +140,15 @@ function createSchedulerRepository(pool) {
     // returned once even if two workers sweep at the same moment. The caller writes history for
     // whatever it gets back.
     async claimNewlyExpired(limit = 50) {
-      const result = await pool.query(`UPDATE mint_tasks SET expired_logged_at=NOW()
-        WHERE id IN (
+      const result = await pool.query(`WITH candidate AS (
           SELECT id FROM mint_tasks
           WHERE expired_logged_at IS NULL
             AND status IN (${sqlStatusList(EXPIRABLE_STATUSES)})
             AND mint_time < ${EXPIRY_GRACE_SQL}
           ORDER BY mint_time LIMIT $1
-        ) RETURNING *`, [limit]);
+          FOR UPDATE SKIP LOCKED
+        ) UPDATE mint_tasks SET expired_logged_at=NOW()
+        FROM candidate WHERE mint_tasks.id=candidate.id RETURNING mint_tasks.*`, [limit]);
       return result.rows.map(mapTask);
     },
 

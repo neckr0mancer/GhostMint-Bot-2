@@ -558,15 +558,19 @@ async function expiredHistorySweep() {
   try {
     const expired = await schedulerRepository.claimNewlyExpired();
     for (const task of expired) {
-      const wallet = DB.wallets.find(item => item.userId === task.userId && item.label === task.walletLabel);
-      const why = task.status === 'paused' ? 'paused past its mint time' : (task.lastError || 'no reason recorded');
-      await logActivity(task.userId, 'fail', `Scheduled mint expired: ${task.name}`,
-        task.walletLabel, null, wallet ? CHAINS[wallet.chain] : null, { triggerSource: 'scheduled' });
-      await notifyUser(task.userId,
-        `⌛ Scheduled mint <b>${escapeTelegramHtml(task.name)}</b> expired — ${escapeTelegramHtml(why)}`);
-      dashboardWebSockets.broadcastToUser(task.userId, { type: 'tasks.changed' });
-      dashboardWebSockets.broadcastToUser(task.userId, { type: 'activity.changed' });
-      recorded += 1;
+      try {
+        const wallet = DB.wallets.find(item => item.userId === task.userId && item.label === task.walletLabel);
+        const why = task.status === 'paused' ? 'paused past its mint time' : (task.lastError || 'no reason recorded');
+        await logActivity(task.userId, 'fail', `Scheduled mint expired: ${task.name}`,
+          task.walletLabel, null, wallet ? CHAINS[wallet.chain] : null, { triggerSource: 'scheduled' });
+        await notifyUser(task.userId,
+          `⌛ Scheduled mint <b>${escapeTelegramHtml(task.name)}</b> expired — ${escapeTelegramHtml(why)}`);
+        dashboardWebSockets.broadcastToUser(task.userId, { type: 'tasks.changed' });
+        dashboardWebSockets.broadcastToUser(task.userId, { type: 'activity.changed' });
+        recorded += 1;
+      } catch (error) {
+        log(`Expired-history record failed for ${task.id}: ${safeError(error)}`);
+      }
     }
   } catch (error) {
     log(`Expired-history sweep failed: ${safeError(error)}`);

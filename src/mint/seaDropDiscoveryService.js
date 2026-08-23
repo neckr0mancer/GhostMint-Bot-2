@@ -45,10 +45,14 @@ function createSeaDropDiscoveryService({ providerService, publicDropResolver, ch
   async function viaCanonicalCore(chain, contractAddress) {
     const address = CANONICAL_SEADROP_CORE[chain];
     if (!address) return undefined;
-    const publicDrop = await publicDropResolver.getPublicDrop(chain, address, contractAddress);
-    if (!publicDrop) return undefined;
-    if (!publicDrop.startTime && !publicDrop.endTime && !publicDrop.maxTotalMintableByWallet) return undefined;
-    return address;
+    try {
+      const publicDrop = await publicDropResolver.getPublicDrop(chain, address, contractAddress);
+      if (!publicDrop) return undefined;
+      if (!publicDrop.startTime && !publicDrop.endTime && !publicDrop.maxTotalMintableByWallet) return undefined;
+      return address;
+    } catch {
+      return undefined;
+    }
   }
 
   function decodeLatestAddress(logs) {

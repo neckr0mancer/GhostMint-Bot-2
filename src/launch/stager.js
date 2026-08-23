@@ -44,32 +44,46 @@ function createLaunchStager({ checkAccountStatus, findWallet, seaDropDiscoverySe
     }
     const valuePerWallet = priceWei * BigInt(quantity);
 
-    const feeData = await providerService.perform(chain, 'launchStagingFee', provider => provider.getFeeData())
-      .catch(() => null);
+    let feeData = null;
+    let feeFetchError = null;
+    try {
+      feeData = await providerService.perform(chain, 'launchStagingFee', provider => provider.getFeeData());
+    } catch (error) {
+      feeFetchError = error;
+      log(`Launch staging: fee fetch failed: ${error.message}`);
+    }
     // 1559 chains report maxFeePerGas; some legacy-only providers report gasPrice only -- use
     // whichever exists so the buffer never silently disappears (a null buffer would let a wallet
     // that cannot pay its own gas pass staging and fail later at send).
     const feePerGas = feeData?.maxFeePerGas ?? feeData?.gasPrice ?? null;
     const gasBufferWei = feePerGas ? feePerGas * GAS_BUFFER_GAS_UNITS : null;
+    if (!feePerGas) {
+      log('Launch staging: no fee data for gas buffer -- wallets will be checked without buffer and may fail at send');
+    }
 
-    const results = [];
-    for (const member of members) {
+    const results = await Promise.all(members.map(async member => {
       try {
         const wallet = findWallet(userId, member.label);
         if (!wallet) throw new Error('wallet not found');
         if (String(wallet.chain || '') !== String(chain)) throw new Error(`wallet is on ${wallet.chain}, not ${chain}`);
+        if (!gasBufferWei && feeFetchError) {
+          // Fee data unavailable -- still attempt balance check but without buffer; the wallet
+          // may still pass staging yet fail at broadcast with INSUFFICIENT_FUNDS. This is
+          // intentionally not a hard skip -- a transient RPC blip should not block the entire
+          // squad's staging, and the error is already logged above.
+        }
         const balance = await providerService.perform(chain, `launchStagingBalance:${member.label}`,
           provider => provider.getBalance(wallet.address));
         const needed = valuePerWallet + (gasBufferWei ?? 0n);
         if (balance < needed) {
           throw new Error(`balance too low: has ${balance} wei, needs ~${needed}`);
         }
-        results.push({ ...member, status: 'staged' });
+        return { ...member, status: 'staged' };
       } catch (error) {
         log(`Launch staging skip [${member.label}]: ${error.message}`);
-        results.push({ ...member, status: 'skipped', error: error.message });
+        return { ...member, status: 'skipped', error: error.message };
       }
-    }
+    }));
     return { plan: { chain, contractAddress, quantity, methodSignature, seaDropAddress, feeRecipient, priceWei }, results };
   }
 
