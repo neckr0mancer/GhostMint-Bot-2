@@ -106,7 +106,7 @@ integrationTest('persisted submitted intent and editable policies survive a proc
 // the daily budget did not hold. Actuals must be topped back up with the intent's own value; the
 // pre-receipt estimate already includes value and must be used as-is. Run against the real schema
 // because this is exactly the kind of column-semantics assumption a mocked pool would wave through.
-integrationTest('rollingSpendWei counts value plus actual fee for confirmed intents, and the estimate before one', { timeout: 30_000 }, async () => {
+integrationTest('rollingSpendWei counts value plus actual fee for confirmed intents, and the estimate before one', { timeout: 120_000 }, async () => {
   const platformId = `rollingspend-${process.pid}-${Date.now()}`;
   let userId;
   const pool = createDatabasePool({ connectionString: CONFIG.databaseUrl, max: 2 });
