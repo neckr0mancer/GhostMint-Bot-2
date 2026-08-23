@@ -392,6 +392,9 @@ function createTransactionEngine({
             methodSignature: request.methodSignature || null,
             callPreview: request.callPreview || null,
             idempotencyKey: request.idempotencyKey || null,
+            // The bump ladder scopes its candidates by this column -- without it every intent
+            // would read 'manual' and launch/scheduled re-bids would never find their targets.
+            triggerSource: trigger,
           });
         } catch (error) {
           if (error?.code !== '23505') throw error;

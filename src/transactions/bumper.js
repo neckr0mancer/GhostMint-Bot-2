@@ -26,7 +26,7 @@ function createBumpSweeper({ intentRepository, findWalletById, decryptPrivateKey
   let scanning = false;
 
   async function feeFor(intent, fresh) {
-    const multiplier = 1 + incrementPct / 100;
+    const bumpFactor = BigInt(Math.round(100 + incrementPct));
     const is1559 = intent.maxFeePerGasWei !== null && intent.maxFeePerGasWei !== undefined;
     // The ceiling hook may be async (server wires it to the governance lookup); a failed lookup
     // means "uncapped this pass" -- refusing every bump because governance blinked would strand
@@ -39,19 +39,21 @@ function createBumpSweeper({ intentRepository, findWalletById, decryptPrivateKey
       }
     } catch { capLimit = null; }
     if (is1559) {
-      let maxFee = (intent.maxFeePerGasWei * BigInt(Math.round(multiplier * 100))) / 100n;
+      // Ceiling division, not truncation: a truncated product can land less than 10% above the
+      // old fee on small values, and nodes reject replacements that didn't rise enough.
+      let maxFee = (intent.maxFeePerGasWei * bumpFactor + 99n) / 100n;
       const floor = fresh?.maxFeePerGas ? BigInt(fresh.maxFeePerGas) : 0n;
       if (floor > maxFee) maxFee = floor;
       if (capLimit !== null && maxFee > capLimit) return { is1559: true, capped: true, gasPrice: null, maxFeePerGas: null, maxPriorityFeePerGas: null };
       // Replacement rule: nodes reject a same-nonce replacement whose priority fee did not also
       // rise -- raising maxFee alone gets "replacement transaction underpriced". Both climb.
-      let priority = (intent.maxPriorityFeePerGasWei ?? 0n) * BigInt(Math.round(multiplier * 100)) / 100n;
+      let priority = ((intent.maxPriorityFeePerGasWei ?? 0n) * bumpFactor + 99n) / 100n;
       const freshPriority = fresh?.maxPriorityFeePerGas ? BigInt(fresh.maxPriorityFeePerGas) : 0n;
       if (freshPriority > priority) priority = freshPriority;
       return { is1559: true, capped: false, gasPrice: null,
         maxFeePerGas: maxFee, maxPriorityFeePerGas: priority };
     }
-    let gasPrice = (intent.gasPriceWei ?? 0n) * BigInt(Math.round(multiplier * 100)) / 100n;
+    let gasPrice = ((intent.gasPriceWei ?? 0n) * bumpFactor + 99n) / 100n;
     const floor = fresh?.gasPrice ? BigInt(fresh.gasPrice) : 0n;
     if (floor > gasPrice) gasPrice = floor;
     if (capLimit !== null && gasPrice > capLimit) return { is1559: false, capped: true, gasPrice: null, maxFeePerGas: null, maxPriorityFeePerGas: null };
