@@ -14,7 +14,7 @@ function mapTask(row) {
   return {
     id: row.id, userId: row.user_id, name: row.name, walletLabel: row.wallet_label,
     contract: row.contract_address, fn: row.function_name, qty: row.quantity,
-    price: number(row.price_eth), gas: number(row.gas_gwei), mintTime: time(row.mint_time),
+    price: number(row.price_eth), gas: number(row.gas_gwei), chain: row.chain ?? null, mintTime: time(row.mint_time),
     status: row.status, createdAt: time(row.created_at), nextAttemptAt: time(row.next_attempt_at),
     attemptCount: row.attempt_count, maxAttempts: row.max_attempts,
     transactionIntentId: row.transaction_intent_id, idempotencyKey: row.idempotency_key,
@@ -121,20 +121,21 @@ function createPostgresStorage(pool) {
       const status = task.status === 'waiting' ? 'scheduled' : task.status;
       const result = await pool.query(`INSERT INTO mint_tasks
         (user_id,id,name,wallet_label,contract_address,function_name,quantity,price_eth,gas_gwei,mint_time,status,created_at,
-          next_attempt_at,max_attempts,idempotency_key,via_opensea,stage_type)
+          next_attempt_at,max_attempts,idempotency_key,via_opensea,stage_type,chain)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,TO_TIMESTAMP($10 / 1000.0),$11,TO_TIMESTAMP($12 / 1000.0),
-          TO_TIMESTAMP($13 / 1000.0),$14,$15,$16,$17)
+          TO_TIMESTAMP($13 / 1000.0),$14,$15,$16,$17,$18)
         ON CONFLICT (user_id,id) DO UPDATE SET name=EXCLUDED.name,wallet_label=EXCLUDED.wallet_label,
         contract_address=EXCLUDED.contract_address,function_name=EXCLUDED.function_name,
         quantity=EXCLUDED.quantity,price_eth=EXCLUDED.price_eth,gas_gwei=EXCLUDED.gas_gwei,
         mint_time=EXCLUDED.mint_time,status=EXCLUDED.status,next_attempt_at=EXCLUDED.next_attempt_at,
-        max_attempts=EXCLUDED.max_attempts,via_opensea=EXCLUDED.via_opensea,stage_type=EXCLUDED.stage_type
+        max_attempts=EXCLUDED.max_attempts,via_opensea=EXCLUDED.via_opensea,stage_type=EXCLUDED.stage_type,
+        chain=EXCLUDED.chain
         RETURNING id`,
       [task.userId, task.id, task.name, task.walletLabel, task.contract, task.fn || 'mint', task.qty,
         task.price || 0, task.gas ?? null, task.mintTime, status, task.createdAt || Date.now(),
         task.nextAttemptAt || task.mintTime, task.maxAttempts || 3,
         task.idempotencyKey || `scheduled-mint:${task.userId}:${task.id}`, Boolean(task.viaOpenSea),
-        task.stageType ?? null]);
+        task.stageType ?? null, task.chain ?? null]);
       return result.rowCount > 0;
     },
     async deleteTask(userId, id) {

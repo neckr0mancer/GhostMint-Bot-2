@@ -607,7 +607,7 @@ function createBotCommandService(dependencies) {
     const validated = requestSchemas.taskCreate({ ...withMintTime, chain }, { supportedChains, now: Date.now() });
     const task = { userId, id: validated.id, name: validated.name, walletLabel: validated.walletLabel,
       contract: validated.contractAddress, fn: validated.functionName, qty: validated.quantity,
-      price: validated.priceETH, gas: validated.gasGwei, mintTime: validated.mintTime,
+      price: validated.priceETH, gas: validated.gasGwei, chain: validated.chain, mintTime: validated.mintTime,
       nextAttemptAt: validated.mintTime, status: 'scheduled', createdAt: Date.now(), maxAttempts: 3,
       idempotencyKey: `scheduled-mint:${userId}:${validated.id}`, viaOpenSea: Boolean(input.viaOpenSea),
       stageType: input.stageType ?? null };

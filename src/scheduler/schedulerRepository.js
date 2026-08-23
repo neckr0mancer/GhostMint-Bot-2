@@ -64,7 +64,7 @@ function mapTask(row) {
     maxAttempts: row.max_attempts, claimedBy: row.claimed_by, claimedAt: time(row.claimed_at),
     leaseExpiresAt: time(row.lease_expires_at), transactionIntentId: row.transaction_intent_id,
     idempotencyKey: row.idempotency_key, lastError: row.last_error, completedAt: time(row.completed_at),
-    viaOpenSea: row.via_opensea, stageType: row.stage_type ?? null,
+    viaOpenSea: row.via_opensea, stageType: row.stage_type ?? null, chain: row.chain ?? null,
   };
 }
 
