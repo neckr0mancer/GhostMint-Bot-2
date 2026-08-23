@@ -76,6 +76,7 @@ function createProviderService({ chains, timeoutMs = 10_000, retries = 1, provid
     return new Promise((resolve, reject) => {
       let pending = candidates.length;
       let settled = false;
+      let lastError = null;
       for (const candidate of candidates) {
         withTimeout(
           Promise.resolve().then(() => operation(candidate.provider)),
@@ -83,9 +84,20 @@ function createProviderService({ chains, timeoutMs = 10_000, retries = 1, provid
           `${chain} ${operationName}`,
         ).then(value => {
           if (!settled) { settled = true; resolve(value); }
-        }).catch(() => {
+        }).catch(error => {
+          if (!settled && NON_RETRYABLE_ERROR_CODES.has(error?.code)) {
+            settled = true;
+            reject(error);
+            return;
+          }
+          lastError = error;
           pending -= 1;
-          if (!settled && pending === 0) { settled = true; reject(new RpcUnavailableError(chain, candidates.length)); }
+          if (!settled && pending === 0) {
+            settled = true;
+            // If the last error was definitive, preserve it; otherwise generic unavailable.
+            if (lastError && NON_RETRYABLE_ERROR_CODES.has(lastError?.code)) reject(lastError);
+            else reject(new RpcUnavailableError(chain, candidates.length));
+          }
         });
       }
     });
