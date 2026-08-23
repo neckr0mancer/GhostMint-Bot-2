@@ -76,7 +76,8 @@ test('1559 intents bump maxFeePerGas with priority preserved', async () => {
   const attach = calls.find(c => c[0] === 'attachBump');
   // floor-wins branch: fresh 40 gwei exceeds bumped 34.5, so 40 it is
   assert.equal(attach[2].maxFeePerGasWei, 40000000000n);
-  assert.equal(attach[2].maxPriorityFeePerGasWei, 2n * 10n ** 9n);
+  // replacement rule: priority must ALSO rise or nodes reject the re-bid
+  assert.equal(attach[2].maxPriorityFeePerGasWei, 2300000000n); // 2 x 1.15
 });
 
 test('a consumed nonce is skipped -- reconciliation owns that story, not the ladder', async () => {
@@ -111,6 +112,7 @@ test('maxAttempts stops the ladder after its final rung', async () => {
   await sweeper.scan();
   assert.ok(!calls.some(c => c[0] === 'attachBump'));
 });
+
 
 
 

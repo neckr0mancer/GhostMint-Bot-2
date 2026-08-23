@@ -51,16 +51,17 @@ function createTransactionIntentRepository(pool) {
           (user_id,wallet_id,target_id,chain,from_address,to_address,calldata,value_wei,nonce,
             gas_limit,gas_price_wei,max_fee_per_gas_wei,max_priority_fee_per_gas_wei,
           estimated_cost_wei,simulation_enabled,required_confirmations,transaction_timeout_ms,
-          state,timeout_at,method_signature,call_preview,idempotency_key)
+          state,timeout_at,method_signature,call_preview,idempotency_key,trigger_source)
           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,'submitted',
-            TO_TIMESTAMP($18 / 1000.0),$19,$20::JSONB,$21) RETURNING *`,
+            TO_TIMESTAMP($18 / 1000.0),$19,$20::JSONB,$21,$22) RETURNING *`,
         [intent.userId, intent.walletId, intent.targetId, intent.chain, intent.from, intent.to,
           intent.data, intent.valueWei.toString(), intent.nonce, intent.gasLimit.toString(),
           intent.gasPriceWei?.toString() ?? null, intent.maxFeePerGasWei?.toString() ?? null,
           intent.maxPriorityFeePerGasWei?.toString() ?? null, intent.estimatedCostWei.toString(),
           intent.simulationEnabled, intent.requiredConfirmations, intent.transactionTimeoutMs,
           intent.timeoutAt, intent.methodSignature || null,
-          intent.callPreview ? JSON.stringify(intent.callPreview) : null, intent.idempotencyKey || null]);
+          intent.callPreview ? JSON.stringify(intent.callPreview) : null, intent.idempotencyKey || null,
+          intent.triggerSource || 'manual']);
         const created = mapIntent(result.rows[0]);
         await client.query(`INSERT INTO transaction_state_transitions (intent_id,from_state,to_state,reason)
           VALUES ($1,NULL,'submitted','intent persisted before broadcast')`, [created.intentId]);
@@ -115,7 +116,11 @@ function createTransactionIntentRepository(pool) {
            gas_price_wei=COALESCE($4,gas_price_wei),
            max_fee_per_gas_wei=COALESCE($5,max_fee_per_gas_wei),
            max_priority_fee_per_gas_wei=COALESCE($6,max_priority_fee_per_gas_wei),
-           bump_count=bump_count+1, pending_at=NOW(), last_reconciled_at=NOW()
+           bump_count=bump_count+1,
+           -- Each rung buys its own full timeout window: reconciliation must not declare the
+           -- intent unknown mid-ladder just because the ORIGINAL broadcast is old.
+           timeout_at = NOW() + (transaction_timeout_ms * INTERVAL '1 millisecond'),
+           pending_at=NOW(), last_reconciled_at=NOW()
          WHERE intent_id=$1 AND state='pending' RETURNING *`,
         [intentId, txHash, bumpedFromTxHash,
           gasPriceWei ? gasPriceWei.toString() : null,

@@ -25,18 +25,31 @@ function createBumpSweeper({ intentRepository, findWalletById, decryptPrivateKey
   let timer = null;
   let scanning = false;
 
-  function feeFor(intent, fresh) {
+  async function feeFor(intent, fresh) {
     const multiplier = 1 + incrementPct / 100;
     const is1559 = intent.maxFeePerGasWei !== null && intent.maxFeePerGasWei !== undefined;
-    const capWei = resolveFeeCapGwei ? resolveFeeCapGwei(intent.userId) : null;
-    const capLimit = capWei !== null && capWei !== undefined ? BigInt(Math.round(Number(capWei) * 1e9)) : null;
+    // The ceiling hook may be async (server wires it to the governance lookup); a failed lookup
+    // means "uncapped this pass" -- refusing every bump because governance blinked would strand
+    // the transaction exactly what this ladder exists to rescue.
+    let capLimit = null;
+    try {
+      if (resolveFeeCapGwei) {
+        const capWei = await resolveFeeCapGwei(intent.userId);
+        if (capWei !== null && capWei !== undefined) capLimit = BigInt(Math.round(Number(capWei) * 1e9));
+      }
+    } catch { capLimit = null; }
     if (is1559) {
       let maxFee = (intent.maxFeePerGasWei * BigInt(Math.round(multiplier * 100))) / 100n;
       const floor = fresh?.maxFeePerGas ? BigInt(fresh.maxFeePerGas) : 0n;
       if (floor > maxFee) maxFee = floor;
       if (capLimit !== null && maxFee > capLimit) return { is1559: true, capped: true, gasPrice: null, maxFeePerGas: null, maxPriorityFeePerGas: null };
+      // Replacement rule: nodes reject a same-nonce replacement whose priority fee did not also
+      // rise -- raising maxFee alone gets "replacement transaction underpriced". Both climb.
+      let priority = (intent.maxPriorityFeePerGasWei ?? 0n) * BigInt(Math.round(multiplier * 100)) / 100n;
+      const freshPriority = fresh?.maxPriorityFeePerGas ? BigInt(fresh.maxPriorityFeePerGas) : 0n;
+      if (freshPriority > priority) priority = freshPriority;
       return { is1559: true, capped: false, gasPrice: null,
-        maxFeePerGas: maxFee, maxPriorityFeePerGas: intent.maxPriorityFeePerGasWei ?? 0n };
+        maxFeePerGas: maxFee, maxPriorityFeePerGas: priority };
     }
     let gasPrice = (intent.gasPriceWei ?? 0n) * BigInt(Math.round(multiplier * 100)) / 100n;
     const floor = fresh?.gasPrice ? BigInt(fresh.gasPrice) : 0n;
@@ -49,17 +62,20 @@ function createBumpSweeper({ intentRepository, findWalletById, decryptPrivateKey
     const wallet = findWalletById(intent.userId, intent.walletId);
     if (!wallet) { log(`Bump skipped for ${intent.intentId}: wallet ${intent.walletId} no longer exists`); return 'skipped'; }
 
-    // Nonce consumed on-chain means the original landed -- reconciliation owns that outcome.
-    const pendingCount = await providerService.perform(intent.chain, 'bumpNonceCheck',
-      provider => provider.getTransactionCount(wallet.address, 'pending'));
-    if (Number(pendingCount) > intent.nonce) {
-      log(`Bump skipped for ${intent.intentId}: nonce already consumed on-chain`);
+    // Nonce consumed on MINED count means the original landed -- reconciliation owns that
+    // outcome. Deliberately 'latest', NOT 'pending': the pending count INCLUDES our own stuck
+    // transaction sitting in the pool, so a pending check reads one above intent.nonce for
+    // exactly the transaction this ladder exists to rescue and would skip it forever.
+    const minedCount = await providerService.perform(intent.chain, 'bumpNonceCheck',
+      provider => provider.getTransactionCount(wallet.address, 'latest'));
+    if (Number(minedCount) > intent.nonce) {
+      log(`Bump skipped for ${intent.intentId}: nonce already consumed by a mined transaction`);
       return 'skipped';
     }
 
     const fresh = await providerService.perform(intent.chain, 'bumpFeeData',
       provider => provider.getFeeData()).catch(() => null);
-    const fee = feeFor(intent, fresh);
+    const fee = await feeFor(intent, fresh);
     if (fee.capped) {
       log(`Bump skipped for ${intent.intentId}: next rung exceeds the fee ceiling`);
       return 'capped';
