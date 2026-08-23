@@ -92,14 +92,16 @@ function createTransactionIntentRepository(pool) {
       return mapIntent(result.rows[0]);
     },
 
-    // Bump-ladder candidates: pending intents whose current broadcast has sat past the staleness
-    // window, scoped to the trigger sources the operator enabled, and not already bumped to the
-    // ladder's ceiling. Staleness measures from pending_at -- which attachBump resets on every
-    // bump -- so each rung of the ladder gets its own full window.
+    // Bump-ladder candidates: pending and timed-out (unknown) intents whose current broadcast
+    // has sat past the staleness window, scoped to the trigger sources the operator enabled,
+    // and not already bumped to the ceiling. Unknown is included so a wallet stalled behind a
+    // timed-out nonce can be rescued by the ladder instead of bricking sequential nonces.
+    // Staleness measures from pending_at -- which attachBump resets on every bump -- so each
+    // rung of the ladder gets its own full window.
     async listBumpCandidates({ sources, cutoffMs, maxBumpCount, limit = 25 }) {
       const result = await pool.query(
         `SELECT * FROM transaction_intents
-         WHERE state='pending' AND bump_count < $1
+         WHERE state IN ('pending','unknown') AND bump_count < $1
            AND trigger_source = ANY($2::TEXT[])
            AND COALESCE(pending_at, submitted_at) <= TO_TIMESTAMP($3 / 1000.0)
          ORDER BY COALESCE(pending_at, submitted_at) ASC LIMIT $4`,
@@ -121,8 +123,8 @@ function createTransactionIntentRepository(pool) {
            -- Each rung buys its own full timeout window: reconciliation must not declare the
            -- intent unknown mid-ladder just because the ORIGINAL broadcast is old.
            timeout_at = NOW() + (transaction_timeout_ms * INTERVAL '1 millisecond'),
-           pending_at=NOW(), last_reconciled_at=NOW()
-         WHERE intent_id=$1 AND state='pending' RETURNING *`,
+           pending_at=NOW(), last_reconciled_at=NOW(), state='pending'
+         WHERE intent_id=$1 AND state IN ('pending','unknown') RETURNING *`,
         [intentId, txHash, bumpedFromTxHash,
           gasPriceWei ? gasPriceWei.toString() : null,
           maxFeePerGasWei ? maxFeePerGasWei.toString() : null,
