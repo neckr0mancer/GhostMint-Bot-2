@@ -419,6 +419,13 @@ const CONFIG = Object.freeze({
   // prearmScheduledTask). 0 disables pre-arming entirely and keeps today's do-everything-at-fire
   // behavior; a recommended production value is 10_000-15_000ms.
   schedulePrearmLeadMs: parseInteger('SCHEDULE_PREARM_LEAD_MS', 0, 0, 300_000),
+  // Bump ladder (stuck-transaction recovery): a pending broadcast sitting this long gets re-bid
+  // same-nonce at +incrementPct on its next rung, at most maxAttempts times, for these trigger
+  // sources. Defaults recover launch and scheduled fires; add 'blockchain'/'manual' via env.
+  transactionBumpAfterMs: parseInteger('TX_BUMP_AFTER_MS', 45_000, 5_000, 600_000),
+  transactionBumpIncrementPct: parseInteger('TX_BUMP_INCREMENT_PCT', 15, 1, 200),
+  transactionBumpMaxAttempts: parseInteger('TX_BUMP_MAX_ATTEMPTS', 3, 0, 10),
+  transactionBumpSources: optionalString('TX_BUMP_SOURCES') || 'launch,scheduled',
   projectRoot: PROJECT_ROOT,
   supportedChains,
 });
