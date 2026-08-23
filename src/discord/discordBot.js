@@ -11,6 +11,12 @@ const { TransactionSafetyError } = require('../transactions/transactionEngine');
 const { ValidationError, validationReply, LIMITS } = require('../validation/domain');
 const { BotContextError, RateLimitError, commandName, createCommandRateLimiter, escapeDiscord,
   verifyDiscordContext } = require('../security/botSecurity');
+// In-flight lock for value-bearing executions -- double-clicks and Discord network retries can
+// deliver the same component interaction twice before the first clears flowState. The lock is
+// per-platform-user for the duration of one execution (a few seconds of RPC + signing), not
+// per-flow, which is intentionally conservative for financial correctness.
+const inFlightMintExecutions = new Set();
+
 // Shared with Telegram (src/telegram/flowState.js). That module has no Telegram-specific logic --
 // it is a platform-namespaced (platform, chatId) -> flow tracker, written to be reused here.
 const { createFlowStateStore } = require('../telegram/flowState');
@@ -368,6 +374,11 @@ async function applyMintFlowStep(ctx, respond, platformUserId, userId, { step, d
 async function finishMintExecutionDiscord(ctx, respond, platformUserId, userId, flowData) {
   const { commands, flowState, rateLimiter } = ctx;
   const backToMenu = [discordMenus.row([discordMenus.button('⬅️ Back to menu', 'menu:main')])];
+  const lockKey = `discord:${platformUserId}`;
+  if (inFlightMintExecutions.has(lockKey)) {
+    return respond({ content: 'Already processing your mint -- please wait for the current one to finish.', components: backToMenu });
+  }
+  inFlightMintExecutions.add(lockKey);
   try {
     rateLimiter.check('discord', userId, flowData.multi ? 'batch-mint' : 'mint');
     if (flowData.multi) {
@@ -404,6 +415,8 @@ async function finishMintExecutionDiscord(ctx, respond, platformUserId, userId, 
     if (error instanceof ValidationError) return respond({ content: escapeDiscord(validationReply(error)), components: backToMenu });
     if (error instanceof TransactionSafetyError) return respond({ content: `❌ ${escapeDiscord(error.message)}`, components: backToMenu });
     throw error;
+  } finally {
+    inFlightMintExecutions.delete(lockKey);
   }
 }
 

@@ -56,6 +56,11 @@ const { createSocialUsageService, formatUsageSummary } = require('./social/usage
 const { createFlowStateStore } = require('./telegram/flowState');
 const { createPanelStore } = require('./telegram/panelState');
 const telegramMenus = require('./telegram/menus');
+
+// In-flight lock for Telegram value-bearing executions -- see discordBot.js for rationale:
+// double-taps and Telegram network retries can deliver the same callback query twice before
+// the first clears flowState.
+const telegramInFlightMints = new Set();
 const { createChainWatcher } = require('./sniper/chainWatcher');
 const { createSniperRepository } = require('./sniper/sniperRepository');
 const { createSniperService } = require('./sniper/sniperService');
@@ -1544,6 +1549,11 @@ async function advanceFromPriceResolved(chatId, messageId, userId, flow, priceET
 
 async function finishMintExecution(chatId, messageId, userId, flowData) {
   const backToMenu = telegramMenus.mainMenu({}).replyMarkup;
+  const lockKey = `telegram:${chatId}`;
+  if (telegramInFlightMints.has(lockKey)) {
+    return tgUpdate(chatId, messageId, { text: 'Already processing your mint -- please wait for the current one to finish.', replyMarkup: backToMenu });
+  }
+  telegramInFlightMints.add(lockKey);
   try {
     commandRateLimiter.check('telegram', userId, flowData.multi ? 'batch-mint' : 'mint');
     if (flowData.multi) {
@@ -1580,6 +1590,8 @@ async function finishMintExecution(chatId, messageId, userId, flowData) {
     if (error instanceof ValidationError) return tgUpdate(chatId, messageId, { text: escapeTelegramHtml(validationReply(error)), replyMarkup: backToMenu, parseMode: 'HTML' });
     if (error instanceof TransactionSafetyError) return tgUpdate(chatId, messageId, { text: `❌ ${escapeTelegramHtml(error.message)}`, replyMarkup: backToMenu, parseMode: 'HTML' });
     throw error;
+  } finally {
+    telegramInFlightMints.delete(lockKey);
   }
 }
 
