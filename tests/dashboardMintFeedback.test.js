@@ -6,6 +6,8 @@ const {mintPriceStep}=require('../src/discord/menus');
 const {pathToFileURL}=require('node:url');
 
 const appSource=fs.readFileSync(path.join(__dirname,'..','dashboard','src','App.jsx'),'utf8');
+const serverSource=fs.readFileSync(path.join(__dirname,'..','src','server.js'),'utf8');
+const discordSource=fs.readFileSync(path.join(__dirname,'..','src','discord','discordBot.js'),'utf8');
 
 test('dashboard address detection deduplicates overlapping paste and blur requests',()=>{
   assert.match(appSource,/requestKey===lastDetected\.current\|\|requestKey===detectingKey\.current/);
@@ -23,10 +25,36 @@ test('notification bell records toast messages without rendering a second pop-up
   assert.doesNotMatch(appSource,/bell-auto-preview/);
 });
 
+test('dashboard mint completion records the chain actually prepared, not the wallet default chain',()=>{
+  assert.match(serverSource,/recordMintActivity\(\{ userId, wallet, quantity: previewQuantity\(prepared\.preview\), intent, chain: prepared\.chain \}\)/);
+  assert.doesNotMatch(serverSource,/recordMintActivity\(\{ userId, wallet, quantity: previewQuantity\(prepared\.preview\), intent, chain: wallet\.chain \}\)/);
+});
+
+test('History exposes durable mint records and Robinhood links use its own explorer',()=>{
+  assert.match(appSource,/api\/mints\/history/);
+  assert.match(appSource,/robinhood:'https:\/\/robinhoodchain\.blockscout\.com\/tx\/'/);
+  assert.match(appSource,/All \$\{total\} mints were successful\./);
+  assert.match(appSource,/Mint successful\./);
+});
+
 test('Discord uses the same calm manual-price guidance',()=>{
   const payload=mintPriceStep({chainSym:'ETH'});
   assert.equal(payload.content,'Enter the mint price per item in ETH to continue. Use 0 only if the mint is free.');
   assert.equal(/recognized price function/i.test(payload.content),false);
+});
+
+test('wallet rail badge counts every wallet and still refreshes from wallets.changed',()=>{
+  assert.match(appSource,/Wallets:Array\.isArray\(wallets\.data\)\?wallets\.data\.length:0/);
+  assert.match(appSource,/useLoad\('\/api\/wallets',\[\],'wallets\.changed'\)/);
+  assert.match(appSource,/item==='Wallets'\?`\$\{badge\} wallets`/);
+});
+
+test('dashboard and guided bot batches preserve the OpenSea preparation decision',()=>{
+  assert.doesNotMatch(appSource,/batch cannot encode/);
+  assert.match(appSource,/chain:detectedChain,viaOpenSea,methodSignature:viaOpenSea\?undefined:methodSignature/);
+  assert.match(appSource,/arguments:viaOpenSea\?\[\]:detectedArguments,valueWei:viaOpenSea\?'0'/);
+  assert.match(serverSource,/viaOpenSea: flowData\.viaOpenSea === true/);
+  assert.match(discordSource,/viaOpenSea: flowData\.viaOpenSea === true/);
 });
 
 test('mint preview turns insufficient balance diagnostics into a short actionable message',async()=>{

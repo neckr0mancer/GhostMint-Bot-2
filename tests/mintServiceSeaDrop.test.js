@@ -95,8 +95,8 @@ test('OpenSea validation rejects an Archetype mintTo that redirects the NFT to a
   }), ValidationError);
 });
 
-function commandServiceFixture({ contractValueResolver, seaDropDiscoveryService, openSeaService, priceFeedService }) {
-  const state = { wallets: [{ userId: 'user-a', label: 'main', address: WALLET, chain: 'ethereum' }], tasks: [], activity: [], pnl: [], snipers: [] };
+function commandServiceFixture({ contractValueResolver, seaDropDiscoveryService, openSeaService, priceFeedService, wallets }) {
+  const state = { wallets: wallets || [{ userId: 'user-a', label: 'main', address: WALLET, chain: 'ethereum' }], tasks: [], activity: [], pnl: [], snipers: [] };
   const calls = [];
   const service = createBotCommandService({
     storage: {}, schedulerRepository: {}, providerService: { perform: async () => '0x1234' }, governance: {}, adminCommands: {}, sniperService: {},
@@ -142,7 +142,9 @@ test('mint() still requires a manual price when neither resolver finds anything'
 // this app's own prepareMintCall, then hands it to executeMintViaOpenSea -- the exact same execution
 // path (governance ceilings, simulation, gas ceiling, activity recording) every other mint uses.
 test('mintViaOpenSea builds calldata through OpenSea and executes it via executeMintViaOpenSea, not the normal calldata path', async () => {
-  const built = { to: SEADROP, data: '0xabcd', valueWei: '50000000000000000', chain: 'ethereum' };
+  const built = { to: CONTRACT, data: ARCHETYPE_INTERFACE.encodeFunctionData('mint', [
+    { key: `0x${'00'.repeat(32)}`, proof: [] }, 2, ZERO_ADDRESS, '0x',
+  ]), valueWei: '50000000000000000', chain: 'ethereum' };
   const buildCalls = [];
   const { calls, service } = commandServiceFixture({
     openSeaService: { buildMintTransaction: async (...args) => { buildCalls.push(args); return built; } },
@@ -155,6 +157,40 @@ test('mintViaOpenSea builds calldata through OpenSea and executes it via execute
   assert.equal(calls[0][3].quantity, 2);
   assert.deepEqual(calls[0][4], built);
   assert.equal(result.txHash, '0xdef');
+});
+
+test('batchMint prepares OpenSea calldata independently for every selected wallet', async () => {
+  const secondWallet = '0x00000000000000000000000000000000000000B2';
+  const data = ARCHETYPE_INTERFACE.encodeFunctionData('mint', [
+    { key: `0x${'00'.repeat(32)}`, proof: [] }, 1, ZERO_ADDRESS, '0x',
+  ]);
+  const buildCalls = [];
+  const { calls, service } = commandServiceFixture({
+    wallets: [
+      { userId: 'user-a', label: 'main', address: WALLET, chain: 'ethereum' },
+      { userId: 'user-a', label: 'second', address: secondWallet, chain: 'ethereum' },
+    ],
+    openSeaService: { buildMintTransaction: async (...args) => {
+      buildCalls.push(args);
+      return { to: CONTRACT, data, valueWei: '0', chain: 'ethereum' };
+    } },
+  });
+
+  const results = await service.batchMint('user-a', {
+    viaOpenSea: true, walletLabels: ['main', 'second'], contractAddress: CONTRACT,
+    quantity: 1, chain: 'ethereum',
+  });
+
+  assert.deepEqual(buildCalls, [
+    ['ethereum', CONTRACT, WALLET, 1],
+    ['ethereum', CONTRACT, secondWallet, 1],
+  ]);
+  assert.deepEqual(calls.map(call => [call[0], call[2]]), [
+    ['executeMintViaOpenSea', 'main'], ['executeMintViaOpenSea', 'second'],
+  ]);
+  assert.deepEqual(results.map(result => [result.walletLabel, result.txHash]), [
+    ['main', '0xdef'], ['second', '0xdef'],
+  ]);
 });
 
 test('mintViaOpenSea throws instead of executing when OpenSea cannot build a mint for this contract', async () => {
@@ -210,6 +246,42 @@ test('dashboard prepareMint uses OpenSea-built Archetype calldata and simulates 
   assert.equal(previewed.calldata, data);
   assert.equal(previewed.method.signature, 'mint((bytes32,bytes32[]),uint256,address,bytes)');
   assert.equal(result.simulation.simulationPassed, true);
+});
+
+test('Discord and dashboard share the on-chain public Archetype fallback when OpenSea returns 404/null', async () => {
+  const state = { wallets: [{ userId: 'user-a', label: 'main', address: WALLET, chain: 'robinhood' }], tasks: [], activity: [], pnl: [], snipers: [] };
+  const builtForDiscord = [];
+  const previewedForDashboard = [];
+  const providerCalls = [];
+  const commands = createBotCommandService({
+    storage: {}, schedulerRepository: {}, governance: {}, adminCommands: {}, sniperService: {},
+    supportedChains: ['robinhood'], chains: { robinhood: { sym: 'ETH' } }, getState: () => state,
+    openSeaService: { buildMintTransaction: async () => null },
+    providerService: { perform: async (chain, operation) => {
+      providerCalls.push([chain, operation]);
+      return ARCHETYPE_INTERFACE.encodeFunctionResult('computePrice', [25000000000000n]);
+    } },
+    previewMint: async value => { previewedForDashboard.push(value.prepared); return { simulationPerformed: true, simulationPassed: true }; },
+    executeMintViaOpenSea: async value => { builtForDiscord.push(value.built); return { state: 'submitted' }; },
+  });
+
+  await commands.prepareMint('user-a', { viaOpenSea: true, walletLabel: 'main',
+    contractAddress: CONTRACT, quantity: 2, chain: 'robinhood' });
+  await commands.mintViaOpenSea('user-a', { walletLabel: 'main', contractAddress: CONTRACT,
+    quantity: 2, chain: 'robinhood' });
+
+  assert.deepEqual(providerCalls, [
+    ['robinhood', 'archetype:computePrice'], ['robinhood', 'archetype:computePrice'],
+  ]);
+  assert.equal(previewedForDashboard[0].calldata, builtForDiscord[0].data);
+  assert.equal(previewedForDashboard[0].valueWei, 25000000000000n);
+  assert.equal(previewedForDashboard[0].calldata.slice(0, 10), '0x4a21a2df');
+  const [auth, quantity, affiliate, signature] = ARCHETYPE_INTERFACE.decodeFunctionData('mint', builtForDiscord[0].data);
+  assert.equal(auth.key, `0x${'00'.repeat(32)}`);
+  assert.deepEqual([...auth.proof], []);
+  assert.equal(quantity, 2n);
+  assert.equal(affiliate, ZERO_ADDRESS);
+  assert.equal(signature, '0x');
 });
 
 test('detectMintContract tries SeaDrop first and returns a SeaDrop-shaped result when a core is found, including opening time and OpenSea metadata', async () => {

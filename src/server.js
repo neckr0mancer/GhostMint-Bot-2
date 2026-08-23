@@ -1527,7 +1527,8 @@ async function finishMintExecution(chatId, messageId, userId, flowData) {
     commandRateLimiter.check('telegram', userId, flowData.multi ? 'batch-mint' : 'mint');
     if (flowData.multi) {
       const results = await botCommands.batchMint(userId, { walletLabels: flowData.selectedWallets,
-        contractAddress: flowData.contractAddress, chain: flowData.chain, quantity: flowData.quantity || 1, priceETH: flowData.priceETH, maxGasGwei: flowData.maxGasGwei });
+        contractAddress: flowData.contractAddress, chain: flowData.chain, quantity: flowData.quantity || 1,
+        priceETH: flowData.priceETH, maxGasGwei: flowData.maxGasGwei, viaOpenSea: flowData.viaOpenSea === true });
       telegramFlowState.clear('telegram', chatId);
       // Per wallet: batchMint no longer aborts on the first failure, so a bare count would
       // report a batch where half the wallets never minted as an unqualified success.
@@ -3725,7 +3726,7 @@ const botCommands = createBotCommandService({
   executePreparedMint:async({userId,wallet,prepared,gasGwei})=>{
     const intent=await mintExecution.executePrepared({userId,wallet,prepared,triggerSource:'manual',
       gasPriceWei:gasGwei===undefined||gasGwei===null?undefined:ethers.parseUnits(String(gasGwei),'gwei')});
-    await recordMintActivity({ userId, wallet, quantity: previewQuantity(prepared.preview), intent, chain: wallet.chain });
+    await recordMintActivity({ userId, wallet, quantity: previewQuantity(prepared.preview), intent, chain: prepared.chain });
     return intent;
   },
   executeMint: async ({ userId, wallet, request }) => {
@@ -3760,6 +3761,8 @@ const botCommands = createBotCommandService({
 const dashboardApi=createDashboardApi({auth:dashboardAuth,identityRepository,commands:botCommands,
   securityAudit:botSecurityRepository,broadcast:(userId,message)=>dashboardWebSockets.broadcastToUser(userId,message),
   broadcastToUsers:(userIds,message)=>dashboardWebSockets.broadcastToUsers(userIds,message),
+  notifyUser,
+  chains:CHAINS,
   supportedChains:CONFIG.supportedChains,
   checkAccountStatus:userId=>governance.checkAccountStatus(userId),
   loginRateLimiter:createCommandRateLimiter({limit:5,windowMs:60_000}),

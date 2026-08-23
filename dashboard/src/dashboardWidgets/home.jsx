@@ -2,7 +2,7 @@ import React from 'react';
 import {Celebrate,FirstRun,Meter,Notice,SectionCard,Skeleton,Sparkline,StatTile} from '../shared.jsx';
 import {activitySucceeded} from '../activityFeed.js';
 import PnlBars from '../PnlBars.jsx';
-import {ChainDot,chainFromExplorer,CountdownRing,EmptyState,formatEth,formatSigned,ICONS,Row,shortAddress,weiToEth} from './homeParts.jsx';
+import {ChainDot,chainFromExplorer,CountdownRing,EmptyState,explorerForChain,formatEth,formatSigned,ICONS,Row,shortAddress,weiToEth} from './homeParts.jsx';
 
 /* ==========================================================================
    Home — the redesigned page for the two primary themes (brief §9.1-D15).
@@ -116,12 +116,13 @@ function Tiles({summary,sources,pnl30}){
 function CelebrateCard({summary,go}){
   const item=summary.latestSuccess;
   if(!item)return null;
+  const explorer=explorerForChain(item.chain)||item.explorer;
   return <Celebrate title={item.title||'Mint confirmed'}
     detail={[item.walletLabel,item.time?new Date(item.time).toLocaleString():null].filter(Boolean).join(' · ')}>
     {/* Hidden entirely below 2 -- "1 in a row" is not a streak (contract §5.7). */}
     {summary.streak>=2&&<div className="streak">🔥 {summary.streak} in a row</div>}
     <div className="celebrate-actions">
-      {item.explorer&&item.txHash&&<a className="link-button" href={`${item.explorer}${item.txHash}`}
+      {explorer&&item.txHash&&<a className="link-button" href={`${explorer}${item.txHash}`}
         target="_blank" rel="noreferrer noopener">View transaction</a>}
       <button type="button" className="b g sm" onClick={()=>go('Activity')}>All activity</button>
     </div>
@@ -160,7 +161,7 @@ function ActivityCard({summary,sources,go}){
         // Activity uses `success`/`fail`; transaction-derived rows can use confirmed/submitted.
         // The old "anything except failed" check incorrectly painted `fail` as a green success.
         const success=activitySucceeded(item.status);
-        const chain=chainFromExplorer(item.explorer);
+        const chain=item.chain||chainFromExplorer(item.explorer);
         const gas=weiToEth(item.actualNetworkCostWei);
         const gasText=gas!==null?gas.toFixed(6):item.txHash?'unavailable':'not spent';
         return <Row key={item.id} icon={success?ICONS.check:ICONS.cross} tone={success?'gain':'loss'}

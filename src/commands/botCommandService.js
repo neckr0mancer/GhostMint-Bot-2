@@ -5,7 +5,8 @@ const { ValidationError, requestSchemas, LIMITS } = require('../validation/domai
 const { paginate, pagination } = require('../pagination');
 const { calculateStatistics } = require('../statistics/statisticsService');
 const { detectContractChain } = require('../mint/chainDetector');
-const { computeSeaDropValueWei, validateOpenSeaMintCall } = require('../mint/seaDropCall');
+const { ARCHETYPE_INTERFACE, ARCHETYPE_PUBLIC_KEY, buildPublicArchetypeMintCall,
+  computeSeaDropValueWei, validateOpenSeaMintCall } = require('../mint/seaDropCall');
 const { SEADROP_MINT_SIGNATURE } = require('../mint/seaDropRegistry');
 const { MINT_METHODS } = require('../mint/mintRegistry');
 const { createWalletBalanceCache } = require('./walletBalanceCache');
@@ -469,6 +470,41 @@ function createBotCommandService(dependencies) {
     return executeMint({ userId, wallet: owned, request: validated });
   }
 
+  // One preparation path for Discord, Telegram and dashboard. OpenSea remains authoritative for
+  // gated stages, but an HTTP 404/null build is not proof that an Archetype public mint is
+  // unavailable: several indexed Robinhood collections expose the known public invite directly.
+  // Probe only that audited shape, compute its price on-chain, and let the normal transaction
+  // engine simulation decide whether the call is currently valid. Any other contract fails closed.
+  async function prepareOpenSeaMint(userId, input) {
+    const owned = wallet(userId, input.walletLabel);
+    const chain = input.chain || owned.chain;
+    const validated = requestSchemas.mint({ ...input, priceETH: 0, chain }, { supportedChains });
+    let built = openSeaService
+      ? await openSeaService.buildMintTransaction(chain, validated.contractAddress, owned.address, validated.quantity)
+      : null;
+    if (!built && providerService?.perform) {
+      try {
+        const priceData = ARCHETYPE_INTERFACE.encodeFunctionData('computePrice',
+          [ARCHETYPE_PUBLIC_KEY, validated.quantity, false]);
+        const encodedPrice = await providerService.perform(chain, 'archetype:computePrice', provider =>
+          provider.call({ to: validated.contractAddress, data: priceData }));
+        const [valueWei] = ARCHETYPE_INTERFACE.decodeFunctionResult('computePrice', encodedPrice);
+        built = { ...buildPublicArchetypeMintCall({ contractAddress: validated.contractAddress,
+          quantity: validated.quantity, valueWei }), chain };
+      } catch {
+        // Not an Archetype public invite (or its read failed). Preserve the existing fail-closed
+        // result; never guess another signature, invite key, proof, affiliate or payment.
+      }
+    }
+    if (!built) throw new ValidationError({ field: 'contractAddress',
+      message: "couldn't prepare a supported mint call for this contract right now" });
+    const decoded = validateOpenSeaMintCall({ built, contractAddress: validated.contractAddress,
+      quantity: validated.quantity, minterAddress: owned.address });
+    const prepared = { chain, calldata: built.data, valueWei: BigInt(built.valueWei),
+      method: { signature: decoded.methodSignature, standard: decoded.standard }, preview: decoded };
+    return { owned, validated, built, prepared };
+  }
+
   // Section AF -- the point of the whole feature: an allowlist/GTD/FCFS SeaDrop stage has no
   // on-chain proof this app can construct (no merkle proof, no signature it can produce) -- that
   // verification lives entirely in OpenSea's own backend. This validates the request the same way
@@ -480,16 +516,7 @@ function createBotCommandService(dependencies) {
   // ceilings, simulation, gas ceiling, and activity recording are all still enforced; OpenSea only
   // ever supplies to/data/value.
   async function mintViaOpenSea(userId, input) {
-    const owned = wallet(userId, input.walletLabel);
-    const chain = input.chain || owned.chain;
-    const validated = requestSchemas.mint({ ...input, priceETH: 0, chain }, { supportedChains });
-    if (!openSeaService) {
-      throw new ValidationError({ field: 'contractAddress', message: 'OpenSea-backed minting is not available -- no OpenSea integration is configured' });
-    }
-    const built = await openSeaService.buildMintTransaction(chain, validated.contractAddress, owned.address, validated.quantity);
-    if (!built) {
-      throw new ValidationError({ field: 'contractAddress', message: "OpenSea couldn't build a mint for this contract right now -- it may not track this as a drop, or OpenSea is temporarily unavailable" });
-    }
+    const { owned, validated, built } = await prepareOpenSeaMint(userId, input);
     return executeMintViaOpenSea({ userId, wallet: owned, request: validated, built });
   }
 
@@ -511,12 +538,21 @@ function createBotCommandService(dependencies) {
   // rendering /batchmint already had. Validation still throws: a bad contract or an unsupported
   // chain is wrong for the whole request, not for one wallet, and must not be retried 5 times.
   async function batchMint(userId, input) {
-    const withPrice = await resolvePriceIfMissing(input, input.chain);
+    const viaOpenSea = input.viaOpenSea === true;
+    // OpenSea builds wallet-specific calldata and value, so a batch must repeat that preparation
+    // for every selected wallet. Treating an OpenSea batch as a plain mint discarded the recipient
+    // and invite/proof fields and fell into the unsupported-method error before simulation.
+    const withPrice = viaOpenSea
+      ? { ...input, priceETH: 0 }
+      : await resolvePriceIfMissing(input, input.chain);
     const validated = requestSchemas.batchMint(withPrice, { supportedChains });
     const results = [];
     for (const label of validated.walletLabels) {
       try {
-        results.push({ walletLabel: label, ...await mint(userId, { ...validated, walletLabel: label }) });
+        const result = viaOpenSea
+          ? await mintViaOpenSea(userId, { ...validated, walletLabel: label })
+          : await mint(userId, { ...validated, walletLabel: label });
+        results.push({ walletLabel: label, ...result });
       } catch (error) {
         results.push({ walletLabel: label, state: 'failed',
           error: error instanceof ValidationError
@@ -640,18 +676,12 @@ function createBotCommandService(dependencies) {
   // input.chain to match owned.chain, which would have blocked minting on anything but a
   // wallet's default chain -- removed so preview/confirm behaves the same as mint()/batchMint().
   async function prepareMint(userId,input) {
-    const owned=wallet(userId,input.walletLabel);
+    let owned=wallet(userId,input.walletLabel);
     let prepared;
     if (input.viaOpenSea) {
-      const chain=input.chain||owned.chain;
-      const validated=requestSchemas.mint({...input,priceETH:0,chain},{supportedChains});
-      if(!openSeaService) throw new ValidationError({field:'contractAddress',message:'OpenSea-backed minting is not available'});
-      const built=await openSeaService.buildMintTransaction(chain,validated.contractAddress,owned.address,validated.quantity);
-      if(!built) throw new ValidationError({field:'contractAddress',message:"OpenSea couldn't build this mint right now -- the drop may be inactive or unavailable"});
-      const decoded=validateOpenSeaMintCall({built,contractAddress:validated.contractAddress,
-        quantity:validated.quantity,minterAddress:owned.address});
-      prepared={chain,calldata:built.data,valueWei:BigInt(built.valueWei),
-        method:{signature:decoded.methodSignature,standard:decoded.standard},preview:decoded};
+      const resolved=await prepareOpenSeaMint(userId,input);
+      owned=resolved.owned;
+      prepared=resolved.prepared;
     } else prepared=input.presetName
       ? await mintService.preparePreset(userId,input.presetName,owned.address)
       : await mintService.prepare({...input,walletAddress:owned.address,chain:input.chain||owned.chain});
@@ -804,6 +834,7 @@ function createBotCommandService(dependencies) {
     advancedModesAllowed: async userId => (await governanceRepository.getEffectiveGovernance(userId, 'ethereum')).advancedModesAllowed,
     pendingTransactions: userId => transactionIntentRepository.listNonFinalForUser(userId),
     transactionsPage:(userId,input)=>pageFrom(transactionIntentRepository.listPageForUser?.bind(transactionIntentRepository),()=>[],userId,input),
+    mintsPage:(userId,input)=>pageFrom(transactionIntentRepository.listMintPageForUser?.bind(transactionIntentRepository),()=>[],userId,input),
     stats,
     selectMode: (userId, preset) => governance.selectPreset(userId, preset),
     admin: (userId, input) => adminCommands.execute(userId, input),

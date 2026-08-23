@@ -89,6 +89,12 @@ const CHAIN_META={
   robinhood:{label:'Robinhood Chain',icon:<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><rect x="3" y="3" width="18" height="18" rx="6" fill="#00C805"/></svg>},
 };
 function chainMeta(value){return CHAIN_META[value]||{label:value,icon:null};}
+const CHAIN_EXPLORERS={
+  ethereum:'https://etherscan.io/tx/',base:'https://basescan.org/tx/',
+  arbitrum:'https://arbiscan.io/tx/',polygon:'https://polygonscan.com/tx/',
+  robinhood:'https://robinhoodchain.blockscout.com/tx/',
+};
+function explorerForChain(chain){return CHAIN_EXPLORERS[chain]||null;}
 const CHAIN_CHEVRON_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 9l6 6 6-6"/></svg>;
 const CHAIN_CHECK_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M5 13l4 4L19 7"/></svg>;
 const SOLANA_ICON=<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 2 20 7v10l-8 5-8-5V7z" fill="none" stroke="currentColor" strokeWidth="1.8"/></svg>;
@@ -391,7 +397,8 @@ function ActivityRow({item,scope='wallet'}){
     ?(VERIFICATION_LABELS[item.verificationState]||String(item.verificationState)):null;
   const details=[...source,item.txHash?shortHex(item.txHash):null,item.triggerSource,gas,
     verification,item.time?relativeTime(item.time):null].filter(Boolean).join(' · ');
-  const href=item.txHash&&item.explorer?`${item.explorer}${item.txHash}`:null;
+  const explorer=explorerForChain(item.chain)||item.explorer;
+  const href=item.txHash&&explorer?`${explorer}${item.txHash}`:null;
   return <div className="r">
     <div className="rm">
       <div className="rt">{item.title}</div>
@@ -977,8 +984,8 @@ function Minting({onSwitchToBatch,onGoWallets}){const wallets=useLoad('/api/wall
     const response=await api('/api/mints/confirm',{method:'POST',body:JSON.stringify({previewToken:preview.previewToken,confirmation:'CONFIRM'})});
     const succeeded=response.results.filter(entry=>entry.status==='success').length;
     const total=response.results.length;
-    if(succeeded===total){notify(total>1?`All ${total} mints submitted.`:'Mint submitted.',{type:'success'});setPreview(null);setConfirmResults(null);formRef.current?.reset();resetDetectedFields();}
-    else{setConfirmResults(Object.fromEntries(response.results.map(entry=>[entry.label,entry])));notify(succeeded===0?'Mint failed -- see the reason below.':`${succeeded}/${total} mints submitted -- see details below for the rest.`,{type:succeeded===0?'error':'info'});}
+    if(succeeded===total){notify(total>1?`All ${total} mints were successful.`:'Mint successful.',{type:'success',category:'money'});setPreview(null);setConfirmResults(null);formRef.current?.reset();resetDetectedFields();}
+    else{setConfirmResults(Object.fromEntries(response.results.map(entry=>[entry.label,entry])));notify(succeeded===0?'Mint failed -- see the reason below.':`${succeeded}/${total} mints were successful; see details below for the rest.`,{type:succeeded===0?'error':'info',category:'money'});}
   }catch(value){const friendly=mintPreviewError(value,{chain:detectedChain,quantity});notify(`${friendly.title} ${friendly.detail}`,{type:'error'});}}
   const detected=Boolean(methodSignature);
   const item=preview?.items?.[0];
@@ -2495,7 +2502,6 @@ function MintBatch({onGoWallets}){
   const [selected,setSelected]=useState([]);
   const [contractAddress,setContractAddress]=useState('');
   const [quantity,setQuantity]=useState('1');
-  const [priceEth,setPriceEth]=useState('0');
   const [preview,setPreview]=useState(null);
   const [results,setResults]=useState(null);
   const [busy,setBusy]=useState(false);
@@ -2503,40 +2509,49 @@ function MintBatch({onGoWallets}){
   // from the contract exactly as Mint now does it. lastDetected guards against re-detecting the
   // same address on every keystroke.
   const [detectedPrice,setDetectedPrice]=useState(null);
+  const [detectedChain,setDetectedChain]=useState('');
+  const [methodSignature,setMethodSignature]=useState('');
+  const [detectedArguments,setDetectedArguments]=useState([]);
+  const [seaDropAddress,setSeaDropAddress]=useState('');
+  const [viaOpenSea,setViaOpenSea]=useState(false);
   const lastDetected=useRef("");
-  async function detectPrice(address){
+  async function detectPrice(address,quantityOverride=quantity){
     const trimmed=address.trim();
-    if(!ADDRESS_SHAPE.test(trimmed)||trimmed===lastDetected.current)return;
-    lastDetected.current=trimmed;
+    const requestKey=`${trimmed}:${quantityOverride}`;
+    if(!ADDRESS_SHAPE.test(trimmed)||requestKey===lastDetected.current)return;
+    lastDetected.current=requestKey;
     try{
-      const result=await api(`/api/mints/detect?contractAddress=${encodeURIComponent(trimmed)}&quantity=${encodeURIComponent(quantity)}`);
-      setDetectedPrice(result.priceKnown?weiToEthDisplay(result.valueWei):"0");
-    }catch{setDetectedPrice(null);}
+      const result=await api(`/api/mints/detect?contractAddress=${encodeURIComponent(trimmed)}&quantity=${encodeURIComponent(quantityOverride)}`);
+      const useOpenSea=Boolean(result.openSeaMintRecommended);
+      setViaOpenSea(useOpenSea);
+      setDetectedChain(result.chain||'');
+      setMethodSignature(useOpenSea?'':result.methodSignature||'');
+      setDetectedArguments(useOpenSea?[]:result.arguments||[]);
+      setSeaDropAddress(useOpenSea?'':result.seaDropAddress||'');
+      setDetectedPrice(useOpenSea?'0':result.priceKnown?weiToEthDisplay(result.valueWei):null);
+    }catch{
+      setDetectedPrice(null);setDetectedChain('');setMethodSignature('');setDetectedArguments([]);
+      setSeaDropAddress('');setViaOpenSea(false);
+    }
   }
   function autoDetectIfReady(value){detectPrice(value);}
   function toggle(label){setSelected(current=>current.includes(label)?current.filter(item=>item!==label):[...current,label]);}
   async function simulate(event){
     event.preventDefault();
     if(!selected.length){notify('Select at least one wallet.',{type:'error'});return;}
-    const valueWei=ethToWei(detectedPrice??"0");
-    if(valueWei===null){notify('Could not resolve a price for this contract — check the address.',{type:'error'});return;}
+    if(!viaOpenSea&&!methodSignature){notify('Could not prepare this contract for batch minting.',{type:'error'});return;}
+    const valueWei=ethToWei(detectedPrice);
+    if(!viaOpenSea&&valueWei===null){notify('Could not confirm the mint price for this contract.',{type:'error'});return;}
     setBusy(true);
     try{
       setPreview(await api('/api/mints/preview',{method:'POST',body:JSON.stringify({
-        walletLabels:selected,contractAddress:contractAddress.trim(),arguments:[],valueWei:valueWei.toString()})}));
+        walletLabels:selected,contractAddress:contractAddress.trim(),quantity:Number(quantity),
+        chain:detectedChain,viaOpenSea,methodSignature:viaOpenSea?undefined:methodSignature,
+        seaDropAddress:viaOpenSea?undefined:seaDropAddress||undefined,
+        arguments:viaOpenSea?[]:detectedArguments,valueWei:viaOpenSea?'0':valueWei.toString()})}));
       setResults(null);
       notify(`Simulation passed for ${selected.length} wallets — review and confirm.`,{type:'success'});
-    }catch(value){
-      // The server's own words here are "methodSignature is not one of the supported mint
-      // signatures", which is true and useless to whoever pasted the address. It happens for a
-      // whole class of real drops -- SeaDrop ones -- because buildMintCall only encodes the
-      // audited plain-mint signatures, so batch genuinely cannot do them. Say THAT, and say what
-      // still works, rather than naming a field the user never filled in.
-      const unsupported=(value.issues||[]).some(issue=>issue.field==='methodSignature');
-      notify(unsupported
-        ?'This contract uses a mint method batch cannot encode (SeaDrop drops are the usual case). Mint now handles it one wallet at a time.'
-        :value.message,{type:'error',timeoutMs:unsupported?12000:5000});
-    }
+    }catch(value){notify(value.message,{type:'error'});}
     finally{setBusy(false);}
   }
   async function confirmBatch(){
@@ -2546,7 +2561,7 @@ function MintBatch({onGoWallets}){
       const response=await api('/api/mints/confirm',{method:'POST',body:JSON.stringify({previewToken:preview.previewToken,confirmation:'CONFIRM'})});
       setResults(response.results);
       const failed=response.results.filter(item=>item.status!=='success').length;
-      notify(failed?`${response.results.length-failed} of ${response.results.length} submitted; ${failed} failed.`:'All wallets submitted.',{type:failed?'error':'success'});
+      notify(failed?`${response.results.length-failed} of ${response.results.length} succeeded; ${failed} failed.`:'All wallet mints were successful.',{type:failed?'error':'success'});
     }catch(value){notify(value.message,{type:'error'});}
     finally{setBusy(false);}
   }
@@ -2582,7 +2597,10 @@ function MintBatch({onGoWallets}){
             aria-describedby={!noWallets&&!enoughSelected?'batch-gate':undefined}
             placeholder={enoughSelected?'0x…':`Select ${BATCH_MIN_WALLETS} wallets first`}
             value={contractAddress}
-            onChange={e=>{if(!enoughSelected)return;setContractAddress(e.target.value);autoDetectIfReady(e.target.value);}}/>
+            onChange={e=>{if(!enoughSelected)return;setContractAddress(e.target.value);setPreview(null);
+              if(!ADDRESS_SHAPE.test(e.target.value.trim())){lastDetected.current='';setDetectedPrice(null);
+                setDetectedChain('');setMethodSignature('');setDetectedArguments([]);setSeaDropAddress('');setViaOpenSea(false);}
+              autoDetectIfReady(e.target.value);}}/>
           {/* Stated up front as well as on click -- a rule you can only discover by bumping into it
               is a rule the page kept to itself. */}
           {!noWallets&&!enoughSelected&&<div className="fielderr" id="batch-gate">{ALERT_ICON}{gateMessage}</div>}</label>
@@ -2608,14 +2626,15 @@ function MintBatch({onGoWallets}){
         <label className="fl"><span>Quantity per wallet</span>
           <div className="qty">
             <input className="in tab" type="number" min={1} max={3} disabled={noWallets}
-              placeholder="Enter quantity (1–3)" value={quantity} onChange={e=>setQuantity(e.target.value)}/>
+              placeholder="Enter quantity (1–3)" value={quantity} onChange={e=>{setQuantity(e.target.value);
+                if(ADDRESS_SHAPE.test(contractAddress.trim()))detectPrice(contractAddress,e.target.value);}}/>
             {/* Shared rule against this form's cap of 3 -> 1, 2, 3, Max. Backlog §13. */}
             <div className="qb">{quantityPicks(3).map(pick=><button type="button" key={pick} disabled={noWallets}
               className={String(pick)===String(quantity)?'on':undefined}
-              onClick={()=>setQuantity(String(pick))}>{pick}</button>)}
+                onClick={()=>{setQuantity(String(pick));if(ADDRESS_SHAPE.test(contractAddress.trim()))detectPrice(contractAddress,String(pick));}}>{pick}</button>)}
               <button type="button" disabled={noWallets}
                 className={String(quantity)==='3'?'on':undefined}
-                onClick={()=>setQuantity('3')}>Max</button></div>
+                onClick={()=>{setQuantity('3');if(ADDRESS_SHAPE.test(contractAddress.trim()))detectPrice(contractAddress,'3');}}>Max</button></div>
           </div></label>
         <button className="b p" disabled={busy||!enoughSelected}>Simulate all {selected.length||0}</button>
       </form>
@@ -2647,7 +2666,7 @@ function MintBatch({onGoWallets}){
                    {entry.status==='success'?shortHex(batchRowDetail(entry)):batchRowDetail(entry)}</span>
                </div>)}
                <p style={{fontSize:'11px',color:'var(--faint)',marginTop:'9px'}}>
-                 {succeeded} {succeeded===1?'transaction was':'transactions were'} broadcast.
+                 {succeeded} {succeeded===1?'transaction was':'transactions were'} confirmed.
                  {resultCount-succeeded>0?` The ${resultCount-succeeded===1?'other':'others'} never left the server.`:''}</p>
              </div>
             :preview
@@ -3526,12 +3545,55 @@ function SecurityLogTab(){
         </div>}
   </>;
 }
+function MintHistory(){
+  const [page,setPage]=useState(1);
+  const listing=useLoad(`/api/mints/history?page=${page}&pageSize=10`,[page],'activity.changed');
+  const rows=listing.data?.items||[];
+  const loading=listing.data===null&&!listing.error;
+  return <>
+    <Notice error={listing.error?{title:'Could not load your mints.',
+      detail:'Your transactions are unaffected — this list could not be read.',
+      code:`${listing.status||500} · Request failed safely`,onRetry:listing.load}:null}/>
+    {loading&&<div className="card history-list-state" aria-busy="true">
+      {Array.from({length:4}).map((_,index)=><div className="sk row" key={index}/>)}</div>}
+    {!loading&&!listing.error&&rows.length===0&&<div className="card"><div className="emp">
+      <div className="ei">{CARD_ICON}</div><h3>No mints yet</h3>
+      <p>Your confirmed, pending, and failed mint transactions will appear here.</p>
+    </div></div>}
+    {!loading&&!listing.error&&rows.length>0&&<div className="card">
+      {rows.map(item=>{
+        const contract=item.callPreview?.contractAddress||item.to;
+        const quantity=item.callPreview?.arguments?.find(argument=>['quantity','amount'].includes(argument.name))?.value;
+        const tokenIds=Array.isArray(item.tokenIds)&&item.tokenIds.length?item.tokenIds:null;
+        const gas=item.actualNetworkCostWei===null||item.actualNetworkCostWei===undefined
+          ?null:`${Number(weiToEthDisplay(item.actualNetworkCostWei)).toFixed(6)} ETH gas`;
+        const details=[item.walletLabel,chainMeta(item.chain).label,quantity?`quantity ${quantity}`:null,
+          tokenIds?`token ${tokenIds.join(', ')}`:null,gas,item.createdAt?relativeTime(item.createdAt):null]
+          .filter(Boolean).join(' · ');
+        const explorer=explorerForChain(item.chain);
+        const href=item.txHash&&explorer?`${explorer}${item.txHash}`:null;
+        return <div className="r" key={item.intentId}>
+          <div className="rm"><div className="rt">{contract?shortHex(contract):'Mint transaction'}</div>
+            <div className="rs mono">{details}</div></div>
+          <div className="rv" style={{display:'flex',alignItems:'center',gap:'7px'}}>
+            {href&&<a className="ico-btn" href={href} target="_blank" rel="noopener noreferrer"
+              aria-label={`View ${shortHex(item.txHash)} on ${chainMeta(item.chain).label}`}
+              title={`View on ${chainMeta(item.chain).label}`}>{EXTERNAL_ICON}</a>}
+            <span className={`p ${outcomeTone(item.state)}`}>{item.state}</span>
+          </div>
+        </div>;
+      })}
+      <HistoryPager value={listing.data} page={page} setPage={setPage} visibleCount={rows.length}/>
+    </div>}
+  </>;
+}
 function History({profile,tab,onTab,go}){
   // Built from profile.isOwner so the tab list itself differs -- a non-owner never sees a tab
   // they cannot open, and `active` falls back to Activity if a stale ?tab=security is bookmarked
   // by someone who has since lost owner access.
   const tabs=[
     {id:'activity',label:'Activity'},
+    {id:'mints',label:'Mints'},
     {id:'audit',label:'Audit evidence'},
     ...(profile.isOwner?[{id:'security',label:'Security log',tag:'owner only'}]:[]),
   ];
@@ -3543,6 +3605,7 @@ function History({profile,tab,onTab,go}){
     <SubTabs tabs={tabs} active={active} onChange={onTab} label="History sections"/>
     <div className="history-flow">
       {active==='activity'&&<Activity go={go}/>}
+      {active==='mints'&&<MintHistory/>}
       {active==='audit'&&<div className="unav">
         <div className="ei">{AUDIT_ICON}</div>
         <h3>Trigger audit is available from Telegram and Discord</h3>
@@ -3785,7 +3848,10 @@ function useNavBadges(){
   // 1 against its one Failing rule, while its Active sniper adds nothing. The Policies tab's
   // "Bypass · Requires an explicit challenge" is a row inside a policy table, not a pending
   // action, so it is deliberately not counted here.
-  return {Mint:mint,Automation:automation.total,Wallets:lowWallets(wallets.data),
+  return {Mint:mint,Automation:automation.total,
+    // The rail badge is inventory, not a funding warning: creating wallet #2 must show 2 even if
+    // an RPC balance read is unavailable. Low-balance attention remains on Wallets → Balances.
+    Wallets:Array.isArray(wallets.data)?wallets.data.length:0,
     hot:{Mint:mintFailing,Automation:automation.hot}};
 }
 const TOP_RAIL_PAGES=['Home','Mint','Automation','Wallets','History'];
@@ -3910,7 +3976,7 @@ function Shell({profile,onLogout,onProfileChange}){const navBadges=useNavBadges(
           aria-current={page===item?'page':undefined} onClick={()=>go(item)}>
           {RAIL_ICONS[item]}<span className="nav-l">{item}</span>
           {badge>0&&<span className={`cnt${hot?' hot':''}`}
-            aria-label={`${badge} ${hot?'failing':'needing attention'}`}>{badge}</span>}
+            aria-label={item==='Wallets'?`${badge} wallets`:`${badge} ${hot?'failing':'needing attention'}`}>{badge}</span>}
         </button>;
       })}
       <div className="railfoot">
