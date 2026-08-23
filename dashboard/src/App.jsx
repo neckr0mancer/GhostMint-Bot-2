@@ -2502,7 +2502,6 @@ function MintBatch({onGoWallets}){
   const [selected,setSelected]=useState([]);
   const [contractAddress,setContractAddress]=useState('');
   const [quantity,setQuantity]=useState('1');
-  const [priceEth,setPriceEth]=useState('0');
   const [preview,setPreview]=useState(null);
   const [results,setResults]=useState(null);
   const [busy,setBusy]=useState(false);
@@ -2510,40 +2509,49 @@ function MintBatch({onGoWallets}){
   // from the contract exactly as Mint now does it. lastDetected guards against re-detecting the
   // same address on every keystroke.
   const [detectedPrice,setDetectedPrice]=useState(null);
+  const [detectedChain,setDetectedChain]=useState('');
+  const [methodSignature,setMethodSignature]=useState('');
+  const [detectedArguments,setDetectedArguments]=useState([]);
+  const [seaDropAddress,setSeaDropAddress]=useState('');
+  const [viaOpenSea,setViaOpenSea]=useState(false);
   const lastDetected=useRef("");
-  async function detectPrice(address){
+  async function detectPrice(address,quantityOverride=quantity){
     const trimmed=address.trim();
-    if(!ADDRESS_SHAPE.test(trimmed)||trimmed===lastDetected.current)return;
-    lastDetected.current=trimmed;
+    const requestKey=`${trimmed}:${quantityOverride}`;
+    if(!ADDRESS_SHAPE.test(trimmed)||requestKey===lastDetected.current)return;
+    lastDetected.current=requestKey;
     try{
-      const result=await api(`/api/mints/detect?contractAddress=${encodeURIComponent(trimmed)}&quantity=${encodeURIComponent(quantity)}`);
-      setDetectedPrice(result.priceKnown?weiToEthDisplay(result.valueWei):"0");
-    }catch{setDetectedPrice(null);}
+      const result=await api(`/api/mints/detect?contractAddress=${encodeURIComponent(trimmed)}&quantity=${encodeURIComponent(quantityOverride)}`);
+      const useOpenSea=Boolean(result.openSeaMintRecommended);
+      setViaOpenSea(useOpenSea);
+      setDetectedChain(result.chain||'');
+      setMethodSignature(useOpenSea?'':result.methodSignature||'');
+      setDetectedArguments(useOpenSea?[]:result.arguments||[]);
+      setSeaDropAddress(useOpenSea?'':result.seaDropAddress||'');
+      setDetectedPrice(useOpenSea?'0':result.priceKnown?weiToEthDisplay(result.valueWei):null);
+    }catch{
+      setDetectedPrice(null);setDetectedChain('');setMethodSignature('');setDetectedArguments([]);
+      setSeaDropAddress('');setViaOpenSea(false);
+    }
   }
   function autoDetectIfReady(value){detectPrice(value);}
   function toggle(label){setSelected(current=>current.includes(label)?current.filter(item=>item!==label):[...current,label]);}
   async function simulate(event){
     event.preventDefault();
     if(!selected.length){notify('Select at least one wallet.',{type:'error'});return;}
-    const valueWei=ethToWei(detectedPrice??"0");
-    if(valueWei===null){notify('Could not resolve a price for this contract — check the address.',{type:'error'});return;}
+    if(!viaOpenSea&&!methodSignature){notify('Could not prepare this contract for batch minting.',{type:'error'});return;}
+    const valueWei=ethToWei(detectedPrice);
+    if(!viaOpenSea&&valueWei===null){notify('Could not confirm the mint price for this contract.',{type:'error'});return;}
     setBusy(true);
     try{
       setPreview(await api('/api/mints/preview',{method:'POST',body:JSON.stringify({
-        walletLabels:selected,contractAddress:contractAddress.trim(),arguments:[],valueWei:valueWei.toString()})}));
+        walletLabels:selected,contractAddress:contractAddress.trim(),quantity:Number(quantity),
+        chain:detectedChain,viaOpenSea,methodSignature:viaOpenSea?undefined:methodSignature,
+        seaDropAddress:viaOpenSea?undefined:seaDropAddress||undefined,
+        arguments:viaOpenSea?[]:detectedArguments,valueWei:viaOpenSea?'0':valueWei.toString()})}));
       setResults(null);
       notify(`Simulation passed for ${selected.length} wallets — review and confirm.`,{type:'success'});
-    }catch(value){
-      // The server's own words here are "methodSignature is not one of the supported mint
-      // signatures", which is true and useless to whoever pasted the address. It happens for a
-      // whole class of real drops -- SeaDrop ones -- because buildMintCall only encodes the
-      // audited plain-mint signatures, so batch genuinely cannot do them. Say THAT, and say what
-      // still works, rather than naming a field the user never filled in.
-      const unsupported=(value.issues||[]).some(issue=>issue.field==='methodSignature');
-      notify(unsupported
-        ?'This contract uses a mint method batch cannot encode (SeaDrop drops are the usual case). Mint now handles it one wallet at a time.'
-        :value.message,{type:'error',timeoutMs:unsupported?12000:5000});
-    }
+    }catch(value){notify(value.message,{type:'error'});}
     finally{setBusy(false);}
   }
   async function confirmBatch(){
@@ -2553,7 +2561,7 @@ function MintBatch({onGoWallets}){
       const response=await api('/api/mints/confirm',{method:'POST',body:JSON.stringify({previewToken:preview.previewToken,confirmation:'CONFIRM'})});
       setResults(response.results);
       const failed=response.results.filter(item=>item.status!=='success').length;
-      notify(failed?`${response.results.length-failed} of ${response.results.length} submitted; ${failed} failed.`:'All wallets submitted.',{type:failed?'error':'success'});
+      notify(failed?`${response.results.length-failed} of ${response.results.length} succeeded; ${failed} failed.`:'All wallet mints were successful.',{type:failed?'error':'success'});
     }catch(value){notify(value.message,{type:'error'});}
     finally{setBusy(false);}
   }
@@ -2589,7 +2597,10 @@ function MintBatch({onGoWallets}){
             aria-describedby={!noWallets&&!enoughSelected?'batch-gate':undefined}
             placeholder={enoughSelected?'0x…':`Select ${BATCH_MIN_WALLETS} wallets first`}
             value={contractAddress}
-            onChange={e=>{if(!enoughSelected)return;setContractAddress(e.target.value);autoDetectIfReady(e.target.value);}}/>
+            onChange={e=>{if(!enoughSelected)return;setContractAddress(e.target.value);setPreview(null);
+              if(!ADDRESS_SHAPE.test(e.target.value.trim())){lastDetected.current='';setDetectedPrice(null);
+                setDetectedChain('');setMethodSignature('');setDetectedArguments([]);setSeaDropAddress('');setViaOpenSea(false);}
+              autoDetectIfReady(e.target.value);}}/>
           {/* Stated up front as well as on click -- a rule you can only discover by bumping into it
               is a rule the page kept to itself. */}
           {!noWallets&&!enoughSelected&&<div className="fielderr" id="batch-gate">{ALERT_ICON}{gateMessage}</div>}</label>
@@ -2615,14 +2626,15 @@ function MintBatch({onGoWallets}){
         <label className="fl"><span>Quantity per wallet</span>
           <div className="qty">
             <input className="in tab" type="number" min={1} max={3} disabled={noWallets}
-              placeholder="Enter quantity (1–3)" value={quantity} onChange={e=>setQuantity(e.target.value)}/>
+              placeholder="Enter quantity (1–3)" value={quantity} onChange={e=>{setQuantity(e.target.value);
+                if(ADDRESS_SHAPE.test(contractAddress.trim()))detectPrice(contractAddress,e.target.value);}}/>
             {/* Shared rule against this form's cap of 3 -> 1, 2, 3, Max. Backlog §13. */}
             <div className="qb">{quantityPicks(3).map(pick=><button type="button" key={pick} disabled={noWallets}
               className={String(pick)===String(quantity)?'on':undefined}
-              onClick={()=>setQuantity(String(pick))}>{pick}</button>)}
+                onClick={()=>{setQuantity(String(pick));if(ADDRESS_SHAPE.test(contractAddress.trim()))detectPrice(contractAddress,String(pick));}}>{pick}</button>)}
               <button type="button" disabled={noWallets}
                 className={String(quantity)==='3'?'on':undefined}
-                onClick={()=>setQuantity('3')}>Max</button></div>
+                onClick={()=>{setQuantity('3');if(ADDRESS_SHAPE.test(contractAddress.trim()))detectPrice(contractAddress,'3');}}>Max</button></div>
           </div></label>
         <button className="b p" disabled={busy||!enoughSelected}>Simulate all {selected.length||0}</button>
       </form>
@@ -2654,7 +2666,7 @@ function MintBatch({onGoWallets}){
                    {entry.status==='success'?shortHex(batchRowDetail(entry)):batchRowDetail(entry)}</span>
                </div>)}
                <p style={{fontSize:'11px',color:'var(--faint)',marginTop:'9px'}}>
-                 {succeeded} {succeeded===1?'transaction was':'transactions were'} broadcast.
+                 {succeeded} {succeeded===1?'transaction was':'transactions were'} confirmed.
                  {resultCount-succeeded>0?` The ${resultCount-succeeded===1?'other':'others'} never left the server.`:''}</p>
              </div>
             :preview
@@ -3836,7 +3848,10 @@ function useNavBadges(){
   // 1 against its one Failing rule, while its Active sniper adds nothing. The Policies tab's
   // "Bypass · Requires an explicit challenge" is a row inside a policy table, not a pending
   // action, so it is deliberately not counted here.
-  return {Mint:mint,Automation:automation.total,Wallets:lowWallets(wallets.data),
+  return {Mint:mint,Automation:automation.total,
+    // The rail badge is inventory, not a funding warning: creating wallet #2 must show 2 even if
+    // an RPC balance read is unavailable. Low-balance attention remains on Wallets → Balances.
+    Wallets:Array.isArray(wallets.data)?wallets.data.length:0,
     hot:{Mint:mintFailing,Automation:automation.hot}};
 }
 const TOP_RAIL_PAGES=['Home','Mint','Automation','Wallets','History'];
@@ -3961,7 +3976,7 @@ function Shell({profile,onLogout,onProfileChange}){const navBadges=useNavBadges(
           aria-current={page===item?'page':undefined} onClick={()=>go(item)}>
           {RAIL_ICONS[item]}<span className="nav-l">{item}</span>
           {badge>0&&<span className={`cnt${hot?' hot':''}`}
-            aria-label={`${badge} ${hot?'failing':'needing attention'}`}>{badge}</span>}
+            aria-label={item==='Wallets'?`${badge} wallets`:`${badge} ${hot?'failing':'needing attention'}`}>{badge}</span>}
         </button>;
       })}
       <div className="railfoot">

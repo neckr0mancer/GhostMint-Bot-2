@@ -95,8 +95,8 @@ test('OpenSea validation rejects an Archetype mintTo that redirects the NFT to a
   }), ValidationError);
 });
 
-function commandServiceFixture({ contractValueResolver, seaDropDiscoveryService, openSeaService, priceFeedService }) {
-  const state = { wallets: [{ userId: 'user-a', label: 'main', address: WALLET, chain: 'ethereum' }], tasks: [], activity: [], pnl: [], snipers: [] };
+function commandServiceFixture({ contractValueResolver, seaDropDiscoveryService, openSeaService, priceFeedService, wallets }) {
+  const state = { wallets: wallets || [{ userId: 'user-a', label: 'main', address: WALLET, chain: 'ethereum' }], tasks: [], activity: [], pnl: [], snipers: [] };
   const calls = [];
   const service = createBotCommandService({
     storage: {}, schedulerRepository: {}, providerService: { perform: async () => '0x1234' }, governance: {}, adminCommands: {}, sniperService: {},
@@ -157,6 +157,40 @@ test('mintViaOpenSea builds calldata through OpenSea and executes it via execute
   assert.equal(calls[0][3].quantity, 2);
   assert.deepEqual(calls[0][4], built);
   assert.equal(result.txHash, '0xdef');
+});
+
+test('batchMint prepares OpenSea calldata independently for every selected wallet', async () => {
+  const secondWallet = '0x00000000000000000000000000000000000000B2';
+  const data = ARCHETYPE_INTERFACE.encodeFunctionData('mint', [
+    { key: `0x${'00'.repeat(32)}`, proof: [] }, 1, ZERO_ADDRESS, '0x',
+  ]);
+  const buildCalls = [];
+  const { calls, service } = commandServiceFixture({
+    wallets: [
+      { userId: 'user-a', label: 'main', address: WALLET, chain: 'ethereum' },
+      { userId: 'user-a', label: 'second', address: secondWallet, chain: 'ethereum' },
+    ],
+    openSeaService: { buildMintTransaction: async (...args) => {
+      buildCalls.push(args);
+      return { to: CONTRACT, data, valueWei: '0', chain: 'ethereum' };
+    } },
+  });
+
+  const results = await service.batchMint('user-a', {
+    viaOpenSea: true, walletLabels: ['main', 'second'], contractAddress: CONTRACT,
+    quantity: 1, chain: 'ethereum',
+  });
+
+  assert.deepEqual(buildCalls, [
+    ['ethereum', CONTRACT, WALLET, 1],
+    ['ethereum', CONTRACT, secondWallet, 1],
+  ]);
+  assert.deepEqual(calls.map(call => [call[0], call[2]]), [
+    ['executeMintViaOpenSea', 'main'], ['executeMintViaOpenSea', 'second'],
+  ]);
+  assert.deepEqual(results.map(result => [result.walletLabel, result.txHash]), [
+    ['main', '0xdef'], ['second', '0xdef'],
+  ]);
 });
 
 test('mintViaOpenSea throws instead of executing when OpenSea cannot build a mint for this contract', async () => {

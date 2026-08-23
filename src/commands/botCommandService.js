@@ -538,12 +538,21 @@ function createBotCommandService(dependencies) {
   // rendering /batchmint already had. Validation still throws: a bad contract or an unsupported
   // chain is wrong for the whole request, not for one wallet, and must not be retried 5 times.
   async function batchMint(userId, input) {
-    const withPrice = await resolvePriceIfMissing(input, input.chain);
+    const viaOpenSea = input.viaOpenSea === true;
+    // OpenSea builds wallet-specific calldata and value, so a batch must repeat that preparation
+    // for every selected wallet. Treating an OpenSea batch as a plain mint discarded the recipient
+    // and invite/proof fields and fell into the unsupported-method error before simulation.
+    const withPrice = viaOpenSea
+      ? { ...input, priceETH: 0 }
+      : await resolvePriceIfMissing(input, input.chain);
     const validated = requestSchemas.batchMint(withPrice, { supportedChains });
     const results = [];
     for (const label of validated.walletLabels) {
       try {
-        results.push({ walletLabel: label, ...await mint(userId, { ...validated, walletLabel: label }) });
+        const result = viaOpenSea
+          ? await mintViaOpenSea(userId, { ...validated, walletLabel: label })
+          : await mint(userId, { ...validated, walletLabel: label });
+        results.push({ walletLabel: label, ...result });
       } catch (error) {
         results.push({ walletLabel: label, state: 'failed',
           error: error instanceof ValidationError

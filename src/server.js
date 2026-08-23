@@ -1527,7 +1527,8 @@ async function finishMintExecution(chatId, messageId, userId, flowData) {
     commandRateLimiter.check('telegram', userId, flowData.multi ? 'batch-mint' : 'mint');
     if (flowData.multi) {
       const results = await botCommands.batchMint(userId, { walletLabels: flowData.selectedWallets,
-        contractAddress: flowData.contractAddress, chain: flowData.chain, quantity: flowData.quantity || 1, priceETH: flowData.priceETH, maxGasGwei: flowData.maxGasGwei });
+        contractAddress: flowData.contractAddress, chain: flowData.chain, quantity: flowData.quantity || 1,
+        priceETH: flowData.priceETH, maxGasGwei: flowData.maxGasGwei, viaOpenSea: flowData.viaOpenSea === true });
       telegramFlowState.clear('telegram', chatId);
       // Per wallet: batchMint no longer aborts on the first failure, so a bare count would
       // report a batch where half the wallets never minted as an unqualified success.
