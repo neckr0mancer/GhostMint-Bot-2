@@ -158,6 +158,10 @@ For the selected unit, list:
 - Use brief functional motion and respect reduced-motion preferences.
 - Fixed mobile chrome respects safe-area insets. No horizontal page overflow.
 - Status always has text plus tone/shape; color alone is insufficient.
+- User-facing warnings and errors use plain language and no more than two short sentences: first
+  say what happened, then say what the user can do. Do not show HTTP status numbers, RPC/provider
+  jargon, raw exceptions, repeated safety disclaimers, or long diagnostic explanations on the
+  customer surface. Keep technical detail in safe internal logs and tests instead.
 - Activity and immutable audit evidence remain separate concepts.
 - Post-confirmation sniper copying must always be labeled as such, never presented as mempool
   front-running.
@@ -304,4 +308,3 @@ Every finished unit reports:
 5. Security, data-truth, and compatibility notes.
 6. What remains for this unit.
 7. Git state; commit and push status only when requested.
-
