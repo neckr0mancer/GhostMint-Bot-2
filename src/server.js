@@ -3799,6 +3799,16 @@ app.use(cors());
 app.use(express.json());
 app.use(dashboardApi.securityHeaders);
 mountDashboardRoutes(app,dashboardApi);
+// Same data as the public /health below, but behind a session + owner check so it shows up inside
+// the admin dashboard itself instead of only being reachable by hitting the bare endpoint by hand.
+// MUST stay registered ABOVE the /api 404 catch-all that follows: it sat below it once and every
+// request answered "API route not found", starving the admin System health panel (Round 10 item 1).
+app.get('/api/admin/health', dashboardApi.requireSession, async (req,res) => {
+  try { await governance.requireOwner(req.dashboardSession.userId); }
+  catch { return res.status(403).json({error:'Owner access required'}); }
+  const health=await readinessService.inspect();
+  res.json({...health,uptime:Math.floor(process.uptime())});
+});
 app.use('/api',(req,res)=>res.status(404).json({error:'API route not found'}));
 app.use(dashboardApi.error);
 app.use('/dashboard/assets',express.static(path.join(PROJECT_ROOT,'public','dashboard','assets'),{immutable:true,maxAge:'1y'}));
@@ -3813,14 +3823,6 @@ const readinessService=createReadinessService({database:storage,providerService,
 app.get('/health', async (req,res) => {
   const health=await readinessService.inspect();
   res.status(health.status==='ok'?200:503).json({...health,uptime:Math.floor(process.uptime())});
-});
-// Same data as the public /health above, but behind a session + owner check so it shows up inside
-// the admin dashboard itself instead of only being reachable by hitting the bare endpoint by hand.
-app.get('/api/admin/health', dashboardApi.requireSession, async (req,res) => {
-  try { await governance.requireOwner(req.dashboardSession.userId); }
-  catch { return res.status(403).json({error:'Owner access required'}); }
-  const health=await readinessService.inspect();
-  res.json({...health,uptime:Math.floor(process.uptime())});
 });
 app.get('*', (req,res) => res.sendFile(path.join(PROJECT_ROOT,'public','index.html')));
 

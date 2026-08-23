@@ -212,7 +212,14 @@ function createTransactionIntentRepository(pool) {
     },
 
     async rollingSpendWei(userId, walletId, sinceMs) {
-      const result = await pool.query(`SELECT COALESCE(SUM(COALESCE(actual_network_cost_wei,estimated_cost_wei)),0) AS total
+      // Budget accounting counts an intent's FULL cost -- mint value plus network fee.
+      // estimated_cost_wei already includes both, but actual_network_cost_wei holds GAS ONLY once a
+      // receipt lands, so COALESCE(actual, estimated) silently dropped a confirmed mint's entire
+      // value from the 24h total and the daily budget did not hold (PROJECT_REVIEW §1.1). Actuals
+      // still win where they exist -- they are simply topped back up with the intent's own value;
+      // pre-receipt states keep running on the estimate. Reverted/replaced stay excluded (a failed
+      // attempt is not budget consumption) -- that is this query's long-standing semantics.
+      const result = await pool.query(`SELECT COALESCE(SUM(COALESCE(actual_network_cost_wei + value_wei, estimated_cost_wei)),0) AS total
         FROM transaction_intents WHERE user_id=$1 AND wallet_id=$2
         AND created_at >= TO_TIMESTAMP($3 / 1000.0)
         AND state IN ('submitted','pending','confirmed')`, [userId, walletId, sinceMs]);

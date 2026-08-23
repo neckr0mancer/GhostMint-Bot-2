@@ -311,12 +311,12 @@ function createGovernanceService(repository) {
     // already being enforced against them is not privileged information -- it is the rule they
     // are being held to. effectiveForLinkedUser below stays owner-gated because it reads
     // SOMEONE ELSE'S limits, which is a different question.
-    //
-    // spentTodayWei is deliberately absent. rollingSpendWei sums
-    // COALESCE(actual_network_cost_wei, estimated_cost_wei) and the actual column holds gas only,
-    // so a confirmed transaction's mint value drops out of the 24h total -- the figure is wrong
-    // in the user's favour. Returning it here would put a known-wrong number on a money surface.
-    // Add it once that under-count is fixed (PROJECT_REVIEW §1.1).
+    // spentTodayWei is deliberately absent here -- but no longer because the figure was wrong:
+    // rollingSpendWei's under-count (actuals held gas only, so a confirmed mint's value dropped
+    // out of the 24h total; PROJECT_REVIEW §1.1) is fixed. What keeps it out is SCOPING: that
+    // function sums one wallet, while a profile view wants an account-wide "used today" -- which
+    // wallets to sum, and against which chain's budget, is a product decision for the
+    // /api/profile/limits surface to make explicitly rather than something to slip in here.
     async limitsForSelf(userId,chain) {
       const effective=await repository.getEffectiveGovernance(userId,chain);
       if(effective.isOwner)return {chain,isOwner:true,ceilingExempt:true,maxTransactionValueWei:null,
