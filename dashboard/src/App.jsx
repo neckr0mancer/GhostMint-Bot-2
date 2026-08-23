@@ -984,8 +984,8 @@ function Minting({onSwitchToBatch,onGoWallets}){const wallets=useLoad('/api/wall
     const response=await api('/api/mints/confirm',{method:'POST',body:JSON.stringify({previewToken:preview.previewToken,confirmation:'CONFIRM'})});
     const succeeded=response.results.filter(entry=>entry.status==='success').length;
     const total=response.results.length;
-    if(succeeded===total){notify(total>1?`All ${total} mints confirmed.`:'Mint confirmed.',{type:'success',category:'money'});setPreview(null);setConfirmResults(null);formRef.current?.reset();resetDetectedFields();}
-    else{setConfirmResults(Object.fromEntries(response.results.map(entry=>[entry.label,entry])));notify(succeeded===0?'Mint failed -- see the reason below.':`${succeeded}/${total} mints confirmed; see details below for the rest.`,{type:succeeded===0?'error':'info',category:'money'});}
+    if(succeeded===total){notify(total>1?`All ${total} mints were successful.`:'Mint successful.',{type:'success',category:'money'});setPreview(null);setConfirmResults(null);formRef.current?.reset();resetDetectedFields();}
+    else{setConfirmResults(Object.fromEntries(response.results.map(entry=>[entry.label,entry])));notify(succeeded===0?'Mint failed -- see the reason below.':`${succeeded}/${total} mints were successful; see details below for the rest.`,{type:succeeded===0?'error':'info',category:'money'});}
   }catch(value){const friendly=mintPreviewError(value,{chain:detectedChain,quantity});notify(`${friendly.title} ${friendly.detail}`,{type:'error'});}}
   const detected=Boolean(methodSignature);
   const item=preview?.items?.[0];

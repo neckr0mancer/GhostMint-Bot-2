@@ -32,8 +32,8 @@ test('dashboard mint completion records the chain actually prepared, not the wal
 test('History exposes durable mint records and Robinhood links use its own explorer',()=>{
   assert.match(appSource,/api\/mints\/history/);
   assert.match(appSource,/robinhood:'https:\/\/robinhoodchain\.blockscout\.com\/tx\/'/);
-  assert.match(appSource,/All \$\{total\} mints confirmed\./);
-  assert.match(appSource,/Mint confirmed\./);
+  assert.match(appSource,/All \$\{total\} mints were successful\./);
+  assert.match(appSource,/Mint successful\./);
 });
 
 test('Discord uses the same calm manual-price guidance',()=>{

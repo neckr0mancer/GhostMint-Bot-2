@@ -269,12 +269,12 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLo
     confirmMint:action(async(req,res)=>{confirmation(req);const value=consumePreview(user(req),req.body.previewToken);const results=[];for(const entry of value.entries){
       try{const result=await commands.submitPreparedMint(user(req),entry);results.push({label:entry.wallet.label,status:'success',result});
         const chain=entry.prepared.chain;const network=chains[chain];const link=result.txHash&&network?.ex?`\n<a href="${network.ex}${result.txHash}">View transaction</a>`:'';
-        Promise.resolve().then(()=>notifyUser(user(req),`✅ <b>Mint confirmed on ${network?.name||chain}.</b>${link}`)).catch(()=>{});}
+        await Promise.resolve().then(()=>notifyUser(user(req),`✅ <b>Mint successful.</b> Your transaction was confirmed on ${network?.name||chain}.${link}`)).catch(()=>{});}
       catch(error){const reason=error instanceof ValidationError?error.issues.map(issue=>`${issue.field} ${issue.message}`).join('; ')
         :error instanceof TransactionSafetyError?error.message:'Mint failed unexpectedly -- check activity for details.';
         results.push({label:entry.wallet.label,status:'failed',error:reason});
         const chain=entry.prepared.chain;const network=chains[chain];
-        Promise.resolve().then(()=>notifyUser(user(req),`❌ <b>Mint failed on ${network?.name||chain}.</b> ${escapeTelegramHtml(reason)}`)).catch(()=>{});}
+        await Promise.resolve().then(()=>notifyUser(user(req),`❌ <b>Mint failed.</b> Nothing was minted on ${network?.name||chain}. ${escapeTelegramHtml(reason)}`)).catch(()=>{});}
     }res.status(202).json(jsonSafe({results}));}),
     tasks:action(async(req,res)=>res.json(await commands.tasksPage(user(req),req.query))),
     createTask:action(async(req,res)=>{const task=await commands.createTask(user(req),req.body);res.status(201).json(task);}),
