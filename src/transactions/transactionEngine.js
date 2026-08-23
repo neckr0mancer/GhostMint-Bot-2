@@ -140,12 +140,18 @@ function createTransactionEngine({
 
   async function estimateGasSafely(chain, params, options, service = providerService) {
     try { return await providerCall(chain, 'estimateGas', provider => provider.estimateGas(params), options, service); }
-    catch (error) { throw new TransactionSafetyError('SIMULATION_FAILED', explainCallFailure(error, { chain, params })); }
+    catch (error) {
+      if (error?.code === 'RPC_UNAVAILABLE' || error?.code === 'NETWORK_ERROR' || error?.code === 'SERVER_ERROR') throw error;
+      throw new TransactionSafetyError('SIMULATION_FAILED', explainCallFailure(error, { chain, params }));
+    }
   }
 
   async function simulateCallSafely(chain, params, options, service = providerService) {
     try { return await providerCall(chain, 'simulate', provider => provider.call(params), options, service); }
-    catch (error) { throw new TransactionSafetyError('SIMULATION_FAILED', explainCallFailure(error, { chain, params })); }
+    catch (error) {
+      if (error?.code === 'RPC_UNAVAILABLE' || error?.code === 'NETWORK_ERROR' || error?.code === 'SERVER_ERROR') throw error;
+      throw new TransactionSafetyError('SIMULATION_FAILED', explainCallFailure(error, { chain, params }));
+    }
   }
 
   // Lets concurrently fired reads settle instead of rejecting a shared Promise.all, so each leg's
