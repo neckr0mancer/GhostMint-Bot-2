@@ -15,9 +15,10 @@ const { planWaves } = require('./planner');
 // mechanism the scheduler settles with -- so "what happened to my mint" has one source of truth.
 function createLauncher({ repository, stager, mintExecution, mintService, transactionEngine, intentRepository,
   findWallet, triggers = null, notify = () => {}, log = () => {}, now = () => Date.now(),
-  // How long settlement keeps polling intents before giving up and marking them unknown-fate in the
-  // report. Generous: finality on polygon alone can take minutes.
-  settleTimeoutMs = 15 * 60_000, settleIntervalMs = 5_000 }) {
+  // How long a 'sent' member may sit without a final state before the sweep marks it failed.
+  // The underlying intent stays durable -- reconciliation and the bump ladder continue
+  // independently of this reporting view.
+  settleTimeoutMs = 15 * 60_000 }) {
 
   let timer = null;
 
@@ -68,18 +69,15 @@ function createLauncher({ repository, stager, mintExecution, mintService, transa
     const size = Math.max(1, squad.waveSize || 25);
     notify({ type: 'launch.starting', squad });
 
-    const outcomes = [];
+    // Waves dispatched back-to-back; within a wave every send starts simultaneously. sendMember
+    // persists each member's outcome (sent/failed + intentId) as it goes, so settlement -- the
+    // settleFiringSquads sweep in start()'s loop -- never depends on THIS call surviving: the
+    // process can restart mid-burst without orphaning anyone.
     for (let offset = 0; offset < sendable.length; offset += size) {
       const wave = sendable.slice(offset, offset + size);
-      const settled = await Promise.allSettled(wave.map(member => sendMember(squad, member)));
-      settled.forEach((result, index) => {
-        const member = wave[index];
-        const error = result.status === 'rejected' ? result.reason : null;
-        outcomes.push({ member, ok: result.status === 'fulfilled', error: error ? String(error.message || error).slice(0, 300) : null });
-      });
+      await Promise.allSettled(wave.map(member => sendMember(squad, member)));
     }
-    void settleInBackground(squad, outcomes);
-    return outcomes;
+    return { fired: sendable.length };
   }
 
   async function sendMember(squad, member) {
@@ -112,40 +110,59 @@ function createLauncher({ repository, stager, mintExecution, mintService, transa
     }
   }
 
-  async function settleInBackground(squad, outcomes) {
-    const intents = outcomes.filter(entry => entry.ok && entry.member.intentId)
-      .map(entry => ({ label: entry.member.walletLabel, intentId: entry.member.intentId }));
-    const deadline = now() + settleTimeoutMs;
-    const pending = new Map(intents.map(entry => [entry.label, entry.intentId]));
-    while (pending.size && now() < deadline) {
-      await new Promise(resolve => setTimeout(resolve, settleIntervalMs));
-      for (const [label, intentId] of [...pending]) {
-        try {
-          const current = await intentRepository.get(intentId);
-          if (!current) { pending.delete(label); continue; }
-          const intent = await transactionEngine.reconcileIntent(current);
-          if (intent.state === 'confirmed' || intent.state === 'reverted' || intent.state === 'replaced') {
-            pending.delete(label);
-            await repository.updateMemberStatus(squad.id, label, {
-              status: intent.state === 'confirmed' ? 'confirmed' : 'reverted',
-              confirmedAt: new Date(now()),
-              error: intent.state === 'confirmed' ? null : `transaction ${intent.state}`,
-            }).catch(() => {});
+  // Settlement is a SWEEP, not an in-process promise: the process can restart mid-burst, and
+  // members must converge to final states regardless of which lifetime sent them. Every tick:
+  //   - firing squads whose waves are all out get their 'sent' members reconciled;
+  //   - a 'sent' member older than settleTimeoutMs is failed honestly (the intent itself stays
+  //     durable -- reconciliation/bump ladder continue independently of this view);
+  //   - when nothing is staged/pending/sent any more the squad is finalized with its report.
+  async function settleFiringSquads() {
+    if (!repository.listFiringSquads) return;
+    const firing = await repository.listFiringSquads();
+    for (const squad of firing) {
+      try {
+        const fresh = await repository.getSquadById(squad.id);
+        if (!fresh || fresh.status !== 'firing') continue;
+        const inFlight = fresh.members.filter(member => member.status === 'sent');
+        for (const member of inFlight) {
+          if (!member.intentId) {
+            await repository.updateMemberStatus(fresh.id, member.walletLabel,
+              { status: 'failed', error: 'sent without a persisted intent' }).catch(() => {});
+            continue;
           }
-        } catch (error) {
-          log(`Launch settlement lookup failed for ${label}: ${error.message}`);
+          try {
+            const current = await intentRepository.get(member.intentId);
+            if (!current) continue;
+            const intent = await transactionEngine.reconcileIntent(current);
+            if (['confirmed', 'reverted', 'replaced'].includes(intent.state)) {
+              await repository.updateMemberStatus(fresh.id, member.walletLabel, {
+                status: intent.state === 'confirmed' ? 'confirmed' : 'reverted',
+                confirmedAt: new Date(now()),
+                error: intent.state === 'confirmed' ? null : `transaction ${intent.state}`,
+              }).catch(() => {});
+            }
+          } catch (error) {
+            log(`Launch settlement lookup failed for ${member.walletLabel}: ${error.message}`);
+          }
         }
+        const after = await repository.getSquadById(fresh.id);
+        const stillOpen = after.members.filter(member => ['staged', 'pending'].includes(member.status));
+        const stillSent = after.members.filter(member => member.status === 'sent');
+        const overdue = stillSent.filter(member => !member.sentAt || now() - member.sentAt > settleTimeoutMs);
+        for (const member of overdue) {
+          await repository.updateMemberStatus(after.id, member.walletLabel,
+            { status: 'failed', error: 'settlement window elapsed without a final state' }).catch(() => {});
+        }
+        if (stillOpen.length || (stillSent.length - overdue.length) > 0) continue; // waves out or settling
+        const counts = {};
+        for (const member of after.members) counts[member.status] = (counts[member.status] || 0) + 1;
+        const report = { finishedAt: new Date(now()).toISOString(), counts, total: after.members.length };
+        await repository.updateSquad(after.id, { status: 'done', report });
+        notify({ type: 'launch.done', squad: { ...after, report }, report });
+      } catch (error) {
+        log(`Launch settlement sweep error for ${squad.name}: ${error.message}`);
       }
     }
-    for (const [label] of pending) {
-      await repository.updateMemberStatus(squad.id, label, { status: 'failed', error: 'settlement window elapsed without a final state' }).catch(() => {});
-    }
-    const fresh = await repository.getSquad(squad.userId, squad.id);
-    const counts = {};
-    for (const member of fresh.members) counts[member.status] = (counts[member.status] || 0) + 1;
-    const report = { finishedAt: new Date(now()).toISOString(), counts, total: fresh.members.length };
-    await repository.updateSquad(squad.id, { status: 'done', report });
-    notify({ type: 'launch.done', squad: fresh, report });
   }
 
   // Attach (or clear) an event trigger on a staged squad. 'manual'/'timer' clears any live
@@ -204,8 +221,9 @@ function createLauncher({ repository, stager, mintExecution, mintService, transa
     }).catch(error => log(`Launch trigger scan failed: ${error.message}`));
   }
 
-  // Timer-triggered squads: a light poll (the scheduler's precise-timer machinery stays where it
-  // belongs; event-triggered squads arm through `triggers` instead of this loop).
+  // Timer-triggered squads + the settlement sweep share one light loop: timers fire due squads,
+  // event triggers arm through `triggers`, and settleFiringSquads converges every firing squad to
+  // its report card -- including squads orphaned by a restart mid-burst.
   function start() {
     if (timer) return;
     timer = setInterval(() => {
@@ -215,12 +233,13 @@ function createLauncher({ repository, stager, mintExecution, mintService, transa
         }
       }).catch(error => log(`Launch timer scan failed: ${error.message}`));
       armEligibleTriggers();
+      settleFiringSquads().catch(error => log(`Launch settlement sweep failed: ${error.message}`));
     }, 1000);
     timer.unref?.();
   }
   function stop() { if (timer) clearInterval(timer); timer = null; if (triggers) triggers.disarmAll(); }
 
-  return { createAndStage, fire, start, stop, setTarget, cancel };
+  return { createAndStage, fire, start, stop, setTarget, cancel, settleFiringSquads };
 }
 
 module.exports = { createLauncher };

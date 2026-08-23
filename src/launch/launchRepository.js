@@ -101,6 +101,12 @@ function createLaunchRepository(pool) {
         `SELECT * FROM launch_squads WHERE status='staged' AND trigger_type IN ('block','pending')`);
       return result.rows.map(mapSquad);
     },
+    // Squads currently mid-burst -- the settlement sweep reconciles their sent members to final
+    // states and finalizes them with report cards, including after a process restart.
+    async listFiringSquads() {
+      const result = await pool.query(`SELECT * FROM launch_squads WHERE status='firing'`);
+      return result.rows.map(mapSquad);
+    },
     async updateSquad(id, fields = {}) {
       const sets = []; const params = []; let n = 1;
       for (const [key, value] of Object.entries(fields)) {
