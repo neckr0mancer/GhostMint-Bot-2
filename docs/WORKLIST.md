@@ -176,6 +176,23 @@ about). Deploy `eff2e4ce` SUCCESS, all workers healthy. The cap is now documente
 before writing, and re-verify the deployment after every variableUpsert** — six upserts fired six
 redeploys and none were checked until a human noticed.
 
+## Incident (same day): paste-detect dead on Discord — zombie gateway session + latent matcher gap
+
+Reported as "paste for info no longer works on Discord." Diagnosis chain, from logs alone thanks
+to the Round 17 diagnostic logging plus a temporary gateway-entry probe:
+
+1. Zero Paste-detect lines despite real pastes, while slash interactions worked — the message
+   stream was silently dead. Root cause: **a half-dead Discord gateway session after ~7 deploys of
+   churn** (two crash windows today). A clean container restart forced a fresh session; delivery
+   returned instantly and a real paste flowed through detection end-to-end (logged live).
+2. The report also exposed a **latent matcher gap**, now fixed: detection tested the ENTIRE
+   message body against anchored patterns, so multi-entity pastes (address + address + OpenSea
+   link) or wrapped/backticked/zero-width-poisoned lines matched nothing — silently. Detection now
+   scans per line (first match wins), strips edge decorations and invisible characters.
+
+The temporary `messageCreate` entry log shipped with the fix and is removed now that delivery is
+confirmed healthy; the per-line matching and its two regression tests stay permanently.
+
 Next in this round (days 3–7): block-height + pending-tx triggers (`trigger.js`, the front-running
 piece), multi-RPC broadcast race extension beyond sniper (owner-approved direction), accelerated
 bump/replace for launch sends, live monitor/report UI, load rehearsal.

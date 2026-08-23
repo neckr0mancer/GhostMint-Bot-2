@@ -2048,16 +2048,8 @@ function createDiscordBot({ token, applicationId, devGuildId, allowedChannelIds=
   discordClient.on('interactionCreate', createDiscordInteractionHandler({ identity, commands, allowedGuildId:devGuildId || null, allowedChannelIds,
     securityAudit,rateLimiter,log,isOwner,checkAccountStatus,supportedChains,chains,flowState,actionGate,securityStatus,
     launcher,launchRepository }));
-  discordClient.on('messageCreate', message => {
-    // TEMPORARY diagnosis for the silent paste-detect drop (2026-08-22): interactions reach this
-    // deployment but zero Paste-detect lines appeared for real pastes. This line distinguishes,
-    // from logs alone, between "gateway not delivering messages", "content arriving empty"
-    // (privileged-intent class), and "delivered but shape-mismatched". Remove once paste-detect is
-    // confirmed healthy in production.
-    log(`messageCreate: author=${message.author?.id || 'unknown'} bot=${Boolean(message.author?.bot)} ` +
-      `guild=${message.guildId || 'dm'} channel=${message.channelId} len=${String(message.content || '').length}`);
-    return handleMintPasteMessage({ identity, commands, flowState, chains, rateLimiter, checkAccountStatus, allowedGuildId: devGuildId || null, allowedChannelIds, log }, message);
-  });
+  discordClient.on('messageCreate', message =>
+    handleMintPasteMessage({ identity, commands, flowState, chains, rateLimiter, checkAccountStatus, allowedGuildId: devGuildId || null, allowedChannelIds, log }, message));
   return {
     client: discordClient,
     // devGuildId set = development bot: commands register to that one guild only (which is instant,
