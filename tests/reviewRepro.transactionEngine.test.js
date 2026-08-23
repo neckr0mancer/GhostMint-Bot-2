@@ -1,3 +1,4 @@
+/* global setImmediate */
 // REVIEW REPRODUCTIONS for ox-alpha/competitive-speed. Each was run against BOTH this branch
 // and main, because "fails here" only means "regression" if it passes there -- and for two of the
 // three it did not. Control results:
