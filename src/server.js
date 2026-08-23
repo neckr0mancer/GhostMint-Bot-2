@@ -3320,15 +3320,16 @@ send /mint with a contract address to get going.`;
       (member.txHash ? ` — <code>${escapeTelegramHtml(String(member.txHash).slice(0, 18))}…</code>` : '') +
       (member.error ? ` (${escapeTelegramHtml(String(member.error).slice(0, 80))})` : ''));
     const more = squad.members.length > 25 ? `\n…and ${squad.members.length - 25} more` : '';
+    const actionable = ['staged', 'armed'].includes(squad.status);
     return tgRender(msg.chat.id, { text: [
       `<b>${escapeTelegramHtml(squad.name)}</b> [${escapeTelegramHtml(squad.status)}]`,
       `${countLine}`,
       '',
       ...rows, more,
-    ].join('\n'), parseMode: 'HTML', replyMarkup: telegramMenus.keyboard([[
+    ].join('\n'), parseMode: 'HTML', replyMarkup: actionable ? telegramMenus.keyboard([[
       telegramMenus.button('🚀 FIRE NOW', `aco:fire:${squad.id}`),
       telegramMenus.button('❌ Abort', `aco:abort:${squad.id}`),
-    ]] ) });
+    ]] ) : undefined });
   }));
 
   bot.onText(/^\/link(?:@\w+)?$/, withTelegramUser(async (msg, match, userId) => {

@@ -21,6 +21,8 @@ function createLauncher({ repository, stager, mintExecution, mintService, transa
   settleTimeoutMs = 15 * 60_000 }) {
 
   let timer = null;
+  let tickCount = 0;
+  let settling = false;
 
   async function createAndStage({ userId, name, chain, contractAddress, quantity = 1, manualPriceWei = null,
     wallets, maxWaveSize = 25, triggerType = 'manual', fireAt = null, gasPriceWei = null }) {
@@ -117,6 +119,18 @@ function createLauncher({ repository, stager, mintExecution, mintService, transa
   //     durable -- reconciliation/bump ladder continue independently of this view);
   //   - when nothing is staged/pending/sent any more the squad is finalized with its report.
   async function settleFiringSquads() {
+    // Overlap guard: two sweeps interleaving on the same squad would double-reconcile and could
+    // double-finalize (two report cards, two launch.done notifications).
+    if (settling) return;
+    settling = true;
+    try {
+      await settleFiringSquadsInner();
+    } finally {
+      settling = false;
+    }
+  }
+
+  async function settleFiringSquadsInner() {
     if (!repository.listFiringSquads) return;
     const firing = await repository.listFiringSquads();
     for (const squad of firing) {
@@ -222,18 +236,22 @@ function createLauncher({ repository, stager, mintExecution, mintService, transa
   }
 
   // Timer-triggered squads + the settlement sweep share one light loop: timers fire due squads,
-  // event triggers arm through `triggers`, and settleFiringSquads converges every firing squad to
-  // its report card -- including squads orphaned by a restart mid-burst.
+  // event triggers arm through `triggers`, and settlement converges every firing squad to its
+  // report card -- including squads orphaned by a restart mid-burst. Settlement runs on a slower
+  // cadence than the 1s tick deliberately: with 50 wallets in flight, per-second reconciliation
+  // would hammer the provider and DB pools concurrently with the broadcasts themselves. Report
+  // latency of a few seconds is invisible; pool contention during the burst is not.
   function start() {
     if (timer) return;
     timer = setInterval(() => {
+      tickCount += 1;
       repository.listDueTimerSquads(now()).then(due => {
         for (const squad of due) {
           fire(squad).catch(error => log(`Launch squad ${squad.name} failed to fire: ${error.message}`));
         }
       }).catch(error => log(`Launch timer scan failed: ${error.message}`));
       armEligibleTriggers();
-      settleFiringSquads().catch(error => log(`Launch settlement sweep failed: ${error.message}`));
+      if (tickCount % 5 === 0) settleFiringSquads().catch(error => log(`Launch settlement sweep failed: ${error.message}`));
     }, 1000);
     timer.unref?.();
   }
