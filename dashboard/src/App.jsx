@@ -7,6 +7,7 @@ import PnlBars from './PnlBars.jsx';
 import {loadError,batchRowDetail,useRetryAfter} from './shared.jsx';
 import {walletPerformance,pnlWalletLabel} from './walletPerformance.js';
 import {pnlBarLayout,pnlRecordSeries,pnlWindowTotals} from './pnlChart.js';
+import {mintDetectionMessage,mintPreviewError} from './mintFeedback.mjs';
 import {ACTIVITY_EVENTS,api,Ledger,NumberField,SectionCard,confirmDialog,ConfirmHost,consumePendingMintPrefill,CopyButton,csrf,downloadFile,Empty,EVM_CHAINS,Field,Form,getNotificationLog,notify,Notice,PageTitle,Pager,promptDialog,relativeTime,SearchField,Select,Skeleton,StatusPill,SubTabs,subscribeNotificationLog,ToastHost,useLoad,useLiveSocket,setPendingMintPrefill,quantityPicks} from './shared.jsx';
 import Dashboard from './Dashboard.jsx';
 // Phase 4, unit 1 of 5 (brief §2). The 11->5 merge lands one page at a time so any single merge
@@ -937,7 +938,7 @@ function Minting({onSwitchToBatch,onGoWallets}){const wallets=useLoad('/api/wall
       if(useOpenSea){setPriceEth('');notify(`Detected ${result.collection?.name||label} on ${result.chain}. OpenSea will prepare the mint details for review.`,{type:'success'});}
       else if(result.priceKnown){setPriceEth(weiToEthDisplay(result.valueWei));notify(`Detected ${label} on ${result.chain} — price read from the contract.`,{type:'success'});}
       else{setPriceEth('');notify(`Detected ${result.collection?.name||label} on ${result.chain}. Enter the mint price per NFT to continue.`,{type:'info'});}
-    }catch(value){if(detectingKey.current===requestKey)notify(value.message,{type:'error'});}
+    }catch(value){if(detectingKey.current===requestKey)notify(mintDetectionMessage(value),{type:'error'});}
     finally{if(detectingKey.current===requestKey){detectingKey.current='';setDetecting(false);}}
   }
   // No manual "Detect" button anywhere -- detection runs itself the moment a full, valid-shaped
@@ -967,18 +968,18 @@ function Minting({onSwitchToBatch,onGoWallets}){const wallets=useLoad('/api/wall
     // is a money-surface failure and gets the .notice panel -- never a toast alone.
     const issue=value.issues?.find(entry=>entry.field==='quantity');
     if(issue)setQuantityIssue(issue.message);
-    else setMintError({title:value.message||'Could not simulate this mint.',detail:'Nothing was broadcast.',code:value.status,onRetry:()=>inspect()});
+    else setMintError({...mintPreviewError(value,{chain:detectedChain,quantity}),onRetry:()=>inspect()});
   }finally{setSimulating(false);}}
   // Each wallet in the batch is annotated with its own outcome (see confirmResults, rendered per
   // item below) rather than one pass/fail for the whole batch -- a failure on one wallet no longer
   // hides whether the others actually went through.
-  async function confirmMint(){if(!await confirmDialog('Broadcast this simulation-backed mint?'))return;try{
+  async function confirmMint(){if(!await confirmDialog('Mint now? This will spend the amount shown in the preview.'))return;try{
     const response=await api('/api/mints/confirm',{method:'POST',body:JSON.stringify({previewToken:preview.previewToken,confirmation:'CONFIRM'})});
     const succeeded=response.results.filter(entry=>entry.status==='success').length;
     const total=response.results.length;
     if(succeeded===total){notify(total>1?`All ${total} mints submitted.`:'Mint submitted.',{type:'success'});setPreview(null);setConfirmResults(null);formRef.current?.reset();resetDetectedFields();}
     else{setConfirmResults(Object.fromEntries(response.results.map(entry=>[entry.label,entry])));notify(succeeded===0?'Mint failed -- see the reason below.':`${succeeded}/${total} mints submitted -- see details below for the rest.`,{type:succeeded===0?'error':'info'});}
-  }catch(value){notify(value.message,{type:'error'});}}
+  }catch(value){const friendly=mintPreviewError(value,{chain:detectedChain,quantity});notify(`${friendly.title} ${friendly.detail}`,{type:'error'});}}
   const detected=Boolean(methodSignature);
   const item=preview?.items?.[0];
   const totalDebitWei=item?item.simulation.estimatedCostWei:null;
@@ -1068,20 +1069,20 @@ function Minting({onSwitchToBatch,onGoWallets}){const wallets=useLoad('/api/wall
           </div>
           <label className="fl"><span>Price per mint <span style={{color:'var(--faint)',fontWeight:500}}>· {viaOpenSea?'resolved during simulation':'auto-detected'}</span></span>
             <input className="in tab" type="number" step="any" min="0" value={priceEth} disabled={noWallets||viaOpenSea}
-              placeholder={viaOpenSea?'OpenSea supplies the exact value':detected?'e.g. 0.08 — leave blank to use detected price':'Detected once a contract is entered'}
+              placeholder={viaOpenSea?'OpenSea sets the price during preview':detected?'e.g. 0.08 — leave blank to use detected price':'Detected once a contract is entered'}
               onChange={e=>setPriceEth(e.target.value)}/>
           </label>
           {detected&&!viaOpenSea&&priceEth===''&&<div className="nt w" role="status">{WARN_TRIANGLE_ICON}<div><b>Mint price needed.</b> Enter the price per NFT to continue. Use 0 only if the mint is free.</div></div>}
           {/* Batch cross-link -- the prototype keeps this on the single-wallet form, where the
               intent actually arises, rather than leaving Batch buried as a sub-tab. */}
           <div className="nt i">{BATCH_ICON}
-            <div>Minting from more than one wallet? <b>Batch</b> simulates and submits each wallet independently, so one failure doesn&apos;t cancel the rest.
+            <div>Minting from more than one wallet? <b>Batch</b> checks each wallet separately, so one failure won&apos;t stop the others.
               <div style={{marginTop:'8px'}}><button type="button" className="b sm" onClick={()=>onSwitchToBatch?.()}>Switch to batch</button></div></div></div>
         </div>
       </div>
 
       <div className="g">
-        {preview&&<PreviewExpiry preview={preview} onExpire={()=>{setPreview(null);notify('That simulation expired before it was confirmed. Nothing was submitted — simulate again.',{type:'error'});}} onResimulate={inspect}/>}
+        {preview&&<PreviewExpiry preview={preview} onExpire={()=>{setPreview(null);notify('Preview expired. Try again to get a new one.',{type:'info'});}} onResimulate={inspect}/>}
         <div className="sober">
           <div className="sh">{LOCK_ICON}Transaction preview</div>
           {/* Register 1: label left, figure right, tabular numerals. The EMPTY state renders the
@@ -1138,13 +1139,13 @@ function Minting({onSwitchToBatch,onGoWallets}){const wallets=useLoad('/api/wall
           :simulating
             ?<button type="button" className="b big bl" disabled>Simulating…</button>
             :pageError
-              ?<button type="button" className="b big bl" disabled>Cannot mint · see above</button>
+              ?<button type="button" className="b big bl" disabled>Fix the issue above to continue</button>
               :<button type="button" className="b p big bl" disabled={!item} onClick={confirmMint}>
                  {item?`Confirm and mint · ${weiToEthDisplay(totalDebitWei)} ETH`:'Confirm and mint'}</button>}
         <p style={{fontSize:'11px',color:'var(--faint)',textAlign:'center'}}>
           {noWallets
             ?'Preview stays visible at all times — a collapsed total is a hidden total.'
-            :'Broadcast is irreversible. Intent persisted before send.'}</p>
+            :'Once sent, a blockchain transaction cannot be undone.'}</p>
       </div>
     </div>
   </>;
