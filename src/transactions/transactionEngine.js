@@ -147,6 +147,12 @@ function createTransactionEngine({
     catch (error) { throw new TransactionSafetyError('SIMULATION_FAILED', explainCallFailure(error, { chain, params })); }
   }
 
+  // Lets concurrently fired reads settle instead of rejecting a shared Promise.all, so each leg's
+  // own error can resurface at exactly the point where its value is first consumed (see submit()).
+  function settleRead(promise) {
+    return promise.then(value => ({ ok: true, value }), error => ({ ok: false, error }));
+  }
+
   async function transition(intentId, state, details) {
     const updated = await intentRepository.transition(intentId, state, details);
     await safeNotify(notify, { intent: updated, state });
@@ -283,13 +289,20 @@ function createTransactionEngine({
       // Hot-path batching: policy has to land first because it selects the pool and the per-call
       // timeout budget used by every RPC below, but after that the three independent reads -- fee
       // data, wallet balance, rolling daily spend -- were awaited strictly one after another even
-      // though nothing links them. They leave together now; every validation further down keeps its
-      // original order and operands, so only wall-clock latency changes, never which error surfaces.
-      const [feeData, balance, spent] = await Promise.all([
-        resolveFeeData(request.chain, useFastPath, fastRpcOptions, activeService),
-        providerCall(request.chain, 'getBalance', provider => provider.getBalance(from), fastRpcOptions, activeService),
-        intentRepository.rollingSpendWei(request.userId, request.wallet.id, now() - 86_400_000),
+      // though nothing links them. They leave together now -- but each leg settles instead of
+      // rejecting the whole batch, because a bare Promise.all lets the FASTEST rejection win: a
+      // transient RPC timeout on getBalance would mask GAS_CEILING_EXCEEDED, a permanent decision
+      // the scheduler must never retry. Every validation keeps its original order and operands,
+      // and each read's own error resurfaces exactly where that value is first consumed, matching
+      // the serial awaits this batching replaced.
+      const [feeDataRead, balanceRead, spentRead] = await Promise.all([
+        settleRead(resolveFeeData(request.chain, useFastPath, fastRpcOptions, activeService)),
+        settleRead(providerCall(request.chain, 'getBalance', provider => provider.getBalance(from), fastRpcOptions, activeService)),
+        settleRead(intentRepository.rollingSpendWei(request.userId, request.wallet.id, now() - 86_400_000)),
       ]);
+      // The fee read fed every check the moment it was awaited, so its failure still leads.
+      if (!feeDataRead.ok) throw feeDataRead.error;
+      const feeData = feeDataRead.value;
       const hasExplicitLegacyFee = request.gasPriceWei !== undefined && request.gasPriceWei !== null;
       const hasExplicitMaxFee = request.maxFeePerGasWei !== undefined && request.maxFeePerGasWei !== null;
       const gasPriceWei = hasExplicitLegacyFee
@@ -336,10 +349,16 @@ function createTransactionEngine({
         ? await estimateGasSafely(request.chain, { ...base, ...feeFields }, fastRpcOptions, activeService)
         : asBigInt(request.gasLimitWei, 'gasLimitWei');
       if (gasLimit <= 0n) throw new TransactionSafetyError('INVALID_TRANSACTION', 'Gas limit must be positive');
+      // The balance read used to be awaited right here -- after every permanent fee decision above.
+      if (!balanceRead.ok) throw balanceRead.error;
+      const balance = balanceRead.value;
       const estimatedCostWei = valueWei + gasLimit * selectedFee;
       if (BigInt(balance) < estimatedCostWei) {
         throw new TransactionSafetyError('INSUFFICIENT_BALANCE', 'Wallet balance is below the estimated transaction cost');
       }
+      // Same for the rolling-spend read: it followed INSUFFICIENT_BALANCE in the serial version.
+      if (!spentRead.ok) throw spentRead.error;
+      const spent = spentRead.value;
       if (!policy.ceilingExempt && spent + estimatedCostWei > policy.dailySpendingBudgetWei) {
         throw new TransactionSafetyError('DAILY_BUDGET_EXCEEDED', 'Transaction would exceed the wallet daily spending budget');
       }

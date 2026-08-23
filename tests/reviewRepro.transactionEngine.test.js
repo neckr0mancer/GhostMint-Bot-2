@@ -46,7 +46,7 @@ function policy(overrides = {}) {
 
 // Deliberately minimal -- each test drives the provider directly so the exact two-failure
 // combination is explicit rather than buried in shared fixture behaviour.
-function harness({ provider, policyOverrides } = {}) {
+function harness({ provider, policyOverrides, repositoryOverrides = {} } = {}) {
   const intents = [];
   const repository = {
     async createSubmitted(input) {
@@ -69,6 +69,7 @@ function harness({ provider, policyOverrides } = {}) {
     },
     async rollingSpendWei() { return 0n; },
     async nextNonce() { return 0; },
+    ...repositoryOverrides,
   };
   const engine = createTransactionEngine({
     providerService: { expectedChainId: () => 1, perform: (chain, name, operation) => operation(provider) },
@@ -150,6 +151,45 @@ test('a fee over the gas ceiling is reported as such even when a balance read is
   assert.ok(error, 'the mint must fail');
   assert.equal(error.code, 'GAS_CEILING_EXCEEDED',
     'the policy decision must win: reporting the RPC timeout instead makes this look retryable');
+});
+
+// FINDING 3's other leg -- the rolling-spend read is the third concurrent read and is consumed
+// last, so its failure must resurface only where the serial version awaited it: after every
+// permanent fee decision AND after INSUFFICIENT_BALANCE. Pinned in both directions: the ceiling
+// decision still beats a failing spend read, and a passing ceiling lets the spend read's own
+// error surface rather than being swallowed by the batching.
+test('a failing daily-budget read never outranks the ceiling decision nor masks itself', async () => {
+  const provider = {
+    async getFeeData() { return { gasPrice: parseUnits('50', 'gwei'), maxFeePerGas: null, maxPriorityFeePerGas: null }; },
+    async getBalance() { return parseEther('10'); },
+    async estimateGas() { return 21_000n; },
+    async getTransactionCount() { return 0; },
+    async getNetwork() { return { chainId: 1n }; },
+    async getBlockNumber() { return 100; },
+    async getTransactionReceipt() { return null; },
+    async getTransaction() { return null; },
+  };
+  // Async on purpose -- the real repository boundary is asynchronous (pg methods always return
+  // promises). A synchronous throw here would detonate during Promise.all construction, before
+  // settleRead could even wrap the leg, and would model a failure mode that cannot occur.
+  const failingSpend = async () => { throw Object.assign(new Error('database unavailable'), { code: 'TIMEOUT' }); };
+  const request = {
+    userId: USER_ID, wallet: { id: 1, address: signer.address }, chain: 'ethereum',
+    to: '0x0000000000000000000000000000000000000001', data: '0x', valueWei: 0n,
+  };
+
+  const overCeiling = await harness({
+    provider, policyOverrides: { gasCeilingGwei: 1 }, repositoryOverrides: { rollingSpendWei: failingSpend },
+  }).engine.submit(request).then(() => null, caught => caught);
+  assert.equal(overCeiling.code, 'GAS_CEILING_EXCEEDED',
+    'the permanent ceiling decision precedes the spend read exactly as in the serial version');
+
+  const underCeiling = await harness({
+    provider, policyOverrides: { gasCeilingGwei: 100 }, repositoryOverrides: { rollingSpendWei: failingSpend },
+  }).engine.submit(request).then(() => null, caught => caught);
+  assert.ok(underCeiling, 'a genuinely failing spend read must not be swallowed once it is reached');
+  assert.equal(underCeiling.code, 'TIMEOUT',
+    'with no permanent decision to report, the spend read surfaces its own error where it used to be awaited');
 });
 
 // FINDING 2 -- finalityPromise is created inside the queue callback but nothing handles it until
