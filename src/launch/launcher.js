@@ -25,8 +25,10 @@ function createLauncher({ repository, stager, mintExecution, mintService, transa
     wallets, maxWaveSize = 25, triggerType = 'manual', fireAt = null, gasPriceWei = null }) {
     const { plan, results } = await stager.stageSquad({ userId, chain, contractAddress, quantity, manualPriceWei,
       members: wallets.map(label => ({ label })) });
-    // Skipped wallets keep their record for the report but sort to the very back so they never sit
-    // in front of live wallets in any wave listing.
+    // Skipped wallets keep their record for the report but carry their staging verdict through to
+    // persistence -- fire() filters on it, so a wallet staging rejected as unfundable must arrive
+    // here already marked 'skipped', not as a fireable 'pending'.
+    const verdict = new Map(results.map(entry => [entry.label, entry]));
     const waves = planWaves({
       wallets: results.map(entry => ({ label: entry.label,
         priority: entry.status === 'staged' ? (entry.priority ?? 100) : 10_000 + (entry.priority ?? 100) })),
@@ -37,7 +39,12 @@ function createLauncher({ repository, stager, mintExecution, mintService, transa
       id, userId, name: name || `${chain}:${contractAddress.slice(0, 10)}..`, chain, contractAddress, quantity,
       methodSignature: plan.methodSignature, seaDropAddress: plan.seaDropAddress, feeRecipient: plan.feeRecipient,
       priceWei: plan.priceWei, gasPriceWei, triggerType, fireAt, status: 'staged', waveSize: maxWaveSize,
-      members: waves.map(({ label, wave, priority }) => ({ walletLabel: label, wave, priority })),
+      members: waves.map(({ label, wave, priority }) => {
+        const result = verdict.get(label) || {};
+        return { walletLabel: label, wave, priority,
+          status: result.status === 'skipped' ? 'skipped' : 'staged',
+          error: result.error ?? null };
+      }),
     });
     return repository.getSquad(userId, id);
   }
@@ -147,20 +154,23 @@ function createLauncher({ repository, stager, mintExecution, mintService, transa
   // never fires is worse than one that refuses to arm.
   async function setTarget(squad, kind, targetBlock = null) {
     if (squad.status !== 'staged') throw new Error(`squad is ${squad.status} -- triggers attach only while staged`);
+    // 'timer' is deliberately rejected here: a timer needs fire_at, which only the create path
+    // sets. Persisting triggerType='timer' without one strands the squad forever -- the timer
+    // scan matches fire_at <= now, and NULL never satisfies it.
     if (kind === 'block') {
       if (!Number.isFinite(Number(targetBlock)) || Number(targetBlock) <= 0) throw new Error('block trigger needs a positive block number');
-    } else if (!['pending', 'manual', 'timer'].includes(kind)) {
-      throw new Error(`unknown trigger: ${kind}`);
+    } else if (!['pending', 'manual'].includes(kind)) {
+      throw new Error(`unknown trigger: ${kind} (use manual, pending, or block with a target)`);
     }
     if (triggers && (squad.triggerType === 'block' || squad.triggerType === 'pending')) triggers.dispose(squad.id);
-    if (kind === 'block' || kind === 'pending') {
-      await repository.updateSquad(squad.id, { triggerType: kind, targetBlock: kind === 'block' ? Number(targetBlock) : null });
+    if (kind === 'pending') {
+      await repository.updateSquad(squad.id, { triggerType: kind, targetBlock: null });
       await triggers.arm({ squadId: squad.id, kind, chain: squad.chain,
         contractAddress: squad.contractAddress, targetBlock: Number(targetBlock) },
         () => { fire(squad.id).catch(error => log(`Launch trigger fire failed for "${squad.name}": ${error.message}`)); });
       log(`Launch squad "${squad.name}" armed on ${kind} trigger`);
     } else {
-      await repository.updateSquad(squad.id, { triggerType: kind, targetBlock: null });
+      await repository.updateSquad(squad.id, { triggerType: 'manual', targetBlock: null });
       if (triggers) triggers.dispose(squad.id);
     }
     return repository.getSquadById(squad.id);
