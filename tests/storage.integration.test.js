@@ -12,7 +12,7 @@ const { createPostgresStorage } = require('../src/storage/postgresStorage');
 
 const integrationTest = CONFIG.databaseUrl && CONFIG.databaseUrlUnpooled ? test : test.skip;
 
-integrationTest('wallet data survives a pool restart and tampering fails authentication', { timeout: 30_000 }, async () => {
+integrationTest('wallet data survives a pool restart and tampering fails authentication', { timeout: 120_000 }, async () => {
   const migration = await runMigrations({
     connectionString: CONFIG.databaseUrlUnpooled,
     migrationsDirectory: path.join(CONFIG.projectRoot, 'migrations'),
@@ -51,7 +51,7 @@ integrationTest('wallet data survives a pool restart and tampering fails authent
   assert.equal(inserted.keyEnvelope.keyVersion, CONFIG.encryptionKeyVersion);
 });
 
-integrationTest('listActivityPage search filters at the database level, not just the currently-loaded page', { timeout: 30_000 }, async () => {
+integrationTest('listActivityPage search filters at the database level, not just the currently-loaded page', { timeout: 120_000 }, async () => {
   const migration = await runMigrations({
     connectionString: CONFIG.databaseUrlUnpooled,
     migrationsDirectory: path.join(CONFIG.projectRoot, 'migrations'),

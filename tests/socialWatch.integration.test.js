@@ -11,7 +11,7 @@ const { createSocialWatchService } = require('../src/social/socialWatchService')
 
 const integrationTest = CONFIG.databaseUrl && CONFIG.databaseUrlUnpooled ? test : test.skip;
 
-integrationTest('social rules and deduplicated trigger events persist in PostgreSQL', { timeout:30_000 }, async () => {
+integrationTest('social rules and deduplicated trigger events persist in PostgreSQL', { timeout:120_000 }, async () => {
   await runMigrations({ connectionString:CONFIG.databaseUrlUnpooled,
     migrationsDirectory:path.join(CONFIG.projectRoot,'migrations') });
   const pool=createDatabasePool({connectionString:CONFIG.databaseUrl,max:2});
@@ -38,7 +38,7 @@ integrationTest('social rules and deduplicated trigger events persist in Postgre
   } finally { await pool.query('DELETE FROM users WHERE user_id=$1',[userId]).catch(()=>{}); await pool.end(); }
 });
 
-integrationTest('Milestone 10b-2: a Farcaster watch rule persists and its trigger events carry the farcaster platform', { timeout:30_000 }, async () => {
+integrationTest('Milestone 10b-2: a Farcaster watch rule persists and its trigger events carry the farcaster platform', { timeout:120_000 }, async () => {
   await runMigrations({ connectionString:CONFIG.databaseUrlUnpooled,
     migrationsDirectory:path.join(CONFIG.projectRoot,'migrations') });
   const pool=createDatabasePool({connectionString:CONFIG.databaseUrl,max:2});

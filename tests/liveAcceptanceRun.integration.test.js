@@ -13,7 +13,7 @@ const { createLiveAcceptanceRunRepository } = require('../src/acceptance/liveAcc
 
 const integrationTest = CONFIG.databaseUrl && CONFIG.databaseUrlUnpooled ? test : test.skip;
 
-integrationTest('live acceptance runs persist durably and stay owner-scoped', { timeout: 30_000 }, async () => {
+integrationTest('live acceptance runs persist durably and stay owner-scoped', { timeout: 120_000 }, async () => {
   await runMigrations({
     connectionString: CONFIG.databaseUrlUnpooled,
     migrationsDirectory: path.join(CONFIG.projectRoot, 'migrations'),

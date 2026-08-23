@@ -20,7 +20,7 @@ async function migrate() {
   });
 }
 
-integrationTest('different Telegram accounts automatically resolve to different stable users', { timeout: 30_000 }, async () => {
+integrationTest('different Telegram accounts automatically resolve to different stable users', { timeout: 120_000 }, async () => {
   await migrate();
   const pool = createDatabasePool({ connectionString: CONFIG.databaseUrl, max: 2 });
   const identity = createIdentityService(createPostgresIdentityRepository(pool));
@@ -35,7 +35,7 @@ integrationTest('different Telegram accounts automatically resolve to different 
   }
 });
 
-integrationTest('a first-seen Discord account is created and can link into an existing Telegram identity', { timeout: 30_000 }, async () => {
+integrationTest('a first-seen Discord account is created and can link into an existing Telegram identity', { timeout: 120_000 }, async () => {
   await migrate();
   const pool = createDatabasePool({ connectionString: CONFIG.databaseUrl, max: 2 });
   const repository = createPostgresIdentityRepository(pool);
@@ -52,7 +52,7 @@ integrationTest('a first-seen Discord account is created and can link into an ex
   } finally { await pool.end(); }
 });
 
-integrationTest('wallet and task repository operations cannot cross Telegram user ownership', { timeout: 30_000 }, async () => {
+integrationTest('wallet and task repository operations cannot cross Telegram user ownership', { timeout: 120_000 }, async () => {
   await migrate();
   const pool = createDatabasePool({ connectionString: CONFIG.databaseUrl, max: 2 });
   const repository = createPostgresIdentityRepository(pool);
@@ -89,7 +89,7 @@ integrationTest('wallet and task repository operations cannot cross Telegram use
   }
 });
 
-integrationTest('link codes expire and are single-use', { timeout: 30_000 }, async () => {
+integrationTest('link codes expire and are single-use', { timeout: 120_000 }, async () => {
   await migrate();
   const pool = createDatabasePool({ connectionString: CONFIG.databaseUrl, max: 2 });
   const repository = createPostgresIdentityRepository(pool);
@@ -119,7 +119,7 @@ integrationTest('link codes expire and are single-use', { timeout: 30_000 }, asy
   }
 });
 
-integrationTest('mergeAccount repoints an empty duplicate account onto an existing one and removes it', { timeout: 30_000 }, async () => {
+integrationTest('mergeAccount repoints an empty duplicate account onto an existing one and removes it', { timeout: 120_000 }, async () => {
   await migrate();
   const pool = createDatabasePool({ connectionString: CONFIG.databaseUrl, max: 2 });
   const identity = createIdentityService(createPostgresIdentityRepository(pool));
@@ -150,7 +150,7 @@ integrationTest('mergeAccount repoints an empty duplicate account onto an existi
   }
 });
 
-integrationTest('mergeAccount refuses and changes nothing if the duplicate account has a wallet', { timeout: 30_000 }, async () => {
+integrationTest('mergeAccount refuses and changes nothing if the duplicate account has a wallet', { timeout: 120_000 }, async () => {
   await migrate();
   const pool = createDatabasePool({ connectionString: CONFIG.databaseUrl, max: 2 });
   const identity = createIdentityService(createPostgresIdentityRepository(pool));

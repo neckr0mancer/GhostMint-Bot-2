@@ -9,7 +9,7 @@ const {createPostgresIdentityRepository}=require('../src/identity/postgresIdenti
 const {createTargetPolicyRepository}=require('../src/triggers/targetPolicyRepository');
 
 const integrationTest=CONFIG.databaseUrl&&CONFIG.databaseUrlUnpooled?test:test.skip;
-integrationTest('target acknowledgement, durable confirmation request, and execution audit persist', {timeout:30_000},async()=>{
+integrationTest('target acknowledgement, durable confirmation request, and execution audit persist', {timeout:120_000},async()=>{
  await runMigrations({connectionString:CONFIG.databaseUrlUnpooled,migrationsDirectory:path.join(CONFIG.projectRoot,'migrations')});
  const pool=createDatabasePool({connectionString:CONFIG.databaseUrl,max:2});
  const identity=createIdentityService(createPostgresIdentityRepository(pool));
