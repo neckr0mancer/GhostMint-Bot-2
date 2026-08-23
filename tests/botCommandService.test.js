@@ -35,6 +35,14 @@ test('shared wallet commands cannot read or remove another Discord user wallet',
   assert.deepEqual(calls, []);
 });
 
+test('personal security history cannot widen beyond the authenticated user', async () => {
+  let requested;
+  const { service } = fixture({ botSecurityRepository: { listRecent: async input => { requested = input; return []; } } });
+  await service.securityAudit('user-a', { userId: 'user-b', limit: 20 });
+  assert.equal(requested.userId, 'user-a');
+  assert.equal(requested.limit, 20);
+});
+
 test('wallet creation generates a valid key server-side and returns only the public wallet details', async () => {
   const { calls, service } = fixture();
   const created = await service.createWallet('user-a', { label: 'generated', chain: 'ethereum' });

@@ -25,7 +25,6 @@ function fixture({ seaDrop = true, priceWei = 0n, balances = {} } = {}) {
       },
       log: () => {},
     }),
-    calls,
   };
 }
 

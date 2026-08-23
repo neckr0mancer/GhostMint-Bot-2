@@ -370,7 +370,7 @@ function mintPriceStep({ chainSym, displayPrice }) {
   const sym = chainSym || 'native currency';
   if (displayPrice) {
     return {
-      content: `This contract does not expose a recognized price function. OpenSea suggests a floor price of ${displayPrice.eth} ${sym}. Use this as the mint price, or enter one yourself?`,
+      content: `We could not read the mint price. OpenSea shows ${displayPrice.eth} ${sym}. Use that price, or enter the mint price yourself.`,
       components: [
         row([button(`✅ Use ${displayPrice.eth} ${sym}`, 'flow:priceaccept', 'success'), button('✏️ Enter manually', 'flow:pricemanual')]),
         row([button('❌ Cancel', 'flow:cancel:ask', 'danger')]),
@@ -378,7 +378,7 @@ function mintPriceStep({ chainSym, displayPrice }) {
     };
   }
   return {
-    content: `This contract does not expose a recognized price function. Enter the price per item in ${sym} (0 if free).`,
+    content: `Enter the mint price per item in ${sym} to continue. Use 0 only if the mint is free.`,
     components: [row([button('✏️ Enter price', 'flow:pricemanual')]), row([button('❌ Cancel', 'flow:cancel:ask', 'danger')])],
   };
 }

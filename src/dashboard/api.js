@@ -18,10 +18,19 @@ const DUMMY_SECURITY_PASSWORD_HASH=hashSecurityPassword(randomBytes(32).toString
 function noStore(res){res.set('Cache-Control','no-store, private');}
 function publicWallet(value){return {label:value.label,address:value.address,chain:value.chain,balances:value.balances??[],minted:value.minted??0,addedAt:value.addedAt??null};}
 function jsonSafe(value){return JSON.parse(JSON.stringify(value,(_key,item)=>typeof item==='bigint'?item.toString():item));}
+const SESSION_END_MESSAGES=Object.freeze({
+  cookie_missing:'No saved session was found on this browser. Sign in again; private browsing and local HTTP on a phone may clear cookies.',
+  idle_expired:'Your session ended after 8 hours without dashboard activity.',
+  absolute_expired:'Your session reached its 7-day maximum lifetime. Sign in again to continue.',
+  session_limit:'This session was signed out because a newer login exceeded the three-browser limit.',
+  logout_all:'This session was ended by Log out everywhere.',logout:'This session has been logged out.',
+  revoked:'This session was revoked.',invalid:'This session is no longer valid.',
+});
+function clientLabel(req){return String(req.get('user-agent')||'Unknown browser').replace(/[\r\n]/g,' ').slice(0,160)||'Unknown browser';}
 
 function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLoginRateLimiter,exportKeyRateLimiter,commands,securityAudit={record:async()=>{}},broadcast=()=>{},broadcastToUsers=()=>{},supportedChains=[],now=()=>Date.now(),checkAccountStatus}) {
   const previews=new Map();
-  const requireSession=async(req,res,next)=>{try{const session=await auth.authenticate(req.headers.cookie);if(!session)return res.status(401).json({error:'Authentication required'});
+  const requireSession=async(req,res,next)=>{try{const result=auth.authenticateDetailed?await auth.authenticateDetailed(req.headers.cookie):{session:await auth.authenticate(req.headers.cookie),reason:'invalid'};const {session}=result;if(!session){const reason=result.reason||'invalid';return res.status(401).json({error:SESSION_END_MESSAGES[reason]||SESSION_END_MESSAGES.invalid,code:`SESSION_${reason.toUpperCase()}`,reason});}
       if(typeof checkAccountStatus==='function'){try{await checkAccountStatus(session.userId);}catch(error){if(error instanceof AccountBlockedError)return res.status(403).json({error:error.message,code:error.code,status:error.status});throw error;}}
       req.dashboardSession=session;const refreshed=auth.refreshSessionCookies?.(req.headers.cookie);if(refreshed?.length)res.setHeader('Set-Cookie',refreshed);next();}catch(error){next(error);}};
   const requireCsrf=(req,res,next)=>auth.verifyCsrf({session:req.dashboardSession,cookieHeader:req.headers.cookie,headerToken:req.get('x-csrf-token')})?next():res.status(403).json({error:'Invalid CSRF token'});
@@ -116,7 +125,7 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLo
     contextId:req.ip||'unknown',command:'login-password',outcome,reason})).catch(()=>{});}
 
   return {securityHeaders(req,res,next){for(const [name,value] of Object.entries(SECURITY_HEADERS))res.set(name,value);if(req.path.startsWith('/api/'))noStore(res);next();},requireSession,requireCsrf,
-    login:async(req,res)=>{noStore(res);try{loginRateLimiter.check('dashboard',req.ip||'unknown','login');const session=await auth.login(req.body?.code);res.setHeader('Set-Cookie',auth.sessionCookies(session));res.status(204).end();}
+    login:async(req,res)=>{noStore(res);try{loginRateLimiter.check('dashboard',req.ip||'unknown','login');const session=await auth.login(req.body?.code,clientLabel(req));res.setHeader('Set-Cookie',auth.sessionCookies(session));res.status(204).end();}
       catch(error){if(error instanceof LinkCodeError)return res.status(401).json({error:'Invalid or expired login code'});if(error instanceof RateLimitError){res.set('Retry-After',String(Math.ceil(error.retryAfterMs/1000)));return res.status(429).json({error:'Too many login attempts'});}throw error;}},
     // Rate-limited per submitted username (not per IP) so brute-forcing one account can't be spread
     // across many source addresses. A missing username still runs a scrypt comparison against
@@ -139,14 +148,14 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLo
         await auditLoginPassword(req,userId,'failure',`invalid credentials for ${username}`);
         return res.status(401).json({error:'Invalid username or password'});
       }
-      const session=await auth.loginWithUserId(userId);
+      const session=await auth.loginWithUserId(userId,clientLabel(req));
       res.setHeader('Set-Cookie',auth.sessionCookies(session));
       await auditLoginPassword(req,userId,'success',`login for ${username}`);
       res.status(204).end();
     },
     logout:async(req,res)=>{noStore(res);await auth.revoke(req.dashboardSession);res.setHeader('Set-Cookie',auth.clearCookies());res.status(204).end();},
     logoutAll:async(req,res)=>{noStore(res);await auth.revokeAll(req.dashboardSession);res.setHeader('Set-Cookie',auth.clearCookies());res.status(204).end();},
-    profile:async(req,res)=>{noStore(res);res.json({userId:user(req),isOwner:commands?.isOwner?await commands.isOwner(user(req)):false,isRootOwner:commands?.isRootOwner?await commands.isRootOwner(user(req)):false,linkedAccounts:await identityRepository.listLinkedAccounts(user(req)),supportedChains,theme:await identityRepository.getTheme(user(req)),displayName:identityRepository.getDisplayName?await identityRepository.getDisplayName(user(req)):null,defaultChain:identityRepository.getDefaultChain?await identityRepository.getDefaultChain(user(req)):null,securityPasswordSet:identityRepository.getSecurityPasswordHash?Boolean(await identityRepository.getSecurityPasswordHash(user(req))):false,botGateLevel:identityRepository.getBotGateLevel?await identityRepository.getBotGateLevel(user(req)):'off',botGateSkipMint:identityRepository.getBotGateSkipMint?await identityRepository.getBotGateSkipMint(user(req)):false,username:identityRepository.getUsername?await identityRepository.getUsername(user(req)):null,currentMode:commands?.currentMode?await commands.currentMode(user(req)):null,advancedModesAllowed:commands?.advancedModesAllowed?await commands.advancedModesAllowed(user(req)):false});},
+    profile:async(req,res)=>{noStore(res);res.json({userId:user(req),isOwner:commands?.isOwner?await commands.isOwner(user(req)):false,isRootOwner:commands?.isRootOwner?await commands.isRootOwner(user(req)):false,linkedAccounts:await identityRepository.listLinkedAccounts(user(req)),supportedChains,theme:await identityRepository.getTheme(user(req)),displayName:identityRepository.getDisplayName?await identityRepository.getDisplayName(user(req)):null,defaultChain:identityRepository.getDefaultChain?await identityRepository.getDefaultChain(user(req)):null,securityPasswordSet:identityRepository.getSecurityPasswordHash?Boolean(await identityRepository.getSecurityPasswordHash(user(req))):false,botGateLevel:identityRepository.getBotGateLevel?await identityRepository.getBotGateLevel(user(req)):'off',botGateSkipMint:identityRepository.getBotGateSkipMint?await identityRepository.getBotGateSkipMint(user(req)):false,username:identityRepository.getUsername?await identityRepository.getUsername(user(req)):null,currentMode:commands?.currentMode?await commands.currentMode(user(req)):null,advancedModesAllowed:commands?.advancedModesAllowed?await commands.advancedModesAllowed(user(req)):false,session:auth.sessionSummary?await auth.sessionSummary(req.dashboardSession):null});},
     updateMode:action(async(req,res)=>{res.json({mode:await commands.selectMode(user(req),req.body.preset)});}),
     updateTheme:action(async(req,res)=>{const {theme}=requestSchemas.themeUpdate(req.body||{});res.json({theme:await identityRepository.setTheme(user(req),theme)});}),
     // The bot action gate is changed HERE and nowhere else. If it could be switched off from
@@ -252,7 +261,7 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLo
       res.json({privateKey});
     }),
     mintPresets:action(async(req,res)=>res.json(jsonSafe(await commands.mintPresets(user(req))))),
-    detectMint:action(async(req,res)=>{noStore(res);res.json(jsonSafe(await commands.detectMintContract(user(req),{contractAddress:req.query.contractAddress,quantity:req.query.quantity})));}),
+    detectMint:action(async(req,res)=>{noStore(res);res.json(jsonSafe(await commands.detectMintContract(user(req),{contractAddress:req.query.contractAddress,quantity:req.query.quantity,includeDrop:true})));}),
     previewMint:action(async(req,res)=>{const labels=req.body.walletLabels||[req.body.walletLabel];const entries=[];for(const walletLabel of labels)entries.push(await commands.prepareMint(user(req),{...req.body,walletLabel}));const previewToken=issuePreview(user(req),entries);res.json({previewToken,expiresInSeconds:300,items:entries.map(value=>({wallet:value.wallet,preview:value.prepared.preview,simulation:jsonSafe(value.simulation)}))});}),
     // Each wallet in a batch submits independently -- one wallet's insufficient balance or stale
     // wallet shouldn't cancel the rest, which had already simulated fine and may have nothing wrong

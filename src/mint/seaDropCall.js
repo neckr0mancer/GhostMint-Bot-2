@@ -1,6 +1,14 @@
-const { formatEther, isAddress } = require('ethers');
+const { formatEther, Interface, isAddress } = require('ethers');
 const { ValidationError } = require('../validation/domain');
 const { MINT_PUBLIC_FRAGMENT, SEADROP_CORE_INTERFACE, SEADROP_MINT_SIGNATURE } = require('./seaDropRegistry');
+
+// OpenSea's drop builder is not SeaDrop-only. Archetype ERC-721A collections (including the
+// verified Raised Fist contract on Robinhood Chain) return calldata for one of these two known
+// functions. Keep this as a small, explicit ABI allowlist: it is not arbitrary-calldata support.
+const ARCHETYPE_INTERFACE = new Interface([
+  'function mint((bytes32 key,bytes32[] proof) auth,uint256 quantity,address affiliate,bytes signature) payable',
+  'function mintTo((bytes32 key,bytes32[] proof) auth,uint256 quantity,address to,address affiliate,bytes signature) payable',
+]);
 
 function invalid(field, message) { throw new ValidationError({ field, message }); }
 
@@ -104,8 +112,45 @@ function decodeSeaDropMintCall({ contractAddress, seaDropAddress, calldata, valu
 // an explicit wallet address) isn't confirmed against a real live response yet, and a wrong guess
 // there would reject legitimate mints, not just catch bad ones -- narrower but certain beats wider
 // but guessed on a path that signs and spends real funds.
-function validateOpenSeaMintCall({ built, contractAddress, quantity: expectedQuantity }) {
-  const decoded = decodeSeaDropMintCall({ contractAddress: built.to, seaDropAddress: built.to, calldata: built.data, valueWei: built.valueWei });
+function decodeArchetypeMintCall({ built, contractAddress, minterAddress }) {
+  if (!isAddress(built?.to) || built.to.toLowerCase() !== contractAddress.toLowerCase()) {
+    invalid('contractAddress', "OpenSea's calldata targets a different contract than requested -- refusing to sign");
+  }
+  const selector = String(built.data || '').slice(0, 10).toLowerCase();
+  const method = ['mint', 'mintTo'].find(name => ARCHETYPE_INTERFACE.getFunction(name).selector.toLowerCase() === selector);
+  if (!method) invalid('calldata', 'does not match a supported OpenSea mint signature');
+  let decoded;
+  try { decoded = ARCHETYPE_INTERFACE.decodeFunctionData(method, built.data); }
+  catch { invalid('calldata', `could not be decoded as Archetype ${method}`); }
+  const [auth, qty] = decoded;
+  const recipient = method === 'mintTo' ? decoded[2] : minterAddress;
+  if (method === 'mintTo' && (!isAddress(minterAddress) || recipient.toLowerCase() !== minterAddress.toLowerCase())) {
+    invalid('walletAddress', "OpenSea's calldata sends the mint to a different wallet -- refusing to sign");
+  }
+  const value = nativeValue(built.valueWei);
+  return {
+    contractAddress,
+    callTarget: built.to,
+    methodSignature: ARCHETYPE_INTERFACE.getFunction(method).format('sighash'),
+    standard: 'Archetype ERC-721A',
+    arguments: [
+      { name: 'inviteKey', type: 'bytes32', value: auth.key },
+      { name: 'proof', type: 'bytes32[]', value: auth.proof.length ? `proof present (${auth.proof.length} item${auth.proof.length === 1 ? '' : 's'})` : 'no proof' },
+      { name: 'quantity', type: 'uint256', value: qty.toString() },
+      { name: 'recipient', type: 'address', value: recipient || 'sender wallet' },
+      { name: 'signature', type: 'bytes', value: decoded[method === 'mintTo' ? 4 : 3] === '0x' ? 'no signature' : 'signature present' },
+    ],
+    nativeValueWei: value.toString(),
+    nativeValue: formatEther(value),
+  };
+}
+
+function validateOpenSeaMintCall({ built, contractAddress, quantity: expectedQuantity, minterAddress }) {
+  const selector = String(built?.data || '').slice(0, 10).toLowerCase();
+  const seaDropSelector = SEADROP_CORE_INTERFACE.getFunction('mintPublic').selector.toLowerCase();
+  const decoded = selector === seaDropSelector
+    ? decodeSeaDropMintCall({ contractAddress: built.to, seaDropAddress: built.to, calldata: built.data, valueWei: built.valueWei })
+    : decodeArchetypeMintCall({ built, contractAddress, minterAddress });
   if (decoded.contractAddress.toLowerCase() !== contractAddress.toLowerCase()) {
     invalid('contractAddress', "OpenSea's calldata targets a different contract than requested -- refusing to sign");
   }
@@ -116,4 +161,4 @@ function validateOpenSeaMintCall({ built, contractAddress, quantity: expectedQua
   return decoded;
 }
 
-module.exports = { buildSeaDropMintCall, computeSeaDropValueWei, decodeSeaDropMintCall, validateOpenSeaMintCall };
+module.exports = { ARCHETYPE_INTERFACE, buildSeaDropMintCall, computeSeaDropValueWei, decodeSeaDropMintCall, validateOpenSeaMintCall };

@@ -5,7 +5,7 @@ const { ValidationError, requestSchemas, LIMITS } = require('../validation/domai
 const { paginate, pagination } = require('../pagination');
 const { calculateStatistics } = require('../statistics/statisticsService');
 const { detectContractChain } = require('../mint/chainDetector');
-const { computeSeaDropValueWei } = require('../mint/seaDropCall');
+const { computeSeaDropValueWei, validateOpenSeaMintCall } = require('../mint/seaDropCall');
 const { SEADROP_MINT_SIGNATURE } = require('../mint/seaDropRegistry');
 const { MINT_METHODS } = require('../mint/mintRegistry');
 const { createWalletBalanceCache } = require('./walletBalanceCache');
@@ -234,6 +234,7 @@ function createBotCommandService(dependencies) {
         displayPrice,
         stats,
         drop,
+        openSeaMintRecommended: false,
       };
     }
 
@@ -262,6 +263,12 @@ function createBotCommandService(dependencies) {
       displayPrice,
       stats,
       drop,
+      // An OpenSea-indexed collection that is not SeaDrop-backed may use a launchpad-specific ABI
+      // (Archetype is a common example). Ask OpenSea to build that known call instead of making the
+      // old, unsafe mint(uint256) guess. `collection.name` is also sufficient because a read-key
+      // account can resolve metadata even when the Drops detail endpoint has no stage snapshot;
+      // the write endpoint remains authoritative and fails safely if it cannot build the mint.
+      openSeaMintRecommended: Boolean(drop || openSea?.name),
     };
   }
 
@@ -634,7 +641,18 @@ function createBotCommandService(dependencies) {
   // wallet's default chain -- removed so preview/confirm behaves the same as mint()/batchMint().
   async function prepareMint(userId,input) {
     const owned=wallet(userId,input.walletLabel);
-    const prepared=input.presetName
+    let prepared;
+    if (input.viaOpenSea) {
+      const chain=input.chain||owned.chain;
+      const validated=requestSchemas.mint({...input,priceETH:0,chain},{supportedChains});
+      if(!openSeaService) throw new ValidationError({field:'contractAddress',message:'OpenSea-backed minting is not available'});
+      const built=await openSeaService.buildMintTransaction(chain,validated.contractAddress,owned.address,validated.quantity);
+      if(!built) throw new ValidationError({field:'contractAddress',message:"OpenSea couldn't build this mint right now -- the drop may be inactive or unavailable"});
+      const decoded=validateOpenSeaMintCall({built,contractAddress:validated.contractAddress,
+        quantity:validated.quantity,minterAddress:owned.address});
+      prepared={chain,calldata:built.data,valueWei:BigInt(built.valueWei),
+        method:{signature:decoded.methodSignature,standard:decoded.standard},preview:decoded};
+    } else prepared=input.presetName
       ? await mintService.preparePreset(userId,input.presetName,owned.address)
       : await mintService.prepare({...input,walletAddress:owned.address,chain:input.chain||owned.chain});
     const simulation=await previewMint({userId,wallet:owned,prepared,gasGwei:input.gasGwei});
