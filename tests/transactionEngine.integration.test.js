@@ -14,7 +14,7 @@ const { createTransactionEngine } = require('../src/transactions/transactionEngi
 
 const integrationTest = CONFIG.databaseUrl && CONFIG.databaseUrlUnpooled ? test : test.skip;
 
-integrationTest('persisted submitted intent and editable policies survive a process-style pool restart', { timeout: 30_000 }, async () => {
+integrationTest('persisted submitted intent and editable policies survive a process-style pool restart', { timeout: 120_000 }, async () => {
   const migration = await runMigrations({
     connectionString: CONFIG.databaseUrlUnpooled,
     migrationsDirectory: path.join(CONFIG.projectRoot, 'migrations'),

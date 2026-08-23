@@ -41,6 +41,7 @@ const sniperFlowDecision = require('./sniper/sniperFlowDecision');
 const { createSchedulerRepository } = require('./scheduler/schedulerRepository');
 const { DEFAULT_LEAD_MS, createScheduledReminder } = require('./scheduler/scheduledReminder');
 const { createSchedulerWorker } = require('./scheduler/schedulerWorker');
+const { resolveTaskChain } = require('./scheduler/taskChain');
 const { createLaunchRepository } = require('./launch/launchRepository');
 const { createLaunchStager } = require('./launch/stager');
 const { createLauncher } = require('./launch/launcher');
@@ -360,7 +361,11 @@ const schedulerWorker = createSchedulerWorker({
     if (!task.viaOpenSea) return null;
     const wallet = DB.wallets.find(item => item.userId === task.userId && item.label === task.walletLabel);
     if (!wallet) return null;
-    const drop = await openSeaService.getDrop(wallet.chain, task.contract);
+    // Read-only reminder lookup: a stored chain this deployment no longer supports just falls
+    // back to the wallet home here. The worst case is reading the wrong network's drop times;
+    // this path never spends anything -- executeTask is where that case fails closed.
+    const resolved = resolveTaskChain(task, CONFIG.supportedChains);
+    const drop = await openSeaService.getDrop(resolved.chain || wallet.chain, task.contract);
     const stage = drop?.stages?.find(item => item.label === task.name);
     return stage?.startTime ? stage.startTime * 1_000 : null;
   },
@@ -376,6 +381,18 @@ const schedulerWorker = createSchedulerWorker({
     if (!takeArmedPreparation(task)) await governance.checkAccountStatus(task.userId);
     const wallet = DB.wallets.find(item => item.userId === task.userId && item.label === task.walletLabel);
     if (!wallet) throw new ValidationError({ field:'walletLabel', message:'was not found' });
+    // Execute on the chain the contract was DETECTED on when the schedule was created
+    // (mint_tasks.chain, migration 052) -- the same rule Mint now and Batch already follow, and
+    // the reason a dashboard/bot schedule behaves identically to a manual mint against that
+    // contract. Rows predating persistence resolve to null and keep the historical wallet-home
+    // behavior; a stored chain this deployment no longer supports fails permanently here rather
+    // than silently broadcasting somewhere else.
+    const resolvedChain = resolveTaskChain(task, CONFIG.supportedChains);
+    if (resolvedChain.error) {
+      throw new ValidationError({ field: 'chain',
+        message: `this schedule was created for ${resolvedChain.error}, which this deployment no longer supports -- cancel it and reschedule on a supported chain` });
+    }
+    const executionChain = resolvedChain.chain || wallet.chain;
     // Section AF -- an allowlist/GTD/FCFS stage this app has no on-chain proof for (see
     // mintViaOpenSea); the drift preflight below doesn't apply here at all -- there is no on-chain
     // PublicDrop for an OpenSea-scheduled task to drift against, since OpenSea's own backend
@@ -385,12 +402,12 @@ const schedulerWorker = createSchedulerWorker({
     // against a wallet that will never become eligible by retrying alone).
     const qty = task.qty || 1;
     if (task.viaOpenSea) {
-      const built = await openSeaService.buildMintTransaction(wallet.chain, task.contract, wallet.address, qty);
+      const built = await openSeaService.buildMintTransaction(executionChain, task.contract, wallet.address, qty);
       if (built) {
         // Same check executeMintViaOpenSea applies to the manual path -- OpenSea's eligibility
         // resolution is trusted, the mechanical shape of what it returned still is not.
         validateOpenSeaMintCall({ built, contractAddress: task.contract, quantity: qty, minterAddress: wallet.address });
-        const prepared = { chain: wallet.chain, calldata: built.data, valueWei: BigInt(built.valueWei),
+        const prepared = { chain: executionChain, calldata: built.data, valueWei: BigInt(built.valueWei),
           method: { signature: 'opensea:drops-mint' }, preview: { contractAddress: task.contract, callTarget: built.to } };
         return mintExecution.executePrepared({ userId: task.userId, wallet, prepared, triggerSource: 'scheduled',
           idempotencyKey: hooks.idempotencyKey, onIntentPersisted: hooks.onIntentPersisted,
@@ -406,7 +423,7 @@ const schedulerWorker = createSchedulerWorker({
       // OpenSea can prove that wallet is allowlisted and an on-chain public mint could only revert;
       // everything else falls through to this app's own on-chain path below -- exactly what a manual
       // mint against this contract would attempt.
-      const live = await openSeaService.getDrop(wallet.chain, task.contract);
+      const live = await openSeaService.getDrop(executionChain, task.contract);
       // Gated if the task was CREATED against an eligibility-only stage (stored at schedule time --
       // the only signal left when OpenSea is unreachable for the live check too) or if the stage
       // OpenSea currently reports as active is one of them.
@@ -420,7 +437,7 @@ const schedulerWorker = createSchedulerWorker({
         throw new ValidationError({ field: 'contractAddress',
           message: `${stageName ? `the "${stageName}" stage` : 'this stage'} can only be minted through OpenSea, and OpenSea couldn't build the mint right now -- retry closer to the drop window, or reschedule` });
       }
-      log(`Scheduled OpenSea-backed task "${task.name}" (${wallet.chain}:${task.contract}) falling back to on-chain calldata: OpenSea could not serve a mint`);
+      log(`Scheduled OpenSea-backed task "${task.name}" (${executionChain}:${task.contract}) falling back to on-chain calldata: OpenSea could not serve a mint`);
     }
     // Phase-drift preflight: the schedule was set against whatever SeaDrop's PublicDrop said at
     // scheduling time (or a hand-typed phase-2+ price/time -- Section AF, since nothing on-chain
@@ -433,10 +450,10 @@ const schedulerWorker = createSchedulerWorker({
     // This same fresh read is handed straight to prepareMintCall below -- it used to read
     // PublicDrop a SECOND time itself, an identical serial RPC round trip back to back with this
     // one; one read serves both the drift gate and the calldata value.
-    const seaDrop = await seaDropDiscoveryService.resolve(wallet.chain, task.contract);
+    const seaDrop = await seaDropDiscoveryService.resolve(executionChain, task.contract);
     let livePublicDrop = null;
     if (seaDrop.address) {
-      livePublicDrop = await seaDropPublicDropResolver.getPublicDrop(wallet.chain, seaDrop.address, task.contract);
+      livePublicDrop = await seaDropPublicDropResolver.getPublicDrop(executionChain, seaDrop.address, task.contract);
       if (livePublicDrop) {
         const nowSec = Math.floor(Date.now() / 1000);
         if (nowSec < livePublicDrop.startTime || (livePublicDrop.endTime && nowSec > livePublicDrop.endTime)) {
@@ -449,7 +466,7 @@ const schedulerWorker = createSchedulerWorker({
     }
     const request = requestSchemas.mint({ walletLabel:wallet.label, contractAddress:task.contract,
       functionName:task.fn || 'mint', quantity:task.qty, priceETH:task.price || 0,
-      gasGwei:task.gas, chain:wallet.chain }, { supportedChains:CONFIG.supportedChains });
+      gasGwei:task.gas, chain:executionChain }, { supportedChains:CONFIG.supportedChains });
     const prepared = await prepareMintCall({ contractAddress:request.contractAddress,
       walletAddress:wallet.address, chain:request.chain, quantity:request.quantity, priceETH:request.priceETH,
       resolvedSeaDrop: seaDrop, resolvedPublicDrop: livePublicDrop });

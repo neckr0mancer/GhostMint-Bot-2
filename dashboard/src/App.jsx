@@ -8,6 +8,7 @@ import {loadError,batchRowDetail,useRetryAfter} from './shared.jsx';
 import {walletPerformance,pnlWalletLabel} from './walletPerformance.js';
 import {pnlBarLayout,pnlRecordSeries,pnlWindowTotals} from './pnlChart.js';
 import {mintDetectionMessage,mintPreviewError} from './mintFeedback.mjs';
+import {mintQuantityPolicy} from './mintQuantityPolicy.mjs';
 import {ACTIVITY_EVENTS,api,Ledger,NumberField,SectionCard,confirmDialog,ConfirmHost,consumePendingMintPrefill,CopyButton,csrf,downloadFile,Empty,EVM_CHAINS,Field,Form,getNotificationLog,notify,Notice,PageTitle,Pager,promptDialog,relativeTime,SearchField,Select,Skeleton,StatusPill,SubTabs,subscribeNotificationLog,ToastHost,useLoad,useLiveSocket,setPendingMintPrefill,quantityPicks} from './shared.jsx';
 import Dashboard from './Dashboard.jsx';
 // Phase 4, unit 1 of 5 (brief §2). The 11->5 merge lands one page at a time so any single merge
@@ -930,11 +931,12 @@ function Minting({onSwitchToBatch,onGoWallets}){const wallets=useLoad('/api/wall
       // DEFAULT_EVM_CHAIN). Without this, submitting fell back to that nominal chain and could
       // silently try to broadcast on the wrong network entirely.
       setDetectedChain(result.chain);
-      setMaxPerWallet(result.maxPerWallet||null);
+      const quantityPolicy=mintQuantityPolicy(result);
+      setMaxPerWallet(quantityPolicy.detected?quantityPolicy.max:null);
       // A quantity already typed in before detection finished can be higher than the contract's
       // real per-wallet cap -- pull it back down rather than leaving an already-invalid value sitting
       // in the field.
-      if(result.maxPerWallet&&Number(effectiveQuantity)>result.maxPerWallet)setQuantity(String(result.maxPerWallet));
+      if(Number(effectiveQuantity)>quantityPolicy.max)setQuantity(String(quantityPolicy.max));
       const label=result.isSeaDrop?'SeaDrop drop':'contract';
       // The field is edited in ETH (result.valueWei comes back from the API in wei); converted at
       // the two boundaries -- here on the way in, and in inspect() on the way out -- so wei never
@@ -1048,7 +1050,7 @@ function Minting({onSwitchToBatch,onGoWallets}){const wallets=useLoad('/api/wall
                     <optgroup label="Solana"><option disabled>Solana (not yet supported)</option></optgroup>
                   </select>}
             </label>
-            <label className="fl"><span>Quantity{maxPerWallet?<span style={{color:'var(--faint)',fontWeight:500}}> · max {maxPerWallet}</span>:null}</span>
+            <label className="fl"><span>Quantity<span style={{color:'var(--faint)',fontWeight:500}}> · {maxPerWallet?`max ${maxPerWallet}/wallet`:`up to ${maxPick}; checked in preview`}</span></span>
               <div className="qty">
                 <input className={`in tab${quantityIssue?' bad':''}`} type="number" min={1} max={maxPerWallet||100}
                   disabled={noWallets} placeholder={`Enter quantity (1–${maxPerWallet||100})`} value={quantity}
@@ -1064,8 +1066,8 @@ function Minting({onSwitchToBatch,onGoWallets}){const wallets=useLoad('/api/wall
                       has nothing left to do. Only at a cap of one: the prototype draws
                       "1 2 3 Max" at a cap of three, so a Max that duplicates a pick is its own
                       deliberate choice at every cap above this one. */}
-                  <button type="button" disabled={noWallets||maxPick===1}
-                  title={maxPick===1?'This drop allows one per wallet':undefined}
+                  <button type="button" disabled={noWallets||!maxPerWallet||maxPick===1}
+                  title={!maxPerWallet?'The contract maximum will be checked during preview':maxPick===1?'This drop allows one per wallet':undefined}
                     className={String(maxPick)===String(quantity)?'on':undefined}
                     onClick={()=>{setQuantity(String(maxPick));autoDetectIfReady(contractAddress,String(maxPick));}}>Max</button>
                 </div>
@@ -1204,7 +1206,7 @@ function bucketOf(task){
   const value=String(task?.status||'').toLowerCase();
   return Object.keys(BUCKET_STATUSES).find(key=>BUCKET_STATUSES[key].includes(value))||null;
 }
-function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSearch]=useState('');const [bucket,setBucket]=useState('pending');const [filtersOpen,setFiltersOpen]=useState(false);const [serverFilters,setServerFilters]=useState(null);const PAGE_SIZE=10;const COMPAT_LIMIT=50;const listing=useLoad(serverFilters===false?`/api/tasks?page=1&pageSize=${COMPAT_LIMIT}&search=${encodeURIComponent(search)}`:`/api/tasks?page=${page}&pageSize=${PAGE_SIZE}&status=${bucket}&search=${encodeURIComponent(search)}`,[page,bucket,search,serverFilters],'tasks.changed');const wallets=useLoad('/api/wallets',[],'wallets.changed');const [chain,setChain]=useState(profile.defaultChain||profile.supportedChains[0]);const [contractAddress,setContractAddress]=useState('');const [quantity,setQuantity]=useState('1');const [priceETH,setPriceETH]=useState('');const [mintTime,setMintTime]=useState('');const [detecting,setDetecting]=useState(false);const lastDetected=useRef('');
+function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSearch]=useState('');const [bucket,setBucket]=useState('pending');const [filtersOpen,setFiltersOpen]=useState(false);const [serverFilters,setServerFilters]=useState(null);const PAGE_SIZE=10;const COMPAT_LIMIT=50;const listing=useLoad(serverFilters===false?`/api/tasks?page=1&pageSize=${COMPAT_LIMIT}&search=${encodeURIComponent(search)}`:`/api/tasks?page=${page}&pageSize=${PAGE_SIZE}&status=${bucket}&search=${encodeURIComponent(search)}`,[page,bucket,search,serverFilters],'tasks.changed');const wallets=useLoad('/api/wallets',[],'wallets.changed');const [chain,setChain]=useState(profile.defaultChain||profile.supportedChains[0]);const [contractAddress,setContractAddress]=useState('');const [quantity,setQuantity]=useState('1');const [maxPerWallet,setMaxPerWallet]=useState(null);const [priceETH,setPriceETH]=useState('');const [mintTime,setMintTime]=useState('');const [viaOpenSea,setViaOpenSea]=useState(false);const [stageType,setStageType]=useState('');const [detecting,setDetecting]=useState(false);const lastDetected=useRef('');
   // The prototype's Schedule form has no price field, because it assumes the contract can be
   // priced automatically. Some cannot -- the server then rejects with a priceETH issue and there
   // is nowhere to type one, which left the form unsubmittable for those contracts. So the field
@@ -1222,17 +1224,31 @@ function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSear
     if(!trimmed){notify('Enter a contract address first.',{type:'error'});return;}
     setDetecting(true);
     try{
-      const result=await api(`/api/mints/detect?contractAddress=${encodeURIComponent(trimmed)}&quantity=${encodeURIComponent(quantity)}`);
+      // Schedule stores price per item, so detection intentionally asks for ONE item. Asking with
+      // the selected quantity returns a total value and would incorrectly save that total as the
+      // per-item price. Quantity policy itself is independent of this probe quantity.
+      const result=await api(`/api/mints/detect?contractAddress=${encodeURIComponent(trimmed)}&quantity=1`);
       lastDetected.current=trimmed;
       setChain(result.chain);
-      if(result.priceKnown)setPriceETH(weiToEthDisplay(result.valueWei));
-      if(result.startTime&&result.startTime*1000>Date.now()){
-        const local=new Date(result.startTime*1000);
+      const useOpenSea=Boolean(result.openSeaMintRecommended);
+      const futureStage=result.drop?.nextStage?.startTime*1000>Date.now()?result.drop.nextStage:null;
+      const quantityPolicy=mintQuantityPolicy(futureStage?.maxPerWallet
+        ?{...result,maxPerWallet:futureStage.maxPerWallet}:result);
+      setViaOpenSea(useOpenSea);
+      setStageType(futureStage?.stageType||result.drop?.activeStage?.stageType||'');
+      setMaxPerWallet(quantityPolicy.detected?quantityPolicy.max:null);
+      if(Number(quantity)>quantityPolicy.max)setQuantity(String(quantityPolicy.max));
+      if(useOpenSea)setPriceETH('');
+      else if(result.priceKnown)setPriceETH(weiToEthDisplay(result.valueWei));
+      const detectedStart=futureStage?.startTime||result.startTime;
+      if(detectedStart&&detectedStart*1000>Date.now()){
+        const local=new Date(detectedStart*1000);
         local.setMinutes(local.getMinutes()-local.getTimezoneOffset());
         setMintTime(local.toISOString().slice(0,16));
       }
       const label=result.isSeaDrop?'SeaDrop drop':'contract';
-      if(result.priceKnown)notify(`Detected ${label} on ${result.chain} — price read from the contract.`,{type:'success'});
+      if(useOpenSea)notify(`Detected ${result.collection?.name||label} on ${result.chain}. OpenSea will prepare the mint at execution time.`,{type:'success'});
+      else if(result.priceKnown)notify(`Detected ${label} on ${result.chain} — price read from the contract.`,{type:'success'});
       else notify(`Detected ${label} on ${result.chain}, but the price couldn't be read — enter it yourself.`,{type:'info'});
     }catch(value){notify(value.message,{type:'error'});}
     finally{setDetecting(false);}
@@ -1242,13 +1258,14 @@ function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSear
   // just-changed value directly since setState hasn't applied yet inside the same onChange handler.
   function autoDetectIfReady(value=contractAddress){const trimmed=value.trim();if(ADDRESS_SHAPE.test(trimmed)&&trimmed!==lastDetected.current)detect(trimmed);}
   function handleContractBlur(){autoDetectIfReady();}
-  async function create(event){event.preventDefault();const form=event.currentTarget;try{const input=Object.fromEntries(new FormData(form));if(!input.priceETH)delete input.priceETH;if(input.mintTime)input.mintTime=new Date(input.mintTime).toISOString();else delete input.mintTime;await api('/api/tasks',{method:'POST',body:JSON.stringify(input)});setPriceIssue(null);form.reset();setContractAddress('');setQuantity('1');setPriceETH('');setMintTime('');lastDetected.current='';notify('Task scheduled.',{type:'success'});listing.load();}catch(value){const issue=value.issues?.find(entry=>entry.field==='priceETH');if(issue)setPriceIssue(issue.message);notify(value.message,{type:'error'});}}async function control(id,action){try{await api(`/api/tasks/${id}/control`,{method:'POST',body:JSON.stringify({action,confirmation:action==='cancel'?'CONFIRM':undefined})});}catch(value){notify(value.message,{type:'error'});}}
+  async function create(event){event.preventDefault();const form=event.currentTarget;try{const input=Object.fromEntries(new FormData(form));input.viaOpenSea=viaOpenSea;if(stageType)input.stageType=stageType;if(viaOpenSea)input.priceETH=0;else if(!input.priceETH)delete input.priceETH;if(input.mintTime)input.mintTime=new Date(input.mintTime).toISOString();else delete input.mintTime;await api('/api/tasks',{method:'POST',body:JSON.stringify(input)});setPriceIssue(null);form.reset();setContractAddress('');setQuantity('1');setMaxPerWallet(null);setPriceETH('');setMintTime('');setViaOpenSea(false);setStageType('');lastDetected.current='';notify('Task scheduled.',{type:'success'});listing.load();}catch(value){const issue=value.issues?.find(entry=>entry.field==='priceETH');if(issue)setPriceIssue(issue.message);notify(value.message,{type:'error'});}}async function control(id,action){try{await api(`/api/tasks/${id}/control`,{method:'POST',body:JSON.stringify({action,confirmation:action==='cancel'?'CONFIRM':undefined})});}catch(value){notify(value.message,{type:'error'});}}
   // Prototype docs/prototype-pages/mint.html:111-158. The Schedule tab is a .split: the form on
   // the left, the "Scheduled" list on the right. The old page-lead, the search toolbar, the chain
   // select and the table UNDER the form are all gone -- none of them exist in the design, and the
   // table in particular was the thing the owner asked to have removed.
   const walletsArrived=wallets.data!==null&&wallets.data!==undefined;
   const noWallets=walletsArrived&&wallets.data.length===0;
+  const quantityMax=maxPerWallet||100;
   // ---- Filtering, and where it happens -------------------------------------------------------
   // The server does this: it filters by bucket and counts all of them in one round trip. But
   // dashboard/vite.config.js proxies /api to the DEPLOYED instance, which does not have that code
@@ -1408,7 +1425,7 @@ function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSear
         <label className="fl"><span>Contract address</span>
           <input className="in mono" name="contractAddress" required disabled={noWallets} placeholder="0x…"
             value={contractAddress}
-            onChange={e=>{setContractAddress(e.target.value);autoDetectIfReady(e.target.value);}}
+            onChange={e=>{setContractAddress(e.target.value);if(!ADDRESS_SHAPE.test(e.target.value.trim())){lastDetected.current='';setMaxPerWallet(null);setViaOpenSea(false);setStageType('');}autoDetectIfReady(e.target.value);}}
             onBlur={handleContractBlur}/></label>
         <div className="nt i">{INFO_ICON}
           <div>SeaDrop drops expose their own opening time on-chain — it is filled in automatically. A plain <code>mint(uint256)</code> contract has no equivalent, so you set the time yourself.</div></div>
@@ -1420,30 +1437,30 @@ function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSear
                 <optgroup label="EVM">{(wallets.data||[]).map(entry=><option key={entry.label} value={entry.label}>{entry.label}</option>)}</optgroup>
               </select>}
           </label>
-          <label className="fl"><span>Quantity</span>
+          <label className="fl"><span>Quantity <span style={{color:'var(--faint)',fontWeight:500}}>· {maxPerWallet?`max ${maxPerWallet}/wallet`:`up to ${quantityMax}; checked in preview`}</span></span>
             <div className="qty">
-              <input className="in tab" name="quantity" type="number" min={1} max={100} disabled={noWallets}
-                placeholder="Enter quantity (1–100)" value={quantity} onChange={e=>setQuantity(e.target.value)}/>
-              {/* Shared rule against this form's cap of 100 -> 1, 2, 50, Max. Backlog §13. */}
-              <div className="qb">{quantityPicks(100).map(pick=><button type="button" key={pick} disabled={noWallets}
+              <input className="in tab" name="quantity" type="number" min={1} max={quantityMax} disabled={noWallets}
+                placeholder={`Enter quantity (1–${quantityMax})`} value={quantity} onChange={e=>setQuantity(e.target.value)}/>
+              <div className="qb">{quantityPicks(quantityMax).map(pick=><button type="button" key={pick} disabled={noWallets}
                 className={String(pick)===String(quantity)?'on':undefined}
                 onClick={()=>setQuantity(String(pick))}>{pick}</button>)}
-                <button type="button" disabled={noWallets}
-                  className={String(quantity)==='100'?'on':undefined}
-                  onClick={()=>setQuantity('100')}>Max</button></div>
+                <button type="button" disabled={noWallets||!maxPerWallet||quantityMax===1}
+                  title={!maxPerWallet?'The contract maximum will be checked during preview':quantityMax===1?'This drop allows one mint per wallet':undefined}
+                  className={String(quantity)===String(quantityMax)?'on':undefined}
+                  onClick={()=>setQuantity(String(quantityMax))}>Max</button></div>
             </div></label>
         </div>
         <label className="fl"><span>Mint time <span style={{color:'var(--faint)',fontWeight:500}}>· UTC, explicit offset or Z</span></span>
           <input className="in tab mono" name="mintTime" type="datetime-local" disabled={noWallets}
             value={mintTime} onChange={e=>setMintTime(e.target.value)}/></label>
-        {priceIssue
+        {!viaOpenSea&&priceIssue
           ?<label className="fl"><span>Price per mint <span style={{color:'var(--faint)',fontWeight:500}}>· ETH</span></span>
              <input className="in tab bad" name="priceETH" type="number" step="any" min="0" required
                placeholder="e.g. 0.08" value={priceETH} onChange={e=>setPriceETH(e.target.value)}/>
              <div className="fielderr">{ALERT_ICON}{priceIssue}</div></label>
-          :priceETH?<input type="hidden" name="priceETH" value={priceETH}/>:null}
+          :!viaOpenSea&&priceETH?<input type="hidden" name="priceETH" value={priceETH}/>:null}
         <input type="hidden" name="chain" value={chain}/>
-        <button className="b p" disabled={noWallets}>Schedule mint</button>
+        <button className="b p" disabled={noWallets||detecting}>{detecting?'Reading contract…':'Schedule mint'}</button>
       </form>
     </div>
 
@@ -2514,31 +2531,47 @@ function MintBatch({onGoWallets}){
   const [detectedArguments,setDetectedArguments]=useState([]);
   const [seaDropAddress,setSeaDropAddress]=useState('');
   const [viaOpenSea,setViaOpenSea]=useState(false);
+  const [maxPerWallet,setMaxPerWallet]=useState(null);
+  const [completedMaxPerWallet,setCompletedMaxPerWallet]=useState(null);
+  const [detecting,setDetecting]=useState(false);
+  const [detectionError,setDetectionError]=useState('');
   const lastDetected=useRef("");
+  const detectingKey=useRef("");
   async function detectPrice(address,quantityOverride=quantity){
     const trimmed=address.trim();
     const requestKey=`${trimmed}:${quantityOverride}`;
-    if(!ADDRESS_SHAPE.test(trimmed)||requestKey===lastDetected.current)return;
-    lastDetected.current=requestKey;
+    if(!ADDRESS_SHAPE.test(trimmed)||requestKey===lastDetected.current||requestKey===detectingKey.current)return;
+    detectingKey.current=requestKey;
+    setDetectionError('');
+    setDetecting(true);
     try{
       const result=await api(`/api/mints/detect?contractAddress=${encodeURIComponent(trimmed)}&quantity=${encodeURIComponent(quantityOverride)}`);
+      if(detectingKey.current!==requestKey)return;
       const useOpenSea=Boolean(result.openSeaMintRecommended);
+      const quantityPolicy=mintQuantityPolicy(result);
       setViaOpenSea(useOpenSea);
       setDetectedChain(result.chain||'');
       setMethodSignature(useOpenSea?'':result.methodSignature||'');
       setDetectedArguments(useOpenSea?[]:result.arguments||[]);
       setSeaDropAddress(useOpenSea?'':result.seaDropAddress||'');
       setDetectedPrice(useOpenSea?'0':result.priceKnown?weiToEthDisplay(result.valueWei):null);
+      setMaxPerWallet(quantityPolicy.detected?quantityPolicy.max:null);
+      if(Number(quantityOverride)>quantityPolicy.max)setQuantity(String(quantityPolicy.max));
+      lastDetected.current=requestKey;
     }catch{
-      setDetectedPrice(null);setDetectedChain('');setMethodSignature('');setDetectedArguments([]);
-      setSeaDropAddress('');setViaOpenSea(false);
-    }
+      if(detectingKey.current===requestKey){
+        setDetectedPrice(null);setDetectedChain('');setMethodSignature('');setDetectedArguments([]);
+        setSeaDropAddress('');setViaOpenSea(false);setMaxPerWallet(null);
+        setDetectionError('We could not read this contract yet. Try again.');
+      }
+    }finally{if(detectingKey.current===requestKey){detectingKey.current='';setDetecting(false);}}
   }
   function autoDetectIfReady(value){detectPrice(value);}
   function toggle(label){setSelected(current=>current.includes(label)?current.filter(item=>item!==label):[...current,label]);}
   async function simulate(event){
-    event.preventDefault();
+    event?.preventDefault?.();
     if(!selected.length){notify('Select at least one wallet.',{type:'error'});return;}
+    if(detecting){notify('Contract details are still loading. Try again in a moment.',{type:'info'});return;}
     if(!viaOpenSea&&!methodSignature){notify('Could not prepare this contract for batch minting.',{type:'error'});return;}
     const valueWei=ethToWei(detectedPrice);
     if(!viaOpenSea&&valueWei===null){notify('Could not confirm the mint price for this contract.',{type:'error'});return;}
@@ -2550,6 +2583,7 @@ function MintBatch({onGoWallets}){
         seaDropAddress:viaOpenSea?undefined:seaDropAddress||undefined,
         arguments:viaOpenSea?[]:detectedArguments,valueWei:viaOpenSea?'0':valueWei.toString()})}));
       setResults(null);
+      setCompletedMaxPerWallet(null);
       notify(`Simulation passed for ${selected.length} wallets — review and confirm.`,{type:'success'});
     }catch(value){notify(value.message,{type:'error'});}
     finally{setBusy(false);}
@@ -2561,6 +2595,16 @@ function MintBatch({onGoWallets}){
       const response=await api('/api/mints/confirm',{method:'POST',body:JSON.stringify({previewToken:preview.previewToken,confirmation:'CONFIRM'})});
       setResults(response.results);
       const failed=response.results.filter(item=>item.status!=='success').length;
+      setPreview(null);
+      // A completely successful batch is finished work, not a reusable transaction draft. Clear
+      // every value that could accidentally submit the same mint again. Failed/partial batches
+      // deliberately keep their inputs so the user can correct the cause and re-simulate.
+      if(failed===0){
+        setCompletedMaxPerWallet(quantityMax);
+        setSelected([]);setContractAddress('');setQuantity('1');setDetectedPrice(null);
+        setDetectedChain('');setMethodSignature('');setDetectedArguments([]);setSeaDropAddress('');
+        setViaOpenSea(false);setMaxPerWallet(null);setDetectionError('');lastDetected.current='';detectingKey.current='';
+      }
       notify(failed?`${response.results.length-failed} of ${response.results.length} succeeded; ${failed} failed.`:'All wallet mints were successful.',{type:failed?'error':'success'});
     }catch(value){notify(value.message,{type:'error'});}
     finally{setBusy(false);}
@@ -2587,23 +2631,28 @@ function MintBatch({onGoWallets}){
   // a toast repeating it was only ever redundant.
   const resultCount=results?results.length:0;
   const succeeded=results?results.filter(entry=>entry.status==='success').length:0;
+  const quantityMax=maxPerWallet||100;
   return <div className="split">
     <div className="card">
       <div className="ch"><div className="chip-ico">{BATCH_ICON}</div><h2>Batch mint</h2></div>
       <form className="g" style={{gap:'11px'}} onSubmit={simulate}>
         <label className="fl"><span>Contract address</span>
           <input className={`in mono${detectedPrice?' ok':''}`}
-            disabled={noWallets} readOnly={!noWallets&&!enoughSelected}
+            required disabled={noWallets} readOnly={!noWallets&&!enoughSelected}
             aria-describedby={!noWallets&&!enoughSelected?'batch-gate':undefined}
             placeholder={enoughSelected?'0x…':`Select ${BATCH_MIN_WALLETS} wallets first`}
             value={contractAddress}
             onChange={e=>{if(!enoughSelected)return;setContractAddress(e.target.value);setPreview(null);
               if(!ADDRESS_SHAPE.test(e.target.value.trim())){lastDetected.current='';setDetectedPrice(null);
-                setDetectedChain('');setMethodSignature('');setDetectedArguments([]);setSeaDropAddress('');setViaOpenSea(false);}
+                setDetectedChain('');setMethodSignature('');setDetectedArguments([]);setSeaDropAddress('');setViaOpenSea(false);
+                setMaxPerWallet(null);setDetectionError('');detectingKey.current='';setDetecting(false);}
               autoDetectIfReady(e.target.value);}}/>
           {/* Stated up front as well as on click -- a rule you can only discover by bumping into it
               is a rule the page kept to itself. */}
-          {!noWallets&&!enoughSelected&&<div className="fielderr" id="batch-gate">{ALERT_ICON}{gateMessage}</div>}</label>
+          {!noWallets&&!enoughSelected&&<div className="fielderr" id="batch-gate">{ALERT_ICON}{gateMessage}</div>}
+          {detectionError&&<div className="nt w" role="status">{WARN_TRIANGLE_ICON}<div><b>{detectionError}</b>
+            <div style={{marginTop:'8px'}}><button type="button" className="b sm" onClick={()=>detectPrice(contractAddress,quantity)}>Retry</button></div>
+          </div></div>}</label>
         <label className="fl"><span>Wallets <span style={{color:'var(--faint)',fontWeight:500}}>· up to 100 unique</span></span>
           {!walletsArrived
             ?<div><div className="sk row"/><div className="sk row"/></div>
@@ -2623,20 +2672,20 @@ function MintBatch({onGoWallets}){
               })}
             </div>}
         </label>
-        <label className="fl"><span>Quantity per wallet</span>
+        <label className="fl"><span>Quantity per wallet <span style={{color:'var(--faint)',fontWeight:500}}>· {maxPerWallet?`max ${maxPerWallet}/wallet`:`up to ${quantityMax}; checked per wallet`}</span></span>
           <div className="qty">
-            <input className="in tab" type="number" min={1} max={3} disabled={noWallets}
-              placeholder="Enter quantity (1–3)" value={quantity} onChange={e=>{setQuantity(e.target.value);
+            <input className="in tab" type="number" min={1} max={quantityMax} disabled={noWallets}
+              placeholder={`Enter quantity (1–${quantityMax})`} value={quantity} onChange={e=>{setQuantity(e.target.value);
                 if(ADDRESS_SHAPE.test(contractAddress.trim()))detectPrice(contractAddress,e.target.value);}}/>
-            {/* Shared rule against this form's cap of 3 -> 1, 2, 3, Max. Backlog §13. */}
-            <div className="qb">{quantityPicks(3).map(pick=><button type="button" key={pick} disabled={noWallets}
+            <div className="qb">{quantityPicks(quantityMax).map(pick=><button type="button" key={pick} disabled={noWallets}
               className={String(pick)===String(quantity)?'on':undefined}
                 onClick={()=>{setQuantity(String(pick));if(ADDRESS_SHAPE.test(contractAddress.trim()))detectPrice(contractAddress,String(pick));}}>{pick}</button>)}
-              <button type="button" disabled={noWallets}
-                className={String(quantity)==='3'?'on':undefined}
-                onClick={()=>{setQuantity('3');if(ADDRESS_SHAPE.test(contractAddress.trim()))detectPrice(contractAddress,'3');}}>Max</button></div>
+              <button type="button" disabled={noWallets||!maxPerWallet||quantityMax===1}
+                title={!maxPerWallet?'Each wallet limit will be checked during simulation':quantityMax===1?'This drop allows one mint per wallet':undefined}
+                className={String(quantity)===String(quantityMax)?'on':undefined}
+                onClick={()=>{setQuantity(String(quantityMax));if(ADDRESS_SHAPE.test(contractAddress.trim()))detectPrice(contractAddress,String(quantityMax));}}>Max</button></div>
           </div></label>
-        <button className="b p" disabled={busy||!enoughSelected}>Simulate all {selected.length||0}</button>
+        <button className="b p" disabled={busy||detecting||!enoughSelected}>{detecting?'Reading contract…':`Simulate all ${selected.length||0}`}</button>
       </form>
     </div>
 
@@ -2668,6 +2717,11 @@ function MintBatch({onGoWallets}){
                <p style={{fontSize:'11px',color:'var(--faint)',marginTop:'9px'}}>
                  {succeeded} {succeeded===1?'transaction was':'transactions were'} confirmed.
                  {resultCount-succeeded>0?` The ${resultCount-succeeded===1?'other':'others'} never left the server.`:''}</p>
+               {succeeded===resultCount&&<div className="nt i" style={{marginTop:'9px'}}>{INFO_ICON}<div>
+                 {completedMaxPerWallet===1
+                   ?'This drop allows one mint per wallet. Start a new batch only with wallets that are still eligible.'
+                   :'The completed batch was cleared to prevent an accidental repeat mint. Start a new batch to mint again.'}
+               </div></div>}
              </div>
             :preview
               ?<div className="g">

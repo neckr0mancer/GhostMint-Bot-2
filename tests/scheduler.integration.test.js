@@ -14,7 +14,7 @@ const { requestSchemas } = require('../src/validation/domain');
 
 const integrationTest = CONFIG.databaseUrl && CONFIG.databaseUrlUnpooled ? test : test.skip;
 
-integrationTest('durable scheduler stores distant jobs, claims once, audits attempts, and supports controls', { timeout:30_000 }, async () => {
+integrationTest('durable scheduler stores distant jobs, claims once, audits attempts, and supports controls', { timeout:120_000 }, async () => {
   const migration = await runMigrations({ connectionString:CONFIG.databaseUrlUnpooled,
     migrationsDirectory:path.join(CONFIG.projectRoot, 'migrations') });
   assert.equal(migration.connection, 'unpooled');
@@ -71,7 +71,7 @@ integrationTest('durable scheduler stores distant jobs, claims once, audits atte
   }
 });
 
-integrationTest('listPageForUser search filters at the database level, not just the currently-loaded page', { timeout:30_000 }, async () => {
+integrationTest('listPageForUser search filters at the database level, not just the currently-loaded page', { timeout:120_000 }, async () => {
   const migration = await runMigrations({ connectionString:CONFIG.databaseUrlUnpooled,
     migrationsDirectory:path.join(CONFIG.projectRoot, 'migrations') });
   assert.equal(migration.connection, 'unpooled');

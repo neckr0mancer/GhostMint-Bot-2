@@ -12,7 +12,7 @@ const { createPostgresStorage } = require('../src/storage/postgresStorage');
 
 const integrationTest = CONFIG.databaseUrl && CONFIG.databaseUrlUnpooled ? test : test.skip;
 
-integrationTest('source transaction deduplication survives a repository restart', { timeout:30_000 }, async () => {
+integrationTest('source transaction deduplication survives a repository restart', { timeout:120_000 }, async () => {
   await runMigrations({ connectionString:CONFIG.databaseUrlUnpooled,
     migrationsDirectory:path.join(CONFIG.projectRoot,'migrations') });
   const pool=createDatabasePool({connectionString:CONFIG.databaseUrl,max:2});

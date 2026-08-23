@@ -57,6 +57,39 @@ test('dashboard and guided bot batches preserve the OpenSea preparation decision
   assert.match(discordSource,/viaOpenSea: flowData\.viaOpenSea === true/);
 });
 
+test('batch simulation waits for contract detection and uses the detected per-wallet maximum',()=>{
+  assert.match(appSource,/disabled=\{busy\|\|detecting\|\|!enoughSelected\}/);
+  assert.match(appSource,/detecting\?'Reading contract…'/);
+  assert.match(appSource,/requestKey===lastDetected\.current\|\|requestKey===detectingKey\.current/);
+  assert.match(appSource,/We could not read this contract yet\. Try again\./);
+  assert.doesNotMatch(appSource,/result\.drop\?\.activeStage\?\.maxPerWallet/);
+  // Any argument shape counts: Schedule legitimately probes the policy with stage data merged
+  // over the detect result, while Mint-now and Batch pass the raw response. What matters is
+  // that all three surfaces resolve their cap through the one shared function.
+  assert.equal((appSource.match(/mintQuantityPolicy\(/g)||[]).length,3,
+    'single, schedule, and batch must share the same quantity policy');
+  assert.match(appSource,/const quantityMax=maxPerWallet\|\|100/);
+  assert.match(appSource,/max=\{quantityMax\}/);
+  assert.match(appSource,/quantityPicks\(quantityMax\)/);
+  assert.doesNotMatch(appSource,/quantityPicks\(3\)/);
+});
+
+test('scheduled mint detection uses the shared max and reads a one-item price',()=>{
+  assert.match(appSource,/api\/mints\/detect\?contractAddress=\$\{encodeURIComponent\(trimmed\)\}&quantity=1/);
+  assert.match(appSource,/name="quantity" type="number" min=\{1\} max=\{quantityMax\}/);
+  // detected?max:null is deliberate: an unproven cap stays null so the UI can say "checked in
+  // preview" and disable Max, instead of presenting the fallback 100 as if the contract said it.
+  assert.match(appSource,/setMaxPerWallet\(quantityPolicy\.detected\?quantityPolicy\.max:null\)/);
+});
+
+test('a completely successful batch clears its mint draft while failed results retain it',()=>{
+  assert.match(appSource,/if\(failed===0\)\{[\s\S]*setSelected\(\[\]\);setContractAddress\(''\);setQuantity\('1'\)/);
+  assert.match(appSource,/Failed\/partial batches[\s\S]*deliberately keep their inputs/);
+  assert.match(appSource,/completed batch was cleared to prevent an accidental repeat mint/);
+  assert.match(appSource,/This drop allows one mint per wallet/);
+  assert.doesNotMatch(appSource,/Run again/);
+});
+
 test('mint preview turns insufficient balance diagnostics into a short actionable message',async()=>{
   const feedback=await import(pathToFileURL(path.join(__dirname,'..','dashboard','src','mintFeedback.mjs')));
   const result=feedback.mintPreviewError({code:'SIMULATION_FAILED',message:'This wallet cannot cover the mint price plus the network fee on robinhood (0xabc). Both are paid together.'},{chain:'robinhood',quantity:1});

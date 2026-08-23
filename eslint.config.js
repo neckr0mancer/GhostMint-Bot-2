@@ -16,7 +16,7 @@ module.exports = [
     // .claude/worktrees/**: scratch worktrees other agent sessions create under this checkout.
     // They contain full copies of the dashboard (ESM) and get linted as repo files otherwise,
     // which fails `npm run lint` for code that is not part of this tree at all.
-    ignores: ['node_modules/**', 'coverage/**', '.project-tools/**', 'public/dashboard/**', '.claude/**'],
+    ignores: ['node_modules/**', 'coverage/**', '.project-tools/**', 'public/dashboard/**', '.claude/**', '.ai-tools/**'],
   },
   {
     files: ['**/*.js'],

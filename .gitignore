@@ -20,3 +20,6 @@ PROJECT_REVIEW_*.md
 # git add -A on 2026-08-19 and carried through several commits before anyone noticed.
 next prompt.txt
 *.local.md
+
+# AI tooling: browser automation, screenshots, persistent login profile (.ai-tools/)
+.ai-tools/
