@@ -137,8 +137,8 @@ export function GroupedChainOptions({options=[],labelFor=value=>value}){return <
 </>;}
 
 export function csrf(){return document.cookie.split(';').map(value=>value.trim()).find(value=>value.startsWith('ghostmint_csrf='))?.split('=').slice(1).join('=')||'';}
-export async function api(path,options={}){const response=await fetch(path,{...options,headers:{'Content-Type':'application/json',...(options.method&&options.method!=='GET'?{'X-CSRF-Token':decodeURIComponent(csrf())}:{})}});const body=response.status===204?null:await response.json().catch(()=>({}));if(!response.ok){const error=new Error(body?.issues?.map(item=>`${item.field} ${item.message}`).join('; ')||body?.error||'Request failed');error.status=response.status;error.code=body?.code;// The per-field issues are kept ON the error, not just flattened into its message. The prototype's validation state (.in.bad + .fielderr under the offending field) needs to know WHICH field failed; without this it could never fire, and both Mint now and Schedule were silently falling back to a toast.
-  error.issues=body?.issues;error.retryAfter=response.headers.get('Retry-After');throw error;}return body;}
+export async function api(path,options={}){const response=await fetch(path,{...options,headers:{'Content-Type':'application/json',...(options.method&&options.method!=='GET'?{'X-CSRF-Token':decodeURIComponent(csrf())}:{})}});const body=response.status===204?null:await response.json().catch(()=>({}));if(!response.ok){const error=new Error(body?.issues?.map(item=>`${item.field} ${item.message}`).join('; ')||body?.error||'Request failed');error.status=response.status;error.code=body?.code;error.reason=body?.reason;// The per-field issues are kept ON the error, not just flattened into its message. The prototype's validation state (.in.bad + .fielderr under the offending field) needs to know WHICH field failed; without this it could never fire, and both Mint now and Schedule were silently falling back to a toast.
+  error.issues=body?.issues;error.retryAfter=response.headers.get('Retry-After');if(response.status===401&&!path.startsWith('/api/auth/login'))window.dispatchEvent(new CustomEvent('ghostmint-session-ended',{detail:{message:error.message,reason:error.reason}}));throw error;}return body;}
 
 // Triggers a client-side file save (used for the exported wallet keystore) via the standard
 // Blob-URL-plus-synthetic-<a>-click pattern -- content never leaves the browser except through the
@@ -410,6 +410,9 @@ export function SearchField({label,value='',onChange,placeholder='Label, address
 //   bad  red    -- something failed
 //   wn   amber  -- something missed its window
 //   nu   grey   -- something is stopped on purpose
+// `tag` is a plain qualifier rendered in the same muted style WITHOUT the "was" prefix --
+// history.html's "Security log owner only" marker, where the point is a permission boundary,
+// not a rename.
 export function SubTabs({tabs=[],active,onChange,label='Sections',badges={}}){
   return <div className="subtabs" role="tablist" aria-label={label}>
     {tabs.map(tab=>{
@@ -417,6 +420,7 @@ export function SubTabs({tabs=[],active,onChange,label='Sections',badges={}}){
       return <button key={tab.id} type="button" role="tab" aria-selected={active===tab.id}
         className={active===tab.id?'on':undefined} onClick={()=>onChange(tab.id)}>
         <span>{tab.label}</span>{tab.was&&<span className="was">was {tab.was}</span>}
+        {tab.tag&&<span className="was">{' '}{tab.tag}</span>}
         {badge&&badge.count>0&&<span className={`cnt sub${badge.tone==='bad'?' hot':badge.tone==='wn'?' warn':''}`}
           aria-label={`${badge.count} ${badge.tone==='bad'?'failing':'needing attention'}`}>
           {badge.count}</span>}

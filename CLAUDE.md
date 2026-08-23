@@ -1,5 +1,10 @@
 # GhostMint-Bot
 
+**Mandatory first read for every implementation or redesign task:** [`AGENTS.md`](AGENTS.md).
+It is the current cross-AI operating contract, resolves the authority order among older design
+documents, and contains the audited remaining-work register. Where this older handoff disagrees
+with `AGENTS.md`, verify current code and follow `AGENTS.md`.
+
 Node.js/Express/PostgreSQL EVM wallet and NFT-minting bot spanning Telegram, Discord, and a web
 dashboard. Wallets, mint execution, gas/spend governance, watch rules, snipers, and scheduled
 mints all live under `src/`; the dashboard frontend is under `dashboard/`.

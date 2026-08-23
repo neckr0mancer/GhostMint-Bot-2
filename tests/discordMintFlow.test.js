@@ -684,7 +684,7 @@ test('price step offers the OpenSea floor as a one-tap accept', async () => {
   const handler = createDiscordInteractionHandler(ctx);
   const mintNow = buttonInteraction('flow:mintdetailscontinue', 'paster-4');
   await handler(mintNow);
-  assert.match(mintNow.replies[0].content, /OpenSea suggests a floor price/);
+  assert.match(mintNow.replies[0].content, /OpenSea shows 0\.05 ETH/);
 
   const accept = buttonInteraction('flow:priceaccept', 'paster-4');
   await handler(accept);
@@ -707,7 +707,7 @@ test('manual price entry via modal advances past the price step', async () => {
   const handler = createDiscordInteractionHandler(ctx);
   const mintNow = buttonInteraction('flow:mintdetailscontinue', 'paster-5');
   await handler(mintNow);
-  assert.match(mintNow.replies[0].content, /Enter the price per item/);
+  assert.match(mintNow.replies[0].content, /Enter the mint price per item/);
 
   const manual = buttonInteraction('flow:pricemanual', 'paster-5');
   await handler(manual);

@@ -1,12 +1,13 @@
 /* global clearInterval, clearTimeout, CustomEvent, FormData, localStorage, setInterval, setTimeout, URLSearchParams */
 import React,{useCallback,useEffect,useRef,useState} from 'react';
+import QRCode from 'qrcode';
 import Admin from './Admin.jsx';
 import {shortAddress} from './dashboardWidgets/homeParts.jsx';
 import PnlBars from './PnlBars.jsx';
 import {loadError,batchRowDetail,useRetryAfter} from './shared.jsx';
 import {walletPerformance,pnlWalletLabel} from './walletPerformance.js';
 import {pnlBarLayout,pnlRecordSeries,pnlWindowTotals} from './pnlChart.js';
-import {ACTIVITY_EVENTS,api,Ledger,NumberField,SectionCard,confirmDialog,ConfirmHost,consumePendingMintPrefill,CopyButton,csrf,downloadFile,Empty,EVM_CHAINS,Field,Form,getNotificationLog,notify,Notice,PageTitle,Pager,promptDialog,relativeTime,Select,Skeleton,StatusPill,SubTabs,subscribeNotificationLog,ToastHost,useLoad,useLiveSocket,setPendingMintPrefill,quantityPicks} from './shared.jsx';
+import {ACTIVITY_EVENTS,api,Ledger,NumberField,SectionCard,confirmDialog,ConfirmHost,consumePendingMintPrefill,CopyButton,csrf,downloadFile,Empty,EVM_CHAINS,Field,Form,getNotificationLog,notify,Notice,PageTitle,Pager,promptDialog,relativeTime,SearchField,Select,Skeleton,StatusPill,SubTabs,subscribeNotificationLog,ToastHost,useLoad,useLiveSocket,setPendingMintPrefill,quantityPicks} from './shared.jsx';
 import Dashboard from './Dashboard.jsx';
 // Phase 4, unit 1 of 5 (brief §2). The 11->5 merge lands one page at a time so any single merge
 // can be reverted alone. Mint = Minting + Tasks is done; Automation, Wallets+P&L and History are
@@ -153,6 +154,14 @@ function ChainSelect({name,label,options,value,onChange}){const [open,setOpen]=u
 // EVM chain -- one address already works on every EVM chain, so wallets store DEFAULT_EVM_CHAIN
 // as their nominal home chain and the actual target chain is resolved per-mint instead.
 const DEFAULT_EVM_CHAIN='ethereum';
+function AddressQr({address,label='Wallet address'}){
+  const [src,setSrc]=useState('');
+  const [error,setError]=useState('');
+  useEffect(()=>{let live=true;setSrc('');setError('');QRCode.toDataURL(address,{errorCorrectionLevel:'M',margin:2,width:240,
+    color:{dark:'#07120f',light:'#ffffff'}}).then(value=>{if(live)setSrc(value);}).catch(()=>{if(live)setError('QR code could not be generated.');});return()=>{live=false;};},[address]);
+  return <div className="address-qr"><div className="address-qr-image">{src?<img src={src} alt={`${label} QR code`}/>:error?<span role="alert">{error}</span>:<span aria-live="polite">Preparing QR…</span>}</div>
+    <div><strong>Scan to receive</strong><p>This QR contains only the public EVM address. It never contains a private key or recovery phrase.</p><p className="mono fold">{address}</p><CopyButton value={address} label={`Copy ${label.toLowerCase()}`}/></div></div>;
+}
 const CHAIN_FAMILIES=[{value:'evm',label:'EVM',icon:CHAIN_META.ethereum.icon},{value:'solana',label:'Solana',icon:SOLANA_ICON,disabled:true}];
 function WalletChainSelect({name,label,value,onChange}){const [open,setOpen]=useState(false);const rootRef=useRef(null);const panelRef=useRef(null);const current=CHAIN_FAMILIES.find(family=>family.value===value)||CHAIN_FAMILIES[0];useEffect(()=>{if(!open)return;function onDocClick(event){if(rootRef.current&&!rootRef.current.contains(event.target))setOpen(false);}function onKey(event){if(event.key==='Escape')setOpen(false);}document.addEventListener('mousedown',onDocClick);document.addEventListener('keydown',onKey);return()=>{document.removeEventListener('mousedown',onDocClick);document.removeEventListener('keydown',onKey);};},[open]);useEffect(()=>{if(open)panelRef.current?.focus();},[open]);function choose(next){onChange({target:{name,value:next}});setOpen(false);}return <div className="chain-select">{label}<div className="chain-select-control" ref={rootRef}><input type="hidden" name={name} value={current.value==='evm'?DEFAULT_EVM_CHAIN:''}/><button type="button" className="chain-select-trigger" aria-haspopup="listbox" aria-expanded={open} aria-label={label} onClick={()=>setOpen(value=>!value)}><span className="chain-icon" aria-hidden="true">{current.icon}</span><span className="chain-select-value">{current.label}</span><span className="chain-select-chevron" aria-hidden="true">{CHAIN_CHEVRON_ICON}</span></button>{open&&<ul className="chain-select-panel" role="listbox" aria-label={label} tabIndex="-1" ref={panelRef}>{CHAIN_FAMILIES.map(family=><li key={family.value} role="option" aria-disabled={family.disabled||undefined} aria-selected={family.value===current.value} className={`chain-select-option${family.value===current.value?' selected':''}${family.disabled?' disabled':''}`} onClick={()=>!family.disabled&&choose(family.value)}><span className="chain-icon" aria-hidden="true">{family.icon}</span><span>{family.label}</span><span className="chain-select-option-end">{family.disabled&&<span className="chain-select-tag">Coming soon</span>}{family.value===current.value&&<span className="chain-select-option-check" aria-hidden="true">{CHAIN_CHECK_ICON}</span>}</span></li>)}</ul>}</div></div>;}
 // Sets or changes the one account password that gates every sensitive dashboard action (currently:
@@ -362,15 +371,25 @@ function walletCreatedText(wallet){
 // but an unknown value is rendered as itself rather than mapped to a wrong word -- a status this
 // does not recognise is not automatically a failure.
 const ACTIVITY_TONES={success:{tone:'ok',label:'Confirmed'},fail:{tone:'bad',label:'Failed'}};
-function ActivityRow({item}){
+// Verification state rides the same subtitle as the trigger that caused it: it is execution
+// context, not a separate column (history.html keeps rows to title + one identifying line).
+// Known values get honest words; an unrecognized stored value renders as itself.
+const VERIFICATION_LABELS={on:'verified',bypassed:'verification bypassed'};
+function ActivityRow({item,scope='wallet'}){
   const verdict=ACTIVITY_TONES[item.status]
     ||{tone:'wn',label:String(item.status||'unknown').replace(/^./,value=>value.toUpperCase())};
   // actualNetworkCostWei is the gas that was really paid, not an estimate, and it is the one figure
   // a wallet's own history is asked for most. Absent on anything that never broadcast.
   const gas=item.actualNetworkCostWei===null||item.actualNetworkCostWei===undefined
     ?null:`${Number(weiToEthDisplay(item.actualNetworkCostWei)).toFixed(6)} ETH gas`;
-  const details=[item.txHash?shortHex(item.txHash):null,item.triggerSource,gas,
-    item.time?relativeTime(item.time):null].filter(Boolean).join(' · ');
+  // scope="global" (the History feed) names the contract and wallet -- history.html's row order,
+  // address first -- which the wallet overlay omits because the overlay itself already says both.
+  const source=scope==='global'
+    ?[item.address?shortHex(item.address):null,item.walletLabel]:[];
+  const verification=item.verificationState
+    ?(VERIFICATION_LABELS[item.verificationState]||String(item.verificationState)):null;
+  const details=[...source,item.txHash?shortHex(item.txHash):null,item.triggerSource,gas,
+    verification,item.time?relativeTime(item.time):null].filter(Boolean).join(' · ');
   const href=item.txHash&&item.explorer?`${item.explorer}${item.txHash}`:null;
   return <div className="r">
     <div className="rm">
@@ -413,6 +432,7 @@ function WalletDetails({wallet,records,windowKey,onWindow,onRemove,onClose}){
       </div>
       <p className="mono wallet-addr" style={{marginBottom:0}}>{wallet.address}
         <CopyButton value={wallet.address} label="Copy full wallet address"/></p>
+      <AddressQr address={wallet.address} label={`${wallet.label} address`}/>
       <div className="sober"><div className="sh">Balances · by chain</div>
         <table className="led"><tbody>
           {(wallet.balances||[]).map(item=><tr key={item.chain}>
@@ -617,6 +637,7 @@ function NewWalletOverlay({open,onClose,onDone,chains}){
           :<div className="nt i">{INFO_ICON}<div>The phrase is hidden. You can copy it without
             displaying it, or choose Reveal and accept the on-screen exposure warning.</div></div>}
       </div>
+      <AddressQr address={createdRecovery.address} label={`${createdRecovery.label} address`}/>
       <div className="br">
         <button type="button" className="b p" onClick={copyRecoveryPhrase}>Copy recovery phrase</button>
         <button type="button" className="b g" onClick={recoveryRevealed?()=>setRecoveryRevealed(false):revealRecoveryPhrase}>{recoveryRevealed?'Hide':'Reveal'}</button>
@@ -839,6 +860,10 @@ const CLOCK_ICON=<svg width="13" height="13" viewBox="0 0 24 24" fill="none" str
 // for a failed one. CLOCK_ICON_LG is the 24px .ri/.chip-ico variant; CLOCK_ICON above is the 13px
 // one the .tokbar uses.
 const CLOCK_ICON_LG=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg>;
+// history.html's audit-evidence glyph: a checked circle -- the record exists and holds.
+const AUDIT_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>;
+// history.html's owner-only security banner uses the same restrained shield as the admin rail.
+const SECURITY_SHIELD_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><path d="M12 3l7 3v5c0 5-3 8.5-7 10-4-1.5-7-5-7-10V6z"/></svg>;
 const PAUSE_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><path d="M6 4h4v16H6zM14 4h4v16h-4z"/></svg>;
 // Empty-state glyphs, from the prototype: a nested square for "No presets saved"
 // (mint.html:215) and a wallet for "No wallets to batch" (mint.html:192).
@@ -852,7 +877,7 @@ const CARD_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strok
 const CROSS_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><path d="M18 6 6 18M6 6l12 12"/></svg>;
 const LOCK_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><rect x="4" y="10.5" width="16" height="10.5" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/></svg>;
 function shortHex(value){const v=String(value||"");return v.length>12?`${v.slice(0,6)}…${v.slice(-4)}`:v;}
-function Minting({onSwitchToBatch,onGoWallets}){const wallets=useLoad('/api/wallets',[],'wallets.changed');const limits=useLoad('/api/profile/limits');const [preview,setPreview]=useState(null);const [confirmResults,setConfirmResults]=useState(null);const formRef=useRef(null);const previewRef=useRef(null);const [walletLabel,setWalletLabel]=useState('');const [contractAddress,setContractAddress]=useState('');const [quantity,setQuantity]=useState('1');const [methodSignature,setMethodSignature]=useState('');const [argumentsJson,setArgumentsJson]=useState('');const [priceEth,setPriceEth]=useState('');const [seaDropAddress,setSeaDropAddress]=useState('');const [detectedChain,setDetectedChain]=useState('');const [maxPerWallet,setMaxPerWallet]=useState(null);const [detecting,setDetecting]=useState(false);const lastDetected=useRef('');
+function Minting({onSwitchToBatch,onGoWallets}){const wallets=useLoad('/api/wallets',[],'wallets.changed');const limits=useLoad('/api/profile/limits');const [preview,setPreview]=useState(null);const [confirmResults,setConfirmResults]=useState(null);const formRef=useRef(null);const previewRef=useRef(null);const [walletLabel,setWalletLabel]=useState('');const [contractAddress,setContractAddress]=useState('');const [collectionName,setCollectionName]=useState('');const [viaOpenSea,setViaOpenSea]=useState(false);const [quantity,setQuantity]=useState('1');const [methodSignature,setMethodSignature]=useState('');const [argumentsJson,setArgumentsJson]=useState('');const [priceEth,setPriceEth]=useState('');const [seaDropAddress,setSeaDropAddress]=useState('');const [detectedChain,setDetectedChain]=useState('');const [maxPerWallet,setMaxPerWallet]=useState(null);const [detecting,setDetecting]=useState(false);const lastDetected=useRef('');const detectingKey=useRef('');
   // Simulation is no longer user-triggered (backlog §7.2): the prototype has no "Validate and
   // simulate" control, only a Re-simulate on an expired quote, so the first simulation runs on its
   // own. Debounced, because otherwise typing an address would fire one /api/mints/preview per
@@ -876,12 +901,21 @@ function Minting({onSwitchToBatch,onGoWallets}){const wallets=useLoad('/api/wall
     const trimmed=(addressOverride??contractAddress).trim();
     const effectiveQuantity=quantityOverride??quantity;
     if(!trimmed){notify('Enter a contract address first.',{type:'error'});return;}
+    const requestKey=`${trimmed}:${effectiveQuantity}`;
+    // Paste/change and blur can overlap. Mark this lookup before awaiting so those browser events
+    // share one request, one toast and one Recent entry. A newer address/quantity wins safely.
+    if(requestKey===lastDetected.current||requestKey===detectingKey.current)return;
+    detectingKey.current=requestKey;
     setDetecting(true);
     try{
       const result=await api(`/api/mints/detect?contractAddress=${encodeURIComponent(trimmed)}&quantity=${encodeURIComponent(effectiveQuantity)}`);
-      lastDetected.current=`${trimmed}:${effectiveQuantity}`;
-      setMethodSignature(result.methodSignature);
-      setArgumentsJson(JSON.stringify(result.arguments));
+      if(detectingKey.current!==requestKey)return;
+      lastDetected.current=requestKey;
+      const useOpenSea=Boolean(result.openSeaMintRecommended);
+      setViaOpenSea(useOpenSea);
+      setCollectionName(result.collection?.name||'');
+      setMethodSignature(useOpenSea?'opensea:drops-mint':result.methodSignature);
+      setArgumentsJson(JSON.stringify(useOpenSea?[]:result.arguments));
       setSeaDropAddress(result.seaDropAddress||'');
       // The chain a mint actually targets comes from where the contract was found, never from the
       // wallet -- a wallet's stored chain is just its nominal home chain, not a restriction (see
@@ -900,10 +934,11 @@ function Minting({onSwitchToBatch,onGoWallets}){const wallets=useLoad('/api/wall
       // collapsed Advanced section -- an unknown price forces that section open so the user isn't
       // stuck facing a required-but-hidden field, rather than quietly clearing it to something that
       // reads as optional (see the "never let an unresolved price look free" note this mirrors).
-      if(result.priceKnown){setPriceEth(weiToEthDisplay(result.valueWei));notify(`Detected ${label} on ${result.chain} — price read from the contract.`,{type:'success'});}
-      else{setPriceEth('');notify(`Detected ${label} on ${result.chain}, but this contract doesn't expose a recognized price function. Enter the price per NFT in ETH below — enter 0 if it's free.`,{type:'info'});}
-    }catch(value){notify(value.message,{type:'error'});}
-    finally{setDetecting(false);}
+      if(useOpenSea){setPriceEth('');notify(`Detected ${result.collection?.name||label} on ${result.chain}. OpenSea will prepare the mint details for review.`,{type:'success'});}
+      else if(result.priceKnown){setPriceEth(weiToEthDisplay(result.valueWei));notify(`Detected ${label} on ${result.chain} — price read from the contract.`,{type:'success'});}
+      else{setPriceEth('');notify(`Detected ${result.collection?.name||label} on ${result.chain}. Enter the mint price per NFT to continue.`,{type:'info'});}
+    }catch(value){if(detectingKey.current===requestKey)notify(value.message,{type:'error'});}
+    finally{if(detectingKey.current===requestKey){detectingKey.current='';setDetecting(false);}}
   }
   // No manual "Detect" button anywhere -- detection runs itself the moment a full, valid-shaped
   // address is present (on every keystroke while typing, and critically also on paste, which never
@@ -913,18 +948,18 @@ function Minting({onSwitchToBatch,onGoWallets}){const wallets=useLoad('/api/wall
   // Quantity changes re-trigger it too (quantity affects both the price and the call arguments).
   function autoDetectIfReady(value=contractAddress,quantityValue=quantity){const trimmed=value.trim();if(ADDRESS_SHAPE.test(trimmed)&&`${trimmed}:${quantityValue}`!==lastDetected.current)detect(trimmed,quantityValue);}
   function handleAutoDetectBlur(){autoDetectIfReady();}
-  function resetDetectedFields(){setContractAddress('');setQuantity('1');setMethodSignature('');setArgumentsJson('');setPriceEth('0');setSeaDropAddress('');setDetectedChain('');setMaxPerWallet(null);lastDetected.current='';}
+  function resetDetectedFields(){setContractAddress('');setCollectionName('');setViaOpenSea(false);setQuantity('1');setMethodSignature('');setArgumentsJson('');setPriceEth('0');setSeaDropAddress('');setDetectedChain('');setMaxPerWallet(null);lastDetected.current='';}
   // Auto-simulate driver (backlog §7.2). Fires 600ms after the inputs settle, and only when the
   // form could actually produce a preview: a detected contract, a chosen wallet, a quantity.
   // Clears any previous quote first so a stale total can never sit under fresh inputs.
   useEffect(()=>{
     clearTimeout(simulateTimer.current);
-    if(!methodSignature||!walletLabel||!quantity||detecting)return;
+    if(!methodSignature||!walletLabel||!quantity||detecting||(!viaOpenSea&&priceEth===''))return;
     simulateTimer.current=setTimeout(()=>{inspect();},600);
     return()=>clearTimeout(simulateTimer.current);
-  },[methodSignature,argumentsJson,seaDropAddress,walletLabel,quantity,priceEth,detectedChain,detecting]);
+  },[methodSignature,argumentsJson,seaDropAddress,walletLabel,quantity,priceEth,detectedChain,detecting,viaOpenSea]);
   useEffect(()=>()=>clearTimeout(simulateTimer.current),[]);
-  async function inspect(event){event?.preventDefault?.();const raw={walletLabel,presetName:undefined,contractAddress,methodSignature,seaDropAddress,arguments:argumentsJson,priceEth};try{const valueWei=ethToWei(raw.priceEth);if(valueWei===null){notify('Price (ETH) must be a plain non-negative number -- 0.01 for example, or 0 if the mint is free.',{type:'error'});return;}const batch=raw.walletLabels?.split(/[,\n]+/).map(x=>x.trim()).filter(Boolean);const input={walletLabel:raw.walletLabel,walletLabels:batch?.length?batch:undefined,presetName:raw.presetName||undefined,contractAddress:raw.contractAddress||undefined,methodSignature:raw.methodSignature||undefined,seaDropAddress:raw.seaDropAddress||undefined,arguments:raw.arguments?JSON.parse(raw.arguments):[],valueWei:valueWei.toString(),chain:detectedChain||undefined};setSimulating(true);setMintError(null);setQuantityIssue(null);
+  async function inspect(event){event?.preventDefault?.();const raw={walletLabel,presetName:undefined,contractAddress,methodSignature,seaDropAddress,arguments:argumentsJson,priceEth};try{const valueWei=viaOpenSea?0n:ethToWei(raw.priceEth);if(valueWei===null){notify('Enter the mint price per NFT to continue. Use 0 only if the mint is free.',{type:'info'});return;}const batch=raw.walletLabels?.split(/[,\n]+/).map(x=>x.trim()).filter(Boolean);const input={walletLabel:raw.walletLabel,walletLabels:batch?.length?batch:undefined,presetName:raw.presetName||undefined,contractAddress:raw.contractAddress||undefined,methodSignature:raw.methodSignature||undefined,seaDropAddress:raw.seaDropAddress||undefined,arguments:raw.arguments?JSON.parse(raw.arguments):[],quantity:Number(quantity),viaOpenSea,valueWei:valueWei.toString(),chain:detectedChain||undefined};setSimulating(true);setMintError(null);setQuantityIssue(null);
     setPreview(await api('/api/mints/preview',{method:'POST',body:JSON.stringify(input)}));setConfirmResults(null);
   }catch(value){
     setPreview(null);
@@ -985,9 +1020,9 @@ function Minting({onSwitchToBatch,onGoWallets}){const wallets=useLoad('/api/wall
           </label>
           {/* Detection summary, the prototype's .nt.i one-liner. */}
           {!detecting&&detected&&<div className="nt i">{INFO_ICON}
-            <div>Detected <b>{methodSignature===SEADROP_SIGNATURE?'SeaDrop drop':'contract'}</b>
+            <div>Detected <b>{collectionName||(methodSignature===SEADROP_SIGNATURE?'SeaDrop drop':'contract')}</b>
               {detectedChain&&<> · {detectedChain}</>}
-              {priceEth&&priceEth!=='0'?<> · {priceEth} ETH</>:<> · free</>}
+              {viaOpenSea?<> · price confirmed during preview</>:priceEth===''?<> · price needed</>:priceEth!=='0'?<> · {priceEth} ETH</>:<> · free</>}
               {maxPerWallet?<> · max {maxPerWallet}/wallet</>:null}
             </div></div>}
           <div className="g gm2 g2">
@@ -1031,11 +1066,12 @@ function Minting({onSwitchToBatch,onGoWallets}){const wallets=useLoad('/api/wall
               {quantityIssue&&<div className="fielderr">{ALERT_ICON}{quantityIssue}</div>}
             </label>
           </div>
-          <label className="fl"><span>Price per mint <span style={{color:'var(--faint)',fontWeight:500}}>· auto-detected</span></span>
-            <input className="in tab" type="number" step="any" min="0" value={priceEth} disabled={noWallets}
-              placeholder={detected?'e.g. 0.08 — leave blank to use detected price':'Detected once a contract is entered'}
+          <label className="fl"><span>Price per mint <span style={{color:'var(--faint)',fontWeight:500}}>· {viaOpenSea?'resolved during simulation':'auto-detected'}</span></span>
+            <input className="in tab" type="number" step="any" min="0" value={priceEth} disabled={noWallets||viaOpenSea}
+              placeholder={viaOpenSea?'OpenSea supplies the exact value':detected?'e.g. 0.08 — leave blank to use detected price':'Detected once a contract is entered'}
               onChange={e=>setPriceEth(e.target.value)}/>
           </label>
+          {detected&&!viaOpenSea&&priceEth===''&&<div className="nt w" role="status">{WARN_TRIANGLE_ICON}<div><b>Mint price needed.</b> Enter the price per NFT to continue. Use 0 only if the mint is free.</div></div>}
           {/* Batch cross-link -- the prototype keeps this on the single-wallet form, where the
               intent actually arises, rather than leaving Batch buried as a sub-tab. */}
           <div className="nt i">{BATCH_ICON}
@@ -1059,12 +1095,12 @@ function Minting({onSwitchToBatch,onGoWallets}){const wallets=useLoad('/api/wall
                   knows nothing" when it had just reported detecting the drop. Chain was the only
                   row wired to what was actually known, which is why it was the only one that
                   filled in. Only gas, Simulation and Total debit genuinely depend on simulating. */}
-              <tr><td>Contract</td><td className="mono">{item?shortHex(item.preview.contractAddress):(contractAddress?shortHex(contractAddress):'—')}</td></tr>
+              <tr><td>Name</td><td>{collectionName||'—'}</td></tr>
               <tr><td>Method</td><td className="mono">{item?item.preview.methodSignature:(methodSignature||'—')}</td></tr>
               <tr><td>Chain</td><td>{detectedChain||'—'}</td></tr>
               <tr><td>Quantity</td><td>{item?quantity:(detected?quantity:'—')}</td></tr>
               <tr><td>Mint price</td><td>{item?`${weiToEthDisplay(item.preview.nativeValue)} ETH`
-                :(priceEth!==''&&priceEth!==null&&priceEth!==undefined?`${Number(priceEth).toFixed(6)} ETH`:'0.000000 ETH')}</td></tr>
+                :viaOpenSea?'—':(priceEth!==''&&priceEth!==null&&priceEth!==undefined?`${Number(priceEth).toFixed(6)} ETH`:'0.000000 ETH')}</td></tr>
               {/* Only these three depend on simulating. Before one has run they show an em dash
                   rather than 0.000000 ETH: gas is never actually zero, so printing a confident
                   zero claims something untrue -- and next to a genuinely free mint price it is
@@ -1505,16 +1541,99 @@ function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSear
 const OUTCOME_TONE={
   success:'ok', confirmed:'ok', succeeded:'ok', allowed:'ok', ok:'ok',
   fail:'bad', failed:'bad', failure:'bad', error:'bad', reverted:'bad',
-  unauthorized:'wn', denied:'wn', rejected:'wn', blocked:'wn', 'rate-limited':'wn',
+  unauthorized:'wn', denied:'wn', rejected:'wn', blocked:'wn', account_blocked:'wn',
+  invalid_context:'wn', rate_limited:'wn', 'rate-limited':'wn',
 };
 function outcomeTone(value){return OUTCOME_TONE[String(value||'').toLowerCase()]||'nu';}
-// Platform is a source, not an outcome, so it gets its own neutral chip rather than competing
-// with the colour that carries meaning.
-function PlatformChip({platform}){
-  if(!platform)return null;
-  return <span className="p nu" style={{textTransform:'capitalize'}}>{platform}</span>;
+// History has the pager shown in history.html: one previous arrow, numbered pages with an
+// ellipsis/last-page affordance when needed, then one next arrow. The shared Pager intentionally
+// follows a later compact-window rule (including first/last double arrows), so using it here would
+// make this page visibly diverge from its prototype again.
+function HistoryPager({value,page,setPage,visibleCount}){
+  if(!value||!value.total)return null;
+  const total=value.totalPages;
+  // history.html reports rows on THIS page ("4 of 248"), not the cumulative offset reached.
+  const shown=visibleCount??Math.min(value.pageSize,value.total-(page-1)*value.pageSize);
+  let pages;
+  if(total<=5)pages=Array.from({length:total},(_,index)=>index+1);
+  else if(page<=3)pages=[1,2,3,'end-gap',total];
+  else if(page>=total-2)pages=[1,'start-gap',total-2,total-1,total];
+  else pages=[1,'start-gap',page-1,page,page+1,'end-gap',total];
+  return <div className="pager">
+    <span className="pinfo">{shown} of {value.total}</span>
+    <button type="button" disabled={page<=1} aria-label="Previous page"
+      onClick={()=>setPage(page-1)}>&lsaquo;</button>
+    {pages.map(item=>typeof item==='number'
+      ?<button type="button" key={item} className={item===page?'on':undefined}
+          aria-current={item===page?'page':undefined} onClick={()=>setPage(item)}>{item}</button>
+      :<span className="history-page-gap" key={item} aria-hidden="true">…</span>)}
+    <button type="button" disabled={page>=total} aria-label="Next page"
+      onClick={()=>setPage(page+1)}>&rsaquo;</button>
+  </div>;
 }
-function Activity(){const [page,setPage]=useState(1);const [search,setSearch]=useState('');const listing=useLoad(`/api/activity?page=${page}&pageSize=10&search=${encodeURIComponent(search)}`,[page,search],ACTIVITY_EVENTS);return <><p className="page-lead">Paginated execution history with trigger and verification context where recorded.</p><Notice error={loadError(listing,'Could not load activity.')}/><div className="page-toolbar"><label className="page-search">Find activity<input type="search" value={search} placeholder="Title or wallet…" onChange={e=>{setSearch(e.target.value);setPage(1);}}/></label></div>{listing.data===null?<Skeleton variant="lines" rows={4}/>:<><div className="feed activity-feed">{listing.data.items.map(item=><article className="feed-item" key={item.id}><div><span className={`p ${outcomeTone(item.status)}`}>{item.status}</span><h2>{item.title}</h2><p>{item.walletLabel||'No wallet'} · {new Date(item.time).toLocaleString()}</p></div><div className="activity-context"><p>Trigger: {item.triggerSource||'legacy/unrecorded'}</p><p>Verification: {item.verificationState||'not applicable'}</p></div></article>)}</div>{listing.data.items.length===0&&<Empty text={search?'No activity matches this search.':'No activity recorded yet.'}/>}<Pager value={listing.data} page={page} setPage={setPage}/></>}</>}
+// history.html's Activity tab. The filter card is the prototype's collapsible .card.col (the same
+// markup WalletCard uses; prototype.css hides the header above the mobile breakpoint, so one
+// markup serves both). The search row uses the prototype's own .ch/.sf/.si/.sx vocabulary, while
+// the placeholder names what the server actually searches -- title or wallet label -- rather
+// than the prototype's aspirational
+// "Contract, hash, wallet…" copy, which listActivityPage does not yet honor.
+function Activity({go}){
+  const [page,setPage]=useState(1);
+  const [search,setSearch]=useState('');
+  const [filtersOpen,setFiltersOpen]=useState(false);
+  const searchRef=useRef(null);
+  const listing=useLoad(`/api/activity?page=${page}&pageSize=10&search=${encodeURIComponent(search)}`,[page,search],ACTIVITY_EVENTS);
+  const total=listing.data?.total;
+  const loading=listing.data===null&&!listing.error;
+  return <>
+    <div className="card col history-filter-card" data-open={filtersOpen?'1':'0'}>
+      <button type="button" className="colh" aria-expanded={filtersOpen} onClick={()=>setFiltersOpen(value=>!value)}>
+        <span className="p nu">Filter</span>
+        <span className="cti">Search &amp; filters</span>
+        {listing.data&&<span className={`ctv${total===0?' oe':' of'}`}>
+          {total} {total===1?'record':'records'}</span>}
+        <svg className="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"
+          strokeLinecap="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+      </button>
+      <div className="colb">
+        <div className="ch">
+          <div className="sf">
+            <span className="si" aria-hidden="true">{SEARCH_ICON}</span>
+            <input ref={searchRef} type="search" value={search} placeholder="Title or wallet…"
+              aria-label="Find activity" onChange={event=>{setSearch(event.target.value);setPage(1);}}/>
+            {search&&<button type="button" className="sx" aria-label="Clear search" onClick={()=>{
+              setSearch('');setPage(1);searchRef.current?.focus();
+            }}>×</button>}
+          </div>
+          <div className="sp"/>
+          {listing.data&&<span style={{fontSize:'11px',color:'var(--faint)'}}>
+            {total} {total===1?'record':'records'}</span>}
+        </div>
+      </div>
+    </div>
+    {loading?<div className="card history-list-state" aria-hidden="true">
+        {Array.from({length:4}).map((_,index)=><div className="sk row" key={index}/>)}</div>
+      :listing.error?<div className="history-list-state"><Notice
+          error={loadError(listing,'Could not load activity.')}/></div>
+      :listing.data.items.length===0
+        ?(search?<div style={{marginTop:'11px'}}><Empty text="No activity matches this search."/></div>
+          :<div className="card" style={{marginTop:'11px'}}><div className="emp">
+            <div className="ei">{CLOCK_ICON_LG}</div>
+            <h3>Nothing yet</h3>
+            <p>Your first mint will appear here. An empty audit log is evidence that nothing has
+              happened — not an error.</p>
+            {go&&<button type="button" className="b p sm" onClick={()=>go('Mint')}>Go to Mint</button>}
+          </div></div>)
+        :<>
+          <div className="card" style={{marginTop:'11px'}}>
+            {listing.data.items.map(item=><ActivityRow key={item.id} item={item} scope="global"/>)}
+          </div>
+          <div className="card history-pager-card">
+            <HistoryPager value={listing.data} page={page} setPage={setPage}
+              visibleCount={listing.data.items.length}/>
+          </div>
+        </>}
+  </>}
 // Every confirmed mint auto-creates its own record now (see recordMintActivity/autoRecordPnl in
 // src/server.js) with real cost+gas and sale left at 0 until something actually sells -- these
 // rollups are computed straight from that same already-loaded list, not a separate fetch, since
@@ -1994,7 +2113,7 @@ const BELL_ICON=<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stro
 // The bell surfaces two different things: pending confirmations (actionable, drive the badge
 // count) and a short recent-notifications log (informational, sourced from the same notify() log
 // the toast host reads -- so anything a toast reported is still checkable here after it auto-dismisses).
-function NotificationBell(){const [items,setItems]=useState([]);const [open,setOpen]=useState(false);const [log,setLog]=useState(getNotificationLog());const [autoPreview,setAutoPreview]=useState(null);const seenIds=useRef(new Set(getNotificationLog().map(entry=>entry.id)));const autoPreviewTimer=useRef(null);const load=useCallback(()=>api('/api/confirmations').then(setItems).catch(x=>notify(x.message,{type:'error'})),[]);useEffect(()=>{load();const listener=event=>{const message=event.detail;if(message.type==='confirmation.pending')setItems(current=>[message.request,...current.filter(x=>x.id!==message.request.id)]);if(message.type==='confirmation.resolved')setItems(current=>current.filter(x=>x.id!==message.requestId));};window.addEventListener('ghostmint-ws',listener);return()=>window.removeEventListener('ghostmint-ws',listener);},[load]);
+function NotificationBell(){const [items,setItems]=useState([]);const [open,setOpen]=useState(false);const [log,setLog]=useState(getNotificationLog());const load=useCallback(()=>api('/api/confirmations').then(setItems).catch(x=>notify(x.message,{type:'error'})),[]);useEffect(()=>{load();const listener=event=>{const message=event.detail;if(message.type==='confirmation.pending')setItems(current=>[message.request,...current.filter(x=>x.id!==message.request.id)]);if(message.type==='confirmation.resolved')setItems(current=>current.filter(x=>x.id!==message.requestId));};window.addEventListener('ghostmint-ws',listener);return()=>window.removeEventListener('ghostmint-ws',listener);},[load]);
   // Server-side outcomes become actionable notifications here. The scheduler already knew a mint
   // had failed and why; until now that only reached Telegram, so on the dashboard a scheduled
   // mint just quietly changed colour in a list you had to already be looking at.
@@ -2032,25 +2151,11 @@ function NotificationBell(){const [items,setItems]=useState([]);const [open,setO
     window.addEventListener('ghostmint-ws',onMessage);
     return()=>window.removeEventListener('ghostmint-ws',onMessage);
   },[]);
-  // New notifications pop a compact preview off the bell itself (not the full dropdown) for a few
-  // seconds, so you don't have to open the list to notice something just happened. Suppressed while
-  // the full dropdown is already open, since the new entry is already visible there.
-  useEffect(()=>subscribeNotificationLog(next=>{
-    setLog(next);
-    const newest=next[0];
-    if(newest&&!seenIds.current.has(newest.id)){
-      seenIds.current.add(newest.id);
-      if(!open){
-        setAutoPreview(newest);
-        clearTimeout(autoPreviewTimer.current);
-        autoPreviewTimer.current=setTimeout(()=>setAutoPreview(null),5000);
-      }
-    }
-  }),[open]);
-  useEffect(()=>()=>clearTimeout(autoPreviewTimer.current),[]);
+  // notify() already shows one toast. The bell only retains it in Recent; it must not create a
+  // second simultaneous pop-up for the same message.
+  useEffect(()=>subscribeNotificationLog(setLog),[]);
   async function resolve(id,decision){try{await api(`/api/confirmations/${id}`,{method:'POST',body:JSON.stringify({decision})});setItems(current=>current.filter(x=>x.id!==id));}catch(x){notify(x.message,{type:'error'});load();}}
-  function dismissAutoPreview(){setAutoPreview(null);clearTimeout(autoPreviewTimer.current);}
-  function toggleBell(){if(autoPreview){dismissAutoPreview();return;}setOpen(value=>!value);}
+  function toggleBell(){setOpen(value=>!value);}
   // Prototype .bell-pop (ghostmint-redesign-v3.html:2147), backlog §3. Two tabs, not two stacked
   // headings: "Needs you" is the actionable queue and is the ONLY thing the badge counts; "Recent"
   // is the capped session log the toasts also write to. The footer says exactly that, because the
@@ -2125,10 +2230,6 @@ function NotificationBell(){const [items,setItems]=useState([]);const [open,setO
       <div className="bell-act"><p style={{fontSize:'11px',color:'var(--faint)'}}>
         The badge counts pending confirmations only. Recent is a capped session scratchpad — never an inbox.</p></div>
     </div>}
-    {!open&&autoPreview&&<div className={`bell-auto-preview bell-log-${autoPreview.type}`} role="status" aria-live="polite" onClick={dismissAutoPreview}>
-      <span className="bell-log-dot" aria-hidden="true"/>
-      <span className="bell-log-message">{autoPreview.message}</span>
-    </div>}
   </div>;}
 // Setting a username at all requires a security password to already exist (enforced server-side
 // too, see api.js's usernameSet) -- a username with no password behind it could never sign anyone
@@ -2146,7 +2247,24 @@ async function promptSetUsername({isChange,onProfileChange}){
     return true;
   }catch(error){notify(error.message,{type:'error'});return false;}
 }
-function Account({profile,onLogout,onProfileChange}){const [linking,setLinking]=useState(null);async function generate(){try{setLinking(await api('/api/auth/link-code',{method:'POST',body:JSON.stringify({})}));}catch(value){notify(value.message,{type:'error'});}}return <><PageTitle eyebrow="Identity" title="Account" subtitle="One account, shared across Telegram, Discord, and this dashboard."/><div className="card-grid">{profile.linkedAccounts.map(account=><article className="card" key={account.platform}><span className="pill">{account.platform}</span><div className="user-card-identity"><h2>{account.platformUserId}</h2><CopyButton value={account.platformUserId} label="Copy platform user ID"/></div></article>)}</div><div className="panel"><h2>Connect another platform</h2><p>Generate a five-minute, single-use code, then run <code>/link code:&lt;code&gt;</code> in Discord (or <code>/link</code> generates the same kind of code directly from Telegram) to connect it to this same account instead of creating a separate one.</p><button className="panel-cta" onClick={generate}>Generate link code</button>{linking&&<div className="link-code-result"><strong>{linking.code}</strong><p>Expires at {new Date(linking.expiresAt).toLocaleTimeString()}</p></div>}</div><div className="panel"><h2>Login credentials</h2><p>A username and security password together let you sign in with a password instead of a Telegram/Discord code. The same password also gates sensitive actions like exporting a wallet key.</p><div className="account-credential-row"><span>Username</span><strong>{profile.username||'Not set'}</strong><button className="b g sm" disabled={!profile.securityPasswordSet} onClick={()=>promptSetUsername({isChange:Boolean(profile.username),onProfileChange})}>{profile.username?'Change':'Set'}</button></div><div className="account-credential-row"><span>Security password</span><strong>{profile.securityPasswordSet?'Set':'Not set'}</strong><button className="b g sm" onClick={()=>promptSetSecurityPassword({isChange:profile.securityPasswordSet,onProfileChange})}>{profile.securityPasswordSet?'Change':'Set'}</button></div>{!profile.securityPasswordSet&&<p className="notice notice-warning">Set a security password first -- a username needs one to be useful for signing in.</p>}</div>{profile.isOwner&&<div className="panel"><h2>Admin</h2><p>Owner-only controls for groups, ceilings, presets, and platform-wide governance live on a separate screen.</p><a className="b g admin-link panel-cta" href="/dashboard/admin">Open admin dashboard</a></div>}<div className="panel"><h2>Session</h2><p>Signed in {profile.linkedAccounts.map(item=>item.platform).join(' + ')||'as a linked user'}.</p><button className="b g panel-cta" onClick={onLogout}>Log out</button></div></>}
+function Account({profile,onLogout,onProfileChange}){
+  const [linking,setLinking]=useState(null);const [linkBusy,setLinkBusy]=useState(false);const [clock,setClock]=useState(Date.now());
+  useEffect(()=>{if(!linking)return;const timer=setInterval(()=>setClock(Date.now()),1000);return()=>clearInterval(timer);},[linking]);
+  async function generate(){setLinkBusy(true);try{setLinking(await api('/api/auth/link-code',{method:'POST',body:JSON.stringify({})}));setClock(Date.now());}catch(value){notify(value.message,{type:'error'});}finally{setLinkBusy(false);}}
+  async function logoutEverywhere(){if(await confirmDialog('Log out every dashboard session for this account, including this browser?'))onLogout({all:true});}
+  const remaining=linking?Math.max(0,Math.ceil((new Date(linking.expiresAt).getTime()-clock)/1000)):0;
+  const session=profile.session;
+  return <><PageTitle eyebrow="Identity" title="Account" subtitle="One account, shared across Telegram, Discord, and this dashboard."/>
+    <div className="card-grid">{profile.linkedAccounts.map(account=><article className="card" key={account.platform}><span className="pill">{account.platform}</span><div className="user-card-identity"><h2>{account.platformUserId}</h2><CopyButton value={account.platformUserId} label="Copy platform user ID"/></div></article>)}</div>
+    <div className="panel"><h2>Connect another platform</h2><p>Generate a five-minute, single-use code, then run <code>/link code:&lt;code&gt;</code> in Discord (or <code>/link</code> generates the same kind of code directly from Telegram) to connect it to this same account instead of creating a separate one. Refreshing immediately invalidates the previous code.</p>
+      <button className="b p panel-cta" disabled={linkBusy} onClick={generate}>{linkBusy?'Generating…':linking?'Refresh code':'Generate link code'}</button>
+      {linking&&<div className="link-code-result"><div className="link-code-heading"><strong>{linking.code}</strong><CopyButton value={linking.code} label="Copy link code"/></div><p>{remaining>0?`Expires in ${Math.floor(remaining/60)}:${String(remaining%60).padStart(2,'0')}`:'Expired — refresh to generate a new code.'}</p><p>Exact expiry: {new Date(linking.expiresAt).toLocaleString()}</p></div>}
+    </div>
+    <div className="panel"><h2>Login credentials</h2><p>A username and security password together let you sign in with a password instead of a Telegram/Discord code. The same password also gates sensitive actions like exporting a wallet key.</p><div className="account-credential-row"><span>Username</span><strong>{profile.username||'Not set'}</strong><button className="b g sm" disabled={!profile.securityPasswordSet} onClick={()=>promptSetUsername({isChange:Boolean(profile.username),onProfileChange})}>{profile.username?'Change':'Set'}</button></div><div className="account-credential-row"><span>Security password</span><strong>{profile.securityPasswordSet?'Set':'Not set'}</strong><button className="b g sm" onClick={()=>promptSetSecurityPassword({isChange:profile.securityPasswordSet,onProfileChange})}>{profile.securityPasswordSet?'Change':'Set'}</button></div>{!profile.securityPasswordSet&&<p className="notice notice-warning">Set a security password first -- a username needs one to be useful for signing in.</p>}</div>
+    {profile.isOwner&&<div className="panel"><h2>Admin</h2><p>Owner-only controls for groups, ceilings, presets, and platform-wide governance live on a separate screen.</p><a className="b g admin-link panel-cta" href="/dashboard/admin">Open admin dashboard</a></div>}
+    <div className="panel"><h2>Sessions</h2><p>Signed in {profile.linkedAccounts.map(item=>item.platform).join(' + ')||'as a linked user'}.</p>{session&&<div className="session-policy"><div><span>Active browser sessions</span><strong>{session.activeCount} of {session.maxActiveSessions}</strong></div><div><span>Idle timeout</span><strong>{Math.round(session.idleTimeoutMs/3_600_000)} hours</strong></div><div><span>Maximum lifetime</span><strong>{Math.round(session.maxLifetimeMs/86_400_000)} days</strong></div><div><span>This session refreshes until</span><strong>{session.expiresAt?new Date(session.expiresAt).toLocaleString():'Unavailable'}</strong></div></div>}<p className="session-policy-note">Activity extends the idle deadline, but never beyond seven days. A fourth browser login signs out the least recently used session. Production uses secure HTTPS cookies; private browsing may still clear them when a page closes.</p><div className="br"><button className="b g" onClick={()=>onLogout(false)}>Log out</button><button className="b d" onClick={logoutEverywhere}>Log out everywhere</button></div></div>
+  </>;
+}
 const SUN_ICON=<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.2 4.2l1.4 1.4M18.4 18.4l1.4 1.4M1 12h2M21 12h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" fill="none"/></svg>;
 const MOON_ICON=<svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a7 7 0 0 0 10.5 10.5z"/></svg>;
 const PRIMARY_THEMES=[{value:'ghost-mint-light',label:'Light',icon:SUN_ICON},{value:'ghost-mint',label:'Dark',icon:MOON_ICON}];
@@ -2280,7 +2398,7 @@ function TransactionModePanel({profile}){
 const USAGE_PERIODS=[['today','Today'],['day','24 hours'],['week','7 days'],['month','Month']];
 function ApiUsagePanel(){const [period,setPeriod]=useState('month');const usage=useLoad(`/api/social-usage?period=${period}`,[period]);const {data}=usage;return <div className="panel settings-usage"><div className="settings-panel-heading"><div><p className="eyebrow">Owner reporting</p><h2>Social API usage</h2></div><div className="seg usage-period" role="radiogroup" aria-label="Usage period">{USAGE_PERIODS.map(([value,label])=><button type="button" key={value} className={period===value?'on':undefined} aria-pressed={period===value} onClick={()=>setPeriod(value)}>{label}</button>)}</div></div><p>Observed adapter requests, provider-reported consumption, and current pricing estimates.</p><Notice error={loadError(usage,'Could not load social API usage.')}/>{data===null?<Skeleton variant="lines" rows={4}/>:<><div className="usage-stats"><div><span>Total requests</span><strong>{data.requests}</strong></div><div><span>Reported cost</span><strong>${data.reportedCostUsd.toFixed(4)}</strong></div><div><span>Reported credits</span><strong>{data.reportedCredits.toFixed(2)}</strong></div><div><span>Pay-per-use estimate</span><strong>${data.payPerUseEstimateUsd.toFixed(2)}</strong></div><div><span>Projected monthly</span><strong>{Math.round(data.projectedMonthlyRequests).toLocaleString()}</strong></div></div><div className="settings-usage-tables"><div className="table-wrap"><table><thead><tr><th>Rule</th><th>Method</th><th>Type</th><th>Requests</th></tr></thead><tbody>{data.rows.map(row=><tr key={`${row.ruleId}-${row.method}-${row.requestType}`}><td>{row.ruleName}</td><td>{row.method}</td><td>{row.requestType}</td><td>{row.requests}</td></tr>)}</tbody></table>{data.rows.length===0&&<Empty text="No social adapter requests recorded for this period."/>}</div><div className="table-wrap"><table><thead><tr><th>Managed tier</th><th>Break-even reads</th><th>Break-even posts</th></tr></thead><tbody>{data.breakEvenRequests.map(tier=><tr key={tier.price}><td>${tier.price}/mo</td><td>{tier.atReadRate.toLocaleString()}</td><td>{tier.atPostRate.toLocaleString()}</td></tr>)}</tbody></table></div></div></>}</div>}
 function Settings({profile,onThemeChange,onProfileChange}){const secondaryActive=SECONDARY_THEMES.some(option=>option.value===profile.theme);return <><PageTitle eyebrow="Preferences" title="Settings" subtitle="Display, network defaults, live gas information, and owner reporting."/><div className="settings-layout"><div className="panel settings-appearance"><div className="settings-panel-heading"><div><p className="eyebrow">Display</p><h2>Appearance</h2></div><div className="seg theme-picker" role="radiogroup" aria-label="Dashboard appearance">{PRIMARY_THEMES.map(option=><button type="button" key={option.value} aria-pressed={profile.theme===option.value} className={profile.theme===option.value?'on':undefined} onClick={()=>onThemeChange(option.value)}><span className="theme-picker-icon" aria-hidden="true">{option.icon}</span>{option.label}</button>)}</div></div><details className="settings-more-themes" open={secondaryActive}><summary>More themes</summary><div className="theme-grid" role="radiogroup" aria-label="More dashboard themes">{SECONDARY_THEMES.map(option=><button type="button" key={option.value} aria-pressed={profile.theme===option.value} className={`theme-option${profile.theme===option.value?' active':''}`} onClick={()=>onThemeChange(option.value)}><ThemeSwatch value={option.value}/><span className="theme-option-label">{option.label}</span></button>)}</div></details></div><DefaultChainPanel profile={profile}/><TransactionModePanel profile={profile}/><BotSecurityPanel profile={profile} onProfileChange={onProfileChange}/><GasPanel profile={profile}/>{profile.isOwner&&<ApiUsagePanel/>}</div></>}
-function Login({onLogin}){
+function Login({onLogin,sessionMessage}){
   const [mode,setMode]=useState('code');
   const [code,setCode]=useState('');
   const [username,setUsername]=useState('');
@@ -2309,6 +2427,7 @@ function Login({onLogin}){
       <input id="login-password" type="password" value={password} onChange={event=>setPassword(event.target.value)} autoComplete="current-password" required maxLength="200"/>
     </>}
     <button className="b p" disabled={busy}>{busy?'Signing in...':'Sign in securely'}</button>
+    {sessionMessage&&<div className="nt w" role="status">{WARN_TRIANGLE_ICON}<div><b>Your previous session ended.</b> {sessionMessage}</div></div>}
     {error&&<p className="error" role="alert">{error}</p>}
   </form></main>;
 }
@@ -3357,13 +3476,11 @@ function WalletsPage({profile,onProfileChange,tab,onTab}){
 // append-only evidence. They become sibling tabs rather than one being reskinned as the other,
 // which is the separation GHOSTMINT_UI_RULES.md requires.
 //
-// Security log is OWNER-ONLY and the tab is HIDDEN, not disabled, for a regular account:
-// /api/security-audit is the PERSONAL feed: scoped to the session's own user server-side, with no
-// parameter that could widen it. This tab used to call the owner-gated admin route, so it showed
-// every account's events to the owner and 403'd for everyone else. Backlog §13.1.
-// (kept: the old note about owner-gating applied to the admin view, which still exists)
-// would 403 on load. Offering a control that cannot work is worse than not offering it
-// (contract §6.1).
+// Security log remains OWNER-ONLY in the History information architecture and the tab is hidden,
+// not disabled, for a regular account. The endpoint behind this view is narrower than the admin
+// audit endpoint: /api/security-audit is scoped to the current session's user server-side and has
+// no parameter that could widen it. That keeps this owner view personal while the separate Admin
+// audit page remains the platform-wide governance surface.
 const SECURITY_PAGE_SIZE=20;
 function SecurityLogTab(){
   const listing=useLoad('/api/security-audit?limit=200');
@@ -3375,52 +3492,69 @@ function SecurityLogTab(){
   const totalPages=Math.max(1,Math.ceil(rows.length/SECURITY_PAGE_SIZE));
   const shown=rows.slice((page-1)*SECURITY_PAGE_SIZE,page*SECURITY_PAGE_SIZE);
   const pagerValue={page,pageSize:SECURITY_PAGE_SIZE,total:rows.length,totalPages};
+  const loading=listing.data===null&&!listing.error;
   return <>
-    <p className="eyebrow">Your recent authorization outcomes across Telegram, Discord and the dashboard — successes, rejections and failures.</p>
+    <div className="abn">{SECURITY_SHIELD_ICON}<span><b>Owner view.</b> This tab is hidden for regular
+      accounts — the dashboard presents only your own recent authorization outcomes here.</span></div>
     <Notice error={loadError(listing,'Could not load governance data.')}/>
-    {listing.data===null?<Skeleton variant="lines" rows={6}/>
+    {loading?<div className="card history-list-state" aria-hidden="true">
+        {Array.from({length:4}).map((_,index)=><div className="sk row" key={index}/>)}</div>
+      :listing.error?null
       :rows.length===0?<Empty text="No security events recorded yet."/>
-        :<><div className="table-wrap"><table>
-          <thead><tr><th>When</th><th>Platform</th><th>Command</th><th>Outcome</th><th>Reason</th></tr></thead>
-          <tbody>{shown.map(row=><tr key={row.auditId}>
-            <td>{new Date(row.attemptedAt).toLocaleString()}</td>
-            <td><PlatformChip platform={row.platform}/>{row.platformUserId?` ${row.platformUserId}`:''}</td>
-            <td>{row.command}</td>
-            {/* Amber for a refusal, which used to render identically to a failure even though the
-                two mean different things: refused is the system working, failed is it not. */}
-            <td><span className={`p ${outcomeTone(row.outcome)}`}>{row.outcome}</span></td>
-            <td>{row.reason}</td>
-          </tr>)}</tbody></table></div>
-        <Pager value={pagerValue} page={page} setPage={setPage}/></>}
+        :<div className="card">
+          {shown.map(row=>{
+            // history.html's row shape: command + outcome on the title line; platform, the
+            // shortened actor id, the reason and the UTC time on one mono line (folded away on
+            // phones by .rs.fold); the age on the right. The full timestamp stays reachable as
+            // hover/focus title text -- an audit surface should not lose precision to fit.
+            const when=new Date(row.attemptedAt);
+            const iso=Number.isNaN(when.getTime())?null:when.toISOString();
+            const details=[row.platform,row.platformUserId?shortHex(row.platformUserId):null,
+              row.reason,iso?`${iso.slice(11,19)}Z`:null].filter(Boolean).join(' · ');
+            return <div className="r" key={row.auditId}>
+              <div className="rm">
+                <div className="rt">{row.command}<span className={`p ${outcomeTone(row.outcome)}`}
+                  style={{marginLeft:'4px'}}>{row.outcome}</span></div>
+                {details&&<div className="rs mono fold" title={iso||undefined}>{details}</div>}
+              </div>
+              <div className="rv mono" style={{fontSize:'11px'}}>
+                {iso?relativeTime(when.getTime()):'—'}</div>
+            </div>;
+          })}
+          <HistoryPager value={pagerValue} page={page} setPage={setPage} visibleCount={shown.length}/>
+        </div>}
   </>;
 }
-function History({profile,tab,onTab}){
+function History({profile,tab,onTab,go}){
   // Built from profile.isOwner so the tab list itself differs -- a non-owner never sees a tab
   // they cannot open, and `active` falls back to Activity if a stale ?tab=security is bookmarked
   // by someone who has since lost owner access.
   const tabs=[
     {id:'activity',label:'Activity'},
     {id:'audit',label:'Audit evidence'},
-    ...(profile.isOwner?[{id:'security',label:'Security log'}]:[]),
+    ...(profile.isOwner?[{id:'security',label:'Security log',tag:'owner only'}]:[]),
   ];
   const active=tabs.some(item=>item.id===tab)?tab:'activity';
+  // .history-flow scopes the prototype-fidelity overrides in styles.css so the legacy dashboard
+  // card gradient and hover treatment cannot reshape this page's flat ledger rows.
   return <>
     <div className="page-head"><div className="page-head-text"><p className="eyebrow">History</p><h1>History</h1></div></div>
     <SubTabs tabs={tabs} active={active} onChange={onTab} label="History sections"/>
-    {active==='activity'&&<Activity/>}
-    {active==='audit'&&<div className="panel">
-      <h2>Audit evidence is not available on the dashboard yet</h2>
-      {/* Honest unavailable state, not a placeholder pretending to be a feature: triggerAudit
-          exists in botCommandService but has no dashboard route (contract §5.11). Routing it is
-          a src/** change with its own review, so this says where the data IS reachable today
-          rather than rendering an empty table that looks like "no evidence exists". */}
-      <p>Every automated trigger records append-only evidence — what was detected, which rule
-        matched, and what was submitted as a result. That record exists and is intact.</p>
-      <p>It is currently reachable only from the bots: run <code>/triggeraudit</code> in Telegram
-        or Discord. There is no dashboard route for it yet, and this panel deliberately shows
-        nothing rather than an empty table that would read as &ldquo;no evidence recorded&rdquo;.</p>
-    </div>}
-    {active==='security'&&<SecurityLogTab/>}
+    <div className="history-flow">
+      {active==='activity'&&<Activity go={go}/>}
+      {active==='audit'&&<div className="unav">
+        <div className="ei">{AUDIT_ICON}</div>
+        <h3>Trigger audit is available from Telegram and Discord</h3>
+        {/* Honest unavailable state, not a placeholder pretending to be a feature: triggerAudit
+            exists in botCommandService but has no dashboard route (contract §5.11). Routing it is
+            a src/** change with its own review, so this says where the data IS reachable today
+            rather than rendering an empty table that looks like "no evidence exists". */}
+        <p>Every automated execution appends a durable row recording its source, target,
+          verification state, transaction hash and outcome. A dashboard view is planned.</p>
+        <p className="mono" style={{fontSize:'11px'}}>Telegram <b>/triggeraudit</b> · Discord <b>/trigger-audit</b></p>
+      </div>}
+      {active==='security'&&<SecurityLogTab/>}
+    </div>
   </>;
 }
 /* ==========================================================================
@@ -3855,4 +3989,4 @@ function AdminShell({profile,onLogout}){const theme=profile.theme||'ghost-mint';
   const [usersFilter,setUsersFilter]=useState(null);
   useEffect(()=>{document.documentElement.dataset.theme=theme;},[theme]);useEffect(()=>{function onPopState(){setPage(adminSectionFromLocation());}window.addEventListener('popstate',onPopState);return()=>window.removeEventListener('popstate',onPopState);},[]);if(!profile.isOwner)return <AdminDenied/>;function go(next,filter){const slug=ADMIN_SLUGS[next];const path=slug?`/dashboard/admin/${slug}`:'/dashboard/admin';if(window.location.pathname!==path)window.history.pushState(null,'',path);setPage(next);setUsersFilter(next==='Users'?filter||null:null);setMoreOpen(false);window.scrollTo({top:0});}const brandMark=<span className="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d={BOLT_PATH} fill="currentColor"/></svg></span>;return <div className={`shell rail-shell admin-shell${moreOpen?' more-open':''}`} data-rail={railExpanded?'expanded':'collapsed'}><ConfirmHost/><ToastHost/><header className="rail-mobile-header"><a className="brand" href="/dashboard/admin" onClick={event=>{event.preventDefault();go('Overview');}}>{brandMark}GhostMint Admin</a><div className="header-right"><span className="status-pill"><span className={`status-dot${live?' live':''}`} aria-hidden="true"/><span aria-live="polite">{live?'Live':'Connecting'}</span></span><NotificationBell/><a className="header-avatar" aria-label="Return to user dashboard" href="/dashboard/">{NAV_ICONS.Account}</a></div></header><aside><div className="rail-top"><a className="brand" href="/dashboard/admin" onClick={event=>{event.preventDefault();go('Overview');}}>{brandMark}<span className="nav-label">GhostMint Admin</span></a></div><AdminNav page={page} go={go}/><nav className="rail-bottom-nav" aria-label="Admin account"><ul><li><a className="admin-rail-link" href="/dashboard/"><span className="nav-icon" aria-hidden="true">{CHEVRON_LEFT}</span><span className="nav-label">User dashboard</span></a></li><li><button onClick={onLogout}><span className="nav-icon" aria-hidden="true">{NAV_ICONS.Account}</span><span className="nav-label">Log out</span></button></li></ul></nav></aside><button type="button" className="rail-edge-toggle" aria-label={railExpanded?'Collapse sidebar':'Expand sidebar'} onClick={()=>setRailExpanded(value=>!value)}>{railExpanded?CHEVRON_LEFT:CHEVRON_RIGHT}</button><div className="notification-bell-desktop"><NotificationBell/></div><main className="content admin-content" tabIndex="-1"><Admin profile={profile} section={page} go={go} usersFilter={usersFilter}/></main><AdminBottomBar page={page} go={go} moreOpen={moreOpen} onOpenMore={()=>setMoreOpen(value=>!value)}/><AdminMoreSheet open={moreOpen} page={page} go={go} onClose={()=>setMoreOpen(false)} onLogout={onLogout}/><ScrollTop/></div>;}
 function isAdminPath(){const path=window.location.pathname.replace(/\/+$/,'');return path==='/dashboard/admin'||path.startsWith('/dashboard/admin/');}
-export default function App(){const [profile,setProfile]=useState(undefined);const [,forceRender]=useState(0);useEffect(()=>{api('/api/profile').then(setProfile).catch(()=>setProfile(null));},[]);useEffect(()=>{function onPopState(){forceRender(count=>count+1);}window.addEventListener('popstate',onPopState);return()=>window.removeEventListener('popstate',onPopState);},[]);async function logout(){await api('/api/auth/logout',{method:'POST'});setProfile(null);}if(profile===undefined)return <main className="loading" aria-live="polite">Loading secure session...</main>;if(!profile)return <Login onLogin={setProfile}/>;if(isAdminPath())return <AdminShell profile={profile} onLogout={logout}/>;return <Shell profile={profile} onLogout={logout} onProfileChange={setProfile}/>;}
+export default function App(){const [profile,setProfile]=useState(undefined);const [sessionMessage,setSessionMessage]=useState('');const [,forceRender]=useState(0);useEffect(()=>{api('/api/profile').then(value=>{setSessionMessage('');setProfile(value);}).catch(error=>{setSessionMessage(error.message);setProfile(null);});},[]);useEffect(()=>{function onSessionEnded(event){setSessionMessage(event.detail?.message||'Your session is no longer valid.');setProfile(null);}window.addEventListener('ghostmint-session-ended',onSessionEnded);return()=>window.removeEventListener('ghostmint-session-ended',onSessionEnded);},[]);useEffect(()=>{function onPopState(){forceRender(count=>count+1);}window.addEventListener('popstate',onPopState);return()=>window.removeEventListener('popstate',onPopState);},[]);async function logout(request){const all=request?.all===true;try{await api(all?'/api/auth/logout-all':'/api/auth/logout',{method:'POST'});}finally{setSessionMessage(all?'You chose to log out every browser session.':'You logged out of this browser.');setProfile(null);}}function login(value){setSessionMessage('');setProfile(value);}if(profile===undefined)return <main className="loading" aria-live="polite">Loading secure session...</main>;if(!profile)return <Login onLogin={login} sessionMessage={sessionMessage}/>;if(isAdminPath())return <AdminShell profile={profile} onLogout={logout}/>;return <Shell profile={profile} onLogout={logout} onProfileChange={setProfile}/>;}

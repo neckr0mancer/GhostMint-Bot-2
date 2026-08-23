@@ -5,6 +5,19 @@ wallet import, OpenSea pricing, send/deposit UX, Telegram formatting). Separate 
 [`ROADMAP.md`](../ROADMAP.md), which covers the numbered platform/safety milestones (1–16, all
 shipped).
 
+## 2026-08-23 checkpoint — account code refresh, public-address QR, session policy
+
+- Account link-code generation now has an in-place refresh action, live five-minute countdown,
+  exact expiry, and copy control. Refreshing replaces the previous single-use code rather than
+  extending it.
+- Wallet creation review and wallet Summary show a QR for the public receive address only. Private
+  keys and recovery phrases are never encoded. Recipient QR scanning remains deferred until the
+  dashboard Send tab has a real shared-service transaction path.
+- Browser sessions are explicit: 8-hour sliding idle timeout, 7-day absolute maximum, and three
+  active browser sessions per account. A fourth login replaces the least recently used session;
+  expiry/revocation reasons are returned to and shown by the login screen. Development HTTP may
+  use non-Secure cookies for phone testing; production remains Secure-only.
+
 - **Round 1** (Sections A–K) was scoped and implemented on 2026-08-16; 9 of 11 sections shipped in
   commit `423c7c1`. Kept below as the record of what exists.
 - **Round 2** (Sections L–S) is the newer batch of requirements; L, M, N, Q, and O have shipped.
@@ -887,35 +900,41 @@ degraded form in the meantime.
    Wallets → Send both ship as explanatory panels pointing at the bots (contract §5.11, §5.10).
    `send` is a value-moving path and deserves its own review rather than being added alongside a
    restyle.
-5. **`pnl_records` has no wallet column**, so per-wallet performance cannot be computed —
+5. **Activity search covers title and wallet label only.** `postgresStorage.listActivityPage`
+   matches `title ILIKE` / `wallet_label ILIKE`; it does not match the row's `address` or
+   `tx_hash`. The History filter's placeholder therefore says "Title or wallet…" instead of
+   history.html's "Contract, hash, wallet…" — kept truthful rather than over-promising (found
+   2026-08-22 during the History fidelity pass). Extending the WHERE clause to both columns is a
+   small backend change; once it lands, update the placeholder copy.
+6. **`pnl_records` has no wallet column**, so per-wallet performance cannot be computed —
    Performance is account-level in the redesign (contract §5.9). Also `activity` has no chain or
    mint-value column, so the activity feed shows gas only and derives its chain dot from the
    explorer URL (contract §5.8). Bundles naturally with Section T (extract token IDs from mint
    receipts), which is the same missing-provenance problem seen from the bot side.
-6. **No historical balance data anywhere**, so the portfolio 7-day delta and sparkline were cut
+7. **No historical balance data anywhere**, so the portfolio 7-day delta and sparkline were cut
    (contract §5.4). Would need a periodic balance snapshot.
-7. **Admin has no volume metric.** `getAdminOverviewMetrics` returns account counts only — no ETH
+8. **Admin has no volume metric.** `getAdminOverviewMetrics` returns account counts only — no ETH
    volume, no mint count. The tile now shows `activeAnyPlatform24h` instead (contract §5.2).
 
 Two further items were settled while auditing the live deployment on 2026-08-17:
 
-8. **The mobile layout exists in only two of the five themes.** `.mobile-bottombar` and
+9. **The mobile layout exists in only two of the five themes.** `.mobile-bottombar` and
    `.more-sheet` are `display:none` globally and re-enabled only under `ghost-mint` /
    `ghost-mint-light`; `App.jsx`'s `RAIL_THEMES` holds the same two. Clean Vault, Neon Arcade and
    Quiet Ledger therefore have no bottom bar, no More sheet, and no mobile grid collapse — and
    Admin has no mobile nav at all in those three. The redesign deliberately targets Light and Dark
    only (brief §9.1-D15); restoring the other three is logged as brief §9.2-O10.
-9. **Railway's `SUPPORTED_CHAINS` did not match this repo's documented list — fixed 2026-08-20.**
+10. **Railway's `SUPPORTED_CHAINS` did not match this repo's documented list — fixed 2026-08-20.**
    `CLAUDE.md` records `ethereum, base, arbitrum, polygon, robinhood`; production's live var had
    drifted to `ethereum, sepolia, robinhood` at some point, missing `base`/`arbitrum`/`polygon` and
    still carrying `sepolia` (which Section AF deliberately removed from user-facing surfaces, a
    change that can't take effect while the env var still includes it). Surfaced by a real Discord
    `/mint` report — an OpenSea link on one of the missing chains resolved via OpenSea but then
    failed chain-detection with "not found on any supported chain." The owner corrected the variable
-   directly in the Railway dashboard; verified live via the Railway GraphQL API (see item 10 below)
+   directly in the Railway dashboard; verified live via the Railway GraphQL API (see item 11 below)
    that the running production deployment now carries the full five-chain list and the most recent
    deploy (`d24ffdcd`, 2026-08-20T08:57 UTC) is `SUCCESS`.
-10. **This app can now read/write Railway config directly, via a workspace-scoped API token the
+11. **This app can now read/write Railway config directly, via a workspace-scoped API token the
     owner created (Account Settings → Tokens → workspace, not "No workspace").** `RAILWAY_TOKEN` in
     `.env` (gitignored). Auth is `Authorization: Bearer <token>` against
     `https://backboard.railway.com/graphql/v2`; the `me` query only works with an *account* token,

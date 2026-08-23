@@ -5,12 +5,15 @@ const { createMintExecutionService } = require('../src/mint/mintExecutionService
 const { createMintService } = require('../src/mint/mintService');
 const { createProofResolver } = require('../src/mint/proofResolver');
 const { SEADROP_MINT_SIGNATURE } = require('../src/mint/seaDropRegistry');
+const { ARCHETYPE_INTERFACE, validateOpenSeaMintCall } = require('../src/mint/seaDropCall');
 const { ValidationError } = require('../src/validation/domain');
 
 const WALLET = '0x00000000000000000000000000000000000000A1';
 const FEE_RECIPIENT = '0x00000000000000000000000000000000000000B2';
 const CONTRACT = '0x00000000000000000000000000000000000000C3';
 const SEADROP = '0x00000000000000000000000000000000000000D4';
+const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
+const INVITE_KEY = `0x${'11'.repeat(32)}`;
 
 function service(presetRepository = {}) {
   return createMintService({
@@ -65,6 +68,31 @@ test('mintExecutionService sends the transaction to callTarget when present, fal
   });
 
   assert.deepEqual(seenTo, [SEADROP, CONTRACT]);
+});
+
+test('OpenSea validation accepts the known Archetype ERC-721A mint shape and exposes a decoded preview', () => {
+  const data = ARCHETYPE_INTERFACE.encodeFunctionData('mint', [
+    { key: INVITE_KEY, proof: [] }, 2, ZERO_ADDRESS, '0x',
+  ]);
+  const preview = validateOpenSeaMintCall({
+    built: { to: CONTRACT, data, valueWei: '0' }, contractAddress: CONTRACT,
+    quantity: 2, minterAddress: WALLET,
+  });
+  assert.equal(preview.standard, 'Archetype ERC-721A');
+  assert.equal(preview.methodSignature, 'mint((bytes32,bytes32[]),uint256,address,bytes)');
+  assert.equal(preview.arguments.find(item => item.name === 'quantity').value, '2');
+  assert.equal(preview.arguments.find(item => item.name === 'recipient').value, WALLET);
+});
+
+test('OpenSea validation rejects an Archetype mintTo that redirects the NFT to another wallet', () => {
+  const other = '0x00000000000000000000000000000000000000E5';
+  const data = ARCHETYPE_INTERFACE.encodeFunctionData('mintTo', [
+    { key: INVITE_KEY, proof: [] }, 1, other, ZERO_ADDRESS, '0x',
+  ]);
+  assert.throws(() => validateOpenSeaMintCall({
+    built: { to: CONTRACT, data, valueWei: '0' }, contractAddress: CONTRACT,
+    quantity: 1, minterAddress: WALLET,
+  }), ValidationError);
 });
 
 function commandServiceFixture({ contractValueResolver, seaDropDiscoveryService, openSeaService, priceFeedService }) {
@@ -163,6 +191,27 @@ test('mintViaOpenSea throws when no OpenSea integration is configured at all, in
   assert.equal(calls.length, 0);
 });
 
+test('dashboard prepareMint uses OpenSea-built Archetype calldata and simulates that exact call instead of mint(uint256)', async () => {
+  const data = ARCHETYPE_INTERFACE.encodeFunctionData('mint', [
+    { key: INVITE_KEY, proof: [] }, 1, ZERO_ADDRESS, '0x',
+  ]);
+  let previewed = null;
+  const state = { wallets: [{ userId: 'user-a', label: 'main', address: WALLET, chain: 'ethereum' }], tasks: [], activity: [], pnl: [], snipers: [] };
+  const commands = createBotCommandService({
+    storage: {}, schedulerRepository: {}, providerService: {}, governance: {}, adminCommands: {}, sniperService: {},
+    supportedChains: ['ethereum'], chains: { ethereum: { sym: 'ETH' } }, getState: () => state,
+    openSeaService: { buildMintTransaction: async () => ({ to: CONTRACT, data, valueWei: '0', chain: 'ethereum' }) },
+    mintService: { prepare: async () => { throw new Error('plain mint path must not run'); } },
+    previewMint: async value => { previewed = value.prepared; return { simulationPerformed: true, simulationPassed: true }; },
+  });
+  const result = await commands.prepareMint('user-a', {
+    viaOpenSea: true, walletLabel: 'main', contractAddress: CONTRACT, quantity: 1, chain: 'ethereum',
+  });
+  assert.equal(previewed.calldata, data);
+  assert.equal(previewed.method.signature, 'mint((bytes32,bytes32[]),uint256,address,bytes)');
+  assert.equal(result.simulation.simulationPassed, true);
+});
+
 test('detectMintContract tries SeaDrop first and returns a SeaDrop-shaped result when a core is found, including opening time and OpenSea metadata', async () => {
   const { service } = commandServiceFixture({
     contractValueResolver: { resolve: async () => { throw new Error('should not be reached -- SeaDrop was found first'); },
@@ -201,6 +250,19 @@ test('detectMintContract falls back to the plain mint(uint256) assumption when n
   assert.equal(result.startTime, null);
   assert.equal(result.endTime, null);
   assert.equal(result.collection, null);
+});
+
+test('an OpenSea-indexed non-SeaDrop collection prefers the safe OpenSea builder over guessing mint(uint256)', async () => {
+  const { service } = commandServiceFixture({
+    contractValueResolver: { resolve: async () => ({ price: null, maxSupply: null, maxPerWallet: null }) },
+    seaDropDiscoveryService: { resolve: async () => ({ address: null, publicDrop: null, feeRecipient: null }) },
+    openSeaService: { getCollectionMetadata: async () => ({ name: 'Raised Fist' }), getDrop: async () => null },
+  });
+  const result = await service.detectMintContract('user-a', {
+    contractAddress: CONTRACT, quantity: 1, includeDrop: true,
+  });
+  assert.equal(result.collection.name, 'Raised Fist');
+  assert.equal(result.openSeaMintRecommended, true);
 });
 
 // Section AF -- the on-chain SeaDrop PublicDrop struct only ever exposes ONE currently-configured
@@ -304,6 +366,7 @@ test('detectMintContract attaches drop data on the plain mint(uint256) branch to
   });
   const result = await service.detectMintContract('user-a', { contractAddress: CONTRACT, quantity: 1, includeStats: true });
   assert.equal(result.isSeaDrop, false);
+  assert.equal(result.openSeaMintRecommended, true);
   assert.equal(result.drop.nextStage.priceETH, 0);
   assert.equal(result.drop.nextStage.startTime, 1_700_000_000);
 });

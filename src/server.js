@@ -90,7 +90,7 @@ const identityRepository = createPostgresIdentityRepository(pool);
 const identity = createIdentityService(identityRepository, {
   broadcast: (userId, message) => dashboardWebSockets.broadcastToUser(userId, message),
 });
-const dashboardAuth=createDashboardAuthService({identity,repository:createDashboardSessionRepository(pool)});
+const dashboardAuth=createDashboardAuthService({identity,repository:createDashboardSessionRepository(pool),secureCookies:CONFIG.isProduction});
 const transactionIntentRepository = createTransactionIntentRepository(pool);
 const schedulerRepository = createSchedulerRepository(pool);
 const sniperRepository = createSniperRepository(pool);
@@ -326,7 +326,7 @@ const schedulerWorker = createSchedulerWorker({
       }
       // Same check executeMintViaOpenSea applies to the manual path -- OpenSea's eligibility
       // resolution is trusted, the mechanical shape of what it returned still is not.
-      validateOpenSeaMintCall({ built, contractAddress: task.contract, quantity: qty });
+      validateOpenSeaMintCall({ built, contractAddress: task.contract, quantity: qty, minterAddress: wallet.address });
       const prepared = { chain: wallet.chain, calldata: built.data, valueWei: BigInt(built.valueWei),
         method: { signature: 'opensea:drops-mint' }, preview: { contractAddress: task.contract, callTarget: built.to } };
       return mintExecution.executePrepared({ userId: task.userId, wallet, prepared, triggerSource: 'scheduled',
@@ -635,7 +635,7 @@ async function executeMintViaOpenSea({ wallet, contractAddr, chain, quantity, bu
   // OpenSea's own eligibility resolution is trusted by design (see buildMintTransaction's own
   // comment) -- this only checks the mechanical shape of what it handed back actually matches what
   // was requested, before it gets signed and broadcast with real funds.
-  validateOpenSeaMintCall({ built, contractAddress: contractAddr, quantity });
+  validateOpenSeaMintCall({ built, contractAddress: contractAddr, quantity, minterAddress: wallet.address });
   const prepared = {
     chain,
     calldata: built.data,

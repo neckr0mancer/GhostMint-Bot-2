@@ -84,9 +84,46 @@ test('requireSession refreshes the session cookie Max-Age on every authenticated
   assert.ok(refreshed.some(value=>value.startsWith(`${SESSION_COOKIE}=`)&&/Max-Age=/.test(value)));
 });
 
+test('development cookies persist over local HTTP while production cookies remain Secure',async()=>{
+  const identity={consumeDashboardLinkCode:async()=>'user-a'};
+  const repository={create:async()=> 'session-1',resolve:async()=>null,revoke:async()=>true,revokeAll:async()=>1};
+  const local=createDashboardAuthService({identity,repository,secureCookies:false});
+  const production=createDashboardAuthService({identity,repository,secureCookies:true});
+  const localSession=await local.login('VALID');const productionSession=await production.login('VALID');
+  assert.ok(local.sessionCookies(localSession).every(value=>!/; Secure/i.test(value)));
+  assert.ok(production.sessionCookies(productionSession).every(value=>/; Secure/i.test(value)));
+});
+
+test('a fourth browser login replaces the least-recently-used session and reports why',async()=>{
+  const rows=[];let id=0;
+  const repository={
+    create:async value=>{const active=rows.filter(row=>!row.revoked).sort((a,b)=>b.lastSeen-a.lastSeen);for(const row of active.slice(value.maxActiveSessions-1)){row.revoked=true;row.reason='session_limit';}const row={...value,sessionId:`session-${++id}`,lastSeen:id,revoked:false};rows.push(row);return row.sessionId;},
+    resolve:async tokenHash=>rows.find(row=>row.tokenHash===tokenHash&&!row.revoked)||null,
+    denialReason:async tokenHash=>rows.find(row=>row.tokenHash===tokenHash)?.reason||'invalid',
+    revoke:async()=>true,revokeAll:async()=>1,
+  };
+  const auth=createDashboardAuthService({identity:{consumeDashboardLinkCode:async()=>'user-a'},repository,maxActiveSessions:3});
+  const sessions=[];for(let index=0;index<4;index+=1)sessions.push(await auth.login('VALID'));
+  assert.equal((await auth.authenticateDetailed(`${SESSION_COOKIE}=${sessions[0].token}`)).reason,'session_limit');
+  for(const session of sessions.slice(1))assert.ok(await auth.authenticate(`${SESSION_COOKIE}=${session.token}`));
+  assert.equal(rows.filter(row=>!row.revoked).length,3);
+});
+
+test('expired dashboard requests return a user-facing session reason instead of a generic logout',async t=>{
+  const auth={authenticateDetailed:async()=>({session:null,reason:'absolute_expired'})};
+  const api=createDashboardApi({auth,identityRepository:{},loginRateLimiter:createCommandRateLimiter()});
+  const app=express();app.get('/api/profile',api.requireSession,api.profile);
+  const server=http.createServer(app);await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>server.close(resolve)));
+  const response=await fetch(`http://127.0.0.1:${server.address().port}/api/profile`);
+  assert.equal(response.status,401);assert.deepEqual(await response.json(),{
+    error:'Your session reached its 7-day maximum lifetime. Sign in again to continue.',
+    code:'SESSION_ABSOLUTE_EXPIRED',reason:'absolute_expired',
+  });
+});
+
 test('the link-code endpoint requires an authenticated session and returns the code for the resolved user',async t=>{
-  const data=fixture();let capturedUserId=null;
-  const commands={linkCode:async userId=>{capturedUserId=userId;return {code:'ABCDE12345',expiresAt:Date.now()+300_000};}};
+  const data=fixture();let capturedUserId=null;let generated=0;
+  const commands={linkCode:async userId=>{capturedUserId=userId;generated+=1;return {code:`ABCDE1234${generated}`,expiresAt:Date.now()+300_000};}};
   const api=createDashboardApi({auth:data.auth,identityRepository:{listLinkedAccounts:async()=>[],getTheme:async()=>'ghost-mint',setTheme:async(userId,theme)=>theme,getDisplayName:async()=>null},commands,loginRateLimiter:createCommandRateLimiter()});
   const app=express();app.use(express.json());app.use(api.securityHeaders);
   app.post('/api/auth/login',api.login);app.post('/api/auth/link-code',api.requireSession,api.requireCsrf,api.linkCode);
@@ -100,8 +137,10 @@ test('the link-code endpoint requires an authenticated session and returns the c
   const response=await fetch(`${base}/api/auth/link-code`,{method:'POST',headers:{cookie,'x-csrf-token':values[CSRF_COOKIE],'content-type':'application/json'},body:'{}'});
   assert.equal(response.status,200);
   const body=await response.json();
-  assert.equal(body.code,'ABCDE12345');
+  assert.equal(body.code,'ABCDE12341');
   assert.equal(capturedUserId,'user-a');
+  const refreshed=await fetch(`${base}/api/auth/link-code`,{method:'POST',headers:{cookie,'x-csrf-token':values[CSRF_COOKIE],'content-type':'application/json'},body:'{}'});
+  assert.equal(refreshed.status,200);assert.equal((await refreshed.json()).code,'ABCDE12342');
 });
 
 function openSocket(url,cookie){return new Promise((resolve,reject)=>{const socket=new WebSocket(url,{headers:cookie?{Cookie:cookie}:{}});const messages=[];socket.on('message',value=>messages.push(JSON.parse(value.toString())));socket.once('open',()=>resolve({socket,messages}));socket.once('unexpected-response',(request,response)=>reject(Object.assign(new Error('rejected'),{statusCode:response.statusCode})));socket.once('error',reject);});}
