@@ -8,7 +8,11 @@ const { MINT_PUBLIC_FRAGMENT, SEADROP_CORE_INTERFACE, SEADROP_MINT_SIGNATURE } =
 const ARCHETYPE_INTERFACE = new Interface([
   'function mint((bytes32 key,bytes32[] proof) auth,uint256 quantity,address affiliate,bytes signature) payable',
   'function mintTo((bytes32 key,bytes32[] proof) auth,uint256 quantity,address to,address affiliate,bytes signature) payable',
+  'function computePrice(bytes32 key,uint256 quantity,bool affiliateUsed) view returns (uint256)',
 ]);
+
+const ARCHETYPE_PUBLIC_KEY = `0x${'00'.repeat(32)}`;
+const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 
 function invalid(field, message) { throw new ValidationError({ field, message }); }
 
@@ -36,6 +40,21 @@ function nativeValue(valueWei) {
 // exactly; feeBps is split out of it at payout time, never added on top.
 function computeSeaDropValueWei({ mintPriceWei, quantity: qty }) {
   return BigInt(mintPriceWei) * BigInt(qty);
+}
+
+// Archetype's public invite uses the zero key, no proof, no affiliate and no signature. This is a
+// finite, audited call shape (selector 0x4a21a2df), not arbitrary calldata. OpenSea normally
+// supplies the same bytes, but some indexed collections return 404 from its mint-builder even
+// while the public on-chain invite is live. In that case callers may read computePrice() and build
+// this exact public call locally; the transaction engine still estimates, balance-checks and
+// simulates it before anything can be broadcast.
+function buildPublicArchetypeMintCall({ contractAddress, quantity: rawQuantity, valueWei }) {
+  if (!isAddress(contractAddress)) invalid('contractAddress', 'must be a valid Ethereum address');
+  const qty = quantity(rawQuantity, 'quantity');
+  const value = nativeValue(valueWei);
+  const auth = { key: ARCHETYPE_PUBLIC_KEY, proof: [] };
+  const calldata = ARCHETYPE_INTERFACE.encodeFunctionData('mint', [auth, qty, ZERO_ADDRESS, '0x']);
+  return { to: contractAddress, data: calldata, valueWei: value.toString() };
 }
 
 // `arguments` holds the 3 mintPublic parameters other than the NFT contract itself
@@ -161,4 +180,5 @@ function validateOpenSeaMintCall({ built, contractAddress, quantity: expectedQua
   return decoded;
 }
 
-module.exports = { ARCHETYPE_INTERFACE, buildSeaDropMintCall, computeSeaDropValueWei, decodeSeaDropMintCall, validateOpenSeaMintCall };
+module.exports = { ARCHETYPE_INTERFACE, ARCHETYPE_PUBLIC_KEY, buildPublicArchetypeMintCall,
+  buildSeaDropMintCall, computeSeaDropValueWei, decodeSeaDropMintCall, validateOpenSeaMintCall };
