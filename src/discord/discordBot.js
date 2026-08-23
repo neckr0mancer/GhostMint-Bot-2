@@ -128,6 +128,8 @@ function commandDefinitions({ supportedChains = [], chains = {} } = {}) {
       { name: 'First pending tx to contract', value: 'pending' },
       { name: 'Manual (clear trigger)', value: 'manual' }))
     .addIntegerOption(o => o.setName('block').setDescription('Target block height (required for kind=block)').setMinValue(1)));
+  commands.push(new SlashCommandBuilder().setName('acostatus').setDescription('📊 Live status of a launch squad')
+    .addStringOption(o => o.setName('id').setDescription('Launch squad id').setRequired(true)));
   commands.push(new SlashCommandBuilder().setName('task').setDescription('🗓️ Manage durable scheduled mints')
     .addSubcommand(c => c.setName('create').setDescription('Create a UTC scheduled mint')
       .addStringOption(o => o.setName('input').setDescription('Validated task JSON; mintTime must include Z/offset').setRequired(true))
@@ -1681,7 +1683,7 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
       }
       userId = await identity.resolveOrCreate('discord', discordId);
       await enforceAccountStatus(userId);
-      if(['wallet','mint','mintnow','batch-mint','aco','acotarget','admin','watch','sniper','confirm-trigger','target-policy'].includes(interaction.commandName)) {
+      if(['wallet','mint','mintnow','batch-mint','aco','acotarget','acostatus','admin','watch','sniper','confirm-trigger','target-policy'].includes(interaction.commandName)) {
         rateLimiter.check('discord',userId,interaction.commandName);
       }
       let message;
@@ -1869,6 +1871,22 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
           } catch (error) {
             message = `❌ ${escapeDiscord(String(error.message || error).slice(0, 250))}`;
           }
+          break;
+        }
+        case 'acostatus': {
+          if (!launchRepository) { message = 'Launch squads are not available in this deployment.'; break; }
+          const squad = await launchRepository.getSquad(userId, interaction.options.getString('id'));
+          if (!squad) { message = 'Launch squad not found.'; break; }
+          const icon = { staged: '⏳', skipped: '⏭', sent: '📡', confirmed: '✅', reverted: '❌', failed: '⚠️', pending: '·' };
+          const counts = {};
+          for (const member of squad.members) counts[member.status] = (counts[member.status] || 0) + 1;
+          const countLine = Object.entries(counts).map(([status, n]) => `${icon[status] || '·'} ${n}`).join('  ');
+          const rows = squad.members.slice(0, 25).map(member =>
+            `${icon[member.status] || '·'} **${escapeDiscord(member.walletLabel)}** — ${member.status}` +
+            (member.txHash ? ` \`${String(member.txHash).slice(0, 18)}…\`` : '') +
+            (member.error ? ` (${escapeDiscord(String(member.error).slice(0, 80))})` : ''));
+          const more = squad.members.length > 25 ? `\n…and ${squad.members.length - 25} more` : '';
+          message = `## 📊 ${squad.name} [${squad.status}]\n${countLine}\n${rows.join('\n')}${more}`;
           break;
         }
         case 'task': {

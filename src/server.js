@@ -3306,6 +3306,31 @@ send /mint with a contract address to get going.`;
     }
   }));
 
+  // Live launch status: per-wallet states while a burst runs or after it settles.
+  bot.onText(/^\/acostatus(?:@\w+)?\s+([0-9a-fA-F-]{36})$/i, withTelegramUser(async (msg, match, userId) => {
+    commandRateLimiter.check('telegram', userId, 'aco');
+    const squad = await launchRepository.getSquad(userId, match[1]);
+    if (!squad) return tg(msg.chat.id, 'Launch squad not found.', { parseMode: 'HTML' });
+    const icon = { staged: '⏳', skipped: '⏭', sent: '📡', confirmed: '✅', reverted: '❌', failed: '⚠️', pending: '·' };
+    const counts = {};
+    for (const member of squad.members) counts[member.status] = (counts[member.status] || 0) + 1;
+    const countLine = Object.entries(counts).map(([status, n]) => `${icon[status] || '·'} ${n}`).join('  ');
+    const rows = squad.members.slice(0, 25).map(member =>
+      `${icon[member.status] || '·'} ${escapeTelegramHtml(member.walletLabel)} — ${member.status}` +
+      (member.txHash ? ` — <code>${escapeTelegramHtml(String(member.txHash).slice(0, 18))}…</code>` : '') +
+      (member.error ? ` (${escapeTelegramHtml(String(member.error).slice(0, 80))})` : ''));
+    const more = squad.members.length > 25 ? `\n…and ${squad.members.length - 25} more` : '';
+    return tgRender(msg.chat.id, { text: [
+      `<b>${escapeTelegramHtml(squad.name)}</b> [${escapeTelegramHtml(squad.status)}]`,
+      `${countLine}`,
+      '',
+      ...rows, more,
+    ].join('\n'), parseMode: 'HTML', replyMarkup: telegramMenus.keyboard([[
+      telegramMenus.button('🚀 FIRE NOW', `aco:fire:${squad.id}`),
+      telegramMenus.button('❌ Abort', `aco:abort:${squad.id}`),
+    ]] ) });
+  }));
+
   bot.onText(/^\/link(?:@\w+)?$/, withTelegramUser(async (msg, match, userId) => {
     const link = await identity.createLinkCode(userId);
     tgRender(msg.chat.id, { text: `🔗 <b>Account link code</b>\n\n<pre>${link.code}</pre>\nTap or long-press the code above to copy it. Expires in 5 minutes and can be used once.`, parseMode: 'HTML' });
