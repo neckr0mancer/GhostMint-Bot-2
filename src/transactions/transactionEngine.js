@@ -5,6 +5,7 @@ const { createFeeDataCache } = require('./feeDataCache');
 const { extractMintedTokenIds } = require('./mintReceiptTokens');
 
 const FINAL_STATES = new Set(['confirmed', 'reverted', 'replaced']);
+const NON_FINAL_STATES = new Set(['submitted', 'pending', 'unknown']);
 
 // See submit()'s useFastPath: abandon a slow primary RPC after one quick attempt instead of the
 // provider service's own conservative default (10s x 2 attempts per URL) -- only ever applied to
@@ -183,10 +184,22 @@ function createTransactionEngine({
     }
     const transaction = await providerCall(intent.chain, 'getTransaction', provider => provider.getTransaction(intent.txHash));
     if (transaction) return { state: 'pending', reason: 'transaction is present in the provider mempool' };
-    const pendingNonce = await providerCall(intent.chain, 'getTransactionCount', provider => provider.getTransactionCount(intent.from, 'pending'));
-    if (Number(pendingNonce) > intent.nonce) return { state: 'replaced', reason: 'wallet nonce was consumed by another transaction' };
+    // This used to read "pending nonce ahead of mine" as proof the nonce was consumed by another
+    // transaction, settling the intent as FINAL 'replaced'. That inference was only sound while at
+    // most one transaction per wallet could be non-final -- an exclusivity the per-wallet queue no
+    // longer provides since broadcast acceptance released it -- and even a pure outsider steal is
+    // indistinguishable from an invisible-but-live transaction when our own hash returns null from
+    // a node that has not seen it. Declaring replaced finalized spends that were still perfectly
+    // able to confirm, and reconciliation stopped tracking them. Invisibility therefore preserves
+    // the intent's last known non-final state -- dropping a mempool sighting must not DEMOTE a
+    // pending intent below the ladder either, since listBumpCandidates re-bids exactly those --
+    // and converges on 'unknown' only at timeoutAt. An outbid transaction is still recovered the
+    // active way: the bump ladder re-bids the SAME nonce, and whichever hash eventually mines
+    // produces the receipt above. Existing rows already carrying 'replaced' stay final everywhere
+    // downstream; new ones simply are not manufactured from thin air any more.
     if (now() >= intent.timeoutAt) return { state: 'unknown', reason: 'transaction timed out without a chain receipt' };
-    return { state: intent.state === 'unknown' ? 'unknown' : 'submitted', reason: 'transaction is not yet visible on chain' };
+    return { state: NON_FINAL_STATES.has(intent.state) ? intent.state : 'submitted',
+      reason: 'transaction is not yet visible on chain' };
   }
 
   async function reconcileIntent(intent) {

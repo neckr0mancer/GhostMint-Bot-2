@@ -1,18 +1,24 @@
 /* global setImmediate */
 // REVIEW REPRODUCTIONS for ox-alpha/competitive-speed. Each was run against BOTH this branch
 // and main, because "fails here" only means "regression" if it passes there -- and for two of the
-// three it did not. Control results:
+// three it did not. Control results as they were when written, with what happened next:
 //
-//   gas-ceiling precedence  main PASS / ox-alpha FAIL  -> genuine regression from 38a4d97
-//   replaced-misclassify    main FAIL / ox-alpha FAIL  -> PRE-EXISTING flaw, not introduced here,
-//                                                         but d10b565 makes it reachable in normal
-//                                                         operation instead of near-impossible
-//   unhandled rejection     main PASS / ox-alpha PASS  -> did NOT reproduce; the handler wins the
-//                                                         race. Latent risk in the code shape only
+//   gas-ceiling precedence  main PASS / branch FAIL  -> genuine regression from 38a4d97.
+//                                                      FIXED: submit()'s concurrent reads settle
+//                                                      individually and each error resurfaces
+//                                                      exactly where its value is consumed.
+//   replaced-misclassify    main FAIL / branch FAIL  -> PRE-EXISTING flaw, not introduced here,
+//                                                      but d10b565 made it reachable in normal
+//                                                      operation instead of near-impossible.
+//                                                      FIXED: the pending-nonce inference was
+//                                                      removed; invisibility converges on
+//                                                      'unknown' at timeout instead of the
+//                                                      false-final 'replaced'.
+//   unhandled rejection     main PASS / branch PASS  -> did NOT reproduce; the handler wins the
+//                                                      race. Latent risk in the code shape only
 //
-// Kept as assertions of correct behaviour, so fixing each underlying issue turns it green. The
-// existing 806/806 misses all of them because every one needs two things to fail at once, and the
-// suite exercises one at a time.
+// Kept as assertions of correct behaviour. The existing 806-test suite missed all of them because
+// every one needs two things to fail at once, and the suite exercises one at a time.
 
 // (original note) these are expected to FAIL against ox-alpha/competitive-speed as it
 // stands. Each one pins a behaviour that changed as a side effect of the two perf commits
