@@ -1,4 +1,5 @@
 const { createHash } = require('node:crypto');
+const { URL } = require('node:url');
 const axios = require('axios');
 const { WATCH_TYPE_PLATFORMS } = require('../validation/domain');
 
