@@ -170,27 +170,45 @@ function createTransactionEngine({
     return updated;
   }
 
+  // Shared receipt evaluation for BOTH of an intent's possible hashes: the current tx_hash and,
+  // after a bump, the superseded bumped_from_tx_hash. Same mint either way -- whichever hash
+  // mines IS the outcome, with its own gas cost and token IDs.
+  async function evaluateReceipt(intent, receipt) {
+    const gasUsed=receipt.gasUsed===undefined?null:BigInt(receipt.gasUsed);
+    const effectiveGasPriceWei=receipt.gasPrice===undefined||receipt.gasPrice===null
+      ? (receipt.effectiveGasPrice===undefined||receipt.effectiveGasPrice===null?null:BigInt(receipt.gasPrice)):BigInt(receipt.gasPrice);
+    const actualNetworkCostWei=gasUsed!==null&&effectiveGasPriceWei!==null?gasUsed*effectiveGasPriceWei:null;
+    const receiptCost={gasUsed,effectiveGasPriceWei,actualNetworkCostWei};
+    if (Number(receipt.status) === 0) return { state: 'reverted', blockNumber: Number(receipt.blockNumber), reason: 'transaction reverted on chain',...receiptCost };
+    // Section T: which token ID(s) this mint actually received, read from the NFT contract's own
+    // Transfer/TransferSingle/TransferBatch event(s) -- never the transaction's own `to`, which
+    // for a SeaDrop mint is the SeaDrop core, not the token contract. Computed once here (logs
+    // don't change with more confirmations) and carried the same way receiptCost already is.
+    const tokenIds = extractMintedTokenIds(receipt, { contractAddress: intent.callPreview?.contractAddress, minterAddress: intent.from });
+    const currentBlock = await providerCall(intent.chain, 'getBlockNumber', provider => provider.getBlockNumber());
+    const confirmations = Math.max(0, Number(currentBlock) - Number(receipt.blockNumber) + 1);
+    if (confirmations >= intent.requiredConfirmations) {
+      return { state: 'confirmed', blockNumber: Number(receipt.blockNumber), reason: `${confirmations} confirmations observed`,...receiptCost, tokenIds };
+    }
+    return { state: 'pending', blockNumber: Number(receipt.blockNumber), reason: `${confirmations}/${intent.requiredConfirmations} confirmations observed`,...receiptCost };
+  }
+
   async function inspectChain(intent) {
     if (!intent.txHash) return { state: 'unknown', reason: 'signed transaction hash was not persisted' };
     const receipt = await providerCall(intent.chain, 'getTransactionReceipt', provider => provider.getTransactionReceipt(intent.txHash));
-    if (receipt) {
-      const gasUsed=receipt.gasUsed===undefined?null:BigInt(receipt.gasUsed);
-      const effectiveGasPriceWei=receipt.gasPrice===undefined||receipt.gasPrice===null
-        ? (receipt.effectiveGasPrice===undefined||receipt.effectiveGasPrice===null?null:BigInt(receipt.effectiveGasPrice)):BigInt(receipt.gasPrice);
-      const actualNetworkCostWei=gasUsed!==null&&effectiveGasPriceWei!==null?gasUsed*effectiveGasPriceWei:null;
-      const receiptCost={gasUsed,effectiveGasPriceWei,actualNetworkCostWei};
-      if (Number(receipt.status) === 0) return { state: 'reverted', blockNumber: Number(receipt.blockNumber), reason: 'transaction reverted on chain',...receiptCost };
-      // Section T: which token ID(s) this mint actually received, read from the NFT contract's own
-      // Transfer/TransferSingle/TransferBatch event(s) -- never the transaction's own `to`, which
-      // for a SeaDrop mint is the SeaDrop core, not the token contract. Computed once here (logs
-      // don't change with more confirmations) and carried the same way receiptCost already is.
-      const tokenIds = extractMintedTokenIds(receipt, { contractAddress: intent.callPreview?.contractAddress, minterAddress: intent.from });
-      const currentBlock = await providerCall(intent.chain, 'getBlockNumber', provider => provider.getBlockNumber());
-      const confirmations = Math.max(0, Number(currentBlock) - Number(receipt.blockNumber) + 1);
-      if (confirmations >= intent.requiredConfirmations) {
-        return { state: 'confirmed', blockNumber: Number(receipt.blockNumber), reason: `${confirmations} confirmations observed`,...receiptCost, tokenIds };
+    if (receipt) return evaluateReceipt(intent, receipt);
+    // Bump-ladder race: attachBump made the re-bid hash primary and preserved the ORIGINAL in
+    // bumped_from_tx_hash. If the original mined instead (it was propagating while the bump was
+    // assembled; nodes reject a same-nonce replacement only once the original is visible), the
+    // receipt lives on the OLD hash and only checking the new one would keep a confirmed mint
+    // pending until timeout -- reporting a succeeded mint as unknown/failed and inviting a
+    // double spend. Whichever hash mined is the outcome; both are this intent's own broadcasts.
+    if (intent.bumpedFromTxHash) {
+      const supersededReceipt = await providerCall(intent.chain, 'getTransactionReceipt', provider => provider.getTransactionReceipt(intent.bumpedFromTxHash));
+      if (supersededReceipt) {
+        const evaluated = await evaluateReceipt(intent, supersededReceipt);
+        return { ...evaluated, reason: `${evaluated.reason} (original broadcast mined after the re-bid)` };
       }
-      return { state: 'pending', blockNumber: Number(receipt.blockNumber), reason: `${confirmations}/${intent.requiredConfirmations} confirmations observed`,...receiptCost };
     }
     const transaction = await providerCall(intent.chain, 'getTransaction', provider => provider.getTransaction(intent.txHash));
     if (transaction) return { state: 'pending', reason: 'transaction is present in the provider mempool' };

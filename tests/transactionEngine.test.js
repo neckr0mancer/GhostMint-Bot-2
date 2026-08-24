@@ -21,11 +21,18 @@ class MemoryIntentRepository {
     return { ...intent };
   }
 
-  async attachSignedHash(intentId, txHash) {
-    const intent = this.intents.find(item => item.intentId === intentId);
-    intent.txHash = txHash;
-    return { ...intent };
-  }
+async attachSignedHash(intentId, txHash) {
+const intent = this.intents.find(item => item.intentId === intentId);
+intent.txHash = txHash;
+return { ...intent };
+}
+
+async attachBump(intentId, { txHash, bumpedFromTxHash }) {
+const intent = this.intents.find(item => item.intentId === intentId);
+intent.bumpedFromTxHash = bumpedFromTxHash;
+intent.txHash = txHash;
+return { ...intent };
+}
 
   async transition(intentId, state, details = {}) {
     const intent = this.intents.find(item => item.intentId === intentId);
@@ -244,15 +251,66 @@ test('a submitted intent is reconciled from chain state after restart', async ()
     simulationEnabled: true, requiredConfirmations: 1,
     transactionTimeoutMs: 60_000, timeoutAt: Date.now() + 60_000,
   });
-  const hash = `0x${'ab'.repeat(32)}`;
-  await repository.attachSignedHash(intent.intentId, hash);
-  receipts.set(hash, { status: 1, blockNumber: 100, gasUsed:21_000n, gasPrice:2n });
+const hash = `0x${'ab'.repeat(32)}`;
+await repository.attachSignedHash(intent.intentId, hash);
+receipts.set(hash, { status: 1, blockNumber: 100, gasUsed:21_000n, gasPrice:2n });
+const [reconciled] = await engine.reconcileNonFinal();
+assert.equal(reconciled.state, 'confirmed');
+assert.equal(reconciled.actualNetworkCostWei,42_000n);
+assert.equal(reconciled.gasUsed,21_000n);
+assert.equal(reconciled.effectiveGasPriceWei,2n);
+assert.equal(repository.intents[0].state, 'confirmed');
+});
+
+// TX-008: after a bump, the re-bid hash is primary and the ORIGINAL lives in bumped_from_tx_hash.
+// If the original mined instead (it was propagating while the bump was assembled), only checking
+// the primary hash keeps a confirmed mint pending until timeout -- the user is told it failed
+// while the NFT is in the wallet, inviting a double spend. Whichever hash mined is the outcome.
+test('a bumped intent whose ORIGINAL broadcast mined reconciles confirmed from the superseded hash', async () => {
+  const { engine, repository, request, receipts } = fixture();
+  const intent = await repository.createSubmitted({
+    ...request, walletId: request.wallet.id, from: request.wallet.address, nonce: 9,
+    gasLimit: 21_000n, gasPriceWei: 1n, maxFeePerGasWei: null,
+    maxPriorityFeePerGasWei: null, estimatedCostWei: 21_000n,
+    simulationEnabled: true, requiredConfirmations: 1,
+    transactionTimeoutMs: 60_000, timeoutAt: Date.now() + 60_000,
+  });
+  const bumpedHash = `0x${'bb'.repeat(32)}`;
+  const originalHash = `0x${'aa'.repeat(32)}`;
+  await repository.attachSignedHash(intent.intentId, bumpedHash);
+  await repository.attachBump(intent.intentId, {
+    txHash: bumpedHash, bumpedFromTxHash: originalHash,
+    gasPriceWei: 2n, maxFeePerGasWei: null, maxPriorityFeePerGasWei: null,
+  });
+  // The re-bid never mined; the ORIGINAL did. (blockNumber 99: fixture chain head is 100.)
+  receipts.set(originalHash, { status: 1, blockNumber: 99, gasUsed: 22_000n, gasPrice: 2n });
   const [reconciled] = await engine.reconcileNonFinal();
-  assert.equal(reconciled.state, 'confirmed');
-  assert.equal(reconciled.actualNetworkCostWei,42_000n);
-  assert.equal(reconciled.gasUsed,21_000n);
-  assert.equal(reconciled.effectiveGasPriceWei,2n);
+  assert.equal(reconciled.state, 'confirmed', 'the original mining IS the mint');
+  assert.equal(reconciled.gasUsed, 22_000n, 'gas comes from the hash that actually mined');
+  assert.equal(reconciled.actualNetworkCostWei, 44_000n);
+  assert.match(reconciled.reason, /original broadcast mined after the re-bid/);
   assert.equal(repository.intents[0].state, 'confirmed');
+});
+
+test('a bumped intent whose ORIGINAL broadcast REVERTED reconciles reverted, not pending', async () => {
+  const { engine, repository, request, receipts } = fixture();
+  const intent = await repository.createSubmitted({
+    ...request, walletId: request.wallet.id, from: request.wallet.address, nonce: 10,
+    gasLimit: 21_000n, gasPriceWei: 1n, maxFeePerGasWei: null,
+    maxPriorityFeePerGasWei: null, estimatedCostWei: 21_000n,
+    simulationEnabled: true, requiredConfirmations: 1,
+    transactionTimeoutMs: 60_000, timeoutAt: Date.now() + 60_000,
+  });
+  const bumpedHash = `0x${'cc'.repeat(32)}`;
+  const originalHash = `0x${'dd'.repeat(32)}`;
+  await repository.attachSignedHash(intent.intentId, bumpedHash);
+  await repository.attachBump(intent.intentId, {
+    txHash: bumpedHash, bumpedFromTxHash: originalHash,
+    gasPriceWei: 2n, maxFeePerGasWei: null, maxPriorityFeePerGasWei: null,
+  });
+  receipts.set(originalHash, { status: 0, blockNumber: 105 });
+  const [reconciled] = await engine.reconcileNonFinal();
+  assert.equal(reconciled.state, 'reverted');
 });
 
 test('a reconciliation failure is reported through notify and does not stop the rest of the sweep, or throw', async () => {
