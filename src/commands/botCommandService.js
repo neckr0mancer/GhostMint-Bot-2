@@ -121,6 +121,12 @@ function createBotCommandService(dependencies) {
   // contract address detectMintContract already expects. Unrecognized input (including a link
   // OpenSea couldn't map to a chain this app supports) returns null exactly like an invalid
   // address always did, so every caller's existing "not a valid address" error path is unchanged.
+  async function isContractAddress(address) {
+    if (!isAddress(address)) return false;
+    const chain = await detectContractChain({ providerService, supportedChains, contractAddress: address });
+    return Boolean(chain);
+  }
+
   async function resolveMintContractInput(input) {
     if (isAddress(input)) return input;
     if (!openSeaService) return null;
@@ -783,7 +789,7 @@ function createBotCommandService(dependencies) {
 
   return {
     createWallet, createWalletWithRecoveryPhrase, importWallet, importWalletsBatch, detectHomeChain, removeWallet, walletBalance, invalidateBalance, exportWalletKeyRaw, exportWalletKeystore, mint, mintViaOpenSea, batchMint, send, createTask, controlTask, addPnl, updatePnl, deletePnl,
-    prepareMint,submitPreparedMint,detectMintContract,resolveMintContractInput,parseOpenSeaCollectionSlug,mintPresets:userId=>mintService.listPresets(userId),
+    prepareMint,submitPreparedMint,detectMintContract,resolveMintContractInput,isContractAddress,parseOpenSeaCollectionSlug,mintPresets:userId=>mintService.listPresets(userId),
     // The dashboard could LIST presets but never create one -- the only save path was
     // /mintpreset save on Telegram (server.js:2492), so the Presets tab displayed a thing the
     // dashboard had no way to produce. Same validated mintService.savePreset the bot calls,

@@ -2161,11 +2161,17 @@ async function handleFlowTextMessage(msg) {
     // input a flow is actually waiting on.
     const trimmed = msg.text.trim();
     if (ethers.isAddress(trimmed) || botCommands.parseOpenSeaCollectionSlug(trimmed)) {
-      // Don't treat the user's own wallet addresses as contracts
+      // Don't treat wallet addresses as contracts — pasting a wallet address (e.g. from a
+      // block explorer) should not trigger the mint info card. Check both the user's own wallets
+      // and whether the address has code on any supported chain.
       if (ethers.isAddress(trimmed)) {
         try {
           const wallets = await botCommands.wallets(userId).catch(() => []);
           if (Array.isArray(wallets) && wallets.some(w => String(w.address || '').toLowerCase() === String(trimmed).toLowerCase())) return;
+          if (/^0x[0-9a-fA-F]{40}$/.test(trimmed)) {
+            const isContract = await botCommands.isContractAddress(trimmed).catch(() => true);
+            if (!isContract) return;
+          }
         } catch {}
       }
       if (flow) telegramFlowState.clear('telegram', chatId);
