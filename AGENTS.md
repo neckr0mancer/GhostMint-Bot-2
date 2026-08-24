@@ -308,3 +308,30 @@ Every finished unit reports:
 5. Security, data-truth, and compatibility notes.
 6. What remains for this unit.
 7. Git state; commit and push status only when requested.
+
+## 11. Shared agent memory — Model 1 persistent handoff
+
+*This section is the shared-memory extension for Model 1 (primary implementer). It coexists
+with the implementation contract above; if any instruction conflicts, the implementation
+contract wins.*
+
+**Startup:** Run and inspect git status, branch and recent commits; preserve all existing user
+changes; read this file and all project documentation before working.
+
+**Memory files (all committed, branch-pinned):**
+- docs/agents/reviews/phase-xx.md — per-phase audit reviews
+- docs/agent/PROJECT_STATE.md — pinned, verified project state
+- docs/agent/WORKLIST.md — dependency-ordered worklist with stable IDs and statuses
+- docs/agent/DECISIONS.md — architectural decisions and rationale
+- docs/agent/HANDOFFS.md — dated handoffs after every session
+
+**Memory rules:**
+- Every agent must read these files and recent Git history before working.
+- Store only verified, concise facts.
+- Never store private keys, tokens, credentials, wallet data or authenticated RPC URLs.
+- Separate confirmed defects from hypotheses.
+- Every completed item requires test, log, simulation or benchmark evidence.
+- Use stable task IDs such as SEC-001, TX-001, RPC-001 and UX-001.
+- Worklist statuses are: TODO, READY, IN_PROGRESS, BLOCKED, FIXED, REVIEW_FAILED and VERIFIED.
+- Append a dated handoff after every session containing the model, branch, scope, changed files,
+  tests, results, unresolved risks and exact next action.
