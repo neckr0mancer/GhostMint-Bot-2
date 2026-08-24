@@ -40,7 +40,8 @@ const watchRuleFlowDecision = require('./social/watchRuleFlowDecision');
 const sniperFlowDecision = require('./sniper/sniperFlowDecision');
 const { createSchedulerRepository } = require('./scheduler/schedulerRepository');
 const { DEFAULT_LEAD_MS, createScheduledReminder } = require('./scheduler/scheduledReminder');
-const { createSchedulerWorker } = require('./scheduler/schedulerWorker');
+const { createSchedulerWorker, STAGE_REARM_WINDOW_MS } = require('./scheduler/schedulerWorker');
+const { classifySeaDropWindow, preArmRearm } = require('./scheduler/scheduledValidity');
 const { resolveTaskChain } = require('./scheduler/taskChain');
 const { createLaunchRepository } = require('./launch/launchRepository');
 const { createLaunchStager } = require('./launch/stager');
@@ -329,7 +330,22 @@ async function prearmScheduledTask(task) {
     const seaDrop = await seaDropDiscoveryService.resolve(wallet.chain, task.contract);
     if (seaDrop.address) {
       const livePublicDrop = await seaDropPublicDropResolver.getPublicDrop(wallet.chain, seaDrop.address, task.contract);
-      if (livePublicDrop && Math.abs(livePublicDrop.startTime * 1000 - task.mintTime) > PREARM_WINDOW_TOLERANCE_MS) {
+      // INNOV-001: the advertised T is imperfect information. When the contract's own window
+      // differs from the schedule, move the fire moment to the REAL opening NOW -- before T
+      // arrives -- so the first attempt is valid and zero failed tries are spent discovering
+      // what a dedicated script would poll for. Bounded by the same 24h window the post-hoc
+      // re-arm uses; the drift check at executeTask remains the final gate either way.
+      const classification = classifySeaDropWindow(livePublicDrop, Date.now());
+      const move = preArmRearm(classification, task.mintTime, STAGE_REARM_WINDOW_MS);
+      if (move) {
+        const moved = await schedulerRepository.moveFireTime(task.userId, task.id, move.fireAtMs);
+        if (moved) {
+          log(`Pre-arm re-arm: "${task.name}" (${wallet.chain}:${task.contract}) moved to the live opening ${new Date(move.fireAtMs).toISOString()} -- ${move.reason}`);
+          task.mintTime = move.fireAtMs;
+        }
+      } else if (classification.phase === 'late') {
+        log(`Pre-arm notice: "${task.name}" (${wallet.chain}:${task.contract}) window already closed (ended ${classification.endTimeMs ? new Date(classification.endTimeMs).toISOString() : 'never set'}) -- fire-time drift check will reject it`);
+      } else if (livePublicDrop && Math.abs(livePublicDrop.startTime * 1000 - task.mintTime) > PREARM_WINDOW_TOLERANCE_MS) {
         log(`Pre-arm notice: "${task.name}" (${wallet.chain}:${task.contract}) fires at ${new Date(task.mintTime).toISOString()}, but its live SeaDrop window starts ${new Date(livePublicDrop.startTime * 1000).toISOString()} -- the fire-time drift check may reject it`);
       }
     }

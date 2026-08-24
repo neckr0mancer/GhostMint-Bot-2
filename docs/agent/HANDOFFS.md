@@ -2,6 +2,33 @@
 
 ---
 
+## 2026-08-24 (later) — Model 1 — INNOV-001 shipped: zero-failed-attempt scheduled mints; Ink paste fix
+
+- **Branch:** `main` · **Start:** `2aa05c2` · **End:** `13fce24` + this commit
+- **Scope:** Competitive scheduled-mint architecture (owner-approved), Ink chain enablement, paste wallet/contract differentiation.
+
+**Shipped this session (chronological):**
+- `5211dc5` precise timers re-arm on moved `nextAttemptAt` + `'throttled'` retry (no more N-5 lost fires)
+- `7e82499`/`0d4b5af`/`334536e` paste silent-drop → visible errors (Discord+Telegram parity)
+- `09f5b20` WORKLIST.md session checkpoint (stale notes corrected)
+- `079e722` SeaDrop early window → transient `STAGE_NOT_OPEN` (250ms×8 burst + block-driven retry via sniper WS `handleBlock`) + scheduled broadcasts race the fast pool
+- `ed2b9b0` pre-arm warms feeData/balance/nonce/network at T-12s
+- `4da8600`+`9ec7b9e` paste ignores owned wallets and any EOA (`isContractAddress`)
+- `5f0d096`+`2aa05c2` Ink chain 57073 + canonical SeaDrop core; prod vars set via Railway GraphQL (`SUPPORTED_CHAINS+=ink`, `INK_RPC_URLS`); deploy `dcb9c88d` SUCCESS
+- `df6a2b9` **Ink paste root cause:** `OPENSEA_CHAIN_SLUGS` lacked ink (links failed); also fixed dead EOA-check (`.catch` on a synchronous array threw, skipping the check)
+- `13fce24` on-chain SeaDrop tasks re-arm to `getPublicDrop.startTime` after the burst (was OpenSea-only)
+- This commit: **INNOV-001** — `scheduledValidity.js` pure oracle (`classifySeaDropWindow`/`preArmRearm`, 8 tests), `moveFireTime` repo method (integration test vs real DB: scheduled moves, claimed refuses, `mint_time` kept), pre-arm wiring: at T-12s a live-window mismatch **moves the fire moment before T**, so the first attempt is valid — zero failed attempts for SeaDrop drops. Generic contracts keep burst+block-retry+re-arm fallback.
+
+**Delayed-mint coverage after this session:** T+0–2s burst; T+2s+ on-chain SeaDrop → pre-arm re-arm (now) or post-burst re-arm (`13fce24`); OpenSea → stage re-arm; generic → burst+re-arm fallback (inherent: no oracle exists).
+
+**Tests:** scheduledValidity 8/8; scheduler 24/24; scheduler.integration 3/3 (incl. new moveFireTime vs real DB); openSeaService+discordMintFlow 58/58; lint OK; dashboard build OK.
+
+**Unresolved risks:** DNS-rebinding SSRF residual; multi-instance locks (SEC-003); `withTimeout` leak (RPC-001); clock drift (RPC-004). Ink has no WS configured (RPC-011, owner action).
+
+**Exact next action:** ACO deletion (owner approved option A) — inventory live squads first (`launch_squads` non-terminal rows), port `triggers.js` block/pending concepts into the scheduled path if anything is still missing, remove `src/launch` + `/aco` `/acotarget` `/acostatus` surfaces, keep `launchRepository` data readable or migrate. Then REG-002 chaos tests.
+
+---
+
 ## 2026-08-24 — Model 1 — Agent-memory bootstrap + full adversarial audit (no new production code in this unit)
 
 - **Branch:** `main`
