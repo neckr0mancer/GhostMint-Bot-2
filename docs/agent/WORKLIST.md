@@ -107,7 +107,7 @@
 | ID | Item | Status | Evidence / Notes |
 |---|---|---|---|
 | INNOV-001 | Block-driven scheduled validity (generalize sniper `chainWatcher` + ACO trigger concepts into `scheduledValidity.js` oracle) | FIXED | `scheduledValidity.js` pure oracle (`classifySeaDropWindow`/`preArmRearm`, 8 unit tests) + `moveFireTime` repo method (integration test vs real DB) + pre-arm wiring: at T-12s the contract's real window is read and the fire moment moves BEFORE T, so the first attempt is valid with zero failed tries. Burst + block retry + re-arm (TX-006) remain as fallback for generic contracts |
-| INNOV-002 | Delete ACO service, port useful parts to sniper/repository | TODO (owner approved direction) | Owner instruction 2026-08-24: "delete aco service and apply the parts that'll improve sniper and repository, particularly the scheduled mint execution path". Requires careful migration of live squads first — 31 active tasks, squads may exist |
+| INNOV-002 | Delete ACO service, keep ported parts | FIXED | `8cebbcc` — prod `launch_squads` verified empty pre-deletion; block-retry/race/pre-arm already ported (TX-006/PERF-002/003); removed `src/launch` (5 files), 4 test files, `/aco` `/acotarget` `/acostatus` surfaces both platforms. Kept `triggerSource:'launch'` branches (historical intents) and DB tables (no destructive migration) |
 | INNOV-003 | Alchemy `alchemy_pendingTransactions` for scheduled front-running | TODO | Requires Alchemy WS (available, PAYG); provider-agnostic abstraction first (INNOV-001) |
 | INNOV-004 | Private tx routing (Flashbots etc.) | REJECTED | Documented in WORKLIST Round 16 — NFT mint is inclusion race, not MEV-protection problem |
 

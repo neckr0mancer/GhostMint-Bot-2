@@ -2,6 +2,18 @@
 
 ---
 
+## 2026-08-24 (latest) — Model 1 — INNOV-001 + ACO deletion
+
+- **Branch:** `main` · **Start:** `22dd73b` context · **Commits:** `05972c3` (INNOV-001), `22dd73b` (dashboard Ink sync — caught by gate), `8cebbcc` (ACO deletion). Held, not pushed.
+- **INNOV-001 (`05972c3`):** `scheduledValidity.js` pure oracle + `schedulerRepository.moveFireTime` + pre-arm wiring — at T-12s a live-window mismatch moves the fire moment to the contract's real opening BEFORE T; first attempt valid, zero failed tries. Tests: oracle 8/8, moveFireTime integration vs real DB (scheduled moves / claimed refuses / mint_time kept).
+- **Gate catch (`22dd73b`):** dashboard `EVM_CHAINS` hardcoded array omitted Ink → chain dropdown silently missing Ink. Fixed + CHAIN_META/EXPLORERS/DOT/LABEL. chainGrouping 2/2.
+- **ACO deletion (`8cebbcc`):** prod `launch_squads` verified EMPTY first (nothing orphaned). Removed `src/launch` (5 files), 4 test files, all `/aco` surfaces (Telegram handlers + Discord slash/component cases + wiring + timer worker + createDiscordBot params). Kept `triggerSource:'launch'` engine/bumper branches (historical intents, zero-risk) and DB tables (no destructive migration). discordBot command-surface test updated. −1284 lines.
+- **Verification:** lint OK, check OK, full suite 900 tests / 898 pass / 0 fail / 2 cancelled — the two cancelled are `dashboard.integration` WAN timeouts under full-suite load; **re-ran in isolation: 2/2 pass** (flaky-under-load, not a regression). chainGrouping 2/2, dashboard build OK.
+- **Unresolved risks:** unchanged (SEC-003 multi-instance, RPC-004 clock drift, RPC-001 timeout leak, REG-002 chaos tests, PERF-005 load rehearsal).
+- **Exact next action:** REG-002 deterministic chaos tests for the scheduled validity path (T+1/T+3/T+7 with fake clock + fake block feed, RPC disconnect mid-window, duplicate block events, restart during armed window). Push only on owner instruction.
+
+---
+
 ## 2026-08-24 (later) — Model 1 — INNOV-001 shipped: zero-failed-attempt scheduled mints; Ink paste fix
 
 - **Branch:** `main` · **Start:** `2aa05c2` · **End:** `13fce24` + this commit
