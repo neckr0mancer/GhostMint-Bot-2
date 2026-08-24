@@ -43,10 +43,6 @@ const { DEFAULT_LEAD_MS, createScheduledReminder } = require('./scheduler/schedu
 const { createSchedulerWorker, STAGE_REARM_WINDOW_MS } = require('./scheduler/schedulerWorker');
 const { classifySeaDropWindow, preArmRearm } = require('./scheduler/scheduledValidity');
 const { resolveTaskChain } = require('./scheduler/taskChain');
-const { createLaunchRepository } = require('./launch/launchRepository');
-const { createLaunchStager } = require('./launch/stager');
-const { createLauncher } = require('./launch/launcher');
-const { createLaunchTriggers } = require('./launch/triggers');
 const { createBumpSweeper } = require('./transactions/bumper');
 const { createSocialAdapters } = require('./social/adapters');
 const { createSocialWatchRepository } = require('./social/socialWatchRepository');
@@ -979,49 +975,8 @@ function tg(chatId, msg, options = {}) {
   return Promise.resolve();
 }
 
-// ── Launch squads (src/launch) ────────────────────────────
-// Coordinated multi-wallet mints: staging verifies everything that can go stale-checks-free before
-// a fire moment; firing fans ordinary executePrepared sends out in waves. The launcher composes the
-// same primitives as every other execution surface -- no new transaction path, just orchestration.
-const launchRepository = createLaunchRepository(pool);
-// Event triggers ride the sniper-class WebSocket lane per chain -- the low-latency endpoint this
-// deployment already maintains for exactly this class of time-critical watching.
-const launchTriggers = createLaunchTriggers({
-  wsUrlFor: chain => SNIPER_CHAINS[chain]?.rpcWsUrl || CHAINS[chain]?.rpcWsUrl || null,
-  log,
-});
-const launcher = createLauncher({
-  repository: launchRepository,
-  triggers: launchTriggers,
-  // server.js binds this service under its full name -- there is no bare `intentRepository` here.
-  intentRepository: transactionIntentRepository,
-  stager: createLaunchStager({
-    checkAccountStatus: userId => governance.checkAccountStatus(userId),
-    findWallet: (userId, label) => DB.wallets.find(item => item.userId === userId && item.label === label),
-    seaDropDiscoveryService,
-    seaDropPublicDropResolver,
-    providerService,
-    log,
-  }),
-  mintExecution,
-  mintService,
-  transactionEngine,
-  findWallet: (userId, label) => DB.wallets.find(item => item.userId === userId && item.label === label),
-  notify: event => {
-    if (event.type === 'launch.starting') {
-      const sendable = event.squad.members.filter(member => member.status !== 'skipped').length;
-      return notifyUser(event.squad.userId, `🚀 Launching <b>${escapeTelegramHtml(event.squad.name)}</b>: ${sendable} wallets going out now.`);
-    }
-    if (event.type === 'launch.done' && event.report) {
-      const c = event.report.counts;
-      return notifyUser(event.squad.userId, `🏁 Launch <b>${escapeTelegramHtml(event.squad.name)}</b> finished: ` +
-        `${c.confirmed || 0} confirmed, ${c.reverted || 0} reverted, ${c.failed || 0} failed, ${c.skipped || 0} skipped.`);
-    }
-  },
-  log,
-});
-
-// Bump ladder: a pending broadcast stuck past TX_BUMP_AFTER_MS gets re-bid same-nonce at
+// ── Bump ladder ───────────────────────────────────────────
+// A pending broadcast stuck past TX_BUMP_AFTER_MS gets re-bid same-nonce at
 // +incrementPct (floored by the live fee), raced across the fast pool, at most maxAttempts times.
 // Same-nonce replacement is safe under uncertainty -- if the original mined, the re-bid is simply
 // rejected -- so this runs without needing to know why a transaction is stuck. Scoped to launch +
@@ -2631,22 +2586,6 @@ if (BOT_TOKEN) {
     const data = query.data || '';
     const ownerFlag = async () => governanceRepository.isOwner(userId);
 
-    if (data.startsWith('aco:fire:') || data.startsWith('aco:abort:')) {
-      if (await gateBlocks({ chatId, messageId, userId, action: 'mint' })) return;
-      const [, action, id] = data.split(':');
-      const squad = await launchRepository.getSquad(userId, id);
-      if (!squad) return tgEditMenu(chatId, messageId, { text: 'Launch squad not found.' });
-      if (action === 'abort') {
-        if (!['staged', 'armed'].includes(squad.status)) return tgEditMenu(chatId, messageId, { text: `Squad is already ${squad.status} -- too late to abort.` });
-        try { await launcher.cancel(squad); }
-        catch (error) { return tgEditMenu(chatId, messageId, { text: escapeTelegramHtml(String(error.message || error)) }); }
-        return tgEditMenu(chatId, messageId, { text: `🛑 Launch squad "${escapeTelegramHtml(squad.name)}" aborted. Nothing was sent.` });
-      }
-      if (!['staged', 'armed'].includes(squad.status)) return tgEditMenu(chatId, messageId, { text: `Squad is ${squad.status} -- cannot fire.` });
-      void launcher.fire(squad).catch(error => log(`Launch fire error: ${error.message}`));
-      const sendable = squad.members.filter(member => member.status !== 'skipped').length;
-      return tgEditMenu(chatId, messageId, { text: `🚀 Firing "${escapeTelegramHtml(squad.name)}": ${sendable} wallets going out...` });
-    }
     if (data === 'menu:main') return tgEditMenu(chatId, messageId, telegramMenus.mainMenu({ isOwner: await ownerFlag(), security: await securityFlags(userId) }));
     if (data === 'menu:security') {
       return tgEditMenu(chatId, messageId, telegramMenus.securitySetupCard(await securityFlags(userId)));
@@ -3357,98 +3296,6 @@ send /mint with a contract address to get going.`;
       replyMarkup: telegramMenus.keyboard([[telegramMenus.button('⬅️ Back to base', 'menu:main')]]), parseMode: 'HTML' });
   }));
 
-  // Launch squads -- coordinated multi-wallet mints (src/launch). Power syntax first; a guided
-  // picker flow mirroring /batchmint's wallet multiselect is the D2 polish item.
-  bot.onText(/^\/aco(?:@\w+)?$/, withTelegramUser(async msg => {
-    tgRender(msg.chat.id, { text: [
-      '<b>Launch squads</b> — one mint, many wallets, fired together.',
-      '',
-      'Power syntax:',
-      '<code>/aco &lt;contract&gt; &lt;qty&gt; &lt;wallet1,wallet2,...&gt;</code>',
-      '',
-      'Staging verifies every wallet (balance, gas headroom) and resolves the mint price up front;',
-      'skipped wallets are reported instead of failing the launch. Then FIRE NOW -- or schedule it',
-      'and the squad fires itself at that moment.',
-    ].join('\n'), replyMarkup: telegramMenus.keyboard([[telegramMenus.button('⬅️ Back to base', 'menu:main')]]), parseMode: 'HTML' });
-  }));
-  bot.onText(/^\/aco(?:@\w+)?\s+(\S+)\s+(\d+)\s+(.+)$/, withTelegramUser(async (msg, match, userId) => {
-    commandRateLimiter.check('telegram', userId, 'aco');
-    const [, contractAddressRaw, qtyRaw, labelsRaw] = match;
-    const quantity = Math.max(1, parseInt(qtyRaw, 10) || 1);
-    const wallets = [...new Set(labelsRaw.split(',').map(item => item.trim()).filter(Boolean))];
-    if (!wallets.length) return tg(msg.chat.id, 'No wallets given -- comma-separate labels: <code>/aco 0x.. 1 main,alt1</code>', { parseMode: 'HTML' });
-    try {
-      const detected = await botCommands.detectMintContract(userId, { contractAddress: contractAddressRaw, quantity });
-      const chain = detected.chain;
-      if (!chain) return tg(msg.chat.id, `Couldn't resolve a supported chain for ${escapeTelegramHtml(contractAddressRaw)}.`, { parseMode: 'HTML' });
-      const squad = await launcher.createAndStage({ userId, chain,
-        contractAddress: detected.contractAddress || contractAddressRaw, quantity, wallets, triggerType: 'manual' });
-      const staged = squad.members.filter(member => member.status === 'staged').length;
-      const skipped = squad.members.length - staged;
-      const priceLine = squad.priceWei === null ? 'unknown' : `${(Number(squad.priceWei) / 1e18).toFixed(6)} each`;
-      return tgRender(msg.chat.id, { text: [
-        `<b>Launch squad ready</b> — ${escapeTelegramHtml(squad.name)}`,
-        `Chain: <code>${escapeTelegramHtml(chain)}</code> · Qty ${quantity} · Price: ${priceLine}`,
-        `Wallets staged: <b>${staged}</b>${skipped ? ` · skipped: ${skipped} (see report)` : ''}`,
-        '',
-        'FIRE NOW sends every wave immediately.',
-      ].join('\n'), replyMarkup: telegramMenus.keyboard([[
-        telegramMenus.button('🚀 FIRE NOW', `aco:fire:${squad.id}`),
-        telegramMenus.button('❌ Abort', `aco:abort:${squad.id}`),
-      ]]), parseMode: 'HTML' });
-    } catch (error) {
-      if (error instanceof ValidationError) return tg(msg.chat.id, escapeTelegramHtml(validationReply(error)), { parseMode: 'HTML' });
-      log(`ACO staging failed: ${safeError(error)}`);
-      return tg(msg.chat.id, `❌ Staging failed: ${escapeTelegramHtml(String(error.message || error).slice(0, 200))}`, { parseMode: 'HTML' });
-    }
-  }));
-
-  // Attach an event trigger to a staged squad: fire at a block height, or on the first pending tx
-  // touching the mint contract. `manual` clears a trigger back to button-fired.
-  bot.onText(/^\/acotarget(?:@\w+)?\s+([0-9a-fA-F-]{36})\s+(block|pending|manual)(?:\s+(\d+))?$/i, withTelegramUser(async (msg, match, userId) => {
-    commandRateLimiter.check('telegram', userId, 'aco');
-    const [, id, kindRaw, blockRaw] = match;
-    const kind = kindRaw.toLowerCase();
-    try {
-      const squad = await launchRepository.getSquad(userId, id);
-      if (!squad) return tg(msg.chat.id, 'Launch squad not found.', { parseMode: 'HTML' });
-      const fresh = await launcher.setTarget(squad, kind, blockRaw ? Number(blockRaw) : null);
-      const line = fresh.triggerType === 'block' ? `🎯 Will fire at block <b>${fresh.targetBlock}</b>`
-        : fresh.triggerType === 'pending' ? '🎯 Will fire on the first pending transaction to the contract'
-        : 'Manual -- use the FIRE NOW button.';
-      return tgRender(msg.chat.id, { text: `<b>${escapeTelegramHtml(fresh.name)}</b>\n${line}`, parseMode: 'HTML',
-        replyMarkup: telegramMenus.keyboard([[telegramMenus.button('❌ Abort', `aco:abort:${fresh.id}`)]] ) });
-    } catch (error) {
-      return tg(msg.chat.id, `❌ ${escapeTelegramHtml(String(error.message || error).slice(0, 200))}`, { parseMode: 'HTML' });
-    }
-  }));
-
-  // Live launch status: per-wallet states while a burst runs or after it settles.
-  bot.onText(/^\/acostatus(?:@\w+)?\s+([0-9a-fA-F-]{36})$/i, withTelegramUser(async (msg, match, userId) => {
-    commandRateLimiter.check('telegram', userId, 'aco');
-    const squad = await launchRepository.getSquad(userId, match[1]);
-    if (!squad) return tg(msg.chat.id, 'Launch squad not found.', { parseMode: 'HTML' });
-    const icon = { staged: '⏳', skipped: '⏭', sent: '📡', confirmed: '✅', reverted: '❌', failed: '⚠️', pending: '·' };
-    const counts = {};
-    for (const member of squad.members) counts[member.status] = (counts[member.status] || 0) + 1;
-    const countLine = Object.entries(counts).map(([status, n]) => `${icon[status] || '·'} ${n}`).join('  ');
-    const rows = squad.members.slice(0, 25).map(member =>
-      `${icon[member.status] || '·'} ${escapeTelegramHtml(member.walletLabel)} — ${member.status}` +
-      (member.txHash ? ` — <code>${escapeTelegramHtml(String(member.txHash).slice(0, 18))}…</code>` : '') +
-      (member.error ? ` (${escapeTelegramHtml(String(member.error).slice(0, 80))})` : ''));
-    const more = squad.members.length > 25 ? `\n…and ${squad.members.length - 25} more` : '';
-    const actionable = ['staged', 'armed'].includes(squad.status);
-    return tgRender(msg.chat.id, { text: [
-      `<b>${escapeTelegramHtml(squad.name)}</b> [${escapeTelegramHtml(squad.status)}]`,
-      `${countLine}`,
-      '',
-      ...rows, more,
-    ].join('\n'), parseMode: 'HTML', replyMarkup: actionable ? telegramMenus.keyboard([[
-      telegramMenus.button('🚀 FIRE NOW', `aco:fire:${squad.id}`),
-      telegramMenus.button('❌ Abort', `aco:abort:${squad.id}`),
-    ]] ) : undefined });
-  }));
-
   bot.onText(/^\/link(?:@\w+)?$/, withTelegramUser(async (msg, match, userId) => {
     const link = await identity.createLinkCode(userId);
     tgRender(msg.chat.id, { text: `🔗 <b>Account link code</b>\n\n<pre>${link.code}</pre>\nTap or long-press the code above to copy it. Expires in 5 minutes and can be used once.`, parseMode: 'HTML' });
@@ -3893,8 +3740,7 @@ if (CONFIG.discordBotToken) {
     isOwner: userId => governanceRepository.isOwner(userId),
     checkAccountStatus: userId => governance.checkAccountStatus(userId),
     supportedChains: CONFIG.supportedChains, chains: CHAINS, actionGate,
-    securityStatus: userId => securityFlags(userId),
-    launcher, launchRepository });
+    securityStatus: userId => securityFlags(userId) });
   // Live push: skip the 30s social-watch poll for discord_channel rules by reacting
   // to the Gateway's messageCreate event directly. The scheduled poller keeps running
   // as a fallback, so a dropped Gateway connection never stops detection, just slows it.
@@ -3964,7 +3810,6 @@ async function start() {
     }
   }
   schedulerWorker.start();
-  launcher.start();
   bumpSweeper.start();
   setInterval(()=>{scheduledReminder.sweep().catch(error=>log(`Scheduled-reminder sweep error: ${safeError(error)}`));},SCHEDULE_REMINDER_SWEEP_MS).unref?.();
   setInterval(()=>{expiredHistorySweep().catch(error=>log(`Expired-history sweep error: ${safeError(error)}`));},SCHEDULE_REMINDER_SWEEP_MS).unref?.();
@@ -3974,7 +3819,6 @@ async function start() {
   retentionWorker.start();
   log('Started social watch-rule worker');
   log('Started governance-group retention worker');
-  log('Started launch-squads timer worker');
   log(`Started durable scheduler with ${await schedulerRepository.countActive()} active tasks`);
   DB.snipers.filter(s => s.active).forEach(s => ensureChainWatcher(s.chain));
   log(`Restored ${DB.snipers.filter(s=>s.active).length} active snipers`);
