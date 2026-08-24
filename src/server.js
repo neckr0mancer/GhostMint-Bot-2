@@ -2164,9 +2164,10 @@ async function handleFlowTextMessage(msg) {
       // Don't treat wallet addresses as contracts — pasting a wallet address (e.g. from a
       // block explorer) should not trigger the mint info card. Check both the user's own wallets
       // and whether the address has code on any supported chain.
+      // NOTE: botCommands.wallets() is SYNCHRONOUS — no .catch on it (would throw and skip the check).
       if (ethers.isAddress(trimmed)) {
         try {
-          const wallets = await botCommands.wallets(userId).catch(() => []);
+          const wallets = botCommands.wallets(userId);
           if (Array.isArray(wallets) && wallets.some(w => String(w.address || '').toLowerCase() === String(trimmed).toLowerCase())) return;
           if (/^0x[0-9a-fA-F]{40}$/.test(trimmed)) {
             const isContract = await botCommands.isContractAddress(trimmed).catch(() => true);

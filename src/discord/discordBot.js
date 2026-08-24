@@ -2048,8 +2048,11 @@ async function handleMintPasteMessage({ identity, commands, flowState, chains, r
     // Don't treat wallet addresses as contracts — pasting a wallet address (e.g. from a
     // block explorer) should not trigger the mint info card. Check both the user's own wallets
     // and whether the address has code on any supported chain (EOAs have no code).
+    // NOTE: commands.wallets() is SYNCHRONOUS (returns an array) — .catch() on it throws and
+    // would silently skip this whole check, so no .catch on that call; the surrounding try
+    // covers genuine throw paths only.
     try {
-      const wallets = await commands.wallets(userId).catch(() => []);
+      const wallets = commands.wallets(userId);
       if (Array.isArray(wallets) && wallets.some(w => String(w.address || '').toLowerCase() === String(target).toLowerCase())) return;
       if (/^0x[0-9a-fA-F]{40}$/.test(target)) {
         const isContract = await commands.isContractAddress(target).catch(() => true);
