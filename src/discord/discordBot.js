@@ -2016,6 +2016,7 @@ async function handleMintPasteMessage({ identity, commands, flowState, chains, r
   // also means there was nothing to look at in Railway's logs when this got reported. These lines
   // change that without changing behavior: every one is on a path that already did nothing before.
   const where = `guild=${message.guildId || 'dm'} channel=${message.channelId || 'unknown'}`;
+  let target = null;
   try {
     if (!message.author || message.author.bot) return;
     // Per-LINE matching: users routinely paste several entities at once -- an address twice and an
@@ -2030,7 +2031,6 @@ async function handleMintPasteMessage({ identity, commands, flowState, chains, r
       // nothing. Strip them everywhere, decorations at the edges.
       .replace(/[\u200B-\u200F\u2060\uFEFF]/g, '')
       .split(/\r?\n/).map(line => line.trim()).filter(Boolean);
-    let target = null;
     for (const line of lines) {
       const cleaned = line.replace(/^[<`*~\s]+/, '').replace(/[>`*~\s]+$/, '');
       if (/^0x[0-9a-fA-F]{40}$/.test(cleaned) || commands.parseOpenSeaCollectionSlug(cleaned)) { target = cleaned; break; }
