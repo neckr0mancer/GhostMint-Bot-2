@@ -2123,7 +2123,13 @@ async function handleFlowTextMessage(msg) {
     const trimmed = msg.text.trim();
     if (ethers.isAddress(trimmed) || botCommands.parseOpenSeaCollectionSlug(trimmed)) {
       if (flow) telegramFlowState.clear('telegram', chatId);
-      await startMintFlow({ chatId, messageId: null, userId, multi: false, contractAddressInput: trimmed });
+      try {
+        await startMintFlow({ chatId, messageId: null, userId, multi: false, contractAddressInput: trimmed });
+      } catch (error) {
+        if (error instanceof ValidationError) return;
+        log(`Paste-detect: startMintFlow failed for ${trimmed}: ${safeError(error)}`);
+        await tgRender(chatId, { text: 'Could not fetch info for this contract right now. Try again or use /info &lt;contract&gt; for a read-only lookup.', replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' });
+      }
       return;
     }
     if (!flow) return;

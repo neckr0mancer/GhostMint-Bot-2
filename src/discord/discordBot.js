@@ -2048,7 +2048,12 @@ async function handleMintPasteMessage({ identity, commands, flowState, chains, r
     await startMintGuidedFlow({ commands, flowState, chains, rateLimiter },
       payload => message.reply(payload).catch(error => log(`Paste-detect: reply failed (${where}): ${error?.message || error}`)),
       platformUserId, userId, target);
-  } catch (error) { log(`Paste-detect: dropped before reply (${where}): ${error?.message || error}`); }
+  } catch (error) {
+    log(`Paste-detect: dropped before reply (${where}): ${error?.message || error}`);
+    if (target) {
+      await message.reply({ content: 'Could not fetch info for this contract right now. Try again or use `/info <contract>` for a read-only lookup.', allowedMentions: { repliedUser: false } }).catch(() => {});
+    }
+  }
 }
 
 // Global registration does not replace commands previously registered to a guild -- Discord keeps
