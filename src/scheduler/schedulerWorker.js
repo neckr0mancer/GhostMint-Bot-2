@@ -180,7 +180,7 @@ function createSchedulerWorker({ repository, intentRepository, transactionEngine
   }
 
   async function tick() {
-    if (inFlightCount >= maxConcurrentTasks) return false;
+    if (inFlightCount >= maxConcurrentTasks) return 'throttled';
     inFlightCount += 1;
     lastTickAt=now();
     try {
@@ -212,15 +212,21 @@ function createSchedulerWorker({ repository, intentRepository, transactionEngine
     const tasks = await repository.listImminent({ now: now(), withinMs });
     for (const task of tasks) {
       if (!prearmActive || task.nextAttemptAt - now() <= preciseArmWindowMs) {
-        if (!armedTimers.has(task.id)) {
-          const delay = Math.max(0, task.nextAttemptAt - now());
-          const handle = setTimeout(() => {
-            armedTimers.delete(task.id);
-            tick().catch(error => log(`Scheduler precise-fire failed: ${sanitizeError(error)}`));
-          }, delay);
-          handle.unref?.();
-          armedTimers.set(task.id, handle);
+        const existing = armedTimers.get(task.id);
+        if (existing) {
+          if (existing.nextAttemptAt === task.nextAttemptAt) continue;
+          clearTimeout(existing.handle);
         }
+        const delay = Math.max(0, task.nextAttemptAt - now());
+        const handle = setTimeout(() => {
+          armedTimers.delete(task.id);
+          const attempt = () => tick().then(result => {
+            if (result === 'throttled') setTimeout(attempt, 50);
+          }).catch(error => log(`Scheduler precise-fire failed: ${sanitizeError(error)}`));
+          attempt();
+        }, delay);
+        handle.unref?.();
+        armedTimers.set(task.id, { handle, nextAttemptAt: task.nextAttemptAt });
       }
       if (prearmActive) {
         const key = `${task.userId}:${task.id}`;
@@ -250,7 +256,7 @@ function createSchedulerWorker({ repository, intentRepository, transactionEngine
   function stop() {
     if (timer) clearInterval(timer);
     timer = null;
-    for (const handle of armedTimers.values()) clearTimeout(handle);
+    for (const entry of armedTimers.values()) clearTimeout(entry.handle ?? entry);
     armedTimers.clear();
     for (const entry of prearmTimers.values()) clearTimeout(entry.handle);
     prearmTimers.clear();
