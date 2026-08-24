@@ -357,6 +357,7 @@ const schedulerWorker = createSchedulerWorker({
   transactionEngine,
   prearmLeadMs: CONFIG.schedulePrearmLeadMs,
   prearm: task => prearmScheduledTask(task),
+  onStageNotOpen: chain => ensureChainWatcher(chain),
   // Answers "when does this task's stage actually open?" after the stage-not-open retry burst is
   // spent, so the worker can re-arm once instead of discarding a task that exists precisely to be
   // there at the open. Read live from OpenSea rather than from the time stored when the task was
@@ -461,9 +462,15 @@ const schedulerWorker = createSchedulerWorker({
       livePublicDrop = await seaDropPublicDropResolver.getPublicDrop(executionChain, seaDrop.address, task.contract);
       if (livePublicDrop) {
         const nowSec = Math.floor(Date.now() / 1000);
-        if (nowSec < livePublicDrop.startTime || (livePublicDrop.endTime && nowSec > livePublicDrop.endTime)) {
+        if (nowSec < livePublicDrop.startTime) {
+          // Early: the contract is not yet open, but may open seconds later (the advertised T
+          // vs real T+2s competitive case). Treat as transient like an OpenSea STAGE_NOT_OPEN
+          // so the scheduler retries every block instead of failing permanently.
+          throw new ValidationError({ field: 'mintTime', message: `This mint has not opened yet (opens ${new Date(livePublicDrop.startTime * 1000).toISOString()}).`, code: 'STAGE_NOT_OPEN' });
+        }
+        if (livePublicDrop.endTime && nowSec > livePublicDrop.endTime) {
           const from = new Date(livePublicDrop.startTime * 1000).toISOString();
-          const to = livePublicDrop.endTime ? new Date(livePublicDrop.endTime * 1000).toISOString() : 'no end set';
+          const to = new Date(livePublicDrop.endTime * 1000).toISOString();
           throw new TransactionSafetyError('SCHEDULE_DRIFT',
             `This drop's live mint window no longer matches what you scheduled -- it currently runs ${from} to ${to}, which does not include right now. The project likely changed their schedule; check the contract and reschedule if needed.`);
         }
@@ -857,13 +864,20 @@ const activeSnipersForChain = chain => DB.snipers.filter(s => s.active && s.chai
 // scheduled broadcast. With no {ENVNAME}_RPC_SNIPER_URLS/_WS configured, SNIPER_CHAINS[chain] is a
 // literal alias for CHAINS[chain] (see config/index.js), so this is a no-op change until configured.
 function ensureChainWatcher(chain) {
-  if (chainWatchers[chain] || !SNIPER_CHAINS[chain]) return;
+  if (chainWatchers[chain]) return;
+  // Scheduled mints waiting for a stage to open also need block push, even if no sniper
+  // is active on that chain. Prefer SNIPER_CHAINS' dedicated WS pool when available, fall back
+  // to the chain's general WS.
+  const sniperChain = SNIPER_CHAINS[chain];
+  const generalChain = CHAINS[chain];
+  if (!sniperChain && !generalChain?.rpcWsUrl) return;
+  const chainConfig = sniperChain || generalChain;
   const watcher = createChainWatcher({
-    chain, rpcUrls: SNIPER_CHAINS[chain].rpcUrls, wsUrl: SNIPER_CHAINS[chain].rpcWsUrl,
+    chain, rpcUrls: chainConfig.rpcUrls, wsUrl: chainConfig.rpcWsUrl,
     providerFactory: url => new ethers.JsonRpcProvider(url),
     wsProviderFactory: url => {
       const socket = new WebSocket(url);
-      const provider = new ethers.WebSocketProvider(socket, SNIPER_CHAINS[chain].chainId);
+      const provider = new ethers.WebSocketProvider(socket, chainConfig.chainId);
       socket.on('close', () => provider.emit('error', new Error('WebSocket closed')));
       socket.on('error', error => provider.emit('error', error));
       return provider;
@@ -878,6 +892,7 @@ function ensureChainWatcher(chain) {
 
 function teardownChainWatcherIfIdle(chain) {
   if (activeSnipersForChain(chain).length) return;
+  if (schedulerWorker.hasBlockWaiters?.(chain)) return;
   const watcher = chainWatchers[chain];
   if (!watcher) return;
   watcher.stop();
@@ -886,6 +901,10 @@ function teardownChainWatcherIfIdle(chain) {
 }
 
 async function onBlock(chain, blockNumber, provider) {
+  // Scheduled mints waiting for a stage to open also retry on every new block, not just on
+  // the 250ms timer. This reuses the same sniper block push so scheduled gets instant
+  // notification without polling. The timer remains as fallback for chains without WS.
+  if (schedulerWorker.handleBlock) schedulerWorker.handleBlock(chain);
   const snipers = activeSnipersForChain(chain);
   if (!snipers.length) return;
   const block = await provider.getBlock(blockNumber, true);

@@ -516,19 +516,29 @@ test('a dedicated fastProviderService (Round 15) is used for scheduled/Degen pre
       async call() { return '0x'; },
       async getTransactionCount() { return 0; },
       async getNetwork() { return { chainId: 1n }; },
+      async broadcastTransaction(raw) {
+        // For scheduled broadcast race, reuse the same tracking as the general provider's broadcast
+        // would have, but via the fast path. The test's `calls` object is not visible here, so we
+        // just ensure the operation succeeds and push the name for the assertion.
+        return { hash: `0x${'cc'.repeat(32)}` };
+      },
     };
-    const fastProviderService = { expectedChainId: () => 1, perform: (chain, name, operation) => { fastCalls.push(name); return operation(fastProvider); } };
+    const fastProviderService = {
+      expectedChainId: () => 1,
+      perform: (chain, name, operation) => { fastCalls.push(name); return operation(fastProvider); },
+      performAll: (chain, name, operation) => { fastCalls.push(name); return operation(fastProvider); },
+    };
     return { fastCalls, fastProviderService };
   }
 
-  await t.test('a scheduled mint routes its reads through the fast service, but still broadcasts via the general one', async () => {
+  await t.test('a scheduled mint routes its reads and broadcast through the fast service race', async () => {
     const { fastCalls, fastProviderService } = fastServiceFixture();
     const { calls, engine, request } = fixture({ fastProviderService });
     await engine.submit({ ...request, triggerSource: 'scheduled' });
     assert.ok(fastCalls.includes('getFeeData'), 'fee data should come from the fast service');
     assert.ok(fastCalls.includes('getBalance'), 'balance check should come from the fast service');
-    assert.equal(calls.broadcasts.length, 1, 'the general service must still be the one that actually broadcasts');
-    assert.ok(!fastCalls.includes('broadcastTransaction'), 'the fast service must never be asked to broadcast');
+    assert.ok(fastCalls.includes('broadcastTransaction'), 'broadcast should race via the fast service');
+    assert.equal(calls.broadcasts.length, 0, 'the general service should not broadcast when the fast race is used');
   });
 
   await t.test('a manual mint never touches the fast service, even when one is configured', async () => {

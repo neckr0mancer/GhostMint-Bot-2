@@ -7,10 +7,12 @@ const { TransactionSafetyError } = require('../transactions/transactionEngine');
 // its advertised second -- the identical request then succeeds. Bounded tightly below so the
 // already-over case still fails fast instead of retrying into a window that will never reopen.
 const STAGE_NOT_OPEN = 'STAGE_NOT_OPEN';
-// One second apart, five retries after the first attempt. Waiting on an external system to cross a
-// known moment, not on congestion to clear, so backing off exponentially would only widen the miss.
-const STAGE_NOT_OPEN_RETRY_MS = 1_000;
-const STAGE_NOT_OPEN_MAX_ATTEMPTS = 6;
+// Tight retry for stage-not-open: the contract may flip valid at the next block (400ms-2.5s).
+// Backing off would only widen the miss, so we retry quickly and also on every new block via
+// the chain watcher (see block-driven recheck below). Five retries plus one re-arm covers the
+// T vs T+5s competitive case with margin.
+const STAGE_NOT_OPEN_RETRY_MS = 250;
+const STAGE_NOT_OPEN_MAX_ATTEMPTS = 8;
 // Once that burst is spent, the schedule is consulted once more: a stage whose real opening moved
 // (or was recorded wrongly when the task was created) is worth re-arming to rather than discarding,
 // since the task exists precisely to be there at the open. Exactly ONE re-arm, and only to a time
@@ -49,6 +51,9 @@ function isTransientFailure(error) {
 function createSchedulerWorker({ repository, intentRepository, transactionEngine, executeTask,
   workerId = randomUUID(), now = () => Date.now(), leaseMs = 120_000,
   pollIntervalMs = 1_000, retryBaseMs = 5_000, notify, log = () => {}, sanitizeError = errorReason,
+  // Called when a task enters STAGE_NOT_OPEN retry so the caller can ensure a block watcher
+  // for that chain is running even if no sniper is active there.
+  onStageNotOpen = null,
   // Optional: given a task whose stage would not open, returns the stage's real opening time in
   // epoch ms, or null when it cannot be resolved. Injected rather than imported so this worker
   // keeps knowing nothing about OpenSea; server.js supplies the lookup.
@@ -165,6 +170,10 @@ function createSchedulerWorker({ repository, intentRepository, transactionEngine
       // spent in three seconds and leave nothing for a genuine RPC failure later in the same task.
       const stageWait = transient && error?.code === STAGE_NOT_OPEN;
       const plan = stageWait ? await stageWaitPlan(task) : null;
+      if (stageWait && task.chain) {
+        blockRetryChains.add(task.chain);
+        try { await Promise.resolve(onStageNotOpen?.(task.chain)).catch(() => {}); } catch {}
+      }
       const budgeted = plan ? { ...task, maxAttempts: plan.maxAttempts } : task;
       const outcome = await repository.fail(budgeted, { reason: sanitizeError(error).slice(0, 500), transient,
         retryAt: transient ? (plan ? plan.retryAt : retryAt(task.attemptCount)) : null });
@@ -262,8 +271,20 @@ function createSchedulerWorker({ repository, intentRepository, transactionEngine
     prearmTimers.clear();
   }
 
+  // Block-driven retry for STAGE_NOT_OPEN: when a scheduled mint fails because the contract
+  // is not yet open, also retry on the next block (via chainWatcher) instead of only on the
+  // 250ms timer. This reuses the same sniper block push so scheduled mints get instant
+  // notification without polling. The timer remains as fallback for chains without WS.
+  const blockRetryChains = new Set();
+  function handleBlock(chain) {
+    if (!blockRetryChains.has(chain)) return;
+    blockRetryChains.delete(chain);
+    tick().catch(error => log(`Scheduler block retry failed: ${sanitizeError(error)}`));
+  }
+
+  function hasBlockWaiters(chain) { return blockRetryChains.has(chain); }
   function health(){return {status:timer&&(!lastError||lastSuccessAt>=lastTickAt)?'up':'down',running:Boolean(timer),active:inFlightCount>0,inFlightCount,armedCount:armedTimers.size,prearmedCount:prearmTimers.size,lastTickAt,lastSuccessAt,lastError};}
-  return { armPreciseTimers, health,processTask, recoverStaleClaims, start, stop, tick, workerId };
+  return { armPreciseTimers, handleBlock, hasBlockWaiters, health,processTask, recoverStaleClaims, start, stop, tick, workerId };
 }
 
 module.exports = { STAGE_NOT_OPEN, STAGE_NOT_OPEN_MAX_ATTEMPTS, STAGE_NOT_OPEN_RETRY_MS,
