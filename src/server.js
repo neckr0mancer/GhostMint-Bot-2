@@ -40,7 +40,7 @@ const watchRuleFlowDecision = require('./social/watchRuleFlowDecision');
 const sniperFlowDecision = require('./sniper/sniperFlowDecision');
 const { createSchedulerRepository } = require('./scheduler/schedulerRepository');
 const { DEFAULT_LEAD_MS, createScheduledReminder } = require('./scheduler/scheduledReminder');
-const { createSchedulerWorker, STAGE_REARM_WINDOW_MS } = require('./scheduler/schedulerWorker');
+const { createSchedulerWorker, STAGE_REARM_WINDOW_MS, errorReason } = require('./scheduler/schedulerWorker');
 const { classifySeaDropWindow, preArmRearm } = require('./scheduler/scheduledValidity');
 const { resolveTaskChain } = require('./scheduler/taskChain');
 const { createBumpSweeper } = require('./transactions/bumper');
@@ -555,7 +555,9 @@ const schedulerWorker = createSchedulerWorker({
       // upstream reasoning above is the one kept, because it is the more accurate of the two --
       // the dashboard branch assumed event.error was always present and would have reported
       // "no reason recorded" for every reverted transaction.
-      const detail = event.error?.message || '';
+      // Same fold as the stored last_error above: event.error.message alone is the constant
+      // "Request validation failed" for every ValidationError -- the issues carry the real cause.
+      const detail = event.error ? sanitizeError(event.error) : '';
       const reason = detail ? `
 ${escapeTelegramHtml(detail)}` : '';
       if (wallet) await logActivity(event.task.userId, 'fail', `Scheduled mint failed: ${event.task.name}`,
@@ -580,7 +582,12 @@ ${escapeTelegramHtml(detail)}` : '';
     }
   },
   log,
-  sanitizeError:safeError,
+  // errorReason folds ValidationError's issues (the real cause -- OpenSea's own eligibility
+  // answer, a missing wallet, an unsupported chain) into what otherwise surfaces as the constant
+  // "Request validation failed"; safeError then redacts secrets. The fold is the whole point --
+  // wiring plain safeError here is why every failed schedule used to store the same opaque
+  // sentence and a live "scheduled mints always fail" report was undiagnosable from last_error.
+  sanitizeError: error => safeError(errorReason(error)),
 });
 
 // ── Scheduled-mint reminder and low-balance pre-flight ────
