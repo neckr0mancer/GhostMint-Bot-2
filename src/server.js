@@ -380,20 +380,28 @@ const schedulerWorker = createSchedulerWorker({
   onStageNotOpen: chain => ensureChainWatcher(chain),
   // Answers "when does this task's stage actually open?" after the stage-not-open retry burst is
   // spent, so the worker can re-arm once instead of discarding a task that exists precisely to be
-  // there at the open. Read live from OpenSea rather than from the time stored when the task was
-  // created -- a stored time that was wrong, or has since moved, is the whole case worth recovering.
-  // Matched on the stage label, which is what openSeaPhaseTaskData named the task after.
+  // there at the open. Read live rather than from the time stored when the task was created -- a
+  // stored time that was wrong, or has since moved, is the whole case worth recovering.
+  // viaOpenSea tasks: matched on the stage label, which is what openSeaPhaseTaskData named the
+  // task after. On-chain SeaDrop tasks: the same getPublicDrop read the drift preflight uses --
+  // the contract itself is the authority on when it really opens (the T vs T+5s competitive case).
   resolveStageStart: async task => {
-    if (!task.viaOpenSea) return null;
     const wallet = DB.wallets.find(item => item.userId === task.userId && item.label === task.walletLabel);
     if (!wallet) return null;
-    // Read-only reminder lookup: a stored chain this deployment no longer supports just falls
+    // Read-only lookup: a stored chain this deployment no longer supports just falls
     // back to the wallet home here. The worst case is reading the wrong network's drop times;
     // this path never spends anything -- executeTask is where that case fails closed.
     const resolved = resolveTaskChain(task, CONFIG.supportedChains);
-    const drop = await openSeaService.getDrop(resolved.chain || wallet.chain, task.contract);
-    const stage = drop?.stages?.find(item => item.label === task.name);
-    return stage?.startTime ? stage.startTime * 1_000 : null;
+    const chain = resolved.chain || wallet.chain;
+    if (task.viaOpenSea) {
+      const drop = await openSeaService.getDrop(chain, task.contract);
+      const stage = drop?.stages?.find(item => item.label === task.name);
+      return stage?.startTime ? stage.startTime * 1_000 : null;
+    }
+    const seaDrop = await seaDropDiscoveryService.resolve(chain, task.contract);
+    if (!seaDrop.address) return null;
+    const live = await seaDropPublicDropResolver.getPublicDrop(chain, seaDrop.address, task.contract);
+    return live?.startTime ? live.startTime * 1_000 : null;
   },
   executeTask: async (task, hooks) => {
     // Scheduled tasks are created while the owning account is in good standing, but the account can
