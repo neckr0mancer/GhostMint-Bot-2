@@ -12,6 +12,7 @@
 | BASE-002 | `Transaction timing` logs exist (prep/sign/broadcast/total) but are not aggregated per chain | READY | `transactionEngine.js:496` emits `event:'timing'`; `server.js:240` logs only. Add rolling per-chain averages to prove latency wins |
 | BASE-003 | `performAll` does not report which RPC URL won the race | READY | `providerService.js:73-104` discards candidate identity; needed to tune `*_FAST_URLS` ordering |
 | BASE-004 | `reconcileNonFinal` counts failed reconciliations as successes in boot log | READY | `transactionEngine.js:514-531` pushes stale intent on catch; boot log "Reconciled N" is ambiguous |
+| BASE-005 | Integration-fixture rows pollute the shared DB (1701 tasks + 30 wallets as of 2026-08-24) | FIXED (script shipped; `--yes` run is an owner action) | `9f17ede` — `scripts/clear-test-fixtures.js` / `node --run clear:test-fixtures`; dry-run default, deletes only fake `0x0000…` contract rows + truly-empty users |
 
 ## Phase 2 — Security and data integrity
 
@@ -116,7 +117,7 @@
 | ID | Item | Status | Evidence / Notes |
 |---|---|---|---|
 | REG-001 | Full gate after every unit | ONGOING | 908/908 latest |
-| REG-002 | Deterministic competitive tests (T+1/T+3/T+7, RPC disconnect, duplicate block, restart) | TODO | Designed 2026-08-24; implement with INNOV-001 |
+| REG-002 | Deterministic chaos tests for the delayed-mint path | FIXED | `9f17ede` — `scheduledValidity.chaos.test.js` 8/8: T+1/T+3/T+7 delayed opens (faithful retryAt clock: burst steps + contract-told re-arm jump), RPC disconnect mid-window, duplicate block events one-shot, onStageNotOpen wiring, restart mid-armed-window, burst-exhaustion re-arm to the getPublicDrop answer, eligibility-stays-permanent |
 | REG-003 | D9 acceptance run (internetmonkes 2026-08-28) | TODO | Round 22 target |
 
 ## Dependency order

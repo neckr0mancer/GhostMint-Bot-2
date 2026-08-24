@@ -2,6 +2,24 @@
 
 ---
 
+## 2026-08-24 (latest) — Model 1 — REG-002 chaos suite + fixture cleanup + failure-reason fold
+
+- **Branch:** `main` · **Commits held then pushed:** `05972c3` (INNOV-001), `22dd73b` (dashboard Ink), `8cebbcc` (ACO deletion), `310558b` (docs), `655d23f` (failure-reason fold), `9f17ede` (REG-002 chaos + cleanup script). All pushed, `0/0`.
+
+**Shipped this stretch:**
+- **INNOV-001** (`05972c3`): `scheduledValidity.js` oracle + `moveFireTime` + pre-arm wiring — fire moment moves to the contract's real opening BEFORE T; zero failed attempts for SeaDrop drops.
+- **ACO deletion** (`8cebbcc`, owner option A): prod `launch_squads` verified empty first; removed `src/launch`, 4 test files, all `/aco` surfaces both platforms (−1284 lines). Kept `triggerSource:'launch'` branches + DB tables.
+- **Failure-reason fold** (`655d23f`): server.js wired `sanitizeError: safeError`, skipping `errorReason`'s issue fold — every ValidationError stored/notified the constant "Request validation failed". Now folds + redacts. Exposed by real prod failures: The Doll Club GTD (robinhood `0x0d77e2b1`, viaOpenSea signed_presale) — almost certainly OpenSea eligibility for that wallet; upcoming FCFS/public tasks will show real reasons.
+- **REG-002** (`9f17ede`): `scheduledValidity.chaos.test.js` 8/8 — T+1/T+3/T+7 delayed opens with a faithful retryAt clock, RPC disconnect, duplicate blocks, watcher wiring, restart, burst-exhaustion re-arm, eligibility-permanent. Plus `scripts/clear-test-fixtures.js` (dry-run found 1701 fixture tasks + 30 wallets; `--yes` is an owner action).
+
+**Verification:** chaos 8/8, related suites 157/157, full gate 917/917 (at `22dd73b`), lint OK, dashboard build OK, staged diffs secret-scanned.
+
+**Unresolved risks (unchanged):** SEC-003 multi-instance locks, RPC-004 clock drift, RPC-001 withTimeout leak, PERF-005 load rehearsal, DNS-rebinding residual.
+
+**Exact next action:** owner runs `node scripts/clear-test-fixtures.js --yes` when ready to purge fixtures; then D9 acceptance run (internetmonkes 2026-08-28) per Round 22. Chaos suite is the regression gate for any future scheduled-validity change.
+
+---
+
 ## 2026-08-24 (latest) — Model 1 — INNOV-001 + ACO deletion
 
 - **Branch:** `main` · **Start:** `22dd73b` context · **Commits:** `05972c3` (INNOV-001), `22dd73b` (dashboard Ink sync — caught by gate), `8cebbcc` (ACO deletion). Held, not pushed.
