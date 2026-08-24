@@ -2045,6 +2045,12 @@ async function handleMintPasteMessage({ identity, commands, flowState, chains, r
     // second paste while a flow (mint or otherwise) is already in progress implicitly abandons it
     // and starts fresh with the new address -- no confirmation needed, trimmed per user feedback.
     if (flowState.get('discord', platformUserId)) flowState.clear('discord', platformUserId);
+    // Don't treat the user's own wallet addresses as contracts — pasting a wallet address
+    // (e.g. from a block explorer) should not trigger the mint info card.
+    try {
+      const wallets = await commands.wallets(userId).catch(() => []);
+      if (Array.isArray(wallets) && wallets.some(w => String(w.address || '').toLowerCase() === String(target).toLowerCase())) return;
+    } catch {}
     const started = await startMintGuidedFlow({ commands, flowState, chains, rateLimiter },
       payload => message.reply(payload).catch(error => log(`Paste-detect: reply failed (${where}): ${error?.message || error}`)),
       platformUserId, userId, target);

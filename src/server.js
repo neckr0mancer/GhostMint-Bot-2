@@ -2161,6 +2161,13 @@ async function handleFlowTextMessage(msg) {
     // input a flow is actually waiting on.
     const trimmed = msg.text.trim();
     if (ethers.isAddress(trimmed) || botCommands.parseOpenSeaCollectionSlug(trimmed)) {
+      // Don't treat the user's own wallet addresses as contracts
+      if (ethers.isAddress(trimmed)) {
+        try {
+          const wallets = await botCommands.wallets(userId).catch(() => []);
+          if (Array.isArray(wallets) && wallets.some(w => String(w.address || '').toLowerCase() === String(trimmed).toLowerCase())) return;
+        } catch {}
+      }
       if (flow) telegramFlowState.clear('telegram', chatId);
       try {
         await startMintFlow({ chatId, messageId: null, userId, multi: false, contractAddressInput: trimmed });
