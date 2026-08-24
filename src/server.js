@@ -557,7 +557,7 @@ const schedulerWorker = createSchedulerWorker({
       // "no reason recorded" for every reverted transaction.
       // Same fold as the stored last_error above: event.error.message alone is the constant
       // "Request validation failed" for every ValidationError -- the issues carry the real cause.
-      const detail = event.error ? sanitizeError(event.error) : '';
+      const detail = event.error ? safeError(errorReason(event.error)) : '';
       const reason = detail ? `
 ${escapeTelegramHtml(detail)}` : '';
       if (wallet) await logActivity(event.task.userId, 'fail', `Scheduled mint failed: ${event.task.name}`,
