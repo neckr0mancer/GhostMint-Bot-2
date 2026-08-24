@@ -137,6 +137,10 @@ function createTransactionEngine({
     return fresh;
   }
 
+  function warmFeeDataCache(chain, feeData) {
+    if (feeData) feeDataCache.set(chain, feeData);
+  }
+
 
   async function estimateGasSafely(chain, params, options, service = providerService) {
     try { return await providerCall(chain, 'estimateGas', provider => provider.estimateGas(params), options, service); }
@@ -531,7 +535,7 @@ function createTransactionEngine({
     return results;
   }
 
-  return { preview,reconcileIntent, reconcileNonFinal, submit, waitForFinality };
+  return { preview,reconcileIntent, reconcileNonFinal, submit, waitForFinality, warmFeeDataCache };
 }
 
 module.exports = { FINAL_STATES, TransactionSafetyError, createTransactionEngine, explainCallFailure };

@@ -333,6 +333,26 @@ async function prearmScheduledTask(task) {
         log(`Pre-arm notice: "${task.name}" (${wallet.chain}:${task.contract}) fires at ${new Date(task.mintTime).toISOString()}, but its live SeaDrop window starts ${new Date(livePublicDrop.startTime * 1000).toISOString()} -- the fire-time drift check may reject it`);
       }
     }
+    // Warm hot-path reads that executeTask will need at T0: fee data (5s TTL), balance, and
+    // pending nonce. All best-effort and in parallel -- a failure here just means T0 does the
+    // work the old way, never a hard failure. Use the execution chain (persisted task chain
+    // if present, else wallet home) so the warm matches what T0 will actually use.
+    const executionChain = (() => {
+      try { return resolveTaskChain(task, CONFIG.supportedChains).chain || wallet.chain; }
+      catch { return wallet.chain; }
+    })();
+    // Fee data cache is per-chain and short-lived, so a 12s lead still leaves it hot at T0.
+    // Balance and nonce warm the provider/RPC connection pool.
+    providerService.perform(executionChain, 'prearmFeeData', p => p.getFeeData()).then(fd => {
+      if (fd && executionChain) {
+        try { transactionEngine.warmFeeDataCache(executionChain, fd); } catch {}
+      }
+    }).catch(() => {});
+    Promise.all([
+      providerService.perform(executionChain, 'prearmBalance', p => p.getBalance(wallet.address)).catch(() => null),
+      providerService.perform(executionChain, 'prearmNonce', p => p.getTransactionCount(wallet.address, 'pending')).catch(() => null),
+      providerService.perform(executionChain, 'prearmNetwork', p => p.getNetwork()).catch(() => null),
+    ]).catch(() => {});
     armedPreparations.set(`${task.userId}:${task.id}`, { mintTime: task.mintTime, at: Date.now() });
   } catch (error) {
     // Preparation is best-effort by contract: any failure here just means fire time does things
