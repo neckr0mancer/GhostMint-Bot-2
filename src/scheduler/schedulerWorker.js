@@ -184,7 +184,10 @@ function createSchedulerWorker({ repository, intentRepository, transactionEngine
 
   async function recoverStaleClaims() {
     const tasks = await repository.listStaleClaims(now());
-    for (const task of tasks) await processTask(task, true);
+    // RPC-005: recovery is per-task independent (each stale lease is reconciled from chain state,
+    // not executed), so one hung reconcile must not extend every other stale lease past its
+    // expiry -- a second worker could legitimately claim what we are merely slow to release.
+    await Promise.all(tasks.map(task => processTask(task, true).catch(error => log(`Stale-claim recovery failed for ${task.id}: ${sanitizeError(error)}`))));
     return tasks.length;
   }
 

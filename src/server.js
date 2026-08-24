@@ -629,6 +629,9 @@ async function expiredHistorySweep() {
         recorded += 1;
       } catch (error) {
         log(`Expired-history record failed for ${task.id}: ${safeError(error)}`);
+        // The claim already set expired_logged_at, so without this the row would never be
+        // retried and its history would be lost forever (SEC-011). Hand it back.
+        await schedulerRepository.clearExpiredLogged([task.id]).catch(() => {});
       }
     }
   } catch (error) {

@@ -152,6 +152,15 @@ function createSchedulerRepository(pool) {
       return result.rows.map(mapTask);
     },
 
+    // SEC-011: claimNewlyExpired marks rows logged in the same statement it returns them, so a
+    // crashed history writer would otherwise lose the row forever. The sweep calls this per
+    // failed task to hand the row back for the next pass.
+    async clearExpiredLogged(ids) {
+      if (!ids.length) return;
+      await pool.query(`UPDATE mint_tasks SET expired_logged_at=NULL
+        WHERE id = ANY($1::uuid[])`, [ids]);
+    },
+
     async countActive() {
       const result = await pool.query(`SELECT COUNT(*)::INTEGER AS count FROM mint_tasks WHERE status IN (${sqlStatusList(ACTIVE_STATUSES)})`);
       return result.rows[0].count;
