@@ -20,6 +20,7 @@ const CANONICAL_SEADROP_CORE = Object.freeze({
   arbitrum: '0x00005EA00Ac477B1030CE78506496e8C2dE24bf5',
   polygon: '0x00005EA00Ac477B1030CE78506496e8C2dE24bf5',
   robinhood: '0x00005EA00Ac477B1030CE78506496e8C2dE24bf5',
+  ink: '0x00005EA00Ac477B1030CE78506496e8C2dE24bf5',
 });
 
 // Discovers which SeaDrop core contract a token has configured as allowed to mint it. Three tiers,
