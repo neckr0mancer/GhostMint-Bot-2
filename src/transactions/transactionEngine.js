@@ -176,7 +176,7 @@ function createTransactionEngine({
   async function evaluateReceipt(intent, receipt) {
     const gasUsed=receipt.gasUsed===undefined?null:BigInt(receipt.gasUsed);
     const effectiveGasPriceWei=receipt.gasPrice===undefined||receipt.gasPrice===null
-      ? (receipt.effectiveGasPrice===undefined||receipt.effectiveGasPrice===null?null:BigInt(receipt.gasPrice)):BigInt(receipt.gasPrice);
+      ? (receipt.effectiveGasPrice===undefined||receipt.effectiveGasPrice===null?null:BigInt(receipt.effectiveGasPrice)):BigInt(receipt.gasPrice);
     const actualNetworkCostWei=gasUsed!==null&&effectiveGasPriceWei!==null?gasUsed*effectiveGasPriceWei:null;
     const receiptCost={gasUsed,effectiveGasPriceWei,actualNetworkCostWei};
     if (Number(receipt.status) === 0) return { state: 'reverted', blockNumber: Number(receipt.blockNumber), reason: 'transaction reverted on chain',...receiptCost };
@@ -514,7 +514,13 @@ function createTransactionEngine({
       const signedTransaction = await signer.signTransaction(transaction);
       timings.signedAt = now();
       const txHash = keccak256(signedTransaction);
-      intent = await intentRepository.attachSignedHash(intent.intentId, txHash);
+      // TX-014 (Model 2 phase-2): if attachSignedHash returns null (the reconciliation sweep
+      // transitioned the intent between createSubmitted and here), no provider may receive the
+      // signed bytes — the durable hash is absent and the intent is no longer eligible.
+      const attached = await intentRepository.attachSignedHash(intent.intentId, txHash);
+      if (!attached) throw new TransactionSafetyError('HASH_ATTACH_FAILED',
+        'Signed transaction hash could not be persisted — broadcast aborted to prevent an untracked spend');
+      intent = attached;
       try {
         // Round 16 (Section AV): sniper races the same signed transaction across every candidate
         // in its own pool concurrently instead of trying one at a time -- safe because it's the

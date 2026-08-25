@@ -81,4 +81,3 @@ test('latest confirmed mint requires a final success, transaction hash and mint 
   ]),expected);
   assert.equal(latestConfirmedMint(null),null);
 });
-

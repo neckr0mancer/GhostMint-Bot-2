@@ -54,6 +54,7 @@ function createProviderService({ chains, timeoutMs = 10_000, retries = 1, provid
     const effectiveTimeoutMs = timeoutOverride ?? timeoutMs;
     const effectiveRetries = retriesOverride ?? retries;
     let attempts = 0;
+    let anyTimedOut = false;
     for (const candidate of candidates) {
       for (let retry = 0; retry <= effectiveRetries; retry += 1) {
         attempts += 1;
@@ -64,7 +65,12 @@ function createProviderService({ chains, timeoutMs = 10_000, retries = 1, provid
             `${chain} ${operationName}`,
           );
         } catch (error) {
-          if (NON_RETRYABLE_ERROR_CODES.has(error?.code)) throw error;
+          // TX-004 (Model 2 phase-2): a timed-out request may still have been accepted by the
+          // provider after we stopped waiting. A later candidate's definitive rejection cannot
+          // erase that ambiguity -- the aggregate must stay ambiguous (RpcUnavailable), never
+          // a definitive code that the engine would map to a false-final durable state.
+          if (error?.message?.includes('timed out')) anyTimedOut = true;
+          if (NON_RETRYABLE_ERROR_CODES.has(error?.code) && !anyTimedOut) throw error;
         }
       }
     }
@@ -94,13 +100,15 @@ function createProviderService({ chains, timeoutMs = 10_000, retries = 1, provid
           if (!settled) { settled = true; resolve(value); }
         }).catch(error => {
           if (!settled) {
-            if (error?.message?.includes('timed out')) anyTimedOut = true;
+            // TX-004 (Model 2 phase-2): any transport ambiguity (timeout OR network error) makes
+            // the aggregate non-definitive — the request may have been accepted after we stopped
+            // waiting. Only an explicit definitive rejection from every candidate is final.
+            if (error?.message?.includes('timed out') || error?.code === 'NETWORK_ERROR' || error?.message?.includes('timed out')) anyTimedOut = true;
             else if (NON_RETRYABLE_ERROR_CODES.has(error?.code) && !definitiveError) definitiveError = error;
+            else anyTimedOut = true; // unknown transport error = ambiguous
             pending -= 1;
             if (pending === 0) {
               settled = true;
-              // A definitive code is trustworthy only when every candidate explicitly and
-              // definitively rejected. Any timeout makes the aggregate ambiguous.
               if (definitiveError && !anyTimedOut) reject(definitiveError);
               else reject(new RpcUnavailableError(chain, candidates.length));
             }

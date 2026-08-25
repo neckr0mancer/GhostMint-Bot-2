@@ -617,11 +617,16 @@ function createBotCommandService(dependencies) {
   }
 
   async function createTask(userId, input) {
+    // TX-025 (Model 2 phase-2): only a real boolean may select builder routing. The string
+    // 'false' is truthy and would silently switch to the OpenSea-backed path with price 0.
+    if (input.viaOpenSea !== undefined && input.viaOpenSea !== null && typeof input.viaOpenSea !== 'boolean') {
+      throw new ValidationError({ field: 'viaOpenSea', message: 'must be a boolean' });
+    }
     const owned = wallet(userId, input.walletLabel);
     const chain = input.chain || owned.chain;
     const target = input.contractAddress ?? input.contract;
     if (target) await assertContractExists(target, chain);
-    const requestedEligibilityMode = input.eligibilityMode
+    const requestedEligibilityMode = input.viaOpenSea
       ?? (input.viaOpenSea ? 'earliest_eligible' : 'specific_stage');
     if ((input.viaOpenSea || requestedEligibilityMode === 'earliest_eligible')
       && !input.stageUuid && !input.stageLabel && !input.stageType) {

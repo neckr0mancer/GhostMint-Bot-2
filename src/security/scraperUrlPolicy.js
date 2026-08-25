@@ -41,6 +41,8 @@ function ipv4IsPrivate(ip) {
   if (o[0] === 172 && o[1] >= 16 && o[1] <= 31) return true;
   if (o[0] === 192 && o[1] === 168) return true;
   if (o[0] === 100 && o[1] >= 64 && o[1] <= 127) return true; // CGNAT
+  if (o[0] === 198 && o[1] >= 18 && o[1] <= 19) return true; // benchmarking (RFC 2544)
+  if (o[0] === 224 || o[0] >= 240) return true; // multicast + reserved + broadcast
   return false;
 }
 
@@ -89,6 +91,14 @@ function isPrivateScraperHostname(hostname) {
     if (first >= 'fe80' && first <= 'febf') return true; // link-local
     if (first >= 'fc00' && first <= 'fdff') return true; // unique local
     if (first >= 'ff00' && first <= 'ffff') return true; // multicast
+    if (first >= 'fec0' && first <= 'feff') return true; // site-local (deprecated but still reserved)
+    // IPv4-compatible ::a.b.c.d (not mapped) — the embedded v4 is the real destination
+    if (groups.slice(0, 6).every(g => g === '0000')) {
+      const bytes = [Number.parseInt(groups[6].slice(0, 2), 16), Number.parseInt(groups[6].slice(2), 16),
+        Number.parseInt(groups[7].slice(0, 2), 16), Number.parseInt(groups[7].slice(2), 16)];
+      if (bytes.some(n => !Number.isInteger(n) || n < 0 || n > 255)) return true;
+      return ipv4IsPrivate(bytes.join('.'));
+    }
     return false;
   }
 
@@ -107,7 +117,8 @@ async function assertPublicScraperDestination(sourceUrl, { lookup = (host, opts)
   if (isPrivateScraperHostname(parsed.hostname)) throw new Error('scraper sourceUrl must not target a private or internal address');
   let resolved;
   try { resolved = await lookup(parsed.hostname, { all: true }); }
-  catch { return; } // unresolvable here: the request itself will fail visibly; not a policy pass
+  catch { throw new Error('scraper sourceUrl DNS resolution failed — failing closed rather than authorizing an unverifiable destination'); }
+  if (!resolved || !resolved.length) throw new Error('scraper sourceUrl DNS resolution returned no addresses');
   if (resolved.some(entry => isPrivateScraperHostname(entry.address))) {
     throw new Error('scraper sourceUrl resolves to a private or internal address');
   }

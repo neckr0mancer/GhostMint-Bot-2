@@ -55,7 +55,7 @@ function createSeaDropDiscoveryService({ providerService, publicDropResolver, ch
       'ECONNREFUSED', 'EAI_AGAIN', 'ECONNABORTED', 'ENOTFOUND', 'ENETUNREACH', 'EHOSTUNREACH',
       'EPIPE', 'ERR_NETWORK', 'ERR_BAD_RESPONSE', 'ERR_CANCELED'].includes(code)) return true;
     if (error?.cause?.code && ['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EAI_AGAIN', 'ENOTFOUND',
-      'ENETUNREACH', 'EHOSTUNREACH'].includes(error.cause.code)) return true;
+      'ENETUNREACH', 'EHOSTUNREACH', 'EPIPE'].includes(error.cause.code)) return true;
     if (msg.includes('timed out') || msg.includes('timeout') || msg.includes('connection reset')
       || msg.includes('rate limit') || msg.includes('too many requests')) return true;
     const status = error?.response?.status ?? error?.status;

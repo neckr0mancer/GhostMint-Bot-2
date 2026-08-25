@@ -1,6 +1,8 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const { createSocialAdapters } = require('../src/social/adapters');
+// Tests use reserved .example TLD hostnames that don't resolve — provide a mock lookup.
+const PUBLIC_LOOKUP = async () => [{ address: '93.184.216.34', family: 4 }];
 const { createSocialWatchService, extractContractAddresses } = require('../src/social/socialWatchService');
 const { createTriggerPipeline } = require('../src/triggers/triggerPipeline');
 
@@ -115,7 +117,7 @@ test('switching method changes adapter selection without changing watcher core',
 
 test('all concrete HTTP adapters normalize items and do not expose credentials', async () => {
   const seen=[]; const usage=[];
-  const adapters=createSocialAdapters({request:async input=>{seen.push(input);return{data:{items:[{id:'1',text:ADDRESS}]}};},
+  const adapters=createSocialAdapters({lookup:PUBLIC_LOOKUP,request:async input=>{seen.push(input);return{data:{items:[{id:'1',text:ADDRESS}]}};},
     officialApi:{endpoint:'https://official.example/watch',token:'official-secret'},
     managedService:{endpoint:'https://managed.example/watch',token:'managed-secret'},recordUsage:async entry=>usage.push(entry)});
   for (const method of ['official_api','managed_service','scraper']) {
@@ -131,7 +133,7 @@ test('all concrete HTTP adapters normalize items and do not expose credentials',
 
 test('provider-reported cost and credits are captured in durable usage records', async () => {
   const usage=[];
-  const adapter=createSocialAdapters({request:async()=>({headers:{'x-request-cost-usd':'0.005','x-credits-used':'1'},data:{items:[]}}),
+  const adapter=createSocialAdapters({lookup:PUBLIC_LOOKUP,request:async()=>({headers:{'x-request-cost-usd':'0.005','x-credits-used':'1'},data:{items:[]}}),
     officialApi:{endpoint:'https://official.example/watch',token:'token'},recordUsage:async entry=>usage.push(entry)}).get('official_api');
   await adapter.poll({id:ID,userId:'user-a',name:'metered',type:'twitter_account',config:{handle:'ghostmint'},cursor:null});
   assert.equal(usage[0].providerCostUsd,0.005);
@@ -139,7 +141,7 @@ test('provider-reported cost and credits are captured in durable usage records',
 });
 
 test('scraper adapter extracts visible content from a credential-free HTML response', async () => {
-  const adapter=createSocialAdapters({request:async()=>({data:`<html><style>.x{}</style><body>Mint ${ADDRESS}</body></html>`})}).get('scraper');
+  const adapter=createSocialAdapters({lookup:PUBLIC_LOOKUP,request:async()=>({data:`<html><style>.x{}</style><body>Mint ${ADDRESS}</body></html>`})}).get('scraper');
   const result=await adapter.poll({type:'twitter_account',config:{sourceUrl:'https://public.example/page'},cursor:null});
   assert.equal(result.items.length,1);
   assert.match(result.items[0].text,/Mint 0x/);
@@ -147,13 +149,13 @@ test('scraper adapter extracts visible content from a credential-free HTML respo
 });
 
 test('Milestone 10b-2: a new watch type (Farcaster) is tagged with its own platform through the same adapter code', async () => {
-  const adapter=createSocialAdapters({request:async()=>({data:{items:[{id:'cast-1',text:ADDRESS}]}})}).get('scraper');
+  const adapter=createSocialAdapters({lookup:PUBLIC_LOOKUP,request:async()=>({data:{items:[{id:'cast-1',text:ADDRESS}]}})}).get('scraper');
   const result=await adapter.poll({type:'farcaster_account',config:{sourceUrl:'https://public.example/casts',handle:'ghostmint',keywords:[]},cursor:null});
   assert.equal(result.items[0].platform,'farcaster');
 });
 
 test('an adapter refuses to poll a watch type with no registered platform instead of silently mislabeling it', async () => {
-  const adapter=createSocialAdapters({request:async()=>({data:{items:[]}})}).get('scraper');
+  const adapter=createSocialAdapters({lookup:PUBLIC_LOOKUP,request:async()=>({data:{items:[]}})}).get('scraper');
   await assert.rejects(
     adapter.poll({type:'unknown_type',config:{sourceUrl:'https://public.example/feed'},cursor:null}),
     error=>error.code==='SOCIAL_ADAPTER_FAILED',

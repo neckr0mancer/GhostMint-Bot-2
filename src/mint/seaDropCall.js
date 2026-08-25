@@ -25,7 +25,9 @@ const SEADROP_GATED_INTERFACE = new Interface([
 ]);
 const SEADROP_GATED_METHODS = Object.freeze(['mintAllowList', 'mintSigned', 'mintAllowedTokenHolder']);
 
-function invalid(field, message) { throw new ValidationError({ field, message }); }
+function invalid(field, message, explicitMessage) {
+  throw new ValidationError({ field, message }, 'VALIDATION_ERROR', explicitMessage || message);
+}
 
 function resolveAddress(value, field, walletAddress) {
   const resolved = value === '$wallet' ? walletAddress : value;
@@ -227,14 +229,36 @@ function decodeSeaDropGatedMintCall({ built, method, minterAddress }) {
   };
 }
 
-function validateOpenSeaMintCall({ built, contractAddress, quantity: expectedQuantity, minterAddress }) {
+function validateOpenSeaMintCall({ built, contractAddress, quantity: expectedQuantity, minterAddress, chain }) {
   if (!isAddress(contractAddress)) invalid('contractAddress', 'must be a valid Ethereum address');
   if (!isAddress(minterAddress)) invalid('walletAddress', 'must be a valid Ethereum address');
+  // MINT-008 (Model 2 phase-2): a mismatched chain on the built response means the calldata
+  // was built for (or injected from) a different network — reject before signing.
+  if (built?.chain && chain && built.chain !== chain) {
+    invalid('chain', `OpenSea built this call for ${built.chain}, not ${chain} -- refusing to sign`);
+  }
   const selector = String(built?.data || '').slice(0, 10).toLowerCase();
   const seaDropSelector = SEADROP_CORE_INTERFACE.getFunction('mintPublic').selector.toLowerCase();
   const gatedMethod = SEADROP_GATED_METHODS.find(method => (
     SEADROP_GATED_INTERFACE.getFunction(method).selector.toLowerCase() === selector
   ));
+  // MINT-008 (Model 2 phase-2): SeaDrop selectors are called on the SeaDrop core, never on
+  // the NFT itself — a malicious same-selector contract at built.to could pass calldata
+  // checks and retain msg.value. Scoped to SeaDrop calls only: Archetype mints legitimately
+  // target the NFT contract directly.
+  if ((selector === seaDropSelector || gatedMethod) && isAddress(built?.to)
+    && built.to.toLowerCase() === contractAddress.toLowerCase()) {
+    invalid('target', 'the call target must be a SeaDrop core, not the NFT contract itself');
+  }
+  // MINT-008: gated methods must target the canonical SeaDrop core (same CREATE2 address
+  // on every chain) — a malicious same-selector contract could retain msg.value.
+  if (gatedMethod) {
+    const CANONICAL_SEADROP = '0x00005ea00ac477b1030ce78506496e8c2de24bf5';
+    if (built?.to?.toLowerCase() !== CANONICAL_SEADROP) {
+      invalid('target', `gated calldata must target the canonical SeaDrop core, got ${built?.to}`,
+        `gated calldata must target the canonical SeaDrop core, got ${built?.to}`);
+    }
+  }
   const decoded = selector === seaDropSelector
     ? decodeSeaDropMintCall({ contractAddress: built.to, seaDropAddress: built.to, calldata: built.data, valueWei: built.valueWei })
     : gatedMethod

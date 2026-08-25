@@ -55,4 +55,3 @@ export function latestConfirmedMint(items){
     &&FINAL_SUCCESS_STATUSES.has(statusOf(item))
     &&/mint/i.test(String(item?.title||'')))||null;
 }
-

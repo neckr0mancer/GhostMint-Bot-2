@@ -1,8 +1,8 @@
-const net = require('node:net');
 const { Buffer } = require('node:buffer');
 const { URL } = require('node:url');
 const axios = require('axios');
 const { getMintMethod } = require('./mintRegistry');
+const { isPrivateScraperHostname } = require('../security/scraperUrlPolicy');
 
 class ProofResolutionError extends Error {
   constructor(message, cause) {
@@ -13,25 +13,18 @@ class ProofResolutionError extends Error {
   }
 }
 
-function isPrivateHostname(hostname) {
-  const normalized = hostname.toLowerCase();
-  if (normalized === 'localhost' || normalized.endsWith('.local')) return true;
-  if (net.isIP(normalized) === 4) {
-    const [a, b] = normalized.split('.').map(Number);
-    return a === 10 || a === 127 || a === 0 || (a === 169 && b === 254)
-      || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
-  }
-  return net.isIP(normalized) === 6 && (normalized === '::1' || normalized.startsWith('fc') || normalized.startsWith('fd') || normalized.startsWith('fe80'));
-}
-
 function publicProofUrl(source, walletAddress, ipfsGateway = 'https://ipfs.io/ipfs/') {
   const raw = String(source || '').trim();
   const expanded = raw.startsWith('ipfs://') ? `${ipfsGateway.replace(/\/?$/, '/')}${raw.slice(7)}` : raw;
   let url;
   try { url = new URL(expanded.replaceAll('{address}', walletAddress)); }
   catch { throw new ProofResolutionError('The proof URL is invalid.'); }
-  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || isPrivateHostname(url.hostname)) {
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) {
     throw new ProofResolutionError('The proof URL must be a public HTTP, HTTPS, or IPFS resource.');
+  }
+  // SEC-013 (Model 2 phase-2): use the shared canonical policy (IPv6 brackets, mapped, etc.)
+  if (isPrivateScraperHostname(url.hostname)) {
+    throw new ProofResolutionError('The proof URL must not target a private or internal address.');
   }
   if (!raw.includes('{address}') && !url.searchParams.has('address')) url.searchParams.set('address', walletAddress);
   return url.toString();

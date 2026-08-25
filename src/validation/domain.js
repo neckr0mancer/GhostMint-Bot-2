@@ -216,9 +216,14 @@ function taskEligibilityDeadline(value, mintTime) {
   const timestamp = Date.parse(value);
   if (!Number.isFinite(timestamp)) fail('eligibilityDeadline', 'must be a valid date and time');
   if (timestamp <= mintTime) fail('eligibilityDeadline', 'must be after mintTime');
-  if (timestamp - mintTime > MAX_SCHEDULE_AHEAD_MS) {
-    fail('eligibilityDeadline', 'must be no more than 5 years after mintTime');
-  }
+if (timestamp - mintTime > MAX_SCHEDULE_AHEAD_MS) {
+fail('eligibilityDeadline', 'must be no more than 5 years after mintTime');
+}
+// TX-026 (Model 2 phase-2): cap phase-wait churn at 24 hours — an API caller must not create
+// years of per-minute scheduler claim/attempt cycles that never consume execution retries.
+if (timestamp - mintTime > 24 * 60 * 60 * 1000) {
+fail('eligibilityDeadline', 'must be no more than 24 hours after mintTime');
+}
   return timestamp;
 }
 
@@ -333,6 +338,10 @@ function validateSendRequest(input, context) {
 
 function validateTaskCreate(input, context) {
   const mintTime = scheduleTimestamp(input.mintTime, context);
+  // TX-025 (Model 2 phase-2): only a real boolean may select the OpenSea builder routing path.
+  if (input.viaOpenSea !== undefined && input.viaOpenSea !== null && typeof input.viaOpenSea !== 'boolean') {
+    fail('viaOpenSea', 'must be a boolean');
+  }
   return {
     id: input.id === undefined ? randomUUID() : uuid(input.id, 'id'),
     name: string(input.name, 'name', { max: 100 }),

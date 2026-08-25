@@ -9,7 +9,7 @@ const { ValidationError } = require('../src/validation/domain');
 const WALLET = '0x00000000000000000000000000000000000000A1';
 const FEE_RECIPIENT = '0x00000000000000000000000000000000000000B2';
 const CONTRACT = '0x00000000000000000000000000000000000000C3';
-const SEADROP = '0x00000000000000000000000000000000000000D4';
+const SEADROP = '0x00005EA00Ac477B1030CE78506496e8C2dE24bf5';
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 
 test('encodes mintPublic with the reserved SeaDrop signature and a distinct call target', () => {
@@ -178,7 +178,7 @@ test('formatMintPreview shows a distinct call-target line for SeaDrop previews a
     contractAddress: CONTRACT, seaDropAddress: SEADROP, arguments: [FEE_RECIPIENT, '$wallet', 1],
     walletAddress: WALLET, valueWei: 0n,
   }).preview;
-  assert.match(formatMintPreview(seaDropPreview), /Call target: 0x.*D4/i);
+  assert.match(formatMintPreview(seaDropPreview), /Call target: 0x00005EA00/i);
   const plainPreview = { contractAddress: CONTRACT, methodSignature: 'mint(uint256)', standard: 'ERC-721', arguments: [], nativeValue: '0.0' };
   assert.doesNotMatch(formatMintPreview(plainPreview), /Call target/);
 });

@@ -30,23 +30,17 @@ function metric(response, header, field) {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
 }
 
-function metric(response, header, field) {
-  const value = response?.headers?.[header] ?? response?.data?.usage?.[field];
-  const parsed = value === undefined || value === null ? null : Number(value);
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
-}
-
 function createHttpAdapter(method, { request, endpoint, token, recordUsage = async () => {},
-  now = () => Date.now(), defaultPlatform = null }) {
+  now = () => Date.now(), defaultPlatform = null, lookup } = {}) {
   return {
     method,
     async poll(rule) {
       if (method !== 'scraper' && !endpoint) throw new AdapterError(method, `${method} endpoint is not configured`);
       if (!token && method !== 'scraper') throw new AdapterError(method, `${method} credential is not configured`);
       if (method === 'scraper' && rule.config?.sourceUrl) {
-        // SEC-001: canonical policy (shared with validation) — hostname + DNS resolution check.
-        // Throws on private/internal/reserved; the request transport must never see a private destination.
-        await assertPublicScraperDestination(rule.config.sourceUrl);
+        // SEC-001: canonical policy — hostname + DNS resolution check. Throws on private/internal.
+        // The optional `lookup` override lets tests skip real DNS; production uses system DNS.
+        await assertPublicScraperDestination(rule.config.sourceUrl, lookup ? { lookup } : {});
       }
       const platform = defaultPlatform || WATCH_TYPE_PLATFORMS[rule.type];
       if (!platform) throw new AdapterError(method, `no platform is registered for watch type ${rule.type}`);
@@ -77,13 +71,13 @@ function createHttpAdapter(method, { request, endpoint, token, recordUsage = asy
 }
 
 function createSocialAdapters({ request = axios.request, officialApi = {}, managedService = {},
-  recordUsage, now } = {}) {
+  recordUsage, now, lookup } = {}) {
   return new Map([
     ['official_api', createHttpAdapter('official_api', { request, endpoint:officialApi.endpoint,
-      token:officialApi.token, recordUsage, now })],
+      token:officialApi.token, recordUsage, now, lookup })],
     ['managed_service', createHttpAdapter('managed_service', { request, endpoint:managedService.endpoint,
-      token:managedService.token, recordUsage, now })],
-    ['scraper', createHttpAdapter('scraper', { request, recordUsage, now })],
+      token:managedService.token, recordUsage, now, lookup })],
+    ['scraper', createHttpAdapter('scraper', { request, recordUsage, now, lookup })],
   ]);
 }
 

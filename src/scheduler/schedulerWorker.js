@@ -209,20 +209,20 @@ function createSchedulerWorker({ repository, intentRepository, transactionEngine
       // spent in three seconds and leave nothing for a genuine RPC failure later in the same task.
       const stageWait = transient && error?.code === STAGE_NOT_OPEN;
       const plan = stageWait ? await stageWaitPlan(task) : null;
+      const budgeted = plan ? { ...task, maxAttempts: plan.maxAttempts } : task;
+      const outcome = await repository.fail(budgeted, { reason: sanitizeError(error).slice(0, 500), transient,
+        retryAt: transient ? (plan ? plan.retryAt : retryAt(executionAttemptCount(task))) : null });
+      // TX-020: the waiter is published only AFTER repository.fail has durably committed the
+      // retry state — a block arriving between the failure and the fail commit must not
+      // consume the signal before the row is actually claimable.
       if (stageWait && task.chain) {
-        // TX-020: per-task waiters, not a chain-level bit -- every waiting task gets its own
-        // block-triggered wake-up at its own retry moment, and none can be consumed by an
-        // unrelated due task or by a block arriving before the waiter is eligible.
         const key = `${task.userId}:${task.id}`;
         let waiters = blockRetryWaiters.get(task.chain);
         if (!waiters) { waiters = new Map(); blockRetryWaiters.set(task.chain, waiters); }
         waiters.set(key, { userId: task.userId, taskId: task.id,
-          eligibleAt: plan ? plan.retryAt : retryAt(task.attemptCount) });
+          eligibleAt: plan ? plan.retryAt : retryAt(executionAttemptCount(task)) });
         try { await Promise.resolve(onStageNotOpen?.(task.chain)).catch(() => {}); } catch {}
       }
-      const budgeted = plan ? { ...task, maxAttempts: plan.maxAttempts } : task;
-      const outcome = await repository.fail(budgeted, { reason: sanitizeError(error).slice(0, 500), transient,
-        retryAt: transient ? (plan ? plan.retryAt : retryAt(executionAttemptCount(task))) : null });
       await Promise.resolve(notify?.({ task, outcome, error })).catch(() => {});
       return outcome;
     }
@@ -289,9 +289,10 @@ function createSchedulerWorker({ repository, intentRepository, transactionEngine
       if (prearmActive) {
         const key = `${task.userId}:${task.id}`;
         const existing = prearmTimers.get(key);
-        // TX-007 (Model 2 re-review): a completed pre-arm must not re-arm on the next sweep.
-        // The entry stays as a sentinel (done: true) so the same firing is prepared exactly once.
-        if (existing && (existing.done || existing.mintTime === task.mintTime)) continue;
+        // TX-007 (Model 2 re-review fix): a completed pre-arm must not re-arm for the SAME
+        // firing, but a MOVED firing (different mintTime) must be re-prepared. The done flag
+        // is keyed to the firing identity, not the task identity.
+        if (existing && existing.done && existing.mintTime === task.mintTime) continue;
         if (existing) clearTimeout(existing.handle);
         const handle = setTimeout(() => {
           // Mark done BEFORE firing so a concurrent sweep can't double-fire.
@@ -326,6 +327,7 @@ function createSchedulerWorker({ repository, intentRepository, transactionEngine
   function stop() {
     if (timer) clearInterval(timer);
     timer = null;
+    if (recoveryTimer) { clearInterval(recoveryTimer); recoveryTimer = null; }
     for (const entry of armedTimers.values()) clearTimeout(entry.handle ?? entry);
     armedTimers.clear();
     for (const entry of prearmTimers.values()) clearTimeout(entry.handle);

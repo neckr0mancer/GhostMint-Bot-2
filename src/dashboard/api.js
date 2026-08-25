@@ -267,12 +267,21 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLo
     }),
     mintPresets:action(async(req,res)=>res.json(jsonSafe(await commands.mintPresets(user(req))))),
     detectMint:action(async(req,res)=>{noStore(res);res.json(jsonSafe(await commands.detectMintContract(user(req),{contractAddress:req.query.contractAddress,quantity:req.query.quantity,includeDrop:true})));}),
-    previewMint:action(async(req,res)=>{const isBatch=Array.isArray(req.body.walletLabels);const labels=isBatch?req.body.walletLabels:[req.body.walletLabel];const entries=[];const failures=[];for(const walletLabel of labels){try{entries.push(await commands.prepareMint(user(req),{...req.body,walletLabel}));}catch(error){if(!isBatch)throw error;failures.push({walletLabel,error:mintPreviewFailure(error),code:error?.code||null});}}const previewToken=entries.length?issuePreview(user(req),entries):null;res.json({previewToken,expiresInSeconds:entries.length?300:0,items:entries.map(value=>({wallet:value.wallet,preview:value.prepared.preview,simulation:jsonSafe(value.simulation)})),failures});}),
+    previewMint:action(async(req,res)=>{const isBatch=Array.isArray(req.body.walletLabels);let labels=isBatch?req.body.walletLabels:[req.body.walletLabel];
+      // TX-024 (Model 2 phase-2): reject empty, duplicate, case-insensitive duplicate, and >100-label
+      // batches before any preparation — the dashboard batch path bypassed requestSchemas.batchMint.
+      if(isBatch){if(!labels.length)throw new ValidationError([{field:'walletLabels',message:'must contain at least one wallet label'}]);
+        const seen=new Set();for(const l of labels){const k=String(l).toLowerCase();if(seen.has(k))throw new ValidationError([{field:'walletLabels',message:`duplicate wallet label: ${l}`}]);seen.add(k);}
+        if(labels.length>100)throw new ValidationError([{field:'walletLabels',message:'must contain at most 100 wallet labels'}]);}
+      const entries=[];const failures=[];for(const walletLabel of labels){try{entries.push(await commands.prepareMint(user(req),{...req.body,walletLabel}));}catch(error){if(!isBatch)throw error;failures.push({walletLabel,error:mintPreviewFailure(error),code:error?.code||null});}}const previewToken=entries.length?issuePreview(user(req),entries):null;res.json({previewToken,expiresInSeconds:entries.length?300:0,items:entries.map(value=>({wallet:value.wallet,preview:value.prepared.preview,simulation:jsonSafe(value.simulation)})),failures});}),
     // Each wallet in a batch submits independently -- one wallet's insufficient balance or stale
     // wallet shouldn't cancel the rest, which had already simulated fine and may have nothing wrong
     // with them at all (same per-entry try/catch shape as importWalletsBatch's batch key import).
     confirmMint:action(async(req,res)=>{confirmation(req);const value=consumePreview(user(req),req.body.previewToken);const results=[];for(const entry of value.entries){
-      try{const result=await commands.submitPreparedMint(user(req),entry);results.push({label:entry.wallet.label,status:'success',result});
+      try{const result=await commands.submitPreparedMint(user(req),entry);
+        // TX-027 (Model 2 phase-2): only a confirmed intent may produce success side effects.
+        if(result.state!=='confirmed'){results.push({label:entry.wallet.label,status:'failed',error:`Transaction ${result.state} on chain`});continue;}
+        results.push({label:entry.wallet.label,status:'success',result});
         const chain=entry.prepared.chain;const network=chains[chain];const link=result.txHash&&network?.ex?`\n<a href="${network.ex}${result.txHash}">View transaction</a>`:'';
         await Promise.resolve().then(()=>notifyUser(user(req),`✅ <b>Mint successful.</b> Your transaction was confirmed on ${network?.name||chain}.${link}`)).catch(()=>{});}
       catch(error){const reason=error instanceof ValidationError?error.issues.map(issue=>`${issue.field} ${issue.message}`).join('; ')
