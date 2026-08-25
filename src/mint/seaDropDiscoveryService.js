@@ -43,10 +43,21 @@ function createSeaDropDiscoveryService({ providerService, publicDropResolver, ch
   endpoint = 'https://api.etherscan.io/v2/api', http = axios, timeoutMs = 10_000 }) {
   const topic0 = TOKEN_ALLOWED_SEADROP_EVENT_INTERFACE.getEvent('AllowedSeaDropUpdated').topicHash;
 
+  // MINT-001 (Model 2 phase-1): the transient taxonomy must match the transport reality, not just
+  // four codes -- ECONNRESET/ECONNREFUSED/ETIMEDOUT/EAI_AGAIN, axios timeouts, and rate-limit
+  // responses are all "discovery incomplete". Anything transient here must reach resolve()'s
+  // no-cache guard, or a single network blip poisons the negative cache for the contract's life.
   function isTransientDiscoveryError(error) {
     const code = error?.code;
     const msg = String(error?.message || '').toLowerCase();
-    return code === 'RPC_UNAVAILABLE' || code === 'NETWORK_ERROR' || code === 'SERVER_ERROR' || code === 'TIMEOUT' || msg.includes('timed out');
+    if (['RPC_UNAVAILABLE', 'NETWORK_ERROR', 'SERVER_ERROR', 'TIMEOUT', 'ETIMEDOUT', 'ECONNRESET',
+      'ECONNREFUSED', 'EAI_AGAIN', 'ECONNABORTED', 'ERR_BAD_RESPONSE'].includes(code)) return true;
+    if (msg.includes('timed out') || msg.includes('timeout') || msg.includes('connection reset')
+      || msg.includes('rate limit') || msg.includes('too many requests')) return true;
+    // HTTP 429/5xx from the Etherscan tier arrive as plain Errors with a status attached.
+    const status = error?.response?.status ?? error?.status;
+    if (status === 429 || (Number.isInteger(status) && status >= 500)) return true;
+    return false;
   }
 
   async function viaCanonicalCore(chain, contractAddress) {

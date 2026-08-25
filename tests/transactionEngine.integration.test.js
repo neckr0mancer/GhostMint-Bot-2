@@ -154,6 +154,32 @@ integrationTest('rollingSpendWei counts value plus actual fee for confirmed inte
     // The old formula's answer, for contrast: it would have returned 15_000n + 30_000n, silently
     // excusing the entire 0.5 ETH mint from the daily budget.
     assert.notEqual(spent, 45_000n);
+
+    // TX-005 (Model 2 phase-1): state-aware arithmetic for the two states the first fix missed.
+    // An UNKNOWN broadcast may still be live -- its full estimate stays reserved.
+    const unknownIntent = await intents.createSubmitted({
+      ...base, nonce: 12, valueWei: 100_000_000_000_000_000n,
+      gasLimit: 40_000n, estimatedCostWei: 100_000_000_000_000_000n + 40_000n,
+    });
+    await intents.attachSignedHash(unknownIntent.intentId, `0x${'ee'.repeat(32)}`);
+    await intents.transition(unknownIntent.intentId, 'unknown', { reason: 'integration fixture' });
+    // A REVERTED receipt paid real gas but transferred nothing -- actual fee only.
+    const revertedIntent = await intents.createSubmitted({
+      ...base, nonce: 13, valueWei: 200_000_000_000_000_000n,
+      gasLimit: 50_000n, estimatedCostWei: 250_000_000_000_000_000n,
+    });
+    await intents.attachSignedHash(revertedIntent.intentId, `0x${'ff'.repeat(32)}`);
+    await intents.transition(revertedIntent.intentId, 'reverted', {
+      reason: 'integration fixture', blockNumber: 300,
+      gasUsed: 25_000n, effectiveGasPriceWei: 2n, actualNetworkCostWei: 50_000n,
+    });
+
+    const after = await intents.rollingSpendWei(userId, wallet.id, Date.now() - 86_400_000);
+    const expectedAfter = expected
+      + (100_000_000_000_000_000n + 40_000n) // unknown: full estimate reserved
+      + 50_000n;                             // reverted: actual gas only, never the value
+    assert.equal(after, expectedAfter,
+      'unknown reserves its estimate; reverted counts actual gas but never its value');
   } finally {
     if (userId) {
       await pool.query('DELETE FROM transaction_intents WHERE user_id=$1', [userId]).catch(() => {});

@@ -2,6 +2,29 @@
 
 *Append-only. Newest first. Each entry: date, decision, rationale, evidence, rejected alternatives.*
 
+## 2026-08-25 — Model 2 phase-1 review corrections (verdict was FAIL; all blocking findings addressed)
+
+**Reviewer findings reproduced independently and fixed:**
+- SEC-001 (Critical): bracketed-IPv6 SSRF bypass — replaced both duplicated hostname checks with `src/security/scraperUrlPolicy.js` (IPv6 expansion, mapped-v4, ULA/link-local/multicast/CGNAT, decimal/hex/octal v4, DNS-resolution check at poll time in adapters). Reviewer reproduction 3/3 pass.
+- TX-004 (Critical): `performAll` rejected on the first definitive code while another RPC accepted the same bytes → engine wrote final `reverted` for a live tx. Rewritten: success wins unconditionally; definitive codes surface only when every candidate failed. Reviewer reproduction passes.
+- MINT-001 (High): transient taxonomy broadened to the full transport set (ECONNRESET/ECONNREFUSED/ETIMEDOUT/EAI_AGAIN/ECONNABORTED + timeout/reset/rate-limit messages + HTTP 429/5xx). Reviewer reproduction passes.
+- TX-005 (High): budget arithmetic is state-aware (unknown reserves estimate; reverted counts actual gas only; confirmed = actual+value). Integration tests cover all three.
+- TX-019 (Medium): `attachBump` transition provenance now records the actual previous state via a locking CTE.
+- TX-020 (Medium): block-retry waiters are per-task with explicit `claimSpecific` claims — no collapse, no early consumption.
+- UX-002 (High): three Discord paste regressions added (owned EOA ignored, unowned EOA ignored, contract+RPC-failure fails open).
+- TX-007 (High→partial): fee re-warm scheduled inside the 5s TTL window; balance/nonce honestly downgraded to connection-warming.
+
+**Reviewer findings rejected with counter-evidence:** none rejected outright; one narrowed — the reviewer's "network error" transient message match was over-broad and would have disabled negative-caching for definitive archive rejections (the file's own documented philosophy); narrowed to true transport phrases while keeping the full code taxonomy.
+
+**Reviewer findings mooted:** PERF-001 — `src/launch` deleted (8cebbcc, owner option A) before the finding's fix deadline.
+
+**Reviewer corrections accepted into memory:**
+- RPC-001: `withTimeout` late rejection does NOT become unhandled (Promise.race attaches handlers); the concern is resource/work leak only. WORKLIST wording corrected.
+- SEC-002: remains FIXED, not VERIFIED — no concurrent-double-confirm regression exists yet.
+- BASE-001: the "908/908 green" claim at `1d99936` was false (chainGrouping failed there); corrected to VERIFIED only at the post-correction gate (916/916).
+- PERF-002/003: downgraded from FIXED to FIXED with the TX-004/TX-007 caveats noted.
+- Production observations (deploy IDs, task counts, wallet addresses) are Model 1 assertions from Railway GraphQL + read-only SQL, not independently reviewed evidence.
+
 ## 2026-08-24 — Scheduled mints fire on valid state, not just wall-clock
 
 **Decision:** Early SeaDrop windows (`now < startTime`) are transient (`STAGE_NOT_OPEN`, 250ms×8 burst + block-driven retry via the sniper's WebSocket), not permanent. Scheduled broadcasts race the fast pool like sniper/launch. Pre-arm warms fee/balance/nonce/network at `T-12s`.

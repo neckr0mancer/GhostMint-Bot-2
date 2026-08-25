@@ -37,7 +37,9 @@ function errorReason(error) {
     const detail = error.issues.map(item => `${item.field} ${item.message}`).join('; ');
     return `${error.message}: ${detail}`.slice(0, 500);
   }
-  return String(error?.message || 'Unknown scheduler failure').slice(0, 500);
+  // .reason first: AccountBlockedError carries the account's own status_reason there (the ban
+  // reason the smoke test pins), with a generic .message. Preserves the pre-fold semantics.
+  return String(error?.reason || error?.message || 'Unknown scheduler failure').slice(0, 500);
 }
 
 function isTransientFailure(error) {
@@ -171,7 +173,14 @@ function createSchedulerWorker({ repository, intentRepository, transactionEngine
       const stageWait = transient && error?.code === STAGE_NOT_OPEN;
       const plan = stageWait ? await stageWaitPlan(task) : null;
       if (stageWait && task.chain) {
-        blockRetryChains.add(task.chain);
+        // TX-020: per-task waiters, not a chain-level bit -- every waiting task gets its own
+        // block-triggered wake-up at its own retry moment, and none can be consumed by an
+        // unrelated due task or by a block arriving before the waiter is eligible.
+        const key = `${task.userId}:${task.id}`;
+        let waiters = blockRetryWaiters.get(task.chain);
+        if (!waiters) { waiters = new Map(); blockRetryWaiters.set(task.chain, waiters); }
+        waiters.set(key, { userId: task.userId, taskId: task.id,
+          eligibleAt: plan ? plan.retryAt : retryAt(task.attemptCount) });
         try { await Promise.resolve(onStageNotOpen?.(task.chain)).catch(() => {}); } catch {}
       }
       const budgeted = plan ? { ...task, maxAttempts: plan.maxAttempts } : task;
@@ -278,14 +287,33 @@ function createSchedulerWorker({ repository, intentRepository, transactionEngine
   // is not yet open, also retry on the next block (via chainWatcher) instead of only on the
   // 250ms timer. This reuses the same sniper block push so scheduled mints get instant
   // notification without polling. The timer remains as fallback for chains without WS.
-  const blockRetryChains = new Set();
+  // 250ms timer. This reuses the same sniper block push so scheduled mints get instant
+  // notification without polling. The timer remains as fallback for chains without WS.
+  //
+  // TX-020 (Model 2 phase-1): waiters are PER TASK with their own eligibility moment -- a
+  // chain-level Set collapsed multiple waiters into one generic tick that could be consumed by
+  // an unrelated due task or by a block arriving before the waiter's retryAt. handleBlock wakes
+  // every eligible waiter by claiming it explicitly; not-yet-eligible waiters keep their
+  // registration, and a claim that returns null (claimed/cancelled elsewhere) drops just that
+  // waiter -- the ordinary poll owns it from there.
+  const blockRetryWaiters = new Map(); // chain -> Map(`${userId}:${taskId}` -> {userId, taskId, eligibleAt})
   function handleBlock(chain) {
-    if (!blockRetryChains.has(chain)) return;
-    blockRetryChains.delete(chain);
-    tick().catch(error => log(`Scheduler block retry failed: ${sanitizeError(error)}`));
+    const waiters = blockRetryWaiters.get(chain);
+    if (!waiters) return;
+    for (const [key, waiter] of [...waiters]) {
+      if (waiter.eligibleAt > now()) continue; // block arrived before this waiter's retry moment
+      waiters.delete(key);
+      (async () => {
+        const claimed = repository.claimSpecific
+          ? await repository.claimSpecific({ workerId, userId: waiter.userId, taskId: waiter.taskId, now: now(), leaseMs })
+          : null;
+        if (claimed) await processTask(claimed, false);
+      })().catch(error => log(`Scheduler block retry failed for ${waiter.taskId}: ${sanitizeError(error)}`));
+    }
+    if (!waiters.size) blockRetryWaiters.delete(chain);
   }
 
-  function hasBlockWaiters(chain) { return blockRetryChains.has(chain); }
+  function hasBlockWaiters(chain) { return blockRetryWaiters.has(chain); }
   function health(){return {status:timer&&(!lastError||lastSuccessAt>=lastTickAt)?'up':'down',running:Boolean(timer),active:inFlightCount>0,inFlightCount,armedCount:armedTimers.size,prearmedCount:prearmTimers.size,lastTickAt,lastSuccessAt,lastError};}
   return { armPreciseTimers, handleBlock, hasBlockWaiters, health,processTask, recoverStaleClaims, start, stop, tick, workerId };
 }

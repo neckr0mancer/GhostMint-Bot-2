@@ -64,9 +64,7 @@ async function main() {
     if (tasks.rowCount) await client.query(`DELETE FROM mint_tasks WHERE contract_address LIKE $1`, [LIKE]);
     if (intents.rowCount) await client.query(`DELETE FROM transaction_intents WHERE to_address LIKE $1`, [LIKE]);
     if (wallets.rowCount) await client.query(
-      `DELETE FROM wallets w USING (
-         SELECT unnest($1::uuid[]) AS uid, unnest($2::text[]) AS lbl
-       ) d
+      `DELETE FROM wallets w USING (SELECT unnest($1::uuid[]) uid, unnest($2::text[]) lbl) d(user_id, label)
        WHERE w.user_id = d.uid AND w.label = d.lbl`,
       [wallets.rows.map(r => r.user_id), wallets.rows.map(r => r.label)]);
     if (staleUsers.rowCount) await client.query(

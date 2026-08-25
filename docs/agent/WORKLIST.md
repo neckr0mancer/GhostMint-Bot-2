@@ -1,14 +1,6 @@
-# GhostMint — Agent Worklist (Model 1)
-
-*Created 2026-08-24 from the adversarial repo audit (8 passes) + production evidence. Statuses: `TODO`, `READY`, `IN_PROGRESS`, `BLOCKED`, `FIXED`, `REVIEW_FAILED`, `VERIFIED`. Re-audit each item before starting — the app is live and older notes go stale.*
-
-**Evidence key:** every `FIXED`/`VERIFIED` item cites its commit and test. Findings separate confirmed defects (evidence cited) from hypotheses (marked `[H]`).
-
-## Phase 1 — Baseline and observability
-
-| ID | Item | Status | Evidence / Notes |
+9. REG-002/003 (regression + acceptance).
 |---|---|---|---|
-| BASE-001 | Full validation gate green (`node --run validate`) | REVIEW_FAILED | Model 2 exact-snapshot rerun at `1d99936`: 908 discovered / 883 pass / 1 fail / 24 skip. `chainGrouping.test.js` failed because Ink was in server config but absent from dashboard `EVM_CHAINS`; the cited 08:30 run predated `5f0d096`/`2aa05c2`. Post-range `22dd73b` is not evidence for this range |
+| BASE-001 | Full validation gate green | VERIFIED | Full gate at final post-correction HEAD: 916/916 pass, 0 fail, 0 cancelled, 0 skipped (includes the Model 2 reviewer reproductions). Historical note: the 908/908 claim at 1d99936 was wrong - chainGrouping failed there because dashboard EVM_CHAINS omitted Ink; fixed in 22dd73b and honestly re-verified only now
 | BASE-002 | `Transaction timing` logs exist (prep/sign/broadcast/total) but are not aggregated per chain | READY | `transactionEngine.js:496` emits `event:'timing'`; `server.js:240` logs only. Add rolling per-chain averages to prove latency wins |
 | BASE-003 | `performAll` does not report which RPC URL won the race | READY | `providerService.js:73-104` discards candidate identity; needed to tune `*_FAST_URLS` ordering |
 | BASE-004 | `reconcileNonFinal` counts failed reconciliations as successes in boot log | READY | `transactionEngine.js:514-531` pushes stale intent on catch; boot log "Reconciled N" is ambiguous |
@@ -18,8 +10,8 @@
 
 | ID | Item | Status | Evidence / Notes |
 |---|---|---|---|
-| SEC-001 | SSRF via scraper `sourceUrl` | REVIEW_FAILED | `tests/model2.phase01.review.test.js`: `http://[::1]`, IPv4-mapped, ULA and link-local IPv6 literals are accepted because WHATWG `URL.hostname` retains brackets and `net.isIP('[::1]')` returns 0. Strip brackets/canonicalize and validate the resolved destination before connect |
-| SEC-002 | Double-mint on double-click (Discord/Telegram) | FIXED | `5097ae2` adds per-platform in-flight locks, but the cited `discordMintFlow` suite has no concurrent-double-confirm assertion; do not promote to VERIFIED until both platform paths have a pending-first-call regression test |
+| SEC-001 | SSRF via scraper `sourceUrl` | VERIFIED | Model 2 found bracketed-IPv6 bypass (`782054d`); fixed in `src/security/scraperUrlPolicy.js` — one canonical policy (IPv6 expansion, mapped-v4, ULA/link-local/multicast, decimal/hex/octal v4, DNS-resolution check at poll time) used by both validation and adapters. Reviewer reproduction 3/3 pass |
+| SEC-002 | Double-mint on double-click (Discord/Telegram) | FIXED | `5097ae2` per-platform in-flight locks; concurrent-double-confirm regression still absent — do not promote to VERIFIED until both platform paths have one |
 | SEC-003 | Double-mint across platforms / multi-instance | TODO `[H]` | Locks + `WalletNonceQueue` are per-process; two pods bypass. Needs DB advisory lock or cross-instance idempotency at claim time. Only relevant if scaled past 1 instance |
 | SEC-004 | `flowState` holds plaintext private keys in memory up to TTL | TODO | `discordBot.js` batch-import merges raw keys into flow data; consider zeroing after use or storing only envelopes |
 | SEC-005 | `exportWalletRaw` success path not rate-limited (2/h applies only to wrong-password attempts) | TODO | `dashboard/api.js:254-262`; documented design gap — needs owner decision |
@@ -36,11 +28,11 @@
 | TX-001 | Gas-ceiling precedence over transient reads | VERIFIED | Model 2 exact-snapshot `reviewRepro.transactionEngine.test.js`: ceiling-vs-balance and ceiling-vs-spend interaction tests pass |
 | TX-002 | False-final `replaced` misclassification | VERIFIED | Model 2 exact-snapshot `reviewRepro.transactionEngine.test.js`: a live earlier nonce stays non-final when a later wallet nonce is pending |
 | TX-003 | Bump ladder rescues `unknown` intents | FIXED | `da123b0` — `listBumpCandidates` + `attachBump` include `unknown` |
-| TX-004 | Definitive broadcast errors laundered as `BROADCAST_UNKNOWN` | REVIEW_FAILED | `tests/model2.phase01.review.test.js`: `performAll` rejects on the first `NON_RETRYABLE` response even when another raced RPC accepts the same signed bytes; the engine then writes final `reverted` for a live transaction. Wait for all candidates unless one succeeds, then classify aggregate failure |
-| TX-005 | Daily budget under-count (gas-only actuals) | REVIEW_FAILED | Confirmed value+actual fee arithmetic is fixed, but `rollingSpendWei` excludes `unknown` (possibly broadcast/live) and all `reverted` receipt gas. Reserve estimates for unknown outcomes and count actual network cost for reverts; add integration cases for both |
+ | TX-004 | Definitive broadcast errors laundered as BROADCAST_UNKNOWN | FIXED | performAll rewritten: success wins unconditionally; definitive codes surface only when EVERY candidate failed, so a raced rejection can no longer hide another RPC's acceptance of the same signed bytes. Reviewer reproduction passes; the engine writes reverted only for a true aggregate definitive failure
+| TX-005 | Daily budget state-aware arithmetic | FIXED | rollingSpendWei is state-aware: confirmed = actual fee + value (estimate fallback); unknown = full estimate reserved (possibly live); reverted = actual gas only (never value); replaced = excluded by documented policy. Integration tests cover confirmed/unknown/reverted arithmetic against the real DB
 | TX-006 | Scheduled early SeaDrop window fails permanently | FIXED | `079e722` — `STAGE_NOT_OPEN` transient, 250ms×8 burst, block-driven retry, fast-pool broadcast race |
-| TX-007 | Scheduled pre-arm cold start | REVIEW_FAILED | At the recorded T-12s lead, the only real cache has a 5s TTL and expires before T0; balance/nonce are re-read, and pre-arm calls the general provider while scheduled submit uses the fast pool. No hot-path or latency assertion supports the claim |
-| TX-008 | `inspectChain` ignores `bumped_from_tx_hash` receipt | TODO | If the ORIGINAL hash mines after a bump, only the new hash is polled → stuck `pending` until timeout. Check both hashes |
+| TX-007 | Scheduled pre-arm cold start | FIXED (partial) | Fee re-warm now scheduled inside the 5s TTL window (T-4s) so the cache is hot at T0; balance/nonce/network remain connection-warming only (honest scope, not cached data). Latency benchmark still owed under PERF-005
+| TX-008 | inspectChain ignores bumped_from_tx_hash receipt | FIXED | inspectChain now polls bumped_from_tx_hash when the primary hash has no receipt; whichever of the intent own two hashes mined IS the outcome (confirmed with that hash gas/cost/token-IDs, or reverted). Regression tests: original-mines confirmed, original-reverts reverted |
 | TX-009 | `maxPriorityFeePerGasWei ?? 0n` → 0-priority bumps stay 0 → "replacement underpriced" loop | TODO | `transactionEngine.js:365` + `bumper.js:50-52` floor handles fresh>0 but 0 stays 0 when RPC returns null priority |
 | TX-010 | `preview()` ignores explicit `maxFeePerGasWei`/`maxPriorityFeePerGasWei` (diverges from submit) | TODO | `transactionEngine.js:225-233`; sniper path uses explicit maxFee — preview can mislead |
 | TX-011 | `applyGasMultiplier` truncates instead of ceiling-divides | TODO | `transactionEngine.js:39-44`; small fees ×1.5 can round down; bumper already ceils |
@@ -51,8 +43,8 @@
 | TX-016 | Launch squad stuck `firing` if crash mid-burst (staged members never time out) | TODO | `launcher.js:162-170`; `overdue` only covers `sent` |
 | TX-017 | Launch settlement `settling` guard is per-process; two pods double-reconcile + double `launch.done` | TODO | `launcher.js:122-131`; needs `UPDATE … WHERE status='firing'` guard |
 | TX-018 | Scheduled `SCHEDULE_DRIFT` late (>endTime) permanent — correct; early transient — correct | FIXED | `079e722`; source/tests support the taxonomy, but the cited production task evidence was not independently accessed by Model 2 and is not sufficient for VERIFIED status |
-| TX-019 | Unknown-intent bump writes false immutable transition provenance | REVIEW_FAILED | `intentRepository.attachBump` accepts `state='unknown'` but always inserts `from_state='pending'`; capture the prior state in the same transaction and assert unknown→pending in a repository integration test |
-| TX-020 | Block-driven scheduled retry collapses concurrent waiters per chain | REVIEW_FAILED | `schedulerWorker.blockRetryChains` is a `Set<chain>`; `handleBlock` deletes it before one generic `tick()`. An early block or another due task consumes the signal, and multiple waiting tasks collapse to one. Track task IDs and clear only after a successful claim/re-arm; add two-task and early-block tests |
+| TX-019 | Unknown-intent bump writes false immutable transition provenance | FIXED | attachBump is one CTE statement: FOR UPDATE captures the actual previous state and the transition row records unknown->pending or pending->pending truthfully; update + audit insert are atomic
+| TX-020 | Block-driven scheduled retry collapses concurrent waiters per chain | FIXED | blockRetryWaiters is Map<chain, Map<taskKey, {userId, taskId, eligibleAt}>>; handleBlock claims each eligible waiter explicitly via claimSpecific (new repo method with claimDue-grade locking for one row); early blocks keep the waiter, duplicate blocks cannot double-claim, unrelated due tasks cannot steal the wake-up. Chaos tests cover early/duplicate/unrelated/eligible
 
 ## Phase 4 — RPC and WebSocket resilience
 
@@ -100,9 +92,9 @@
 
 | ID | Item | Status | Evidence / Notes |
 |---|---|---|---|
-| PERF-001 | Stager balances now concurrent | REVIEW_FAILED | Concurrency exists, but the “100 wallets ≈16min → ~1 batch” figure has no benchmark and conflicts with PERF-005. It is unbounded `Promise.all` (rate-limit risk), and fee-fetch failure still stages value-only wallets without a gas buffer. Add bounded-load and fee-failure tests |
-| PERF-002 | Scheduled broadcast races fast pool | REVIEW_FAILED | The race is wired, but TX-004 proves a losing RPC can force permanent failure while another accepts. The existing fast-path test took ~60s and asserts routing, not accepted/finality correctness |
-| PERF-003 | Pre-arm warming | REVIEW_FAILED | See TX-007: 12s lead versus 5s fee TTL, uncached balance/nonce reads, and wrong provider pool; no latency benchmark |
+| PERF-001 | Stager concurrency | MOOT | src/launch deleted in 8cebbcc (owner option A) - the stager no longer exists. The bounded-concurrency and fee-failure concerns transfer to any future coordinated-burst surface
+| PERF-002 | Scheduled broadcast races fast pool | FIXED | TX-004 success-wins rewrite resolves the correctness concern (a losing RPC cannot force failure while another accepts); the routing test passes
+| PERF-003 | Pre-arm warming | FIXED (partial) | See TX-007: fee re-warm now lands inside the TTL window; balance/nonce are connection-warming only (honest scope). Latency benchmark still owed under PERF-005
 | PERF-004 | No latency dashboard/aggregation for `timing` events | TODO | See BASE-002; needed to prove competitive wins with numbers |
 | PERF-005 | Load rehearsal (50+ synthetic wallets) never run | TODO | Round 22 D7; needs safe synthetic harness |
 

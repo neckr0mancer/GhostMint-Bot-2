@@ -161,6 +161,35 @@ function createSchedulerRepository(pool) {
         WHERE id = ANY($1::uuid[])`, [ids]);
     },
 
+    // TX-020 (Model 2 phase-1): block-driven retry needs to wake ONE specific waiting task, not
+    // whatever generic tick happens to claim -- a chain-level signal collapsed waiters and could
+    // be consumed by an unrelated due task or before the waiter was even eligible. Mirrors
+    // claimDue's locking for a single (user, task) pair; returns null when the row is no longer
+    // scheduled/retry (claimed, cancelled, moved) -- the ordinary poll then owns it.
+    async claimSpecific({ workerId, userId, taskId, now, leaseMs }) {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const result = await client.query(`UPDATE mint_tasks task
+          SET status='claimed',claimed_by=$1,claimed_at=TO_TIMESTAMP($2 / 1000.0),
+            lease_expires_at=TO_TIMESTAMP(($2+$3) / 1000.0),attempt_count=attempt_count+1,last_error=NULL
+          WHERE user_id=$4 AND id=$5 AND status IN ('scheduled','retry')
+            AND next_attempt_at <= TO_TIMESTAMP($2 / 1000.0)
+          RETURNING task.*`,
+        [workerId, now, leaseMs, userId, taskId]);
+        if (!result.rowCount) { await client.query('COMMIT'); return null; }
+        const claimed = mapTask(result.rows[0]);
+        await client.query(`INSERT INTO mint_task_attempts
+          (user_id,task_id,attempt_number,worker_id,outcome) VALUES ($1,$2,$3,$4,'running')`,
+        [claimed.userId, claimed.id, claimed.attemptCount, workerId]);
+        await client.query('COMMIT');
+        return claimed;
+      } catch (error) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw error;
+      } finally { client.release(); }
+    },
+
     async countActive() {
       const result = await pool.query(`SELECT COUNT(*)::INTEGER AS count FROM mint_tasks WHERE status IN (${sqlStatusList(ACTIVE_STATUSES)})`);
       return result.rows[0].count;

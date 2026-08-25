@@ -2,6 +2,36 @@
 
 ---
 
+## 2026-08-25 — Model 1 correction handoff — Model 2 phase-1 review findings addressed
+
+- **Branch:** `main` · **Base:** `782054d` (Model 2 review recorded) · **This commit:** corrections + memory updates, all together
+- **Scope:** Address every Model 2 phase-1 finding per the owner's 8-step instruction.
+
+**Blocking findings — fixed, reviewer reproductions kept unchanged and passing 3/3:**
+- **SEC-001 (Critical):** new `src/security/scraperUrlPolicy.js` — one canonical policy replacing both duplicated checks. IPv6 brackets stripped before `net.isIP`; full hextet expansion handles `::1`, `::ffff:x`, ULA `fc/fd`, link-local `fe80-febf`, multicast `ff`, unspecified `::`, CGNAT `100.64/10`, decimal/hex/octal/mixed-radix IPv4, `.internal`/`.localhost`. Adapters add DNS resolution at poll time (`assertPublicScraperDestination`). `ValidationError` gained an optional explicit-message parameter so the SSRF rejection is readable on `error.message` (backward compatible — default unchanged).
+- **TX-004 (Critical):** `performAll` rewritten — success wins unconditionally; definitive codes surface only when every candidate failed. A raced rejection can no longer mark a live tx reverted.
+- **MINT-001 (High):** transient taxonomy broadened (ECONNRESET/ECONNREFUSED/ETIMEDOUT/EAI_AGAIN/ECONNABORTED, timeout/reset/rate-limit messages, HTTP 429/5xx). Narrowed the reviewer's implied "network error" message match — that would disable negative-caching for definitive archive rejections (counter-evidence in DECISIONS).
+
+**High/Medium findings — fixed:**
+- **TX-005:** budget arithmetic state-aware (unknown reserves estimate, reverted counts actual gas only, replaced excluded by documented policy). Integration tests cover confirmed/unknown/reverted.
+- **TX-019:** `attachBump` CTE captures the actual previous state; transition provenance truthful (unknown→pending vs pending→pending).
+- **TX-020:** block-retry waiters are per-task (`Map<chain, Map<taskKey, {userId,taskId,eligibleAt}>>`); `handleBlock` claims each eligible waiter explicitly via new `claimSpecific` repo method (claimDue-grade locking for one row). Early blocks, duplicate blocks, and unrelated due tasks all covered by chaos tests.
+- **UX-002:** three Discord paste regressions (owned EOA ignored, unowned EOA ignored, contract + RPC-failure fails open).
+- **TX-007 (partial):** fee re-warm scheduled inside the 5s TTL window (T-4s); balance/nonce honestly downgraded to connection-warming in WORKLIST.
+- **BASE-001:** full gate at final HEAD: **916/916 pass, 0 fail, 0 cancelled, 0 skipped** — includes the reviewer's 3 reproductions. Historical 908/908 claim at `1d99936` corrected in WORKLIST (chainGrouping failed there; fixed in `22dd73b`).
+
+**Memory corrections accepted:** RPC-001 wording (resource leak only, not unhandled rejection); SEC-002 stays FIXED not VERIFIED; PERF-001 MOOT (`src/launch` deleted); PERF-002/003 downgraded with caveats; production observations marked as Model 1 assertions.
+
+**Rejected with counter-evidence:** narrowed the reviewer's implied "network error" transient match — that would disable negative-caching for definitive archive rejections (seaDropDiscoveryService.test.js:115 "every tier fails" test pins the cached-negative behavior for definitive failures).
+
+**Verification:** full gate **916/916** (0 fail, 0 cancelled, 0 skipped) at this commit; reviewer reproductions 3/3; chaos 8/8; discordMintFlow 35/35; lint OK; dashboard build OK. Staged diff secret-scanned clean.
+
+**Unresolved risks:** SEC-003 multi-instance locks; RPC-004 clock drift; PERF-005 load rehearsal (TX-007 latency benchmark folded into it); DNS-rebinding residual (DNS-resolution check added but TOCTOU between resolve and connect remains theoretical).
+
+**Exact next action:** push and request Model 2 phase-2 review of `782054d..{this commit}`. Do not begin phase 2 until PASS.
+
+---
+
 ## 2026-08-25 (latest) — Model 2 — independent review of `2aa05c2..1d99936`
 
 - **Branch:** `main` · **Reviewed result:** `1d999366f20ef34ac5809099a3bb5f3fd95cb2d2` (ancestor of current HEAD) · **Verdict:** **FAIL**

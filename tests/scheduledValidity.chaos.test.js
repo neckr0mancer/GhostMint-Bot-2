@@ -5,6 +5,7 @@
 // (re-arm territory) so all three rescue mechanisms are exercised.
 const assert = require('node:assert/strict');
 const test = require('node:test');
+const { setImmediate } = require('node:timers');
 const { ValidationError } = require('../src/validation/domain');
 const { STAGE_NOT_OPEN, STAGE_NOT_OPEN_MAX_ATTEMPTS, STAGE_REARM_MAX_ATTEMPTS,
   createSchedulerWorker } = require('../src/scheduler/schedulerWorker');
@@ -23,6 +24,11 @@ function chaosRepository() {
       return details.transient && value.attemptCount < value.maxAttempts ? 'retry' : 'failed';
     },
     async claimDue() { calls.push(['claimDue']); return null; },
+    // TX-020: explicit per-task claim used by handleBlock; claims only when due.
+    async claimSpecific({ taskId }) {
+      calls.push(['claimSpecific', taskId]);
+      return { id: taskId, userId: 'u', attemptCount: 1, maxAttempts: 3, state: 'claimed' };
+    },
     async listImminent() { return []; },
     async listStaleClaims() { return []; },
   };
@@ -142,7 +148,10 @@ test('RPC disconnect mid-window is transient too: the burst survives an outage b
   assert.equal(await worker.processTask(t()), 'succeeded');
 });
 
-test('duplicate block events cannot double-claim: handleBlock is one-shot per stage-not-open failure', async () => {
+// TX-020 semantics: waiters are per task with their own eligibility moment. A block before the
+// waiter's retryAt keeps the registration; a block after it claims THAT task explicitly, exactly
+// once -- duplicate block delivery and unrelated chains cannot double-claim or steal the wake-up.
+test('block-driven retry wakes each eligible waiter explicitly; duplicates and early blocks do not double-claim', async () => {
   const repository = chaosRepository();
   let nowMs = T;
   const worker = createSchedulerWorker({
@@ -154,18 +163,30 @@ test('duplicate block events cannot double-claim: handleBlock is one-shot per st
   });
   const t = { id: 't-blocks', userId: 'u', attemptCount: 1, maxAttempts: 3, chain: 'ethereum', idempotencyKey: 'k' };
   await worker.processTask(t);
-  const claimsAfterFailure = repository.calls.filter(c => c[0] === 'claimDue').length;
+  const claimsAfterFailure = () => repository.calls.filter(c => c[0] === 'claimSpecific').length;
+  assert.equal(claimsAfterFailure(), 0);
 
-  // First block after the failure: the registered chain gets exactly one tick.
+  // A block arriving BEFORE the waiter's retry moment (retryAt = T+250): no claim, waiter kept.
+  nowMs = T + 100;
   worker.handleBlock('ethereum');
-  assert.equal(repository.calls.filter(c => c[0] === 'claimDue').length, claimsAfterFailure + 1);
-  // Duplicate delivery of the same block (reconnect replay): no second tick.
+  assert.equal(claimsAfterFailure(), 0, 'an early block must not consume the waiter');
+
+  // A block at/after the retry moment: exactly one explicit claim of exactly this task.
+  nowMs = T + 300;
   worker.handleBlock('ethereum');
-  assert.equal(repository.calls.filter(c => c[0] === 'claimDue').length, claimsAfterFailure + 1,
-    'a duplicate block event must not claim twice');
-  // A chain that never had a waiting task: no tick either.
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(claimsAfterFailure(), 1, 'an eligible waiter is claimed exactly once');
+  assert.deepEqual(repository.calls.find(c => c[0] === 'claimSpecific')[1], 't-blocks');
+
+  // Duplicate delivery of the same block (reconnect replay): the waiter is gone, no second claim.
+  worker.handleBlock('ethereum');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(claimsAfterFailure(), 1, 'a duplicate block event must not claim twice');
+
+  // A chain that never had a waiting task: no claim either.
   worker.handleBlock('base');
-  assert.equal(repository.calls.filter(c => c[0] === 'claimDue').length, claimsAfterFailure + 1);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(claimsAfterFailure(), 1);
 });
 
 test('the block-retry registration feeds the watcher wiring (onStageNotOpen) exactly per failure', async () => {

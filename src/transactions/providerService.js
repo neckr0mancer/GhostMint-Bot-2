@@ -73,16 +73,23 @@ function createProviderService({ chains, timeoutMs = 10_000, retries = 1, provid
 
   // Round 16 (docs/WORKLIST.md Section AV): fans one operation out to EVERY configured candidate
   // concurrently, resolving with whichever succeeds first, instead of perform()'s sequential
-  // try-then-fallback. Used only for sniper's same-signed-tx broadcast: the same nonce+signature
-  // can't double-spend across endpoints, so racing all of them beats waiting on one at a time when
-  // shaving inclusion latency is the entire point. Every other caller stays on perform().
+  // try-then-fallback. Used only for same-signed-tx broadcasts (sniper, launch, scheduled): the
+  // identical nonce+signature can't double-spend across endpoints, so racing all of them beats
+  // waiting on one at a time when shaving inclusion latency is the entire point. Every other
+  // caller stays on perform().
+  //
+  // TX-004 (Model 2 phase-1): a definitive rejection from ONE endpoint must never hide another
+  // endpoint's ACCEPTANCE of the same bytes -- the accepted copy may already be in that node's
+  // mempool, and classifying the broadcast as reverted/failed here can cause a duplicate at a new
+  // nonce. Success therefore wins unconditionally; a definitive code is surfaced only when EVERY
+  // candidate failed and at least one was definitive.
   async function performAll(chain, operationName, operation, { timeoutMs: timeoutOverride } = {}) {
     const candidates = chainProviders(chain);
     const effectiveTimeoutMs = timeoutOverride ?? timeoutMs;
     return new Promise((resolve, reject) => {
       let pending = candidates.length;
       let settled = false;
-      let lastError = null;
+      let definitiveError = null;
       for (const candidate of candidates) {
         withTimeout(
           Promise.resolve().then(() => operation(candidate.provider)),
@@ -91,17 +98,11 @@ function createProviderService({ chains, timeoutMs = 10_000, retries = 1, provid
         ).then(value => {
           if (!settled) { settled = true; resolve(value); }
         }).catch(error => {
-          if (!settled && NON_RETRYABLE_ERROR_CODES.has(error?.code)) {
-            settled = true;
-            reject(error);
-            return;
-          }
-          lastError = error;
+          if (NON_RETRYABLE_ERROR_CODES.has(error?.code) && !definitiveError) definitiveError = error;
           pending -= 1;
           if (!settled && pending === 0) {
             settled = true;
-            // If the last error was definitive, preserve it; otherwise generic unavailable.
-            if (lastError && NON_RETRYABLE_ERROR_CODES.has(lastError?.code)) reject(lastError);
+            if (definitiveError) reject(definitiveError);
             else reject(new RpcUnavailableError(chain, candidates.length));
           }
         });

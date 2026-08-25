@@ -345,26 +345,31 @@ async function prearmScheduledTask(task) {
         log(`Pre-arm notice: "${task.name}" (${wallet.chain}:${task.contract}) fires at ${new Date(task.mintTime).toISOString()}, but its live SeaDrop window starts ${new Date(livePublicDrop.startTime * 1000).toISOString()} -- the fire-time drift check may reject it`);
       }
     }
-    // Warm hot-path reads that executeTask will need at T0: fee data (5s TTL), balance, and
-    // pending nonce. All best-effort and in parallel -- a failure here just means T0 does the
-    // work the old way, never a hard failure. Use the execution chain (persisted task chain
-    // if present, else wallet home) so the warm matches what T0 will actually use.
+    // Warm hot-path reads that executeTask will need at T0. TX-007 (Model 2 phase-1) corrected
+    // the claim: the fee cache TTL is 5s, so a single warm at T-12s is COLD again by T0 -- the
+    // warm that matters is the one inside the TTL window. Balance/nonce/network warm the RPC
+    // connection pool (keep-alive sockets), not reusable data. All best-effort; a failure just
+    // means T0 does the work the old way, never a hard failure. Uses the execution chain
+    // (persisted task chain if present, else wallet home) so the warm matches T0's actual pool.
     const executionChain = (() => {
       try { return resolveTaskChain(task, CONFIG.supportedChains).chain || wallet.chain; }
       catch { return wallet.chain; }
     })();
-    // Fee data cache is per-chain and short-lived, so a 12s lead still leaves it hot at T0.
-    // Balance and nonce warm the provider/RPC connection pool.
-    providerService.perform(executionChain, 'prearmFeeData', p => p.getFeeData()).then(fd => {
-      if (fd && executionChain) {
-        try { transactionEngine.warmFeeDataCache(executionChain, fd); } catch {}
-      }
-    }).catch(() => {});
+    const warmFeeData = () => providerService.perform(executionChain, 'prearmFeeData', p => p.getFeeData())
+      .then(fd => { if (fd && executionChain) { try { transactionEngine.warmFeeDataCache(executionChain, fd); } catch {} } })
+      .catch(() => {});
+    // Connection warm now; the FEE re-warm is scheduled into the TTL window (T-4s), timed from
+    // the task's own fire moment so a moved fire time moves the re-warm with it.
+    warmFeeData();
     Promise.all([
       providerService.perform(executionChain, 'prearmBalance', p => p.getBalance(wallet.address)).catch(() => null),
       providerService.perform(executionChain, 'prearmNonce', p => p.getTransactionCount(wallet.address, 'pending')).catch(() => null),
       providerService.perform(executionChain, 'prearmNetwork', p => p.getNetwork()).catch(() => null),
     ]).catch(() => {});
+    const fireAt = task.mintTime;
+    const reWarmDelay = Math.max(250, fireAt - 4000 - Date.now());
+    const reWarm = setTimeout(warmFeeData, reWarmDelay);
+    reWarm.unref?.();
     armedPreparations.set(`${task.userId}:${task.id}`, { mintTime: task.mintTime, at: Date.now() });
   } catch (error) {
     // Preparation is best-effort by contract: any failure here just means fire time does things
@@ -557,7 +562,7 @@ const schedulerWorker = createSchedulerWorker({
       // "no reason recorded" for every reverted transaction.
       // Same fold as the stored last_error above: event.error.message alone is the constant
       // "Request validation failed" for every ValidationError -- the issues carry the real cause.
-      const detail = event.error ? safeError(errorReason(event.error)) : '';
+      const detail = event.error ? redact(errorReason(event.error)) : '';
       const reason = detail ? `
 ${escapeTelegramHtml(detail)}` : '';
       if (wallet) await logActivity(event.task.userId, 'fail', `Scheduled mint failed: ${event.task.name}`,
@@ -584,10 +589,12 @@ ${escapeTelegramHtml(detail)}` : '';
   log,
   // errorReason folds ValidationError's issues (the real cause -- OpenSea's own eligibility
   // answer, a missing wallet, an unsupported chain) into what otherwise surfaces as the constant
-  // "Request validation failed"; safeError then redacts secrets. The fold is the whole point --
+  // "Request validation failed"; redact then strips secrets. The fold is the whole point --
   // wiring plain safeError here is why every failed schedule used to store the same opaque
   // sentence and a live "scheduled mints always fail" report was undiagnosable from last_error.
-  sanitizeError: error => safeError(errorReason(error)),
+  // (redact, not safeError: errorReason already returns a string, and safeError expects an
+  // error object -- passing it a string yields "Unknown error".)
+  sanitizeError: error => redact(errorReason(error)),
 });
 
 // ── Scheduled-mint reminder and low-balance pre-flight ────

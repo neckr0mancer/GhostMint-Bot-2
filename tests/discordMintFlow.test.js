@@ -116,6 +116,35 @@ test('a paste always lands on the collection details card first', async () => {
   assert.deepEqual(message.replies[0].components[0].components.map(b => b.custom_id), ['flow:mintdetailscontinue']);
 });
 
+// UX-002 regressions (Model 2 phase-1 finding 6): the paste path must distinguish the user's own
+// wallets, any EOA, and real contracts -- previously the whole differentiation block was dead
+// because .catch() was chained onto a synchronous array.
+test('a paste of an address the user OWNS is ignored, not treated as a contract', async () => {
+  const flowState = createFlowStateStore();
+  const commands = baseCommands({ wallets: () => [{ label: 'main', address: '0x0000000000000000000000000000000000000001' }] });
+  const message = mockMessage('0x0000000000000000000000000000000000000001', 'owner-paster');
+  await handleMintPasteMessage({ identity: { resolveOrCreate: async () => 'internal-user' }, commands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT }, message);
+  assert.equal(message.replies.length, 0, 'an owned wallet paste must not open a mint flow');
+  assert.equal(flowState.get('discord', 'owner-paster'), null);
+});
+
+test('a paste of an unowned EOA (no code on any chain) is ignored too', async () => {
+  const flowState = createFlowStateStore();
+  const commands = baseCommands({ isContractAddress: async () => false });
+  const message = mockMessage('0x9999999999999999999999999999999999999999', 'eoa-paster');
+  await handleMintPasteMessage({ identity: { resolveOrCreate: async () => 'internal-user' }, commands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT }, message);
+  assert.equal(message.replies.length, 0, 'an EOA paste must not open a mint flow');
+  assert.equal(flowState.get('discord', 'eoa-paster'), null);
+});
+
+test('a paste of a real contract still opens the flow, and an isContractAddress RPC failure fails open to it', async () => {
+  const flowState = createFlowStateStore();
+  const commands = baseCommands({ isContractAddress: async () => { throw new Error('RPC down'); } });
+  const message = mockMessage('0x0000000000000000000000000000000000000001', 'contract-paster');
+  await handleMintPasteMessage({ identity: { resolveOrCreate: async () => 'internal-user' }, commands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT }, message);
+  assert.equal(message.replies.length, 1, 'a transient classification failure must not hide a real contract paste');
+});
+
 test('a multi-entity paste (several lines in one message) starts the flow on its first matching line', async () => {
   const flowState = createFlowStateStore();
   const seen = [];

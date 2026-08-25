@@ -113,26 +113,38 @@ function createTransactionIntentRepository(pool) {
     // Move an intent onto its re-bid: new hash becomes primary (the superseded one is preserved in
     // bumped_from_tx_hash), fees advance, bump_count increments, and pending_at resets so the next
     // staleness window starts from this bump rather than from the original fire.
+    // TX-019 (Model 2 phase-1): the transition row must record the ACTUAL previous state -- a
+    // ladder rescue from 'unknown' is unknown→pending, not a fabricated pending→pending. One
+    // statement captures the locked previous state and updates atomically.
     async attachBump(intentId, { txHash, bumpedFromTxHash, gasPriceWei, maxFeePerGasWei, maxPriorityFeePerGasWei }) {
       const result = await pool.query(
-        `UPDATE transaction_intents SET tx_hash=$2, bumped_from_tx_hash=$3,
-           gas_price_wei=COALESCE($4,gas_price_wei),
-           max_fee_per_gas_wei=COALESCE($5,max_fee_per_gas_wei),
-           max_priority_fee_per_gas_wei=COALESCE($6,max_priority_fee_per_gas_wei),
-           bump_count=bump_count+1,
-           -- Each rung buys its own full timeout window: reconciliation must not declare the
-           -- intent unknown mid-ladder just because the ORIGINAL broadcast is old.
-           timeout_at = NOW() + (transaction_timeout_ms * INTERVAL '1 millisecond'),
-           pending_at=NOW(), last_reconciled_at=NOW(), state='pending'
-         WHERE intent_id=$1 AND state IN ('pending','unknown') RETURNING *`,
+        `WITH previous AS (
+           SELECT intent_id, state FROM transaction_intents
+           WHERE intent_id=$1 AND state IN ('pending','unknown')
+           FOR UPDATE
+         ), updated AS (
+           UPDATE transaction_intents SET tx_hash=$2, bumped_from_tx_hash=$3,
+             gas_price_wei=COALESCE($4,gas_price_wei),
+             max_fee_per_gas_wei=COALESCE($5,max_fee_per_gas_wei),
+             max_priority_fee_per_gas_wei=COALESCE($6,max_priority_fee_per_gas_wei),
+             bump_count=bump_count+1,
+             -- Each rung buys its own full timeout window: reconciliation must not declare the
+             -- intent unknown mid-ladder just because the ORIGINAL broadcast is old.
+             timeout_at = NOW() + (transaction_timeout_ms * INTERVAL '1 millisecond'),
+             pending_at=NOW(), last_reconciled_at=NOW(), state='pending'
+           WHERE intent_id=$1 AND state IN ('pending','unknown') RETURNING *
+         ), logged AS (
+           INSERT INTO transaction_state_transitions (intent_id, from_state, to_state, reason)
+           SELECT previous.intent_id, previous.state, 'pending', 'bumped to a higher fee'
+           FROM previous
+         )
+         SELECT * FROM updated`,
         [intentId, txHash, bumpedFromTxHash,
           gasPriceWei ? gasPriceWei.toString() : null,
           maxFeePerGasWei ? maxFeePerGasWei.toString() : null,
           maxPriorityFeePerGasWei ? maxPriorityFeePerGasWei.toString() : null],
       );
       if (!result.rowCount) throw new Error(`attachBump: intent ${intentId} is no longer pending`);
-      await pool.query(`INSERT INTO transaction_state_transitions (intent_id,from_state,to_state,reason)
-        VALUES ($1,'pending','pending','bumped to a higher fee')`, [intentId]);
       return mapIntent(result.rows[0]);
     },
 
@@ -214,17 +226,25 @@ function createTransactionIntentRepository(pool) {
     },
 
     async rollingSpendWei(userId, walletId, sinceMs) {
-      // Budget accounting counts an intent's FULL cost -- mint value plus network fee.
-      // estimated_cost_wei already includes both, but actual_network_cost_wei holds GAS ONLY once a
-      // receipt lands, so COALESCE(actual, estimated) silently dropped a confirmed mint's entire
-      // value from the 24h total and the daily budget did not hold (PROJECT_REVIEW §1.1). Actuals
-      // still win where they exist -- they are simply topped back up with the intent's own value;
-      // pre-receipt states keep running on the estimate. Reverted/replaced stay excluded (a failed
-      // attempt is not budget consumption) -- that is this query's long-standing semantics.
-      const result = await pool.query(`SELECT COALESCE(SUM(COALESCE(actual_network_cost_wei + value_wei, estimated_cost_wei)),0) AS total
+      // Budget accounting is STATE-AWARE (Model 2 phase-1, TX-005):
+      //   confirmed -- actual network fee + mint value (the full cost; estimate only if the
+      //                receipt somehow lacks cost fields)
+      //   unknown   -- full estimate: the broadcast may still be live, so its cost stays reserved
+      //   reverted  -- actual network fee ONLY: gas was really paid, but no value transferred
+      //   submitted/pending -- full estimate (pre-receipt)
+      //   replaced  -- excluded by policy: the winning transaction at that nonce carries the
+      //                economic outcome, and this row's unreceipted gas is not reservable budget.
+      //                Its gas loss is still visible in reporting via the intent's own row.
+      const result = await pool.query(`SELECT COALESCE(SUM(
+          CASE state
+            WHEN 'confirmed' THEN COALESCE(actual_network_cost_wei + value_wei, estimated_cost_wei)
+            WHEN 'reverted' THEN COALESCE(actual_network_cost_wei, 0)
+            ELSE estimated_cost_wei
+          END
+        ), 0) AS total
         FROM transaction_intents WHERE user_id=$1 AND wallet_id=$2
         AND created_at >= TO_TIMESTAMP($3 / 1000.0)
-        AND state IN ('submitted','pending','confirmed')`, [userId, walletId, sinceMs]);
+        AND state IN ('submitted','pending','confirmed','unknown','reverted')`, [userId, walletId, sinceMs]);
       return BigInt(result.rows[0].total);
     },
   };

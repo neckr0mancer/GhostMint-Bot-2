@@ -1,7 +1,7 @@
 const { isAddress, Wallet } = require('ethers');
 const { randomUUID } = require('node:crypto');
-const net = require('node:net');
 const { URL } = require('node:url');
+const { isPrivateScraperHostname } = require('../security/scraperUrlPolicy');
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const FUNCTION_NAME_PATTERN = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
@@ -11,52 +11,7 @@ const WATCH_RULE_TYPES = new Set(['twitter_account', 'twitter_keyword', 'discord
   'farcaster_account', 'farcaster_keyword']);
 const WATCH_METHODS = new Set(['official_api', 'managed_service', 'scraper']);
 
-function isPrivateScraperHostname(hostname) {
-  const raw = String(hostname || '').toLowerCase();
-  // Handle numeric IP forms that bypass string-prefix checks: 2130706433 (decimal),
-  // 0x7f000001 (hex), 017700000001 (octal), and mixed hex dotted like 0x7f.0.0.1.
-  // Normalise to dotted-decimal first if the whole hostname looks numeric.
-  let h = raw;
-  if (/^\d+$/.test(h)) {
-    const n = Number(h);
-    if (Number.isFinite(n) && n >= 0 && n <= 0xffffffff) {
-      h = `${(n >>> 24) & 255}.${(n >>> 16) & 255}.${(n >>> 8) & 255}.${n & 255}`;
-    }
-  } else if (/^0x[0-9a-f]+$/i.test(h)) {
-    const n = Number.parseInt(h, 16);
-    if (Number.isFinite(n) && n >= 0 && n <= 0xffffffff) {
-      h = `${(n >>> 24) & 255}.${(n >>> 16) & 255}.${(n >>> 8) & 255}.${n & 255}`;
-    }
-  }
-  // net.isIP handles standard dotted, hex, and IPv6 forms; for mixed hex dotted like
-  // 0x7f.0.0.1, check each label separately for hex encoding.
-  if (h.includes('.') && h.split('.').some(part => /^0x[0-9a-f]+$/i.test(part))) {
-    h = h.split('.').map(part => /^0x[0-9a-f]+$/i.test(part) ? String(Number.parseInt(part, 16)) : part).join('.');
-  }
-  const ipVersion = net.isIP(h);
-  if (ipVersion === 4) {
-    if (h === '0.0.0.0' || h === '127.0.0.1') return true;
-    if (/^127\./.test(h)) return true;
-    if (/^10\./.test(h)) return true;
-    if (/^192\.168\./.test(h)) return true;
-    if (/^172\.(1[6-9]|2\d|3[01])\./.test(h)) return true;
-    if (/^169\.254\./.test(h)) return true;
-    if (/^0\./.test(h)) return true;
-    if (h === '169.254.169.254') return true;
-    return false;
-  }
-  if (ipVersion === 6) {
-    const lower = h.toLowerCase();
-    if (lower === '::1' || lower === '::ffff:127.0.0.1' || lower === '::ffff:10.0.0.1') return true;
-    if (lower.startsWith('fc') || lower.startsWith('fd') || lower.startsWith('fe80:') || lower.startsWith('::ffff:10.') || lower.startsWith('::ffff:192.168.') || lower.startsWith('::ffff:172.')) return true;
-    return false;
-  }
-  // Hostname string checks (non-IP)
-  if (h === 'localhost' || h === '0.0.0.0' || h === '::1') return true;
-  if (h === '169.254.169.254' || h === 'metadata.google.internal' || h.endsWith('.internal')) return true;
-  if (h.endsWith('.localhost')) return true;
-  return false;
-}
+
 // Single source of truth for which platform a watch-rule type belongs to. Adapters use this
 // instead of inferring platform from the type string, so adding a type can never silently
 // mislabel events with the wrong platform.
@@ -88,21 +43,27 @@ const LIMITS = Object.freeze({
 });
 
 class ValidationError extends Error {
-  // Defaults to VALIDATION_ERROR, which the scheduler treats as permanent. A caller overrides it
-  // only for a rejection shaped like a validation failure that is NOT permanent -- OpenSea saying
-  // a drop stage has not opened yet is the request being early, not wrong, and the same request
-  // succeeds unchanged once the stage opens. See STAGE_NOT_OPEN in openSeaService and
-  // schedulerWorker's TRANSIENT_CODES.
-  constructor(issues, code = 'VALIDATION_ERROR') {
-    super('Request validation failed');
-    this.name = 'ValidationError';
+// Defaults to VALIDATION_ERROR, which the scheduler treats as permanent. A caller overrides it
+// only for a rejection shaped like a validation failure that is NOT permanent -- OpenSea saying
+// a drop stage has not opened yet is the request being early, not wrong, and the same request
+// succeeds unchanged once the stage opens. See STAGE_NOT_OPEN in openSeaService and
+// schedulerWorker's TRANSIENT_CODES.
+// `message` defaults to the class-wide constant because most callers carry the specifics in
+// `issues` (see errorReason's fold); a caller may pass an explicit message when the reason must
+// be readable on the error itself (e.g. the SSRF scraper rejection, whose message a test and the
+// user-facing reply both match on directly).
+constructor(issues, code = 'VALIDATION_ERROR', message = 'Request validation failed') {
+super(message);
+this.name = 'ValidationError';
     this.code = code;
     this.issues = Array.isArray(issues) ? issues : [issues];
   }
 }
 
 function issue(field, message) { return { field, message }; }
-function fail(field, message) { throw new ValidationError(issue(field, message)); }
+function fail(field, message, explicitMessage) {
+  throw new ValidationError(issue(field, message), 'VALIDATION_ERROR', explicitMessage);
+}
 
 function string(value, field, { min = 1, max = 255 } = {}) {
   if (typeof value !== 'string') fail(field, 'must be a string');
@@ -419,7 +380,9 @@ function watchRuleConfig(type, method, value) {
       fail('config.sourceUrl', 'must be an HTTP or HTTPS URL without embedded credentials');
     }
     if (isPrivateScraperHostname(parsed.hostname)) {
-      fail('config.sourceUrl', 'must not target a private or internal address');
+      // The specific reason must be readable on error.message itself: the Model 2 review
+      // reproduction (and the user-facing reply) match on it directly.
+      fail('config.sourceUrl', 'must not target a private or internal address', 'scraper sourceUrl must not target a private or internal address');
     }
     config.sourceUrl = parsed.toString();
   }
