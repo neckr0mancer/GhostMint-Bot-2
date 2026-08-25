@@ -2,6 +2,19 @@
 
 ---
 
+## 2026-08-25 — Model 2 — Phase 2 independent review
+
+- **Branch:** `main` · **Reviewed base:** `782054d648d1432d14c07eef9abd94816156a30c` · **Reviewed result:** `cff9eb69a65c3748224e71c7a05b6a58f7455124` · **Verdict:** **FAIL**
+- **Scope:** complete 10-commit, 58-file, +3,649/-495 range review; every changed line and claimed correction inspected. No production code changed.
+- **Review artifacts:** `docs/agent/reviews/model2-phase-02.md`; `tests/model2.phase02.review.test.js`; factual/status corrections in `docs/agent/WORKLIST.md` and `docs/agent/DECISIONS.md`; this handoff.
+- **Critical findings:** SEC-001 scraper SSRF remains fail-open/unpinned; SEC-013 proof-URL SSRF; TX-004 ambiguous broadcast false-finality; TX-014 missed signed-hash attach still broadcasts.
+- **Other blockers:** unsafe BASE-005 wallet cleanup; incomplete final account guard; replacement hash/history/policy/spend defects; non-monotonic/provider-desynchronized finality; arbitrary OpenSea gated call target; dashboard double-submit and reverted-as-success; phase mutation/churn; scheduler lifecycle and cross-chain reminder failures. See the report for exact reproduction, expected/actual, required test, and correction for every ID.
+- **Verified narrowly:** result ancestry/range; nominal phase resolver and OpenSea signature cases; UX-002 Discord EOA flow preservation; UX-008 Ink code-path subclaim; TX-001/TX-002 reviewer cases; builds, lint, syntax, and high-confidence secret scan. No item was promoted from memory alone.
+- **Tests/results:** exact isolated full run 971 total / 953 pass / 13 fail / 5 skip; safe-config reruns cleared environment-only failures/timing flake but intentionally skipped DB integrations and retained BASE-006. Original reviewer files 11/12 before worklist repair; Phase 2 reproductions expected-fail 0/16. Exact and current Vite builds pass; ESLint and changed-JS syntax pass; exact range `diff --check` has two EOF whitespace errors.
+- **Safety:** no `.env`, live database/RPC/service, transaction, funds, credential, production write, or production-code edit. Review-only deterministic mocks/static probes were used.
+- **Unresolved risk:** release and any real-value use remain blocked by the report's Critical/High transaction and security findings. The claimed fixture purge must be audited against backups before the script is reused.
+- **Exact next action:** Model 1 first disables/audits the cleanup path, then fixes SEC-001/SEC-013/TX-004/TX-014 without weakening `tests/model2.phase02.review.test.js`; next it restores append-only/monotonic transaction truth and confirmed-only dashboard accounting with disposable PostgreSQL concurrency tests; finally run the full gate with DB integrations and request another Model 2 review. Do not begin a later phase.
+
 ## 2026-08-25 — Model 1 correction handoff — Model 2 phase-1 re-review findings addressed
 
 - **Branch:** `main` · **Base:** `782054d` (Model 2 re-review FAIL) · **This commit:** all corrections

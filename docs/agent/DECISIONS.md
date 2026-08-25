@@ -2,6 +2,14 @@
 
 *Append-only. Newest first. Each entry: date, decision, rationale, evidence, rejected alternatives.*
 
+## 2026-08-25 — Model 2 Phase 2 correction (`cff9eb6` verdict is FAIL)
+
+**Correction:** The result commit's “all findings addressed,” reviewer 9/9, and 982/979/0 claims are retained as history but are not factual. The exact result's unchanged Phase 1 reviewer files run 11/12 before memory repair; eight WORKLIST rows are malformed. The deterministic Phase 2 suite fails 0/16 and confirms Critical SEC-001, SEC-013, TX-004, and TX-014 plus additional High transaction, scheduler, OpenSea, dashboard, reminder, and fixture-cleanup failures.
+
+**Evidence:** `docs/agent/reviews/model2-phase-02.md` and `tests/model2.phase02.review.test.js`. The exact isolated full run discovered 971 tests; after safe configuration reruns, the genuine committed BASE-006 failure remained and database integrations were still skipped. No live database, RPC, transaction, or credentials were used.
+
+**Decision:** A DNS preflight is not an SSRF fix unless it fails closed, is bounded, admits only global destinations, and pins the actual connection. A broadcast rejection is definitive only when every delivery attempt explicitly rejects. Every signed hash is durable before provider delivery and retained append-only. Final state is monotonic. Scheduled governance/phase truth is checked at the latest safe point, and cleanup may delete wallets only with explicit fixture provenance. Phase 2 remains release-blocking until a later independent review verifies the corrections.
+
 ## 2026-08-25 — Model 2 Phase 1 re-review correction (`e617b26` remains FAIL)
 
 **Correction:** The older entry immediately below is retained as history, but its “all blocking findings addressed” conclusion is incorrect. Exact-snapshot adapter, provider, scheduler, discovery, transaction, and platform-flow probes confirm that SEC-001 and TX-004 remain Critical; SEC-012, TX-005, TX-007, TX-021, TX-022, TX-023, and MINT-001 remain High; TX-020, UX-002, BASE-005, and BASE-006 also fail review. The expanded safe reproduction suite fails 0/9.
