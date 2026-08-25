@@ -46,6 +46,15 @@ const CHAIN_DEFINITIONS = Object.freeze({
     ex: 'https://polygonscan.com/tx/',
     isTestnet: false,
   }),
+  ink: Object.freeze({
+    name: 'Ink',
+    chainId: 57073,
+    envName: 'INK_RPC',
+    defaultRpc: 'https://rpc-gel.inkonchain.com',
+    sym: 'ETH',
+    ex: 'https://explorer.inkonchain.com/tx/',
+    isTestnet: false,
+  }),
   robinhood: Object.freeze({
     name: 'Robinhood Chain',
     chainId: 4663,

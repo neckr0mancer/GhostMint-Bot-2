@@ -88,12 +88,14 @@ const CHAIN_META={
   arbitrum:{label:'Arbitrum',icon:<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 3 4 20h5l3-7 3 7h5z" fill="#28a0f0"/></svg>},
   polygon:{label:'Polygon',icon:<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 2 21 7v10l-9 5-9-5V7z" fill="#c084fc"/></svg>},
   robinhood:{label:'Robinhood Chain',icon:<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><rect x="3" y="3" width="18" height="18" rx="6" fill="#00C805"/></svg>},
+  ink:{label:'Ink',icon:<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="9" fill="#7132F5"/></svg>},
 };
 function chainMeta(value){return CHAIN_META[value]||{label:value,icon:null};}
 const CHAIN_EXPLORERS={
   ethereum:'https://etherscan.io/tx/',base:'https://basescan.org/tx/',
   arbitrum:'https://arbiscan.io/tx/',polygon:'https://polygonscan.com/tx/',
   robinhood:'https://robinhoodchain.blockscout.com/tx/',
+  ink:'https://explorer.inkonchain.com/tx/',
 };
 function explorerForChain(chain){return CHAIN_EXPLORERS[chain]||null;}
 const CHAIN_CHEVRON_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 9l6 6 6-6"/></svg>;
@@ -3047,8 +3049,8 @@ const AUTOMATION_TABS=[
 // order the API does not expose, and a handle that forgets its order on reload is worse than none.
 // Only Ethereum and Base appear in the prototype (#627eea, #0052ff); the rest are each chain's own
 // brand colour, because a dot that is the WRONG colour is worse than the one thing it exists to do.
-const CHAIN_DOT={ethereum:'#627eea',base:'#0052ff',arbitrum:'#28a0f0',polygon:'#8247e5',robinhood:'#ccff00'};
-const CHAIN_LABEL={ethereum:'Ethereum',base:'Base',arbitrum:'Arbitrum',polygon:'Polygon',robinhood:'Robinhood'};
+const CHAIN_DOT={ethereum:'#627eea',base:'#0052ff',arbitrum:'#28a0f0',polygon:'#8247e5',robinhood:'#ccff00',ink:'#7132F5'};
+const CHAIN_LABEL={ethereum:'Ethereum',base:'Base',arbitrum:'Arbitrum',polygon:'Polygon',robinhood:'Robinhood',ink:'Ink'};
 const SOCIAL_LABEL={twitter:'Twitter',discord:'Discord',farcaster:'Farcaster'};
 const AUTOMATION_KIND={sniper:'Copy sniper',social:'Social rule'};
 

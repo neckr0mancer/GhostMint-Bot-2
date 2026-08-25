@@ -137,15 +137,25 @@ function createTransactionEngine({
     return fresh;
   }
 
+  function warmFeeDataCache(chain, feeData) {
+    if (feeData) feeDataCache.set(chain, feeData);
+  }
+
 
   async function estimateGasSafely(chain, params, options, service = providerService) {
     try { return await providerCall(chain, 'estimateGas', provider => provider.estimateGas(params), options, service); }
-    catch (error) { throw new TransactionSafetyError('SIMULATION_FAILED', explainCallFailure(error, { chain, params })); }
+    catch (error) {
+      if (error?.code === 'RPC_UNAVAILABLE' || error?.code === 'NETWORK_ERROR' || error?.code === 'SERVER_ERROR' || error?.code === 'TIMEOUT' || String(error?.message || '').toLowerCase().includes('timed out')) throw error;
+      throw new TransactionSafetyError('SIMULATION_FAILED', explainCallFailure(error, { chain, params }));
+    }
   }
 
   async function simulateCallSafely(chain, params, options, service = providerService) {
     try { return await providerCall(chain, 'simulate', provider => provider.call(params), options, service); }
-    catch (error) { throw new TransactionSafetyError('SIMULATION_FAILED', explainCallFailure(error, { chain, params })); }
+    catch (error) {
+      if (error?.code === 'RPC_UNAVAILABLE' || error?.code === 'NETWORK_ERROR' || error?.code === 'SERVER_ERROR' || error?.code === 'TIMEOUT' || String(error?.message || '').toLowerCase().includes('timed out')) throw error;
+      throw new TransactionSafetyError('SIMULATION_FAILED', explainCallFailure(error, { chain, params }));
+    }
   }
 
   // Lets concurrently fired reads settle instead of rejecting a shared Promise.all, so each leg's
@@ -496,17 +506,28 @@ function createTransactionEngine({
         // race it without a reason as strong as sniper's actual competitive-inclusion use case.
         if (isSniperTrigger && sniperProviderService) {
           await sniperProviderService.performAll(request.chain, 'broadcastTransaction', provider => provider.broadcastTransaction(signedTransaction));
-        } else if (trigger === 'launch') {
-          // Launch squads race too (Round 22, day 4): a coordinated burst is the exact competitive
-          // use case sniper's race was built for -- same nonce+signature everywhere, losing
-          // endpoints' "already known" responses are harmless -- and its staging phase did all the
-          // slow verification up front, so there is no sequential-fallback safety argument left.
-          const racing = useFastPath && fastProviderService ? fastProviderService : providerService;
+        } else if ((trigger === 'launch' || trigger === 'scheduled') && useFastPath && fastProviderService) {
+          // Launch squads and scheduled mints both race the same signed bytes across the fast
+          // pool when it exists -- the competitive case for scheduled is identical to sniper's:
+          // the first valid block after T, not T itself. Same nonce+signature everywhere, so
+          // "already known" on losers is harmless, and the fast pool's pre-arm already did the
+          // slow verification. Without a fast pool, fall back to the conservative sequential path.
+          const racing = fastProviderService;
           await racing.performAll(request.chain, 'broadcastTransaction', provider => provider.broadcastTransaction(signedTransaction));
         } else {
           await providerCall(request.chain, 'broadcastTransaction', provider => provider.broadcastTransaction(signedTransaction));
         }
       } catch (error) {
+        // Definitive provider answers (insufficient funds, reverted call, nonce errors) must not be
+        // laundered into BROADCAST_UNKNOWN -- that code is treated as transient and retried, while
+        // these are permanent and must surface with their real reason so the scheduler fails the
+        // task instead of retrying a mint that can never succeed.
+        const definitiveBroadcastCodes = new Set(['CALL_EXCEPTION', 'INSUFFICIENT_FUNDS', 'NONCE_EXPIRED', 'REPLACEMENT_UNDERPRICED', 'UNPREDICTABLE_GAS_LIMIT']);
+        if (definitiveBroadcastCodes.has(error?.code)) {
+          await transition(intent.intentId, 'reverted', { reason: (error.message || String(error)).slice(0, 500) });
+          if (error instanceof TransactionSafetyError) throw error;
+          throw new TransactionSafetyError(error.code || 'CALL_EXCEPTION', error.message || String(error));
+        }
         await transition(intent.intentId, 'unknown', { reason: 'broadcast result was not observable' });
         throw new TransactionSafetyError('BROADCAST_UNKNOWN', 'Transaction broadcast outcome is unknown; reconciliation will continue');
       }
@@ -548,7 +569,7 @@ function createTransactionEngine({
     return results;
   }
 
-  return { preview,reconcileIntent, reconcileNonFinal, submit, waitForFinality };
+  return { preview,reconcileIntent, reconcileNonFinal, submit, waitForFinality, warmFeeDataCache };
 }
 
 module.exports = { FINAL_STATES, TransactionSafetyError, createTransactionEngine, explainCallFailure };

@@ -11,6 +11,12 @@ const { TransactionSafetyError } = require('../transactions/transactionEngine');
 const { ValidationError, validationReply, LIMITS } = require('../validation/domain');
 const { BotContextError, RateLimitError, commandName, createCommandRateLimiter, escapeDiscord,
   verifyDiscordContext } = require('../security/botSecurity');
+// In-flight lock for value-bearing executions -- double-clicks and Discord network retries can
+// deliver the same component interaction twice before the first clears flowState. The lock is
+// per-platform-user for the duration of one execution (a few seconds of RPC + signing), not
+// per-flow, which is intentionally conservative for financial correctness.
+const inFlightMintExecutions = new Set();
+
 // Shared with Telegram (src/telegram/flowState.js). That module has no Telegram-specific logic --
 // it is a platform-namespaced (platform, chatId) -> flow tracker, written to be reused here.
 const { createFlowStateStore } = require('../telegram/flowState');
@@ -112,24 +118,6 @@ function commandDefinitions({ supportedChains = [], chains = {} } = {}) {
     .addIntegerOption(o => o.setName('quantity').setDescription('Quantity per wallet (omit to see the collection card first)').setMinValue(1))
     .addNumberOption(o => o.setName('price').setDescription('Native price per item (only if the contract does not expose one)').setMinValue(0))
     .addStringOption(o => chainOption(o, { description: 'Chain (auto-detected when omitted)' })));
-  // Launch squads -- staged multi-wallet bursts with a FIRE NOW moment and a report card
-  // (src/launch). Unlike batch-mint (immediate), staging happens up front so wallet problems
-  // surface before anyone spends gas.
-  commands.push(new SlashCommandBuilder().setName('aco').setDescription('🚀 Launch squad: one mint, many wallets, fired together')
-    .addStringOption(o => o.setName('contract').setDescription('Contract address').setRequired(true))
-    .addStringOption(o => o.setName('wallets').setDescription('Comma-separated wallet labels').setRequired(true).setAutocomplete(true))
-    .addIntegerOption(o => o.setName('quantity').setDescription('Quantity per wallet').setMinValue(1))
-    .addNumberOption(o => o.setName('price').setDescription("Native price per item (only if the contract does not expose one)").setMinValue(0))
-    .addStringOption(o => chainOption(o, { description: 'Chain (auto-detected when omitted)' })));
-  commands.push(new SlashCommandBuilder().setName('acotarget').setDescription('🎯 Arm a launch-squad event trigger')
-    .addStringOption(o => o.setName('id').setDescription('Launch squad id').setRequired(true))
-    .addStringOption(o => o.setName('kind').setDescription('When to fire').setRequired(true).addChoices(
-      { name: 'Block height', value: 'block' },
-      { name: 'First pending tx to contract', value: 'pending' },
-      { name: 'Manual (clear trigger)', value: 'manual' }))
-    .addIntegerOption(o => o.setName('block').setDescription('Target block height (required for kind=block)').setMinValue(1)));
-  commands.push(new SlashCommandBuilder().setName('acostatus').setDescription('📊 Live status of a launch squad')
-    .addStringOption(o => o.setName('id').setDescription('Launch squad id').setRequired(true)));
   commands.push(new SlashCommandBuilder().setName('task').setDescription('🗓️ Manage durable scheduled mints')
     .addSubcommand(c => c.setName('create').setDescription('Create a UTC scheduled mint')
       .addStringOption(o => o.setName('input').setDescription('Validated task JSON; mintTime must include Z/offset').setRequired(true))
@@ -368,6 +356,11 @@ async function applyMintFlowStep(ctx, respond, platformUserId, userId, { step, d
 async function finishMintExecutionDiscord(ctx, respond, platformUserId, userId, flowData) {
   const { commands, flowState, rateLimiter } = ctx;
   const backToMenu = [discordMenus.row([discordMenus.button('⬅️ Back to menu', 'menu:main')])];
+  const lockKey = `discord:${platformUserId}`;
+  if (inFlightMintExecutions.has(lockKey)) {
+    return respond({ content: 'Already processing your mint -- please wait for the current one to finish.', components: backToMenu });
+  }
+  inFlightMintExecutions.add(lockKey);
   try {
     rateLimiter.check('discord', userId, flowData.multi ? 'batch-mint' : 'mint');
     if (flowData.multi) {
@@ -404,6 +397,8 @@ async function finishMintExecutionDiscord(ctx, respond, platformUserId, userId, 
     if (error instanceof ValidationError) return respond({ content: escapeDiscord(validationReply(error)), components: backToMenu });
     if (error instanceof TransactionSafetyError) return respond({ content: `❌ ${escapeDiscord(error.message)}`, components: backToMenu });
     throw error;
+  } finally {
+    inFlightMintExecutions.delete(lockKey);
   }
 }
 
@@ -625,11 +620,7 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
   // Defaults to a gate that permits everything, so a caller that does not wire one (and every
   // existing test) behaves exactly as before this existed.
   actionGate={ allows: async () => true, submit: async () => ({ ok: true }) },
-  securityStatus=async () => ({ passwordSet: true, gateLevel: 'sensitive' }),
-  // Launch squads (src/launch). Optional so existing test harnesses that build this handler
-  // without a launcher keep working -- the /aco and acotarget surfaces degrade to a clear
-  // "not available in this deployment" message instead of crashing.
-  launcher=null, launchRepository=null }) {
+  securityStatus=async () => ({ passwordSet: true, gateLevel: 'sensitive' }) }) {
   const audit=value=>Promise.resolve(securityAudit.record(value)).catch(error=>log(`Security audit write failed: ${error.message}`));
   const ownerFlag = async userId => (typeof isOwner === 'function' ? Boolean(await isOwner(userId)) : false);
   const enforceAccountStatus = async userId => { if (typeof checkAccountStatus === 'function') await checkAccountStatus(userId); };
@@ -685,28 +676,6 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
       if (data === 'flow:cancel:ask') {
         flowState.clear('discord', platformUserId);
         return dcRespond(interaction, discordMenus.mainMenu({ isOwner: await ownerFlag(userId), security: await securityStatus(userId) }));
-      }
-
-      // Launch squad FIRE NOW / ABORT -- same semantics as the Telegram buttons: only staged or
-      // armed squads may fire, abort is free until firing starts, and firing itself is
-      // fire-and-forget here so the 3-second component window never bounds a launch.
-      if (data.startsWith('aco:fire:') || data.startsWith('aco:abort:')) {
-        if (!await actionGate.allows(userId, 'discord', platformUserId, 'mint')) {
-          return dcRespond(interaction, discordMenus.gateUnlockCard({ action: 'mint' }));
-        }
-        const [, acoAction, id] = data.split(':');
-        const squad = await launchRepository.getSquad(userId, id);
-        if (!squad) return dcRespond(interaction, { content: 'Launch squad not found.' });
-        if (acoAction === 'abort') {
-          if (!['staged', 'armed'].includes(squad.status)) return dcRespond(interaction, { content: `Squad is already ${squad.status} — too late to abort.` });
-          try { await launcher.cancel(squad); }
-          catch (error) { return dcRespond(interaction, { content: `❌ ${escapeDiscord(String(error.message || error).slice(0, 250))}` }); }
-          return dcRespond(interaction, { content: `🛑 Launch squad "${escapeDiscord(squad.name)}" aborted. Nothing was sent.` });
-        }
-        if (!['staged', 'armed'].includes(squad.status)) return dcRespond(interaction, { content: `Squad is ${squad.status} — cannot fire.` });
-        void launcher.fire(squad).catch(error => log(`Launch fire error: ${error.message}`));
-        const sendable = squad.members.filter(member => member.status !== 'skipped').length;
-        return dcRespond(interaction, { content: `🚀 Firing "${escapeDiscord(squad.name)}": ${sendable} wallets going out...` });
       }
 
       if (data === 'menu:main') return dcRespond(interaction, discordMenus.mainMenu({ isOwner: await ownerFlag(userId), security: await securityStatus(userId) }));
@@ -1715,7 +1684,7 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
       }
       userId = await identity.resolveOrCreate('discord', discordId);
       await enforceAccountStatus(userId);
-      if(['wallet','mint','mintnow','batch-mint','aco','acotarget','acostatus','admin','watch','sniper','confirm-trigger','target-policy'].includes(interaction.commandName)) {
+      if(['wallet','mint','mintnow','batch-mint','admin','watch','sniper','confirm-trigger','target-policy'].includes(interaction.commandName)) {
         rateLimiter.check('discord',userId,interaction.commandName);
       }
       let message;
@@ -1850,77 +1819,6 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
           }
           break;
         }
-        case 'aco': {
-          if (!launcher || !launchRepository) { message = 'Launch squads are not available in this deployment.'; break; }
-          const contractAddressRaw = interaction.options.getString('contract');
-          const quantity = Math.max(1, interaction.options.getInteger('quantity') || 1);
-          const manualPrice = interaction.options.getNumber('price');
-          const wallets = [...new Set((interaction.options.getString('wallets') || '').split(',').map(v => v.trim()).filter(Boolean))];
-          if (!wallets.length) { message = 'No wallets given — comma-separate labels.'; break; }
-          let chain = interaction.options.getString('chain');
-          try {
-            if (!chain) {
-              const detected = await commands.detectMintContract(userId, { contractAddress: contractAddressRaw, quantity });
-              chain = detected?.chain;
-              if (!chain) { message = `Could not resolve a supported chain for \`${escapeDiscord(contractAddressRaw)}\`.`; break; }
-            }
-            const squad = await launcher.createAndStage({ userId, chain,
-              contractAddress: contractAddressRaw, quantity,
-              manualPriceWei: manualPrice == null ? null : BigInt(Math.round(manualPrice * 1e18)),
-              wallets, triggerType: 'manual' });
-            const staged = squad.members.filter(member => member.status === 'staged').length;
-            const skipped = squad.members.length - staged;
-            const priceLine = squad.priceWei === null ? 'unknown' : `${(Number(squad.priceWei) / 1e18).toFixed(6)} each`;
-            await interaction.editReply({ content: [
-              `## 🚀 Launch squad ready — ${squad.name}`,
-              `Chain: \`${chain}\` · Qty ${quantity} · Price: ${priceLine}`,
-              `Wallets staged: **${staged}**${skipped ? ` · skipped: ${skipped}` : ''}`,
-              '',
-              'FIRE NOW sends every wave immediately.',
-            ].join('\n'), components: [discordMenus.row([
-              discordMenus.button('🔥 FIRE NOW', `aco:fire:${squad.id}`, 'danger'),
-              discordMenus.button('✖ Abort', `aco:abort:${squad.id}`),
-            ])] });
-            return;
-          } catch (error) {
-            message = error instanceof ValidationError ? validationReply(error)
-              : `❌ Staging failed: ${escapeDiscord(String(error.message || error).slice(0, 250))}`;
-            break;
-          }
-        }
-        case 'acotarget': {
-          if (!launcher || !launchRepository) { message = 'Launch squads are not available in this deployment.'; break; }
-          const id = interaction.options.getString('id');
-          const kind = interaction.options.getString('kind');
-          const block = interaction.options.getInteger('block');
-          const squad = await launchRepository.getSquad(userId, id);
-          if (!squad) { message = 'Launch squad not found.'; break; }
-          try {
-            const fresh = await launcher.setTarget(squad, kind, block);
-            message = fresh.triggerType === 'block' ? `🎯 **${squad.name}** will fire at block **${fresh.targetBlock}**.`
-              : fresh.triggerType === 'pending' ? `🎯 **${squad.name}** will fire on the first pending transaction to the contract.`
-              : `**${squad.name}** is manual again — use FIRE NOW.`;
-          } catch (error) {
-            message = `❌ ${escapeDiscord(String(error.message || error).slice(0, 250))}`;
-          }
-          break;
-        }
-        case 'acostatus': {
-          if (!launchRepository) { message = 'Launch squads are not available in this deployment.'; break; }
-          const squad = await launchRepository.getSquad(userId, interaction.options.getString('id'));
-          if (!squad) { message = 'Launch squad not found.'; break; }
-          const icon = { staged: '⏳', skipped: '⏭', sent: '📡', confirmed: '✅', reverted: '❌', failed: '⚠️', pending: '·' };
-          const counts = {};
-          for (const member of squad.members) counts[member.status] = (counts[member.status] || 0) + 1;
-          const countLine = Object.entries(counts).map(([status, n]) => `${icon[status] || '·'} ${n}`).join('  ');
-          const rows = squad.members.slice(0, 25).map(member =>
-            `${icon[member.status] || '·'} **${escapeDiscord(member.walletLabel)}** — ${member.status}` +
-            (member.txHash ? ` \`${String(member.txHash).slice(0, 18)}…\`` : '') +
-            (member.error ? ` (${escapeDiscord(String(member.error).slice(0, 80))})` : ''));
-          const more = squad.members.length > 25 ? `\n…and ${squad.members.length - 25} more` : '';
-          message = `## 📊 ${squad.name} [${squad.status}]\n${countLine}\n${rows.join('\n')}${more}`;
-          break;
-        }
         case 'task': {
           const action = interaction.options.getSubcommand();
           if (action === 'create') { confirmation(interaction); const task = await commands.createTask(userId, json(interaction.options.getString('input'))); message = `Task ${task.name} scheduled for ${discordMenus.formatGmtPlus1(task.mintTime)} (ID: ${task.id}).`; }
@@ -2034,6 +1932,7 @@ async function handleMintPasteMessage({ identity, commands, flowState, chains, r
   // also means there was nothing to look at in Railway's logs when this got reported. These lines
   // change that without changing behavior: every one is on a path that already did nothing before.
   const where = `guild=${message.guildId || 'dm'} channel=${message.channelId || 'unknown'}`;
+  let target = null;
   try {
     if (!message.author || message.author.bot) return;
     // Per-LINE matching: users routinely paste several entities at once -- an address twice and an
@@ -2048,7 +1947,6 @@ async function handleMintPasteMessage({ identity, commands, flowState, chains, r
       // nothing. Strip them everywhere, decorations at the edges.
       .replace(/[\u200B-\u200F\u2060\uFEFF]/g, '')
       .split(/\r?\n/).map(line => line.trim()).filter(Boolean);
-    let target = null;
     for (const line of lines) {
       const cleaned = line.replace(/^[<`*~\s]+/, '').replace(/[>`*~\s]+$/, '');
       if (/^0x[0-9a-fA-F]{40}$/.test(cleaned) || commands.parseOpenSeaCollectionSlug(cleaned)) { target = cleaned; break; }
@@ -2063,10 +1961,32 @@ async function handleMintPasteMessage({ identity, commands, flowState, chains, r
     // second paste while a flow (mint or otherwise) is already in progress implicitly abandons it
     // and starts fresh with the new address -- no confirmation needed, trimmed per user feedback.
     if (flowState.get('discord', platformUserId)) flowState.clear('discord', platformUserId);
-    await startMintGuidedFlow({ commands, flowState, chains, rateLimiter },
+    // Don't treat wallet addresses as contracts — pasting a wallet address (e.g. from a
+    // block explorer) should not trigger the mint info card. Check both the user's own wallets
+    // and whether the address has code on any supported chain (EOAs have no code).
+    // NOTE: commands.wallets() is SYNCHRONOUS (returns an array) — .catch() on it throws and
+    // would silently skip this whole check, so no .catch on that call; the surrounding try
+    // covers genuine throw paths only.
+    try {
+      const wallets = commands.wallets(userId);
+      if (Array.isArray(wallets) && wallets.some(w => String(w.address || '').toLowerCase() === String(target).toLowerCase())) return;
+      if (/^0x[0-9a-fA-F]{40}$/.test(target)) {
+        const isContract = await commands.isContractAddress(target).catch(() => true);
+        if (!isContract) return;
+      }
+    } catch {}
+    const started = await startMintGuidedFlow({ commands, flowState, chains, rateLimiter },
       payload => message.reply(payload).catch(error => log(`Paste-detect: reply failed (${where}): ${error?.message || error}`)),
       platformUserId, userId, target);
-  } catch (error) { log(`Paste-detect: dropped before reply (${where}): ${error?.message || error}`); }
+    if (!started) {
+      await message.reply({ content: 'Could not find this contract on any supported chain. Double-check the address or try `/info <contract>` for a read-only lookup.', allowedMentions: { repliedUser: false } }).catch(error => log(`Paste-detect: error reply failed (${where}): ${error?.message || error}`));
+    }
+  } catch (error) {
+    log(`Paste-detect: dropped before reply (${where}): ${error?.message || error}`);
+    if (target) {
+      await message.reply({ content: 'Could not fetch info for this contract right now. Try again or use `/info <contract>` for a read-only lookup.', allowedMentions: { repliedUser: false } }).catch(() => {});
+    }
+  }
 }
 
 // Global registration does not replace commands previously registered to a guild -- Discord keeps
@@ -2087,7 +2007,7 @@ async function clearLeftoverGuildCommands({ api, applicationId, log }) {
   }
 }
 
-function createDiscordBot({ token, applicationId, devGuildId, allowedChannelIds=null, identity, commands, securityAudit, rateLimiter, log = () => {}, client, rest, isOwner, checkAccountStatus, supportedChains, chains, actionGate, securityStatus, launcher = null, launchRepository = null }) {
+function createDiscordBot({ token, applicationId, devGuildId, allowedChannelIds=null, identity, commands, securityAudit, rateLimiter, log = () => {}, client, rest, isOwner, checkAccountStatus, supportedChains, chains, actionGate, securityStatus }) {
   const discordClient = client || new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.DirectMessages,
     GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent] });
   const api = rest || new REST({ version: '10' }).setToken(token);
@@ -2096,8 +2016,7 @@ function createDiscordBot({ token, applicationId, devGuildId, allowedChannelIds=
   // visible to the other -- they'd otherwise be two independent, non-communicating stores.
   const flowState = createFlowStateStore();
   discordClient.on('interactionCreate', createDiscordInteractionHandler({ identity, commands, allowedGuildId:devGuildId || null, allowedChannelIds,
-    securityAudit,rateLimiter,log,isOwner,checkAccountStatus,supportedChains,chains,flowState,actionGate,securityStatus,
-    launcher,launchRepository }));
+    securityAudit,rateLimiter,log,isOwner,checkAccountStatus,supportedChains,chains,flowState,actionGate,securityStatus }));
   discordClient.on('messageCreate', message =>
     handleMintPasteMessage({ identity, commands, flowState, chains, rateLimiter, checkAccountStatus, allowedGuildId: devGuildId || null, allowedChannelIds, log }, message));
   return {

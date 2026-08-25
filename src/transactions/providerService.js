@@ -2,10 +2,16 @@ const { JsonRpcProvider } = require('ethers');
 
 // Error codes ethers uses for a definitive answer from a provider that was actually reached --
 // retrying or failing over to a different RPC endpoint cannot change these (a different node won't
-// suddenly know the wallet has funds, or that the call wouldn't revert), so they should propagate
-// immediately with their real reason intact rather than being swallowed into a generic
-// "RPC providers failed" message after wasting retries.
-const NON_RETRYABLE_ERROR_CODES = new Set(['CALL_EXCEPTION', 'INSUFFICIENT_FUNDS']);
+// suddenly know the wallet has funds, that the call wouldn't revert, or that the nonce/replacement
+// is permanently unpriceable), so they should propagate immediately with their real reason intact
+// rather than being swallowed into a generic "RPC providers failed" message after wasting retries.
+const NON_RETRYABLE_ERROR_CODES = new Set([
+  'CALL_EXCEPTION',
+  'INSUFFICIENT_FUNDS',
+  'NONCE_EXPIRED',
+  'REPLACEMENT_UNDERPRICED',
+  'UNPREDICTABLE_GAS_LIMIT',
+]);
 
 class RpcUnavailableError extends Error {
   constructor(chain, attempts) {
@@ -76,6 +82,7 @@ function createProviderService({ chains, timeoutMs = 10_000, retries = 1, provid
     return new Promise((resolve, reject) => {
       let pending = candidates.length;
       let settled = false;
+      let lastError = null;
       for (const candidate of candidates) {
         withTimeout(
           Promise.resolve().then(() => operation(candidate.provider)),
@@ -83,9 +90,20 @@ function createProviderService({ chains, timeoutMs = 10_000, retries = 1, provid
           `${chain} ${operationName}`,
         ).then(value => {
           if (!settled) { settled = true; resolve(value); }
-        }).catch(() => {
+        }).catch(error => {
+          if (!settled && NON_RETRYABLE_ERROR_CODES.has(error?.code)) {
+            settled = true;
+            reject(error);
+            return;
+          }
+          lastError = error;
           pending -= 1;
-          if (!settled && pending === 0) { settled = true; reject(new RpcUnavailableError(chain, candidates.length)); }
+          if (!settled && pending === 0) {
+            settled = true;
+            // If the last error was definitive, preserve it; otherwise generic unavailable.
+            if (lastError && NON_RETRYABLE_ERROR_CODES.has(lastError?.code)) reject(lastError);
+            else reject(new RpcUnavailableError(chain, candidates.length));
+          }
         });
       }
     });

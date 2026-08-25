@@ -18,6 +18,13 @@ shipped).
   expiry/revocation reasons are returned to and shown by the login screen. Development HTTP may
   use non-Secure cookies for phone testing; production remains Secure-only.
 
+- **This session (2026-08-23, commits `f0d5648` → `0d4b5af`) — reconciliation, budgets, audit hardenings:**
+  - Verified `origin/main` merge (settlement sweep vs `track final outcomes` — no semantic collision) and repaired a stale `qrcode` install.
+  - Closed the two by-design-failing engine reproductions: gas-ceiling precedence (`f0d5648`, `c0269ff` companion test) and `replaced`-misclassification (`80a6ff8` — removed the `pending-nonce` heuristic, invisibility now preserves `pending` and converges to `unknown` at `timeoutAt`; bump ladder now rescues `unknown` via `da123b0`).
+  - Smoke suite budgets: outer ceilings `20s/45s` → `60s/60s/120s` (`7bcac88` → `0d4b5af` paste parity), plus `waitForHealth` 10s fast-fail kept; gate is `908/908`.
+  - Audit hardenings: daily-budget `rollingSpendWei` now counts `value+actual` (`8d56823` + `c08e9e6` 120s WAN), admin health route escapes the `/api` 404 catch-all (`8d56823`), transient gas/broadcast errors preserved for scheduler retry (`eb22ede` + `71c76ab` + `9236ba8` SSRF blocklist with `net.isIP` + `maxRedirects:0`), launch stager concurrency + discovery fallback + scheduler atomic claim + expired-history per-task isolation (`69fa168`), double-mint in-flight locks (`5097ae2`), and paste silent-drop → user-visible error (`7e82499` → `0d4b5af`).
+  - **Stale notes corrected:** AV A3 pre-arming already shipped via AY (`SCHEDULE_PREARM_LEAD_MS`), AU pool 2 (sniper `RPC_SNIPER_URLS`/`_WS`) via Round 16, and `GET /api/profile/limits` already exists (`api.js:339` → `governance.limitsForSelf`); `spentTodayWei` stays withheld by scoping (per-wallet vs account-wide), not by wrong figure — `governanceService` comment + test updated. Every round's "…only the two review repros failing" refrain is now obsolete.
+
 - **Round 1** (Sections A–K) was scoped and implemented on 2026-08-16; 9 of 11 sections shipped in
   commit `423c7c1`. Kept below as the record of what exists.
 - **Round 2** (Sections L–S) is the newer batch of requirements; L, M, N, Q, and O have shipped.

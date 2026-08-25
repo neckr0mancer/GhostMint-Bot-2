@@ -40,13 +40,10 @@ const watchRuleFlowDecision = require('./social/watchRuleFlowDecision');
 const sniperFlowDecision = require('./sniper/sniperFlowDecision');
 const { createSchedulerRepository } = require('./scheduler/schedulerRepository');
 const { DEFAULT_LEAD_MS, createScheduledReminder } = require('./scheduler/scheduledReminder');
-const { SCHEDULE_PHASE_WAIT, createSchedulerWorker } = require('./scheduler/schedulerWorker');
+const { SCHEDULE_PHASE_WAIT, createSchedulerWorker, STAGE_REARM_WINDOW_MS, errorReason } = require('./scheduler/schedulerWorker');
 const { DECISION_REASONS, resolveScheduledPhase } = require('./scheduler/scheduledPhaseResolver');
+const { classifySeaDropWindow, preArmRearm } = require('./scheduler/scheduledValidity');
 const { resolveTaskChain } = require('./scheduler/taskChain');
-const { createLaunchRepository } = require('./launch/launchRepository');
-const { createLaunchStager } = require('./launch/stager');
-const { createLauncher } = require('./launch/launcher');
-const { createLaunchTriggers } = require('./launch/triggers');
 const { createBumpSweeper } = require('./transactions/bumper');
 const { createSocialAdapters } = require('./social/adapters');
 const { createSocialWatchRepository } = require('./social/socialWatchRepository');
@@ -57,6 +54,11 @@ const { createSocialUsageService, formatUsageSummary } = require('./social/usage
 const { createFlowStateStore } = require('./telegram/flowState');
 const { createPanelStore } = require('./telegram/panelState');
 const telegramMenus = require('./telegram/menus');
+
+// In-flight lock for Telegram value-bearing executions -- see discordBot.js for rationale:
+// double-taps and Telegram network retries can deliver the same callback query twice before
+// the first clears flowState.
+const telegramInFlightMints = new Set();
 const { createChainWatcher } = require('./sniper/chainWatcher');
 const { createSniperRepository } = require('./sniper/sniperRepository');
 const { createSniperService } = require('./sniper/sniperService');
@@ -451,10 +453,45 @@ async function prearmScheduledTask(task) {
     const seaDrop = await seaDropDiscoveryService.resolve(wallet.chain, task.contract);
     if (seaDrop.address) {
       const livePublicDrop = await seaDropPublicDropResolver.getPublicDrop(wallet.chain, seaDrop.address, task.contract);
-      if (livePublicDrop && Math.abs(livePublicDrop.startTime * 1000 - task.mintTime) > PREARM_WINDOW_TOLERANCE_MS) {
-        log(`Pre-arm notice: "${task.name}" (${wallet.chain}:${task.contract}) starts checking at ${new Date(task.mintTime).toISOString()}, while its live SeaDrop window starts ${new Date(livePublicDrop.startTime * 1000).toISOString()} -- execution will wait for the live eligible phase`);
+      // INNOV-001: the advertised T is imperfect information. When the contract's own window
+      // differs from the schedule, move the fire moment to the REAL opening NOW -- before T
+      // arrives -- so the first attempt is valid and zero failed tries are spent discovering
+      // what a dedicated script would poll for. Bounded by the same 24h window the post-hoc
+      // re-arm uses; the drift check at executeTask remains the final gate either way.
+      const classification = classifySeaDropWindow(livePublicDrop, Date.now());
+      const move = preArmRearm(classification, task.mintTime, STAGE_REARM_WINDOW_MS);
+      if (move) {
+        const moved = await schedulerRepository.moveFireTime(task.userId, task.id, move.fireAtMs);
+        if (moved) {
+          log(`Pre-arm re-arm: "${task.name}" (${wallet.chain}:${task.contract}) moved to the live opening ${new Date(move.fireAtMs).toISOString()} -- ${move.reason}`);
+          task.mintTime = move.fireAtMs;
+        }
+      } else if (classification.phase === 'late') {
+        log(`Pre-arm notice: "${task.name}" (${wallet.chain}:${task.contract}) window already closed (ended ${classification.endTimeMs ? new Date(classification.endTimeMs).toISOString() : 'never set'}) -- fire-time drift check will reject it`);
+      } else if (livePublicDrop && Math.abs(livePublicDrop.startTime * 1000 - task.mintTime) > PREARM_WINDOW_TOLERANCE_MS) {
+        log(`Pre-arm notice: "${task.name}" (${wallet.chain}:${task.contract}) fires at ${new Date(task.mintTime).toISOString()}, but its live SeaDrop window starts ${new Date(livePublicDrop.startTime * 1000).toISOString()} -- the fire-time drift check may reject it`);
       }
     }
+    // Warm hot-path reads that executeTask will need at T0: fee data (5s TTL), balance, and
+    // pending nonce. All best-effort and in parallel -- a failure here just means T0 does the
+    // work the old way, never a hard failure. Use the execution chain (persisted task chain
+    // if present, else wallet home) so the warm matches what T0 will actually use.
+    const executionChain = (() => {
+      try { return resolveTaskChain(task, CONFIG.supportedChains).chain || wallet.chain; }
+      catch { return wallet.chain; }
+    })();
+    // Fee data cache is per-chain and short-lived, so a 12s lead still leaves it hot at T0.
+    // Balance and nonce warm the provider/RPC connection pool.
+    providerService.perform(executionChain, 'prearmFeeData', p => p.getFeeData()).then(fd => {
+      if (fd && executionChain) {
+        try { transactionEngine.warmFeeDataCache(executionChain, fd); } catch {}
+      }
+    }).catch(() => {});
+    Promise.all([
+      providerService.perform(executionChain, 'prearmBalance', p => p.getBalance(wallet.address)).catch(() => null),
+      providerService.perform(executionChain, 'prearmNonce', p => p.getTransactionCount(wallet.address, 'pending')).catch(() => null),
+      providerService.perform(executionChain, 'prearmNetwork', p => p.getNetwork()).catch(() => null),
+    ]).catch(() => {});
     armedPreparations.set(`${task.userId}:${task.id}`, { mintTime: task.mintTime, at: Date.now() });
   } catch (error) {
     // Preparation is best-effort by contract: any failure here just means fire time does things
@@ -500,25 +537,34 @@ const schedulerWorker = createSchedulerWorker({
     const { drop, decision } = await refreshScheduledOpenSeaPhase(task, chain);
     return { phaseDrop:drop, phaseDecision:decision };
   },
+  onStageNotOpen: chain => ensureChainWatcher(chain),
   // Answers "when does this task's stage actually open?" after the stage-not-open retry burst is
   // spent, so the worker can re-arm once instead of discarding a task that exists precisely to be
-  // there at the open. Read live from OpenSea rather than from the time stored when the task was
-  // created -- a stored time that was wrong, or has since moved, is the whole case worth recovering.
-  // Matched on the stage label, which is what openSeaPhaseTaskData named the task after.
+  // there at the open. Read live rather than from the time stored when the task was created -- a
+  // stored time that was wrong, or has since moved, is the whole case worth recovering.
+  // viaOpenSea tasks: matched on the stage label, which is what openSeaPhaseTaskData named the
+  // task after. On-chain SeaDrop tasks: the same getPublicDrop read the drift preflight uses --
+  // the contract itself is the authority on when it really opens (the T vs T+5s competitive case).
   resolveStageStart: async task => {
-    if (!task.viaOpenSea) return null;
     const wallet = DB.wallets.find(item => item.userId === task.userId && item.label === task.walletLabel);
     if (!wallet) return null;
-    // Read-only reminder lookup: a stored chain this deployment no longer supports just falls
+    // Read-only lookup: a stored chain this deployment no longer supports just falls
     // back to the wallet home here. The worst case is reading the wrong network's drop times;
     // this path never spends anything -- executeTask is where that case fails closed.
     const resolved = resolveTaskChain(task, CONFIG.supportedChains);
-    const drop = await openSeaService.getDrop(resolved.chain || wallet.chain, task.contract);
-    const stage = task.stageUuid
-      ? drop?.stages?.find(item => item.uuid === task.stageUuid)
-      : drop?.stages?.find(item => item.label === task.stageLabel || item.label === task.name
-        || (item.label && String(task.name || '').endsWith(`— ${item.label}`)));
-    return stage?.startTime ? stage.startTime * 1_000 : null;
+    const chain = resolved.chain || wallet.chain;
+    if (task.viaOpenSea) {
+      const drop = await openSeaService.getDrop(chain, task.contract);
+      const stage = task.stageUuid
+        ? drop?.stages?.find(item => item.uuid === task.stageUuid)
+        : drop?.stages?.find(item => item.label === task.name
+          || (item.label && String(task.name || '').endsWith(`— ${item.label}`)));
+      return stage?.startTime ? stage.startTime * 1_000 : null;
+    }
+    const seaDrop = await seaDropDiscoveryService.resolve(chain, task.contract);
+    if (!seaDrop.address) return null;
+    const live = await seaDropPublicDropResolver.getPublicDrop(chain, seaDrop.address, task.contract);
+    return live?.startTime ? live.startTime * 1_000 : null;
   },
   executeTask: async (task, hooks) => {
     // Scheduled tasks are created while the owning account is in good standing, but the account can
@@ -650,6 +696,9 @@ const schedulerWorker = createSchedulerWorker({
     } else {
       // Legacy/non-phase task behavior: protect against a moved SeaDrop window even though there is
       // no persisted OpenSea phase UUID to pin. Phase-aware tasks use the stricter branch above.
+      // Read live, not from seaDropDiscoveryService's cached snapshot -- the whole point is catching
+      // drift since that snapshot was taken. This same fresh read is handed straight to
+      // prepareMintCall below, so one read serves both the drift gate and the calldata value.
       seaDrop = hooks.preflight?.seaDrop
         || await seaDropDiscoveryService.resolve(executionChain, task.contract);
       livePublicDrop = hooks.preflight?.livePublicDrop || null;
@@ -659,9 +708,15 @@ const schedulerWorker = createSchedulerWorker({
         }
         if (livePublicDrop) {
           const nowSec = Math.floor(Date.now() / 1000);
-          if (nowSec < livePublicDrop.startTime || (livePublicDrop.endTime && nowSec > livePublicDrop.endTime)) {
+          if (nowSec < livePublicDrop.startTime) {
+            // Early: the contract is not yet open, but may open seconds later (the advertised T
+            // vs real T+2s competitive case). Treat as transient like an OpenSea STAGE_NOT_OPEN
+            // so the scheduler retries every block instead of failing permanently.
+            throw new ValidationError({ field: 'mintTime', message: `This mint has not opened yet (opens ${new Date(livePublicDrop.startTime * 1000).toISOString()}).`, code: 'STAGE_NOT_OPEN' });
+          }
+          if (livePublicDrop.endTime && nowSec > livePublicDrop.endTime) {
             const from = new Date(livePublicDrop.startTime * 1000).toISOString();
-            const to = livePublicDrop.endTime ? new Date(livePublicDrop.endTime * 1000).toISOString() : 'no end set';
+            const to = new Date(livePublicDrop.endTime * 1000).toISOString();
             throw new TransactionSafetyError('SCHEDULE_DRIFT',
               `This drop's live mint window no longer matches what you scheduled -- it currently runs ${from} to ${to}, which does not include right now. The project likely changed their schedule; check the contract and reschedule if needed.`);
           }
@@ -721,12 +776,9 @@ const schedulerWorker = createSchedulerWorker({
       // upstream reasoning above is the one kept, because it is the more accurate of the two --
       // the dashboard branch assumed event.error was always present and would have reported
       // "no reason recorded" for every reverted transaction.
-      // ValidationError.message is intentionally generic ("Request validation failed"). The
-      // useful, already-sanitized explanation lives in issues, so surface that concise reason to
-      // the user instead of hiding a phase-expired/ineligible diagnosis behind generic wording.
-      const detail = event.error instanceof ValidationError
-        ? redact(event.error.issues.map(issue => issue.message).filter(Boolean).join(' '))
-        : (event.error ? safeError(event.error) : '');
+      // Same fold as the stored last_error above: event.error.message alone is the constant
+      // "Request validation failed" for every ValidationError -- the issues carry the real cause.
+      const detail = event.error ? safeError(errorReason(event.error)) : '';
       const reason = detail ? `
 ${escapeTelegramHtml(detail)}` : '';
       if (wallet) await logActivity(event.task.userId, 'fail', `Scheduled mint failed: ${event.task.name}`,
@@ -744,7 +796,12 @@ ${escapeTelegramHtml(detail)}` : '';
     }
   },
   log,
-  sanitizeError:safeError,
+  // errorReason folds ValidationError's issues (the real cause -- OpenSea's own eligibility
+  // answer, a missing wallet, an unsupported chain) into what otherwise surfaces as the constant
+  // "Request validation failed"; safeError then redacts secrets. The fold is the whole point --
+  // wiring plain safeError here is why every failed schedule used to store the same opaque
+  // sentence and a live "scheduled mints always fail" report was undiagnosable from last_error.
+  sanitizeError: error => safeError(errorReason(error)),
 });
 
 // ── Scheduled-mint reminder and low-balance pre-flight ────
@@ -776,15 +833,19 @@ async function expiredHistorySweep() {
   try {
     const expired = await schedulerRepository.claimNewlyExpired();
     for (const task of expired) {
-      const wallet = DB.wallets.find(item => item.userId === task.userId && item.label === task.walletLabel);
-      const why = task.status === 'paused' ? 'paused past its mint time' : (task.lastError || 'no reason recorded');
-      await logActivity(task.userId, 'fail', `Scheduled mint expired: ${task.name}`,
-        task.walletLabel, null, wallet ? CHAINS[wallet.chain] : null, { triggerSource: 'scheduled' });
-      await notifyUser(task.userId,
-        `⌛ Scheduled mint <b>${escapeTelegramHtml(task.name)}</b> expired — ${escapeTelegramHtml(why)}`);
-      dashboardWebSockets.broadcastToUser(task.userId, { type: 'tasks.changed' });
-      dashboardWebSockets.broadcastToUser(task.userId, { type: 'activity.changed' });
-      recorded += 1;
+      try {
+        const wallet = DB.wallets.find(item => item.userId === task.userId && item.label === task.walletLabel);
+        const why = task.status === 'paused' ? 'paused past its mint time' : (task.lastError || 'no reason recorded');
+        await logActivity(task.userId, 'fail', `Scheduled mint expired: ${task.name}`,
+          task.walletLabel, null, wallet ? CHAINS[wallet.chain] : null, { triggerSource: 'scheduled' });
+        await notifyUser(task.userId,
+          `⌛ Scheduled mint <b>${escapeTelegramHtml(task.name)}</b> expired — ${escapeTelegramHtml(why)}`);
+        dashboardWebSockets.broadcastToUser(task.userId, { type: 'tasks.changed' });
+        dashboardWebSockets.broadcastToUser(task.userId, { type: 'activity.changed' });
+        recorded += 1;
+      } catch (error) {
+        log(`Expired-history record failed for ${task.id}: ${safeError(error)}`);
+      }
     }
   } catch (error) {
     log(`Expired-history sweep failed: ${safeError(error)}`);
@@ -1082,13 +1143,20 @@ const activeSnipersForChain = chain => DB.snipers.filter(s => s.active && s.chai
 // scheduled broadcast. With no {ENVNAME}_RPC_SNIPER_URLS/_WS configured, SNIPER_CHAINS[chain] is a
 // literal alias for CHAINS[chain] (see config/index.js), so this is a no-op change until configured.
 function ensureChainWatcher(chain) {
-  if (chainWatchers[chain] || !SNIPER_CHAINS[chain]) return;
+  if (chainWatchers[chain]) return;
+  // Scheduled mints waiting for a stage to open also need block push, even if no sniper
+  // is active on that chain. Prefer SNIPER_CHAINS' dedicated WS pool when available, fall back
+  // to the chain's general WS.
+  const sniperChain = SNIPER_CHAINS[chain];
+  const generalChain = CHAINS[chain];
+  if (!sniperChain && !generalChain?.rpcWsUrl) return;
+  const chainConfig = sniperChain || generalChain;
   const watcher = createChainWatcher({
-    chain, rpcUrls: SNIPER_CHAINS[chain].rpcUrls, wsUrl: SNIPER_CHAINS[chain].rpcWsUrl,
+    chain, rpcUrls: chainConfig.rpcUrls, wsUrl: chainConfig.rpcWsUrl,
     providerFactory: url => new ethers.JsonRpcProvider(url),
     wsProviderFactory: url => {
       const socket = new WebSocket(url);
-      const provider = new ethers.WebSocketProvider(socket, SNIPER_CHAINS[chain].chainId);
+      const provider = new ethers.WebSocketProvider(socket, chainConfig.chainId);
       socket.on('close', () => provider.emit('error', new Error('WebSocket closed')));
       socket.on('error', error => provider.emit('error', error));
       return provider;
@@ -1103,6 +1171,7 @@ function ensureChainWatcher(chain) {
 
 function teardownChainWatcherIfIdle(chain) {
   if (activeSnipersForChain(chain).length) return;
+  if (schedulerWorker.hasBlockWaiters?.(chain)) return;
   const watcher = chainWatchers[chain];
   if (!watcher) return;
   watcher.stop();
@@ -1111,6 +1180,10 @@ function teardownChainWatcherIfIdle(chain) {
 }
 
 async function onBlock(chain, blockNumber, provider) {
+  // Scheduled mints waiting for a stage to open also retry on every new block, not just on
+  // the 250ms timer. This reuses the same sniper block push so scheduled gets instant
+  // notification without polling. The timer remains as fallback for chains without WS.
+  if (schedulerWorker.handleBlock) schedulerWorker.handleBlock(chain);
   const snipers = activeSnipersForChain(chain);
   if (!snipers.length) return;
   const block = await provider.getBlock(blockNumber, true);
@@ -1141,49 +1214,8 @@ function tg(chatId, msg, options = {}) {
   return Promise.resolve();
 }
 
-// ── Launch squads (src/launch) ────────────────────────────
-// Coordinated multi-wallet mints: staging verifies everything that can go stale-checks-free before
-// a fire moment; firing fans ordinary executePrepared sends out in waves. The launcher composes the
-// same primitives as every other execution surface -- no new transaction path, just orchestration.
-const launchRepository = createLaunchRepository(pool);
-// Event triggers ride the sniper-class WebSocket lane per chain -- the low-latency endpoint this
-// deployment already maintains for exactly this class of time-critical watching.
-const launchTriggers = createLaunchTriggers({
-  wsUrlFor: chain => SNIPER_CHAINS[chain]?.rpcWsUrl || CHAINS[chain]?.rpcWsUrl || null,
-  log,
-});
-const launcher = createLauncher({
-  repository: launchRepository,
-  triggers: launchTriggers,
-  // server.js binds this service under its full name -- there is no bare `intentRepository` here.
-  intentRepository: transactionIntentRepository,
-  stager: createLaunchStager({
-    checkAccountStatus: userId => governance.checkAccountStatus(userId),
-    findWallet: (userId, label) => DB.wallets.find(item => item.userId === userId && item.label === label),
-    seaDropDiscoveryService,
-    seaDropPublicDropResolver,
-    providerService,
-    log,
-  }),
-  mintExecution,
-  mintService,
-  transactionEngine,
-  findWallet: (userId, label) => DB.wallets.find(item => item.userId === userId && item.label === label),
-  notify: event => {
-    if (event.type === 'launch.starting') {
-      const sendable = event.squad.members.filter(member => member.status !== 'skipped').length;
-      return notifyUser(event.squad.userId, `🚀 Launching <b>${escapeTelegramHtml(event.squad.name)}</b>: ${sendable} wallets going out now.`);
-    }
-    if (event.type === 'launch.done' && event.report) {
-      const c = event.report.counts;
-      return notifyUser(event.squad.userId, `🏁 Launch <b>${escapeTelegramHtml(event.squad.name)}</b> finished: ` +
-        `${c.confirmed || 0} confirmed, ${c.reverted || 0} reverted, ${c.failed || 0} failed, ${c.skipped || 0} skipped.`);
-    }
-  },
-  log,
-});
-
-// Bump ladder: a pending broadcast stuck past TX_BUMP_AFTER_MS gets re-bid same-nonce at
+// ── Bump ladder ───────────────────────────────────────────
+// A pending broadcast stuck past TX_BUMP_AFTER_MS gets re-bid same-nonce at
 // +incrementPct (floored by the live fee), raced across the fast pool, at most maxAttempts times.
 // Same-nonce replacement is safe under uncertainty -- if the original mined, the re-bid is simply
 // rejected -- so this runs without needing to know why a transaction is stuck. Scoped to launch +
@@ -1775,6 +1807,11 @@ async function advanceFromPriceResolved(chatId, messageId, userId, flow, priceET
 
 async function finishMintExecution(chatId, messageId, userId, flowData) {
   const backToMenu = telegramMenus.mainMenu({}).replyMarkup;
+  const lockKey = `telegram:${chatId}`;
+  if (telegramInFlightMints.has(lockKey)) {
+    return tgUpdate(chatId, messageId, { text: 'Already processing your mint -- please wait for the current one to finish.', replyMarkup: backToMenu });
+  }
+  telegramInFlightMints.add(lockKey);
   try {
     commandRateLimiter.check('telegram', userId, flowData.multi ? 'batch-mint' : 'mint');
     if (flowData.multi) {
@@ -1811,6 +1848,8 @@ async function finishMintExecution(chatId, messageId, userId, flowData) {
     if (error instanceof ValidationError) return tgUpdate(chatId, messageId, { text: escapeTelegramHtml(validationReply(error)), replyMarkup: backToMenu, parseMode: 'HTML' });
     if (error instanceof TransactionSafetyError) return tgUpdate(chatId, messageId, { text: `❌ ${escapeTelegramHtml(error.message)}`, replyMarkup: backToMenu, parseMode: 'HTML' });
     throw error;
+  } finally {
+    telegramInFlightMints.delete(lockKey);
   }
 }
 
@@ -2361,8 +2400,28 @@ async function handleFlowTextMessage(msg) {
     // input a flow is actually waiting on.
     const trimmed = msg.text.trim();
     if (ethers.isAddress(trimmed) || botCommands.parseOpenSeaCollectionSlug(trimmed)) {
+      // Don't treat wallet addresses as contracts — pasting a wallet address (e.g. from a
+      // block explorer) should not trigger the mint info card. Check both the user's own wallets
+      // and whether the address has code on any supported chain.
+      // NOTE: botCommands.wallets() is SYNCHRONOUS — no .catch on it (would throw and skip the check).
+      if (ethers.isAddress(trimmed)) {
+        try {
+          const wallets = botCommands.wallets(userId);
+          if (Array.isArray(wallets) && wallets.some(w => String(w.address || '').toLowerCase() === String(trimmed).toLowerCase())) return;
+          if (/^0x[0-9a-fA-F]{40}$/.test(trimmed)) {
+            const isContract = await botCommands.isContractAddress(trimmed).catch(() => true);
+            if (!isContract) return;
+          }
+        } catch {}
+      }
       if (flow) telegramFlowState.clear('telegram', chatId);
-      await startMintFlow({ chatId, messageId: null, userId, multi: false, contractAddressInput: trimmed });
+      try {
+        await startMintFlow({ chatId, messageId: null, userId, multi: false, contractAddressInput: trimmed });
+      } catch (error) {
+        if (error instanceof ValidationError) return;
+        log(`Paste-detect: startMintFlow failed for ${trimmed}: ${safeError(error)}`);
+        await tgRender(chatId, { text: 'Could not fetch info for this contract right now. Try again or use /info &lt;contract&gt; for a read-only lookup.', replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' });
+      }
       return;
     }
     if (!flow) return;
@@ -2787,22 +2846,6 @@ if (BOT_TOKEN) {
     const data = query.data || '';
     const ownerFlag = async () => governanceRepository.isOwner(userId);
 
-    if (data.startsWith('aco:fire:') || data.startsWith('aco:abort:')) {
-      if (await gateBlocks({ chatId, messageId, userId, action: 'mint' })) return;
-      const [, action, id] = data.split(':');
-      const squad = await launchRepository.getSquad(userId, id);
-      if (!squad) return tgEditMenu(chatId, messageId, { text: 'Launch squad not found.' });
-      if (action === 'abort') {
-        if (!['staged', 'armed'].includes(squad.status)) return tgEditMenu(chatId, messageId, { text: `Squad is already ${squad.status} -- too late to abort.` });
-        try { await launcher.cancel(squad); }
-        catch (error) { return tgEditMenu(chatId, messageId, { text: escapeTelegramHtml(String(error.message || error)) }); }
-        return tgEditMenu(chatId, messageId, { text: `🛑 Launch squad "${escapeTelegramHtml(squad.name)}" aborted. Nothing was sent.` });
-      }
-      if (!['staged', 'armed'].includes(squad.status)) return tgEditMenu(chatId, messageId, { text: `Squad is ${squad.status} -- cannot fire.` });
-      void launcher.fire(squad).catch(error => log(`Launch fire error: ${error.message}`));
-      const sendable = squad.members.filter(member => member.status !== 'skipped').length;
-      return tgEditMenu(chatId, messageId, { text: `🚀 Firing "${escapeTelegramHtml(squad.name)}": ${sendable} wallets going out...` });
-    }
     if (data === 'menu:main') return tgEditMenu(chatId, messageId, telegramMenus.mainMenu({ isOwner: await ownerFlag(), security: await securityFlags(userId) }));
     if (data === 'menu:security') {
       return tgEditMenu(chatId, messageId, telegramMenus.securitySetupCard(await securityFlags(userId)));
@@ -3513,98 +3556,6 @@ send /mint with a contract address to get going.`;
       replyMarkup: telegramMenus.keyboard([[telegramMenus.button('⬅️ Back to base', 'menu:main')]]), parseMode: 'HTML' });
   }));
 
-  // Launch squads -- coordinated multi-wallet mints (src/launch). Power syntax first; a guided
-  // picker flow mirroring /batchmint's wallet multiselect is the D2 polish item.
-  bot.onText(/^\/aco(?:@\w+)?$/, withTelegramUser(async msg => {
-    tgRender(msg.chat.id, { text: [
-      '<b>Launch squads</b> — one mint, many wallets, fired together.',
-      '',
-      'Power syntax:',
-      '<code>/aco &lt;contract&gt; &lt;qty&gt; &lt;wallet1,wallet2,...&gt;</code>',
-      '',
-      'Staging verifies every wallet (balance, gas headroom) and resolves the mint price up front;',
-      'skipped wallets are reported instead of failing the launch. Then FIRE NOW -- or schedule it',
-      'and the squad fires itself at that moment.',
-    ].join('\n'), replyMarkup: telegramMenus.keyboard([[telegramMenus.button('⬅️ Back to base', 'menu:main')]]), parseMode: 'HTML' });
-  }));
-  bot.onText(/^\/aco(?:@\w+)?\s+(\S+)\s+(\d+)\s+(.+)$/, withTelegramUser(async (msg, match, userId) => {
-    commandRateLimiter.check('telegram', userId, 'aco');
-    const [, contractAddressRaw, qtyRaw, labelsRaw] = match;
-    const quantity = Math.max(1, parseInt(qtyRaw, 10) || 1);
-    const wallets = [...new Set(labelsRaw.split(',').map(item => item.trim()).filter(Boolean))];
-    if (!wallets.length) return tg(msg.chat.id, 'No wallets given -- comma-separate labels: <code>/aco 0x.. 1 main,alt1</code>', { parseMode: 'HTML' });
-    try {
-      const detected = await botCommands.detectMintContract(userId, { contractAddress: contractAddressRaw, quantity });
-      const chain = detected.chain;
-      if (!chain) return tg(msg.chat.id, `Couldn't resolve a supported chain for ${escapeTelegramHtml(contractAddressRaw)}.`, { parseMode: 'HTML' });
-      const squad = await launcher.createAndStage({ userId, chain,
-        contractAddress: detected.contractAddress || contractAddressRaw, quantity, wallets, triggerType: 'manual' });
-      const staged = squad.members.filter(member => member.status === 'staged').length;
-      const skipped = squad.members.length - staged;
-      const priceLine = squad.priceWei === null ? 'unknown' : `${(Number(squad.priceWei) / 1e18).toFixed(6)} each`;
-      return tgRender(msg.chat.id, { text: [
-        `<b>Launch squad ready</b> — ${escapeTelegramHtml(squad.name)}`,
-        `Chain: <code>${escapeTelegramHtml(chain)}</code> · Qty ${quantity} · Price: ${priceLine}`,
-        `Wallets staged: <b>${staged}</b>${skipped ? ` · skipped: ${skipped} (see report)` : ''}`,
-        '',
-        'FIRE NOW sends every wave immediately.',
-      ].join('\n'), replyMarkup: telegramMenus.keyboard([[
-        telegramMenus.button('🚀 FIRE NOW', `aco:fire:${squad.id}`),
-        telegramMenus.button('❌ Abort', `aco:abort:${squad.id}`),
-      ]]), parseMode: 'HTML' });
-    } catch (error) {
-      if (error instanceof ValidationError) return tg(msg.chat.id, escapeTelegramHtml(validationReply(error)), { parseMode: 'HTML' });
-      log(`ACO staging failed: ${safeError(error)}`);
-      return tg(msg.chat.id, `❌ Staging failed: ${escapeTelegramHtml(String(error.message || error).slice(0, 200))}`, { parseMode: 'HTML' });
-    }
-  }));
-
-  // Attach an event trigger to a staged squad: fire at a block height, or on the first pending tx
-  // touching the mint contract. `manual` clears a trigger back to button-fired.
-  bot.onText(/^\/acotarget(?:@\w+)?\s+([0-9a-fA-F-]{36})\s+(block|pending|manual)(?:\s+(\d+))?$/i, withTelegramUser(async (msg, match, userId) => {
-    commandRateLimiter.check('telegram', userId, 'aco');
-    const [, id, kindRaw, blockRaw] = match;
-    const kind = kindRaw.toLowerCase();
-    try {
-      const squad = await launchRepository.getSquad(userId, id);
-      if (!squad) return tg(msg.chat.id, 'Launch squad not found.', { parseMode: 'HTML' });
-      const fresh = await launcher.setTarget(squad, kind, blockRaw ? Number(blockRaw) : null);
-      const line = fresh.triggerType === 'block' ? `🎯 Will fire at block <b>${fresh.targetBlock}</b>`
-        : fresh.triggerType === 'pending' ? '🎯 Will fire on the first pending transaction to the contract'
-        : 'Manual -- use the FIRE NOW button.';
-      return tgRender(msg.chat.id, { text: `<b>${escapeTelegramHtml(fresh.name)}</b>\n${line}`, parseMode: 'HTML',
-        replyMarkup: telegramMenus.keyboard([[telegramMenus.button('❌ Abort', `aco:abort:${fresh.id}`)]] ) });
-    } catch (error) {
-      return tg(msg.chat.id, `❌ ${escapeTelegramHtml(String(error.message || error).slice(0, 200))}`, { parseMode: 'HTML' });
-    }
-  }));
-
-  // Live launch status: per-wallet states while a burst runs or after it settles.
-  bot.onText(/^\/acostatus(?:@\w+)?\s+([0-9a-fA-F-]{36})$/i, withTelegramUser(async (msg, match, userId) => {
-    commandRateLimiter.check('telegram', userId, 'aco');
-    const squad = await launchRepository.getSquad(userId, match[1]);
-    if (!squad) return tg(msg.chat.id, 'Launch squad not found.', { parseMode: 'HTML' });
-    const icon = { staged: '⏳', skipped: '⏭', sent: '📡', confirmed: '✅', reverted: '❌', failed: '⚠️', pending: '·' };
-    const counts = {};
-    for (const member of squad.members) counts[member.status] = (counts[member.status] || 0) + 1;
-    const countLine = Object.entries(counts).map(([status, n]) => `${icon[status] || '·'} ${n}`).join('  ');
-    const rows = squad.members.slice(0, 25).map(member =>
-      `${icon[member.status] || '·'} ${escapeTelegramHtml(member.walletLabel)} — ${member.status}` +
-      (member.txHash ? ` — <code>${escapeTelegramHtml(String(member.txHash).slice(0, 18))}…</code>` : '') +
-      (member.error ? ` (${escapeTelegramHtml(String(member.error).slice(0, 80))})` : ''));
-    const more = squad.members.length > 25 ? `\n…and ${squad.members.length - 25} more` : '';
-    const actionable = ['staged', 'armed'].includes(squad.status);
-    return tgRender(msg.chat.id, { text: [
-      `<b>${escapeTelegramHtml(squad.name)}</b> [${escapeTelegramHtml(squad.status)}]`,
-      `${countLine}`,
-      '',
-      ...rows, more,
-    ].join('\n'), parseMode: 'HTML', replyMarkup: actionable ? telegramMenus.keyboard([[
-      telegramMenus.button('🚀 FIRE NOW', `aco:fire:${squad.id}`),
-      telegramMenus.button('❌ Abort', `aco:abort:${squad.id}`),
-    ]] ) : undefined });
-  }));
-
   bot.onText(/^\/link(?:@\w+)?$/, withTelegramUser(async (msg, match, userId) => {
     const link = await identity.createLinkCode(userId);
     tgRender(msg.chat.id, { text: `🔗 <b>Account link code</b>\n\n<pre>${link.code}</pre>\nTap or long-press the code above to copy it. Expires in 5 minutes and can be used once.`, parseMode: 'HTML' });
@@ -4049,8 +4000,7 @@ if (CONFIG.discordBotToken) {
     isOwner: userId => governanceRepository.isOwner(userId),
     checkAccountStatus: userId => governance.checkAccountStatus(userId),
     supportedChains: CONFIG.supportedChains, chains: CHAINS, actionGate,
-    securityStatus: userId => securityFlags(userId),
-    launcher, launchRepository });
+    securityStatus: userId => securityFlags(userId) });
   // Live push: skip the 30s social-watch poll for discord_channel rules by reacting
   // to the Gateway's messageCreate event directly. The scheduled poller keeps running
   // as a fallback, so a dropped Gateway connection never stops detection, just slows it.
@@ -4071,6 +4021,16 @@ app.use(cors());
 app.use(express.json());
 app.use(dashboardApi.securityHeaders);
 mountDashboardRoutes(app,dashboardApi);
+// Same data as the public /health below, but behind a session + owner check so it shows up inside
+// the admin dashboard itself instead of only being reachable by hitting the bare endpoint by hand.
+// MUST stay registered ABOVE the /api 404 catch-all that follows: it sat below it once and every
+// request answered "API route not found", starving the admin System health panel (Round 10 item 1).
+app.get('/api/admin/health', dashboardApi.requireSession, async (req,res) => {
+  try { await governance.requireOwner(req.dashboardSession.userId); }
+  catch { return res.status(403).json({error:'Owner access required'}); }
+  const health=await readinessService.inspect();
+  res.json({...health,uptime:Math.floor(process.uptime())});
+});
 app.use('/api',(req,res)=>res.status(404).json({error:'API route not found'}));
 app.use(dashboardApi.error);
 app.use('/dashboard/assets',express.static(path.join(PROJECT_ROOT,'public','dashboard','assets'),{immutable:true,maxAge:'1y'}));
@@ -4085,14 +4045,6 @@ const readinessService=createReadinessService({database:storage,providerService,
 app.get('/health', async (req,res) => {
   const health=await readinessService.inspect();
   res.status(health.status==='ok'?200:503).json({...health,uptime:Math.floor(process.uptime())});
-});
-// Same data as the public /health above, but behind a session + owner check so it shows up inside
-// the admin dashboard itself instead of only being reachable by hitting the bare endpoint by hand.
-app.get('/api/admin/health', dashboardApi.requireSession, async (req,res) => {
-  try { await governance.requireOwner(req.dashboardSession.userId); }
-  catch { return res.status(403).json({error:'Owner access required'}); }
-  const health=await readinessService.inspect();
-  res.json({...health,uptime:Math.floor(process.uptime())});
 });
 app.get('*', (req,res) => res.sendFile(path.join(PROJECT_ROOT,'public','index.html')));
 
@@ -4118,7 +4070,6 @@ async function start() {
     }
   }
   schedulerWorker.start();
-  launcher.start();
   bumpSweeper.start();
   setInterval(()=>{scheduledReminder.sweep().catch(error=>log(`Scheduled-reminder sweep error: ${safeError(error)}`));},SCHEDULE_REMINDER_SWEEP_MS).unref?.();
   setInterval(()=>{expiredHistorySweep().catch(error=>log(`Expired-history sweep error: ${safeError(error)}`));},SCHEDULE_REMINDER_SWEEP_MS).unref?.();
@@ -4128,7 +4079,6 @@ async function start() {
   retentionWorker.start();
   log('Started social watch-rule worker');
   log('Started governance-group retention worker');
-  log('Started launch-squads timer worker');
   log(`Started durable scheduler with ${await schedulerRepository.countActive()} active tasks`);
   DB.snipers.filter(s => s.active).forEach(s => ensureChainWatcher(s.chain));
   log(`Restored ${DB.snipers.filter(s=>s.active).length} active snipers`);

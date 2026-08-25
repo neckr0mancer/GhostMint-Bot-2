@@ -821,11 +821,12 @@ test('a slash command issued mid mint-flow silently abandons the flow and runs n
   assert.equal(flowState.get('discord', 'paster-9'), null, 'the mint flow was abandoned');
 });
 
-test('an invalid or unresolvable contract input is ignored rather than starting a flow', async () => {
+test('an invalid contract input is ignored, but a valid address that is not found on any chain shows an error', async () => {
   const flowState = createFlowStateStore();
   const commands = baseCommands({ resolveMintContractInput: async () => null });
   const message = mockMessage('0x0000000000000000000000000000000000000001', 'paster-10');
   await handleMintPasteMessage({ identity: { resolveOrCreate: async () => 'internal-user' }, commands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT }, message);
-  assert.equal(message.replies.length, 0);
+  assert.equal(message.replies.length, 1);
+  assert.match(message.replies[0].content, /Could not find this contract/);
   assert.equal(flowState.get('discord', 'paster-10'), null);
 });

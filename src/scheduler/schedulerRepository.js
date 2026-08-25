@@ -144,14 +144,15 @@ function createSchedulerRepository(pool) {
     // returned once even if two workers sweep at the same moment. The caller writes history for
     // whatever it gets back.
     async claimNewlyExpired(limit = 50) {
-      const result = await pool.query(`UPDATE mint_tasks SET expired_logged_at=NOW()
-        WHERE id IN (
+      const result = await pool.query(`WITH candidate AS (
           SELECT id FROM mint_tasks
           WHERE expired_logged_at IS NULL
             AND status IN (${sqlStatusList(EXPIRABLE_STATUSES)})
             AND mint_time < ${EXPIRY_GRACE_SQL}
           ORDER BY mint_time LIMIT $1
-        ) RETURNING *`, [limit]);
+          FOR UPDATE SKIP LOCKED
+        ) UPDATE mint_tasks SET expired_logged_at=NOW()
+        FROM candidate WHERE mint_tasks.id=candidate.id RETURNING mint_tasks.*`, [limit]);
       return result.rows.map(mapTask);
     },
 
@@ -290,6 +291,17 @@ function createSchedulerRepository(pool) {
         last_error=NULL,completed_at=NULL
         WHERE user_id=$1 AND id=$2 AND status='failed'
           AND (attempt_count-phase_wait_count) < max_attempts RETURNING *`, [userId, id, now]);
+      return mapTask(result.rows[0]);
+    },
+
+    // Pre-arm fire-time correction (scheduledValidity): the contract's own window differs from the
+    // advertised time, so move next_attempt_at to the REAL opening before T arrives -- the precise
+    // timers re-arm on the change (schedulerWorker compares nextAttemptAt) and the first attempt
+    // lands valid with zero failed tries. Only a still-'scheduled' task moves: claimed/retried/
+    // paused rows are owned by other paths. mint_time (what the user sees) is deliberately kept.
+    async moveFireTime(userId, id, fireAtMs) {
+      const result = await pool.query(`UPDATE mint_tasks SET next_attempt_at=TO_TIMESTAMP($3 / 1000.0)
+        WHERE user_id=$1 AND id=$2 AND status='scheduled' RETURNING *`, [userId, id, fireAtMs]);
       return mapTask(result.rows[0]);
     },
   };

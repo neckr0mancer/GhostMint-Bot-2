@@ -334,9 +334,12 @@ test('an owner reads back as ceiling-exempt with null ceilings rather than a num
   assert.equal(limits.gasCeilingGwei, null);
 });
 
-// The whole reason the route withholds spentTodayWei: rollingSpendWei under-counts by the full
-// transaction value (PROJECT_REVIEW §1.1), so shipping a "used" figure would put a known-wrong
-// number on a money surface. If someone adds it later, this test should fail and make them think.
+// spentTodayWei stays absent by scoping, not because the figure is wrong any more: the
+// rollingSpendWei under-count (actuals held gas only, PROJECT_REVIEW §1.1) is fixed, but that
+// function is per-wallet while a profile "used today" wants an account-wide sum -- a product
+// decision for the /api/profile/limits surface, recorded in governanceService's own comment.
+// This test keeps the surface honest: adding a spend figure here must be a deliberate act that
+// updates this test, not something that drifts in.
 test('limitsForSelf returns a ceiling only and never a spent-so-far figure', async () => {
   const service = selfLimitsFixture();
   const limits = await service.limitsForSelf('regular-user', 'ethereum');

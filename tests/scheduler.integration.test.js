@@ -114,3 +114,52 @@ integrationTest('listPageForUser search filters at the database level, not just 
     await storage.close();
   }
 });
+
+// Pre-arm fire-time correction (scheduledValidity / INNOV-001): the contract's real opening
+// differs from the advertised time, so the pre-arm moves next_attempt_at BEFORE T arrives --
+// the first attempt lands valid with zero failed tries. Only a still-'scheduled' row moves:
+// claimed/retried/paused rows are owned by other paths, and mint_time (what the user sees)
+// is deliberately kept while only the internal fire moment moves.
+integrationTest('moveFireTime moves a scheduled task to the real opening and refuses non-scheduled rows', { timeout:120_000 }, async () => {
+  const migration = await runMigrations({ connectionString: CONFIG.databaseUrlUnpooled,
+    migrationsDirectory: path.join(CONFIG.projectRoot, 'migrations') });
+  assert.equal(migration.connection, 'unpooled');
+
+  const pool = createDatabasePool({ connectionString: CONFIG.databaseUrl, max: 2 });
+  const storage = createPostgresStorage(pool);
+  const scheduler = createSchedulerRepository(pool);
+  const identity = createIdentityService(createPostgresIdentityRepository(pool));
+  const userId = await identity.resolveOrCreate('telegram', `movefire-${process.pid}-${Date.now()}`);
+  const label = `movefire-${Date.now()}`;
+  const crypto = createKeyEncryption({ activeVersion: CONFIG.encryptionKeyVersion, keys: CONFIG.encryptionKeys });
+  await storage.addWallet({ userId, label, address: '0x0000000000000000000000000000000000000022', chain: 'ethereum',
+    keyEnvelope: crypto.encrypt(`0x${'55'.repeat(32)}`), addedAt: Date.now() });
+  try {
+    const fireAt = Date.now() + 5000;
+    const validated = requestSchemas.taskCreate({ userId, id: randomUUID(), name: 'move-me', walletLabel: label,
+      contract: '0x0000000000000000000000000000000000000044', fn: 'mint', qty: 1, price: 0, gas: null,
+      chain: 'ethereum', mintTime: fireAt, status: 'scheduled', createdAt: Date.now() },
+      { supportedChains: CONFIG.supportedChains, now: Date.now() });
+    const task = { userId, id: validated.id, name: 'move-me', walletLabel: label,
+      contract: '0x0000000000000000000000000000000000000044', fn: 'mint', qty: 1, price: 0, gas: null,
+      chain: 'ethereum', mintTime: fireAt, status: 'scheduled', createdAt: Date.now(),
+      nextAttemptAt: fireAt, maxAttempts: 3, idempotencyKey: validated.idempotencyKey,
+      viaOpenSea: false, stageType: null };
+    await storage.saveTask(task);
+
+    const newFire = Date.now() + 9000;
+    const moved = await scheduler.moveFireTime(userId, task.id, newFire);
+    assert.ok(moved, 'a scheduled task moves');
+    assert.equal(moved.nextAttemptAt, newFire, 'next_attempt_at is the real opening');
+    assert.equal(moved.mintTime, fireAt, 'the user-visible mint_time is deliberately kept');
+    assert.equal(moved.status, 'scheduled');
+
+    // A claimed row is owned by the fire path -- moveFireTime must not move it behind the worker's back.
+    await scheduler.claimDue({ workerId: 'movefire-worker', now: newFire + 1, leaseMs: 60_000, userId });
+    const refused = await scheduler.moveFireTime(userId, task.id, Date.now() + 60_000);
+    assert.equal(refused, null, 'a claimed task must not be moved');
+  } finally {
+    await pool.query('DELETE FROM users WHERE user_id=$1', [userId]).catch(() => {});
+    await storage.close();
+  }
+});

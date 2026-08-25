@@ -102,6 +102,14 @@ smokeTest('the application starts and exposes a healthy database-backed service'
   assert.equal(typeof body.dependencies.scheduler.status, 'string');
   assert.equal(typeof body.uptime, 'number');
   assert.doesNotMatch(stdout, new RegExp(EXAMPLE_ENV.ENCRYPTION_SECRET));
+
+  // The admin variant sits behind a session+owner gate, so unauthenticated it must answer 401 --
+  // never the /api 404 catch-all's "API route not found", which is exactly what happened while the
+  // route was registered below that catch-all (Round 10 item 1): the admin System health panel
+  // silently had no data source. Registration ORDER in server.js is what this pins.
+  const adminHealth = await fetch(`http://127.0.0.1:${port}/api/admin/health`);
+  assert.equal(adminHealth.status, 401,
+    'admin health must be routed behind the session gate (401), not swallowed by the API 404 catch-all');
 });
 
 // Regression test: startup used to await discordBot.start() with no try/catch, so an invalid or

@@ -24,6 +24,7 @@
     "merge:duplicate-account": "node scripts/merge-duplicate-account.js",
     "clear:non-owner-users": "node scripts/clear-non-owner-users.js",
     "clear:all-users": "node scripts/clear-all-users.js",
+    "clear:test-fixtures": "node scripts/clear-test-fixtures.js",
     "acceptance:run": "node scripts/live-acceptance-run.js",
     "opensea:refresh-key": "node scripts/refresh-opensea-key.js"
   },
