@@ -415,10 +415,38 @@ function openSeaPhaseTaskName(mintFlowData, stage) {
   const phase = stage.label || discordMenus.humanizeStageType(stage.stageType);
   return mintFlowData.collection?.name ? `${mintFlowData.collection.name} — ${phase}` : phase;
 }
+function openSeaPhaseEligibilityDeadline(mintFlowData, stage) {
+  const startTime = Number(stage.startTime);
+  const cap = startTime + 24 * 60 * 60;
+  // earliest_eligible may legitimately move from an ineligible allowlist into the following
+  // public phase, so use the latest advertised end at/after the selected phase, capped at 24h.
+  // Using only the selected allowlist's end would expire the task at the exact moment public opens.
+  const advertisedEnds = (mintFlowData.drop?.stages || [])
+    .filter(candidate => Number(candidate.startTime) >= startTime)
+    .map(candidate => Number(candidate.endTime))
+    .filter(endTime => Number.isFinite(endTime) && endTime > startTime);
+  const latestAdvertisedEnd = advertisedEnds.length ? Math.max(...advertisedEnds) : null;
+  const deadlineSeconds = latestAdvertisedEnd === null ? cap : Math.min(latestAdvertisedEnd, cap);
+  return new Date(deadlineSeconds * 1000).toISOString();
+}
 function openSeaPhaseTaskData(mintFlowData, stage) {
+  const type = String(stage.stageType || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+  const publicStage = ['public','public_sale','publicsale','public_drop'].includes(type)
+    || (!type && /^public(?:\s+sale)?$/i.test(String(stage.label || '').trim()));
+  const viaOpenSea = !mintFlowData.isSeaDrop || !publicStage;
+  const detectedPrice = stage.priceWei !== null && stage.priceWei !== undefined
+    ? Number(formatEther(BigInt(stage.priceWei)))
+    : (Number.isFinite(stage.priceETH) ? stage.priceETH : undefined);
   return {
     contractAddress: mintFlowData.contractAddress, chain: mintFlowData.chain,
-    priceETH: 0, priceUnknown: false, viaOpenSea: true, stageType: stage.stageType || null,
+    priceETH: viaOpenSea ? 0 : detectedPrice, priceUnknown: !viaOpenSea && detectedPrice === undefined,
+    viaOpenSea,
+    stageUuid: stage.uuid || null, stageLabel: stage.label || null, stageType: stage.stageType || null,
+    // The opening time is a not-before wake-up, not a promise to broadcast blindly at that
+    // second. Gated OpenSea-builder tasks may advance from an ineligible allowlist to a later
+    // advertised phase; direct public SeaDrop tasks stay pinned to this exact public-stage UUID.
+    eligibilityMode: viaOpenSea ? 'earliest_eligible' : 'specific_stage',
+    eligibilityDeadline: openSeaPhaseEligibilityDeadline(mintFlowData, stage),
     mintTime: new Date(stage.startTime * 1000).toISOString(),
     name: openSeaPhaseTaskName(mintFlowData, stage),
     // The chosen stage carries its own per-wallet cap (normalizeStage maps OpenSea's
@@ -435,7 +463,7 @@ function taskConfirmPayload(taskData, chains) {
   return discordMenus.taskConfirmation({
     name: taskData.name, contractAddress: taskData.contractAddress, chainLabel: chains[taskData.chain]?.name || taskData.chain,
     walletLabel: taskData.walletLabel, quantity: taskData.quantity || 1, mintTime: taskData.mintTime, priceETH: taskData.priceETH, priceUnknown: taskData.priceUnknown,
-    viaOpenSea: taskData.viaOpenSea,
+    viaOpenSea: taskData.viaOpenSea, phaseAware:Boolean(taskData.eligibilityDeadline),
   });
 }
 
@@ -463,7 +491,7 @@ function advanceFromTaskQuantity(ctx, respond, platformUserId, userId, taskData)
   const wallets = commands.wallets(userId);
   if (wallets.length === 1) {
     const data = { ...taskData, walletLabel: wallets[0].label };
-    if (data.viaOpenSea && data.name) {
+    if (data.eligibilityDeadline && data.name) {
       flowState.start('discord', platformUserId, 'task_guided', 'awaiting_confirm', data);
       return respond(taskConfirmPayload(data, chains));
     }
@@ -485,13 +513,16 @@ async function finishTaskScheduleDiscord(ctx, respond, platformUserId, userId, f
     const task = await commands.createTask(userId, {
       name: flowData.name, walletLabel: flowData.walletLabel, contractAddress: flowData.contractAddress,
       chain: flowData.chain, quantity: flowData.quantity || 1, priceETH: flowData.priceETH, mintTime: flowData.mintTime,
-      viaOpenSea: flowData.viaOpenSea, stageType: flowData.stageType,
+      viaOpenSea: flowData.viaOpenSea, stageUuid: flowData.stageUuid, stageLabel: flowData.stageLabel,
+      stageType: flowData.stageType, eligibilityMode: flowData.eligibilityMode,
+      eligibilityDeadline: flowData.eligibilityDeadline,
     });
     flowState.clear('discord', platformUserId);
     // Reuses the same task:cancel:ask:<id> step tasksMenu/taskActions already use on Telegram -- a
     // freshly scheduled task starts life in the 'scheduled' status, always cancellable.
     const cancelRow = discordMenus.row([discordMenus.button('❌ Cancel this schedule', `task:cancel:ask:${task.id}`, 'danger')]);
-    return respond({ content: `✅${task.viaOpenSea ? '🎫' : ''} Scheduled ${escapeDiscord(task.name)} to fire at \`${discordMenus.formatGmtPlus1(task.mintTime)}\`${task.viaOpenSea ? ' via OpenSea (it resolves eligibility and price automatically)' : ''}.`, components: [cancelRow, ...backToMenu] });
+    const phaseAware = Boolean(task.eligibilityDeadline || flowData.eligibilityDeadline);
+    return respond({ content: `✅${phaseAware ? '🎫' : ''} Scheduled ${escapeDiscord(task.name)}${phaseAware ? ' to begin eligibility checks at' : ' to fire at'} \`${discordMenus.formatGmtPlus1(task.mintTime)}\`${phaseAware ? '; it waits for a live phase this wallet can actually mint in' : ''}.`, components: [cancelRow, ...backToMenu] });
   } catch (error) {
     if (error instanceof RateLimitError) {
       return respond({ content: `Too many sensitive commands. Retry in ${Math.ceil(error.retryAfterMs / 1000)} seconds.`, components: backToMenu });
@@ -1146,7 +1177,7 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         const label = interaction.values?.[0];
         if (!label) return undefined;
         const taskData = { ...flow.data, walletLabel: label };
-        if (taskData.viaOpenSea && taskData.name) {
+        if (taskData.eligibilityDeadline && taskData.name) {
           flowState.advance('discord', platformUserId, 'awaiting_confirm', taskData);
           return dcRespond(interaction, taskConfirmPayload(taskData, chains));
         }
@@ -1518,7 +1549,7 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         await interaction.reply({ ...discordMenus.taskConfirmation({
           name: taskData.name, contractAddress: taskData.contractAddress, chainLabel: chains[taskData.chain]?.name || taskData.chain,
           walletLabel: taskData.walletLabel, quantity: taskData.quantity || 1, mintTime: taskData.mintTime, priceETH: taskData.priceETH, priceUnknown: taskData.priceUnknown,
-          viaOpenSea: taskData.viaOpenSea,
+          viaOpenSea: taskData.viaOpenSea, phaseAware:Boolean(taskData.eligibilityDeadline),
         }), ephemeral: true });
         return;
       }

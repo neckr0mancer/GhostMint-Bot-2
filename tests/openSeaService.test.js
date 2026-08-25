@@ -279,6 +279,27 @@ test('getDrop returns null (never throws) when unconfigured, unsupported, not a 
   assert.equal(await notADrop.getDrop('ethereum', CONTRACT), null);
 });
 
+test('repeated phase refreshes cache the stable contract-to-collection lookup', async () => {
+  let contractReads = 0;
+  let dropReads = 0;
+  const http = { get:async url => {
+    if (url.includes('/chain/ethereum/contract/')) {
+      contractReads += 1;
+      return { data:{ collection:'cool-cats' } };
+    }
+    if (url.endsWith('/drops/cool-cats')) {
+      dropReads += 1;
+      return { data:{ is_minting:false, stages:[] } };
+    }
+    throw new Error(`unexpected url ${url}`);
+  } };
+  const service = createOpenSeaService({ apiKey:'test-key', repository:fakeRepository(), http });
+  await service.getDrop('ethereum', CONTRACT);
+  await service.getDrop('ethereum', CONTRACT);
+  assert.equal(contractReads, 1);
+  assert.equal(dropReads, 2, 'the changing drop state itself must still be refreshed');
+});
+
 test('getDrop does not log the common 404 "not a drop" case, but does log a real failure (bad key, network error, outage)', async () => {
   const logs = [];
   const log = msg => logs.push(msg);
@@ -345,7 +366,8 @@ test('buildMintTransaction throws a ValidationError when OpenSea reports a minti
   const service = createOpenSeaService({ apiKey: 'test-key', repository: fakeRepository(), http });
   await assert.rejects(
     service.buildMintTransaction('ethereum', CONTRACT, MINTER, 1),
-    error => { assert.equal(error.name, 'ValidationError'); assert.match(error.issues[0].message, /not on the allowlist/); return true; },
+    error => { assert.equal(error.name, 'ValidationError'); assert.equal(error.code, 'WALLET_NOT_ELIGIBLE');
+      assert.match(error.issues[0].message, /not on the allowlist/); return true; },
   );
 });
 
@@ -357,7 +379,8 @@ test('buildMintTransaction still throws a ValidationError with a sensible defaul
   const service = createOpenSeaService({ apiKey: 'test-key', repository: fakeRepository(), http });
   await assert.rejects(
     service.buildMintTransaction('ethereum', CONTRACT, MINTER, 1),
-    error => { assert.match(error.issues[0].message, /insufficient balance|allowlist|limit|sold out/); return true; },
+    error => { assert.equal(error.code, 'VALIDATION_ERROR');
+      assert.match(error.issues[0].message, /insufficient balance|allowlist|limit|sold out/); return true; },
   );
 });
 

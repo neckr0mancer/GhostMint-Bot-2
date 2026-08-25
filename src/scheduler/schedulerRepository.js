@@ -65,6 +65,10 @@ function mapTask(row) {
     leaseExpiresAt: time(row.lease_expires_at), transactionIntentId: row.transaction_intent_id,
     idempotencyKey: row.idempotency_key, lastError: row.last_error, completedAt: time(row.completed_at),
     viaOpenSea: row.via_opensea, stageType: row.stage_type ?? null, chain: row.chain ?? null,
+    stageUuid: row.stage_uuid ?? null, stageLabel: row.stage_label ?? null,
+    eligibilityMode: row.eligibility_mode ?? 'specific_stage',
+    eligibilityDeadline: time(row.eligibility_deadline),
+    phaseWaitCount: Number(row.phase_wait_count || 0),
   };
 }
 
@@ -239,7 +243,8 @@ function createSchedulerRepository(pool) {
     },
 
     async fail(task, { reason, transient, retryAt = null, intentId = null }) {
-      const retry = transient && task.attemptCount < task.maxAttempts;
+      const executionAttempts = Math.max(1, task.attemptCount - (task.phaseWaitCount || 0));
+      const retry = transient && executionAttempts < task.maxAttempts;
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
@@ -251,6 +256,38 @@ function createSchedulerRepository(pool) {
         if (updated.rowCount) await finishAttempt(client, task, retry ? 'retry' : 'failure', reason, intentId);
         await client.query('COMMIT');
         return updated.rowCount ? (retry ? 'retry' : 'failed') : 'superseded';
+      } catch (error) { await client.query('ROLLBACK').catch(() => {}); throw error; }
+      finally { client.release(); }
+    },
+
+    async deferForPhase(task, details) {
+      const { retryAt, mintTime, stageUuid, stageLabel, stageType, reason } = details;
+      const mintTimeSupplied = Object.prototype.hasOwnProperty.call(details, 'mintTime');
+      const deadlineSupplied = Object.prototype.hasOwnProperty.call(details, 'deadline');
+      const deadline = deadlineSupplied ? details.deadline : null;
+      const stageUuidSupplied = Object.prototype.hasOwnProperty.call(details, 'stageUuid');
+      const stageLabelSupplied = Object.prototype.hasOwnProperty.call(details, 'stageLabel');
+      const stageTypeSupplied = Object.prototype.hasOwnProperty.call(details, 'stageType');
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const updated = await client.query(`UPDATE mint_tasks SET status='retry',
+          mint_time=CASE WHEN $5 THEN TO_TIMESTAMP($6 / 1000.0) ELSE mint_time END,
+          next_attempt_at=TO_TIMESTAMP($4 / 1000.0),phase_wait_count=phase_wait_count+1,
+          eligibility_deadline=CASE WHEN $7 THEN
+            CASE WHEN $8::BIGINT IS NULL THEN NULL ELSE TO_TIMESTAMP($8 / 1000.0) END
+            ELSE eligibility_deadline END,
+          stage_uuid=CASE WHEN $9 THEN $10 ELSE stage_uuid END,
+          stage_label=CASE WHEN $11 THEN $12 ELSE stage_label END,
+          stage_type=CASE WHEN $13 THEN $14 ELSE stage_type END,last_error=$15,
+          claimed_by=NULL,claimed_at=NULL,lease_expires_at=NULL,completed_at=NULL
+          WHERE user_id=$1 AND id=$2 AND status='claimed' AND attempt_count=$3 RETURNING *`,
+        [task.userId, task.id, task.attemptCount, retryAt, mintTimeSupplied, mintTime ?? null,
+          deadlineSupplied, deadline, stageUuidSupplied, stageUuid ?? null,
+          stageLabelSupplied, stageLabel ?? null, stageTypeSupplied, stageType ?? null, reason]);
+        if (updated.rowCount) await finishAttempt(client, task, 'retry', reason, null);
+        await client.query('COMMIT');
+        return mapTask(updated.rows[0]);
       } catch (error) { await client.query('ROLLBACK').catch(() => {}); throw error; }
       finally { client.release(); }
     },
@@ -289,8 +326,9 @@ function createSchedulerRepository(pool) {
     },
     async retry(userId, id, now) {
       const result = await pool.query(`UPDATE mint_tasks SET status='retry',next_attempt_at=TO_TIMESTAMP($3 / 1000.0),
-        max_attempts=GREATEST(max_attempts,attempt_count+1),last_error=NULL,completed_at=NULL
-        WHERE user_id=$1 AND id=$2 AND status='failed' RETURNING *`, [userId, id, now]);
+        last_error=NULL,completed_at=NULL
+        WHERE user_id=$1 AND id=$2 AND status='failed'
+          AND (attempt_count-phase_wait_count) < max_attempts RETURNING *`, [userId, id, now]);
       return mapTask(result.rows[0]);
     },
 

@@ -7,6 +7,11 @@ const { TransactionSafetyError } = require('../transactions/transactionEngine');
 // its advertised second -- the identical request then succeeds. Bounded tightly below so the
 // already-over case still fails fast instead of retrying into a window that will never reopen.
 const STAGE_NOT_OPEN = 'STAGE_NOT_OPEN';
+// A phase-aware task uses its stored time only as a durable wake-up. The execution layer throws
+// this code when the intended phase is not live (or this wallet is not eligible for the current
+// gated phase) and supplies a verified next phase/time. Unlike an RPC retry, this transition must
+// not consume the task's bounded execution-attempt budget.
+const SCHEDULE_PHASE_WAIT = 'SCHEDULE_PHASE_WAIT';
 // Tight retry for stage-not-open: the contract may flip valid at the next block (400ms-2.5s).
 // Backing off would only widen the miss, so we retry quickly and also on every new block via
 // the chain watcher (see block-driven recheck below). Five retries plus one re-arm covers the
@@ -50,6 +55,13 @@ function isTransientFailure(error) {
   return TRANSIENT_CODES.has(error?.code);
 }
 
+function executionAttemptCount(task) {
+  // attemptCount is the immutable claim/audit sequence. Phase-only claims are tracked separately
+  // so waiting for a delayed launch neither exhausts normal retries nor produces enormous
+  // exponential backoff once the mint finally reaches RPC/simulation work.
+  return Math.max(1, Number(task?.attemptCount || 0) - Number(task?.phaseWaitCount || 0));
+}
+
 function createSchedulerWorker({ repository, intentRepository, transactionEngine, executeTask,
   workerId = randomUUID(), now = () => Date.now(), leaseMs = 120_000,
   pollIntervalMs = 1_000, retryBaseMs = 5_000, notify, log = () => {}, sanitizeError = errorReason,
@@ -60,6 +72,10 @@ function createSchedulerWorker({ repository, intentRepository, transactionEngine
   // epoch ms, or null when it cannot be resolved. Injected rather than imported so this worker
   // keeps knowing nothing about OpenSea; server.js supplies the lookup.
   resolveStageStart = null,
+  // Optional durable preflight. It runs after idempotency/recovery checks but before the user is
+  // told execution is starting. Phase-aware schedules use it to defer without producing a false
+  // "starting" notification; its returned snapshot is passed to executeTask for reuse.
+  preflightTask = null,
   // A single in-flight task used to serialize every scheduled mint behind whichever one claimed
   // first, even though processTask() waits for full on-chain finality (up to policy's
   // transactionTimeoutMs, 10 minutes by default) before returning -- a second task whose own
@@ -69,6 +85,9 @@ function createSchedulerWorker({ repository, intentRepository, transactionEngine
   // `await worker.tick()` expectation), so this only changes how many overlapping `tick()` calls
   // the existing setInterval loop is allowed to have outstanding at once.
   maxConcurrentTasks = 5,
+  // A process can restart while another worker's lease is still valid. The one startup sweep
+  // cannot recover it yet, so keep checking at a bounded cadence until the lease expires.
+  staleRecoveryIntervalMs = Math.min(30_000, leaseMs),
   // Round 16 (docs/WORKLIST.md Section AV, item 4): "replace coarse polling with precise timers
   // for near-launch tasks." A task due more than this far out is left to the ordinary poll loop --
   // only one about to become due gets an exact setTimeout instead of waiting for the next tick.
@@ -83,6 +102,8 @@ function createSchedulerWorker({ repository, intentRepository, transactionEngine
   // introduced, task created inside the lead window). Re-arms automatically if mintTime moves.
   prearmLeadMs = 0, prearm = null }) {
   let timer = null;
+  let recoveryTimer = null;
+  let recoveryInFlight = false;
   let inFlightCount = 0;
   let lastTickAt=null;let lastSuccessAt=null;let lastError=null;
   const armedTimers = new Map();
@@ -104,8 +125,9 @@ function createSchedulerWorker({ repository, intentRepository, transactionEngine
   // How a stage-not-open failure is retried. Returns null to mean "handle it like anything else",
   // which for an exhausted budget is a permanent failure.
   async function stageWaitPlan(task) {
-    const rearmed = task.attemptCount > STAGE_NOT_OPEN_MAX_ATTEMPTS;
-    if (rearmed || task.attemptCount < STAGE_NOT_OPEN_MAX_ATTEMPTS) {
+    const attempts = executionAttemptCount(task);
+    const rearmed = attempts > STAGE_NOT_OPEN_MAX_ATTEMPTS;
+    if (rearmed || attempts < STAGE_NOT_OPEN_MAX_ATTEMPTS) {
       return { retryAt: now() + STAGE_NOT_OPEN_RETRY_MS,
         maxAttempts: Math.max(task.maxAttempts, rearmed ? STAGE_REARM_MAX_ATTEMPTS : STAGE_NOT_OPEN_MAX_ATTEMPTS) };
     }
@@ -134,7 +156,8 @@ function createSchedulerWorker({ repository, intentRepository, transactionEngine
       return 'failed';
     }
     await repository.recoverWithoutExecution(task, { status: 'retry', intentId: current.intentId,
-      retryAt: retryAt(task.attemptCount), reason: `transaction remains ${current.state}; reconciliation will continue` });
+      retryAt: retryAt(executionAttemptCount(task)), reason: `transaction remains ${current.state}; reconciliation will continue` });
+    await Promise.resolve(notify?.({ task, outcome: 'retry', intent: current, recovery: true })).catch(() => {});
     return 'retry';
   }
 
@@ -151,10 +174,12 @@ function createSchedulerWorker({ repository, intentRepository, transactionEngine
       const existing = await existingIntent(task);
       if (existing) return settleFromIntent(task, existing, recovery);
       if (recovery) {
-        await repository.recoverWithoutExecution(task, { status: 'retry', retryAt: retryAt(task.attemptCount),
+        await repository.recoverWithoutExecution(task, { status: 'retry', retryAt: retryAt(executionAttemptCount(task)),
           reason: 'expired claim had no transaction intent; safe idempotent retry scheduled' });
+        await Promise.resolve(notify?.({ task, outcome: 'retry', recovery: true })).catch(() => {});
         return 'retry';
       }
+      const preflight = preflightTask ? await preflightTask(task) : null;
       // This is informational only: the task is already due and will execute without waiting for
       // approval. Delivery is deliberately isolated from execution so a Telegram, Discord, or
       // dashboard outage cannot prevent the mint or change its eventual transaction state.
@@ -162,9 +187,21 @@ function createSchedulerWorker({ repository, intentRepository, transactionEngine
       const intent = await executeTask(task, {
         idempotencyKey: task.idempotencyKey,
         onIntentPersisted: persisted => repository.attachIntent(task, persisted.intentId),
+        preflight,
       });
       return settleFromIntent(task, intent, false);
     } catch (error) {
+      if (error?.code === SCHEDULE_PHASE_WAIT && error.phaseDeferral && repository.deferForPhase) {
+        const reason = sanitizeError(error).slice(0, 500);
+        const deferred = await repository.deferForPhase(task, { ...error.phaseDeferral, reason });
+        if (!deferred) {
+          log(`Phase deferral lost its claim guard for scheduled task ${task.id}; no state was overwritten`);
+          return 'retry';
+        }
+        Object.assign(task, deferred);
+        await Promise.resolve(notify?.({ task, outcome: 'retry', error, phaseWait: true })).catch(() => {});
+        return 'retry';
+      }
       const transient = isTransientFailure(error);
       // A stage that has not opened is the one failure worth waiting on rather than abandoning:
       // a tight fixed burst first, then a single re-arm to the stage's real opening time. Both
@@ -185,7 +222,7 @@ function createSchedulerWorker({ repository, intentRepository, transactionEngine
       }
       const budgeted = plan ? { ...task, maxAttempts: plan.maxAttempts } : task;
       const outcome = await repository.fail(budgeted, { reason: sanitizeError(error).slice(0, 500), transient,
-        retryAt: transient ? (plan ? plan.retryAt : retryAt(task.attemptCount)) : null });
+        retryAt: transient ? (plan ? plan.retryAt : retryAt(executionAttemptCount(task))) : null });
       await Promise.resolve(notify?.({ task, outcome, error })).catch(() => {});
       return outcome;
     }
@@ -272,11 +309,21 @@ function createSchedulerWorker({ repository, intentRepository, transactionEngine
       armPreciseTimers().catch(error => log(`Scheduler precise-arm failed: ${sanitizeError(error)}`));
     }, pollIntervalMs);
     timer.unref?.();
+    recoveryTimer = setInterval(() => {
+      if (recoveryInFlight) return;
+      recoveryInFlight = true;
+      recoverStaleClaims()
+        .catch(error => log(`Scheduler stale-claim recovery failed: ${sanitizeError(error)}`))
+        .finally(() => { recoveryInFlight = false; });
+    }, Math.max(1, staleRecoveryIntervalMs));
+    recoveryTimer.unref?.();
   }
 
   function stop() {
     if (timer) clearInterval(timer);
     timer = null;
+    if (recoveryTimer) clearInterval(recoveryTimer);
+    recoveryTimer = null;
     for (const entry of armedTimers.values()) clearTimeout(entry.handle ?? entry);
     armedTimers.clear();
     for (const entry of prearmTimers.values()) clearTimeout(entry.handle);
@@ -318,6 +365,6 @@ function createSchedulerWorker({ repository, intentRepository, transactionEngine
   return { armPreciseTimers, handleBlock, hasBlockWaiters, health,processTask, recoverStaleClaims, start, stop, tick, workerId };
 }
 
-module.exports = { STAGE_NOT_OPEN, STAGE_NOT_OPEN_MAX_ATTEMPTS, STAGE_NOT_OPEN_RETRY_MS,
+module.exports = { SCHEDULE_PHASE_WAIT, STAGE_NOT_OPEN, STAGE_NOT_OPEN_MAX_ATTEMPTS, STAGE_NOT_OPEN_RETRY_MS,
   STAGE_REARM_MAX_ATTEMPTS, STAGE_REARM_WINDOW_MS, TRANSIENT_CODES,
-  createSchedulerWorker, errorReason, isTransientFailure };
+  createSchedulerWorker, errorReason, executionAttemptCount, isTransientFailure };

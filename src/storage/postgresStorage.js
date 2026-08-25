@@ -19,6 +19,10 @@ function mapTask(row) {
     attemptCount: row.attempt_count, maxAttempts: row.max_attempts,
     transactionIntentId: row.transaction_intent_id, idempotencyKey: row.idempotency_key,
     viaOpenSea: row.via_opensea, stageType: row.stage_type ?? null,
+    stageUuid: row.stage_uuid ?? null, stageLabel: row.stage_label ?? null,
+    eligibilityMode: row.eligibility_mode ?? 'specific_stage',
+    eligibilityDeadline: time(row.eligibility_deadline),
+    phaseWaitCount: Number(row.phase_wait_count || 0),
   };
 }
 
@@ -26,8 +30,12 @@ function mapActivity(row) {
   return { id: Number(row.id), userId: row.user_id, status: row.status, title: row.title,
     walletLabel: row.wallet_label, txHash: row.tx_hash, explorer: row.explorer, time: time(row.occurred_at),
     actualNetworkCostWei:row.actual_network_cost_wei===null?null:BigInt(row.actual_network_cost_wei),
-    triggerSource:row.trigger_source || null, verificationState:row.verification_state || null,
-    address: row.address || null, chain: row.transaction_chain || null };
+    transactionValueWei:row.transaction_value_wei===null||row.transaction_value_wei===undefined
+      ?null:BigInt(row.transaction_value_wei),tokenIds:row.transaction_token_ids||null,
+    collectionName:row.collection_name||null,
+    triggerSource:row.trigger_source || row.transaction_trigger_source || null,
+    verificationState:row.verification_state || null,
+    address: row.address || row.transaction_address || null, chain: row.transaction_chain || null };
 }
 
 function mapPnl(row) {
@@ -80,9 +88,18 @@ function createPostgresStorage(pool) {
       const qualifiedMainWhere=mainWhere.replaceAll('user_id','activity.user_id')
         .replaceAll('title','activity.title').replaceAll('wallet_label','activity.wallet_label');
       const [rows,count]=await Promise.all([pool.query(`SELECT activity.*,
-        transaction_intents.chain AS transaction_chain FROM activity
+        transaction_intents.chain AS transaction_chain,
+        transaction_intents.to_address AS transaction_address,
+        transaction_intents.value_wei AS transaction_value_wei,
+        transaction_intents.token_ids AS transaction_token_ids,
+        transaction_intents.trigger_source AS transaction_trigger_source,
+        contract_value_cache.opensea_name AS collection_name FROM activity
         LEFT JOIN transaction_intents ON transaction_intents.user_id=activity.user_id
-          AND transaction_intents.tx_hash=activity.tx_hash ${qualifiedMainWhere}
+          AND transaction_intents.tx_hash=activity.tx_hash
+        LEFT JOIN contract_value_cache ON contract_value_cache.chain=transaction_intents.chain
+          AND contract_value_cache.contract_address=LOWER(COALESCE(
+            transaction_intents.call_preview->>'contractAddress',activity.address,transaction_intents.to_address))
+        ${qualifiedMainWhere}
         ORDER BY activity.occurred_at DESC,activity.id DESC LIMIT $2 OFFSET $3`,mainParams),
       pool.query(`SELECT COUNT(*)::INTEGER AS total FROM activity ${countWhere}`,countParams)]);
       return {items:rows.rows.map(mapActivity),total:count.rows[0].total};
@@ -121,21 +138,25 @@ function createPostgresStorage(pool) {
       const status = task.status === 'waiting' ? 'scheduled' : task.status;
       const result = await pool.query(`INSERT INTO mint_tasks
         (user_id,id,name,wallet_label,contract_address,function_name,quantity,price_eth,gas_gwei,mint_time,status,created_at,
-          next_attempt_at,max_attempts,idempotency_key,via_opensea,stage_type,chain)
+          next_attempt_at,max_attempts,idempotency_key,via_opensea,stage_type,chain,stage_uuid,stage_label,
+          eligibility_mode,eligibility_deadline)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,TO_TIMESTAMP($10 / 1000.0),$11,TO_TIMESTAMP($12 / 1000.0),
-          TO_TIMESTAMP($13 / 1000.0),$14,$15,$16,$17,$18)
+          TO_TIMESTAMP($13 / 1000.0),$14,$15,$16,$17,$18,$19,$20,$21,
+          CASE WHEN $22::BIGINT IS NULL THEN NULL ELSE TO_TIMESTAMP($22 / 1000.0) END)
         ON CONFLICT (user_id,id) DO UPDATE SET name=EXCLUDED.name,wallet_label=EXCLUDED.wallet_label,
         contract_address=EXCLUDED.contract_address,function_name=EXCLUDED.function_name,
         quantity=EXCLUDED.quantity,price_eth=EXCLUDED.price_eth,gas_gwei=EXCLUDED.gas_gwei,
         mint_time=EXCLUDED.mint_time,status=EXCLUDED.status,next_attempt_at=EXCLUDED.next_attempt_at,
         max_attempts=EXCLUDED.max_attempts,via_opensea=EXCLUDED.via_opensea,stage_type=EXCLUDED.stage_type,
-        chain=EXCLUDED.chain
+        chain=EXCLUDED.chain,stage_uuid=EXCLUDED.stage_uuid,stage_label=EXCLUDED.stage_label,
+        eligibility_mode=EXCLUDED.eligibility_mode,eligibility_deadline=EXCLUDED.eligibility_deadline
         RETURNING id`,
       [task.userId, task.id, task.name, task.walletLabel, task.contract, task.fn || 'mint', task.qty,
         task.price || 0, task.gas ?? null, task.mintTime, status, task.createdAt || Date.now(),
         task.nextAttemptAt || task.mintTime, task.maxAttempts || 3,
         task.idempotencyKey || `scheduled-mint:${task.userId}:${task.id}`, Boolean(task.viaOpenSea),
-        task.stageType ?? null, task.chain ?? null]);
+        task.stageType ?? null, task.chain ?? null, task.stageUuid ?? null, task.stageLabel ?? null,
+        task.eligibilityMode ?? 'specific_stage', task.eligibilityDeadline ?? null]);
       return result.rowCount > 0;
     },
     async deleteTask(userId, id) {

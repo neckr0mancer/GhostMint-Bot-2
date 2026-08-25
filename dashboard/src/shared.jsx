@@ -1,7 +1,103 @@
-/* global Blob, clearTimeout, CustomEvent, navigator, URL, WebSocket, setTimeout */
-import React,{useCallback,useEffect,useRef,useState} from 'react';
+/* global Blob, clearTimeout, CustomEvent, localStorage, navigator, URL, WebSocket, setTimeout */
+import React,{useCallback,useEffect,useId,useRef,useState} from 'react';
 
 export {ACTIVITY_EVENTS} from './activityFeed.js';
+
+// The rail preference and this single layout document are deliberately the only layout values in
+// localStorage (REDESIGN_BRIEF §3.6). Each page owns a key inside the document, so adding another
+// reorderable page never creates another browser-storage key. The reserved `dismissedRewards`
+// field remembers which one-off success panel was dismissed; its activity key changes when a new
+// confirmed mint arrives, so the next real event is shown without inventing another storage key.
+const SECTION_ORDER_KEY='ghostmint-section-order';
+const SECTION_ORDER_RESET_EVENT='ghostmint-section-order-reset';
+const DISMISSED_REWARDS_FIELD='dismissedRewards';
+
+function normalizedSectionOrder(saved,ids){
+  const allowed=new Set(ids);
+  const kept=Array.isArray(saved)?saved.filter((id,index)=>allowed.has(id)&&saved.indexOf(id)===index):[];
+  return [...kept,...ids.filter(id=>!kept.includes(id))];
+}
+function storedSectionOrders(){
+  try{const value=JSON.parse(localStorage.getItem(SECTION_ORDER_KEY)||'{}');return value&&typeof value==='object'&&!Array.isArray(value)?value:{};}
+  catch{return {};}
+}
+function saveSectionOrder(stackKey,order){
+  try{localStorage.setItem(SECTION_ORDER_KEY,JSON.stringify({...storedSectionOrders(),[stackKey]:order}));}
+  catch{/* Storage can be disabled; reordering still works for the current mounted page. */}
+}
+export function readDismissedReward(scope){
+  const dismissed=storedSectionOrders()[DISMISSED_REWARDS_FIELD];
+  return dismissed&&typeof dismissed==='object'&&!Array.isArray(dismissed)?dismissed[scope]??null:null;
+}
+export function saveDismissedReward(scope,itemKey){
+  if(!scope||itemKey===null||itemKey===undefined)return;
+  try{
+    const current=storedSectionOrders();
+    const dismissed=current[DISMISSED_REWARDS_FIELD];
+    const saved=dismissed&&typeof dismissed==='object'&&!Array.isArray(dismissed)?dismissed:{};
+    localStorage.setItem(SECTION_ORDER_KEY,JSON.stringify({
+      ...current,
+      [DISMISSED_REWARDS_FIELD]:{...saved,[scope]:String(itemKey)},
+    }));
+  }catch{/* Dismissal still works in component state when browser storage is unavailable. */}
+}
+export function resetSectionOrders(){
+  // Reset means layout order only. It must not resurrect an event the user deliberately dismissed.
+  try{
+    const dismissed=storedSectionOrders()[DISMISSED_REWARDS_FIELD];
+    if(dismissed&&typeof dismissed==='object'&&!Array.isArray(dismissed)){
+      localStorage.setItem(SECTION_ORDER_KEY,JSON.stringify({[DISMISSED_REWARDS_FIELD]:dismissed}));
+    }else localStorage.removeItem(SECTION_ORDER_KEY);
+  }catch{/* The in-page reset still applies below. */}
+  document.dispatchEvent(new CustomEvent(SECTION_ORDER_RESET_EVENT));
+}
+
+// A real counterpart to the prototype's .blk/.dragh chrome. The handle alone is draggable (the
+// card header remains free for mobile collapse), and ArrowUp/ArrowDown provide the mandatory
+// keyboard equivalent. Only rendered order changes; the children and their data requests do not.
+export function ReorderableStack({stackKey,items,className=''}){
+  // Keep temporarily-hidden blocks (a dismissed reward, an empty alert panel) in the stored order.
+  // Dropping them from `ids` while data loads made them reappear at the bottom instead of their
+  // prototype position once the request completed.
+  const allItems=items.filter(Boolean);
+  const ids=allItems.map(item=>item.id);
+  const idsKey=ids.join('\u001f');
+  const [order,setOrder]=useState(()=>normalizedSectionOrder(storedSectionOrders()[stackKey],ids));
+  const [dragging,setDragging]=useState(null);
+  useEffect(()=>{setOrder(current=>normalizedSectionOrder(current,ids));},[stackKey,idsKey]);
+  useEffect(()=>{const reset=()=>setOrder(ids);document.addEventListener(SECTION_ORDER_RESET_EVENT,reset);
+    return()=>document.removeEventListener(SECTION_ORDER_RESET_EVENT,reset);},[idsKey]);
+  function commit(next){setOrder(next);saveSectionOrder(stackKey,next);}
+  const byId=new Map(allItems.map(item=>[item.id,item]));
+  const renderedOrder=normalizedSectionOrder(order,ids).filter(id=>byId.get(id)?.visible!==false);
+  function moveBy(id,delta){
+    const current=normalizedSectionOrder(order,ids);const from=renderedOrder.indexOf(id);
+    const to=Math.max(0,Math.min(renderedOrder.length-1,from+delta));if(from<0||from===to)return;
+    const target=renderedOrder[to];const next=current.filter(value=>value!==id);
+    const targetAt=next.indexOf(target);next.splice(delta<0?targetAt:targetAt+1,0,id);commit(next);
+  }
+  function moveBefore(id,target){
+    if(!id||id===target)return;const current=normalizedSectionOrder(order,ids);
+    const next=current.filter(value=>value!==id);const at=next.indexOf(target);if(at<0)return;
+    next.splice(at,0,id);commit(next);
+  }
+  return <div className={className} data-reorder={stackKey}>
+    {renderedOrder.map((id,index)=>{const item=byId.get(id);if(!item)return null;
+      return <div className={`blk${dragging===id?' is-dragging':''}`} key={id}
+        onDragOver={event=>{if(dragging&&dragging!==id)event.preventDefault();}}
+        onDrop={event=>{event.preventDefault();moveBefore(dragging||event.dataTransfer.getData('text/plain'),id);setDragging(null);}}>
+        <button type="button" className="dragh" draggable="true"
+          title="Drag to move · arrow keys to reorder"
+          aria-label={`Reorder ${item.label||'this section'}; item ${index+1} of ${renderedOrder.length}`}
+          onDragStart={event=>{setDragging(id);event.dataTransfer.effectAllowed='move';event.dataTransfer.setData('text/plain',id);}}
+          onDragEnd={()=>setDragging(null)}
+          onKeyDown={event=>{if(event.key==='ArrowUp'||event.key==='ArrowDown'){event.preventDefault();moveBy(id,event.key==='ArrowUp'?-1:1);}}}>
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg>
+        </button>
+        {item.content}
+      </div>;})}
+  </div>;
+}
 
 // Drop-in async replacements for window.confirm/window.prompt -- native browser dialogs can't be
 // themed and look broken against the rest of the UI. Any component calls confirmDialog/promptDialog
@@ -158,12 +254,12 @@ export function downloadFile(filename,content,mimeType='application/json'){
 // A null path means "not yet" -- the caller has nothing to fetch for the current state (a tab that
 // has not been opened, an id that is not chosen). It stays in the loading shape rather than firing
 // a request for the string "null", so a panel can defer its own load until someone looks at it.
-export function useLoad(path,dependencies=[],wsEvents){const [data,setData]=useState(null);const [error,setError]=useState('');const [status,setStatus]=useState(null);const load=useCallback(()=>{if(!path)return Promise.resolve();setError('');setStatus(null);return api(path).then(setData).catch(value=>{setError(value.message);setStatus(value.status??null);});},[path,...dependencies]);useEffect(()=>{load();},[load]);useEffect(()=>{if(!wsEvents)return;const watched=[].concat(wsEvents);const listener=event=>{if(watched.includes(event.detail?.type))load();};window.addEventListener('ghostmint-ws',listener);return()=>window.removeEventListener('ghostmint-ws',listener);},[load,wsEvents]);return {data,error,status,load};}
+export function useLoad(path,dependencies=[],wsEvents){const [data,setData]=useState(null);const [error,setError]=useState('');const [status,setStatus]=useState(null);const load=useCallback(()=>{if(!path)return Promise.resolve();setError('');setStatus(null);return api(path).then(setData).catch(value=>{setError(value.message);setStatus(value.status??null);});},[path,...dependencies]);useEffect(()=>{load();},[load]);useEffect(()=>{if(!wsEvents)return;const watched=[].concat(wsEvents);const listener=event=>{if(event.detail?.type==='ws.reconnected'||watched.includes(event.detail?.type))load();};window.addEventListener('ghostmint-ws',listener);return()=>window.removeEventListener('ghostmint-ws',listener);},[load,wsEvents]);return {data,error,status,load};}
 // Opens the one live-update socket for the whole session (shared by both the regular dashboard
 // shell and the admin shell, which previously never opened one at all -- so admin pages had no live
 // listener). Every server-side change is broadcast as a 'ghostmint-ws' window CustomEvent; useLoad's
 // wsEvents param subscribes a given resource to specific event types.
-export function useLiveSocket(){const [live,setLive]=useState(false);useEffect(()=>{const protocol=window.location.protocol==='https:'?'wss:':'ws:';const socket=new WebSocket(`${protocol}//${window.location.host}/ws`);socket.onmessage=event=>{const message=JSON.parse(event.data);if(message.type==='connected')setLive(true);window.dispatchEvent(new CustomEvent('ghostmint-ws',{detail:message}));};socket.onclose=()=>setLive(false);return()=>socket.close();},[]);return live;}
+export function useLiveSocket(){const [live,setLive]=useState(false);useEffect(()=>{const protocol=window.location.protocol==='https:'?'wss:':'ws:';let socket=null;let retryTimer=null;let stopped=false;let attempt=0;let connectedOnce=false;let needsResync=false;function connect(){if(stopped)return;socket=new WebSocket(`${protocol}//${window.location.host}/ws`);socket.onmessage=event=>{let message;try{message=JSON.parse(event.data);}catch{return;}if(message.type==='connected'){setLive(true);attempt=0;if(connectedOnce||needsResync)window.dispatchEvent(new CustomEvent('ghostmint-ws',{detail:{type:'ws.reconnected'}}));connectedOnce=true;needsResync=false;}window.dispatchEvent(new CustomEvent('ghostmint-ws',{detail:message}));};socket.onclose=()=>{setLive(false);if(stopped)return;needsResync=true;const delay=Math.min(30_000,1_000*(2**attempt));attempt+=1;retryTimer=setTimeout(connect,delay);};}connect();return()=>{stopped=true;if(retryTimer)clearTimeout(retryTimer);socket?.close();};},[]);return live;}
 // Two shapes, deliberately. `error` as a STRING keeps the original one-line notice every existing
 // caller passes (useLoad's error is always a string). `error` as an OBJECT renders the richer
 // failure surface brief §3.8 requires on a money surface: what failed, what was NOT changed, the
@@ -242,19 +338,28 @@ export function FirstRun({step=1,go}){
 //
 //   cap   3 -> 1, 2, 3, Max      (identical to the prototype's Mint now)
 //   cap   5 -> 1, 2, 5, Max
+//   cap   6 -> 1, 2, 3, Max
 //   cap  10 -> 1, 2, 5, Max
-//   cap 100 -> 1, 2, 50, Max
-//
+//   cap 100 -> 10, 20, 50, Max  (scales with the cap so large mints get useful steps)
 // If that third step would collide with 1 or 2 the cap itself is used, which is what keeps small
 // caps sensible instead of rendering "1, 2, 2". This is a DELIBERATE, owner-approved departure
 // from the prototype's hardcoded values -- see REDESIGN_FIDELITY_BACKLOG.md §13.
-const QUANTITY_LADDER=[1,2,3,5,10,25,50,100];
+const QUANTITY_LADDER=[1,2,3,5,10,20,25,50,100];
 export function quantityPicks(max){
   const cap=Number(max)>0?Math.floor(Number(max)):1;
   if(cap<=2)return Array.from({length:cap},(_,index)=>index+1);
-  const candidate=[...QUANTITY_LADDER].reverse().find(value=>value<=cap/2);
-  const third=candidate&&candidate>2?candidate:cap;
-  return [...new Set([1,2,third])].filter(value=>value<=cap);
+  if(cap<=10){
+    const candidate=[...QUANTITY_LADDER].reverse().find(value=>value<=cap/2);
+    const third=candidate&&candidate>2?candidate:cap;
+    return [...new Set([1,2,third])].filter(value=>value<=cap);
+  }
+  const pick=(fraction)=>{
+    const raw=cap*fraction;
+    const candidate=[...QUANTITY_LADDER].reverse().find(value=>value<=raw);
+    return candidate||Math.max(1,Math.floor(raw));
+  };
+  const p1=pick(0.1),p2=pick(0.2),p3=pick(0.5);
+  return [...new Set([p1,p2,p3])].filter(value=>value>=1&&value<=cap).sort((a,b)=>a-b);
 }
 export function relativeTime(at){const seconds=Math.max(0,Math.floor((Date.now()-at)/1000));if(seconds<5)return 'just now';if(seconds<60)return `${seconds}s ago`;const minutes=Math.floor(seconds/60);if(minutes<60)return `${minutes}m ago`;const hours=Math.floor(minutes/60);if(hours<24)return `${hours}h ago`;return `${Math.floor(hours/24)}d ago`;}
 // Carries the contract address (and whatever else was already typed) from Quick Mint's "Advanced
@@ -343,14 +448,36 @@ export function Pager({value,page,setPage}){
 
 // The card every .panel becomes. Head slot carries an optional accent-tinted icon chip and an
 // actions slot, so a card header never has to be hand-assembled per page again.
-export function SectionCard({title,icon,actions,children,className=''}){
-  return <section className={`panel section-card ${className}`.trim()}>
+export function SectionCard({title,icon,actions,children,className='',mobileCollapsible=false,
+  mobileDefaultOpen=true,collapsedLeading,collapsedValue}){
+  const [open,setOpen]=useState(mobileDefaultOpen);
+  const bodyId=`section-${useId().replaceAll(':','')}`;
+  if(!mobileCollapsible)return <section className={`panel section-card ${className}`.trim()}>
     {(title||actions)&&<div className="section-head">
       {icon&&<span className="section-icon" aria-hidden="true">{icon}</span>}
       {title&&<h2>{title}</h2>}
       {actions&&<div className="section-actions">{actions}</div>}
     </div>}
     {children}
+  </section>;
+  return <section className={`panel section-card${mobileCollapsible?' col':''} ${className}`.trim()}
+    data-open={mobileCollapsible?(open?'1':'0'):undefined}>
+    {mobileCollapsible&&<button type="button" className="colh" aria-expanded={open}
+      aria-controls={bodyId} onClick={()=>setOpen(value=>!value)}>
+      {collapsedLeading&&<span className="p nu">{collapsedLeading}</span>}
+      <span className="cti">{title}</span>
+      {collapsedValue!==null&&collapsedValue!==undefined&&<span className="ctv">{collapsedValue}</span>}
+      <svg className="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+        strokeWidth="2.2" strokeLinecap="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+    </button>}
+    <div className={mobileCollapsible?'colb':undefined} id={mobileCollapsible?bodyId:undefined}>
+      {(title||actions)&&<div className="section-head">
+        {icon&&<span className="section-icon" aria-hidden="true">{icon}</span>}
+        {title&&<h2>{title}</h2>}
+        {actions&&<div className="section-actions">{actions}</div>}
+      </div>}
+      {children}
+    </div>
   </section>;
 }
 
@@ -381,7 +508,15 @@ export function Ledger({rows=[],total,className=''}){
 
 // Register 4, and the only component allowed to be warm. Renders after a confirmed outcome only.
 export function Celebrate({title,detail,children}){
-  return <div className="celebrate" role="status"><strong>{title}</strong>{detail&&<p>{detail}</p>}{children}</div>;
+  return <div className="cel" role="status">
+    <div className="cel-b" aria-hidden="true">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+        strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round"><path d="M5 13l4 4L19 7"/></svg>
+    </div>
+    <h3>{title}</h3>
+    {detail&&<p>{detail}</p>}
+    {children}
+  </div>;
 }
 
 // Consolidates the .page-search pattern and finally adds the themed in-input clear the UI rules

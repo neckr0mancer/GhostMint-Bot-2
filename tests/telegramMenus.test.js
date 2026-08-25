@@ -526,6 +526,9 @@ test('a viaOpenSea task confirmation says the price is determined by OpenSea at 
   });
   assert.match(prompt.text, /Confirm OpenSea-backed schedule/);
   assert.match(prompt.text, /Price: determined by OpenSea at mint time/);
+  assert.match(prompt.text, /Eligibility checks begin/);
+  assert.match(prompt.text, /waits for a live phase this wallet can use/i);
+  assert.doesNotMatch(prompt.text, /Fires:/);
   assert.equal(prompt.text.includes('not exposed by this contract'), false);
   assert.equal(/Price: 0 per item/.test(prompt.text), false);
 });
@@ -539,6 +542,9 @@ test('a viaOpenSea scheduled-task screen has no Add phase button and points back
     mintTime: '2026-08-20T18:00:00.000Z', viaOpenSea: true,
   });
   assert.match(screen.text, /Armed via OpenSea/);
+  assert.match(screen.text, /Eligibility checks begin/);
+  assert.match(screen.text, /waits until a live phase this wallet can use/);
+  assert.doesNotMatch(screen.text, /Fires:/);
   assert.equal(flatButtons(screen.replyMarkup).some(b => b.callback_data.startsWith('flow:phase:')), false);
   assert.match(screen.text, /Schedule for OpenSea phase/);
 });

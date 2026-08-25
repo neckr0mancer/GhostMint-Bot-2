@@ -54,7 +54,13 @@ async function waitForHealth(url, child, output) {
   throw new Error(`Timed out waiting for ${url}.\n${output()}`);
 }
 
-const smokeTest = LOCAL_ENV.DATABASE_URL && LOCAL_ENV.DATABASE_URL_UNPOOLED ? test : test.skip;
+// Booting the real server starts real workers -- scheduler, social watcher, retention, sniper
+// watchers -- against whatever DATABASE_URL points at. With production credentials in .env that
+// means a second worker instance could claim and broadcast a real due mint (the exact hazard
+// dashboard/vite.config.js documents for dev booting). Smoke therefore runs only against an
+// explicitly disposable database: point the env vars at throwaway credentials AND set
+// SMOKE_ALLOW=RUN. Absent either, these skip instead of silently risking production.
+const smokeTest = LOCAL_ENV.DATABASE_URL && LOCAL_ENV.DATABASE_URL_UNPOOLED && process.env.SMOKE_ALLOW === 'RUN' ? test : test.skip;
 
 smokeTest('the application starts and exposes a healthy database-backed service', { timeout: 60_000 }, async t => {
   await runMigrations({

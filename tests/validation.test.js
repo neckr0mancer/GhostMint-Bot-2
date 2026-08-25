@@ -58,6 +58,28 @@ test('schedule strings require an explicit timezone', () => {
     Date.parse('2030-01-01T12:00:00Z'));
 });
 
+test('scheduled phase metadata is bounded, explicit, and cannot silently change eligibility mode', () => {
+  const task = requestSchemas.taskCreate(validTask({
+    stageUuid: 'open-sea-stage-1', stageLabel: 'Public sale', stageType: 'public_sale',
+    eligibilityMode: 'earliest_eligible',
+    eligibilityDeadline: new Date(NOW + 3_600_000).toISOString(),
+  }), { supportedChains:CHAINS, now:NOW });
+  assert.equal(task.stageUuid, 'open-sea-stage-1');
+  assert.equal(task.stageLabel, 'Public sale');
+  assert.equal(task.stageType, 'public_sale');
+  assert.equal(task.eligibilityMode, 'earliest_eligible');
+  assert.equal(task.eligibilityDeadline, NOW + 3_600_000);
+
+  rejectsField(() => requestSchemas.taskCreate(validTask({ eligibilityMode:'public_only' }),
+    { supportedChains:CHAINS, now:NOW }), 'eligibilityMode');
+  rejectsField(() => requestSchemas.taskCreate(validTask({ eligibilityDeadline:'2026-08-13T13:00:00' }),
+    { supportedChains:CHAINS, now:NOW }), 'eligibilityDeadline');
+  rejectsField(() => requestSchemas.taskCreate(validTask({ eligibilityDeadline:new Date(NOW + 30_000).toISOString() }),
+    { supportedChains:CHAINS, now:NOW }), 'eligibilityDeadline');
+  rejectsField(() => requestSchemas.taskCreate(validTask({ eligibilityDeadline:new Date(NOW + (6 * 365 * 24 * 60 * 60 * 1000)).toISOString() }),
+    { supportedChains:CHAINS, now:NOW }), 'eligibilityDeadline');
+});
+
 test('unsupported chains are rejected instead of defaulting to Ethereum', () => {
   rejectsField(() => requestSchemas.mint(validMint({ chain: 'solana' }), { supportedChains: CHAINS }), 'chain');
   rejectsField(() => requestSchemas.mint(validMint({ chain: '' }), { supportedChains: CHAINS }), 'chain');

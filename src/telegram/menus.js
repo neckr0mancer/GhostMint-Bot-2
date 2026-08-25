@@ -576,7 +576,7 @@ function openSeaPhasePicker(stages) {
 // phaseNumber > 1 means this task is a later stage of a multi-stage drop (Section AF). Its price and
 // time were typed by hand off the project's own announcement -- nothing on-chain describes a stage
 // that isn't live yet -- so the price line must not claim the contract said so.
-function taskConfirmation({ name, contractAddress, chainLabel, walletLabel, quantity, mintTime, autoDetectedTime, priceETH, priceUnknown, displayPrice, phaseNumber, viaOpenSea }) {
+function taskConfirmation({ name, contractAddress, chainLabel, walletLabel, quantity, mintTime, autoDetectedTime, priceETH, priceUnknown, displayPrice, phaseNumber, viaOpenSea, phaseAware = viaOpenSea }) {
   const phase = Number(phaseNumber) > 1 ? Number(phaseNumber) : null;
   let priceLine;
   // Section AF -- OpenSea's own response at execution time determines the real price for an
@@ -585,12 +585,14 @@ function taskConfirmation({ name, contractAddress, chainLabel, walletLabel, quan
   else if (phase) priceLine = `Price: ${priceETH} per item (your number for this phase)`;
   else if (priceUnknown) priceLine = 'Price: not exposed by this contract. Using the amount you entered above.';
   else priceLine = `Price: ${priceETH} per item (pulled straight from the contract)${displayPrice ? usdSuffix(displayPrice.usd) : ''}`;
-  const timeLine = autoDetectedTime
-    ? `Fires: <b>${formatGmtPlus1(mintTime)}</b> (this contract's own opening time)`
-    : `Fires: <b>${formatGmtPlus1(mintTime)}</b>`;
+  const timeLine = phaseAware
+    ? `Eligibility checks begin: <b>${formatGmtPlus1(mintTime)}</b>`
+    : autoDetectedTime
+      ? `Fires: <b>${formatGmtPlus1(mintTime)}</b> (this contract's own opening time)`
+      : `Fires: <b>${formatGmtPlus1(mintTime)}</b>`;
   const heading = viaOpenSea ? '<b>⏰🎫 Confirm OpenSea-backed schedule</b>' : phase ? `<b>⏰ Confirm phase ${phase}</b>` : '<b>⏰ Confirm scheduled mint</b>';
   return {
-    text: `${heading}\nName: ${escapeTelegramHtml(name)}\nContract: <code>${contractAddress}</code>\nChain: ${chainLabel}\nWallet: ${escapeTelegramHtml(walletLabel)}\nQuantity: ${quantity || 1}\n${priceLine}\n${timeLine}\n\nThis is not a reminder — the bot signs and sends the mint itself at that moment, phone in your pocket, you asleep.\n\nLock it in?`,
+    text: `${heading}\nName: ${escapeTelegramHtml(name)}\nContract: <code>${contractAddress}</code>\nChain: ${chainLabel}\nWallet: ${escapeTelegramHtml(walletLabel)}\nQuantity: ${quantity || 1}\n${priceLine}\n${timeLine}\n\n${phaseAware ? 'The bot waits for a live phase this wallet can use, then signs and sends automatically.' : 'This is not a reminder — the bot signs and sends the mint itself at that moment, phone in your pocket, you asleep.'}\n\nLock it in?`,
     replyMarkup: keyboard([[button('✅ Schedule it', 'flow:taskconfirm')], [button('❌ Cancel', 'flow:cancel:ask')]]),
     parseMode: 'HTML',
   };
@@ -601,7 +603,7 @@ function taskConfirmation({ name, contractAddress, chainLabel, walletLabel, quan
 // stage that is live right now), so the only way to pre-arm every stage is one task per stage, each
 // with its own hand-entered time and price. Offering that as the obvious next tap is the feature --
 // the contract address rides in the callback data so the next phase skips straight past re-pasting.
-function taskScheduled({ id, name, contractAddress, mintTime, phaseNumber, viaOpenSea }) {
+function taskScheduled({ id, name, contractAddress, mintTime, phaseNumber, viaOpenSea, phaseAware = viaOpenSea }) {
   const phase = Number(phaseNumber) > 1 ? Number(phaseNumber) : 1;
   const armed = viaOpenSea
     ? `✅🎫 Armed via OpenSea: <b>${escapeTelegramHtml(name)}</b>`
@@ -621,8 +623,11 @@ function taskScheduled({ id, name, contractAddress, mintTime, phaseNumber, viaOp
   // is needed here the way CANCELLABLE_TASK_STATUSES gates it elsewhere.
   rows.push([button('❌ Cancel this schedule', `task:cancel:ask:${id}`)]);
   rows.push([button('🗓️ See all tasks', 'menu:tasks')], [button('⬅️ Back to base', 'menu:main')]);
+  const timing = phaseAware
+    ? `Eligibility checks begin: <b>${formatGmtPlus1(mintTime)}</b>\nMinting waits until a live phase this wallet can use.`
+    : `Fires: <b>${formatGmtPlus1(mintTime)}</b>`;
   return {
-    text: `${armed}\nFires: <b>${formatGmtPlus1(mintTime)}</b>\n\n${nextStageHint}`,
+    text: `${armed}\n${timing}\n\n${nextStageHint}`,
     replyMarkup: keyboard(rows),
     parseMode: 'HTML',
   };

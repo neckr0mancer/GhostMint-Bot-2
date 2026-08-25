@@ -319,7 +319,8 @@ test('flow:scheduleviaopensea pre-fills the next stage\'s own opening time AND i
   assert.equal(created[0].input.viaOpenSea, true);
   assert.equal(created[0].input.mintTime, FUTURE_ISO);
   assert.match(confirm.updates[0].content, /Scheduled/);
-  assert.match(confirm.updates[0].content, /via OpenSea/);
+  assert.match(confirm.updates[0].content, /begin eligibility checks/);
+  assert.match(confirm.updates[0].content, /waits for a live phase/);
 });
 
 // Live-reported follow-up: the phase label alone ("Allowlist") isn't enough to tell two different
@@ -423,6 +424,38 @@ function withTwoUpcomingStages(overrides = {}) {
     ...overrides,
   });
 }
+
+test('an earliest-eligible allowlist schedule remains live through the following advertised phase', async () => {
+  const flowState = createFlowStateStore();
+  const created = [];
+  const earlier = { uuid:'e1', label:'Allowlist', startTime:FUTURE_START,
+    endTime:FUTURE_START+600, priceETH:0.05, maxPerWallet:1, stageType:'presale' };
+  const later = { uuid:'p1', label:'Public', startTime:FUTURE_START+600,
+    endTime:FUTURE_START+3600, priceETH:0.08, maxPerWallet:3, stageType:'public_sale' };
+  const commands = baseCommands({
+    detectMintContract: async () => ({
+      chain:'ethereum', isSeaDrop:true, priceKnown:false, valueWei:'0', maxSupply:100,
+      maxPerWallet:1, startTime:null, endTime:null, collection:null, soldOut:false, displayPrice:null,
+      drop:{ isMinting:false, activeStage:null, nextStage:earlier, stages:[earlier,later] },
+    }),
+    createTask: async (userId, input) => { created.push({ userId, input }); return {
+      id:'task-1', name:input.name, mintTime:input.mintTime, viaOpenSea:input.viaOpenSea,
+    }; },
+  });
+  const ctx = { identity:{ resolveOrCreate:async()=> 'internal-user' }, commands, flowState,
+    chains:CHAINS, rateLimiter:NO_LIMIT };
+  await handleMintPasteMessage(ctx, mockMessage('0x0000000000000000000000000000000000000001', 'osea-window'));
+  const handler = createDiscordInteractionHandler(ctx);
+  await handler(buttonInteraction('flow:scheduleviaopensea', 'osea-window'));
+  await handler(selectInteraction('flow:scheduleviaopenseaphase:select', ['0'], 'osea-window'));
+  await handler(buttonInteraction('flow:taskconfirm', 'osea-window'));
+
+  assert.equal(created[0].input.stageUuid, 'e1');
+  assert.equal(created[0].input.eligibilityMode, 'earliest_eligible');
+  assert.equal(created[0].input.eligibilityDeadline,
+    new Date((FUTURE_START + 3600) * 1000).toISOString(),
+    'the task must not expire when the selected allowlist ends if the next advertised phase can accept it');
+});
 
 test('flow:scheduleviaopensea shows a picker with more than one upcoming stage, and picking the LATER one schedules against that, not the earlier default', async () => {
   const flowState = createFlowStateStore();
@@ -595,8 +628,18 @@ test('a phase whose own cap is 1 never asks for a quantity, even when the collec
   assert.equal(flowState.get('discord', 'osea-cap-1').step, 'awaiting_confirm',
     'a 1-per-wallet stage must go straight to confirm, not ask a question with only one valid answer');
   assert.equal(flowState.get('discord', 'osea-cap-1').data.quantity, 1);
+  assert.equal(flowState.get('discord', 'osea-cap-1').data.viaOpenSea, false,
+    'a public SeaDrop phase keeps live phase gating but uses the direct on-chain path');
 
   await handler(buttonInteraction('flow:taskconfirm', 'osea-cap-1'));
   assert.equal(created.length, 1);
   assert.equal(created[0].input.quantity, 1, 'the stage cap must reach createTask, not the card reading');
+  assert.equal(created[0].input.stageUuid, 'n1');
+  assert.equal(created[0].input.stageLabel, 'PUBLIC');
+  assert.equal(created[0].input.stageType, 'public_sale');
+  assert.equal(created[0].input.eligibilityMode, 'specific_stage',
+    'a direct public task must stay pinned to the selected public-stage UUID');
+  assert.equal(created[0].input.viaOpenSea, false);
+  assert.equal(created[0].input.eligibilityDeadline,
+    new Date((FUTURE_START + 3600) * 1000).toISOString());
 });

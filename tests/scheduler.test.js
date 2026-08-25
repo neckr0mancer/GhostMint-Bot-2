@@ -1,9 +1,9 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const { ValidationError } = require('../src/validation/domain');
-const { STAGE_NOT_OPEN, STAGE_NOT_OPEN_MAX_ATTEMPTS, STAGE_NOT_OPEN_RETRY_MS,
+const { SCHEDULE_PHASE_WAIT, STAGE_NOT_OPEN, STAGE_NOT_OPEN_MAX_ATTEMPTS, STAGE_NOT_OPEN_RETRY_MS,
   STAGE_REARM_MAX_ATTEMPTS, STAGE_REARM_WINDOW_MS, createSchedulerWorker,
-  errorReason, isTransientFailure } = require('../src/scheduler/schedulerWorker');
+  errorReason, executionAttemptCount, isTransientFailure } = require('../src/scheduler/schedulerWorker');
 
 function task(overrides = {}) {
   return {
@@ -31,7 +31,7 @@ function repositoryFixture(stale = [], { imminent = [] } = {}) {
     // the attemptCount check this returned 'retry' for anything transient, which cannot express an
     // exhausted budget at all, so a test for "gives up" could never fail honestly.
     async fail(value, details) { calls.push(['fail', details, value]);
-      return details.transient && value.attemptCount < value.maxAttempts ? 'retry' : 'failed'; },
+      return details.transient && executionAttemptCount(value) < value.maxAttempts ? 'retry' : 'failed'; },
     async claimDue() { calls.push(['claimDue']); return null; },
     async listImminent() { return state.imminent; },
   };
@@ -53,6 +53,35 @@ test('stale claimed task is reconciled from chain state without executing again'
   assert.equal(reconciliations, 1, 'recovery must consult transaction state');
   assert.equal(executions, 0, 'recovery must not blindly execute again');
   assert.deepEqual(repository.calls.at(-1), ['complete', 'intent-1']);
+});
+
+test('recovery retry transitions notify listeners after the durable retry state is saved', async () => {
+  const repository = repositoryFixture();
+  const events = [];
+  const worker = createSchedulerWorker({
+    repository,
+    intentRepository:{ get:async()=>({intentId:'intent-pending',state:'pending'}),getByIdempotencyKey:async()=>null },
+    transactionEngine:{ reconcileIntent:async intent=>intent },
+    executeTask:async()=>{throw new Error('must not execute during recovery');},
+    notify:async event=>events.push(event),
+  });
+  assert.equal(await worker.processTask(task({transactionIntentId:'intent-pending'}),true),'retry');
+  assert.equal(repository.calls.some(call=>call[0]==='recover'&&call[1].status==='retry'),true);
+  assert.equal(events.length,1);
+  assert.equal(events[0].outcome,'retry');
+  assert.equal(events[0].recovery,true);
+});
+
+test('a failed recovery-refresh notification cannot change the persisted retry outcome', async () => {
+  const repository = repositoryFixture();
+  const worker = createSchedulerWorker({
+    repository,
+    intentRepository:{get:async()=>null,getByIdempotencyKey:async()=>null},transactionEngine:{},
+    executeTask:async()=>{throw new Error('must not execute during recovery');},
+    notify:async()=>{throw new Error('dashboard unavailable');},
+  });
+  assert.equal(await worker.processTask(task(),true),'retry');
+  assert.equal(repository.calls.some(call=>call[0]==='recover'&&call[1].status==='retry'),true);
 });
 
 test('an idempotency-key intent prevents duplicate task execution', async () => {
@@ -94,6 +123,72 @@ test('transient failures retry within bounds and permanent failures do not retry
   assert.equal(await permanentWorker.processTask(task()), 'failed');
   assert.equal(permanentRepository.calls.at(-1)[1].transient, false);
   assert.equal(isTransientFailure(new ValidationError({ field:'quantity', message:'is invalid' })), false);
+});
+
+test('waiting for a live eligible phase durably re-arms without spending the execution retry budget', async () => {
+  const repository = repositoryFixture();
+  repository.deferForPhase = async (value, details) => {
+    repository.calls.push(['deferForPhase', details, value]);
+    return { ...value, status:'retry', mintTime:details.mintTime ?? value.mintTime, nextAttemptAt:details.retryAt,
+      stageUuid:details.stageUuid, attemptCount:value.attemptCount,
+      phaseWaitCount:(value.phaseWaitCount||0)+1 };
+  };
+  const retryAt = 9_000;
+  const wait = Object.assign(new Error('Waiting for the Public phase to go live.'), {
+    code:SCHEDULE_PHASE_WAIT,
+    phaseDeferral:{ retryAt, stageUuid:'public-stage', stageLabel:'Public', stageType:'public_sale' },
+  });
+  const events = [];
+  let executed = false;
+  const worker = createSchedulerWorker({
+    repository,
+    intentRepository:{ get:async () => null, getByIdempotencyKey:async () => null },
+    transactionEngine:{}, preflightTask:async () => { throw wait; },
+    executeTask:async () => { executed = true; throw new Error('must not execute while waiting'); },
+    notify:async event => events.push(event),
+  });
+
+  assert.equal(await worker.processTask(task({ attemptCount:9, maxAttempts:1 })), 'retry');
+  const deferred = repository.calls.find(call => call[0] === 'deferForPhase');
+  assert.equal(deferred[1].retryAt, retryAt);
+  assert.equal(deferred[1].stageUuid, 'public-stage');
+  assert.equal(repository.calls.some(call => call[0] === 'fail'), false,
+    'phase waiting must not pass through maxAttempts-based failure handling');
+  assert.equal(executed, false);
+  assert.deepEqual(events.map(event => event.outcome), ['retry'],
+    'waiting must not emit a misleading starting notification');
+  assert.equal(events.at(-1).phaseWait, true);
+  assert.equal(events.at(-1).task.stageUuid, 'public-stage');
+});
+
+test('many phase checks still leave the first real RPC failure on the first retry delay', async () => {
+  const repository = repositoryFixture();
+  const transient = Object.assign(new Error('RPC unavailable'), { code:'RPC_UNAVAILABLE' });
+  const worker = createSchedulerWorker({
+    repository,
+    intentRepository:{ get:async()=>null, getByIdempotencyKey:async()=>null },
+    transactionEngine:{}, executeTask:async()=>{ throw transient; }, now:()=>1_000, retryBaseMs:100,
+  });
+  const waited = task({ attemptCount:21, phaseWaitCount:20, maxAttempts:3 });
+  assert.equal(await worker.processTask(waited), 'retry');
+  const failed = repository.calls.find(call=>call[0]==='fail');
+  assert.equal(failed[1].retryAt, 1_100);
+});
+
+test('start keeps sweeping for claims whose lease expires after process startup', async () => {
+  let sweeps = 0;
+  const repository = repositoryFixture();
+  repository.listStaleClaims = async () => { sweeps += 1; return []; };
+  const worker = createSchedulerWorker({
+    repository,
+    intentRepository:{ get:async()=>null, getByIdempotencyKey:async()=>null },
+    transactionEngine:{}, executeTask:async()=>null,
+    pollIntervalMs:1_000, staleRecoveryIntervalMs:10,
+  });
+  worker.start();
+  await new Promise(resolve=>setTimeout(resolve, 35));
+  worker.stop();
+  assert.ok(sweeps >= 2, 'stale claims must be revisited after their lease can expire');
 });
 
 test('notification failure cannot change a confirmed task outcome', async () => {

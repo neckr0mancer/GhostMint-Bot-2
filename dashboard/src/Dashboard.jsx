@@ -1,10 +1,10 @@
 import React,{useEffect,useMemo,useState} from 'react';
 import {ACTIVITY_EVENTS,api,notify,promptDialog,useLoad} from './shared.jsx';
+import {broadcastOutcomeSummary,broadcastSuccessStreak,latestConfirmedMint} from './homeActivityMetrics.js';
 import {cumulativePnlPoints,pnlRecordSeries,pnlWindowTotals} from './pnlChart.js';
 import {THEME_WIDGETS} from './dashboardWidgets/index.js';
 import Home from './dashboardWidgets/home.jsx';
 
-const SUCCESS_STATUSES=new Set(['confirmed','success','executed','enabled','healthy','submitted','resolved','up']);
 const LOW_BALANCE_THRESHOLD=0.01;
 // One page of activity serves three different derivations at three different depths: the feed
 // shows 8 rows, the success tile is scoped to the last 20 (contract §5.6), and the streak counts
@@ -97,17 +97,6 @@ function pnlViewFor(items,windowDays){
   return {points,trend:cumulativePnlPoints(points),net:totals.net,sale:totals.sale,mints:totals.records};
 }
 
-// Counts back from the newest activity row until the first non-success. Hidden below 2 rather
-// than rendered as "1 in a row", which is not a streak (contract §5.7).
-function successStreak(items){
-  let streak=0;
-  for(const item of items){
-    if(!SUCCESS_STATUSES.has(String(item.status||'').toLowerCase()))break;
-    streak+=1;
-  }
-  return streak;
-}
-
 function summarize({wallets,tasks,snipers,watchRules,activity,pnl,confirmations}){
   const walletList=wallets.data||[];
   const {decorated,ethTotal,unavailable,other}=summarizeWallets(walletList);
@@ -127,14 +116,17 @@ function summarize({wallets,tasks,snipers,watchRules,activity,pnl,confirmations}
   const nextTask=upcoming[0]||null;
   const watchRuleItems=watchRules.data?.items||[];
   const activityItems=activity.data?.items||[];
-  const successScope=activityItems.slice(0,SUCCESS_SCOPE);
-  const successCount=successScope.filter(item=>SUCCESS_STATUSES.has(String(item.status||'').toLowerCase())).length;
+  // This is deliberately an on-chain outcome metric, not a score for the user or a count of
+  // every command. A validation/simulation refusal has no transaction hash and is protection,
+  // not a failed broadcast. Submitted/unknown/replaced rows are not final yet either.
+  const outcomeSummary=broadcastOutcomeSummary(activityItems,SUCCESS_SCOPE);
   const pnlItems=pnl.data||[];
   return {
     loading:wallets.data===null||tasks.data===null||snipers.data===null||watchRules.data===null||activity.data===null||pnl.data===null,
     wallets:decorated.slice(0,2),
     walletRows:decorated.slice(0,4),
     walletCount:walletList.length,
+    fundedWalletCount:decorated.filter(wallet=>wallet.ethBalance!==null&&wallet.ethBalance>0).length,
     portfolio:{eth:ethTotal,chainsUnavailable:unavailable,other},
     lowBalanceWallets,
     pendingConfirmations:confirmations.data||[],
@@ -147,11 +139,11 @@ function summarize({wallets,tasks,snipers,watchRules,activity,pnl,confirmations}
     targetsTotal:(snipers.data?.items?.length??0)+watchRuleItems.length,
     activityItems:activityItems.slice(0,FEED_ROWS),
     activityCount:activityItems.length,
-    successRate:successScope.length?Math.round(successCount/successScope.length*100):null,
-    successCount,
-    successScopeSize:successScope.length,
-    streak:successStreak(activityItems),
-    latestSuccess:activityItems.find(item=>SUCCESS_STATUSES.has(String(item.status||'').toLowerCase()))||null,
+    ...outcomeSummary,
+    streak:broadcastSuccessStreak(activityItems),
+    // Requires both a final-success status and a real transaction hash; health checks, preflight
+    // rows and merely-submitted intents can never become a celebration panel.
+    latestSuccess:latestConfirmedMint(activityItems),
     pnlItems,
     totalMinted:decorated.reduce((sum,wallet)=>sum+(Number(wallet.minted)||0),0),
     totalGasSpent:pnlItems.reduce((sum,item)=>sum+(Number(item.gas)||0),0),

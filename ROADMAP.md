@@ -59,6 +59,7 @@ This is the ordered implementation plan for GhostMint. Milestones are intentiona
 - Replace process-local long-duration timers with database-backed due times, atomic multi-instance claiming, leases, attempt history, and bounded retry behavior.
 - Recover expired claims from persisted transaction intents and chain state, enforce task idempotency, and provide owner-scoped cancel, pause, resume, and retry controls.
 - Store and display authoritative schedule timestamps in UTC while safely supporting schedules beyond Node's timer limit.
+- Phase-aware OpenSea tasks persist the selected stage identity and treat that timestamp as a not-before wake-up: execution waits for a live wallet-eligible phase, durably advances an ineligible allowlist wallet to a later advertised phase, and stops at a bounded eligibility deadline without consuming ordinary retry attempts.
 
 ### Milestone 10 — Post-confirmation copy-mint hardening
 

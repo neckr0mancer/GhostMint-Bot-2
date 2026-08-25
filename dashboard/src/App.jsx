@@ -9,7 +9,7 @@ import {walletPerformance,pnlWalletLabel} from './walletPerformance.js';
 import {pnlBarLayout,pnlRecordSeries,pnlWindowTotals} from './pnlChart.js';
 import {mintDetectionMessage,mintPreviewError} from './mintFeedback.mjs';
 import {mintQuantityPolicy} from './mintQuantityPolicy.mjs';
-import {ACTIVITY_EVENTS,api,Ledger,NumberField,SectionCard,confirmDialog,ConfirmHost,consumePendingMintPrefill,CopyButton,csrf,downloadFile,Empty,EVM_CHAINS,Field,Form,getNotificationLog,notify,Notice,PageTitle,Pager,promptDialog,relativeTime,SearchField,Select,Skeleton,StatusPill,SubTabs,subscribeNotificationLog,ToastHost,useLoad,useLiveSocket,setPendingMintPrefill,quantityPicks} from './shared.jsx';
+import {ACTIVITY_EVENTS,api,Ledger,NumberField,SectionCard,confirmDialog,ConfirmHost,consumePendingMintPrefill,CopyButton,csrf,downloadFile,Empty,EVM_CHAINS,Field,Form,getNotificationLog,notify,Notice,PageTitle,Pager,promptDialog,relativeTime,resetSectionOrders,SearchField,Select,Skeleton,StatusPill,SubTabs,subscribeNotificationLog,ToastHost,useLoad,useLiveSocket,setPendingMintPrefill,quantityPicks} from './shared.jsx';
 import Dashboard from './Dashboard.jsx';
 // Phase 4, unit 1 of 5 (brief §2). The 11->5 merge lands one page at a time so any single merge
 // can be reverted alone. Mint = Minting + Tasks is done; Automation, Wallets+P&L and History are
@@ -888,7 +888,7 @@ const CARD_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strok
 const CROSS_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><path d="M18 6 6 18M6 6l12 12"/></svg>;
 const LOCK_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><rect x="4" y="10.5" width="16" height="10.5" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/></svg>;
 function shortHex(value){const v=String(value||"");return v.length>12?`${v.slice(0,6)}…${v.slice(-4)}`:v;}
-function Minting({onSwitchToBatch,onGoWallets}){const wallets=useLoad('/api/wallets',[],'wallets.changed');const limits=useLoad('/api/profile/limits');const [preview,setPreview]=useState(null);const [confirmResults,setConfirmResults]=useState(null);const formRef=useRef(null);const previewRef=useRef(null);const [walletLabel,setWalletLabel]=useState('');const [contractAddress,setContractAddress]=useState('');const [collectionName,setCollectionName]=useState('');const [viaOpenSea,setViaOpenSea]=useState(false);const [quantity,setQuantity]=useState('1');const [methodSignature,setMethodSignature]=useState('');const [argumentsJson,setArgumentsJson]=useState('');const [priceEth,setPriceEth]=useState('');const [seaDropAddress,setSeaDropAddress]=useState('');const [detectedChain,setDetectedChain]=useState('');const [maxPerWallet,setMaxPerWallet]=useState(null);const [detecting,setDetecting]=useState(false);const lastDetected=useRef('');const detectingKey=useRef('');
+function Minting({onSwitchToBatch,onSwitchToSchedule,onGoWallets}){const wallets=useLoad('/api/wallets',[],'wallets.changed');const limits=useLoad('/api/profile/limits');const [preview,setPreview]=useState(null);const [confirmResults,setConfirmResults]=useState(null);const formRef=useRef(null);const previewRef=useRef(null);const [walletLabel,setWalletLabel]=useState('');const [contractAddress,setContractAddress]=useState('');const [collectionName,setCollectionName]=useState('');const [viaOpenSea,setViaOpenSea]=useState(false);const [quantity,setQuantity]=useState('1');const [methodSignature,setMethodSignature]=useState('');const [argumentsJson,setArgumentsJson]=useState('');const [priceEth,setPriceEth]=useState('');const [seaDropAddress,setSeaDropAddress]=useState('');const [detectedChain,setDetectedChain]=useState('');const [maxPerWallet,setMaxPerWallet]=useState(null);const [detecting,setDetecting]=useState(false);const [detectionError,setDetectionError]=useState('');const [detectionRetryable,setDetectionRetryable]=useState(false);const lastDetected=useRef('');const detectingKey=useRef('');
   // Simulation is no longer user-triggered (backlog §7.2): the prototype has no "Validate and
   // simulate" control, only a Re-simulate on an expired quote, so the first simulation runs on its
   // own. Debounced, because otherwise typing an address would fire one /api/mints/preview per
@@ -918,6 +918,8 @@ function Minting({onSwitchToBatch,onGoWallets}){const wallets=useLoad('/api/wall
     if(requestKey===lastDetected.current||requestKey===detectingKey.current)return;
     detectingKey.current=requestKey;
     setDetecting(true);
+    setDetectionError('');
+    setDetectionRetryable(false);
     try{
       const result=await api(`/api/mints/detect?contractAddress=${encodeURIComponent(trimmed)}&quantity=${encodeURIComponent(effectiveQuantity)}`);
       if(detectingKey.current!==requestKey)return;
@@ -949,7 +951,16 @@ function Minting({onSwitchToBatch,onGoWallets}){const wallets=useLoad('/api/wall
       if(useOpenSea){setPriceEth('');notify(`Detected ${result.collection?.name||label} on ${result.chain}. OpenSea will prepare the mint details for review.`,{type:'success'});}
       else if(result.priceKnown){setPriceEth(weiToEthDisplay(result.valueWei));notify(`Detected ${label} on ${result.chain} — price read from the contract.`,{type:'success'});}
       else{setPriceEth('');notify(`Detected ${result.collection?.name||label} on ${result.chain}. Enter the mint price per NFT to continue.`,{type:'info'});}
-    }catch(value){if(detectingKey.current===requestKey)notify(mintDetectionMessage(value),{type:'error'});}
+    }catch(value){
+      if(detectingKey.current===requestKey){
+        const message=mintDetectionMessage(value);
+        const retryable=/right now|in a moment/i.test(message);
+        setDetectionError(message);
+        setDetectionRetryable(retryable);
+        setCollectionName('');setViaOpenSea(false);setMethodSignature('');setArgumentsJson('');setSeaDropAddress('');setDetectedChain('');setMaxPerWallet(null);setPriceEth('');setPreview(null);setMintError(null);setQuantityIssue(null);
+        notify(message,{type:'error'});
+      }
+    }
     finally{if(detectingKey.current===requestKey){detectingKey.current='';setDetecting(false);}}
   }
   // No manual "Detect" button anywhere -- detection runs itself the moment a full, valid-shaped
@@ -975,11 +986,25 @@ function Minting({onSwitchToBatch,onGoWallets}){const wallets=useLoad('/api/wall
     setPreview(await api('/api/mints/preview',{method:'POST',body:JSON.stringify(input)}));setConfirmResults(null);
   }catch(value){
     setPreview(null);
-    // A field-scoped validation issue belongs on the field (.in.bad + .fielderr), everything else
-    // is a money-surface failure and gets the .notice panel -- never a toast alone.
-    const issue=value.issues?.find(entry=>entry.field==='quantity');
-    if(issue)setQuantityIssue(issue.message);
-    else setMintError({...mintPreviewError(value,{chain:detectedChain,quantity}),onRetry:()=>inspect()});
+    // Field-scoped validation belongs on the field itself; everything else is a preview-surface
+    // failure. Keep it calm (yellow nt w) — red is reserved for background scheduled failures that
+    // need action now. Retry only for transient provider hiccups.
+    const issue=value.issues?.[0];
+    if(issue){
+      if(issue.field==='quantity')setQuantityIssue(issue.message);
+      else {
+        const label=issue.field==='methodSignature'?'mint method':issue.field==='contractAddress'?'contract address':issue.field;
+        setMintError({title:`Check the ${label}.`,detail:issue.message,isWarning:true});
+        notify(`${issue.field}: ${issue.message}`,{type:'info'});
+        return;
+      }
+    } else {
+      const friendly=mintPreviewError(value,{chain:detectedChain,quantity});
+      const retryable=/in a moment|right now/i.test(friendly.detail)||/FEE_UNAVAILABLE|TIMEOUT/i.test(String(value.code||''));
+      setMintError({...friendly,onRetry:retryable?()=>inspect():undefined,isWarning:true});
+      notify(`${friendly.title} ${friendly.detail}`,{type:retryable?'info':'error'});
+      return;
+    }
   }finally{setSimulating(false);}}
   // Each wallet in the batch is annotated with its own outcome (see confirmResults, rendered per
   // item below) rather than one pass/fail for the whole batch -- a failure on one wallet no longer
@@ -1027,9 +1052,10 @@ function Minting({onSwitchToBatch,onGoWallets}){const wallets=useLoad('/api/wall
           <label className="fl"><span>Contract address</span>
             <input className={`in mono${detected?' ok':''}`} disabled={noWallets}
               placeholder="0x… paste a contract address" value={contractAddress}
-              onChange={e=>{setContractAddress(e.target.value);autoDetectIfReady(e.target.value,quantity);}}
+              onChange={e=>{const v=e.target.value;setContractAddress(v);if(!ADDRESS_SHAPE.test(v.trim())){setDetectionError('');setDetectionRetryable(false);setCollectionName('');setViaOpenSea(false);setMethodSignature('');setArgumentsJson('');setSeaDropAddress('');setDetectedChain('');setMaxPerWallet(null);setPriceEth('');setPreview(null);setMintError(null);setQuantityIssue(null);lastDetected.current='';detectingKey.current='';setDetecting(false);}autoDetectIfReady(v,quantity);}}
               onBlur={handleAutoDetectBlur}/>
           </label>
+          {detectionError&&<div className="nt w" role="status">{WARN_TRIANGLE_ICON}<div><b>{detectionError}</b>{detectionRetryable&&<div style={{marginTop:'8px'}}><button type="button" className="b sm" onClick={()=>detect(contractAddress,quantity)}>Retry</button></div>}</div></div>}
           {/* Detection summary, the prototype's .nt.i one-liner. */}
           {!detecting&&detected&&<div className="nt i">{INFO_ICON}
             <div>Detected <b>{collectionName||(methodSignature===SEADROP_SIGNATURE?'SeaDrop drop':'contract')}</b>
@@ -1143,7 +1169,16 @@ function Minting({onSwitchToBatch,onGoWallets}){const wallets=useLoad('/api/wall
               ?(limits.data?.ceilingExempt?'Exempt':'No limit')
               :`${weiToEthDisplay(ceilingWei)} ETH`}</b></div>
         </div>}
-        {pageError&&<Notice error={pageError}/>}
+        {pageError&& (pageError.isWarning
+          ?<div className="nt w" role="status">{WARN_TRIANGLE_ICON}<div><b>{pageError.title}</b> {pageError.detail}
+              {pageError.onRetry&&<div style={{marginTop:'8px'}}><button type="button" className="b sm" onClick={pageError.onRetry}>Retry</button></div>}
+              {/* Not-open / not-eligible mints are exactly what scheduling is for -- hand the
+                  contract over instead of making the user re-paste it on another tab. */}
+              {/not open yet|not eligible|no mintable stage/i.test(`${pageError.title} ${pageError.detail}`)&&onSwitchToSchedule
+                &&<div style={{marginTop:'8px'}}><button type="button" className="b p sm"
+                  onClick={()=>{setPendingSchedulePrefill({contractAddress,quantity});onSwitchToSchedule();}}>Schedule this mint</button></div>}
+            </div></div>
+          :<Notice error={pageError}/>)}
         {/* One CTA per state, all .big.bl, copy verbatim from the prototype. */}
         {noWallets
           ?<button type="button" className="b big bl" disabled>Create a wallet to mint</button>
@@ -1208,7 +1243,27 @@ function bucketOf(task){
   const value=String(task?.status||'').toLowerCase();
   return Object.keys(BUCKET_STATUSES).find(key=>BUCKET_STATUSES[key].includes(value))||null;
 }
-function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSearch]=useState('');const [bucket,setBucket]=useState('pending');const [filtersOpen,setFiltersOpen]=useState(false);const [serverFilters,setServerFilters]=useState(null);const PAGE_SIZE=10;const COMPAT_LIMIT=50;const listing=useLoad(serverFilters===false?`/api/tasks?page=1&pageSize=${COMPAT_LIMIT}&search=${encodeURIComponent(search)}`:`/api/tasks?page=${page}&pageSize=${PAGE_SIZE}&status=${bucket}&search=${encodeURIComponent(search)}`,[page,bucket,search,serverFilters],'tasks.changed');const wallets=useLoad('/api/wallets',[],'wallets.changed');const [chain,setChain]=useState(profile.defaultChain||profile.supportedChains[0]);const [contractAddress,setContractAddress]=useState('');const [quantity,setQuantity]=useState('1');const [maxPerWallet,setMaxPerWallet]=useState(null);const [priceETH,setPriceETH]=useState('');const [mintTime,setMintTime]=useState('');const [viaOpenSea,setViaOpenSea]=useState(false);const [stageType,setStageType]=useState('');const [detecting,setDetecting]=useState(false);const lastDetected=useRef('');
+function scheduleStageRequiresOpenSeaBuilder(stage){
+  if(!stage)return false;
+  const type=String(stage.stageType||stage.stage_type||'').trim().toLowerCase();
+  if(['public','public_sale','publicsale','public_drop'].includes(type))return false;
+  if(!type&&/^public(?:\s+sale)?$/i.test(String(stage.label||'').trim()))return false;
+  return true;
+}
+function scheduleStageSelectionKey(stage){
+  const uuid=String(stage?.uuid||'').trim();
+  if(uuid)return `uuid:${uuid}`;
+  // OpenSea normally supplies UUIDs. Keep a deterministic fallback for incomplete snapshots so
+  // repeated public phases do not collapse to one option just because their label/type match. The
+  // authoritative UUID/label/type are still sent separately to the task API.
+  return `stage:${String(stage?.stageType||stage?.stage_type||'').trim().toLowerCase()}:${String(stage?.label||'').trim().toLowerCase()}:${Number(stage?.startTime)||''}:${Number(stage?.endTime)||''}`;
+}
+// Carries a contract from a Mint now failure ("not open yet" / "not eligible") into the Schedule
+// form, which detects it fresh on arrival -- the same hand-off pattern as Quick Mint's prefill.
+let pendingSchedulePrefill=null;
+function setPendingSchedulePrefill(value){pendingSchedulePrefill=value;}
+function consumePendingSchedulePrefill(){const value=pendingSchedulePrefill;pendingSchedulePrefill=null;return value;}
+function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSearch]=useState('');const [bucket,setBucket]=useState('pending');const [filtersOpen,setFiltersOpen]=useState(false);const [serverFilters,setServerFilters]=useState(null);const PAGE_SIZE=10;const COMPAT_LIMIT=50;const listing=useLoad(serverFilters===false?`/api/tasks?page=1&pageSize=${COMPAT_LIMIT}&search=${encodeURIComponent(search)}`:`/api/tasks?page=${page}&pageSize=${PAGE_SIZE}&status=${bucket}&search=${encodeURIComponent(search)}`,[page,bucket,search,serverFilters],'tasks.changed');const wallets=useLoad('/api/wallets',[],'wallets.changed');const [chain,setChain]=useState(profile.defaultChain||profile.supportedChains[0]);const [contractAddress,setContractAddress]=useState('');const [taskName,setTaskName]=useState('');const [detectedName,setDetectedName]=useState('');const [detectedSeaDrop,setDetectedSeaDrop]=useState(false);const [quantity,setQuantity]=useState('1');const [maxPerWallet,setMaxPerWallet]=useState(null);const [priceETH,setPriceETH]=useState('');const [mintTime,setMintTime]=useState('');const [viaOpenSea,setViaOpenSea]=useState(false);const [detectedOpenSeaRecommendation,setDetectedOpenSeaRecommendation]=useState(false);const [stageType,setStageType]=useState('');const [stages,setStages]=useState([]);const [selectedStageKey,setSelectedStageKey]=useState('');const [scheduleWallet,setScheduleWallet]=useState('');const [pendingRows,setPendingRows]=useState([]);const [detecting,setDetecting]=useState(false);const [detectionError,setDetectionError]=useState('');const [detectionRetryable,setDetectionRetryable]=useState(false);const lastDetected=useRef('');
   // The prototype's Schedule form has no price field, because it assumes the contract can be
   // priced automatically. Some cannot -- the server then rejects with a priceETH issue and there
   // is nowhere to type one, which left the form unsubmittable for those contracts. So the field
@@ -1216,7 +1271,21 @@ function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSear
   // .fielderr. A gap in the design rather than a departure from it; see backlog §14.
   const [priceIssue,setPriceIssue]=useState(null);
   const [selectedIds,setSelectedIds]=useState([]);
+  const [scheduleNow,setScheduleNow]=useState(()=>Date.now());
+  useEffect(()=>{
+    const timer=setInterval(()=>setScheduleNow(Date.now()),15_000);
+    return()=>clearInterval(timer);
+  },[]);
   function toggleSelected(id){setSelectedIds(current=>current.includes(id)?current.filter(x=>x!==id):[...current,id]);}
+  // Picks up a contract handed over from Mint now's "Schedule this mint" action and detects it on
+  // arrival, so the hand-off lands on a fully detected form rather than a bare address.
+  useEffect(()=>{
+    const prefill=consumePendingSchedulePrefill();
+    if(!prefill?.contractAddress)return;
+    setContractAddress(prefill.contractAddress);
+    if(prefill.quantity)setQuantity(String(prefill.quantity));
+    detect(prefill.contractAddress);
+  },[]);
   // Mirrors Minting's auto-detect: a scheduled mint needs the same price/opening-time knowledge an
   // immediate mint does, so this reuses the identical /api/mints/detect endpoint rather than making
   // the user look those up by hand. Price and time stay editable afterward -- detection pre-fills,
@@ -1225,6 +1294,8 @@ function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSear
     const trimmed=(addressOverride??contractAddress).trim();
     if(!trimmed){notify('Enter a contract address first.',{type:'error'});return;}
     setDetecting(true);
+    setDetectionError('');
+    setDetectionRetryable(false);
     try{
       // Schedule stores price per item, so detection intentionally asks for ONE item. Asking with
       // the selected quantity returns a total value and would incorrectly save that total as the
@@ -1232,27 +1303,86 @@ function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSear
       const result=await api(`/api/mints/detect?contractAddress=${encodeURIComponent(trimmed)}&quantity=1`);
       lastDetected.current=trimmed;
       setChain(result.chain);
+      setDetectedSeaDrop(Boolean(result.isSeaDrop));
       const useOpenSea=Boolean(result.openSeaMintRecommended);
-      const futureStage=result.drop?.nextStage?.startTime*1000>Date.now()?result.drop.nextStage:null;
-      const quantityPolicy=mintQuantityPolicy(futureStage?.maxPerWallet
-        ?{...result,maxPerWallet:futureStage.maxPerWallet}:result);
-      setViaOpenSea(useOpenSea);
-      setStageType(futureStage?.stageType||result.drop?.activeStage?.stageType||'');
+      const allStages=result.drop?.stages?[...result.drop.stages].sort((a,b)=>a.startTime-b.startTime):[];
+      setStages(allStages);
+      let chosenStage=null;
+      if(allStages.length){
+        const future=allStages.filter(s=>s.startTime*1000>Date.now()).sort((a,b)=>a.startTime-b.startTime);
+        // Default to the earliest upcoming stage this wallet can actually use. Allowlist/signed
+        // stages need eligibility the app cannot verify from an address alone, so a public stage
+        // always wins the default; the gated ones stay selectable for wallets that ARE on the list.
+        chosenStage=future.find(s=>!scheduleStageRequiresOpenSeaBuilder(s))||future[0]
+          ||result.drop?.activeStage||allStages[0];
+        setSelectedStageKey(scheduleStageSelectionKey(chosenStage||allStages[0]));
+        setStageType(chosenStage?.stageType||'');
+      } else {
+        const futureStage=result.drop?.nextStage?.startTime*1000>Date.now()?result.drop.nextStage:null;
+        chosenStage=futureStage;
+        setSelectedStageKey('');
+        setStageType(futureStage?.stageType||result.drop?.activeStage?.stageType||'');
+      }
+      const chosenUsesOpenSea=chosenStage
+        ?(!result.isSeaDrop||scheduleStageRequiresOpenSeaBuilder(chosenStage))
+        :useOpenSea;
+      const quantityPolicy=mintQuantityPolicy(chosenStage?.maxPerWallet!=null?{maxPerWallet:chosenStage.maxPerWallet}:result);
+      setDetectedOpenSeaRecommendation(useOpenSea);
+      setViaOpenSea(chosenUsesOpenSea);
       setMaxPerWallet(quantityPolicy.detected?quantityPolicy.max:null);
       if(Number(quantity)>quantityPolicy.max)setQuantity(String(quantityPolicy.max));
-      if(useOpenSea)setPriceETH('');
-      else if(result.priceKnown)setPriceETH(weiToEthDisplay(result.valueWei));
-      const detectedStart=futureStage?.startTime||result.startTime;
+      const collectionName=result.collection?.name||'';
+      const prevDetected=detectedName;
+      setDetectedName(collectionName);
+      if(collectionName && (!taskName || taskName===prevDetected)) setTaskName(collectionName);
+      if(result.chain && !profile.supportedChains.map(c=>c.toLowerCase()).includes(String(result.chain).toLowerCase())){
+        const supported=profile.supportedChains.map(c=>c.charAt(0).toUpperCase()+c.slice(1)).join(', ');
+        const chainLabel=String(result.chain).charAt(0).toUpperCase()+String(result.chain).slice(1);
+        const msg=`This contract is on ${chainLabel}, which isn't supported. Supported chains: ${supported}.`;
+        setDetectionError(msg);
+        setDetectionRetryable(false);
+        notify(msg,{type:'error'});
+      }
+      if(allStages.length && chosenStage){
+        if(chosenUsesOpenSea)setPriceETH('');
+        else if(chosenStage.priceWei!=null) setPriceETH(weiToEthDisplay(chosenStage.priceWei));
+        else if(result.priceKnown) setPriceETH(weiToEthDisplay(result.valueWei));
+      } else {
+        if(chosenUsesOpenSea)setPriceETH('');
+        else if(result.priceKnown)setPriceETH(weiToEthDisplay(result.valueWei));
+      }
+      const detectedStart=chosenStage?.startTime||result.startTime;
       if(detectedStart&&detectedStart*1000>Date.now()){
-        const local=new Date(detectedStart*1000);
+        const bufferMs=15*1000;
+        const local=new Date(detectedStart*1000+bufferMs);
         local.setMinutes(local.getMinutes()-local.getTimezoneOffset());
         setMintTime(local.toISOString().slice(0,16));
       }
       const label=result.isSeaDrop?'SeaDrop drop':'contract';
-      if(useOpenSea)notify(`Detected ${result.collection?.name||label} on ${result.chain}. OpenSea will prepare the mint at execution time.`,{type:'success'});
+      if(chosenUsesOpenSea)notify(`Detected ${result.collection?.name||label} on ${result.chain}. OpenSea will prepare the mint at execution time.`,{type:'success'});
       else if(result.priceKnown)notify(`Detected ${label} on ${result.chain} — price read from the contract.`,{type:'success'});
       else notify(`Detected ${label} on ${result.chain}, but the price couldn't be read — enter it yourself.`,{type:'info'});
-    }catch(value){notify(value.message,{type:'error'});}
+      refreshPendingForContract(trimmed);
+    }catch(error){
+      const raw=String(error?.message||'');
+      if(/unsupported chain/i.test(raw)){
+        const m=raw.match(/unsupported chain[^a-z0-9]*([a-z0-9_-]+)/i);
+        const chainLabel=m?m[1].charAt(0).toUpperCase()+m[1].slice(1):'this chain';
+        const supported=profile.supportedChains.map(c=>c.charAt(0).toUpperCase()+c.slice(1)).join(', ');
+        const msg=`This contract is on ${chainLabel}, which isn't supported. Supported chains: ${supported}.`;
+        setDetectionError(msg);
+        setDetectionRetryable(false);
+        setDetectedName('');setDetectedSeaDrop(false);setStages([]);setSelectedStageKey('');setViaOpenSea(false);setDetectedOpenSeaRecommendation(false);
+        notify(msg,{type:'error'});
+      } else {
+        const message=mintDetectionMessage(error);
+        const retryable=/right now|in a moment/i.test(message);
+        setDetectionError(message);
+        setDetectionRetryable(retryable);
+        setDetectedName('');setDetectedSeaDrop(false);setStages([]);setSelectedStageKey('');setViaOpenSea(false);setDetectedOpenSeaRecommendation(false);
+        notify(message,{type:'error'});
+      }
+    }
     finally{setDetecting(false);}
   }
   // No manual "Detect" button -- mirrors Minting's autoDetectIfReady exactly: fires the moment a
@@ -1260,7 +1390,57 @@ function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSear
   // just-changed value directly since setState hasn't applied yet inside the same onChange handler.
   function autoDetectIfReady(value=contractAddress){const trimmed=value.trim();if(ADDRESS_SHAPE.test(trimmed)&&trimmed!==lastDetected.current)detect(trimmed);}
   function handleContractBlur(){autoDetectIfReady();}
-  async function create(event){event.preventDefault();const form=event.currentTarget;try{const input=Object.fromEntries(new FormData(form));input.viaOpenSea=viaOpenSea;if(stageType)input.stageType=stageType;if(viaOpenSea)input.priceETH=0;else if(!input.priceETH)delete input.priceETH;if(input.mintTime)input.mintTime=new Date(input.mintTime).toISOString();else delete input.mintTime;await api('/api/tasks',{method:'POST',body:JSON.stringify(input)});setPriceIssue(null);form.reset();setContractAddress('');setQuantity('1');setMaxPerWallet(null);setPriceETH('');setMintTime('');setViaOpenSea(false);setStageType('');lastDetected.current='';notify('Task scheduled.',{type:'success'});listing.load();}catch(value){const issue=value.issues?.find(entry=>entry.field==='priceETH');if(issue)setPriceIssue(issue.message);notify(value.message,{type:'error'});}}async function control(id,action){try{await api(`/api/tasks/${id}/control`,{method:'POST',body:JSON.stringify({action,confirmation:action==='cancel'?'CONFIRM':undefined})});}catch(value){notify(value.message,{type:'error'});}}
+  // Duplicate-schedule awareness: pending mints for the same contract count against the same
+  // per-wallet cap, so the form says out loud how much of that cap is already committed. Fetched
+  // on detection and after each successful schedule; capped at 100 pending rows, which only ever
+  // under-counts a warning (never blocks anything).
+  async function refreshPendingForContract(address){
+    const trimmed=String(address||'').trim();
+    if(!ADDRESS_SHAPE.test(trimmed)){setPendingRows([]);return;}
+    try{
+      const response=await api(`/api/tasks?status=pending&pageSize=50`);
+      setPendingRows((response?.items||[]).filter(item=>String(item.contract||'').toLowerCase()===trimmed.toLowerCase()));
+    }catch{setPendingRows([]);}
+  }
+  useEffect(()=>{if(!scheduleWallet&&wallets.data?.length)setScheduleWallet(wallets.data[0].label);},[wallets.data]);
+  useEffect(()=>{if(contractAddress)refreshPendingForContract(contractAddress);else setPendingRows([]);},[contractAddress]);
+  async function create(event){event.preventDefault();const form=event.currentTarget;const scheduledStage=stages.find(stage=>scheduleStageSelectionKey(stage)===selectedStageKey);
+    if(scheduledStage){
+      const live=scheduledStage.startTime*1000<=Date.now()&&(!scheduledStage.endTime||scheduledStage.endTime*1000>Date.now());
+      if(live){notify(`"${scheduledStage.label}" is live right now — use Mint now instead of scheduling.`,{type:'info'});return;}
+    }
+    try{
+      const input=Object.fromEntries(new FormData(form));
+      const scheduledViaOpenSea=scheduledStage
+        ?(!detectedSeaDrop||scheduleStageRequiresOpenSeaBuilder(scheduledStage))
+        :(viaOpenSea||detectedOpenSeaRecommendation);
+      input.viaOpenSea=scheduledViaOpenSea;
+      input.eligibilityMode=scheduledViaOpenSea?'earliest_eligible':'specific_stage';
+      if(scheduledStage){
+        if(scheduledStage.uuid)input.stageUuid=scheduledStage.uuid;
+        if(scheduledStage.label)input.stageLabel=scheduledStage.label;
+        if(scheduledStage.stageType)input.stageType=scheduledStage.stageType;
+      }else if(stageType)input.stageType=stageType;
+      if(input.mintTime)input.mintTime=new Date(input.mintTime).toISOString();
+      else delete input.mintTime;
+      if(input.mintTime){
+        const startMs=Date.parse(input.mintTime);
+        const selectedStageStart=Number(scheduledStage?.startTime)*1000;
+        const notBeforeMs=Number.isFinite(selectedStageStart)?Math.max(startMs,selectedStageStart):startMs;
+        const deadlineCap=notBeforeMs+24*60*60*1000;
+        const advertisedEnds=stages.filter(candidate=>Number(candidate.startTime)*1000>=selectedStageStart)
+          .map(candidate=>Number(candidate.endTime)*1000)
+          .filter(endMs=>Number.isFinite(endMs)&&endMs>startMs);
+        // earliest_eligible can advance from an ineligible allowlist to the next public phase.
+        // Keep enough room for that advertised transition, but never leave an unattended schedule
+        // open for more than 24 hours when a project keeps moving its launch.
+        const latestAdvertisedEnd=advertisedEnds.length?Math.max(...advertisedEnds):null;
+        const deadlineMs=latestAdvertisedEnd===null?deadlineCap:Math.min(latestAdvertisedEnd,deadlineCap);
+        input.eligibilityDeadline=new Date(deadlineMs).toISOString();
+      }
+      if(scheduledViaOpenSea)input.priceETH=0;else if(!input.priceETH)delete input.priceETH;
+      await api('/api/tasks',{method:'POST',body:JSON.stringify(input)});setPriceIssue(null);form.reset();setContractAddress('');setTaskName('');setDetectedName('');setDetectedSeaDrop(false);setStages([]);setSelectedStageKey('');setDetectionError('');setDetectionRetryable(false);setQuantity('1');setMaxPerWallet(null);setPriceETH('');setMintTime('');setViaOpenSea(false);setDetectedOpenSeaRecommendation(false);setStageType('');setPendingRows([]);lastDetected.current='';notify('Task scheduled. Its time is the earliest check; minting waits for a live phase this wallet can use.',{type:'success'});listing.load();
+    }catch(value){const issue=value.issues?.find(entry=>entry.field==='priceETH');if(issue)setPriceIssue(issue.message);notify(value.message,{type:'error'});}}async function control(id,action){try{await api(`/api/tasks/${id}/control`,{method:'POST',body:JSON.stringify({action,confirmation:action==='cancel'?'CONFIRM':undefined})});}catch(value){notify(value.message,{type:'error'});}}
   // Prototype docs/prototype-pages/mint.html:111-158. The Schedule tab is a .split: the form on
   // the left, the "Scheduled" list on the right. The old page-lead, the search toolbar, the chain
   // select and the table UNDER the form are all gone -- none of them exist in the design, and the
@@ -1268,6 +1448,11 @@ function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSear
   const walletsArrived=wallets.data!==null&&wallets.data!==undefined;
   const noWallets=walletsArrived&&wallets.data.length===0;
   const quantityMax=maxPerWallet||100;
+  // How much of this contract's per-wallet cap the chosen wallet has already committed to on the
+  // pending list. Informational only -- scheduling is never blocked, but once the cap is reached
+  // the extra mints will fail at execution, and the user deserves to see that before submitting.
+  const pendingForWallet=pendingRows.filter(item=>item.walletLabel===scheduleWallet);
+  const pendingSum=pendingForWallet.reduce((total,item)=>total+(Number(item.qty)||0),0);
   // ---- Filtering, and where it happens -------------------------------------------------------
   // The server does this: it filters by bucket and counts all of them in one round trip. But
   // dashboard/vite.config.js proxies /api to the DEPLOYED instance, which does not have that code
@@ -1355,6 +1540,7 @@ function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSear
   function actionsFor(task){
     const status=String(task?.status||'').toLowerCase();
     if(isExpired(task))return status==='paused'?['cancel']:[];
+    if(status==='failed'&&Number(task?.attemptCount)>=Number(task?.maxAttempts))return [];
     return ACTIONS_BY_STATUS[status]||[];
   }
   // Selection is scoped to the page in view -- it clears on paging and on changing filter -- and
@@ -1398,17 +1584,21 @@ function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSear
   function rowMeta(task){
     const key=bucketOf(task);
     if((key==='failed'||key==='expired')&&task.lastError){
-      const attempt=task.attemptCount||0,cap=task.maxAttempts||3;
+      const attempt=Math.max(0,(task.attemptCount||0)-(task.phaseWaitCount||0)),cap=task.maxAttempts||3;
       return `attempt ${attempt} of ${cap} · ${task.lastError}`;
     }
     if(key==='paused')return `${task.walletLabel} · paused`;
     const at=task.mintTime?new Date(task.mintTime):null;
     if(!at||Number.isNaN(at.getTime()))return String(task.walletLabel||'');
-    const ms=at.getTime()-Date.now();
+    const ms=at.getTime()-scheduleNow;
     if(ms>0){
       const mins=Math.round(ms/60000);
-      const when=mins<60?`fires in ${mins}m`:mins<1440?`fires in ${Math.round(mins/60)}h`:`fires in ${Math.round(mins/1440)}d`;
+      const verb=task.eligibilityDeadline?'checks begin':'fires';
+      const when=mins<60?`${verb} in ${mins}m`:mins<1440?`${verb} in ${Math.round(mins/60)}h`:`${verb} in ${Math.round(mins/1440)}d`;
       return `${task.walletLabel} · ${when} · ${at.toISOString()}`;
+    }
+    if(task.eligibilityDeadline&&['scheduled','retry','claimed'].includes(String(task.status||'').toLowerCase())){
+      return `${task.walletLabel} · waiting for a live eligible phase · ${at.toISOString()}`;
     }
     return `${task.walletLabel} · ${at.toISOString()}`;
   }
@@ -1422,22 +1612,39 @@ function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSear
     <div className="card">
       <div className="ch"><div className="chip-ico">{CLOCK_ICON_LG}</div><h2>Schedule a mint</h2></div>
       <form className="g" style={{gap:'11px'}} onSubmit={create}>
-        <label className="fl"><span>Name</span>
-          <input className="in" name="name" required disabled={noWallets} placeholder="e.g. Pudgy Rods public"/></label>
         <label className="fl"><span>Contract address</span>
           <input className="in mono" name="contractAddress" required disabled={noWallets} placeholder="0x…"
             value={contractAddress}
-            onChange={e=>{setContractAddress(e.target.value);if(!ADDRESS_SHAPE.test(e.target.value.trim())){lastDetected.current='';setMaxPerWallet(null);setViaOpenSea(false);setStageType('');}autoDetectIfReady(e.target.value);}}
+            onChange={e=>{setContractAddress(e.target.value);if(!ADDRESS_SHAPE.test(e.target.value.trim())){lastDetected.current='';setMaxPerWallet(null);setViaOpenSea(false);setDetectedOpenSeaRecommendation(false);setDetectedSeaDrop(false);setStageType('');setStages([]);setSelectedStageKey('');setDetectionError('');setDetectionRetryable(false);const prev=detectedName;setDetectedName('');if(taskName===prev) setTaskName('');}autoDetectIfReady(e.target.value);}}
             onBlur={handleContractBlur}/></label>
+        {detectionError&&<div className="nt w" role="status">{WARN_TRIANGLE_ICON}<div><b>{detectionError}</b>{detectionRetryable&&<div style={{marginTop:'8px'}}><button type="button" className="b sm" onClick={()=>detect(contractAddress)}>Retry</button></div>}</div></div>}
+        <label className="fl"><span>Name{detectedName&&<span style={{color:'var(--faint)',fontWeight:500}}> · auto-detected</span>}</span>
+          <input className="in" name="name" required disabled={noWallets} readOnly={!!detectedName} placeholder={detectedName||"e.g. Pudgy Rods public"} value={taskName} onChange={e=>setTaskName(e.target.value)}/></label>
+        {stages.length>1&&<label className="fl"><span>Stage</span><select className="in" value={selectedStageKey} onChange={e=>{const s=stages.find(stage=>scheduleStageSelectionKey(stage)===e.target.value); if(!s)return; setSelectedStageKey(scheduleStageSelectionKey(s)); setStageType(s.stageType); setViaOpenSea(!detectedSeaDrop||scheduleStageRequiresOpenSeaBuilder(s)); const sp=mintQuantityPolicy({maxPerWallet:s.maxPerWallet}); setMaxPerWallet(sp.detected?sp.max:null); if(Number(quantity)>sp.max) setQuantity(String(sp.max)); if(s.priceWei!=null) setPriceETH(weiToEthDisplay(s.priceWei)); const t=s.startTime; if(t&&t*1000>Date.now()){const local=new Date(t*1000+15000); local.setMinutes(local.getMinutes()-local.getTimezoneOffset()); setMintTime(local.toISOString().slice(0,16));}}}>
+          {stages.map(s=>{
+            const ended=s.endTime&&s.endTime*1000<Date.now();
+            const live=s.startTime*1000<=Date.now()&&(!s.endTime||s.endTime*1000>Date.now());
+            const gated=scheduleStageRequiresOpenSeaBuilder(s);
+            const local=new Date(s.startTime*1000).toLocaleString([],{weekday:'short',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
+            const utc=`${String(new Date(s.startTime*1000).getUTCHours()).padStart(2,'0')}:${String(new Date(s.startTime*1000).getUTCMinutes()).padStart(2,'0')}Z`;
+            const selectionKey=scheduleStageSelectionKey(s);
+            return <option key={selectionKey} value={selectionKey} disabled={ended}>{s.label}{gated?' (allowlist)':''} · {local} ({utc}) · max {s.maxPerWallet}/wallet{s.priceWei!=null?` · ${weiToEthDisplay(s.priceWei)} ETH`:''}{ended?' · ended':live?' · live':''}</option>;
+          })}
+        </select></label>}
+        {(()=>{const s=stages.find(x=>scheduleStageSelectionKey(x)===selectedStageKey);
+          return s&&scheduleStageRequiresOpenSeaBuilder(s)
+            ?<div className="nt w" role="status">{WARN_TRIANGLE_ICON}<div><b>&ldquo;{s.label}&rdquo; is an allowlist stage.</b> Eligibility is proven by proofs the project published to OpenSea — GhostMint fetches yours automatically at mint time, so there is nothing to paste here. &ldquo;Not eligible&rdquo; means this wallet isn't on that list: mint on the project's site with their proof, or schedule the public stage instead.</div></div>
+            :null;})()}
         <div className="nt i">{INFO_ICON}
-          <div>SeaDrop drops expose their own opening time on-chain — it is filled in automatically. A plain <code>mint(uint256)</code> contract has no equivalent, so you set the time yourself.</div></div>
+          <div>The scheduled time is the earliest attempt, not a blind launch. For an OpenSea phase, GhostMint checks the live phase and this wallet's eligibility before it mints; if the opening is delayed, the task waits. A plain <code>mint(uint256)</code> contract has no equivalent phase feed, so you set its time yourself.</div></div>
         <div className="g gm2 g2">
           <label className="fl"><span>Wallet</span>
             {noWallets
               ?<select className="in" disabled><option>No wallets yet</option></select>
-              :<select className="in" name="walletLabel" disabled={!walletsArrived}>
-                <optgroup label="EVM">{(wallets.data||[]).map(entry=><option key={entry.label} value={entry.label}>{entry.label}</option>)}</optgroup>
-              </select>}
+              :<select className="in" name="walletLabel" disabled={!walletsArrived} value={scheduleWallet}
+                  onChange={e=>setScheduleWallet(e.target.value)}>
+                 <optgroup label="EVM">{(wallets.data||[]).map(entry=><option key={entry.label} value={entry.label}>{entry.label}</option>)}</optgroup>
+               </select>}
           </label>
           <label className="fl"><span>Quantity <span style={{color:'var(--faint)',fontWeight:500}}>· {maxPerWallet?`max ${maxPerWallet}/wallet`:`up to ${quantityMax}; checked in preview`}</span></span>
             <div className="qty">
@@ -1452,6 +1659,11 @@ function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSear
                   onClick={()=>setQuantity(String(quantityMax))}>Max</button></div>
             </div></label>
         </div>
+        {maxPerWallet&&pendingSum>0&&<div className={`nt ${pendingSum>=maxPerWallet?'w':'i'}`} role="status">
+          {pendingSum>=maxPerWallet?WARN_TRIANGLE_ICON:INFO_ICON}
+          <div>{pendingSum>=maxPerWallet
+            ?<><b>{scheduleWallet} already has {pendingSum} of max {maxPerWallet} scheduled on this contract.</b> Any additional mint for this wallet will fail -- schedule another wallet or wait for the next stage.</>
+            :<>{scheduleWallet} already has {pendingSum} of max {maxPerWallet} scheduled on this contract.</>}</div></div>}
         <label className="fl"><span>Mint time <span style={{color:'var(--faint)',fontWeight:500}}>· UTC, explicit offset or Z</span></span>
           <input className="in tab mono" name="mintTime" type="datetime-local" disabled={noWallets}
             value={mintTime} onChange={e=>setMintTime(e.target.value)}/></label>
@@ -1492,9 +1704,16 @@ function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSear
                 onClick={()=>selectBucket(key)}>
                 {counts[key]??0} {label.toLowerCase()}</button>)}
             </div>}
-          </div>
-        </div>
-        {listing.error
+           </div>
+         </div>
+         {/* A failed schedule is something that happened TO the user; the Failed count alone was
+             too easy to miss, which is exactly how failed mints used to sit unnoticed. The banner
+             is derived from the same server counts -- durable, not a second notification path. */}
+         {(counts.failed??0)>0&&bucket!=='failed'&&<div className="nt w" style={{marginBottom:'9px'}} role="status">
+           {WARN_TRIANGLE_ICON}
+           <div><b>{counts.failed} scheduled mint{(counts.failed??0)===1?' has':'s have'} failed and need{(counts.failed??0)===1?'s':''} your attention.</b> Each row carries the real reason.
+             <div style={{marginTop:'8px'}}><button type="button" className="b sm" onClick={()=>selectBucket('failed')}>Review failed mints</button></div></div></div>}
+         {listing.error
           ?<Notice error={loadError(listing,'Could not load scheduled mints.')}/>
           :items===undefined||items===null
             ?<div><div className="sk row"/><div className="sk row"/><div className="sk row"/></div>
@@ -2153,11 +2372,15 @@ function NotificationBell(){const [items,setItems]=useState([]);const [open,setO
     function onMessage(event){
       const message=event.detail;
       if(message?.type==='task.failed'){
-        notify(`${message.name} failed — ${message.reason}`,{type:'error',category:'auto',timeoutMs:9000,
-          action:{label:'Retry',run:async()=>{
-            await api(`/api/tasks/${message.taskId}/control`,{method:'POST',body:JSON.stringify({action:'retry'})});
-            notify(`${message.name} queued for another attempt.`,{type:'success',category:'auto'});
-          }}});
+        const action=message.retryable
+          ?{label:'Retry',run:async()=>{
+              await api(`/api/tasks/${message.taskId}/control`,{method:'POST',body:JSON.stringify({action:'retry'})});
+              notify(`${message.name} queued for another attempt.`,{type:'success',category:'auto'});
+            }}
+          // Retries are spent: a further Retry would only be refused by the server's own guard.
+          // Reschedule jumps to the schedule form, which is the way to run this mint again.
+          :{label:'Reschedule',run:()=>{window.location.href='/dashboard/mint?tab=schedule';}};
+        notify(`${message.name} failed — ${message.reason}`,{type:'error',category:'auto',timeoutMs:9000,action});
       }
       if(message?.type==='task.lowBalance'){
         notify(`${message.name} mints automatically in ${message.minutes}m and ${message.walletLabel} is short by ${message.shortByEth} ETH.`,
@@ -2424,7 +2647,7 @@ function TransactionModePanel({profile}){
 }
 const USAGE_PERIODS=[['today','Today'],['day','24 hours'],['week','7 days'],['month','Month']];
 function ApiUsagePanel(){const [period,setPeriod]=useState('month');const usage=useLoad(`/api/social-usage?period=${period}`,[period]);const {data}=usage;return <div className="panel settings-usage"><div className="settings-panel-heading"><div><p className="eyebrow">Owner reporting</p><h2>Social API usage</h2></div><div className="seg usage-period" role="radiogroup" aria-label="Usage period">{USAGE_PERIODS.map(([value,label])=><button type="button" key={value} className={period===value?'on':undefined} aria-pressed={period===value} onClick={()=>setPeriod(value)}>{label}</button>)}</div></div><p>Observed adapter requests, provider-reported consumption, and current pricing estimates.</p><Notice error={loadError(usage,'Could not load social API usage.')}/>{data===null?<Skeleton variant="lines" rows={4}/>:<><div className="usage-stats"><div><span>Total requests</span><strong>{data.requests}</strong></div><div><span>Reported cost</span><strong>${data.reportedCostUsd.toFixed(4)}</strong></div><div><span>Reported credits</span><strong>{data.reportedCredits.toFixed(2)}</strong></div><div><span>Pay-per-use estimate</span><strong>${data.payPerUseEstimateUsd.toFixed(2)}</strong></div><div><span>Projected monthly</span><strong>{Math.round(data.projectedMonthlyRequests).toLocaleString()}</strong></div></div><div className="settings-usage-tables"><div className="table-wrap"><table><thead><tr><th>Rule</th><th>Method</th><th>Type</th><th>Requests</th></tr></thead><tbody>{data.rows.map(row=><tr key={`${row.ruleId}-${row.method}-${row.requestType}`}><td>{row.ruleName}</td><td>{row.method}</td><td>{row.requestType}</td><td>{row.requests}</td></tr>)}</tbody></table>{data.rows.length===0&&<Empty text="No social adapter requests recorded for this period."/>}</div><div className="table-wrap"><table><thead><tr><th>Managed tier</th><th>Break-even reads</th><th>Break-even posts</th></tr></thead><tbody>{data.breakEvenRequests.map(tier=><tr key={tier.price}><td>${tier.price}/mo</td><td>{tier.atReadRate.toLocaleString()}</td><td>{tier.atPostRate.toLocaleString()}</td></tr>)}</tbody></table></div></div></>}</div>}
-function Settings({profile,onThemeChange,onProfileChange}){const secondaryActive=SECONDARY_THEMES.some(option=>option.value===profile.theme);return <><PageTitle eyebrow="Preferences" title="Settings" subtitle="Display, network defaults, live gas information, and owner reporting."/><div className="settings-layout"><div className="panel settings-appearance"><div className="settings-panel-heading"><div><p className="eyebrow">Display</p><h2>Appearance</h2></div><div className="seg theme-picker" role="radiogroup" aria-label="Dashboard appearance">{PRIMARY_THEMES.map(option=><button type="button" key={option.value} aria-pressed={profile.theme===option.value} className={profile.theme===option.value?'on':undefined} onClick={()=>onThemeChange(option.value)}><span className="theme-picker-icon" aria-hidden="true">{option.icon}</span>{option.label}</button>)}</div></div><details className="settings-more-themes" open={secondaryActive}><summary>More themes</summary><div className="theme-grid" role="radiogroup" aria-label="More dashboard themes">{SECONDARY_THEMES.map(option=><button type="button" key={option.value} aria-pressed={profile.theme===option.value} className={`theme-option${profile.theme===option.value?' active':''}`} onClick={()=>onThemeChange(option.value)}><ThemeSwatch value={option.value}/><span className="theme-option-label">{option.label}</span></button>)}</div></details></div><DefaultChainPanel profile={profile}/><TransactionModePanel profile={profile}/><BotSecurityPanel profile={profile} onProfileChange={onProfileChange}/><GasPanel profile={profile}/>{profile.isOwner&&<ApiUsagePanel/>}</div></>}
+function Settings({profile,onThemeChange,onProfileChange}){const secondaryActive=SECONDARY_THEMES.some(option=>option.value===profile.theme);return <><PageTitle eyebrow="Preferences" title="Settings" subtitle="Display, network defaults, live gas information, and owner reporting."/><div className="settings-layout"><div className="panel settings-appearance"><div className="settings-panel-heading"><div><p className="eyebrow">Display</p><h2>Appearance</h2></div><div className="seg theme-picker" role="radiogroup" aria-label="Dashboard appearance">{PRIMARY_THEMES.map(option=><button type="button" key={option.value} aria-pressed={profile.theme===option.value} className={profile.theme===option.value?'on':undefined} onClick={()=>onThemeChange(option.value)}><span className="theme-picker-icon" aria-hidden="true">{option.icon}</span>{option.label}</button>)}</div></div><details className="settings-more-themes" open={secondaryActive}><summary>More themes</summary><div className="theme-grid" role="radiogroup" aria-label="More dashboard themes">{SECONDARY_THEMES.map(option=><button type="button" key={option.value} aria-pressed={profile.theme===option.value} className={`theme-option${profile.theme===option.value?' active':''}`} onClick={()=>onThemeChange(option.value)}><ThemeSwatch value={option.value}/><span className="theme-option-label">{option.label}</span></button>)}</div></details><button type="button" className="b g sm settings-reset-layout" onClick={()=>{resetSectionOrders();notify('Layout reset.',{type:'success'});}}>Reset layout</button></div><DefaultChainPanel profile={profile}/><TransactionModePanel profile={profile}/><BotSecurityPanel profile={profile} onProfileChange={onProfileChange}/><GasPanel profile={profile}/>{profile.isOwner&&<ApiUsagePanel/>}</div></>}
 function Login({onLogin,sessionMessage}){
   const [mode,setMode]=useState('code');
   const [code,setCode]=useState('');
@@ -2516,7 +2739,7 @@ function nativeBalance(wallet){
   if(!match||match.balance===null||match.balance===undefined)return null;
   return {amount:Number(match.balance),symbol:match.symbol||'ETH'};
 }
-function MintBatch({onGoWallets}){
+function MintBatch({onGoWallets,onSwitchToSchedule}){
   const wallets=useLoad('/api/wallets',[],'wallets.changed');
   const [selected,setSelected]=useState([]);
   const [contractAddress,setContractAddress]=useState('');
@@ -2537,6 +2760,7 @@ function MintBatch({onGoWallets}){
   const [completedMaxPerWallet,setCompletedMaxPerWallet]=useState(null);
   const [detecting,setDetecting]=useState(false);
   const [detectionError,setDetectionError]=useState('');
+  const [detectionRetryable,setDetectionRetryable]=useState(false);
   const lastDetected=useRef("");
   const detectingKey=useRef("");
   async function detectPrice(address,quantityOverride=quantity){
@@ -2560,16 +2784,19 @@ function MintBatch({onGoWallets}){
       setMaxPerWallet(quantityPolicy.detected?quantityPolicy.max:null);
       if(Number(quantityOverride)>quantityPolicy.max)setQuantity(String(quantityPolicy.max));
       lastDetected.current=requestKey;
-    }catch{
+    }catch(error){
       if(detectingKey.current===requestKey){
         setDetectedPrice(null);setDetectedChain('');setMethodSignature('');setDetectedArguments([]);
         setSeaDropAddress('');setViaOpenSea(false);setMaxPerWallet(null);
-        setDetectionError('We could not read this contract yet. Try again.');
+        const message=mintDetectionMessage(error);
+        const retryable=/right now|in a moment/i.test(message);
+        setDetectionError(message);
+        setDetectionRetryable(retryable);
       }
     }finally{if(detectingKey.current===requestKey){detectingKey.current='';setDetecting(false);}}
   }
   function autoDetectIfReady(value){detectPrice(value);}
-  function toggle(label){setSelected(current=>current.includes(label)?current.filter(item=>item!==label):[...current,label]);}
+  function toggle(label){setSelected(current=>current.includes(label)?current.filter(item=>item!==label):[...current,label]);setPreview(null);setResults(null);}
   async function simulate(event){
     event?.preventDefault?.();
     if(!selected.length){notify('Select at least one wallet.',{type:'error'});return;}
@@ -2579,24 +2806,42 @@ function MintBatch({onGoWallets}){
     if(!viaOpenSea&&valueWei===null){notify('Could not confirm the mint price for this contract.',{type:'error'});return;}
     setBusy(true);
     try{
-      setPreview(await api('/api/mints/preview',{method:'POST',body:JSON.stringify({
+      const nextPreview=await api('/api/mints/preview',{method:'POST',body:JSON.stringify({
         walletLabels:selected,contractAddress:contractAddress.trim(),quantity:Number(quantity),
         chain:detectedChain,viaOpenSea,methodSignature:viaOpenSea?undefined:methodSignature,
         seaDropAddress:viaOpenSea?undefined:seaDropAddress||undefined,
-        arguments:viaOpenSea?[]:detectedArguments,valueWei:viaOpenSea?'0':valueWei.toString()})}));
+        arguments:viaOpenSea?[]:detectedArguments,valueWei:viaOpenSea?'0':valueWei.toString()})});
+      setPreview(nextPreview);
       setResults(null);
       setCompletedMaxPerWallet(null);
-      notify(`Simulation passed for ${selected.length} wallets — review and confirm.`,{type:'success'});
-    }catch(value){notify(value.message,{type:'error'});}
+      const passed=nextPreview.items.length;const failed=nextPreview.failures?.length||0;
+      if(!passed){
+        const first=nextPreview.failures?.[0];
+        const feedback=first?mintPreviewError({message:first.error,code:first.code},{chain:detectedChain,quantity}):null;
+        notify(feedback?`${feedback.title} ${feedback.detail}`:'None of the selected wallets can mint this collection right now.',{type:'error'});
+      }
+      else if(failed)notify(`${passed} ${passed===1?'wallet passed':'wallets passed'} simulation; ${failed} ${failed===1?'wallet was':'wallets were'} skipped.`,{type:'info'});
+      else notify(`Simulation passed for ${passed} wallets — review and confirm.`,{type:'success'});
+    }catch(value){
+      // Same plain-English treatment as Mint now's preview failures -- the raw server sentence is
+      // never shown when a recognized reason exists.
+      const friendly=mintPreviewError(value,{chain:detectedChain,quantity});
+      notify(`${friendly.title} ${friendly.detail}`,{type:'error'});
+    }
     finally{setBusy(false);}
   }
   async function confirmBatch(){
-    if(!await confirmDialog(`Broadcast this mint from ${selected.length} wallets? Each is submitted independently.`))return;
+    const readyCount=preview?.items?.length||0;
+    if(!readyCount)return;
+    if(!await confirmDialog(`Broadcast this mint from ${readyCount} ${readyCount===1?'wallet':'wallets'}? Wallets that failed simulation will be skipped.`))return;
     setBusy(true);
     try{
       const response=await api('/api/mints/confirm',{method:'POST',body:JSON.stringify({previewToken:preview.previewToken,confirmation:'CONFIRM'})});
-      setResults(response.results);
-      const failed=response.results.filter(item=>item.status!=='success').length;
+      const previewFailures=(preview.failures||[]).map(item=>({label:item.walletLabel,status:'failed',error:item.error}));
+      const byLabel=new Map([...response.results,...previewFailures].map(item=>[item.label,item]));
+      const combined=selected.map(label=>byLabel.get(label)).filter(Boolean);
+      setResults(combined);
+      const failed=combined.filter(item=>item.status!=='success').length;
       setPreview(null);
       // A completely successful batch is finished work, not a reusable transaction draft. Clear
       // every value that could accidentally submit the same mint again. Failed/partial batches
@@ -2607,7 +2852,7 @@ function MintBatch({onGoWallets}){
         setDetectedChain('');setMethodSignature('');setDetectedArguments([]);setSeaDropAddress('');
         setViaOpenSea(false);setMaxPerWallet(null);setDetectionError('');lastDetected.current='';detectingKey.current='';
       }
-      notify(failed?`${response.results.length-failed} of ${response.results.length} succeeded; ${failed} failed.`:'All wallet mints were successful.',{type:failed?'error':'success'});
+      notify(failed?`${combined.length-failed} of ${combined.length} succeeded; ${failed} ${failed===1?'was':'were'} skipped or failed.`:'All wallet mints were successful.',{type:failed?'info':'success'});
     }catch(value){notify(value.message,{type:'error'});}
     finally{setBusy(false);}
   }
@@ -2641,19 +2886,16 @@ function MintBatch({onGoWallets}){
         <label className="fl"><span>Contract address</span>
           <input className={`in mono${detectedPrice?' ok':''}`}
             required disabled={noWallets} readOnly={!noWallets&&!enoughSelected}
-            aria-describedby={!noWallets&&!enoughSelected?'batch-gate':undefined}
             placeholder={enoughSelected?'0x…':`Select ${BATCH_MIN_WALLETS} wallets first`}
             value={contractAddress}
+            onFocus={()=>{if(!noWallets&&!enoughSelected)notify(gateMessage,{type:'info'});}}
             onChange={e=>{if(!enoughSelected)return;setContractAddress(e.target.value);setPreview(null);
               if(!ADDRESS_SHAPE.test(e.target.value.trim())){lastDetected.current='';setDetectedPrice(null);
                 setDetectedChain('');setMethodSignature('');setDetectedArguments([]);setSeaDropAddress('');setViaOpenSea(false);
-                setMaxPerWallet(null);setDetectionError('');detectingKey.current='';setDetecting(false);}
+                setMaxPerWallet(null);setDetectionError('');setDetectionRetryable(false);detectingKey.current='';setDetecting(false);}
               autoDetectIfReady(e.target.value);}}/>
-          {/* Stated up front as well as on click -- a rule you can only discover by bumping into it
-              is a rule the page kept to itself. */}
-          {!noWallets&&!enoughSelected&&<div className="fielderr" id="batch-gate">{ALERT_ICON}{gateMessage}</div>}
           {detectionError&&<div className="nt w" role="status">{WARN_TRIANGLE_ICON}<div><b>{detectionError}</b>
-            <div style={{marginTop:'8px'}}><button type="button" className="b sm" onClick={()=>detectPrice(contractAddress,quantity)}>Retry</button></div>
+            {detectionRetryable&&<div style={{marginTop:'8px'}}><button type="button" className="b sm" onClick={()=>detectPrice(contractAddress,quantity)}>Retry</button></div>}
           </div></div>}</label>
         <label className="fl"><span>Wallets <span style={{color:'var(--faint)',fontWeight:500}}>· up to 100 unique</span></span>
           {!walletsArrived
@@ -2727,18 +2969,34 @@ function MintBatch({onGoWallets}){
              </div>
             :preview
               ?<div className="g">
-                 <PreviewExpiry preview={preview} onExpire={()=>setPreview(null)} onResimulate={simulate}/>
+                 {preview.previewToken&&<PreviewExpiry preview={preview} onExpire={()=>setPreview(null)} onResimulate={simulate}/>}
                  <div className="sober">
-                   <div className="sh">{LOCK_ICON}Simulation passed</div>
+                   <div className="sh">{LOCK_ICON}Simulation results</div>
                    <table className="led"><tbody>
                      {preview.items.map(item=><tr key={item.wallet.label}>
                        <td>{item.wallet.label}</td>
                        <td>{weiToEthDisplay(item.simulation.estimatedCostWei)} ETH</td></tr>)}
+                     {(preview.failures||[]).map(item=>{const feedback=mintPreviewError({message:item.error,code:item.code},{chain:detectedChain,quantity});return <tr key={item.walletLabel}>
+                       <td>{item.walletLabel}</td><td><span className="p bad">Skipped</span> {feedback.title} {feedback.detail}</td></tr>;})}
                      <tr className="tot"><td>Wallets</td><td>{preview.items.length}</td></tr>
                    </tbody></table>
                  </div>
-                 <button type="button" className="b p big bl" disabled={busy} onClick={confirmBatch}>
+                  {!preview.items.length&&(()=>{
+                    // Every wallet was skipped: lead with the shared reason instead of a generic
+                    // sentence, and offer the schedule hand-off when the reason is a timing or
+                    // eligibility one -- the two cases scheduling exists to solve.
+                    const first=preview.failures?.[0];
+                    const feedback=first?mintPreviewError({message:first.error,code:first.code},{chain:detectedChain,quantity}):null;
+                    const schedulable=feedback&&/not open yet|not eligible|no mintable stage/i.test(`${feedback.title} ${feedback.detail}`);
+                    return <div className="nt w" role="status">{WARN_TRIANGLE_ICON}<div>
+                      <b>{feedback?feedback.title:'No wallet is ready to mint.'}</b> {feedback?feedback.detail:'Review the wallet results above, then change the selection or quantity and simulate again.'}
+                      {schedulable&&onSwitchToSchedule&&<div style={{marginTop:'8px'}}><button type="button" className="b p sm"
+                        onClick={()=>{setPendingSchedulePrefill({contractAddress,quantity});onSwitchToSchedule();}}>Schedule this mint</button></div>}
+                    </div></div>;
+                  })()}
+                 {preview.items.length>0&&<button type="button" className="b p big bl" disabled={busy} onClick={confirmBatch}>
                    Confirm and mint · {preview.items.length} {preview.items.length===1?'wallet':'wallets'}</button>
+                 }
                </div>
               :null}
     </div>
@@ -2847,9 +3105,9 @@ function Mint({profile,go,tab,onTab}){
   return <>
     <div className="page-head"><div className="page-head-text"><p className="eyebrow">Mint</p><h1>Mint</h1></div></div>
     <SubTabs tabs={MINT_TABS} active={active} onChange={onTab} label="Mint sections" badges={badges}/>
-    {active==='now'&&<Minting onSwitchToBatch={()=>onTab('batch')} onGoWallets={()=>go('Wallets')}/>}
+    {active==='now'&&<Minting onSwitchToBatch={()=>onTab('batch')} onSwitchToSchedule={()=>onTab('schedule')} onGoWallets={()=>go('Wallets')}/>}
     {active==='schedule'&&<Tasks profile={profile} go={go}/>}
-    {active==='batch'&&<MintBatch onGoWallets={()=>go('Wallets')}/>}
+    {active==='batch'&&<MintBatch onGoWallets={()=>go('Wallets')} onSwitchToSchedule={()=>onTab('schedule')}/>}
     {active==='presets'&&<MintPresets onUsePreset={preset=>{setPendingMintPrefill({contractAddress:preset.contractAddress});onTab('now');}}/>}
   </>;
 }

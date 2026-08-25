@@ -1,5 +1,5 @@
-import React from 'react';
-import {Celebrate,FirstRun,Meter,Notice,SectionCard,Skeleton,Sparkline,StatTile} from '../shared.jsx';
+import React,{useState} from 'react';
+import {Celebrate,FirstRun,Meter,Notice,readDismissedReward,ReorderableStack,saveDismissedReward,SectionCard,Skeleton,Sparkline,StatTile} from '../shared.jsx';
 import {activitySucceeded} from '../activityFeed.js';
 import PnlBars from '../PnlBars.jsx';
 import {ChainDot,chainFromExplorer,CountdownRing,EmptyState,explorerForChain,formatEth,formatSigned,ICONS,Row,shortAddress,weiToEth} from './homeParts.jsx';
@@ -96,35 +96,68 @@ function Tiles({summary,sources,pnl30}){
         :summary.walletCount===0?'Applies once you mint'
         :`Per transaction ${formatEth(weiToEth(limits.maxTransactionValueWei),3)} ETH · gas ${limits.gasCeilingGwei} gwei`}/>
 
-    {/* Scope is in the LABEL, not just the tooltip: stats() is not routed, so this is one page
-        of activity, and an unqualified "Success rate" would misstate the denominator (§5.6). */}
-    <StatTile label="Success · up to 20"
+    {/* This measures final on-chain outcomes after broadcast, never the user's competence and
+        never previews that simulation/validation safely stopped before money could be spent. */}
+    <StatTile label="On-chain success · last 20"
       value={activityState!=='ready'?'—'
-        :summary.successScopeSize===0?0
+        :summary.successScopeSize===0?'—'
         :summary.successRate===null?'—':summary.successRate}
-      unit={activityState==='ready'&&(summary.successScopeSize===0||summary.successRate!==null)?'%':undefined}
+      unit={activityState==='ready'&&summary.successRate!==null?'%':undefined}
       meta={activityState==='error'?'Could not load'
         :activityState==='loading'?'Loading…'
-        :summary.successScopeSize===0?'No activity yet':`${summary.successCount} of ${summary.successScopeSize} successful`}>
-      {activityState==='ready'&&(summary.successScopeSize===0||summary.successRate!==null)
-        &&<Meter value={summary.successRate??0} max={100}/>}
+        :summary.successScopeSize===0?'No completed transactions yet'
+        :`${summary.successCount} of ${summary.successScopeSize} broadcast transactions confirmed`}>
+      {activityState==='ready'&&summary.successRate!==null
+        &&<Meter value={summary.successRate} max={100}/>}
     </StatTile>
   </div>;
 }
 
 /* --- Left column ---------------------------------------------------------- */
-function CelebrateCard({summary,go}){
+function explorerName(explorer){
+  const value=String(explorer||'').toLowerCase();
+  if(value.includes('blockscout'))return 'Blockscout';
+  if(value.includes('etherscan'))return 'Etherscan';
+  if(value.includes('basescan'))return 'Basescan';
+  if(value.includes('arbiscan'))return 'Arbiscan';
+  if(value.includes('polygonscan'))return 'Polygonscan';
+  return 'View transaction';
+}
+function mintRewardTitle(item){
+  if(item.triggerSource==='scheduled')return 'Scheduled mint confirmed.';
+  if(String(item.triggerSource||'').includes('blockchain'))return 'Copy-mint confirmed.';
+  if(String(item.triggerSource||'').includes('social'))return 'Social mint confirmed.';
+  return 'Minted it.';
+}
+function mintRewardSubject(item){
+  const tokenIds=Array.isArray(item.tokenIds)?item.tokenIds.filter(Boolean):[];
+  if(item.collectionName&&tokenIds.length===1)return `${item.collectionName} #${tokenIds[0]}`;
+  if(item.collectionName)return item.collectionName;
+  if(tokenIds.length===1)return `NFT #${tokenIds[0]}`;
+  return String(item.title||'Mint confirmed').replace(/^Minted\s+/i,'');
+}
+function mintRewardContext(item,streak){
+  if(streak>=2)return `🔥 ${streak} confirmed in a row`;
+  if(item.triggerSource==='scheduled')return '✓ Scheduled mint confirmed';
+  if(String(item.triggerSource||'').includes('blockchain'))return '✓ Copy-mint confirmed';
+  if(String(item.triggerSource||'').includes('social'))return '✓ Social mint confirmed';
+  return '✓ Mint confirmed on-chain';
+}
+function CelebrateCard({summary,onDismiss}){
   const item=summary.latestSuccess;
   if(!item)return null;
+  const itemKey=item.id??item.txHash??item.time??item.title;
   const explorer=explorerForChain(item.chain)||item.explorer;
-  return <Celebrate title={item.title||'Mint confirmed'}
-    detail={[item.walletLabel,item.time?new Date(item.time).toLocaleString():null].filter(Boolean).join(' · ')}>
-    {/* Hidden entirely below 2 -- "1 in a row" is not a streak (contract §5.7). */}
-    {summary.streak>=2&&<div className="streak">🔥 {summary.streak} in a row</div>}
-    <div className="celebrate-actions">
-      {explorer&&item.txHash&&<a className="link-button" href={`${explorer}${item.txHash}`}
-        target="_blank" rel="noreferrer noopener">View transaction</a>}
-      <button type="button" className="b g sm" onClick={()=>go('Activity')}>All activity</button>
+  const mintValue=weiToEth(item.transactionValueWei);
+  return <Celebrate title={mintRewardTitle(item)}
+    detail={<>{mintRewardSubject(item)}{item.walletLabel&&<> → <b>{item.walletLabel}</b></>}
+      {mintValue!==null&&<> for {Number(mintValue.toFixed(6))} ETH</>}.</>}>
+    {/* Never invent a streak. A single success gets truthful execution context instead. */}
+    <div className="streak">{mintRewardContext(item,summary.streak)}</div>
+    <div className="br celebrate-actions">
+      {explorer&&item.txHash&&<a className="b sm" href={`${explorer}${item.txHash}`}
+        target="_blank" rel="noreferrer noopener">{explorerName(explorer)}</a>}
+      <button type="button" className="b g sm" onClick={()=>onDismiss(itemKey)}>Dismiss</button>
     </div>
   </Celebrate>;
 }
@@ -137,7 +170,10 @@ function PnlCard({summary,sources,pnlView,pnlWindow,onPnlWindow,go}){
       className={pnlWindow===option.id?'on':undefined}
       aria-pressed={pnlWindow===option.id} onClick={()=>onPnlWindow(option.id)}>{option.label}</button>)}
   </div>;
-  return <SectionCard title="P&L by day" icon={ICONS.chart} actions={windows}>
+  return <SectionCard title="P&L by day" icon={ICONS.chart} actions={windows}
+    mobileCollapsible mobileDefaultOpen={false}
+    collapsedLeading={PNL_WINDOWS.find(option=>option.id===pnlWindow)?.label||'All'}
+    collapsedValue={pnlView.points.length?formatSigned(pnlView.net):'0.000'}>
     <CardBody source={sources.pnl} skeleton="chart" rows={1}
       empty={pnlView.points.length===0?<EmptyState icon={ICONS.chart} title="No profit or loss yet"
         action={<button type="button" className="b sm" onClick={()=>go('Mint')}>Go to Mint</button>}>
@@ -151,6 +187,7 @@ function PnlCard({summary,sources,pnlView,pnlWindow,onPnlWindow,go}){
 
 function ActivityCard({summary,sources,go}){
   return <SectionCard title="Recent activity" icon={ICONS.clock}
+    mobileCollapsible mobileDefaultOpen collapsedLeading={`${summary.activityItems.length} recent`}
     actions={<button type="button" className="b g sm" onClick={()=>go('Activity')}>View all</button>}>
     <CardBody source={sources.activity} skeleton="row" rows={3}
       empty={summary.activityItems.length===0?<EmptyState icon={ICONS.clock} title="Nothing yet"
@@ -232,6 +269,9 @@ function QueueCard({summary,sources,go}){
 
 function WalletsCard({summary,sources,go}){
   return <SectionCard title="Wallets" icon={ICONS.wallet}
+    mobileCollapsible mobileDefaultOpen={false}
+    collapsedLeading={summary.walletCount?`${summary.fundedWalletCount} funded`:'None'}
+    collapsedValue={formatEth(summary.portfolio.eth)}
     actions={<button type="button" className="b g sm" onClick={()=>go('Wallets')}>Manage</button>}>
     <CardBody source={sources.wallets} skeleton="row" rows={3}
       empty={summary.walletCount===0?<EmptyState icon={ICONS.wallet} title="No wallets yet"
@@ -252,6 +292,12 @@ function WalletsCard({summary,sources,go}){
 
 /* --- Page ----------------------------------------------------------------- */
 export default function Home({summary,sources,go,greeting,pnlView,pnl30,pnlWindow,onPnlWindow}){
+  const [dismissedItem,setDismissedItem]=useState(()=>readDismissedReward('home'));
+  function dismissCelebration(itemKey){
+    const key=String(itemKey);
+    setDismissedItem(key);
+    saveDismissedReward('home',key);
+  }
   // A page-level failure is reported once at the top rather than as six identical card errors.
   // Only genuinely failed sources are listed, and every card keeps its own inline error too, so
   // a single failing endpoint does not blank the page (contract §7.1).
@@ -269,7 +315,7 @@ export default function Home({summary,sources,go,greeting,pnlView,pnl30,pnlWindo
     {/* The prototype's header: "Command centre" eyebrow, the GREETING as the h1 (not the word
         "Home"), and Mint now sitting to its right. The page is named in the rail; repeating it
         as the h1 spends the largest type on the page saying nothing. */}
-    <div className="page-head">
+    <div className="page-head home-page-head">
       <div className="page-head-text">
         <p className="eyebrow">Command centre</p>
         <h1>{greeting}</h1>
@@ -298,17 +344,19 @@ export default function Home({summary,sources,go,greeting,pnlView,pnl30,pnlWindo
     }}/>}
 
     <div className="split home-split">
-      <div className="home-col">
-        <CelebrateCard summary={summary} go={go}/>
-        <PnlCard summary={summary} sources={sources} pnlView={pnlView}
-          pnlWindow={pnlWindow} onPnlWindow={onPnlWindow} go={go}/>
-        <ActivityCard summary={summary} sources={sources} go={go}/>
-      </div>
-      <div className="home-col">
-        <NextDropCard summary={summary} sources={sources} go={go}/>
-        <AlertsCard summary={summary} go={go}/>
-        <WalletsCard summary={summary} sources={sources} go={go}/>
-      </div>
+      <ReorderableStack stackKey="home-left" className="home-col" items={[
+        {id:'celebrate',label:'mint confirmation',visible:Boolean(summary.latestSuccess)
+          &&dismissedItem!==String(summary.latestSuccess.id??summary.latestSuccess.txHash??summary.latestSuccess.time??summary.latestSuccess.title),
+        content:<CelebrateCard summary={summary} onDismiss={dismissCelebration}/>},
+        {id:'pnl',label:'P&L by day',content:<PnlCard summary={summary} sources={sources} pnlView={pnlView}
+          pnlWindow={pnlWindow} onPnlWindow={onPnlWindow} go={go}/>},
+        {id:'activity',label:'recent activity',content:<ActivityCard summary={summary} sources={sources} go={go}/>},
+      ]}/>
+      <ReorderableStack stackKey="home-right" className="home-col" items={[
+        {id:'next-drop',label:'next scheduled mint',content:<NextDropCard summary={summary} sources={sources} go={go}/>},
+        {id:'alerts',label:'alerts',content:<AlertsCard summary={summary} go={go}/>},
+        {id:'wallets',label:'wallets',content:<WalletsCard summary={summary} sources={sources} go={go}/>},
+      ]}/>
     </div>
   </>;
 }

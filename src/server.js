@@ -40,7 +40,8 @@ const watchRuleFlowDecision = require('./social/watchRuleFlowDecision');
 const sniperFlowDecision = require('./sniper/sniperFlowDecision');
 const { createSchedulerRepository } = require('./scheduler/schedulerRepository');
 const { DEFAULT_LEAD_MS, createScheduledReminder } = require('./scheduler/scheduledReminder');
-const { createSchedulerWorker, STAGE_REARM_WINDOW_MS, errorReason } = require('./scheduler/schedulerWorker');
+const { SCHEDULE_PHASE_WAIT, createSchedulerWorker, STAGE_REARM_WINDOW_MS, errorReason } = require('./scheduler/schedulerWorker');
+const { DECISION_REASONS, resolveScheduledPhase } = require('./scheduler/scheduledPhaseResolver');
 const { classifySeaDropWindow, preArmRearm } = require('./scheduler/scheduledValidity');
 const { resolveTaskChain } = require('./scheduler/taskChain');
 const { createBumpSweeper } = require('./transactions/bumper');
@@ -294,17 +295,143 @@ triggerExecutionService=createTriggerExecutionService({repository:targetPolicyRe
   notify:(userId,value)=>notifyUser(userId,`Trigger requires confirmation.\n<code>${escapeTelegramHtml(JSON.stringify(value.preview))}</code>\nRun /confirmtrigger ${value.requestId} CONFIRM to approve or REJECT to reject within 10 minutes.`),
   onPending:(userId,request)=>dashboardWebSockets.broadcastToUser(userId,{type:'confirmation.pending',request}),
   onResolved:(userId,value)=>dashboardWebSockets.broadcastToUser(userId,{type:'confirmation.resolved',...value})});
-// OpenSea drop stages whose eligibility only OpenSea's own backend can resolve (allowlist/GTD/FCFS
-// need a per-wallet proof or signature this app has no on-chain way to construct). A scheduled task
-// against one of these cannot fall back to this app's own public-mint calldata when OpenSea fails to
-// serve it -- such a mint could only revert. Anything else (public_sale and friends, or no stage
-// data at all) may fall back. snake_case per the API, matched lowercased.
-const OPENSEA_ELIGIBILITY_ONLY_STAGES = new Set(['allowlist', 'gtd', 'fcfs', 'presale']);
+// Only explicitly public OpenSea stages may fall back to a known public on-chain mint call. Every
+// other named/unknown stage is fail-closed because it can require a wallet-specific Merkle proof or
+// project signature. This deliberately includes signed_presale and future stage names we have not
+// seen yet rather than silently treating them as public.
+const OPENSEA_PUBLIC_STAGES = new Set(['public', 'public_sale', 'publicsale', 'public_drop']);
+function needsOpenSeaEligibility(stageType) {
+  const type = String(stageType || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+  return !type || !OPENSEA_PUBLIC_STAGES.has(type);
+}
+
+function phaseAwareTask(task) {
+  // OpenSea currently supplies stage UUIDs, but the resolver also has a deliberately
+  // fail-closed label/type fallback for older persisted rows. Do not bypass phase gating merely
+  // because a legacy task predates UUID persistence: any OpenSea task with a bounded deadline and
+  // an identifiable phase must pass the same fresh live-phase check.
+  return Boolean(Number.isFinite(task?.eligibilityDeadline)
+    && (task.stageUuid || task.stageLabel || task.stageType));
+}
+
+function phaseName(stage) {
+  return stage?.label || telegramMenus.humanizeStageType(stage?.stageType) || 'selected';
+}
+
+function phaseIdentity(stage) {
+  if (!stage) return null;
+  if (stage.uuid) return `uuid:${stage.uuid}`;
+  return `legacy:${String(stage.stageType || '').toLowerCase()}:${String(stage.label || '').toLowerCase()}`;
+}
+
+function phaseTerminalError(decision) {
+  const messages = {
+    [DECISION_REASONS.DEADLINE_PASSED]: 'The eligibility window ended before this wallet could mint. Nothing was broadcast.',
+    [DECISION_REASONS.STAGE_REMOVED]: 'The selected mint phase is no longer available. Nothing was broadcast.',
+    [DECISION_REASONS.STAGE_AMBIGUOUS]: 'The selected mint phase can no longer be identified safely. Nothing was broadcast.',
+    [DECISION_REASONS.STAGE_ENDED]: 'The selected mint phase ended before this wallet could mint. Nothing was broadcast.',
+    [DECISION_REASONS.STAGE_INELIGIBLE]: 'This wallet is not eligible for the selected mint phase. Nothing was broadcast.',
+    [DECISION_REASONS.NO_LATER_STAGE]: 'No later eligible mint phase is available. Nothing was broadcast.',
+  };
+  return new ValidationError({ field:'contractAddress',
+    message:messages[decision.reason] || 'The selected mint phase could not be verified safely. Nothing was broadcast.' });
+}
+
+function phaseWaitError(decision) {
+  const nextStage = decision.nextStage || decision.targetStage || null;
+  const error = new Error(nextStage
+    ? `Waiting for the ${phaseName(nextStage)} phase to go live for this wallet.`
+    : 'Waiting to confirm the live mint phase for this wallet.');
+  error.code = SCHEDULE_PHASE_WAIT;
+  error.phaseDeferral = { retryAt:decision.retryAt, deadline:decision.deadline };
+  if (nextStage) Object.assign(error.phaseDeferral, {
+    stageUuid:nextStage.uuid ?? null, stageLabel:nextStage.label ?? null,
+    stageType:nextStage.stageType ?? null,
+  });
+  const phaseStart = Number(nextStage?.startAt
+    ?? (Number.isFinite(nextStage?.startTime) ? nextStage.startTime * 1_000 : null));
+  if (Number.isFinite(phaseStart) && phaseStart > (decision.checkedAt ?? Date.now())) {
+    // Keep the user-facing launch/reminder time stable at the advertised phase opening. Internal
+    // five/ten/sixty-second eligibility polls move only next_attempt_at, not mint_time.
+    error.phaseDeferral.mintTime = phaseStart;
+  }
+  return error;
+}
+
+function enforcePhaseDecision(decision) {
+  if (decision.status === 'ready') return decision;
+  if (decision.status === 'wait') throw phaseWaitError(decision);
+  throw phaseTerminalError(decision);
+}
+
+function enforceEligibilityDeadline(task, now = Date.now()) {
+  if (phaseAwareTask(task) && now >= task.eligibilityDeadline) {
+    throw phaseTerminalError({ reason:DECISION_REASONS.DEADLINE_PASSED });
+  }
+  return now;
+}
+
+async function refreshScheduledOpenSeaPhase(task, chain, expectedPhaseIdentity = null) {
+  enforceEligibilityDeadline(task);
+  const drop = await openSeaService.getDrop(chain, task.contract);
+  const decision = resolveScheduledPhase({ task, drop, now:Date.now() });
+  enforcePhaseDecision(decision);
+  enforceEligibilityDeadline(task);
+  if (expectedPhaseIdentity && phaseIdentity(decision.activeStage) !== expectedPhaseIdentity) {
+    const checkedAt = Date.now();
+    throw phaseWaitError({ ...decision, status:'wait',
+      retryAt:Math.min(checkedAt + 1_000, decision.deadline),
+      nextStage:decision.activeStage, checkedAt });
+  }
+  return { drop, decision };
+}
+
+async function refreshScheduledPublicPhase(task, chain, expectedPhaseIdentity = null) {
+  // A direct public mint does not need OpenSea to build its calldata, but the selected OpenSea UUID
+  // is still the only safe way to distinguish repeated/rescheduled public phases. OpenSea proves
+  // which advertised phase is active; SeaDrop's fresh PublicDrop proves the on-chain window/price.
+  const phase = await refreshScheduledOpenSeaPhase(task, chain, expectedPhaseIdentity);
+  if (needsOpenSeaEligibility(phase.decision.activeStage?.stageType
+    || phase.decision.activeStage?.label)) {
+    throw new ValidationError({ field:'contractAddress',
+      message:'This live phase needs wallet eligibility data. Nothing was broadcast.' });
+  }
+  const seaDrop = await seaDropDiscoveryService.resolve(chain, task.contract);
+  if (!seaDrop.address) {
+    throw new ValidationError({ field:'contractAddress',
+      message:'This public phase cannot be verified on chain. Nothing was broadcast.' });
+  }
+  const livePublicDrop = await seaDropPublicDropResolver.getPublicDrop(chain, seaDrop.address, task.contract);
+  if (!livePublicDrop) {
+    throw new ValidationError({ field:'contractAddress',
+      message:'The live public mint phase could not be verified. Nothing was broadcast.' });
+  }
+  const now = enforceEligibilityDeadline(task);
+  const startAt = Number(livePublicDrop.startTime) * 1_000;
+  const endAt = Number(livePublicDrop.endTime) * 1_000;
+  if (!Number.isFinite(startAt)) {
+    throw new ValidationError({ field:'contractAddress',
+      message:'The public mint start could not be verified. Nothing was broadcast.' });
+  }
+  const stage = { ...phase.decision.activeStage, startAt,
+    endAt:Number.isFinite(endAt) && endAt > 0 ? endAt : null };
+  if (now < startAt) {
+    if (startAt >= task.eligibilityDeadline) {
+      throw phaseTerminalError({ reason:DECISION_REASONS.DEADLINE_PASSED });
+    }
+    throw phaseWaitError({ status:'wait', retryAt:startAt, deadline:task.eligibilityDeadline,
+      nextStage:stage, checkedAt:now });
+  }
+  if (stage.endAt && now >= stage.endAt) {
+    throw phaseTerminalError({ reason:DECISION_REASONS.STAGE_ENDED });
+  }
+  return { ...phase, seaDrop, livePublicDrop, directPublic:true };
+}
 
 // Round 16 item A3 follow-through -- pre-arming scheduled mints. When SCHEDULE_PREARM_LEAD_MS is
-// set, the scheduler calls prearmScheduledTask that long before each imminent fire: account-status
-// enforcement, wallet resolution and SeaDrop discovery all happen while there is still time to
-// spare, so the fire moment itself starts closer to the broadcast. Deliberately NOT cached here:
+// set, the scheduler calls prearmScheduledTask that long before each imminent eligibility check:
+// account-status enforcement, wallet resolution and SeaDrop discovery all happen while there is
+// still time to spare. Deliberately NOT cached here:
 // calldata and the PublicDrop price/window. Both are read fresh at fire time by design --
 // SeaDrop's PublicDrop is a single mutable struct projects update exactly around launches (price
 // finalization!), and msg.value carrying a stale mint price could only buy an on-chain revert.
@@ -394,6 +521,27 @@ const schedulerWorker = createSchedulerWorker({
   transactionEngine,
   prearmLeadMs: CONFIG.schedulePrearmLeadMs,
   prearm: task => prearmScheduledTask(task),
+  // The stored timestamp is only the earliest wake-up. A phase-aware task reaches the execution
+  // path only after a fresh OpenSea snapshot says the intended (or later eligible) phase is
+  // actually active. Deferral happens before the "starting" notification and before any calldata
+  // is built, simulated, signed, or broadcast.
+  preflightTask: async task => {
+    if (task.viaOpenSea && !phaseAwareTask(task)) {
+      throw new ValidationError({ field:'stageUuid',
+        message:'This older schedule has no verified phase. Reschedule it before minting.' });
+    }
+    if (!phaseAwareTask(task)) return null;
+    const wallet = DB.wallets.find(item => item.userId === task.userId && item.label === task.walletLabel);
+    if (!wallet) return null;
+    const resolved = resolveTaskChain(task, CONFIG.supportedChains);
+    if (resolved.error) return null;
+    const chain = resolved.chain || wallet.chain;
+    if (!task.viaOpenSea) {
+      return refreshScheduledPublicPhase(task, chain);
+    }
+    const { drop, decision } = await refreshScheduledOpenSeaPhase(task, chain);
+    return { phaseDrop:drop, phaseDecision:decision };
+  },
   onStageNotOpen: chain => ensureChainWatcher(chain),
   // Answers "when does this task's stage actually open?" after the stage-not-open retry burst is
   // spent, so the worker can re-arm once instead of discarding a task that exists precisely to be
@@ -412,7 +560,10 @@ const schedulerWorker = createSchedulerWorker({
     const chain = resolved.chain || wallet.chain;
     if (task.viaOpenSea) {
       const drop = await openSeaService.getDrop(chain, task.contract);
-      const stage = drop?.stages?.find(item => item.label === task.name);
+      const stage = task.stageUuid
+        ? drop?.stages?.find(item => item.uuid === task.stageUuid)
+        : drop?.stages?.find(item => item.label === task.name
+          || (item.label && String(task.name || '').endsWith(`— ${item.label}`)));
       return stage?.startTime ? stage.startTime * 1_000 : null;
     }
     const seaDrop = await seaDropDiscoveryService.resolve(chain, task.contract);
@@ -444,17 +595,54 @@ const schedulerWorker = createSchedulerWorker({
         message: `this schedule was created for ${resolvedChain.error}, which this deployment no longer supports -- cancel it and reschedule on a supported chain` });
     }
     const executionChain = resolvedChain.chain || wallet.chain;
-    // Section AF -- an allowlist/GTD/FCFS stage this app has no on-chain proof for (see
-    // mintViaOpenSea); the drift preflight below doesn't apply here at all -- there is no on-chain
-    // PublicDrop for an OpenSea-scheduled task to drift against, since OpenSea's own backend
-    // resolves the live stage and eligibility itself, fresh, at this exact moment. A 409/422 from
-    // OpenSea IS the honest drift/ineligibility answer for this path, surfaced as a ValidationError
-    // (not in schedulerWorker's TRANSIENT_CODES, so it fails permanently rather than retrying
-    // against a wallet that will never become eligible by retrying alone).
+    // Section AF -- gated stages may require wallet-specific proof/signature data that is not
+    // derivable from the on-chain Merkle root. OpenSea's builder resolves that eligibility fresh.
+    // A phase-aware 409/422 therefore re-arms this same durable task within its deadline (and may
+    // advance earliest-eligible mode to a later stage); it never falls back to guessed calldata.
     const qty = task.qty || 1;
     if (task.viaOpenSea) {
-      const built = await openSeaService.buildMintTransaction(executionChain, task.contract, wallet.address, qty);
+      let built;
+      try {
+        built = await openSeaService.buildMintTransaction(executionChain, task.contract, wallet.address, qty);
+      } catch (error) {
+        if (phaseAwareTask(task) && ['WALLET_NOT_ELIGIBLE','STAGE_NOT_OPEN'].includes(error?.code)) {
+          // OpenSea has answered the wallet-specific question the global phase list cannot: this
+          // address is not eligible for the active gated phase. In earliest-eligible mode, advance
+          // durably to the next advertised phase (normally Public) and ask again only once it is
+          // truly live. Specific-stage tasks fail closed instead.
+          const drop = await openSeaService.getDrop(executionChain, task.contract);
+          let decision = resolveScheduledPhase({ task, drop, now:Date.now(),
+            ineligibleStage:error.code === 'WALLET_NOT_ELIGIBLE'
+              ? (hooks.preflight?.phaseDecision?.activeStage || drop?.activeStage) : null });
+          // OpenSea can return 409 for the few seconds between its drop status and mint-builder
+          // service converging. Even when the refreshed snapshot already reads live, keep the same
+          // task durably polling within its deadline instead of falling into the old six-shot burst.
+          if (decision.status === 'ready') {
+            const checkedAt = Date.now();
+            decision = { ...decision, status:'wait', retryAt:Math.min(checkedAt + 1_000, decision.deadline),
+              nextStage:decision.activeStage, checkedAt };
+          }
+          enforcePhaseDecision(decision);
+        }
+        throw error;
+      }
       if (built) {
+        let expectedPhaseIdentity = null;
+        if (phaseAwareTask(task)) {
+          // Close the check/build race: stage state can change while OpenSea constructs the
+          // wallet-specific call. Refresh once more immediately before handing calldata to the
+          // transaction engine; simulation remains the final on-chain enforcement before send.
+          const { decision:latestDecision } = await refreshScheduledOpenSeaPhase(task, executionChain);
+          const builtFor = hooks.preflight?.phaseDecision?.activeStage;
+          if (builtFor && phaseIdentity(builtFor) !== phaseIdentity(latestDecision.activeStage)) {
+            // A later phase became active while calldata was being built. Re-arm immediately and
+            // rebuild for that phase; never submit calldata prepared under a different phase.
+            throw phaseWaitError({ ...latestDecision, status:'wait',
+              retryAt:Math.min(Date.now() + 1_000, latestDecision.deadline),
+              nextStage:latestDecision.activeStage, checkedAt:Date.now() });
+          }
+          expectedPhaseIdentity = phaseIdentity(latestDecision.activeStage);
+        }
         // Same check executeMintViaOpenSea applies to the manual path -- OpenSea's eligibility
         // resolution is trusted, the mechanical shape of what it returned still is not.
         validateOpenSeaMintCall({ built, contractAddress: task.contract, quantity: qty, minterAddress: wallet.address });
@@ -462,10 +650,20 @@ const schedulerWorker = createSchedulerWorker({
           method: { signature: 'opensea:drops-mint' }, preview: { contractAddress: task.contract, callTarget: built.to } };
         return mintExecution.executePrepared({ userId: task.userId, wallet, prepared, triggerSource: 'scheduled',
           idempotencyKey: hooks.idempotencyKey, onIntentPersisted: hooks.onIntentPersisted,
+          preBroadcastGuard: expectedPhaseIdentity
+            ? () => refreshScheduledOpenSeaPhase(task, executionChain, expectedPhaseIdentity)
+            : undefined,
           onPreview: preview => notifyUser(task.userId, formatMintPreview(preview)) });
       }
-      // OpenSea couldn't serve calldata at all. Only its definitive eligibility answers (409/422)
-      // throw inside buildMintTransaction; null means "no calldata available": the contract isn't
+      if (phaseAwareTask(task)) {
+        // The drop was verified live by preflight, but the builder itself was temporarily
+        // unavailable. Never downgrade a phase-aware task to guessed public calldata; preserve the
+        // same task/idempotency key and poll again until its bounded eligibility deadline.
+        const decision = resolveScheduledPhase({ task, drop:null, now:Date.now() });
+        enforcePhaseDecision(decision);
+      }
+      // OpenSea couldn't serve calldata at all. Its definitive eligibility answers (409/422) throw
+      // inside buildMintTransaction and are handled above; null means "no calldata available": the contract isn't
       // indexed by OpenSea at all ("Contract ... not found" on the slug lookup), resolves as a bare
       // collection with no /drops/{slug}/mint behind it, or OpenSea itself is unreachable. All three
       // used to fail the task permanently right here -- the dominant cause of production's
@@ -478,9 +676,8 @@ const schedulerWorker = createSchedulerWorker({
       // Gated if the task was CREATED against an eligibility-only stage (stored at schedule time --
       // the only signal left when OpenSea is unreachable for the live check too) or if the stage
       // OpenSea currently reports as active is one of them.
-      const taskGated = OPENSEA_ELIGIBILITY_ONLY_STAGES.has(String(task.stageType || '').toLowerCase());
-      const activeGated = Boolean(live?.activeStage
-        && OPENSEA_ELIGIBILITY_ONLY_STAGES.has(String(live.activeStage.stageType || '').toLowerCase()));
+      const taskGated = Boolean(task.stageType && needsOpenSeaEligibility(task.stageType));
+      const activeGated = Boolean(live?.activeStage && needsOpenSeaEligibility(live.activeStage.stageType));
       if (taskGated || activeGated) {
         const stageName = live?.activeStage
           ? (live.activeStage.label || telegramMenus.humanizeStageType(live.activeStage.stageType))
@@ -490,34 +687,44 @@ const schedulerWorker = createSchedulerWorker({
       }
       log(`Scheduled OpenSea-backed task "${task.name}" (${executionChain}:${task.contract}) falling back to on-chain calldata: OpenSea could not serve a mint`);
     }
-    // Phase-drift preflight: the schedule was set against whatever SeaDrop's PublicDrop said at
-    // scheduling time (or a hand-typed phase-2+ price/time -- Section AF, since nothing on-chain
-    // describes a stage that isn't live yet). If the project has since moved the live window --
-    // delayed it, cut it short, replaced it with the next phase -- blindly broadcasting either
-    // wastes real gas on a doomed revert (simulation-off transaction modes) or surfaces a generic
-    // on-chain revert instead of the real story (simulation-on modes). Read live, not from
-    // seaDropDiscoveryService's cached snapshot, since the whole point is catching drift since that
-    // snapshot was taken; a non-SeaDrop contract has no on-chain window concept to check at all.
-    // This same fresh read is handed straight to prepareMintCall below -- it used to read
-    // PublicDrop a SECOND time itself, an identical serial RPC round trip back to back with this
-    // one; one read serves both the drift gate and the calldata value.
-    const seaDrop = await seaDropDiscoveryService.resolve(executionChain, task.contract);
-    let livePublicDrop = null;
-    if (seaDrop.address) {
-      livePublicDrop = await seaDropPublicDropResolver.getPublicDrop(executionChain, seaDrop.address, task.contract);
-      if (livePublicDrop) {
-        const nowSec = Math.floor(Date.now() / 1000);
-        if (nowSec < livePublicDrop.startTime) {
-          // Early: the contract is not yet open, but may open seconds later (the advertised T
-          // vs real T+2s competitive case). Treat as transient like an OpenSea STAGE_NOT_OPEN
-          // so the scheduler retries every block instead of failing permanently.
-          throw new ValidationError({ field: 'mintTime', message: `This mint has not opened yet (opens ${new Date(livePublicDrop.startTime * 1000).toISOString()}).`, code: 'STAGE_NOT_OPEN' });
+    let seaDrop;
+    let livePublicDrop;
+    let expectedPublicPhaseIdentity = null;
+    if (phaseAwareTask(task) && !task.viaOpenSea) {
+      // Refresh both halves again after the start notification: OpenSea pins the selected public
+      // phase UUID, while the contract supplies the authoritative live PublicDrop window/price.
+      const refreshed = await refreshScheduledPublicPhase(task, executionChain,
+        phaseIdentity(hooks.preflight?.phaseDecision?.activeStage));
+      seaDrop = refreshed.seaDrop;
+      livePublicDrop = refreshed.livePublicDrop;
+      expectedPublicPhaseIdentity = phaseIdentity(refreshed.decision.activeStage);
+    } else {
+      // Legacy/non-phase task behavior: protect against a moved SeaDrop window even though there is
+      // no persisted OpenSea phase UUID to pin. Phase-aware tasks use the stricter branch above.
+      // Read live, not from seaDropDiscoveryService's cached snapshot -- the whole point is catching
+      // drift since that snapshot was taken. This same fresh read is handed straight to
+      // prepareMintCall below, so one read serves both the drift gate and the calldata value.
+      seaDrop = hooks.preflight?.seaDrop
+        || await seaDropDiscoveryService.resolve(executionChain, task.contract);
+      livePublicDrop = hooks.preflight?.livePublicDrop || null;
+      if (seaDrop.address) {
+        if (!livePublicDrop) {
+          livePublicDrop = await seaDropPublicDropResolver.getPublicDrop(executionChain, seaDrop.address, task.contract);
         }
-        if (livePublicDrop.endTime && nowSec > livePublicDrop.endTime) {
-          const from = new Date(livePublicDrop.startTime * 1000).toISOString();
-          const to = new Date(livePublicDrop.endTime * 1000).toISOString();
-          throw new TransactionSafetyError('SCHEDULE_DRIFT',
-            `This drop's live mint window no longer matches what you scheduled -- it currently runs ${from} to ${to}, which does not include right now. The project likely changed their schedule; check the contract and reschedule if needed.`);
+        if (livePublicDrop) {
+          const nowSec = Math.floor(Date.now() / 1000);
+          if (nowSec < livePublicDrop.startTime) {
+            // Early: the contract is not yet open, but may open seconds later (the advertised T
+            // vs real T+2s competitive case). Treat as transient like an OpenSea STAGE_NOT_OPEN
+            // so the scheduler retries every block instead of failing permanently.
+            throw new ValidationError({ field: 'mintTime', message: `This mint has not opened yet (opens ${new Date(livePublicDrop.startTime * 1000).toISOString()}).`, code: 'STAGE_NOT_OPEN' });
+          }
+          if (livePublicDrop.endTime && nowSec > livePublicDrop.endTime) {
+            const from = new Date(livePublicDrop.startTime * 1000).toISOString();
+            const to = new Date(livePublicDrop.endTime * 1000).toISOString();
+            throw new TransactionSafetyError('SCHEDULE_DRIFT',
+              `This drop's live mint window no longer matches what you scheduled -- it currently runs ${from} to ${to}, which does not include right now. The project likely changed their schedule; check the contract and reschedule if needed.`);
+          }
         }
       }
     }
@@ -530,10 +737,24 @@ const schedulerWorker = createSchedulerWorker({
     return mintExecution.executePrepared({ userId:task.userId, wallet, prepared, triggerSource:'scheduled',
       gasPriceWei:request.gasGwei === null ? undefined : ethers.parseUnits(String(request.gasGwei), 'gwei'),
       idempotencyKey:hooks.idempotencyKey, onIntentPersisted:hooks.onIntentPersisted,
+      preBroadcastGuard: expectedPublicPhaseIdentity
+        ? () => refreshScheduledPublicPhase(task, executionChain, expectedPublicPhaseIdentity)
+        : undefined,
       onPreview:preview => notifyUser(task.userId, formatMintPreview(preview)) });
   },
   notify: async event => {
     const wallet = DB.wallets.find(item => item.userId === event.task.userId && item.label === event.task.walletLabel);
+    if (event.phaseWait) {
+      const cached = DB.tasks.find(item => item.userId === event.task.userId && item.id === event.task.id);
+      if (cached) Object.assign(cached, event.task);
+    }
+    // The repository has already persisted each of these states before notify() is called. Publish
+    // the durable-list invalidation first, before activity writes or Telegram/Discord delivery:
+    // those secondary operations may fail, but they must never leave the dashboard showing an old
+    // task state. WebSocket delivery itself is synchronous and safely no-ops for disconnected users.
+    if (['starting','retry','success','failure','failed'].includes(event.outcome)) {
+      dashboardWebSockets.broadcastToUser(event.task.userId, {type:'tasks.changed'});
+    }
     if (event.outcome === 'starting') {
       dashboardWebSockets.broadcastToUser(event.task.userId, { type:'task.starting',
         taskId:event.task.id, name:event.task.name, walletLabel:event.task.walletLabel });
@@ -570,20 +791,17 @@ ${escapeTelegramHtml(detail)}` : '';
       await notifyUser(event.task.userId, `❌ Scheduled mint <b>${escapeTelegramHtml(event.task.name)}</b> failed.${reason}`);
       // Carries the id so the dashboard can offer Retry on the notification itself rather than
       // sending the user back to the Schedule tab to find the row. A revert has no event.error by
-      // design, so it gets the on-chain wording rather than an empty string.
+      // design, so it gets the on-chain wording rather than an empty string. retryable tells the
+      // bell which action to offer: Retry while attempts remain, otherwise Reschedule -- offering
+      // Retry on an exhausted task would only earn a server refusal.
       dashboardWebSockets.broadcastToUser(event.task.userId, {type:'task.failed',
-        taskId:event.task.id, name:event.task.name, reason: detail || 'transaction reverted on chain'});
-      // task.failed is the NOTIFICATION. This is the LIST refresh, and they are not the same thing:
-      // every schedule list, status count and nav badge listens for tasks.changed, and nothing was
-      // sending it from here. So a scheduled mint could fire, fail, and the dashboard would still
-      // show it as pending until the user navigated away and back -- on the one screen whose whole
-      // claim is that it is live.
-      dashboardWebSockets.broadcastToUser(event.task.userId, {type:'tasks.changed'});
+        taskId:event.task.id, name:event.task.name, reason: detail || 'transaction reverted on chain',
+        retryable: Number(event.task.attemptCount||0) < Number(event.task.maxAttempts||0),
+        contract: event.task.contract || null});
     }
     if (event.outcome === 'success') {
       dashboardWebSockets.broadcastToUser(event.task.userId, {type:'task.succeeded',
         taskId:event.task.id, name:event.task.name});
-      dashboardWebSockets.broadcastToUser(event.task.userId, {type:'tasks.changed'});
     }
   },
   log,
@@ -604,6 +822,8 @@ ${escapeTelegramHtml(detail)}` : '';
 //
 // Deliberately compares against the mint VALUE only (price × quantity), not value + gas. That makes
 // it a lower bound: falling short of it is certain failure, so the warning is never a false alarm.
+// For phase-aware OpenSea tasks, refresh the selected stage's advertised price instead of trusting
+// the zero placeholder stored for builder-backed calldata.
 // A wallet that clears this bar can still fail on gas, which is the failure notification's job.
 //
 // Delivery bookkeeping is held in memory. A restart can therefore re-remind a task once, which is
@@ -659,7 +879,22 @@ const scheduledReminder = createScheduledReminder({
     } catch { return false; }
   },
   cancelTask: task => botCommands.controlTask(task.userId, 'cancel', task.id),
-  calculateNeededWei: task => ethers.parseEther(String((Number(task.price) || 0) * (Number(task.qty) || 1))),
+  calculateNeededWei: async (task, wallet) => {
+    if (phaseAwareTask(task)) {
+      try {
+        const resolved = resolveTaskChain(task, CONFIG.supportedChains);
+        const drop = await openSeaService.getDrop(resolved.chain || wallet.chain, task.contract);
+        const stages = [...(drop?.stages || []), drop?.activeStage, drop?.nextStage].filter(Boolean);
+        const stage = task.stageUuid
+          ? stages.find(item => item.uuid === task.stageUuid)
+          : stages.find(item => item.label === task.stageLabel && item.stageType === task.stageType);
+        if (stage?.priceWei !== null && stage?.priceWei !== undefined) {
+          return BigInt(stage.priceWei) * BigInt(Number(task.qty) || 1);
+        }
+      } catch { /* Unknown price degrades to the ordinary reminder; execution rechecks it. */ }
+    }
+    return ethers.parseEther(String((Number(task.price) || 0) * (Number(task.qty) || 1)));
+  },
   getBalance: wallet => providerService.perform(wallet.chain, 'lowBalanceCheck', provider => provider.getBalance(wallet.address)),
   formatWei: value => ethers.formatEther(value),
   escape: escapeTelegramHtml,
@@ -721,7 +956,8 @@ async function recordMintActivity({ userId, wallet, quantity, intent, chain }) {
   wallet.minted = (wallet.minted || 0) + quantity;
   await storage.updateWalletMinted(userId, wallet.label, wallet.minted);
   await logActivity(userId, 'success', `Minted ${quantity} NFT${quantity === 1 ? '' : 's'}`,
-    wallet.label, intent, CHAINS[chain], { triggerSource: 'manual' });
+    wallet.label, intent, CHAINS[chain], { triggerSource: intent?.triggerSource || 'manual',
+      address: intent?.callPreview?.contractAddress || intent?.to || null });
   await autoRecordPnl({ userId, wallet, quantity, intent });
 }
 
@@ -1386,6 +1622,7 @@ function renderFlowStep(flow, step, { userId, data = {} } = {}) {
         displayPrice: data.displayPrice,
         phaseNumber: data.phaseNumber,
         viaOpenSea: data.viaOpenSea,
+        phaseAware: Boolean(data.eligibilityDeadline),
       });
     }
   }
@@ -1920,14 +2157,31 @@ function openSeaPhaseTaskName(mintFlowData, stage) {
   const phase = stage.label || telegramMenus.humanizeStageType(stage.stageType);
   return mintFlowData.collection?.name ? `${mintFlowData.collection.name} — ${phase}` : phase;
 }
+function openSeaPhaseEligibilityDeadline(mintFlowData, stage) {
+  const startTime = Number(stage.startTime);
+  const cap = startTime + 24 * 60 * 60;
+  const advertisedEnds = (mintFlowData.drop?.stages || [])
+    .filter(candidate => Number(candidate.startTime) >= startTime)
+    .map(candidate => Number(candidate.endTime))
+    .filter(endTime => Number.isFinite(endTime) && endTime > startTime);
+  const latest = advertisedEnds.length ? Math.max(...advertisedEnds) : cap;
+  return new Date(Math.min(latest, cap) * 1000).toISOString();
+}
 function openSeaPhaseTaskData(mintFlowData, stage) {
+  const viaOpenSea = !mintFlowData.isSeaDrop || needsOpenSeaEligibility(stage.stageType);
+  const detectedPrice = stage.priceWei !== null && stage.priceWei !== undefined
+    ? Number(ethers.formatEther(BigInt(stage.priceWei)))
+    : (Number.isFinite(stage.priceETH) ? stage.priceETH : undefined);
   return {
     contractAddress: mintFlowData.contractAddress, chain: mintFlowData.chain, isSeaDrop: mintFlowData.isSeaDrop,
-    priceETH: 0, priceUnknown: false, viaOpenSea: true, collection: mintFlowData.collection,
-    stageType: stage.stageType || null,
+    priceETH: viaOpenSea ? 0 : detectedPrice, priceUnknown: !viaOpenSea && detectedPrice === undefined,
+    viaOpenSea, collection: mintFlowData.collection,
+    stageUuid: stage.uuid || null, stageLabel: stage.label || null, stageType: stage.stageType || null,
+    eligibilityMode: viaOpenSea ? 'earliest_eligible' : 'specific_stage',
+    eligibilityDeadline: openSeaPhaseEligibilityDeadline(mintFlowData, stage),
     mintTime: new Date(stage.startTime * 1000).toISOString(),
     name: openSeaPhaseTaskName(mintFlowData, stage),
-    maxPerWallet: mintFlowData.maxPerWallet,
+    maxPerWallet: stage.maxPerWallet ?? mintFlowData.maxPerWallet,
   };
 }
 
@@ -1958,7 +2212,7 @@ async function advanceFromTaskWallet(chatId, messageId, userId, flow, walletLabe
     telegramFlowState.advance('telegram', chatId, 'awaiting_price', data);
     return tgUpdate(chatId, messageId, renderFlowStep('task_guided', 'awaiting_price', { userId, data }));
   }
-  if (data.viaOpenSea && data.name) {
+  if (data.eligibilityDeadline && data.name) {
     telegramFlowState.advance('telegram', chatId, 'awaiting_confirm', data);
     return tgUpdate(chatId, messageId, renderFlowStep('task_guided', 'awaiting_confirm', { userId, data }));
   }
@@ -1973,12 +2227,15 @@ async function finishTaskSchedule(chatId, messageId, userId, flowData) {
     const task = await botCommands.createTask(userId, {
       name: flowData.name, walletLabel: flowData.walletLabel, contractAddress: flowData.contractAddress,
       chain: flowData.chain, quantity: flowData.quantity || 1, priceETH: flowData.priceETH, mintTime: flowData.mintTime,
-      viaOpenSea: flowData.viaOpenSea, stageType: flowData.stageType,
+      viaOpenSea: flowData.viaOpenSea, stageUuid: flowData.stageUuid, stageLabel: flowData.stageLabel,
+      stageType: flowData.stageType, eligibilityMode: flowData.eligibilityMode,
+      eligibilityDeadline: flowData.eligibilityDeadline,
     });
     telegramFlowState.clear('telegram', chatId);
     return tgUpdate(chatId, messageId, telegramMenus.taskScheduled({
       id: task.id, name: task.name, contractAddress: flowData.contractAddress,
-      mintTime: new Date(task.mintTime).toISOString(), phaseNumber: flowData.phaseNumber, viaOpenSea: task.viaOpenSea,
+      mintTime: new Date(task.mintTime).toISOString(), phaseNumber: flowData.phaseNumber,
+      viaOpenSea: task.viaOpenSea, phaseAware:Boolean(task.eligibilityDeadline),
     }));
   } catch (error) {
     if (error instanceof RateLimitError) {

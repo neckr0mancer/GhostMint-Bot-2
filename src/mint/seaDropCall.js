@@ -14,6 +14,17 @@ const ARCHETYPE_INTERFACE = new Interface([
 const ARCHETYPE_PUBLIC_KEY = `0x${'00'.repeat(32)}`;
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 
+// SeaDrop v1's finite set of wallet-callable gated mint shapes, taken from OpenSea's canonical
+// ISeaDrop/SeaDrop contracts. OpenSea's mint builder can return any of these depending on the
+// active stage. Keeping the complete tuple components here is important: ethers derives the exact
+// selector from them, so a look-alike/custom function cannot enter through this validator.
+const SEADROP_GATED_INTERFACE = new Interface([
+  'function mintAllowList(address nftContract,address feeRecipient,address minterIfNotPayer,uint256 quantity,(uint256 mintPrice,uint256 maxTotalMintableByWallet,uint256 startTime,uint256 endTime,uint256 dropStageIndex,uint256 maxTokenSupplyForStage,uint256 feeBps,bool restrictFeeRecipients) mintParams,bytes32[] proof) payable',
+  'function mintSigned(address nftContract,address feeRecipient,address minterIfNotPayer,uint256 quantity,(uint256 mintPrice,uint256 maxTotalMintableByWallet,uint256 startTime,uint256 endTime,uint256 dropStageIndex,uint256 maxTokenSupplyForStage,uint256 feeBps,bool restrictFeeRecipients) mintParams,uint256 salt,bytes signature) payable',
+  'function mintAllowedTokenHolder(address nftContract,address feeRecipient,address minterIfNotPayer,(address allowedNftToken,uint256[] allowedNftTokenIds) mintParams) payable',
+]);
+const SEADROP_GATED_METHODS = Object.freeze(['mintAllowList', 'mintSigned', 'mintAllowedTokenHolder']);
+
 function invalid(field, message) { throw new ValidationError({ field, message }); }
 
 function resolveAddress(value, field, walletAddress) {
@@ -164,12 +175,75 @@ function decodeArchetypeMintCall({ built, contractAddress, minterAddress }) {
   };
 }
 
+function enforceSeaDropMinter(minterIfNotPayer, minterAddress) {
+  if (!isAddress(minterAddress)) invalid('walletAddress', 'must be a valid Ethereum address');
+  if (!isAddress(minterIfNotPayer)) invalid('calldata', 'contains an invalid SeaDrop mint recipient');
+  // SeaDrop defines zero as "the payer (msg.sender) is also the minter". The transaction is signed
+  // by minterAddress, so zero and that exact address are the only safe encodings for this request.
+  if (minterIfNotPayer.toLowerCase() !== ZERO_ADDRESS
+    && minterIfNotPayer.toLowerCase() !== minterAddress.toLowerCase()) {
+    invalid('walletAddress', "OpenSea's calldata sends the mint to a different wallet -- refusing to sign");
+  }
+  return minterAddress;
+}
+
+function decodeSeaDropGatedMintCall({ built, method, minterAddress }) {
+  if (!isAddress(built?.to)) invalid('calldata', 'contains an invalid SeaDrop call target');
+  if (typeof built?.data !== 'string' || !/^0x(?:[0-9a-fA-F]{2})*$/.test(built.data)
+    || built.data.length < 10) invalid('calldata', 'must be encoded hexadecimal function calldata');
+  let decoded;
+  try { decoded = SEADROP_GATED_INTERFACE.decodeFunctionData(method, built.data); }
+  catch { invalid('calldata', `could not be decoded as SeaDrop ${method}`); }
+
+  const [nftContract, feeRecipient, minterIfNotPayer] = decoded;
+  const minter = enforceSeaDropMinter(minterIfNotPayer, minterAddress);
+  const mintParams = method === 'mintAllowedTokenHolder' ? decoded[3] : decoded[4];
+  const qty = method === 'mintAllowedTokenHolder'
+    ? BigInt(mintParams.allowedNftTokenIds.length)
+    : BigInt(decoded[3]);
+  const value = nativeValue(built.valueWei);
+  const authorization = method === 'mintAllowList'
+    ? { name:'proof', type:'bytes32[]', value:decoded[5].length
+      ? `proof present (${decoded[5].length} item${decoded[5].length === 1 ? '' : 's'})` : 'empty proof' }
+    : method === 'mintSigned'
+      ? { name:'signature', type:'bytes', value:decoded[6] === '0x' ? 'empty signature' : 'signature present' }
+      : { name:'allowedTokenIds', type:'uint256[]', value:`${mintParams.allowedNftTokenIds.length} token ID${mintParams.allowedNftTokenIds.length === 1 ? '' : 's'}` };
+
+  return {
+    contractAddress:nftContract,
+    callTarget:built.to,
+    methodSignature:SEADROP_GATED_INTERFACE.getFunction(method).format('sighash'),
+    standard:method === 'mintAllowList' ? 'SeaDrop allowlist'
+      : method === 'mintSigned' ? 'SeaDrop signed mint' : 'SeaDrop token-gated mint',
+    arguments:[
+      { name:'nftContract', type:'address', value:nftContract },
+      { name:'feeRecipient', type:'address', value:feeRecipient },
+      { name:'minter', type:'address', value:minter },
+      { name:'quantity', type:'uint256', value:qty.toString() },
+      authorization,
+    ],
+    nativeValueWei:value.toString(),
+    nativeValue:formatEther(value),
+  };
+}
+
 function validateOpenSeaMintCall({ built, contractAddress, quantity: expectedQuantity, minterAddress }) {
+  if (!isAddress(contractAddress)) invalid('contractAddress', 'must be a valid Ethereum address');
+  if (!isAddress(minterAddress)) invalid('walletAddress', 'must be a valid Ethereum address');
   const selector = String(built?.data || '').slice(0, 10).toLowerCase();
   const seaDropSelector = SEADROP_CORE_INTERFACE.getFunction('mintPublic').selector.toLowerCase();
+  const gatedMethod = SEADROP_GATED_METHODS.find(method => (
+    SEADROP_GATED_INTERFACE.getFunction(method).selector.toLowerCase() === selector
+  ));
   const decoded = selector === seaDropSelector
     ? decodeSeaDropMintCall({ contractAddress: built.to, seaDropAddress: built.to, calldata: built.data, valueWei: built.valueWei })
-    : decodeArchetypeMintCall({ built, contractAddress, minterAddress });
+    : gatedMethod
+      ? decodeSeaDropGatedMintCall({ built, method:gatedMethod, minterAddress })
+      : decodeArchetypeMintCall({ built, contractAddress, minterAddress });
+  if (selector === seaDropSelector) {
+    const encodedMinter = decoded.arguments.find(arg => arg.name === 'minterIfNotPayer')?.value;
+    enforceSeaDropMinter(encodedMinter, minterAddress);
+  }
   if (decoded.contractAddress.toLowerCase() !== contractAddress.toLowerCase()) {
     invalid('contractAddress', "OpenSea's calldata targets a different contract than requested -- refusing to sign");
   }
@@ -181,4 +255,5 @@ function validateOpenSeaMintCall({ built, contractAddress, quantity: expectedQua
 }
 
 module.exports = { ARCHETYPE_INTERFACE, ARCHETYPE_PUBLIC_KEY, buildPublicArchetypeMintCall,
-  buildSeaDropMintCall, computeSeaDropValueWei, decodeSeaDropMintCall, validateOpenSeaMintCall };
+  SEADROP_GATED_INTERFACE, buildSeaDropMintCall, computeSeaDropValueWei, decodeSeaDropMintCall,
+  validateOpenSeaMintCall };
