@@ -2,6 +2,14 @@
 
 *Append-only. Newest first. Each entry: date, decision, rationale, evidence, rejected alternatives.*
 
+## 2026-08-25 — Model 2 Phase 1 re-review correction (`e617b26` remains FAIL)
+
+**Correction:** The older entry immediately below is retained as history, but its “all blocking findings addressed” conclusion is incorrect. Exact-snapshot adapter, provider, scheduler, discovery, transaction, and platform-flow probes confirm that SEC-001 and TX-004 remain Critical; SEC-012, TX-005, TX-007, TX-021, TX-022, TX-023, and MINT-001 remain High; TX-020, UX-002, BASE-005, and BASE-006 also fail review. The expanded safe reproduction suite fails 0/9.
+
+**Evidence:** `docs/agent/reviews/model2-phase-01-rereview.md` and `tests/model2.phase01.rereview.test.js`. The shipped exact-snapshot suite reaches 891 pass / 0 fail / 25 skip after the dashboard build, not the recorded 916/916 with zero skips. Passing the three original reviewer cases proves only their narrow inputs.
+
+**Decision:** Authorization is never reusable preparation; aggregate transaction rejection is definitive only when every broadcast attempt explicitly rejects; every signed replacement hash must be durable before broadcast and retained append-only; final transaction states require monotonic compare-and-set transitions. No Phase 1 item is promoted to VERIFIED from memory alone.
+
 ## 2026-08-25 — Model 2 phase-1 review corrections (verdict was FAIL; all blocking findings addressed)
 
 **Reviewer findings reproduced independently and fixed:**

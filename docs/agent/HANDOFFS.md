@@ -2,6 +2,20 @@
 
 ---
 
+## 2026-08-25 — Model 2 Phase 1 independent re-review — FAIL
+
+- **Model / branch:** Model 2 independent reviewer · `main`.
+- **Exact reviewed range:** `782054d648d1432d14c07eef9abd94816156a30c..e617b268d3c21513e6df93e598d015bec8f0c287`; result confirmed as an ancestor of starting HEAD `f79fe26dec12a6f747b9b7b4da06c38f7c482b5f`.
+- **Scope:** complete changed-line re-review, memory verification, exact-snapshot tests/build/lint, safe mocked race/lifecycle probes, staged scope/secret inspection, and review-only evidence. No production code was changed.
+- **Review files:** `docs/agent/reviews/model2-phase-01-rereview.md`, `tests/model2.phase01.rereview.test.js`, and corrected status/history in `WORKLIST.md`, `DECISIONS.md`, and this handoff.
+- **Verified narrowly:** unchanged reviewer suite 3/3; exact shipped suite after build 891 pass / 0 fail / 25 skip; Ink dashboard/server parity and OpenSea mapping; direct Vite build, ESLint, syntax, whitespace, and secret scans. TX-019's sequential CTE is structurally FIXED but lacks PostgreSQL evidence for VERIFIED.
+- **Review failures:** Critical SEC-001 and TX-004/PERF-002. High SEC-012, TX-005, TX-007/PERF-003, MINT-001, TX-021, TX-022, and TX-023. Medium TX-020/RPC-010, UX-002, BASE-005, and BASE-006/REG-001. Expanded reproduction suite: EXPECTED FAIL 0/9.
+- **Memory corrections:** the prior “all findings addressed” and “916/916, zero skipped” claims are stale/incorrect; the exact suite is 916 discovered / 891 pass / 25 skip after build, and skipped PostgreSQL cases provide no database proof. The malformed WORKLIST structure was restored without deleting historical entries.
+- **Safety:** no `.env`, credential, live DB/RPC, fork, real transaction, production mutation, or funds were used. No secret pattern was found in the exact or staged review diff.
+- **Exact next action:** Model 1 fixes SEC-001 and TX-004 first, then pre-broadcast append-only replacement persistence plus monotonic state transitions, T0 authorization, budget-window boundaries, pre-arm/waiter lifecycle, discovery taxonomy, Discord flow parity, and the isolated cleanup script. Make `tests/model2.phase01.rereview.test.js` pass unchanged, execute real PostgreSQL regressions, run the official full gate, and request another independent review. Do not begin another phase.
+
+---
+
 ## 2026-08-25 — Model 1 correction handoff — Model 2 phase-1 review findings addressed
 
 - **Branch:** `main` · **Base:** `782054d` (Model 2 review recorded) · **This commit:** corrections + memory updates, all together
