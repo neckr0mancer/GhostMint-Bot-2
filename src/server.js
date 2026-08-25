@@ -786,9 +786,13 @@ ${escapeTelegramHtml(detail)}` : '';
       await notifyUser(event.task.userId, `❌ Scheduled mint <b>${escapeTelegramHtml(event.task.name)}</b> failed.${reason}`);
       // Carries the id so the dashboard can offer Retry on the notification itself rather than
       // sending the user back to the Schedule tab to find the row. A revert has no event.error by
-      // design, so it gets the on-chain wording rather than an empty string.
+      // design, so it gets the on-chain wording rather than an empty string. retryable tells the
+      // bell which action to offer: Retry while attempts remain, otherwise Reschedule -- offering
+      // Retry on an exhausted task would only earn a server refusal.
       dashboardWebSockets.broadcastToUser(event.task.userId, {type:'task.failed',
-        taskId:event.task.id, name:event.task.name, reason: detail || 'transaction reverted on chain'});
+        taskId:event.task.id, name:event.task.name, reason: detail || 'transaction reverted on chain',
+        retryable: Number(event.task.attemptCount||0) < Number(event.task.maxAttempts||0),
+        contract: event.task.contract || null});
     }
     if (event.outcome === 'success') {
       dashboardWebSockets.broadcastToUser(event.task.userId, {type:'task.succeeded',

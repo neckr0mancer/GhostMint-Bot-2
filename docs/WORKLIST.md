@@ -1109,6 +1109,14 @@ degraded form in the meantime.
    history.html's "Contract, hash, wallet…" — kept truthful rather than over-promising (found
    2026-08-22 during the History fidelity pass). Extending the WHERE clause to both columns is a
    small backend change; once it lands, update the placeholder copy.
+5b. **Dashboard cannot mint a gated SeaDrop stage with a user-supplied proof.** Allowlist stages
+   go through OpenSea's builder, which fetches the proof OpenSea holds — "not eligible" genuinely
+   means the wallet isn't on that list, so the dashboard shows no proof box (a placebo would
+   silently do nothing; owner agreed 2026-08-25). Manual proofs work today only via Telegram
+   `/mintcall` (`mintService.prepare` accepts `proofUrl`/manual authorization). Closing the gap
+   needs: local `mintAllowList`/`mintSigned` calldata construction (seaDropCall currently
+   decode/validates only), preview/confirm acceptance of a pasted proof or proof URL, and — for
+   scheduled tasks — persisting the proof against the task row. Owner to scope before build.
 6. **`pnl_records` has no wallet column**, so per-wallet performance cannot be computed —
    Performance is account-level in the redesign (contract §5.9). Also `activity` has no chain or
    mint-value column, so the activity feed shows gas only and derives its chain dot from the
