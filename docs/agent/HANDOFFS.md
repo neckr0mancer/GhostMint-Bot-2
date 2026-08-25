@@ -2,6 +2,19 @@
 
 ---
 
+## 2026-08-25 (latest) — Model 2 — independent review of `2aa05c2..1d99936`
+
+- **Branch:** `main` · **Reviewed result:** `1d999366f20ef34ac5809099a3bb5f3fd95cb2d2` (ancestor of current HEAD) · **Verdict:** **FAIL**
+- **Scope:** Reviewed every added line in the six-file memory bootstrap and independently checked its 15 claimed fixes against the exact result snapshot. No production code changed. Added isolated failing reproductions only.
+- **Changed files:** `docs/agent/reviews/model2-phase-01.md` (full report), `docs/agent/PROJECT_STATE.md` (corrected false 908/908 fact), `docs/agent/WORKLIST.md` (VERIFIED/REVIEW_FAILED evidence and new TX-019/TX-020/UX-008 records), this handoff, and `tests/model2.phase01.review.test.js` (three safe reproductions).
+- **Blocking findings:** SEC-001 bracketed IPv6 SSRF bypass; TX-004 raced broadcast false-final where one RPC accepts after another rejects; TX-005 budget excludes possibly-live `unknown` spends and known reverted gas. Also REVIEW_FAILED: BASE/REG gate claim, MINT-001 transient cache poisoning, UX-002 dead EOA guard, TX/PERF pre-arm claim, Ink surface completeness, transition provenance, chain-level block waiter, and unsupported stager benchmark.
+- **Tests/results:** exact snapshot full tests 908 discovered / 883 pass / 1 fail / 24 skip (Ink chain parity); direct Vite build PASS; direct ESLint PASS; reviewer reproductions EXPECTED FAIL 0/3. Documented `node --run` validation wrapper could not execute under local system Node 24.19 (exit `-1073740791`), so direct component commands were used. No credentials, live DB/RPC, fork, or real broadcasts.
+- **Preserved work:** existing unstaged `scripts/clear-test-fixtures.js` change was inspected, left untouched, and excluded from staging. Later fixes on current `main` were not credited to the reviewed range.
+- **Unresolved risks:** critical accepted-broadcast false-final/double-mint path; direct IPv6 SSRF; budget fail-open; DNS rebinding; multi-instance locks; unreviewed post-range corrections.
+- **Exact next action:** Model 1 fixes SEC-001 and TX-004 first, then MINT-001 and TX-005; make `tests/model2.phase01.review.test.js` pass unchanged, add the specified integration/concurrency regressions, and run the full gate on the final commit before requesting re-review.
+
+---
+
 ## 2026-08-24 (latest) — Model 1 — REG-002 chaos suite + fixture cleanup + failure-reason fold
 
 - **Branch:** `main` · **Commits held then pushed:** `05972c3` (INNOV-001), `22dd73b` (dashboard Ink), `8cebbcc` (ACO deletion), `310558b` (docs), `655d23f` (failure-reason fold), `9f17ede` (REG-002 chaos + cleanup script). All pushed, `0/0`.

@@ -39,7 +39,7 @@
 
 ## Verified Facts Only
 
-- Gate is `908/908` green locally (last full `node --test` at `2026-08-24T08:30Z`); lint clean after `URL` import fix.
+- **Model 2 correction (2026-08-25, exact `1d99936` snapshot):** the recorded `908/908` green gate is false for the reviewed result. Direct `node --test --test-concurrency=1` discovered 908 tests: 883 passed, 1 failed, and 24 skipped. `tests/chainGrouping.test.js` failed because `5f0d096` added Ink to `CHAIN_DEFINITIONS` after the cited 08:30 run but `dashboard/src/shared.jsx` still omitted Ink. Direct ESLint and the production dashboard build passed. Post-range `22dd73b` is not evidence for `1d99936`.
 - `SCHEDULE_PREARM_LEAD_MS=12000` is live in prod; local `.env` has `0` (disabled) — behavior differs.
 - Ink chain added but not yet in `.env.example` default `SUPPORTED_CHAINS`.
 
