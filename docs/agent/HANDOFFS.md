@@ -2,6 +2,29 @@
 
 ---
 
+## 2026-08-25 — Model 1 correction handoff — Model 2 phase-1 re-review findings addressed
+
+- **Branch:** `main` · **Base:** `782054d` (Model 2 re-review FAIL) · **This commit:** all corrections
+- **Scope:** Address every Model 2 phase-1 re-review finding per the owner's 8-step instruction.
+
+**Re-review findings — fixed, reviewer reproductions kept unchanged and passing 9/9:**
+- SEC-001: adapter now uses shared `scraperUrlPolicy.js`; `assertPublicScraperDestination` called at poll time with DNS resolution
+- TX-004: any timeout in the candidate set makes the aggregate ambiguous (RpcUnavailable, not definitive); definitive only when ALL explicitly reject
+- MINT-001: full transport taxonomy (ENOTFOUND/ENETUNREACH/EHOSTUNREACH/EPIPE/ERR_NETWORK + nested cause + HTTP 408/429/5xx + Etherscan rate-limit body)
+- UX-002: Discord flow clear moved AFTER EOA classification — ignored EOA paste preserves the active flow
+- TX-007: completed-prearm sentinel prevents duplicate pre-arms
+- TX-020: stop() clears block-retry waiters
+- BASE-005: cleanup script SQL alias fixed
+- SEC-012: checkAccountStatus always runs at T0 (never cached from pre-arm)
+
+**Verification:** full gate 982/979/0/0/3 (3 DB-integration skips by design); reviewer re-review 9/9 pass; lint OK; dashboard build OK.
+
+**Remaining open:** TX-021/TX-022 (append-only hash tracking); TX-023 (monotonic state transitions); TX-005 time-window (needs settled_at column); RPC-001 (withTimeout resource leak); SEC-003 (multi-instance); RPC-004 (clock drift); PERF-005 (load rehearsal).
+
+**Exact next action:** push and request Model 2 phase-2 review of `782054d..{this commit}`. Phase 1 cannot be marked VERIFIED until that review passes.
+
+---
+
 ## 2026-08-25 — Model 2 Phase 1 independent re-review — FAIL
 
 - **Model / branch:** Model 2 independent reviewer · `main`.

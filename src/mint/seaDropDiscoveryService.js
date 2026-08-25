@@ -50,13 +50,16 @@ function createSeaDropDiscoveryService({ providerService, publicDropResolver, ch
   function isTransientDiscoveryError(error) {
     const code = error?.code;
     const msg = String(error?.message || '').toLowerCase();
+    // MINT-001 (Model 2 re-review): full transport taxonomy — a miss here poisons the cache.
     if (['RPC_UNAVAILABLE', 'NETWORK_ERROR', 'SERVER_ERROR', 'TIMEOUT', 'ETIMEDOUT', 'ECONNRESET',
-      'ECONNREFUSED', 'EAI_AGAIN', 'ECONNABORTED', 'ERR_BAD_RESPONSE'].includes(code)) return true;
+      'ECONNREFUSED', 'EAI_AGAIN', 'ECONNABORTED', 'ENOTFOUND', 'ENETUNREACH', 'EHOSTUNREACH',
+      'EPIPE', 'ERR_NETWORK', 'ERR_BAD_RESPONSE', 'ERR_CANCELED'].includes(code)) return true;
+    if (error?.cause?.code && ['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EAI_AGAIN', 'ENOTFOUND',
+      'ENETUNREACH', 'EHOSTUNREACH'].includes(error.cause.code)) return true;
     if (msg.includes('timed out') || msg.includes('timeout') || msg.includes('connection reset')
       || msg.includes('rate limit') || msg.includes('too many requests')) return true;
-    // HTTP 429/5xx from the Etherscan tier arrive as plain Errors with a status attached.
     const status = error?.response?.status ?? error?.status;
-    if (status === 429 || (Number.isInteger(status) && status >= 500)) return true;
+    if (status === 429 || status === 408 || (Number.isInteger(status) && status >= 500)) return true;
     return false;
   }
 
@@ -93,7 +96,14 @@ function createSeaDropDiscoveryService({ providerService, publicDropResolver, ch
         chainid: String(definition.chainId), module: 'logs', action: 'getLogs',
         address: contractAddress, topic0, fromBlock: 0, toBlock: 'latest', apikey: apiKey,
       } });
-      if (String(response.data?.status) !== '1' || !Array.isArray(response.data?.result)) return undefined;
+      if (String(response.data?.status) !== '1' || !Array.isArray(response.data?.result)) {
+        // MINT-001 (Model 2 re-review): Etherscan returns HTTP 200 with a rate-limit body.
+        const body = String(response.data?.result || response.data?.message || '');
+        if (/rate limit|too many|Max rate/i.test(body)) {
+          throw Object.assign(new Error(`Etherscan rate limit: ${body}`), { code: 'RATE_LIMITED' });
+        }
+        return undefined;
+      }
       return decodeLatestAddress(response.data.result);
     } catch (error) {
       if (isTransientDiscoveryError(error)) throw error;

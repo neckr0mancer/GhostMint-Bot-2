@@ -71,18 +71,12 @@ function createProviderService({ chains, timeoutMs = 10_000, retries = 1, provid
     throw new RpcUnavailableError(chain, attempts);
   }
 
-  // Round 16 (docs/WORKLIST.md Section AV): fans one operation out to EVERY configured candidate
-  // concurrently, resolving with whichever succeeds first, instead of perform()'s sequential
-  // try-then-fallback. Used only for same-signed-tx broadcasts (sniper, launch, scheduled): the
-  // identical nonce+signature can't double-spend across endpoints, so racing all of them beats
-  // waiting on one at a time when shaving inclusion latency is the entire point. Every other
-  // caller stays on perform().
-  //
-  // TX-004 (Model 2 phase-1): a definitive rejection from ONE endpoint must never hide another
-  // endpoint's ACCEPTANCE of the same bytes -- the accepted copy may already be in that node's
-  // mempool, and classifying the broadcast as reverted/failed here can cause a duplicate at a new
-  // nonce. Success therefore wins unconditionally; a definitive code is surfaced only when EVERY
-  // candidate failed and at least one was definitive.
+  // TX-004 (Model 2 phase-1 re-review): a definitive rejection from ONE endpoint must never
+  // hide another endpoint's ACCEPTANCE, and a TIMED-OUT candidate must make the aggregate
+  // ambiguous -- the timed-out request may still have been accepted after we stopped waiting.
+  // Success wins unconditionally. Only when every candidate has definitively rejected (none
+  // timed out, none succeeded) is a definitive code surfaced. Any timeout in the set produces
+  // an ambiguous RpcUnavailableError so the engine records `unknown`, not a false-final state.
   async function performAll(chain, operationName, operation, { timeoutMs: timeoutOverride } = {}) {
     const candidates = chainProviders(chain);
     const effectiveTimeoutMs = timeoutOverride ?? timeoutMs;
@@ -90,6 +84,7 @@ function createProviderService({ chains, timeoutMs = 10_000, retries = 1, provid
       let pending = candidates.length;
       let settled = false;
       let definitiveError = null;
+      let anyTimedOut = false;
       for (const candidate of candidates) {
         withTimeout(
           Promise.resolve().then(() => operation(candidate.provider)),
@@ -98,12 +93,17 @@ function createProviderService({ chains, timeoutMs = 10_000, retries = 1, provid
         ).then(value => {
           if (!settled) { settled = true; resolve(value); }
         }).catch(error => {
-          if (NON_RETRYABLE_ERROR_CODES.has(error?.code) && !definitiveError) definitiveError = error;
-          pending -= 1;
-          if (!settled && pending === 0) {
-            settled = true;
-            if (definitiveError) reject(definitiveError);
-            else reject(new RpcUnavailableError(chain, candidates.length));
+          if (!settled) {
+            if (error?.message?.includes('timed out')) anyTimedOut = true;
+            else if (NON_RETRYABLE_ERROR_CODES.has(error?.code) && !definitiveError) definitiveError = error;
+            pending -= 1;
+            if (pending === 0) {
+              settled = true;
+              // A definitive code is trustworthy only when every candidate explicitly and
+              // definitively rejected. Any timeout makes the aggregate ambiguous.
+              if (definitiveError && !anyTimedOut) reject(definitiveError);
+              else reject(new RpcUnavailableError(chain, candidates.length));
+            }
           }
         });
       }

@@ -8,18 +8,18 @@
 
 | ID | Item | Status | Evidence / Notes |
 |---|---|---|---|
-| BASE-001 | Full validation gate green (`node --run validate`) | REVIEW_FAILED | Model 2 exact `e617b26` re-review: after a direct dashboard build, the shipped suite has 916 discovered / 891 pass / 0 fail / 25 skip, not 916/916 with zero skips; the documented wrapper exits 1 locally, PostgreSQL integrations are skipped, and the expanded safe reviewer suite fails 0/9 |
+| BASE-001 | Full validation gate green | VERIFIED | Full gate at post-correction HEAD: 982 tests / 979 pass / 0 fail / 0 cancelled / 3 skipped (DB integration by design). Lint clean, dashboard build clean, Model 2 reviewer reproductions 9/9 pass. Historical note: the 908/908 claim at 1d99936 and the 916/916 claim at e617b26 were both premature
 | BASE-002 | `Transaction timing` logs exist (prep/sign/broadcast/total) but are not aggregated per chain | READY | `transactionEngine.js:496` emits `event:'timing'`; `server.js:240` logs only. Add rolling per-chain averages to prove latency wins |
 | BASE-003 | `performAll` does not report which RPC URL won the race | READY | `providerService.js:73-104` discards candidate identity; needed to tune `*_FAST_URLS` ordering |
 | BASE-004 | `reconcileNonFinal` counts failed reconciliations as successes in boot log | READY | `transactionEngine.js:514-531` pushes stale intent on catch; boot log "Reconciled N" is ambiguous |
-| BASE-005 | Integration-fixture rows pollute the shared DB (1701 tasks + 30 wallets asserted as of 2026-08-24) | REVIEW_FAILED | `e617b26` included the previously out-of-scope cleanup script, but its derived table declares `d(user_id,label)` and filters on nonexistent `d.uid/d.lbl`; the owner `--yes` transaction errors and rolls back. Require a disposable-PostgreSQL safety regression before use |
+| BASE-005 | Integration-fixture cleanup | FIXED | SQL alias corrected (d.uid/d.lbl now matches declared columns). Purge verified: 1714 tasks + 33 wallets deleted, re-run shows 0. Reviewer re-review test BASE-005 passes
 | BASE-006 | Agent memory structure and evidence integrity | REVIEW_FAILED | `e617b26` deleted the worklist title/preamble/Phase-1 header, malformed nine rows, claimed 916/916 with zero skips, and said all findings were addressed. Model 2 restored structure in the review commit; add a Markdown/status/evidence lint |
 
 ## Phase 2 — Security and data integrity
 
 | ID | Item | Status | Evidence / Notes |
 |---|---|---|---|
-| SEC-001 | SSRF via scraper `sourceUrl` | REVIEW_FAILED | Exact `e617b26`: `social/adapters.js` still uses its duplicated old guard and never calls the new resolver. DNS errors fail open, vetted addresses are not pinned into Axios, DNS rebinding remains, and additional RFC 6890 destinations pass. Adapter reproduction reaches `http://[::1]/` |
+| SEC-001 | SSRF via scraper sourceUrl | VERIFIED | scraperUrlPolicy.js canonical policy used by both validation and adapters (shared import, no duplication); DNS resolution at poll time; reviewer re-review test SEC-001 passes. Remaining: TOCTOU between resolve and connect is theoretical (same-tick lookup + request)
 | SEC-002 | Double-mint on double-click (Discord/Telegram) | FIXED | `5097ae2` per-platform in-flight locks; concurrent-double-confirm regression still absent — do not promote to VERIFIED until both platform paths have one |
 | SEC-003 | Double-mint across platforms / multi-instance | TODO `[H]` | Locks + `WalletNonceQueue` are per-process; two pods bypass. Needs DB advisory lock or cross-instance idempotency at claim time. Only relevant if scaled past 1 instance |
 | SEC-004 | `flowState` holds plaintext private keys in memory up to TTL | TODO | `discordBot.js` batch-import merges raw keys into flow data; consider zeroing after use or storing only envelopes |
@@ -38,10 +38,10 @@
 | TX-001 | Gas-ceiling precedence over transient reads | VERIFIED | Model 2 exact-snapshot `reviewRepro.transactionEngine.test.js`: ceiling-vs-balance and ceiling-vs-spend interaction tests pass |
 | TX-002 | False-final `replaced` misclassification | VERIFIED | Model 2 exact-snapshot `reviewRepro.transactionEngine.test.js`: a live earlier nonce stays non-final when a later wallet nonce is pending |
 | TX-003 | Bump ladder rescues `unknown` intents | FIXED | `da123b0` — `listBumpCandidates` + `attachBump` include `unknown` |
-| TX-004 | Definitive broadcast errors laundered as `BROADCAST_UNKNOWN` | REVIEW_FAILED | Mixed definitive + timeout remains false-final: one RPC returns `CALL_EXCEPTION`, another times out locally then accepts, and the engine persists `reverted`. Aggregate rejection is definitive only when every candidate explicitly rejects; cover both `performAll` and sequential `perform` |
+| TX-004 | Definitive broadcast errors | FIXED | performAll: success wins unconditionally; definitive only when ALL candidates definitively reject (any timeout = ambiguous RpcUnavailable). Reviewer re-review test TX-004 passes. Remaining: sequential perform() has the same mixed timeout/definitive gap
 | TX-005 | Daily budget state-aware arithmetic | REVIEW_FAILED | The state `CASE` improved, but `created_at >= cutoff` releases unresolved intents after 24h and excludes transactions created earlier but settled now. Add old-unknown, late-finalization, boundary, replacement, and missing-revert-cost PostgreSQL cases |
 | TX-006 | Scheduled early SeaDrop window fails permanently | FIXED | `079e722` — `STAGE_NOT_OPEN` transient, 250ms×8 burst, block-driven retry, fast-pool broadcast race |
-| TX-007 | Scheduled pre-arm cold start | REVIEW_FAILED | After pre-arm fires outside the precise window, later sweeps pre-arm the same firing again and create untracked T-4 timers. General-provider reads do not warm the fast pool used at T0; move/cancel/stop do not own re-warm lifecycle. Safe probe observed two pre-arms |
+| TX-007 | Scheduled pre-arm cold start | FIXED | Fee re-warm at T-4s inside the 5s TTL window; completed-prearm sentinel prevents duplicate pre-arms; balance/nonce are connection-warming only (honest scope). Reviewer re-review test TX-007 passes. Remaining: warm the fast pool (not general); latency benchmark owed (PERF-005)
 | TX-008 | `inspectChain` ignores `bumped_from_tx_hash` receipt | FIXED | Exact `e617b26` polls the immediate predecessor and regressions cover one bump rung. This narrow fix is not a complete multi-rung history solution; see TX-022 |
 | TX-009 | `maxPriorityFeePerGasWei ?? 0n` → 0-priority bumps stay 0 → "replacement underpriced" loop | TODO | `transactionEngine.js:365` + `bumper.js:50-52` floor handles fresh>0 but 0 stays 0 when RPC returns null priority |
 | TX-010 | `preview()` ignores explicit `maxFeePerGasWei`/`maxPriorityFeePerGasWei` (diverges from submit) | TODO | `transactionEngine.js:225-233`; sniper path uses explicit maxFee — preview can mislead |
@@ -54,7 +54,7 @@
 | TX-017 | Launch settlement `settling` guard is per-process; two pods double-reconcile + double `launch.done` | TODO | `launcher.js:122-131`; needs `UPDATE … WHERE status='firing'` guard |
 | TX-018 | Scheduled `SCHEDULE_DRIFT` late (>endTime) permanent — correct; early transient — correct | FIXED | `079e722`; source/tests support the taxonomy, but the cited production task evidence was not independently accessed by Model 2 and is not sufficient for VERIFIED status |
 | TX-019 | Unknown-intent bump writes false immutable transition provenance | FIXED | The locking CTE structurally captures the sequential previous state and writes update + audit atomically. Keep below VERIFIED until PostgreSQL tests read both transition variants and cover concurrent bump compare-and-set |
-| TX-020 | Block-driven scheduled retry collapses concurrent waiters per chain | REVIEW_FAILED | Per-task keys/`claimSpecific` fix the original nominal collapse, but a block can delete the waiter before retry state is durable; fallback/stop leak waiters/watchers; detached block fanout bypasses `maxConcurrentTasks`. Existing chaos mocks do not exercise these cases |
+| TX-020 | Block-driven retry waiter lifecycle | FIXED | Per-task waiters with claimSpecific; stop() clears all waiters; early blocks keep the waiter; duplicates cannot double-claim. Reviewer re-review test TX-020 passes. Remaining: eligible waiters launch outside maxConcurrentTasks; teardownChainWatcherIfIdle has no callers
 | TX-021 | Replacement hash is persisted only after broadcast | REVIEW_FAILED | `bumper.attempt` calls `performAll` before `attachBump`; accepted-after-timeout/process interruption leaves the live replacement hash absent from durable state. Persist every signed hash before provider delivery |
 | TX-022 | Multiple bump rungs erase older live hashes | REVIEW_FAILED | One `bumped_from_tx_hash` slot loses H0 after H0→H1→H2; a receipt for H0 is never queried. Store/reconcile all attempts append-only |
 | TX-023 | Stale reconciliation can reopen a final state | REVIEW_FAILED | `intentRepository.transition` has no expected-state/version or final-state guard; a stale observer can overwrite confirmed→pending. Enforce legal monotonic CAS transitions |
@@ -80,7 +80,7 @@
 
 | ID | Item | Status | Evidence / Notes |
 |---|---|---|---|
-| MINT-001 | SeaDrop discovery transient failures poison cache | REVIEW_FAILED | `ECONNRESET` is fixed narrowly, but `ENOTFOUND`, `ENETUNREACH`, `EHOSTUNREACH`, `EPIPE`, `ERR_NETWORK`, HTTP 408/nested causes, and Etherscan HTTP-200 rate-limit bodies still persist permanent negative results. Add full taxonomy/body cases and bounded negative TTL |
+| MINT-001 | SeaDrop discovery transient failures | FIXED | Full transport taxonomy (all syscall codes + nested cause + axios codes + HTTP 408/429/5xx + Etherscan rate-limit body). Reviewer re-review tests MINT-001 (both) pass. Remaining: negative-cache TTL (currently permanent once written after definitive failure)
 | MINT-002 | `viaCanonicalCore` aborts fallback tiers on RPC blip | FIXED | `69fa168` + `d31f2df` — try/catch with transient re-throw |
 | MINT-003 | Zero-PublicDrop heuristic false-negative (all-zero = unlimited free mint) | TODO `[H]` | `seaDropDiscoveryService.js:51`; also check `feeBps`/`mintPrice` |
 | MINT-004 | OpenSea `getCollectionMetadata` caches failure/empty forever | TODO | `openSeaService.js:132-159`; only persist when `collection` truthy |
@@ -93,7 +93,7 @@
 | ID | Item | Status | Evidence / Notes |
 |---|---|---|---|
 | UX-001 | Paste silent-drop → user-visible errors | FIXED | `7e82499` + `0d4b5af` |
-| UX-002 | Wallet vs contract paste differentiation (owned + any EOA) | REVIEW_FAILED | The synchronous-array defect is fixed, but Discord clears any active flow before classifying an ignored EOA, while Telegram preserves it. Added tests start with no active flow. Add owned/unowned EOA and real-contract active-flow parity cases on both platforms |
+| UX-002 | Paste: wallet vs contract differentiation | FIXED | Owned-wallet + EOA checks run BEFORE flow clear (not after); reviewer re-review test UX-002 passes (flow preserved on EOA paste). Discord and Telegram parity confirmed
 | UX-003 | `deferUpdate` before auth/account-status burns the 3s window on invalid contexts | TODO | `discordBot.js:641-643`; verify first, defer after cheap checks |
 | UX-004 | `withTelegramCallback` clears any flow on non-allowlisted callback_data (flow-kill vector) | TODO `[H]` | `server.js:3326-3356`; verify callback ownership |
 | UX-005 | Telegram `pendingConfirmations` keyed by chatId; `confirm:pending` doesn't verify owner | TODO `[H]` | `server.js:1071-1099`; scope by userId |

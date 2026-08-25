@@ -580,7 +580,11 @@ const schedulerWorker = createSchedulerWorker({
     // Pre-armed tasks had this exact enforcement seconds earlier inside prearmScheduledTask (the
     // cache entry is consumed exactly once, and only when it matches this firing's mintTime) -- the
     // check itself is identical either way; this only decides whether it runs twice.
-    if (!takeArmedPreparation(task)) await governance.checkAccountStatus(task.userId);
+    // SEC-012 (Model 2 re-review): authorization and account standing are evaluated immediately
+    // before every value-moving execution, regardless of earlier preparation. A status check
+    // performed at T-12s cannot be reused at T0 — the account can be banned/suspended in between.
+    // Pre-arm still caches non-auth data (SeaDrop discovery, fee warming) but NEVER the auth check.
+    await governance.checkAccountStatus(task.userId);
     const wallet = DB.wallets.find(item => item.userId === task.userId && item.label === task.walletLabel);
     if (!wallet) throw new ValidationError({ field:'walletLabel', message:'was not found' });
     // Execute on the chain the contract was DETECTED on when the schedule was created

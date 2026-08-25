@@ -1960,21 +1960,23 @@ async function handleMintPasteMessage({ identity, commands, flowState, chains, r
     // Mirrors the mid-flow divergence handling every slash command and component already gets: a
     // second paste while a flow (mint or otherwise) is already in progress implicitly abandons it
     // and starts fresh with the new address -- no confirmation needed, trimmed per user feedback.
-    if (flowState.get('discord', platformUserId)) flowState.clear('discord', platformUserId);
+    // UX-002 (Model 2 re-review): the flow clear must happen AFTER the EOA/wallet classification
+    // below, not before -- an ignored EOA paste must preserve the active flow.
     // Don't treat wallet addresses as contracts — pasting a wallet address (e.g. from a
     // block explorer) should not trigger the mint info card. Check both the user's own wallets
     // and whether the address has code on any supported chain (EOAs have no code).
-    // NOTE: commands.wallets() is SYNCHRONOUS (returns an array) — .catch() on it throws and
-    // would silently skip this whole check, so no .catch on that call; the surrounding try
-    // covers genuine throw paths only.
+    // NOTE: commands.wallets() is SYNCHRONOUS (returns an array) — no .catch on it.
+    let isOwnedWallet = false;
     try {
       const wallets = commands.wallets(userId);
-      if (Array.isArray(wallets) && wallets.some(w => String(w.address || '').toLowerCase() === String(target).toLowerCase())) return;
-      if (/^0x[0-9a-fA-F]{40}$/.test(target)) {
+      if (Array.isArray(wallets) && wallets.some(w => String(w.address || '').toLowerCase() === String(target).toLowerCase())) isOwnedWallet = true;
+      if (!isOwnedWallet && /^0x[0-9a-fA-F]{40}$/.test(target)) {
         const isContract = await commands.isContractAddress(target).catch(() => true);
-        if (!isContract) return;
+        if (!isContract) isOwnedWallet = true; // EOA — treat like owned-wallet ignore
       }
     } catch {}
+    if (isOwnedWallet) return;
+    if (flowState.get('discord', platformUserId)) flowState.clear('discord', platformUserId);
     const started = await startMintGuidedFlow({ commands, flowState, chains, rateLimiter },
       payload => message.reply(payload).catch(error => log(`Paste-detect: reply failed (${where}): ${error?.message || error}`)),
       platformUserId, userId, target);

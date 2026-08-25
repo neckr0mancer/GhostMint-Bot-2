@@ -289,10 +289,14 @@ function createSchedulerWorker({ repository, intentRepository, transactionEngine
       if (prearmActive) {
         const key = `${task.userId}:${task.id}`;
         const existing = prearmTimers.get(key);
-        if (existing && existing.mintTime === task.mintTime) continue;
+        // TX-007 (Model 2 re-review): a completed pre-arm must not re-arm on the next sweep.
+        // The entry stays as a sentinel (done: true) so the same firing is prepared exactly once.
+        if (existing && (existing.done || existing.mintTime === task.mintTime)) continue;
         if (existing) clearTimeout(existing.handle);
         const handle = setTimeout(() => {
-          prearmTimers.delete(key);
+          // Mark done BEFORE firing so a concurrent sweep can't double-fire.
+          const entry = prearmTimers.get(key);
+          if (entry) entry.done = true;
           Promise.resolve(prearm(task))
             .catch(error => log(`Scheduler pre-arm failed for "${task.name}": ${sanitizeError(error)}`));
         }, Math.max(0, task.nextAttemptAt - prearmLeadMs - now()));
@@ -322,12 +326,12 @@ function createSchedulerWorker({ repository, intentRepository, transactionEngine
   function stop() {
     if (timer) clearInterval(timer);
     timer = null;
-    if (recoveryTimer) clearInterval(recoveryTimer);
-    recoveryTimer = null;
     for (const entry of armedTimers.values()) clearTimeout(entry.handle ?? entry);
     armedTimers.clear();
     for (const entry of prearmTimers.values()) clearTimeout(entry.handle);
     prearmTimers.clear();
+    // TX-020: shutdown must not retain block-retry waiters or their chain watchers.
+    blockRetryWaiters.clear();
   }
 
   // Block-driven retry for STAGE_NOT_OPEN: when a scheduled mint fails because the contract
