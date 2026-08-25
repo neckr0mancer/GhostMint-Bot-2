@@ -395,6 +395,40 @@ function createTransactionEngine({
       if (signer.address.toLowerCase() !== from.toLowerCase()) {
         throw new TransactionSafetyError('WALLET_KEY_MISMATCH', 'Stored private key does not match the wallet address');
       }
+
+      // Latest safe revalidation point before broadcast. This runs after policy, fee, balance,
+      // spend, simulation, network, and private-key/address checks, but deliberately BEFORE
+      // createSubmitted(): a guard such as a live-phase/eligibility check may ask the caller to
+      // defer, and that must leave neither a reserved nonce nor a durable "submitted" intent for a
+      // transaction we consciously chose not to broadcast. The actual intent is still persisted
+      // before signing/broadcast exactly as before once the guard permits execution.
+      //
+      // Integration signature:
+      //   preBroadcastGuard({ userId, walletId, targetId, chain, triggerSource, from, to, data,
+      //     valueWei, gasLimit, gasPriceWei, maxFeePerGasWei, maxPriorityFeePerGasWei,
+      //     estimatedCostWei, simulationEnabled, providerNonce, chainId }) => Promise<void>
+      // Resolve to continue; throw to abort without creating an intent or broadcasting.
+      if (request.preBroadcastGuard) {
+        await request.preBroadcastGuard({
+          userId: request.userId,
+          walletId: request.wallet.id,
+          targetId: request.targetId || null,
+          chain: request.chain,
+          triggerSource: trigger,
+          from,
+          to: request.to,
+          data: request.data || '0x',
+          valueWei,
+          gasLimit,
+          gasPriceWei,
+          maxFeePerGasWei,
+          maxPriorityFeePerGasWei,
+          estimatedCostWei,
+          simulationEnabled: policy.simulationEnabled,
+          providerNonce,
+          chainId: BigInt(network.chainId),
+        });
+      }
       let nonce;
       let intent;
       for (let attempt = 0; attempt < 5 && !intent; attempt += 1) {

@@ -17,22 +17,31 @@ function createScheduledReminder({
 }) {
   const reminderSent = new Set();
   const lowBalanceWarned = new Set();
+  // A phase-aware scheduler can move mintTime after a launch delay. Key delivery by both task and
+  // current fire time so the newly verified window receives its own five-minute reminder instead
+  // of being suppressed by the reminder sent for the stale advertised time.
+  const deliveryKey = task => `${task.id}:${task.mintTime}`;
 
   async function sendReminder(task, wallet, minutes, lowBalance = null) {
-    const automatic = 'It will execute automatically; no approval is required.';
+    const key = deliveryKey(task);
+    const phaseAware = Boolean(task.eligibilityDeadline);
+    const timing = phaseAware ? `eligibility checks begin in ${minutes}m` : `mints in ${minutes}m`;
+    const automatic = phaseAware
+      ? 'It will mint automatically once a live phase accepts this wallet; no approval is required.'
+      : 'It will execute automatically; no approval is required.';
     if (lowBalance) {
       await notify(task.userId,
-        `⚠️ <b>${escape(task.name)}</b> mints in ${minutes}m and <b>${escape(wallet.label)}</b> is short by ${escape(lowBalance)} ETH. ${automatic}`);
+        `⚠️ <b>${escape(task.name)}</b> ${timing} and <b>${escape(wallet.label)}</b> is short by ${escape(lowBalance)} ETH. ${automatic}`);
       broadcast(task.userId, { type: 'task.lowBalance', taskId: task.id, name: task.name,
         walletLabel: wallet.label, shortByEth: lowBalance, minutes, automatic: true });
-      lowBalanceWarned.add(task.id);
+      lowBalanceWarned.add(key);
     } else {
       await notify(task.userId,
-        `⏰ Scheduled mint <b>${escape(task.name)}</b> runs in ${minutes}m from <b>${escape(wallet.label)}</b>. ${automatic}`);
+        `⏰ Scheduled mint <b>${escape(task.name)}</b> ${timing} from <b>${escape(wallet.label)}</b>. ${automatic}`);
       broadcast(task.userId, { type: 'task.reminder', taskId: task.id, name: task.name,
         walletLabel: wallet.label, minutes, automatic: true });
     }
-    reminderSent.add(task.id);
+    reminderSent.add(key);
   }
 
   async function sweep(now = Date.now()) {
@@ -41,10 +50,11 @@ function createScheduledReminder({
       && typeof task.mintTime === 'number'
       && task.mintTime > now
       && task.mintTime - now <= leadMs
-      && !(reminderSent.has(task.id) && lowBalanceWarned.has(task.id)));
+      && !(reminderSent.has(deliveryKey(task)) && lowBalanceWarned.has(deliveryKey(task))));
 
     for (const task of due) {
       try {
+        const key = deliveryKey(task);
         const wallet = findWallet(task);
         if (!wallet) continue;
 
@@ -52,31 +62,31 @@ function createScheduledReminder({
           await cancelTask(task);
           await notify(task.userId, `🛑 <b>${escape(task.name)}</b> was auto-cancelled -- the collection already sold out.`);
           broadcast(task.userId, { type: 'task.autoCancelled', taskId: task.id, name: task.name, reason: 'sold_out' });
-          reminderSent.add(task.id);
-          lowBalanceWarned.add(task.id);
+          reminderSent.add(key);
+          lowBalanceWarned.add(key);
           continue;
         }
 
         const minutes = Math.max(1, Math.round((task.mintTime - now) / 60000));
-        const needed = calculateNeededWei(task);
+        const needed = await calculateNeededWei(task, wallet);
         if (needed <= 0n) {
-          if (!reminderSent.has(task.id)) await sendReminder(task, wallet, minutes);
-          lowBalanceWarned.add(task.id);
+          if (!reminderSent.has(key)) await sendReminder(task, wallet, minutes);
+          lowBalanceWarned.add(key);
           continue;
         }
 
         const balance = await getBalance(wallet);
         if (balance < needed) {
           const short = formatWei(needed - balance);
-          if (!reminderSent.has(task.id)) await sendReminder(task, wallet, minutes, short);
-          else if (!lowBalanceWarned.has(task.id)) {
+          if (!reminderSent.has(key)) await sendReminder(task, wallet, minutes, short);
+          else if (!lowBalanceWarned.has(key)) {
             await notify(task.userId,
-              `⚠️ <b>${escape(task.name)}</b> mints in ${minutes}m and <b>${escape(wallet.label)}</b> is now short by ${escape(short)} ETH. Top up before automatic execution.`);
+              `⚠️ <b>${escape(task.name)}</b> ${task.eligibilityDeadline ? `eligibility checks begin in ${minutes}m` : `mints in ${minutes}m`} and <b>${escape(wallet.label)}</b> is now short by ${escape(short)} ETH. Top up before automatic execution.`);
             broadcast(task.userId, { type: 'task.lowBalance', taskId: task.id, name: task.name,
               walletLabel: wallet.label, shortByEth: short, minutes, automatic: true });
-            lowBalanceWarned.add(task.id);
+            lowBalanceWarned.add(key);
           }
-        } else if (!reminderSent.has(task.id)) {
+        } else if (!reminderSent.has(key)) {
           await sendReminder(task, wallet, minutes);
         }
       } catch (error) {

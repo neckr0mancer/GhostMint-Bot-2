@@ -9,6 +9,7 @@ const DASHBOARD_THEMES = new Set(['ghost-mint', 'ghost-mint-light', 'clean-vault
 const WATCH_RULE_TYPES = new Set(['twitter_account', 'twitter_keyword', 'discord_channel', 'discord_keyword',
   'farcaster_account', 'farcaster_keyword']);
 const WATCH_METHODS = new Set(['official_api', 'managed_service', 'scraper']);
+const TASK_ELIGIBILITY_MODES = new Set(['specific_stage', 'earliest_eligible']);
 // Single source of truth for which platform a watch-rule type belongs to. Adapters use this
 // instead of inferring platform from the type string, so adding a type can never silently
 // mislabel events with the wrong platform.
@@ -185,6 +186,33 @@ function scheduleTimestamp(value, { now = Date.now(), maxAheadMs = MAX_SCHEDULE_
   return timestamp;
 }
 
+function optionalTaskMetadata(value, field, max) {
+  if (value === undefined || value === null || value === '') return null;
+  return string(value, field, { max });
+}
+
+function taskEligibilityMode(value) {
+  const normalized = string(value ?? 'specific_stage', 'eligibilityMode', { max: 32 }).toLowerCase();
+  if (!TASK_ELIGIBILITY_MODES.has(normalized)) {
+    fail('eligibilityMode', `must be one of: ${[...TASK_ELIGIBILITY_MODES].join(', ')}`);
+  }
+  return normalized;
+}
+
+function taskEligibilityDeadline(value, mintTime) {
+  if (value === undefined || value === null || value === '') return null;
+  if (typeof value !== 'string' || !/(?:Z|[+-]\d{2}:\d{2})$/i.test(value.trim())) {
+    fail('eligibilityDeadline', 'must include an explicit UTC offset or Z suffix');
+  }
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) fail('eligibilityDeadline', 'must be a valid date and time');
+  if (timestamp <= mintTime) fail('eligibilityDeadline', 'must be after mintTime');
+  if (timestamp - mintTime > MAX_SCHEDULE_AHEAD_MS) {
+    fail('eligibilityDeadline', 'must be no more than 5 years after mintTime');
+  }
+  return timestamp;
+}
+
 function quantity(value) { return finiteNumber(value ?? 1, 'quantity', { min: 1, max: LIMITS.quantity, integer: true }); }
 function price(value) { return finiteNumber(value ?? 0, 'priceETH', { min: 0, max: LIMITS.priceEth }); }
 function gasLimit(value) { return finiteNumber(value, 'gasLimit', { min: 21_000, max: LIMITS.gasLimit, integer: true, required: false }); }
@@ -295,11 +323,17 @@ function validateSendRequest(input, context) {
 }
 
 function validateTaskCreate(input, context) {
+  const mintTime = scheduleTimestamp(input.mintTime, context);
   return {
     id: input.id === undefined ? randomUUID() : uuid(input.id, 'id'),
     name: string(input.name, 'name', { max: 100 }),
     ...validateMintRequest(input, context),
-    mintTime: scheduleTimestamp(input.mintTime, context),
+    mintTime,
+    stageUuid: optionalTaskMetadata(input.stageUuid, 'stageUuid', 200),
+    stageLabel: optionalTaskMetadata(input.stageLabel, 'stageLabel', 100),
+    stageType: optionalTaskMetadata(input.stageType, 'stageType', 64),
+    eligibilityMode: taskEligibilityMode(input.eligibilityMode),
+    eligibilityDeadline: taskEligibilityDeadline(input.eligibilityDeadline, mintTime),
   };
 }
 

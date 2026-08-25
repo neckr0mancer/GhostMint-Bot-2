@@ -20,6 +20,26 @@ const { EXPIRY_GRACE_MS, TASK_BUCKETS, TASK_BUCKET_NAMES, bucketFor } = require(
 const TASK_CONTROLS = Object.freeze({
   cancel: 'cancelled', pause: 'paused', resume: 'resumed', retry: 'retried',
 });
+const PUBLIC_OPEN_SEA_STAGE_TYPES = new Set(['public', 'public_sale', 'publicsale', 'public_drop']);
+const DEFAULT_PHASE_ELIGIBILITY_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+// OpenSea's builder is needed when the current/next phase carries wallet-specific eligibility
+// (proof/signature/allowlist). A plain public SeaDrop remains on the direct, on-chain SeaDrop path
+// so a future gated phase elsewhere in the collection does not unnecessarily make today's public
+// mint depend on OpenSea. The selected schedule surface performs the same check against the phase
+// the user actually chose.
+function openSeaStageRequiresBuilder(stage) {
+  if (!stage) return false;
+  const type = String(stage.stageType || stage.stage_type || '').trim().toLowerCase();
+  if (PUBLIC_OPEN_SEA_STAGE_TYPES.has(type)) return false;
+  if (!type && /^public(?:\s+sale)?$/i.test(String(stage.label || '').trim())) return false;
+  return true;
+}
+
+function dropRequiresOpenSeaBuilder(drop) {
+  if (!drop) return false;
+  return openSeaStageRequiresBuilder(drop.activeStage || drop.nextStage || drop.stages?.[0]);
+}
 
 function createBotCommandService(dependencies) {
   const { storage, schedulerRepository, providerService, governance, adminCommands, sniperService,
@@ -235,7 +255,7 @@ function createBotCommandService(dependencies) {
         displayPrice,
         stats,
         drop,
-        openSeaMintRecommended: false,
+        openSeaMintRecommended: dropRequiresOpenSeaBuilder(drop),
       };
     }
 
@@ -595,6 +615,16 @@ function createBotCommandService(dependencies) {
     const chain = input.chain || owned.chain;
     const target = input.contractAddress ?? input.contract;
     if (target) await assertContractExists(target, chain);
+    const requestedEligibilityMode = input.eligibilityMode
+      ?? (input.viaOpenSea ? 'earliest_eligible' : 'specific_stage');
+    if ((input.viaOpenSea || requestedEligibilityMode === 'earliest_eligible')
+      && !input.stageUuid && !input.stageLabel && !input.stageType) {
+      // A builder-backed task without a persisted phase identity cannot prove that the phase it
+      // wakes into is the one the user selected. Reject that unsafe shape at creation rather than
+      // letting an API caller bypass the live-phase gate used by every first-party surface.
+      throw new ValidationError({ field:'stageUuid',
+        message:'select a detected mint phase before scheduling' });
+    }
     // Section AF -- scheduling an OpenSea-backed mint (allowlist/GTD/FCFS stages this app has no
     // on-chain proof for): priceETH is always 0 here, never resolved from the contract, since
     // OpenSea's own response at execution time determines the real value -- resolvePriceIfMissing
@@ -604,13 +634,22 @@ function createBotCommandService(dependencies) {
       ? { ...input, contractAddress: target, priceETH: 0 }
       : await resolvePriceIfMissing({ ...input, contractAddress: target }, chain);
     const withMintTime = await resolveMintTimeIfMissing(withPrice, chain);
-    const validated = requestSchemas.taskCreate({ ...withMintTime, chain }, { supportedChains, now: Date.now() });
+    const defaultEligibilityMode = input.viaOpenSea ? 'earliest_eligible' : 'specific_stage';
+    const mintTimestamp = typeof withMintTime.mintTime === 'number'
+      ? withMintTime.mintTime : Date.parse(withMintTime.mintTime);
+    const eligibilityDeadline = input.eligibilityDeadline ?? (input.viaOpenSea && Number.isFinite(mintTimestamp)
+      ? new Date(mintTimestamp + DEFAULT_PHASE_ELIGIBILITY_WINDOW_MS).toISOString() : null);
+    const validated = requestSchemas.taskCreate({ ...withMintTime, chain,
+      eligibilityMode: input.eligibilityMode ?? defaultEligibilityMode,
+      eligibilityDeadline,
+    }, { supportedChains, now: Date.now() });
     const task = { userId, id: validated.id, name: validated.name, walletLabel: validated.walletLabel,
       contract: validated.contractAddress, fn: validated.functionName, qty: validated.quantity,
       price: validated.priceETH, gas: validated.gasGwei, chain: validated.chain, mintTime: validated.mintTime,
       nextAttemptAt: validated.mintTime, status: 'scheduled', createdAt: Date.now(), maxAttempts: 3,
       idempotencyKey: `scheduled-mint:${userId}:${validated.id}`, viaOpenSea: Boolean(input.viaOpenSea),
-      stageType: input.stageType ?? null };
+      stageUuid: validated.stageUuid, stageLabel: validated.stageLabel, stageType: validated.stageType,
+      eligibilityMode: validated.eligibilityMode, eligibilityDeadline: validated.eligibilityDeadline };
     await storage.saveTask(task);
     getState().tasks.push(task);
     broadcast(userId, 'tasks');

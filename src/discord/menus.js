@@ -443,7 +443,7 @@ function taskNameQuickPicks() {
   };
 }
 
-function taskConfirmation({ name, contractAddress, chainLabel, walletLabel, quantity, mintTime, priceETH, priceUnknown, viaOpenSea }) {
+function taskConfirmation({ name, contractAddress, chainLabel, walletLabel, quantity, mintTime, priceETH, priceUnknown, viaOpenSea, phaseAware = viaOpenSea }) {
   // Section AF -- OpenSea's own response at execution time determines the real price for an
   // allowlist/GTD/FCFS stage; nothing scheduled up front could ever be the real number.
   const priceLine = viaOpenSea
@@ -453,7 +453,7 @@ function taskConfirmation({ name, contractAddress, chainLabel, walletLabel, quan
       : `Price: ${priceETH} per item (read from the contract)`;
   const heading = viaOpenSea ? '## Confirm OpenSea-backed schedule' : '## Confirm scheduled mint';
   return {
-    content: `${heading}\nName: ${name}\nContract: \`${contractAddress}\`\nChain: ${chainLabel}\nWallet: ${walletLabel}\nQuantity: ${quantity || 1}\n${priceLine}\nFires: ${formatGmtPlus1(mintTime)}\n\nThis is not a reminder -- the bot signs and sends the mint itself at that moment.\n\nProceed?`,
+    content: `${heading}\nName: ${name}\nContract: \`${contractAddress}\`\nChain: ${chainLabel}\nWallet: ${walletLabel}\nQuantity: ${quantity || 1}\n${priceLine}\n${phaseAware ? 'Eligibility checks begin' : 'Fires'}: ${formatGmtPlus1(mintTime)}\n\n${phaseAware ? 'The bot waits for a live phase this wallet can use, then signs and sends automatically.' : 'This is not a reminder -- the bot signs and sends the mint itself at that moment.'}\n\nProceed?`,
     components: [row([button('✅ Schedule it', 'flow:taskconfirm', 'success'), button('❌ Cancel', 'flow:cancel:ask', 'danger')])],
   };
 }
@@ -687,7 +687,7 @@ function activityMenu(page) {
 // activityMenu above.
 function tasksMenu(page) {
   const lines = page.items.length
-    ? page.items.map(task => `${task.viaOpenSea ? '🎫 ' : ''}${task.name} [${task.status}] — ${formatGmtPlus1(task.mintTime)} — ${task.id}`).join('\n')
+    ? page.items.map(task => `${task.eligibilityDeadline ? '🎫 ' : ''}${task.name} [${task.status}] — ${task.eligibilityDeadline ? 'eligibility checks ' : ''}${formatGmtPlus1(task.mintTime)} — ${task.id}`).join('\n')
     : 'No scheduled tasks.';
   const nav = [];
   if (page.page > 1) nav.push(button('◀️ Prev', `tasks:page:${page.page - 1}`));

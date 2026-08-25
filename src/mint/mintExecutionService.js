@@ -1,6 +1,6 @@
 function createMintExecutionService({ mintService, transactionEngine }) {
   async function executePrepared({ userId, wallet, prepared, triggerSource = 'manual', gasPriceWei, maxGasGwei, onPreview,
-    idempotencyKey, onIntentPersisted }) {
+    idempotencyKey, onIntentPersisted, preBroadcastGuard }) {
     // Fire-and-forget, deliberately not awaited: the preview notification is informational, and an
     // await here sat directly between "launch moment arrived" and "submit()" -- meaning Telegram's
     // or Discord's full HTTPS round trip was on the critical path of every scheduled and sniper
@@ -21,6 +21,7 @@ function createMintExecutionService({ mintService, transactionEngine }) {
       maxGasGwei,
       idempotencyKey,
       onIntentPersisted,
+      preBroadcastGuard,
     });
   }
 
@@ -31,9 +32,11 @@ function createMintExecutionService({ mintService, transactionEngine }) {
         callPreview:prepared.preview,gasPriceWei,forceSimulation:true});
     },
     executePrepared,
-    async execute({ userId, wallet, input, triggerSource, gasPriceWei, maxGasGwei, onPreview, idempotencyKey, onIntentPersisted }) {
+    async execute({ userId, wallet, input, triggerSource, gasPriceWei, maxGasGwei, onPreview, idempotencyKey, onIntentPersisted,
+      preBroadcastGuard }) {
       const prepared = await mintService.prepare({ ...input, walletAddress: wallet.address });
-      return executePrepared({ userId, wallet, prepared, triggerSource, gasPriceWei, maxGasGwei, onPreview, idempotencyKey, onIntentPersisted });
+      return executePrepared({ userId, wallet, prepared, triggerSource, gasPriceWei, maxGasGwei, onPreview, idempotencyKey,
+        onIntentPersisted, preBroadcastGuard });
     },
   };
 }

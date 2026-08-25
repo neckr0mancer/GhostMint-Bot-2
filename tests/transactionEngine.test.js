@@ -235,6 +235,56 @@ test('wallet address must match the private key before an intent is persisted', 
   assert.equal(calls.broadcasts.length, 0);
 });
 
+test('an async pre-broadcast guard runs after safety preparation and can block without creating an intent', async () => {
+  const { calls, engine, repository, request } = fixture();
+  const guardError = Object.assign(new Error('the selected phase is not live yet'), {
+    code: 'SCHEDULE_PHASE_WAIT',
+  });
+  let observed = null;
+
+  await assert.rejects(engine.submit({
+    ...request,
+    triggerSource:'scheduled',
+    targetId:'phase-target',
+    preBroadcastGuard:async context => {
+      // Simulation and every pre-broadcast provider check have completed, but persisting an intent
+      // here would strand a fake submitted transaction when this guard asks the scheduler to wait.
+      assert.equal(calls.simulations, 1);
+      assert.equal(repository.intents.length, 0);
+      assert.equal(calls.broadcasts.length, 0);
+      await Promise.resolve();
+      observed = context;
+      throw guardError;
+    },
+  }), error => error === guardError);
+
+  assert.equal(repository.intents.length, 0, 'a rejected guard must not reserve a nonce or persist an intent');
+  assert.equal(calls.broadcasts.length, 0, 'a rejected guard must never reach any broadcast provider');
+  assert.equal(observed.userId, request.userId);
+  assert.equal(observed.walletId, request.wallet.id);
+  assert.equal(observed.targetId, 'phase-target');
+  assert.equal(observed.chain, request.chain);
+  assert.equal(observed.triggerSource, 'scheduled');
+  assert.equal(observed.from, request.wallet.address);
+  assert.equal(observed.to, request.to);
+  assert.equal(observed.valueWei, 0n);
+  assert.equal(observed.gasLimit, 21_000n);
+  assert.equal(observed.providerNonce, 0);
+  assert.equal(observed.chainId, 1n);
+  assert.equal(observed.simulationEnabled, true);
+});
+
+test('an optional pre-broadcast guard that resolves preserves the normal persisted-before-broadcast path', async () => {
+  const { calls, engine, repository, request } = fixture();
+  let guarded = 0;
+  const result = await engine.submit({ ...request, preBroadcastGuard:async () => { guarded += 1; } });
+
+  assert.equal(guarded, 1);
+  assert.equal(result.state, 'confirmed');
+  assert.equal(repository.intents.length, 1);
+  assert.deepEqual(calls.broadcasts, [0]);
+});
+
 test('a submitted intent is reconciled from chain state after restart', async () => {
   const { engine, repository, request, receipts } = fixture();
   const intent = await repository.createSubmitted({

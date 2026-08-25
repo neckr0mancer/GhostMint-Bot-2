@@ -19,6 +19,10 @@ const OPENSEA_CHAIN_SLUGS = Object.freeze({
 // returns a collection slug, not the collection's own name/image/stats.
 function createOpenSeaService({ apiKey, repository, baseUrl = 'https://api.opensea.io/api/v2',
   http = axios, timeoutMs = 8_000, log = () => {} }) {
+  // Contract -> collection membership is stable for the life of this process. Phase polling still
+  // refreshes /drops/{slug}, but it should not pay for the identical contract lookup on every
+  // five/ten/sixty-second check.
+  const collectionSlugCache = new Map();
   // Every catch block below was silently swallowing whatever actually went wrong (a bad/expired
   // API key, a network failure, a genuine OpenSea outage) -- correct for the card renderer, which
   // must never see a thrown error, but it meant a real, ongoing failure (e.g. an invalid key) left
@@ -29,9 +33,13 @@ function createOpenSeaService({ apiKey, repository, baseUrl = 'https://api.opens
     log(`OpenSea ${operation} failed for ${chain}:${contractAddress}: ${detail}`);
   }
   async function fetchCollectionSlug(openSeaChain, contractAddress) {
+    const key = `${openSeaChain}:${String(contractAddress).toLowerCase()}`;
+    if (collectionSlugCache.has(key)) return collectionSlugCache.get(key);
     const response = await http.get(`${baseUrl}/chain/${openSeaChain}/contract/${contractAddress}`,
       { timeout: timeoutMs, maxContentLength: 1_000_000, headers: { 'x-api-key': apiKey } });
-    return response.data?.collection || null;
+    const slug = response.data?.collection || null;
+    if (slug) collectionSlugCache.set(key, slug);
+    return slug;
   }
 
   async function fetchCollectionDetails(slug) {
@@ -254,7 +262,13 @@ function createOpenSeaService({ apiKey, repository, baseUrl = 'https://api.opens
         throw new ValidationError({ field: 'contractAddress', message: detail || 'this drop is not currently active for minting (not started, ended, or paused)' }, 'STAGE_NOT_OPEN');
       }
       if (status === 422) {
-        throw new ValidationError({ field: 'contractAddress', message: detail || "this wallet can't mint right now (insufficient balance, not on the allowlist, limit reached, or sold out)" });
+        // Only a wallet-specific eligibility rejection is allowed to advance an
+        // `earliest_eligible` scheduled task to a later phase. Sold out, wallet-limit and balance
+        // failures remain permanent: treating those as an allowlist miss could submit a different
+        // phase the user never intended to chase.
+        const code = /(?:not|isn'?t)\s+(?:currently\s+)?eligible|ineligible|allowlist|whitelist/i.test(detail || '')
+          ? 'WALLET_NOT_ELIGIBLE' : undefined;
+        throw new ValidationError({ field: 'contractAddress', message: detail || "this wallet can't mint right now (insufficient balance, not on the allowlist, limit reached, or sold out)" }, code);
       }
       // A real mint attempt got no calldata at all -- unlike the read-only functions above, this is
       // always worth a trace, not just the non-404 subset (there is no "expected" failure shape here).

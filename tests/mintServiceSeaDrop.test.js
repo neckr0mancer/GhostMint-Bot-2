@@ -366,6 +366,44 @@ test('detectMintContract attaches real phase data from OpenSea when includeStats
   assert.equal(result.drop.activeStage.priceWei, '50000000000000000');
   assert.equal(result.drop.nextStage, null);
   assert.equal(result.drop.stages[0].priceETH, 0.05);
+  assert.equal(result.openSeaMintRecommended, false,
+    'a direct public SeaDrop must not acquire an unnecessary OpenSea-builder dependency');
+});
+
+test('detectMintContract recommends the OpenSea builder for a wallet-gated SeaDrop phase', async () => {
+  const gated = { uuid: 'allow-1', label: 'Allowlist', startTime: 1_800_000_000,
+    endTime: 1_800_003_600, priceWei: '0', maxPerWallet: 1, stageType: 'signed_presale' };
+  const { service } = commandServiceFixture({
+    contractValueResolver: { resolve: async () => { throw new Error('should not be reached'); }, probeMaxSupply: async () => null },
+    seaDropDiscoveryService: { resolve: async () => ({ address: SEADROP,
+      publicDrop: { mintPriceWei: '0', maxTotalMintableByWallet: 1 }, feeRecipient: FEE_RECIPIENT }) },
+    openSeaService: { getCollectionMetadata: async () => null, getDrop: async () => ({
+      isMinting: false, activeStage: null, nextStage: gated, stages: [gated],
+    }) },
+  });
+  const result = await service.detectMintContract('user-a', {
+    contractAddress: CONTRACT, quantity: 1, includeDrop: true,
+  });
+  assert.equal(result.openSeaMintRecommended, true);
+});
+
+test('an active public phase keeps the direct SeaDrop path even when a later gated phase exists', async () => {
+  const active = { uuid: 'public-1', label: 'Public sale', startTime: 1_700_000_000,
+    endTime: 1_900_000_000, priceWei: '0', maxPerWallet: 2, stageType: 'public_sale' };
+  const later = { uuid: 'allow-2', label: 'Collectors', startTime: 1_900_000_100,
+    endTime: 1_900_003_600, priceWei: '0', maxPerWallet: 1, stageType: 'signed_presale' };
+  const { service } = commandServiceFixture({
+    contractValueResolver: { resolve: async () => { throw new Error('should not be reached'); }, probeMaxSupply: async () => null },
+    seaDropDiscoveryService: { resolve: async () => ({ address: SEADROP,
+      publicDrop: { mintPriceWei: '0', maxTotalMintableByWallet: 2 }, feeRecipient: FEE_RECIPIENT }) },
+    openSeaService: { getCollectionMetadata: async () => null, getDrop: async () => ({
+      isMinting: true, activeStage: active, nextStage: later, stages: [active, later],
+    }) },
+  });
+  const result = await service.detectMintContract('user-a', {
+    contractAddress: CONTRACT, quantity: 1, includeDrop: true,
+  });
+  assert.equal(result.openSeaMintRecommended, false);
 });
 
 test('detectMintContract never calls getDrop (or attaches drop) when neither includeDrop nor includeStats is requested', async () => {
@@ -399,6 +437,7 @@ test('detectMintContract attaches drop data via includeDrop alone, without needi
   assert.equal(result.drop.nextStage.label, 'Early birds');
   assert.equal(result.drop.nextStage.priceETH, 0);
   assert.equal(result.stats, null, 'includeDrop alone must not also pull in the heavier stats block');
+  assert.equal(result.openSeaMintRecommended, true);
 });
 
 test('detectMintContract skips getDrop when includeDrop is explicitly false, even if includeStats is true', async () => {
@@ -705,16 +744,35 @@ test('createTask still requires mintTime for a plain (non-SeaDrop) contract -- t
 // own response at execution time determines the real value, so resolvePriceIfMissing (which would
 // throw for a price that genuinely can't be read on-chain, exactly this path's normal case) must
 // never even run for a viaOpenSea task.
-test('createTask forces priceETH to 0 and skips price resolution entirely for a viaOpenSea task, storing viaOpenSea on the saved row', async () => {
+test('createTask forces priceETH to 0, persists its chosen phase, and safely defaults OpenSea eligibility', async () => {
   const { saved, service } = taskServiceFixture({
     contractValueResolver: { resolve: async () => { throw new Error('must not be called for a viaOpenSea task'); } },
     seaDropDiscoveryService: { resolve: async () => ({ address: null, publicDrop: null, feeRecipient: null }) },
   });
   const mintTime = new Date(Date.now() + 60_000).toISOString();
-  const task = await service.createTask('user-a', { name: 'allowlist phase', walletLabel: 'main', contractAddress: CONTRACT, quantity: 1, mintTime, viaOpenSea: true });
+  const task = await service.createTask('user-a', { name: 'allowlist phase', walletLabel: 'main',
+    contractAddress: CONTRACT, quantity: 1, mintTime, viaOpenSea: true,
+    stageUuid: 'stage-allow-1', stageLabel: 'Allowlist', stageType: 'signed_presale' });
   assert.equal(saved[0].price, 0);
   assert.equal(saved[0].viaOpenSea, true);
   assert.equal(task.viaOpenSea, true);
+  assert.equal(task.stageUuid, 'stage-allow-1');
+  assert.equal(task.stageLabel, 'Allowlist');
+  assert.equal(task.stageType, 'signed_presale');
+  assert.equal(task.eligibilityMode, 'earliest_eligible');
+  assert.equal(task.eligibilityDeadline, Date.parse(mintTime) + 24 * 60 * 60 * 1000);
+});
+
+test('createTask rejects a viaOpenSea schedule with no persisted phase identity', async () => {
+  const { service } = taskServiceFixture({
+    contractValueResolver: { resolve: async () => { throw new Error('must not be called'); } },
+    seaDropDiscoveryService: { resolve: async () => ({ address: null, publicDrop: null, feeRecipient: null }) },
+  });
+  const mintTime = new Date(Date.now() + 60_000).toISOString();
+  await assert.rejects(service.createTask('user-a', { name:'unsafe phase', walletLabel:'main',
+    contractAddress:CONTRACT, quantity:1, mintTime, viaOpenSea:true }), error => (
+    error instanceof ValidationError && error.issues.some(issue => issue.field === 'stageUuid')
+  ));
 });
 
 test('createTask still requires an explicit mintTime for a viaOpenSea task -- there is no PublicDrop opening time to auto-fill from', async () => {
@@ -733,4 +791,6 @@ test('a non-viaOpenSea task never has viaOpenSea set on the saved row', async ()
   const mintTime = new Date(Date.now() + 60_000).toISOString();
   await service.createTask('user-a', { name: 'plain', walletLabel: 'main', contractAddress: CONTRACT, quantity: 1, mintTime });
   assert.equal(saved[0].viaOpenSea, false);
+  assert.equal(saved[0].eligibilityMode, 'specific_stage');
+  assert.equal(saved[0].eligibilityDeadline, null);
 });
