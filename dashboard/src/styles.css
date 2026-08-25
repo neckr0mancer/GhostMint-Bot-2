@@ -1166,12 +1166,6 @@ html[data-theme="ghost-mint"] .dash-hero button,html[data-theme="ghost-mint-ligh
 .ledger-total dt{font-weight:700;color:var(--text)}
 .ledger-total .ledger-value{font-weight:700}
 
-/* --- Celebrate (register 4, the one warm surface) --- */
-.celebrate{padding:var(--card-pad);border:1px solid var(--accent-line);border-radius:var(--radius);
-  background:linear-gradient(135deg,var(--accent-soft),transparent 70%)}
-.celebrate strong{display:block;font-size:1rem}
-.celebrate p{margin-top:.2rem;color:var(--text-muted);font-size:.8rem}
-
 /* --- SearchField --- */
 .search-field-control{position:relative;display:block}
 .search-field-control input{width:100%;padding-right:2.5rem}
@@ -1241,10 +1235,11 @@ html[data-theme="ghost-mint"] .dash-hero button,html[data-theme="ghost-mint-ligh
    component CSS lives -- the same shape Phase 2 took when it added the shared
    family's styles here. Only additive rules below; nothing above is edited.
 
-   The collapse/reorder chrome the prototype draws around these cards (.blk,
-   .dragh, .col) is Phase 8's work and is deliberately absent here.
+   Home now uses the prototype's real .blk/.dragh reorder chrome. The reusable component changes
+   rendered order only; these selectors keep its native drag feedback quiet and theme-consistent.
    ========================================================================== */
 
+.blk.is-dragging{opacity:.58}
 .home-split{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(0,1fr);gap:var(--grid-gap);align-items:start}
 .home-col{display:grid;gap:var(--grid-gap);align-content:start;min-width:0}
 .tiles{margin-bottom:var(--grid-gap)}
@@ -1288,9 +1283,12 @@ html[data-theme="ghost-mint"] .dash-hero button,html[data-theme="ghost-mint-ligh
 .card-more{margin-top:.5rem}
 
 
-/* --- Celebrate extras (register 4) --- */
-.streak{margin-top:.5rem;font-size:.78rem;font-weight:600}
-.celebrate-actions{display:flex;flex-wrap:wrap;gap:.4rem;margin-top:.7rem}
+/* --- Celebrate extras (register 4) ---
+   The surface, badge, title, detail, streak pill and mobile padding come directly from
+   prototype.css's .cel/.cel-b/.streak rules. Only the action-row alignment was inline in the
+   reference HTML, so it lives here as the one production-only class. */
+.celebrate-actions{justify-content:center;margin-top:13px}
+.celebrate-actions a,.celebrate-actions a:hover{text-decoration:none}
 
 /* --- Inline alert note --- */
 .alert-note{display:flex;gap:.6rem;padding:var(--card-pad);border:1px solid var(--border);
@@ -1408,6 +1406,12 @@ html[data-theme="ghost-mint"] .rail-bottom-nav,
 html[data-theme="ghost-mint-light"] .rail-bottom-nav{
   margin-top:auto;border-top:1px solid var(--border);padding-top:.4rem}
 @media(max-width:700px){.page-head{flex-direction:column;gap:.6rem}.page-head-actions{margin-left:0;width:100%}.page-head-actions button{flex:1}}
+@media(max-width:700px){
+  .home-page-head{flex-direction:row;align-items:flex-end;gap:14px;flex-wrap:wrap}
+  .home-page-head .page-head-text{flex:1;min-width:180px}
+  .home-page-head .page-head-actions{margin-left:auto;width:auto}
+  .home-page-head .page-head-actions button{flex:none}
+}
 
 /* --- Mint now, prototype layout (#mt-now) --- */
 .mint-split{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);gap:var(--grid-gap);align-items:start}

@@ -39,7 +39,14 @@ export function mintPreviewError(error,{chain,quantity}={}){
   };
   if(code==='FEE_UNAVAILABLE'||/fee data|network fee/i.test(text)&&/unavailable|could not|did not return/i.test(text))return {title:'We could not get the network fee.',detail:'Try again in a moment.'};
   if(code==='WRONG_CHAIN')return {title:'The network is on the wrong chain.',detail:'Try again or check the RPC settings for this chain.'};
+  const walletLimit=text.match(/would hold\s+(\d+),\s*exceeding the\s+(\d+) allowed per wallet/i);
+  if(walletLimit){const total=Number(walletLimit[1]);const allowed=Number(walletLimit[2]);const requested=Number(quantity);const already=Number.isFinite(requested)&&requested>0?Math.max(0,total-requested):null;const remaining=already===null?null:Math.max(0,allowed-already);return remaining===0
+    ?{title:"This wallet has reached this mint's limit.",detail:'Use another eligible wallet.'}
+    :remaining!==null
+      ?{title:`This wallet can mint ${remaining} more.`,detail:`Lower its quantity to ${remaining} or use another wallet.`}
+      :{title:`This mint allows ${allowed} per wallet.`,detail:'Lower the quantity or use another wallet.'};}
   if(/sold out|max supply/i.test(text))return {title:'This mint is sold out.',detail:'No transaction was sent.'};
+  if(/not eligible|allowlist|fee recipient.*not allowed/i.test(text))return {title:'You are not eligible to mint right now.',detail:'Try when your stage opens, or schedule it for your eligible window — you’ll get a notification.'};
   if(/not opened|not active|opens \d|opening time/i.test(text))return {title:'This mint is not open yet.',detail:'Check the opening time and try again later.'};
   if(/already closed|stage has already closed|mint has ended/i.test(text))return {title:'This mint has ended.',detail:'No transaction was sent.'};
   if(/incorrect payment|wrong price|requires exactly/i.test(text))return {title:'The mint price is incorrect.',detail:'Check the price and try again.'};
