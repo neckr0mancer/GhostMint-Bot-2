@@ -654,9 +654,12 @@ const schedulerWorker = createSchedulerWorker({
           method: { signature: 'opensea:drops-mint' }, preview: { contractAddress: task.contract, callTarget: built.to } };
         return mintExecution.executePrepared({ userId: task.userId, wallet, prepared, triggerSource: 'scheduled',
           idempotencyKey: hooks.idempotencyKey, onIntentPersisted: hooks.onIntentPersisted,
-          preBroadcastGuard: expectedPhaseIdentity
-            ? () => refreshScheduledOpenSeaPhase(task, executionChain, expectedPhaseIdentity)
-            : undefined,
+          preBroadcastGuard: async () => {
+            // SEC-012 (Model 2 phase-2): governance is evaluated at the latest safe point —
+            // immediately before intent creation, after all slow preparation is done.
+            await governance.checkAccountStatus(task.userId);
+            if (expectedPhaseIdentity) await refreshScheduledOpenSeaPhase(task, executionChain, expectedPhaseIdentity);
+          },
           onPreview: preview => notifyUser(task.userId, formatMintPreview(preview)) });
       }
       if (phaseAwareTask(task)) {
@@ -741,9 +744,11 @@ const schedulerWorker = createSchedulerWorker({
     return mintExecution.executePrepared({ userId:task.userId, wallet, prepared, triggerSource:'scheduled',
       gasPriceWei:request.gasGwei === null ? undefined : ethers.parseUnits(String(request.gasGwei), 'gwei'),
       idempotencyKey:hooks.idempotencyKey, onIntentPersisted:hooks.onIntentPersisted,
-      preBroadcastGuard: expectedPublicPhaseIdentity
-        ? () => refreshScheduledPublicPhase(task, executionChain, expectedPublicPhaseIdentity)
-        : undefined,
+      preBroadcastGuard: async () => {
+        // SEC-012 (Model 2 phase-2): same governance-at-the-latest-safe-point for on-chain tasks.
+        await governance.checkAccountStatus(task.userId);
+        if (expectedPublicPhaseIdentity) await refreshScheduledPublicPhase(task, executionChain, expectedPublicPhaseIdentity);
+      },
       onPreview:preview => notifyUser(task.userId, formatMintPreview(preview)) });
   },
   notify: async event => {
