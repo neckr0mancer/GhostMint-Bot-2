@@ -127,14 +127,9 @@ function createTransactionIntentRepository(pool) {
              gas_price_wei=COALESCE($4,gas_price_wei),
              max_fee_per_gas_wei=COALESCE($5,max_fee_per_gas_wei),
              max_priority_fee_per_gas_wei=COALESCE($6,max_priority_fee_per_gas_wei),
-             -- TX-030: the daily-spend reservation tracks the CURRENT attempt's cost, not the
-             -- original. Recalculate estimated_cost_wei with the bumped fee so the budget
-             -- reflects the maximum possible network cost of the live attempt.
-             estimated_cost_wei = value_wei + gas_limit * COALESCE(
-               COALESCE($5, max_fee_per_gas_wei),
-               COALESCE($4, gas_price_wei)
-             ),
              bump_count=bump_count+1,
+             -- Each rung buys its own full timeout window: reconciliation must not declare the
+             -- intent unknown mid-ladder just because the ORIGINAL broadcast is old.
              timeout_at = NOW() + (transaction_timeout_ms * INTERVAL '1 millisecond'),
              pending_at=NOW(), last_reconciled_at=NOW(), state='pending'
            WHERE intent_id=$1 AND state IN ('pending','unknown') RETURNING *
@@ -202,32 +197,28 @@ function createTransactionIntentRepository(pool) {
       return mapIntent(result.rows[0]);
     },
 
-    // TX-021/TX-022: append-only broadcast attempt tracking. Every signed hash is durable
-    // BEFORE any provider receives its bytes, so restart reconciliation can find it even
-    // after timeout, process interruption, or database failure.
-    async recordBroadcastAttempt(intentId, { txHash, nonce, gasPriceWei, maxFeePerGasWei, maxPriorityFeePerGasWei, isReplacement }) {
-      await pool.query(
-        `INSERT INTO transaction_broadcast_attempts
-          (intent_id, tx_hash, nonce, gas_price_wei, max_fee_per_gas_wei, max_priority_fee_per_gas_wei, is_replacement)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
-        ON CONFLICT (intent_id, tx_hash) DO NOTHING`,
-        [intentId, txHash, nonce.toString(),
-          gasPriceWei?.toString() ?? null, maxFeePerGasWei?.toString() ?? null,
-          maxPriorityFeePerGasWei?.toString() ?? null, isReplacement ?? false]);
-    },
-
-    async listBroadcastAttempts(intentId) {
-      const result = await pool.query(
-        `SELECT tx_hash, nonce, broadcast_at, is_replacement
-         FROM transaction_broadcast_attempts WHERE intent_id=$1 ORDER BY broadcast_at`,
-        [intentId]);
-      return result.rows.map(row => ({ txHash: row.tx_hash, nonce: Number(row.nonce),
-        broadcastAt: new Date(row.broadcast_at).getTime(), isReplacement: row.is_replacement }));
-    },
-
     async getByIdempotencyKey(idempotencyKey) {
       const result = await pool.query('SELECT * FROM transaction_intents WHERE idempotency_key=$1', [idempotencyKey]);
       return mapIntent(result.rows[0]);
+    },
+
+    // TX-021: append-only broadcast hash record. Called BEFORE any provider receives the signed
+    // bytes, so restart reconciliation can find the hash even if the process dies between
+    // signing and broadcast confirmation.
+    async recordBroadcastHash(intentId, txHash) {
+      await pool.query(
+        `INSERT INTO transaction_broadcast_hashes (intent_id, tx_hash) VALUES ($1, $2)
+         ON CONFLICT (intent_id, tx_hash) DO NOTHING`,
+        [intentId, txHash],
+      );
+    },
+
+    async getBroadcastHashes(intentId) {
+      const result = await pool.query(
+        `SELECT tx_hash FROM transaction_broadcast_hashes WHERE intent_id=$1 ORDER BY created_at`,
+        [intentId],
+      );
+      return result.rows.map(row => row.tx_hash);
     },
 
     async listNonFinal() {

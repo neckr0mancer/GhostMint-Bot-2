@@ -195,36 +195,27 @@ function createTransactionEngine({
 
   async function inspectChain(intent) {
     if (!intent.txHash) return { state: 'unknown', reason: 'signed transaction hash was not persisted' };
-    const receipt = await providerCall(intent.chain, 'getTransactionReceipt', provider => provider.getTransactionReceipt(intent.txHash));
-    if (receipt) return evaluateReceipt(intent, receipt);
-    // Bump-ladder race: attachBump made the re-bid hash primary and preserved the ORIGINAL in
-    // bumped_from_tx_hash. If the original mined instead (it was propagating while the bump was
-    // assembled; nodes reject a same-nonce replacement only once the original is visible), the
-    // receipt lives on the OLD hash and only checking the new one would keep a confirmed mint
-    // pending until timeout -- reporting a succeeded mint as unknown/failed and inviting a
-    // double spend. Whichever hash mined is the outcome; both are this intent's own broadcasts.
-    if (intent.bumpedFromTxHash) {
-      const supersededReceipt = await providerCall(intent.chain, 'getTransactionReceipt', provider => provider.getTransactionReceipt(intent.bumpedFromTxHash));
-      if (supersededReceipt) {
-        const evaluated = await evaluateReceipt(intent, supersededReceipt);
-        return { ...evaluated, reason: `${evaluated.reason} (original broadcast mined after the re-bid)` };
-      }
+    // TX-022: check ALL recorded hashes for this intent, not just the primary. A multi-rung
+    // bump ladder produces multiple possibly-live hashes; whichever mined IS the outcome.
+    let hashes = [intent.txHash];
+    if (intent.bumpedFromTxHash) hashes.push(intent.bumpedFromTxHash);
+    if (intentRepository.getBroadcastHashes) {
+      try {
+        const allHashes = await intentRepository.getBroadcastHashes(intent.intentId);
+        if (allHashes.length) hashes = allHashes;
+      } catch { /* fall back to primary + bumped */ }
     }
-    // TX-022: check ALL broadcast attempt hashes — a multi-rung ladder can have H0, H1, H2...
-    // and any of them may have mined. Without this, only the latest two are checked and older
-    // possibly-live hashes are lost.
-    if (intentRepository.listBroadcastAttempts) {
-      const attempts = await intentRepository.listBroadcastAttempts(intent.intentId);
-      const alreadyChecked = new Set([intent.txHash, intent.bumpedFromTxHash].filter(Boolean));
-      for (const attempt of attempts) {
-        if (alreadyChecked.has(attempt.txHash)) continue;
-        const olderReceipt = await providerCall(intent.chain, 'getTransactionReceipt', provider => provider.getTransactionReceipt(attempt.txHash));
-        if (olderReceipt) {
-          const evaluated = await evaluateReceipt(intent, olderReceipt);
-          return { ...evaluated, reason: `${evaluated.reason} (broadcast attempt mined)` };
+    for (const hash of hashes) {
+      const receipt = await providerCall(intent.chain, 'getTransactionReceipt', provider => provider.getTransactionReceipt(hash));
+      if (receipt) {
+        const evaluated = await evaluateReceipt(intent, receipt);
+        if (hash !== intent.txHash) {
+          return { ...evaluated, reason: `${evaluated.reason} (hash ${hash.slice(0, 10)}… mined)` };
         }
+        return evaluated;
       }
     }
+    // No receipt for any hash — check mempool visibility on the primary hash.
     const transaction = await providerCall(intent.chain, 'getTransaction', provider => provider.getTransaction(intent.txHash));
     if (transaction) return { state: 'pending', reason: 'transaction is present in the provider mempool' };
     // This used to read "pending nonce ahead of mine" as proof the nonce was consumed by another
@@ -536,11 +527,10 @@ function createTransactionEngine({
       if (!attached) throw new TransactionSafetyError('HASH_ATTACH_FAILED',
         'Signed transaction hash could not be persisted — broadcast aborted to prevent an untracked spend');
       intent = attached;
-      // TX-021: the primary hash is durable in the attempts table before any provider sees it.
-      if (intentRepository.recordBroadcastAttempt) {
-        await intentRepository.recordBroadcastAttempt(intent.intentId, {
-          txHash, nonce, isReplacement: false,
-        }).catch(() => {}); // best-effort: attachSignedHash already persisted it on the intent
+      // TX-021: record the hash BEFORE broadcast so restart reconciliation finds it even
+      // if the process dies between here and the broadcast confirmation.
+      if (intentRepository.recordBroadcastHash) {
+        await intentRepository.recordBroadcastHash(intent.intentId, txHash);
       }
       try {
         // Round 16 (Section AV): sniper races the same signed transaction across every candidate

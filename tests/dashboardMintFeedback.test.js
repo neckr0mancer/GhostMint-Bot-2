@@ -108,8 +108,8 @@ test('dashboard pins the chosen phase identity through scheduled-task creation',
 test('scheduled phases are checked again at the last safe pre-broadcast boundary',()=>{
   assert.match(serverSource,/function enforceEligibilityDeadline\(task, now = Date\.now\(\)\)/);
   assert.match(serverSource,/refreshScheduledPublicPhase\(task, executionChain, expectedPublicPhaseIdentity\)/);
-  assert.match(serverSource,/preBroadcastGuard: expectedPhaseIdentity/);
-  assert.match(serverSource,/preBroadcastGuard: expectedPublicPhaseIdentity/);
+  assert.match(serverSource,/preBroadcastGuard: async \(\) => \{/);
+  assert.match(serverSource,/await governance\.checkAccountStatus\(task\.userId\)/);
   assert.match(transactionEngineSource,/if \(request\.preBroadcastGuard\) \{[\s\S]*await request\.preBroadcastGuard/);
   assert.ok(transactionEngineSource.indexOf('await request.preBroadcastGuard')
     < transactionEngineSource.indexOf('intent = await intentRepository.createSubmitted'),

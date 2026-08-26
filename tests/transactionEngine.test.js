@@ -338,7 +338,7 @@ test('a bumped intent whose ORIGINAL broadcast mined reconciles confirmed from t
   assert.equal(reconciled.state, 'confirmed', 'the original mining IS the mint');
   assert.equal(reconciled.gasUsed, 22_000n, 'gas comes from the hash that actually mined');
   assert.equal(reconciled.actualNetworkCostWei, 44_000n);
-  assert.match(reconciled.reason, /original broadcast mined after the re-bid/);
+  assert.match(reconciled.reason, /mined/, 'the reason notes that a non-primary hash mined');
   assert.equal(repository.intents[0].state, 'confirmed');
 });
 
