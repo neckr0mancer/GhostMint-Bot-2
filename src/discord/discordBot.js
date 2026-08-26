@@ -1962,20 +1962,15 @@ async function handleMintPasteMessage({ identity, commands, flowState, chains, r
     // and starts fresh with the new address -- no confirmation needed, trimmed per user feedback.
     // UX-002 (Model 2 re-review): the flow clear must happen AFTER the EOA/wallet classification
     // below, not before -- an ignored EOA paste must preserve the active flow.
-    // Don't treat wallet addresses as contracts — pasting a wallet address (e.g. from a
-    // block explorer) should not trigger the mint info card. Check both the user's own wallets
-    // and whether the address has code on any supported chain (EOAs have no code).
-    // NOTE: commands.wallets() is SYNCHRONOUS (returns an array) — no .catch on it.
-    let isOwnedWallet = false;
+    // Don't treat the user's own wallet addresses as contracts — pasting a wallet address
+    // should not trigger the mint info card. This check is synchronous (fast, no RPC).
+    // The EOA check (isContractAddress) was removed: it made 6 serial RPC calls before every
+    // paste, and a slow chain RPC silently dropped real contracts as "EOAs." The main
+    // detectMintContract below already returns a clear error for addresses with no code.
     try {
       const wallets = commands.wallets(userId);
-      if (Array.isArray(wallets) && wallets.some(w => String(w.address || '').toLowerCase() === String(target).toLowerCase())) isOwnedWallet = true;
-      if (!isOwnedWallet && /^0x[0-9a-fA-F]{40}$/.test(target)) {
-        const isContract = await commands.isContractAddress(target).catch(() => true);
-        if (!isContract) isOwnedWallet = true; // EOA — treat like owned-wallet ignore
-      }
+      if (Array.isArray(wallets) && wallets.some(w => String(w.address || '').toLowerCase() === String(target).toLowerCase())) return;
     } catch {}
-    if (isOwnedWallet) return;
     if (flowState.get('discord', platformUserId)) flowState.clear('discord', platformUserId);
     const started = await startMintGuidedFlow({ commands, flowState, chains, rateLimiter },
       payload => message.reply(payload).catch(error => log(`Paste-detect: reply failed (${where}): ${error?.message || error}`)),

@@ -128,13 +128,13 @@ test('a paste of an address the user OWNS is ignored, not treated as a contract'
   assert.equal(flowState.get('discord', 'owner-paster'), null);
 });
 
-test('a paste of an unowned EOA (no code on any chain) is ignored too', async () => {
+test('a paste of an address not owned by the user still reaches the flow (owned-wallet check is fast, no RPC)', async () => {
   const flowState = createFlowStateStore();
-  const commands = baseCommands({ isContractAddress: async () => false });
+  const commands = baseCommands();
   const message = mockMessage('0x9999999999999999999999999999999999999999', 'eoa-paster');
   await handleMintPasteMessage({ identity: { resolveOrCreate: async () => 'internal-user' }, commands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT }, message);
-  assert.equal(message.replies.length, 0, 'an EOA paste must not open a mint flow');
-  assert.equal(flowState.get('discord', 'eoa-paster'), null);
+  assert.equal(message.replies.length, 1, 'a non-owned paste reaches detection (the real detectMintContract decides EOA vs contract)');
+  assert.equal(flowState.get('discord', 'eoa-paster') !== null, true);
 });
 
 test('a paste of a real contract still opens the flow, and an isContractAddress RPC failure fails open to it', async () => {
