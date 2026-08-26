@@ -553,7 +553,7 @@ function walletsMenu() {
     components: [
       row([button('📋 List wallets', 'wallet:list'), button('💰 Check balance', 'wallet:balance:pick')]),
       row([button('➕ Create wallet', 'wallet:create:start', 'success'), button('📥 Import wallet', 'wallet:import:start'), button('📥📥 Batch import', 'wallet:batch-import:start')]),
-      row([button('🗑️ Remove wallet', 'wallet:remove:pick', 'danger'), button('⬅️ Back to menu', 'menu:main')]),
+      row([button('🔑 Export wallet', 'wallet:export:pick'), button('🗑️ Remove wallet', 'wallet:remove:pick', 'danger'), button('⬅️ Back to menu', 'menu:main')]),
     ],
   };
 }
@@ -933,6 +933,16 @@ function confirmRemoveWallet(label) {
   };
 }
 
+function confirmExportWallet(label) {
+  return {
+    content: `⚠️ Export the private key for **${label}**?\n\nThis is the master key to this wallet. Whoever holds it owns everything in it, permanently. This ephemeral message is only visible to you, but the key still passes through Discord's systems and can be screenshotted or forwarded. Only proceed if you understand the risk.`,
+    components: [row([
+      button('⚠️ I understand, export it', `wallet:export:do:${label}`, 'danger'),
+      button('❌ Cancel', 'menu:wallets'),
+    ])],
+  };
+}
+
 // Discord counterpart to Telegram's confirmCancelTask -- same task:cancel:ask:<id>/task:cancel:do:<id>
 // step shape, so both platforms' handlers can share the exact same commands.tasks/controlTask calls.
 function confirmCancelTask(task) {
@@ -959,7 +969,7 @@ function labelModal({ customId, title, placeholder = '', style = 'short', maxLen
 module.exports = {
   button, row, select, mainMenu, mintModeMenu, batchImportMenu, gateUnlockCard,
   securityBanner, securityNeedsAttention, securitySetupCard, walletsMenu, settingsMenu, placeholderMenu,
-  chainSelect, walletSelect, walletMultiSelect, confirmRemoveWallet, confirmCancelTask, labelModal, gasMenu, activityMenu, tasksMenu, snipersMenu, adminOverviewMenu,
+  chainSelect, walletSelect, walletMultiSelect, confirmRemoveWallet, confirmExportWallet, confirmCancelTask, labelModal, gasMenu, activityMenu, tasksMenu, snipersMenu, adminOverviewMenu,
   sniperDetailsModal, sniperTolerancePrompt, sniperToleranceModal, sniperConfirmation,
   modeMenu, MODE_META,
   contractDetailsText, collectionInfoCard, openSeaPhasePicker, humanizeStageType, mintQuantitySelect, mintPriceStep, gasTolerancePrompt, mintConfirmation, numberModal,

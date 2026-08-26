@@ -926,6 +926,35 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
           components: [discordMenus.row([discordMenus.button('⬅️ Back to wallets', 'menu:wallets')])] });
       }
 
+      if (data === 'wallet:export:pick') {
+        if (!await actionGate.allows(userId, 'discord', platformUserId, 'exportkey')) {
+          return dcRespond(interaction, discordMenus.gateUnlockCard({ action: 'exportkey' }));
+        }
+        return dcRespond(interaction, discordMenus.walletSelect(commands.wallets(userId), { customId: 'wallet:export:select', emptyHint: 'No wallets yet. Create one first.' }));
+      }
+      if (data === 'wallet:export:select') {
+        const label = interaction.values?.[0];
+        if (!label) return dcRespond(interaction, { content: 'Select a wallet first.', components: [discordMenus.row([discordMenus.button('⬅️ Back to wallets', 'menu:wallets')])] });
+        return dcRespond(interaction, discordMenus.confirmExportWallet(label));
+      }
+      if (data.startsWith('wallet:export:do:')) {
+        const label = data.slice('wallet:export:do:'.length);
+        if (!await actionGate.allows(userId, 'discord', platformUserId, 'exportkey')) {
+          return dcRespond(interaction, discordMenus.gateUnlockCard({ action: 'exportkey' }));
+        }
+        try {
+          const exported = await commands.exportWalletKeyRaw(userId, label);
+          // Ephemeral only to the clicking user, mirrors Telegram's auto-delete courtesy.
+          // Delivered as code block so Discord doesn't link-preview it, with explicit warning.
+          return dcRespond(interaction, {
+            content: `🔑 Private key for **${escapeDiscord(label)}** — this message is only visible to you. It still passed through Discord's systems and can be screenshotted or forwarded. Store it securely and clear your clipboard after.\n\`\`\`${exported.privateKey}\`\`\``,
+            components: [discordMenus.row([discordMenus.button('⬅️ Back to wallets', 'menu:wallets')])],
+          });
+        } catch (error) {
+          return dcRespond(interaction, { content: componentErrorMessage(error), components: [discordMenus.row([discordMenus.button('⬅️ Back to wallets', 'menu:wallets')])] });
+        }
+      }
+
       // Section AA -- every branch below first confirms the CLICKING user (not just anyone who
       // can see the message) owns this exact mint_guided flow at this exact step; flowState is
       // keyed per clicking user, so a stranger's click naturally finds no matching flow and gets
