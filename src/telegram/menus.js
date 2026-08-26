@@ -704,8 +704,11 @@ function taskActions(task) {
   // determines the real value, never anything scheduled up front -- so "Free" would be a real lie
   // for a paid allowlist/GTD stage, not just an unhelpful label.
   const priceLine = task.viaOpenSea ? 'via OpenSea (determined at mint time)' : (task.price > 0 ? `${task.price} ETH` : 'Free');
+  const failureLine = task.status === 'failed' && task.lastError
+    ? `\nReason: ${escapeTelegramHtml(String(task.lastError))}`
+    : '';
   return {
-    text: `<b>${escapeTelegramHtml(task.name)}</b>${task.viaOpenSea ? ' 🎫' : ''} [${task.status}]\nContract: <code>${task.contract}</code>\nWallet: ${escapeTelegramHtml(task.walletLabel)}\nQty: ${task.qty} | Price: ${priceLine}\nDue: <b>${formatGmtPlus1(task.mintTime)}</b>\nID: <code>${task.id}</code>`,
+    text: `<b>${escapeTelegramHtml(task.name)}</b>${task.viaOpenSea ? ' 🎫' : ''} [${task.status}]\nContract: <code>${task.contract}</code>\nWallet: ${escapeTelegramHtml(task.walletLabel)}\nQty: ${task.qty} | Price: ${priceLine}\nDue: <b>${formatGmtPlus1(task.mintTime)}</b>${failureLine}\nID: <code>${task.id}</code>`,
     replyMarkup: keyboard(rows),
     parseMode: 'HTML',
   };

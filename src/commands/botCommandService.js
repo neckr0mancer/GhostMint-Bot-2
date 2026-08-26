@@ -174,12 +174,14 @@ function createBotCommandService(dependencies) {
     // first time this contract was ever looked up. Computed once here, shared by both the SeaDrop
     // and plain-mint branches below, since collection-level stats don't depend on mint mechanism.
     let stats = null;
+    let liveTotalMintedValue = null;
     if (input.includeStats) {
       const [liveTotalMinted, liveStats] = await Promise.all([
         contractValueResolver ? contractValueResolver.probeTotalMinted(chain, contractAddress) : null,
         openSeaService ? openSeaService.getCollectionStats(chain, contractAddress) : null,
       ]);
       const totalMintedValue = liveTotalMinted ? Number(liveTotalMinted.value) : null;
+      liveTotalMintedValue = totalMintedValue;
       const floorPrice = liveStats?.floorPrice ?? null;
       stats = {
         totalMinted: totalMintedValue,
@@ -193,6 +195,14 @@ function createBotCommandService(dependencies) {
         // everywhere else this term is used.
         marketCap: floorPrice !== null && totalMintedValue !== null ? floorPrice * totalMintedValue : null,
       };
+    } else if (input.includeSupply) {
+      // Scheduler reminders only need the live supply counter. Do not spend an OpenSea stats API
+      // request every minute merely to determine whether a pending mint has exhausted; the token's
+      // own total-minted view is enough and keeps the check provider-neutral.
+      const liveTotalMinted = contractValueResolver
+        ? await contractValueResolver.probeTotalMinted(chain, contractAddress)
+        : null;
+      liveTotalMintedValue = liveTotalMinted ? Number(liveTotalMinted.value) : null;
     }
 
     // Section AF -- "can't you read the phases from OpenSea and the contract?" On-chain SeaDrop only
@@ -226,17 +236,16 @@ function createBotCommandService(dependencies) {
       const priceKnown = Boolean(seaDrop.publicDrop);
       // SeaDrop's own PublicDrop struct has no current-supply field, so the stage's endTime having
       // already passed is one sold-out signal here -- but a popular drop can sell out well before
-      // its window closes, so that alone isn't enough. `stats.totalMinted` above is the only live
-      // minted-count already available without probing twice, and it's includeStats-gated on
-      // purpose (see the comment above it) -- outside includeStats there is no live count to
-      // compare against, so soldOut falls back to the time-window check alone, same as before this
-      // fix. maxSupply is probed unconditionally either way, same as the card's own "Max supply"
-      // line further down.
+      // its window closes, so that alone isn't enough. `liveTotalMintedValue` above is the only live
+      // minted-count already available without probing twice. Ordinary card detection keeps that
+      // behind includeStats; scheduler reminders use the lean includeSupply flag so they can make
+      // the same comparison without fetching floor/owner/volume data every minute. maxSupply is
+      // probed unconditionally either way, same as the card's own "Max supply" line further down.
       const timeWindowClosed = Boolean(seaDrop.publicDrop?.endTime && seaDrop.publicDrop.endTime * 1000 <= Date.now());
       const liveMaxSupply = contractValueResolver ? await contractValueResolver.probeMaxSupply(chain, contractAddress) : null;
       const maxSupplyValue = liveMaxSupply ? Number(liveMaxSupply.value) : null;
-      const soldOut = Boolean(timeWindowClosed || (maxSupplyValue !== null && typeof stats?.totalMinted === 'number'
-        && stats.totalMinted >= maxSupplyValue));
+      const soldOut = Boolean(timeWindowClosed || (maxSupplyValue !== null && typeof liveTotalMintedValue === 'number'
+        && liveTotalMintedValue >= maxSupplyValue));
       const displayPrice = await resolveDisplayPrice({ chain, soldOut, mintPriceKnown: priceKnown,
         mintPriceWeiPerItem: priceKnown ? BigInt(seaDrop.publicDrop.mintPriceWei) : null, floorPrice: openSea?.floorPrice });
       return {

@@ -49,8 +49,7 @@ function createScheduledReminder({
       PENDING_STATUSES.has(String(task.status || '').toLowerCase())
       && typeof task.mintTime === 'number'
       && task.mintTime > now
-      && task.mintTime - now <= leadMs
-      && !(reminderSent.has(deliveryKey(task)) && lowBalanceWarned.has(deliveryKey(task))));
+      && task.mintTime - now <= leadMs);
 
     for (const task of due) {
       try {
@@ -60,12 +59,17 @@ function createScheduledReminder({
 
         if (await detectSoldOut(task)) {
           await cancelTask(task);
-          await notify(task.userId, `🛑 <b>${escape(task.name)}</b> was auto-cancelled -- the collection already sold out.`);
+          await notify(task.userId, `⚠️ <b>${escape(task.name)}</b> was cancelled because the mint sold out before its scheduled time. Nothing was sent.`);
           broadcast(task.userId, { type: 'task.autoCancelled', taskId: task.id, name: task.name, reason: 'sold_out' });
           reminderSent.add(key);
           lowBalanceWarned.add(key);
           continue;
         }
+
+        // Delivery flags suppress duplicate reminders, not safety checks. A free mint used to set
+        // both flags on the first sweep and then skip every later sold-out check, so supply could
+        // exhaust during the remaining five minutes and the user would only see a generic failure.
+        if (reminderSent.has(key) && lowBalanceWarned.has(key)) continue;
 
         const minutes = Math.max(1, Math.round((task.mintTime - now) / 60000));
         const needed = await calculateNeededWei(task, wallet);

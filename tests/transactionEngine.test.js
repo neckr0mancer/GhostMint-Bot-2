@@ -60,7 +60,8 @@ function policy(overrides = {}) {
   };
 }
 
-function fixture({ policyOverrides, notification, simulationError, feeData, feeDataCache, fastProviderService, sniperProviderService, receipts: receiptsOverride } = {}) {
+function fixture({ policyOverrides, notification, simulationError, feeData, feeDataCache, fastProviderService, sniperProviderService,
+  receipts: receiptsOverride, receiptStatus = 1 } = {}) {
   const repository = new MemoryIntentRepository();
   const calls = { broadcasts: [], simulations: 0, feeDataFetches: 0 };
   let pendingNonce = 0;
@@ -83,7 +84,7 @@ function fixture({ policyOverrides, notification, simulationError, feeData, feeD
       assert.equal(intent.txHash, keccak256(raw), 'signed hash must exist before broadcast');
       calls.broadcasts.push(parsed.nonce);
       pendingNonce = Math.max(pendingNonce, parsed.nonce + 1);
-      receipts.set(keccak256(raw), { status: 1, blockNumber: 100 });
+      receipts.set(keccak256(raw), { status: receiptStatus, blockNumber: 100 });
       return { hash: keccak256(raw) };
     },
     async getTransactionReceipt(hash) { return receipts.get(hash) || null; },
@@ -444,6 +445,14 @@ test('simulation setting independently skips or enforces dry-run', async t => {
     const { engine, request } = fixture({ simulationError });
     await assert.rejects(engine.submit(request), /would hold 7, exceeding the 5 allowed per wallet/);
   });
+  await t.test('nested RPC revert bytes are decoded too', async () => {
+    const data = SEADROP_ERROR_INTERFACE.encodeErrorResult('MintQuantityExceedsMaxSupply', [101, 100]);
+    const simulationError = Object.assign(new Error('execution reverted'), {
+      code: 'CALL_EXCEPTION', info: { error: { data } },
+    });
+    const { engine, request } = fixture({ simulationError });
+    await assert.rejects(engine.submit(request), /mint is sold out/i);
+  });
   await t.test('a zero-data revert explains itself instead of surfacing ethers\' cryptic "require(false)" text verbatim', async () => {
     // Reproduced live against a real reported failure: calling mint(uint256) on a contract that
     // implements neither that function nor a fallback reverts with zero bytes of data, which
@@ -454,6 +463,24 @@ test('simulation setting independently skips or enforces dry-run', async t => {
     const { engine, request } = fixture({ simulationError });
     await assert.rejects(engine.submit(request), /no reason given by the contract/);
   });
+});
+
+test('a mined revert is replayed read-only so a supply race is not reported as only failed', async () => {
+  const data = SEADROP_ERROR_INTERFACE.encodeErrorResult('MintQuantityExceedsMaxSupply', [101, 100]);
+  const replayError = Object.assign(new Error('execution reverted'), {
+    code: 'CALL_EXCEPTION', info: { error: { data } },
+  });
+  const { calls, engine, request } = fixture({
+    policyOverrides:{ simulationEnabled:false },
+    simulationError:replayError,
+    receiptStatus:0,
+  });
+
+  const result = await engine.submit(request);
+  assert.equal(result.state, 'reverted');
+  assert.match(result.reason, /mint is sold out/i);
+  assert.equal(calls.broadcasts.length, 1, 'the test models supply exhausting after the send');
+  assert.equal(calls.simulations, 1, 'the only call is the read-only post-receipt diagnosis');
 });
 
 test('provider service retries then falls back to the next configured RPC', async () => {
@@ -601,7 +628,9 @@ test('the insufficient-funds branch does not swallow real contract reverts', () 
   const { explainCallFailure } = require('../src/transactions/transactionEngine');
   const revert = Object.assign(new Error('execution reverted'), { reason: 'MintQuantityExceedsMaxSupply' });
   const message = explainCallFailure(revert, { chain: 'ethereum', params: {} });
-  assert.match(message, /MintQuantityExceedsMaxSupply/);
+  assert.match(message, /mint is sold out/i);
+  assert.doesNotMatch(message, /MintQuantityExceedsMaxSupply/,
+    'raw Solidity error names should not be shown to the user');
   assert.equal(/cannot cover the mint price/.test(message), false);
 });
 

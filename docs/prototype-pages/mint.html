@@ -167,13 +167,12 @@
                   <div class="rm"><div class="rt">Unknown drop</div><div class="rs fold">attempt 3 of 3 · sale not active</div></div>
                   <div class="rv"><span class="p bad">Failed</span></div></div>
                 <div class="br" style="margin-top:11px"><button class="b sm">Pause</button><button class="b sm">Resume</button><button class="b sm">Retry</button><button class="b d sm">Cancel…</button></div>
-                <!-- Pager: /api/tasks returns {page,pageSize,total,totalPages,items} -->
-                <!-- THREE numbers, sliding: pages 1-3 read "1 2 3", and the fourth appears only by
-                     stepping onto it ("2 3 4"). Jump-to-first/last appear only past three pages.
-                     All four arrows disable at the ends rather than hiding, so the row does not
-                     reflow under the cursor. -->
+                <!-- Pager: /api/tasks returns {page,pageSize,total,totalPages,items}. THREE numbers,
+                     sliding: pages 1-3 read "1 2 3", and the fourth appears only by stepping onto
+                     it ("2 3 4"). No ellipsis and no jump-to-first: previous, three numbers, next,
+                     then jump-to-last. On phones this list requests three rows per page. -->
                 <div class="pager"><span class="pinfo">3 of 14</span>
-                  <button disabled aria-label="First page">«</button><button disabled>‹</button>
+                  <button disabled>‹</button>
                   <button class="on">1</button><button>2</button><button>3</button>
                   <button>›</button><button aria-label="Last page">»</button></div>
               </div>
@@ -259,4 +258,3 @@
     </section>
 
     <!-- ══════════ AUTOMATION ══════════ -->
-    

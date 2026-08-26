@@ -1050,7 +1050,7 @@ function Minting({onSwitchToBatch,onSwitchToSchedule,onGoWallets}){const wallets
         <div className="ch"><div className="chip-ico">{CONTRACT_ICON}</div><h2>Contract</h2></div>
         <div className="g" style={{gap:'11px'}}>
           <label className="fl"><span>Contract address</span>
-            <input className={`in mono${detected?' ok':''}`} disabled={noWallets}
+            <input className={`in mono${detected?' ok':''}`} disabled={noWallets} autoFocus
               placeholder="0x… paste a contract address" value={contractAddress}
               onChange={e=>{const v=e.target.value;setContractAddress(v);if(!ADDRESS_SHAPE.test(v.trim())){setDetectionError('');setDetectionRetryable(false);setCollectionName('');setViaOpenSea(false);setMethodSignature('');setArgumentsJson('');setSeaDropAddress('');setDetectedChain('');setMaxPerWallet(null);setPriceEth('');setPreview(null);setMintError(null);setQuantityIssue(null);lastDetected.current='';detectingKey.current='';setDetecting(false);}autoDetectIfReady(v,quantity);}}
               onBlur={handleAutoDetectBlur}/>
@@ -1263,7 +1263,7 @@ function scheduleStageSelectionKey(stage){
 let pendingSchedulePrefill=null;
 function setPendingSchedulePrefill(value){pendingSchedulePrefill=value;}
 function consumePendingSchedulePrefill(){const value=pendingSchedulePrefill;pendingSchedulePrefill=null;return value;}
-function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSearch]=useState('');const [bucket,setBucket]=useState('pending');const [filtersOpen,setFiltersOpen]=useState(false);const [serverFilters,setServerFilters]=useState(null);const PAGE_SIZE=10;const COMPAT_LIMIT=50;const listing=useLoad(serverFilters===false?`/api/tasks?page=1&pageSize=${COMPAT_LIMIT}&search=${encodeURIComponent(search)}`:`/api/tasks?page=${page}&pageSize=${PAGE_SIZE}&status=${bucket}&search=${encodeURIComponent(search)}`,[page,bucket,search,serverFilters],'tasks.changed');const wallets=useLoad('/api/wallets',[],'wallets.changed');const [chain,setChain]=useState(profile.defaultChain||profile.supportedChains[0]);const [contractAddress,setContractAddress]=useState('');const [taskName,setTaskName]=useState('');const [detectedName,setDetectedName]=useState('');const [detectedSeaDrop,setDetectedSeaDrop]=useState(false);const [quantity,setQuantity]=useState('1');const [maxPerWallet,setMaxPerWallet]=useState(null);const [priceETH,setPriceETH]=useState('');const [mintTime,setMintTime]=useState('');const [viaOpenSea,setViaOpenSea]=useState(false);const [detectedOpenSeaRecommendation,setDetectedOpenSeaRecommendation]=useState(false);const [stageType,setStageType]=useState('');const [stages,setStages]=useState([]);const [selectedStageKey,setSelectedStageKey]=useState('');const [scheduleWallet,setScheduleWallet]=useState('');const [pendingRows,setPendingRows]=useState([]);const [detecting,setDetecting]=useState(false);const [detectionError,setDetectionError]=useState('');const [detectionRetryable,setDetectionRetryable]=useState(false);const lastDetected=useRef('');
+function Tasks({profile}){const mobile=useIsMobile();const [page,setPage]=useState(1);const [search,setSearch]=useState('');const [bucket,setBucket]=useState('pending');const [filtersOpen,setFiltersOpen]=useState(false);const [serverFilters,setServerFilters]=useState(null);const PAGE_SIZE=mobile?3:10;const COMPAT_LIMIT=50;const listing=useLoad(serverFilters===false?`/api/tasks?page=1&pageSize=${COMPAT_LIMIT}&search=${encodeURIComponent(search)}`:`/api/tasks?page=${page}&pageSize=${PAGE_SIZE}&status=${bucket}&search=${encodeURIComponent(search)}`,[page,bucket,search,serverFilters,PAGE_SIZE],'tasks.changed');const wallets=useLoad('/api/wallets',[],'wallets.changed');const [chain,setChain]=useState(profile.defaultChain||profile.supportedChains[0]);const [contractAddress,setContractAddress]=useState('');const [taskName,setTaskName]=useState('');const [detectedName,setDetectedName]=useState('');const [detectedSeaDrop,setDetectedSeaDrop]=useState(false);const [quantity,setQuantity]=useState('1');const [maxPerWallet,setMaxPerWallet]=useState(null);const [priceETH,setPriceETH]=useState('');const [mintTime,setMintTime]=useState('');const [viaOpenSea,setViaOpenSea]=useState(false);const [detectedOpenSeaRecommendation,setDetectedOpenSeaRecommendation]=useState(false);const [stageType,setStageType]=useState('');const [stages,setStages]=useState([]);const [selectedStageKey,setSelectedStageKey]=useState('');const [scheduleWallet,setScheduleWallet]=useState('');const [pendingRows,setPendingRows]=useState([]);const [detecting,setDetecting]=useState(false);const [detectionError,setDetectionError]=useState('');const [detectionRetryable,setDetectionRetryable]=useState(false);const lastDetected=useRef('');
   // The prototype's Schedule form has no price field, because it assumes the contract can be
   // priced automatically. Some cannot -- the server then rejects with a priceETH issue and there
   // is nowhere to type one, which left the form unsubmittable for those contracts. So the field
@@ -1271,6 +1271,9 @@ function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSear
   // .fielderr. A gap in the design rather than a departure from it; see backlog §14.
   const [priceIssue,setPriceIssue]=useState(null);
   const [selectedIds,setSelectedIds]=useState([]);
+  // A phone deliberately shows three schedules per page. Reset page-scoped selection when the
+  // breakpoint changes so a desktop page 5 cannot become an empty mobile page 5.
+  useEffect(()=>{setPage(1);setSelectedIds([]);},[mobile]);
   const [scheduleNow,setScheduleNow]=useState(()=>Date.now());
   useEffect(()=>{
     const timer=setInterval(()=>setScheduleNow(Date.now()),15_000);
@@ -1606,14 +1609,18 @@ function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSear
     const key=bucketOf(task);
     // An expired row says "expired" rather than "paused"/"failed", because that is the fact that
     // decides what you can do with it.
-    return <span className={`p ${key?BUCKET_TONE[key]:'nu'}`}>{key==='expired'?'expired':task.status}</span>;
+    const status=String(task.status||'').toLowerCase();
+    const label=key==='expired'?'expired'
+      :status==='retry'&&task.eligibilityDeadline&&Number(task.phaseWaitCount||0)>0?'rescheduled'
+      :task.status;
+    return <span className={`p ${key?BUCKET_TONE[key]:'nu'}`}>{label}</span>;
   }
-  return <div className="split">
+  return <div className="split schedule-layout">
     <div className="card">
       <div className="ch"><div className="chip-ico">{CLOCK_ICON_LG}</div><h2>Schedule a mint</h2></div>
       <form className="g" style={{gap:'11px'}} onSubmit={create}>
         <label className="fl"><span>Contract address</span>
-          <input className="in mono" name="contractAddress" required disabled={noWallets} placeholder="0x…"
+          <input className="in mono" name="contractAddress" required disabled={noWallets} autoFocus placeholder="0x…"
             value={contractAddress}
             onChange={e=>{setContractAddress(e.target.value);if(!ADDRESS_SHAPE.test(e.target.value.trim())){lastDetected.current='';setMaxPerWallet(null);setViaOpenSea(false);setDetectedOpenSeaRecommendation(false);setDetectedSeaDrop(false);setStageType('');setStages([]);setSelectedStageKey('');setDetectionError('');setDetectionRetryable(false);const prev=detectedName;setDetectedName('');if(taskName===prev) setTaskName('');}autoDetectIfReady(e.target.value);}}
             onBlur={handleContractBlur}/></label>
@@ -1679,7 +1686,7 @@ function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSear
     </div>
 
     <div className="g">
-      <div className="card">
+      <div className="card schedule-list-card">
         {/* The prototype's static "2 pending" chip, now the filter. It stays ON THE TITLE LINE
             where that chip was, and stays a SINGLE chip until pressed -- see selectBucket's note.
             Each chip carries its own count, which is why the server scopes counts to the search
@@ -1763,7 +1770,7 @@ function Tasks({profile}){const [page,setPage]=useState(1);const [search,setSear
                      apply to the current selection are disabled rather than hidden, so the row
                      does not reflow as the selection changes. .b[disabled] is the prototype's
                      own treatment for exactly this. */}
-                 <div className="br" style={{marginTop:'11px'}}>
+                 <div className="br schedule-actions" style={{marginTop:'11px'}}>
                    {['pause','resume','retry'].map(action=><button type="button" key={action} className="b sm"
                      disabled={!selectionSupports(action)} onClick={()=>controlSelected(action)}>
                      {action[0].toUpperCase()+action.slice(1)}</button>)}
@@ -1791,31 +1798,12 @@ const OUTCOME_TONE={
   invalid_context:'wn', rate_limited:'wn', 'rate-limited':'wn',
 };
 function outcomeTone(value){return OUTCOME_TONE[String(value||'').toLowerCase()]||'nu';}
-// History has the pager shown in history.html: one previous arrow, numbered pages with an
-// ellipsis/last-page affordance when needed, then one next arrow. The shared Pager intentionally
-// follows a later compact-window rule (including first/last double arrows), so using it here would
-// make this page visibly diverge from its prototype again.
+// History reports the number of rows on THIS page ("4 of 248") rather than the cumulative offset.
+// Everything else -- arrows, the three-number window and no-ellipsis rule -- comes from the same
+// shared Pager used by Schedule and Admin. This wrapper exists only for that count convention.
 function HistoryPager({value,page,setPage,visibleCount}){
-  if(!value||!value.total)return null;
-  const total=value.totalPages;
-  // history.html reports rows on THIS page ("4 of 248"), not the cumulative offset reached.
-  const shown=visibleCount??Math.min(value.pageSize,value.total-(page-1)*value.pageSize);
-  let pages;
-  if(total<=5)pages=Array.from({length:total},(_,index)=>index+1);
-  else if(page<=3)pages=[1,2,3,'end-gap',total];
-  else if(page>=total-2)pages=[1,'start-gap',total-2,total-1,total];
-  else pages=[1,'start-gap',page-1,page,page+1,'end-gap',total];
-  return <div className="pager">
-    <span className="pinfo">{shown} of {value.total}</span>
-    <button type="button" disabled={page<=1} aria-label="Previous page"
-      onClick={()=>setPage(page-1)}>&lsaquo;</button>
-    {pages.map(item=>typeof item==='number'
-      ?<button type="button" key={item} className={item===page?'on':undefined}
-          aria-current={item===page?'page':undefined} onClick={()=>setPage(item)}>{item}</button>
-      :<span className="history-page-gap" key={item} aria-hidden="true">…</span>)}
-    <button type="button" disabled={page>=total} aria-label="Next page"
-      onClick={()=>setPage(page+1)}>&rsaquo;</button>
-  </div>;
+  const shown=visibleCount??(value?Math.min(value.pageSize,value.total-(page-1)*value.pageSize):0);
+  return <Pager value={value} page={page} setPage={setPage} visibleCount={shown}/>;
 }
 // history.html's Activity tab. The filter card is the prototype's collapsible .card.col (the same
 // markup WalletCard uses; prototype.css hides the header above the mobile breakpoint, so one
@@ -2114,7 +2102,8 @@ function Pnl(){
       {/* An auto-created record's name, cost and gas are facts off a confirmed receipt. They stay
           submittable (the PUT recomputes net from all four) but not editable, so the only thing a
           person can change here is the one field that never had a data source. */}
-      <Field name="name" label="Name" defaultValue={current?.nm} readOnly={currentIsAuto||undefined}/>
+      <Field name="name" label="Name" defaultValue={current?.nm} readOnly={currentIsAuto||undefined}
+        autoFocus={!currentIsAuto||undefined}/>
       <Field name="cost" label="Cost" type="number" step="any" defaultValue={current?.cost??0} readOnly={currentIsAuto||undefined}/>
       <Field name="sale" label={currentIsAuto?'Sale — what it resold for':'Sale'} type="number" step="any" defaultValue={current?.sale??0} autoFocus={currentIsAuto||undefined}/>
       <Field name="gas" label="Gas" type="number" step="any" defaultValue={current?.gas??0} readOnly={currentIsAuto||undefined}/>
@@ -2289,7 +2278,7 @@ function PolicyEditor({target,onChanged,highlighted}){
              <form onSubmit={confirmBypass}>
                <label className="fl" style={{marginBottom:'11px'}}>
                  <span>Type <b>CONFIRM</b> exactly to enable</span>
-                 <input className="in mono" name="confirmation" placeholder="CONFIRM"/></label>
+                 <input className="in mono" name="confirmation" autoFocus placeholder="CONFIRM"/></label>
                <div className="br"><button className="b d sm">Enable bypass</button>
                  <button type="button" className="b g sm" onClick={()=>setChallenge(null)}>Cancel</button></div>
              </form>
@@ -2379,8 +2368,15 @@ function NotificationBell(){const [items,setItems]=useState([]);const [open,setO
             }}
           // Retries are spent: a further Retry would only be refused by the server's own guard.
           // Reschedule jumps to the schedule form, which is the way to run this mint again.
-          :{label:'Reschedule',run:()=>{window.location.href='/dashboard/mint?tab=schedule';}};
-        notify(`${message.name} failed — ${message.reason}`,{type:'error',category:'auto',timeoutMs:9000,action});
+          :(message.reschedulable===false?null:{label:'Reschedule',run:()=>{window.location.href='/dashboard/mint?tab=schedule';}});
+        notify(`${message.name} — ${message.reason}`,{
+          type:message.severity==='warning'?'info':'error',category:'auto',timeoutMs:9000,
+          ...(action?{action}:{})
+        });
+      }
+      if(message?.type==='task.autoCancelled'){
+        notify(`${message.name} was cancelled because the mint sold out before its scheduled time. Nothing was sent.`,
+          {type:'info',category:'auto',timeoutMs:9000});
       }
       if(message?.type==='task.lowBalance'){
         notify(`${message.name} mints automatically in ${message.minutes}m and ${message.walletLabel} is short by ${message.shortByEth} ETH.`,
@@ -2497,22 +2493,110 @@ async function promptSetUsername({isChange,onProfileChange}){
     return true;
   }catch(error){notify(error.message,{type:'error'});return false;}
 }
-function Account({profile,onLogout,onProfileChange}){
+const ACCOUNT_TABS=[
+  {id:'identity',label:'Identity'},
+  {id:'security',label:'Security'},
+  {id:'linked',label:'Linked platforms'},
+  {id:'sessions',label:'Sessions'},
+];
+const ACCOUNT_ICONS={
+  identity:<svg {...ICON_PROPS}><circle cx="12" cy="8" r="3.6"/><path d="M4.5 20c.8-4 3.8-6 7.5-6s6.7 2 7.5 6"/></svg>,
+  security:<svg {...ICON_PROPS}><rect x="4" y="10.5" width="16" height="10.5" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/></svg>,
+  sessions:<svg {...ICON_PROPS}><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M8 21h8M12 18v3"/></svg>,
+  telegram:<svg viewBox="0 0 24 24" fill="currentColor"><path d="M21 4 3 11l5 2 2 6 3-4 5 4z"/></svg>,
+  discord:<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"><circle cx="9.5" cy="11.5" r="1.6" fill="currentColor" stroke="none"/><circle cx="14.5" cy="11.5" r="1.6" fill="currentColor" stroke="none"/><path d="M19 6a15 15 0 0 0-4-1c-2-1-6-1-8 0a15 15 0 0 0-4 1c-2 3-2.5 6-2.5 9a15 15 0 0 0 4.5 2l1-1.5a11 11 0 0 0 10 0l1 1.5a15 15 0 0 0 4.5-2c0-3-.5-6-2.5-9"/></svg>,
+};
+function linkedAccountLabel(platform){return platform==='telegram'?'Telegram':platform==='discord'?'Discord':String(platform||'Platform');}
+function shortPlatformId(value){const id=String(value||'');return id.length>12?`${id.slice(0,4)}…${id.slice(-4)}`:id;}
+function Account({profile,onLogout,onProfileChange,tab,onTab,go}){
+  const active=ACCOUNT_TABS.some(item=>item.id===tab)?tab:'identity';
   const [linking,setLinking]=useState(null);const [linkBusy,setLinkBusy]=useState(false);const [clock,setClock]=useState(Date.now());
+  const [displayName,setDisplayName]=useState(profile.displayName||'');const [profileBusy,setProfileBusy]=useState(false);
+  useEffect(()=>setDisplayName(profile.displayName||''),[profile.displayName]);
   useEffect(()=>{if(!linking)return;const timer=setInterval(()=>setClock(Date.now()),1000);return()=>clearInterval(timer);},[linking]);
   async function generate(){setLinkBusy(true);try{setLinking(await api('/api/auth/link-code',{method:'POST',body:JSON.stringify({})}));setClock(Date.now());}catch(value){notify(value.message,{type:'error'});}finally{setLinkBusy(false);}}
+  async function saveProfile(event){event.preventDefault();setProfileBusy(true);try{const result=await api('/api/profile/display-name',{method:'PUT',body:JSON.stringify({displayName})});setDisplayName(result.displayName);onProfileChange?.(current=>({...current,displayName:result.displayName}));notify('Profile saved.',{type:'success'});}catch(value){notify(value.message,{type:'error'});}finally{setProfileBusy(false);}}
   async function logoutEverywhere(){if(await confirmDialog('Log out every dashboard session for this account, including this browser?'))onLogout({all:true});}
   const remaining=linking?Math.max(0,Math.ceil((new Date(linking.expiresAt).getTime()-clock)/1000)):0;
   const session=profile.session;
-  return <><PageTitle eyebrow="Identity" title="Account" subtitle="One account, shared across Telegram, Discord, and this dashboard."/>
-    <div className="card-grid">{profile.linkedAccounts.map(account=><article className="card" key={account.platform}><span className="pill">{account.platform}</span><div className="user-card-identity"><h2>{account.platformUserId}</h2><CopyButton value={account.platformUserId} label="Copy platform user ID"/></div></article>)}</div>
-    <div className="panel"><h2>Connect another platform</h2><p>Generate a five-minute, single-use code, then run <code>/link code:&lt;code&gt;</code> in Discord (or <code>/link</code> generates the same kind of code directly from Telegram) to connect it to this same account instead of creating a separate one. Refreshing immediately invalidates the previous code.</p>
-      <button className="b p panel-cta" disabled={linkBusy} onClick={generate}>{linkBusy?'Generating…':linking?'Refresh code':'Generate link code'}</button>
-      {linking&&<div className="link-code-result"><div className="link-code-heading"><strong>{linking.code}</strong><CopyButton value={linking.code} label="Copy link code"/></div><p>{remaining>0?`Expires in ${Math.floor(remaining/60)}:${String(remaining%60).padStart(2,'0')}`:'Expired — refresh to generate a new code.'}</p><p>Exact expiry: {new Date(linking.expiresAt).toLocaleString()}</p></div>}
-    </div>
-    <div className="panel"><h2>Login credentials</h2><p>A username and security password together let you sign in with a password instead of a Telegram/Discord code. The same password also gates sensitive actions like exporting a wallet key.</p><div className="account-credential-row"><span>Username</span><strong>{profile.username||'Not set'}</strong><button className="b g sm" disabled={!profile.securityPasswordSet} onClick={()=>promptSetUsername({isChange:Boolean(profile.username),onProfileChange})}>{profile.username?'Change':'Set'}</button></div><div className="account-credential-row"><span>Security password</span><strong>{profile.securityPasswordSet?'Set':'Not set'}</strong><button className="b g sm" onClick={()=>promptSetSecurityPassword({isChange:profile.securityPasswordSet,onProfileChange})}>{profile.securityPasswordSet?'Change':'Set'}</button></div>{!profile.securityPasswordSet&&<p className="notice notice-warning">Set a security password first -- a username needs one to be useful for signing in.</p>}</div>
-    {profile.isOwner&&<div className="panel"><h2>Admin</h2><p>Owner-only controls for groups, ceilings, presets, and platform-wide governance live on a separate screen.</p><a className="b g admin-link panel-cta" href="/dashboard/admin">Open admin dashboard</a></div>}
-    <div className="panel"><h2>Sessions</h2><p>Signed in {profile.linkedAccounts.map(item=>item.platform).join(' + ')||'as a linked user'}.</p>{session&&<div className="session-policy"><div><span>Active browser sessions</span><strong>{session.activeCount} of {session.maxActiveSessions}</strong></div><div><span>Idle timeout</span><strong>{Math.round(session.idleTimeoutMs/3_600_000)} hours</strong></div><div><span>Maximum lifetime</span><strong>{Math.round(session.maxLifetimeMs/86_400_000)} days</strong></div><div><span>This session refreshes until</span><strong>{session.expiresAt?new Date(session.expiresAt).toLocaleString():'Unavailable'}</strong></div></div>}<p className="session-policy-note">Activity extends the idle deadline, but never beyond seven days. A fourth browser login signs out the least recently used session. Production uses secure HTTPS cookies; private browsing may still clear them when a page closes.</p><div className="br"><button className="b g" onClick={()=>onLogout(false)}>Log out</button><button className="b d" onClick={logoutEverywhere}>Log out everywhere</button></div></div>
+  const linkedAccounts=profile.linkedAccounts||[];
+  const mode=profile.currentMode?.displayName||profile.currentMode?.key||'Not selected';
+  const defaultChain=chainMeta(profile.defaultChain||profile.supportedChains?.[0]||'').label||'Not selected';
+  const accountRows=[
+    {label:'Internal user ID',value:<span className="account-copy-value"><span className="mono">{shortPlatformId(profile.userId)}</span><CopyButton value={profile.userId} label="Copy internal user ID"/></span>},
+    {label:'Default chain',value:defaultChain},
+    {label:'Linked identities',value:String(linkedAccounts.length)},
+  ];
+  return <><PageTitle eyebrow="Identity" title="Account" subtitle="One internal account. Telegram, Discord, and this browser are linked identities of it."/>
+    <SubTabs tabs={ACCOUNT_TABS} active={active} onChange={onTab} label="Account sections"/>
+
+    {active==='identity'&&<div className="split account-tab-panel" role="tabpanel" aria-label="Identity">
+      <div className="g">
+        <section className="card account-profile-card">
+          <div className="ch"><span className="chip-ico">{ACCOUNT_ICONS.identity}</span><h2>Profile</h2></div>
+          <form onSubmit={saveProfile} className="account-profile-form">
+            <label className="fl"><span>Display name</span><input className="in" value={displayName} maxLength="40" required autoFocus onChange={event=>setDisplayName(event.target.value)} placeholder="How GhostMint should address you"/></label>
+            <div className="account-readonly-field"><span>Username</span><strong>{profile.username||'Not set'}</strong><button type="button" className="b g sm" disabled={!profile.securityPasswordSet} onClick={()=>promptSetUsername({isChange:Boolean(profile.username),onProfileChange})}>{profile.username?'Change':'Set'}</button></div>
+            <div className="account-readonly-field"><span>Default chain</span><strong>{defaultChain}</strong><button type="button" className="b g sm" onClick={()=>go?.('Settings')}>Settings</button></div>
+            <div className="br"><button className="b p sm" disabled={profileBusy||displayName.trim()===(profile.displayName||'')}>{profileBusy?'Saving…':'Save profile'}</button></div>
+          </form>
+        </section>
+        <div className="nt i account-mode-note">{INFO_ICON}<div>Transaction mode is currently <b>{mode}</b>. It changes execution safety, so it lives in <button type="button" className="b sm" onClick={()=>go?.('Settings')}>Settings → Transaction mode</button>.</div></div>
+      </div>
+      <div className="g">
+        <div className="sober"><div className="sh">{ACCOUNT_ICONS.identity}Account</div><Ledger rows={accountRows} total={{label:'Account status',value:'Active'}}/></div>
+        {profile.isOwner&&<section className="card tight"><div className="ch"><h2>Owner access</h2><span className="p ok">Owner</span></div><p>Groups, ceilings, presets, and platform governance live in the owner dashboard.</p><a className="b g admin-link" href="/dashboard/admin">Open admin dashboard</a></section>}
+      </div>
+    </div>}
+
+    {active==='security'&&<div className="split account-tab-panel" role="tabpanel" aria-label="Security">
+      <section className="card">
+        <div className="ch"><span className="chip-ico">{ACCOUNT_ICONS.security}</span><h2>Login credentials</h2></div>
+        <p>A username and security password let you sign in without a link code. The same password protects sensitive actions such as wallet-key export.</p>
+        <div className="account-credential-row"><span>Security password</span><strong>{profile.securityPasswordSet?'Set':'Not set'}</strong><button className="b g sm" onClick={()=>promptSetSecurityPassword({isChange:profile.securityPasswordSet,onProfileChange})}>{profile.securityPasswordSet?'Change':'Set'}</button></div>
+        <div className="account-credential-row"><span>Username login</span><strong>{profile.username?'Enabled':'Not enabled'}</strong><button className="b g sm" disabled={!profile.securityPasswordSet} onClick={()=>promptSetUsername({isChange:Boolean(profile.username),onProfileChange})}>{profile.username?'Change':'Set'}</button></div>
+        {!profile.securityPasswordSet&&<div className="nt w account-warning">{WARN_TRIANGLE_ICON}<div><b>Set a security password first.</b> A username needs one before it can sign you in.</div></div>}
+      </section>
+      <div className="sober"><div className="sh">{ACCOUNT_ICONS.security}Security summary</div><Ledger rows={[
+        {label:'Security password',value:profile.securityPasswordSet?'Set':'Not set'},
+        {label:'Username login',value:profile.username?'Enabled':'Disabled'},
+        {label:'Active sessions',value:session?`${session.activeCount} of ${session.maxActiveSessions}`:'Unavailable'},
+        {label:'Idle timeout',value:session?`${Math.round(session.idleTimeoutMs/3_600_000)} hours`:'Unavailable'},
+        {label:'Maximum lifetime',value:session?`${Math.round(session.maxLifetimeMs/86_400_000)} days`:'Unavailable'},
+      ]} total={{label:'Account status',value:'Active'}}/></div>
+    </div>}
+
+    {active==='linked'&&<div className="split account-tab-panel" role="tabpanel" aria-label="Linked platforms">
+      <section className="card">
+        <div className="ch"><span className="chip-ico">{ACCOUNT_ICONS.security}</span><h2>Linked platforms</h2><span className="p ok">{linkedAccounts.length} linked</span></div>
+        <div className="account-platform-list">{linkedAccounts.map((account,index)=><div className="r" key={`${account.platform}:${account.platformUserId}`}>
+          <div className={`ri account-platform-${account.platform}`}>{ACCOUNT_ICONS[account.platform]||ACCOUNT_ICONS.identity}</div>
+          <div className="rm"><div className="rt">{linkedAccountLabel(account.platform)}</div><div className="rs mono fold">{shortPlatformId(account.platformUserId)}</div></div>
+          <div className="rv"><CopyButton value={account.platformUserId} label={`Copy ${linkedAccountLabel(account.platform)} user ID`}/>{index===0&&<span className="p nu">First linked</span>}</div>
+        </div>)}</div>
+        {!linkedAccounts.length&&<div className="emp"><h3>No linked platform details available</h3><p>Your session is valid, but platform details were not returned.</p></div>}
+      </section>
+      <section className="card account-link-card">
+        <div className="ch"><span className="chip-ico">{ACCOUNT_ICONS.sessions}</span><h2>Connect another platform</h2></div>
+        <p>Generate a five-minute, single-use code here, then enter it on the Telegram or Discord account you want to connect. Refreshing invalidates the previous unused code.</p>
+        <button className="b p" disabled={linkBusy} onClick={generate}>{linkBusy?'Generating…':linking?'Refresh code':'Generate link code'}</button>
+        {linking&&<div className="link-code-result" aria-live="polite"><div className="link-code-heading"><strong>{linking.code}</strong><CopyButton value={linking.code} label="Copy link code"/></div><p>{remaining>0?`Expires in ${Math.floor(remaining/60)}:${String(remaining%60).padStart(2,'0')}`:'Expired — refresh to generate a new code.'}</p><p>Exact expiry: {new Date(linking.expiresAt).toLocaleString()}</p></div>}
+      </section>
+    </div>}
+
+    {active==='sessions'&&<div className="split account-tab-panel" role="tabpanel" aria-label="Sessions">
+      <section className="card">
+        <div className="ch"><span className="chip-ico">{ACCOUNT_ICONS.sessions}</span><h2>This session</h2><span className="p ok">Current</span></div>
+        <p className="account-client-label">{session?.clientLabel||'Browser details unavailable'}</p>
+        <div className="session-policy"><div><span>Active browser sessions</span><strong>{session?`${session.activeCount} of ${session.maxActiveSessions}`:'Unavailable'}</strong></div><div><span>Created</span><strong>{session?.createdAt?new Date(session.createdAt).toLocaleString():'Unavailable'}</strong></div><div><span>Idle timeout</span><strong>{session?`${Math.round(session.idleTimeoutMs/3_600_000)} hours`:'Unavailable'}</strong></div><div><span>Refreshes until</span><strong>{session?.expiresAt?new Date(session.expiresAt).toLocaleString():'Unavailable'}</strong></div></div>
+      </section>
+      <section className="card tight account-session-actions">
+        <div className="ch"><h2>Session controls</h2></div>
+        <p>Activity extends the eight-hour idle deadline, but never beyond the seven-day maximum. A fourth browser login signs out the least recently used session.</p>
+        <div className="br"><button className="b g" onClick={()=>onLogout(false)}>Log out this browser</button><button className="b d" onClick={logoutEverywhere}>Log out everywhere</button></div>
+        <p className="session-policy-note">Production uses secure HTTPS cookies. Private browsing may still clear them when the browser closes.</p>
+      </section>
+    </div>}
   </>;
 }
 const SUN_ICON=<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.2 4.2l1.4 1.4M18.4 18.4l1.4 1.4M1 12h2M21 12h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" fill="none"/></svg>;
@@ -2655,6 +2739,12 @@ function Login({onLogin,sessionMessage}){
   const [password,setPassword]=useState('');
   const [error,setError]=useState('');
   const [busy,setBusy]=useState(false);
+  const codeInputRef=useRef(null);
+  const usernameInputRef=useRef(null);
+  useEffect(()=>{
+    const input=mode==='code'?codeInputRef.current:usernameInputRef.current;
+    input?.focus({preventScroll:true});
+  },[mode]);
   function chooseMode(next){setMode(next);setError('');}
   async function submitCode(event){event.preventDefault();setBusy(true);setError('');try{await api('/api/auth/login',{method:'POST',body:JSON.stringify({code})});onLogin(await api('/api/profile'));}catch(value){setError(value.message);}finally{setBusy(false);}}
   async function submitPassword(event){event.preventDefault();setBusy(true);setError('');try{await api('/api/auth/login-password',{method:'POST',body:JSON.stringify({username,password})});onLogin(await api('/api/profile'));}catch(value){setError(value.message);}finally{setBusy(false);}}
@@ -2668,11 +2758,11 @@ function Login({onLogin,sessionMessage}){
     {mode==='code'?<>
       <p>Generate a five-minute code with <code>/link</code> in Telegram, then enter it here. (Discord's <code>/link</code> only consumes a code generated on Telegram — it can't generate one.)</p>
       <label htmlFor="link-code">Link code</label>
-      <input id="link-code" value={code} onChange={event=>setCode(event.target.value)} autoComplete="one-time-code" required maxLength="32"/>
+      <input ref={codeInputRef} id="link-code" value={code} onChange={event=>setCode(event.target.value)} autoFocus autoComplete="one-time-code" required maxLength="32"/>
     </>:<>
       <p>Sign in with the username and security password set from Account → Login credentials. Not set up yet? Sign in with a code instead, then set them there.</p>
       <label htmlFor="login-username">Username</label>
-      <input id="login-username" value={username} onChange={event=>setUsername(event.target.value)} autoComplete="username" required maxLength="32"/>
+      <input ref={usernameInputRef} id="login-username" value={username} onChange={event=>setUsername(event.target.value)} autoFocus autoComplete="username" required maxLength="32"/>
       <label htmlFor="login-password">Password</label>
       <input id="login-password" type="password" value={password} onChange={event=>setPassword(event.target.value)} autoComplete="current-password" required maxLength="200"/>
     </>}
@@ -2741,6 +2831,7 @@ function nativeBalance(wallet){
 }
 function MintBatch({onGoWallets,onSwitchToSchedule}){
   const wallets=useLoad('/api/wallets',[],'wallets.changed');
+  const contractInputRef=useRef(null);
   const [selected,setSelected]=useState([]);
   const [contractAddress,setContractAddress]=useState('');
   const [quantity,setQuantity]=useState('1');
@@ -2871,6 +2962,10 @@ function MintBatch({onGoWallets,onSwitchToSchedule}){
   // and can explain itself.
   const BATCH_MIN_WALLETS=2;
   const enoughSelected=selected.length>=BATCH_MIN_WALLETS;
+  // The contract field is intentionally locked until this is genuinely a batch. As soon as the
+  // second wallet is selected it becomes the primary task input, so move focus there once instead
+  // of leaving the user to click back to the top of the form.
+  useEffect(()=>{if(enoughSelected)contractInputRef.current?.focus({preventScroll:true});},[enoughSelected]);
   const gateMessage=`Select at least ${BATCH_MIN_WALLETS} wallets — batching one wallet is just a single mint.`;
   // No toast. This fired from onFocus AND onClick, so a single click raised TWO of them, and every
   // notify() also writes a bell entry -- one click, four pieces of noise. The rule is already
@@ -2884,7 +2979,7 @@ function MintBatch({onGoWallets,onSwitchToSchedule}){
       <div className="ch"><div className="chip-ico">{BATCH_ICON}</div><h2>Batch mint</h2></div>
       <form className="g" style={{gap:'11px'}} onSubmit={simulate}>
         <label className="fl"><span>Contract address</span>
-          <input className={`in mono${detectedPrice?' ok':''}`}
+          <input ref={contractInputRef} className={`in mono${detectedPrice?' ok':''}`}
             required disabled={noWallets} readOnly={!noWallets&&!enoughSelected}
             placeholder={enoughSelected?'0x…':`Select ${BATCH_MIN_WALLETS} wallets first`}
             value={contractAddress}
@@ -3319,7 +3414,7 @@ function SniperForm({wallets,chains,onCreated,onCancel,editing}){
       same call from yours — never before it confirms.</p>
     <div className="g gm2 g2">
       <label className="fl"><span>Name</span>
-        <input className="in" name="label" required placeholder="e.g. copy-whale-1"/></label>
+        <input className="in" name="label" required autoFocus placeholder="e.g. copy-whale-1"/></label>
       <label className="fl"><span>Wallet that pays</span>
         <select className="in" name="walletLabel" required>
           {(wallets||[]).map(item=><option key={item.label} value={item.label}>{item.label}</option>)}
@@ -3401,7 +3496,7 @@ function WatchRuleForm({onCreated,onCancel,editing}){
       becomes a trigger — manual by default, so nothing spends without you.</p>
     <div className="g gm2 g2">
       <label className="fl"><span>Name</span>
-        <input className="in" name="name" required placeholder="e.g. azuki-announcements"/></label>
+        <input className="in" name="name" required autoFocus placeholder="e.g. azuki-announcements"/></label>
       <label className="fl"><span>Watch</span>
         <select className="in" value={type} onChange={event=>setType(event.target.value)}>
           {WATCH_TYPES.map(item=><option key={item.value} value={item.value}>{item.label}</option>)}
@@ -3708,7 +3803,7 @@ function WalletExport({profile,onProfileChange,walletList}){
               {wallets.map(item=><option key={item.label} value={item.label}>{item.label}</option>)}
             </select></label>
           <label className="fl"><span>Security password</span>
-            <input className="in" type="password" name="securityPassword" required autoComplete="off"
+            <input className="in" type="password" name="securityPassword" required autoFocus autoComplete="off"
               placeholder="Your account security password"/></label>
           <button className="b p big" disabled={busy}>{busy?'Preparing…'
             :exportKind==='raw'?'Prepare private key':'Export encrypted backup'}</button>

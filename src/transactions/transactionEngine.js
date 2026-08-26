@@ -47,6 +47,44 @@ function safeNotify(notify, event) {
   return Promise.resolve().then(() => notify?.(event)).catch(() => {});
 }
 
+// RPC clients do not agree on where custom-error bytes live. Ethers usually exposes `data`, but
+// several real providers wrap the same bytes under info.error.data, error.data, cause.data, or a
+// JSON-RPC `result` property. Look through the known shapes without ever stringifying the whole
+// error (which could include provider credentials in a URL).
+function extractRevertData(error) {
+  const candidates = [
+    error?.data,
+    error?.info?.error?.data,
+    error?.error?.data,
+    error?.cause?.data,
+    error?.info?.error?.result,
+    error?.error?.result,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && /^0x[0-9a-f]*$/i.test(candidate)) return candidate;
+    if (candidate && typeof candidate === 'object') {
+      for (const nested of [candidate.data, candidate.result]) {
+        if (typeof nested === 'string' && /^0x[0-9a-f]*$/i.test(nested)) return nested;
+      }
+    }
+  }
+  return null;
+}
+
+function describeKnownContractFailure(error) {
+  const decoded = describeSeaDropError(extractRevertData(error));
+  if (decoded) return decoded;
+
+  // Some nodes return only the Solidity error name and omit the ABI-encoded arguments. We cannot
+  // recover the figures in that case, but we can still tell the user the correct category instead
+  // of leaking CamelCase contract internals or reducing it to “failed”.
+  const named = String(error?.reason || error?.shortMessage || error?.message || '');
+  if (/MintQuantityExceedsMaxMintedPerWallet/i.test(named)) return "This wallet has reached this mint's limit.";
+  if (/MintQuantityExceedsMaxTokenSupplyForStage/i.test(named)) return 'This mint stage is sold out.';
+  if (/MintQuantityExceedsMaxSupply/i.test(named)) return 'This mint is sold out.';
+  return null;
+}
+
 // estimateGas/call revert with a raw ethers CALL_EXCEPTION (not a TransactionSafetyError) when the
 // target contract doesn't actually implement the call being made -- the most common cause being a
 // wrong or unsupported function signature. Without this, that exception was falling all the way
@@ -75,7 +113,7 @@ function explainCallFailure(error, { chain, params } = {}) {
   // SeaDrop's real error definitions), so try it first; it's purely selector-based and simply
   // returns null for anything that isn't a recognized SeaDrop error, so trying it against a
   // non-SeaDrop failure is harmless.
-  const seaDropReason = describeSeaDropError(error?.data);
+  const seaDropReason = describeKnownContractFailure(error);
   if (seaDropReason) return seaDropReason;
   // ethers synthesizes the literal reason "require(false)" whenever a revert returned zero
   // bytes of data (confirmed against the installed package's own AbiCoder.getBuiltinCallException)
@@ -170,52 +208,46 @@ function createTransactionEngine({
     return updated;
   }
 
-  // Shared receipt evaluation for BOTH of an intent's possible hashes: the current tx_hash and,
-  // after a bump, the superseded bumped_from_tx_hash. Same mint either way -- whichever hash
-  // mines IS the outcome, with its own gas cost and token IDs.
-  async function evaluateReceipt(intent, receipt) {
-    const gasUsed=receipt.gasUsed===undefined?null:BigInt(receipt.gasUsed);
-    const effectiveGasPriceWei=receipt.gasPrice===undefined||receipt.gasPrice===null
-      ? (receipt.effectiveGasPrice===undefined||receipt.effectiveGasPrice===null?null:BigInt(receipt.effectiveGasPrice)):BigInt(receipt.gasPrice);
-    const actualNetworkCostWei=gasUsed!==null&&effectiveGasPriceWei!==null?gasUsed*effectiveGasPriceWei:null;
-    const receiptCost={gasUsed,effectiveGasPriceWei,actualNetworkCostWei};
-    if (Number(receipt.status) === 0) return { state: 'reverted', blockNumber: Number(receipt.blockNumber), reason: 'transaction reverted on chain',...receiptCost };
-    // Section T: which token ID(s) this mint actually received, read from the NFT contract's own
-    // Transfer/TransferSingle/TransferBatch event(s) -- never the transaction's own `to`, which
-    // for a SeaDrop mint is the SeaDrop core, not the token contract. Computed once here (logs
-    // don't change with more confirmations) and carried the same way receiptCost already is.
-    const tokenIds = extractMintedTokenIds(receipt, { contractAddress: intent.callPreview?.contractAddress, minterAddress: intent.from });
-    const currentBlock = await providerCall(intent.chain, 'getBlockNumber', provider => provider.getBlockNumber());
-    const confirmations = Math.max(0, Number(currentBlock) - Number(receipt.blockNumber) + 1);
-    if (confirmations >= intent.requiredConfirmations) {
-      return { state: 'confirmed', blockNumber: Number(receipt.blockNumber), reason: `${confirmations} confirmations observed`,...receiptCost, tokenIds };
-    }
-    return { state: 'pending', blockNumber: Number(receipt.blockNumber), reason: `${confirmations}/${intent.requiredConfirmations} confirmations observed`,...receiptCost };
-  }
-
   async function inspectChain(intent) {
     if (!intent.txHash) return { state: 'unknown', reason: 'signed transaction hash was not persisted' };
-    // TX-022: check ALL recorded hashes for this intent, not just the primary. A multi-rung
-    // bump ladder produces multiple possibly-live hashes; whichever mined IS the outcome.
-    let hashes = [intent.txHash];
-    if (intent.bumpedFromTxHash) hashes.push(intent.bumpedFromTxHash);
-    if (intentRepository.getBroadcastHashes) {
-      try {
-        const allHashes = await intentRepository.getBroadcastHashes(intent.intentId);
-        if (allHashes.length) hashes = allHashes;
-      } catch { /* fall back to primary + bumped */ }
-    }
-    for (const hash of hashes) {
-      const receipt = await providerCall(intent.chain, 'getTransactionReceipt', provider => provider.getTransactionReceipt(hash));
-      if (receipt) {
-        const evaluated = await evaluateReceipt(intent, receipt);
-        if (hash !== intent.txHash) {
-          return { ...evaluated, reason: `${evaluated.reason} (hash ${hash.slice(0, 10)}… mined)` };
+    const receipt = await providerCall(intent.chain, 'getTransactionReceipt', provider => provider.getTransactionReceipt(intent.txHash));
+    if (receipt) {
+      const gasUsed=receipt.gasUsed===undefined?null:BigInt(receipt.gasUsed);
+      const effectiveGasPriceWei=receipt.gasPrice===undefined||receipt.gasPrice===null
+        ? (receipt.effectiveGasPrice===undefined||receipt.effectiveGasPrice===null?null:BigInt(receipt.effectiveGasPrice)):BigInt(receipt.gasPrice);
+      const actualNetworkCostWei=gasUsed!==null&&effectiveGasPriceWei!==null?gasUsed*effectiveGasPriceWei:null;
+      const receiptCost={gasUsed,effectiveGasPriceWei,actualNetworkCostWei};
+      if (Number(receipt.status) === 0) {
+        let reason = 'transaction reverted on chain';
+        // Receipts do not carry revert data. Replay the exact read-only call at the mined block as
+        // a best-effort diagnosis: for SeaDrop this recovers sold-out, stage-supply and per-wallet
+        // cap errors that can arise after a successful simulation but before inclusion. The
+        // original transaction has already settled; this call cannot change its state or spend.
+        try {
+          await providerCall(intent.chain, 'diagnoseRevert', provider => provider.call({
+            from: intent.from,
+            to: intent.to,
+            data: intent.data || '0x',
+            value: BigInt(intent.valueWei ?? 0n),
+            blockTag: Number(receipt.blockNumber),
+          }), { timeoutMs: FAST_RPC_TIMEOUT_MS, retries: 0 });
+        } catch (error) {
+          reason = describeKnownContractFailure(error) || reason;
         }
-        return evaluated;
+        return { state: 'reverted', blockNumber: Number(receipt.blockNumber), reason, ...receiptCost };
       }
+      // Section T: which token ID(s) this mint actually received, read from the NFT contract's own
+      // Transfer/TransferSingle/TransferBatch event(s) -- never the transaction's own `to`, which
+      // for a SeaDrop mint is the SeaDrop core, not the token contract. Computed once here (logs
+      // don't change with more confirmations) and carried the same way receiptCost already is.
+      const tokenIds = extractMintedTokenIds(receipt, { contractAddress: intent.callPreview?.contractAddress, minterAddress: intent.from });
+      const currentBlock = await providerCall(intent.chain, 'getBlockNumber', provider => provider.getBlockNumber());
+      const confirmations = Math.max(0, Number(currentBlock) - Number(receipt.blockNumber) + 1);
+      if (confirmations >= intent.requiredConfirmations) {
+        return { state: 'confirmed', blockNumber: Number(receipt.blockNumber), reason: `${confirmations} confirmations observed`,...receiptCost, tokenIds };
+      }
+      return { state: 'pending', blockNumber: Number(receipt.blockNumber), reason: `${confirmations}/${intent.requiredConfirmations} confirmations observed`,...receiptCost };
     }
-    // No receipt for any hash — check mempool visibility on the primary hash.
     const transaction = await providerCall(intent.chain, 'getTransaction', provider => provider.getTransaction(intent.txHash));
     if (transaction) return { state: 'pending', reason: 'transaction is present in the provider mempool' };
     // This used to read "pending nonce ahead of mine" as proof the nonce was consumed by another
@@ -520,18 +552,7 @@ function createTransactionEngine({
       const signedTransaction = await signer.signTransaction(transaction);
       timings.signedAt = now();
       const txHash = keccak256(signedTransaction);
-      // TX-014 (Model 2 phase-2): if attachSignedHash returns null (the reconciliation sweep
-      // transitioned the intent between createSubmitted and here), no provider may receive the
-      // signed bytes — the durable hash is absent and the intent is no longer eligible.
-      const attached = await intentRepository.attachSignedHash(intent.intentId, txHash);
-      if (!attached) throw new TransactionSafetyError('HASH_ATTACH_FAILED',
-        'Signed transaction hash could not be persisted — broadcast aborted to prevent an untracked spend');
-      intent = attached;
-      // TX-021: record the hash BEFORE broadcast so restart reconciliation finds it even
-      // if the process dies between here and the broadcast confirmation.
-      if (intentRepository.recordBroadcastHash) {
-        await intentRepository.recordBroadcastHash(intent.intentId, txHash);
-      }
+      intent = await intentRepository.attachSignedHash(intent.intentId, txHash);
       try {
         // Round 16 (Section AV): sniper races the same signed transaction across every candidate
         // in its own pool concurrently instead of trying one at a time -- safe because it's the

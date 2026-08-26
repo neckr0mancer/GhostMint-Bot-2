@@ -220,6 +220,8 @@ in the plan below is going to surprise you, it's most likely here.
       to login. Log back in with a fresh link code.
 - [ ] "Log out everywhere" from Account settings -- confirm a second open session
       (different browser/incognito) is also invalidated.
+- [ ] From Account → Linked platforms, generate a code, then press Refresh. Confirm the expiry
+      countdown restarts and the first unused code is rejected while the refreshed code works.
 - [ ] Change default chain in Settings -- confirm it's actually used as the
       default on the next mint/wallet-creation flow.
 - [ ] View Gas and Social API usage panels -- confirm the numbers look plausible

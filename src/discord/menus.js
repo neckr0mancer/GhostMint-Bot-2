@@ -6,6 +6,7 @@
 // discord.js, and discordBot.js (the composition root) is responsible only for wiring.
 
 const { LIMITS, MIN_BATCH_WALLETS } = require('../validation/domain');
+const { escapeDiscord } = require('../security/botSecurity');
 
 const ROW = 1;
 const BUTTON = 2;
@@ -687,7 +688,12 @@ function activityMenu(page) {
 // activityMenu above.
 function tasksMenu(page) {
   const lines = page.items.length
-    ? page.items.map(task => `${task.eligibilityDeadline ? '🎫 ' : ''}${task.name} [${task.status}] — ${task.eligibilityDeadline ? 'eligibility checks ' : ''}${formatGmtPlus1(task.mintTime)} — ${task.id}`).join('\n')
+    ? page.items.map(task => {
+      const reason = task.status === 'failed' && task.lastError
+        ? ` — reason: ${escapeDiscord(String(task.lastError))}`
+        : '';
+      return `${task.eligibilityDeadline ? '🎫 ' : ''}${escapeDiscord(task.name)} [${task.status}] — ${task.eligibilityDeadline ? 'eligibility checks ' : ''}${formatGmtPlus1(task.mintTime)} — ${task.id}${reason}`;
+    }).join('\n')
     : 'No scheduled tasks.';
   const nav = [];
   if (page.page > 1) nav.push(button('◀️ Prev', `tasks:page:${page.page - 1}`));

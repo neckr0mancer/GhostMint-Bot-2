@@ -9,15 +9,17 @@ function task(overrides = {}) {
     status:'scheduled', mintTime:NOW + (5 * 60 * 1000), price:1, qty:1, ...overrides };
 }
 
-function fixture({ tasks = [task()], balances = [2n], needed = 1n } = {}) {
+function fixture({ tasks = [task()], balances = [2n], needed = 1n, soldOut = [false] } = {}) {
   const messages = [];
   const events = [];
+  const cancelled = [];
   let balanceRead = 0;
+  let soldOutRead = 0;
   const reminder = createScheduledReminder({
     getTasks:() => tasks,
     findWallet:value => ({ userId:value.userId, label:value.walletLabel, address:'0x1', chain:'ethereum' }),
-    detectSoldOut:async () => false,
-    cancelTask:async () => {},
+    detectSoldOut:async () => soldOut[Math.min(soldOutRead++, soldOut.length - 1)],
+    cancelTask:async value => cancelled.push(value.id),
     calculateNeededWei:() => needed,
     getBalance:async () => balances[Math.min(balanceRead++, balances.length - 1)],
     formatWei:value => String(value),
@@ -25,7 +27,7 @@ function fixture({ tasks = [task()], balances = [2n], needed = 1n } = {}) {
     notify:async (userId, message) => messages.push({ userId, message }),
     broadcast:(userId, event) => events.push({ userId, ...event }),
   });
-  return { reminder, messages, events };
+  return { reminder, messages, events, cancelled };
 }
 
 test('every scheduled mint gets one five-minute automatic-execution reminder', async () => {
@@ -95,4 +97,15 @@ test('the reminder awaits an asynchronously refreshed phase price before checkin
   const value = fixture({ needed:3n, balances:[2n] });
   await value.reminder.sweep(NOW);
   assert.match(value.messages[0].message, /short by 1 ETH/i);
+});
+
+test('sold-out safety checks continue after the reminder was already delivered', async () => {
+  const value = fixture({ needed:0n, balances:[], soldOut:[false, true] });
+  await value.reminder.sweep(NOW);
+  await value.reminder.sweep(NOW + 60_000);
+
+  assert.deepEqual(value.cancelled, ['task-1']);
+  assert.deepEqual(value.events.map(event => event.type), ['task.reminder', 'task.autoCancelled']);
+  assert.match(value.messages[1].message, /sold out before its scheduled time/i);
+  assert.match(value.messages[1].message, /Nothing was sent/i);
 });

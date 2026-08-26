@@ -404,11 +404,12 @@ export function Skeleton({rows=3,variant='card'}){
   const shape=SKELETON_SHAPES[variant]||'skeleton-line';
   return <div className="skeleton-lines" aria-hidden="true">{Array.from({length:rows}).map((_,index)=><div className={shape} key={index}/>)}</div>;
 }
-// Prototype .pager (docs/prototype-pages/mint.html:148): a .pinfo count that pushes everything
-// right, then a single-glyph prev, numbered pages with the current one .on, and a single-glyph
-// next. Not "Previous / Page 1 of 3 / Next" -- the numbers are the control, the arrows are the
-// nudge. Window of five keeps a long list from spilling its own row.
-export function Pager({value,page,setPage}){
+// One pager for the whole dashboard. The owner-set order is deliberately asymmetric:
+// previous, THREE numbered pages, next, last. There is no ellipsis and no jump-to-first button.
+// The single previous arrow is enough to move backward; the double-right arrow is the explicit
+// fast path to the end. Keeping this in one component prevents History, Schedule and Admin from
+// drifting into different pagination languages again.
+export function Pager({value,page,setPage,visibleCount}){
   // Nothing to page through, nothing to say. A pager over an empty or single-page list is
   // noise: its whole job is to report what is being truncated, and neither case truncates.
   if(!value||!value.total||value.totalPages<=1)return null;
@@ -420,18 +421,13 @@ export function Pager({value,page,setPage}){
   const first=Math.max(1,Math.min(page-(WINDOW-1),total-(WINDOW-1)));
   const numbers=[];
   for(let n=first;n<=Math.min(total,first+WINDOW-1);n++)numbers.push(n);
-  const shown=Math.min(value.page*value.pageSize,value.total);
-  // Jump-to-end arrows appear only past three pages. Below that every page is already one click
-  // away on a numbered button, so a second pair of arrows would be four controls doing the work
-  // of none. Owner's rule, 2026-08-19.
   const jumps=total>3;
-  // Disabled rather than hidden at the ends, matching the single arrows and .pager button[disabled]
-  // (prototype.css:145). A control that vanishes moves everything beside it, so the row would
-  // reflow under the cursor as you reach the last page -- the reason the ends stay occupied.
+  // Most lists report the cumulative position reached ("20 of 61"). History deliberately reports
+  // rows visible on this page ("4 of 248"), so it supplies visibleCount without needing a second
+  // pager implementation.
+  const shown=visibleCount??Math.min(value.page*value.pageSize,value.total);
   return <div className="pager">
     <span className="pinfo">{shown} of {value.total}</span>
-    {jumps&&<button type="button" disabled={page<=1} aria-label="First page"
-      onClick={()=>setPage(1)}>&laquo;</button>}
     <button type="button" disabled={page<=1} aria-label="Previous page" onClick={()=>setPage(page-1)}>&lsaquo;</button>
     {numbers.map(n=><button type="button" key={n} className={n===page?'on':undefined}
       aria-current={n===page?'page':undefined} onClick={()=>setPage(n)}>{n}</button>)}

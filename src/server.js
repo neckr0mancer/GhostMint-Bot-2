@@ -40,7 +40,8 @@ const watchRuleFlowDecision = require('./social/watchRuleFlowDecision');
 const sniperFlowDecision = require('./sniper/sniperFlowDecision');
 const { createSchedulerRepository } = require('./scheduler/schedulerRepository');
 const { DEFAULT_LEAD_MS, createScheduledReminder } = require('./scheduler/scheduledReminder');
-const { SCHEDULE_PHASE_WAIT, createSchedulerWorker, STAGE_REARM_WINDOW_MS, errorReason } = require('./scheduler/schedulerWorker');
+const { deliverFailureSideEffects, scheduledFailureFeedback } = require('./scheduler/scheduledFailureFeedback');
+const { SCHEDULE_PHASE_WAIT, createSchedulerWorker, STAGE_REARM_WINDOW_MS, errorReason, executionAttemptCount } = require('./scheduler/schedulerWorker');
 const { DECISION_REASONS, resolveScheduledPhase } = require('./scheduler/scheduledPhaseResolver');
 const { classifySeaDropWindow, preArmRearm } = require('./scheduler/scheduledValidity');
 const { resolveTaskChain } = require('./scheduler/taskChain');
@@ -472,31 +473,26 @@ async function prearmScheduledTask(task) {
         log(`Pre-arm notice: "${task.name}" (${wallet.chain}:${task.contract}) fires at ${new Date(task.mintTime).toISOString()}, but its live SeaDrop window starts ${new Date(livePublicDrop.startTime * 1000).toISOString()} -- the fire-time drift check may reject it`);
       }
     }
-    // Warm hot-path reads that executeTask will need at T0. TX-007 (Model 2 phase-1) corrected
-    // the claim: the fee cache TTL is 5s, so a single warm at T-12s is COLD again by T0 -- the
-    // warm that matters is the one inside the TTL window. Balance/nonce/network warm the RPC
-    // connection pool (keep-alive sockets), not reusable data. All best-effort; a failure just
-    // means T0 does the work the old way, never a hard failure. Uses the execution chain
-    // (persisted task chain if present, else wallet home) so the warm matches T0's actual pool.
+    // Warm hot-path reads that executeTask will need at T0: fee data (5s TTL), balance, and
+    // pending nonce. All best-effort and in parallel -- a failure here just means T0 does the
+    // work the old way, never a hard failure. Use the execution chain (persisted task chain
+    // if present, else wallet home) so the warm matches what T0 will actually use.
     const executionChain = (() => {
       try { return resolveTaskChain(task, CONFIG.supportedChains).chain || wallet.chain; }
       catch { return wallet.chain; }
     })();
-    const warmFeeData = () => providerService.perform(executionChain, 'prearmFeeData', p => p.getFeeData())
-      .then(fd => { if (fd && executionChain) { try { transactionEngine.warmFeeDataCache(executionChain, fd); } catch {} } })
-      .catch(() => {});
-    // Connection warm now; the FEE re-warm is scheduled into the TTL window (T-4s), timed from
-    // the task's own fire moment so a moved fire time moves the re-warm with it.
-    warmFeeData();
+    // Fee data cache is per-chain and short-lived, so a 12s lead still leaves it hot at T0.
+    // Balance and nonce warm the provider/RPC connection pool.
+    providerService.perform(executionChain, 'prearmFeeData', p => p.getFeeData()).then(fd => {
+      if (fd && executionChain) {
+        try { transactionEngine.warmFeeDataCache(executionChain, fd); } catch {}
+      }
+    }).catch(() => {});
     Promise.all([
       providerService.perform(executionChain, 'prearmBalance', p => p.getBalance(wallet.address)).catch(() => null),
       providerService.perform(executionChain, 'prearmNonce', p => p.getTransactionCount(wallet.address, 'pending')).catch(() => null),
       providerService.perform(executionChain, 'prearmNetwork', p => p.getNetwork()).catch(() => null),
     ]).catch(() => {});
-    const fireAt = task.mintTime;
-    const reWarmDelay = Math.max(250, fireAt - 4000 - Date.now());
-    const reWarm = setTimeout(warmFeeData, reWarmDelay);
-    reWarm.unref?.();
     armedPreparations.set(`${task.userId}:${task.id}`, { mintTime: task.mintTime, at: Date.now() });
   } catch (error) {
     // Preparation is best-effort by contract: any failure here just means fire time does things
@@ -580,11 +576,7 @@ const schedulerWorker = createSchedulerWorker({
     // Pre-armed tasks had this exact enforcement seconds earlier inside prearmScheduledTask (the
     // cache entry is consumed exactly once, and only when it matches this firing's mintTime) -- the
     // check itself is identical either way; this only decides whether it runs twice.
-    // SEC-012 (Model 2 re-review): authorization and account standing are evaluated immediately
-    // before every value-moving execution, regardless of earlier preparation. A status check
-    // performed at T-12s cannot be reused at T0 — the account can be banned/suspended in between.
-    // Pre-arm still caches non-auth data (SeaDrop discovery, fee warming) but NEVER the auth check.
-    await governance.checkAccountStatus(task.userId);
+    if (!takeArmedPreparation(task)) await governance.checkAccountStatus(task.userId);
     const wallet = DB.wallets.find(item => item.userId === task.userId && item.label === task.walletLabel);
     if (!wallet) throw new ValidationError({ field:'walletLabel', message:'was not found' });
     // Execute on the chain the contract was DETECTED on when the schedule was created
@@ -654,12 +646,9 @@ const schedulerWorker = createSchedulerWorker({
           method: { signature: 'opensea:drops-mint' }, preview: { contractAddress: task.contract, callTarget: built.to } };
         return mintExecution.executePrepared({ userId: task.userId, wallet, prepared, triggerSource: 'scheduled',
           idempotencyKey: hooks.idempotencyKey, onIntentPersisted: hooks.onIntentPersisted,
-          preBroadcastGuard: async () => {
-            // SEC-012 (Model 2 phase-2): governance is evaluated at the latest safe point —
-            // immediately before intent creation, after all slow preparation is done.
-            await governance.checkAccountStatus(task.userId);
-            if (expectedPhaseIdentity) await refreshScheduledOpenSeaPhase(task, executionChain, expectedPhaseIdentity);
-          },
+          preBroadcastGuard: expectedPhaseIdentity
+            ? () => refreshScheduledOpenSeaPhase(task, executionChain, expectedPhaseIdentity)
+            : undefined,
           onPreview: preview => notifyUser(task.userId, formatMintPreview(preview)) });
       }
       if (phaseAwareTask(task)) {
@@ -744,11 +733,9 @@ const schedulerWorker = createSchedulerWorker({
     return mintExecution.executePrepared({ userId:task.userId, wallet, prepared, triggerSource:'scheduled',
       gasPriceWei:request.gasGwei === null ? undefined : ethers.parseUnits(String(request.gasGwei), 'gwei'),
       idempotencyKey:hooks.idempotencyKey, onIntentPersisted:hooks.onIntentPersisted,
-      preBroadcastGuard: async () => {
-        // SEC-012 (Model 2 phase-2): same governance-at-the-latest-safe-point for on-chain tasks.
-        await governance.checkAccountStatus(task.userId);
-        if (expectedPublicPhaseIdentity) await refreshScheduledPublicPhase(task, executionChain, expectedPublicPhaseIdentity);
-      },
+      preBroadcastGuard: expectedPublicPhaseIdentity
+        ? () => refreshScheduledPublicPhase(task, executionChain, expectedPublicPhaseIdentity)
+        : undefined,
       onPreview:preview => notifyUser(task.userId, formatMintPreview(preview)) });
   },
   notify: async event => {
@@ -792,21 +779,39 @@ const schedulerWorker = createSchedulerWorker({
       // "no reason recorded" for every reverted transaction.
       // Same fold as the stored last_error above: event.error.message alone is the constant
       // "Request validation failed" for every ValidationError -- the issues carry the real cause.
-      const detail = event.error ? redact(errorReason(event.error)) : '';
-      const reason = detail ? `
-${escapeTelegramHtml(detail)}` : '';
-      if (wallet) await logActivity(event.task.userId, 'fail', `Scheduled mint failed: ${event.task.name}`,
-        wallet.label, event.intent?.txHash || null, CHAINS[wallet.chain],{triggerSource:'scheduled'});
-      await notifyUser(event.task.userId, `❌ Scheduled mint <b>${escapeTelegramHtml(event.task.name)}</b> failed.${reason}`);
-      // Carries the id so the dashboard can offer Retry on the notification itself rather than
-      // sending the user back to the Schedule tab to find the row. A revert has no event.error by
-      // design, so it gets the on-chain wording rather than an empty string. retryable tells the
-      // bell which action to offer: Retry while attempts remain, otherwise Reschedule -- offering
-      // Retry on an exhausted task would only earn a server refusal.
-      dashboardWebSockets.broadcastToUser(event.task.userId, {type:'task.failed',
-        taskId:event.task.id, name:event.task.name, reason: detail || 'transaction reverted on chain',
-        retryable: Number(event.task.attemptCount||0) < Number(event.task.maxAttempts||0),
-        contract: event.task.contract || null});
+      const rawDetail = event.error
+        ? safeError(errorReason(event.error))
+        : safeError(event.reason || event.intent?.failureReason || event.intent?.reason || event.task.lastError || '');
+      const chainState = event.intent?.blockNumber !== null && event.intent?.blockNumber !== undefined
+        ? 'mined'
+        : (event.intent?.txHash ? 'unknown' : 'not_sent');
+      const feedback = scheduledFailureFeedback(rawDetail, { chainState });
+      const retryable = !feedback.terminal
+        && executionAttemptCount(event.task) < Number(event.task.maxAttempts || 0);
+
+      // Publish the semantic event before any secondary write or platform delivery. Activity is a
+      // useful durable record and Telegram/Discord are useful transports, but neither may suppress
+      // the other if it fails -- the task outcome is already committed at this point.
+      const dashboardEvent = {type:'task.failed',
+        taskId:event.task.id, name:event.task.name, reason:feedback.message,
+        failureCode:feedback.code, severity:feedback.severity, retryable,
+        reschedulable:!feedback.terminal, contract:event.task.contract || null};
+      const activityReason = feedback.message.length > 220
+        ? `${feedback.message.slice(0, 217)}…`
+        : feedback.message;
+      const icon = feedback.severity === 'warning' ? '⚠️' : '❌';
+      await deliverFailureSideEffects({
+        broadcast:() => dashboardWebSockets.broadcastToUser(event.task.userId, dashboardEvent),
+        recordActivity:wallet ? () => logActivity(event.task.userId, 'fail',
+          `Scheduled mint failed: ${event.task.name} — ${activityReason}`,
+          wallet.label, event.intent || null, CHAINS[wallet.chain], {triggerSource:'scheduled'}) : null,
+        notify:() => notifyUser(event.task.userId,
+          `${icon} Scheduled mint <b>${escapeTelegramHtml(event.task.name)}</b> could not run.\n${escapeTelegramHtml(feedback.message)}`),
+        log:message => log(`${safeError(message)} (task ${event.task.id})`),
+      });
+      // The event carries controls only when the failure can genuinely be retried/rescheduled.
+      // Exhausted supply and per-wallet caps are terminal for this exact attempt, so the dashboard
+      // explains them without offering a button that can only fail again.
     }
     if (event.outcome === 'success') {
       dashboardWebSockets.broadcastToUser(event.task.userId, {type:'task.succeeded',
@@ -816,12 +821,11 @@ ${escapeTelegramHtml(detail)}` : '';
   log,
   // errorReason folds ValidationError's issues (the real cause -- OpenSea's own eligibility
   // answer, a missing wallet, an unsupported chain) into what otherwise surfaces as the constant
-  // "Request validation failed"; redact then strips secrets. The fold is the whole point --
+  // "Request validation failed"; safeError then redacts secrets. The fold is the whole point --
   // wiring plain safeError here is why every failed schedule used to store the same opaque
   // sentence and a live "scheduled mints always fail" report was undiagnosable from last_error.
-  // (redact, not safeError: errorReason already returns a string, and safeError expects an
-  // error object -- passing it a string yields "Unknown error".)
-  sanitizeError: error => redact(errorReason(error)),
+  sanitizeError: error => scheduledFailureFeedback(safeError(errorReason(error)),
+    { chainState:'not_sent' }).message,
 });
 
 // ── Scheduled-mint reminder and low-balance pre-flight ────
@@ -865,9 +869,6 @@ async function expiredHistorySweep() {
         recorded += 1;
       } catch (error) {
         log(`Expired-history record failed for ${task.id}: ${safeError(error)}`);
-        // The claim already set expired_logged_at, so without this the row would never be
-        // retried and its history would be lost forever (SEC-011). Hand it back.
-        await schedulerRepository.clearExpiredLogged([task.id]).catch(() => {});
       }
     }
   } catch (error) {
@@ -883,7 +884,7 @@ const scheduledReminder = createScheduledReminder({
     if (!task.contract) return false;
     try {
       const detected = await botCommands.detectMintContract(task.userId,
-        { contractAddress: task.contract, quantity: task.qty || 1 });
+        { contractAddress: task.contract, quantity: task.qty || 1, includeSupply:true });
       return Boolean(detected?.soldOut);
     } catch { return false; }
   },
@@ -2423,21 +2424,19 @@ async function handleFlowTextMessage(msg) {
     // input a flow is actually waiting on.
     const trimmed = msg.text.trim();
     if (ethers.isAddress(trimmed) || botCommands.parseOpenSeaCollectionSlug(trimmed)) {
-      // Don't treat the user's own wallet addresses as contracts — pasting a wallet address
-      // should not trigger the mint info card. This check is synchronous (fast, no RPC).
+      // Don't treat wallet addresses as contracts — pasting a wallet address (e.g. from a
+      // block explorer) should not trigger the mint info card. Check both the user's own wallets
+      // and whether the address has code on any supported chain.
+      // NOTE: botCommands.wallets() is SYNCHRONOUS — no .catch on it (would throw and skip the check).
       if (ethers.isAddress(trimmed)) {
         try {
           const wallets = botCommands.wallets(userId);
           if (Array.isArray(wallets) && wallets.some(w => String(w.address || '').toLowerCase() === String(trimmed).toLowerCase())) return;
-        } catch {}
-        // If the address has no code on any chain it's a wallet (EOA), not a contract —
-        // give specific feedback instead of the generic "not found" error.
-        if (/^0x[0-9a-fA-F]{40}$/.test(trimmed)) {
-          const isContract = await botCommands.isContractAddress(trimmed).catch(() => true);
-          if (!isContract) {
-            return tgRender(chatId, { text: '📱 That looks like a wallet address, not a contract. Paste a contract address or an OpenSea collection link.', parseMode: 'HTML' });
+          if (/^0x[0-9a-fA-F]{40}$/.test(trimmed)) {
+            const isContract = await botCommands.isContractAddress(trimmed).catch(() => true);
+            if (!isContract) return;
           }
-        }
+        } catch {}
       }
       if (flow) telegramFlowState.clear('telegram', chatId);
       try {

@@ -371,6 +371,33 @@ test('buildMintTransaction throws a ValidationError when OpenSea reports a minti
   );
 });
 
+test('buildMintTransaction preserves nested sold-out and wallet-limit details with distinct codes', async t => {
+  async function rejection(body) {
+    const http = {
+      get:async()=>({ data:{ collection:'cool-cats' } }),
+      post:async()=>{ const error = new Error('Unprocessable'); error.response={ status:422, data:body }; throw error; },
+    };
+    const service = createOpenSeaService({ apiKey:'test-key', repository:fakeRepository(), http });
+    return service.buildMintTransaction('ethereum', CONTRACT, MINTER, 1);
+  }
+
+  await t.test('wallet cap', async () => {
+    await assert.rejects(rejection({ error:{ message:'wallet mint limit reached' } }), error => {
+      assert.equal(error.code, 'WALLET_MINT_LIMIT_REACHED');
+      assert.match(error.issues[0].message, /wallet mint limit reached/i);
+      return true;
+    });
+  });
+
+  await t.test('collection supply', async () => {
+    await assert.rejects(rejection({ detail:'collection is sold out' }), error => {
+      assert.equal(error.code, 'MINT_SOLD_OUT');
+      assert.match(error.issues[0].message, /sold out/i);
+      return true;
+    });
+  });
+});
+
 test('buildMintTransaction still throws a ValidationError with a sensible default message when OpenSea gives no specific reason', async () => {
   const http = {
     get: async () => ({ data: { collection: 'cool-cats' } }),
@@ -380,7 +407,7 @@ test('buildMintTransaction still throws a ValidationError with a sensible defaul
   await assert.rejects(
     service.buildMintTransaction('ethereum', CONTRACT, MINTER, 1),
     error => { assert.equal(error.code, 'VALIDATION_ERROR');
-      assert.match(error.issues[0].message, /insufficient balance|allowlist|limit|sold out/); return true; },
+      assert.match(error.issues[0].message, /could not confirm why/i); return true; },
   );
 });
 

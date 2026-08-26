@@ -780,6 +780,28 @@ html[data-theme="ghost-mint"] .dash-hero button,html[data-theme="ghost-mint-ligh
 .account-credential-row span{flex:0 0 auto;min-width:9rem;color:var(--text-muted);font-weight:600;font-size:.85rem}
 .account-credential-row strong{flex:1}
 .account-credential-row button{flex:0 0 auto}
+.account-tab-panel{margin-top:0}
+.account-tab-panel .card>p{font-size:.82rem;color:var(--text-muted);line-height:1.55}
+.account-profile-form{display:grid;gap:.75rem}
+.account-readonly-field{display:grid;grid-template-columns:minmax(7.5rem,.7fr) minmax(0,1fr) auto;align-items:center;gap:.75rem;
+  min-height:42px;padding:.45rem 0;border-top:1px solid var(--border)}
+.account-readonly-field>span{color:var(--text-muted);font-size:.78rem;font-weight:650}
+.account-readonly-field>strong{min-width:0;overflow-wrap:anywhere;font-size:.86rem}
+.account-mode-note{margin:0}
+.account-mode-note .b{margin-left:5px;vertical-align:middle}
+.account-copy-value{display:inline-flex;align-items:center;justify-content:flex-end;gap:.45rem;min-width:0;max-width:100%}
+.account-copy-value .mono{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.account-platform-list .r{min-height:54px}
+.account-platform-list .ri{width:30px;height:30px;border-radius:8px;background:var(--surface-3)}
+.account-platform-list .ri svg{width:17px;height:17px}
+.account-platform-telegram{color:#229ed9}
+.account-platform-discord{color:#5865f2}
+.account-platform-list .rv{display:flex;align-items:center;gap:.45rem}
+.account-link-card>.b{margin-top:.35rem}
+.account-client-label{padding:.7rem .8rem;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface-2);
+  color:var(--muted);font:600 11.5px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace;overflow-wrap:anywhere}
+.account-session-actions .br{margin-top:1rem}
+.account-warning{margin-top:.85rem}
 .session-policy{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1px;margin:1rem 0;
   overflow:hidden;border:1px solid var(--border);border-radius:var(--radius);background:var(--border)}
 .session-policy>div{display:grid;gap:.3rem;padding:.85rem;background:var(--surface-deep)}
@@ -794,6 +816,9 @@ html[data-theme="ghost-mint"] .dash-hero button,html[data-theme="ghost-mint-ligh
   .shell{display:block}
   .address-qr{grid-template-columns:1fr;text-align:center}.address-qr-image{width:min(220px,100%);margin:auto}
   .address-qr .user-card-copy{margin-inline:auto}.session-policy{grid-template-columns:1fr}
+  .account-readonly-field{grid-template-columns:1fr auto}.account-readonly-field>span{grid-column:1/-1}
+  .account-mode-note .b{display:flex;margin:7px 0 0}
+  .account-platform-list .rv .p{display:none}
   .shell header{min-height:4.5rem}
   .identity{display:none}
   .hamburger{display:flex}
@@ -927,9 +952,6 @@ html[data-theme="ghost-mint"] .dash-hero button,html[data-theme="ghost-mint-ligh
 .shell .history-flow .card>.r+.r{margin-top:0}
 .history-list-state{margin-top:11px}
 .history-pager-card{margin-top:11px;padding-top:6px}
-.history-page-gap{display:grid;place-items:center;min-width:34px;min-height:34px;padding:5px 10px;
-  border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface-2);
-  color:var(--muted);font-size:12px;font-weight:650}
 /* The wallet-card mobile rule below repositions every .colb>.ch. History's filter is the other
    prototype .col consumer, and its search row stays in normal flow when expanded. */
 .app[data-m] .history-flow .card.col.history-filter-card>.colb{position:static}
@@ -937,6 +959,22 @@ html[data-theme="ghost-mint"] .dash-hero button,html[data-theme="ghost-mint-ligh
   margin:0 0 10px;align-items:center}
 .app[data-m] .history-flow .card{padding:12px}
 .app[data-m] .history-flow .card>.r{padding:8px 0;gap:9px}
+
+/* Schedule's phone card keeps three rows per page and gives each selectable row enough separation
+   to read as its own target. The generic mobile .r rule removes horizontal padding; restoring it
+   here keeps the selection inset and status pill aligned instead of letting the highlight touch
+   the card edge. Actions become an even two-column bank so four narrow buttons do not wrap into
+   an accidental 3+1 layout. */
+@media(max-width:700px){
+  .schedule-layout{gap:13px}
+  .app[data-m] .schedule-list-card{padding:13px}
+  .app[data-m] .schedule-list-card .r[role="button"]{
+    min-height:58px;margin:0;padding:11px 9px;gap:10px
+  }
+  .app[data-m] .schedule-list-card .ri{width:30px;height:30px}
+  .app[data-m] .schedule-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+  .app[data-m] .schedule-actions .b{width:100%;min-height:44px}
+}
 
 :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .policy-grid{
   max-width:35rem;gap:.875rem}

@@ -147,6 +147,8 @@ For the selected unit, list:
 - Unknown/not-yet-calculated is `—` or explicit unavailable copy. A known numeric zero is `0`.
 - Every form has visible labels, inline field errors, and an in-flight lock. Conditional fields
   update immediately. Never let a rerender steal input focus.
+- When a view opens, focus its primary actionable task-entry text field. Never auto-focus a search
+  field. A conditional field receives focus only when it becomes enabled/read-write.
 - Use shared `confirmDialog`/`promptDialog`; never browser-native dialogs. Consequential prompts
   name the exact record. Confirmation dialogs must appear above overlays; notifications must remain
   visible above ordinary overlays.
@@ -154,6 +156,8 @@ For the selected unit, list:
   Pending confirmations are durable and shared across dashboard, Telegram, and Discord.
 - Search is consistent, user-scoped by the server, and has a themed clear control. The Ctrl+K
   palette navigates only and never mutates; keyboard selection must remain visible.
+- All list pagination uses the shared pager: previous arrow, three sliding page numbers, next
+  arrow, then jump-to-last when there are more than three pages. No ellipsis and no jump-to-first.
 - Touch targets are at least 44px on mobile except explicitly documented prototype exceptions.
 - Use brief functional motion and respect reduced-motion preferences.
 - Fixed mobile chrome respects safe-area insets. No horizontal page overflow.
@@ -241,10 +245,11 @@ item before starting because the application is active and the older backlog con
 1. **History:** finish prototype fidelity for Activity, Audit evidence, and owner Security log;
    preserve operational-vs-audit separation. Audit evidence currently has no dashboard route.
    Decide the truthful destination for archived schedule history before building that archive UI.
-2. **Account:** rebuild against the prototype's Identity, Security, Linked platforms, and Sessions
-   structure. The backend has `POST /api/auth/logout-all`, but the current page does not expose it.
-   Investigate and resolve the conflict between the current page's link-code generator and the
-   later product rule that only Telegram generates codes; do not choose silently.
+2. **Account:** rebuilt against the prototype's Identity, Security, Linked platforms, and Sessions
+   structure. `POST /api/auth/logout-all`, profile/security actions, and the later owner-requested
+   dashboard link-code Generate/Refresh flow are exposed without a second profile-fetch path.
+   The previous Telegram-only generator rule was explicitly reconciled in README/ROADMAP: Discord
+   remains consume-only, while an already-authenticated dashboard session may generate a code.
 3. **Settings:** finish the prototype's Appearance, Transaction mode, Gas, Notifications, and
    owner-only API usage organization. Preserve real mode governance and the compact appearance
    hierarchy.

@@ -1,6 +1,32 @@
 const axios = require('axios');
 const { ValidationError } = require('../validation/domain');
 
+function responseErrorDetail(data) {
+  const values = [data?.errors, data?.error, data?.detail, data?.message];
+  const messages = [];
+  const collect = value => {
+    if (!value) return;
+    if (Array.isArray(value)) return value.forEach(collect);
+    if (typeof value === 'string') { if (value.trim()) messages.push(value.trim()); return; }
+    if (typeof value === 'object') collect(value.message || value.detail || value.reason || value.code);
+  };
+  values.forEach(collect);
+  return [...new Set(messages)].slice(0, 5).join('; ') || null;
+}
+
+function rejectionCode(detail) {
+  const text = String(detail || '');
+  if (/mintquantityexceedsmaxtokensupplyforstage|stage.{0,25}(?:sold out|supply.{0,12}(?:exhausted|reached))/i.test(text)) {
+    return 'STAGE_SUPPLY_EXHAUSTED';
+  }
+  if (/mintquantityexceedsmaxsupply|sold[ -]?out|max(?:imum)? supply/i.test(text)) return 'MINT_SOLD_OUT';
+  if (/mintquantityexceedsmaxmintedperwallet|(?:mint|claim).{0,20}(?:limit|max).{0,20}(?:wallet|address)|(?:wallet|address).{0,20}(?:(?:mint|claim).{0,20})?(?:limit|maximum|max)|already (?:minted|claimed)/i.test(text)) {
+    return 'WALLET_MINT_LIMIT_REACHED';
+  }
+  if (/(?:not|isn'?t)\s+(?:currently\s+)?eligible|ineligible|allowlist|whitelist/i.test(text)) return 'WALLET_NOT_ELIGIBLE';
+  return undefined;
+}
+
 // This app's internal chain names -> OpenSea's own chain identifiers. Chains with no entry here
 // (e.g. a custom/obscure chain OpenSea has never indexed) are simply "not looked up" -- same
 // "unknown is a valid outcome, never a thrown error" philosophy as seaDropDiscoveryService.js.
@@ -252,8 +278,7 @@ function createOpenSeaService({ apiKey, repository, baseUrl = 'https://api.opens
         { timeout: timeoutMs, maxContentLength: 1_000_000, headers: { 'x-api-key': apiKey } });
     } catch (error) {
       const status = error?.response?.status;
-      const reasons = error?.response?.data?.errors;
-      const detail = Array.isArray(reasons) && reasons.length ? reasons.join('; ') : null;
+      const detail = responseErrorDetail(error?.response?.data);
       if (status === 409) {
         // Tagged STAGE_NOT_OPEN, unlike the 422 below: OpenSea returns this both for a stage that
         // has not opened yet and for one already over, and its text does not distinguish them. The
@@ -267,9 +292,10 @@ function createOpenSeaService({ apiKey, repository, baseUrl = 'https://api.opens
         // `earliest_eligible` scheduled task to a later phase. Sold out, wallet-limit and balance
         // failures remain permanent: treating those as an allowlist miss could submit a different
         // phase the user never intended to chase.
-        const code = /(?:not|isn'?t)\s+(?:currently\s+)?eligible|ineligible|allowlist|whitelist/i.test(detail || '')
-          ? 'WALLET_NOT_ELIGIBLE' : undefined;
-        throw new ValidationError({ field: 'contractAddress', message: detail || "this wallet can't mint right now (insufficient balance, not on the allowlist, limit reached, or sold out)" }, code);
+        const code = rejectionCode(detail);
+        throw new ValidationError({ field: 'contractAddress',
+          message:detail || "OpenSea could not confirm why this wallet can't mint right now" },
+        code);
       }
       // A real mint attempt got no calldata at all -- unlike the read-only functions above, this is
       // always worth a trace, not just the non-404 subset (there is no "expected" failure shape here).

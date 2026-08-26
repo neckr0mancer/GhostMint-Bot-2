@@ -150,9 +150,10 @@ function createSchedulerWorker({ repository, intentRepository, transactionEngine
       return 'succeeded';
     }
     if (['reverted', 'replaced'].includes(current.state)) {
+      const reason = current.failureReason || current.reason || `transaction ${current.state}`;
       await repository.recoverWithoutExecution(task, { status: 'failed', intentId: current.intentId,
-        reason: `transaction ${current.state}` });
-      await Promise.resolve(notify?.({ task, outcome: 'failure', intent: current })).catch(() => {});
+        reason });
+      await Promise.resolve(notify?.({ task, outcome: 'failure', intent: current, reason })).catch(() => {});
       return 'failed';
     }
     await repository.recoverWithoutExecution(task, { status: 'retry', intentId: current.intentId,

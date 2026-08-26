@@ -444,8 +444,8 @@ owner has already moved past.
 6. **Failed is red; cancelled is not.** Failed went wrong on its own; cancelled is
    something the user chose. Coluring a deliberate act like an error teaches people to
    ignore red, and this account's list is mostly cancelled test rows.
-7. **Pager gains « and »**, only past three pages, disabled at the ends like the
-   single arrows.
+7. **Pager originally gained « and »**. This was superseded by the app-wide pager ruling below:
+   no jump-to-first control and no ellipsis; keep only previous, three page numbers, next, last.
 
 ### 11.0b Third pass, 2026-08-19 — expired, and the filter actually filtering
 
@@ -499,6 +499,21 @@ Contrast measured against each theme's real backdrop (not the card, which is tra
 themes — measuring against that gave false failures first time round). Every chip clears WCAG AA:
 the weakest is Successful at **4.95** in `clean-vault`, which is that theme's own `--accent` and
 therefore inherent to the token rather than introduced here.
+
+### 11.0d App-wide input and pager ruling, 2026-08-26
+
+- A page's primary task-entry text field receives focus when that view opens. Search fields never
+  take focus automatically. Conditional forms focus only once the field is actionable — Batch,
+  for example, moves focus to Contract address after the second wallet is selected, not while the
+  field is read-only.
+- Every dashboard pager is the shared `Pager`: previous arrow, exactly three sliding page numbers,
+  next arrow, then double-right jump-to-last when more than three pages exist. There is no ellipsis
+  and no double-left jump. History may change only the count convention (`4 of 248` visible rows),
+  never the controls.
+- Schedule requests ten rows per desktop page and three per mobile page. Page-scoped selection is
+  cleared when the breakpoint changes.
+- A worker-owned `retry` caused by an eligibility phase deferral is displayed as **Rescheduled**.
+  The stored state remains `retry`, and the real user action on a failed task remains **Retry**.
 
 ### 11.1 "2 pending" above three rows
 
@@ -678,6 +693,13 @@ This is not a gap left open. Settings' four states are real where real fetches e
 (`/api/gas/:chain`) and ApiUsagePanel (`/api/social-usage`) each own loading, empty and error,
 and both gained a Retry in §11.5. Account's only request (`/api/auth/link-code`) is on-demand
 behind a button and has no page-load state to show.
+
+**Account fidelity pass completed 2026-08-26.** The populated surface now uses the prototype's
+Identity, Security, Linked platforms, and Sessions tabs, stays on the shell profile rather than
+adding a second identity request, and exposes real session summary data plus both logout scopes.
+The older prototype sentence saying the dashboard could only consume a link code was superseded
+by the owner's later Generate/Refresh request; the prototype, README, and roadmap now record that
+an already-authenticated dashboard session may generate one while Discord remains consume-only.
 
 ## 11.7 Batch — two findings, one of which was not a bug
 
@@ -884,7 +906,10 @@ still unverified on:
 - **Automation** — all tabs: snipers, social rules, and the policy editors inside them
 - **Wallets** — including the create and import forms, which have had no prototype pass at all
 - **History** — all tabs
-- **Settings** and **Account** — no prototype pass yet
+- **Settings** — no prototype pass yet
+- **Account** — populated-state prototype pass complete; Dark/Light browser checks with a truthful,
+  browser-only profile fixture completed at phone, tablet, and desktop widths. Live code generation/
+  logout-all still remain human walkthrough items because they intentionally affect real account/session state.
 
 Presets was verified by the owner at phone width and matches.
 

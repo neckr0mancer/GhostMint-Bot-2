@@ -641,10 +641,34 @@ test('detectMintContract treats a SeaDrop drop as sold out once totalMinted reac
   assert.equal(result.displayPrice.source, 'floor');
 });
 
-// Outside includeStats there is no live totalMinted to compare against (see the comment in
-// detectMintContract) -- soldOut correctly falls back to the time-window check alone, same
-// limitation this function already had before this fix, just no longer silently wrong when stats
-// ARE available.
+test('the scheduler-only includeSupply check detects exhaustion without calling OpenSea collection stats', async () => {
+  const futureEndTime = Math.floor(Date.now() / 1000) + 3_600;
+  let statsCalls = 0;
+  const { service } = commandServiceFixture({
+    contractValueResolver:{
+      resolve:async()=>{ throw new Error('should not be reached -- SeaDrop was found first'); },
+      probeTotalMinted:async()=>({ value:'4444', source:'totalSupply' }),
+      probeMaxSupply:async()=>({ value:'4444', source:'maxSupply' }),
+    },
+    seaDropDiscoveryService:{ resolve:async()=>({ address:SEADROP,
+      publicDrop:{ mintPriceWei:'0', endTime:futureEndTime }, feeRecipient:FEE_RECIPIENT }) },
+    openSeaService:{
+      getCollectionMetadata:async()=>null,
+      getCollectionStats:async()=>{ statsCalls += 1; return null; },
+    },
+  });
+
+  const result = await service.detectMintContract('user-a', {
+    contractAddress:CONTRACT, quantity:1, includeSupply:true, includeDrop:false,
+  });
+  assert.equal(result.soldOut, true);
+  assert.equal(result.stats, null, 'the reminder did not request the display stats payload');
+  assert.equal(statsCalls, 0, 'the per-minute safety check does not consume an OpenSea stats call');
+});
+
+// Outside includeStats/includeSupply there is no live totalMinted to compare against (see the
+// comment in detectMintContract) -- ordinary card detection correctly stays lean and falls back to
+// the time-window check alone.
 test('detectMintContract cannot detect a sold-out SeaDrop drop by supply alone when includeStats is not set', async () => {
   const futureEndTime = Math.floor(Date.now() / 1000) + 3_600;
   const { service } = commandServiceFixture({

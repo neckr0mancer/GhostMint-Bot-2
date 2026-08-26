@@ -44,6 +44,9 @@ export function mintPreviewError(error,{chain,quantity}={}){
   };
   if(code==='FEE_UNAVAILABLE'||/fee data|network fee/i.test(text)&&/unavailable|could not|did not return/i.test(text))return {title:'We could not get the network fee.',detail:'Try again in a moment.'};
   if(code==='WRONG_CHAIN')return {title:'The network is on the wrong chain.',detail:'Try again or check the RPC settings for this chain.'};
+  if(code==='WALLET_MINT_LIMIT_REACHED')return {title:"This wallet has reached this mint's limit.",detail:'Use another eligible wallet. No transaction was sent.'};
+  if(code==='STAGE_SUPPLY_EXHAUSTED')return {title:'This mint stage is sold out.',detail:'No transaction was sent.'};
+  if(code==='MINT_SOLD_OUT')return {title:'This mint is sold out.',detail:'No transaction was sent.'};
   const walletLimit=text.match(/would hold\s+(\d+),\s*exceeding the\s+(\d+) allowed per wallet/i);
   if(walletLimit){const total=Number(walletLimit[1]);const allowed=Number(walletLimit[2]);const requested=Number(quantity);const already=Number.isFinite(requested)&&requested>0?Math.max(0,total-requested):null;const remaining=already===null?null:Math.max(0,allowed-already);return remaining===0
     ?{title:"This wallet has reached this mint's limit.",detail:'Use another eligible wallet.'}

@@ -8,6 +8,7 @@
   "scripts": {
     "start": "node --use-system-ca index.js",
     "dev": "node --use-system-ca --watch index.js",
+    "dashboard:dev": "node --use-system-ca node_modules/vite/bin/vite.js --config dashboard/vite.config.js",
     "dashboard:build": "vite build --config dashboard/vite.config.js",
     "check:dashboard-admin": "node --check tests/dashboardAdmin.test.js && node --check tests/governanceRepositoryMapping.test.js",
     "check:dashboard-reporting": "node --check tests/dashboardReporting.test.js",

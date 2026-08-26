@@ -174,6 +174,16 @@ test('mint preview explains a wallet-specific mint allowance concisely',async()=
     {title:"This wallet has reached this mint's limit.",detail:'Use another eligible wallet.'});
 });
 
+test('mint preview uses OpenSea exhaustion codes instead of a generic failure',async()=>{
+  const {mintPreviewError}=await import(pathToFileURL(path.join(__dirname,'..','dashboard','src','mintFeedback.mjs')));
+  assert.deepEqual(mintPreviewError({code:'WALLET_MINT_LIMIT_REACHED',message:'wallet mint limit reached'}),
+    {title:"This wallet has reached this mint's limit.",detail:'Use another eligible wallet. No transaction was sent.'});
+  assert.deepEqual(mintPreviewError({code:'STAGE_SUPPLY_EXHAUSTED',message:'stage supply exhausted'}),
+    {title:'This mint stage is sold out.',detail:'No transaction was sent.'});
+  assert.deepEqual(mintPreviewError({code:'MINT_SOLD_OUT',message:'collection sold out'}),
+    {title:'This mint is sold out.',detail:'No transaction was sent.'});
+});
+
 test('mint preview gives concise next steps for common safety failures',async()=>{
   const {mintPreviewError}=await import(pathToFileURL(path.join(__dirname,'..','dashboard','src','mintFeedback.mjs')));
   assert.deepEqual(mintPreviewError({code:'GAS_CEILING_EXCEEDED'},{chain:'robinhood'}),{title:'Gas is above your limit.',detail:'Raise the wallet gas limit before trying again.'});

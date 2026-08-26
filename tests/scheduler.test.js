@@ -72,6 +72,27 @@ test('recovery retry transitions notify listeners after the durable retry state 
   assert.equal(events[0].recovery,true);
 });
 
+test('a reverted intent preserves its exact chain failure reason for the task and notification', async () => {
+  const repository = repositoryFixture();
+  const events = [];
+  const worker = createSchedulerWorker({
+    repository,
+    intentRepository:{
+      get:async()=>({ intentId:'intent-sold-out', state:'reverted', failureReason:'This mint is sold out.' }),
+      getByIdempotencyKey:async()=>null,
+    },
+    transactionEngine:{},
+    executeTask:async()=>{ throw new Error('must not execute an existing intent'); },
+    notify:async event=>events.push(event),
+  });
+
+  assert.equal(await worker.processTask(task({ transactionIntentId:'intent-sold-out' })), 'failed');
+  const recovered = repository.calls.find(call=>call[0]==='recover');
+  assert.equal(recovered[1].reason, 'This mint is sold out.');
+  assert.equal(events[0].reason, 'This mint is sold out.');
+  assert.equal(events[0].intent.failureReason, 'This mint is sold out.');
+});
+
 test('a failed recovery-refresh notification cannot change the persisted retry outcome', async () => {
   const repository = repositoryFixture();
   const worker = createSchedulerWorker({
