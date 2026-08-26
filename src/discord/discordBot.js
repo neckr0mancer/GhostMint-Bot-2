@@ -1976,7 +1976,9 @@ async function handleMintPasteMessage({ identity, commands, flowState, chains, r
       payload => message.reply(payload).catch(error => log(`Paste-detect: reply failed (${where}): ${error?.message || error}`)),
       platformUserId, userId, target);
     if (!started) {
-      await message.reply({ content: 'Could not find this contract on any supported chain. Double-check the address or try `/info <contract>` for a read-only lookup.', allowedMentions: { repliedUser: false } }).catch(error => log(`Paste-detect: error reply failed (${where}): ${error?.message || error}`));
+      // The address had no code on any chain — it's likely a wallet (EOA), not a contract.
+      // Give specific feedback instead of the generic "not found" error.
+      await message.reply({ content: 'That looks like a wallet address, not a contract. Paste a contract address or an OpenSea collection link.', allowedMentions: { repliedUser: false } }).catch(error => log(`Paste-detect: error reply failed (${where}): ${error?.message || error}`));
     }
   } catch (error) {
     log(`Paste-detect: dropped before reply (${where}): ${error?.message || error}`);

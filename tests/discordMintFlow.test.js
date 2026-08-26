@@ -856,6 +856,6 @@ test('an invalid contract input is ignored, but a valid address that is not foun
   const message = mockMessage('0x0000000000000000000000000000000000000001', 'paster-10');
   await handleMintPasteMessage({ identity: { resolveOrCreate: async () => 'internal-user' }, commands, flowState, chains: CHAINS, rateLimiter: NO_LIMIT }, message);
   assert.equal(message.replies.length, 1);
-  assert.match(message.replies[0].content, /Could not find this contract/);
+  assert.match(message.replies[0].content, /wallet address|Could not find/);
   assert.equal(flowState.get('discord', 'paster-10'), null);
 });

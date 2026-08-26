@@ -2425,13 +2425,19 @@ async function handleFlowTextMessage(msg) {
     if (ethers.isAddress(trimmed) || botCommands.parseOpenSeaCollectionSlug(trimmed)) {
       // Don't treat the user's own wallet addresses as contracts — pasting a wallet address
       // should not trigger the mint info card. This check is synchronous (fast, no RPC).
-      // The EOA check (isContractAddress) was removed: it made 6 serial RPC calls before every
-      // paste, and a slow chain RPC silently dropped real contracts as "EOAs."
       if (ethers.isAddress(trimmed)) {
         try {
           const wallets = botCommands.wallets(userId);
           if (Array.isArray(wallets) && wallets.some(w => String(w.address || '').toLowerCase() === String(trimmed).toLowerCase())) return;
         } catch {}
+        // If the address has no code on any chain it's a wallet (EOA), not a contract —
+        // give specific feedback instead of the generic "not found" error.
+        if (/^0x[0-9a-fA-F]{40}$/.test(trimmed)) {
+          const isContract = await botCommands.isContractAddress(trimmed).catch(() => true);
+          if (!isContract) {
+            return tgRender(chatId, { text: '📱 That looks like a wallet address, not a contract. Paste a contract address or an OpenSea collection link.', parseMode: 'HTML' });
+          }
+        }
       }
       if (flow) telegramFlowState.clear('telegram', chatId);
       try {
