@@ -127,9 +127,14 @@ function createTransactionIntentRepository(pool) {
              gas_price_wei=COALESCE($4,gas_price_wei),
              max_fee_per_gas_wei=COALESCE($5,max_fee_per_gas_wei),
              max_priority_fee_per_gas_wei=COALESCE($6,max_priority_fee_per_gas_wei),
+             -- TX-030: the daily-spend reservation tracks the CURRENT attempt's cost, not the
+             -- original. Recalculate estimated_cost_wei with the bumped fee so the budget
+             -- reflects the maximum possible network cost of the live attempt.
+             estimated_cost_wei = value_wei + gas_limit * COALESCE(
+               COALESCE($5, max_fee_per_gas_wei),
+               COALESCE($4, gas_price_wei)
+             ),
              bump_count=bump_count+1,
-             -- Each rung buys its own full timeout window: reconciliation must not declare the
-             -- intent unknown mid-ladder just because the ORIGINAL broadcast is old.
              timeout_at = NOW() + (transaction_timeout_ms * INTERVAL '1 millisecond'),
              pending_at=NOW(), last_reconciled_at=NOW(), state='pending'
            WHERE intent_id=$1 AND state IN ('pending','unknown') RETURNING *
@@ -156,6 +161,17 @@ function createTransactionIntentRepository(pool) {
         const current = await client.query('SELECT state FROM transaction_intents WHERE intent_id=$1 FOR UPDATE', [intentId]);
         if (!current.rowCount) throw new Error('Transaction intent not found');
         const fromState = current.rows[0].state;
+        // TX-023 (Model 2 phase-2): final states are monotonic — a stale reconciler must not
+        // reopen a confirmed mint as pending, or change a reverted to confirmed. Same-state
+        // transitions (e.g. pending→pending on a bump) are allowed; different final states
+        // are also allowed (e.g. the bump ladder re-bids and the replacement confirms after
+        // the original reverted — that's a legitimate state change, not a stale observation).
+        const FINAL = new Set(['confirmed', 'reverted', 'replaced']);
+        if (FINAL.has(fromState) && fromState !== toState) {
+          await client.query('COMMIT');
+          const unchanged = await client.query('SELECT * FROM transaction_intents WHERE intent_id=$1', [intentId]);
+          return mapIntent(unchanged.rows[0]);
+        }
         const result = await client.query(`UPDATE transaction_intents SET state=$2,
           failure_reason=$3,replacement_tx_hash=COALESCE($4,replacement_tx_hash),
           block_number=COALESCE($5,block_number),gas_used=COALESCE($6,gas_used),
@@ -184,6 +200,29 @@ function createTransactionIntentRepository(pool) {
     async get(intentId) {
       const result = await pool.query('SELECT * FROM transaction_intents WHERE intent_id=$1', [intentId]);
       return mapIntent(result.rows[0]);
+    },
+
+    // TX-021/TX-022: append-only broadcast attempt tracking. Every signed hash is durable
+    // BEFORE any provider receives its bytes, so restart reconciliation can find it even
+    // after timeout, process interruption, or database failure.
+    async recordBroadcastAttempt(intentId, { txHash, nonce, gasPriceWei, maxFeePerGasWei, maxPriorityFeePerGasWei, isReplacement }) {
+      await pool.query(
+        `INSERT INTO transaction_broadcast_attempts
+          (intent_id, tx_hash, nonce, gas_price_wei, max_fee_per_gas_wei, max_priority_fee_per_gas_wei, is_replacement)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        ON CONFLICT (intent_id, tx_hash) DO NOTHING`,
+        [intentId, txHash, nonce.toString(),
+          gasPriceWei?.toString() ?? null, maxFeePerGasWei?.toString() ?? null,
+          maxPriorityFeePerGasWei?.toString() ?? null, isReplacement ?? false]);
+    },
+
+    async listBroadcastAttempts(intentId) {
+      const result = await pool.query(
+        `SELECT tx_hash, nonce, broadcast_at, is_replacement
+         FROM transaction_broadcast_attempts WHERE intent_id=$1 ORDER BY broadcast_at`,
+        [intentId]);
+      return result.rows.map(row => ({ txHash: row.tx_hash, nonce: Number(row.nonce),
+        broadcastAt: new Date(row.broadcast_at).getTime(), isReplacement: row.is_replacement }));
     },
 
     async getByIdempotencyKey(idempotencyKey) {

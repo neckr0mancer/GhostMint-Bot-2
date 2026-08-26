@@ -210,6 +210,21 @@ function createTransactionEngine({
         return { ...evaluated, reason: `${evaluated.reason} (original broadcast mined after the re-bid)` };
       }
     }
+    // TX-022: check ALL broadcast attempt hashes — a multi-rung ladder can have H0, H1, H2...
+    // and any of them may have mined. Without this, only the latest two are checked and older
+    // possibly-live hashes are lost.
+    if (intentRepository.listBroadcastAttempts) {
+      const attempts = await intentRepository.listBroadcastAttempts(intent.intentId);
+      const alreadyChecked = new Set([intent.txHash, intent.bumpedFromTxHash].filter(Boolean));
+      for (const attempt of attempts) {
+        if (alreadyChecked.has(attempt.txHash)) continue;
+        const olderReceipt = await providerCall(intent.chain, 'getTransactionReceipt', provider => provider.getTransactionReceipt(attempt.txHash));
+        if (olderReceipt) {
+          const evaluated = await evaluateReceipt(intent, olderReceipt);
+          return { ...evaluated, reason: `${evaluated.reason} (broadcast attempt mined)` };
+        }
+      }
+    }
     const transaction = await providerCall(intent.chain, 'getTransaction', provider => provider.getTransaction(intent.txHash));
     if (transaction) return { state: 'pending', reason: 'transaction is present in the provider mempool' };
     // This used to read "pending nonce ahead of mine" as proof the nonce was consumed by another
@@ -521,6 +536,12 @@ function createTransactionEngine({
       if (!attached) throw new TransactionSafetyError('HASH_ATTACH_FAILED',
         'Signed transaction hash could not be persisted — broadcast aborted to prevent an untracked spend');
       intent = attached;
+      // TX-021: the primary hash is durable in the attempts table before any provider sees it.
+      if (intentRepository.recordBroadcastAttempt) {
+        await intentRepository.recordBroadcastAttempt(intent.intentId, {
+          txHash, nonce, isReplacement: false,
+        }).catch(() => {}); // best-effort: attachSignedHash already persisted it on the intent
+      }
       try {
         // Round 16 (Section AV): sniper races the same signed transaction across every candidate
         // in its own pool concurrently instead of trying one at a time -- safe because it's the

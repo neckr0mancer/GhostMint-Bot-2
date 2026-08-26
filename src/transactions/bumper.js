@@ -25,19 +25,24 @@ function createBumpSweeper({ intentRepository, findWalletById, decryptPrivateKey
   let timer = null;
   let scanning = false;
 
-  async function feeFor(intent, fresh) {
+  async function feeFor(intent, fresh, chain) {
     const bumpFactor = BigInt(Math.round(100 + incrementPct));
     const is1559 = intent.maxFeePerGasWei !== null && intent.maxFeePerGasWei !== undefined;
-    // The ceiling hook may be async (server wires it to the governance lookup); a failed lookup
-    // means "uncapped this pass" -- refusing every bump because governance blinked would strand
-    // the transaction exactly what this ladder exists to rescue.
+    // TX-029 (Model 2 phase-2): the ceiling hook receives the intent's chain so the correct
+    // chain's gas ceiling is used (Base 5 gwei default vs Ethereum 200 gwei). A governance
+    // failure now DEFERS the bump (fail-closed) instead of broadcasting uncapped.
     let capLimit = null;
     try {
       if (resolveFeeCapGwei) {
-        const capWei = await resolveFeeCapGwei(intent.userId);
+        const capWei = await resolveFeeCapGwei(intent.userId, chain);
         if (capWei !== null && capWei !== undefined) capLimit = BigInt(Math.round(Number(capWei) * 1e9));
+        else capLimit = null; // no ceiling configured for this user/chain
       }
-    } catch { capLimit = null; }
+    } catch {
+      // Governance unavailable — deferring is safer than broadcasting uncapped.
+      log(`Bump deferred for ${intent.intentId}: governance lookup failed`);
+      return { is1559, capped: true, deferred: true, gasPrice: null, maxFeePerGas: null, maxPriorityFeePerGas: null };
+    }
     if (is1559) {
       // Ceiling division, not truncation: a truncated product can land less than 10% above the
       // old fee on small values, and nodes reject replacements that didn't rise enough.
@@ -77,7 +82,7 @@ function createBumpSweeper({ intentRepository, findWalletById, decryptPrivateKey
 
     const fresh = await providerService.perform(intent.chain, 'bumpFeeData',
       provider => provider.getFeeData()).catch(() => null);
-    const fee = await feeFor(intent, fresh);
+    const fee = await feeFor(intent, fresh, intent.chain);
     if (fee.capped) {
       log(`Bump skipped for ${intent.intentId}: next rung exceeds the fee ceiling`);
       return 'capped';
@@ -95,6 +100,15 @@ function createBumpSweeper({ intentRepository, findWalletById, decryptPrivateKey
     const signer = new Wallet(decryptPrivateKey(wallet));
     const signed = await signer.signTransaction(transaction);
     const txHash = keccak256(signed);
+
+    // TX-021: the replacement hash is durable BEFORE any provider receives the bytes.
+    if (intentRepository.recordBroadcastAttempt) {
+      await intentRepository.recordBroadcastAttempt(intent.intentId, {
+        txHash, nonce: intent.nonce,
+        gasPriceWei: fee.gasPrice?.toString(), maxFeePerGasWei: fee.maxFeePerGas?.toString(),
+        maxPriorityFeePerGasWei: fee.maxPriorityFeePerGas?.toString(), isReplacement: true,
+      });
+    }
 
     // Same race semantics as launch broadcasts: identical nonce+signature everywhere.
     const racing = fastProviderService || providerService;

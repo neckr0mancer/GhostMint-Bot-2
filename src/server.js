@@ -1251,7 +1251,7 @@ const bumpSweeper = createBumpSweeper({
   decryptPrivateKey: wallet => decryptPK(wallet),
   providerService,
   fastProviderService,
-  resolveFeeCapGwei: userId => botCommands.gasCeiling(userId),
+    resolveFeeCapGwei: (userId, chain) => botCommands.gasCeiling(userId, chain),
   bumpAfterMs: CONFIG.transactionBumpAfterMs,
   incrementPct: CONFIG.transactionBumpIncrementPct,
   maxAttempts: CONFIG.transactionBumpMaxAttempts,
