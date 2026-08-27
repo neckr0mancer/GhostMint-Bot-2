@@ -3722,7 +3722,7 @@ function WalletExport({profile,onProfileChange,walletList}){
   const rawKeyTimer=useRef(null);
   const retry=useRetryAfter();
   const clearRawKey=useCallback(()=>{clearTimeout(rawKeyTimer.current);rawKeyTimer.current=null;setRawKey(null);setRevealed(false);},[]);
-  useEffect(()=>clearRawKey,[clearRawKey]);
+  useEffect(()=>{return ()=>clearTimeout(rawKeyTimer.current);},[]);
   function chooseKind(kind){clearRawKey();setExportKind(kind);setLimited(null);}
   async function submitExport(event){
     event.preventDefault();
