@@ -158,6 +158,11 @@ For the selected unit, list:
   palette navigates only and never mutates; keyboard selection must remain visible.
 - All list pagination uses the shared pager: previous arrow, three sliding page numbers, next
   arrow, then jump-to-last when there are more than three pages. No ellipsis and no jump-to-first.
+- Mint, Schedule, and Batch are one persistent workspace: changing their tabs or visiting another
+  dashboard page must not erase a draft, preview, selection, or in-flight contract lookup.
+- Scheduled rows show a readable date and 24-hour UTC time with no raw ISO `T`, seconds,
+  milliseconds, or trailing `Z`. A future task may add a 12/24-hour preference; do not imply that
+  preference exists before it is implemented.
 - Touch targets are at least 44px on mobile except explicitly documented prototype exceptions.
 - Use brief functional motion and respect reduced-motion preferences.
 - Fixed mobile chrome respects safe-area insets. No horizontal page overflow.

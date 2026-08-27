@@ -9,6 +9,7 @@ import {walletPerformance,pnlWalletLabel} from './walletPerformance.js';
 import {pnlBarLayout,pnlRecordSeries,pnlWindowTotals} from './pnlChart.js';
 import {mintDetectionMessage,mintPreviewError} from './mintFeedback.mjs';
 import {mintQuantityPolicy} from './mintQuantityPolicy.mjs';
+import {formatScheduleDateTime,scheduleCountdown} from './scheduleDisplay.js';
 import {ACTIVITY_EVENTS,api,Ledger,NumberField,SectionCard,confirmDialog,ConfirmHost,consumePendingMintPrefill,CopyButton,csrf,downloadFile,Empty,EVM_CHAINS,Field,Form,getNotificationLog,notify,Notice,PageTitle,Pager,promptDialog,relativeTime,resetSectionOrders,SearchField,Select,Skeleton,StatusPill,SubTabs,subscribeNotificationLog,ToastHost,useLoad,useLiveSocket,setPendingMintPrefill,quantityPicks} from './shared.jsx';
 import Dashboard from './Dashboard.jsx';
 // Phase 4, unit 1 of 5 (brief §2). The 11->5 merge lands one page at a time so any single merge
@@ -888,7 +889,11 @@ const CARD_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strok
 const CROSS_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><path d="M18 6 6 18M6 6l12 12"/></svg>;
 const LOCK_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><rect x="4" y="10.5" width="16" height="10.5" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/></svg>;
 function shortHex(value){const v=String(value||"");return v.length>12?`${v.slice(0,6)}…${v.slice(-4)}`:v;}
-function Minting({onSwitchToBatch,onSwitchToSchedule,onGoWallets}){const wallets=useLoad('/api/wallets',[],'wallets.changed');const limits=useLoad('/api/profile/limits');const [preview,setPreview]=useState(null);const [confirmResults,setConfirmResults]=useState(null);const formRef=useRef(null);const previewRef=useRef(null);const [walletLabel,setWalletLabel]=useState('');const [contractAddress,setContractAddress]=useState('');const [collectionName,setCollectionName]=useState('');const [viaOpenSea,setViaOpenSea]=useState(false);const [quantity,setQuantity]=useState('1');const [methodSignature,setMethodSignature]=useState('');const [argumentsJson,setArgumentsJson]=useState('');const [priceEth,setPriceEth]=useState('');const [seaDropAddress,setSeaDropAddress]=useState('');const [detectedChain,setDetectedChain]=useState('');const [maxPerWallet,setMaxPerWallet]=useState(null);const [detecting,setDetecting]=useState(false);const [detectionError,setDetectionError]=useState('');const [detectionRetryable,setDetectionRetryable]=useState(false);const lastDetected=useRef('');const detectingKey=useRef('');
+function ContractLookupStatus({visible}){
+  return visible?<span className="contract-lookup-status" role="status" aria-live="polite">
+    <span className="contract-lookup-spinner" aria-hidden="true"/>Reading…</span>:null;
+}
+function Minting({active=true,onSwitchToBatch,onSwitchToSchedule,onGoWallets}){const wallets=useLoad('/api/wallets',[],'wallets.changed');const limits=useLoad('/api/profile/limits');const [preview,setPreview]=useState(null);const [confirmResults,setConfirmResults]=useState(null);const formRef=useRef(null);const previewRef=useRef(null);const contractInputRef=useRef(null);const [walletLabel,setWalletLabel]=useState('');const [contractAddress,setContractAddress]=useState('');const [collectionName,setCollectionName]=useState('');const [viaOpenSea,setViaOpenSea]=useState(false);const [quantity,setQuantity]=useState('1');const [methodSignature,setMethodSignature]=useState('');const [argumentsJson,setArgumentsJson]=useState('');const [priceEth,setPriceEth]=useState('');const [seaDropAddress,setSeaDropAddress]=useState('');const [detectedChain,setDetectedChain]=useState('');const [maxPerWallet,setMaxPerWallet]=useState(null);const [detecting,setDetecting]=useState(false);const [detectionError,setDetectionError]=useState('');const [detectionRetryable,setDetectionRetryable]=useState(false);const lastDetected=useRef('');const detectingKey=useRef('');
   // Simulation is no longer user-triggered (backlog §7.2): the prototype has no "Validate and
   // simulate" control, only a Re-simulate on an expired quote, so the first simulation runs on its
   // own. Debounced, because otherwise typing an address would fire one /api/mints/preview per
@@ -897,6 +902,7 @@ function Minting({onSwitchToBatch,onSwitchToSchedule,onGoWallets}){const wallets
   const [mintError,setMintError]=useState(null);
   const [quantityIssue,setQuantityIssue]=useState(null);
   const simulateTimer=useRef(null);
+  useEffect(()=>{if(active)contractInputRef.current?.focus({preventScroll:true});},[active]);
   useEffect(()=>{if(!walletLabel&&wallets.data?.length)setWalletLabel(wallets.data[0].label);},[wallets.data]);
   // Picks up whatever Quick Mint already had typed in (see Dashboard.jsx's goToFullMint) so landing
   // here isn't a dead end with an empty contract field -- detects immediately rather than waiting
@@ -1050,10 +1056,14 @@ function Minting({onSwitchToBatch,onSwitchToSchedule,onGoWallets}){const wallets
         <div className="ch"><div className="chip-ico">{CONTRACT_ICON}</div><h2>Contract</h2></div>
         <div className="g" style={{gap:'11px'}}>
           <label className="fl"><span>Contract address</span>
-            <input className={`in mono${detected?' ok':''}`} disabled={noWallets} autoFocus
-              placeholder="0x… paste a contract address" value={contractAddress}
-              onChange={e=>{const v=e.target.value;setContractAddress(v);if(!ADDRESS_SHAPE.test(v.trim())){setDetectionError('');setDetectionRetryable(false);setCollectionName('');setViaOpenSea(false);setMethodSignature('');setArgumentsJson('');setSeaDropAddress('');setDetectedChain('');setMaxPerWallet(null);setPriceEth('');setPreview(null);setMintError(null);setQuantityIssue(null);lastDetected.current='';detectingKey.current='';setDetecting(false);}autoDetectIfReady(v,quantity);}}
-              onBlur={handleAutoDetectBlur}/>
+            <div className={`contract-input-shell${detecting?' loading':''}`}>
+              <input ref={contractInputRef} className={`in mono${detected?' ok':''}`} disabled={noWallets}
+                autoFocus={active} aria-busy={detecting||undefined}
+                placeholder="0x… paste a contract address" value={contractAddress}
+                onChange={e=>{const v=e.target.value;setContractAddress(v);if(!ADDRESS_SHAPE.test(v.trim())){setDetectionError('');setDetectionRetryable(false);setCollectionName('');setViaOpenSea(false);setMethodSignature('');setArgumentsJson('');setSeaDropAddress('');setDetectedChain('');setMaxPerWallet(null);setPriceEth('');setPreview(null);setMintError(null);setQuantityIssue(null);lastDetected.current='';detectingKey.current='';setDetecting(false);}autoDetectIfReady(v,quantity);}}
+                onBlur={handleAutoDetectBlur}/>
+              <ContractLookupStatus visible={detecting}/>
+            </div>
           </label>
           {detectionError&&<div className="nt w" role="status">{WARN_TRIANGLE_ICON}<div><b>{detectionError}</b>{detectionRetryable&&<div style={{marginTop:'8px'}}><button type="button" className="b sm" onClick={()=>detect(contractAddress,quantity)}>Retry</button></div>}</div></div>}
           {/* Detection summary, the prototype's .nt.i one-liner. */}
@@ -1146,14 +1156,14 @@ function Minting({onSwitchToBatch,onSwitchToSchedule,onGoWallets}){const wallets
                   rows still render, so the prototype's "a collapsed total is a hidden total"
                   still holds; only the unknown VALUE is withheld. */}
               <tr><td>Est. gas</td><td>{item?`${weiToEthDisplay(item.simulation.estimatedGasCostWei??0)} ETH`:(detected?'—':'0.000000 ETH')}</td></tr>
-              <tr><td>Simulation</td><td>{simulating?'Running…':item?'Passed':'Not run'}</td></tr>
+              <tr><td>Simulation</td><td>{detecting?'Reading contract…':simulating?'Running…':item?'Passed':'Not run'}</td></tr>
               <tr className="tot"><td>Total debit</td><td>{totalDebitWei?`${weiToEthDisplay(totalDebitWei)} ETH`:(detected?'—':'0.000000 ETH')}</td></tr>
             </tbody>
           </table>
         </div>
         {/* Prototype mint.html:85 -- while /api/mints/preview is in flight the column shows
             skeletons, not a half-filled ledger. Three row bars and a 60% line, exactly. */}
-        {simulating&&<div>
+        {(detecting||simulating)&&<div aria-label={detecting?'Reading contract details':'Simulating transaction'}>
           <div className="sk row"/><div className="sk row"/><div className="sk row"/><div className="sk l w60"/>
         </div>}
         {/* Ceiling only -- no meter and no "used" figure, because nothing exposes rolling spend
@@ -1263,7 +1273,7 @@ function scheduleStageSelectionKey(stage){
 let pendingSchedulePrefill=null;
 function setPendingSchedulePrefill(value){pendingSchedulePrefill=value;}
 function consumePendingSchedulePrefill(){const value=pendingSchedulePrefill;pendingSchedulePrefill=null;return value;}
-function Tasks({profile}){const mobile=useIsMobile();const [page,setPage]=useState(1);const [search,setSearch]=useState('');const [bucket,setBucket]=useState('pending');const [filtersOpen,setFiltersOpen]=useState(false);const [serverFilters,setServerFilters]=useState(null);const PAGE_SIZE=mobile?3:10;const COMPAT_LIMIT=50;const listing=useLoad(serverFilters===false?`/api/tasks?page=1&pageSize=${COMPAT_LIMIT}&search=${encodeURIComponent(search)}`:`/api/tasks?page=${page}&pageSize=${PAGE_SIZE}&status=${bucket}&search=${encodeURIComponent(search)}`,[page,bucket,search,serverFilters,PAGE_SIZE],'tasks.changed');const wallets=useLoad('/api/wallets',[],'wallets.changed');const [chain,setChain]=useState(profile.defaultChain||profile.supportedChains[0]);const [contractAddress,setContractAddress]=useState('');const [taskName,setTaskName]=useState('');const [detectedName,setDetectedName]=useState('');const [detectedSeaDrop,setDetectedSeaDrop]=useState(false);const [quantity,setQuantity]=useState('1');const [maxPerWallet,setMaxPerWallet]=useState(null);const [priceETH,setPriceETH]=useState('');const [mintTime,setMintTime]=useState('');const [viaOpenSea,setViaOpenSea]=useState(false);const [detectedOpenSeaRecommendation,setDetectedOpenSeaRecommendation]=useState(false);const [stageType,setStageType]=useState('');const [stages,setStages]=useState([]);const [selectedStageKey,setSelectedStageKey]=useState('');const [scheduleWallet,setScheduleWallet]=useState('');const [pendingRows,setPendingRows]=useState([]);const [detecting,setDetecting]=useState(false);const [detectionError,setDetectionError]=useState('');const [detectionRetryable,setDetectionRetryable]=useState(false);const lastDetected=useRef('');
+function Tasks({profile,active=true}){const mobile=useIsMobile();const [page,setPage]=useState(1);const [search,setSearch]=useState('');const [bucket,setBucket]=useState('pending');const [filtersOpen,setFiltersOpen]=useState(false);const [serverFilters,setServerFilters]=useState(null);const PAGE_SIZE=mobile?3:10;const COMPAT_LIMIT=50;const listing=useLoad(serverFilters===false?`/api/tasks?page=1&pageSize=${COMPAT_LIMIT}&search=${encodeURIComponent(search)}`:`/api/tasks?page=${page}&pageSize=${PAGE_SIZE}&status=${bucket}&search=${encodeURIComponent(search)}`,[page,bucket,search,serverFilters,PAGE_SIZE],'tasks.changed');const wallets=useLoad('/api/wallets',[],'wallets.changed');const contractInputRef=useRef(null);const [chain,setChain]=useState(profile.defaultChain||profile.supportedChains[0]);const [contractAddress,setContractAddress]=useState('');const [taskName,setTaskName]=useState('');const [detectedName,setDetectedName]=useState('');const [detectedSeaDrop,setDetectedSeaDrop]=useState(false);const [quantity,setQuantity]=useState('1');const [maxPerWallet,setMaxPerWallet]=useState(null);const [priceETH,setPriceETH]=useState('');const [mintTime,setMintTime]=useState('');const [viaOpenSea,setViaOpenSea]=useState(false);const [detectedOpenSeaRecommendation,setDetectedOpenSeaRecommendation]=useState(false);const [stageType,setStageType]=useState('');const [stages,setStages]=useState([]);const [selectedStageKey,setSelectedStageKey]=useState('');const [scheduleWallet,setScheduleWallet]=useState('');const [pendingRows,setPendingRows]=useState([]);const [detecting,setDetecting]=useState(false);const [detectionError,setDetectionError]=useState('');const [detectionRetryable,setDetectionRetryable]=useState(false);const lastDetected=useRef('');
   // The prototype's Schedule form has no price field, because it assumes the contract can be
   // priced automatically. Some cannot -- the server then rejects with a priceETH issue and there
   // is nowhere to type one, which left the form unsubmittable for those contracts. So the field
@@ -1271,6 +1281,7 @@ function Tasks({profile}){const mobile=useIsMobile();const [page,setPage]=useSta
   // .fielderr. A gap in the design rather than a departure from it; see backlog §14.
   const [priceIssue,setPriceIssue]=useState(null);
   const [selectedIds,setSelectedIds]=useState([]);
+  useEffect(()=>{if(active)contractInputRef.current?.focus({preventScroll:true});},[active]);
   // A phone deliberately shows three schedules per page. Reset page-scoped selection when the
   // breakpoint changes so a desktop page 5 cannot become an empty mobile page 5.
   useEffect(()=>{setPage(1);setSelectedIds([]);},[mobile]);
@@ -1593,17 +1604,20 @@ function Tasks({profile}){const mobile=useIsMobile();const [page,setPage]=useSta
     if(key==='paused')return `${task.walletLabel} · paused`;
     const at=task.mintTime?new Date(task.mintTime):null;
     if(!at||Number.isNaN(at.getTime()))return String(task.walletLabel||'');
-    const ms=at.getTime()-scheduleNow;
-    if(ms>0){
-      const mins=Math.round(ms/60000);
-      const verb=task.eligibilityDeadline?'checks begin':'fires';
-      const when=mins<60?`${verb} in ${mins}m`:mins<1440?`${verb} in ${Math.round(mins/60)}h`:`${verb} in ${Math.round(mins/1440)}d`;
-      return `${task.walletLabel} · ${when} · ${at.toISOString()}`;
-    }
+    const when=formatScheduleDateTime(at);
+    if(at.getTime()>scheduleNow)return `${task.walletLabel} · ${when}`;
     if(task.eligibilityDeadline&&['scheduled','retry','claimed'].includes(String(task.status||'').toLowerCase())){
-      return `${task.walletLabel} · waiting for a live eligible phase · ${at.toISOString()}`;
+      return `${task.walletLabel} · waiting for a live eligible phase · ${when}`;
     }
-    return `${task.walletLabel} · ${at.toISOString()}`;
+    return `${task.walletLabel} · ${when}`;
+  }
+  function rowCountdown(task){
+    const status=String(task?.status||'').toLowerCase();
+    if(!['scheduled','retry','claimed'].includes(status))return null;
+    const remaining=scheduleCountdown(task.mintTime,scheduleNow);
+    if(!remaining)return null;
+    return <span className="schedule-countdown">
+      <span>{task.eligibilityDeadline?'Checks in':'Mints in'}</span><b>{remaining}</b></span>;
   }
   function rowPill(task){
     const key=bucketOf(task);
@@ -1620,10 +1634,13 @@ function Tasks({profile}){const mobile=useIsMobile();const [page,setPage]=useSta
       <div className="ch"><div className="chip-ico">{CLOCK_ICON_LG}</div><h2>Schedule a mint</h2></div>
       <form className="g" style={{gap:'11px'}} onSubmit={create}>
         <label className="fl"><span>Contract address</span>
-          <input className="in mono" name="contractAddress" required disabled={noWallets} autoFocus placeholder="0x…"
-            value={contractAddress}
-            onChange={e=>{setContractAddress(e.target.value);if(!ADDRESS_SHAPE.test(e.target.value.trim())){lastDetected.current='';setMaxPerWallet(null);setViaOpenSea(false);setDetectedOpenSeaRecommendation(false);setDetectedSeaDrop(false);setStageType('');setStages([]);setSelectedStageKey('');setDetectionError('');setDetectionRetryable(false);const prev=detectedName;setDetectedName('');if(taskName===prev) setTaskName('');}autoDetectIfReady(e.target.value);}}
-            onBlur={handleContractBlur}/></label>
+          <div className={`contract-input-shell${detecting?' loading':''}`}>
+            <input ref={contractInputRef} className="in mono" name="contractAddress" required disabled={noWallets}
+              autoFocus={active} aria-busy={detecting||undefined} placeholder="0x…" value={contractAddress}
+              onChange={e=>{setContractAddress(e.target.value);if(!ADDRESS_SHAPE.test(e.target.value.trim())){lastDetected.current='';setMaxPerWallet(null);setViaOpenSea(false);setDetectedOpenSeaRecommendation(false);setDetectedSeaDrop(false);setStageType('');setStages([]);setSelectedStageKey('');setDetectionError('');setDetectionRetryable(false);const prev=detectedName;setDetectedName('');if(taskName===prev) setTaskName('');}autoDetectIfReady(e.target.value);}}
+              onBlur={handleContractBlur}/>
+            <ContractLookupStatus visible={detecting}/>
+          </div></label>
         {detectionError&&<div className="nt w" role="status">{WARN_TRIANGLE_ICON}<div><b>{detectionError}</b>{detectionRetryable&&<div style={{marginTop:'8px'}}><button type="button" className="b sm" onClick={()=>detect(contractAddress)}>Retry</button></div>}</div></div>}
         <label className="fl"><span>Name{detectedName&&<span style={{color:'var(--faint)',fontWeight:500}}> · auto-detected</span>}</span>
           <input className="in" name="name" required disabled={noWallets} readOnly={!!detectedName} placeholder={detectedName||"e.g. Pudgy Rods public"} value={taskName} onChange={e=>setTaskName(e.target.value)}/></label>
@@ -1671,7 +1688,7 @@ function Tasks({profile}){const mobile=useIsMobile();const [page,setPage]=useSta
           <div>{pendingSum>=maxPerWallet
             ?<><b>{scheduleWallet} already has {pendingSum} of max {maxPerWallet} scheduled on this contract.</b> Any additional mint for this wallet will fail -- schedule another wallet or wait for the next stage.</>
             :<>{scheduleWallet} already has {pendingSum} of max {maxPerWallet} scheduled on this contract.</>}</div></div>}
-        <label className="fl"><span>Mint time <span style={{color:'var(--faint)',fontWeight:500}}>· UTC, explicit offset or Z</span></span>
+        <label className="fl"><span>Mint time <span style={{color:'var(--faint)',fontWeight:500}}>· your local time; stored in UTC</span></span>
           <input className="in tab mono" name="mintTime" type="datetime-local" disabled={noWallets}
             value={mintTime} onChange={e=>setMintTime(e.target.value)}/></label>
         {!viaOpenSea&&priceIssue
@@ -1763,7 +1780,7 @@ function Tasks({profile}){const mobile=useIsMobile();const [page,setPage]=useSta
                        <div className="rt">{task.name}</div>
                        <div className="rs fold">{rowMeta(task)}</div>
                      </div>
-                     <div className="rv">{rowPill(task)}</div>
+                     <div className="rv schedule-row-right">{rowCountdown(task)}{rowPill(task)}</div>
                    </div>;
                  })}
                  {/* All four always present, as the prototype draws them; the ones that cannot
@@ -2829,7 +2846,7 @@ function nativeBalance(wallet){
   if(!match||match.balance===null||match.balance===undefined)return null;
   return {amount:Number(match.balance),symbol:match.symbol||'ETH'};
 }
-function MintBatch({onGoWallets,onSwitchToSchedule}){
+function MintBatch({active=true,onGoWallets,onSwitchToSchedule}){
   const wallets=useLoad('/api/wallets',[],'wallets.changed');
   const contractInputRef=useRef(null);
   const [selected,setSelected]=useState([]);
@@ -2965,7 +2982,7 @@ function MintBatch({onGoWallets,onSwitchToSchedule}){
   // The contract field is intentionally locked until this is genuinely a batch. As soon as the
   // second wallet is selected it becomes the primary task input, so move focus there once instead
   // of leaving the user to click back to the top of the form.
-  useEffect(()=>{if(enoughSelected)contractInputRef.current?.focus({preventScroll:true});},[enoughSelected]);
+  useEffect(()=>{if(active&&enoughSelected)contractInputRef.current?.focus({preventScroll:true});},[active,enoughSelected]);
   const gateMessage=`Select at least ${BATCH_MIN_WALLETS} wallets — batching one wallet is just a single mint.`;
   // No toast. This fired from onFocus AND onClick, so a single click raised TWO of them, and every
   // notify() also writes a bell entry -- one click, four pieces of noise. The rule is already
@@ -2979,16 +2996,20 @@ function MintBatch({onGoWallets,onSwitchToSchedule}){
       <div className="ch"><div className="chip-ico">{BATCH_ICON}</div><h2>Batch mint</h2></div>
       <form className="g" style={{gap:'11px'}} onSubmit={simulate}>
         <label className="fl"><span>Contract address</span>
-          <input ref={contractInputRef} className={`in mono${detectedPrice?' ok':''}`}
-            required disabled={noWallets} readOnly={!noWallets&&!enoughSelected}
-            placeholder={enoughSelected?'0x…':`Select ${BATCH_MIN_WALLETS} wallets first`}
-            value={contractAddress}
-            onFocus={()=>{if(!noWallets&&!enoughSelected)notify(gateMessage,{type:'info'});}}
-            onChange={e=>{if(!enoughSelected)return;setContractAddress(e.target.value);setPreview(null);
-              if(!ADDRESS_SHAPE.test(e.target.value.trim())){lastDetected.current='';setDetectedPrice(null);
-                setDetectedChain('');setMethodSignature('');setDetectedArguments([]);setSeaDropAddress('');setViaOpenSea(false);
-                setMaxPerWallet(null);setDetectionError('');setDetectionRetryable(false);detectingKey.current='';setDetecting(false);}
-              autoDetectIfReady(e.target.value);}}/>
+          <div className={`contract-input-shell${detecting?' loading':''}`}>
+            <input ref={contractInputRef} className={`in mono${detectedPrice?' ok':''}`}
+              required disabled={noWallets} readOnly={!noWallets&&!enoughSelected}
+              aria-busy={detecting||undefined}
+              placeholder={enoughSelected?'0x…':`Select ${BATCH_MIN_WALLETS} wallets first`}
+              value={contractAddress}
+              onFocus={()=>{if(!noWallets&&!enoughSelected)notify(gateMessage,{type:'info'});}}
+              onChange={e=>{if(!enoughSelected)return;setContractAddress(e.target.value);setPreview(null);
+                if(!ADDRESS_SHAPE.test(e.target.value.trim())){lastDetected.current='';setDetectedPrice(null);
+                  setDetectedChain('');setMethodSignature('');setDetectedArguments([]);setSeaDropAddress('');setViaOpenSea(false);
+                  setMaxPerWallet(null);setDetectionError('');setDetectionRetryable(false);detectingKey.current='';setDetecting(false);}
+                autoDetectIfReady(e.target.value);}}/>
+            <ContractLookupStatus visible={detecting}/>
+          </div>
           {detectionError&&<div className="nt w" role="status">{WARN_TRIANGLE_ICON}<div><b>{detectionError}</b>
             {detectionRetryable&&<div style={{marginTop:'8px'}}><button type="button" className="b sm" onClick={()=>detectPrice(contractAddress,quantity)}>Retry</button></div>}
           </div></div>}</label>
@@ -3032,7 +3053,7 @@ function MintBatch({onGoWallets,onSwitchToSchedule}){
       <div className="nt i">{INFO_ICON}
         <div>Each wallet is simulated and submitted <b>independently</b>. One wallet failing does not cancel the others.</div></div>
       <Notice error={loadError(wallets,'Could not load wallets.')}/>
-      {busy||(!walletsArrived&&!wallets.error)
+      {busy||detecting||(!walletsArrived&&!wallets.error)
         ?<div><div className="sk row"/><div className="sk row"/><div className="sk row"/></div>
         :wallets.error
           ?null
@@ -3200,10 +3221,22 @@ function Mint({profile,go,tab,onTab}){
   return <>
     <div className="page-head"><div className="page-head-text"><p className="eyebrow">Mint</p><h1>Mint</h1></div></div>
     <SubTabs tabs={MINT_TABS} active={active} onChange={onTab} label="Mint sections" badges={badges}/>
-    {active==='now'&&<Minting onSwitchToBatch={()=>onTab('batch')} onSwitchToSchedule={()=>onTab('schedule')} onGoWallets={()=>go('Wallets')}/>}
-    {active==='schedule'&&<Tasks profile={profile} go={go}/>}
-    {active==='batch'&&<MintBatch onGoWallets={()=>go('Wallets')} onSwitchToSchedule={()=>onTab('schedule')}/>}
-    {active==='presets'&&<MintPresets onUsePreset={preset=>{setPendingMintPrefill({contractAddress:preset.contractAddress});onTab('now');}}/>}
+    {/* Keep every work surface mounted. Contract detection and simulation are asynchronous work,
+        not decoration: changing a tab must not cancel them or erase a half-completed draft. The
+        hidden attribute removes inactive panels from layout and accessibility while React keeps
+        their state and in-flight request alive. */}
+    <div className="mint-tab-panel" hidden={active!=='now'}>
+      <Minting active={active==='now'} onSwitchToBatch={()=>onTab('batch')} onSwitchToSchedule={()=>onTab('schedule')} onGoWallets={()=>go('Wallets')}/>
+    </div>
+    <div className="mint-tab-panel" hidden={active!=='schedule'}>
+      <Tasks profile={profile} active={active==='schedule'} go={go}/>
+    </div>
+    <div className="mint-tab-panel" hidden={active!=='batch'}>
+      <MintBatch active={active==='batch'} onGoWallets={()=>go('Wallets')} onSwitchToSchedule={()=>onTab('schedule')}/>
+    </div>
+    <div className="mint-tab-panel" hidden={active!=='presets'}>
+      <MintPresets onUsePreset={preset=>{setPendingMintPrefill({contractAddress:preset.contractAddress});onTab('now');}}/>
+    </div>
   </>;
 }
 // Automation = Snipers + Watch Rules + Target Policies (brief §2). A sniper and a watch rule are
@@ -4330,6 +4363,12 @@ function AccountMenu({profile,theme,initial,go,onChangeTheme,onLogout}){
   </div>;
 }
 function Shell({profile,onLogout,onProfileChange}){const navBadges=useNavBadges();const [route,setRoute]=useState(pageFromLocation);const {page,tab,target}=route;const live=useLiveSocket();
+  // Mint is a workspace rather than a disposable route. Once visited, keep it mounted while the
+  // user checks Wallets, History, or another page so pasted addresses, selected wallets, previews,
+  // and in-flight contract lookups are still exactly where they were on return.
+  const [mintWorkspaceMounted,setMintWorkspaceMounted]=useState(()=>page==='Mint');
+  const [mintWorkspaceTab,setMintWorkspaceTab]=useState(()=>page==='Mint'?tab:null);
+  useEffect(()=>{if(page==='Mint'){setMintWorkspaceMounted(true);setMintWorkspaceTab(tab);}},[page,tab]);
   // A retired slug is rewritten in place with replaceState, not pushState: the dead URL must not
   // become a history entry, or Back from the new page would land on the old slug and redirect
   // straight forward again, trapping the user.
@@ -4361,8 +4400,17 @@ function Shell({profile,onLogout,onProfileChange}){const navBadges=useNavBadges(
     const tabValue=alias&&nextTab===null?alias.tab:nextTab;
     const path=pathFor(page,tabValue);
     if(`${window.location.pathname}${window.location.search}`!==path)window.history.pushState(null,'',path);
+    if(page==='Mint'){setMintWorkspaceMounted(true);setMintWorkspaceTab(tabValue);}
     setRoute({page,tab:tabValue,redirected:false});setNavOpen(false);setMoreOpen(false);window.scrollTo({top:0});
   }
+  function renderCurrentPage(){return <>
+    {mintWorkspaceMounted&&<div className="mint-workspace" hidden={page!=='Mint'}>
+      <Mint profile={viewProfile} go={go} tab={mintWorkspaceTab} onTab={next=>go('Mint',next)}/>
+    </div>}
+    {page!=='Mint'&&<View profile={viewProfile} go={go} tab={tab} target={target}
+      onTab={next=>go(page,next)} onThemeChange={changeTheme} onLogout={onLogout}
+      onProfileChange={onProfileChange}/>}
+  </>}
   // Ported verbatim from docs/prototype-pages/_rail.html and the prototype's .top bar. The root is
   // .app, NOT .shell/.rail-shell: dropping those two class names is what stops every `.shell ...`
   // and `.rail-shell ...` rule in styles.css from reaching this subtree, so prototype.css owns the
@@ -4413,7 +4461,7 @@ function Shell({profile,onLogout,onProfileChange}){const navBadges=useNavBadges(
         <AccountMenu profile={viewProfile} theme={theme} initial={avatarInitial} go={go}
           onChangeTheme={changeTheme} onLogout={onLogout}/>
       </div>
-      <main className="wrap" tabIndex="-1"><View profile={viewProfile} go={go} tab={tab} target={target} onTab={next=>go(page,next)} onThemeChange={changeTheme} onLogout={onLogout} onProfileChange={onProfileChange}/></main>
+      <main className="wrap" tabIndex="-1">{renderCurrentPage()}</main>
     </div>
     <BottomBar page={page} go={go} moreOpen={moreOpen} onOpenMore={()=>setMoreOpen(value=>!value)}/>
     <MoreSheet open={moreOpen} page={page} go={go} onClose={()=>setMoreOpen(false)}
@@ -4435,7 +4483,7 @@ function Shell({profile,onLogout,onProfileChange}){const navBadges=useNavBadges(
   </header>
   {navOpen&&<div className="backdrop" onClick={()=>setNavOpen(false)}/>}
   <aside><NavList items={PAGES} page={page} go={go}/></aside>
-  <main className="content" tabIndex="-1"><View profile={viewProfile} go={go} tab={tab} target={target} onTab={next=>go(page,next)} onThemeChange={changeTheme} onLogout={onLogout} onProfileChange={onProfileChange}/></main>
+  <main className="content" tabIndex="-1">{renderCurrentPage()}</main>
   </div>;}
 function AdminDenied(){return <main className="login-page"><div className="login-card"><p className="eyebrow">Restricted</p><h1>Admin access required</h1><p>This account is not an owner. Return to the dashboard to continue.</p><a className="b g admin-link" href="/dashboard/">Return to dashboard</a></div></main>;}
 const ADMIN_SECTIONS=[

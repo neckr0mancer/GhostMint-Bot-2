@@ -39,15 +39,16 @@ test('primary task-entry fields autofocus while search fields remain opt-in',()=
   assert.match(app,/id="login-username"[\s\S]{0,220}autoFocus autoComplete="username"/);
   assert.match(app,/const input=mode==='code'\?codeInputRef\.current:usernameInputRef\.current;\s*input\?\.focus\(\{preventScroll:true\}\)/,
     'switching sign-in methods must move focus into the newly rendered primary input');
-  assert.match(app,/Contract address<\/span>\s*<input[^>]+autoFocus/);
-  assert.match(app,/useEffect\(\(\)=>\{if\(enoughSelected\)contractInputRef\.current\?\.focus/);
+  assert.match(app,/autoFocus=\{active\}/);
+  assert.match(app,/useEffect\(\(\)=>\{if\(active\)contractInputRef\.current\?\.focus/);
+  assert.match(app,/useEffect\(\(\)=>\{if\(active&&enoughSelected\)contractInputRef\.current\?\.focus/);
   assert.match(app,/name="label" required autoFocus placeholder="e\.g\. copy-whale-1"/);
   assert.match(app,/name="name" required autoFocus placeholder="e\.g\. azuki-announcements"/);
   assert.doesNotMatch(app,/<input[^>]*type="search"[^>]*autoFocus|<input[^>]*autoFocus[^>]*type="search"/);
 });
 
 test('Schedule pages three rows on phones and labels eligibility deferrals as rescheduled',()=>{
-  const tasks=between(app,'function Tasks({profile})','// One tone per outcome');
+  const tasks=between(app,'function Tasks({profile,active=true})','// One tone per outcome');
   assert.match(tasks,/const PAGE_SIZE=mobile\?3:10/);
   assert.match(tasks,/\[page,bucket,search,serverFilters,PAGE_SIZE\]/);
   assert.match(tasks,/setPage\(1\);setSelectedIds\(\[\]\);\},\[mobile\]\)/);

@@ -514,6 +514,16 @@ therefore inherent to the token rather than introduced here.
   cleared when the breakpoint changes.
 - A worker-owned `retry` caused by an eligibility phase deferral is displayed as **Rescheduled**.
   The stored state remains `retry`, and the real user action on a failed task remains **Retry**.
+- Mint now, Schedule, Batch, and Presets stay mounted as one workspace. Switching tabs — or
+  temporarily visiting another dashboard page — preserves typed addresses, wallet selections,
+  previews and in-flight detection. A successful submission may still clear its own completed
+  draft to prevent an accidental repeat.
+- Scheduled rows show their live remaining time on both desktop and mobile. Exact times use the
+  compact `26 Aug 2026 · 20:00 UTC` shape, never a raw ISO timestamp.
+
+**Deferred setting:** add an account-level 12-hour/24-hour display preference during the Settings
+fidelity pass. Until then, dashboard schedule timestamps remain explicit 24-hour UTC so they are
+unambiguous; this note does not authorize building the setting in the current unit.
 
 ### 11.1 "2 pending" above three rows
 
