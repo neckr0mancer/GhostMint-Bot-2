@@ -116,7 +116,7 @@ function createTransactionIntentRepository(pool) {
     // TX-019 (Model 2 phase-1): the transition row must record the ACTUAL previous state -- a
     // ladder rescue from 'unknown' is unknown→pending, not a fabricated pending→pending. One
     // statement captures the locked previous state and updates atomically.
-    async attachBump(intentId, { txHash, bumpedFromTxHash, gasPriceWei, maxFeePerGasWei, maxPriorityFeePerGasWei }) {
+    async attachBump(intentId, { txHash, bumpedFromTxHash, gasPriceWei, maxFeePerGasWei, maxPriorityFeePerGasWei, estimatedCostWei }) {
       const result = await pool.query(
         `WITH previous AS (
            SELECT intent_id, state FROM transaction_intents
@@ -127,6 +127,7 @@ function createTransactionIntentRepository(pool) {
              gas_price_wei=COALESCE($4,gas_price_wei),
              max_fee_per_gas_wei=COALESCE($5,max_fee_per_gas_wei),
              max_priority_fee_per_gas_wei=COALESCE($6,max_priority_fee_per_gas_wei),
+             estimated_cost_wei=COALESCE($7, estimated_cost_wei),
              bump_count=bump_count+1,
              -- Each rung buys its own full timeout window: reconciliation must not declare the
              -- intent unknown mid-ladder just because the ORIGINAL broadcast is old.
@@ -142,7 +143,8 @@ function createTransactionIntentRepository(pool) {
         [intentId, txHash, bumpedFromTxHash,
           gasPriceWei ? gasPriceWei.toString() : null,
           maxFeePerGasWei ? maxFeePerGasWei.toString() : null,
-          maxPriorityFeePerGasWei ? maxPriorityFeePerGasWei.toString() : null],
+          maxPriorityFeePerGasWei ? maxPriorityFeePerGasWei.toString() : null,
+          estimatedCostWei ? estimatedCostWei.toString() : null],
       );
       if (!result.rowCount) throw new Error(`attachBump: intent ${intentId} is no longer pending`);
       return mapIntent(result.rows[0]);

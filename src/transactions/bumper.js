@@ -95,22 +95,25 @@ function createBumpSweeper({ intentRepository, findWalletById, decryptPrivateKey
     const signer = new Wallet(decryptPrivateKey(wallet));
     const signed = await signer.signTransaction(transaction);
     const txHash = keccak256(signed);
+    const newFeeWei = fee.is1559 ? fee.maxFeePerGas : fee.gasPrice;
+    const newEstimatedCostWei = BigInt(intent.valueWei) + BigInt(intent.gasLimit) * BigInt(newFeeWei ?? 0n);
 
-    // TX-021: record the replacement hash BEFORE broadcast so restart reconciliation finds
-    // it even if the process dies or the broadcast outcome is ambiguous.
+    // TX-021 + TX-030: persist the replacement hash AND the higher fee estimate BEFORE
+    // broadcast so restart reconciliation finds it and the daily budget reserves the
+    // correct higher cost. The estimate update is atomic with the bump.
     if (intentRepository.recordBroadcastHash) {
       await intentRepository.recordBroadcastHash(intent.intentId, txHash);
     }
+    await intentRepository.attachBump(intent.intentId, {
+      txHash, bumpedFromTxHash: intent.txHash,
+      gasPriceWei: fee.gasPrice, maxFeePerGasWei: fee.maxFeePerGas, maxPriorityFeePerGasWei: fee.maxPriorityFeePerGas,
+      estimatedCostWei: newEstimatedCostWei,
+    });
 
     // Same race semantics as launch broadcasts: identical nonce+signature everywhere.
     const racing = fastProviderService || providerService;
     await racing.performAll(intent.chain, 'broadcastTransaction',
       provider => provider.broadcastTransaction(signed));
-
-    await intentRepository.attachBump(intent.intentId, {
-      txHash, bumpedFromTxHash: intent.txHash,
-      gasPriceWei: fee.gasPrice, maxFeePerGasWei: fee.maxFeePerGas, maxPriorityFeePerGasWei: fee.maxPriorityFeePerGas,
-    });
     log(`Bumped ${intent.triggerSource} intent ${intent.intentId} to rung ${(intent.bumpCount || 0) + 1}`);
     return 'bumped';
   }
