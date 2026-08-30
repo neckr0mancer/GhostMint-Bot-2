@@ -210,43 +210,53 @@ function createTransactionEngine({
 
   async function inspectChain(intent) {
     if (!intent.txHash) return { state: 'unknown', reason: 'signed transaction hash was not persisted' };
-    const receipt = await providerCall(intent.chain, 'getTransactionReceipt', provider => provider.getTransactionReceipt(intent.txHash));
-    if (receipt) {
-      const gasUsed=receipt.gasUsed===undefined?null:BigInt(receipt.gasUsed);
-      const effectiveGasPriceWei=receipt.gasPrice===undefined||receipt.gasPrice===null
-        ? (receipt.effectiveGasPrice===undefined||receipt.effectiveGasPrice===null?null:BigInt(receipt.effectiveGasPrice)):BigInt(receipt.gasPrice);
-      const actualNetworkCostWei=gasUsed!==null&&effectiveGasPriceWei!==null?gasUsed*effectiveGasPriceWei:null;
-      const receiptCost={gasUsed,effectiveGasPriceWei,actualNetworkCostWei};
-      if (Number(receipt.status) === 0) {
-        let reason = 'transaction reverted on chain';
-        // Receipts do not carry revert data. Replay the exact read-only call at the mined block as
-        // a best-effort diagnosis: for SeaDrop this recovers sold-out, stage-supply and per-wallet
-        // cap errors that can arise after a successful simulation but before inclusion. The
-        // original transaction has already settled; this call cannot change its state or spend.
-        try {
-          await providerCall(intent.chain, 'diagnoseRevert', provider => provider.call({
-            from: intent.from,
-            to: intent.to,
-            data: intent.data || '0x',
-            value: BigInt(intent.valueWei ?? 0n),
-            blockTag: Number(receipt.blockNumber),
-          }), { timeoutMs: FAST_RPC_TIMEOUT_MS, retries: 0 });
-        } catch (error) {
-          reason = describeKnownContractFailure(error) || reason;
+    // TX-022: check ALL recorded hashes for this intent, not just the primary. A multi-rung
+    // bump ladder produces multiple possibly-live hashes; whichever mined IS the outcome.
+    let hashes = [intent.txHash];
+    if (intent.bumpedFromTxHash) hashes.push(intent.bumpedFromTxHash);
+    if (intentRepository.getBroadcastHashes) {
+      try {
+        const allHashes = await intentRepository.getBroadcastHashes(intent.intentId);
+        if (allHashes.length) hashes = allHashes;
+      } catch { /* fall back to primary + bumped */ }
+    }
+    for (const hash of hashes) {
+      const receipt = await providerCall(intent.chain, 'getTransactionReceipt', provider => provider.getTransactionReceipt(hash));
+      if (receipt) {
+        const gasUsed=receipt.gasUsed===undefined?null:BigInt(receipt.gasUsed);
+        const effectiveGasPriceWei=receipt.gasPrice===undefined||receipt.gasPrice===null
+          ? (receipt.effectiveGasPrice===undefined||receipt.effectiveGasPrice===null?null:BigInt(receipt.effectiveGasPrice)):BigInt(receipt.gasPrice);
+        const actualNetworkCostWei=gasUsed!==null&&effectiveGasPriceWei!==null?gasUsed*effectiveGasPriceWei:null;
+        const receiptCost={gasUsed,effectiveGasPriceWei,actualNetworkCostWei};
+        if (Number(receipt.status) === 0) {
+          let reason = 'transaction reverted on chain';
+          try {
+            await providerCall(intent.chain, 'diagnoseRevert', provider => provider.call({
+              from: intent.from,
+              to: intent.to,
+              data: intent.data || '0x',
+              value: BigInt(intent.valueWei ?? 0n),
+              blockTag: Number(receipt.blockNumber),
+            }), { timeoutMs: FAST_RPC_TIMEOUT_MS, retries: 0 });
+          } catch (error) {
+            reason = describeKnownContractFailure(error) || reason;
+          }
+          const result = { state: 'reverted', blockNumber: Number(receipt.blockNumber), reason, ...receiptCost };
+          if (hash !== intent.txHash) return { ...result, reason: `${result.reason} (hash ${hash.slice(0, 10)}… mined)` };
+          return result;
         }
-        return { state: 'reverted', blockNumber: Number(receipt.blockNumber), reason, ...receiptCost };
+        const tokenIds = extractMintedTokenIds(receipt, { contractAddress: intent.callPreview?.contractAddress, minterAddress: intent.from });
+        const currentBlock = await providerCall(intent.chain, 'getBlockNumber', provider => provider.getBlockNumber());
+        const confirmations = Math.max(0, Number(currentBlock) - Number(receipt.blockNumber) + 1);
+        if (confirmations >= intent.requiredConfirmations) {
+          const result = { state: 'confirmed', blockNumber: Number(receipt.blockNumber), reason: `${confirmations} confirmations observed`,...receiptCost, tokenIds };
+          if (hash !== intent.txHash) return { ...result, reason: `${result.reason} (hash ${hash.slice(0, 10)}… mined)` };
+          return result;
+        }
+        const pendingResult = { state: 'pending', blockNumber: Number(receipt.blockNumber), reason: `${confirmations}/${intent.requiredConfirmations} confirmations observed`,...receiptCost };
+        if (hash !== intent.txHash) return { ...pendingResult, reason: `${pendingResult.reason} (hash ${hash.slice(0, 10)}… mined)` };
+        return pendingResult;
       }
-      // Section T: which token ID(s) this mint actually received, read from the NFT contract's own
-      // Transfer/TransferSingle/TransferBatch event(s) -- never the transaction's own `to`, which
-      // for a SeaDrop mint is the SeaDrop core, not the token contract. Computed once here (logs
-      // don't change with more confirmations) and carried the same way receiptCost already is.
-      const tokenIds = extractMintedTokenIds(receipt, { contractAddress: intent.callPreview?.contractAddress, minterAddress: intent.from });
-      const currentBlock = await providerCall(intent.chain, 'getBlockNumber', provider => provider.getBlockNumber());
-      const confirmations = Math.max(0, Number(currentBlock) - Number(receipt.blockNumber) + 1);
-      if (confirmations >= intent.requiredConfirmations) {
-        return { state: 'confirmed', blockNumber: Number(receipt.blockNumber), reason: `${confirmations} confirmations observed`,...receiptCost, tokenIds };
-      }
-      return { state: 'pending', blockNumber: Number(receipt.blockNumber), reason: `${confirmations}/${intent.requiredConfirmations} confirmations observed`,...receiptCost };
     }
     const transaction = await providerCall(intent.chain, 'getTransaction', provider => provider.getTransaction(intent.txHash));
     if (transaction) return { state: 'pending', reason: 'transaction is present in the provider mempool' };
