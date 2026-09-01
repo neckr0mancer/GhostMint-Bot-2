@@ -1243,6 +1243,13 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         const task = await commands.controlTask(userId, 'cancel', data.slice('task:cancel:do:'.length));
         return dcRespond(interaction, { content: `❌ Cancelled **${task.name}**.`, components: [discordMenus.row([discordMenus.button('⬅️ Back to menu', 'menu:main')])] });
       }
+      if (data === 'task:cancel:pick') {
+        const id = interaction.values?.[0];
+        if (!id) return dcRespond(interaction, { content: 'Pick a schedule first.', components: [discordMenus.row([discordMenus.button('⬅️ Back to menu', 'menu:main')])] });
+        const task = (await commands.tasks(userId)).find(item => item.id === id);
+        if (!task) return dcRespond(interaction, { content: 'That task is gone already -- probably already fired or was cancelled.', components: [discordMenus.row([discordMenus.button('⬅️ Back to menu', 'menu:main')])] });
+        return dcRespond(interaction, discordMenus.confirmCancelTask(task));
+      }
 
       // Watch-rule guided create flow ("/watch has no button" gap) plus the list/manage actions
       // that go with it. Unlike Section AA's mint flow, every one of these is reached from an
