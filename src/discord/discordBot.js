@@ -713,10 +713,12 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         return interaction.showModal(discordMenus.labelModal({ customId: 'menu:mint:batch:submit', title: 'Contract address to batch mint', maxLength: 200 }));
       }
       if (data === 'menu:tasks') {
+        log(`Tasks button clicked by ${platformUserId} for ${userId}`);
         if (!await actionGate.allows(userId, 'discord', platformUserId, 'tasks')) {
           return dcRespond(interaction, discordMenus.gateUnlockCard({ action: 'tasks' }));
         }
         const page = await commands.tasksPage(userId, { page: 1 });
+        log(`Tasks page fetched for ${userId}: ${page.total} tasks`);
         return dcRespond(interaction, discordMenus.tasksMenu(page));
       }
       if (data.startsWith('tasks:page:')) {
