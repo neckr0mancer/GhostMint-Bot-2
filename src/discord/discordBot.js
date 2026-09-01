@@ -2002,12 +2002,16 @@ async function handleMintPasteMessage({ identity, commands, flowState, chains, r
     // below, not before -- an ignored EOA paste must preserve the active flow.
     // Don't treat the user's own wallet addresses as contracts — pasting a wallet address
     // should not trigger the mint info card. This check is synchronous (fast, no RPC).
-    // The EOA check (isContractAddress) was removed: it made 6 serial RPC calls before every
-    // paste, and a slow chain RPC silently dropped real contracts as "EOAs." The main
-    // detectMintContract below already returns a clear error for addresses with no code.
     try {
       const wallets = commands.wallets(userId);
       if (Array.isArray(wallets) && wallets.some(w => String(w.address || '').toLowerCase() === String(target).toLowerCase())) return;
+      // Keep the current guided flow intact when a plain wallet/EOA is pasted. Classification is
+      // fail-open on an RPC outage so a real contract is never silently hidden merely because a
+      // provider was unavailable; startMintGuidedFlow performs the full detection afterward.
+      if (/^0x[0-9a-fA-F]{40}$/.test(target) && typeof commands.isContractAddress === 'function') {
+        const isContract = await commands.isContractAddress(target).catch(() => true);
+        if (!isContract) return;
+      }
     } catch {}
     if (flowState.get('discord', platformUserId)) flowState.clear('discord', platformUserId);
     const started = await startMintGuidedFlow({ commands, flowState, chains, rateLimiter },

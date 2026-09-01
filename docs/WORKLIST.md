@@ -2390,3 +2390,19 @@ rejects at registration), and a merge that would have reverted a wrong-network s
 `main`. A third finding — the banned-account scheduler smoke test failing — was diagnosed as a
 pre-existing 15s timing budget against a ~14s operation, not a regression; deadline widened to 60s
 with assertions unchanged.
+
+## Feature Request — Scheduled Mints: OpenSea Collection Link (Documented 2026-08-26, Not Implemented)
+
+**Original request (rephrased):** View scheduled mints on OpenSea via an external link, as with confirmed mints. Each scheduled mint should expose a link to its OpenSea collection so the user can see the full collection context before execution — mirroring the arrow-in-box affordance in Activity's confirmed-mint rows.
+
+**Scope:** Presentation only. Scheduled list row gains an external-link icon (arrow in box) that opens the OpenSea collection in a new tab when a collection URL is known; hidden otherwise (fallback to explorer link or no icon for non-OpenSea contracts).
+
+**Source for link:** `openSeaService` collection slug → `https://opensea.io/collection/{slug}` (already used for detection display). No schema change.
+
+**Acceptance:**
+- Row shows icon only when collection URL exists; placement and a11y mirror Activity's `aria-label="View … on the block explorer"` pattern
+- Opens in new tab (`target="_blank" rel="noopener noreferrer"`)
+- Non-OpenSea contracts show no icon (or explorer link), never a broken link
+- Dark/Light, 375/768/1024/1440, keyboard focus preserved
+
+**Status:** Documented for prioritization; not implemented in this unit per owner instruction.

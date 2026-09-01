@@ -647,7 +647,13 @@ const schedulerWorker = createSchedulerWorker({
         return mintExecution.executePrepared({ userId: task.userId, wallet, prepared, triggerSource: 'scheduled',
           idempotencyKey: hooks.idempotencyKey, onIntentPersisted: hooks.onIntentPersisted,
           preBroadcastGuard: expectedPhaseIdentity
-            ? () => refreshScheduledOpenSeaPhase(task, executionChain, expectedPhaseIdentity)
+            ? async () => {
+              // Recheck both authorization and the selected phase at the last safe boundary. The
+              // owner can suspend this account, or OpenSea can advance the drop, after pre-arm and
+              // calldata construction but before the transaction engine persists an intent.
+              await governance.checkAccountStatus(task.userId);
+              await refreshScheduledOpenSeaPhase(task, executionChain, expectedPhaseIdentity);
+            }
             : undefined,
           onPreview: preview => notifyUser(task.userId, formatMintPreview(preview)) });
       }
@@ -734,7 +740,10 @@ const schedulerWorker = createSchedulerWorker({
       gasPriceWei:request.gasGwei === null ? undefined : ethers.parseUnits(String(request.gasGwei), 'gwei'),
       idempotencyKey:hooks.idempotencyKey, onIntentPersisted:hooks.onIntentPersisted,
       preBroadcastGuard: expectedPublicPhaseIdentity
-        ? () => refreshScheduledPublicPhase(task, executionChain, expectedPublicPhaseIdentity)
+        ? async () => {
+          await governance.checkAccountStatus(task.userId);
+          await refreshScheduledPublicPhase(task, executionChain, expectedPublicPhaseIdentity);
+        }
         : undefined,
       onPreview:preview => notifyUser(task.userId, formatMintPreview(preview)) });
   },
