@@ -66,6 +66,23 @@ function scheduledFailureFeedback(rawReason, { chainState = 'not_sent' } = {}) {
     };
   }
 
+  if (/^unknown error$/i.test(cleaned) || /^unknown scheduler failure$/i.test(cleaned)) {
+    return {
+      code: 'SCHEDULED_MINT_FAILED',
+      message: `The scheduled mint could not be simulated — the contract rejected it without a clear reason. It may be sold out, not yet open, or the price is wrong. ${suffix} Check the collection's supply and stage timing.`,
+      severity: 'warning',
+      terminal: false,
+    };
+  }
+  if (/missing revert data|no reason given/i.test(cleaned)) {
+    return {
+      code: 'SIMULATION_NO_REASON',
+      message: `The contract rejected the mint without giving a reason. This often means it is sold out, not yet open, or the call was for the wrong stage. ${suffix}`,
+      severity: 'warning',
+      terminal: false,
+    };
+  }
+
   const fallback = cleaned || (chainState === 'mined'
     ? 'The transaction reverted on-chain.'
     : 'The scheduled mint could not run.');

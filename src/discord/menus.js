@@ -553,7 +553,7 @@ function walletsMenu() {
     components: [
       row([button('📋 List wallets', 'wallet:list'), button('💰 Check balance', 'wallet:balance:pick')]),
       row([button('➕ Create wallet', 'wallet:create:start', 'success'), button('📥 Import wallet', 'wallet:import:start'), button('📥📥 Batch import', 'wallet:batch-import:start')]),
-      row([button('🗑️ Remove wallet', 'wallet:remove:pick', 'danger'), button('⬅️ Back to menu', 'menu:main')]),
+      row([button('🔑 Export wallet', 'wallet:export:pick'), button('🗑️ Remove wallet', 'wallet:remove:pick', 'danger'), button('⬅️ Back to menu', 'menu:main')]),
     ],
   };
 }
@@ -685,7 +685,10 @@ function activityMenu(page) {
 }
 
 // Section O -- performs the same lookup /task list already does, same Prev/Next paging shape as
-// activityMenu above.
+// activityMenu above. Adds a per-schedule Cancel picker so you don't have to remember the UUID
+// and type /task cancel id:... — same 2-tap shape as Telegram's per-row ❌ (but as a select,
+// not one row per task, so a page of 10 stays inside Discord's 5-row cap).
+const CANCELLABLE_TASK_STATUSES = new Set(['scheduled', 'retry', 'paused']);
 function tasksMenu(page) {
   const lines = page.items.length
     ? page.items.map(task => {
@@ -695,10 +698,19 @@ function tasksMenu(page) {
       return `${task.eligibilityDeadline ? '🎫 ' : ''}${escapeDiscord(task.name)} [${task.status}] — ${task.eligibilityDeadline ? 'eligibility checks ' : ''}${formatGmtPlus1(task.mintTime)} — ${task.id}${reason}`;
     }).join('\n')
     : 'No scheduled tasks.';
+  const cancellable = page.items.filter(task => CANCELLABLE_TASK_STATUSES.has(task.status));
   const nav = [];
   if (page.page > 1) nav.push(button('◀️ Prev', `tasks:page:${page.page - 1}`));
   if (page.page < page.totalPages) nav.push(button('▶️ Next', `tasks:page:${page.page + 1}`));
   const rows = nav.length ? [row(nav)] : [];
+  if (cancellable.length) {
+    const options = cancellable.slice(0, 10).map(task => ({
+      label: `${task.name} [${task.status}]`.slice(0, 100),
+      description: `Due ${formatGmtPlus1(task.mintTime)} — ${task.id.slice(0, 8)}`.slice(0, 100),
+      value: task.id,
+    }));
+    rows.push(select('task:cancel:pick', options, 'Cancel a schedule — pick one'));
+  }
   rows.push(row([button('🗓️ Schedule mint', 'menu:mint'), button('⬅️ Back to menu', 'menu:main')]));
   return {
     content: `## 🗓️ Tasks (page ${page.page}/${page.totalPages}, ${page.total} total)\n${lines}`,
@@ -933,6 +945,16 @@ function confirmRemoveWallet(label) {
   };
 }
 
+function confirmExportWallet(label) {
+  return {
+    content: `⚠️ Export the private key for **${label}**?\n\nThis is the master key to this wallet. Whoever holds it owns everything in it, permanently. This ephemeral message is only visible to you, but the key still passes through Discord's systems and can be screenshotted or forwarded. Only proceed if you understand the risk.`,
+    components: [row([
+      button('⚠️ I understand, export it', `wallet:export:do:${label}`, 'danger'),
+      button('❌ Cancel', 'menu:wallets'),
+    ])],
+  };
+}
+
 // Discord counterpart to Telegram's confirmCancelTask -- same task:cancel:ask:<id>/task:cancel:do:<id>
 // step shape, so both platforms' handlers can share the exact same commands.tasks/controlTask calls.
 function confirmCancelTask(task) {
@@ -959,7 +981,7 @@ function labelModal({ customId, title, placeholder = '', style = 'short', maxLen
 module.exports = {
   button, row, select, mainMenu, mintModeMenu, batchImportMenu, gateUnlockCard,
   securityBanner, securityNeedsAttention, securitySetupCard, walletsMenu, settingsMenu, placeholderMenu,
-  chainSelect, walletSelect, walletMultiSelect, confirmRemoveWallet, confirmCancelTask, labelModal, gasMenu, activityMenu, tasksMenu, snipersMenu, adminOverviewMenu,
+  chainSelect, walletSelect, walletMultiSelect, confirmRemoveWallet, confirmExportWallet, confirmCancelTask, labelModal, gasMenu, activityMenu, tasksMenu, snipersMenu, adminOverviewMenu,
   sniperDetailsModal, sniperTolerancePrompt, sniperToleranceModal, sniperConfirmation,
   modeMenu, MODE_META,
   contractDetailsText, collectionInfoCard, openSeaPhasePicker, humanizeStageType, mintQuantitySelect, mintPriceStep, gasTolerancePrompt, mintConfirmation, numberModal,

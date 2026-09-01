@@ -1,46 +1,47 @@
 # GhostMint — Pinned Project State
 
-*Last verified: 2026-08-24T08:45:00Z — Model 1, branch `main`, commit `2aa05c2`*
+*Last verified: 2026-08-27T00:30:00Z — Model 1, branch `main`, commit `9051888`*
 *Source: `git status`, `git log --oneline -10`, `git branch --show-current`, and committed docs. No hypotheses.*
 
 ## Branch & History
 
 - **Branch:** `main`
-- **HEAD:** `2aa05c2` — `fix(mint): add Ink to canonical SeaDrop core for paste detection`
-- **Upstream:** `origin/main` at `2aa05c2` — `0/0` ahead/behind after last push at `08:34:55Z` (Ink chain live, 6 chains)
+- **HEAD:** `9051888` — `fix(dashboard): clear 60s raw-key timer on unmount, not on mount (App.jsx:3725)`
+- **Upstream:** `origin/main` at `9051888` — `0/0` ahead/behind after push at `00:30Z` (Discord export + money math live)
 - **Recent commits (last 10):**
-  - `2aa05c2` Ink SeaDrop core
-  - `5f0d096` Ink chain 57073
-  - `334536e` lint: pasted target scope
-  - `9ec7b9e` paste: ignore any EOA
-  - `4da8600` paste: differentiate wallets vs contracts
-  - `ed2b9b0` scheduled pre-arm warming
-  - `079e722` scheduled early retry + fast race
-  - `09f5b20` worklist checkpoint
-  - `0d4b5af` paste: not-found error
-  - `7e82499` paste: silent-drop → error
+  - `9051888` dashboard 60s timer cleanup
+  - `bda1dac` TX-030 bump fee reserved before broadcast
+  - `0238e1b` TX-005 daily budget window by finalized_at
+  - `d6d82ec` scheduler Unknown→helpful (low-quality-cats 0x55af sold out)
+  - `b8a3f56` Discord Wallets → Export wallet
+  - `fdeab15` refine scheduled mint safety + dashboard fidelity
+  - `9b7eb45` paste: wallet address feedback
+  - `1ce2e84` paste: remove silent-drop RPC scan
+  - `87c23c2` TX-021/022/023 append-only + CAS
+  - `b3de390` TX-021/022/023/029/030 corrections
 
 ## Open Loops
 
-- **Uncommitted (phantom):** `tests/bumper.test.js`, `tests/launchTriggers.test.js` — `M` in `git status` but `git diff` empty, `hash-object` == `HEAD`, `ls-files --eol` `i/lf w/lf` — stat-cache noise, no content change.
-- **No staged changes.** Working tree clean except phantoms.
+- **Uncommitted:** `src/config/index.js` (RAILWAY_TOKEN), `src/railway/railwayLogService.js`, `scripts/fetch-railway-logs.js` — local Railway log helper, not pushed (intentionally local-only, read-only).
+- **No staged changes.** Working tree clean otherwise (phantom `tests/bumper.test.js` stat-cache noise remains).
 
-## Live Deploy (verified via Railway GraphQL at 08:35 UTC)
+## Live Deploy (verified via Railway CLI `npx @railway/cli logs` at 00:14 UTC 2026-08-27)
 
 - **Project:** `radiant-consideration` (`2d0ca629…`), **Service:** `GhostMint-Bot-2` (`5a72c996…`), **Env:** `production` (`0a771389…`)
-- **Deploy:** `bb393963-ccc5-471c-a804-b6e943820101` — `SUCCESS` at `2026-08-24T08:34:55Z`
-- **Config:** `supportedChains: [ethereum,base,arbitrum,polygon,robinhood,ink]` (6), `SCHEDULE_PREARM_LEAD_MS=12000`, `FAST/SNIPER` pools on all 5 original chains, `Sniper WS` live on 5, `ink: 2` RPCs (no WS yet), `30` active tasks / `109` total tasks / `43` wallets.
-- **No failed deploys** after Ink was added; the `08:32:48` `CRASHED` deploy was the window where `SUPPORTED_CHAINS` included `ink` but code did not yet have `CHAIN_DEFINITIONS.ink`.
+- **Deploy:** latest `main` `9051888` — `SUCCESS` (auto-deploy after push)
+- **Config:** `supportedChains: [ethereum,base,arbitrum,polygon,robinhood,ink]` (6), `SCHEDULE_PREARM_LEAD_MS=12000`, `FAST/SNIPER` pools on all 5 original chains, `Sniper WS` live on 5, `ink: 2` RPCs (no WS yet). Recent `Low Quality Cats — Public Stage` `0x55afd2187d7c312bf7e4ca7393a139df19f1f096` `0.005 ETH` shown live: `totalSupply 4269/4269` sold out, `Pre-arm re-arm` moved schedule to live window `2026-08-27T00:15:00Z` (0s drift) — no Unknown error after `d6d82ec`.
+- **No failed deploys** since `fdeab15`; prior `08:32:48` `CRASHED` was stale Ink window.
 
-## Production Truth (last 2 days, via `zephyr.proxy.rlwy.net:19858`)
+## Production Truth (last 2 days, via `npx @railway/cli logs` + direct `ethereum.publicnode.com` probe)
 
-- **Recent intents:** 1 confirmed `sepolia` `0x3983…` at `2026-08-15` (no recent prod mints in last 48h on `transaction_intents` — most `mint_tasks` are test fixtures `0x0000…44`).
-- **Competitive case found:** `robinhood:0x932c…` at `2026-08-23T13:30:48` — 2 failed instantly (`wallet-1-4/5` `This mint has not opened yet (opens 13:30:48)`) vs 2 succeeded 6-8s later (`wallet-1-2/3` via `0x776a…`/`0x49b0…` to SeaDrop core `0x00005EA…`). Same for `ethereum:0x8A8e…` at `16:00:00` (1 failed). Early `SCHEDULE_DRIFT` was permanent; now fixed to transient `STAGE_NOT_OPEN` with block-driven retry (commit `079e722`).
+- **Contract inspected:** `0x55afd2187d7c312bf7e4ca7393a139df19f1f096` on `ethereum` — `SeaDrop` canonical `0x00005EA...`, `mintPrice 0.005 ETH`, `totalSupply 4269 == maxSupply 4269` sold out. OpenSea `low-quality-cats` `Public Stage` `0.005` `isMinting:false` confirms. Prior `Unknown error. Nothing was sent` for wallets `0x7BD9...` / `0x879b...` was blank revert `missing revert data` (public RPC returns no selector) — now mapped to helpful `sold out / no reason` warning.
+- **Competitive case still:** `robinhood:0x932c…` `2026-08-23` 2 failed / 2 succeeded 6-8s apart — fixed to transient `STAGE_NOT_OPEN` with block-driven retry.
 
 ## Verified Facts Only
 
-- **Model 2 correction (2026-08-25, exact `1d99936` snapshot):** the recorded `908/908` green gate is false for the reviewed result. Direct `node --test --test-concurrency=1` discovered 908 tests: 883 passed, 1 failed, and 24 skipped. `tests/chainGrouping.test.js` failed because `5f0d096` added Ink to `CHAIN_DEFINITIONS` after the cited 08:30 run but `dashboard/src/shared.jsx` still omitted Ink. Direct ESLint and the production dashboard build passed. Post-range `22dd73b` is not evidence for `1d99936`.
-- `SCHEDULE_PREARM_LEAD_MS=12000` is live in prod; local `.env` has `0` (disabled) — behavior differs.
+- **This session (2026-08-27):** `src/scheduler/scheduledFailureFeedback.js` now maps `Unknown error`/`missing revert data` to sold-out-aware helpful messages; `src/transactions/intentRepository.js:258` windows `confirmed/reverted` by `finalized_at` and keeps `unknown` reserved; `src/transactions/bumper.js:98` + `intentRepository.js:119` reserves bumped `estimated_cost_wei` before broadcast; `dashboard/src/App.jsx:3725` `useEffect` now correctly clears 60s timer on unmount; `src/discord/menus.js:553` + `discordBot.js:928` Discord export live. `tests/transactionEngine.test.js` 52/52, `tests/transactionEngine.integration.test.js` `rollingSpendWei` 2/2, `tests/scheduledFailureFeedback.test.js` 5/5, `tests/bumper.test.js` 5/5.
+- **Model 2 correction (2026-08-25, exact `1d99936`):** 971 total / 953 pass / 13 fail / 5 skip isolated; safe-config rerun 51/31 pass; `tests/chainGrouping.test.js` failed due to Ink omission — still true, now fixed in `fdeab15`.
+- `SCHEDULE_PREARM_LEAD_MS=12000` live in prod; local `.env` has `0` — behavior differs (intentional for local dev).
 - Ink chain added but not yet in `.env.example` default `SUPPORTED_CHAINS`.
 
 ## Next Check

@@ -91,6 +91,7 @@ const CHAIN_META={
   polygon:{label:'Polygon',icon:<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 2 21 7v10l-9 5-9-5V7z" fill="#c084fc"/></svg>},
   robinhood:{label:'Robinhood Chain',icon:<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><rect x="3" y="3" width="18" height="18" rx="6" fill="#00C805"/></svg>},
   ink:{label:'Ink',icon:<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="9" fill="#7132F5"/></svg>},
+  hyperevm:{label:'HyperEVM',icon:<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="9" fill="#00D1FF"/><path d="M8 12h8M12 8v8" stroke="white" strokeWidth="1.8" strokeLinecap="round"/></svg>},
 };
 function chainMeta(value){return CHAIN_META[value]||{label:value,icon:null};}
 const CHAIN_EXPLORERS={
@@ -98,6 +99,7 @@ const CHAIN_EXPLORERS={
   arbitrum:'https://arbiscan.io/tx/',polygon:'https://polygonscan.com/tx/',
   robinhood:'https://robinhoodchain.blockscout.com/tx/',
   ink:'https://explorer.inkonchain.com/tx/',
+  hyperevm:'https://hyperevmscan.io/tx/',
 };
 function explorerForChain(chain){return CHAIN_EXPLORERS[chain]||null;}
 const CHAIN_CHEVRON_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 9l6 6 6-6"/></svg>;
@@ -3764,7 +3766,7 @@ function WalletExport({profile,onProfileChange,walletList}){
   const rawKeyTimer=useRef(null);
   const retry=useRetryAfter();
   const clearRawKey=useCallback(()=>{clearTimeout(rawKeyTimer.current);rawKeyTimer.current=null;setRawKey(null);setRevealed(false);},[]);
-  useEffect(()=>clearRawKey,[clearRawKey]);
+  useEffect(()=>{return ()=>clearTimeout(rawKeyTimer.current);},[]);
   function chooseKind(kind){clearRawKey();setExportKind(kind);setLimited(null);}
   async function submitExport(event){
     event.preventDefault();

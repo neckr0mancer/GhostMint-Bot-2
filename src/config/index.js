@@ -64,6 +64,15 @@ const CHAIN_DEFINITIONS = Object.freeze({
     ex: 'https://robinhoodchain.blockscout.com/tx/',
     isTestnet: false,
   }),
+  hyperevm: Object.freeze({
+    name: 'HyperEVM',
+    chainId: 999,
+    envName: 'HYPEREVM_RPC',
+    defaultRpc: 'https://rpc.hyperliquid.xyz/evm',
+    sym: 'HYPE',
+    ex: 'https://hyperevmscan.io/tx/',
+    isTestnet: false,
+  }),
   // Not part of the default SUPPORTED_CHAINS (no longer user-selectable for wallets/mints) --
   // kept here only so it can still be opted into temporarily for a Milestone 14 live acceptance
   // run (see docs/LIVE_ACCEPTANCE_RUNBOOK.md), the sole feature that requires a chain flagged

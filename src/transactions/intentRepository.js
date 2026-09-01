@@ -116,7 +116,7 @@ function createTransactionIntentRepository(pool) {
     // TX-019 (Model 2 phase-1): the transition row must record the ACTUAL previous state -- a
     // ladder rescue from 'unknown' is unknown→pending, not a fabricated pending→pending. One
     // statement captures the locked previous state and updates atomically.
-    async attachBump(intentId, { txHash, bumpedFromTxHash, gasPriceWei, maxFeePerGasWei, maxPriorityFeePerGasWei }) {
+    async attachBump(intentId, { txHash, bumpedFromTxHash, gasPriceWei, maxFeePerGasWei, maxPriorityFeePerGasWei, estimatedCostWei }) {
       const result = await pool.query(
         `WITH previous AS (
            SELECT intent_id, state FROM transaction_intents
@@ -127,6 +127,7 @@ function createTransactionIntentRepository(pool) {
              gas_price_wei=COALESCE($4,gas_price_wei),
              max_fee_per_gas_wei=COALESCE($5,max_fee_per_gas_wei),
              max_priority_fee_per_gas_wei=COALESCE($6,max_priority_fee_per_gas_wei),
+             estimated_cost_wei=COALESCE($7, estimated_cost_wei),
              bump_count=bump_count+1,
              -- Each rung buys its own full timeout window: reconciliation must not declare the
              -- intent unknown mid-ladder just because the ORIGINAL broadcast is old.
@@ -142,7 +143,8 @@ function createTransactionIntentRepository(pool) {
         [intentId, txHash, bumpedFromTxHash,
           gasPriceWei ? gasPriceWei.toString() : null,
           maxFeePerGasWei ? maxFeePerGasWei.toString() : null,
-          maxPriorityFeePerGasWei ? maxPriorityFeePerGasWei.toString() : null],
+          maxPriorityFeePerGasWei ? maxPriorityFeePerGasWei.toString() : null,
+          estimatedCostWei ? estimatedCostWei.toString() : null],
       );
       if (!result.rowCount) throw new Error(`attachBump: intent ${intentId} is no longer pending`);
       return mapIntent(result.rows[0]);
@@ -256,12 +258,16 @@ function createTransactionIntentRepository(pool) {
     },
 
     async rollingSpendWei(userId, walletId, sinceMs) {
-      // Budget accounting is STATE-AWARE (Model 2 phase-1, TX-005):
+      // Budget accounting is STATE-AWARE (Model 2 phase-1/2, TX-005):
       //   confirmed -- actual network fee + mint value (the full cost; estimate only if the
-      //                receipt somehow lacks cost fields)
-      //   unknown   -- full estimate: the broadcast may still be live, so its cost stays reserved
+      //                receipt somehow lacks cost fields) -- windowed by FINALIZED time, not
+      //                creation, so a transaction created 25h ago but finalized now still counts
+      //                (late-finalization), and exactly at the boundary is inclusive.
       //   reverted  -- actual network fee ONLY: gas was really paid, but no value transferred
-      //   submitted/pending -- full estimate (pre-receipt)
+      //                (also windowed by finalized_at; missing actual cost is 0, not estimate)
+      //   unknown   -- full estimate: the broadcast may still be live, so its cost stays reserved
+      //                even if created before the window (old-unknown) until it terminally resolves.
+      //   submitted/pending -- full estimate (pre-receipt) -- also reserved while live.
       //   replaced  -- excluded by policy: the winning transaction at that nonce carries the
       //                economic outcome, and this row's unreceipted gas is not reservable budget.
       //                Its gas loss is still visible in reporting via the intent's own row.
@@ -273,8 +279,19 @@ function createTransactionIntentRepository(pool) {
           END
         ), 0) AS total
         FROM transaction_intents WHERE user_id=$1 AND wallet_id=$2
-        AND created_at >= TO_TIMESTAMP($3 / 1000.0)
-        AND state IN ('submitted','pending','confirmed','unknown','reverted')`, [userId, walletId, sinceMs]);
+        AND state IN ('submitted','pending','confirmed','unknown','reverted')
+        AND (
+          -- Final states: windowed by when they settled, so late finalization counts
+          (state IN ('confirmed','reverted') AND COALESCE(finalized_at, created_at) >= TO_TIMESTAMP($3 / 1000.0))
+          OR
+          -- Non-final states: reserved while live, regardless of age (old-unknown)
+          -- Created within window always counts; even if created before window, if it has
+          -- no finalized_at (still live) it must stay reserved until it resolves.
+          (state IN ('submitted','pending','unknown') AND (
+            created_at >= TO_TIMESTAMP($3 / 1000.0)
+            OR finalized_at IS NULL
+          ))
+        )`, [userId, walletId, sinceMs]);
       return BigInt(result.rows[0].total);
     },
   };

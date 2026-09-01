@@ -713,10 +713,12 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         return interaction.showModal(discordMenus.labelModal({ customId: 'menu:mint:batch:submit', title: 'Contract address to batch mint', maxLength: 200 }));
       }
       if (data === 'menu:tasks') {
+        log(`Tasks button clicked by ${platformUserId} for ${userId}`);
         if (!await actionGate.allows(userId, 'discord', platformUserId, 'tasks')) {
           return dcRespond(interaction, discordMenus.gateUnlockCard({ action: 'tasks' }));
         }
         const page = await commands.tasksPage(userId, { page: 1 });
+        log(`Tasks page fetched for ${userId}: ${page.total} tasks`);
         return dcRespond(interaction, discordMenus.tasksMenu(page));
       }
       if (data.startsWith('tasks:page:')) {
@@ -924,6 +926,35 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         await commands.removeWallet(userId, label);
         return dcRespond(interaction, { content: `🗑️ Wallet ${label} removed.`,
           components: [discordMenus.row([discordMenus.button('⬅️ Back to wallets', 'menu:wallets')])] });
+      }
+
+      if (data === 'wallet:export:pick') {
+        if (!await actionGate.allows(userId, 'discord', platformUserId, 'exportkey')) {
+          return dcRespond(interaction, discordMenus.gateUnlockCard({ action: 'exportkey' }));
+        }
+        return dcRespond(interaction, discordMenus.walletSelect(commands.wallets(userId), { customId: 'wallet:export:select', emptyHint: 'No wallets yet. Create one first.' }));
+      }
+      if (data === 'wallet:export:select') {
+        const label = interaction.values?.[0];
+        if (!label) return dcRespond(interaction, { content: 'Select a wallet first.', components: [discordMenus.row([discordMenus.button('⬅️ Back to wallets', 'menu:wallets')])] });
+        return dcRespond(interaction, discordMenus.confirmExportWallet(label));
+      }
+      if (data.startsWith('wallet:export:do:')) {
+        const label = data.slice('wallet:export:do:'.length);
+        if (!await actionGate.allows(userId, 'discord', platformUserId, 'exportkey')) {
+          return dcRespond(interaction, discordMenus.gateUnlockCard({ action: 'exportkey' }));
+        }
+        try {
+          const exported = await commands.exportWalletKeyRaw(userId, label);
+          // Ephemeral only to the clicking user, mirrors Telegram's auto-delete courtesy.
+          // Delivered as code block so Discord doesn't link-preview it, with explicit warning.
+          return dcRespond(interaction, {
+            content: `🔑 Private key for **${escapeDiscord(label)}** — this message is only visible to you. It still passed through Discord's systems and can be screenshotted or forwarded. Store it securely and clear your clipboard after.\n\`\`\`${exported.privateKey}\`\`\``,
+            components: [discordMenus.row([discordMenus.button('⬅️ Back to wallets', 'menu:wallets')])],
+          });
+        } catch (error) {
+          return dcRespond(interaction, { content: componentErrorMessage(error), components: [discordMenus.row([discordMenus.button('⬅️ Back to wallets', 'menu:wallets')])] });
+        }
       }
 
       // Section AA -- every branch below first confirms the CLICKING user (not just anyone who
@@ -1213,6 +1244,13 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
       if (data.startsWith('task:cancel:do:')) {
         const task = await commands.controlTask(userId, 'cancel', data.slice('task:cancel:do:'.length));
         return dcRespond(interaction, { content: `❌ Cancelled **${task.name}**.`, components: [discordMenus.row([discordMenus.button('⬅️ Back to menu', 'menu:main')])] });
+      }
+      if (data === 'task:cancel:pick') {
+        const id = interaction.values?.[0];
+        if (!id) return dcRespond(interaction, { content: 'Pick a schedule first.', components: [discordMenus.row([discordMenus.button('⬅️ Back to menu', 'menu:main')])] });
+        const task = (await commands.tasks(userId)).find(item => item.id === id);
+        if (!task) return dcRespond(interaction, { content: 'That task is gone already -- probably already fired or was cancelled.', components: [discordMenus.row([discordMenus.button('⬅️ Back to menu', 'menu:main')])] });
+        return dcRespond(interaction, discordMenus.confirmCancelTask(task));
       }
 
       // Watch-rule guided create flow ("/watch has no button" gap) plus the list/manage actions
