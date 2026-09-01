@@ -40,7 +40,7 @@ code{font-family:ui-monospace,'SF Mono',Consolas,monospace;font-size:.9em}
 /* ==========================================================================
    Layout shell
    ========================================================================== */
-.loading{min-height:100vh;display:grid;place-items:center;padding:1.25rem;color:var(--text-muted)}
+main.loading{min-height:100vh;display:grid;place-items:center;padding:1.25rem;color:var(--text-muted)}
 
 .shell{min-height:100vh;display:grid;grid-template-columns:16rem minmax(0,1fr);grid-template-rows:4.5rem 1fr;
   grid-template-areas:'header header' 'aside content'}
@@ -962,10 +962,11 @@ html[data-theme="ghost-mint"] .dash-hero button,html[data-theme="ghost-mint-ligh
 
 /* Contract discovery begins as soon as a complete address is pasted. Keep its progress next to
    the address itself so the form never looks inert while the preview data is still arriving. */
-.contract-input-shell{position:relative}
-.contract-input-shell.loading .in{padding-right:86px}
-.contract-lookup-status{position:absolute;right:10px;top:50%;transform:translateY(-50%);
-  display:inline-flex;align-items:center;gap:6px;color:var(--accent);font-size:10.5px;font-weight:700;
+.contract-input-shell{position:relative;min-width:0}
+.contract-input-shell.is-loading .in{padding-inline-end:96px}
+.contract-lookup-status{position:absolute;inset-block:0;inset-inline-end:10px;
+  display:inline-flex;align-items:center;gap:6px;max-width:calc(100% - 20px);overflow:hidden;
+  color:var(--accent);font-size:10.5px;font-weight:700;line-height:1;white-space:nowrap;
   pointer-events:none}
 .contract-lookup-spinner{width:12px;height:12px;border:2px solid color-mix(in srgb,var(--accent) 28%,transparent);
   border-top-color:var(--accent);border-radius:50%;animation:contract-lookup-spin .7s linear infinite}

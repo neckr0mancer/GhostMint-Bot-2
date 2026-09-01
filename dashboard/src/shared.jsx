@@ -1,5 +1,6 @@
 /* global Blob, clearTimeout, CustomEvent, localStorage, navigator, URL, WebSocket, setTimeout */
 import React,{useCallback,useEffect,useId,useRef,useState} from 'react';
+import {dashboardEvmChains} from './chainOptions.mjs';
 
 export {ACTIVITY_EVENTS} from './activityFeed.js';
 
@@ -222,13 +223,12 @@ export function CopyButton({value,label}){
   return <button type="button" className="user-card-copy" aria-label={label} onClick={copy}>{copied?CHECK_ICON:COPY_ICON}</button>;
 }
 
-// All chains the transaction engine currently supports are EVM (Ethereum, Base, Arbitrum, Polygon,
-// and any future addition to src/config's CHAIN_DEFINITIONS) -- a single wallet address already
-// works across every one of them. Solana is listed for visibility but is not wired up anywhere in
-// the app (different key format, no provider/transaction-engine integration); it is always disabled.
-export const EVM_CHAINS=['ethereum','base','arbitrum','polygon','robinhood','ink'];
+// The options arrive from /api/profile, whose supportedChains value is built from the same server
+// config used by Telegram and transaction validation. Do not narrow it with a second client-side
+// allowlist: that would make newly configured EVM chains bot-only until the bundle was edited too.
+// Solana remains a disabled future family because it has no provider/transaction-engine support.
 export function GroupedChainOptions({options=[],labelFor=value=>value}){return <>
-  <optgroup label="EVM">{options.filter(value=>EVM_CHAINS.includes(value)).map(value=><option key={value} value={value}>{labelFor(value)}</option>)}</optgroup>
+  <optgroup label="EVM">{dashboardEvmChains(options).map(value=><option key={value} value={value}>{labelFor(value)}</option>)}</optgroup>
   <optgroup label="Solana"><option value="solana" disabled>Solana (not yet supported)</option></optgroup>
 </>;}
 
@@ -544,11 +544,11 @@ export function SearchField({label,value='',onChange,placeholder='Label, address
 // `tag` is a plain qualifier rendered in the same muted style WITHOUT the "was" prefix --
 // history.html's "Security log owner only" marker, where the point is a permission boundary,
 // not a rename.
-export function SubTabs({tabs=[],active,onChange,label='Sections',badges={}}){
-  return <div className="subtabs" role="tablist" aria-label={label}>
+export function SubTabs({tabs=[],active,onChange,label='Sections',badges={},disabled=false}){
+  return <div className="subtabs" role="tablist" aria-label={label} aria-busy={disabled||undefined}>
     {tabs.map(tab=>{
       const badge=badges[tab.id];
-      return <button key={tab.id} type="button" role="tab" aria-selected={active===tab.id}
+      return <button key={tab.id} type="button" role="tab" aria-selected={active===tab.id} disabled={disabled}
         className={active===tab.id?'on':undefined} onClick={()=>onChange(tab.id)}>
         <span>{tab.label}</span>{tab.was&&<span className="was">was {tab.was}</span>}
         {tab.tag&&<span className="was">{' '}{tab.tag}</span>}

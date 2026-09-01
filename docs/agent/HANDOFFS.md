@@ -2,6 +2,67 @@
 
 ---
 
+## 2026-09-01 — Codex — dashboard EVM mint parity
+
+- **Branch / starting HEAD:** `main` at `bb5f0cc`; no commit or push requested.
+- **Scope:** ensure the dashboard accepts the same configured EVM chain set as Telegram for Mint now, Schedule, Batch, settings/admin chain controls, and sniper creation.
+- **Audit result:** transaction execution was already shared correctly: dashboard preview/confirm and Telegram both use `detectMintContract`, `prepareMint`, and `submitPreparedMint`, and a wallet's nominal home chain does not restrict the detected execution chain. The remaining mismatch was browser-only: dashboard controls re-filtered `/api/profile.supportedChains` through a second hardcoded six-chain array.
+- **Changed:** removed that duplicate browser allowlist. Dashboard controls now normalize and use the authenticated server profile's chain list directly, including a testnet when deliberately enabled for acceptance and any future configured EVM chain without another dashboard edit. Solana remains excluded because it has no EVM provider/transaction-engine support.
+- **Definition:** parity means every chain present in validated `SUPPORTED_CHAINS` with a configured server chain definition/RPC. Neither surface claims it can broadcast safely to an arbitrary unconfigured network.
+- **Verification:** focused chain/dashboard API/mint/schedule tests 67/67 passed; dashboard production build passed (66 modules, existing >500 kB chunk warning only); ESLint passed; `git diff --check` passed.
+- **Preserved work:** all earlier uncommitted Mint loader/form-lock, transaction, scheduling, Discord, worklist, and lock-note changes remain; nothing was reset, staged, committed, or pushed.
+
+---
+
+## 2026-09-01 — Codex — Mint consequential-request form locks
+
+- **Branch / starting HEAD:** `main` at `bb5f0cc`; no commit or push requested.
+- **Scope:** apply the adopted form contract to consequential Mint workspace requests without turning ordinary contract lookup or list loading into page-wide blocking.
+- **Already correct:** contract detection remains a localized, stable in-field loader; batch simulation already had its own busy state; request cleanup already used `finally` in the principal submit paths.
+- **Changed:** Mint submission, schedule creation, schedule pause/resume/retry/cancel, and batch submission now lock every participating field and action, publish `aria-busy`, prevent duplicate submission, and restore controls in `finally`. Mint sub-tabs are locked for the duration through a reference-counted parent commit lock, so overlapping requests cannot unlock the workspace early. Batch simulation locks only its participating batch form; ordinary independent page areas remain usable.
+- **Rule:** `GHOSTMINT_UI_RULES.md` now distinguishes consequential request locks from ordinary page/list/lookup loaders and requires stable geometry plus restoration of prior disabled state.
+- **Verification:** focused mint/schedule tests 27/27 passed; dashboard production build passed through the documented `project-npm.ps1` launcher (65 modules, existing >500 kB chunk warning only); `git diff --check` passed before this entry.
+- **Known tooling note:** the old direct Codex runtime path currently resolves to Node 18.13.0 and cannot build Vite 8 because `node:util.styleText` is absent; the repository launcher successfully selected compatible project tooling.
+- **Remaining:** authenticated browser interaction was not repeated in this bounded unit. The app-wide confirmation host still merits a separate accessibility audit for focus trapping/background inertness; Account, Settings, Admin, and other non-Mint forms were not changed.
+- **Preserved work:** all earlier uncommitted transaction, scheduling, Discord, worklist, handoff, and lock-note changes remain in place; nothing was reset, staged, committed, or pushed.
+
+---
+
+## 2026-09-01 — Codex — non-shifting mint workspace loaders
+
+- **Branch / starting HEAD:** `main` at `bb5f0cc`; no commit or push requested.
+- **Scope:** stop request-progress indicators from pushing Mint now, Schedule, and Batch content down.
+- **Cause / fix:** the contract wrapper reused the global `loading` class, which carries the full-page session loader's `min-height:100vh`, grid centering, and padding; this centred the address input inside a viewport-tall block and pushed the form down. The wrapper now uses scoped `is-loading`, the full-page rule is constrained to `main.loading`, and the in-input Reading status is height-anchored with contained overflow. Secondary Mint/Batch skeletons were also removed so progress stays in the existing input, ledger, and action button.
+- **Rule:** `GHOSTMINT_UI_RULES.md` now requires in-place form progress to use an initiating control or reserved surface rather than inserting layout-shifting blocks.
+- **Verification:** focused mint/schedule/dashboard tests 26/26 passed; dashboard production build passed (65 modules, existing >500 kB chunk warning only); signed-in browser interaction was not available in the fresh browser session, so the owner should visually confirm with their existing local login.
+- **Preserved work:** all earlier uncommitted transaction, scheduling, Discord, worklist, handoff, and lock-note changes remain untouched except for the explicitly listed shared files.
+- **Exact next action:** visually retry contract detection and simulation in all three Mint tabs; commit only when explicitly requested.
+
+---
+
+## 2026-09-01 — Codex — schedule eligibility deadline precision fix
+
+- **Branch / starting HEAD:** `main` at `bb5f0cc`; no commit or push requested.
+- **Scope:** correct the dashboard-generated `eligibilityDeadline` rejection reported for contract `0x129c4b60ebcaf8f5e84d59864b737bc5a2335d58` without weakening the server-side 24-hour churn bound.
+- **Cause / fix:** provider phase timestamps include seconds while `datetime-local` submits minute precision; the dashboard previously capped from the later provider timestamp, producing a deadline a few hidden seconds beyond 24 hours from `mintTime`. Deadline calculation is now centralized and capped from the exact submitted mint time while still respecting advertised stage ends.
+- **Verification:** focused scheduler/dashboard/domain tests 38/38 passed; dashboard production build passed (65 modules, existing >500 kB chunk warning only); `git diff --check` passed before this handoff entry.
+- **Preserved work:** existing transaction/Discord/server/test corrections, `docs/WORKLIST.md`, and `ghost lock, arm it.txt` were not reset, staged, committed, or pushed.
+- **Exact next action:** owner can retry scheduling the same contract locally; commit only when explicitly requested.
+
+---
+
+## 2026-08-27 — Codex — validation regressions repaired
+
+- **Branch / starting HEAD:** `main` at `bb5f0cc`; no commit or push requested.
+- **Scope:** fix every failure exposed by the 2026-08-27 validation runs while preserving unrelated `docs/WORKLIST.md` and `ghost lock, arm it.txt` changes.
+- **Production fixes:** restored append-only/all-hash transaction reconciliation and fail-closed signed-hash persistence while retaining decoded mined-revert feedback; restored Discord EOA paste classification before flow clearing; added final pre-broadcast account and scheduled-phase rechecks for both OpenSea-built and direct public scheduled mints.
+- **Test maintenance:** countdown source assertion now follows the centralized `scheduleCountdown(task.mintTime, scheduleNow)` helper instead of requiring duplicated arithmetic in `App.jsx`.
+- **Verification:** transaction + phase-2 safety 70/70; all PostgreSQL integration files 22/22; schedule/Discord focused regression 65/65; dashboard build, syntax checks, social/acceptance/menu checks, and ESLint all passed in the documented full gate. Full test result was 1,027 discovered / 1,023 pass / 0 fail / 1 cancelled / 3 intentional smoke skips; the sole cancellation was Railway governance integration exceeding its 60-second test timeout, then passing alone 1/1 in 45.3 seconds. Live `SELECT 1` passed and the earlier `ENOTFOUND zephyr.proxy.rlwy.net` did not recur.
+- **Remaining external note:** Railway database latency is variable enough to approach the integration test's fixed 60-second timeout; no application defect was reproduced after the isolated pass.
+- **Exact next action:** review and commit these scoped fixes only when requested; do not include the unrelated worklist or lock-note files.
+
+---
+
 ## 2026-08-25 — Model 2 — Phase 2 independent review
 
 - **Branch:** `main` · **Reviewed base:** `782054d648d1432d14c07eef9abd94816156a30c` · **Reviewed result:** `cff9eb69a65c3748224e71c7a05b6a58f7455124` · **Verdict:** **FAIL**

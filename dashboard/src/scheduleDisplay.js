@@ -1,4 +1,5 @@
 const MONTHS=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const PHASE_ELIGIBILITY_WINDOW_MS=24*60*60*1000;
 
 export function formatScheduleDateTime(value){
   const at=value instanceof Date?value:new Date(value);
@@ -20,4 +21,18 @@ export function scheduleCountdown(value,now=Date.now()){
   if(days)return `${days}d${hours?` ${hours}h`:''}`;
   if(hours)return `${hours}h${minutes?` ${minutes}m`:''}`;
   return `${minutes}m`;
+}
+
+export function scheduleEligibilityDeadline(mintTime,selectedStageStart,stages=[]){
+  const startMs=Date.parse(mintTime);
+  if(!Number.isFinite(startMs))return null;
+  const selectedStageStartMs=Number(selectedStageStart)*1000;
+  const stageThresholdMs=Number.isFinite(selectedStageStartMs)?selectedStageStartMs:startMs;
+  const advertisedEnds=(Array.isArray(stages)?stages:[])
+    .filter(stage=>Number(stage?.startTime)*1000>=stageThresholdMs)
+    .map(stage=>Number(stage?.endTime)*1000)
+    .filter(endMs=>Number.isFinite(endMs)&&endMs>startMs);
+  const capMs=startMs+PHASE_ELIGIBILITY_WINDOW_MS;
+  const deadlineMs=advertisedEnds.length?Math.min(Math.max(...advertisedEnds),capMs):capMs;
+  return new Date(deadlineMs).toISOString();
 }

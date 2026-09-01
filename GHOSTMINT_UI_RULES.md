@@ -111,6 +111,14 @@ in which case update this document in the same change.
 - List/page loading renders `<Skeleton/>` (card or `variant="lines"`) while
   data is `null` — never a blank pane and never a full-page spinner for a
   partial-page load.
+- In-place form work must not shift the layout. Contract detection, simulation, validation, and
+  similar progress belongs inside the initiating input/button or over an already-reserved result
+  surface; never insert a temporary loader block that pushes surrounding fields or actions down.
+- A consequential submission locks every control and exit belonging to that operation, including
+  Submit, Back, Cancel, Close, tab changes, and duplicate action paths. Mark the participating
+  form or region `aria-busy`, keep its geometry stable, and release the lock from `finally` so each
+  control returns to the enabled/disabled state it had before the request. This does not authorize
+  blocking unrelated page sections during ordinary lookups, list refreshes, or background loads.
 - Empty states use `<Empty text="…"/>` with copy that explains what's empty
   and names the next permitted action (e.g. "No wallets yet. Create the
   recommended server-side wallet below."), not a bare "No results."

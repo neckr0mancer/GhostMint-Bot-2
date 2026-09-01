@@ -9,8 +9,9 @@ import {walletPerformance,pnlWalletLabel} from './walletPerformance.js';
 import {pnlBarLayout,pnlRecordSeries,pnlWindowTotals} from './pnlChart.js';
 import {mintDetectionMessage,mintPreviewError} from './mintFeedback.mjs';
 import {mintQuantityPolicy} from './mintQuantityPolicy.mjs';
-import {formatScheduleDateTime,scheduleCountdown} from './scheduleDisplay.js';
-import {ACTIVITY_EVENTS,api,Ledger,NumberField,SectionCard,confirmDialog,ConfirmHost,consumePendingMintPrefill,CopyButton,csrf,downloadFile,Empty,EVM_CHAINS,Field,Form,getNotificationLog,notify,Notice,PageTitle,Pager,promptDialog,relativeTime,resetSectionOrders,SearchField,Select,Skeleton,StatusPill,SubTabs,subscribeNotificationLog,ToastHost,useLoad,useLiveSocket,setPendingMintPrefill,quantityPicks} from './shared.jsx';
+import {formatScheduleDateTime,scheduleCountdown,scheduleEligibilityDeadline} from './scheduleDisplay.js';
+import {dashboardEvmChains} from './chainOptions.mjs';
+import {ACTIVITY_EVENTS,api,Ledger,NumberField,SectionCard,confirmDialog,ConfirmHost,consumePendingMintPrefill,CopyButton,csrf,downloadFile,Empty,Field,Form,getNotificationLog,notify,Notice,PageTitle,Pager,promptDialog,relativeTime,resetSectionOrders,SearchField,Select,Skeleton,StatusPill,SubTabs,subscribeNotificationLog,ToastHost,useLoad,useLiveSocket,setPendingMintPrefill,quantityPicks} from './shared.jsx';
 import Dashboard from './Dashboard.jsx';
 // Phase 4, unit 1 of 5 (brief §2). The 11->5 merge lands one page at a time so any single merge
 // can be reverted alone. Mint = Minting + Tasks is done; Automation, Wallets+P&L and History are
@@ -160,7 +161,7 @@ function useIsMobile(){
   },[]);
   return mobile;
 }
-function ChainSelect({name,label,options,value,onChange}){const [open,setOpen]=useState(false);const [activeIndex,setActiveIndex]=useState(0);const rootRef=useRef(null);const panelRef=useRef(null);const meta=chainMeta(value);const evmOptions=(options||[]).filter(option=>EVM_CHAINS.includes(option));useEffect(()=>{if(!open)return;function onDocClick(event){if(rootRef.current&&!rootRef.current.contains(event.target))setOpen(false);}function onKey(event){if(event.key==='Escape')setOpen(false);}document.addEventListener('mousedown',onDocClick);document.addEventListener('keydown',onKey);return()=>{document.removeEventListener('mousedown',onDocClick);document.removeEventListener('keydown',onKey);};},[open]);useEffect(()=>{if(open)panelRef.current?.focus();},[open]);function choose(next){onChange({target:{name,value:next}});setOpen(false);}function openList(){setActiveIndex(Math.max(0,evmOptions.indexOf(value)));setOpen(true);}function onTriggerKeyDown(event){if(event.key==='ArrowDown'||event.key==='Enter'||event.key===' '){event.preventDefault();openList();}}function onListKeyDown(event){if(event.key==='ArrowDown'){event.preventDefault();setActiveIndex(index=>Math.min(evmOptions.length-1,index+1));}else if(event.key==='ArrowUp'){event.preventDefault();setActiveIndex(index=>Math.max(0,index-1));}else if(event.key==='Enter'||event.key===' '){event.preventDefault();choose(evmOptions[activeIndex]);}else if(event.key==='Escape'){event.preventDefault();setOpen(false);}else if(event.key==='Tab'){setOpen(false);}}return <div className="chain-select">{label}<div className="chain-select-control" ref={rootRef}><input type="hidden" name={name} value={value}/><button type="button" className="chain-select-trigger" aria-haspopup="listbox" aria-expanded={open} aria-label={label} onClick={()=>open?setOpen(false):openList()} onKeyDown={onTriggerKeyDown}><span className="chain-icon" aria-hidden="true">{meta.icon}</span><span className="chain-select-value">{meta.label}</span>{meta.testnet&&<span className="chain-select-tag">Testnet</span>}<span className="chain-select-chevron" aria-hidden="true">{CHAIN_CHEVRON_ICON}</span></button>{open&&<ul className="chain-select-panel" role="listbox" aria-label={label} tabIndex="-1" ref={panelRef} onKeyDown={onListKeyDown}><li className="chain-select-group-label" role="presentation">EVM</li>{evmOptions.map((option,index)=>{const optionMeta=chainMeta(option);return <li key={option} role="option" aria-selected={option===value} className={`chain-select-option${option===value?' selected':''}${index===activeIndex?' active':''}`} onMouseEnter={()=>setActiveIndex(index)} onClick={()=>choose(option)}><span className="chain-icon" aria-hidden="true">{optionMeta.icon}</span><span>{optionMeta.label}</span><span className="chain-select-option-end">{optionMeta.testnet&&<span className="chain-select-tag">Testnet</span>}{option===value&&<span className="chain-select-option-check" aria-hidden="true">{CHAIN_CHECK_ICON}</span>}</span></li>;})}<li className="chain-select-group-label" role="presentation">Other networks</li><li className="chain-select-option disabled" role="option" aria-disabled="true" aria-selected="false"><span className="chain-icon" aria-hidden="true">{SOLANA_ICON}</span><span>Solana</span><span className="chain-select-option-end"><span className="chain-select-tag">Coming soon</span></span></li></ul>}</div></div>;}
+function ChainSelect({name,label,options,value,onChange}){const [open,setOpen]=useState(false);const [activeIndex,setActiveIndex]=useState(0);const rootRef=useRef(null);const panelRef=useRef(null);const meta=chainMeta(value);const evmOptions=dashboardEvmChains(options);useEffect(()=>{if(!open)return;function onDocClick(event){if(rootRef.current&&!rootRef.current.contains(event.target))setOpen(false);}function onKey(event){if(event.key==='Escape')setOpen(false);}document.addEventListener('mousedown',onDocClick);document.addEventListener('keydown',onKey);return()=>{document.removeEventListener('mousedown',onDocClick);document.removeEventListener('keydown',onKey);};},[open]);useEffect(()=>{if(open)panelRef.current?.focus();},[open]);function choose(next){onChange({target:{name,value:next}});setOpen(false);}function openList(){setActiveIndex(Math.max(0,evmOptions.indexOf(value)));setOpen(true);}function onTriggerKeyDown(event){if(event.key==='ArrowDown'||event.key==='Enter'||event.key===' '){event.preventDefault();openList();}}function onListKeyDown(event){if(event.key==='ArrowDown'){event.preventDefault();setActiveIndex(index=>Math.min(evmOptions.length-1,index+1));}else if(event.key==='ArrowUp'){event.preventDefault();setActiveIndex(index=>Math.max(0,index-1));}else if(event.key==='Enter'||event.key===' '){event.preventDefault();choose(evmOptions[activeIndex]);}else if(event.key==='Escape'){event.preventDefault();setOpen(false);}else if(event.key==='Tab'){setOpen(false);}}return <div className="chain-select">{label}<div className="chain-select-control" ref={rootRef}><input type="hidden" name={name} value={value}/><button type="button" className="chain-select-trigger" aria-haspopup="listbox" aria-expanded={open} aria-label={label} onClick={()=>open?setOpen(false):openList()} onKeyDown={onTriggerKeyDown}><span className="chain-icon" aria-hidden="true">{meta.icon}</span><span className="chain-select-value">{meta.label}</span>{meta.testnet&&<span className="chain-select-tag">Testnet</span>}<span className="chain-select-chevron" aria-hidden="true">{CHAIN_CHEVRON_ICON}</span></button>{open&&<ul className="chain-select-panel" role="listbox" aria-label={label} tabIndex="-1" ref={panelRef} onKeyDown={onListKeyDown}><li className="chain-select-group-label" role="presentation">EVM</li>{evmOptions.map((option,index)=>{const optionMeta=chainMeta(option);return <li key={option} role="option" aria-selected={option===value} className={`chain-select-option${option===value?' selected':''}${index===activeIndex?' active':''}`} onMouseEnter={()=>setActiveIndex(index)} onClick={()=>choose(option)}><span className="chain-icon" aria-hidden="true">{optionMeta.icon}</span><span>{optionMeta.label}</span><span className="chain-select-option-end">{optionMeta.testnet&&<span className="chain-select-tag">Testnet</span>}{option===value&&<span className="chain-select-option-check" aria-hidden="true">{CHAIN_CHECK_ICON}</span>}</span></li>;})}<li className="chain-select-group-label" role="presentation">Other networks</li><li className="chain-select-option disabled" role="option" aria-disabled="true" aria-selected="false"><span className="chain-icon" aria-hidden="true">{SOLANA_ICON}</span><span>Solana</span><span className="chain-select-option-end"><span className="chain-select-tag">Coming soon</span></span></li></ul>}</div></div>;}
 // Wallet create/import only need to distinguish the chain family (EVM vs Solana), not a specific
 // EVM chain -- one address already works on every EVM chain, so wallets store DEFAULT_EVM_CHAIN
 // as their nominal home chain and the actual target chain is resolved per-mint instead.
@@ -893,7 +894,7 @@ function ContractLookupStatus({visible}){
   return visible?<span className="contract-lookup-status" role="status" aria-live="polite">
     <span className="contract-lookup-spinner" aria-hidden="true"/>Reading…</span>:null;
 }
-function Minting({active=true,onSwitchToBatch,onSwitchToSchedule,onGoWallets}){const wallets=useLoad('/api/wallets',[],'wallets.changed');const limits=useLoad('/api/profile/limits');const [preview,setPreview]=useState(null);const [confirmResults,setConfirmResults]=useState(null);const formRef=useRef(null);const previewRef=useRef(null);const contractInputRef=useRef(null);const [walletLabel,setWalletLabel]=useState('');const [contractAddress,setContractAddress]=useState('');const [collectionName,setCollectionName]=useState('');const [viaOpenSea,setViaOpenSea]=useState(false);const [quantity,setQuantity]=useState('1');const [methodSignature,setMethodSignature]=useState('');const [argumentsJson,setArgumentsJson]=useState('');const [priceEth,setPriceEth]=useState('');const [seaDropAddress,setSeaDropAddress]=useState('');const [detectedChain,setDetectedChain]=useState('');const [maxPerWallet,setMaxPerWallet]=useState(null);const [detecting,setDetecting]=useState(false);const [detectionError,setDetectionError]=useState('');const [detectionRetryable,setDetectionRetryable]=useState(false);const lastDetected=useRef('');const detectingKey=useRef('');
+function Minting({active=true,onSwitchToBatch,onSwitchToSchedule,onGoWallets,onCommitChange}){const wallets=useLoad('/api/wallets',[],'wallets.changed');const limits=useLoad('/api/profile/limits');const [preview,setPreview]=useState(null);const [confirmResults,setConfirmResults]=useState(null);const formRef=useRef(null);const previewRef=useRef(null);const contractInputRef=useRef(null);const [walletLabel,setWalletLabel]=useState('');const [contractAddress,setContractAddress]=useState('');const [collectionName,setCollectionName]=useState('');const [viaOpenSea,setViaOpenSea]=useState(false);const [quantity,setQuantity]=useState('1');const [methodSignature,setMethodSignature]=useState('');const [argumentsJson,setArgumentsJson]=useState('');const [priceEth,setPriceEth]=useState('');const [seaDropAddress,setSeaDropAddress]=useState('');const [detectedChain,setDetectedChain]=useState('');const [maxPerWallet,setMaxPerWallet]=useState(null);const [detecting,setDetecting]=useState(false);const [detectionError,setDetectionError]=useState('');const [detectionRetryable,setDetectionRetryable]=useState(false);const [submitting,setSubmitting]=useState(false);const lastDetected=useRef('');const detectingKey=useRef('');
   // Simulation is no longer user-triggered (backlog §7.2): the prototype has no "Validate and
   // simulate" control, only a Re-simulate on an expired quote, so the first simulation runs on its
   // own. Debounced, because otherwise typing an address would fire one /api/mints/preview per
@@ -1015,13 +1016,13 @@ function Minting({active=true,onSwitchToBatch,onSwitchToSchedule,onGoWallets}){c
   // Each wallet in the batch is annotated with its own outcome (see confirmResults, rendered per
   // item below) rather than one pass/fail for the whole batch -- a failure on one wallet no longer
   // hides whether the others actually went through.
-  async function confirmMint(){if(!await confirmDialog('Mint now? This will spend the amount shown in the preview.'))return;try{
+  async function confirmMint(){if(submitting||!preview)return;if(!await confirmDialog('Mint now? This will spend the amount shown in the preview.'))return;setSubmitting(true);onCommitChange?.(true);try{
     const response=await api('/api/mints/confirm',{method:'POST',body:JSON.stringify({previewToken:preview.previewToken,confirmation:'CONFIRM'})});
     const succeeded=response.results.filter(entry=>entry.status==='success').length;
     const total=response.results.length;
     if(succeeded===total){notify(total>1?`All ${total} mints were successful.`:'Mint successful.',{type:'success',category:'money'});setPreview(null);setConfirmResults(null);formRef.current?.reset();resetDetectedFields();}
     else{setConfirmResults(Object.fromEntries(response.results.map(entry=>[entry.label,entry])));notify(succeeded===0?'Mint failed -- see the reason below.':`${succeeded}/${total} mints were successful; see details below for the rest.`,{type:succeeded===0?'error':'info',category:'money'});}
-  }catch(value){const friendly=mintPreviewError(value,{chain:detectedChain,quantity});notify(`${friendly.title} ${friendly.detail}`,{type:'error'});}}
+  }catch(value){const friendly=mintPreviewError(value,{chain:detectedChain,quantity});notify(`${friendly.title} ${friendly.detail}`,{type:'error'});}finally{setSubmitting(false);onCommitChange?.(false);}}
   const detected=Boolean(methodSignature);
   const item=preview?.items?.[0];
   const totalDebitWei=item?item.simulation.estimatedCostWei:null;
@@ -1051,12 +1052,13 @@ function Minting({active=true,onSwitchToBatch,onSwitchToSchedule,onGoWallets}){c
       <div><b>Create a wallet before minting.</b> The form below is shown disabled so you can see what minting looks like.
         <div style={{marginTop:'8px'}}><button type="button" className="b sm" onClick={()=>onGoWallets?.()}>Create a wallet</button></div></div>
     </div>}
-    <div className="split">
+    <div className="split" aria-busy={submitting||undefined}>
+      <fieldset disabled={submitting}>
       <div className="card">
         <div className="ch"><div className="chip-ico">{CONTRACT_ICON}</div><h2>Contract</h2></div>
         <div className="g" style={{gap:'11px'}}>
           <label className="fl"><span>Contract address</span>
-            <div className={`contract-input-shell${detecting?' loading':''}`}>
+            <div className={`contract-input-shell${detecting?' is-loading':''}`}>
               <input ref={contractInputRef} className={`in mono${detected?' ok':''}`} disabled={noWallets}
                 autoFocus={active} aria-busy={detecting||undefined}
                 placeholder="0x… paste a contract address" value={contractAddress}
@@ -1161,11 +1163,9 @@ function Minting({active=true,onSwitchToBatch,onSwitchToSchedule,onGoWallets}){c
             </tbody>
           </table>
         </div>
-        {/* Prototype mint.html:85 -- while /api/mints/preview is in flight the column shows
-            skeletons, not a half-filled ledger. Three row bars and a 60% line, exactly. */}
-        {(detecting||simulating)&&<div aria-label={detecting?'Reading contract details':'Simulating transaction'}>
-          <div className="sk row"/><div className="sk row"/><div className="sk row"/><div className="sk l w60"/>
-        </div>}
+        {/* Detection already reports inside the contract field, and this ledger's Simulation row
+            reports preview progress. Do not insert a second skeleton below the ledger: it changes
+            the column height and pushes every following control down while a request is running. */}
         {/* Ceiling only -- no meter and no "used" figure, because nothing exposes rolling spend
             (data contract §5.1). */}
         {ceilingWei!==undefined&&<div className="card tight">
@@ -1196,13 +1196,14 @@ function Minting({active=true,onSwitchToBatch,onSwitchToSchedule,onGoWallets}){c
             ?<button type="button" className="b big bl" disabled>Simulating…</button>
             :pageError
               ?<button type="button" className="b big bl" disabled>Fix the issue above to continue</button>
-              :<button type="button" className="b p big bl" disabled={!item} onClick={confirmMint}>
-                 {item?`Confirm and mint · ${weiToEthDisplay(totalDebitWei)} ETH`:'Confirm and mint'}</button>}
+              :<button type="button" className="b p big bl" disabled={!item||submitting} onClick={confirmMint}>
+                 {submitting?'Submitting mint…':item?`Confirm and mint · ${weiToEthDisplay(totalDebitWei)} ETH`:'Confirm and mint'}</button>}
         <p style={{fontSize:'11px',color:'var(--faint)',textAlign:'center'}}>
           {noWallets
             ?'Preview stays visible at all times — a collapsed total is a hidden total.'
             :'Once sent, a blockchain transaction cannot be undone.'}</p>
       </div>
+      </fieldset>
     </div>
   </>;
 }
@@ -1273,7 +1274,7 @@ function scheduleStageSelectionKey(stage){
 let pendingSchedulePrefill=null;
 function setPendingSchedulePrefill(value){pendingSchedulePrefill=value;}
 function consumePendingSchedulePrefill(){const value=pendingSchedulePrefill;pendingSchedulePrefill=null;return value;}
-function Tasks({profile,active=true}){const mobile=useIsMobile();const [page,setPage]=useState(1);const [search,setSearch]=useState('');const [bucket,setBucket]=useState('pending');const [filtersOpen,setFiltersOpen]=useState(false);const [serverFilters,setServerFilters]=useState(null);const PAGE_SIZE=mobile?3:10;const COMPAT_LIMIT=50;const listing=useLoad(serverFilters===false?`/api/tasks?page=1&pageSize=${COMPAT_LIMIT}&search=${encodeURIComponent(search)}`:`/api/tasks?page=${page}&pageSize=${PAGE_SIZE}&status=${bucket}&search=${encodeURIComponent(search)}`,[page,bucket,search,serverFilters,PAGE_SIZE],'tasks.changed');const wallets=useLoad('/api/wallets',[],'wallets.changed');const contractInputRef=useRef(null);const [chain,setChain]=useState(profile.defaultChain||profile.supportedChains[0]);const [contractAddress,setContractAddress]=useState('');const [taskName,setTaskName]=useState('');const [detectedName,setDetectedName]=useState('');const [detectedSeaDrop,setDetectedSeaDrop]=useState(false);const [quantity,setQuantity]=useState('1');const [maxPerWallet,setMaxPerWallet]=useState(null);const [priceETH,setPriceETH]=useState('');const [mintTime,setMintTime]=useState('');const [viaOpenSea,setViaOpenSea]=useState(false);const [detectedOpenSeaRecommendation,setDetectedOpenSeaRecommendation]=useState(false);const [stageType,setStageType]=useState('');const [stages,setStages]=useState([]);const [selectedStageKey,setSelectedStageKey]=useState('');const [scheduleWallet,setScheduleWallet]=useState('');const [pendingRows,setPendingRows]=useState([]);const [detecting,setDetecting]=useState(false);const [detectionError,setDetectionError]=useState('');const [detectionRetryable,setDetectionRetryable]=useState(false);const lastDetected=useRef('');
+function Tasks({profile,active=true,onCommitChange}){const mobile=useIsMobile();const [page,setPage]=useState(1);const [search,setSearch]=useState('');const [bucket,setBucket]=useState('pending');const [filtersOpen,setFiltersOpen]=useState(false);const [serverFilters,setServerFilters]=useState(null);const PAGE_SIZE=mobile?3:10;const COMPAT_LIMIT=50;const listing=useLoad(serverFilters===false?`/api/tasks?page=1&pageSize=${COMPAT_LIMIT}&search=${encodeURIComponent(search)}`:`/api/tasks?page=${page}&pageSize=${PAGE_SIZE}&status=${bucket}&search=${encodeURIComponent(search)}`,[page,bucket,search,serverFilters,PAGE_SIZE],'tasks.changed');const wallets=useLoad('/api/wallets',[],'wallets.changed');const contractInputRef=useRef(null);const [chain,setChain]=useState(profile.defaultChain||profile.supportedChains[0]);const [contractAddress,setContractAddress]=useState('');const [taskName,setTaskName]=useState('');const [detectedName,setDetectedName]=useState('');const [detectedSeaDrop,setDetectedSeaDrop]=useState(false);const [quantity,setQuantity]=useState('1');const [maxPerWallet,setMaxPerWallet]=useState(null);const [priceETH,setPriceETH]=useState('');const [mintTime,setMintTime]=useState('');const [viaOpenSea,setViaOpenSea]=useState(false);const [detectedOpenSeaRecommendation,setDetectedOpenSeaRecommendation]=useState(false);const [stageType,setStageType]=useState('');const [stages,setStages]=useState([]);const [selectedStageKey,setSelectedStageKey]=useState('');const [scheduleWallet,setScheduleWallet]=useState('');const [pendingRows,setPendingRows]=useState([]);const [detecting,setDetecting]=useState(false);const [detectionError,setDetectionError]=useState('');const [detectionRetryable,setDetectionRetryable]=useState(false);const [submitting,setSubmitting]=useState(false);const [controlBusy,setControlBusy]=useState('');const lastDetected=useRef('');
   // The prototype's Schedule form has no price field, because it assumes the contract can be
   // priced automatically. Some cannot -- the server then rejects with a priceETH issue and there
   // is nowhere to type one, which left the form unsubmittable for those contracts. So the field
@@ -1418,12 +1419,12 @@ function Tasks({profile,active=true}){const mobile=useIsMobile();const [page,set
   }
   useEffect(()=>{if(!scheduleWallet&&wallets.data?.length)setScheduleWallet(wallets.data[0].label);},[wallets.data]);
   useEffect(()=>{if(contractAddress)refreshPendingForContract(contractAddress);else setPendingRows([]);},[contractAddress]);
-  async function create(event){event.preventDefault();const form=event.currentTarget;const scheduledStage=stages.find(stage=>scheduleStageSelectionKey(stage)===selectedStageKey);
+  async function create(event){event.preventDefault();if(submitting)return;const form=event.currentTarget;const scheduledStage=stages.find(stage=>scheduleStageSelectionKey(stage)===selectedStageKey);
     if(scheduledStage){
       const live=scheduledStage.startTime*1000<=Date.now()&&(!scheduledStage.endTime||scheduledStage.endTime*1000>Date.now());
       if(live){notify(`"${scheduledStage.label}" is live right now — use Mint now instead of scheduling.`,{type:'info'});return;}
     }
-    try{
+    setSubmitting(true);onCommitChange?.(true);try{
       const input=Object.fromEntries(new FormData(form));
       const scheduledViaOpenSea=scheduledStage
         ?(!detectedSeaDrop||scheduleStageRequiresOpenSeaBuilder(scheduledStage))
@@ -1438,23 +1439,15 @@ function Tasks({profile,active=true}){const mobile=useIsMobile();const [page,set
       if(input.mintTime)input.mintTime=new Date(input.mintTime).toISOString();
       else delete input.mintTime;
       if(input.mintTime){
-        const startMs=Date.parse(input.mintTime);
-        const selectedStageStart=Number(scheduledStage?.startTime)*1000;
-        const notBeforeMs=Number.isFinite(selectedStageStart)?Math.max(startMs,selectedStageStart):startMs;
-        const deadlineCap=notBeforeMs+24*60*60*1000;
-        const advertisedEnds=stages.filter(candidate=>Number(candidate.startTime)*1000>=selectedStageStart)
-          .map(candidate=>Number(candidate.endTime)*1000)
-          .filter(endMs=>Number.isFinite(endMs)&&endMs>startMs);
         // earliest_eligible can advance from an ineligible allowlist to the next public phase.
-        // Keep enough room for that advertised transition, but never leave an unattended schedule
-        // open for more than 24 hours when a project keeps moving its launch.
-        const latestAdvertisedEnd=advertisedEnds.length?Math.max(...advertisedEnds):null;
-        const deadlineMs=latestAdvertisedEnd===null?deadlineCap:Math.min(latestAdvertisedEnd,deadlineCap);
-        input.eligibilityDeadline=new Date(deadlineMs).toISOString();
+        // The visible datetime-local field is minute-precision while provider stage times include
+        // seconds. Always derive the 24-hour cap from the exact submitted mintTime so those hidden
+        // seconds cannot make an otherwise valid first-party request fail server validation.
+        input.eligibilityDeadline=scheduleEligibilityDeadline(input.mintTime,scheduledStage?.startTime,stages);
       }
       if(scheduledViaOpenSea)input.priceETH=0;else if(!input.priceETH)delete input.priceETH;
       await api('/api/tasks',{method:'POST',body:JSON.stringify(input)});setPriceIssue(null);form.reset();setContractAddress('');setTaskName('');setDetectedName('');setDetectedSeaDrop(false);setStages([]);setSelectedStageKey('');setDetectionError('');setDetectionRetryable(false);setQuantity('1');setMaxPerWallet(null);setPriceETH('');setMintTime('');setViaOpenSea(false);setDetectedOpenSeaRecommendation(false);setStageType('');setPendingRows([]);lastDetected.current='';notify('Task scheduled. Its time is the earliest check; minting waits for a live phase this wallet can use.',{type:'success'});listing.load();
-    }catch(value){const issue=value.issues?.find(entry=>entry.field==='priceETH');if(issue)setPriceIssue(issue.message);notify(value.message,{type:'error'});}}async function control(id,action){try{await api(`/api/tasks/${id}/control`,{method:'POST',body:JSON.stringify({action,confirmation:action==='cancel'?'CONFIRM':undefined})});}catch(value){notify(value.message,{type:'error'});}}
+    }catch(value){const issue=value.issues?.find(entry=>entry.field==='priceETH');if(issue)setPriceIssue(issue.message);notify(value.message,{type:'error'});}finally{setSubmitting(false);onCommitChange?.(false);}}async function control(id,action){try{await api(`/api/tasks/${id}/control`,{method:'POST',body:JSON.stringify({action,confirmation:action==='cancel'?'CONFIRM':undefined})});}catch(value){notify(value.message,{type:'error'});}}
   // Prototype docs/prototype-pages/mint.html:111-158. The Schedule tab is a .split: the form on
   // the left, the "Scheduled" list on the right. The old page-lead, the search toolbar, the chain
   // select and the table UNDER the form are all gone -- none of them exist in the design, and the
@@ -1569,23 +1562,26 @@ function Tasks({profile,active=true}){const mobile=useIsMobile();const [page,set
   // reshuffle under the cursor as a selection is built.
   const selectionKey=selected.length?actionsFor(selected[0]).join('+'):null;
   const canSelect=task=>selectionKey===null||actionsFor(task).join('+')===selectionKey;
-  function chooseRow(task){if(canSelect(task))toggleSelected(task.id);}
+  function chooseRow(task){if(!controlBusy&&canSelect(task))toggleSelected(task.id);}
   // Because the selection is homogeneous, "this action is offered" and "this action will run
   // against every selected row" are now the same statement -- which is what makes the button
   // labels honest.
   function selectionSupports(action){
-    return selected.length>0&&actionsFor(selected[0]).includes(action);
+    return !controlBusy&&selected.length>0&&actionsFor(selected[0]).includes(action);
   }
   async function controlSelected(action){
-    if(!selectionSupports(action))return;
+    if(controlBusy||!selectionSupports(action))return;
     const targets=selected;
     if(!targets.length)return;
     if(action==='cancel'&&!await confirmDialog(targets.length===1
       ?'Cancel this scheduled mint? It will not fire, and this cannot be undone.'
       :`Cancel ${targets.length} scheduled mints? They will not fire, and this cannot be undone.`))return;
-    for(const task of targets)await control(task.id,action);
-    setSelectedIds([]);
-    listing.load();
+    setControlBusy(action);onCommitChange?.(true);
+    try{
+      for(const task of targets)await control(task.id,action);
+      setSelectedIds([]);
+      listing.load();
+    }finally{setControlBusy('');onCommitChange?.(false);}
   }
   // The prototype writes a DIFFERENT meta line per state, and the failed one is the reason:
   //   scheduled  "Primary · fires in 42m · 2026-08-20T18:00:00Z"
@@ -1632,9 +1628,10 @@ function Tasks({profile,active=true}){const mobile=useIsMobile();const [page,set
   return <div className="split schedule-layout">
     <div className="card">
       <div className="ch"><div className="chip-ico">{CLOCK_ICON_LG}</div><h2>Schedule a mint</h2></div>
-      <form className="g" style={{gap:'11px'}} onSubmit={create}>
+      <form className="g" style={{gap:'11px'}} onSubmit={create} aria-busy={submitting||undefined}>
+        <fieldset disabled={submitting}>
         <label className="fl"><span>Contract address</span>
-          <div className={`contract-input-shell${detecting?' loading':''}`}>
+          <div className={`contract-input-shell${detecting?' is-loading':''}`}>
             <input ref={contractInputRef} className="in mono" name="contractAddress" required disabled={noWallets}
               autoFocus={active} aria-busy={detecting||undefined} placeholder="0x…" value={contractAddress}
               onChange={e=>{setContractAddress(e.target.value);if(!ADDRESS_SHAPE.test(e.target.value.trim())){lastDetected.current='';setMaxPerWallet(null);setViaOpenSea(false);setDetectedOpenSeaRecommendation(false);setDetectedSeaDrop(false);setStageType('');setStages([]);setSelectedStageKey('');setDetectionError('');setDetectionRetryable(false);const prev=detectedName;setDetectedName('');if(taskName===prev) setTaskName('');}autoDetectIfReady(e.target.value);}}
@@ -1698,12 +1695,14 @@ function Tasks({profile,active=true}){const mobile=useIsMobile();const [page,set
              <div className="fielderr">{ALERT_ICON}{priceIssue}</div></label>
           :!viaOpenSea&&priceETH?<input type="hidden" name="priceETH" value={priceETH}/>:null}
         <input type="hidden" name="chain" value={chain}/>
-        <button className="b p" disabled={noWallets||detecting}>{detecting?'Reading contract…':'Schedule mint'}</button>
+        <button className="b p" disabled={noWallets||detecting||submitting}>{submitting?'Scheduling…':detecting?'Reading contract…':'Schedule mint'}</button>
+        </fieldset>
       </form>
     </div>
 
     <div className="g">
-      <div className="card schedule-list-card">
+      <div className="card schedule-list-card" aria-busy={Boolean(controlBusy)||undefined}>
+        <fieldset disabled={Boolean(controlBusy)}>
         {/* The prototype's static "2 pending" chip, now the filter. It stays ON THE TITLE LINE
             where that chip was, and stays a SINGLE chip until pressed -- see selectBucket's note.
             Each chip carries its own count, which is why the server scopes counts to the search
@@ -1767,7 +1766,7 @@ function Tasks({profile,active=true}){const mobile=useIsMobile();const [page,set
                      so the rule is visible before it is discovered by clicking. */}
                  {items.map(task=>{
                    const chosen=selectedIds.includes(task.id);
-                   const selectable=canSelect(task);
+                   const selectable=!controlBusy&&canSelect(task);
                    return <div key={task.id}
                      className={`r${chosen?' on':''}${selectable?'':' off'}`}
                      role="button" tabIndex={selectable?0:-1}
@@ -1790,9 +1789,9 @@ function Tasks({profile,active=true}){const mobile=useIsMobile();const [page,set
                  <div className="br schedule-actions" style={{marginTop:'11px'}}>
                    {['pause','resume','retry'].map(action=><button type="button" key={action} className="b sm"
                      disabled={!selectionSupports(action)} onClick={()=>controlSelected(action)}>
-                     {action[0].toUpperCase()+action.slice(1)}</button>)}
+                     {controlBusy===action?`${action[0].toUpperCase()+action.slice(1)}…`:action[0].toUpperCase()+action.slice(1)}</button>)}
                    <button type="button" className="b d sm" disabled={!selectionSupports('cancel')}
-                     onClick={()=>controlSelected('cancel')}>Cancel…</button>
+                     onClick={()=>controlSelected('cancel')}>{controlBusy==='cancel'?'Cancelling…':'Cancel…'}</button>
                  </div>
                  {/* A selection belongs to the page it was made on, so leaving the page drops it.
                      Guarded on an ACTUAL change: pressing the number you are already on is a no-op,
@@ -1800,6 +1799,7 @@ function Tasks({profile,active=true}){const mobile=useIsMobile();const [page,set
                  <Pager value={pagerValue} page={page}
                    setPage={value=>{if(value!==page)setSelectedIds([]);setPage(value);}}/>
                </div>}
+        </fieldset>
       </div>
     </div>
   </div>;
@@ -2846,7 +2846,7 @@ function nativeBalance(wallet){
   if(!match||match.balance===null||match.balance===undefined)return null;
   return {amount:Number(match.balance),symbol:match.symbol||'ETH'};
 }
-function MintBatch({active=true,onGoWallets,onSwitchToSchedule}){
+function MintBatch({active=true,onGoWallets,onSwitchToSchedule,onCommitChange}){
   const wallets=useLoad('/api/wallets',[],'wallets.changed');
   const contractInputRef=useRef(null);
   const [selected,setSelected]=useState([]);
@@ -2855,6 +2855,7 @@ function MintBatch({active=true,onGoWallets,onSwitchToSchedule}){
   const [preview,setPreview]=useState(null);
   const [results,setResults]=useState(null);
   const [busy,setBusy]=useState(false);
+  const [submitting,setSubmitting]=useState(false);
   // The prototype batch form carries no price field (mint.html:161-181), so the price is detected
   // from the contract exactly as Mint now does it. lastDetected guards against re-detecting the
   // same address on every keystroke.
@@ -2907,6 +2908,7 @@ function MintBatch({active=true,onGoWallets,onSwitchToSchedule}){
   function toggle(label){setSelected(current=>current.includes(label)?current.filter(item=>item!==label):[...current,label]);setPreview(null);setResults(null);}
   async function simulate(event){
     event?.preventDefault?.();
+    if(busy||submitting)return;
     if(!selected.length){notify('Select at least one wallet.',{type:'error'});return;}
     if(detecting){notify('Contract details are still loading. Try again in a moment.',{type:'info'});return;}
     if(!viaOpenSea&&!methodSignature){notify('Could not prepare this contract for batch minting.',{type:'error'});return;}
@@ -2939,10 +2941,11 @@ function MintBatch({active=true,onGoWallets,onSwitchToSchedule}){
     finally{setBusy(false);}
   }
   async function confirmBatch(){
+    if(busy||submitting)return;
     const readyCount=preview?.items?.length||0;
     if(!readyCount)return;
     if(!await confirmDialog(`Broadcast this mint from ${readyCount} ${readyCount===1?'wallet':'wallets'}? Wallets that failed simulation will be skipped.`))return;
-    setBusy(true);
+    setSubmitting(true);onCommitChange?.(true);
     try{
       const response=await api('/api/mints/confirm',{method:'POST',body:JSON.stringify({previewToken:preview.previewToken,confirmation:'CONFIRM'})});
       const previewFailures=(preview.failures||[]).map(item=>({label:item.walletLabel,status:'failed',error:item.error}));
@@ -2962,7 +2965,7 @@ function MintBatch({active=true,onGoWallets,onSwitchToSchedule}){
       }
       notify(failed?`${combined.length-failed} of ${combined.length} succeeded; ${failed} ${failed===1?'was':'were'} skipped or failed.`:'All wallet mints were successful.',{type:failed?'info':'success'});
     }catch(value){notify(value.message,{type:'error'});}
-    finally{setBusy(false);}
+    finally{setSubmitting(false);onCommitChange?.(false);}
   }
   // Prototype docs/prototype-pages/mint.html:161-197. .split -- the Batch mint form left, the
   // independence note and result panel right. The prototype's form has three fields only:
@@ -2991,12 +2994,14 @@ function MintBatch({active=true,onGoWallets,onSwitchToSchedule}){
   const resultCount=results?results.length:0;
   const succeeded=results?results.filter(entry=>entry.status==='success').length:0;
   const quantityMax=maxPerWallet||100;
-  return <div className="split">
+  const formLocked=busy||submitting;
+  return <div className="split" aria-busy={formLocked||undefined}>
+    <fieldset disabled={formLocked}>
     <div className="card">
       <div className="ch"><div className="chip-ico">{BATCH_ICON}</div><h2>Batch mint</h2></div>
       <form className="g" style={{gap:'11px'}} onSubmit={simulate}>
         <label className="fl"><span>Contract address</span>
-          <div className={`contract-input-shell${detecting?' loading':''}`}>
+          <div className={`contract-input-shell${detecting?' is-loading':''}`}>
             <input ref={contractInputRef} className={`in mono${detectedPrice?' ok':''}`}
               required disabled={noWallets} readOnly={!noWallets&&!enoughSelected}
               aria-busy={detecting||undefined}
@@ -3045,7 +3050,7 @@ function MintBatch({active=true,onGoWallets,onSwitchToSchedule}){
                 className={String(quantity)===String(quantityMax)?'on':undefined}
                 onClick={()=>{setQuantity(String(quantityMax));if(ADDRESS_SHAPE.test(contractAddress.trim()))detectPrice(contractAddress,String(quantityMax));}}>Max</button></div>
           </div></label>
-        <button className="b p" disabled={busy||detecting||!enoughSelected}>{detecting?'Reading contract…':`Simulate all ${selected.length||0}`}</button>
+        <button className="b p" disabled={formLocked||detecting||!enoughSelected}>{detecting?'Reading contract…':busy?'Simulating…':submitting?'Submitting mints…':`Simulate all ${selected.length||0}`}</button>
       </form>
     </div>
 
@@ -3053,7 +3058,7 @@ function MintBatch({active=true,onGoWallets,onSwitchToSchedule}){
       <div className="nt i">{INFO_ICON}
         <div>Each wallet is simulated and submitted <b>independently</b>. One wallet failing does not cancel the others.</div></div>
       <Notice error={loadError(wallets,'Could not load wallets.')}/>
-      {busy||detecting||(!walletsArrived&&!wallets.error)
+      {!walletsArrived&&!wallets.error
         ?<div><div className="sk row"/><div className="sk row"/><div className="sk row"/></div>
         :wallets.error
           ?null
@@ -3110,12 +3115,13 @@ function MintBatch({active=true,onGoWallets,onSwitchToSchedule}){
                         onClick={()=>{setPendingSchedulePrefill({contractAddress,quantity});onSwitchToSchedule();}}>Schedule this mint</button></div>}
                     </div></div>;
                   })()}
-                 {preview.items.length>0&&<button type="button" className="b p big bl" disabled={busy} onClick={confirmBatch}>
-                   Confirm and mint · {preview.items.length} {preview.items.length===1?'wallet':'wallets'}</button>
+                  {preview.items.length>0&&<button type="button" className="b p big bl" disabled={formLocked} onClick={confirmBatch}>
+                    {submitting?'Submitting mints…':`Confirm and mint · ${preview.items.length} ${preview.items.length===1?'wallet':'wallets'}`}</button>
                  }
                </div>
               :null}
     </div>
+    </fieldset>
   </div>;
 }
 
@@ -3217,22 +3223,25 @@ function Mint({profile,go,tab,onTab}){
   // hand-edited tab value should land somewhere useful, not nowhere.
   const active=MINT_TABS.some(item=>item.id===tab)?tab:'now';
   const tasks=useLoad('/api/tasks?page=1&pageSize=1',[],'tasks.changed');
+  const [activeCommits,setActiveCommits]=useState(0);
+  const commitLocked=activeCommits>0;
+  const trackCommit=useCallback(locked=>setActiveCommits(count=>Math.max(0,count+(locked?1:-1))),[]);
   const badges={schedule:scheduleBadge(tasks.data?.counts)};
   return <>
     <div className="page-head"><div className="page-head-text"><p className="eyebrow">Mint</p><h1>Mint</h1></div></div>
-    <SubTabs tabs={MINT_TABS} active={active} onChange={onTab} label="Mint sections" badges={badges}/>
+    <SubTabs tabs={MINT_TABS} active={active} onChange={onTab} label="Mint sections" badges={badges} disabled={commitLocked}/>
     {/* Keep every work surface mounted. Contract detection and simulation are asynchronous work,
         not decoration: changing a tab must not cancel them or erase a half-completed draft. The
         hidden attribute removes inactive panels from layout and accessibility while React keeps
         their state and in-flight request alive. */}
     <div className="mint-tab-panel" hidden={active!=='now'}>
-      <Minting active={active==='now'} onSwitchToBatch={()=>onTab('batch')} onSwitchToSchedule={()=>onTab('schedule')} onGoWallets={()=>go('Wallets')}/>
+      <Minting active={active==='now'} onSwitchToBatch={()=>onTab('batch')} onSwitchToSchedule={()=>onTab('schedule')} onGoWallets={()=>go('Wallets')} onCommitChange={trackCommit}/>
     </div>
     <div className="mint-tab-panel" hidden={active!=='schedule'}>
-      <Tasks profile={profile} active={active==='schedule'} go={go}/>
+      <Tasks profile={profile} active={active==='schedule'} onCommitChange={trackCommit}/>
     </div>
     <div className="mint-tab-panel" hidden={active!=='batch'}>
-      <MintBatch active={active==='batch'} onGoWallets={()=>go('Wallets')} onSwitchToSchedule={()=>onTab('schedule')}/>
+      <MintBatch active={active==='batch'} onGoWallets={()=>go('Wallets')} onSwitchToSchedule={()=>onTab('schedule')} onCommitChange={trackCommit}/>
     </div>
     <div className="mint-tab-panel" hidden={active!=='presets'}>
       <MintPresets onUsePreset={preset=>{setPendingMintPrefill({contractAddress:preset.contractAddress});onTab('now');}}/>
@@ -3648,7 +3657,7 @@ function AutomationAll({filter=null,onTab}){
   </>;
 }
 
-function Automation({tab,onTab,target}){
+function Automation({profile,tab,onTab,target}){
   const active=AUTOMATION_TABS.some(item=>item.id===tab)?tab:'all';
   // Collapsed until asked for: the page should open as a list of what exists, not a form for
   // something that does not.
@@ -3680,7 +3689,7 @@ function Automation({tab,onTab,target}){
       </div></div>
     <SubTabs tabs={AUTOMATION_TABS} active={active} onChange={onTab} label="Automation sections" badges={badges}/>
     {active==='all'&&<AutomationAll onTab={onTab}/>}
-    {active==='snipers'&&<>{creating&&<SniperForm wallets={wallets.data} chains={EVM_CHAINS}
+    {active==='snipers'&&<>{creating&&<SniperForm wallets={wallets.data} chains={dashboardEvmChains(profile?.supportedChains)}
       onCreated={()=>{setCreating(false);snipers.load();}} onCancel={()=>setCreating(false)}/>}
       <AutomationAll filter="sniper" onTab={onTab}/></>}
     {active==='social'&&<>{creating&&<WatchRuleForm

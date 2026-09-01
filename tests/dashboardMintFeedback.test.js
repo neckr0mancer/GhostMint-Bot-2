@@ -59,7 +59,8 @@ test('dashboard and guided bot batches preserve the OpenSea preparation decision
 });
 
 test('batch simulation waits for contract detection and uses the detected per-wallet maximum',()=>{
-  assert.match(appSource,/disabled=\{busy\|\|detecting\|\|!enoughSelected\}/);
+  assert.match(appSource,/const formLocked=busy\|\|submitting/);
+  assert.match(appSource,/disabled=\{formLocked\|\|detecting\|\|!enoughSelected\}/);
   assert.match(appSource,/detecting\?'Reading contract…'/);
   assert.match(appSource,/requestKey===lastDetected\.current\|\|requestKey===detectingKey\.current/);
   assert.match(appSource,/const message=mintDetectionMessage\(error\)/);
@@ -93,9 +94,7 @@ test('dashboard pins the chosen phase identity through scheduled-task creation',
   assert.match(appSource,/input\.stageLabel=scheduledStage\.label/);
   assert.match(appSource,/input\.stageType=scheduledStage\.stageType/);
   assert.match(appSource,/input\.eligibilityMode=scheduledViaOpenSea\?'earliest_eligible':'specific_stage'/);
-  assert.match(appSource,/const notBeforeMs=Number\.isFinite\(selectedStageStart\)\?Math\.max\(startMs,selectedStageStart\):startMs/);
-  assert.match(appSource,/const deadlineCap=notBeforeMs\+24\*60\*60\*1000/);
-  assert.match(appSource,/Math\.min\(latestAdvertisedEnd,deadlineCap\)/);
+  assert.match(appSource,/scheduleEligibilityDeadline\(input\.mintTime,scheduledStage\?\.startTime,stages\)/);
   assert.match(appSource,/scheduled time is the earliest attempt, not a blind launch/i);
   assert.match(appSource,/scheduleStageRequiresOpenSeaBuilder\(scheduledStage\)/);
   assert.match(appSource,/\(!detectedSeaDrop\|\|scheduleStageRequiresOpenSeaBuilder\(scheduledStage\)\)/);
@@ -108,7 +107,8 @@ test('dashboard pins the chosen phase identity through scheduled-task creation',
 test('scheduled phases are checked again at the last safe pre-broadcast boundary',()=>{
   assert.match(serverSource,/function enforceEligibilityDeadline\(task, now = Date\.now\(\)\)/);
   assert.match(serverSource,/refreshScheduledPublicPhase\(task, executionChain, expectedPublicPhaseIdentity\)/);
-  assert.match(serverSource,/preBroadcastGuard: async \(\) => \{/);
+  assert.match(serverSource,/preBroadcastGuard: expectedPhaseIdentity\s*\? async \(\) => \{/);
+  assert.match(serverSource,/preBroadcastGuard: expectedPublicPhaseIdentity\s*\? async \(\) => \{/);
   assert.match(serverSource,/await governance\.checkAccountStatus\(task\.userId\)/);
   assert.match(transactionEngineSource,/if \(request\.preBroadcastGuard\) \{[\s\S]*await request\.preBroadcastGuard/);
   assert.ok(transactionEngineSource.indexOf('await request.preBroadcastGuard')
@@ -127,7 +127,7 @@ test('a completely successful batch clears its mint draft while failed results r
 test('batch preview keeps eligible wallets when another wallet fails simulation',()=>{
   assert.match(appSource,/const passed=nextPreview\.items\.length/);
   assert.match(appSource,/preview\.failures\|\|\[\]/);
-  assert.match(appSource,/Confirm and mint · \{preview\.items\.length\}/);
+  assert.match(appSource,/`Confirm and mint · \$\{preview\.items\.length\} \$\{preview\.items\.length===1\?'wallet':'wallets'\}`/);
   assert.match(appSource,/No wallet is ready to mint\./);
   assert.match(appSource,/preview\.previewToken&&<PreviewExpiry/);
 });
@@ -144,7 +144,7 @@ test('scheduled lists resync after socket recovery and every scheduler retry tra
 
 test('scheduled countdown labels advance without polling the API',()=>{
   assert.match(appSource,/setInterval\(\(\)=>setScheduleNow\(Date\.now\(\)\),15_000\)/);
-  assert.match(appSource,/const ms=at\.getTime\(\)-scheduleNow/);
+  assert.match(appSource,/scheduleCountdown\(task\.mintTime,scheduleNow\)/);
 });
 
 test('mint preview turns insufficient balance diagnostics into a short actionable message',async()=>{
