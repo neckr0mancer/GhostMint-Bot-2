@@ -208,18 +208,21 @@ function createTransactionEngine({
     return updated;
   }
 
+  // Every replacement uses the same nonce and represents the same mint intent. Inspect every
+  // durable hash plus the row-level current/predecessor fallbacks; whichever one mined is the
+  // outcome. Keeping both sources protects reconciliation if the hash ledger is temporarily
+  // unavailable or an older row predates it.
   async function inspectChain(intent) {
     if (!intent.txHash) return { state: 'unknown', reason: 'signed transaction hash was not persisted' };
-    // TX-022: check ALL recorded hashes for this intent, not just the primary. A multi-rung
-    // bump ladder produces multiple possibly-live hashes; whichever mined IS the outcome.
     let hashes = [intent.txHash];
     if (intent.bumpedFromTxHash) hashes.push(intent.bumpedFromTxHash);
     if (intentRepository.getBroadcastHashes) {
       try {
         const allHashes = await intentRepository.getBroadcastHashes(intent.intentId);
-        if (allHashes.length) hashes = allHashes;
+        if (allHashes.length) hashes = [...allHashes, ...hashes];
       } catch { /* fall back to primary + bumped */ }
     }
+    hashes = [...new Set(hashes.filter(Boolean))];
     for (const hash of hashes) {
       const receipt = await providerCall(intent.chain, 'getTransactionReceipt', provider => provider.getTransactionReceipt(hash));
       if (receipt) {
@@ -245,19 +248,30 @@ function createTransactionEngine({
           if (hash !== intent.txHash) return { ...result, reason: `${result.reason} (hash ${hash.slice(0, 10)}… mined)` };
           return result;
         }
-        const tokenIds = extractMintedTokenIds(receipt, { contractAddress: intent.callPreview?.contractAddress, minterAddress: intent.from });
+        // Preserve the NFT contract's emitted token IDs for confirmed mints. A SeaDrop transaction
+        // targets the SeaDrop core, so the receipt logs—not transaction.to—are the source of truth.
+        const tokenIds = extractMintedTokenIds(receipt, {
+          contractAddress: intent.callPreview?.contractAddress,
+          minterAddress: intent.from,
+        });
         const currentBlock = await providerCall(intent.chain, 'getBlockNumber', provider => provider.getBlockNumber());
         const confirmations = Math.max(0, Number(currentBlock) - Number(receipt.blockNumber) + 1);
         if (confirmations >= intent.requiredConfirmations) {
-          const result = { state: 'confirmed', blockNumber: Number(receipt.blockNumber), reason: `${confirmations} confirmations observed`,...receiptCost, tokenIds };
-          if (hash !== intent.txHash) return { ...result, reason: `${result.reason} (hash ${hash.slice(0, 10)}… mined)` };
+          const result = { state: 'confirmed', blockNumber: Number(receipt.blockNumber),
+            reason: `${confirmations} confirmations observed`, ...receiptCost, tokenIds };
+          if (hash !== intent.txHash) return { ...result,
+            reason: `${result.reason} (hash ${hash.slice(0, 10)}… mined)` };
           return result;
         }
-        const pendingResult = { state: 'pending', blockNumber: Number(receipt.blockNumber), reason: `${confirmations}/${intent.requiredConfirmations} confirmations observed`,...receiptCost };
-        if (hash !== intent.txHash) return { ...pendingResult, reason: `${pendingResult.reason} (hash ${hash.slice(0, 10)}… mined)` };
-        return pendingResult;
+        const result = { state: 'pending', blockNumber: Number(receipt.blockNumber),
+          reason: `${confirmations}/${intent.requiredConfirmations} confirmations observed`, ...receiptCost };
+        if (hash !== intent.txHash) return { ...result,
+          reason: `${result.reason} (hash ${hash.slice(0, 10)}… mined)` };
+        return result;
       }
     }
+
+    // No receipt for any known broadcast hash — check current-primary mempool visibility.
     const transaction = await providerCall(intent.chain, 'getTransaction', provider => provider.getTransaction(intent.txHash));
     if (transaction) return { state: 'pending', reason: 'transaction is present in the provider mempool' };
     // This used to read "pending nonce ahead of mine" as proof the nonce was consumed by another
@@ -562,7 +576,18 @@ function createTransactionEngine({
       const signedTransaction = await signer.signTransaction(transaction);
       timings.signedAt = now();
       const txHash = keccak256(signedTransaction);
-      intent = await intentRepository.attachSignedHash(intent.intentId, txHash);
+      // The signed hash must be durable before any provider receives the bytes. A concurrent
+      // reconciler can make the submitted row ineligible between createSubmitted and this update;
+      // broadcasting after a missed attach would create an untracked spend.
+      const attached = await intentRepository.attachSignedHash(intent.intentId, txHash);
+      if (!attached) throw new TransactionSafetyError('HASH_ATTACH_FAILED',
+        'Signed transaction hash could not be persisted — broadcast aborted to prevent an untracked spend');
+      intent = attached;
+      // Keep every replacement hash append-only. Restart reconciliation uses this ledger to find
+      // whichever same-nonce broadcast actually mined, even after several fee bumps.
+      if (intentRepository.recordBroadcastHash) {
+        await intentRepository.recordBroadcastHash(intent.intentId, txHash);
+      }
       try {
         // Round 16 (Section AV): sniper races the same signed transaction across every candidate
         // in its own pool concurrently instead of trying one at a time -- safe because it's the

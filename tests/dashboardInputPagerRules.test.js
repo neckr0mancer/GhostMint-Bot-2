@@ -48,7 +48,7 @@ test('primary task-entry fields autofocus while search fields remain opt-in',()=
 });
 
 test('Schedule pages three rows on phones and labels eligibility deferrals as rescheduled',()=>{
-  const tasks=between(app,'function Tasks({profile,active=true})','// One tone per outcome');
+  const tasks=between(app,'function Tasks(','// One tone per outcome');
   assert.match(tasks,/const PAGE_SIZE=mobile\?3:10/);
   assert.match(tasks,/\[page,bucket,search,serverFilters,PAGE_SIZE\]/);
   assert.match(tasks,/setPage\(1\);setSelectedIds\(\[\]\);\},\[mobile\]\)/);
