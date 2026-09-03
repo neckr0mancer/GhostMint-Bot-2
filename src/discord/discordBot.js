@@ -714,12 +714,17 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
       }
       if (data === 'menu:tasks') {
         log(`Tasks button clicked by ${platformUserId} for ${userId}`);
-        if (!await actionGate.allows(userId, 'discord', platformUserId, 'tasks')) {
-          return dcRespond(interaction, discordMenus.gateUnlockCard({ action: 'tasks' }));
+        try {
+          if (!await actionGate.allows(userId, 'discord', platformUserId, 'tasks')) {
+            return dcRespond(interaction, discordMenus.gateUnlockCard({ action: 'tasks' }));
+          }
+          const page = await commands.tasksPage(userId, { page: 1 });
+          log(`Tasks page fetched for ${userId}: ${page.total} tasks`);
+          return dcRespond(interaction, discordMenus.tasksMenu(page));
+        } catch (error) {
+          log(`Tasks menu failed for ${userId}: ${error?.message || error} ${error?.stack || ''}`.slice(0, 800));
+          throw error;
         }
-        const page = await commands.tasksPage(userId, { page: 1 });
-        log(`Tasks page fetched for ${userId}: ${page.total} tasks`);
-        return dcRespond(interaction, discordMenus.tasksMenu(page));
       }
       if (data.startsWith('tasks:page:')) {
         const page = await commands.tasksPage(userId, { page: Number(data.slice('tasks:page:'.length)) || 1 });
