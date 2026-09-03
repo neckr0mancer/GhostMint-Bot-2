@@ -715,12 +715,17 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
       if (data === 'menu:tasks') {
         log(`Tasks button clicked by ${platformUserId} for ${userId}`);
         try {
+          log(`Tasks check gate for ${userId}`);
           if (!await actionGate.allows(userId, 'discord', platformUserId, 'tasks')) {
+            log(`Tasks gate blocked for ${userId}`);
             return dcRespond(interaction, discordMenus.gateUnlockCard({ action: 'tasks' }));
           }
+          log(`Tasks gate passed for ${userId}, fetching page`);
           const page = await commands.tasksPage(userId, { page: 1 });
-          log(`Tasks page fetched for ${userId}: ${page.total} tasks`);
-          return dcRespond(interaction, discordMenus.tasksMenu(page));
+          log(`Tasks page fetched for ${userId}: ${page.total} tasks, ${page.items.length} items`);
+          const menu = discordMenus.tasksMenu(page);
+          log(`Tasks menu rendered for ${userId}: ${menu.components.length} rows`);
+          return dcRespond(interaction, menu);
         } catch (error) {
           log(`Tasks menu failed for ${userId}: ${error?.message || error} ${error?.stack || ''}`.slice(0, 800));
           throw error;
