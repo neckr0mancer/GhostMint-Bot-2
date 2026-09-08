@@ -39,7 +39,7 @@ async function findMergeEmptinessViolations(client, userId) {
 
   const user = await client.query(
     `SELECT is_owner,account_status,status_reason,suspended_until,subscription_active,
-      good_standing_override,dashboard_theme,default_chain
+      good_standing_override,dashboard_theme,default_chain,sniper_observation_default
      FROM users WHERE user_id=$1`, [userId]);
   if (!user.rowCount) violations.push('source account no longer exists');
   else {
@@ -52,6 +52,9 @@ async function findMergeEmptinessViolations(client, userId) {
     if (row.good_standing_override) violations.push('source account has good_standing_override=true');
     if (row.dashboard_theme && row.dashboard_theme !== 'ghost-mint') violations.push('source account changed its dashboard theme');
     if (row.default_chain) violations.push('source account has a default_chain set');
+    if (row.sniper_observation_default && row.sniper_observation_default !== 'confirmed') {
+      violations.push('source account changed its sniper observation default');
+    }
   }
 
   const linked = await client.query('SELECT platform,platform_user_id FROM linked_accounts WHERE user_id=$1', [userId]);
@@ -273,6 +276,16 @@ function createPostgresIdentityRepository(pool) {
     async setDefaultChain(userId, defaultChain) {
       await pool.query('UPDATE users SET default_chain=$2 WHERE user_id=$1', [userId, defaultChain]);
       return defaultChain;
+    },
+
+    async getSniperObservationDefault(userId) {
+      const result = await pool.query('SELECT sniper_observation_default FROM users WHERE user_id=$1', [userId]);
+      return result.rows[0]?.sniper_observation_default || 'confirmed';
+    },
+
+    async setSniperObservationDefault(userId, observationMode) {
+      await pool.query('UPDATE users SET sniper_observation_default=$2 WHERE user_id=$1', [userId, observationMode]);
+      return observationMode;
     },
 
     // Bot action gate (migration 041). Defaults to 'off' for a row that somehow has no value:

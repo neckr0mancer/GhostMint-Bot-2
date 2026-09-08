@@ -72,6 +72,27 @@ function mapTask(row) {
   };
 }
 
+function mapAttempt(row) {
+  const transaction = row.transaction_intent_id ? {
+    intentId:row.transaction_intent_id,
+    state:row.intent_state ?? null,
+    txHash:row.intent_tx_hash ?? null,
+    failureReason:row.intent_failure_reason ?? null,
+    chain:row.intent_chain ?? null,
+    submittedAt:time(row.intent_submitted_at),
+    finalizedAt:time(row.intent_finalized_at),
+  } : null;
+  return {
+    attemptId:String(row.attempt_id),
+    attemptNumber:Number(row.attempt_number),
+    outcome:row.outcome,
+    reason:row.reason ?? null,
+    startedAt:time(row.started_at),
+    finishedAt:time(row.finished_at),
+    transaction,
+  };
+}
+
 function createSchedulerRepository(pool) {
   async function claimDue({ workerId, now, leaseMs, userId = null }) {
     const client = await pool.connect();
@@ -112,6 +133,21 @@ function createSchedulerRepository(pool) {
     async listForUser(userId) {
       const result = await pool.query('SELECT * FROM mint_tasks WHERE user_id=$1 ORDER BY mint_time', [userId]);
       return result.rows.map(mapTask);
+    },
+    async detailsForUser(userId, id) {
+      const taskResult = await pool.query(
+        'SELECT * FROM mint_tasks WHERE user_id=$1 AND id=$2', [userId, id]);
+      if (!taskResult.rowCount) return null;
+      const attempts = await pool.query(`SELECT attempt.*,
+          intent.state AS intent_state,intent.tx_hash AS intent_tx_hash,
+          intent.failure_reason AS intent_failure_reason,intent.chain AS intent_chain,
+          intent.submitted_at AS intent_submitted_at,intent.finalized_at AS intent_finalized_at
+        FROM mint_task_attempts attempt
+        LEFT JOIN transaction_intents intent
+          ON intent.intent_id=attempt.transaction_intent_id AND intent.user_id=attempt.user_id
+        WHERE attempt.user_id=$1 AND attempt.task_id=$2
+        ORDER BY attempt.attempt_number DESC`, [userId, id]);
+      return { ...mapTask(taskResult.rows[0]), attempts:attempts.rows.map(mapAttempt) };
     },
     async listPageForUser(userId,{limit,offset,search,status}={}) {
       // Two scopes, and the difference matters. `counts` is scoped to the SEARCH only, so every

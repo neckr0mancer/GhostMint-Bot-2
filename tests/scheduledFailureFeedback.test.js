@@ -1,4 +1,6 @@
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const test = require('node:test');
 const { deliverFailureSideEffects, scheduledFailureFeedback } = require('../src/scheduler/scheduledFailureFeedback');
 
@@ -24,6 +26,25 @@ test('collection and stage exhaustion stay distinct and state whether the transa
   assert.equal(stage.code, 'STAGE_SUPPLY_EXHAUSTED');
   assert.match(stage.message, /transaction reached the chain/i);
   assert.doesNotMatch(stage.message, /Nothing was sent/i);
+
+  const exactSupply = scheduledFailureFeedback(
+    'Only 1 NFT remains, but this schedule requests 2.',
+    { chainState:'not_sent' },
+  );
+  assert.equal(exactSupply.code, 'MINT_SOLD_OUT');
+  assert.equal(exactSupply.message,
+    'Only 1 NFT remains, but this schedule requests 2. Nothing was sent.');
+});
+
+test('a live public-wallet allowance keeps the exact recorded numbers', () => {
+  const feedback = scheduledFailureFeedback(
+    'This wallet already minted 4 and has 1 mint left for this public stage; the schedule requests 2.',
+    { chainState:'not_sent' },
+  );
+  assert.equal(feedback.code, 'WALLET_MINT_LIMIT_REACHED');
+  assert.equal(feedback.terminal, true);
+  assert.match(feedback.message, /already minted 4.*1 mint left.*requests 2/i);
+  assert.match(feedback.message, /Nothing was sent\. Use another eligible wallet\.$/i);
 });
 
 test('unknown pre-broadcast failures remain specific and still say that nothing was sent', () => {
@@ -60,4 +81,12 @@ test('a failed activity write cannot suppress dashboard or linked-platform notif
   assert.deepEqual(delivered, ['dashboard', 'telegram-and-discord']);
   assert.equal(logs.length, 1);
   assert.match(logs[0], /activity delivery failed: database unavailable/i);
+});
+
+test('a missing wallet still leaves the scheduled failure in durable activity', () => {
+  const source=fs.readFileSync(path.join(__dirname,'..','src','server.js'),'utf8');
+  assert.match(source,/recordActivity:\(\) => logActivity\(event\.task\.userId, 'fail'/);
+  assert.match(source,/event\.task\.walletLabel, event\.intent \|\| null, activityChain/);
+  assert.doesNotMatch(source,/recordActivity:wallet \?/,
+    'the missing wallet is a failure cause, not a reason to suppress its activity record');
 });

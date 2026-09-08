@@ -7,6 +7,7 @@ const { Interface } = require('ethers');
 // ISeaDrop.sol/SeaDrop.sol source: msg.value must equal exactly quantity * mintPrice (feeBps is
 // split out of that payment at payout time, never added on top).
 const SEADROP_MINT_SIGNATURE = 'mintPublic(address,address,address,uint256)';
+const CANONICAL_SEADROP_CORE_ADDRESS = '0x00005EA00Ac477B1030CE78506496e8C2dE24bf5';
 
 const MINT_PUBLIC_FRAGMENT = Object.freeze({
   type: 'function', name: 'mintPublic', stateMutability: 'payable', outputs: [],
@@ -28,6 +29,15 @@ const SEADROP_CORE_INTERFACE = new Interface([
   'function getFeeRecipientIsAllowed(address nftContract, address feeRecipient) view returns (bool)',
 ]);
 
+// SeaDrop itself calls the token's getMintStats(minter) before every mint to enforce both the
+// wallet allowance and total supply. Reading the same public function during a scheduled preflight
+// lets GhostMint explain those two common failures before simulation instead of reporting an
+// opaque revert. A custom token that does not implement it simply returns an unknown diagnostic;
+// the normal transaction simulation remains authoritative.
+const SEADROP_TOKEN_INTERFACE = new Interface([
+  'function getMintStats(address minter) view returns (uint256 minterNumMinted, uint256 currentTotalSupply, uint256 maxSupply)',
+]);
+
 if (SEADROP_CORE_INTERFACE.getFunction('mintPublic').format('sighash') !== SEADROP_MINT_SIGNATURE) {
   throw new Error(`Invalid SeaDrop mintPublic ABI fragment: expected ${SEADROP_MINT_SIGNATURE}`);
 }
@@ -40,9 +50,11 @@ const TOKEN_ALLOWED_SEADROP_EVENT_INTERFACE = new Interface([
 ]);
 
 module.exports = {
+  CANONICAL_SEADROP_CORE_ADDRESS,
   SEADROP_MINT_SIGNATURE,
   MINT_PUBLIC_FRAGMENT,
   PUBLIC_DROP_TUPLE,
   SEADROP_CORE_INTERFACE,
+  SEADROP_TOKEN_INTERFACE,
   TOKEN_ALLOWED_SEADROP_EVENT_INTERFACE,
 };

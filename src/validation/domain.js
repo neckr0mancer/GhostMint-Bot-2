@@ -216,14 +216,15 @@ function taskEligibilityDeadline(value, mintTime) {
   const timestamp = Date.parse(value);
   if (!Number.isFinite(timestamp)) fail('eligibilityDeadline', 'must be a valid date and time');
   if (timestamp <= mintTime) fail('eligibilityDeadline', 'must be after mintTime');
-if (timestamp - mintTime > MAX_SCHEDULE_AHEAD_MS) {
-fail('eligibilityDeadline', 'must be no more than 5 years after mintTime');
-}
-// TX-026 (Model 2 phase-2): cap phase-wait churn at 24 hours — an API caller must not create
-// years of per-minute scheduler claim/attempt cycles that never consume execution retries.
-if (timestamp - mintTime > 24 * 60 * 60 * 1000) {
-fail('eligibilityDeadline', 'must be no more than 24 hours after mintTime');
-}
+  if (timestamp - mintTime > MAX_SCHEDULE_AHEAD_MS) {
+    fail('eligibilityDeadline', 'must be no more than 5 years after mintTime');
+  }
+  // TX-026 (Model 2 phase-2): cap phase-wait churn at 24 hours — an API caller must not create
+  // years of scheduler claim/attempt cycles that never consume execution retries. First-party
+  // surfaces derive this cap from the exact submitted mint time, avoiding hidden-second drift.
+  if (timestamp - mintTime > 24 * 60 * 60 * 1000) {
+    fail('eligibilityDeadline', 'must be no more than 24 hours after mintTime');
+  }
   return timestamp;
 }
 
@@ -364,9 +365,16 @@ function validateBatchMint(input, context) {
   return { ...validateMintRequest({ ...input, walletLabel: labels[0] }, context), walletLabels: labels };
 }
 
+function sniperObservationMode(value, field = 'observationMode') {
+  const mode = value === undefined ? 'confirmed' : string(value, field, { max: 20 }).toLowerCase();
+  if (!['confirmed', 'pending'].includes(mode)) fail(field, 'must be confirmed or pending');
+  return mode;
+}
+
 function validateSniper(input, context) {
   const valueMode = input.valueMode === undefined ? 'copy' : string(input.valueMode, 'valueMode', { max: 5 }).toLowerCase();
   if (!['copy', 'fixed'].includes(valueMode)) fail('valueMode', 'must be copy or fixed');
+  const observationMode = sniperObservationMode(input.observationMode);
   const contractAllowlist = addressList(input.contractAllowlist, 'contractAllowlist');
   const contractDenylist = addressList(input.contractDenylist, 'contractDenylist');
   const denied = new Set(contractDenylist.map(item => item.toLowerCase()));
@@ -378,6 +386,7 @@ function validateSniper(input, context) {
     chain: chainName(input.chain, context.supportedChains),
     walletLabel: walletLabel(input.walletLabel),
     valueMode,
+    observationMode,
     fixedValueETH: finiteNumber(input.fixedValueETH ?? 0, 'fixedValueETH', { min: 0, max: LIMITS.sniperValueEth }),
     maxValueETH: finiteNumber(input.maxValueETH ?? 0.1, 'maxValueETH', { min: 0, max: LIMITS.sniperValueEth }),
     gasBoostPercent: finiteNumber(input.gasBoostPercent ?? 20, 'gasBoostPercent', { min: 0, max: LIMITS.sniperGasBoostPercent, integer: true }),
@@ -486,6 +495,7 @@ const requestSchemas = Object.freeze({
   botGateMintUpdate: input => ({ skipMint: input.skipMint === true || input.skipMint === 'true' }),
   displayNameUpdate: input => ({ displayName: displayName(input.displayName) }),
   defaultChainUpdate: (input, context) => ({ defaultChain: chainName(input.defaultChain, context.supportedChains, 'defaultChain') }),
+  sniperObservationDefault: input => ({ observationMode: sniperObservationMode(input.observationMode) }),
   socialUsagePeriod: input => ({ period: usagePeriod(input.period) }),
   liveAcceptanceRun: validateLiveAcceptanceRun,
 });

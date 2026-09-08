@@ -47,7 +47,9 @@ function createBotCommandService(dependencies) {
     triggerAuditRepository, transactionIntentRepository, gasService, supportedChains, chains, encryptPrivateKey, getState, executeMint, executeMintViaOpenSea, executeSend,
     sniperRepository, mintService, previewMint, executePreparedMint, identity, contractValueResolver, seaDropDiscoveryService, openSeaService, priceFeedService,
     exportRawKey, exportKeystore, botSecurityRepository,
-    ensureChainWatcher = () => {}, broadcast = () => {}, walletBalanceCache = createWalletBalanceCache() } = dependencies;
+    ensureChainWatcher = () => {}, syncChainWatcher = ensureChainWatcher,
+    supportsPendingSniper = () => false, pendingSniperChains = [],
+    broadcast = () => {}, walletBalanceCache = createWalletBalanceCache() } = dependencies;
 
   // Discord's /mint no longer has a price input; Telegram's guided flow doesn't ask for one either.
   // If the caller already gave a price (either field name the schema accepts), that stands -- an
@@ -698,6 +700,13 @@ function createBotCommandService(dependencies) {
     return task;
   }
 
+  async function taskDetails(userId, id) {
+    const validated = requestSchemas.taskDeletion({ id });
+    const task = await schedulerRepository.detailsForUser(userId, validated.id);
+    if (!task) throw new ValidationError({ field:'id', message:'was not found' });
+    return task;
+  }
+
   async function addPnl(userId, input) {
     const value = requestSchemas.pnlCreate(input);
     const saved = await storage.addPnl({ userId, nm: value.name, cost: value.cost, sale: value.sale,
@@ -754,7 +763,22 @@ function createBotCommandService(dependencies) {
   }
 
   async function createSniper(userId, input) {
-    const validated = sniperService.validateCreate(input);
+    const pendingRiskAccepted = input?.pendingRiskAccepted === true;
+    const requested = { ...(input || {}) };
+    delete requested.pendingRiskAccepted;
+    if (requested.observationMode === undefined) {
+      requested.observationMode = identity?.getSniperObservationDefault
+        ? await identity.getSniperObservationDefault(userId) : 'confirmed';
+    }
+    const validated = sniperService.validateCreate(requested);
+    if (validated.observationMode === 'pending') {
+      if (!supportsPendingSniper(validated.chain)) {
+        throw new ValidationError({ field:'observationMode', message:`pending mode is unavailable on ${validated.chain}; it requires a configured, address-filtered pending WebSocket stream` });
+      }
+      if (!pendingRiskAccepted) {
+        throw new ValidationError({ field:'pendingRiskAccepted', message:'must be explicitly accepted because a pending copy can spend even if the source is later dropped, replaced, or reverted' });
+      }
+    }
     wallet(userId, validated.walletLabel);
     await enforceSniperGovernance(userId,validated);
     const sniper = { ...validated, userId, active: input.active !== false, hits: 0, fails: 0,
@@ -772,6 +796,7 @@ function createBotCommandService(dependencies) {
     if(!current||!await storage.deleteSniper(userId,validated.id)) throw new ValidationError({field:'id',message:'was not found'});
     getState().snipers.splice(getState().snipers.indexOf(current),1);
     await targetPolicyService.reset(userId,{targetType:'sniper',targetId:validated.id});
+    syncChainWatcher(current.chain);
     broadcast(userId, 'snipers');
     return validated.id;
   }
@@ -780,13 +805,50 @@ function createBotCommandService(dependencies) {
     const validated = requestSchemas.sniperDeletion({ id });
     const current = state(userId).snipers.find(item => item.id === validated.id);
     if (!current) throw new ValidationError({ field: 'id', message: 'was not found' });
-    const updated = sniperService.validatePatch(current, patch);
+    const previousChain = current.chain;
+    const pendingRiskAccepted = patch?.pendingRiskAccepted === true;
+    const requested = { ...(patch || {}) };
+    delete requested.pendingRiskAccepted;
+    const updated = sniperService.validatePatch(current, requested);
+    if (updated.observationMode === 'pending') {
+      if (!supportsPendingSniper(updated.chain)) {
+        throw new ValidationError({ field:'observationMode', message:`pending mode is unavailable on ${updated.chain}; it requires a configured, address-filtered pending WebSocket stream` });
+      }
+      if (current.observationMode !== 'pending' && !pendingRiskAccepted) {
+        throw new ValidationError({ field:'pendingRiskAccepted', message:'must be explicitly accepted because a pending copy can spend even if the source is later dropped, replaced, or reverted' });
+      }
+    }
     await enforceSniperGovernance(userId,updated);
     await storage.saveSniper(updated);
     Object.assign(current, updated);
     if (current.active) ensureChainWatcher(current.chain);
+    syncChainWatcher(previousChain);
+    if (current.chain !== previousChain) syncChainWatcher(current.chain);
     broadcast(userId, 'snipers');
     return current;
+  }
+
+  async function sniperObservationDefault(userId) {
+    return identity?.getSniperObservationDefault
+      ? identity.getSniperObservationDefault(userId) : 'confirmed';
+  }
+
+  async function setSniperObservationDefault(userId, input) {
+    const { observationMode } = requestSchemas.sniperObservationDefault(input || {});
+    if (observationMode === 'pending') {
+      if (!pendingSniperChains.length) {
+        throw new ValidationError({ field:'observationMode', message:'pending mode is unavailable until at least one address-filtered pending WebSocket stream is configured' });
+      }
+      if (input?.pendingRiskAccepted !== true) {
+        throw new ValidationError({ field:'pendingRiskAccepted', message:'must be explicitly accepted because pending copies may spend even when the source is later dropped, replaced, or reverted' });
+      }
+    }
+    if (!identity?.setSniperObservationDefault) {
+      throw new ValidationError({ field:'observationMode', message:'cannot be saved by this identity repository' });
+    }
+    const saved = await identity.setSniperObservationDefault(userId, observationMode);
+    broadcast(userId, 'snipers');
+    return saved;
   }
 
   async function gas(chain = 'ethereum') {
@@ -841,7 +903,7 @@ function createBotCommandService(dependencies) {
     return calculateStatistics({activity:state(userId).activity,sniperEvents});}
 
   return {
-    createWallet, createWalletWithRecoveryPhrase, importWallet, importWalletsBatch, detectHomeChain, removeWallet, walletBalance, invalidateBalance, exportWalletKeyRaw, exportWalletKeystore, mint, mintViaOpenSea, batchMint, send, createTask, controlTask, addPnl, updatePnl, deletePnl,
+    createWallet, createWalletWithRecoveryPhrase, importWallet, importWalletsBatch, detectHomeChain, removeWallet, walletBalance, invalidateBalance, exportWalletKeyRaw, exportWalletKeystore, mint, mintViaOpenSea, batchMint, send, createTask, controlTask, taskDetails, addPnl, updatePnl, deletePnl,
     prepareMint,submitPreparedMint,detectMintContract,resolveMintContractInput,isContractAddress,parseOpenSeaCollectionSlug,mintPresets:userId=>mintService.listPresets(userId),
     // The dashboard could LIST presets but never create one -- the only save path was
     // /mintpreset save on Telegram (server.js:2492), so the Presets tab displayed a thing the
@@ -857,6 +919,8 @@ function createBotCommandService(dependencies) {
       return saved;
     },
     createSniper, updateSniper, removeSniper, gas,
+    sniperObservationDefault, setSniperObservationDefault,
+    sniperCapabilities: () => ({ pendingSupportedChains:[...pendingSniperChains] }),
     sniperEvents:userId=>sniperRepository.listRecentForUser(userId),
     wallets: userId => state(userId).wallets,
     tasks: userId => schedulerRepository.listForUser(userId),

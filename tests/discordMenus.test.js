@@ -4,7 +4,8 @@ const {
   mainMenu, walletsMenu, settingsMenu, chainSelect, walletSelect,
   confirmRemoveWallet, placeholderMenu, labelModal, collectionInfoCard,
   taskNameQuickPicks, taskConfirmation, tasksMenu, snipersMenu, adminOverviewMenu,
-  modeMenu, MODE_META, sniperDetailsModal, sniperTolerancePrompt, sniperToleranceModal, sniperConfirmation,
+  modeMenu, MODE_META, sniperDetailsModal, sniperObservationMode, sniperPendingRiskWarning,
+  sniperTolerancePrompt, sniperToleranceModal, sniperConfirmation,
 } = require('../src/discord/menus');
 
 function flatButtons(components) {
@@ -341,16 +342,25 @@ test('tasksMenu says so plainly when there are no scheduled tasks', () => {
   assert.match(page.content, /No scheduled tasks/);
 });
 
-test('snipersMenu matches /sniper list\'s exact format and disclaimer', () => {
+test('snipersMenu labels each sniper timing mode and keeps confirmed as the default', () => {
   const list = snipersMenu([{ label: 'Copy Cool Cats', active: true, id: 'sniper-1' }, { label: 'Old one', active: false, id: 'sniper-2' }]);
-  assert.match(list.content, /Post-confirmation copying only; not mempool front-running/);
-  assert.match(list.content, /Copy Cool Cats \[active\] — sniper-1/);
-  assert.match(list.content, /Old one \[inactive\] — sniper-2/);
+  assert.match(list.content, /After-confirmation copying is the default/);
+  assert.match(list.content, /Copy Cool Cats \[active\].*after confirmation/);
+  assert.match(list.content, /Old one \[inactive\].*after confirmation/);
 
   const empty = snipersMenu([]);
   assert.match(empty.content, /No matching snipers/);
   assert.ok(flatButtons(list.components).some(b => b.custom_id === 'sniper:create:start'));
   assert.ok(flatButtons(empty.components).some(b => b.custom_id === 'sniper:create:start'));
+});
+
+test('Discord pending timing has a distinct warning and acknowledgement action',()=>{
+  const choice=sniperObservationMode({defaultMode:'confirmed',pendingSupported:true});
+  assert.match(choice.content,/source is unconfirmed/i);
+  assert.ok(flatButtons(choice.components).some(button=>button.custom_id==='flow:sniperobservation:pending'));
+  const warning=sniperPendingRiskWarning();
+  assert.match(warning.content,/still execute and spend/i);
+  assert.ok(flatButtons(warning.components).some(button=>button.custom_id==='flow:sniperpendingrisk:accept'));
 });
 
 test('sniperDetailsModal asks for both label and target address, both required', () => {

@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const { createSeaDropPublicDropResolver } = require('../src/mint/seaDropPublicDropResolver');
-const { SEADROP_CORE_INTERFACE } = require('../src/mint/seaDropRegistry');
+const { SEADROP_CORE_INTERFACE, SEADROP_TOKEN_INTERFACE } = require('../src/mint/seaDropRegistry');
 
 const CONTRACT = '0x00000000000000000000000000000000000000C3';
 const SEADROP = '0x00000000000000000000000000000000000000D4';
@@ -44,4 +44,23 @@ test('getAllowedFeeRecipients decodes an address array', async () => {
 test('getAllowedFeeRecipients returns an empty array (not a throw) when the call reverts', async () => {
   const resolver = createSeaDropPublicDropResolver({ providerService: providerServiceThrowing() });
   assert.deepEqual(await resolver.getAllowedFeeRecipients('ethereum', SEADROP, CONTRACT), []);
+});
+
+test('strict scheduled reads preserve RPC failures while ordinary discovery reads stay nullable', async () => {
+  const resolver = createSeaDropPublicDropResolver({ providerService: providerServiceThrowing() });
+  await assert.rejects(resolver.readPublicDrop('ethereum', SEADROP, CONTRACT),/boom/);
+  await assert.rejects(resolver.readAllowedFeeRecipients('ethereum', SEADROP, CONTRACT),/boom/);
+  await assert.rejects(resolver.readMintStats('ethereum', CONTRACT,
+    '0x00000000000000000000000000000000000000A1'),/boom/);
+  assert.equal(await resolver.getMintStats('ethereum',CONTRACT,
+    '0x00000000000000000000000000000000000000A1'),null);
+});
+
+test('getMintStats decodes the wallet minted count and collection supply', async () => {
+  const encoded = SEADROP_TOKEN_INTERFACE.encodeFunctionResult('getMintStats',[2n,91n,100n]);
+  const resolver = createSeaDropPublicDropResolver({ providerService:providerServiceReturning(encoded) });
+  assert.deepEqual(await resolver.getMintStats('ethereum',CONTRACT,
+    '0x00000000000000000000000000000000000000A1'),{
+    minterNumMinted:'2',currentTotalSupply:'91',maxSupply:'100',
+  });
 });

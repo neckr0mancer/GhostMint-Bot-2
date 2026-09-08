@@ -1,5 +1,5 @@
 const axios = require('axios');
-const { TOKEN_ALLOWED_SEADROP_EVENT_INTERFACE } = require('./seaDropRegistry');
+const { CANONICAL_SEADROP_CORE_ADDRESS, TOKEN_ALLOWED_SEADROP_EVENT_INTERFACE } = require('./seaDropRegistry');
 
 // OpenSea's official SeaDrop v1.0 core, deployed at this same address via CREATE2 on every chain
 // it supports (confirmed against Etherscan's own "SeaDrop"/OpenSea label and the
@@ -15,12 +15,12 @@ const { TOKEN_ALLOWED_SEADROP_EVENT_INTERFACE } = require('./seaDropRegistry');
 // found anything -- producing a 0-value call to a contract that has no such function at all, which
 // is exactly the "simulating this call failed with no reason given" error this was root-caused from.
 const CANONICAL_SEADROP_CORE = Object.freeze({
-  ethereum: '0x00005EA00Ac477B1030CE78506496e8C2dE24bf5',
-  base: '0x00005EA00Ac477B1030CE78506496e8C2dE24bf5',
-  arbitrum: '0x00005EA00Ac477B1030CE78506496e8C2dE24bf5',
-  polygon: '0x00005EA00Ac477B1030CE78506496e8C2dE24bf5',
-  robinhood: '0x00005EA00Ac477B1030CE78506496e8C2dE24bf5',
-  ink: '0x00005EA00Ac477B1030CE78506496e8C2dE24bf5',
+  ethereum: CANONICAL_SEADROP_CORE_ADDRESS,
+  base: CANONICAL_SEADROP_CORE_ADDRESS,
+  arbitrum: CANONICAL_SEADROP_CORE_ADDRESS,
+  polygon: CANONICAL_SEADROP_CORE_ADDRESS,
+  robinhood: CANONICAL_SEADROP_CORE_ADDRESS,
+  ink: CANONICAL_SEADROP_CORE_ADDRESS,
 });
 
 // Discovers which SeaDrop core contract a token has configured as allowed to mint it. Three tiers,

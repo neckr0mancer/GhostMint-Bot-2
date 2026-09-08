@@ -977,6 +977,18 @@ html[data-theme="ghost-mint"] .dash-hero button,html[data-theme="ghost-mint-ligh
 .schedule-countdown{display:inline-flex;align-items:baseline;gap:4px;padding:4px 7px;border:1px solid var(--border);
   border-radius:var(--radius-sm);background:var(--surface-2);color:var(--muted);font-size:9.5px;font-weight:600}
 .schedule-countdown b{color:var(--text);font-size:11px;font-variant-numeric:tabular-nums}
+.schedule-detail-open{min-height:28px;padding:4px 8px}
+.schedule-detail{gap:12px}
+.schedule-detail-clock{padding:14px 16px;background:var(--surface-2)}
+.schedule-detail-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.schedule-detail .nt b{display:block;margin-bottom:3px}
+.schedule-detail-address{word-break:break-all}
+.schedule-detail-address .user-card-copy{display:inline-grid;margin-left:4px;vertical-align:middle}
+.schedule-attempts{border:1px solid var(--border);border-radius:var(--radius);padding:12px 14px;background:var(--surface-2)}
+.schedule-attempts>.sh{margin-bottom:4px}
+.schedule-attempt{align-items:flex-start}
+.schedule-attempt-reason{margin-top:5px;color:var(--text);font-size:11.5px;line-height:1.45;white-space:normal}
+.schedule-attempt-state{display:flex;align-items:center;gap:7px;flex-wrap:wrap;justify-content:flex-end}
 
 /* Schedule's phone card keeps three rows per page and gives each selectable row enough separation
    to read as its own target. The generic mobile .r rule removes horizontal padding; restoring it
@@ -992,13 +1004,19 @@ html[data-theme="ghost-mint"] .dash-hero button,html[data-theme="ghost-mint-ligh
   .app[data-m] .schedule-list-card .ri{width:30px;height:30px}
   .app[data-m] .schedule-list-card .rs.fold{display:block;white-space:normal;line-height:1.4;
     overflow:visible;text-overflow:clip;margin-top:4px}
-  .app[data-m] .schedule-row-right{align-self:stretch;flex-direction:column-reverse;
+  .app[data-m] .schedule-row-right{align-self:stretch;flex-direction:column;
     justify-content:space-between;align-items:flex-end;gap:7px}
+  .app[data-m] .schedule-row-right>.p{order:1}
+  .app[data-m] .schedule-row-right>.schedule-countdown{order:2}
+  .app[data-m] .schedule-row-right>.schedule-detail-open{order:3;min-height:28px}
   .app[data-m] .schedule-countdown{flex-direction:column;align-items:flex-end;gap:0;padding:4px 6px}
   .app[data-m] .schedule-countdown span{font-size:8.5px}
   .app[data-m] .schedule-countdown b{font-size:11.5px}
   .app[data-m] .schedule-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
   .app[data-m] .schedule-actions .b{width:100%;min-height:44px}
+  .schedule-detail-grid{grid-template-columns:1fr}
+  .schedule-attempt{gap:9px}
+  .schedule-attempt-state{flex-direction:column;align-items:flex-end}
 }
 
 :where(html[data-theme="ghost-mint"],html[data-theme="ghost-mint-light"]) .policy-grid{

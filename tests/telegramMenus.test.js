@@ -5,7 +5,8 @@ const {
   mintModeMenu, batchImportMenu,
   contractDetails, contractDetailsText, collectionInfoCard, mintConfirmation, gasTolerancePrompt,
   taskConfirmation, taskScheduled, confirmRemoveWallet, placeholderMenu,
-  sniperMenu, sniperChainSelect, sniperTolerancePrompt, sniperConfirmation, activityMenu, adminOverviewMenu,
+  sniperMenu, sniperChainSelect, sniperObservationMode, sniperPendingRiskWarning,
+  sniperTolerancePrompt, sniperConfirmation, activityMenu, adminOverviewMenu,
 } = require('../src/telegram/menus');
 
 function flatButtons(replyMarkup) {
@@ -560,14 +561,23 @@ test('sniperMenu shows the same disclaimer and per-sniper detail as /snipers, wi
   assert.ok(flatButtons(empty.replyMarkup).some(b => b.callback_data === 'sniper:create:start'));
 
   const list = sniperMenu([{ label: 'Copy Cool Cats', active: true, targetAddress: '0x1234567890abcdef1234567890abcdef12345678', chain: 'ethereum', walletLabel: 'main', hits: 3, fails: 1 }]);
-  assert.match(list.text, /Post-confirmation copy snipers \(1\)/);
-  assert.match(list.text, /Not mempool front-running/);
+  assert.match(list.text, /Wallet-copy snipers \(1\)/);
+  assert.match(list.text, /After-confirmation is the default/);
   assert.match(list.text, /Copy Cool Cats/);
   assert.match(list.text, /Hits: 3 · Fails: 1/);
   // The full address, never truncated -- a shortened display is still <code>-wrapped and looks
   // tap-to-copy, but copying it hands back a string that isn't a real usable address.
   assert.match(list.text, /<code>0x1234567890abcdef1234567890abcdef12345678<\/code>/);
   assert.ok(flatButtons(list.replyMarkup).some(b => b.callback_data === 'sniper:create:start'));
+});
+
+test('Telegram pending timing has a distinct warning and acknowledgement action',()=>{
+  const choice=sniperObservationMode({defaultMode:'confirmed',pendingSupported:true});
+  assert.match(choice.text,/source is still unconfirmed/i);
+  assert.ok(flatButtons(choice.replyMarkup).some(button=>button.callback_data==='flow:sniperobservation:pending'));
+  const warning=sniperPendingRiskWarning();
+  assert.match(warning.text,/still execute and spend/i);
+  assert.ok(flatButtons(warning.replyMarkup).some(button=>button.callback_data==='flow:sniperpendingrisk:accept'));
 });
 
 test('sniperChainSelect offers one button per configured chain, chunked 3-per-row, plus Cancel', () => {

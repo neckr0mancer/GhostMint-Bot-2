@@ -106,7 +106,8 @@ test('dashboard pins the chosen phase identity through scheduled-task creation',
 
 test('scheduled phases are checked again at the last safe pre-broadcast boundary',()=>{
   assert.match(serverSource,/function enforceEligibilityDeadline\(task, now = Date\.now\(\)\)/);
-  assert.match(serverSource,/refreshScheduledPublicPhase\(task, executionChain, expectedPublicPhaseIdentity\)/);
+  assert.match(serverSource,/refreshScheduledPublicPhase\(task, executionChain, expectedPublicPhaseIdentity,\s*wallet\.address, resolvedFeeRecipient, livePublicDrop\.mintPriceWei\)/,
+    'the final guard must re-check the same wallet, fee recipient, and price, not only the phase label');
   assert.match(serverSource,/preBroadcastGuard: expectedPhaseIdentity\s*\? async \(\) => \{/);
   assert.match(serverSource,/preBroadcastGuard: expectedPublicPhaseIdentity\s*\? async \(\) => \{/);
   assert.match(serverSource,/await governance\.checkAccountStatus\(task\.userId\)/);

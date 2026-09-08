@@ -61,11 +61,12 @@ This is the ordered implementation plan for GhostMint. Milestones are intentiona
 - Store and display authoritative schedule timestamps in UTC while safely supporting schedules beyond Node's timer limit.
 - Phase-aware OpenSea tasks persist the selected stage identity and treat that timestamp as a not-before wake-up: execution waits for a live wallet-eligible phase, durably advances an ineligible allowlist wallet to a later advertised phase, and stops at a bounded eligibility deadline without consuming ordinary retry attempts.
 
-### Milestone 10 — Post-confirmation copy-mint hardening
+### Milestone 10 — Copy-mint hardening and configurable observation timing
 
 - Persist source-event state and transition history, deduplicate delivery across instances/restarts, and verify canonical source receipts after configurable confirmations.
 - Enforce validated per-sniper value, gas, daily-spend, cooldown, attempt, and contract-list limits through the shared transaction engine.
-- Isolate each sniper's failures and label this feature accurately as post-confirmation copying rather than mempool front-running.
+- Isolate each sniper's failures and label its actual observation mode accurately.
+- Keep canonical after-confirmation copying as the safe default, with an explicit per-sniper pending-mempool opt-in and a per-user default for newly created snipers. Pending mode requires a separate risk acknowledgement and a pending-capable WebSocket RPC, and still uses the same validation, idempotency, governance, nonce queue, simulation, and transaction engine.
 
 ## Remaining implementation
 

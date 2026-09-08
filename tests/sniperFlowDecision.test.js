@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { afterLabel, afterTarget, afterChain, afterWalletSelection, afterTolerance } = require('../src/sniper/sniperFlowDecision');
+const { afterLabel, afterTarget, afterChain, afterWalletSelection, afterObservation,
+  afterPendingRisk, afterTolerance } = require('../src/sniper/sniperFlowDecision');
 
 test('afterLabel moves straight to asking for the target wallet, carrying the label through', () => {
   const result = afterLabel({ data: { label: 'Copy whale' } });
@@ -16,7 +17,7 @@ test('afterTarget moves straight to asking for the chain, carrying the target ad
 
 test('afterChain auto-selects the sole owned wallet instead of asking', () => {
   const result = afterChain({ data: { chain: 'ethereum' }, wallets: [{ label: 'main' }] });
-  assert.equal(result.step, 'awaiting_tolerance');
+  assert.equal(result.step, 'awaiting_observation');
   assert.equal(result.data.walletLabel, 'main');
 });
 
@@ -31,10 +32,23 @@ test('afterChain never auto-selects when the caller owns no wallets at all', () 
   assert.equal(result.step, 'awaiting_wallet');
 });
 
-test('afterWalletSelection always moves to the fee-tolerance/caps step -- there is no price/skipConfirm branch here, unlike mint', () => {
+test('afterWalletSelection always asks for observation timing before fee tolerance', () => {
   const result = afterWalletSelection({ data: { walletLabel: 'main' } });
-  assert.equal(result.step, 'awaiting_tolerance');
+  assert.equal(result.step, 'awaiting_observation');
   assert.equal(result.data.walletLabel, 'main');
+});
+
+test('confirmed timing advances directly while pending timing requires a separate risk acknowledgement',()=>{
+  const confirmed=afterObservation({data:{walletLabel:'main'},observationMode:'confirmed'});
+  assert.equal(confirmed.step,'awaiting_tolerance');
+  assert.equal(confirmed.data.pendingRiskAccepted,undefined);
+  const pending=afterObservation({data:{walletLabel:'main'},observationMode:'pending'});
+  assert.equal(pending.step,'awaiting_pending_risk');
+  assert.equal(pending.data.pendingRiskAccepted,undefined);
+  assert.throws(()=>afterPendingRisk({data:pending.data,accepted:false}),/not accepted/);
+  const accepted=afterPendingRisk({data:pending.data,accepted:true});
+  assert.equal(accepted.step,'awaiting_tolerance');
+  assert.equal(accepted.data.pendingRiskAccepted,true);
 });
 
 test('afterTolerance always lands on confirm and carries the chosen (or default) tolerance/caps into flow data', () => {

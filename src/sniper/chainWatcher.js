@@ -1,4 +1,5 @@
 function createChainWatcher({ chain, rpcUrls, wsUrl, providerFactory, wsProviderFactory, onBlock,
+  onPending = async () => {}, pendingEnabled: initialPendingEnabled = false,
   log = () => {}, pollingIntervalMs = 2500, reconnectDelayMs = 5000 }) {
   let provider = null;
   let mode = null;
@@ -6,10 +7,16 @@ function createChainWatcher({ chain, rpcUrls, wsUrl, providerFactory, wsProvider
   let wsReconnectTimer = null;
   let httpRetryTimer = null;
   let rpcUrlIndex = 0;
+  let pendingEnabled = Boolean(initialPendingEnabled);
 
   function blockHandler(blockNumber) {
     Promise.resolve(onBlock(blockNumber, provider)).catch(error =>
       log(`chain watcher block handling failed (${chain}): ${error?.message || error}`));
+  }
+
+  function pendingHandler(value) {
+    Promise.resolve(onPending(value, provider)).catch(error =>
+      log(`chain watcher pending handling failed (${chain}): ${error?.message || error}`));
   }
 
   function teardown() {
@@ -81,6 +88,7 @@ function createChainWatcher({ chain, rpcUrls, wsUrl, providerFactory, wsProvider
     provider = socket;
     mode = 'ws';
     provider.on('block', blockHandler);
+    if (pendingEnabled) provider.on('pending', pendingHandler);
     provider.on('error', () => handleWsDrop('error'));
   }
 
@@ -94,6 +102,16 @@ function createChainWatcher({ chain, rpcUrls, wsUrl, providerFactory, wsProvider
     },
     mode: () => mode,
     getProvider: () => provider,
+    pendingAvailable: () => mode === 'ws' && pendingEnabled,
+    setPendingEnabled(value) {
+      const enabled = Boolean(value);
+      if (enabled === pendingEnabled) return;
+      pendingEnabled = enabled;
+      if (!provider || mode !== 'ws') return;
+      if (enabled) provider.on('pending', pendingHandler);
+      else if (provider.off) provider.off('pending', pendingHandler);
+      else provider.removeListener?.('pending', pendingHandler);
+    },
   };
 }
 

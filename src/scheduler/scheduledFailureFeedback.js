@@ -27,11 +27,15 @@ function scheduledFailureFeedback(rawReason, { chainState = 'not_sent' } = {}) {
   const suffix = deliverySuffix(chainState);
 
   const walletLimit = !/(?:max(?:imum)? supply|sold[ -]?out)/i.test(cleaned)
-    && /mintquantityexceedsmaxmintedperwallet|(?:wallet|address).{0,40}(?:mint|purchase).{0,20}(?:limit|maximum|max)|(?:limit|maximum|max|allowed).{0,25}(?:per wallet|per address)|(?:would hold|exceeding).{0,40}allowed per wallet|already (?:minted|claimed).{0,30}(?:maximum|max|limit)/i.test(cleaned);
+    && /mintquantityexceedsmaxmintedperwallet|(?:wallet|address).{0,40}(?:mint|purchase).{0,20}(?:limit|maximum|max)|(?:limit|maximum|max|allowed).{0,25}(?:per wallet|per address)|(?:would hold|exceeding).{0,40}allowed per wallet|already (?:minted|claimed).{0,45}(?:maximum|max|limit|mint.{0,12}left)|allows? at most.{0,30}per wallet/i.test(cleaned);
   if (walletLimit) {
+    const detailed = /already minted|allows? at most/i.test(cleaned);
+    const detail = detailed
+      ? `${cleaned}${/[.!?]$/.test(cleaned) ? '' : '.'}${/nothing was (?:sent|broadcast)/i.test(cleaned) ? '' : ` ${suffix}`}`
+      : `This wallet has reached this mint's limit. ${suffix}`;
     return {
       code: 'WALLET_MINT_LIMIT_REACHED',
-      message: `This wallet has reached this mint's limit. ${suffix}${chainState === 'not_sent' ? ' Use another eligible wallet.' : ''}`,
+      message: `${detail}${chainState === 'not_sent' ? ' Use another eligible wallet.' : ''}`,
       severity: 'warning',
       terminal: true,
     };
@@ -47,11 +51,15 @@ function scheduledFailureFeedback(rawReason, { chainState = 'not_sent' } = {}) {
     };
   }
 
-  const soldOut = /mintquantityexceedsmaxsupply|sold[ -]?out|supply.{0,20}(?:exhausted|reached)|max(?:imum)? supply.{0,20}(?:reached|exceeded)/i.test(cleaned);
+  const soldOut = /mintquantityexceedsmaxsupply|sold[ -]?out|supply.{0,20}(?:exhausted|reached)|max(?:imum)? supply.{0,20}(?:reached|exceeded)|only \d+ NFTs? remains?/i.test(cleaned);
   if (soldOut) {
+    const detailed = /only \d+ NFTs? remains?/i.test(cleaned);
+    const detail = detailed
+      ? `${cleaned}${/[.!?]$/.test(cleaned) ? '' : '.'}${/nothing was (?:sent|broadcast)/i.test(cleaned) ? '' : ` ${suffix}`}`
+      : `This mint sold out before the scheduled mint could run. ${suffix}`;
     return {
       code: 'MINT_SOLD_OUT',
-      message: `This mint sold out before the scheduled mint could run. ${suffix}`,
+      message: detail,
       severity: 'warning',
       terminal: true,
     };

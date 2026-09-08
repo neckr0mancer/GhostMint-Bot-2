@@ -20,7 +20,7 @@ const { createReadinessService } = require('./health/readinessService');
 const { createIdentityService } = require('./identity/identityService');
 const { createPostgresIdentityRepository } = require('./identity/postgresIdentityRepository');
 const { findOwnedWallet, stateForUser } = require('./identity/ownership');
-const { decodeMintCall, formatMintPreview } = require('./mint/mintCall');
+const { formatMintPreview } = require('./mint/mintCall');
 const { createMintExecutionService } = require('./mint/mintExecutionService');
 const { createMintService } = require('./mint/mintService');
 const { createNotificationService } = require('./notifications/notificationService');
@@ -44,6 +44,8 @@ const { deliverFailureSideEffects, scheduledFailureFeedback } = require('./sched
 const { SCHEDULE_PHASE_WAIT, createSchedulerWorker, STAGE_REARM_WINDOW_MS, errorReason, executionAttemptCount } = require('./scheduler/schedulerWorker');
 const { DECISION_REASONS, resolveScheduledPhase } = require('./scheduler/scheduledPhaseResolver');
 const { classifySeaDropWindow, preArmRearm } = require('./scheduler/scheduledValidity');
+const { liveFeeRecipient, opaquePublicSimulationReason, publicMintCapacity,
+  publicStageClock } = require('./scheduler/scheduledPublicPreflight');
 const { resolveTaskChain } = require('./scheduler/taskChain');
 const { createBumpSweeper } = require('./transactions/bumper');
 const { createSocialAdapters } = require('./social/adapters');
@@ -61,6 +63,8 @@ const telegramMenus = require('./telegram/menus');
 // the first clears flowState.
 const telegramInFlightMints = new Set();
 const { createChainWatcher } = require('./sniper/chainWatcher');
+const { createAlchemyPendingSource, supportsAlchemyPendingSource } = require('./sniper/alchemyPendingSource');
+const { createPendingTransactionDispatcher } = require('./sniper/pendingTransactionDispatcher');
 const { createSniperRepository } = require('./sniper/sniperRepository');
 const { createSniperService } = require('./sniper/sniperService');
 const { createAdminCommandService } = require('./governance/adminCommandService');
@@ -340,9 +344,9 @@ function phaseTerminalError(decision) {
 
 function phaseWaitError(decision) {
   const nextStage = decision.nextStage || decision.targetStage || null;
-  const error = new Error(nextStage
+  const error = new Error(decision.waitMessage || (nextStage
     ? `Waiting for the ${phaseName(nextStage)} phase to go live for this wallet.`
-    : 'Waiting to confirm the live mint phase for this wallet.');
+    : 'Waiting to confirm the live mint phase for this wallet.'));
   error.code = SCHEDULE_PHASE_WAIT;
   error.phaseDeferral = { retryAt:decision.retryAt, deadline:decision.deadline };
   if (nextStage) Object.assign(error.phaseDeferral, {
@@ -387,7 +391,8 @@ async function refreshScheduledOpenSeaPhase(task, chain, expectedPhaseIdentity =
   return { drop, decision };
 }
 
-async function refreshScheduledPublicPhase(task, chain, expectedPhaseIdentity = null) {
+async function refreshScheduledPublicPhase(task, chain, expectedPhaseIdentity = null,
+  walletAddress = null, expectedFeeRecipient = null, expectedMintPriceWei = null) {
   // A direct public mint does not need OpenSea to build its calldata, but the selected OpenSea UUID
   // is still the only safe way to distinguish repeated/rescheduled public phases. OpenSea proves
   // which advertised phase is active; SeaDrop's fresh PublicDrop proves the on-chain window/price.
@@ -402,10 +407,19 @@ async function refreshScheduledPublicPhase(task, chain, expectedPhaseIdentity = 
     throw new ValidationError({ field:'contractAddress',
       message:'This public phase cannot be verified on chain. Nothing was broadcast.' });
   }
-  const livePublicDrop = await seaDropPublicDropResolver.getPublicDrop(chain, seaDrop.address, task.contract);
-  if (!livePublicDrop) {
+  // These are execution-critical reads. The ordinary discovery UI deliberately converts RPC
+  // trouble to "unknown", but a scheduled worker must distinguish "the contract has no public
+  // drop" from "the node was unavailable" so the latter retries instead of becoming a permanent
+  // failure with an invented contract reason.
+  const livePublicDrop = await seaDropPublicDropResolver.readPublicDrop(chain, seaDrop.address, task.contract);
+  const allowedFeeRecipients = await seaDropPublicDropResolver.readAllowedFeeRecipients(
+    chain, seaDrop.address, task.contract);
+  const feeRecipient = liveFeeRecipient({ cachedFeeRecipient:seaDrop.feeRecipient,
+    allowedFeeRecipients, restrictFeeRecipients:livePublicDrop.restrictFeeRecipients,
+    walletAddress });
+  if (!feeRecipient) {
     throw new ValidationError({ field:'contractAddress',
-      message:'The live public mint phase could not be verified. Nothing was broadcast.' });
+      message:'The contract has no approved fee recipient for this public stage. Nothing was sent.' });
   }
   const now = enforceEligibilityDeadline(task);
   const startAt = Number(livePublicDrop.startTime) * 1_000;
@@ -416,17 +430,46 @@ async function refreshScheduledPublicPhase(task, chain, expectedPhaseIdentity = 
   }
   const stage = { ...phase.decision.activeStage, startAt,
     endAt:Number.isFinite(endAt) && endAt > 0 ? endAt : null };
-  if (now < startAt) {
+  const latestBlock = await fastProviderService.perform(chain, 'scheduledChainTime', provider =>
+    provider.getBlock('latest'), { timeoutMs:3_000, retries:0 });
+  const chainTimeMs = Number(latestBlock?.timestamp) * 1_000;
+  const clock = publicStageClock({ chainTimeMs, wallTimeMs:now,
+    startTime:livePublicDrop.startTime, endTime:livePublicDrop.endTime,
+    deadlineMs:task.eligibilityDeadline });
+  if (clock.status === 'wait') {
     if (startAt >= task.eligibilityDeadline) {
       throw phaseTerminalError({ reason:DECISION_REASONS.DEADLINE_PASSED });
     }
-    throw phaseWaitError({ status:'wait', retryAt:startAt, deadline:task.eligibilityDeadline,
-      nextStage:stage, checkedAt:now });
+    throw phaseWaitError({ status:'wait', retryAt:clock.retryAt, deadline:task.eligibilityDeadline,
+      nextStage:stage, checkedAt:now, waitMessage:
+        'The chain has not reached the public opening yet. GhostMint will check again automatically.' });
   }
-  if (stage.endAt && now >= stage.endAt) {
+  if (clock.status === 'error' && clock.code === 'PUBLIC_STAGE_ENDED') {
     throw phaseTerminalError({ reason:DECISION_REASONS.STAGE_ENDED });
   }
-  return { ...phase, seaDrop, livePublicDrop, directPublic:true };
+  if (clock.status === 'error') {
+    throw new ValidationError({ field:'contractAddress', message:`${clock.reason} Nothing was sent.` });
+  }
+  const mintStats = walletAddress
+    ? await seaDropPublicDropResolver.readMintStats(chain, task.contract, walletAddress)
+    : null;
+  const capacity = publicMintCapacity({ quantity:task.qty || 1, publicDrop:livePublicDrop, mintStats });
+  if (capacity.status === 'error') {
+    throw new ValidationError({ field:'quantity', message:`${capacity.reason} Nothing was sent.` });
+  }
+  if (expectedFeeRecipient && expectedFeeRecipient.toLowerCase() !== feeRecipient.toLowerCase()) {
+    throw phaseWaitError({ status:'wait', retryAt:Math.min(now + 250, task.eligibilityDeadline),
+      deadline:task.eligibilityDeadline, nextStage:stage, checkedAt:now,
+      waitMessage:'The public mint configuration changed. GhostMint will rebuild and check it again automatically.' });
+  }
+  if (expectedMintPriceWei !== null
+    && String(expectedMintPriceWei) !== String(livePublicDrop.mintPriceWei)) {
+    throw phaseWaitError({ status:'wait', retryAt:Math.min(now + 250, task.eligibilityDeadline),
+      deadline:task.eligibilityDeadline, nextStage:stage, checkedAt:now,
+      waitMessage:'The public mint price changed. GhostMint will rebuild and check it again automatically.' });
+  }
+  return { ...phase, seaDrop, livePublicDrop, feeRecipient, mintStats, capacity,
+    chainTimeMs, directPublic:true };
 }
 
 // Round 16 item A3 follow-through -- pre-arming scheduled mints. When SCHEDULE_PREARM_LEAD_MS is
@@ -533,7 +576,7 @@ const schedulerWorker = createSchedulerWorker({
     if (resolved.error) return null;
     const chain = resolved.chain || wallet.chain;
     if (!task.viaOpenSea) {
-      return refreshScheduledPublicPhase(task, chain);
+      return refreshScheduledPublicPhase(task, chain, null, wallet.address);
     }
     const { drop, decision } = await refreshScheduledOpenSeaPhase(task, chain);
     return { phaseDrop:drop, phaseDecision:decision };
@@ -691,14 +734,18 @@ const schedulerWorker = createSchedulerWorker({
     }
     let seaDrop;
     let livePublicDrop;
+    let resolvedFeeRecipient;
+    let publicCapacity;
     let expectedPublicPhaseIdentity = null;
     if (phaseAwareTask(task) && !task.viaOpenSea) {
       // Refresh both halves again after the start notification: OpenSea pins the selected public
       // phase UUID, while the contract supplies the authoritative live PublicDrop window/price.
       const refreshed = await refreshScheduledPublicPhase(task, executionChain,
-        phaseIdentity(hooks.preflight?.phaseDecision?.activeStage));
+        phaseIdentity(hooks.preflight?.phaseDecision?.activeStage), wallet.address);
       seaDrop = refreshed.seaDrop;
       livePublicDrop = refreshed.livePublicDrop;
+      resolvedFeeRecipient = refreshed.feeRecipient;
+      publicCapacity = refreshed.capacity;
       expectedPublicPhaseIdentity = phaseIdentity(refreshed.decision.activeStage);
     } else {
       // Legacy/non-phase task behavior: protect against a moved SeaDrop window even though there is
@@ -719,7 +766,9 @@ const schedulerWorker = createSchedulerWorker({
             // Early: the contract is not yet open, but may open seconds later (the advertised T
             // vs real T+2s competitive case). Treat as transient like an OpenSea STAGE_NOT_OPEN
             // so the scheduler retries every block instead of failing permanently.
-            throw new ValidationError({ field: 'mintTime', message: `This mint has not opened yet (opens ${new Date(livePublicDrop.startTime * 1000).toISOString()}).`, code: 'STAGE_NOT_OPEN' });
+            throw new ValidationError({ field: 'mintTime',
+              message:`This mint has not opened yet (opens ${new Date(livePublicDrop.startTime * 1000).toISOString()}).` },
+            'STAGE_NOT_OPEN');
           }
           if (livePublicDrop.endTime && nowSec > livePublicDrop.endTime) {
             const from = new Date(livePublicDrop.startTime * 1000).toISOString();
@@ -733,19 +782,35 @@ const schedulerWorker = createSchedulerWorker({
     const request = requestSchemas.mint({ walletLabel:wallet.label, contractAddress:task.contract,
       functionName:task.fn || 'mint', quantity:task.qty, priceETH:task.price || 0,
       gasGwei:task.gas, chain:executionChain }, { supportedChains:CONFIG.supportedChains });
+    // Only scheduled public-stage execution overrides the discovery cache's fee recipient. The
+    // core address is stable, but this recipient is mutable and was freshly verified above.
+    const scheduledSeaDrop = resolvedFeeRecipient ? { ...seaDrop, feeRecipient:resolvedFeeRecipient } : seaDrop;
     const prepared = await prepareMintCall({ contractAddress:request.contractAddress,
       walletAddress:wallet.address, chain:request.chain, quantity:request.quantity, priceETH:request.priceETH,
-      resolvedSeaDrop: seaDrop, resolvedPublicDrop: livePublicDrop });
-    return mintExecution.executePrepared({ userId:task.userId, wallet, prepared, triggerSource:'scheduled',
-      gasPriceWei:request.gasGwei === null ? undefined : ethers.parseUnits(String(request.gasGwei), 'gwei'),
-      idempotencyKey:hooks.idempotencyKey, onIntentPersisted:hooks.onIntentPersisted,
-      preBroadcastGuard: expectedPublicPhaseIdentity
-        ? async () => {
-          await governance.checkAccountStatus(task.userId);
-          await refreshScheduledPublicPhase(task, executionChain, expectedPublicPhaseIdentity);
-        }
-        : undefined,
-      onPreview:preview => notifyUser(task.userId, formatMintPreview(preview)) });
+      resolvedSeaDrop:scheduledSeaDrop, resolvedPublicDrop:livePublicDrop });
+    try {
+      return await mintExecution.executePrepared({ userId:task.userId, wallet, prepared, triggerSource:'scheduled',
+        gasPriceWei:request.gasGwei === null ? undefined : ethers.parseUnits(String(request.gasGwei), 'gwei'),
+        idempotencyKey:hooks.idempotencyKey, onIntentPersisted:hooks.onIntentPersisted,
+        preBroadcastGuard: expectedPublicPhaseIdentity
+          ? async () => {
+            await governance.checkAccountStatus(task.userId);
+            await refreshScheduledPublicPhase(task, executionChain, expectedPublicPhaseIdentity,
+              wallet.address, resolvedFeeRecipient, livePublicDrop.mintPriceWei);
+          }
+          : undefined,
+        onPreview:preview => notifyUser(task.userId, formatMintPreview(preview)) });
+    } catch (error) {
+      // Some nodes erase revert bytes. After the public-stage checks above, record what is known
+      // (open phase, approved recipient, wallet/supply allowance) instead of storing only “failed”.
+      const opaque = error?.code === 'SIMULATION_FAILED'
+        && /no reason|may not implement|require\(false\)/i.test(String(error?.message || ''));
+      if (opaque && publicCapacity) {
+        throw new TransactionSafetyError('SIMULATION_FAILED',
+          opaquePublicSimulationReason({ capacity:publicCapacity }));
+      }
+      throw error;
+    }
   },
   notify: async event => {
     const wallet = DB.wallets.find(item => item.userId === event.task.userId && item.label === event.task.walletLabel);
@@ -809,11 +874,15 @@ const schedulerWorker = createSchedulerWorker({
         ? `${feedback.message.slice(0, 217)}…`
         : feedback.message;
       const icon = feedback.severity === 'warning' ? '⚠️' : '❌';
+      const activityChain = CHAINS[event.task.chain || wallet?.chain] || null;
       await deliverFailureSideEffects({
         broadcast:() => dashboardWebSockets.broadcastToUser(event.task.userId, dashboardEvent),
-        recordActivity:wallet ? () => logActivity(event.task.userId, 'fail',
+        // A deleted/missing wallet is itself a useful failure reason. Keep the activity record even
+        // when the in-memory wallet lookup fails; the task already carries its durable label/chain.
+        recordActivity:() => logActivity(event.task.userId, 'fail',
           `Scheduled mint failed: ${event.task.name} — ${activityReason}`,
-          wallet.label, event.intent || null, CHAINS[wallet.chain], {triggerSource:'scheduled'}) : null,
+          event.task.walletLabel, event.intent || null, activityChain, {triggerSource:'scheduled',
+            address:event.task.contract || null}),
         notify:() => notifyUser(event.task.userId,
           `${icon} Scheduled mint <b>${escapeTelegramHtml(event.task.name)}</b> could not run.\n${escapeTelegramHtml(feedback.message)}`),
         log:message => log(`${safeError(message)} (task ${event.task.id})`),
@@ -1093,19 +1162,20 @@ async function executeMintViaOpenSea({ wallet, contractAddr, chain, quantity, bu
 }
 
 // ── Wallet Sniper / Copy-Mint Engine ─────────────────────────
-// Watches a target wallet block-by-block and, when it sees the
-// target call a contract (typically a mint), replicates that exact
-// call — same contract, same calldata — from one of your own
-// wallets. Detection happens once the target's tx is confirmed in
-// a block, so this is a best-effort copier riding public RPCs, not
-// a mempool front-runner.
+// Watches a target wallet and, when it sees the target call a contract (typically a mint),
+// replicates that exact call from one of the user's wallets. Confirmed-copy remains the safe
+// default. A user may explicitly opt a sniper into pending-mempool observation when that chain has
+// a dedicated address-filtered Alchemy WebSocket source; it still uses every M7/M7a safety rail but accepts the unavoidable
+// risk that the source transaction may later be dropped, replaced, or reverted.
 const chainWatchers = {};
+const pendingDispatchers = {};
+const pendingSources = {};
 const sniperService = createSniperService({
   repository:sniperRepository,
   intentRepository:transactionIntentRepository,
   transactionEngine,
   supportedChains:CONFIG.supportedChains,
-  beforeExecute:async ({sniper,event,sourceTx,wallet,value,copiedFee}) => {
+  beforeExecute:async ({sniper,event,sourceTx,wallet,value,copiedFee,prepared}) => {
     // Same reasoning as the scheduler's executeTask above: a sniper can be created while its owner is
     // in good standing and later that account gets banned/suspended/deactivated, but the chain
     // watcher's block loop never passes through the per-command account-status choke point. Returning
@@ -1122,22 +1192,27 @@ const sniperService = createSniperService({
     }
     const policy=await targetPolicyService.get(sniper.userId,'sniper',sniper.id);
     if(policy.blockchainTrigger==='auto') return true;
-    const preview=decodeMintCall({contractAddress:sourceTx.to,calldata:sourceTx.data,valueWei:value});
+    const preview=prepared.preview;
     const request=await targetPolicyRepository.createRequest({userId:sniper.userId,targetType:'sniper',targetId:sniper.id,
       triggerSource:'blockchain-triggered',sourceEventId:event.txHash,preview,executionPayload:{
         userId:sniper.userId,targetType:'sniper',targetId:sniper.id,triggerSource:'blockchain-triggered',
-        address:sourceTx.to,walletLabel:wallet.label,chain:sniper.chain,to:sourceTx.to,data:sourceTx.data,
+        address:prepared.contractAddress,walletLabel:wallet.label,chain:sniper.chain,
+        to:prepared.callTarget,data:prepared.calldata,
         valueWei:String(value),gasPriceWei:sourceTx.maxFeePerGas?null:String(copiedFee),
         maxFeePerGasWei:sourceTx.maxFeePerGas?String(copiedFee):null,
         maxPriorityFeePerGasWei:sourceTx.maxFeePerGas?String((sourceTx.maxPriorityFeePerGas||sourceTx.maxFeePerGas)*BigInt(100+sniper.gasBoostPercent)/100n):null,
       },expiresAt:Date.now()+10*60_000});
     dashboardWebSockets.broadcastToUser(sniper.userId,{type:'confirmation.pending',request});
-    await notifyUser(sniper.userId,`Blockchain trigger for <b>${escapeTelegramHtml(sniper.label)}</b> requires confirmation. Contract: <code>${sourceTx.to}</code>.\nRun /confirmtrigger ${request.id} CONFIRM to approve or REJECT to reject within 10 minutes.`);
+    const observation = (event.observationMode || sniper.observationMode) === 'pending'
+      ? 'Pending mempool trigger (source not yet confirmed)' : 'Confirmed blockchain trigger';
+    await notifyUser(sniper.userId,`${observation} for <b>${escapeTelegramHtml(sniper.label)}</b> requires confirmation. Contract: <code>${sourceTx.to}</code>.\nRun /confirmtrigger ${request.id} CONFIRM to approve or REJECT to reject within 10 minutes.`);
     return false;
   },
   onEvent:async ({ event, state, reason, intent, error }) => {
     const sniper = DB.snipers.find(item => item.userId === event.userId && item.id === event.sniperId);
     if (!sniper) return;
+    const copyLabel = (event.observationMode || sniper.observationMode) === 'pending'
+      ? 'Pending-mempool copy' : 'Post-confirmation copy';
     const wallet = DB.wallets.find(item => item.userId === sniper.userId && item.label === sniper.walletLabel);
     if (state === 'confirmed') {
       sniper.hits = (sniper.hits || 0) + 1;
@@ -1145,7 +1220,7 @@ const sniperService = createSniperService({
       if (wallet) wallet.minted = (wallet.minted || 0) + 1;
       await Promise.all([storage.saveSniper(sniper), wallet
         ? storage.updateWalletMinted(sniper.userId, wallet.label, wallet.minted) : Promise.resolve()]);
-      if (wallet) await logActivity(sniper.userId, 'success', `Post-confirmation copy-mint (${sniper.label})`,
+      if (wallet) await logActivity(sniper.userId, 'success', `${copyLabel}-mint (${sniper.label})`,
         wallet.label, intent || null, CHAINS[sniper.chain],{triggerSource:'blockchain-triggered',
           verificationState:(await targetPolicyService.get(sniper.userId,'sniper',sniper.id)).humanVerification});
       const policy=await targetPolicyService.get(sniper.userId,'sniper',sniper.id);
@@ -1163,12 +1238,49 @@ const sniperService = createSniperService({
     }
     dashboardWebSockets.broadcastToUser(sniper.userId,{type:'snipers.changed'});
     await notifyUser(sniper.userId, state === 'confirmed'
-      ? `✅ Post-confirmation copy <b>${escapeTelegramHtml(sniper.label)}</b> confirmed.`
-      : `🎯 Post-confirmation copy <b>${escapeTelegramHtml(sniper.label)}</b>: ${escapeTelegramHtml(state)}${reason ? ` — ${escapeTelegramHtml(reason)}` : ''}${error ? ` — ${escapeTelegramHtml(safeError(error).slice(0,120))}` : ''}`);
+      ? `✅ ${copyLabel} <b>${escapeTelegramHtml(sniper.label)}</b> confirmed.`
+      : `🎯 ${copyLabel} <b>${escapeTelegramHtml(sniper.label)}</b>: ${escapeTelegramHtml(state)}${reason ? ` — ${escapeTelegramHtml(reason)}` : ''}${error ? ` — ${escapeTelegramHtml(safeError(error).slice(0,120))}` : ''}`);
   },
 });
 
 const activeSnipersForChain = chain => DB.snipers.filter(s => s.active && s.chain === chain);
+const activePendingSnipersForChain = chain => activeSnipersForChain(chain)
+  .filter(s => (s.observationMode || 'confirmed') === 'pending');
+const dedicatedSniperWsUrl = chain => SNIPER_CHAINS[chain]?.rpcWsUrl
+  && SNIPER_CHAINS[chain].rpcWsUrl !== CHAINS[chain]?.rpcWsUrl
+  ? SNIPER_CHAINS[chain].rpcWsUrl : null;
+const pendingSniperChains = Object.freeze(CONFIG.supportedChains
+  .filter(chain => supportsAlchemyPendingSource(chain, dedicatedSniperWsUrl(chain))));
+
+function ensurePendingDispatcher(chain) {
+  if (pendingDispatchers[chain]) return pendingDispatchers[chain];
+  const dispatcher = createPendingTransactionDispatcher({ chain,
+    onTransaction: transaction => onPendingTransaction(chain, transaction), log });
+  pendingDispatchers[chain] = dispatcher;
+  return dispatcher;
+}
+
+function syncPendingSource(chain) {
+  const snipers = activePendingSnipersForChain(chain);
+  const wsUrl = dedicatedSniperWsUrl(chain);
+  if (!snipers.length || !supportsAlchemyPendingSource(chain, wsUrl)) {
+    pendingSources[chain]?.stop();
+    delete pendingSources[chain];
+    pendingDispatchers[chain]?.stop();
+    delete pendingDispatchers[chain];
+    return;
+  }
+  const targets = snipers.map(sniper => sniper.targetAddress);
+  if (pendingSources[chain]) {
+    pendingSources[chain].updateTargets(targets);
+    return;
+  }
+  const dispatcher = ensurePendingDispatcher(chain);
+  const source = createAlchemyPendingSource({ chain, wsUrl, targets,
+    onTransaction:transaction => dispatcher.enqueue(transaction), log });
+  pendingSources[chain] = source;
+  source.start();
+}
 
 // Round 16 (docs/WORKLIST.md Section AV): sniper watching reads from SNIPER_CHAINS, not CHAINS --
 // its own isolated RPC/WS pool, separate from both the general pool and the scheduled/Degen fast
@@ -1176,7 +1288,10 @@ const activeSnipersForChain = chain => DB.snipers.filter(s => s.active && s.chai
 // scheduled broadcast. With no {ENVNAME}_RPC_SNIPER_URLS/_WS configured, SNIPER_CHAINS[chain] is a
 // literal alias for CHAINS[chain] (see config/index.js), so this is a no-op change until configured.
 function ensureChainWatcher(chain) {
-  if (chainWatchers[chain]) return;
+  syncPendingSource(chain);
+  if (chainWatchers[chain]) {
+    return;
+  }
   // Scheduled mints waiting for a stage to open also need block push, even if no sniper
   // is active on that chain. Prefer SNIPER_CHAINS' dedicated WS pool when available, fall back
   // to the chain's general WS.
@@ -1209,7 +1324,38 @@ function teardownChainWatcherIfIdle(chain) {
   if (!watcher) return;
   watcher.stop();
   delete chainWatchers[chain];
+  pendingSources[chain]?.stop();
+  delete pendingSources[chain];
+  pendingDispatchers[chain]?.stop();
+  delete pendingDispatchers[chain];
   log(`🎯 Sniper watcher stopped on ${chain} (no active targets)`);
+}
+
+function syncChainWatcher(chain) {
+  if (activeSnipersForChain(chain).length || schedulerWorker.hasBlockWaiters?.(chain)) {
+    ensureChainWatcher(chain);
+    return;
+  }
+  teardownChainWatcherIfIdle(chain);
+}
+
+async function onPendingTransaction(chain, transaction) {
+  if (!transaction?.hash || !transaction.from || !transaction.to || !transaction.data || transaction.data === '0x') return;
+  const snipers = activePendingSnipersForChain(chain);
+  for (const sniper of snipers) {
+    try {
+      if (transaction.from.toLowerCase() !== sniper.targetAddress.toLowerCase()) continue;
+      const detected = await sniperService.detect(sniper, transaction);
+      if (!detected) continue;
+      await triggerPipeline.publish({ id:transaction.hash,userId:sniper.userId,targetId:sniper.id,
+        address:transaction.to,triggerSource:'blockchain-triggered',sourceTransactionHash:transaction.hash,
+        observationMode:'pending' });
+      const wallet = DB.wallets.find(item => item.userId === sniper.userId && item.label === sniper.walletLabel);
+      await sniperService.processPending(sniper, detected, transaction, wallet);
+    } catch (error) {
+      log(`Pending sniper ${sniper.id} handling failed: ${safeError(error)}`);
+    }
+  }
 }
 
 async function onBlock(chain, blockNumber, provider) {
@@ -1223,7 +1369,7 @@ async function onBlock(chain, blockNumber, provider) {
   if (!block?.prefetchedTransactions) return;
   for (const tx of block.prefetchedTransactions) {
     if (!tx.to || !tx.data || tx.data === '0x') continue; // skip plain transfers / contract creations
-    for (const sniper of snipers) {
+    for (const sniper of snipers.filter(item => (item.observationMode || 'confirmed') === 'confirmed')) {
       try {
         if (tx.from.toLowerCase() !== sniper.targetAddress.toLowerCase()) continue;
         const detected = await sniperService.detect(sniper, { hash:tx.hash, to:tx.to, blockNumber, blockHash:block.hash });
@@ -1377,7 +1523,8 @@ const FLOW_CONTINUATION_PREFIXES = { wallet_create: ['flow:chain:'], wallet_impo
   // some other flow is mid-air should raise the usual abandon prompt, not silently replace it.
   task_guided: ['flow:mintdetailscontinue', 'flow:mintqty:', 'flow:priceaccept', 'flow:pricemanual', 'flow:phasepriceaccept', 'flow:phasetimeaccept', 'flow:taskname:', 'flow:taskwalletpick:', 'flow:taskconfirm'],
   watch_guided: ['flow:watchtype:', 'flow:watchmethod:', 'flow:watchconfirm'],
-  sniper_guided: ['flow:sniperchain:', 'flow:sniperwalletpick:', 'flow:snipertoleranceaccept', 'flow:snipertolerancemanual', 'flow:sniperconfirm'] };
+  sniper_guided: ['flow:sniperchain:', 'flow:sniperwalletpick:', 'flow:sniperobservation:',
+    'flow:sniperpendingrisk:accept', 'flow:snipertoleranceaccept', 'flow:snipertolerancemanual', 'flow:sniperconfirm'] };
 
 // Generic one-shot confirmation gate for simple "<command> <id> CONFIRM"-shaped destructive actions
 // (remove wallet, cancel/resume/retry task, remove watch rule) -- replaces typing the literal word
@@ -1662,6 +1809,11 @@ function renderFlowStep(flow, step, { userId, data = {} } = {}) {
     if (step === 'awaiting_wallet') {
       return telegramMenus.walletPicker(botCommands.wallets(userId), { prefix: 'flow:sniperwalletpick', emptyHint: 'No wallets yet. Create one first from the Wallets menu.' });
     }
+    if (step === 'awaiting_observation') return telegramMenus.sniperObservationMode({
+      defaultMode:data.defaultObservationMode,
+      pendingSupported:(data.pendingSupportedChains || []).includes(data.chain),
+    });
+    if (step === 'awaiting_pending_risk') return telegramMenus.sniperPendingRiskWarning();
     if (step === 'awaiting_tolerance') {
       return telegramMenus.sniperTolerancePrompt({ maxGasGwei: sniperFlowDecision.DEFAULTS.maxGasGwei,
         maxValueETH: sniperFlowDecision.DEFAULTS.maxValueETH, dailySpendingCapETH: sniperFlowDecision.DEFAULTS.dailySpendingCapETH });
@@ -1945,7 +2097,12 @@ async function finishWatchRuleCreation(chatId, messageId, userId, flowData) {
 // all before this (only /updatesniper to patch one that already exists), unlike every other
 // guided-flow feature here. Mirrors startWatchRuleFlow's shape exactly.
 async function startSniperFlow(chatId, messageId, userId) {
-  telegramFlowState.start('telegram', chatId, 'sniper_guided', 'awaiting_label', {});
+  const [defaultObservationMode, capabilities] = await Promise.all([
+    botCommands.sniperObservationDefault(userId), botCommands.sniperCapabilities(),
+  ]);
+  telegramFlowState.start('telegram', chatId, 'sniper_guided', 'awaiting_label', {
+    defaultObservationMode, pendingSupportedChains:capabilities.pendingSupportedChains,
+  });
   return tgUpdate(chatId, messageId, renderFlowStep('sniper_guided', 'awaiting_label'));
 }
 
@@ -1954,7 +2111,8 @@ async function finishSniperCreation(chatId, messageId, userId, flowData) {
   try {
     const sniper = await botCommands.createSniper(userId, { label: flowData.label, targetAddress: flowData.targetAddress,
       chain: flowData.chain, walletLabel: flowData.walletLabel, maxGasGwei: flowData.maxGasGwei,
-      maxValueETH: flowData.maxValueETH, dailySpendingCapETH: flowData.dailySpendingCapETH });
+      maxValueETH: flowData.maxValueETH, dailySpendingCapETH: flowData.dailySpendingCapETH,
+      observationMode:flowData.observationMode, pendingRiskAccepted:flowData.pendingRiskAccepted === true });
     telegramFlowState.clear('telegram', chatId);
     return tgUpdate(chatId, messageId, { text: `✅ Sniper <b>${escapeTelegramHtml(sniper.label)}</b> is live, watching <code>${sniper.targetAddress}</code> on ${sniper.chain}.`, replyMarkup: backToMenu, parseMode: 'HTML' });
   } catch (error) {
@@ -2854,7 +3012,8 @@ if (BOT_TOKEN) {
     { command: 'mintpresets', description: 'List saved mint presets' },
     { command: 'schedule', description: 'Schedule a future mint' },
     { command: 'tasks', description: 'List scheduled mint tasks' },
-    { command: 'snipers', description: 'List post-confirmation copy snipers' },
+    { command: 'snipers', description: 'List wallet-copy snipers' },
+    { command: 'sniperdefault', description: 'Set default copy timing for new snipers' },
     { command: 'watch', description: 'Manage social watch rules' },
     { command: 'activity', description: 'Recent mint activity' },
     { command: 'gas', description: 'Live chain fee data' },
@@ -3322,6 +3481,27 @@ if (BOT_TOKEN) {
       telegramFlowState.advance('telegram', chatId, decision.step, decision.data);
       return tgEditMenu(chatId, messageId, renderFlowStep('sniper_guided', decision.step, { userId, data: decision.data }));
     }
+    if (data.startsWith('flow:sniperobservation:')) {
+      const flow = telegramFlowState.get('telegram', chatId);
+      if (!flow || flow.flow !== 'sniper_guided'
+        || !['awaiting_observation','awaiting_pending_risk'].includes(flow.step)) return;
+      const choice = data.slice('flow:sniperobservation:'.length);
+      const observationMode = choice === 'default' ? flow.data.defaultObservationMode : choice;
+      if (observationMode === 'pending' && !(flow.data.pendingSupportedChains || []).includes(flow.data.chain)) {
+        return tgEditMenu(chatId, messageId, telegramMenus.sniperObservationMode({
+          defaultMode:flow.data.defaultObservationMode,pendingSupported:false }));
+      }
+      const decision = sniperFlowDecision.afterObservation({ data:flow.data, observationMode });
+      telegramFlowState.advance('telegram', chatId, decision.step, decision.data);
+      return tgEditMenu(chatId, messageId, renderFlowStep('sniper_guided', decision.step, { userId, data:decision.data }));
+    }
+    if (data === 'flow:sniperpendingrisk:accept') {
+      const flow = telegramFlowState.get('telegram', chatId);
+      if (!flow || flow.flow !== 'sniper_guided' || flow.step !== 'awaiting_pending_risk') return;
+      const decision = sniperFlowDecision.afterPendingRisk({ data:flow.data, accepted:true });
+      telegramFlowState.advance('telegram', chatId, decision.step, decision.data);
+      return tgEditMenu(chatId, messageId, renderFlowStep('sniper_guided', decision.step, { userId, data:decision.data }));
+    }
     if (data === 'flow:snipertoleranceaccept') {
       const flow = telegramFlowState.get('telegram', chatId);
       if (!flow || flow.flow !== 'sniper_guided' || flow.step !== 'awaiting_tolerance') return;
@@ -3682,16 +3862,37 @@ send /mint with a contract address to get going.`;
     const snipers = botCommands.snipers(userId);
     if (!snipers.length) return tgRender(msg.chat.id, { text: 'No snipers configured.', parseMode: 'HTML' });
     const list = snipers.map(s =>
-      `${s.active?'🟢':'⚪'} <b>${escapeTelegramHtml(s.label)}</b>\nTarget: <code>${s.targetAddress.slice(0,10)}...</code>\nChain: ${CHAINS[s.chain]?.name||s.chain} · Wallet: ${escapeTelegramHtml(s.walletLabel)}\nHits: ${s.hits||0} · Fails: ${s.fails||0}`
+      `${s.active?'🟢':'⚪'} <b>${escapeTelegramHtml(s.label)}</b>\nTarget: <code>${s.targetAddress}</code>\nChain: ${CHAINS[s.chain]?.name||s.chain} · Wallet: ${escapeTelegramHtml(s.walletLabel)}\nMode: ${(s.observationMode||'confirmed')==='pending'?'⚡ pending mempool (high risk)':'🛡️ after confirmation'}\nHits: ${s.hits||0} · Fails: ${s.fails||0}`
     ).join('\n\n');
-    tgRender(msg.chat.id, { text: `🎯 <b>Post-confirmation copy snipers (${snipers.length})</b>\n<i>Not mempool front-running: copying begins only after the source transaction confirms.</i>\n\n${list}`, parseMode: 'HTML' });
+    tgRender(msg.chat.id, { text: `🎯 <b>Wallet-copy snipers (${snipers.length})</b>\n<i>After-confirmation is the default. Pending-mempool mode is explicit and labelled per sniper.</i>\n\n${list}`, parseMode: 'HTML' });
   }));
+
+  bot.onText(/^\/sniperdefault(?:@\w+)?(?:\s+(confirmed|pending)(?:\s+(CONFIRM))?)?$/i,
+    withTelegramUser(async (msg, match, userId) => {
+      const requested = match[1]?.toLowerCase();
+      if (!requested) {
+        const [current, capabilities] = await Promise.all([
+          botCommands.sniperObservationDefault(userId), botCommands.sniperCapabilities(),
+        ]);
+        return tgRender(msg.chat.id, { parseMode:'HTML',
+          text:`New copy snipers default to <b>${current === 'pending' ? 'pending mempool' : 'after confirmation'}</b>.\nPending-capable chains: ${capabilities.pendingSupportedChains.join(', ') || 'none configured'}.` });
+      }
+      if (requested === 'pending' && match[2] !== 'CONFIRM') {
+        return tgRender(msg.chat.id, { parseMode:'HTML',
+          text:'⚠️ Pending copies may spend even if the source is later dropped, replaced, or reverted. All normal caps and simulation still apply.\n\nIf you accept this for newly created snipers, send <code>/sniperdefault pending CONFIRM</code>.' });
+      }
+      const saved = await botCommands.setSniperObservationDefault(userId, {
+        observationMode:requested,pendingRiskAccepted:requested === 'pending' && match[2] === 'CONFIRM',
+      });
+      return tgRender(msg.chat.id, { parseMode:'HTML',
+        text:`✅ New copy snipers will default to <b>${saved === 'pending' ? 'pending mempool (high risk)' : 'after confirmation'}</b>. You can still override this per sniper.` });
+    }));
 
   bot.onText(/^\/updatesniper(?:@\w+)?\s+([0-9a-f-]+)\s+(.+)\s+(CONFIRM)$/i, withTelegramUser(async (msg, match, userId) => {
     requireTextConfirmation(match[3]);
     const updated = await botCommands.updateSniper(userId, match[1], commandJson(match[2]));
     const sniper = botCommands.snipers(userId).find(item => item.id === updated.id);
-    tgRender(msg.chat.id, { text: `✅ Post-confirmation copy sniper <b>${escapeTelegramHtml(sniper.label)}</b> updated. This is not mempool front-running.`, parseMode: 'HTML' });
+    tgRender(msg.chat.id, { text: `✅ Copy sniper <b>${escapeTelegramHtml(sniper.label)}</b> updated. Mode: ${(sniper.observationMode||'confirmed')==='pending'?'pending mempool (high risk)':'after confirmation'}.`, parseMode: 'HTML' });
   }));
 
   bot.onText(/^\/wallets(?:@\w+)?$/, withTelegramUser(async (msg, match, userId) => {
@@ -3977,6 +4178,9 @@ const botCommands = createBotCommandService({
   encryptPrivateKey: encryptPK,
   getState: () => DB,
   ensureChainWatcher,
+  syncChainWatcher,
+  supportsPendingSniper: chain => pendingSniperChains.includes(chain),
+  pendingSniperChains,
   previewMint:async({userId,wallet,prepared,gasGwei})=>mintExecution.preview({userId,wallet,prepared,
     gasPriceWei:gasGwei===undefined||gasGwei===null?undefined:ethers.parseUnits(String(gasGwei),'gwei')}),
   executePreparedMint:async({userId,wallet,prepared,gasGwei})=>{
@@ -4073,8 +4277,14 @@ app.use(express.static(path.join(PROJECT_ROOT,'public'),{setHeaders:(res,file)=>
 // ── API ───────────────────────────────────────────────────
 const readinessService=createReadinessService({database:storage,providerService,
   chains:CONFIG.supportedChains,schedulerWorker,socialWatchWorker,retentionWorker,
-  sniperHealth:()=>({status:'up',activeChains:Object.keys(chainWatchers).length,
-    liveChains:Object.values(chainWatchers).filter(watcher=>watcher.mode()==='ws').length})});
+  sniperHealth:()=>{const sourceHealth=Object.values(pendingSources).map(source=>source.health());
+    const expectedPendingChains=[...new Set(DB.snipers.filter(sniper=>sniper.active
+      &&(sniper.observationMode||'confirmed')==='pending').map(sniper=>sniper.chain))];
+    const missingPendingChains=expectedPendingChains.filter(chain=>!pendingSources[chain]);return {
+    status:missingPendingChains.length||sourceHealth.some(source=>!source.connected)?'down':'up',activeChains:Object.keys(chainWatchers).length,
+    liveChains:Object.values(chainWatchers).filter(watcher=>watcher.mode()==='ws').length,
+    pendingChains:sourceHealth.filter(source=>source.connected).length,missingPendingChains,pendingSources:sourceHealth,
+    pendingDispatchers:Object.values(pendingDispatchers).map(dispatcher=>dispatcher.health())};}});
 app.get('/health', async (req,res) => {
   const health=await readinessService.inspect();
   res.status(health.status==='ok'?200:503).json({...health,uptime:Math.floor(process.uptime())});
@@ -4124,7 +4334,8 @@ async function start() {
 
 const gracefulShutdown=createGracefulShutdown({getHttpServer:()=>httpServer,telegramBot:bot,discordBot,
   schedulerWorker,socialWatchWorker,retentionWorker,webSocketHub:dashboardWebSockets,stopWatchers:()=>Object.keys(chainWatchers).forEach(chain=>{
-    chainWatchers[chain].stop();delete chainWatchers[chain];
+    chainWatchers[chain].stop();delete chainWatchers[chain];pendingSources[chain]?.stop();delete pendingSources[chain];
+    pendingDispatchers[chain]?.stop();delete pendingDispatchers[chain];
   }),releasePollingLock:()=>releaseTelegramPollingLock?.(),pool,log});
 for(const signal of ['SIGINT','SIGTERM'])process.once(signal,()=>gracefulShutdown(signal)
   .then(()=>{process.exitCode=0;}).catch(error=>{log(`Shutdown failed: ${safeError(error)}`);process.exitCode=1;}));

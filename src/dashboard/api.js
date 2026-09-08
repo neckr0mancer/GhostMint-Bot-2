@@ -291,6 +291,7 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLo
         await Promise.resolve().then(()=>notifyUser(user(req),`❌ <b>Mint failed.</b> Nothing was minted on ${network?.name||chain}. ${escapeTelegramHtml(reason)}`)).catch(()=>{});}
     }res.status(202).json(jsonSafe({results}));}),
     tasks:action(async(req,res)=>res.json(await commands.tasksPage(user(req),req.query))),
+    taskDetails:action(async(req,res)=>{noStore(res);res.json(await commands.taskDetails(user(req),req.params.id));}),
     createTask:action(async(req,res)=>{const task=await commands.createTask(user(req),req.body);res.status(201).json(task);}),
     controlTask:action(async(req,res)=>{if(req.body?.action==='cancel')confirmation(req);const result=await commands.controlTask(user(req),req.body?.action,req.params.id);res.json(result);}),
     activity:action(async(req,res)=>res.json(jsonSafe(await commands.activityPage(user(req),req.query)))),
@@ -299,7 +300,12 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLo
     addPnl:action(async(req,res)=>{const record=await commands.addPnl(user(req),req.body);res.status(201).json(record);}),
     updatePnl:action(async(req,res)=>{const record=await commands.updatePnl(user(req),req.params.id,req.body);res.json(record);}),
     deletePnl:action(async(req,res)=>{confirmation(req);await commands.deletePnl(user(req),req.params.id);res.status(204).end();}),
-    snipers:action(async(req,res)=>{const [items,events]=await Promise.all([commands.snipers(user(req)),commands.sniperEvents(user(req))]);res.json(jsonSafe({items,events}));}),
+    snipers:action(async(req,res)=>{const [items,events,defaultObservationMode,capabilities]=await Promise.all([
+      commands.snipers(user(req)),commands.sniperEvents(user(req)),
+      commands.sniperObservationDefault?commands.sniperObservationDefault(user(req)):'confirmed',
+      commands.sniperCapabilities?commands.sniperCapabilities():{pendingSupportedChains:[]},
+    ]);res.json(jsonSafe({items,events,defaultObservationMode,capabilities}));}),
+    setSniperDefault:action(async(req,res)=>{const observationMode=await commands.setSniperObservationDefault(user(req),req.body);res.json({observationMode});}),
     createSniper:action(async(req,res)=>{const sniper=await commands.createSniper(user(req),req.body);res.status(201).json(jsonSafe(sniper));}),
     updateSniper:action(async(req,res)=>{const sniper=await commands.updateSniper(user(req),req.params.id,req.body);res.json(jsonSafe(sniper));}),
     removeSniper:action(async(req,res)=>{confirmation(req);await commands.removeSniper(user(req),req.params.id);res.status(204).end();}),
@@ -375,6 +381,7 @@ function mountDashboardRoutes(app,api){
   app.post('/api/mints/preview',api.requireSession,api.requireCsrf,api.previewMint);
   app.post('/api/mints/confirm',api.requireSession,api.requireCsrf,api.confirmMint);
   app.get('/api/tasks',api.requireSession,api.tasks);
+  app.get('/api/tasks/:id',api.requireSession,api.taskDetails);
   app.post('/api/tasks',api.requireSession,api.requireCsrf,api.createTask);
   app.post('/api/tasks/:id/control',api.requireSession,api.requireCsrf,api.controlTask);
   app.get('/api/activity',api.requireSession,api.activity);
@@ -384,6 +391,7 @@ function mountDashboardRoutes(app,api){
   app.put('/api/pnl/:id',api.requireSession,api.requireCsrf,api.updatePnl);
   app.delete('/api/pnl/:id',api.requireSession,api.requireCsrf,api.deletePnl);
   app.get('/api/snipers',api.requireSession,api.snipers);
+  app.put('/api/snipers/default',api.requireSession,api.requireCsrf,api.setSniperDefault);
   app.post('/api/snipers',api.requireSession,api.requireCsrf,api.createSniper);
   app.put('/api/snipers/:id',api.requireSession,api.requireCsrf,api.updateSniper);
   app.delete('/api/snipers/:id',api.requireSession,api.requireCsrf,api.removeSniper);

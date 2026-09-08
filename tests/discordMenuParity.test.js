@@ -178,7 +178,7 @@ test('menu:snipers performs the same lookup /sniper list uses instead of replyin
   const { handler } = fixture();
   const tap = buttonInteraction('menu:snipers');
   await handler(tap);
-  assert.match(tap.updates[0].content, /Post-confirmation copying only/);
+  assert.match(tap.updates[0].content, /After-confirmation copying is the default/);
   assert.match(tap.updates[0].content, /Copy Cool Cats/);
 });
 

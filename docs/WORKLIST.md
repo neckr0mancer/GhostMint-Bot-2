@@ -5,6 +5,26 @@ wallet import, OpenSea pricing, send/deposit UX, Telegram formatting). Separate 
 [`ROADMAP.md`](../ROADMAP.md), which covers the numbered platform/safety milestones (1–16, all
 shipped).
 
+## 2026-09-02 checkpoint — configurable copy-sniper timing
+
+- Copy snipers retain `confirmed` as the safe default and can independently opt into explicitly
+  labelled, high-risk `pending` observation when that chain has the supported address-filtered
+  Alchemy WebSocket source.
+- The Automation dashboard, Telegram, and Discord all call the shared command/sniper/transaction
+  services. Each exposes the per-sniper choice plus a per-user default for **new** copy snipers;
+  changing that default never rewrites existing snipers or affects manual/scheduled mints.
+- Pending activation is fail-closed and requires a separate acknowledgement explaining that a
+  source transaction may be dropped, replaced, or reverted after GhostMint has already submitted
+  the copy. Normal simulation, ceilings, daily budgets, nonce serialization, and intent persistence
+  remain in force.
+- Replacement hashes are deduplicated by source sender and nonce, pending lookups use a bounded,
+  failure-isolated dispatcher, and startup health exposes pending watcher/dispatcher state. Railway
+  already supplies the dedicated `ghostmint-wraith` sniper HTTP/WSS pool through each chain's
+  `{CHAIN}_RPC_SNIPER_URLS` / `{CHAIN}_RPC_SNIPER_WS` variables; production consumes those variables
+  directly, so the provider secrets are intentionally not duplicated into local `.env`. The remaining
+  acceptance check is a live address-filtered `alchemy_pendingTransactions` subscription through that deployed pool (the
+  recorded WSS handshake alone does not prove subscription support), not provisioning another key.
+
 ## 2026-08-23 checkpoint — account code refresh, public-address QR, session policy
 
 - Account link-code generation now has an in-place refresh action, live five-minute countdown,
@@ -24,6 +44,67 @@ shipped).
   - Smoke suite budgets: outer ceilings `20s/45s` → `60s/60s/120s` (`7bcac88` → `0d4b5af` paste parity), plus `waitForHealth` 10s fast-fail kept; gate is `908/908`.
   - Audit hardenings: daily-budget `rollingSpendWei` now counts `value+actual` (`8d56823` + `c08e9e6` 120s WAN), admin health route escapes the `/api` 404 catch-all (`8d56823`), transient gas/broadcast errors preserved for scheduler retry (`eb22ede` + `71c76ab` + `9236ba8` SSRF blocklist with `net.isIP` + `maxRedirects:0`), launch stager concurrency + discovery fallback + scheduler atomic claim + expired-history per-task isolation (`69fa168`), double-mint in-flight locks (`5097ae2`), and paste silent-drop → user-visible error (`7e82499` → `0d4b5af`).
   - **Stale notes corrected:** AV A3 pre-arming already shipped via AY (`SCHEDULE_PREARM_LEAD_MS`), AU pool 2 (sniper `RPC_SNIPER_URLS`/`_WS`) via Round 16, and `GET /api/profile/limits` already exists (`api.js:339` → `governance.limitsForSelf`); `spentTodayWei` stays withheld by scoping (per-wallet vs account-wide), not by wrong figure — `governanceService` comment + test updated. Every round's "…only the two review repros failing" refrain is now obsolete.
+
+## Feature request — Wallet fund dispersion (documented 2026-09-02, not implemented)
+
+Add a **Disperse** operation that funds several of the user's wallets from one better-funded source
+wallet on the same EVM chain. This is a new value-moving feature, not an extension of the current
+single-recipient Send form, and must reuse the shared transaction engine rather than creating a
+parallel signing/broadcast path.
+
+### Allocation modes
+
+1. **Equal split:** enter one total distribution amount and divide it equally across the selected
+   destination wallets, with deterministic rounding and any remainder left in the source wallet.
+2. **Percentage split:** enter one total distribution amount and assign a percentage to each
+   destination; allocations must total exactly 100% before confirmation.
+3. **Exact amounts:** enter the precise native-token amount for every selected destination. The UI
+   shows the calculated total before confirmation.
+
+The first version is limited to the user's own wallets on one chain. The source cannot also be a
+destination, duplicate destinations are rejected, and cross-chain transfers are explicitly out of
+scope because they require a bridge rather than an ordinary transfer. ERC-20 dispersal is also a
+separate later decision; this request initially covers the chain's native currency.
+
+### Required safety and behavior
+
+- Show a restrained review/receipt before execution: source wallet and balance, every destination
+  and amount/percentage, distribution subtotal, estimated aggregate network fees, total debit, and
+  estimated source balance remaining. Unknown fee data stays unknown rather than displaying zero.
+- Reserve enough native currency for every network fee and reject the whole request before the
+  first broadcast when the source cannot cover distribution plus fees. Never spend the reserved
+  gas through a Max/equal/percentage calculation.
+- Require an explicit value-moving confirmation, CSRF protection on the dashboard, command
+  throttling, user ownership checks, supported-chain validation, governance ceilings/daily budget,
+  and the existing security action gate wherever applicable.
+- Create a durable parent dispersion record plus deterministic idempotency keys for its child
+  transfers. Each child still persists a Milestone 7 transaction intent before broadcast and all
+  sends from the source wallet reuse its nonce queue.
+- Treat results as a durable per-destination batch. A crash/retry must reconcile submitted child
+  intents before doing anything else and must never pay the same destination twice. Partial success
+  is reported honestly; already-confirmed children stay complete while safely retryable children
+  can be resumed individually.
+- Record activity/audit evidence and deliver final success, failure, or partial-completion
+  notifications to the dashboard and every linked platform. Notification failure never changes
+  transfer state.
+- Put an explicit configurable cap on recipients per dispersion and paginate long result lists.
+  Dashboard, Telegram, and Discord must call one shared dispersion service; platform adapters may
+  format the flow but may not reimplement allocation or transaction rules.
+
+### Acceptance criteria for the future implementation
+
+- Equal, percentage, and exact allocations produce the previewed amounts with no rounding-created
+  overspend; percentage totals other than 100% are rejected.
+- Insufficient balance, duplicate/source destinations, mixed-chain wallets, invalid amounts, and
+  governance-limit violations fail before any broadcast.
+- Concurrent or restarted execution cannot reuse a nonce or send one child's allocation twice.
+- A failure on one child is visible with its reason and does not misreport the whole dispersion as
+  successful or erase confirmed children.
+- No private key, recovery phrase, raw signed transaction, or secret appears in API responses,
+  activity, notifications, audit rows, or logs.
+
+**Status:** recorded for prioritization only. No schema, service, transaction, API, command, or UI
+work is included in the current scheduled-mint fix.
 
 - **Round 1** (Sections A–K) was scoped and implemented on 2026-08-16; 9 of 11 sections shipped in
   commit `423c7c1`. Kept below as the record of what exists.
@@ -69,8 +150,9 @@ shipped).
   requested directly and deliberately scoped away from manual mints; shipped 2026-08-20.
 - **Round 15** (Section AU) splits RPC traffic into isolated pools so sniper's continuous polling
   can never queue behind a time-critical scheduled broadcast. Pool 1 (scheduled/Degen fast path, a
-  generic opt-in `{ENVNAME}_FAST_URLS` per chain) shipped 2026-08-20; pool 2 (sniper isolation + a
-  real WebSocket endpoint) remains open, needs its own provider/budget decision.
+  generic opt-in `{ENVNAME}_FAST_URLS` per chain) shipped 2026-08-20; pool 2's application wiring
+  later shipped in Round 16. Railway's existing `ghostmint-wraith` variables supply pool 2; only the
+  live pending-subscription acceptance check remains.
 - **Round 16** (Section AV) is the owner's own two-tier plan for sniper execution speed —
   2026-08-20. Worklist A: finish Round 15's pool 2 (sniper's own RPC/WS pool), same-tx multi-RPC
   broadcast for sniper, sniper as its own execution profile, precise near-launch timers, and
@@ -236,9 +318,10 @@ to the Round 17 diagnostic logging plus a temporary gateway-entry probe:
 The temporary `messageCreate` entry log shipped with the fix and is removed now that delivery is
 confirmed healthy; the per-line matching and its two regression tests stay permanently.
 
-Next in this round (days 3–7): block-height + pending-tx triggers (`trigger.js`, the front-running
-piece), multi-RPC broadcast race extension beyond sniper (owner-approved direction), accelerated
-bump/replace for launch sends, live monitor/report UI, load rehearsal.
+The pending-transaction item from this historical next-work list is now implemented by the
+2026-09-02 configurable copy-sniper checkpoint above. A separate block-height trigger, multi-RPC
+broadcast race extension beyond sniper, accelerated bump/replace for launch sends, live
+monitor/report UI, and load rehearsal remain distinct future work.
 
 ---
 

@@ -135,11 +135,23 @@ function commandDefinitions({ supportedChains = [], chains = {} } = {}) {
     .addSubcommand(c => c.setName('delete').setDescription('Delete a P&L record').addStringOption(o => o.setName('id').setDescription('Record UUID').setRequired(true)).addBooleanOption(o => o.setName('confirm').setDescription('Confirm deletion').setRequired(true))));
   commands.push(new SlashCommandBuilder().setName('gas').setDescription('⛽ Show live chain fee data')
     .addStringOption(o => chainOption(o)));
-  commands.push(new SlashCommandBuilder().setName('sniper').setDescription('🎯 Manage post-confirmation copy snipers (not mempool front-running)')
-    .addSubcommand(c => c.setName('create').setDescription('Create post-confirmation copy sniper').addStringOption(o => o.setName('input').setDescription('Validated sniper JSON').setRequired(true)).addBooleanOption(o=>o.setName('confirm').setDescription('Confirm automated copy configuration').setRequired(true)))
-    .addSubcommand(c => c.setName('update').setDescription('Update post-confirmation copy sniper').addStringOption(o => o.setName('id').setDescription('Sniper UUID').setRequired(true)).addStringOption(o => o.setName('patch').setDescription('Validated patch JSON').setRequired(true)).addBooleanOption(o=>o.setName('confirm').setDescription('Confirm automated copy configuration change').setRequired(true)))
-    .addSubcommand(c => c.setName('list').setDescription('List post-confirmation copy snipers'))
-    .addSubcommand(c => c.setName('status').setDescription('Show a post-confirmation copy sniper').addStringOption(o => o.setName('id').setDescription('Sniper UUID').setRequired(true))));
+  commands.push(new SlashCommandBuilder().setName('sniper').setDescription('🎯 Manage wallet-copy snipers')
+    .addSubcommand(c => c.setName('create').setDescription('Create a wallet-copy sniper')
+      .addStringOption(o => o.setName('input').setDescription('Validated sniper JSON').setRequired(true))
+      .addBooleanOption(o=>o.setName('confirm').setDescription('Confirm automated copy configuration').setRequired(true))
+      .addBooleanOption(o=>o.setName('accept-pending-risk').setDescription('Required true only for pending mode: source may fail while your copy spends')))
+    .addSubcommand(c => c.setName('update').setDescription('Update a wallet-copy sniper')
+      .addStringOption(o => o.setName('id').setDescription('Sniper UUID').setRequired(true))
+      .addStringOption(o => o.setName('patch').setDescription('Validated patch JSON').setRequired(true))
+      .addBooleanOption(o=>o.setName('confirm').setDescription('Confirm automated copy configuration change').setRequired(true))
+      .addBooleanOption(o=>o.setName('accept-pending-risk').setDescription('Required true when switching to pending mode')))
+    .addSubcommand(c => c.setName('list').setDescription('List wallet-copy snipers'))
+    .addSubcommand(c => c.setName('status').setDescription('Show a wallet-copy sniper').addStringOption(o => o.setName('id').setDescription('Sniper UUID').setRequired(true)))
+    .addSubcommand(c => c.setName('default').setDescription('Set copy timing for newly created snipers')
+      .addStringOption(o => o.setName('timing').setDescription('Safe confirmed or high-risk pending').setRequired(true)
+        .addChoices({name:'🛡️ After confirmation · safer',value:'confirmed'},
+          {name:'⚡ Pending mempool · highest risk',value:'pending'}))
+      .addBooleanOption(o=>o.setName('accept-pending-risk').setDescription('Must be true when choosing pending mode'))));
   commands.push(new SlashCommandBuilder().setName('mode').setDescription('🎛️ Select your transaction mode preset')
     .addStringOption(o => o.setName('preset').setDescription('Preset').setRequired(true).addChoices(
       { name: '🔥 Degen -- fastest, high gas, no confirmation', value: 'ultra_fast' },
@@ -209,7 +221,10 @@ const FLOW_CONTINUATIONS = {
   // discordBot.js), and the callback handler branches on flow.flow.
   task_guided: ['flow:taskwallet:select', 'flow:mintqty:select', 'flow:mintqty:submit', 'flow:taskname:select', 'flow:taskname:submit', 'flow:taskconfirm'],
   watch_guided: ['flow:watchname:submit', 'flow:watchtype:select', 'flow:watchmethod:select', 'flow:watchconfig:submit', 'flow:watchconfirm'],
-  sniper_guided: ['flow:snipercreate:submit', 'flow:sniperchain:select', 'flow:sniperwallet:select', 'flow:snipertoleranceaccept', 'flow:snipertolerancemanual', 'flow:snipertolerance:submit', 'flow:sniperconfirm'],
+  sniper_guided: ['flow:snipercreate:submit', 'flow:sniperchain:select', 'flow:sniperwallet:select',
+    'flow:sniperobservation:default', 'flow:sniperobservation:confirmed', 'flow:sniperobservation:pending',
+    'flow:sniperpendingrisk:accept', 'flow:snipertoleranceaccept',
+    'flow:snipertolerancemanual', 'flow:snipertolerance:submit', 'flow:sniperconfirm'],
 };
 
 function renderFlowStep(flow, step, { supportedChains = [], chains = {} } = {}) {
@@ -1332,7 +1347,13 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         if (!await actionGate.allows(userId, 'discord', platformUserId, 'snipers')) {
           return dcRespond(interaction, discordMenus.gateUnlockCard({ action: 'snipers' }));
         }
-        flowState.start('discord', platformUserId, 'sniper_guided', 'awaiting_label', {});
+        const [defaultObservationMode, capabilities] = await Promise.all([
+          commands.sniperObservationDefault ? commands.sniperObservationDefault(userId) : 'confirmed',
+          commands.sniperCapabilities ? commands.sniperCapabilities() : {pendingSupportedChains:[]},
+        ]);
+        flowState.start('discord', platformUserId, 'sniper_guided', 'awaiting_label', {
+          defaultObservationMode,pendingSupportedChains:capabilities.pendingSupportedChains,
+        });
         return interaction.showModal(discordMenus.sniperDetailsModal());
       }
       if (data === 'flow:sniperchain:select') {
@@ -1345,13 +1366,42 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         if (decision.step === 'awaiting_wallet') {
           return dcRespond(interaction, discordMenus.walletSelect(wallets, { customId: 'flow:sniperwallet:select', emptyHint: 'No wallets yet. Create one first from the Wallets menu.' }));
         }
-        return dcRespond(interaction, discordMenus.sniperTolerancePrompt(sniperFlowDecision.DEFAULTS));
+        return dcRespond(interaction, discordMenus.sniperObservationMode({
+          defaultMode:decision.data.defaultObservationMode,
+          pendingSupported:(decision.data.pendingSupportedChains || []).includes(decision.data.chain),
+        }));
       }
       if (data === 'flow:sniperwallet:select') {
         const flow = flowState.get('discord', platformUserId);
         if (!flow || flow.flow !== 'sniper_guided' || flow.step !== 'awaiting_wallet') return undefined;
         const walletLabel = interaction.values?.[0];
         const decision = sniperFlowDecision.afterWalletSelection({ data: { ...flow.data, walletLabel } });
+        flowState.advance('discord', platformUserId, decision.step, decision.data);
+        return dcRespond(interaction, discordMenus.sniperObservationMode({
+          defaultMode:decision.data.defaultObservationMode,
+          pendingSupported:(decision.data.pendingSupportedChains || []).includes(decision.data.chain),
+        }));
+      }
+      if (data.startsWith('flow:sniperobservation:')) {
+        const flow = flowState.get('discord', platformUserId);
+        if (!flow || flow.flow !== 'sniper_guided'
+          || !['awaiting_observation','awaiting_pending_risk'].includes(flow.step)) return undefined;
+        const choice = data.slice('flow:sniperobservation:'.length);
+        const observationMode = choice === 'default' ? flow.data.defaultObservationMode : choice;
+        if (observationMode === 'pending' && !(flow.data.pendingSupportedChains || []).includes(flow.data.chain)) {
+          return dcRespond(interaction, discordMenus.sniperObservationMode({
+            defaultMode:flow.data.defaultObservationMode,pendingSupported:false }));
+        }
+        const decision = sniperFlowDecision.afterObservation({data:flow.data,observationMode});
+        flowState.advance('discord', platformUserId, decision.step, decision.data);
+        return dcRespond(interaction, decision.step === 'awaiting_pending_risk'
+          ? discordMenus.sniperPendingRiskWarning()
+          : discordMenus.sniperTolerancePrompt(sniperFlowDecision.DEFAULTS));
+      }
+      if (data === 'flow:sniperpendingrisk:accept') {
+        const flow = flowState.get('discord', platformUserId);
+        if (!flow || flow.flow !== 'sniper_guided' || flow.step !== 'awaiting_pending_risk') return undefined;
+        const decision = sniperFlowDecision.afterPendingRisk({data:flow.data,accepted:true});
         flowState.advance('discord', platformUserId, decision.step, decision.data);
         return dcRespond(interaction, discordMenus.sniperTolerancePrompt(sniperFlowDecision.DEFAULTS));
       }
@@ -1373,7 +1423,8 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         try {
           const sniper = await commands.createSniper(userId, { label: flow.data.label, targetAddress: flow.data.targetAddress,
             chain: flow.data.chain, walletLabel: flow.data.walletLabel, maxGasGwei: flow.data.maxGasGwei,
-            maxValueETH: flow.data.maxValueETH, dailySpendingCapETH: flow.data.dailySpendingCapETH });
+            maxValueETH: flow.data.maxValueETH, dailySpendingCapETH: flow.data.dailySpendingCapETH,
+            observationMode:flow.data.observationMode,pendingRiskAccepted:flow.data.pendingRiskAccepted === true });
           flowState.clear('discord', platformUserId);
           return dcRespond(interaction, { content: `✅ Sniper ${sniper.label} is live, watching \`${sniper.targetAddress}\` on ${sniper.chain}.`,
             components: [discordMenus.row([discordMenus.button('⬅️ Back to menu', 'menu:main')])] });
@@ -1632,7 +1683,7 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
           await interaction.reply({ content: 'That does not look like a valid address. Tap "Create sniper" again to retry.', ephemeral: true }).catch(() => {});
           return;
         }
-        const labelStep = sniperFlowDecision.afterLabel({ data: { label } });
+        const labelStep = sniperFlowDecision.afterLabel({ data: { ...flow.data, label } });
         const decision = sniperFlowDecision.afterTarget({ data: { ...labelStep.data, targetAddress } });
         flowState.advance('discord', platformUserId, decision.step, decision.data);
         await interaction.reply({ ...discordMenus.chainSelect(supportedChains, chains, { customId: 'flow:sniperchain:select' }), ephemeral: true });
@@ -1886,9 +1937,28 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         }
         case 'sniper': {
           const action = interaction.options.getSubcommand();
-          if (action === 'create') { confirmation(interaction);const sniper = await commands.createSniper(userId, json(interaction.options.getString('input'))); message = `Post-confirmation copy sniper ${sniper.label} created. This is not mempool front-running.`; }
-          else if (action === 'update') { confirmation(interaction);const sniper = await commands.updateSniper(userId, interaction.options.getString('id'), json(interaction.options.getString('patch'))); message = `Post-confirmation copy sniper ${sniper.label} updated.`; }
-          else { const values = commands.snipers(userId); const selected = action === 'status' ? values.filter(item => item.id === interaction.options.getString('id')) : values; message = `Post-confirmation copying only; not mempool front-running.\n${formatRows(selected, 'No matching snipers.', item => `${item.label} [${item.active ? 'active' : 'inactive'}] — ${item.id}`)}`; }
+          if (action === 'create') {
+            confirmation(interaction);
+            const input=json(interaction.options.getString('input'));
+            const sniper=await commands.createSniper(userId,{...input,
+              pendingRiskAccepted:interaction.options.getBoolean('accept-pending-risk') === true});
+            message=`Copy sniper ${sniper.label} created in ${(sniper.observationMode||'confirmed')==='pending'?'pending-mempool (high-risk)':'after-confirmation'} mode.`;
+          } else if (action === 'update') {
+            confirmation(interaction);
+            const patch=json(interaction.options.getString('patch'));
+            const sniper=await commands.updateSniper(userId,interaction.options.getString('id'),{...patch,
+              pendingRiskAccepted:interaction.options.getBoolean('accept-pending-risk') === true});
+            message=`Copy sniper ${sniper.label} updated; mode ${(sniper.observationMode||'confirmed')==='pending'?'pending mempool (high risk)':'after confirmation'}.`;
+          } else if (action === 'default') {
+            const timing=interaction.options.getString('timing');
+            const saved=await commands.setSniperObservationDefault(userId,{observationMode:timing,
+              pendingRiskAccepted:interaction.options.getBoolean('accept-pending-risk') === true});
+            message=`New copy snipers default to ${saved==='pending'?'pending mempool (high risk)':'after confirmation'}. Per-sniper overrides still apply.`;
+          } else {
+            const values=commands.snipers(userId);
+            const selected=action==='status'?values.filter(item=>item.id===interaction.options.getString('id')):values;
+            message=`After-confirmation is the default; pending mode is opt-in.\n${formatRows(selected,'No matching snipers.',item=>`${item.label} [${item.active?'active':'inactive'}] — ${(item.observationMode||'confirmed')==='pending'?'pending mempool · high risk':'after confirmation'} — ${item.id}`)}`;
+          }
           break;
         }
         case 'mode': confirmation(interaction);message = `Transaction mode set to ${await commands.selectMode(userId, interaction.options.getString('preset'))}.`; break;

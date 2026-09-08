@@ -159,11 +159,16 @@ async function operationsServer(t){const sessions=new Map([['token-a',{userId:'u
   exportWalletKeystore:async(userId,label,password)=>{if(userId!=='user-a'||label!=='alpha')throw new ValidationError({field:'label',message:'was not found'});if(String(password||'').length<12)throw new ValidationError({field:'securityPassword',message:'must contain 12-200 characters'});calls.push(['export',userId,label]);return {label,keystore:'{"encrypted":"keystore-json"}'};},
   mintPresets:async()=>[],prepareMint:async(userId,input)=>{if(input.walletLabel==='already-minted')throw new ValidationError({field:'quantity',message:'this wallet has reached the mint limit'});return {wallet:{label:input.walletLabel,address:'0x0000000000000000000000000000000000000001',chain:'ethereum'},prepared:{chain:'robinhood',preview:{contractAddress:'0x0000000000000000000000000000000000000003',methodSignature:'mint(uint256)',nativeValue:'0 ETH',arguments:[{name:'quantity',value:'1'}]}},simulation:{simulationEnabled:false,simulationPerformed:true,simulationPassed:true,gasLimit:21000n,estimatedCostWei:1n}};},
   submitPreparedMint:async(userId,value)=>{if(value.wallet.label==='broken')throw new ValidationError({field:'walletLabel',message:'insufficient funds'});calls.push(['mint',userId,value.simulation.simulationPassed]);return {state:'confirmed',txHash:`0x${'ab'.repeat(32)}`};},
-  tasksPage:async userId=>({page:1,pageSize:10,total:userId==='user-a'?1:0,totalPages:1,items:userId==='user-a'?[{id:'task-a'}]:[]}),createTask:async(userId,input)=>{calls.push(['task',userId,input]);return {id:'task'};},controlTask:async(userId,action,id)=>{if(userId!=='user-a'||id!=='task-a')throw new ValidationError({field:'id',message:'was not found'});calls.push(['control',userId,action,id]);return {id};},
+  tasksPage:async userId=>({page:1,pageSize:10,total:userId==='user-a'?1:0,totalPages:1,items:userId==='user-a'?[{id:'task-a'}]:[]}),
+  taskDetails:async(userId,id)=>{if(userId!=='user-a'||id!=='task-a')throw new ValidationError({field:'id',message:'was not found'});return {id,name:'Public mint',walletLabel:'alpha',attempts:[{attemptId:'1',attemptNumber:1,outcome:'failure',reason:'The chain had not reached the public opening yet.'}]};},
+  createTask:async(userId,input)=>{calls.push(['task',userId,input]);return {id:'task'};},controlTask:async(userId,action,id)=>{if(userId!=='user-a'||id!=='task-a')throw new ValidationError({field:'id',message:'was not found'});calls.push(['control',userId,action,id]);return {id};},
   activityPage:async(userId,input)=>({page:Number(input.page)||1,pageSize:2,total:5,totalPages:3,items:[{id:(Number(input.page)||1)*2-1},{id:(Number(input.page)||1)*2}].filter(x=>x.id<=5).map(x=>({...x,userId}))}),
   mintsPage:async(userId,input)=>({page:Number(input.page)||1,pageSize:10,total:userId==='user-a'?1:0,totalPages:1,items:userId==='user-a'?[{intentId:'mint-a',userId,chain:'robinhood',state:'confirmed'}]:[]}),
   pnl:userId=>userId==='user-a'?[{id:'pnl-a'}]:[],addPnl:async()=>({}),updatePnl:async()=>({}),deletePnl:async(userId,id)=>{if(userId!=='user-a'||id!=='pnl-a')throw new ValidationError({field:'id',message:'was not found'});calls.push(['deletePnl',userId,id]);},
-  snipers:userId=>userId==='user-a'?[{id:'sniper-a'}]:[],sniperEvents:async()=>[],createSniper:async()=>({}),updateSniper:async(userId,id)=>{if(userId!=='user-a'||id!=='sniper-a')throw new ValidationError({field:'id',message:'was not found'});return {id};},removeSniper:async()=>{},
+  snipers:userId=>userId==='user-a'?[{id:'sniper-a'}]:[],sniperEvents:async()=>[],
+  sniperObservationDefault:async()=> 'confirmed',sniperCapabilities:()=>({pendingSupportedChains:['ethereum']}),
+  setSniperObservationDefault:async(userId,input)=>{calls.push(['sniper-default',userId,input]);return input.observationMode;},
+  createSniper:async()=>({}),updateSniper:async(userId,id)=>{if(userId!=='user-a'||id!=='sniper-a')throw new ValidationError({field:'id',message:'was not found'});return {id};},removeSniper:async()=>{},
   watchRules:async userId=>userId==='user-a'?[{id:'rule-a'}]:[],watchEvents:async()=>[],createWatchRule:async()=>({}),updateWatchRule:async(userId,id)=>{if(userId!=='user-a'||id!=='rule-a')throw new ValidationError({field:'id',message:'was not found'});return {id};},disableWatchRule:async()=>{},removeWatchRule:async()=>{},
   targetDetails:async(userId,type,id)=>{if(userId!=='user-a'||!['sniper-a','rule-a'].includes(id))throw new ValidationError({field:'targetId',message:'was not found'});return {targetType:type,targetId:id};},updateTargetPolicy:async()=>({}),requestTargetBypass:async()=>({}),confirmTargetBypass:async()=>({}),applyTargetPreset:async()=>({}),modePresets:async()=>[{key:'ultra_fast',displayName:'Ultra fast',simulationMode:'optional',confirmationCount:0,humanVerification:false},{key:'safe',displayName:'Safe',simulationMode:'forced',confirmationCount:2,humanVerification:true}],
   currentMode:async userId=>selectedPresets.get(userId)?{key:selectedPresets.get(userId),displayName:selectedPresets.get(userId),simulationMode:'forced',confirmationCount:1,humanVerification:false}:null,
@@ -209,9 +214,36 @@ test('an all-failed batch simulation returns safe per-wallet results and no usab
 test('a failure on one wallet in a batch confirmation does not cancel the others, and reports its own reason',async t=>{const {base,calls,notifications}=await operationsServer(t);const preview=await (await fetch(`${base}/api/mints/preview`,{method:'POST',headers:authHeaders('a',true),body:JSON.stringify({walletLabels:['alpha','broken']})})).json();assert.equal(preview.items.length,2);const confirm=await fetch(`${base}/api/mints/confirm`,{method:'POST',headers:authHeaders('a',true),body:JSON.stringify({previewToken:preview.previewToken,confirmation:'CONFIRM'})});assert.equal(confirm.status,202);const body=await confirm.json();assert.deepEqual(body.results.map(entry=>entry.label),['alpha','broken']);const [alphaResult,brokenResult]=body.results;assert.equal(alphaResult.status,'success');assert.equal(brokenResult.status,'failed');assert.equal(brokenResult.error,'walletLabel insufficient funds');assert.deepEqual(calls.filter(call=>call[0]==='mint').map(call=>call[1]),['user-a']);assert.equal(notifications.length,2);assert.match(notifications[1].message,/Mint failed/);assert.match(notifications[1].message,/Nothing was minted on Robinhood Chain/);assert.match(notifications[1].message,/insufficient funds/);});
 test('dashboard resources are user scoped and activity pagination has exact boundaries',async t=>{const {base,calls}=await operationsServer(t);assert.equal((await (await fetch(`${base}/api/wallets`,{headers:authHeaders('b')})).json()).length,0);assert.equal((await (await fetch(`${base}/api/tasks`,{headers:authHeaders('b')})).json()).total,0);assert.equal((await (await fetch(`${base}/api/pnl`,{headers:authHeaders('b')})).json()).length,0);const pages=[];for(const page of [1,2,3])pages.push(await (await fetch(`${base}/api/activity?page=${page}`,{headers:authHeaders('a')})).json());assert.deepEqual(pages.flatMap(value=>value.items.map(item=>item.id)),[1,2,3,4,5]);const deniedWallet=await fetch(`${base}/api/wallets/alpha`,{method:'DELETE',headers:authHeaders('b',true),body:JSON.stringify({confirmation:'CONFIRM'})});const deniedTask=await fetch(`${base}/api/tasks/task-a/control`,{method:'POST',headers:authHeaders('b',true),body:JSON.stringify({action:'cancel',confirmation:'CONFIRM'})});const deniedPnl=await fetch(`${base}/api/pnl/pnl-a`,{method:'DELETE',headers:authHeaders('b',true),body:JSON.stringify({confirmation:'CONFIRM'})});assert.deepEqual([deniedWallet.status,deniedTask.status,deniedPnl.status],[400,400,400]);assert.equal(calls.some(call=>['remove','control','deletePnl'].includes(call[0])),false);});
 
+test('schedule details expose durable attempt reasons only to the owning session',async t=>{
+  const {base}=await operationsServer(t);
+  const mine=await fetch(`${base}/api/tasks/task-a`,{headers:authHeaders('a')});
+  assert.equal(mine.status,200);
+  const detail=await mine.json();
+  assert.equal(detail.walletLabel,'alpha');
+  assert.equal(detail.attempts[0].outcome,'failure');
+  assert.match(detail.attempts[0].reason,/chain had not reached the public opening/i);
+  const other=await fetch(`${base}/api/tasks/task-a`,{headers:authHeaders('b')});
+  assert.equal(other.status,400);
+  assert.doesNotMatch(await other.text(),/Public mint|alpha|public opening/);
+});
+
 test('mint history is durable and session scoped',async t=>{const {base}=await operationsServer(t);const mine=await (await fetch(`${base}/api/mints/history`,{headers:authHeaders('a')})).json();const other=await (await fetch(`${base}/api/mints/history`,{headers:authHeaders('b')})).json();assert.equal(mine.total,1);assert.equal(mine.items[0].chain,'robinhood');assert.equal(other.total,0);assert.deepEqual(other.items,[]);});
 
 test('dashboard trigger endpoints cannot expose or configure another user targets',async t=>{const {base}=await operationsServer(t);const [snipers,rules]=await Promise.all([fetch(`${base}/api/snipers`,{headers:authHeaders('b')}),fetch(`${base}/api/watch-rules`,{headers:authHeaders('b')})]);assert.deepEqual((await snipers.json()).items,[]);assert.deepEqual((await rules.json()).items,[]);const target=await fetch(`${base}/api/targets/sniper-a?type=sniper`,{headers:authHeaders('b')});const sniper=await fetch(`${base}/api/snipers/sniper-a`,{method:'PUT',headers:authHeaders('b',true),body:'{}'});const rule=await fetch(`${base}/api/watch-rules/rule-a`,{method:'PUT',headers:authHeaders('b',true),body:'{}'});assert.deepEqual([target.status,sniper.status,rule.status],[400,400,400]);});
+
+test('dashboard exposes and writes the shared per-user sniper timing default with CSRF',async t=>{
+  const {base,calls}=await operationsServer(t);
+  const listing=await (await fetch(`${base}/api/snipers`,{headers:authHeaders('a')})).json();
+  assert.equal(listing.defaultObservationMode,'confirmed');
+  assert.deepEqual(listing.capabilities.pendingSupportedChains,['ethereum']);
+  const withoutCsrf=await fetch(`${base}/api/snipers/default`,{method:'PUT',
+    headers:{cookie:'ghostmint_session=token-a','content-type':'application/json'},body:'{}'});
+  assert.equal(withoutCsrf.status,403);
+  const saved=await fetch(`${base}/api/snipers/default`,{method:'PUT',headers:authHeaders('a',true),
+    body:JSON.stringify({observationMode:'pending',pendingRiskAccepted:true})});
+  assert.equal(saved.status,200);assert.deepEqual(await saved.json(),{observationMode:'pending'});
+  assert.deepEqual(calls.at(-1),['sniper-default','user-a',{observationMode:'pending',pendingRiskAccepted:true}]);
+});
 
 test('profile reports the account dashboard theme, defaulting to ghost-mint',async t=>{const {base}=await operationsServer(t);const profile=await (await fetch(`${base}/api/profile`,{headers:authHeaders('a')})).json();assert.equal(profile.theme,'ghost-mint');});
 test('dashboard theme updates persist per account, reject unknown themes, and require CSRF',async t=>{const {base}=await operationsServer(t);

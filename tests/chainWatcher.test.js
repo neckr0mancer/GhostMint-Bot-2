@@ -45,6 +45,32 @@ test('delivers block events from the active provider to onBlock', async () => {
   watcher.stop();
 });
 
+test('pending events are subscribed only on WebSocket and only when explicitly enabled',async()=>{
+  const seen=[];const wsProvider=fakeProvider();
+  const watcher=createChainWatcher({chain:'ethereum',rpcUrls:['https://rpc'],wsUrl:'wss://rpc',
+    providerFactory:()=>{throw new Error('unused');},wsProviderFactory:()=>wsProvider,
+    onBlock:()=>{},onPending:(value,provider)=>seen.push([value,provider]),pendingEnabled:true});
+  watcher.start();
+  assert.equal(watcher.pendingAvailable(),true);
+  wsProvider.emit('pending',`0x${'12'.repeat(32)}`);await new Promise(resolve=>setTimeout(resolve,0));
+  assert.deepEqual(seen,[[`0x${'12'.repeat(32)}`,wsProvider]]);
+  watcher.setPendingEnabled(false);assert.equal(watcher.pendingAvailable(),false);
+  wsProvider.emit('pending',`0x${'34'.repeat(32)}`);await new Promise(resolve=>setTimeout(resolve,0));
+  assert.equal(seen.length,1);
+  watcher.stop();
+});
+
+test('HTTP fallback never presents itself as pending-capable',()=>{
+  const httpProvider=fakeProvider();
+  const watcher=createChainWatcher({chain:'ethereum',rpcUrls:['https://rpc'],wsUrl:null,
+    providerFactory:()=>httpProvider,wsProviderFactory:()=>{},onBlock:()=>{},onPending:()=>{},pendingEnabled:true});
+  watcher.start();
+  assert.equal(watcher.mode(),'http');
+  assert.equal(watcher.pendingAvailable(),false);
+  assert.equal(httpProvider.listenerCount('pending'),0);
+  watcher.stop();
+});
+
 test('a dropped WebSocket falls back to HTTP polling immediately and reconnects to WS in the background', async () => {
   const httpProvider = fakeProvider();
   const wsProviders = [fakeProvider(), fakeProvider()];

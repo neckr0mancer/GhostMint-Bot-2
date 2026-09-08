@@ -52,6 +52,7 @@ function mapSniper(row) {
     dailySpendingCapETH:number(row.daily_spending_cap_eth), cooldownMs:row.cooldown_ms,
     maxAttempts:row.max_attempts, contractAllowlist:row.contract_allowlist || [],
     contractDenylist:row.contract_denylist || [], sourceConfirmations:row.source_confirmations,
+    observationMode:row.observation_mode || 'confirmed',
     active: row.active, hits: row.hits,
     fails: row.fails, lastFiredAt: time(row.last_fired_at), createdAt: time(row.created_at),
   };
@@ -192,10 +193,10 @@ function createPostgresStorage(pool) {
       const result = await pool.query(`INSERT INTO snipers
         (user_id,id,label,target_address,chain,wallet_label,value_mode,fixed_value_eth,max_value_eth,
           gas_boost_percent,max_gas_gwei,daily_spending_cap_eth,cooldown_ms,max_attempts,
-          contract_allowlist,contract_denylist,source_confirmations,active,hits,fails,last_fired_at,created_at)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
-          CASE WHEN $21::BIGINT IS NULL THEN NULL ELSE TO_TIMESTAMP($21 / 1000.0) END,
-          TO_TIMESTAMP($22 / 1000.0))
+          contract_allowlist,contract_denylist,source_confirmations,observation_mode,active,hits,fails,last_fired_at,created_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,
+          CASE WHEN $22::BIGINT IS NULL THEN NULL ELSE TO_TIMESTAMP($22 / 1000.0) END,
+          TO_TIMESTAMP($23 / 1000.0))
         ON CONFLICT (user_id,id) DO UPDATE SET label=EXCLUDED.label,target_address=EXCLUDED.target_address,
         chain=EXCLUDED.chain,wallet_label=EXCLUDED.wallet_label,value_mode=EXCLUDED.value_mode,
         fixed_value_eth=EXCLUDED.fixed_value_eth,max_value_eth=EXCLUDED.max_value_eth,
@@ -203,6 +204,7 @@ function createPostgresStorage(pool) {
         daily_spending_cap_eth=EXCLUDED.daily_spending_cap_eth,cooldown_ms=EXCLUDED.cooldown_ms,
         max_attempts=EXCLUDED.max_attempts,contract_allowlist=EXCLUDED.contract_allowlist,
         contract_denylist=EXCLUDED.contract_denylist,source_confirmations=EXCLUDED.source_confirmations,
+        observation_mode=EXCLUDED.observation_mode,
         active=EXCLUDED.active,hits=EXCLUDED.hits,
         fails=EXCLUDED.fails,last_fired_at=EXCLUDED.last_fired_at
         RETURNING id`,
@@ -210,7 +212,7 @@ function createPostgresStorage(pool) {
         sniper.valueMode, sniper.fixedValueETH || 0, sniper.maxValueETH ?? 0.1, sniper.gasBoostPercent ?? 20,
         sniper.maxGasGwei ?? 200, sniper.dailySpendingCapETH ?? 0.25, sniper.cooldownMs ?? 60_000,
         sniper.maxAttempts ?? 3, sniper.contractAllowlist || [], sniper.contractDenylist || [],
-        sniper.sourceConfirmations ?? 2, sniper.active, sniper.hits || 0, sniper.fails || 0,
+        sniper.sourceConfirmations ?? 2, sniper.observationMode || 'confirmed', sniper.active, sniper.hits || 0, sniper.fails || 0,
         sniper.lastFiredAt, sniper.createdAt || Date.now()]);
       return result.rowCount > 0;
     },

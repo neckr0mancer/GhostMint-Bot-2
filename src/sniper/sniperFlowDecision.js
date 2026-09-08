@@ -11,7 +11,7 @@
 // mint_guided validates/resolves a contract address before calling into mintFlowDecision at all.
 //
 // This is a copy-mode sniper's own shape: label -> target wallet to copy -> chain -> which of the
-// user's own wallets executes the copy -> fee tolerance & caps -> confirm. Every field left out of
+// user's own wallets executes the copy -> observation timing -> fee tolerance & caps -> confirm. Every field left out of
 // this flow (valueMode, gasBoostPercent, cooldownMs, maxAttempts, contract allow/deny lists,
 // sourceConfirmations) already has a working default in validateSniper -- this only ever asks for
 // what has none, plus the one combined tolerance/caps step, matching the same scope line
@@ -39,7 +39,20 @@ function afterChain({ data, wallets }) {
 }
 
 function afterWalletSelection({ data }) {
-  return { step: 'awaiting_tolerance', data };
+  return { step: 'awaiting_observation', data };
+}
+
+function afterObservation({ data, observationMode }) {
+  if (!['confirmed', 'pending'].includes(observationMode)) throw new Error('Unsupported sniper observation mode');
+  const nextData = { ...data, observationMode };
+  return observationMode === 'pending'
+    ? { step: 'awaiting_pending_risk', data: nextData }
+    : { step: 'awaiting_tolerance', data: nextData };
+}
+
+function afterPendingRisk({ data, accepted }) {
+  if (data.observationMode !== 'pending' || accepted !== true) throw new Error('Pending sniper risk was not accepted');
+  return { step: 'awaiting_tolerance', data: { ...data, pendingRiskAccepted: true } };
 }
 
 // After the fee-tolerance/caps step (defaults accepted as-is, or one/more typed by hand). Always
@@ -49,4 +62,5 @@ function afterTolerance({ data, maxGasGwei, maxValueETH, dailySpendingCapETH }) 
   return { step: 'awaiting_confirm', data: { ...data, maxGasGwei, maxValueETH, dailySpendingCapETH } };
 }
 
-module.exports = { DEFAULTS, afterLabel, afterTarget, afterChain, afterWalletSelection, afterTolerance };
+module.exports = { DEFAULTS, afterLabel, afterTarget, afterChain, afterWalletSelection, afterObservation,
+  afterPendingRisk, afterTolerance };

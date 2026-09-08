@@ -35,6 +35,37 @@ test('shared wallet commands cannot read or remove another Discord user wallet',
   assert.deepEqual(calls, []);
 });
 
+test('pending sniper mode is opt-in, WebSocket-gated, and a persisted per-user creation default',async()=>{
+  const saved=[];let defaultMode='pending';
+  const sniperService={validateCreate:input=>({id:'123e4567-e89b-42d3-a456-426614174000',
+    label:input.label,targetAddress:input.targetAddress,chain:input.chain,walletLabel:input.walletLabel,
+    observationMode:input.observationMode||'confirmed',maxValueETH:.01,dailySpendingCapETH:.02,
+    maxGasGwei:20,contractAllowlist:[],contractDenylist:[]})};
+  const identity={getSniperObservationDefault:async()=>defaultMode,
+    setSniperObservationDefault:async(_userId,value)=>{defaultMode=value;return value;}};
+  const {service}=fixture({sniperService,identity,storage:{saveSniper:async value=>saved.push(value)},
+    governanceRepository:{getEffectiveGovernance:async()=>({isOwner:true})},
+    targetPolicyService:{reset:async()=>{}},supportsPendingSniper:chain=>chain==='ethereum',
+    pendingSniperChains:['ethereum']});
+  const input={label:'copy',targetAddress:'0x0000000000000000000000000000000000000011',
+    chain:'ethereum',walletLabel:'alpha'};
+  await assert.rejects(service.createSniper('user-a',input),error=>error instanceof ValidationError
+    &&error.issues[0].field==='pendingRiskAccepted');
+  const created=await service.createSniper('user-a',{...input,pendingRiskAccepted:true});
+  assert.equal(created.observationMode,'pending');
+  assert.equal(saved.length,1);
+  await assert.rejects(service.setSniperObservationDefault('user-a',{observationMode:'pending'}),
+    error=>error instanceof ValidationError&&error.issues[0].field==='pendingRiskAccepted');
+  assert.equal(await service.setSniperObservationDefault('user-a',{observationMode:'confirmed'}),'confirmed');
+  assert.equal(defaultMode,'confirmed');
+
+  const unavailable=fixture({sniperService,identity:{getSniperObservationDefault:async()=>'pending'},
+    storage:{saveSniper:async()=>{}},governanceRepository:{getEffectiveGovernance:async()=>({isOwner:true})},
+    supportsPendingSniper:()=>false,pendingSniperChains:[]});
+  await assert.rejects(unavailable.service.createSniper('user-a',{...input,pendingRiskAccepted:true}),
+    error=>error instanceof ValidationError&&/address-filtered pending WebSocket stream/.test(error.issues[0].message));
+});
+
 test('personal security history cannot widen beyond the authenticated user', async () => {
   let requested;
   const { service } = fixture({ botSecurityRepository: { listRecent: async input => { requested = input; return []; } } });

@@ -55,6 +55,8 @@ const TARGET = '0x1111111111111111111111111111111111111111';
 function baseCommands(overrides = {}) {
   return {
     wallets: () => [{ label: 'main', chain: 'ethereum' }],
+    sniperObservationDefault:async()=> 'confirmed',
+    sniperCapabilities:()=>({pendingSupportedChains:['ethereum']}),
     createSniper: async () => { throw new Error('createSniper should have been overridden'); },
     ...overrides,
   };
@@ -88,7 +90,7 @@ test('an invalid target address is rejected without advancing the flow', async (
   assert.equal(ctx.flowState.get('discord', 'sniper-2').step, 'awaiting_label');
 });
 
-test('full happy path with more than one wallet: modal -> chain -> wallet -> accept default tolerance -> confirm -> createSniper receives the right shape', async () => {
+test('full happy path with more than one wallet: modal -> chain -> wallet -> timing -> tolerance -> confirm', async () => {
   const created = [];
   const commands = baseCommands({
     wallets: () => [{ label: 'main', chain: 'ethereum' }, { label: 'cold', chain: 'ethereum' }],
@@ -111,8 +113,13 @@ test('full happy path with more than one wallet: modal -> chain -> wallet -> acc
 
   const walletSelect = selectInteraction('flow:sniperwallet:select', ['cold'], 'sniper-3');
   await handler(walletSelect);
-  assert.equal(ctx.flowState.get('discord', 'sniper-3').step, 'awaiting_tolerance');
-  assert.deepEqual(walletSelect.updates[0].components[0].components.map(c => c.custom_id), ['flow:snipertoleranceaccept', 'flow:snipertolerancemanual']);
+  assert.equal(ctx.flowState.get('discord', 'sniper-3').step, 'awaiting_observation');
+  assert.match(walletSelect.updates[0].content,/When should this sniper copy/);
+
+  const timing=buttonInteraction('flow:sniperobservation:confirmed','sniper-3');
+  await handler(timing);
+  assert.equal(ctx.flowState.get('discord','sniper-3').step,'awaiting_tolerance');
+  assert.deepEqual(timing.updates[0].components[0].components.map(c => c.custom_id), ['flow:snipertoleranceaccept', 'flow:snipertolerancemanual']);
 
   const accept = buttonInteraction('flow:snipertoleranceaccept', 'sniper-3');
   await handler(accept);
@@ -126,6 +133,7 @@ test('full happy path with more than one wallet: modal -> chain -> wallet -> acc
   assert.deepEqual(created[0].input, {
     label: 'Whale copy', targetAddress: TARGET, chain: 'ethereum', walletLabel: 'cold',
     maxGasGwei: undefined, maxValueETH: undefined, dailySpendingCapETH: undefined,
+    observationMode:'confirmed',pendingRiskAccepted:false,
   });
   assert.equal(ctx.flowState.get('discord', 'sniper-3'), null);
 });
@@ -140,9 +148,9 @@ test('a single owned wallet is auto-selected -- the flow never shows a wallet pi
   const chainSelect = selectInteraction('flow:sniperchain:select', ['ethereum'], 'sniper-4');
   await handler(chainSelect);
   const flow = ctx.flowState.get('discord', 'sniper-4');
-  assert.equal(flow.step, 'awaiting_tolerance');
+  assert.equal(flow.step, 'awaiting_observation');
   assert.equal(flow.data.walletLabel, 'solo');
-  assert.deepEqual(chainSelect.updates[0].components[0].components.map(c => c.custom_id), ['flow:snipertoleranceaccept', 'flow:snipertolerancemanual']);
+  assert.match(chainSelect.updates[0].content,/When should this sniper copy/);
 });
 
 test('customizing tolerance opens a modal, and blank fields still fall back to defaults while typed ones carry through', async () => {
@@ -156,6 +164,7 @@ test('customizing tolerance opens a modal, and blank fields still fall back to d
   await handler(buttonInteraction('sniper:create:start', 'sniper-5'));
   await handler(modalInteraction('flow:snipercreate:submit', { label: 'Custom caps', targetAddress: TARGET }, 'sniper-5'));
   await handler(selectInteraction('flow:sniperchain:select', ['ethereum'], 'sniper-5'));
+  await handler(buttonInteraction('flow:sniperobservation:confirmed','sniper-5'));
 
   const manual = buttonInteraction('flow:snipertolerancemanual', 'sniper-5');
   await handler(manual);
@@ -182,6 +191,7 @@ test('a negative or non-numeric tolerance field is rejected without advancing th
   await handler(buttonInteraction('sniper:create:start', 'sniper-6'));
   await handler(modalInteraction('flow:snipercreate:submit', { label: 'x', targetAddress: TARGET }, 'sniper-6'));
   await handler(selectInteraction('flow:sniperchain:select', ['ethereum'], 'sniper-6'));
+  await handler(buttonInteraction('flow:sniperobservation:confirmed','sniper-6'));
   await handler(buttonInteraction('flow:snipertolerancemanual', 'sniper-6'));
 
   const bad = modalInteraction('flow:snipertolerance:submit', { maxGasGwei: '-5', maxValueETH: '', dailySpendingCapETH: '' }, 'sniper-6');
@@ -201,9 +211,29 @@ test('a ValidationError from createSniper is shown plainly and clears the flow i
   await handler(buttonInteraction('sniper:create:start', 'sniper-7'));
   await handler(modalInteraction('flow:snipercreate:submit', { label: 'x', targetAddress: TARGET }, 'sniper-7'));
   await handler(selectInteraction('flow:sniperchain:select', ['ethereum'], 'sniper-7'));
+  await handler(buttonInteraction('flow:sniperobservation:confirmed','sniper-7'));
   await handler(buttonInteraction('flow:snipertoleranceaccept', 'sniper-7'));
   const confirm = buttonInteraction('flow:sniperconfirm', 'sniper-7');
   await handler(confirm);
   assert.match(confirm.updates[0].content, /valid Ethereum address/);
   assert.equal(ctx.flowState.get('discord', 'sniper-7'), null);
+});
+
+test('pending timing requires its own explicit risk acknowledgement before tolerance or creation',async()=>{
+  const created=[];const commands=baseCommands({createSniper:async(_userId,input)=>{created.push(input);return input;}});
+  const ctx=ctxFor(commands,'sniper-risk');const handler=createDiscordInteractionHandler(ctx);
+  await handler(buttonInteraction('sniper:create:start','sniper-risk'));
+  await handler(modalInteraction('flow:snipercreate:submit',{label:'Pending copy',targetAddress:TARGET},'sniper-risk'));
+  await handler(selectInteraction('flow:sniperchain:select',['ethereum'],'sniper-risk'));
+  const pending=buttonInteraction('flow:sniperobservation:pending','sniper-risk');await handler(pending);
+  assert.equal(ctx.flowState.get('discord','sniper-risk').step,'awaiting_pending_risk');
+  assert.match(pending.updates[0].content,/source has not confirmed/i);
+  assert.equal(created.length,0);
+  const acceptRisk=buttonInteraction('flow:sniperpendingrisk:accept','sniper-risk');await handler(acceptRisk);
+  assert.equal(ctx.flowState.get('discord','sniper-risk').step,'awaiting_tolerance');
+  await handler(buttonInteraction('flow:snipertoleranceaccept','sniper-risk'));
+  await handler(buttonInteraction('flow:sniperconfirm','sniper-risk'));
+  assert.equal(created.length,1);
+  assert.equal(created[0].observationMode,'pending');
+  assert.equal(created[0].pendingRiskAccepted,true);
 });

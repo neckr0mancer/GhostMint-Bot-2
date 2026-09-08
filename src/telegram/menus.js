@@ -725,12 +725,12 @@ function confirmCancelTask(task) {
   };
 }
 
-// Section O -- performs the same lookup /snipers already does, matching its exact list format
-// (Post-confirmation copying disclaimer included) rather than replying "use /snipers".
+// Section O -- performs the same lookup /snipers already does, including each sniper's actual
+// observation timing rather than applying one global claim to a now-mixed list.
 function sniperMenu(snipers) {
   if (!snipers.length) {
     return {
-      text: '<b>🎯 Snipers</b>\n\nNo snipers configured.\n<i>Post-confirmation copy snipers replicate a target wallet\'s confirmed mint from one of yours -- not mempool front-running.</i>',
+      text: '<b>🎯 Snipers</b>\n\nNo snipers configured.\n<i>New snipers use safe after-confirmation copying unless you explicitly choose pending-mempool mode.</i>',
       replyMarkup: keyboard([[button('➕ Create sniper', 'sniper:create:start')], [button('⬅️ Back to base', 'menu:main')]]),
       parseMode: 'HTML',
     };
@@ -738,10 +738,10 @@ function sniperMenu(snipers) {
   // The full address, never truncated -- a shortened display would still be <code>-wrapped and look
   // tap-to-copy, but copying it hands back a truncated string that isn't a usable address at all.
   const list = snipers.map(s =>
-    `${s.active ? '🟢' : '⚪'} <b>${escapeTelegramHtml(s.label)}</b>\nTarget: <code>${s.targetAddress}</code>\nChain: ${s.chain} · Wallet: ${escapeTelegramHtml(s.walletLabel)}\nHits: ${s.hits || 0} · Fails: ${s.fails || 0}`,
+    `${s.active ? '🟢' : '⚪'} <b>${escapeTelegramHtml(s.label)}</b>\nTarget: <code>${s.targetAddress}</code>\nChain: ${s.chain} · Wallet: ${escapeTelegramHtml(s.walletLabel)}\nMode: ${(s.observationMode || 'confirmed') === 'pending' ? '⚡ pending mempool (high risk)' : '🛡️ after confirmation'}\nHits: ${s.hits || 0} · Fails: ${s.fails || 0}`,
   ).join('\n\n');
   return {
-    text: `<b>🎯 Post-confirmation copy snipers (${snipers.length})</b>\n<i>Not mempool front-running: copying begins only after the source transaction confirms.</i>\n\n${list}`,
+    text: `<b>🎯 Wallet-copy snipers (${snipers.length})</b>\n<i>After-confirmation is the default. Pending-mempool mode is opt-in and labelled per sniper.</i>\n\n${list}`,
     replyMarkup: keyboard([[button('➕ Create sniper', 'sniper:create:start')], [button('⬅️ Back to base', 'menu:main')]]),
     parseMode: 'HTML',
   };
@@ -878,6 +878,35 @@ function sniperChainSelect(supportedChains, chains) {
   return { text: 'Which chain does that wallet operate on?', replyMarkup: keyboard(rows), parseMode: 'HTML' };
 }
 
+function sniperObservationMode({ defaultMode = 'confirmed', pendingSupported = false } = {}) {
+  const defaultLabel = defaultMode === 'pending' ? 'Pending mempool' : 'After confirmation';
+  const rows = [
+    [button(`Use my default · ${defaultLabel}`, 'flow:sniperobservation:default')],
+    [button('🛡️ After confirmation · safer', 'flow:sniperobservation:confirmed')],
+  ];
+  if (pendingSupported) rows.push([button('⚡ Pending mempool · highest risk', 'flow:sniperobservation:pending')]);
+  rows.push([button('❌ Cancel', 'flow:cancel:ask')]);
+  return {
+    text: '<b>When should this sniper copy?</b>\n\n'
+      + '🛡️ <b>After confirmation</b> is the safe default. The source is confirmed before your copy is sent.\n\n'
+      + (pendingSupported
+        ? '⚠️ <b>Pending mempool</b> may send while the source is still unconfirmed. Your copy can still spend gas and value if the source is dropped, replaced, or reverts.'
+        : 'Pending mempool mode is unavailable on this chain because no supported address-filtered stream is configured.'),
+    replyMarkup: keyboard(rows), parseMode: 'HTML',
+  };
+}
+
+function sniperPendingRiskWarning() {
+  return {
+    text: '<b>⚠️ Confirm pending-mempool risk</b>\n\nThe source has not confirmed when your copy is sent. If it is dropped, replaced, or reverts, your copy can still execute and spend gas or mint value. All configured caps and simulation still apply.\n\nContinue only if you accept that risk.',
+    replyMarkup: keyboard([
+      [button('⚡ I understand — use pending mode', 'flow:sniperpendingrisk:accept')],
+      [button('🛡️ Use after-confirmation instead', 'flow:sniperobservation:confirmed')],
+      [button('❌ Cancel', 'flow:cancel:ask')],
+    ]), parseMode: 'HTML',
+  };
+}
+
 // Every field here already has a working default in validateSniper -- accepting them is one tap;
 // customizing walks the three fields one at a time (awaiting_tolerance_gas/_value/_cap in
 // server.js), the same free-text-with-a-default-hint shape watch_guided's awaiting_config uses.
@@ -896,7 +925,7 @@ function sniperTolerancePrompt({ maxGasGwei, maxValueETH, dailySpendingCapETH })
 function sniperConfirmation(data) {
   const fmt = (value, fallback) => (value === undefined || value === null ? `default (${fallback})` : value);
   return {
-    text: `<b>🎯 Confirm sniper</b>\nLabel: <b>${escapeTelegramHtml(data.label)}</b>\nTarget: <code>${data.targetAddress}</code>\nChain: ${data.chain}\nWallet: ${escapeTelegramHtml(data.walletLabel)}\nMax gas: ${fmt(data.maxGasGwei, '200 gwei')}\nMax value/fire: ${fmt(data.maxValueETH, '0.1 ETH')}\nDaily cap: ${fmt(data.dailySpendingCapETH, '0.25 ETH')}\n\nCreate this sniper?`,
+    text: `<b>🎯 Confirm sniper</b>\nLabel: <b>${escapeTelegramHtml(data.label)}</b>\nTarget: <code>${data.targetAddress}</code>\nChain: ${data.chain}\nWallet: ${escapeTelegramHtml(data.walletLabel)}\nObservation: ${data.observationMode === 'pending' ? '⚡ Pending mempool · source unconfirmed' : '🛡️ After confirmation'}\nMax gas: ${fmt(data.maxGasGwei, '200 gwei')}\nMax value/fire: ${fmt(data.maxValueETH, '0.1 ETH')}\nDaily cap: ${fmt(data.dailySpendingCapETH, '0.25 ETH')}${data.observationMode === 'pending' ? '\n\n⚠️ Your copy may still spend if the source is later dropped, replaced, or reverted.' : ''}\n\nCreate this sniper?`,
     replyMarkup: keyboard([
       [button('✅ Create', 'flow:sniperconfirm')],
       [button('❌ Cancel', 'flow:cancel:ask')],
@@ -1040,6 +1069,8 @@ module.exports = {
   gasMenu,
   sniperMenu,
   sniperChainSelect,
+  sniperObservationMode,
+  sniperPendingRiskWarning,
   sniperTolerancePrompt,
   sniperConfirmation,
   activityMenu,

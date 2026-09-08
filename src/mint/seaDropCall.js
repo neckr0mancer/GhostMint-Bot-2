@@ -1,6 +1,7 @@
 const { formatEther, Interface, isAddress } = require('ethers');
 const { ValidationError } = require('../validation/domain');
-const { MINT_PUBLIC_FRAGMENT, SEADROP_CORE_INTERFACE, SEADROP_MINT_SIGNATURE } = require('./seaDropRegistry');
+const { CANONICAL_SEADROP_CORE_ADDRESS, MINT_PUBLIC_FRAGMENT, SEADROP_CORE_INTERFACE,
+  SEADROP_MINT_SIGNATURE } = require('./seaDropRegistry');
 
 // OpenSea's drop builder is not SeaDrop-only. Archetype ERC-721A collections (including the
 // verified Raised Fist contract on Robinhood Chain) return calldata for one of these two known
@@ -253,8 +254,7 @@ function validateOpenSeaMintCall({ built, contractAddress, quantity: expectedQua
   // MINT-008: gated methods must target the canonical SeaDrop core (same CREATE2 address
   // on every chain) — a malicious same-selector contract could retain msg.value.
   if (gatedMethod) {
-    const CANONICAL_SEADROP = '0x00005ea00ac477b1030ce78506496e8c2de24bf5';
-    if (built?.to?.toLowerCase() !== CANONICAL_SEADROP) {
+    if (built?.to?.toLowerCase() !== CANONICAL_SEADROP_CORE_ADDRESS.toLowerCase()) {
       invalid('target', `gated calldata must target the canonical SeaDrop core, got ${built?.to}`,
         `gated calldata must target the canonical SeaDrop core, got ${built?.to}`);
     }

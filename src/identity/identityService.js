@@ -35,6 +35,14 @@ function createIdentityService(identityRepository, { now = () => Date.now(), lin
       return identityRepository.resolveOrCreateIdentity(normalizeIdentity(platform, platformUserId));
     },
 
+    getSniperObservationDefault(userId) {
+      return identityRepository.getSniperObservationDefault(userId);
+    },
+
+    setSniperObservationDefault(userId, observationMode) {
+      return identityRepository.setSniperObservationDefault(userId, observationMode);
+    },
+
     async createLinkCode(userId) {
       const code = randomBytes(5).toString('hex').toUpperCase();
       const expiresAt = now() + linkTtlMs;

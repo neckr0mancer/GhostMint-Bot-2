@@ -38,6 +38,20 @@ test('Schedule exposes its countdown and readable metadata on mobile',()=>{
   assert.match(css,/\.app\[data-m\] \.schedule-countdown/);
 });
 
+test('Schedule details are discoverable without replacing single-click row selection',()=>{
+  assert.match(app,/function TaskDetails\(\{summary,onClose\}\)/);
+  assert.match(app,/`\/api\/tasks\/\$\{encodeURIComponent\(summary\.id\)\}`/);
+  assert.match(app,/onClick=\{\(\)=>chooseRow\(task\)\}/,
+    'single click must remain the existing row-selection gesture');
+  assert.match(app,/onDoubleClick=\{event=>\{event\.preventDefault\(\);event\.stopPropagation\(\);setDetailTask\(task\);\}\}/);
+  assert.match(app,/>Details<\/button>/,'an explicit keyboard and touch action must accompany double click');
+  assert.match(app,/<CountdownRing target=\{countdownTarget\}/);
+  assert.match(app,/Latest recorded reason/);
+  assert.match(app,/Attempt history/);
+  assert.match(css,/\.schedule-detail-grid\{display:grid;grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/);
+  assert.match(css,/@media\(max-width:700px\)[\s\S]*\.schedule-detail-grid\{grid-template-columns:1fr\}/);
+});
+
 test('Mint tabs and page changes preserve drafts and in-flight detection',()=>{
   for(const tab of ['now','schedule','batch','presets'])assert.match(app,new RegExp(`hidden=\\{active!==['"]${tab}['"]\\}`));
   assert.match(app,/const \[mintWorkspaceMounted,setMintWorkspaceMounted\]=useState/);

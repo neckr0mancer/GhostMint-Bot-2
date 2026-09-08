@@ -718,15 +718,40 @@ function tasksMenu(page) {
   };
 }
 
-// Section O -- performs the same lookup /sniper list already does, matching its exact list format
-// (Post-confirmation copying disclaimer included) rather than replying "use /sniper list".
+// Section O -- performs the same lookup /sniper list already does and labels each sniper's real
+// timing. A mixed confirmed/pending list must never inherit one global safety claim.
 function snipersMenu(snipers) {
   const lines = snipers.length
-    ? snipers.map(item => `${item.label} [${item.active ? 'active' : 'inactive'}] — ${item.id}`).join('\n')
+    ? snipers.map(item => `${item.label} [${item.active ? 'active' : 'inactive'}] — ${(item.observationMode || 'confirmed') === 'pending' ? '⚡ pending mempool · high risk' : '🛡️ after confirmation'} — ${item.id}`).join('\n')
     : 'No matching snipers.';
   return {
-    content: `🎯 Post-confirmation copying only; not mempool front-running.\n${lines}`,
+    content: `🎯 After-confirmation copying is the default. Pending-mempool copying is opt-in and labelled per sniper.\n${lines}`,
     components: [row([button('➕ Create sniper', 'sniper:create:start')]), row([button('⬅️ Back to menu', 'menu:main')])],
+  };
+}
+
+function sniperObservationMode({ defaultMode = 'confirmed', pendingSupported = false } = {}) {
+  const components = [row([
+    button(`Default · ${defaultMode === 'pending' ? 'Pending' : 'Confirmed'}`, 'flow:sniperobservation:default'),
+    button('🛡️ Confirmed', 'flow:sniperobservation:confirmed', 'success'),
+  ])];
+  if (pendingSupported) components.push(row([button('⚡ Pending mempool · high risk', 'flow:sniperobservation:pending', 'danger')]));
+  return {
+    content: '**When should this sniper copy?**\n\n🛡️ **After confirmation** verifies the source first and is the safe default.\n\n'
+      + (pendingSupported
+        ? '⚠️ **Pending mempool** may send while the source is unconfirmed. Your copy can still spend if the source is dropped, replaced, or reverts.'
+        : 'Pending mode is unavailable on this chain because no supported address-filtered stream is configured.'),
+    components,
+  };
+}
+
+function sniperPendingRiskWarning() {
+  return {
+    content: '**⚠️ Confirm pending-mempool risk**\n\nThe source has not confirmed when your copy is sent. If it is dropped, replaced, or reverts, your copy can still execute and spend gas or mint value. All configured caps and simulation still apply.',
+    components: [row([
+      button('⚡ I understand — continue', 'flow:sniperpendingrisk:accept', 'danger'),
+      button('🛡️ Use confirmed instead', 'flow:sniperobservation:confirmed'),
+    ])],
   };
 }
 
@@ -780,7 +805,7 @@ function sniperToleranceModal(defaults) {
 function sniperConfirmation(data) {
   const fmt = (value, fallback) => (value === undefined || value === null || Number.isNaN(value) ? `default (${fallback})` : value);
   return {
-    content: `## 🎯 Confirm sniper\nLabel: ${data.label}\nTarget: \`${data.targetAddress}\`\nChain: ${data.chain}\nWallet: ${data.walletLabel}\nMax gas: ${fmt(data.maxGasGwei, '200 gwei')}\nMax value/fire: ${fmt(data.maxValueETH, '0.1 ETH')}\nDaily cap: ${fmt(data.dailySpendingCapETH, '0.25 ETH')}\n\nCreate this sniper?`,
+    content: `## 🎯 Confirm sniper\nLabel: ${data.label}\nTarget: \`${data.targetAddress}\`\nChain: ${data.chain}\nWallet: ${data.walletLabel}\nObservation: ${data.observationMode === 'pending' ? '⚡ pending mempool · source unconfirmed' : '🛡️ after confirmation'}\nMax gas: ${fmt(data.maxGasGwei, '200 gwei')}\nMax value/fire: ${fmt(data.maxValueETH, '0.1 ETH')}\nDaily cap: ${fmt(data.dailySpendingCapETH, '0.25 ETH')}${data.observationMode === 'pending' ? '\n\n⚠️ Your copy may still spend if the source is dropped, replaced, or reverted.' : ''}\n\nCreate this sniper?`,
     components: [row([button('✅ Create', 'flow:sniperconfirm', 'success'), button('❌ Cancel', 'flow:cancel:ask', 'danger')])],
   };
 }
@@ -982,7 +1007,8 @@ module.exports = {
   button, row, select, mainMenu, mintModeMenu, batchImportMenu, gateUnlockCard,
   securityBanner, securityNeedsAttention, securitySetupCard, walletsMenu, settingsMenu, placeholderMenu,
   chainSelect, walletSelect, walletMultiSelect, confirmRemoveWallet, confirmExportWallet, confirmCancelTask, labelModal, gasMenu, activityMenu, tasksMenu, snipersMenu, adminOverviewMenu,
-  sniperDetailsModal, sniperTolerancePrompt, sniperToleranceModal, sniperConfirmation,
+  sniperDetailsModal, sniperObservationMode, sniperPendingRiskWarning,
+  sniperTolerancePrompt, sniperToleranceModal, sniperConfirmation,
   modeMenu, MODE_META,
   contractDetailsText, collectionInfoCard, openSeaPhasePicker, humanizeStageType, mintQuantitySelect, mintPriceStep, gasTolerancePrompt, mintConfirmation, numberModal,
   taskNameQuickPicks, taskConfirmation,

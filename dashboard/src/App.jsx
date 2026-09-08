@@ -2,7 +2,7 @@
 import React,{useCallback,useEffect,useRef,useState} from 'react';
 import QRCode from 'qrcode';
 import Admin from './Admin.jsx';
-import {shortAddress} from './dashboardWidgets/homeParts.jsx';
+import {CountdownRing,shortAddress} from './dashboardWidgets/homeParts.jsx';
 import PnlBars from './PnlBars.jsx';
 import {loadError,batchRowDetail,useRetryAfter} from './shared.jsx';
 import {walletPerformance,pnlWalletLabel} from './walletPerformance.js';
@@ -1276,6 +1276,77 @@ function scheduleStageSelectionKey(stage){
 let pendingSchedulePrefill=null;
 function setPendingSchedulePrefill(value){pendingSchedulePrefill=value;}
 function consumePendingSchedulePrefill(){const value=pendingSchedulePrefill;pendingSchedulePrefill=null;return value;}
+
+function taskDetailTime(value){return value?formatScheduleDateTime(value):'Not recorded';}
+function taskAttemptTone(value){return ({success:'ok',failure:'bad',retry:'wn',running:'info',recovered:'nu'})[value]||'nu';}
+function TaskDetails({summary,onClose}){
+  const detail=useLoad(`/api/tasks/${encodeURIComponent(summary.id)}`,[summary.id],'tasks.changed');
+  const task=detail.data||summary;
+  const active=['scheduled','retry','claimed'].includes(String(task.status||'').toLowerCase());
+  const countdownTarget=task.nextAttemptAt||task.mintTime;
+  const attempts=detail.data?.attempts||[];
+  const chain=chainMeta(task.chain);
+  const price=(task.viaOpenSea||task.stageType)
+    ?'Checked live when the mint runs'
+    :`${Number(task.price||0)} ETH each`;
+  return <Overlay open onClose={onClose} wide title={task.name||'Scheduled mint'}
+    subtitle={`${task.walletLabel||'Unknown wallet'} · ${chain.label||task.chain||'Unknown chain'}`}>
+    <Notice error={detail.error?{title:'Could not load the full schedule record.',
+      detail:'The schedule itself was not changed.',code:detail.status?`${detail.status} · Request failed safely`:'Request failed safely',
+      onRetry:detail.load}:null}/>
+    {!detail.data&&!detail.error&&<div aria-busy="true">{[0,1,2,3].map(item=><div className="sk row" key={item}></div>)}</div>}
+    {task&&<div className="g schedule-detail">
+      {active&&countdownTarget&&<div className="card schedule-detail-clock">
+        <CountdownRing target={countdownTarget} from={task.createdAt}
+          title={task.phaseWaitCount>0?'Next eligibility check':'Scheduled mint'}
+          meta={String(task.status||'scheduled')}/>
+      </div>}
+      {task.lastError&&<div className="nt w" role="status">{WARN_TRIANGLE_ICON}<div>
+        <b>Latest recorded reason</b>{task.lastError}</div></div>}
+      <div className="schedule-detail-grid">
+        <div className="sober"><div className="sh">Mint</div><table className="led"><tbody>
+          <tr><td>Status</td><td><span className={`p ${BUCKET_TONE[bucketOf(task)]||'nu'}`}>{bucketOf(task)==='expired'?'expired':task.status}</span></td></tr>
+          <tr><td>Wallet</td><td>{task.walletLabel||'Unknown'}</td></tr>
+          <tr><td>Chain</td><td>{chain.label||task.chain||'Unknown'}</td></tr>
+          <tr><td>Contract</td><td className="mono schedule-detail-address">{task.contract||'Unknown'}{task.contract&&<CopyButton value={task.contract} label="Copy contract address"/>}</td></tr>
+          <tr><td>Method</td><td className="mono">{task.fn||'mint'}</td></tr>
+          <tr><td>Quantity</td><td>{task.qty??'Unknown'}</td></tr>
+          <tr><td>Price</td><td>{price}</td></tr>
+          <tr><td>Stage</td><td>{task.stageLabel||task.stageType||'Not stage-linked'}</td></tr>
+        </tbody></table></div>
+        <div className="sober"><div className="sh">Timing</div><table className="led"><tbody>
+          <tr><td>Created</td><td>{taskDetailTime(task.createdAt)}</td></tr>
+          <tr><td>Scheduled for</td><td>{taskDetailTime(task.mintTime)}</td></tr>
+          <tr><td>Next worker check</td><td>{taskDetailTime(task.nextAttemptAt)}</td></tr>
+          <tr><td>Eligibility deadline</td><td>{taskDetailTime(task.eligibilityDeadline)}</td></tr>
+          <tr><td>Completed</td><td>{taskDetailTime(task.completedAt)}</td></tr>
+          <tr><td>Execution attempts</td><td>{Math.max(0,Number(task.attemptCount||0)-Number(task.phaseWaitCount||0))} of {task.maxAttempts||3}</td></tr>
+          <tr><td>Phase checks</td><td>{task.phaseWaitCount||0}</td></tr>
+        </tbody></table></div>
+      </div>
+      <div className="schedule-attempts">
+        <div className="sh">Attempt history</div>
+        {attempts.length===0&&<div className="empty-state compact"><h3>No attempts yet</h3>
+          <p>This schedule has not reached an execution or eligibility check.</p></div>}
+        {attempts.map(attempt=>{
+          const explorer=attempt.transaction?.txHash&&explorerForChain(attempt.transaction.chain||task.chain);
+          return <div className="r schedule-attempt" key={attempt.attemptId}>
+            <div className="rm"><div className="rt">Attempt {attempt.attemptNumber}</div>
+              <div className="rs">{taskDetailTime(attempt.startedAt)}{attempt.finishedAt?` · finished ${taskDetailTime(attempt.finishedAt)}`:''}</div>
+              {attempt.reason&&<div className="schedule-attempt-reason">{attempt.reason}</div>}
+              {attempt.transaction&&<div className="rs mono">Transaction: {attempt.transaction.state||'recorded'}</div>}
+            </div>
+            <div className="rv schedule-attempt-state">
+              {explorer&&<a className="b sm" href={`${explorer}${attempt.transaction.txHash}`}
+                target="_blank" rel="noopener noreferrer">Explorer</a>}
+              <span className={`p ${taskAttemptTone(attempt.outcome)}`}>{attempt.outcome}</span>
+            </div>
+          </div>;
+        })}
+      </div>
+    </div>}
+  </Overlay>;
+}
 function Tasks({profile,active=true,onCommitChange}){const mobile=useIsMobile();const [page,setPage]=useState(1);const [search,setSearch]=useState('');const [bucket,setBucket]=useState('pending');const [filtersOpen,setFiltersOpen]=useState(false);const [serverFilters,setServerFilters]=useState(null);const PAGE_SIZE=mobile?3:10;const COMPAT_LIMIT=50;const listing=useLoad(serverFilters===false?`/api/tasks?page=1&pageSize=${COMPAT_LIMIT}&search=${encodeURIComponent(search)}`:`/api/tasks?page=${page}&pageSize=${PAGE_SIZE}&status=${bucket}&search=${encodeURIComponent(search)}`,[page,bucket,search,serverFilters,PAGE_SIZE],'tasks.changed');const wallets=useLoad('/api/wallets',[],'wallets.changed');const contractInputRef=useRef(null);const [chain,setChain]=useState(profile.defaultChain||profile.supportedChains[0]);const [contractAddress,setContractAddress]=useState('');const [taskName,setTaskName]=useState('');const [detectedName,setDetectedName]=useState('');const [detectedSeaDrop,setDetectedSeaDrop]=useState(false);const [quantity,setQuantity]=useState('1');const [maxPerWallet,setMaxPerWallet]=useState(null);const [priceETH,setPriceETH]=useState('');const [mintTime,setMintTime]=useState('');const [viaOpenSea,setViaOpenSea]=useState(false);const [detectedOpenSeaRecommendation,setDetectedOpenSeaRecommendation]=useState(false);const [stageType,setStageType]=useState('');const [stages,setStages]=useState([]);const [selectedStageKey,setSelectedStageKey]=useState('');const [scheduleWallet,setScheduleWallet]=useState('');const [pendingRows,setPendingRows]=useState([]);const [detecting,setDetecting]=useState(false);const [detectionError,setDetectionError]=useState('');const [detectionRetryable,setDetectionRetryable]=useState(false);const [submitting,setSubmitting]=useState(false);const [controlBusy,setControlBusy]=useState('');const lastDetected=useRef('');
   // The prototype's Schedule form has no price field, because it assumes the contract can be
   // priced automatically. Some cannot -- the server then rejects with a priceETH issue and there
@@ -1284,6 +1355,7 @@ function Tasks({profile,active=true,onCommitChange}){const mobile=useIsMobile();
   // .fielderr. A gap in the design rather than a departure from it; see backlog §14.
   const [priceIssue,setPriceIssue]=useState(null);
   const [selectedIds,setSelectedIds]=useState([]);
+  const [detailTask,setDetailTask]=useState(null);
   useEffect(()=>{if(active)contractInputRef.current?.focus({preventScroll:true});},[active]);
   // A phone deliberately shows three schedules per page. Reset page-scoped selection when the
   // breakpoint changes so a desktop page 5 cannot become an empty mobile page 5.
@@ -1774,6 +1846,7 @@ function Tasks({profile,active=true,onCommitChange}){const mobile=useIsMobile();
                      role="button" tabIndex={selectable?0:-1}
                      aria-pressed={chosen} aria-disabled={selectable?undefined:true}
                      onClick={()=>chooseRow(task)}
+                     onDoubleClick={event=>{event.preventDefault();event.stopPropagation();setDetailTask(task);}}
                      onKeyDown={event=>{if(event.key==='Enter'||event.key===' '){
                        event.preventDefault();chooseRow(task);}}}>
                      {rowIcon(task.status)}
@@ -1781,7 +1854,10 @@ function Tasks({profile,active=true,onCommitChange}){const mobile=useIsMobile();
                        <div className="rt">{task.name}</div>
                        <div className="rs fold">{rowMeta(task)}</div>
                      </div>
-                     <div className="rv schedule-row-right">{rowCountdown(task)}{rowPill(task)}</div>
+                     <div className="rv schedule-row-right">{rowCountdown(task)}{rowPill(task)}
+                       <button type="button" className="b sm schedule-detail-open"
+                         onClick={event=>{event.stopPropagation();setDetailTask(task);}}>Details</button>
+                     </div>
                    </div>;
                  })}
                  {/* All four always present, as the prototype draws them; the ones that cannot
@@ -1804,6 +1880,8 @@ function Tasks({profile,active=true,onCommitChange}){const mobile=useIsMobile();
         </fieldset>
       </div>
     </div>
+    {detailTask&&<TaskDetails key={detailTask.id} summary={detailTask}
+      onClose={()=>setDetailTask(null)}/>}
   </div>;
 }
 // One tone per outcome, so a list reads the same way everywhere. Extends the Schedule card's
@@ -2168,7 +2246,7 @@ function jsonForm(event){event.preventDefault();const form=event.currentTarget;r
 // policyFor: which card has its policy expanded. A policy configures an existing target, so it
 // now lives ON that target's card rather than on a page of its own (brief §2). Same PolicyEditor,
 // same routes, new place -- including the bypass challenge, which keeps its explicit CONFIRM step.
-function Snipers({formOnly=false}={}){const listing=useLoad('/api/snipers',[],'snipers.changed');const [editing,setEditing]=useState(null);const [query,setQuery]=useState('');const [policyFor,setPolicyFor]=useState(null);async function save(event){try{const {form,value}=jsonForm(event);const wasEditing=editing;await api(editing?`/api/snipers/${editing}`:'/api/snipers',{method:editing?'PUT':'POST',body:JSON.stringify(value)});form.reset();setEditing(null);notify(wasEditing?'Sniper updated.':'Sniper created.',{type:'success'});listing.load();}catch(value){notify(value.message,{type:'error'});}}async function remove(id){if(!await confirmDialog('Remove this post-confirmation copy sniper?'))return;try{await api(`/api/snipers/${id}`,{method:'DELETE',body:JSON.stringify({confirmation:'CONFIRM'})});listing.load();}catch(value){notify(value.message,{type:'error'});}}const normalized=query.trim().toLowerCase();const filtered=listing.data?{...listing.data,items:normalized?listing.data.items.filter(item=>[item.label,item.chain,item.walletLabel].filter(Boolean).some(value=>String(value).toLowerCase().includes(normalized))):listing.data.items}:null;return <>{!formOnly&&<><p className="page-lead">Copies confirmed wallet transactions after their confirmation threshold. This is not mempool front-running.</p><Notice error={loadError(listing,'Could not load your triggers.')}/><div className="page-toolbar"><label className="page-search">Find a sniper<input type="search" value={query} placeholder="Label, chain, wallet…" onChange={e=>setQuery(e.target.value)}/></label></div></>}<Form className="form-json" title={editing?'Edit sniper patch':'Create sniper'} note="The same M10 validation and M7a ceilings used by Telegram and Discord apply here." onSubmit={save}><label>Configuration JSON<textarea name="json" required defaultValue={editing?'{}':'{"label":"copy","targetAddress":"0x0000000000000000000000000000000000000001","chain":"ethereum","walletLabel":"wallet","maxValueETH":0.01,"maxGasGwei":50,"dailySpendingCapETH":0.05,"cooldownMs":60000,"maxAttempts":3}'}/></label><button className="b p">{editing?'Apply validated patch':'Create sniper'}</button></Form>{!formOnly&&(listing.data===null?<Skeleton/>:<div className="card-grid sniper-grid">{filtered.items.map(item=>{const recent=listing.data.events.filter(event=>event.sniperId===item.id)[0];return <article className="card" key={item.id}><StatusPill status={recent?.state||'no events'}/><h2>{item.label}</h2><p className="warning">Post-confirmation copy; not front-running.</p><p>{item.chain} · wallet {item.walletLabel}</p><p>Max {item.maxValueETH} ETH · Gas {item.maxGasGwei} gwei · Daily {item.dailySpendingCapETH} ETH</p><p>Cooldown {item.cooldownMs} ms · Attempts {item.maxAttempts}</p><p>Allow: {item.contractAllowlist.join(', ')||'any'}<br/>Deny: {item.contractDenylist.join(', ')||'none'}</p><div className="br"><button className="b g sm" onClick={()=>setEditing(item.id)}>Edit</button><button className="b g sm" aria-expanded={policyFor===item.id} onClick={()=>setPolicyFor(policyFor===item.id?null:item.id)}>{policyFor===item.id?'Hide policy':'Policy'}</button><button className="b d sm" onClick={()=>remove(item.id)}>Remove</button></div>{policyFor===item.id&&<PolicyEditor target={{id:item.id,label:item.label,type:'sniper'}}/>}</article>})}{filtered.items.length===0&&<Empty text={normalized?'No snipers match this search.':'No snipers yet. Create one above to start post-confirmation copying.'}/>}</div>)}</>}
+function Snipers({formOnly=false}={}){const listing=useLoad('/api/snipers',[],'snipers.changed');const [editing,setEditing]=useState(null);const [query,setQuery]=useState('');const [policyFor,setPolicyFor]=useState(null);async function save(event){try{const {form,value}=jsonForm(event);const wasEditing=editing;await api(editing?`/api/snipers/${editing}`:'/api/snipers',{method:editing?'PUT':'POST',body:JSON.stringify(value)});form.reset();setEditing(null);notify(wasEditing?'Sniper updated.':'Sniper created.',{type:'success'});listing.load();}catch(value){notify(value.message,{type:'error'});}}async function remove(id){if(!await confirmDialog('Remove this wallet-copy sniper?'))return;try{await api(`/api/snipers/${id}`,{method:'DELETE',body:JSON.stringify({confirmation:'CONFIRM'})});listing.load();}catch(value){notify(value.message,{type:'error'});}}const normalized=query.trim().toLowerCase();const filtered=listing.data?{...listing.data,items:normalized?listing.data.items.filter(item=>[item.label,item.chain,item.walletLabel].filter(Boolean).some(value=>String(value).toLowerCase().includes(normalized))):listing.data.items}:null;return <>{!formOnly&&<><p className="page-lead">After-confirmation is the safe default. Pending-mempool timing is an explicit high-risk option.</p><Notice error={loadError(listing,'Could not load your triggers.')}/><div className="page-toolbar"><label className="page-search">Find a sniper<input type="search" value={query} placeholder="Label, chain, wallet…" onChange={e=>setQuery(e.target.value)}/></label></div></>}<Form className="form-json" title={editing?'Edit sniper patch':'Create sniper'} note="The same M10 validation and M7a ceilings used by Telegram and Discord apply here." onSubmit={save}><label>Configuration JSON<textarea name="json" required defaultValue={editing?'{}':'{"label":"copy","targetAddress":"0x0000000000000000000000000000000000000001","chain":"ethereum","walletLabel":"wallet","observationMode":"confirmed","maxValueETH":0.01,"maxGasGwei":50,"dailySpendingCapETH":0.05,"cooldownMs":60000,"maxAttempts":3}'}/></label><button className="b p">{editing?'Apply validated patch':'Create sniper'}</button></Form>{!formOnly&&(listing.data===null?<Skeleton/>:<div className="card-grid sniper-grid">{filtered.items.map(item=>{const recent=listing.data.events.filter(event=>event.sniperId===item.id)[0];return <article className="card" key={item.id}><StatusPill status={recent?.state||'no events'}/><h2>{item.label}</h2><p className="warning">{(item.observationMode||'confirmed')==='pending'?'Pending mempool · high risk':'After confirmation · safer'}</p><p>{item.chain} · wallet {item.walletLabel}</p><p>Max {item.maxValueETH} ETH · Gas {item.maxGasGwei} gwei · Daily {item.dailySpendingCapETH} ETH</p><p>Cooldown {item.cooldownMs} ms · Attempts {item.maxAttempts}</p><p>Allow: {item.contractAllowlist.join(', ')||'any'}<br/>Deny: {item.contractDenylist.join(', ')||'none'}</p><div className="br"><button className="b g sm" onClick={()=>setEditing(item.id)}>Edit</button><button className="b g sm" aria-expanded={policyFor===item.id} onClick={()=>setPolicyFor(policyFor===item.id?null:item.id)}>{policyFor===item.id?'Hide policy':'Policy'}</button><button className="b d sm" onClick={()=>remove(item.id)}>Remove</button></div>{policyFor===item.id&&<PolicyEditor target={{id:item.id,label:item.label,type:'sniper'}}/>}</article>})}{filtered.items.length===0&&<Empty text={normalized?'No snipers match this search.':'No snipers yet. Create one above to start wallet-copy automation.'}/>}</div>)}</>}
 function WatchRules({formOnly=false}={}){const listing=useLoad('/api/watch-rules',[],'watchrules.changed');const [editing,setEditing]=useState(null);const [query,setQuery]=useState('');const [policyFor,setPolicyFor]=useState(null);async function save(event){try{const {form,value}=jsonForm(event);const wasEditing=editing;await api(editing?`/api/watch-rules/${editing}`:'/api/watch-rules',{method:editing?'PUT':'POST',body:JSON.stringify(value)});form.reset();setEditing(null);notify(wasEditing?'Watch rule updated.':'Watch rule created.',{type:'success'});listing.load();}catch(value){notify(value.message,{type:'error'});}}async function action(id,name){try{await api(`/api/watch-rules/${id}${name==='disable'?'/disable':''}`,{method:name==='remove'?'DELETE':'POST',body:JSON.stringify(name==='remove'?{confirmation:'CONFIRM'}:{})});listing.load();}catch(value){notify(value.message,{type:'error'});}}const normalized=query.trim().toLowerCase();const filtered=listing.data?{...listing.data,items:normalized?listing.data.items.filter(item=>[item.name,item.type,item.method].filter(Boolean).some(value=>String(value).toLowerCase().includes(normalized))):listing.data.items}:null;return <>{!formOnly&&<><p className="page-lead">Manage adapter-backed Twitter/X and Discord source monitoring.</p><Notice error={loadError(listing,'Could not load your triggers.')}/><div className="page-toolbar"><label className="page-search">Find a watch rule<input type="search" value={query} placeholder="Name, type, method…" onChange={e=>setQuery(e.target.value)}/></label></div></>}<Form className="form-json" title={editing?'Edit watch rule patch':'Create watch rule'} onSubmit={save}><label>Configuration JSON<textarea name="json" required defaultValue={editing?'{}':'{"name":"announcements","type":"discord_channel","method":"scraper","config":{"channelId":"123","keywords":["mint"],"sourceUrl":"https://example.com/feed"}}'}/></label><button className="b p">{editing?'Apply validated patch':'Create rule'}</button></Form>{!formOnly&&(listing.data===null?<Skeleton/>:<div className="card-grid watch-grid">{filtered.items.map(item=>{const events=listing.data.events.filter(event=>event.matchedRuleIds.includes(item.id)).slice(0,3);return <article className="card" key={item.id}><StatusPill status={item.enabled?'enabled':'disabled'}/><h2>{item.name}</h2><p>{item.type} · {item.method}</p><p className={item.consecutiveFailures?'warning':''}>Adapter health: {item.consecutiveFailures?`failing (${item.consecutiveFailures} consecutive)`:'healthy'} </p>{events.map(event=><p key={event.id}><code>{event.address}</code><br/>{new Date(event.detectedAt).toLocaleString()}</p>)}<div className="br"><button className="b g sm" onClick={()=>setEditing(item.id)}>Edit</button><button className="b g sm" onClick={()=>action(item.id,'disable')}>Disable</button><button className="b g sm" aria-expanded={policyFor===item.id} onClick={()=>setPolicyFor(policyFor===item.id?null:item.id)}>{policyFor===item.id?'Hide policy':'Policy'}</button><button className="b d sm" onClick={async()=>{if(await confirmDialog('Remove this watch rule?'))action(item.id,'remove');}}>Remove</button></div>{policyFor===item.id&&<PolicyEditor target={{id:item.id,label:item.name,type:'social_rule'}}/>}</article>})}{filtered.items.length===0&&<Empty text={normalized?'No watch rules match this search.':'No watch rules yet. Create one above to start social-trigger detection.'}/>}</div>)}</>}
 // Laid out as auto.html's at-pol panel: a .split with the policy form on the left and, on the
 // right, a read-only Human verification table above the bypass challenge.
@@ -3286,12 +3364,6 @@ const AUTOMATION_KIND={sniper:'Copy sniper',social:'Social rule'};
 // humanVerification and walletLabel, which is exactly what the card lists. Read them, do not invent
 // them -- an inline policy that shows something other than the policy is worse than showing none.
 //
-// The prototype also draws a .meter for "Daily cap used · 0.140 / 0.200". That figure is NOT
-// rendered here, deliberately. governanceService.js:315 records why spentTodayWei is withheld:
-// rollingSpendWei sums COALESCE(actual_network_cost_wei, estimated_cost_wei) and the actual column
-// holds gas only, so a confirmed mint's value drops out and the total is wrong in the user's
-// favour. The cap is real and is shown; the "used" half would be a known-wrong number on a money
-// surface, and Mint now already refuses the same figure for the same reason.
 function policyRows(row,policy){
   if(!policy)return null;
   const rows=[];
@@ -3301,26 +3373,34 @@ function policyRows(row,policy){
     ?<span style={{color:'var(--warn-text)'}}>Bypassed</span>:'On']);
   if(policy.walletLabel||row.walletLabel)rows.push(['Wallet',policy.walletLabel||row.walletLabel]);
   if(row.kind==='sniper'){
+    rows.push(['Copy timing',row.observationMode==='pending'
+      ?<span style={{color:'var(--warn-text)'}}>Pending mempool · high risk</span>:'After confirmation']);
     rows.push(['Max copied value',`${row.maxValueETH} ETH`]);
     rows.push(['Daily cap used',`${row.spend.eth.toFixed(3)} / ${row.dailySpendingCapETH} ETH`]);
   }
   return rows;
 }
-// The prototype's "Daily cap used · 0.140 / 0.200" and its .meter. governanceService.js:315
-// withholds spentTodayWei because rollingSpendWei sums COALESCE(actual_network_cost_wei,
-// estimated_cost_wei) and the actual column holds gas only -- a confirmed mint's VALUE drops out.
-// sniper_seen_transactions.copied_value_wei is that missing value, per event, and it reaches the
-// dashboard through /api/snipers events. Summing today's copies gives the figure the server
-// refuses to publish, computed from the column that actually holds it rather than the one that
-// does not. Only states that really moved money count: a skipped or failed copy spent nothing.
-const SPENT_STATES=new Set(['confirmed','sent','submitted','pending']);
+// Match the repository's rolling 24-hour sniper cap: a final transaction uses copied value plus
+// actual gas; a non-final one uses the engine's total estimate; a pre-intent claim uses its reserved
+// network cost. Skipped/failed events never count. PostgreSQL remains the atomic authority.
+const SPENT_STATES=new Set(['confirmed','submitted']);
+function eventSpendWei(event){
+  const asWei=value=>{try{return BigInt(value??0);}catch{return 0n;}};
+  if(event.actualNetworkCostWei!==null&&event.actualNetworkCostWei!==undefined){
+    return asWei(event.copiedValueWei)+asWei(event.actualNetworkCostWei);
+  }
+  if(event.estimatedTotalCostWei!==null&&event.estimatedTotalCostWei!==undefined){
+    return asWei(event.estimatedTotalCostWei);
+  }
+  return asWei(event.copiedValueWei)+asWei(event.reservedNetworkCostWei);
+}
 function dailyCopySpend(events,sniperId){
-  const dayStart=new Date();dayStart.setHours(0,0,0,0);
+  const cutoff=Date.now()-86_400_000;
   const mine=(events||[]).filter(event=>event.sniperId===sniperId
     &&SPENT_STATES.has(String(event.state||'').toLowerCase())
-    &&Number(event.seenAt||event.updatedAt||0)>=dayStart.getTime());
-  const wei=mine.reduce((total,event)=>total+(Number(event.copiedValueWei)||0),0);
-  return {copies:mine.length,eth:wei/1e18};
+    &&Number(event.updatedAt||event.seenAt||0)>=cutoff);
+  const wei=mine.reduce((total,event)=>total+eventSpendWei(event),0n);
+  return {copies:mine.length,eth:Number(wei)/1e18};
 }
 function titleCase(value){const s=String(value||'');return s.charAt(0).toUpperCase()+s.slice(1);}
 
@@ -3331,10 +3411,12 @@ function triggerRows(snipers,rules){
     return {kind:'sniper',id:item.id,title:item.label,chain:item.chain,
       walletLabel:item.walletLabel,maxValueETH:item.maxValueETH,
       dailySpendingCapETH:item.dailySpendingCapETH,
+      observationMode:item.observationMode||'confirmed',
+      pendingSupported:(snipers.capabilities?.pendingSupportedChains||[]).includes(item.chain),
       status:failed?'Failing':(item.active===false?'Paused':'Active'),
       tone:failed?'bad':(item.active===false?'idle':'ok'),
       spend:dailyCopySpend(snipers.events,item.id),
-      meta:`Post-confirmation · wallet ${item.walletLabel}`+(dailyCopySpend(snipers.events,item.id).copies?` · ${dailyCopySpend(snipers.events,item.id).copies} copies today`:''),
+      meta:`${(item.observationMode||'confirmed')==='pending'?'Pending mempool · high risk':'After confirmation'} · wallet ${item.walletLabel}`+(dailyCopySpend(snipers.events,item.id).copies?` · ${dailyCopySpend(snipers.events,item.id).copies} copies in 24h`:''),
       value:`${item.maxValueETH} ETH`,
       search:[item.label,item.chain,item.walletLabel]};
   });
@@ -3349,7 +3431,7 @@ function triggerRows(snipers,rules){
   return [...fromSnipers,...fromRules];
 }
 
-function TriggerCard({row,onEdit,onToggle,onArchive}){
+function TriggerCard({row,onEdit,onToggle,onArchive,onTiming}){
   const [open,setOpen]=useState(false);
   const [policy,setPolicy]=useState(undefined);
   useEffect(()=>{let live=true;
@@ -3403,6 +3485,10 @@ function TriggerCard({row,onEdit,onToggle,onArchive}){
           <button type="button" className="b sm" onClick={()=>onEdit?.(row)}>Edit</button>
           <button type="button" className={`b g sm ${stopped?'trigger-start':'trigger-stop'}`}
             onClick={()=>onToggle?.(row)}>{stopLabel}</button>
+          {row.kind==='sniper'&&<button type="button" className="b g sm"
+            disabled={row.observationMode!=='pending'&&!row.pendingSupported}
+            title={row.observationMode!=='pending'&&!row.pendingSupported?'Pending mode needs a supported address-filtered WebSocket stream on this chain.':''}
+            onClick={()=>onTiming?.(row)}>{row.observationMode==='pending'?'Use confirmed timing':'Use pending timing'}</button>}
           {/* Only once it is stopped. Archiving is the one action that removes a trigger from
               every list, so requiring a pause first makes it a two-step decision rather than one
               a stray tap can complete -- and a running trigger is exactly the one you would not
@@ -3423,8 +3509,14 @@ function TriggerCard({row,onEdit,onToggle,onArchive}){
 //
 // Collapsed by default and opened by New trigger, so the page starts as a list of what exists
 // rather than a form for something that does not.
-function SniperForm({wallets,chains,onCreated,onCancel,editing}){
+function SniperForm({wallets,chains,sniperConfig,onCreated,onCancel,editing}){
   const [busy,setBusy]=useState(false);
+  const pendingChains=sniperConfig?.capabilities?.pendingSupportedChains||[];
+  const firstChain=chains?.[0]||'ethereum';
+  const initialDefault=sniperConfig?.defaultObservationMode||'confirmed';
+  const [chain,setChain]=useState(editing?.chain||firstChain);
+  const [observationMode,setObservationMode]=useState(editing?.observationMode
+    ||(initialDefault==='pending'&&pendingChains.includes(firstChain)?'pending':'confirmed'));
   const formRef=useRef(null);
   async function submit(event){
     event.preventDefault();
@@ -3432,14 +3524,21 @@ function SniperForm({wallets,chains,onCreated,onCancel,editing}){
     const body={
       label:String(form.get('label')||'').trim(),
       targetAddress:String(form.get('targetAddress')||'').trim(),
-      chain:form.get('chain'),
+      chain,
       walletLabel:form.get('walletLabel'),
+      observationMode,
       maxValueETH:Number(form.get('maxValueETH')),
       maxGasGwei:Number(form.get('maxGasGwei')),
       dailySpendingCapETH:Number(form.get('dailySpendingCapETH')),
       cooldownMs:Number(form.get('cooldownSeconds'))*1000,
       maxAttempts:Number(form.get('maxAttempts')),
     };
+    let pendingRiskAccepted=false;
+    if(observationMode==='pending'){
+      pendingRiskAccepted=await confirmDialog('Pending-mempool copying sends before the source confirms. Your copy can still spend gas or mint value if the source is dropped, replaced, or reverts. All caps and simulation still apply. Continue?');
+      if(!pendingRiskAccepted)return;
+    }
+    body.pendingRiskAccepted=pendingRiskAccepted;
     setBusy(true);
     try{
       await api(editing?`/api/snipers/${editing}`:'/api/snipers',
@@ -3448,14 +3547,15 @@ function SniperForm({wallets,chains,onCreated,onCancel,editing}){
       // Cleared on success, as the owner asked: leaving the last target address sitting in the
       // field is how you create the same sniper twice by accident.
       formRef.current?.reset();
+      setChain(firstChain);setObservationMode(initialDefault==='pending'&&pendingChains.includes(firstChain)?'pending':'confirmed');
       onCreated?.();
     }catch(error){notify(error.message,{type:'error'});}
     finally{setBusy(false);}
   }
   return <form ref={formRef} className="panel form" onSubmit={submit} aria-busy={busy||undefined}>
     <h2>{editing?'Edit sniper':'New copy sniper'}</h2>
-    <p className="page-lead">Watch one wallet. When it mints and that transaction confirms, copy the
-      same call from yours — never before it confirms.</p>
+    <p className="page-lead">Watch one wallet and copy the same call from yours. After-confirmation
+      is safer and remains the default; pending-mempool timing is an explicit high-risk option.</p>
     <div className="g gm2 g2">
       <label className="fl"><span>Name</span>
         <input className="in" name="label" required autoFocus placeholder="e.g. copy-whale-1"/></label>
@@ -3467,8 +3567,17 @@ function SniperForm({wallets,chains,onCreated,onCancel,editing}){
         <input className="in mono" name="targetAddress" required pattern="0x[0-9a-fA-F]{40}"
           placeholder="0x… the address whose mints you want to copy"/></label>
       <label className="fl"><span>Chain</span>
-        <select className="in" name="chain" required defaultValue="ethereum">
+        <select className="in" name="chain" required value={chain} onChange={event=>{
+          const next=event.target.value;setChain(next);
+          if(observationMode==='pending'&&!pendingChains.includes(next))setObservationMode('confirmed');
+        }}>
           {(chains||[]).map(item=><option key={item} value={item}>{item}</option>)}
+        </select></label>
+      <label className="fl"><span>Copy timing</span>
+        <select className="in" name="observationMode" value={observationMode}
+          onChange={event=>setObservationMode(event.target.value)}>
+          <option value="confirmed">After confirmation · safer</option>
+          <option value="pending" disabled={!pendingChains.includes(chain)}>Pending mempool · highest risk</option>
         </select></label>
       <label className="fl"><span>Max per copy (ETH)</span>
         <input className="in tab" name="maxValueETH" type="number" step="any" min="0" required defaultValue="0.01"/></label>
@@ -3483,7 +3592,8 @@ function SniperForm({wallets,chains,onCreated,onCancel,editing}){
     </div>
     <div className="nt i" style={{marginTop:'11px'}}>{INFO_ICON}
       <div>These caps apply to this sniper alone. Your account gas ceiling and spending budget still
-        apply on top, and the lower of the two always wins.</div></div>
+        apply on top, and the lower of the two always wins. Pending timing is only available with a
+        supported address-filtered WebSocket stream for the selected chain.</div></div>
     <div className="br" style={{marginTop:'11px'}}>
       <button className="b p sm" disabled={busy}>{editing?'Save sniper':'Create sniper'}</button>
       <button type="button" className="b g sm" onClick={()=>onCancel?.()}>Cancel</button>
@@ -3602,6 +3712,21 @@ function AutomationAll({filter=null,onTab}){
       if(row.kind==='social')rules.load();else snipers.load();
     }catch(error){notify(error.message,{type:'error'});}
   }
+  async function changeSniperTiming(row){
+    const next=row.observationMode==='pending'?'confirmed':'pending';
+    let pendingRiskAccepted=false;
+    if(next==='pending'){
+      pendingRiskAccepted=await confirmDialog('Pending-mempool copying sends before the source confirms. Your copy can still spend gas or mint value if the source is dropped, replaced, or reverts. All caps and simulation still apply. Continue?');
+      if(!pendingRiskAccepted)return;
+    }
+    try{
+      await api(`/api/snipers/${row.id}`,{method:'PUT',body:JSON.stringify({
+        observationMode:next,pendingRiskAccepted,
+      })});
+      notify(`Sniper now copies ${next==='pending'?'from the pending mempool (high risk)':'after confirmation'}.`,{type:'success'});
+      snipers.load();
+    }catch(error){notify(error.message,{type:'error'});}
+  }
   const needle=query.trim().toLowerCase();
   const rows=needle?scoped.filter(row=>row.search.filter(Boolean)
     .some(value=>String(value).toLowerCase().includes(needle))):scoped;
@@ -3655,8 +3780,40 @@ function AutomationAll({filter=null,onTab}){
             ?<Empty text="No triggers match this search."/>
             :<div className="g g2">{rows.map(row=><TriggerCard key={`${row.kind}:${row.id}`} row={row}
                 onEdit={item=>{openPolicyFor(item.id);onTab?.('policies');}}
-                onToggle={toggleTrigger} onArchive={archiveTrigger}/>)}</div>}
+                onToggle={toggleTrigger} onTiming={changeSniperTiming} onArchive={archiveTrigger}/>)}</div>}
   </>;
+}
+
+function SniperDefaultControl({data,onSaved}){
+  const current=data?.defaultObservationMode||'confirmed';
+  const pendingAvailable=(data?.capabilities?.pendingSupportedChains||[]).length>0;
+  const [busy,setBusy]=useState(false);
+  async function setDefault(next){
+    if(next===current)return;
+    let pendingRiskAccepted=false;
+    if(next==='pending'){
+      pendingRiskAccepted=await confirmDialog('Make pending-mempool timing the default for newly created copy snipers? A pending copy can still spend if its source is dropped, replaced, or reverts. Existing snipers do not change.');
+      if(!pendingRiskAccepted)return;
+    }
+    setBusy(true);
+    try{
+      await api('/api/snipers/default',{method:'PUT',body:JSON.stringify({observationMode:next,pendingRiskAccepted})});
+      notify(`New snipers now default to ${next==='pending'?'pending mempool (high risk)':'after confirmation'}.`,{type:'success'});
+      onSaved?.();
+    }catch(error){notify(error.message,{type:'error'});}
+    finally{setBusy(false);}
+  }
+  return <div className="panel" aria-busy={busy||undefined} style={{marginBottom:'12px'}}>
+    <div className="ch"><div><h2>Default copy timing</h2><p className="page-lead" style={{margin:0}}>
+      Used only when you create a new sniper. Existing snipers keep their own timing.</p></div></div>
+    <div className="br">
+      <button type="button" className={`b sm ${current==='confirmed'?'p':'g'}`} disabled={busy}
+        onClick={()=>setDefault('confirmed')}>After confirmation · safer</button>
+      <button type="button" className={`b sm ${current==='pending'?'d':'g'}`} disabled={busy||!pendingAvailable}
+        title={pendingAvailable?'Highest-risk option':'Configure at least one supported address-filtered sniper stream first'}
+        onClick={()=>setDefault('pending')}>Pending mempool · high risk</button>
+    </div>
+  </div>;
 }
 
 function Automation({profile,tab,onTab,target}){
@@ -3691,8 +3848,10 @@ function Automation({profile,tab,onTab,target}){
       </div></div>
     <SubTabs tabs={AUTOMATION_TABS} active={active} onChange={onTab} label="Automation sections" badges={badges}/>
     {active==='all'&&<AutomationAll onTab={onTab}/>}
-    {active==='snipers'&&<>{creating&&<SniperForm wallets={wallets.data} chains={dashboardEvmChains(profile?.supportedChains)}
+    {active==='snipers'&&<><SniperDefaultControl data={snipers.data} onSaved={snipers.load}/>
+      {creating&&snipers.data&&<SniperForm wallets={wallets.data} chains={dashboardEvmChains(profile?.supportedChains)} sniperConfig={snipers.data}
       onCreated={()=>{setCreating(false);snipers.load();}} onCancel={()=>setCreating(false)}/>}
+      {creating&&!snipers.data&&!snipers.error&&<div className="panel" aria-busy="true"><Skeleton/></div>}
       <AutomationAll filter="sniper" onTab={onTab}/></>}
     {active==='social'&&<>{creating&&<WatchRuleForm
       onCreated={()=>{setCreating(false);rules.load();}} onCancel={()=>setCreating(false)}/>}
@@ -3705,8 +3864,9 @@ function Automation({profile,tab,onTab,target}){
         the extra line after it is this app's own precision about WHEN a copy can be submitted,
         which the prototype has no room for but which makes the same claim checkable. */}
     <div className="nt w" role="note" style={{marginTop:'12px'}}>{WARN_TRIANGLE_ICON}
-      <div><b>Copying is post-confirmation, not mempool front-running.</b> Nothing here submits
-        until a transaction the target made has already confirmed on chain.</div></div>
+      <div><b>After-confirmation is the safe default.</b> Pending-mempool copying is available only
+        as an explicit per-sniper opt-in, and may still spend if the source is dropped, replaced,
+        or reverted. Both modes retain simulation, caps, durable intents, and nonce serialization.</div></div>
   </>;
 }
 // Wallets = Wallets + P&L (brief §2). On its own page P&L was a table the user had to mentally
