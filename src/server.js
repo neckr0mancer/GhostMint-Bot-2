@@ -785,6 +785,24 @@ const schedulerWorker = createSchedulerWorker({
         }
       }
     }
+    // GLRTCH Genesis on Robinhood — custom site, not SeaDrop not OpenSea. Public: publicMint, Glrtchlist: whitelistMint with proof from /api/whitelist-proof.
+    if (task.contract.toLowerCase() === '0xda719be13af43757cede32d82f021c13ce29d991'.toLowerCase() && executionChain === 'robinhood') {
+      const isGlrtchlist = String(task.stageType || '').toLowerCase().includes('glrtchlist') || String(task.name || '').toLowerCase().includes('glrtchlist');
+      if (isGlrtchlist) {
+        const { fetchWhitelistProof, buildGlrtchWhitelistCall } = require('./mint/glrtchService');
+        const { proof, maxAllowance, priceWei } = await fetchWhitelistProof(wallet.address);
+        const glrtchPrepared = buildGlrtchWhitelistCall({ quantity: task.qty || 1, maxAllowance, priceWei, proof });
+        const prepared = { chain: executionChain, calldata: glrtchPrepared.data, valueWei: BigInt(glrtchPrepared.valueWei), method: { signature: 'whitelistMint(uint256,uint256,uint256,bytes32[])' }, preview: { contractAddress: task.contract, callTarget: glrtchPrepared.to, methodSignature: 'whitelistMint(uint256,uint256,uint256,bytes32[])', standard: 'GLRTCH allowlist', arguments: [{ name: 'quantity', type: 'uint256', value: String(task.qty || 1) }], nativeValueWei: glrtchPrepared.valueWei, nativeValue: String(Number(glrtchPrepared.valueWei)/1e18) } };
+        return mintExecution.executePrepared({ userId:task.userId, wallet, prepared, triggerSource:'scheduled',
+          gasPriceWei:undefined, idempotencyKey:hooks.idempotencyKey, onIntentPersisted:hooks.onIntentPersisted, onPreview:preview => notifyUser(task.userId, formatMintPreview(preview)) });
+      } else {
+        const { buildGlrtchPublicCall } = require('./mint/glrtchService');
+        const glrtchPrepared = buildGlrtchPublicCall({ quantity: task.qty || 1, valueWei: (1600000000000000n * BigInt(task.qty || 1)).toString() });
+        const prepared = { chain: executionChain, calldata: glrtchPrepared.data, valueWei: BigInt(glrtchPrepared.valueWei), method: { signature: 'publicMint(uint256)' }, preview: { contractAddress: task.contract, callTarget: glrtchPrepared.to, methodSignature: 'publicMint(uint256)', standard: 'GLRTCH public', arguments: [{ name: 'quantity', type: 'uint256', value: String(task.qty || 1) }], nativeValueWei: glrtchPrepared.valueWei, nativeValue: String(Number(glrtchPrepared.valueWei)/1e18) } };
+        return mintExecution.executePrepared({ userId:task.userId, wallet, prepared, triggerSource:'scheduled',
+          gasPriceWei:undefined, idempotencyKey:hooks.idempotencyKey, onIntentPersisted:hooks.onIntentPersisted, onPreview:preview => notifyUser(task.userId, formatMintPreview(preview)) });
+      }
+    }
     const request = requestSchemas.mint({ walletLabel:wallet.label, contractAddress:task.contract,
       functionName:task.fn || 'mint', quantity:task.qty, priceETH:task.price || 0,
       gasGwei:task.gas, chain:executionChain }, { supportedChains:CONFIG.supportedChains });
@@ -3603,6 +3621,25 @@ if (BOT_TOKEN) {
           { emptyHint: 'No wallets yet. Create one first from the Wallets menu.' }));
       }
       return advanceFromWalletSelection(chatId, messageId, userId, flow, picked);
+    }
+    if (data === 'flow:checkEligibility') {
+      const flow = telegramFlowState.get('telegram', chatId);
+      if (!flow || flow.flow !== 'mint_guided' || !flow.data.selectedWallets?.length) return;
+      const walletLabel = flow.data.selectedWallets[0];
+      const wallet = botCommands.wallets(userId).find(w => w.label === walletLabel);
+      if (!wallet) return tgEditMenu(chatId, messageId, { text: 'Wallet not found.', replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' });
+      const contract = flow.data.contractAddress;
+      const chain = flow.data.chain;
+      if (String(contract || '').toLowerCase() === '0xda719be13af43757cede32d82f021c13ce29d991'.toLowerCase() && String(chain || '').toLowerCase() === 'robinhood') {
+        try {
+          const { fetchWhitelistProof } = require('./mint/glrtchService');
+          const proofData = await fetchWhitelistProof(wallet.address);
+          return tgEditMenu(chatId, messageId, { text: `✅ <b>${escapeTelegramHtml(walletLabel)}</b> is <b>eligible</b> for Glrtchlist — max ${proofData.maxAllowance}, price ${Number(proofData.priceWei)/1e18} ETH.\n\nTap Send it to mint.`, replyMarkup: keyboard([[button('✅ Send it', 'flow:mintconfirm')], [button('❌ Cancel', 'flow:cancel:ask')]]), parseMode: 'HTML' });
+        } catch (error) {
+          return tgEditMenu(chatId, messageId, { text: `❌ <b>${escapeTelegramHtml(walletLabel)}</b> is <b>not eligible</b> for Glrtchlist: ${escapeTelegramHtml(error.message)}`, replyMarkup: keyboard([[button('❌ Cancel', 'flow:cancel:ask')]]), parseMode: 'HTML' });
+        }
+      }
+      return tgEditMenu(chatId, messageId, { text: `ℹ️ <b>${escapeTelegramHtml(walletLabel)}</b> — this drop has an allowlist stage, but GhostMint will check eligibility live at mint time via OpenSea. If you're on the list, it will mint.`, replyMarkup: keyboard([[button('✅ Send it', 'flow:mintconfirm')], [button('❌ Cancel', 'flow:cancel:ask')]]), parseMode: 'HTML' });
     }
     if (data === 'flow:mintconfirm') {
       const flow = telegramFlowState.get('telegram', chatId);

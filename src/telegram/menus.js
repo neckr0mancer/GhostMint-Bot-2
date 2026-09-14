@@ -835,9 +835,12 @@ function mintConfirmation({ contractAddress, chainLabel, walletLabels, quantity 
   // means this confirm screen isn't reachable through that step at all (a plain /mint), so the
   // line is omitted entirely rather than shown as "not set" for a flow that was never asked.
   const gasLine = maxGasGwei === undefined ? '' : `\nGas tolerance: ${maxGasGwei === null ? 'no extra limit (account ceiling only)' : `up to ${maxGasGwei} gwei`}`;
+  const isGlrtch = String(contractAddress || '').toLowerCase() === '0xda719be13af43757cede32d82f021c13ce29d991'.toLowerCase();
+  const rows = [[button('✅ Send it', 'flow:mintconfirm')], [button('❌ Cancel', 'flow:cancel:ask')]];
+  if (isGlrtch) rows.splice(1, 0, [button('✅ Check eligibility', 'flow:checkEligibility')]);
   return {
     text: `<b>🪙 Confirm mint</b>\nContract: <code>${contractAddress}</code>\nChain: ${chainLabel}\nWallet(s): ${walletLabels.map(escapeTelegramHtml).join(', ')}\nQuantity: ${quantity} each\n${priceLine}${gasLine}\n\nLocked in?`,
-    replyMarkup: keyboard([[button('✅ Send it', 'flow:mintconfirm')], [button('❌ Cancel', 'flow:cancel:ask')]]),
+    replyMarkup: keyboard(rows),
     parseMode: 'HTML',
   };
 }

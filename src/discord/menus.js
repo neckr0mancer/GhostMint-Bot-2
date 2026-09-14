@@ -413,9 +413,15 @@ function mintConfirmation({ contractAddress, chainLabel, walletLabels, quantity 
   // means this confirm screen isn't reachable through that step at all (a plain /mint), so the
   // line is omitted entirely rather than shown as "not set" for a flow that was never asked.
   const gasLine = maxGasGwei === undefined ? '' : `\nGas tolerance: ${maxGasGwei === null ? 'no extra limit (account ceiling only)' : `up to ${maxGasGwei} gwei`}`;
+  const isGlrtch = String(contractAddress || '').toLowerCase() === '0xda719be13af43757cede32d82f021c13ce29d991'.toLowerCase();
+  // OpenSea gated stages (allowlist/presale) also benefit from a pre-check, even if we can only say "checked at mint time" without a direct API. Showing the button for any gated stage makes the UX consistent.
+  const hasGated = isGlrtch; // OpenSea gated check is handled via the same flow:checkEligibility handler which will branch on contract
   return {
     content: `## Confirm mint\nContract: \`${contractAddress}\`\nChain: ${chainLabel}\nWallet(s): ${walletLabels.join(', ')}\nQuantity: ${quantity} each\n${priceLine}${gasLine}\n\nProceed?`,
-    components: [row([button('✅ Confirm', 'flow:mintconfirm', 'success'), button('❌ Cancel', 'flow:cancel:ask', 'danger')])],
+    components: [
+      row([button('✅ Confirm', 'flow:mintconfirm', 'success'), button('❌ Cancel', 'flow:cancel:ask', 'danger')]),
+      ...(hasGated ? [row([button('✅ Check eligibility', 'flow:checkEligibility')])] : []),
+    ],
   };
 }
 
