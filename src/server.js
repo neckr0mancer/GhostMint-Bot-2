@@ -3634,12 +3634,12 @@ if (BOT_TOKEN) {
         try {
           const { fetchWhitelistProof } = require('./mint/glrtchService');
           const proofData = await fetchWhitelistProof(wallet.address);
-          return tgEditMenu(chatId, messageId, { text: `✅ <b>${escapeTelegramHtml(walletLabel)}</b> is <b>eligible</b> for Glrtchlist — max ${proofData.maxAllowance}, price ${Number(proofData.priceWei)/1e18} ETH.\n\nTap Send it to mint.`, replyMarkup: keyboard([[button('✅ Send it', 'flow:mintconfirm')], [button('❌ Cancel', 'flow:cancel:ask')]]), parseMode: 'HTML' });
+          return tgEditMenu(chatId, messageId, { text: `✅ <b>${escapeTelegramHtml(walletLabel)}</b> is <b>eligible</b> for Glrtchlist — max ${proofData.maxAllowance}, price ${Number(proofData.priceWei)/1e18} ETH.\n\nTap Send it to mint.`, replyMarkup: telegramMenus.keyboard([[telegramMenus.button('✅ Send it', 'flow:mintconfirm')], [telegramMenus.button('❌ Cancel', 'flow:cancel:ask')]]), parseMode: 'HTML' });
         } catch (error) {
-          return tgEditMenu(chatId, messageId, { text: `❌ <b>${escapeTelegramHtml(walletLabel)}</b> is <b>not eligible</b> for Glrtchlist: ${escapeTelegramHtml(error.message)}`, replyMarkup: keyboard([[button('❌ Cancel', 'flow:cancel:ask')]]), parseMode: 'HTML' });
+          return tgEditMenu(chatId, messageId, { text: `❌ <b>${escapeTelegramHtml(walletLabel)}</b> is <b>not eligible</b> for Glrtchlist: ${escapeTelegramHtml(error.message)}`, replyMarkup: telegramMenus.keyboard([[telegramMenus.button('❌ Cancel', 'flow:cancel:ask')]]), parseMode: 'HTML' });
         }
       }
-      return tgEditMenu(chatId, messageId, { text: `ℹ️ <b>${escapeTelegramHtml(walletLabel)}</b> — this drop has an allowlist stage, but GhostMint will check eligibility live at mint time via OpenSea. If you're on the list, it will mint.`, replyMarkup: keyboard([[button('✅ Send it', 'flow:mintconfirm')], [button('❌ Cancel', 'flow:cancel:ask')]]), parseMode: 'HTML' });
+      return tgEditMenu(chatId, messageId, { text: `ℹ️ <b>${escapeTelegramHtml(walletLabel)}</b> — this drop has an allowlist stage, but GhostMint will check eligibility live at mint time via OpenSea. If you're on the list, it will mint.`, replyMarkup: telegramMenus.keyboard([[telegramMenus.button('✅ Send it', 'flow:mintconfirm')], [telegramMenus.button('❌ Cancel', 'flow:cancel:ask')]]), parseMode: 'HTML' });
     }
     if (data === 'flow:mintconfirm') {
       const flow = telegramFlowState.get('telegram', chatId);
