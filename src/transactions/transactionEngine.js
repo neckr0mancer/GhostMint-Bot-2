@@ -14,10 +14,11 @@ const FAST_RPC_TIMEOUT_MS = 3_000;
 const FAST_RPC_RETRIES = 0;
 
 class TransactionSafetyError extends Error {
-  constructor(code, message) {
+  constructor(code, message, details = null) {
     super(message);
     this.name = 'TransactionSafetyError';
     this.code = code;
+    if (details) this.details = details;
   }
 }
 
@@ -316,15 +317,20 @@ function createTransactionEngine({
     const feeFields=maxFeePerGasWei!==null&&maxFeePerGasWei!==undefined
       ?{maxFeePerGas:maxFeePerGasWei,maxPriorityFeePerGas:maxPriorityFeePerGasWei??0n,type:2}:{gasPrice:gasPriceWei};
     const gasLimit=await estimateGasSafely(request.chain,{...base,...feeFields});
-    const estimatedCostWei=valueWei+BigInt(gasLimit)*BigInt(selectedFee);
+    const estimatedGasCostWei=BigInt(gasLimit)*BigInt(selectedFee);
+    const estimatedCostWei=valueWei+estimatedGasCostWei;
     const balance=await providerCall(request.chain,'getBalance',provider=>provider.getBalance(request.wallet.address));
-    if(BigInt(balance)<estimatedCostWei) throw new TransactionSafetyError('INSUFFICIENT_BALANCE','Wallet balance is below the estimated transaction cost');
+    if(BigInt(balance)<estimatedCostWei) throw new TransactionSafetyError(
+      'INSUFFICIENT_BALANCE',
+      'Wallet balance is below the estimated transaction cost',
+      {balanceWei:BigInt(balance),estimatedCostWei,estimatedGasCostWei},
+    );
     const spent=await intentRepository.rollingSpendWei(request.userId,request.wallet.id,now()-86_400_000);
     if(!policy.ceilingExempt&&spent+estimatedCostWei>policy.dailySpendingBudgetWei) throw new TransactionSafetyError('DAILY_BUDGET_EXCEEDED','Transaction would exceed the wallet daily spending budget');
     const simulationPerformed=policy.simulationEnabled||request.forceSimulation===true;
     if(simulationPerformed) await simulateCallSafely(request.chain,{...base,...feeFields,gasLimit});
     return {simulationEnabled:policy.simulationEnabled,simulationPerformed,simulationPassed:true,gasLimit:BigInt(gasLimit),
-      estimatedCostWei,feePerGasWei:BigInt(selectedFee)};
+      balanceWei:BigInt(balance),estimatedGasCostWei,estimatedCostWei,feePerGasWei:BigInt(selectedFee)};
   }
 
   async function waitForFinality(intent) {

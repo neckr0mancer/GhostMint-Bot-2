@@ -11,6 +11,7 @@ const WATCH_RULE_TYPES = new Set(['twitter_account', 'twitter_keyword', 'discord
   'farcaster_account', 'farcaster_keyword']);
 const WATCH_METHODS = new Set(['official_api', 'managed_service', 'scraper']);
 const TASK_ELIGIBILITY_MODES = new Set(['specific_stage', 'earliest_eligible']);
+const LOW_BALANCE_THRESHOLDS = new Set(['0.0001', '0.0005', '0.001', '0.005', '0.01', '0.025', '0.05', '0.1']);
 
 
 // Single source of truth for which platform a watch-rule type belongs to. Adapters use this
@@ -53,11 +54,12 @@ class ValidationError extends Error {
 // `issues` (see errorReason's fold); a caller may pass an explicit message when the reason must
 // be readable on the error itself (e.g. the SSRF scraper rejection, whose message a test and the
 // user-facing reply both match on directly).
-constructor(issues, code = 'VALIDATION_ERROR', message = 'Request validation failed') {
+constructor(issues, code = 'VALIDATION_ERROR', message = 'Request validation failed', details = undefined) {
 super(message);
 this.name = 'ValidationError';
     this.code = code;
     this.issues = Array.isArray(issues) ? issues : [issues];
+    if (details !== undefined) this.details = details;
   }
 }
 
@@ -136,6 +138,17 @@ function usagePeriod(value, field = 'period') {
   if (value === undefined || value === null || value === '') return undefined;
   const normalized = string(value, field, { max: 16 }).toLowerCase();
   if (!['today', 'day', 'week', 'month'].includes(normalized)) fail(field, 'must be today, day, week, or month');
+  return normalized;
+}
+
+// A display warning, not a transaction ceiling. Keeping the choices finite makes the setting
+// understandable and prevents an accidental enormous value from painting every wallet "Low".
+function lowBalanceThreshold(value, field = 'lowBalanceThreshold') {
+  const parsed = finiteNumber(value, field, { min: 0.0001, max: 0.1 });
+  const normalized = String(parsed);
+  if (!LOW_BALANCE_THRESHOLDS.has(normalized)) {
+    fail(field, `must be one of: ${[...LOW_BALANCE_THRESHOLDS].join(', ')}`);
+  }
   return normalized;
 }
 
@@ -225,6 +238,17 @@ function taskEligibilityDeadline(value, mintTime) {
   if (timestamp - mintTime > 24 * 60 * 60 * 1000) {
     fail('eligibilityDeadline', 'must be no more than 24 hours after mintTime');
   }
+  return timestamp;
+}
+
+function taskStageStart(value, mintTime) {
+  if (value === undefined || value === null || value === '') return mintTime;
+  if (typeof value !== 'string' || !/(?:Z|[+-]\d{2}:\d{2})$/i.test(value.trim())) {
+    fail('stageStartAt', 'must include an explicit UTC offset or Z suffix');
+  }
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) fail('stageStartAt', 'must be a valid date and time');
+  if (timestamp > mintTime) fail('stageStartAt', 'must not be after mintTime');
   return timestamp;
 }
 
@@ -351,6 +375,7 @@ function validateTaskCreate(input, context) {
     stageUuid: optionalTaskMetadata(input.stageUuid, 'stageUuid', 200),
     stageLabel: optionalTaskMetadata(input.stageLabel, 'stageLabel', 100),
     stageType: optionalTaskMetadata(input.stageType, 'stageType', 64),
+    stageStartAt: taskStageStart(input.stageStartAt, mintTime),
     eligibilityMode: taskEligibilityMode(input.eligibilityMode),
     eligibilityDeadline: taskEligibilityDeadline(input.eligibilityDeadline, mintTime),
   };
@@ -495,6 +520,7 @@ const requestSchemas = Object.freeze({
   botGateMintUpdate: input => ({ skipMint: input.skipMint === true || input.skipMint === 'true' }),
   displayNameUpdate: input => ({ displayName: displayName(input.displayName) }),
   defaultChainUpdate: (input, context) => ({ defaultChain: chainName(input.defaultChain, context.supportedChains, 'defaultChain') }),
+  lowBalanceThresholdUpdate: input => ({ lowBalanceThreshold: lowBalanceThreshold(input.lowBalanceThreshold) }),
   sniperObservationDefault: input => ({ observationMode: sniperObservationMode(input.observationMode) }),
   socialUsagePeriod: input => ({ period: usagePeriod(input.period) }),
   liveAcceptanceRun: validateLiveAcceptanceRun,
@@ -502,7 +528,8 @@ const requestSchemas = Object.freeze({
 
 function validationPayload(error) {
   if (!(error instanceof ValidationError)) throw error;
-  return { error: 'Validation failed', code: error.code, issues: error.issues };
+  return { error: 'Validation failed', code: error.code, issues: error.issues,
+    ...(error.details !== undefined ? { details:error.details } : {}) };
 }
 
 function validationReply(error) {

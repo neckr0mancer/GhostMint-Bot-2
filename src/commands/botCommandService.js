@@ -11,6 +11,9 @@ const { SEADROP_MINT_SIGNATURE } = require('../mint/seaDropRegistry');
 const { MINT_METHODS } = require('../mint/mintRegistry');
 const { createWalletBalanceCache } = require('./walletBalanceCache');
 const { EXPIRY_GRACE_MS, TASK_BUCKETS, TASK_BUCKET_NAMES, bucketFor } = require('../scheduler/schedulerRepository');
+const { buildScheduleStagePlan, decorateScheduleDrop,
+  scheduleReservationStageKey, stageRequiresEligibilityCheck } = require('../mint/scheduleStagePlanning');
+const { buildSeaDropAllowanceEvidence, unknownEvidence } = require('../mint/scheduleAllowance');
 
 // The four controls a scheduled mint accepts, each with the past participle its error message
 // needs. `${action}d` got half of them wrong -- "canceld" and "retryd" both reached the user
@@ -20,7 +23,6 @@ const { EXPIRY_GRACE_MS, TASK_BUCKETS, TASK_BUCKET_NAMES, bucketFor } = require(
 const TASK_CONTROLS = Object.freeze({
   cancel: 'cancelled', pause: 'paused', resume: 'resumed', retry: 'retried',
 });
-const PUBLIC_OPEN_SEA_STAGE_TYPES = new Set(['public', 'public_sale', 'publicsale', 'public_drop']);
 const DEFAULT_PHASE_ELIGIBILITY_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 // OpenSea's builder is needed when the current/next phase carries wallet-specific eligibility
@@ -28,13 +30,7 @@ const DEFAULT_PHASE_ELIGIBILITY_WINDOW_MS = 24 * 60 * 60 * 1000;
 // so a future gated phase elsewhere in the collection does not unnecessarily make today's public
 // mint depend on OpenSea. The selected schedule surface performs the same check against the phase
 // the user actually chose.
-function openSeaStageRequiresBuilder(stage) {
-  if (!stage) return false;
-  const type = String(stage.stageType || stage.stage_type || '').trim().toLowerCase();
-  if (PUBLIC_OPEN_SEA_STAGE_TYPES.has(type)) return false;
-  if (!type && /^public(?:\s+sale)?$/i.test(String(stage.label || '').trim())) return false;
-  return true;
-}
+const openSeaStageRequiresBuilder = stageRequiresEligibilityCheck;
 
 function dropRequiresOpenSeaBuilder(drop) {
   if (!drop) return false;
@@ -42,10 +38,10 @@ function dropRequiresOpenSeaBuilder(drop) {
 }
 
 function createBotCommandService(dependencies) {
-  const { storage, schedulerRepository, providerService, governance, adminCommands, sniperService,
+  const { storage, schedulerRepository, scheduledPreflightRepository, providerService, governance, adminCommands, sniperService,
     socialWatchService, socialUsageService, targetPolicyService, triggerExecutionService, governanceRepository,
     triggerAuditRepository, transactionIntentRepository, gasService, supportedChains, chains, encryptPrivateKey, getState, executeMint, executeMintViaOpenSea, executeSend,
-    sniperRepository, mintService, previewMint, executePreparedMint, identity, contractValueResolver, seaDropDiscoveryService, openSeaService, priceFeedService,
+    sniperRepository, mintService, previewMint, executePreparedMint, identity, contractValueResolver, seaDropDiscoveryService, seaDropPublicDropResolver, openSeaService, priceFeedService,
     exportRawKey, exportKeystore, botSecurityRepository,
     ensureChainWatcher = () => {}, syncChainWatcher = ensureChainWatcher,
     supportsPendingSniper = () => false, pendingSniperChains = [],
@@ -161,7 +157,21 @@ function createBotCommandService(dependencies) {
   async function detectMintContract(userId, input) {
     const contractAddress = String(input.contractAddress || '').trim();
     if (!isAddress(contractAddress)) throw new ValidationError({ field: 'contractAddress', message: 'must be a valid Ethereum address' });
-    const chain = await detectContractChain({ providerService, supportedChains, contractAddress });
+    const requestedChain = input.chain === undefined || input.chain === null || input.chain === ''
+      ? null : String(input.chain).trim().toLowerCase();
+    if (requestedChain && !supportedChains.map(value => String(value).toLowerCase()).includes(requestedChain)) {
+      throw new ValidationError({ field:'chain', message:`must be one of: ${supportedChains.join(', ')}` });
+    }
+    // Normal interactive detection finds the chain automatically. Background schedule checks pin
+    // the persisted execution chain so the same address on another EVM cannot supply sold-out,
+    // price, or stage data for the wrong task.
+    let chain = requestedChain;
+    if (chain) {
+      const code = await providerService.perform(chain, 'detectChain', provider => provider.getCode(contractAddress));
+      if (code === '0x' || code === '0x0') chain = null;
+    } else {
+      chain = await detectContractChain({ providerService, supportedChains, contractAddress });
+    }
     if (!chain) throw new ValidationError({ field: 'contractAddress', message: 'could not be found on any supported chain' });
     const quantity = Math.max(1, Math.min(100, Math.floor(Number(input.quantity)) || 1));
     // Display-only, same "unknown is fine" shape as everything else here -- a missing API key or
@@ -225,11 +235,15 @@ function createBotCommandService(dependencies) {
     if (wantsDrop && openSeaService?.getDrop) {
       const liveDrop = await openSeaService.getDrop(chain, contractAddress);
       if (liveDrop) {
-        const toEthStage = stage => (stage ? { ...stage, priceETH: stage.priceWei !== null ? Number(formatEther(BigInt(stage.priceWei))) : null } : null);
-        drop = { ...liveDrop, activeStage: toEthStage(liveDrop.activeStage), nextStage: toEthStage(liveDrop.nextStage),
-          stages: liveDrop.stages.map(toEthStage) };
+        const toEthStage = stage => (stage ? { ...stage,
+          priceETH: stage.priceWei != null ? Number(formatEther(BigInt(stage.priceWei))) : null,
+        } : null);
+        drop = decorateScheduleDrop({ ...liveDrop,
+          activeStage:toEthStage(liveDrop.activeStage), nextStage:toEthStage(liveDrop.nextStage),
+          stages:liveDrop.stages.map(toEthStage) });
       }
     }
+    const schedulePlan = buildScheduleStagePlan(drop);
 
     const seaDrop = seaDropDiscoveryService
       ? await seaDropDiscoveryService.resolve(chain, contractAddress)
@@ -257,10 +271,12 @@ function createBotCommandService(dependencies) {
         seaDropAddress: seaDrop.address,
         arguments: [seaDrop.feeRecipient || null, '$wallet', quantity],
         valueWei: priceKnown ? computeSeaDropValueWei({ mintPriceWei: seaDrop.publicDrop.mintPriceWei, quantity }).toString() : null,
+        priceWeiPerItem: priceKnown ? String(seaDrop.publicDrop.mintPriceWei) : null,
         priceKnown,
         // SeaDrop's PublicDrop struct has no supply-cap field -- probed live from the token contract
         // itself, separately from the SeaDrop core's price/timing above.
         maxSupply: liveMaxSupply ? Number(liveMaxSupply.value) : null,
+        totalMinted:liveTotalMintedValue,
         maxPerWallet: seaDrop.publicDrop?.maxTotalMintableByWallet ?? null,
         // Real on-chain SeaDrop PublicDrop fields (unix seconds) -- null for a drop with no known
         // PublicDrop yet, not "no opening time exists." Non-SeaDrop contracts have no equivalent
@@ -272,6 +288,7 @@ function createBotCommandService(dependencies) {
         displayPrice,
         stats,
         drop,
+        schedulePlan,
         openSeaMintRecommended: dropRequiresOpenSeaBuilder(drop),
       };
     }
@@ -291,8 +308,10 @@ function createBotCommandService(dependencies) {
       seaDropAddress: null,
       arguments: [quantity],
       valueWei: priceKnown ? (BigInt(resolved.price.value) * BigInt(quantity)).toString() : null,
+      priceWeiPerItem: priceKnown ? String(resolved.price.value) : null,
       priceKnown,
       maxSupply: resolved.maxSupply?.value ?? null,
+      totalMinted:resolved.totalMinted?.value ?? null,
       maxPerWallet: resolved.maxPerWallet?.value ?? null,
       startTime: null,
       endTime: null,
@@ -301,6 +320,7 @@ function createBotCommandService(dependencies) {
       displayPrice,
       stats,
       drop,
+      schedulePlan,
       // An OpenSea-indexed collection that is not SeaDrop-backed may use a launchpad-specific ABI
       // (Archetype is a common example). Ask OpenSea to build that known call instead of making the
       // old, unsafe mint(uint256) guess. `collection.name` is also sufficient because a read-key
@@ -627,6 +647,44 @@ function createBotCommandService(dependencies) {
     }
   }
 
+  async function resolveScheduleAllowance(owned, chain, contractAddress, validated, rawInput) {
+    const stageStartAt = validated.stageStartAt ?? validated.mintTime;
+    const unknown = () => unknownEvidence({ stageStartAt });
+    if (!seaDropDiscoveryService || !seaDropPublicDropResolver) return unknown();
+    let seaDrop;
+    try { seaDrop = await seaDropDiscoveryService.resolve(chain, contractAddress); }
+    catch { return unknown(); }
+    if (!seaDrop?.address) return unknown();
+
+    const phaseIdentity = Boolean(validated.stageUuid || validated.stageLabel || validated.stageType);
+    const gated = phaseIdentity && stageRequiresEligibilityCheck({
+      label:validated.stageLabel,stageType:validated.stageType,
+    });
+    const stage = {
+      uuid:validated.stageUuid,label:validated.stageLabel,stageType:validated.stageType,
+      startTime:stageStartAt / 1000,mintTime:validated.mintTime / 1000,
+      // A phase-less direct SeaDrop schedule still executes mintPublic. It must not be able to
+      // evade the same contract-cumulative cap merely by omitting display metadata.
+      directPublic:rawInput?.viaOpenSea !== true && (!phaseIdentity || !gated),
+    };
+    let publicDrop;
+    let mintStats;
+    try {
+      [publicDrop,mintStats] = await Promise.all([
+        seaDropPublicDropResolver.readPublicDrop(chain,seaDrop.address,contractAddress),
+        seaDropPublicDropResolver.readMintStats(chain,contractAddress,owned.address),
+      ]);
+    } catch {
+      if (stage.directPublic) {
+        throw new ValidationError({ field:'quantity',
+          message:'could not verify this wallet\'s on-chain mint allowance right now; try again shortly' },
+        'SCHEDULE_ALLOWANCE_UNAVAILABLE');
+      }
+      return unknown();
+    }
+    return buildSeaDropAllowanceEvidence({ stage,publicDrop,mintStats });
+  }
+
   async function createTask(userId, input) {
     // TX-025 (Model 2 phase-2): only a real boolean may select builder routing. The string
     // 'false' is truthy and would silently switch to the OpenSea-backed path with price 0.
@@ -637,8 +695,12 @@ function createBotCommandService(dependencies) {
     const chain = input.chain || owned.chain;
     const target = input.contractAddress ?? input.contract;
     if (target) await assertContractExists(target, chain);
-    const requestedEligibilityMode = input.viaOpenSea
+    const requestedEligibilityMode = input.eligibilityMode
       ?? (input.viaOpenSea ? 'earliest_eligible' : 'specific_stage');
+    if (requestedEligibilityMode === 'earliest_eligible' && input.viaOpenSea !== true) {
+      throw new ValidationError({ field:'eligibilityMode',
+        message:'earliest eligible scheduling requires OpenSea phase execution' });
+    }
     if ((input.viaOpenSea || requestedEligibilityMode === 'earliest_eligible')
       && !input.stageUuid && !input.stageLabel && !input.stageType) {
       // A builder-backed task without a persisted phase identity cannot prove that the phase it
@@ -661,18 +723,48 @@ function createBotCommandService(dependencies) {
       ? withMintTime.mintTime : Date.parse(withMintTime.mintTime);
     const eligibilityDeadline = input.eligibilityDeadline ?? (input.viaOpenSea && Number.isFinite(mintTimestamp)
       ? new Date(mintTimestamp + DEFAULT_PHASE_ELIGIBILITY_WINDOW_MS).toISOString() : null);
-    const validated = requestSchemas.taskCreate({ ...withMintTime, chain,
+    // Creation owns the UUID. A caller-supplied ID must never turn the storage insert into an
+    // update of an existing task.
+    const validated = requestSchemas.taskCreate({ ...withMintTime, id:undefined, chain,
       eligibilityMode: input.eligibilityMode ?? defaultEligibilityMode,
       eligibilityDeadline,
     }, { supportedChains, now: Date.now() });
-    const task = { userId, id: validated.id, name: validated.name, walletLabel: validated.walletLabel,
+    const reservationStageKey = scheduleReservationStageKey({
+      stageUuid:validated.stageUuid,stageLabel:validated.stageLabel,
+      stageType:validated.stageType,mintTime:validated.mintTime,
+    });
+    const allowance = await resolveScheduleAllowance(owned,validated.chain,validated.contractAddress,validated,input);
+    const task = { userId, id: validated.id, name: validated.name, walletLabel: owned.label,
+      walletAddress:owned.address,reservationStageKey,
       contract: validated.contractAddress, fn: validated.functionName, qty: validated.quantity,
       price: validated.priceETH, gas: validated.gasGwei, chain: validated.chain, mintTime: validated.mintTime,
       nextAttemptAt: validated.mintTime, status: 'scheduled', createdAt: Date.now(), maxAttempts: 3,
       idempotencyKey: `scheduled-mint:${userId}:${validated.id}`, viaOpenSea: Boolean(input.viaOpenSea),
       stageUuid: validated.stageUuid, stageLabel: validated.stageLabel, stageType: validated.stageType,
-      eligibilityMode: validated.eligibilityMode, eligibilityDeadline: validated.eligibilityDeadline };
-    await storage.saveTask(task);
+      stageStartAt:validated.stageStartAt,
+      eligibilityMode: validated.eligibilityMode, eligibilityDeadline: validated.eligibilityDeadline,
+      ...allowance };
+    if (storage.createReservedTask) {
+      let reserved;
+      try { reserved = await storage.createReservedTask(task); }
+      catch (error) {
+        if (error?.code === 'SCHEDULE_ALLOWANCE_EXCEEDED' || error?.code === 'SCHEDULE_ALLOWANCE_UNAVAILABLE') {
+          const details=error.details?Object.fromEntries(['remaining','maximum','minted','reserved']
+            .filter(key=>error.details[key]!==undefined).map(key=>[key,String(error.details[key])])):undefined;
+          throw new ValidationError({ field:'quantity',message:error.message },error.code,
+            'Request validation failed',details);
+        }
+        if (error?.code === 'SCHEDULE_STAGE_DUPLICATE') {
+          throw new ValidationError({field:'stageUuid',message:error.message},error.code,error.message);
+        }
+        throw error;
+      }
+      if (!reserved.created) {
+        throw new ValidationError({ field:'stageUuid',
+          message:`this wallet already has an active mint scheduled for this stage (${reserved.conflict?.name || 'existing task'})` },
+        'SCHEDULE_STAGE_DUPLICATE','This wallet already has a mint scheduled for this stage.');
+      }
+    } else await storage.saveTask(task);
     getState().tasks.push(task);
     broadcast(userId, 'tasks');
     return task;
@@ -690,9 +782,14 @@ function createBotCommandService(dependencies) {
     }
     const validated = requestSchemas.taskDeletion({ id });
     const now = Date.now();
-    const task = action === 'resume' || action === 'retry'
+    let task;
+    try { task = action === 'resume' || action === 'retry'
       ? await schedulerRepository[action](userId, validated.id, now)
-      : await schedulerRepository[action](userId, validated.id);
+      : await schedulerRepository[action](userId, validated.id); }
+    catch (error) {
+      if (error?.code !== 'SCHEDULE_STAGE_DUPLICATE') throw error;
+      throw new ValidationError({field:'id',message:error.message},'SCHEDULE_STAGE_DUPLICATE',error.message);
+    }
     if (!task) throw new ValidationError({ field: 'id', message: `was not found or cannot be ${TASK_CONTROLS[action]}` });
     const cached = getState().tasks.find(item => item.userId === userId && item.id === task.id);
     if (cached) Object.assign(cached, task);
@@ -704,7 +801,9 @@ function createBotCommandService(dependencies) {
     const validated = requestSchemas.taskDeletion({ id });
     const task = await schedulerRepository.detailsForUser(userId, validated.id);
     if (!task) throw new ValidationError({ field:'id', message:'was not found' });
-    return task;
+    const preflights=scheduledPreflightRepository?.listForTask
+      ?await scheduledPreflightRepository.listForTask(userId,validated.id):[];
+    return {...task,preflights};
   }
 
   async function addPnl(userId, input) {
@@ -753,7 +852,17 @@ function createBotCommandService(dependencies) {
     } else prepared=input.presetName
       ? await mintService.preparePreset(userId,input.presetName,owned.address)
       : await mintService.prepare({...input,walletAddress:owned.address,chain:input.chain||owned.chain});
-    const simulation=await previewMint({userId,wallet:owned,prepared,gasGwei:input.gasGwei});
+    let simulation;
+    try{simulation=await previewMint({userId,wallet:owned,prepared,gasGwei:input.gasGwei});}
+    catch(error){
+      // Safe, public context for dashboard batch rows that fail a balance/ceiling/simulation
+      // check. The private key remains only on `owned` and is never copied onto the error.
+      error.previewContext={
+        wallet:{label:owned.label,address:owned.address,chain:owned.chain},
+        chain:prepared.chain,preview:prepared.preview,
+      };
+      throw error;
+    }
     return {wallet:{label:owned.label,address:owned.address,chain:owned.chain},prepared,simulation};
   }
 

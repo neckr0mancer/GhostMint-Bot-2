@@ -179,3 +179,25 @@ integrationTest('mergeAccount refuses and changes nothing if the duplicate accou
     await storage.close();
   }
 });
+
+integrationTest('Robinhood default chain and low-balance preference persist through PostgreSQL', { timeout: 120_000 }, async () => {
+  await migrate();
+  const pool = createDatabasePool({ connectionString: CONFIG.databaseUrl, max: 2 });
+  const identity = createIdentityService(createPostgresIdentityRepository(pool));
+  const suffix = `${process.pid}-${Date.now()}`;
+  let userId;
+  try {
+    userId = await identity.resolveOrCreate('telegram', `dashboard-preferences-${suffix}`);
+    const firstRepository = createPostgresIdentityRepository(pool);
+    assert.equal(await firstRepository.setDefaultChain(userId, 'robinhood'), 'robinhood');
+    assert.equal(await firstRepository.setLowBalanceThreshold(userId, '0.025'), '0.025');
+
+    // A fresh repository object proves these are database values, not process-local state.
+    const restartedRepository = createPostgresIdentityRepository(pool);
+    assert.equal(await restartedRepository.getDefaultChain(userId), 'robinhood');
+    assert.equal(await restartedRepository.getLowBalanceThreshold(userId), '0.025');
+  } finally {
+    if (userId) await pool.query('DELETE FROM users WHERE user_id=$1', [userId]).catch(() => {});
+    await pool.end();
+  }
+});

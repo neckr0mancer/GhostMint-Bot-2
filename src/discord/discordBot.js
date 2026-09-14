@@ -25,6 +25,7 @@ const discordMenus = require('./menus');
 // see src/mint/mintFlowDecision.js for why this exists as one shared module instead of a
 // hand-mirrored copy per platform.
 const mintFlowDecision = require('../mint/mintFlowDecision');
+const { stageRequiresEligibilityCheck } = require('../mint/scheduleStagePlanning');
 const watchRuleFlowDecision = require('../social/watchRuleFlowDecision');
 const sniperFlowDecision = require('../sniper/sniperFlowDecision');
 
@@ -445,10 +446,8 @@ function openSeaPhaseEligibilityDeadline(mintFlowData, stage) {
   return new Date(deadlineSeconds * 1000).toISOString();
 }
 function openSeaPhaseTaskData(mintFlowData, stage) {
-  const type = String(stage.stageType || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
-  const publicStage = ['public','public_sale','publicsale','public_drop'].includes(type)
-    || (!type && /^public(?:\s+sale)?$/i.test(String(stage.label || '').trim()));
-  const viaOpenSea = !mintFlowData.isSeaDrop || !publicStage;
+  const requiresEligibilityCheck = stageRequiresEligibilityCheck(stage);
+  const viaOpenSea = !mintFlowData.isSeaDrop || requiresEligibilityCheck;
   const detectedPrice = stage.priceWei !== null && stage.priceWei !== undefined
     ? Number(formatEther(BigInt(stage.priceWei)))
     : (Number.isFinite(stage.priceETH) ? stage.priceETH : undefined);
@@ -460,7 +459,7 @@ function openSeaPhaseTaskData(mintFlowData, stage) {
     // The opening time is a not-before wake-up, not a promise to broadcast blindly at that
     // second. Gated OpenSea-builder tasks may advance from an ineligible allowlist to a later
     // advertised phase; direct public SeaDrop tasks stay pinned to this exact public-stage UUID.
-    eligibilityMode: viaOpenSea ? 'earliest_eligible' : 'specific_stage',
+    eligibilityMode: requiresEligibilityCheck ? 'earliest_eligible' : 'specific_stage',
     eligibilityDeadline: openSeaPhaseEligibilityDeadline(mintFlowData, stage),
     mintTime: new Date(stage.startTime * 1000).toISOString(),
     name: openSeaPhaseTaskName(mintFlowData, stage),

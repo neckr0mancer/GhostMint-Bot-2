@@ -182,6 +182,25 @@ test('waiting for a live eligible phase durably re-arms without spending the exe
   assert.equal(events.at(-1).task.stageUuid, 'public-stage');
 });
 
+test('a phase advance into an already-reserved stage records one clear failure instead of crashing the worker',async()=>{
+  const repository=repositoryFixture();
+  repository.deferForPhase=async()=>{const error=new Error('This wallet already has an active mint scheduled for the next stage.');
+    error.code='SCHEDULE_STAGE_DUPLICATE';throw error;};
+  const wait=Object.assign(new Error('Waiting for another phase.'),{
+    code:SCHEDULE_PHASE_WAIT,phaseDeferral:{retryAt:9_000,stageUuid:'public-2',stageLabel:'Public'},
+  });
+  const events=[];
+  const worker=createSchedulerWorker({repository,
+    intentRepository:{get:async()=>null,getByIdempotencyKey:async()=>null},transactionEngine:{},
+    preflightTask:async()=>{throw wait;},executeTask:async()=>{throw new Error('must not execute');},
+    notify:async event=>events.push(event)});
+  assert.equal(await worker.processTask(task()),'failed');
+  const failed=repository.calls.find(call=>call[0]==='fail');
+  assert.equal(failed[1].transient,false);
+  assert.match(failed[1].reason,/already has an active mint scheduled/);
+  assert.equal(events.at(-1).outcome,'failed');
+});
+
 test('many phase checks still leave the first real RPC failure on the first retry delay', async () => {
   const repository = repositoryFixture();
   const transient = Object.assign(new Error('RPC unavailable'), { code:'RPC_UNAVAILABLE' });
@@ -207,7 +226,10 @@ test('start keeps sweeping for claims whose lease expires after process startup'
     pollIntervalMs:1_000, staleRecoveryIntervalMs:10,
   });
   worker.start();
-  await new Promise(resolve=>setTimeout(resolve, 35));
+  const deadline=Date.now()+250;
+  while(sweeps<2 && Date.now()<deadline){
+    await new Promise(resolve=>setTimeout(resolve, 10));
+  }
   worker.stop();
   assert.ok(sweeps >= 2, 'stale claims must be revisited after their lease can expire');
 });

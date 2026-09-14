@@ -39,7 +39,8 @@ async function findMergeEmptinessViolations(client, userId) {
 
   const user = await client.query(
     `SELECT is_owner,account_status,status_reason,suspended_until,subscription_active,
-      good_standing_override,dashboard_theme,default_chain,sniper_observation_default
+      good_standing_override,dashboard_theme,default_chain,low_balance_threshold_native,
+      sniper_observation_default
      FROM users WHERE user_id=$1`, [userId]);
   if (!user.rowCount) violations.push('source account no longer exists');
   else {
@@ -52,6 +53,10 @@ async function findMergeEmptinessViolations(client, userId) {
     if (row.good_standing_override) violations.push('source account has good_standing_override=true');
     if (row.dashboard_theme && row.dashboard_theme !== 'ghost-mint') violations.push('source account changed its dashboard theme');
     if (row.default_chain) violations.push('source account has a default_chain set');
+    if (row.low_balance_threshold_native !== null
+      && Number(row.low_balance_threshold_native) !== 0.01) {
+      violations.push('source account changed its low-balance warning preference');
+    }
     if (row.sniper_observation_default && row.sniper_observation_default !== 'confirmed') {
       violations.push('source account changed its sniper observation default');
     }
@@ -68,6 +73,11 @@ async function findMergeEmptinessViolations(client, userId) {
   }
 
   return violations;
+}
+
+function normalizeLowBalanceThreshold(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? String(numeric) : '0.01';
 }
 
 function createPostgresIdentityRepository(pool) {
@@ -276,6 +286,20 @@ function createPostgresIdentityRepository(pool) {
     async setDefaultChain(userId, defaultChain) {
       await pool.query('UPDATE users SET default_chain=$2 WHERE user_id=$1', [userId, defaultChain]);
       return defaultChain;
+    },
+
+    async getLowBalanceThreshold(userId) {
+      const result = await pool.query(
+        'SELECT low_balance_threshold_native::TEXT AS value FROM users WHERE user_id=$1', [userId],
+      );
+      return normalizeLowBalanceThreshold(result.rows[0]?.value);
+    },
+
+    async setLowBalanceThreshold(userId, value) {
+      const result = await pool.query(`UPDATE users SET low_balance_threshold_native=$2
+        WHERE user_id=$1 RETURNING low_balance_threshold_native::TEXT AS value`, [userId, value]);
+      if (!result.rowCount) throw new Error('User not found');
+      return normalizeLowBalanceThreshold(result.rows[0].value);
     },
 
     async getSniperObservationDefault(userId) {

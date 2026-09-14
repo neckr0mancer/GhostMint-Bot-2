@@ -15,6 +15,43 @@ export function mintDetectionMessage(error){
   return 'We could not check this contract. Check the address and try again.';
 }
 
+// Schedule creation has a few domain outcomes that are useful to the user, and one deliberately
+// opaque server outcome. Keep the copy here so a raw API fallback such as "Request failed safely"
+// never becomes the only explanation on the Schedule surface.
+export function scheduleSubmitError(error){
+  const code=String(error?.code||'');
+  const issue=Array.isArray(error?.issues)?error.issues[0]:null;
+  const issueText=String(issue?.message||error?.message||'').trim();
+  const details=error?.details||{};
+  if(code==='SCHEDULE_STAGE_DUPLICATE')return {
+    title:'This mint is already scheduled.',
+    detail:issueText&& !/request failed safely/i.test(issueText)
+      ?issueText
+      :'Choose another wallet or a different mint stage.'
+  };
+  if(code==='SCHEDULE_ALLOWANCE_EXCEEDED'){
+    const remaining=details.remaining;
+    return {
+      title:'This quantity is above the wallet limit.',
+      detail:remaining!==undefined&&remaining!==null
+        ?`This wallet can schedule ${remaining} more for the selected mint stages.`
+        :(issueText||'Lower the quantity or use another eligible wallet.')
+    };
+  }
+  if(code==='SCHEDULE_ALLOWANCE_UNAVAILABLE')return {
+    title:'We could not verify this wallet’s mint limit.',
+    detail:'Try again in a moment. Nothing was scheduled.'
+  };
+  if(code==='INTERNAL_ERROR'||Number(error?.status)>=500)return {
+    title:'Scheduling is temporarily unavailable.',
+    detail:`Try again in a moment. Nothing was scheduled.${error?.requestId?` Reference: ${error.requestId}.`:''}`
+  };
+  return {
+    title:'Could not schedule this mint.',
+    detail:issueText||'Check the schedule details and try again.'
+  };
+}
+
 export function mintPreviewError(error,{chain,quantity}={}){
   // Batch failures arrive as "${field} ${message}" (the repository's issue format), so a leading
   // field name must be stripped before phrase matching -- "contractAddress Drop is not…" would

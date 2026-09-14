@@ -1,5 +1,5 @@
 /* global Blob, clearTimeout, CustomEvent, localStorage, navigator, URL, WebSocket, setTimeout */
-import React,{useCallback,useEffect,useId,useRef,useState} from 'react';
+import React,{useCallback,useEffect,useId,useMemo,useRef,useState} from 'react';
 import {dashboardEvmChains} from './chainOptions.mjs';
 
 export {ACTIVITY_EVENTS} from './activityFeed.js';
@@ -233,7 +233,7 @@ export function GroupedChainOptions({options=[],labelFor=value=>value}){return <
 </>;}
 
 export function csrf(){return document.cookie.split(';').map(value=>value.trim()).find(value=>value.startsWith('ghostmint_csrf='))?.split('=').slice(1).join('=')||'';}
-export async function api(path,options={}){const response=await fetch(path,{...options,headers:{'Content-Type':'application/json',...(options.method&&options.method!=='GET'?{'X-CSRF-Token':decodeURIComponent(csrf())}:{})}});const body=response.status===204?null:await response.json().catch(()=>({}));if(!response.ok){const error=new Error(body?.issues?.map(item=>`${item.field} ${item.message}`).join('; ')||body?.error||'Request failed');error.status=response.status;error.code=body?.code;error.reason=body?.reason;// The per-field issues are kept ON the error, not just flattened into its message. The prototype's validation state (.in.bad + .fielderr under the offending field) needs to know WHICH field failed; without this it could never fire, and both Mint now and Schedule were silently falling back to a toast.
+export async function api(path,options={}){const response=await fetch(path,{...options,headers:{'Content-Type':'application/json',...(options.method&&options.method!=='GET'?{'X-CSRF-Token':decodeURIComponent(csrf())}:{})}});const body=response.status===204?null:await response.json().catch(()=>({}));if(!response.ok){const error=new Error(body?.issues?.map(item=>`${item.field} ${item.message}`).join('; ')||body?.error||'Request failed');error.status=response.status;error.code=body?.code;error.reason=body?.reason;error.details=body?.details;error.requestId=body?.requestId;// The per-field issues are kept ON the error, not just flattened into its message. The prototype's validation state (.in.bad + .fielderr under the offending field) needs to know WHICH field failed; without this it could never fire, and both Mint now and Schedule were silently falling back to a toast.
   error.issues=body?.issues;error.retryAfter=response.headers.get('Retry-After');if(response.status===401&&!path.startsWith('/api/auth/login'))window.dispatchEvent(new CustomEvent('ghostmint-session-ended',{detail:{message:error.message,reason:error.reason}}));throw error;}return body;}
 
 // Triggers a client-side file save (used for the exported wallet keystore) via the standard
@@ -259,7 +259,46 @@ export function useLoad(path,dependencies=[],wsEvents){const [data,setData]=useS
 // shell and the admin shell, which previously never opened one at all -- so admin pages had no live
 // listener). Every server-side change is broadcast as a 'ghostmint-ws' window CustomEvent; useLoad's
 // wsEvents param subscribes a given resource to specific event types.
-export function useLiveSocket(){const [live,setLive]=useState(false);useEffect(()=>{const protocol=window.location.protocol==='https:'?'wss:':'ws:';let socket=null;let retryTimer=null;let stopped=false;let attempt=0;let connectedOnce=false;let needsResync=false;function connect(){if(stopped)return;socket=new WebSocket(`${protocol}//${window.location.host}/ws`);socket.onmessage=event=>{let message;try{message=JSON.parse(event.data);}catch{return;}if(message.type==='connected'){setLive(true);attempt=0;if(connectedOnce||needsResync)window.dispatchEvent(new CustomEvent('ghostmint-ws',{detail:{type:'ws.reconnected'}}));connectedOnce=true;needsResync=false;}window.dispatchEvent(new CustomEvent('ghostmint-ws',{detail:message}));};socket.onclose=()=>{setLive(false);if(stopped)return;needsResync=true;const delay=Math.min(30_000,1_000*(2**attempt));attempt+=1;retryTimer=setTimeout(connect,delay);};}connect();return()=>{stopped=true;if(retryTimer)clearTimeout(retryTimer);socket?.close();};},[]);return live;}
+export function useLiveSocket(){
+  const [live,setLive]=useState(false);
+  useEffect(()=>{
+    const protocol=window.location.protocol==='https:'?'wss:':'ws:';
+    let socket=null;let retryTimer=null;let stopped=false;let attempt=0;
+    let connectedOnce=false;let needsResync=false;
+    function connect(){
+      if(stopped)return;
+      const next=new WebSocket(`${protocol}//${window.location.host}/ws`);
+      socket=next;
+      next.onmessage=event=>{
+        let message;try{message=JSON.parse(event.data);}catch{return;}
+        if(message.type==='connected'){
+          setLive(true);attempt=0;
+          if(connectedOnce||needsResync)window.dispatchEvent(new CustomEvent('ghostmint-ws',{detail:{type:'ws.reconnected'}}));
+          connectedOnce=true;needsResync=false;
+        }
+        window.dispatchEvent(new CustomEvent('ghostmint-ws',{detail:message}));
+      };
+      next.onclose=()=>{
+        setLive(false);if(stopped)return;needsResync=true;
+        const delay=Math.min(30_000,1_000*(2**attempt));attempt+=1;
+        retryTimer=setTimeout(connect,delay);
+      };
+    }
+    connect();
+    return()=>{
+      stopped=true;if(retryTimer)clearTimeout(retryTimer);
+      if(!socket)return;
+      // React StrictMode deliberately mounts, cleans up, then mounts effects again in development.
+      // Calling close() during CONNECTING makes the browser emit a scary failure even though the
+      // proxy/server are healthy. Detach this abandoned effect immediately, then let its handshake
+      // finish before closing it. The second StrictMode mount owns the real live connection.
+      socket.onmessage=null;socket.onclose=null;
+      if(socket.readyState===0)socket.addEventListener('open',()=>socket.close(),{once:true});
+      else if(socket.readyState===1)socket.close();
+    };
+  },[]);
+  return live;
+}
 // Two shapes, deliberately. `error` as a STRING keeps the original one-line notice every existing
 // caller passes (useLoad's error is always a string). `error` as an OBJECT renders the richer
 // failure surface brief §3.8 requires on a money surface: what failed, what was NOT changed, the
@@ -385,6 +424,173 @@ export function consumePendingMintPrefill(){const value=pendingMintPrefill;pendi
 // participating in the .fields grid exactly as before.
 export function Form({title,note,warning,onSubmit,children,className='',busy=false}){return <form className={`panel form ${className}`.trim()} onSubmit={onSubmit} aria-busy={busy||undefined}><h2>{title}</h2>{note&&<p>{note}</p>}{warning&&<p className="warning">{warning}</p>}<div className="fields"><fieldset disabled={busy}>{children}</fieldset></div></form>}
 export function Field({label,required=true,...props}){return <label>{label}<input required={required} {...props}/></label>}
+const SELECT_MENU_CHEVRON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>;
+const SELECT_MENU_CHECK=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 13l4 4L19 7"/></svg>;
+function selectMenuOptions(options,optional){
+  const values=(options||[]).map(option=>typeof option==='object'&&option!==null
+    ?{...option,value:String(option.value)}:{value:String(option),label:String(option)});
+  return optional?[{value:'',label:'None'},...values]:values;
+}
+function firstEnabledSelectIndex(options,start=0,direction=1){
+  if(!options.length)return -1;
+  let index=Math.min(options.length-1,Math.max(0,start));
+  for(let seen=0;seen<options.length;seen+=1){
+    if(!options[index]?.disabled)return index;
+    index=(index+direction+options.length)%options.length;
+  }
+  return -1;
+}
+// One listbox implementation for dashboard and Admin forms. It keeps the native event shape used
+// by existing callers and a real hidden form value, while giving every dropdown the same themed
+// panel, keyboard model, disabled-option handling, and mobile wrapping as Default chain.
+export function SelectMenu({label,options=[],optional=false,name,value,defaultValue,onChange,disabled=false,
+  required=!optional,className='',placeholder='Select…',autoFocus=false,...ariaProps}){
+  // Keep the semantic option list stable across this component's own state updates. Rebuilding it
+  // on every Arrow-key render retriggered the reconciliation effect below and snapped the active
+  // option back to the selected value before Enter could choose it.
+  const normalized=useMemo(()=>selectMenuOptions(options,optional),[options,optional]);
+  const controlled=value!==undefined;
+  const defaultSelection=defaultValue!==undefined?String(defaultValue)
+    :normalized.find(option=>!option.disabled)?.value||'';
+  const [internalValue,setInternalValue]=useState(()=>controlled?String(value??''):defaultSelection);
+  const selectedValue=controlled?String(value??''):internalValue;
+  const selected=normalized.find(option=>option.value===selectedValue)||null;
+  const [open,setOpen]=useState(false);
+  const [activeIndex,setActiveIndex]=useState(()=>Math.max(0,normalized.findIndex(option=>option.value===selectedValue)));
+  const rootRef=useRef(null);
+  const triggerRef=useRef(null);
+  const panelRef=useRef(null);
+  const typeaheadRef=useRef('');
+  const typeaheadTimer=useRef(null);
+  const previousSelectedValueRef=useRef(selectedValue);
+  const uid=useId().replace(/:/g,'');
+  const labelId=`select-label-${uid}`;
+  const valueId=`select-value-${uid}`;
+  const listId=`select-list-${uid}`;
+  useEffect(()=>{if(controlled)setInternalValue(String(value??''));},[controlled,value]);
+  useEffect(()=>{
+    if(controlled||selected||!normalized.length)return;
+    const first=normalized.find(option=>!option.disabled);
+    if(first)setInternalValue(first.value);
+  },[controlled,selected,normalized]);
+  useEffect(()=>{
+    const selectedIndex=normalized.findIndex(option=>option.value===selectedValue&&!option.disabled);
+    const next=selectedIndex>=0?selectedIndex:firstEnabledSelectIndex(normalized,0,1);
+    const selectionChanged=previousSelectedValueRef.current!==selectedValue;
+    previousSelectedValueRef.current=selectedValue;
+    setActiveIndex(current=>{
+      // Schedule refreshes its countdown every 15 seconds and therefore rebuilds its inline
+      // option objects. While the list is open, preserve a still-valid keyboard target across
+      // that harmless parent render; only a real value change or invalidated option recentres it.
+      if(!selectionChanged&&open&&current>=0&&!normalized[current]?.disabled)return current;
+      return next;
+    });
+  },[selectedValue,normalized,open]);
+  useEffect(()=>{
+    const form=rootRef.current?.closest('form');
+    if(controlled||!form)return undefined;
+    const reset=()=>setTimeout(()=>setInternalValue(defaultSelection),0);
+    form.addEventListener('reset',reset);
+    return()=>form.removeEventListener('reset',reset);
+  },[controlled,defaultSelection]);
+  useEffect(()=>{
+    if(!open)return undefined;
+    const outside=event=>{if(rootRef.current&&!rootRef.current.contains(event.target))setOpen(false);};
+    document.addEventListener('mousedown',outside);
+    return()=>document.removeEventListener('mousedown',outside);
+  },[open]);
+  useEffect(()=>{
+    if(!open)return;
+    panelRef.current?.focus();
+    panelRef.current?.querySelector(`[data-option-index="${activeIndex}"]`)?.scrollIntoView({block:'nearest'});
+  },[open,activeIndex]);
+  useEffect(()=>()=>{if(typeaheadTimer.current)clearTimeout(typeaheadTimer.current);},[]);
+  function close({restoreFocus=false}={}){setOpen(false);if(restoreFocus)setTimeout(()=>triggerRef.current?.focus(),0);}
+  function openList(direction=1){
+    if(disabled||!normalized.length)return;
+    const current=normalized.findIndex(option=>option.value===selectedValue);
+    setActiveIndex(firstEnabledSelectIndex(normalized,current>=0?current:(direction>0?0:normalized.length-1),direction));
+    setOpen(true);
+  }
+  function choose(option){
+    if(!option||option.disabled)return;
+    if(option.value!==selectedValue){
+      if(!controlled)setInternalValue(option.value);
+      onChange?.({target:{name,value:option.value},currentTarget:{name,value:option.value}});
+    }
+    close({restoreFocus:true});
+  }
+  function move(direction){
+    if(!normalized.length)return;
+    let index=activeIndex;
+    for(let seen=0;seen<normalized.length;seen+=1){
+      index=(index+direction+normalized.length)%normalized.length;
+      if(!normalized[index]?.disabled){setActiveIndex(index);break;}
+    }
+  }
+  function onTriggerKeyDown(event){
+    if(['ArrowDown','ArrowUp','Enter',' '].includes(event.key)){
+      event.preventDefault();openList(event.key==='ArrowUp'?-1:1);
+    }
+  }
+  function onListKeyDown(event){
+    if(event.key==='ArrowDown'){event.preventDefault();move(1);return;}
+    if(event.key==='ArrowUp'){event.preventDefault();move(-1);return;}
+    if(event.key==='Home'){event.preventDefault();setActiveIndex(firstEnabledSelectIndex(normalized,0,1));return;}
+    if(event.key==='End'){event.preventDefault();setActiveIndex(firstEnabledSelectIndex(normalized,normalized.length-1,-1));return;}
+    if(event.key==='Enter'||event.key===' '){event.preventDefault();choose(normalized[activeIndex]);return;}
+    if(event.key==='Escape'){event.preventDefault();close({restoreFocus:true});return;}
+    if(event.key==='Tab'){close();return;}
+    if(event.key.length===1&&!event.ctrlKey&&!event.metaKey&&!event.altKey){
+      typeaheadRef.current+=event.key.toLowerCase();
+      if(typeaheadTimer.current)clearTimeout(typeaheadTimer.current);
+      typeaheadTimer.current=setTimeout(()=>{typeaheadRef.current='';},500);
+      const match=normalized.findIndex(option=>!option.disabled&&String(option.label||option.value).toLowerCase().startsWith(typeaheadRef.current));
+      if(match>=0){event.preventDefault();setActiveIndex(match);}
+    }
+  }
+  let lastGroup=null;
+  return <div className={`select-menu ${className}`.trim()} ref={rootRef}>
+    <span className="select-menu-label" id={labelId}>{label}</span>
+    {name&&(
+      <input type="hidden" name={name} value={selectedValue} disabled={disabled}/>
+    )}
+    <div className="select-menu-control">
+      <button type="button" className="select-menu-trigger" ref={triggerRef} disabled={disabled} autoFocus={autoFocus}
+        aria-haspopup="listbox" aria-expanded={open} aria-controls={listId} aria-labelledby={`${labelId} ${valueId}`}
+        aria-required={required||undefined} {...ariaProps}
+        onClick={()=>open?close():openList()} onKeyDown={onTriggerKeyDown}>
+        {selected?.icon&&<span className="select-menu-icon" aria-hidden="true">{selected.icon}</span>}
+        <span className={`select-menu-value${selected?'':' placeholder'}`} id={valueId}>{selected?.label||placeholder}</span>
+        {selected?.tag&&<span className="select-menu-tag">{selected.tag}</span>}
+        <span className="select-menu-chevron">{SELECT_MENU_CHEVRON}</span>
+      </button>
+      {open&&<ul className="select-menu-panel" id={listId} role="listbox" tabIndex="-1" ref={panelRef}
+        aria-labelledby={labelId} aria-activedescendant={activeIndex>=0?`${listId}-option-${activeIndex}`:undefined}
+        onKeyDown={onListKeyDown}>
+        {normalized.map((option,index)=>{
+          const groupChanged=option.group&&option.group!==lastGroup;
+          lastGroup=option.group||lastGroup;
+          return <React.Fragment key={`${option.value}:${index}`}>
+            {groupChanged&&<li className="select-menu-group-label" role="presentation">{option.group}</li>}
+            <li id={`${listId}-option-${index}`} data-option-index={index} role="option"
+              aria-disabled={option.disabled||undefined} aria-selected={option.value===selectedValue}
+              className={`select-menu-option${option.value===selectedValue?' selected':''}${index===activeIndex?' active':''}${option.disabled?' disabled':''}`}
+              onMouseEnter={()=>!option.disabled&&setActiveIndex(index)} onClick={()=>choose(option)}>
+              {option.icon&&<span className="select-menu-icon" aria-hidden="true">{option.icon}</span>}
+              <span className="select-menu-option-copy"><b>{option.label??option.value}</b>{option.description&&<small>{option.description}</small>}</span>
+              <span className="select-menu-option-end">{option.tag&&<span className="select-menu-tag">{option.tag}</span>}
+                {option.value===selectedValue&&<span className="select-menu-check">{SELECT_MENU_CHECK}</span>}</span>
+            </li>
+          </React.Fragment>;
+        })}
+      </ul>}
+    </div>
+  </div>;
+}
+// Existing Admin forms still rely on native required validation and form.reset(). They remain on
+// a real select until each uncontrolled caller is migrated deliberately; the richer SelectMenu is
+// used for controlled dashboard surfaces where an empty value is already impossible or disabled.
 export function Select({label,options=[],optional=false,...props}){return <label>{label}<select required={!optional} {...props}>{optional&&<option value="">None</option>}{options?.map(value=><option key={value} value={value}>{value}</option>)}</select></label>}
 export function statusClass(status){const value=String(status||'').toLowerCase();
   if(['confirmed','success','executed','enabled','healthy','submitted','resolved','up'].includes(value))return 'pill-success';

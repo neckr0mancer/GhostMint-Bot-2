@@ -184,9 +184,9 @@ smokeTest('a banned account\'s due scheduled task fails without executing, inste
       [userId, banReason]);
     await pool.query(
       `INSERT INTO mint_tasks (id,user_id,name,wallet_label,contract_address,function_name,quantity,
-        price_eth,mint_time,status,next_attempt_at,max_attempts,idempotency_key)
+        price_eth,mint_time,status,next_attempt_at,preflight_target_at,max_attempts,idempotency_key)
        VALUES ($1,$2,'smoke test task','nonexistent-wallet','0x0000000000000000000000000000000000000001',
-        'mint',1,0,NOW(),'scheduled',NOW(),3,$3)`,
+        'mint',1,0,NOW(),'scheduled',NOW(),NOW(),3,$3)`,
       [taskId, userId, `scheduled-mint:${userId}:${taskId}`]);
 
     const port = await reservePort();

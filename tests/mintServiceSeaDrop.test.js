@@ -95,12 +95,13 @@ test('OpenSea validation rejects an Archetype mintTo that redirects the NFT to a
   }), ValidationError);
 });
 
-function commandServiceFixture({ contractValueResolver, seaDropDiscoveryService, openSeaService, priceFeedService, wallets }) {
+function commandServiceFixture({ contractValueResolver, seaDropDiscoveryService, openSeaService, priceFeedService, wallets,
+  providerService, supportedChains = ['ethereum'], chains = { ethereum: { sym: 'ETH' } } }) {
   const state = { wallets: wallets || [{ userId: 'user-a', label: 'main', address: WALLET, chain: 'ethereum' }], tasks: [], activity: [], pnl: [], snipers: [] };
   const calls = [];
   const service = createBotCommandService({
-    storage: {}, schedulerRepository: {}, providerService: { perform: async () => '0x1234' }, governance: {}, adminCommands: {}, sniperService: {},
-    supportedChains: ['ethereum'], chains: { ethereum: { sym: 'ETH' } }, getState: () => state,
+    storage: {}, schedulerRepository: {}, providerService: providerService || { perform: async () => '0x1234' }, governance: {}, adminCommands: {}, sniperService: {},
+    supportedChains, chains, getState: () => state,
     contractValueResolver, seaDropDiscoveryService, openSeaService, priceFeedService,
     executeMint: async ({ userId, wallet, request }) => { calls.push(['executeMint', userId, wallet.label, request]); return { txHash: '0xabc' }; },
     executeMintViaOpenSea: async ({ userId, wallet, request, built }) => { calls.push(['executeMintViaOpenSea', userId, wallet.label, request, built]); return { txHash: '0xdef' }; },
@@ -297,6 +298,7 @@ test('detectMintContract tries SeaDrop first and returns a SeaDrop-shaped result
   assert.equal(result.seaDropAddress, SEADROP);
   assert.equal(result.priceKnown, true);
   assert.equal(result.valueWei, '2000');
+  assert.equal(result.priceWeiPerItem, '1000');
   assert.equal(result.maxPerWallet, 5);
   // SeaDrop's PublicDrop struct has no supply-cap field -- probed separately from the token
   // contract itself (Section AD Tier 1 follow-up: this used to be hardcoded null for every
@@ -318,10 +320,26 @@ test('detectMintContract falls back to the plain mint(uint256) assumption when n
   assert.equal(result.seaDropAddress, null);
   assert.equal(result.priceKnown, true);
   assert.equal(result.valueWei, '1000');
+  assert.equal(result.priceWeiPerItem, '500');
   assert.equal(result.maxPerWallet, '3');
   assert.equal(result.startTime, null);
   assert.equal(result.endTime, null);
   assert.equal(result.collection, null);
+});
+
+test('scheduler detection can pin the persisted EVM chain instead of scanning another deployment of the address', async () => {
+  const seen=[];
+  const { service } = commandServiceFixture({
+    supportedChains:['ethereum','base'],chains:{ethereum:{sym:'ETH'},base:{sym:'ETH'}},
+    providerService:{perform:async(chain,operation)=>{seen.push([chain,operation]);return '0x1234';}},
+    contractValueResolver:{resolve:async()=>({price:{value:'500'},maxSupply:null,maxPerWallet:null})},
+    seaDropDiscoveryService:{resolve:async()=>({address:null,publicDrop:null,feeRecipient:null})},
+  });
+  const result=await service.detectMintContract('user-a',{
+    contractAddress:CONTRACT,quantity:1,chain:'base',
+  });
+  assert.equal(result.chain,'base');
+  assert.deepEqual(seen,[['base','detectChain']]);
 });
 
 test('an OpenSea-indexed non-SeaDrop collection prefers the safe OpenSea builder over guessing mint(uint256)', async () => {
@@ -385,6 +403,12 @@ test('detectMintContract recommends the OpenSea builder for a wallet-gated SeaDr
     contractAddress: CONTRACT, quantity: 1, includeDrop: true,
   });
   assert.equal(result.openSeaMintRecommended, true);
+  assert.equal(result.drop.stages[0].requiresEligibilityCheck, true);
+  assert.equal(result.drop.stages[0].eligibilityState, 'check_at_open');
+  assert.equal(result.schedulePlan.recommendedStageUuid, 'allow-1');
+  assert.equal(result.schedulePlan.eligibilityMode, 'earliest_eligible');
+  assert.equal(result.schedulePlan.advancesIfIneligible, false,
+    'a single gated phase must not promise a later-stage advance that does not exist');
 });
 
 test('an active public phase keeps the direct SeaDrop path even when a later gated phase exists', async () => {
@@ -714,14 +738,15 @@ test('market cap is null (not a guess) when either the floor price or the live m
   assert.equal(noSupply.stats.marketCap, null);
 });
 
-function taskServiceFixture({ contractValueResolver, seaDropDiscoveryService }) {
+function taskServiceFixture({ contractValueResolver, seaDropDiscoveryService, seaDropPublicDropResolver, createReservedTask }) {
   const state = { wallets: [{ id: 1, userId: 'user-a', label: 'main', address: WALLET, chain: 'ethereum' }], tasks: [], activity: [], pnl: [], snipers: [] };
   const saved = [];
   const service = createBotCommandService({
-    storage: { saveTask: async task => { saved.push(task); return true; } },
+    storage: { saveTask: async task => { saved.push(task); return true; },
+      ...(createReservedTask ? {createReservedTask:async task=>{saved.push(task);return createReservedTask(task);}} : {}) },
     schedulerRepository: {}, providerService: {}, governance: {}, adminCommands: {}, sniperService: {},
     supportedChains: ['ethereum'], chains: { ethereum: { sym: 'ETH' } }, getState: () => state,
-    contractValueResolver, seaDropDiscoveryService, encryptPrivateKey: () => ({}),
+    contractValueResolver, seaDropDiscoveryService, seaDropPublicDropResolver, encryptPrivateKey: () => ({}),
   });
   return { saved, service };
 }
@@ -796,6 +821,75 @@ test('createTask rejects a viaOpenSea schedule with no persisted phase identity'
   await assert.rejects(service.createTask('user-a', { name:'unsafe phase', walletLabel:'main',
     contractAddress:CONTRACT, quantity:1, mintTime, viaOpenSea:true }), error => (
     error instanceof ValidationError && error.issues.some(issue => issue.field === 'stageUuid')
+  ));
+});
+
+test('createTask rejects earliest-eligible scheduling unless OpenSea phase execution is enabled',async()=>{
+  const {service}=taskServiceFixture({
+    contractValueResolver:{resolve:async()=>({price:{value:'500'},maxSupply:null,maxPerWallet:null})},
+    seaDropDiscoveryService:{resolve:async()=>({address:null,publicDrop:null,feeRecipient:null})},
+  });
+  const mintTime=new Date(Date.now()+60_000).toISOString();
+  await assert.rejects(service.createTask('user-a',{name:'unsafe API task',walletLabel:'main',
+    contractAddress:CONTRACT,quantity:1,mintTime,eligibilityMode:'earliest_eligible',
+    stageUuid:'allow-1',stageType:'allowlist'}),error=>(
+    error instanceof ValidationError&&error.issues.some(issue=>issue.field==='eligibilityMode')
+  ));
+});
+
+test('createTask uses a server-owned ID and rejects an active same-stage reservation',async()=>{
+  const requestedId='11111111-1111-4111-8111-111111111111';
+  const {saved,service}=taskServiceFixture({
+    contractValueResolver:{resolve:async()=>({price:{value:'0'},maxSupply:null,maxPerWallet:null})},
+    seaDropDiscoveryService:{resolve:async()=>({address:null,publicDrop:null,feeRecipient:null})},
+    createReservedTask:async()=>({created:false,conflict:{name:'Existing public stage'}}),
+  });
+  const mintTime=new Date(Date.now()+60_000).toISOString();
+  await assert.rejects(service.createTask('user-a',{id:requestedId,name:'duplicate',walletLabel:'MAIN',
+    contractAddress:CONTRACT,quantity:1,mintTime,stageUuid:'PUBLIC-1',stageLabel:'Public',
+    stageType:'public_sale'}),error=>(
+    error instanceof ValidationError&&error.code==='SCHEDULE_STAGE_DUPLICATE'
+      &&/already has an active mint scheduled/.test(error.issues[0].message)
+  ));
+  assert.notEqual(saved[0].id,requestedId);
+  assert.equal(saved[0].walletLabel,'main','the stored label comes from the owned wallet, not request casing');
+  assert.equal(saved[0].walletAddress,WALLET);
+  assert.equal(saved[0].reservationStageKey,'uuid:public-1');
+});
+
+test('createTask persists fresh, wallet-specific SeaDrop allowance evidence for a matching public stage',async()=>{
+  const start=Math.floor(Date.now()/1000)+3_600;
+  const end=start+3_600;
+  const {saved,service}=taskServiceFixture({
+    contractValueResolver:{resolve:async()=>({price:{value:'0'},maxSupply:null,maxPerWallet:null})},
+    seaDropDiscoveryService:{resolve:async()=>({address:SEADROP,publicDrop:null,feeRecipient:FEE_RECIPIENT})},
+    seaDropPublicDropResolver:{
+      readPublicDrop:async()=>({startTime:start,endTime:end,maxTotalMintableByWallet:10,mintPriceWei:'0'}),
+      readMintStats:async(_chain,_contract,wallet)=>{assert.equal(wallet,WALLET);return {minterNumMinted:'2'};},
+    },
+    createReservedTask:async()=>({created:true}),
+  });
+  await service.createTask('user-a',{name:'verified public',walletLabel:'main',contractAddress:CONTRACT,
+    quantity:3,mintTime:new Date(start*1000+15_000).toISOString(),
+    stageStartAt:new Date(start*1000).toISOString(),stageUuid:'public-1',stageLabel:'Public',
+    stageType:'public_sale'});
+  assert.equal(saved[0].allowanceScope,'contract_cumulative');
+  assert.equal(saved[0].allowanceMaxPerWallet,'10');
+  assert.equal(saved[0].allowanceMintedSnapshot,'2');
+  assert.equal(saved[0].allowanceStageStartAt,start*1000);
+});
+
+test('createTask reports an authoritative allowance conflict as a validation error',async()=>{
+  const {service}=taskServiceFixture({
+    contractValueResolver:{resolve:async()=>({price:{value:'0'},maxSupply:null,maxPerWallet:null})},
+    seaDropDiscoveryService:{resolve:async()=>({address:null,publicDrop:null,feeRecipient:null})},
+    createReservedTask:async()=>{const error=new Error('This wallet can schedule 1 more mint.');
+      error.code='SCHEDULE_ALLOWANCE_EXCEEDED';throw error;},
+  });
+  await assert.rejects(service.createTask('user-a',{name:'too many',walletLabel:'main',
+    contractAddress:CONTRACT,quantity:2,mintTime:new Date(Date.now()+60_000).toISOString()}),error=>(
+    error instanceof ValidationError&&error.code==='SCHEDULE_ALLOWANCE_EXCEEDED'
+      &&error.issues[0].field==='quantity'&&/schedule 1 more/.test(error.issues[0].message)
   ));
 });
 

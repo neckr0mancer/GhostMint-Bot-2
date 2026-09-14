@@ -36,10 +36,13 @@ const { createPriceFeedService } = require('./mint/priceFeedService');
 const { computeSeaDropValueWei, validateOpenSeaMintCall } = require('./mint/seaDropCall');
 const { SEADROP_MINT_SIGNATURE } = require('./mint/seaDropRegistry');
 const mintFlowDecision = require('./mint/mintFlowDecision');
+const { stageRequiresEligibilityCheck } = require('./mint/scheduleStagePlanning');
 const watchRuleFlowDecision = require('./social/watchRuleFlowDecision');
 const sniperFlowDecision = require('./sniper/sniperFlowDecision');
 const { createSchedulerRepository } = require('./scheduler/schedulerRepository');
-const { DEFAULT_LEAD_MS, createScheduledReminder } = require('./scheduler/scheduledReminder');
+const { createScheduledPreflightEvaluator, scheduledPreflightDelivery } = require('./scheduler/scheduledPreflight');
+const { createScheduledPreflightRepository } = require('./scheduler/scheduledPreflightRepository');
+const { createScheduledPreflightWorker } = require('./scheduler/scheduledPreflightWorker');
 const { deliverFailureSideEffects, scheduledFailureFeedback } = require('./scheduler/scheduledFailureFeedback');
 const { SCHEDULE_PHASE_WAIT, createSchedulerWorker, STAGE_REARM_WINDOW_MS, errorReason, executionAttemptCount } = require('./scheduler/schedulerWorker');
 const { DECISION_REASONS, resolveScheduledPhase } = require('./scheduler/scheduledPhaseResolver');
@@ -108,6 +111,7 @@ const identity = createIdentityService(identityRepository, {
 const dashboardAuth=createDashboardAuthService({identity,repository:createDashboardSessionRepository(pool),secureCookies:CONFIG.isProduction});
 const transactionIntentRepository = createTransactionIntentRepository(pool);
 const schedulerRepository = createSchedulerRepository(pool);
+const scheduledPreflightRepository=createScheduledPreflightRepository(pool);
 const sniperRepository = createSniperRepository(pool);
 const socialWatchRepository = createSocialWatchRepository(pool);
 const targetPolicyRepository = createTargetPolicyRepository(pool);
@@ -319,6 +323,11 @@ function phaseAwareTask(task) {
     && (task.stageUuid || task.stageLabel || task.stageType));
 }
 
+function taskExecutionChain(task, wallet = null) {
+  try { return resolveTaskChain(task, CONFIG.supportedChains).chain || wallet?.chain || null; }
+  catch { return wallet?.chain || null; }
+}
+
 function phaseName(stage) {
   return stage?.label || telegramMenus.humanizeStageType(stage?.stageType) || 'selected';
 }
@@ -494,9 +503,10 @@ async function prearmScheduledTask(task) {
     await governance.checkAccountStatus(task.userId);
     const wallet = DB.wallets.find(item => item.userId === task.userId && item.label === task.walletLabel);
     if (!wallet) return; // deleted after scheduling -- executeTask surfaces the real failure at T0
-    const seaDrop = await seaDropDiscoveryService.resolve(wallet.chain, task.contract);
+    const executionChain = taskExecutionChain(task, wallet);
+    const seaDrop = await seaDropDiscoveryService.resolve(executionChain, task.contract);
     if (seaDrop.address) {
-      const livePublicDrop = await seaDropPublicDropResolver.getPublicDrop(wallet.chain, seaDrop.address, task.contract);
+      const livePublicDrop = await seaDropPublicDropResolver.getPublicDrop(executionChain, seaDrop.address, task.contract);
       // INNOV-001: the advertised T is imperfect information. When the contract's own window
       // differs from the schedule, move the fire moment to the REAL opening NOW -- before T
       // arrives -- so the first attempt is valid and zero failed tries are spent discovering
@@ -507,23 +517,19 @@ async function prearmScheduledTask(task) {
       if (move) {
         const moved = await schedulerRepository.moveFireTime(task.userId, task.id, move.fireAtMs);
         if (moved) {
-          log(`Pre-arm re-arm: "${task.name}" (${wallet.chain}:${task.contract}) moved to the live opening ${new Date(move.fireAtMs).toISOString()} -- ${move.reason}`);
+          log(`Pre-arm re-arm: "${task.name}" (${executionChain}:${task.contract}) moved to the live opening ${new Date(move.fireAtMs).toISOString()} -- ${move.reason}`);
           task.mintTime = move.fireAtMs;
         }
       } else if (classification.phase === 'late') {
-        log(`Pre-arm notice: "${task.name}" (${wallet.chain}:${task.contract}) window already closed (ended ${classification.endTimeMs ? new Date(classification.endTimeMs).toISOString() : 'never set'}) -- fire-time drift check will reject it`);
+        log(`Pre-arm notice: "${task.name}" (${executionChain}:${task.contract}) window already closed (ended ${classification.endTimeMs ? new Date(classification.endTimeMs).toISOString() : 'never set'}) -- fire-time drift check will reject it`);
       } else if (livePublicDrop && Math.abs(livePublicDrop.startTime * 1000 - task.mintTime) > PREARM_WINDOW_TOLERANCE_MS) {
-        log(`Pre-arm notice: "${task.name}" (${wallet.chain}:${task.contract}) fires at ${new Date(task.mintTime).toISOString()}, but its live SeaDrop window starts ${new Date(livePublicDrop.startTime * 1000).toISOString()} -- the fire-time drift check may reject it`);
+        log(`Pre-arm notice: "${task.name}" (${executionChain}:${task.contract}) fires at ${new Date(task.mintTime).toISOString()}, but its live SeaDrop window starts ${new Date(livePublicDrop.startTime * 1000).toISOString()} -- the fire-time drift check may reject it`);
       }
     }
     // Warm hot-path reads that executeTask will need at T0: fee data (5s TTL), balance, and
     // pending nonce. All best-effort and in parallel -- a failure here just means T0 does the
     // work the old way, never a hard failure. Use the execution chain (persisted task chain
     // if present, else wallet home) so the warm matches what T0 will actually use.
-    const executionChain = (() => {
-      try { return resolveTaskChain(task, CONFIG.supportedChains).chain || wallet.chain; }
-      catch { return wallet.chain; }
-    })();
     // Fee data cache is per-chain and short-lived, so a 12s lead still leaves it hot at T0.
     // Balance and nonce warm the provider/RPC connection pool.
     providerService.perform(executionChain, 'prearmFeeData', p => p.getFeeData()).then(fd => {
@@ -836,7 +842,7 @@ const schedulerWorker = createSchedulerWorker({
         wallet.minted = (wallet.minted || 0) + event.task.qty;
         await storage.updateWalletMinted(event.task.userId, wallet.label, wallet.minted);
         await logActivity(event.task.userId, 'success', `Scheduled mint: ${event.task.name}`, wallet.label,
-          event.intent || null, CHAINS[wallet.chain],{triggerSource:'scheduled'});
+          event.intent || null, CHAINS[taskExecutionChain(event.task, wallet)],{triggerSource:'scheduled'});
       }
       await notifyUser(event.task.userId, `✅ Scheduled mint <b>${escapeTelegramHtml(event.task.name)}</b> confirmed.`);
     }
@@ -906,21 +912,12 @@ const schedulerWorker = createSchedulerWorker({
     { chainState:'not_sent' }).message,
 });
 
-// ── Scheduled-mint reminder and low-balance pre-flight ────
-// Every scheduled mint gets an informational five-minute reminder while remaining fully automatic.
-// The same sweep compares the live wallet balance against the mint value and adds an actionable
-// warning when funds are already short or become short after the first reminder.
-//
-// Deliberately compares against the mint VALUE only (price × quantity), not value + gas. That makes
-// it a lower bound: falling short of it is certain failure, so the warning is never a false alarm.
-// For phase-aware OpenSea tasks, refresh the selected stage's advertised price instead of trusting
-// the zero placeholder stored for builder-backed calldata.
-// A wallet that clears this bar can still fail on gas, which is the failure notification's job.
-//
-// Delivery bookkeeping is held in memory. A restart can therefore re-remind a task once, which is
-// harmless and safer than suppressing a time-sensitive warning after a crash.
-const SCHEDULE_REMINDER_LEAD_MS = DEFAULT_LEAD_MS;
+// Scheduled task expiry is a separate one-minute history sweep. Readiness reminders no longer use
+// this interval: the durable worker below owns persisted five-minute and 30-second checkpoints.
 const SCHEDULE_REMINDER_SWEEP_MS = 60 * 1000;
+// Advisory early estimate only. The M7 engine still performs the authoritative gas estimate,
+// simulation, balance, and policy checks immediately before broadcast.
+const SCHEDULE_REMINDER_GAS_UNITS = 250_000n;
 
 // An expired scheduled mint is something that happened TO the user and then quietly vanished:
 // expiry is derived from the clock, so nothing is written when it occurs. A failure at least leaves
@@ -939,7 +936,7 @@ async function expiredHistorySweep() {
         const wallet = DB.wallets.find(item => item.userId === task.userId && item.label === task.walletLabel);
         const why = task.status === 'paused' ? 'paused past its mint time' : (task.lastError || 'no reason recorded');
         await logActivity(task.userId, 'fail', `Scheduled mint expired: ${task.name}`,
-          task.walletLabel, null, wallet ? CHAINS[wallet.chain] : null, { triggerSource: 'scheduled' });
+          task.walletLabel, null, CHAINS[taskExecutionChain(task, wallet)] || null, { triggerSource: 'scheduled' });
         await notifyUser(task.userId,
           `⌛ Scheduled mint <b>${escapeTelegramHtml(task.name)}</b> expired — ${escapeTelegramHtml(why)}`);
         dashboardWebSockets.broadcastToUser(task.userId, { type: 'tasks.changed' });
@@ -955,41 +952,76 @@ async function expiredHistorySweep() {
   return recorded;
 }
 
-const scheduledReminder = createScheduledReminder({
-  getTasks: () => DB.tasks,
-  findWallet: task => DB.wallets.find(item => item.userId === task.userId && item.label === task.walletLabel),
-  detectSoldOut: async task => {
-    if (!task.contract) return false;
-    try {
-      const detected = await botCommands.detectMintContract(task.userId,
-        { contractAddress: task.contract, quantity: task.qty || 1, includeSupply:true });
-      return Boolean(detected?.soldOut);
-    } catch { return false; }
+// Each result is claimed and committed in PostgreSQL before Telegram, Discord, or WebSocket
+// delivery is attempted. No process-memory delivery flags or cached task list are involved.
+const evaluateScheduledPreflight=createScheduledPreflightEvaluator({
+  findWallet:task=>DB.wallets.find(item=>item.userId===task.userId&&item.label===task.walletLabel),
+  inspectMint:async(task,wallet)=>{
+    const detected=await botCommands.detectMintContract(task.userId,{contractAddress:task.contract,
+      quantity:task.qty||1,includeSupply:true,chain:taskExecutionChain(task,wallet)});
+    const soldOutBySupply=detected?.maxSupply!==null&&detected?.maxSupply!==undefined
+      &&detected?.totalMinted!==null&&detected?.totalMinted!==undefined
+      &&BigInt(detected.totalMinted)>=BigInt(detected.maxSupply);
+    return {soldOut:soldOutBySupply,soldOutDefinitive:soldOutBySupply,
+      isSeaDrop:Boolean(detected?.isSeaDrop),priceWeiPerItem:detected?.priceWeiPerItem??null};
   },
-  cancelTask: task => botCommands.controlTask(task.userId, 'cancel', task.id),
-  calculateNeededWei: async (task, wallet) => {
-    if (phaseAwareTask(task)) {
-      try {
-        const resolved = resolveTaskChain(task, CONFIG.supportedChains);
-        const drop = await openSeaService.getDrop(resolved.chain || wallet.chain, task.contract);
-        const stages = [...(drop?.stages || []), drop?.activeStage, drop?.nextStage].filter(Boolean);
-        const stage = task.stageUuid
-          ? stages.find(item => item.uuid === task.stageUuid)
-          : stages.find(item => item.label === task.stageLabel && item.stageType === task.stageType);
-        if (stage?.priceWei !== null && stage?.priceWei !== undefined) {
-          return BigInt(stage.priceWei) * BigInt(Number(task.qty) || 1);
-        }
-      } catch { /* Unknown price degrades to the ordinary reminder; execution rechecks it. */ }
+  resolveMintValueWei:async(task,wallet,inspection)=>{
+    if(phaseAwareTask(task)){
+      const drop=await openSeaService.getDrop(taskExecutionChain(task,wallet),task.contract);
+      const stages=[...(drop?.stages||[]),drop?.activeStage,drop?.nextStage].filter(Boolean);
+      const normalized=value=>String(value||'').trim().toLowerCase().replace(/[\s-]+/g,'_');
+      const stage=task.stageUuid
+        ?stages.find(item=>String(item.uuid||'')===String(task.stageUuid))
+        :stages.find(item=>normalized(item.label)===normalized(task.stageLabel)
+          &&normalized(item.stageType)===normalized(task.stageType));
+      if(stage?.priceWei!==null&&stage?.priceWei!==undefined){
+        return BigInt(stage.priceWei)*BigInt(Number(task.qty)||1);
+      }
+      // Direct public SeaDrop tasks may have a fresh on-chain PublicDrop price even when OpenSea's
+      // stage metadata omits one. Never use this fallback for builder/gated mints, where the price
+      // is wallet-specific and the builder remains authoritative.
+      if(!task.viaOpenSea&&inspection?.isSeaDrop&&inspection.priceWeiPerItem!==null){
+        return BigInt(inspection.priceWeiPerItem)*BigInt(Number(task.qty)||1);
+      }
+      return null;
     }
-    return ethers.parseEther(String((Number(task.price) || 0) * (Number(task.qty) || 1)));
+    return ethers.parseEther(String(task.price??0))*BigInt(Number(task.qty)||1);
   },
-  getBalance: wallet => providerService.perform(wallet.chain, 'lowBalanceCheck', provider => provider.getBalance(wallet.address)),
-  formatWei: value => ethers.formatEther(value),
-  escape: escapeTelegramHtml,
-  notify: notifyUser,
-  broadcast: (userId, message) => dashboardWebSockets.broadcastToUser(userId, message),
-  log: message => log(message),
-  leadMs: SCHEDULE_REMINDER_LEAD_MS,
+  estimateGasWei:async(task,wallet)=>{
+    const executionChain=taskExecutionChain(task,wallet);
+    let feePerGas=Number(task.gas)>0?ethers.parseUnits(String(task.gas),'gwei'):null;
+    if(feePerGas===null){
+      const feeData=await providerService.perform(executionChain,'scheduledPreflightFee',provider=>provider.getFeeData());
+      feePerGas=feeData?.maxFeePerGas??feeData?.gasPrice??null;
+    }
+    return feePerGas===null||feePerGas===undefined?null:SCHEDULE_REMINDER_GAS_UNITS*BigInt(feePerGas);
+  },
+  getBalance:(task,wallet)=>providerService.perform(taskExecutionChain(task,wallet),
+    'scheduledPreflightBalance',provider=>provider.getBalance(wallet.address)),
+  nativeCurrency:(task,wallet)=>CHAINS[taskExecutionChain(task,wallet)]?.sym||'native currency',
+});
+
+const scheduledPreflightWorker=createScheduledPreflightWorker({
+  repository:scheduledPreflightRepository,evaluate:evaluateScheduledPreflight,
+  sanitizeError:error=>scheduledFailureFeedback(safeError(errorReason(error)),
+    {chainState:'not_sent'}).message,
+  deliver:async(task,check,result)=>{
+    const executionChain=taskExecutionChain(task);
+    const delivery=scheduledPreflightDelivery(task,check,{...result,
+      walletLabel:result.walletLabel||task.walletLabel,
+      currency:CHAINS[executionChain]?.sym||'native currency'},{formatWei:ethers.formatEther,
+      escape:escapeTelegramHtml});
+    const platformResults=await notificationService.sendToUser(task.userId,delivery.text);
+    dashboardWebSockets.broadcastToUser(task.userId,delivery.event);
+    const failures=platformResults.filter(item=>item.status==='rejected').length;
+    if(failures)throw new Error(`${failures} linked platform notification${failures===1?'':'s'} failed`);
+  },
+  onCommitted:(task,check,result,persisted)=>{
+    if(persisted.cancelled){const cached=DB.tasks.find(item=>item.userId===task.userId&&item.id===task.id);
+      if(cached){cached.status='cancelled';cached.completedAt=Date.now();}}
+    dashboardWebSockets.broadcastToUser(task.userId,{type:'tasks.changed'});
+  },
+  log,
 });
 
 // ── Activity ──────────────────────────────────────────────
@@ -1041,12 +1073,27 @@ function previewQuantity(preview) {
 // previously these were two independently-written copies whose message text and increment logic
 // could silently drift apart.
 async function recordMintActivity({ userId, wallet, quantity, intent, chain }) {
+  // This helper owns every manual-mint success side effect. Keep the finality guard here as well as
+  // at adapters so a future caller cannot increment the wallet, add success Activity, or create
+  // automatic P&L for a reverted/non-final intent.
+  if (intent?.state !== 'confirmed') return false;
   wallet.minted = (wallet.minted || 0) + quantity;
   await storage.updateWalletMinted(userId, wallet.label, wallet.minted);
   await logActivity(userId, 'success', `Minted ${quantity} NFT${quantity === 1 ? '' : 's'}`,
     wallet.label, intent, CHAINS[chain], { triggerSource: intent?.triggerSource || 'manual',
       address: intent?.callPreview?.contractAddress || intent?.to || null });
   await autoRecordPnl({ userId, wallet, quantity, intent });
+  return true;
+}
+
+async function recordMintActivitySafely(input) {
+  try { return await recordMintActivity(input); }
+  catch (error) {
+    // Chain finality is the source of transaction truth. A later Activity/P&L write failure is an
+    // accounting-repair problem, never evidence that the confirmed transaction became unknown.
+    log(`Confirmed mint accounting update failed for ${safeError(input?.wallet?.label || 'wallet')}: ${safeError(error)}`);
+    return false;
+  }
 }
 
 // Every confirmed mint becomes its own P&L row automatically -- cost and gas are real numbers
@@ -1418,8 +1465,14 @@ const bumpSweeper = createBumpSweeper({
 const notificationService = createNotificationService({
   identityRepository,
   transports: {
-    telegram: (platformUserId, message) => tg(platformUserId, message, { parse_mode: 'HTML' }),
-    discord: (platformUserId, message) => discordBot?.sendDirectMessage(platformUserId, telegramHtmlToDiscordMarkdown(message)),
+    telegram: (platformUserId, message) => {
+      if (!bot) throw new Error('Telegram notification transport is unavailable');
+      return bot.sendMessage(platformUserId,String(message),{parse_mode:'HTML'});
+    },
+    discord: (platformUserId, message) => {
+      if (!discordBot) throw new Error('Discord notification transport is unavailable');
+      return discordBot.sendDirectMessage(platformUserId,telegramHtmlToDiscordMarkdown(message));
+    },
   },
   log,
 });
@@ -2345,7 +2398,8 @@ function openSeaPhaseEligibilityDeadline(mintFlowData, stage) {
   return new Date(Math.min(latest, cap) * 1000).toISOString();
 }
 function openSeaPhaseTaskData(mintFlowData, stage) {
-  const viaOpenSea = !mintFlowData.isSeaDrop || needsOpenSeaEligibility(stage.stageType);
+  const requiresEligibilityCheck = stageRequiresEligibilityCheck(stage);
+  const viaOpenSea = !mintFlowData.isSeaDrop || requiresEligibilityCheck;
   const detectedPrice = stage.priceWei !== null && stage.priceWei !== undefined
     ? Number(ethers.formatEther(BigInt(stage.priceWei)))
     : (Number.isFinite(stage.priceETH) ? stage.priceETH : undefined);
@@ -2354,7 +2408,7 @@ function openSeaPhaseTaskData(mintFlowData, stage) {
     priceETH: viaOpenSea ? 0 : detectedPrice, priceUnknown: !viaOpenSea && detectedPrice === undefined,
     viaOpenSea, collection: mintFlowData.collection,
     stageUuid: stage.uuid || null, stageLabel: stage.label || null, stageType: stage.stageType || null,
-    eligibilityMode: viaOpenSea ? 'earliest_eligible' : 'specific_stage',
+    eligibilityMode: requiresEligibilityCheck ? 'earliest_eligible' : 'specific_stage',
     eligibilityDeadline: openSeaPhaseEligibilityDeadline(mintFlowData, stage),
     mintTime: new Date(stage.startTime * 1000).toISOString(),
     name: openSeaPhaseTaskName(mintFlowData, stage),
@@ -4155,9 +4209,11 @@ const botCommands = createBotCommandService({
   botSecurityRepository,
   broadcast: (userId, resource) => dashboardWebSockets.broadcastToUser(userId, {type:`${resource}.changed`}),
   schedulerRepository,
+  scheduledPreflightRepository,
   providerService,
   contractValueResolver,
   seaDropDiscoveryService,
+  seaDropPublicDropResolver,
   openSeaService,
   priceFeedService,
   governance,
@@ -4186,20 +4242,22 @@ const botCommands = createBotCommandService({
   executePreparedMint:async({userId,wallet,prepared,gasGwei})=>{
     const intent=await mintExecution.executePrepared({userId,wallet,prepared,triggerSource:'manual',
       gasPriceWei:gasGwei===undefined||gasGwei===null?undefined:ethers.parseUnits(String(gasGwei),'gwei')});
-    await recordMintActivity({ userId, wallet, quantity: previewQuantity(prepared.preview), intent, chain: prepared.chain });
+    if(intent.state==='confirmed'){
+      await recordMintActivitySafely({ userId, wallet, quantity: previewQuantity(prepared.preview), intent, chain: prepared.chain });
+    }
     return intent;
   },
   executeMint: async ({ userId, wallet, request }) => {
     const intent = await executeMint({ wallet, contractAddr: request.contractAddress,
       qty: request.quantity, priceETH: request.priceETH, gasGwei: request.gasGwei, maxGasGwei: request.maxGasGwei,
       chain: request.chain, triggerSource: 'manual' });
-    await recordMintActivity({ userId, wallet, quantity: request.quantity, intent, chain: request.chain });
+    await recordMintActivitySafely({ userId, wallet, quantity: request.quantity, intent, chain: request.chain });
     return intent;
   },
   executeMintViaOpenSea: async ({ userId, wallet, request, built }) => {
     const intent = await executeMintViaOpenSea({ wallet, contractAddr: request.contractAddress, chain: request.chain, quantity: request.quantity, built,
       triggerSource: 'manual', gasGwei: request.gasGwei, maxGasGwei: request.maxGasGwei });
-    await recordMintActivity({ userId, wallet, quantity: request.quantity, intent, chain: request.chain });
+    await recordMintActivitySafely({ userId, wallet, quantity: request.quantity, intent, chain: request.chain });
     return intent;
   },
   // Unlike mint, a send has no contract/calldata to prepare -- calls transactionEngine.submit
@@ -4222,6 +4280,7 @@ const dashboardApi=createDashboardApi({auth:dashboardAuth,identityRepository,com
   securityAudit:botSecurityRepository,broadcast:(userId,message)=>dashboardWebSockets.broadcastToUser(userId,message),
   broadcastToUsers:(userIds,message)=>dashboardWebSockets.broadcastToUsers(userIds,message),
   notifyUser,
+  log,
   chains:CHAINS,
   supportedChains:CONFIG.supportedChains,
   checkAccountStatus:userId=>governance.checkAccountStatus(userId),
@@ -4276,7 +4335,7 @@ app.use(express.static(path.join(PROJECT_ROOT,'public'),{setHeaders:(res,file)=>
 
 // ── API ───────────────────────────────────────────────────
 const readinessService=createReadinessService({database:storage,providerService,
-  chains:CONFIG.supportedChains,schedulerWorker,socialWatchWorker,retentionWorker,
+  chains:CONFIG.supportedChains,schedulerWorker,scheduledPreflightWorker,socialWatchWorker,retentionWorker,
   sniperHealth:()=>{const sourceHealth=Object.values(pendingSources).map(source=>source.health());
     const expectedPendingChains=[...new Set(DB.snipers.filter(sniper=>sniper.active
       &&(sniper.observationMode||'confirmed')==='pending').map(sniper=>sniper.chain))];
@@ -4313,11 +4372,11 @@ async function start() {
     }
   }
   schedulerWorker.start();
+  scheduledPreflightWorker.start();
   bumpSweeper.start();
-  setInterval(()=>{scheduledReminder.sweep().catch(error=>log(`Scheduled-reminder sweep error: ${safeError(error)}`));},SCHEDULE_REMINDER_SWEEP_MS).unref?.();
   setInterval(()=>{expiredHistorySweep().catch(error=>log(`Expired-history sweep error: ${safeError(error)}`));},SCHEDULE_REMINDER_SWEEP_MS).unref?.();
   log('Started expired-mint history sweep');
-  log(`Started scheduled-mint reminders and low-balance pre-flight (${SCHEDULE_REMINDER_LEAD_MS/60000}m lead)`);
+  log('Started durable scheduled-mint preflights (5m and 30s checkpoints)');
   socialWatchWorker.start();
   retentionWorker.start();
   log('Started social watch-rule worker');
@@ -4333,7 +4392,8 @@ async function start() {
 }
 
 const gracefulShutdown=createGracefulShutdown({getHttpServer:()=>httpServer,telegramBot:bot,discordBot,
-  schedulerWorker,socialWatchWorker,retentionWorker,webSocketHub:dashboardWebSockets,stopWatchers:()=>Object.keys(chainWatchers).forEach(chain=>{
+  schedulerWorker,scheduledPreflightWorker,socialWatchWorker,retentionWorker,
+  webSocketHub:dashboardWebSockets,stopWatchers:()=>Object.keys(chainWatchers).forEach(chain=>{
     chainWatchers[chain].stop();delete chainWatchers[chain];pendingSources[chain]?.stop();delete pendingSources[chain];
     pendingDispatchers[chain]?.stop();delete pendingDispatchers[chain];
   }),releasePollingLock:()=>releaseTelegramPollingLock?.(),pool,log});

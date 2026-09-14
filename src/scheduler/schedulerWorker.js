@@ -194,7 +194,15 @@ function createSchedulerWorker({ repository, intentRepository, transactionEngine
     } catch (error) {
       if (error?.code === SCHEDULE_PHASE_WAIT && error.phaseDeferral && repository.deferForPhase) {
         const reason = sanitizeError(error).slice(0, 500);
-        const deferred = await repository.deferForPhase(task, { ...error.phaseDeferral, reason });
+        let deferred;
+        try { deferred = await repository.deferForPhase(task, { ...error.phaseDeferral, reason }); }
+        catch (deferralError) {
+          if (deferralError?.code !== 'SCHEDULE_STAGE_DUPLICATE') throw deferralError;
+          const conflictReason = sanitizeError(deferralError).slice(0, 500);
+          const outcome = await repository.fail(task,{reason:conflictReason,transient:false});
+          await Promise.resolve(notify?.({task,outcome:'failed',error:deferralError})).catch(()=>{});
+          return outcome;
+        }
         if (!deferred) {
           log(`Phase deferral lost its claim guard for scheduled task ${task.id}; no state was overwritten`);
           return 'retry';

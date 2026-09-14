@@ -5,7 +5,7 @@ import {cumulativePnlPoints,pnlRecordSeries,pnlWindowTotals} from './pnlChart.js
 import {THEME_WIDGETS} from './dashboardWidgets/index.js';
 import Home from './dashboardWidgets/home.jsx';
 
-const LOW_BALANCE_THRESHOLD=0.01;
+const DEFAULT_LOW_BALANCE_THRESHOLD=0.01;
 // One page of activity serves three different derivations at three different depths: the feed
 // shows 8 rows, the success tile is scoped to the last 20 (contract §5.6), and the streak counts
 // back through up to 50 (contract §5.7). Fetching the deepest of the three once and slicing it
@@ -97,10 +97,11 @@ function pnlViewFor(items,windowDays){
   return {points,trend:cumulativePnlPoints(points),net:totals.net,sale:totals.sale,mints:totals.records};
 }
 
-function summarize({wallets,tasks,snipers,watchRules,activity,pnl,confirmations}){
+function summarize({wallets,tasks,snipers,watchRules,activity,pnl,confirmations,lowBalanceThreshold}){
   const walletList=wallets.data||[];
   const {decorated,ethTotal,unavailable,other}=summarizeWallets(walletList);
-  const lowBalanceWallets=decorated.filter(wallet=>wallet.ethBalance!==null&&wallet.ethBalance<LOW_BALANCE_THRESHOLD);
+  const threshold=Number(lowBalanceThreshold??DEFAULT_LOW_BALANCE_THRESHOLD);
+  const lowBalanceWallets=decorated.filter(wallet=>wallet.ethBalance!==null&&wallet.ethBalance<threshold);
   const taskItems=tasks.data?.items||[];
   // Earliest future mint time among the ones that are actually still coming. Filtering on time
   // ALONE meant pausing or cancelling the next mint left this tile counting down to it anyway --
@@ -128,6 +129,7 @@ function summarize({wallets,tasks,snipers,watchRules,activity,pnl,confirmations}
     walletCount:walletList.length,
     fundedWalletCount:decorated.filter(wallet=>wallet.ethBalance!==null&&wallet.ethBalance>0).length,
     portfolio:{eth:ethTotal,chainsUnavailable:unavailable,other},
+    lowBalanceThreshold:threshold,
     lowBalanceWallets,
     pendingConfirmations:confirmations.data||[],
     tasksTotal:tasks.data?.total??0,
@@ -167,9 +169,13 @@ export default function Dashboard({profile,go,onProfileChange}){
   // rollingSpendWei under-counts, so the budget tile shows a real ceiling and no meter rather
   // than a meter built on a wrong denominator.
   const limits=useLoad('/api/profile/limits');
+  // Keep `sources` strictly load-state objects. Home iterates this collection to report endpoint
+  // failures; putting a plain preference value here made an omitted/legacy profile field become
+  // `undefined`, then the error collector tried to read `.error` from it and blanked the page.
   const sources={wallets,tasks,snipers,watchRules,activity,pnl,confirmations,limits};
-  const summary=useMemo(()=>summarize(sources),
-    [wallets.data,tasks.data,snipers.data,watchRules.data,activity.data,pnl.data,confirmations.data,limits.data]);
+  const summary=useMemo(()=>summarize({...sources,lowBalanceThreshold:profile.lowBalanceThreshold}),
+    [wallets.data,tasks.data,snipers.data,watchRules.data,activity.data,pnl.data,confirmations.data,limits.data,
+      profile.lowBalanceThreshold]);
   const [pnlWindow,setPnlWindow]=useState(30);
   const pnlView=useMemo(()=>pnlViewFor(summary.pnlItems,pnlWindow),[summary.pnlItems,pnlWindow]);
   const pnl30=useMemo(()=>pnlViewFor(summary.pnlItems,30),[summary.pnlItems]);

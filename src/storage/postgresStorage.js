@@ -1,3 +1,7 @@
+const { armTaskPreflightRows } = require('../scheduler/scheduledPreflightRepository');
+const { scheduleReservationStageKey } = require('../mint/scheduleStagePlanning');
+const { enforceScheduleAllowanceEnvelope } = require('../mint/scheduleAllowance');
+
 function number(value) { return value === null ? null : Number(value); }
 function time(value) { return value === null ? null : new Date(value).getTime(); }
 
@@ -20,9 +24,21 @@ function mapTask(row) {
     transactionIntentId: row.transaction_intent_id, idempotencyKey: row.idempotency_key,
     viaOpenSea: row.via_opensea, stageType: row.stage_type ?? null,
     stageUuid: row.stage_uuid ?? null, stageLabel: row.stage_label ?? null,
+    walletAddress: row.wallet_address ?? null,
+    reservationStageKey: row.reservation_stage_key ?? null,
+    allowanceScope:row.allowance_scope ?? 'unknown',
+    allowanceMaxPerWallet:row.allowance_max_per_wallet === null || row.allowance_max_per_wallet === undefined
+      ? null:String(row.allowance_max_per_wallet),
+    allowanceMintedSnapshot:row.allowance_minted_snapshot === null || row.allowance_minted_snapshot === undefined
+      ? null:String(row.allowance_minted_snapshot),
+    allowanceSource:row.allowance_source ?? null,
+    allowanceVerifiedAt:time(row.allowance_verified_at),
+    allowanceStageStartAt:time(row.allowance_stage_start_at),
     eligibilityMode: row.eligibility_mode ?? 'specific_stage',
     eligibilityDeadline: time(row.eligibility_deadline),
     phaseWaitCount: Number(row.phase_wait_count || 0),
+    preflightTargetAt:time(row.preflight_target_at),
+    preflightGeneration:Number(row.preflight_generation||1),
   };
 }
 
@@ -59,6 +75,55 @@ function mapSniper(row) {
 }
 
 function createPostgresStorage(pool) {
+  async function writeTask(queryable, task, { upsert = true } = {}) {
+    const status = task.status === 'waiting' ? 'scheduled' : task.status;
+    const conflict = upsert ? `ON CONFLICT (user_id,id) DO UPDATE SET name=EXCLUDED.name,
+        wallet_label=EXCLUDED.wallet_label,contract_address=EXCLUDED.contract_address,
+        function_name=EXCLUDED.function_name,quantity=EXCLUDED.quantity,price_eth=EXCLUDED.price_eth,
+        gas_gwei=EXCLUDED.gas_gwei,mint_time=EXCLUDED.mint_time,status=EXCLUDED.status,
+        next_attempt_at=EXCLUDED.next_attempt_at,max_attempts=EXCLUDED.max_attempts,
+        via_opensea=EXCLUDED.via_opensea,stage_type=EXCLUDED.stage_type,chain=EXCLUDED.chain,
+        stage_uuid=EXCLUDED.stage_uuid,stage_label=EXCLUDED.stage_label,
+        eligibility_mode=EXCLUDED.eligibility_mode,eligibility_deadline=EXCLUDED.eligibility_deadline,
+        wallet_address=EXCLUDED.wallet_address,reservation_stage_key=EXCLUDED.reservation_stage_key,
+        allowance_scope=EXCLUDED.allowance_scope,
+        allowance_max_per_wallet=EXCLUDED.allowance_max_per_wallet,
+        allowance_minted_snapshot=EXCLUDED.allowance_minted_snapshot,
+        allowance_source=EXCLUDED.allowance_source,
+        allowance_verified_at=EXCLUDED.allowance_verified_at,
+        allowance_stage_start_at=EXCLUDED.allowance_stage_start_at,
+        preflight_target_at=EXCLUDED.preflight_target_at,
+        preflight_generation=CASE WHEN mint_tasks.preflight_target_at IS DISTINCT FROM EXCLUDED.preflight_target_at
+          THEN mint_tasks.preflight_generation+1 ELSE mint_tasks.preflight_generation END` : '';
+    return queryable.query(`INSERT INTO mint_tasks
+      (user_id,id,name,wallet_label,contract_address,function_name,quantity,price_eth,gas_gwei,mint_time,status,created_at,
+        next_attempt_at,max_attempts,idempotency_key,via_opensea,stage_type,chain,stage_uuid,stage_label,
+        eligibility_mode,eligibility_deadline,wallet_address,reservation_stage_key,
+        allowance_scope,allowance_max_per_wallet,allowance_minted_snapshot,allowance_source,
+        allowance_verified_at,allowance_stage_start_at,
+        preflight_target_at,preflight_generation)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,TO_TIMESTAMP($10 / 1000.0),$11,TO_TIMESTAMP($12 / 1000.0),
+        TO_TIMESTAMP($13 / 1000.0),$14,$15,$16,$17,$18,$19,$20,$21,
+        CASE WHEN $22::BIGINT IS NULL THEN NULL ELSE TO_TIMESTAMP($22 / 1000.0) END,$23,$24,
+        $25,$26,$27,$28,
+        CASE WHEN $29::BIGINT IS NULL THEN NULL ELSE TO_TIMESTAMP($29 / 1000.0) END,
+        CASE WHEN $30::BIGINT IS NULL THEN NULL ELSE TO_TIMESTAMP($30 / 1000.0) END,
+        TO_TIMESTAMP($31 / 1000.0),$32)
+      ${conflict}
+      RETURNING *`,
+    [task.userId, task.id, task.name, task.walletLabel, task.contract, task.fn || 'mint', task.qty,
+      task.price || 0, task.gas ?? null, task.mintTime, status, task.createdAt || Date.now(),
+      task.nextAttemptAt || task.mintTime, task.maxAttempts || 3,
+      task.idempotencyKey || `scheduled-mint:${task.userId}:${task.id}`, Boolean(task.viaOpenSea),
+      task.stageType ?? null, task.chain ?? null, task.stageUuid ?? null, task.stageLabel ?? null,
+      task.eligibilityMode ?? 'specific_stage', task.eligibilityDeadline ?? null,
+      task.walletAddress ?? null, task.reservationStageKey ?? null,
+      task.allowanceScope ?? 'unknown',task.allowanceMaxPerWallet ?? null,
+      task.allowanceMintedSnapshot ?? null,task.allowanceSource ?? null,
+      task.allowanceVerifiedAt ?? null,task.allowanceStageStartAt ?? task.stageStartAt ?? task.mintTime,
+      task.preflightTargetAt ?? task.nextAttemptAt ?? task.mintTime,task.preflightGeneration??1]);
+  }
+
   async function loadState(userId = null) {
     const where = userId ? ' WHERE user_id=$1' : '';
     const values = userId ? [userId] : [];
@@ -136,29 +201,65 @@ function createPostgresStorage(pool) {
     },
 
     async saveTask(task) {
-      const status = task.status === 'waiting' ? 'scheduled' : task.status;
-      const result = await pool.query(`INSERT INTO mint_tasks
-        (user_id,id,name,wallet_label,contract_address,function_name,quantity,price_eth,gas_gwei,mint_time,status,created_at,
-          next_attempt_at,max_attempts,idempotency_key,via_opensea,stage_type,chain,stage_uuid,stage_label,
-          eligibility_mode,eligibility_deadline)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,TO_TIMESTAMP($10 / 1000.0),$11,TO_TIMESTAMP($12 / 1000.0),
-          TO_TIMESTAMP($13 / 1000.0),$14,$15,$16,$17,$18,$19,$20,$21,
-          CASE WHEN $22::BIGINT IS NULL THEN NULL ELSE TO_TIMESTAMP($22 / 1000.0) END)
-        ON CONFLICT (user_id,id) DO UPDATE SET name=EXCLUDED.name,wallet_label=EXCLUDED.wallet_label,
-        contract_address=EXCLUDED.contract_address,function_name=EXCLUDED.function_name,
-        quantity=EXCLUDED.quantity,price_eth=EXCLUDED.price_eth,gas_gwei=EXCLUDED.gas_gwei,
-        mint_time=EXCLUDED.mint_time,status=EXCLUDED.status,next_attempt_at=EXCLUDED.next_attempt_at,
-        max_attempts=EXCLUDED.max_attempts,via_opensea=EXCLUDED.via_opensea,stage_type=EXCLUDED.stage_type,
-        chain=EXCLUDED.chain,stage_uuid=EXCLUDED.stage_uuid,stage_label=EXCLUDED.stage_label,
-        eligibility_mode=EXCLUDED.eligibility_mode,eligibility_deadline=EXCLUDED.eligibility_deadline
-        RETURNING id`,
-      [task.userId, task.id, task.name, task.walletLabel, task.contract, task.fn || 'mint', task.qty,
-        task.price || 0, task.gas ?? null, task.mintTime, status, task.createdAt || Date.now(),
-        task.nextAttemptAt || task.mintTime, task.maxAttempts || 3,
-        task.idempotencyKey || `scheduled-mint:${task.userId}:${task.id}`, Boolean(task.viaOpenSea),
-        task.stageType ?? null, task.chain ?? null, task.stageUuid ?? null, task.stageLabel ?? null,
-        task.eligibilityMode ?? 'specific_stage', task.eligibilityDeadline ?? null]);
-      return result.rowCount > 0;
+      const client=await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const result=await writeTask(client,task);
+        if(result.rowCount)await armTaskPreflightRows(client,result.rows[0]);
+        await client.query('COMMIT');
+        return result.rowCount>0;
+      } catch(error) {
+        await client.query('ROLLBACK').catch(()=>{});
+        throw error;
+      } finally { client.release(); }
+    },
+    async createReservedTask(task) {
+      if (!task.walletAddress || !task.chain || !task.reservationStageKey) {
+        throw new TypeError('A schedule reservation requires walletAddress, chain, and reservationStageKey');
+      }
+      const client = await pool.connect();
+      const lockKey = [task.userId,task.walletAddress.toLowerCase(),task.chain.toLowerCase(),task.contract.toLowerCase()].join('|');
+      try {
+        await client.query('BEGIN');
+        // Lock the whole wallet+chain+contract envelope, not just one stage. A later cumulative-cap
+        // pass can safely inspect every phase under this same serialization boundary.
+        await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[lockKey]);
+        const active = await client.query(`SELECT task.* FROM mint_tasks task
+          LEFT JOIN wallets wallet ON wallet.user_id=task.user_id
+            AND LOWER(wallet.label)=LOWER(task.wallet_label)
+          WHERE task.user_id=$1
+            AND LOWER(COALESCE(NULLIF(task.wallet_address,''),wallet.address))=LOWER($2)
+            AND LOWER(COALESCE(NULLIF(task.chain,''),wallet.chain))=LOWER($3)
+            AND LOWER(task.contract_address)=LOWER($4)
+            AND task.status IN ('scheduled','claimed','retry','paused')
+          ORDER BY task.created_at,task.id FOR UPDATE OF task`,
+        [task.userId,task.walletAddress,task.chain,task.contract]);
+        const activeTasks = active.rows.map(mapTask);
+        const conflict = activeTasks.find(existing => {
+          const key = existing.reservationStageKey || scheduleReservationStageKey({
+            stageUuid:existing.stageUuid,stageLabel:existing.stageLabel,
+            stageType:existing.stageType,mintTime:existing.mintTime,
+          });
+          return key === task.reservationStageKey;
+        });
+        if (conflict) {
+          await client.query('COMMIT');
+          return { created:false, conflict };
+        }
+        enforceScheduleAllowanceEnvelope(activeTasks,task);
+        const inserted = await writeTask(client, task, { upsert:false });
+        await armTaskPreflightRows(client,inserted.rows[0]);
+        await client.query('COMMIT');
+        return { created:true, task:mapTask(inserted.rows[0]) };
+      } catch (error) {
+        await client.query('ROLLBACK').catch(() => {});
+        if (error?.code==='23505'&&error?.constraint==='mint_tasks_active_wallet_contract_stage_uniq') {
+          const conflict=new Error('This wallet already has an active mint scheduled for this stage.');
+          conflict.code='SCHEDULE_STAGE_DUPLICATE';
+          throw conflict;
+        }
+        throw error;
+      } finally { client.release(); }
     },
     async deleteTask(userId, id) {
       const result = await pool.query('DELETE FROM mint_tasks WHERE user_id=$1 AND id=$2', [userId, id]);

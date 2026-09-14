@@ -58,6 +58,17 @@ test('schedule strings require an explicit timezone', () => {
     Date.parse('2030-01-01T12:00:00Z'));
 });
 
+test('a persisted stage opening is UTC-explicit and cannot be later than the task wake time', () => {
+  const mintTime=new Date(NOW+120_000).toISOString();
+  const stageStartAt=new Date(NOW+60_000).toISOString();
+  const task=requestSchemas.taskCreate(validTask({mintTime,stageStartAt}),{supportedChains:CHAINS,now:NOW});
+  assert.equal(task.stageStartAt,Date.parse(stageStartAt));
+  rejectsField(()=>requestSchemas.taskCreate(validTask({mintTime,stageStartAt:'2030-01-01T12:00:00'}),
+    {supportedChains:CHAINS,now:NOW}),'stageStartAt');
+  rejectsField(()=>requestSchemas.taskCreate(validTask({mintTime,
+    stageStartAt:new Date(NOW+180_000).toISOString()}),{supportedChains:CHAINS,now:NOW}),'stageStartAt');
+});
+
 test('scheduled phase metadata is bounded, explicit, and cannot silently change eligibility mode', () => {
   const task = requestSchemas.taskCreate(validTask({
     stageUuid: 'open-sea-stage-1', stageLabel: 'Public sale', stageType: 'public_sale',
@@ -83,6 +94,21 @@ test('scheduled phase metadata is bounded, explicit, and cannot silently change 
 test('unsupported chains are rejected instead of defaulting to Ethereum', () => {
   rejectsField(() => requestSchemas.mint(validMint({ chain: 'solana' }), { supportedChains: CHAINS }), 'chain');
   rejectsField(() => requestSchemas.mint(validMint({ chain: '' }), { supportedChains: CHAINS }), 'chain');
+});
+
+test('dashboard chain and low-balance preferences accept only configured, explicit choices', () => {
+  assert.deepEqual(requestSchemas.defaultChainUpdate({ defaultChain:'robinhood' },
+    { supportedChains:['ethereum','robinhood'] }), { defaultChain:'robinhood' });
+  rejectsField(() => requestSchemas.defaultChainUpdate({ defaultChain:'robinhood' },
+    { supportedChains:['ethereum'] }), 'defaultChain');
+  for (const value of ['0.0001','0.0005','0.001','0.005','0.01','0.025','0.05','0.1']) {
+    assert.deepEqual(requestSchemas.lowBalanceThresholdUpdate({ lowBalanceThreshold:value }),
+      { lowBalanceThreshold:value });
+  }
+  for (const value of [undefined,0,'0.02','0.101','NaN']) {
+    rejectsField(() => requestSchemas.lowBalanceThresholdUpdate({ lowBalanceThreshold:value }),
+      'lowBalanceThreshold');
+  }
 });
 
 test('negative, NaN, infinite, fractional, and oversized numeric values are rejected', () => {

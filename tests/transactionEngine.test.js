@@ -218,11 +218,29 @@ test('a per-request maxGasGwei tolerance rejects before broadcast, independently
   });
 });
 
+test('preview exposes the exact balance, network fee, and total debit used by its safety check', async () => {
+  const { calls, engine, request } = fixture();
+  const result = await engine.preview(request);
+  assert.equal(result.balanceWei, parseEther('10'));
+  assert.equal(result.estimatedGasCostWei, 21_000n * parseUnits('2', 'gwei'));
+  assert.equal(result.estimatedCostWei, result.estimatedGasCostWei);
+  assert.equal(calls.broadcasts.length, 0);
+});
+
 test('insufficient balance and wrong-chain RPC fail before broadcast', async t => {
   await t.test('balance precheck', async () => {
     const { calls, engine, provider, request } = fixture();
     provider.getBalance = async () => 1n;
-    await assert.rejects(engine.submit(request), error => error instanceof TransactionSafetyError && error.code === 'INSUFFICIENT_BALANCE');
+    await assert.rejects(engine.preview(request), error => {
+      assert.equal(error instanceof TransactionSafetyError, true);
+      assert.equal(error.code, 'INSUFFICIENT_BALANCE');
+      assert.equal(error.details.balanceWei, 1n);
+      assert.equal(error.details.estimatedGasCostWei, 21_000n * parseUnits('2', 'gwei'));
+      assert.equal(error.details.estimatedCostWei, error.details.estimatedGasCostWei);
+      return true;
+    });
+    await assert.rejects(engine.submit(request), error => error instanceof TransactionSafetyError
+      && error.code === 'INSUFFICIENT_BALANCE');
     assert.equal(calls.broadcasts.length, 0);
   });
   await t.test('chain identity check', async () => {

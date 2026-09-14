@@ -1,6 +1,7 @@
 /* global clearInterval, setInterval */
 import React,{useEffect,useState} from 'react';
 import {countdownState} from '../countdown.js';
+import {formatAdaptiveAmount,formatSignedAdaptiveAmount} from '../amountDisplay.mjs';
 
 /* ==========================================================================
    Home page presentational parts (brief §3.3, §4; contract §3).
@@ -71,18 +72,13 @@ export function ChainDot({chain}){
 // when the truth is "there is no ceiling". On a money surface those must never look alike.
 export function formatEth(value,digits=3){
   if(value===null||value===undefined)return '—';
-  const parsed=Number(value);
-  return Number.isFinite(parsed)?parsed.toFixed(digits):'—';
+  return formatAdaptiveAmount(value,{minDecimals:digits});
 }
 // A signed figure always carries its sign character, because colour is the secondary channel
 // and must never be the only thing distinguishing a gain from a loss (brief §4, condition 2).
 // U+2212 MINUS SIGN, not a hyphen: it aligns with digit width in a tabular-nums column.
 export function formatSigned(value,digits=3){
-  const parsed=Number(value);
-  if(!Number.isFinite(parsed))return '—';
-  const fixed=Math.abs(parsed).toFixed(digits);
-  if(Number(fixed)===0)return `0.${'0'.repeat(digits)}`;
-  return `${parsed<0?'−':'+'}${fixed}`;
+  return formatSignedAdaptiveAmount(value,{minDecimals:digits});
 }
 export function shortAddress(address){
   const value=String(address||'');

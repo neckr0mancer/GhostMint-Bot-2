@@ -3,6 +3,7 @@ import {Celebrate,FirstRun,Meter,Notice,readDismissedReward,ReorderableStack,sav
 import {activitySucceeded} from '../activityFeed.js';
 import PnlBars from '../PnlBars.jsx';
 import {ChainDot,chainFromExplorer,CountdownRing,EmptyState,explorerForChain,formatEth,formatSigned,ICONS,Row,shortAddress,weiToEth} from './homeParts.jsx';
+import {formatAdaptiveAmount} from '../amountDisplay.mjs';
 
 /* ==========================================================================
    Home — the redesigned page for the two primary themes (brief §9.1-D15).
@@ -16,6 +17,9 @@ import {ChainDot,chainFromExplorer,CountdownRing,EmptyState,explorerForChain,for
 
 // One helper drives all four states so no card can accidentally implement three of them.
 function cardState(source){
+  // A newly added/temporarily unavailable endpoint must degrade to its loading skeleton, never
+  // take down the whole dashboard while the remaining independent cards are usable.
+  if(!source)return 'loading';
   if(source.error)return 'error';
   if(source.data===null)return 'loading';
   return 'ready';
@@ -51,7 +55,7 @@ function Tiles({summary,sources,pnl30}){
     // On the live deployment two of three chains routinely fail at the RPC, so this is the
     // normal render, not an edge case (contract §5.3).
     chainsUnavailable?`${chainsUnavailable} ${chainsUnavailable===1?'chain':'chains'} unavailable`:null,
-    ...other.map(entry=>`${entry.total.toFixed(3)} ${entry.symbol}`),
+    ...other.map(entry=>`${formatAdaptiveAmount(entry.total)} ${entry.symbol}`),
   ].filter(Boolean).join(' · ');
 
   return <div className="tiles">
@@ -72,7 +76,7 @@ function Tiles({summary,sources,pnl30}){
         :pnlState==='loading'?'Loading…'
         :pnl30.mints===0?'0 mints'
         :`${pnl30.mints} ${pnl30.mints===1?'mint':'mints'} · ${pnl30.sale>0
-          ?`${pnl30.sale.toFixed(3)} ETH sales`:'no sales recorded'}`}>
+          ?`${formatAdaptiveAmount(pnl30.sale)} ETH sales`:'no sales recorded'}`}>
       {pnlState==='ready'&&pnl30.points.length>1
         &&<Sparkline points={pnl30.trend} tone={pnl30.net<0?'loss':'gain'}/>}
     </StatTile>
@@ -151,7 +155,7 @@ function CelebrateCard({summary,onDismiss}){
   const mintValue=weiToEth(item.transactionValueWei);
   return <Celebrate title={mintRewardTitle(item)}
     detail={<>{mintRewardSubject(item)}{item.walletLabel&&<> → <b>{item.walletLabel}</b></>}
-      {mintValue!==null&&<> for {Number(mintValue.toFixed(6))} ETH</>}.</>}>
+      {mintValue!==null&&<> for {formatAdaptiveAmount(mintValue,{minDecimals:6})} ETH</>}.</>}>
     {/* Never invent a streak. A single success gets truthful execution context instead. */}
     <div className="streak">{mintRewardContext(item,summary.streak)}</div>
     <div className="br celebrate-actions">
@@ -200,7 +204,7 @@ function ActivityCard({summary,sources,go}){
         const success=activitySucceeded(item.status);
         const chain=item.chain||chainFromExplorer(item.explorer);
         const gas=weiToEth(item.actualNetworkCostWei);
-        const gasText=gas!==null?gas.toFixed(6):item.txHash?'unavailable':'not spent';
+        const gasText=gas!==null?formatAdaptiveAmount(gas,{minDecimals:6}):item.txHash?'unavailable':'not spent';
         return <Row key={item.id} icon={success?ICONS.check:ICONS.cross} tone={success?'gain':'loss'}
           title={item.title||'Untitled'}
           sub={<>{item.walletLabel&&<>{item.walletLabel} · </>}{chain&&<><ChainDot chain={chain}/> · </>}
@@ -281,7 +285,7 @@ function WalletsCard({summary,sources,go}){
       {summary.walletRows.map(wallet=><Row key={wallet.label} title={wallet.label}
         sub={<span className="mono">{shortAddress(wallet.address)}</span>}
         value={wallet.ethBalance===null?'—':formatEth(wallet.ethBalance)}
-        valueTone={wallet.ethBalance!==null&&wallet.ethBalance<0.01?'warn':undefined}/>)}
+        valueTone={wallet.ethBalance!==null&&wallet.ethBalance<summary.lowBalanceThreshold?'warn':undefined}/>)}
       {summary.walletCount>summary.walletRows.length
         &&<button type="button" className="b g sm card-more" onClick={()=>go('Wallets')}>
           +{summary.walletCount-summary.walletRows.length} more
@@ -301,7 +305,8 @@ export default function Home({summary,sources,go,greeting,pnlView,pnl30,pnlWindo
   // A page-level failure is reported once at the top rather than as six identical card errors.
   // Only genuinely failed sources are listed, and every card keeps its own inline error too, so
   // a single failing endpoint does not blank the page (contract §7.1).
-  const failed=Object.entries(sources).filter(([,source])=>source.error);
+  const sourceEntries=Object.entries(sources).filter(([,source])=>source&&typeof source==='object');
+  const failed=sourceEntries.filter(([,source])=>source.error);
   // RULE 2: empty is not loading. FirstRun renders only once the wallets fetch has actually
   // ARRIVED and come back empty -- `data !== null` -- so a slow request shows skeletons, never
   // "let's get you minting" to someone who already has three wallets. It also hides itself while
@@ -334,13 +339,13 @@ export default function Home({summary,sources,go,greeting,pnlView,pnl30,pnlWindo
     <Tiles summary={summary} sources={sources} pnl30={pnl30}/>
 
     {failed.length>0&&<Notice error={{
-      title:failed.length===Object.keys(sources).length?'Could not load your dashboard.':`Could not load ${failed.length} of ${Object.keys(sources).length} sections.`,
+      title:failed.length===sourceEntries.length?'Could not load your dashboard.':`Could not load ${failed.length} of ${sourceEntries.length} sections.`,
       detail:'Request failed safely — nothing was changed.',
       // Only when every failure agrees on a code. Mixed codes (a 500 alongside a 403) would make
       // one of them a lie, so the page-level notice stays silent and each card shows its own.
       code:[...new Set(failed.map(([,source])=>source.status).filter(Boolean))].length===1
         ?failed.find(([,source])=>source.status)[1].status:undefined,
-      onRetry:()=>failed.forEach(([,source])=>source.load()),
+      onRetry:()=>failed.forEach(([,source])=>source.load?.()),
     }}/>}
 
     <div className="split home-split">

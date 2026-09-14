@@ -8,6 +8,9 @@ function createScheduledReminder({
   cancelTask,
   calculateNeededWei,
   getBalance,
+  nativeCurrency = () => 'ETH',
+  isPhaseAware = task => Boolean(task?.eligibilityDeadline
+    && (task.stageUuid || task.stageLabel || task.stageType)),
   formatWei,
   escape = value => String(value),
   notify,
@@ -24,16 +27,17 @@ function createScheduledReminder({
 
   async function sendReminder(task, wallet, minutes, lowBalance = null) {
     const key = deliveryKey(task);
-    const phaseAware = Boolean(task.eligibilityDeadline);
+    const phaseAware = isPhaseAware(task);
+    const currency = nativeCurrency(task, wallet);
     const timing = phaseAware ? `eligibility checks begin in ${minutes}m` : `mints in ${minutes}m`;
     const automatic = phaseAware
       ? 'It will mint automatically once a live phase accepts this wallet; no approval is required.'
       : 'It will execute automatically; no approval is required.';
     if (lowBalance) {
       await notify(task.userId,
-        `⚠️ <b>${escape(task.name)}</b> ${timing} and <b>${escape(wallet.label)}</b> is short by ${escape(lowBalance)} ETH. ${automatic}`);
+        `⚠️ <b>${escape(task.name)}</b> ${timing} and <b>${escape(wallet.label)}</b> is short by ${escape(lowBalance)} ${escape(currency)}. ${automatic}`);
       broadcast(task.userId, { type: 'task.lowBalance', taskId: task.id, name: task.name,
-        walletLabel: wallet.label, shortByEth: lowBalance, minutes, automatic: true });
+        walletLabel: wallet.label, shortByNative: lowBalance, currency, minutes, automatic: true });
       lowBalanceWarned.add(key);
     } else {
       await notify(task.userId,
@@ -79,15 +83,15 @@ function createScheduledReminder({
           continue;
         }
 
-        const balance = await getBalance(wallet);
+        const balance = await getBalance(task, wallet);
         if (balance < needed) {
           const short = formatWei(needed - balance);
           if (!reminderSent.has(key)) await sendReminder(task, wallet, minutes, short);
           else if (!lowBalanceWarned.has(key)) {
             await notify(task.userId,
-              `⚠️ <b>${escape(task.name)}</b> ${task.eligibilityDeadline ? `eligibility checks begin in ${minutes}m` : `mints in ${minutes}m`} and <b>${escape(wallet.label)}</b> is now short by ${escape(short)} ETH. Top up before automatic execution.`);
+              `⚠️ <b>${escape(task.name)}</b> ${isPhaseAware(task) ? `eligibility checks begin in ${minutes}m` : `mints in ${minutes}m`} and <b>${escape(wallet.label)}</b> is now short by ${escape(short)} ${escape(nativeCurrency(task,wallet))}. Top up before automatic execution.`);
             broadcast(task.userId, { type: 'task.lowBalance', taskId: task.id, name: task.name,
-              walletLabel: wallet.label, shortByEth: short, minutes, automatic: true });
+              walletLabel: wallet.label, shortByNative: short, currency:nativeCurrency(task,wallet), minutes, automatic: true });
             lowBalanceWarned.add(key);
           }
         } else if (!reminderSent.has(key)) {

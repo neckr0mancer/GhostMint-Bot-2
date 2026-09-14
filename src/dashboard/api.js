@@ -15,6 +15,7 @@ const SECURITY_HEADERS=Object.freeze({
 // scrypt cost as one that does -- without this, response time alone would let an attacker
 // enumerate which usernames are registered before ever guessing a password.
 const DUMMY_SECURITY_PASSWORD_HASH=hashSecurityPassword(randomBytes(32).toString('hex'));
+const DASHBOARD_BATCH_CONCURRENCY=5;
 function noStore(res){res.set('Cache-Control','no-store, private');}
 function publicWallet(value){return {label:value.label,address:value.address,chain:value.chain,balances:value.balances??[],minted:value.minted??0,addedAt:value.addedAt??null};}
 function jsonSafe(value){return JSON.parse(JSON.stringify(value,(_key,item)=>typeof item==='bigint'?item.toString():item));}
@@ -22,6 +23,64 @@ function mintPreviewFailure(error){
   if(error instanceof ValidationError)return error.issues.map(issue=>`${issue.field} ${issue.message}`).join('; ');
   if(error instanceof TransactionSafetyError)return error.message;
   return 'This wallet could not pass simulation.';
+}
+const MINT_INTENT_OUTCOMES=new Set(['confirmed','reverted','replaced','unknown','pending','submitted']);
+function mintFailureReason(error){
+  if(error instanceof ValidationError)return error.issues.map(issue=>`${issue.field} ${issue.message}`).join('; ');
+  if(error instanceof TransactionSafetyError)return error.message;
+  return 'GhostMint could not determine the final transaction outcome.';
+}
+function mintOutcomeFromResult(result){
+  const state=String(result?.state||'').toLowerCase();
+  return MINT_INTENT_OUTCOMES.has(state)?state:'unknown';
+}
+function mintOutcomeFromError(error){
+  const explicit=String(error?.transactionOutcome?.state||error?.transactionOutcome?.intent?.state||'').toLowerCase();
+  if(MINT_INTENT_OUTCOMES.has(explicit)||explicit==='failed_prebroadcast')return explicit;
+  if(error?.code==='BROADCAST_UNKNOWN')return 'unknown';
+  if(error instanceof ValidationError||error instanceof TransactionSafetyError)return 'failed_prebroadcast';
+  // An unexpected exception has no trustworthy broadcast boundary. Treating it as pre-broadcast
+  // would invite a duplicate retry after a provider accepted the transaction but our process lost
+  // the response, so the only safe customer-facing truth is unknown.
+  return 'unknown';
+}
+function mintOutcomeStatus(outcome){
+  if(outcome==='confirmed')return 'success';
+  if(outcome==='pending'||outcome==='submitted')return 'pending';
+  if(outcome==='unknown')return 'uncertain';
+  return 'failed';
+}
+function mintOutcomeReason(outcome,result,error){
+  if(outcome==='confirmed')return null;
+  const recorded=result?.reason||error?.transactionOutcome?.intent?.reason;
+  if(recorded)return String(recorded);
+  if(error)return mintFailureReason(error);
+  if(outcome==='reverted')return 'Transaction reverted on chain.';
+  if(outcome==='replaced')return 'Transaction was replaced before it confirmed.';
+  if(outcome==='unknown')return 'Transaction outcome is unknown; reconciliation will continue.';
+  if(outcome==='pending')return 'Transaction is waiting for confirmation.';
+  if(outcome==='submitted')return 'Transaction submission is recorded but not yet confirmed.';
+  return null;
+}
+function mintOutcomeNotification({outcome,networkName,reason,link}){
+  const safeNetwork=escapeTelegramHtml(networkName);
+  const safeReason=reason?` ${escapeTelegramHtml(reason)}`:'';
+  if(outcome==='confirmed')return `✅ <b>Mint successful.</b> Your transaction was confirmed on ${safeNetwork}.${link}`;
+  if(outcome==='reverted')return `❌ <b>Mint reverted.</b> The transaction was broadcast on ${safeNetwork} but reverted on chain.${safeReason}${link}`;
+  if(outcome==='replaced')return `⚠️ <b>Mint replaced.</b> The original transaction was broadcast but did not confirm as submitted; check transaction history before retrying.${link}`;
+  if(outcome==='pending')return `⏳ <b>Mint pending.</b> The transaction was broadcast on ${safeNetwork} and is still waiting for confirmation.${link}`;
+  if(outcome==='submitted')return `⏳ <b>Mint submitted.</b> The submission is recorded for ${safeNetwork}, but broadcast and finality are not yet confirmed; check Activity before retrying.${link}`;
+  if(outcome==='failed_prebroadcast')return `❌ <b>Mint not submitted.</b> GhostMint stopped before broadcast on ${safeNetwork}.${safeReason}`;
+  return `⚠️ <b>Mint outcome unknown.</b> A transaction may have been broadcast on ${safeNetwork}; check Activity or the explorer before retrying.${link}`;
+}
+async function mapWithConcurrency(values,limit,worker){
+  const output=new Array(values.length);let cursor=0;
+  async function run(){
+    while(cursor<values.length){const index=cursor;cursor+=1;output[index]=await worker(values[index],index);}
+  }
+  const count=Math.min(Math.max(1,limit),values.length);
+  await Promise.all(Array.from({length:count},()=>run()));
+  return output;
 }
 const SESSION_END_MESSAGES=Object.freeze({
   cookie_missing:'No saved session was found on this browser. Sign in again; private browsing and local HTTP on a phone may clear cookies.',
@@ -33,7 +92,7 @@ const SESSION_END_MESSAGES=Object.freeze({
 });
 function clientLabel(req){return String(req.get('user-agent')||'Unknown browser').replace(/[\r\n]/g,' ').slice(0,160)||'Unknown browser';}
 
-function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLoginRateLimiter,exportKeyRateLimiter,commands,securityAudit={record:async()=>{}},broadcast=()=>{},broadcastToUsers=()=>{},notifyUser=async()=>{},chains={},supportedChains=[],now=()=>Date.now(),checkAccountStatus}) {
+function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLoginRateLimiter,exportKeyRateLimiter,commands,securityAudit={record:async()=>{}},broadcast=()=>{},broadcastToUsers=()=>{},notifyUser=async()=>{},log=()=>{},chains={},supportedChains=[],now=()=>Date.now(),checkAccountStatus}) {
   const previews=new Map();
   const requireSession=async(req,res,next)=>{try{const result=auth.authenticateDetailed?await auth.authenticateDetailed(req.headers.cookie):{session:await auth.authenticate(req.headers.cookie),reason:'invalid'};const {session}=result;if(!session){const reason=result.reason||'invalid';return res.status(401).json({error:SESSION_END_MESSAGES[reason]||SESSION_END_MESSAGES.invalid,code:`SESSION_${reason.toUpperCase()}`,reason});}
       if(typeof checkAccountStatus==='function'){try{await checkAccountStatus(session.userId);}catch(error){if(error instanceof AccountBlockedError)return res.status(403).json({error:error.message,code:error.code,status:error.status});throw error;}}
@@ -44,7 +103,7 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLo
   // a client sending a bad/missing confirmation is a 400, not a server fault. Every route that
   // calls confirmation(req) (removeWallet, deletePnl, removeSniper, removeWatchRule, confirmMint,
   // adminWrite's ban/unban/suspend/etc.) gets the correct status from this one fix.
-  const action=handler=>async(req,res,next)=>{try{await handler(req,res);}catch(error){if(error instanceof ValidationError)return sendValidationError(res,error);if(error instanceof BotContextError)return res.status(400).json({error:error.message});if(error instanceof AuthorizationError)return res.status(403).json({error:'Owner access required'});if(error instanceof TransactionSafetyError)return res.status(400).json({error:error.message,code:error.code});next(error);}};
+  const action=handler=>async(req,res,next)=>{try{await handler(req,res);}catch(error){if(error instanceof ValidationError)return sendValidationError(res,error);if(error instanceof BotContextError)return res.status(400).json({error:error.message});if(error instanceof AuthorizationError)return res.status(403).json({error:'Owner access required'});if(error instanceof TransactionSafetyError)return res.status(400).json({error:error.message,code:error.code,...(error.details?{details:jsonSafe(error.details)}:{})});next(error);}};
   function confirmation(req){requireTextConfirmation(req.body?.confirmation);}
   function issuePreview(userId,entries){const token=randomUUID();previews.set(token,{userId,entries,expiresAt:now()+5*60_000});return token;}
   function consumePreview(userId,token){const value=previews.get(String(token||''));previews.delete(String(token||''));if(!value||value.userId!==userId||value.expiresAt<=now())throw new ValidationError({field:'previewToken',message:'is invalid or expired'});return value;}
@@ -160,7 +219,7 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLo
     },
     logout:async(req,res)=>{noStore(res);await auth.revoke(req.dashboardSession);res.setHeader('Set-Cookie',auth.clearCookies());res.status(204).end();},
     logoutAll:async(req,res)=>{noStore(res);await auth.revokeAll(req.dashboardSession);res.setHeader('Set-Cookie',auth.clearCookies());res.status(204).end();},
-    profile:async(req,res)=>{noStore(res);res.json({userId:user(req),isOwner:commands?.isOwner?await commands.isOwner(user(req)):false,isRootOwner:commands?.isRootOwner?await commands.isRootOwner(user(req)):false,linkedAccounts:await identityRepository.listLinkedAccounts(user(req)),supportedChains,theme:await identityRepository.getTheme(user(req)),displayName:identityRepository.getDisplayName?await identityRepository.getDisplayName(user(req)):null,defaultChain:identityRepository.getDefaultChain?await identityRepository.getDefaultChain(user(req)):null,securityPasswordSet:identityRepository.getSecurityPasswordHash?Boolean(await identityRepository.getSecurityPasswordHash(user(req))):false,botGateLevel:identityRepository.getBotGateLevel?await identityRepository.getBotGateLevel(user(req)):'off',botGateSkipMint:identityRepository.getBotGateSkipMint?await identityRepository.getBotGateSkipMint(user(req)):false,username:identityRepository.getUsername?await identityRepository.getUsername(user(req)):null,currentMode:commands?.currentMode?await commands.currentMode(user(req)):null,advancedModesAllowed:commands?.advancedModesAllowed?await commands.advancedModesAllowed(user(req)):false,session:auth.sessionSummary?await auth.sessionSummary(req.dashboardSession):null});},
+    profile:async(req,res)=>{noStore(res);res.json({userId:user(req),isOwner:commands?.isOwner?await commands.isOwner(user(req)):false,isRootOwner:commands?.isRootOwner?await commands.isRootOwner(user(req)):false,linkedAccounts:await identityRepository.listLinkedAccounts(user(req)),supportedChains,theme:await identityRepository.getTheme(user(req)),displayName:identityRepository.getDisplayName?await identityRepository.getDisplayName(user(req)):null,defaultChain:identityRepository.getDefaultChain?await identityRepository.getDefaultChain(user(req)):null,lowBalanceThreshold:identityRepository.getLowBalanceThreshold?await identityRepository.getLowBalanceThreshold(user(req)):'0.01',securityPasswordSet:identityRepository.getSecurityPasswordHash?Boolean(await identityRepository.getSecurityPasswordHash(user(req))):false,botGateLevel:identityRepository.getBotGateLevel?await identityRepository.getBotGateLevel(user(req)):'off',botGateSkipMint:identityRepository.getBotGateSkipMint?await identityRepository.getBotGateSkipMint(user(req)):false,username:identityRepository.getUsername?await identityRepository.getUsername(user(req)):null,currentMode:commands?.currentMode?await commands.currentMode(user(req)):null,advancedModesAllowed:commands?.advancedModesAllowed?await commands.advancedModesAllowed(user(req)):false,session:auth.sessionSummary?await auth.sessionSummary(req.dashboardSession):null});},
     updateMode:action(async(req,res)=>{res.json({mode:await commands.selectMode(user(req),req.body.preset)});}),
     updateTheme:action(async(req,res)=>{const {theme}=requestSchemas.themeUpdate(req.body||{});res.json({theme:await identityRepository.setTheme(user(req),theme)});}),
     // The bot action gate is changed HERE and nowhere else. If it could be switched off from
@@ -175,6 +234,7 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLo
       await identityRepository.setBotGateSkipMint(user(req),skipMint);res.json({botGateSkipMint:skipMint});}),
     updateDisplayName:action(async(req,res)=>{const {displayName}=requestSchemas.displayNameUpdate(req.body||{});res.json({displayName:await identityRepository.setDisplayName(user(req),displayName)});}),
     updateDefaultChain:action(async(req,res)=>{const {defaultChain}=requestSchemas.defaultChainUpdate(req.body||{},{supportedChains});res.json({defaultChain:await identityRepository.setDefaultChain(user(req),defaultChain)});}),
+    updateLowBalanceThreshold:action(async(req,res)=>{const {lowBalanceThreshold}=requestSchemas.lowBalanceThresholdUpdate(req.body||{});res.json({lowBalanceThreshold:await identityRepository.setLowBalanceThreshold(user(req),lowBalanceThreshold)});}),
     // The caller's own effective ceilings, resolved user override -> group -> chain defaults.
     // No owner gate: these are the limits already being enforced against this caller.
     // Chain defaults to the account's saved default, then the first supported chain, because
@@ -273,23 +333,27 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLo
       if(isBatch){if(!labels.length)throw new ValidationError([{field:'walletLabels',message:'must contain at least one wallet label'}]);
         const seen=new Set();for(const l of labels){const k=String(l).toLowerCase();if(seen.has(k))throw new ValidationError([{field:'walletLabels',message:`duplicate wallet label: ${l}`}]);seen.add(k);}
         if(labels.length>100)throw new ValidationError([{field:'walletLabels',message:'must contain at most 100 wallet labels'}]);}
-      const entries=[];const failures=[];for(const walletLabel of labels){try{entries.push(await commands.prepareMint(user(req),{...req.body,walletLabel}));}catch(error){if(!isBatch)throw error;failures.push({walletLabel,error:mintPreviewFailure(error),code:error?.code||null});}}const previewToken=entries.length?issuePreview(user(req),entries):null;res.json({previewToken,expiresInSeconds:entries.length?300:0,items:entries.map(value=>({wallet:value.wallet,preview:value.prepared.preview,simulation:jsonSafe(value.simulation)})),failures});}),
+      const entries=[];const failures=[];for(const walletLabel of labels){try{entries.push(await commands.prepareMint(user(req),{...req.body,walletLabel}));}catch(error){if(!isBatch)throw error;const context=error?.previewContext;failures.push({walletLabel,error:mintPreviewFailure(error),code:error?.code||null,...(error?.details?{details:jsonSafe(error.details)}:{}),...(context?{wallet:context.wallet,chain:context.chain,preview:jsonSafe(context.preview)}:{})});}}const previewToken=entries.length?issuePreview(user(req),entries):null;res.json({previewToken,expiresInSeconds:entries.length?300:0,items:entries.map(value=>({wallet:value.wallet,chain:value.prepared.chain,preview:value.prepared.preview,simulation:jsonSafe(value.simulation)})),failures});}),
     // Each wallet in a batch submits independently -- one wallet's insufficient balance or stale
     // wallet shouldn't cancel the rest, which had already simulated fine and may have nothing wrong
     // with them at all (same per-entry try/catch shape as importWalletsBatch's batch key import).
-    confirmMint:action(async(req,res)=>{confirmation(req);const value=consumePreview(user(req),req.body.previewToken);const results=[];for(const entry of value.entries){
-      try{const result=await commands.submitPreparedMint(user(req),entry);
-        // TX-027 (Model 2 phase-2): only a confirmed intent may produce success side effects.
-        if(result.state!=='confirmed'){results.push({label:entry.wallet.label,status:'failed',error:`Transaction ${result.state} on chain`});continue;}
-        results.push({label:entry.wallet.label,status:'success',result});
-        const chain=entry.prepared.chain;const network=chains[chain];const link=result.txHash&&network?.ex?`\n<a href="${network.ex}${result.txHash}">View transaction</a>`:'';
-        await Promise.resolve().then(()=>notifyUser(user(req),`✅ <b>Mint successful.</b> Your transaction was confirmed on ${network?.name||chain}.${link}`)).catch(()=>{});}
-      catch(error){const reason=error instanceof ValidationError?error.issues.map(issue=>`${issue.field} ${issue.message}`).join('; ')
-        :error instanceof TransactionSafetyError?error.message:'Mint failed unexpectedly -- check activity for details.';
-        results.push({label:entry.wallet.label,status:'failed',error:reason});
-        const chain=entry.prepared.chain;const network=chains[chain];
-        await Promise.resolve().then(()=>notifyUser(user(req),`❌ <b>Mint failed.</b> Nothing was minted on ${network?.name||chain}. ${escapeTelegramHtml(reason)}`)).catch(()=>{});}
-    }res.status(202).json(jsonSafe({results}));}),
+    confirmMint:action(async(req,res)=>{confirmation(req);const value=consumePreview(user(req),req.body.previewToken);
+      const completed=await mapWithConcurrency(value.entries,DASHBOARD_BATCH_CONCURRENCY,async entry=>{
+      const chain=entry.prepared.chain;const network=chains[chain];let result;let error=null;
+      try{result=await commands.submitPreparedMint(user(req),entry);}catch(caught){error=caught;result=caught?.transactionOutcome?.intent||null;}
+      const outcome=error?mintOutcomeFromError(error):mintOutcomeFromResult(result);const reason=mintOutcomeReason(outcome,result,error);
+      const response={label:entry.wallet.label,chain,status:mintOutcomeStatus(outcome),outcome,...(result?{result}:{}),
+        ...(reason?{error:reason}:{}),...(error?.code?{code:error.code}:{})};
+      const txHash=result?.txHash;const link=txHash&&network?.ex?`\n<a href="${network.ex}${txHash}">View transaction</a>`:'';
+      const message=mintOutcomeNotification({outcome,networkName:network?.name||chain,reason,link});
+      return {response,message};
+    });
+      const results=completed.map(value=>value.response);
+      // Begin every best-effort delivery only after every wallet has reached a chain-derived
+      // outcome. A rejected or indefinitely-hanging Telegram/Discord request therefore cannot
+      // delay another wallet's submission, alter its status, or hold the HTTP response open.
+      for(const value of completed)void Promise.resolve().then(()=>notifyUser(user(req),value.message)).catch(()=>{});
+      res.status(202).json(jsonSafe({results}));}),
     tasks:action(async(req,res)=>res.json(await commands.tasksPage(user(req),req.query))),
     taskDetails:action(async(req,res)=>{noStore(res);res.json(await commands.taskDetails(user(req),req.params.id));}),
     createTask:action(async(req,res)=>{const task=await commands.createTask(user(req),req.body);res.status(201).json(task);}),
@@ -347,7 +411,13 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLo
       const ownerIds=commands.listOwnerUserIds?await commands.listOwnerUserIds():[user(req)];
       broadcastToUsers(ownerIds,{type:'admin.changed'});
       res.json({message:result});}),
-    error(error,req,res,next){if(res.headersSent)return next(error);res.status(500).json({error:'Request failed safely'});},
+    error(error,req,res,next){if(res.headersSent)return next(error);const requestId=randomBytes(6).toString('hex');
+      const safeField=value=>/^[A-Za-z0-9_.-]{1,100}$/.test(String(value||''))?String(value):undefined;
+      const metadata={requestId,method:safeField(req.method),path:safeField(req.route?.path||req.path),
+        name:safeField(error?.name),code:safeField(error?.code),table:safeField(error?.table),
+        column:safeField(error?.column),constraint:safeField(error?.constraint)};
+      try{log(`Dashboard API failure ${JSON.stringify(metadata)}`);}catch{}
+      res.status(500).json({error:'This request could not be completed.',code:'INTERNAL_ERROR',requestId});},
   };
 }
 function mountDashboardRoutes(app,api){
@@ -362,6 +432,7 @@ function mountDashboardRoutes(app,api){
   app.put('/api/profile/bot-gate-mint',api.requireSession,api.requireCsrf,api.updateBotGateMint);
   app.put('/api/profile/display-name',api.requireSession,api.requireCsrf,api.updateDisplayName);
   app.put('/api/profile/default-chain',api.requireSession,api.requireCsrf,api.updateDefaultChain);
+  app.put('/api/profile/low-balance-threshold',api.requireSession,api.requireCsrf,api.updateLowBalanceThreshold);
   app.put('/api/auth/security-password',api.requireSession,api.requireCsrf,api.securityPasswordSet);
   app.put('/api/auth/username',api.requireSession,api.requireCsrf,api.usernameSet);
   app.put('/api/profile/mode',api.requireSession,api.requireCsrf,api.updateMode);

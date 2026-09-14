@@ -63,6 +63,12 @@ test('readiness distinctly reports database and RPC outages', async () => {
   assert.equal(rpcResult.dependencies.database.status,'up');
   assert.equal(rpcResult.dependencies.rpc.ethereum.status,'down');
   assert.doesNotMatch(JSON.stringify(rpcResult),/token/);
+  const preflightDown=createReadinessService({database:{health:async()=>true},
+    providerService:{perform:async()=>123},chains:['ethereum'],schedulerWorker:worker,
+    scheduledPreflightWorker:{health:()=>({status:'down',lastError:'safe failure'})},socialWatchWorker:worker});
+  const preflightResult=await preflightDown.inspect();
+  assert.equal(preflightResult.status,'degraded');
+  assert.equal(preflightResult.dependencies.scheduledPreflights.status,'down');
 });
 
 test('allowlist checks accept a validated configurable ABI shape', async () => {

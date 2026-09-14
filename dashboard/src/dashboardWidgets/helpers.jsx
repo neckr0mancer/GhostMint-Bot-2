@@ -1,8 +1,9 @@
 import React,{useEffect,useRef,useState} from 'react';
 import {api,confirmDialog,Field,Form,notify,promptDialog,Select,setPendingMintPrefill,useLoad} from '../shared.jsx';
+import {formatAdaptiveAmount} from '../amountDisplay.mjs';
 
 export function formatWhen(value){if(!value)return 'No timestamp';const date=new Date(value);return Number.isNaN(date.getTime())?'No timestamp':date.toLocaleString();}
-export function formatAmount(value,suffix=''){const parsed=Number(value);return `${Number.isFinite(parsed)?parsed.toFixed(4):'0.0000'}${suffix}`;}
+export function formatAmount(value,suffix=''){return `${formatAdaptiveAmount(value,{minDecimals:4,fallback:'0.0000'})}${suffix}`;}
 
 const ADDRESS_SHAPE=/^0x[0-9a-fA-F]{40}$/;
 // A real USD figure of $0 is possible and must render as $0.00, not be dropped -- only a missing

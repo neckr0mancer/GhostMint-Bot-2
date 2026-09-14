@@ -4,7 +4,7 @@ function createNotificationService({ identityRepository, transports = {}, log = 
       const accounts = await identityRepository.listLinkedAccounts(userId);
       const results = await Promise.allSettled(accounts.map(async account => {
         const send = transports[account.platform];
-        if (!send) return;
+        if (!send) throw new Error(`${account.platform} notification transport is unavailable`);
         await send(account.platformUserId, message);
       }));
       results.forEach((result, index) => {

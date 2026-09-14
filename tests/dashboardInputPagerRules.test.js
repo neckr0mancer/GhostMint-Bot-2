@@ -42,8 +42,8 @@ test('primary task-entry fields autofocus while search fields remain opt-in',()=
   assert.match(app,/autoFocus=\{active\}/);
   assert.match(app,/useEffect\(\(\)=>\{if\(active\)contractInputRef\.current\?\.focus/);
   assert.match(app,/useEffect\(\(\)=>\{if\(active&&enoughSelected\)contractInputRef\.current\?\.focus/);
-  assert.match(app,/name="label" required autoFocus placeholder="e\.g\. copy-whale-1"/);
-  assert.match(app,/name="name" required autoFocus placeholder="e\.g\. azuki-announcements"/);
+  assert.match(app,/name="label"[^>]*required[^>]*autoFocus[^>]*placeholder="e\.g\. copy-whale-1"/);
+  assert.match(app,/name="name"[^>]*required[^>]*autoFocus[^>]*placeholder="e\.g\. azuki-announcements"/);
   assert.doesNotMatch(app,/<input[^>]*type="search"[^>]*autoFocus|<input[^>]*autoFocus[^>]*type="search"/);
 });
 

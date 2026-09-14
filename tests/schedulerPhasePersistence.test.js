@@ -40,18 +40,30 @@ test('migration 054 separates phase-only waits from the execution retry budget',
   assert.match(sql, /phase_wait_count <= attempt_count/);
 });
 
+test('migration 061 adds active stage reservations without rewriting historical stage identities',()=>{
+  const sql=fs.readFileSync(path.join(__dirname,'..','migrations','061_schedule_stage_reservations.sql'),'utf8');
+  assert.match(sql,/ADD COLUMN wallet_address TEXT/);
+  assert.match(sql,/ADD COLUMN reservation_stage_key TEXT/);
+  assert.match(sql,/status IN \('scheduled','claimed','retry','paused'\)/);
+  assert.match(sql,/CREATE UNIQUE INDEX mint_tasks_active_wallet_contract_stage_uniq/);
+  assert.doesNotMatch(sql,/SET reservation_stage_key=/,
+    'historical duplicate tasks must not be silently collapsed or made migration-blocking');
+});
+
 test('Postgres storage persists phase eligibility fields and maps them on reads', async () => {
   let insert;
   const row = taskRow();
-  const pool = {
-    async query(sql, params) {
+  const query=async(sql,params)=>{
       if (sql.includes('INSERT INTO mint_tasks')) {
         insert = { sql, params };
         return { rowCount:1, rows:[{ id:row.id }] };
       }
       if (sql.includes('FROM mint_tasks')) return { rows:[row] };
       return { rows:[] };
-    },
+  };
+  const pool = {
+    query,
+    async connect(){return {query,release(){}};},
   };
   const storage = createPostgresStorage(pool);
   const deadline = Date.parse('2026-08-26T12:00:00.000Z');
@@ -66,7 +78,8 @@ test('Postgres storage persists phase eligibility fields and maps them on reads'
 
   assert.match(insert.sql, /stage_uuid,stage_label/);
   assert.match(insert.sql, /eligibility_mode,eligibility_deadline/);
-  assert.deepEqual(insert.params.slice(18), ['new-stage','Allowlist round','earliest_eligible',deadline]);
+  assert.deepEqual(insert.params.slice(18,22), ['new-stage','Allowlist round','earliest_eligible',deadline]);
+  assert.match(insert.sql,/wallet_address,reservation_stage_key/);
 
   const mapped = (await storage.loadState(row.user_id)).tasks[0];
   assert.equal(mapped.stageUuid, 'old-stage');
@@ -74,6 +87,8 @@ test('Postgres storage persists phase eligibility fields and maps them on reads'
   assert.equal(mapped.eligibilityMode, 'earliest_eligible');
   assert.equal(mapped.eligibilityDeadline, row.eligibility_deadline.getTime());
   assert.equal(mapped.phaseWaitCount, 0);
+  assert.equal(mapped.walletAddress, null);
+  assert.equal(mapped.reservationStageKey, null);
 });
 
 function phaseRepositoryFixture(updatedRow) {
@@ -122,6 +137,7 @@ test('deferForPhase atomically re-arms a claimed task and records retry without 
   assert.match(update.sql, /WHERE user_id=\$1 AND id=\$2 AND status='claimed' AND attempt_count=\$3/);
   assert.doesNotMatch(update.sql, /max_attempts/);
   assert.match(update.sql, /phase_wait_count=phase_wait_count\+1/);
+  assert.match(update.sql,/reservation_stage_key=CASE WHEN \$16 THEN \$17/);
   assert.equal(update.params[3], retryAt);
   const audit = calls.find(call => call.sql.includes('UPDATE mint_task_attempts'));
   assert.equal(audit.params[3], 'retry');

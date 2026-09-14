@@ -35,3 +35,14 @@ test('one failed platform delivery does not prevent delivery to another linked p
   assert.deepEqual(sent, ['dc-1']);
   assert.deepEqual(results.map(result => result.status), ['rejected', 'fulfilled']);
 });
+
+test('a linked platform with no active transport is reported as failed, not silently successful',async()=>{
+  const logs=[];
+  const service=createNotificationService({identityRepository:{listLinkedAccounts:async()=>[
+    {platform:'discord',platformUserId:'dc-1'},
+  ]},transports:{},log:value=>logs.push(value)});
+  const results=await service.sendToUser('user-1','scheduled mint check');
+  assert.equal(results[0].status,'rejected');
+  assert.match(results[0].reason.message,/transport is unavailable/);
+  assert.match(logs[0],/Notification to discord failed/);
+});

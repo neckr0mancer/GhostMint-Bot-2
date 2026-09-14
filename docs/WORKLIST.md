@@ -5,6 +5,122 @@ wallet import, OpenSea pricing, send/deposit UX, Telegram formatting). Separate 
 [`ROADMAP.md`](../ROADMAP.md), which covers the numbered platform/safety milestones (1–16, all
 shipped).
 
+## Feature request — voluntary owner ceilings (documented 2026-09-10, not implemented)
+
+Owners are deliberately exempt from governance max-value, daily-budget, and gas ceilings today.
+An owner asked to be able to opt into real limits for testing and personal risk control. This must
+be an enforceable transaction-policy feature, not a dashboard-only number.
+
+The safe implementation needs an explicit persisted opt-in flag (default `FALSE`) plus a complete,
+validated set of owner limits. Existing per-user override rows must never silently enable it: an
+account may have stale overrides from before it was promoted. When enabled, preview, broadcast,
+scheduled mint, sniper, Telegram, Discord, dashboard effective-policy reads, and audit evidence
+must all resolve the same non-exempt policy. Turning it off restores the current documented owner
+exemption. Enabling and disabling must require a clear confirmation and tests must cover preview
+and submit enforcement, promotion with stale overrides, and sniper/scheduler paths.
+
+Until that dedicated governance change is implemented, use a non-owner test account to exercise
+ceiling behavior. The Mint preview truthfully shows `Exempt` for owners; the UI must not pretend a
+saved owner override is active when the transaction engine intentionally ignores it.
+
+Related copy gap to fix in that pass: Telegram/Discord batch gas-tolerance screens currently show
+the raw governance gas figure to owners even though owners are exempt unless they explicitly enter
+a per-batch cap. The engine behavior is safe, but the bot copy must distinguish exemption from a
+real enforced ceiling.
+
+## Feature request — selectable fiat display (documented 2026-09-13, not implemented)
+
+Let a user view Wallet, Home, and mint-preview amounts in a chosen display currency such as USD or
+NGN, while keeping the chain-native amount visible and authoritative. A global display preference
+should apply across the dashboard, with deliberate per-surface overrides for Wallet balances and
+transaction previews where useful. The selected preference must persist for the account.
+
+This is not a decimal-formatting change. The current app has only a best-effort CoinGecko USD
+annotation for some detected mint/floor prices; Wallet balances, portfolio totals, gas, and the full
+transaction preview are still native-token-only, and no NGN or general FX layer exists. The future
+implementation needs one server-side quote service covering every supported native token, fiat FX
+rates, bounded timeouts and caching, and explicit source/timestamp/stale/unavailable states. A
+single quote snapshot should drive mint price, estimated gas, wallet balance, and total debit so
+one receipt never mixes rates from different moments.
+
+Converted figures are display-only and must never change `valueWei`, fee fields, balance checks,
+ceilings, or signed transactions. Mixed-chain portfolio and P&L conversion also requires reliable
+chain/native-currency provenance before unlike assets can be totalled. Tests must cover USD/NGN,
+unmapped tokens, missing and stale rates, rounding without displaying a real non-zero amount as
+zero, and proof that changing display currency cannot change the transaction payload.
+
+## Feature request — complete supported-EVM mint parity and diagnostics (documented 2026-09-13, not implemented)
+
+Audit and complete the shared mint path on every EVM network GhostMint offers, rather than allowing
+a network to appear in a selector while its policy, discovery, simulation, or broadcast path is
+incomplete. The current registry contains Ethereum, Base, Arbitrum, Polygon, Ink, Robinhood Chain,
+and HyperEVM; BSC is not currently defined in the registry despite being requested and must be
+added deliberately (chain ID, native symbol, RPCs, explorer, transaction-policy defaults, and
+tests) before the UI or documentation calls it supported. Solana remains a separate future,
+non-EVM integration and is not part of this task.
+
+For each enabled EVM chain, verify address and supported-link resolution, collection/price/stage
+discovery, method preparation, native-value and gas estimation, simulation, balance checks,
+broadcast, receipt reconciliation, and the correct explorer link across Dashboard, Telegram, and
+Discord through the same services. The 2026-09-13 code audit confirmed the immediate Ink failure:
+Ink is wired into chain discovery, OpenSea, SeaDrop and dashboard metadata, but has no transaction-
+policy defaults, so policy resolution fails before simulation. HyperEVM has the same policy gap and
+lacks the OpenSea/SeaDrop mappings Ink already has. When a chain is disabled or a required chain
+capability is absent, fail before simulation with a direct message such as “Ink minting is not
+available yet”; never silently fall back to Ethereum/Robinhood or return only “We could not preview
+this mint.”
+
+Acceptance requires at least one known compatible contract fixture per enabled chain, explicit
+unsupported-chain/capability tests, and a safe testnet or mocked broadcast/receipt proof. A chain
+must not be advertised as mint-capable until its end-to-end path passes that matrix.
+
+## Schedule intelligence and reservations (started 2026-09-14)
+
+### Complete in the current uncommitted unit
+
+- Schedule detection now returns one server-owned recommendation across the complete OpenSea stage
+  set. It chooses the earliest future stage without pretending a wallet is already allowlisted:
+  gated eligibility is explicitly `check_at_open`, while public stages are `open_to_all`.
+- Public builder routing and allowlist advancement are separate facts. A non-SeaDrop public stage
+  may need OpenSea-built calldata but remains pinned to that stage; it is not mislabeled
+  `earliest_eligible`.
+- A task promises automatic movement only when a later stage actually exists within the bounded
+  24-hour eligibility window. Ambiguous UUID-less repeated phases are disabled rather than saved
+  with an identity the worker cannot later distinguish.
+- New schedules use an atomic database reservation for user + wallet address + chain + contract +
+  stage. The database advisory lock and partial unique index make concurrent same-stage creation
+  single-winner across app instances. `paused` still reserves; `cancelled`, `failed`, and
+  `succeeded` release. Historical rows are preserved and checked through their legacy phase fields.
+- Schedule creation owns its UUID and is insert-only on this path, so an API caller cannot mutate
+  an existing task by reusing its ID. A phase advance or manual retry that collides with another
+  active reservation becomes a clear task failure/validation result rather than a raw SQL error.
+- Proven SeaDrop public allowances are now enforced transactionally across stages: a fresh
+  `PublicDrop.maxTotalMintableByWallet` and wallet `getMintStats` snapshot establish a
+  contract-cumulative boundary, and already-minted plus every active earlier/equal reservation
+  must fit. Display/OpenSea maxima remain informational and cannot block a schedule. The dashboard
+  no longer derives enforcement from a paginated task list or mixes unrelated stage limits.
+- Five-minute and 30-second readiness checks are now durable PostgreSQL rows, claimed with
+  `FOR UPDATE SKIP LOCKED` and recoverable after an expired worker lease. A real phase/opening-time
+  move increments a generation and re-arms both checkpoints; ordinary RPC retries do not.
+- Each check records `ready`, `short`, `price_unknown`, `sold_out`, or `check_failed` plus its
+  price/gas/balance snapshot. The task-detail view exposes that history. Results commit before
+  Telegram, Discord, or WebSocket delivery, then a leased notification outbox retries interrupted
+  delivery with bounded backoff (five attempts). A notification outage therefore cannot rerun or
+  erase a check, and a process crash between result commit and delivery cannot silently lose it.
+  Only definitive sold-out evidence cancels; every final M7 pre-broadcast check remains
+  authoritative.
+
+### Still required before this broader schedule-intelligence request is complete
+
+- **Wallet-aware planning and phase changes:** expose per-stage evidence/current minted/reserved/
+  remaining values, distinguish the earliest confirmed-open recommendation from an earlier
+  `check_at_open` possibility, and recompute reservation evidence atomically if a task advances to
+  another phase. OpenSea stage/order maxima remain unverified unless their scope is proven.
+- **Shared bot auto-planning surface:** Telegram and Discord already persist picked OpenSea phases,
+  but their guided schedule UX still asks the user to choose rather than offering the dashboard's
+  new automatic earliest-stage recommendation. They must consume the same planner when automatic
+  selection is added; no third platform-specific planner.
+
 ## 2026-09-02 checkpoint — configurable copy-sniper timing
 
 - Copy snipers retain `confirmed` as the safe default and can independently opt into explicitly

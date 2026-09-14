@@ -5,6 +5,7 @@ const test=require('node:test');
 
 const root=path.join(__dirname,'..');
 const home=fs.readFileSync(path.join(root,'dashboard','src','dashboardWidgets','home.jsx'),'utf8');
+const dashboard=fs.readFileSync(path.join(root,'dashboard','src','Dashboard.jsx'),'utf8');
 const shared=fs.readFileSync(path.join(root,'dashboard','src','shared.jsx'),'utf8');
 const styles=fs.readFileSync(path.join(root,'dashboard','src','styles.css'),'utf8');
 const prototype=fs.readFileSync(path.join(root,'dashboard','src','prototype.css'),'utf8');
@@ -72,6 +73,21 @@ test('Home follows the prototype mobile collapse defaults without collapsing des
   assert.match(shared,/className="colh"/);
   assert.match(shared,/className=\{mobileCollapsible\?'colb':undefined\}/);
   assert.match(prototype,/\.app\[data-m\] \.col\[data-open="0"\]>\.colb\{display:none\}/);
+});
+
+test('Home failure isolation never treats profile preferences as endpoint load sources',()=>{
+  assert.match(dashboard,/const sources=\{wallets,tasks,snipers,watchRules,activity,pnl,confirmations,limits\}/);
+  assert.match(dashboard,/summarize\(\{\.\.\.sources,lowBalanceThreshold:profile\.lowBalanceThreshold\}\)/);
+  assert.match(home,/if\(!source\)return 'loading'/);
+  assert.match(home,/sourceEntries=Object\.entries\(sources\)\.filter\(\(\[,source\]\)=>source&&typeof source==='object'\)/);
+  assert.match(home,/source\.load\?\.\(\)/);
+});
+
+test('development StrictMode cleanup never closes a WebSocket before it connects',()=>{
+  assert.match(shared,/socket\.readyState===0\)socket\.addEventListener\('open',\(\)=>socket\.close\(\),\{once:true\}\)/);
+  assert.match(shared,/else if\(socket\.readyState===1\)socket\.close\(\)/);
+  assert.match(shared,/socket\.onmessage=null;socket\.onclose=null/);
+  assert.doesNotMatch(shared,/return\(\)=>\{stopped=true;if\(retryTimer\)clearTimeout\(retryTimer\);socket\?\.close\(\)/);
 });
 
 test('activity rows expose real transaction value, contract and token IDs for the reward copy',async()=>{

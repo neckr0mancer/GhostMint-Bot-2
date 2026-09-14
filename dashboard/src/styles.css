@@ -152,12 +152,12 @@ main.loading{min-height:100vh;display:grid;place-items:center;padding:1.25rem;co
    chevron makes the closed box look intentional; background-color/color on <option> gets the open
    list itself to follow the theme in Chromium/Firefox/Edge (Safari largely ignores <option> styling
    regardless -- a platform limitation this can reduce but not fully remove). */
-.form select{
+.form select,select.in{
   appearance:none;-webkit-appearance:none;-moz-appearance:none;
   background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%239aa4c7' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
   background-repeat:no-repeat;background-position:right .75rem center;background-size:1.1rem;padding-right:2.5rem}
-.form select option{background-color:var(--surface-deep);color:var(--text)}
-.form select optgroup{background-color:var(--surface-deep);color:var(--text-muted);font-weight:700;font-style:normal}
+.form select option,select.in option{background-color:var(--surface-deep);color:var(--text)}
+.form select optgroup,select.in optgroup{background-color:var(--surface-deep);color:var(--text-muted);font-weight:700;font-style:normal}
 
 /* Themed confirm()/prompt() replacement. Shared overlays live at 9100 and notifications at 9200;
    confirmations deliberately sit above both because they are the blocking, actionable layer. */
@@ -179,6 +179,86 @@ main.loading{min-height:100vh;display:grid;place-items:center;padding:1.25rem;co
   border:1px solid var(--border-strong);box-shadow:var(--shadow-lg);font-size:.86rem;line-height:1.4;
   animation:toastIn var(--normal) var(--ease)}
 .toast.leaving{animation:toastOut var(--fast) var(--ease) forwards}
+.batch-preview-head .p{letter-spacing:0;text-transform:none;white-space:nowrap}
+.batch-asset-totals{display:grid;border-top:1px solid var(--border)}
+.batch-asset-total+.batch-asset-total{border-top:1px solid var(--border-strong)}
+.batch-asset-title{display:flex;align-items:center;justify-content:space-between;gap:.75rem;padding:7px 13px;
+  background:var(--surface-3);color:var(--muted);font-size:10px;font-weight:800;letter-spacing:.07em;text-transform:uppercase}
+.batch-balance-danger td{color:var(--loss-text)!important;background:color-mix(in srgb,var(--loss) 8%,transparent)}
+.batch-balance-label{display:inline-flex;align-items:center;gap:5px}
+.batch-balance-help{position:relative;display:inline-grid;place-items:center}
+.batch-balance-help>button{display:grid;place-items:center;width:20px;height:20px;padding:0;border:0;border-radius:50%;
+  background:transparent;color:var(--info-text);cursor:help}
+.batch-balance-help svg{width:13px;height:13px}
+.batch-balance-help>button:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+.batch-balance-tooltip{position:absolute;z-index:30;left:-4px;bottom:calc(100% + 7px);width:min(240px,calc(100vw - 48px));
+  padding:8px 9px;border:1px solid var(--border-strong);border-radius:var(--radius-sm);background:var(--surface-4);
+  color:var(--text);box-shadow:var(--shadow-pop);font-size:11px;font-weight:600;line-height:1.45;text-align:left;
+  opacity:0;visibility:hidden;pointer-events:none;transform:translateY(3px);transition:opacity var(--fast) var(--ease),transform var(--fast) var(--ease)}
+.batch-balance-help:hover .batch-balance-tooltip,.batch-balance-help:focus-within .batch-balance-tooltip{
+  opacity:1;visibility:visible;transform:translateY(0)}
+.batch-underfunded-count{font-size:11px;font-weight:750}
+.batch-detail-toggle{display:flex;align-items:center;justify-content:space-between;gap:.75rem;width:100%;padding:9px 13px;
+  min-height:44px;border-top:1px solid var(--border);background:var(--surface-3);color:var(--text);font-size:12px;font-weight:750;text-align:left}
+.batch-detail-toggle small{color:var(--muted);font:inherit;font-weight:600}
+.batch-detail-toggle:hover{background:var(--surface-hover)}
+.batch-detail-chevron{display:grid;place-items:center;width:18px;height:18px;color:var(--muted);transition:transform var(--fast) var(--ease)}
+.batch-detail-chevron svg{width:14px;height:14px}
+.batch-detail-toggle[aria-expanded="true"] .batch-detail-chevron{transform:rotate(180deg)}
+.batch-detail-panel{max-height:22rem;overflow-y:auto;overflow-x:hidden;border-top:1px solid var(--border);padding:9px;background:var(--surface-2)}
+.batch-detail-panel:focus-visible{outline:2px solid var(--focus);outline-offset:-3px}
+.batch-technical-line{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:start;gap:10px;padding:2px 3px 9px;
+  color:var(--muted);font-size:11px}
+.batch-technical-line code{min-width:0;color:var(--text);text-align:right;overflow-wrap:anywhere}
+.batch-wallet-details{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,9rem),1fr));align-items:start;gap:6px}
+.batch-wallet-detail-card{min-width:0;border:1px solid var(--border);border-left-width:3px;border-radius:var(--radius-sm);
+  padding:7px 8px;background:var(--surface);font-size:11.5px;font-variant-numeric:tabular-nums}
+.batch-wallet-detail-card.is-ready{border-left-color:var(--success);background:color-mix(in srgb,var(--success) 6%,var(--surface))}
+.batch-wallet-detail-card.is-blocked{border-left-color:var(--warn);background:color-mix(in srgb,var(--warn) 6%,var(--surface))}
+.batch-wallet-detail-card.is-underfunded{border-left-color:var(--loss);background:color-mix(in srgb,var(--loss) 7%,var(--surface))}
+.batch-wallet-detail-card.is-shared{border-left-color:var(--info);background:color-mix(in srgb,var(--info) 5%,var(--surface))}
+.batch-wallet-detail-head{display:grid;grid-template-columns:7px minmax(0,1fr) auto;align-items:center;gap:6px;min-width:0}
+.batch-wallet-detail-head strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)}
+.batch-wallet-detail-balance{min-width:0;max-width:8.5rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  color:var(--muted);font-size:10.5px;font-weight:700;text-align:right}
+.batch-wallet-state-dot{width:7px;height:7px;flex:none;border-radius:50%;background:var(--warn)}
+.batch-wallet-detail-card.is-ready .batch-wallet-state-dot{background:var(--success)}
+.batch-wallet-detail-card.is-underfunded .batch-wallet-state-dot{background:var(--loss)}
+.batch-wallet-detail-card.is-shared .batch-wallet-state-dot{background:var(--info)}
+.batch-wallet-technical{display:grid;grid-template-columns:auto minmax(0,1fr);gap:8px;margin-top:7px;padding-top:7px;
+  border-top:1px solid var(--border);color:var(--muted);font-size:10px}
+.batch-wallet-technical code{min-width:0;color:var(--text);text-align:right;overflow-wrap:anywhere}
+.batch-wallet-reason{margin:7px -8px -7px;padding:6px 8px 7px;border-top:1px solid color-mix(in srgb,var(--warn) 24%,var(--border));
+  color:var(--warn-text);font-size:11.5px;line-height:1.45;background:color-mix(in srgb,var(--warn) 5%,transparent)}
+.batch-wallet-reason b{display:inline;color:inherit;font-size:inherit}
+.mint-technical-details{border-top:1px solid var(--border);background:var(--surface-2);font-size:11.5px}
+.mint-technical-details summary{min-height:40px;display:flex;align-items:center;padding:7px 13px;color:var(--muted);font-weight:700;cursor:pointer}
+.mint-technical-details summary:hover{color:var(--text);background:var(--surface-hover)}
+.mint-technical-row{display:grid;grid-template-columns:auto minmax(0,1fr);gap:12px;padding:0 13px 10px;color:var(--muted)}
+.mint-technical-row code{min-width:0;color:var(--text);text-align:right;overflow-wrap:anywhere}
+@media(max-width:700px){
+  .batch-preview-head{flex-wrap:wrap}
+  .batch-preview-head .sp{display:none}
+  .batch-preview-head .p{margin-left:auto}
+  .batch-asset-title{padding:7px 11px}
+  .batch-summary-ledger td:first-child{width:44%}
+  .batch-detail-panel{max-height:18rem;padding:7px}
+  .batch-wallet-details{gap:5px}
+  .batch-wallet-detail-card{padding:6px 7px}
+  .batch-wallet-detail-balance{max-width:6.75rem;font-size:10px}
+  .batch-wallet-reason{margin:7px -7px -6px;padding:6px 7px}
+}
+@media(prefers-reduced-motion:reduce){.batch-detail-chevron{transition:none}}
+.batch-result-row{flex-wrap:wrap}
+.batch-result-row .batch-result-link{flex:none;min-height:32px;padding-inline:10px;text-decoration:none}
+.batch-result-row .be{min-width:10rem;overflow-wrap:anywhere;white-space:normal}
+@media(max-width:700px){
+  .batch-result-row .be{order:4;flex-basis:100%;text-align:left}
+  .batch-result-row .batch-result-link{margin-left:auto}
+}
+.mint-preview-reason{padding:9px 13px;border-top:1px solid var(--border);font-size:12px;
+  line-height:1.5;color:var(--warn-text);background:color-mix(in srgb,var(--warn) 8%,var(--surface-2))}
+.mint-preview-reason b{display:inline;margin:0;font-size:inherit}
 .toast-icon{flex-shrink:0;width:1.1rem;height:1.1rem;margin-top:.05rem}
 .toast-icon svg{width:100%;height:100%}
 .toast-success .toast-icon{color:var(--success)}
@@ -250,36 +330,55 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
 .user-card-mini-heading .pill{font-size:.6rem;padding:.15rem .5rem}
 .user-card-mini .user-card-identity{margin:0;font-size:.76rem}
 
-/* Chain select with icon. Deliberately a <div>, not a <label>: label-wrapped clicks are
-   forwarded natively to the label's associated control, which re-toggled the trigger button
-   open again immediately after any option click closed it. */
-.chain-select{display:grid;gap:.4rem;font-weight:700;font-size:.88rem;color:var(--text-muted)}
-.chain-select-control{position:relative}
-.chain-icon{display:flex;flex-shrink:0}
-.chain-icon svg{width:1.3rem;height:1.3rem}
-.chain-select-trigger{width:100%;display:flex;align-items:center;gap:.6rem;text-align:left;
-  padding:.75rem .85rem;border:1px solid var(--border-strong);border-radius:var(--radius-sm);
-  background:var(--surface-deep);color:var(--text);font-size:.95rem;font-weight:600;box-shadow:none;
+/* One dropdown language across controlled dashboard surfaces. A div owns the visible label rather
+   than wrapping the trigger in <label>; browser label forwarding would re-open the menu after an
+   option click. Long stage facts wrap inside the popup and the popup never widens the page. */
+.select-menu,.wallet-chain-select{display:grid;gap:.4rem;min-width:0;font-weight:700;font-size:.88rem;color:var(--text-muted)}
+.select-menu-label{display:block;font-size:11.5px;color:var(--muted);font-weight:650}
+.select-menu-control{position:relative;min-width:0}
+.select-menu-icon{display:flex;flex:none}
+.select-menu-icon svg{width:1.3rem;height:1.3rem}
+.select-menu-trigger{width:100%;min-width:0;display:flex;align-items:center;gap:.6rem;text-align:left;
+  min-height:44px;padding:.7rem .8rem;border:1px solid var(--border-strong);border-radius:var(--radius-sm);
+  background:var(--surface-deep);color:var(--text);font-size:.9rem;font-weight:650;box-shadow:none;
   transition:border-color var(--fast) var(--ease),box-shadow var(--fast) var(--ease)}
-.chain-select-trigger:hover:not(:disabled){filter:none;border-color:color-mix(in srgb,var(--border-strong) 55%,var(--accent) 45%)}
-.chain-select-value{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.chain-select-chevron{width:1rem;height:1rem;flex-shrink:0;color:var(--text-faint);transition:transform var(--fast) var(--ease)}
-.chain-select-trigger[aria-expanded="true"] .chain-select-chevron{transform:rotate(180deg)}
-.chain-select-panel{position:absolute;top:calc(100% + .4rem);left:0;right:0;z-index:50;max-height:18rem;overflow:auto;
-  margin:0;padding:.5rem;list-style:none;border:1px solid var(--border-strong);border-radius:var(--radius-lg);
-  background:linear-gradient(180deg,var(--surface-2),var(--surface));box-shadow:var(--shadow-lg);animation:fadeIn var(--fast) var(--ease)}
-.chain-select-group-label{padding:.4rem .6rem;text-transform:uppercase;letter-spacing:.08em;font-size:.68rem;font-weight:800;color:var(--accent-2)}
-.chain-select-group-label:not(:first-child){margin-top:.3rem;border-top:1px solid var(--border);padding-top:.7rem;color:var(--text-faint)}
-.chain-select-option{display:flex;align-items:center;gap:.6rem;padding:.6rem;border-radius:var(--radius-sm);cursor:pointer;font-size:.9rem;font-weight:600;color:var(--text)}
-.chain-select-option.active,.chain-select-option:hover{background:var(--accent-soft)}
-.chain-select-option.selected{color:var(--accent)}
-.chain-select-option-end{margin-left:auto;flex-shrink:0;display:flex;align-items:center;gap:.4rem}
-.chain-select-option-check{width:1rem;height:1rem;flex-shrink:0;color:var(--accent)}
-.chain-select-tag{padding:.1rem .45rem;border-radius:999px;background:var(--surface-2);border:1px solid var(--border);
+.select-menu-trigger:hover:not(:disabled){filter:none;border-color:color-mix(in srgb,var(--border-strong) 55%,var(--accent) 45%)}
+.select-menu-value{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.select-menu-value.placeholder{color:var(--text-faint);font-weight:550}
+.select-menu-chevron{width:1rem;height:1rem;display:grid;place-items:center;flex:none;color:var(--text-faint);transition:transform var(--fast) var(--ease)}
+.select-menu-chevron svg{width:100%;height:100%}
+.select-menu-trigger[aria-expanded="true"] .select-menu-chevron{transform:rotate(180deg)}
+.select-menu-panel{position:absolute;top:calc(100% + .4rem);left:0;right:0;z-index:50;max-height:min(20rem,55vh);
+  overflow-y:auto;overflow-x:hidden;margin:0;padding:.5rem;list-style:none;border:1px solid var(--border-strong);
+  border-radius:var(--radius-lg);background:linear-gradient(180deg,var(--surface-2),var(--surface));
+  box-shadow:var(--shadow-lg);animation:fadeIn var(--fast) var(--ease)}
+.select-menu-group-label{padding:.4rem .6rem;text-transform:uppercase;letter-spacing:.08em;font-size:.68rem;font-weight:800;color:var(--accent-2)}
+.select-menu-group-label:not(:first-child){margin-top:.3rem;border-top:1px solid var(--border);padding-top:.7rem;color:var(--text-faint)}
+.select-menu-option{display:flex;align-items:center;gap:.6rem;min-width:0;min-height:44px;padding:.55rem .6rem;
+  border-radius:var(--radius-sm);cursor:pointer;font-size:.88rem;font-weight:600;color:var(--text)}
+.select-menu-option.active,.select-menu-option:hover{background:var(--accent-soft)}
+.select-menu-option.selected{color:var(--accent)}
+.select-menu-option-copy{display:grid;gap:2px;min-width:0;flex:1}
+.select-menu-option-copy b{min-width:0;overflow-wrap:anywhere;font:inherit;color:inherit}
+.select-menu-option-copy small{min-width:0;color:var(--muted);font-size:.69rem;font-weight:500;line-height:1.35;overflow-wrap:anywhere}
+.select-menu-option-end{margin-left:auto;flex:none;display:flex;align-items:center;gap:.4rem}
+.select-menu-check{width:1rem;height:1rem;display:grid;place-items:center;flex:none;color:var(--accent)}
+.select-menu-check svg{width:100%;height:100%}
+.select-menu-tag{padding:.1rem .45rem;border-radius:999px;background:var(--surface-2);border:1px solid var(--border);
   color:var(--text-faint);font-size:.62rem;font-weight:700;text-transform:uppercase;letter-spacing:.03em;white-space:nowrap}
-.chain-select-option.disabled{cursor:not-allowed;color:var(--text-faint)}
-.chain-select-option.disabled:hover{background:transparent}
-.chain-select-option.disabled .chain-icon{opacity:.5}
+.select-menu-option.disabled{cursor:not-allowed;color:var(--text-faint)}
+.select-menu-option.disabled:hover{background:transparent}
+.select-menu-option.disabled .select-menu-icon{opacity:.5}
+@media(max-width:700px){
+  .select-menu-panel{max-height:min(18rem,52vh)}
+  .select-menu-option{align-items:flex-start}
+  .select-menu-option-end{padding-top:2px}
+}
+
+/* The quantity control becomes taller on mobile. Keep its paired wallet selector pinned to the
+   top of the grid row so the selector and its absolutely-positioned menu never inherit that extra
+   height as blank space. */
+.app[data-m] .mint-wallet-quantity-row>.select-menu{align-self:start}
 
 /* Private key / seed phrase toggle */
 .method-toggle{display:grid;gap:.45rem;font-weight:700;font-size:.88rem;color:var(--text-muted)}
@@ -973,11 +1072,24 @@ html[data-theme="ghost-mint"] .dash-hero button,html[data-theme="ghost-mint-ligh
 @keyframes contract-lookup-spin{to{transform:rotate(360deg)}}
 @media(prefers-reduced-motion:reduce){.contract-lookup-spinner{animation:none;border-right-color:var(--accent)}}
 
-.schedule-row-right{display:flex;align-items:center;gap:9px}
+.schedule-task-row{display:grid!important;grid-template-columns:minmax(0,1fr) 44px;align-items:stretch!important;
+  gap:4px!important;padding:0!important}
+.schedule-task-row.on{background:var(--accent-soft);box-shadow:inset 2px 0 0 var(--accent);border-radius:var(--radius-sm)}
+.schedule-row-select{display:flex;align-items:center;gap:12px;min-width:0;width:100%;padding:9px 3px 9px 0;
+  border:0;border-radius:0;background:transparent;color:inherit;text-align:left;box-shadow:none;cursor:pointer}
+.schedule-row-select:hover:not(:disabled){filter:none;background:transparent}
+.schedule-row-select:disabled{cursor:not-allowed;opacity:.62;color:var(--faint)}
+.schedule-row-select .rm{display:block;min-width:0;flex:1}
+.schedule-row-select .rt,.schedule-row-select .rs{display:block}
+.schedule-row-right{display:flex;align-items:center;justify-content:flex-end;gap:9px;min-width:0}
 .schedule-countdown{display:inline-flex;align-items:baseline;gap:4px;padding:4px 7px;border:1px solid var(--border);
   border-radius:var(--radius-sm);background:var(--surface-2);color:var(--muted);font-size:9.5px;font-weight:600}
 .schedule-countdown b{color:var(--text);font-size:11px;font-variant-numeric:tabular-nums}
-.schedule-detail-open{min-height:28px;padding:4px 8px}
+.ico-btn.schedule-detail-open{align-self:center;justify-self:center;width:34px;height:34px;min-height:34px;padding:7px;border:1px solid var(--border-strong);
+  border-radius:50%;background:var(--surface-2);color:var(--muted)}
+.ico-btn.schedule-detail-open svg{width:18px;height:18px}
+.ico-btn.schedule-detail-open>span{display:grid;place-items:center}
+.ico-btn.schedule-detail-open:hover:not(:disabled){background:var(--surface-hover);color:var(--text)}
 .schedule-detail{gap:12px}
 .schedule-detail-clock{padding:14px 16px;background:var(--surface-2)}
 .schedule-detail-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
@@ -998,20 +1110,19 @@ html[data-theme="ghost-mint"] .dash-hero button,html[data-theme="ghost-mint-ligh
 @media(max-width:700px){
   .schedule-layout{gap:13px}
   .app[data-m] .schedule-list-card{padding:13px}
-  .app[data-m] .schedule-list-card .r[role="button"]{
-    min-height:72px;margin:0;padding:11px 9px;gap:10px;align-items:flex-start
-  }
+  .app[data-m] .schedule-list-card .schedule-task-row{min-height:72px;margin:0;grid-template-columns:minmax(0,1fr) 44px}
+  .app[data-m] .schedule-row-select{display:grid;grid-template-columns:30px minmax(0,1fr);align-content:center;
+    align-items:start;column-gap:10px;row-gap:6px;padding:10px 3px 10px 9px}
   .app[data-m] .schedule-list-card .ri{width:30px;height:30px}
   .app[data-m] .schedule-list-card .rs.fold{display:block;white-space:normal;line-height:1.4;
     overflow:visible;text-overflow:clip;margin-top:4px}
-  .app[data-m] .schedule-row-right{align-self:stretch;flex-direction:column;
-    justify-content:space-between;align-items:flex-end;gap:7px}
+  .app[data-m] .schedule-row-right{grid-column:2;justify-content:flex-start;align-items:center;gap:6px;flex-wrap:wrap}
   .app[data-m] .schedule-row-right>.p{order:1}
   .app[data-m] .schedule-row-right>.schedule-countdown{order:2}
-  .app[data-m] .schedule-row-right>.schedule-detail-open{order:3;min-height:28px}
-  .app[data-m] .schedule-countdown{flex-direction:column;align-items:flex-end;gap:0;padding:4px 6px}
+  .app[data-m] .schedule-countdown{gap:3px;padding:4px 6px}
   .app[data-m] .schedule-countdown span{font-size:8.5px}
   .app[data-m] .schedule-countdown b{font-size:11.5px}
+  .app[data-m] .ico-btn.schedule-detail-open{width:44px;height:44px;min-height:44px;padding:12px;border-radius:50%}
   .app[data-m] .schedule-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
   .app[data-m] .schedule-actions .b{width:100%;min-height:44px}
   .schedule-detail-grid{grid-template-columns:1fr}

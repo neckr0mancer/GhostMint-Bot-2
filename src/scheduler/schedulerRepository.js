@@ -1,3 +1,6 @@
+const { scheduleReservationStageKey } = require('../mint/scheduleStagePlanning');
+const { armTaskPreflightRows } = require('./scheduledPreflightRepository');
+
 // The seven statuses the schema allows (migrations/011_durable_scheduler.sql:30), grouped into the
 // buckets the dashboard filters by. Every status belongs to EXACTLY ONE bucket, which is the point:
 // the counts sum to the total, no row is counted twice, and no row can become unreachable because
@@ -53,6 +56,12 @@ const BUCKET_PREDICATES = Object.freeze({
 
 function time(value) { return value === null ? null : new Date(value).getTime(); }
 
+function scheduleReservationConflict(message) {
+  const error = new Error(message);
+  error.code = 'SCHEDULE_STAGE_DUPLICATE';
+  return error;
+}
+
 function mapTask(row) {
   if (!row) return null;
   return {
@@ -66,9 +75,20 @@ function mapTask(row) {
     idempotencyKey: row.idempotency_key, lastError: row.last_error, completedAt: time(row.completed_at),
     viaOpenSea: row.via_opensea, stageType: row.stage_type ?? null, chain: row.chain ?? null,
     stageUuid: row.stage_uuid ?? null, stageLabel: row.stage_label ?? null,
+    walletAddress:row.wallet_address ?? null,reservationStageKey:row.reservation_stage_key ?? null,
+    allowanceScope:row.allowance_scope ?? 'unknown',
+    allowanceMaxPerWallet:row.allowance_max_per_wallet === null || row.allowance_max_per_wallet === undefined
+      ? null:String(row.allowance_max_per_wallet),
+    allowanceMintedSnapshot:row.allowance_minted_snapshot === null || row.allowance_minted_snapshot === undefined
+      ? null:String(row.allowance_minted_snapshot),
+    allowanceSource:row.allowance_source ?? null,
+    allowanceVerifiedAt:time(row.allowance_verified_at),
+    allowanceStageStartAt:time(row.allowance_stage_start_at),
     eligibilityMode: row.eligibility_mode ?? 'specific_stage',
     eligibilityDeadline: time(row.eligibility_deadline),
     phaseWaitCount: Number(row.phase_wait_count || 0),
+    preflightTargetAt:time(row.preflight_target_at),
+    preflightGeneration:Number(row.preflight_generation||1),
   };
 }
 
@@ -304,6 +324,13 @@ function createSchedulerRepository(pool) {
       const stageUuidSupplied = Object.prototype.hasOwnProperty.call(details, 'stageUuid');
       const stageLabelSupplied = Object.prototype.hasOwnProperty.call(details, 'stageLabel');
       const stageTypeSupplied = Object.prototype.hasOwnProperty.call(details, 'stageType');
+      const reservationChanged = mintTimeSupplied || stageUuidSupplied || stageLabelSupplied || stageTypeSupplied;
+      const reservationStageKey = reservationChanged ? scheduleReservationStageKey({
+        stageUuid:stageUuidSupplied ? stageUuid : task.stageUuid,
+        stageLabel:stageLabelSupplied ? stageLabel : task.stageLabel,
+        stageType:stageTypeSupplied ? stageType : task.stageType,
+        mintTime:mintTimeSupplied ? mintTime : task.mintTime,
+      }) : task.reservationStageKey;
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
@@ -316,15 +343,38 @@ function createSchedulerRepository(pool) {
           stage_uuid=CASE WHEN $9 THEN $10 ELSE stage_uuid END,
           stage_label=CASE WHEN $11 THEN $12 ELSE stage_label END,
           stage_type=CASE WHEN $13 THEN $14 ELSE stage_type END,last_error=$15,
+          reservation_stage_key=CASE WHEN $16 THEN $17 ELSE reservation_stage_key END,
+          allowance_scope=CASE WHEN $16 THEN 'unknown' ELSE allowance_scope END,
+          allowance_max_per_wallet=CASE WHEN $16 THEN NULL ELSE allowance_max_per_wallet END,
+          allowance_minted_snapshot=CASE WHEN $16 THEN NULL ELSE allowance_minted_snapshot END,
+          allowance_source=CASE WHEN $16 THEN NULL ELSE allowance_source END,
+          allowance_verified_at=CASE WHEN $16 THEN NULL ELSE allowance_verified_at END,
+          allowance_stage_start_at=CASE WHEN $16 THEN
+            CASE WHEN $5 THEN TO_TIMESTAMP($6 / 1000.0) ELSE TO_TIMESTAMP($4 / 1000.0) END
+            ELSE allowance_stage_start_at END,
+          preflight_target_at=CASE WHEN $16 THEN
+            CASE WHEN $5 THEN TO_TIMESTAMP($6 / 1000.0) ELSE TO_TIMESTAMP($4 / 1000.0) END
+            ELSE preflight_target_at END,
+          preflight_generation=preflight_generation+CASE WHEN $16 THEN 1 ELSE 0 END,
           claimed_by=NULL,claimed_at=NULL,lease_expires_at=NULL,completed_at=NULL
           WHERE user_id=$1 AND id=$2 AND status='claimed' AND attempt_count=$3 RETURNING *`,
         [task.userId, task.id, task.attemptCount, retryAt, mintTimeSupplied, mintTime ?? null,
           deadlineSupplied, deadline, stageUuidSupplied, stageUuid ?? null,
-          stageLabelSupplied, stageLabel ?? null, stageTypeSupplied, stageType ?? null, reason]);
-        if (updated.rowCount) await finishAttempt(client, task, 'retry', reason, null);
+          stageLabelSupplied, stageLabel ?? null, stageTypeSupplied, stageType ?? null, reason,
+          reservationChanged,reservationStageKey]);
+        if (updated.rowCount) {
+          await finishAttempt(client, task, 'retry', reason, null);
+          await armTaskPreflightRows(client,updated.rows[0]);
+        }
         await client.query('COMMIT');
         return mapTask(updated.rows[0]);
-      } catch (error) { await client.query('ROLLBACK').catch(() => {}); throw error; }
+      } catch (error) {
+        await client.query('ROLLBACK').catch(() => {});
+        if (error.code === '23505' && error.constraint === 'mint_tasks_active_wallet_contract_stage_uniq') {
+          throw scheduleReservationConflict('This wallet already has an active mint scheduled for the next stage.');
+        }
+        throw error;
+      }
       finally { client.release(); }
     },
 
@@ -351,21 +401,39 @@ function createSchedulerRepository(pool) {
       return mapTask(result.rows[0]);
     },
     async pause(userId, id) {
-      const result = await pool.query(`UPDATE mint_tasks SET status='paused'
+      const result = await pool.query(`UPDATE mint_tasks SET status='paused',
+          preflight_generation=preflight_generation+1
         WHERE user_id=$1 AND id=$2 AND status IN ('scheduled','retry') RETURNING *`, [userId, id]);
       return mapTask(result.rows[0]);
     },
     async resume(userId, id, now) {
-      const result = await pool.query(`UPDATE mint_tasks SET status='scheduled',next_attempt_at=GREATEST(mint_time,TO_TIMESTAMP($3 / 1000.0)),last_error=NULL
-        WHERE user_id=$1 AND id=$2 AND status='paused' RETURNING *`, [userId, id, now]);
-      return mapTask(result.rows[0]);
+      const client=await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const result=await client.query(`UPDATE mint_tasks SET status='scheduled',
+            next_attempt_at=GREATEST(mint_time,TO_TIMESTAMP($3 / 1000.0)),
+            preflight_target_at=GREATEST(mint_time,TO_TIMESTAMP($3 / 1000.0)),last_error=NULL
+          WHERE user_id=$1 AND id=$2 AND status='paused' RETURNING *`,[userId,id,now]);
+        if(result.rowCount)await armTaskPreflightRows(client,result.rows[0]);
+        await client.query('COMMIT');
+        return mapTask(result.rows[0]);
+      } catch(error) {
+        await client.query('ROLLBACK').catch(()=>{});throw error;
+      } finally { client.release(); }
     },
     async retry(userId, id, now) {
-      const result = await pool.query(`UPDATE mint_tasks SET status='retry',next_attempt_at=TO_TIMESTAMP($3 / 1000.0),
-        last_error=NULL,completed_at=NULL
-        WHERE user_id=$1 AND id=$2 AND status='failed'
-          AND (attempt_count-phase_wait_count) < max_attempts RETURNING *`, [userId, id, now]);
-      return mapTask(result.rows[0]);
+      try {
+        const result = await pool.query(`UPDATE mint_tasks SET status='retry',next_attempt_at=TO_TIMESTAMP($3 / 1000.0),
+          last_error=NULL,completed_at=NULL
+          WHERE user_id=$1 AND id=$2 AND status='failed'
+            AND (attempt_count-phase_wait_count) < max_attempts RETURNING *`, [userId, id, now]);
+        return mapTask(result.rows[0]);
+      } catch (error) {
+        if (error.code === '23505' && error.constraint === 'mint_tasks_active_wallet_contract_stage_uniq') {
+          throw scheduleReservationConflict('This wallet already has another active mint scheduled for this stage.');
+        }
+        throw error;
+      }
     },
 
     // Pre-arm fire-time correction (scheduledValidity): the contract's own window differs from the
@@ -374,9 +442,20 @@ function createSchedulerRepository(pool) {
     // lands valid with zero failed tries. Only a still-'scheduled' task moves: claimed/retried/
     // paused rows are owned by other paths. mint_time (what the user sees) is deliberately kept.
     async moveFireTime(userId, id, fireAtMs) {
-      const result = await pool.query(`UPDATE mint_tasks SET next_attempt_at=TO_TIMESTAMP($3 / 1000.0)
-        WHERE user_id=$1 AND id=$2 AND status='scheduled' RETURNING *`, [userId, id, fireAtMs]);
-      return mapTask(result.rows[0]);
+      const client=await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const result=await client.query(`UPDATE mint_tasks SET
+            next_attempt_at=TO_TIMESTAMP($3 / 1000.0),
+            preflight_target_at=TO_TIMESTAMP($3 / 1000.0),
+            preflight_generation=preflight_generation+1
+          WHERE user_id=$1 AND id=$2 AND status='scheduled' RETURNING *`,[userId,id,fireAtMs]);
+        if(result.rowCount)await armTaskPreflightRows(client,result.rows[0]);
+        await client.query('COMMIT');
+        return mapTask(result.rows[0]);
+      } catch(error) {
+        await client.query('ROLLBACK').catch(()=>{});throw error;
+      } finally { client.release(); }
     },
   };
 }

@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const { randomBytes } = require('node:crypto');
 const path = require('node:path');
 const test = require('node:test');
 const { CONFIG } = require('../src/config');
@@ -22,9 +23,10 @@ integrationTest('persisted submitted intent and editable policies survive a proc
   assert.equal(migration.connection, 'unpooled');
 
   const platformId = `transaction-${process.pid}-${Date.now()}`;
-  const txHash = `0x${'cd'.repeat(32)}`;
+  const txHash = `0x${randomBytes(32).toString('hex')}`;
   let userId;
   let wallet;
+  let intentId;
   const firstPool = createDatabasePool({ connectionString: CONFIG.databaseUrl, max: 2 });
   try {
     const identity = createIdentityService(createPostgresIdentityRepository(firstPool));
@@ -62,6 +64,7 @@ integrationTest('persisted submitted intent and editable policies survive a proc
       timeoutAt: Date.now() + 60_000,
     };
     const intent = await intents.createSubmitted(intentInput);
+    intentId = intent.intentId;
     await assert.rejects(intents.createSubmitted(intentInput), error => error.code === '23505');
     await intents.attachSignedHash(intent.intentId, txHash);
   } finally {
@@ -71,6 +74,15 @@ integrationTest('persisted submitted intent and editable policies survive a proc
   const secondPool = createDatabasePool({ connectionString: CONFIG.databaseUrl, max: 2 });
   try {
     const intents = createTransactionIntentRepository(secondPool);
+    // This integration suite shares the configured database with other tests (and may be run
+    // against a developer database containing real pending intents). Reconciliation itself is
+    // intentionally global in production, but this fixture's fake provider must never confirm
+    // somebody else's intent. Scope only the list operation to this fixture's unique user while
+    // retaining the real repository for every read and state transition under test.
+    const fixtureIntents = {
+      ...intents,
+      listNonFinal: () => intents.listNonFinalForUser(userId, 20),
+    };
     const engine = createTransactionEngine({
       providerService: {
         perform: (chain, name, operation) => operation({
@@ -78,11 +90,13 @@ integrationTest('persisted submitted intent and editable policies survive a proc
           getBlockNumber: async () => 201,
         }),
       },
-      intentRepository: intents,
+      intentRepository: fixtureIntents,
       policyRepository: createTransactionPolicyRepository(secondPool),
       decryptPrivateKey: () => { throw new Error('reconciliation must not decrypt or sign'); },
     });
-    const [reconciled] = await engine.reconcileNonFinal();
+    const reconciled = (await engine.reconcileNonFinal())
+      .find(candidate => candidate.intentId === intentId);
+    assert.ok(reconciled, 'the fixture intent should be present in the reconciliation result');
     assert.equal(reconciled.txHash, txHash);
     assert.equal(reconciled.state, 'confirmed');
     const stored = await intents.get(reconciled.intentId);

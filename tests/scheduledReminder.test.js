@@ -9,7 +9,7 @@ function task(overrides = {}) {
     status:'scheduled', mintTime:NOW + (5 * 60 * 1000), price:1, qty:1, ...overrides };
 }
 
-function fixture({ tasks = [task()], balances = [2n], needed = 1n, soldOut = [false] } = {}) {
+function fixture({ tasks = [task()], balances = [2n], needed = 1n, soldOut = [false], currency='ETH' } = {}) {
   const messages = [];
   const events = [];
   const cancelled = [];
@@ -22,6 +22,7 @@ function fixture({ tasks = [task()], balances = [2n], needed = 1n, soldOut = [fa
     cancelTask:async value => cancelled.push(value.id),
     calculateNeededWei:() => needed,
     getBalance:async () => balances[Math.min(balanceRead++, balances.length - 1)],
+    nativeCurrency:() => currency,
     formatWei:value => String(value),
     escape:value => String(value),
     notify:async (userId, message) => messages.push({ userId, message }),
@@ -81,7 +82,7 @@ test('a launch-delay re-arm gets a fresh reminder for the verified mint time', a
 });
 
 test('a phase-aware reminder describes an eligibility check and internal polls do not resend it', async () => {
-  const scheduled = task({ eligibilityDeadline:NOW + 24 * 60 * 60 * 1000, phaseWaitCount:0 });
+  const scheduled = task({ eligibilityDeadline:NOW + 24 * 60 * 60 * 1000, stageUuid:'public', phaseWaitCount:0 });
   const value = fixture({ tasks:[scheduled], needed:0n, balances:[] });
   await value.reminder.sweep(NOW);
   scheduled.nextAttemptAt = NOW + 5_000;
@@ -91,6 +92,14 @@ test('a phase-aware reminder describes an eligibility check and internal polls d
   assert.equal(value.messages.length, 1);
   assert.match(value.messages[0].message, /eligibility checks begin in 5m/i);
   assert.doesNotMatch(value.messages[0].message, /mints in 5m/i);
+});
+
+test('low-balance reminders use the scheduled chain native currency instead of hardcoded ETH',async()=>{
+  const value=fixture({balances:[0n],currency:'MATIC'});
+  await value.reminder.sweep(NOW);
+  assert.match(value.messages[0].message,/short by 1 MATIC/i);
+  assert.equal(value.events[0].shortByNative,'1');
+  assert.equal(value.events[0].currency,'MATIC');
 });
 
 test('the reminder awaits an asynchronously refreshed phase price before checking balance', async () => {

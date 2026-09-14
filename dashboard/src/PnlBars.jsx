@@ -1,17 +1,12 @@
 import React from 'react';
 import {pnlBarLayout} from './pnlChart.js';
+import {formatSignedAdaptiveAmount} from './amountDisplay.mjs';
 
 const CHART_WIDTH=620;
 const CHART_HEIGHT=112;
 const BAR_RADIUS=4;
 
-function signed(value,digits=3){
-  const parsed=Number(value);
-  if(!Number.isFinite(parsed))return '—';
-  const fixed=Math.abs(parsed).toFixed(digits);
-  if(Number(fixed)===0)return `0.${'0'.repeat(digits)}`;
-  return `${parsed<0?'−':'+'}${fixed}`;
-}
+function signed(value,digits=3){return formatSignedAdaptiveAmount(value,{minDecimals:digits});}
 
 // Only the data-end is rounded; the baseline end stays square so each bar remains visibly
 // anchored to the shared zero line.
