@@ -1140,6 +1140,48 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         const decision = mintFlowDecision.afterWalletSelection({ data: flow.data });
         return applyMintFlowStep(mintCtx, payload => dcRespond(interaction, payload), platformUserId, userId, decision);
       }
+      if (data === 'flow:checkEligibility') {
+        const flow = flowState.get('discord', platformUserId);
+        if (!flow || flow.flow !== 'mint_guided' || !flow.data.selectedWallets?.length) return notYourMintPrompt(interaction);
+        const walletLabel = flow.data.selectedWallets[0];
+        const wallet = commands.wallets(userId).find(w => w.label === walletLabel);
+        if (!wallet) return dcRespond(interaction, { content: 'Wallet not found.', components: [] });
+        const contract = flow.data.contractAddress;
+        const chain = flow.data.chain;
+        // Glrtchlist check
+        if (contract.toLowerCase() === '0xda719be13af43757cede32d82f021c13ce29d991'.toLowerCase() && chain === 'robinhood') {
+          try {
+            const { fetchWhitelistProof } = require('../mint/glrtchService');
+            const proofData = await fetchWhitelistProof(wallet.address);
+            return dcRespond(interaction, { content: `✅ **${walletLabel}** is **eligible** for Glrtchlist — max ${proofData.maxAllowance}, price ${Number(proofData.priceWei)/1e18} ETH.`, components: [discordMenus.row([discordMenus.button('▶️ Continue', 'flow:eligibilityContinue', 'success')])] });
+          } catch (error) {
+            return dcRespond(interaction, { content: `❌ **${walletLabel}** is **not eligible** for Glrtchlist: ${error.message}`, components: [discordMenus.row([discordMenus.button('⬅️ Back', 'flow:cancel:ask', 'secondary')])] });
+          }
+        }
+        // OpenSea allowlist check — try to build the transaction, if it would succeed it's eligible
+        try {
+          const chain = flow.data.chain;
+          const contractAddress = flow.data.contractAddress;
+          // For OpenSea, try to see if the stage is gated and if building would succeed
+          // We use a lightweight check: try to fetch the proof via the same endpoint OpenSea would use, but we don't have a direct API, so we just say check on-chain
+          // For now, show a generic check: if the contract is an OpenSea drop with a gated stage, tell them to try minting
+          const drop = flow.data.drop;
+          const hasGated = (drop?.stages || []).some(s => {
+            const t = String(s.stageType || '').toLowerCase();
+            return t.includes('allowlist') || t.includes('whitelist') || t.includes('presale') || t === 'signed_presale';
+          });
+          if (!hasGated) return dcRespond(interaction, { content: `✅ **${walletLabel}** — this is a public stage, no allowlist needed.`, components: [discordMenus.row([discordMenus.button('▶️ Continue', 'flow:eligibilityContinue', 'success')])] });
+          return dcRespond(interaction, { content: `ℹ️ **${walletLabel}** — this drop has an allowlist stage, but GhostMint will check eligibility live at mint time via OpenSea. If you're on the list, it will mint; if not, it will show \`not eligible\` before sending.`, components: [discordMenus.row([discordMenus.button('▶️ Continue', 'flow:eligibilityContinue', 'success')])] });
+        } catch (error) {
+          return dcRespond(interaction, { content: `Could not check eligibility: ${error.message}`, components: [] });
+        }
+      }
+      if (data === 'flow:eligibilityContinue') {
+        const flow = flowState.get('discord', platformUserId);
+        if (!flow || flow.flow !== 'mint_guided') return notYourMintPrompt(interaction);
+        const decision = mintFlowDecision.afterWalletSelection({ data: flow.data });
+        return applyMintFlowStep(mintCtx, payload => dcRespond(interaction, payload), platformUserId, userId, decision);
+      }
       if (data === 'flow:priceaccept') {
         const flow = flowState.get('discord', platformUserId);
         if (!flow || flow.flow !== 'mint_guided' || flow.step !== 'awaiting_price' || !flow.data.displayPrice) return notYourMintPrompt(interaction);

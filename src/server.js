@@ -3568,6 +3568,25 @@ if (BOT_TOKEN) {
       }
       return advanceFromWalletSelection(chatId, messageId, userId, flow, picked);
     }
+    if (data === 'flow:checkEligibility') {
+      const flow = telegramFlowState.get('telegram', chatId);
+      if (!flow || flow.flow !== 'mint_guided' || !flow.data.selectedWallets?.length) return;
+      const walletLabel = flow.data.selectedWallets[0];
+      const wallet = botCommands.wallets(userId).find(w => w.label === walletLabel);
+      if (!wallet) return tgEditMenu(chatId, messageId, { text: 'Wallet not found.', replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' });
+      const contract = flow.data.contractAddress;
+      const chain = flow.data.chain;
+      if (String(contract || '').toLowerCase() === '0xda719be13af43757cede32d82f021c13ce29d991'.toLowerCase() && String(chain || '').toLowerCase() === 'robinhood') {
+        try {
+          const { fetchWhitelistProof } = require('./mint/glrtchService');
+          const proofData = await fetchWhitelistProof(wallet.address);
+          return tgEditMenu(chatId, messageId, { text: `✅ <b>${escapeTelegramHtml(walletLabel)}</b> is <b>eligible</b> for Glrtchlist — max ${proofData.maxAllowance}, price ${Number(proofData.priceWei)/1e18} ETH.\n\nTap Send it to mint.`, replyMarkup: keyboard([[button('✅ Send it', 'flow:mintconfirm')], [button('❌ Cancel', 'flow:cancel:ask')]]), parseMode: 'HTML' });
+        } catch (error) {
+          return tgEditMenu(chatId, messageId, { text: `❌ <b>${escapeTelegramHtml(walletLabel)}</b> is <b>not eligible</b> for Glrtchlist: ${escapeTelegramHtml(error.message)}`, replyMarkup: keyboard([[button('❌ Cancel', 'flow:cancel:ask')]]), parseMode: 'HTML' });
+        }
+      }
+      return tgEditMenu(chatId, messageId, { text: `ℹ️ <b>${escapeTelegramHtml(walletLabel)}</b> — this drop has an allowlist stage, but GhostMint will check eligibility live at mint time via OpenSea. If you're on the list, it will mint.`, replyMarkup: keyboard([[button('✅ Send it', 'flow:mintconfirm')], [button('❌ Cancel', 'flow:cancel:ask')]]), parseMode: 'HTML' });
+    }
     if (data === 'flow:mintconfirm') {
       const flow = telegramFlowState.get('telegram', chatId);
       if (!flow || flow.flow !== 'mint_guided') return;
