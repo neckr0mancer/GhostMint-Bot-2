@@ -139,10 +139,23 @@ function createBotCommandService(dependencies) {
     return slug;
   }
 
-  // Resolves whatever a user pasted -- a contract address or an OpenSea collection link -- to the
-  // contract address detectMintContract already expects. Unrecognized input (including a link
-  // OpenSea couldn't map to a chain this app supports) returns null exactly like an invalid
-  // address always did, so every caller's existing "not a valid address" error path is unchanged.
+  // Resolves whatever a user pasted -- a contract address, an OpenSea collection link, or a
+  // custom mint site link (glrtch.xyz/mint → robonhood:0xda71…d991) -- to the contract address
+  // detectMintContract already expects. Unrecognized input (including a link OpenSea couldn't
+  // map to a chain this app supports) returns null exactly like an invalid address always did,
+  // so every caller's existing "not a valid address" error path is unchanged.
+  function isGlrtchMintLink(input) {
+    let url;
+    try { url = new URL(String(input).trim()); } catch { return false; }
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') return false;
+    const host = url.hostname.toLowerCase();
+    if (host !== 'glrtch.xyz' && host !== 'www.glrtch.xyz') return false;
+    const path = url.pathname.replace(/\/+$/, '').toLowerCase();
+    return path === '/mint' || path === '/mint/' || path === '';
+  }
+  function glrtchContractForLink(input) {
+    return isGlrtchMintLink(input) ? '0xda719be13af43757cede32d82f021c13ce29d991' : null;
+  }
   async function isContractAddress(address) {
     if (!isAddress(address)) return false;
     const chain = await detectContractChain({ providerService, supportedChains, contractAddress: address });
@@ -150,6 +163,8 @@ function createBotCommandService(dependencies) {
   }
 
   async function resolveMintContractInput(input) {
+    const glrtch = glrtchContractForLink(input);
+    if (glrtch) return glrtch;
     if (isAddress(input)) return input;
     if (!openSeaService) return null;
     const slug = parseOpenSeaCollectionSlug(input);
@@ -229,6 +244,33 @@ function createBotCommandService(dependencies) {
         drop = { ...liveDrop, activeStage: toEthStage(liveDrop.activeStage), nextStage: toEthStage(liveDrop.nextStage),
           stages: liveDrop.stages.map(toEthStage) };
       }
+    }
+
+    // GLRTCH Genesis on Robinhood — custom mint site glrtch.xyz/mint, not SeaDrop not OpenSea.
+    // Hard-coded stages from live site (Sep 14 12:30 Treasury free 44, 13:00 Glrtchlist 0.0016/1, 14:00 Public 0.0016/2).
+    // Pasted glrtch.xyz/mint link already resolves to this contract via glrtchContractForLink above, so
+    // pasting the link behaves exactly like pasting the contract.
+    if (contractAddress.toLowerCase() === '0xda719be13af43757cede32d82f021c13ce29d991'.toLowerCase() && chain === 'robinhood') {
+      const glrtchStages = [
+        { label: 'Treasury Mint', stageType: 'treasury', priceWei: '0', maxPerWallet: 44, startTime: Math.floor(new Date('2025-09-14T12:30:00Z').getTime()/1000), endTime: Math.floor(new Date('2025-09-14T13:00:00Z').getTime()/1000) },
+        { label: 'Glrtchlist Mint', stageType: 'glrtchlist', priceWei: '1600000000000000', maxPerWallet: 1, startTime: Math.floor(new Date('2025-09-14T13:00:00Z').getTime()/1000), endTime: Math.floor(new Date('2025-09-14T14:00:00Z').getTime()/1000) },
+        { label: 'Public Mint', stageType: 'public', priceWei: '1600000000000000', maxPerWallet: 2, startTime: Math.floor(new Date('2025-09-14T14:00:00Z').getTime()/1000), endTime: Math.floor(new Date('2025-09-14T15:00:00Z').getTime()/1000) },
+      ];
+      const nowSec = Math.floor(Date.now()/1000);
+      const activeStage = glrtchStages.find(s => s.startTime && s.startTime <= nowSec && (!s.endTime || nowSec < s.endTime)) || null;
+      const nextStage = glrtchStages.find(s => s.startTime && s.startTime > nowSec) || null;
+      const drop = { isMinting: Boolean(activeStage), dropType: 'glrtch_custom', maxSupply: 3404, openSeaUrl: 'https://opensea.io/collection/glrtch-genesis', activeStage: activeStage ? { ...activeStage, uuid: activeStage.label, priceWei: activeStage.priceWei, stageType: activeStage.stageType } : null, nextStage: nextStage ? { ...nextStage, uuid: nextStage.label, priceWei: nextStage.priceWei, stageType: nextStage.stageType } : null, stages: glrtchStages.map(s => ({ ...s, uuid: s.label, priceWei: s.priceWei, stageType: s.stageType })) };
+      // Public stage is direct publicMint, Glrtchlist needs whitelist proof. This app can do both.
+      const isGlrtchlist = activeStage?.stageType === 'glrtchlist' || nextStage?.stageType === 'glrtchlist';
+      return {
+        chain, isSeaDrop: false, methodSignature: isGlrtchlist ? 'whitelistMint(uint256,uint256,uint256,bytes32[])' : 'publicMint(uint256)',
+        seaDropAddress: null, arguments: isGlrtchlist ? [1, 1, '1600000000000000', []] : [1],
+        valueWei: '1600000000000000', priceKnown: true,
+        maxSupply: 3404, maxPerWallet: activeStage?.maxPerWallet ?? nextStage?.maxPerWallet ?? 2,
+        startTime: activeStage?.startTime ?? nextStage?.startTime ?? null, endTime: activeStage?.endTime ?? nextStage?.endTime ?? null,
+        collection: openSea, soldOut: false, displayPrice: null, stats, drop, openSeaMintRecommended: false,
+        glrtchStages: true,
+      };
     }
 
     const seaDrop = seaDropDiscoveryService
@@ -500,6 +542,18 @@ function createBotCommandService(dependencies) {
   }
 
   async function mint(userId, input) {
+    // GLRTCH custom site — handle before the generic price probe so the allowlist proof is fetched. Public: direct publicMint, Glrtchlist: whitelistMint with proof from /api/whitelist-proof.
+    if (String(input.contractAddress || '').toLowerCase() === '0xda719be13af43757cede32d82f021c13ce29d991'.toLowerCase() && String(input.chain || '').toLowerCase() === 'robinhood') {
+      const stage = String(input.glrtchStage || input.stage || 'public').toLowerCase();
+      const glrtchStage = stage.includes('glrtchlist') || stage.includes('allowlist') ? 'glrtchlist' : 'public';
+      const prepared = await prepareGlrtchMint(userId, input, glrtchStage);
+      // Reuse the same execute path as prepareMint — preview + simulation + spend caps still apply, proof is already in calldata.
+      const wallet = prepared.owned;
+      const simulation = await previewMint({ userId, wallet, prepared: prepared.prepared, gasGwei: input.gasGwei });
+      // For the dashboard's preview/confirm split, return the same shape as prepareMint does.
+      if (input.previewOnly) return { wallet: { label: wallet.label, address: wallet.address, chain: wallet.chain }, prepared: prepared.prepared, simulation };
+      return executePreparedMint({ userId, wallet, prepared: prepared.prepared, gasGwei: input.gasGwei });
+    }
     const owned = wallet(userId, input.walletLabel);
     const chain = input.chain || owned.chain;
     const withPrice = await resolvePriceIfMissing(input, chain);
@@ -540,6 +594,31 @@ function createBotCommandService(dependencies) {
     const prepared = { chain, calldata: built.data, valueWei: BigInt(built.valueWei),
       method: { signature: decoded.methodSignature, standard: decoded.standard }, preview: decoded };
     return { owned, validated, built, prepared };
+  }
+
+  // GLRTCH Genesis on Robinhood — custom site glrtch.xyz/mint, not SeaDrop not OpenSea.
+  // Public: publicMint(uint256) at 0.0016, 2 per wallet. Glrtchlist: whitelistMint(uint256,uint256,uint256,bytes32[]) at 0.0016, 1 per wallet, proof from /api/whitelist-proof?address=.
+  async function prepareGlrtchMint(userId, input, stage) {
+    const owned = wallet(userId, input.walletLabel);
+    const chain = input.chain || owned.chain;
+    if (chain !== 'robinhood' || input.contractAddress.toLowerCase() !== '0xda719be13af43757cede32d82f021c13ce29d991'.toLowerCase()) {
+      throw new ValidationError({ field: 'contractAddress', message: 'not a GLRTCH contract' });
+    }
+    const quantity = Math.max(1, Math.min(100, Math.floor(Number(input.quantity) || 1)));
+    if (stage === 'glrtchlist') {
+      const { fetchWhitelistProof, buildGlrtchWhitelistCall } = require('../mint/glrtchService');
+      const { proof, maxAllowance, priceWei } = await fetchWhitelistProof(owned.address);
+      const prepared = buildGlrtchWhitelistCall({ quantity, maxAllowance, priceWei, proof });
+      // Reuse the same preview shape as SeaDrop for consistency
+      const preview = { contractAddress: input.contractAddress, callTarget: prepared.to, methodSignature: 'whitelistMint(uint256,uint256,uint256,bytes32[])', standard: 'GLRTCH allowlist', arguments: [{ name: 'quantity', type: 'uint256', value: String(quantity) }, { name: 'proof', type: 'bytes32[]', value: `${proof.length} proof nodes` }], nativeValueWei: prepared.valueWei, nativeValue: formatEther(BigInt(prepared.valueWei)) };
+      return { owned, prepared: { chain, calldata: prepared.data, valueWei: BigInt(prepared.valueWei), method: { signature: 'whitelistMint(uint256,uint256,uint256,bytes32[])' }, preview }, stage };
+    }
+    // public
+    const { buildGlrtchPublicCall } = require('../mint/glrtchService');
+    const valueWei = (1600000000000000n * BigInt(quantity)).toString();
+    const prepared = buildGlrtchPublicCall({ quantity, valueWei });
+    const preview = { contractAddress: input.contractAddress, callTarget: prepared.to, methodSignature: 'publicMint(uint256)', standard: 'GLRTCH public', arguments: [{ name: 'quantity', type: 'uint256', value: String(quantity) }], nativeValueWei: prepared.valueWei, nativeValue: formatEther(BigInt(prepared.valueWei)) };
+    return { owned, prepared: { chain, calldata: prepared.data, valueWei: BigInt(prepared.valueWei), method: { signature: 'publicMint(uint256)' }, preview }, stage };
   }
 
   // Section AF -- the point of the whole feature: an allowlist/GTD/FCFS SeaDrop stage has no
