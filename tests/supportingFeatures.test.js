@@ -71,6 +71,35 @@ test('readiness distinctly reports database and RPC outages', async () => {
   assert.equal(preflightResult.dependencies.scheduledPreflights.status,'down');
 });
 
+test('dashboard-only readiness reports workers disabled without hiding database or RPC outages', async () => {
+  let workerHealthCalls=0;
+  const mustNotRun={health:()=>{workerHealthCalls+=1;throw new Error('disabled worker health ran');}};
+  const disabled=createReadinessService({database:{health:async()=>true},
+    providerService:{perform:async()=>123},chains:['ethereum'],schedulerWorker:mustNotRun,
+    scheduledPreflightWorker:mustNotRun,socialWatchWorker:mustNotRun,retentionWorker:mustNotRun,
+    sniperHealth:()=>{workerHealthCalls+=1;throw new Error('disabled sniper health ran');},
+    workersDisabled:true});
+  const result=await disabled.inspect();
+  assert.equal(result.status,'ok');
+  assert.equal(result.dependencies.database.status,'up');
+  assert.equal(result.dependencies.rpc.ethereum.status,'up');
+  for(const name of ['scheduler','scheduledPreflights','socialWatcher','retentionWorker','sniperWatchers']){
+    assert.deepEqual(result.dependencies[name],{status:'disabled',detail:'dashboard-only test mode'});
+  }
+  assert.equal(workerHealthCalls,0);
+
+  const databaseDown=createReadinessService({database:{health:async()=>{throw new Error('database unavailable');}},
+    providerService:{perform:async()=>123},chains:['ethereum'],schedulerWorker:mustNotRun,
+    socialWatchWorker:mustNotRun,workersDisabled:true});
+  assert.equal((await databaseDown.inspect()).status,'degraded');
+
+  const rpcDown=createReadinessService({database:{health:async()=>true},
+    providerService:{perform:async()=>{throw new Error('rpc unavailable');}},chains:['ethereum'],
+    schedulerWorker:mustNotRun,socialWatchWorker:mustNotRun,workersDisabled:true});
+  assert.equal((await rpcDown.inspect()).status,'degraded');
+  assert.equal(workerHealthCalls,0);
+});
+
 test('allowlist checks accept a validated configurable ABI shape', async () => {
   const fragment={type:'function',name:'canMint',stateMutability:'view',inputs:[{name:'wallet',type:'address'}],outputs:[{name:'allowed',type:'bool'}]};
   const check=validateAllowlistCheck({signature:'canMint(address)',abiFragment:fragment});

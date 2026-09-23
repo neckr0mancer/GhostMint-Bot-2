@@ -11,7 +11,8 @@ const viteConfig=fs.readFileSync(path.join(root,'dashboard','vite.config.js'),'u
 test('the local dashboard launcher trusts the Windows CA store used by the Railway proxy',()=>{
   assert.match(pkg.scripts['dashboard:dev'],/^node --use-system-ca /);
   assert.match(pkg.scripts['dashboard:dev'],/vite\.js --config dashboard\/vite\.config\.js$/);
-  assert.match(viteConfig,/DEV_API_TARGET='https:\/\//);
+  assert.match(viteConfig,/process\.env\.GHOSTMINT_DEV_API_TARGET/);
+  assert.match(viteConfig,/https:\/\/ghostmint-bot-2-production-d3ca\.up\.railway\.app/);
 });
 
 test('the README documents both safe launch forms and warns against duplicate live workers',()=>{

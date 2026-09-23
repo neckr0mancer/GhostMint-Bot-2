@@ -276,6 +276,9 @@ async function prepareTriggeredExecution(event,policy) {
 }
 
 async function executeTriggered(event,policy) {
+  if (CONFIG.dashboardOnly) {
+    throw new TransactionSafetyError('DASHBOARD_ONLY', 'Transaction execution is disabled in dashboard-only test mode');
+  }
   // Covers both branches below: the manual-confirm path (/confirmtrigger) already passes through the
   // per-command account-status choke point, so this is a harmless redundant re-check there, but the
   // fully-automatic social-auto-with-bypass path (triggerExecutionService.handle -> here, with no
@@ -1416,6 +1419,7 @@ function syncPendingSource(chain) {
 // scheduled broadcast. With no {ENVNAME}_RPC_SNIPER_URLS/_WS configured, SNIPER_CHAINS[chain] is a
 // literal alias for CHAINS[chain] (see config/index.js), so this is a no-op change until configured.
 function ensureChainWatcher(chain) {
+  if (CONFIG.dashboardOnly) return;
   syncPendingSource(chain);
   if (chainWatchers[chain]) {
     return;
@@ -1460,6 +1464,15 @@ function teardownChainWatcherIfIdle(chain) {
 }
 
 function syncChainWatcher(chain) {
+  if (CONFIG.dashboardOnly) {
+    chainWatchers[chain]?.stop();
+    delete chainWatchers[chain];
+    pendingSources[chain]?.stop();
+    delete pendingSources[chain];
+    pendingDispatchers[chain]?.stop();
+    delete pendingDispatchers[chain];
+    return;
+  }
   if (activeSnipersForChain(chain).length || schedulerWorker.hasBlockWaiters?.(chain)) {
     ensureChainWatcher(chain);
     return;
@@ -3117,7 +3130,7 @@ function withTelegramUser(handler) {
   };
 }
 
-if (BOT_TOKEN) {
+if (BOT_TOKEN && !CONFIG.dashboardOnly) {
   // polling starts only once the exclusive lock below is acquired -- see
   // telegramSingleInstanceLock.js for why (a Railway deploy overlap running two pollers at once is
   // what produced the "Command failed safely" duplicate report and the ETELEGRAM 409 conflict seen
@@ -4346,6 +4359,8 @@ send /mint with a contract address to get going.`;
     .then(() => log('Telegram bot polling started'))
     .catch(error => log(`Failed to acquire Telegram polling lock, polling not started: ${safeError(error)}`));
 
+} else if (CONFIG.dashboardOnly) {
+  log('Dashboard-only mode: Telegram polling disabled.');
 } else {
   log('⚠️  No TELEGRAM_BOT_TOKEN — Telegram disabled.');
 }
@@ -4387,6 +4402,7 @@ const botCommands = createBotCommandService({
   previewMint:async({userId,wallet,prepared,gasGwei})=>mintExecution.preview({userId,wallet,prepared,
     gasPriceWei:gasGwei===undefined||gasGwei===null?undefined:ethers.parseUnits(String(gasGwei),'gwei')}),
   executePreparedMint:async({userId,wallet,prepared,gasGwei})=>{
+    if (CONFIG.dashboardOnly) throw new TransactionSafetyError('DASHBOARD_ONLY', 'Mint execution is disabled in dashboard-only test mode');
     const intent=await mintExecution.executePrepared({userId,wallet,prepared,triggerSource:'manual',
       gasPriceWei:gasGwei===undefined||gasGwei===null?undefined:ethers.parseUnits(String(gasGwei),'gwei')});
     if(intent.state==='confirmed'){
@@ -4395,6 +4411,7 @@ const botCommands = createBotCommandService({
     return intent;
   },
   executeMint: async ({ userId, wallet, request }) => {
+    if (CONFIG.dashboardOnly) throw new TransactionSafetyError('DASHBOARD_ONLY', 'Mint execution is disabled in dashboard-only test mode');
     const intent = await executeMint({ wallet, contractAddr: request.contractAddress,
       qty: request.quantity, priceETH: request.priceETH, gasGwei: request.gasGwei, maxGasGwei: request.maxGasGwei,
       chain: request.chain, triggerSource: 'manual' });
@@ -4402,6 +4419,7 @@ const botCommands = createBotCommandService({
     return intent;
   },
   executeMintViaOpenSea: async ({ userId, wallet, request, built }) => {
+    if (CONFIG.dashboardOnly) throw new TransactionSafetyError('DASHBOARD_ONLY', 'Mint execution is disabled in dashboard-only test mode');
     const intent = await executeMintViaOpenSea({ wallet, contractAddr: request.contractAddress, chain: request.chain, quantity: request.quantity, built,
       triggerSource: 'manual', gasGwei: request.gasGwei, maxGasGwei: request.maxGasGwei });
     await recordMintActivitySafely({ userId, wallet, quantity: request.quantity, intent, chain: request.chain });
@@ -4411,6 +4429,7 @@ const botCommands = createBotCommandService({
   // directly (same pattern the sniper's blockchain-triggered copy path already uses at
   // executeTriggered above), which still applies the same spend caps, gas ceiling, and nonce queue.
   executeSend: async ({ userId, wallet, request }) => {
+    if (CONFIG.dashboardOnly) throw new TransactionSafetyError('DASHBOARD_ONLY', 'Sending funds is disabled in dashboard-only test mode');
     const intent = await transactionEngine.submit({ userId, wallet, chain: request.chain,
       to: request.toAddress, valueWei: ethers.parseEther(String(request.amountETH)), triggerSource: 'manual',
       gasPriceWei: request.gasGwei === undefined || request.gasGwei === null ? undefined : ethers.parseUnits(String(request.gasGwei), 'gwei') });
@@ -4435,7 +4454,7 @@ const dashboardApi=createDashboardApi({auth:dashboardAuth,identityRepository,com
   passwordLoginRateLimiter:createCommandRateLimiter({limit:5,windowMs:15*60_000}),
   exportKeyRateLimiter});
 
-if (CONFIG.discordBotToken) {
+if (CONFIG.discordBotToken && !CONFIG.dashboardOnly) {
   discordBot = createDiscordBot({ token: CONFIG.discordBotToken,
     applicationId: CONFIG.discordApplicationId, devGuildId: CONFIG.discordDevGuildId,
     allowedChannelIds: CONFIG.discordChannelIds,
@@ -4453,6 +4472,8 @@ if (CONFIG.discordBotToken) {
       url:message.url, publishedAt:message.createdTimestamp, channelId:message.channelId })
       .catch(error => log(`Live discord watch dispatch failed: ${safeError(error)}`));
   });
+} else if (CONFIG.dashboardOnly) {
+  log('Dashboard-only mode: Discord gateway disabled.');
 } else {
   log('Discord disabled because credentials are not configured.');
 }
@@ -4483,6 +4504,7 @@ app.use(express.static(path.join(PROJECT_ROOT,'public'),{setHeaders:(res,file)=>
 // ── API ───────────────────────────────────────────────────
 const readinessService=createReadinessService({database:storage,providerService,
   chains:CONFIG.supportedChains,schedulerWorker,scheduledPreflightWorker,socialWatchWorker,retentionWorker,
+  workersDisabled:CONFIG.dashboardOnly,
   sniperHealth:()=>{const sourceHealth=Object.values(pendingSources).map(source=>source.health());
     const expectedPendingChains=[...new Set(DB.snipers.filter(sniper=>sniper.active
       &&(sniper.observationMode||'confirmed')==='pending').map(sniper=>sniper.chain))];
@@ -4501,36 +4523,40 @@ app.get('*', (req,res) => res.sendFile(path.join(PROJECT_ROOT,'public','index.ht
 let httpServer=null;
 async function start() {
   DB = await storage.loadSystemState();
-  const reconciled = await transactionEngine.reconcileNonFinal();
-  log(`Reconciled ${reconciled.length} non-final transaction intents`);
-  const recovered = await schedulerWorker.recoverStaleClaims();
-  log(`Recovered ${recovered} expired scheduler claims`);
-  if (discordBot) {
-    // Discord's login/command-registration must never abort the rest of startup -- Telegram, the
-    // HTTP server (including /health and the dashboard), and every background worker are otherwise
-    // independent of Discord, so a bad/revoked token or a transient Discord outage should degrade
-    // only the Discord integration, the same way one chain's provider failure doesn't take down
-    // another chain's sniper watcher.
-    try {
-      const discordUser = await discordBot.start();
-      log(`Discord bot started as ${discordUser?.tag || discordUser?.id || 'configured application'}`);
-    } catch (error) {
-      log(`Discord bot failed to start, continuing without it: ${safeError(error)}`);
+  if (CONFIG.dashboardOnly) {
+    log('Dashboard-only mode: reconciliation, schedulers, transaction bumping, social/retention workers, and sniper watchers are disabled.');
+  } else {
+    const reconciled = await transactionEngine.reconcileNonFinal();
+    log(`Reconciled ${reconciled.length} non-final transaction intents`);
+    const recovered = await schedulerWorker.recoverStaleClaims();
+    log(`Recovered ${recovered} expired scheduler claims`);
+    if (discordBot) {
+      // Discord's login/command-registration must never abort the rest of startup -- Telegram, the
+      // HTTP server (including /health and the dashboard), and every background worker are otherwise
+      // independent of Discord, so a bad/revoked token or a transient Discord outage should degrade
+      // only the Discord integration, the same way one chain's provider failure doesn't take down
+      // another chain's sniper watcher.
+      try {
+        const discordUser = await discordBot.start();
+        log(`Discord bot started as ${discordUser?.tag || discordUser?.id || 'configured application'}`);
+      } catch (error) {
+        log(`Discord bot failed to start, continuing without it: ${safeError(error)}`);
+      }
     }
+    schedulerWorker.start();
+    scheduledPreflightWorker.start();
+    bumpSweeper.start();
+    setInterval(()=>{expiredHistorySweep().catch(error=>log(`Expired-history sweep error: ${safeError(error)}`));},SCHEDULE_REMINDER_SWEEP_MS).unref?.();
+    log('Started expired-mint history sweep');
+    log('Started durable scheduled-mint preflights (5m and 30s checkpoints)');
+    socialWatchWorker.start();
+    retentionWorker.start();
+    log('Started social watch-rule worker');
+    log('Started governance-group retention worker');
+    log(`Started durable scheduler with ${await schedulerRepository.countActive()} active tasks`);
+    DB.snipers.filter(s => s.active).forEach(s => ensureChainWatcher(s.chain));
+    log(`Restored ${DB.snipers.filter(s=>s.active).length} active snipers`);
   }
-  schedulerWorker.start();
-  scheduledPreflightWorker.start();
-  bumpSweeper.start();
-  setInterval(()=>{expiredHistorySweep().catch(error=>log(`Expired-history sweep error: ${safeError(error)}`));},SCHEDULE_REMINDER_SWEEP_MS).unref?.();
-  log('Started expired-mint history sweep');
-  log('Started durable scheduled-mint preflights (5m and 30s checkpoints)');
-  socialWatchWorker.start();
-  retentionWorker.start();
-  log('Started social watch-rule worker');
-  log('Started governance-group retention worker');
-  log(`Started durable scheduler with ${await schedulerRepository.countActive()} active tasks`);
-  DB.snipers.filter(s => s.active).forEach(s => ensureChainWatcher(s.chain));
-  log(`Restored ${DB.snipers.filter(s=>s.active).length} active snipers`);
   httpServer=app.listen(PORT, () => {
     log(`GhostMint running on port ${PORT}`);
     log(`Wallets: ${DB.wallets.length} | Tasks: ${DB.tasks.length}`);

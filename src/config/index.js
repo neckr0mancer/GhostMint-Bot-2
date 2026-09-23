@@ -146,6 +146,15 @@ function parseInteger(name, fallback, minimum, maximum) {
   return value;
 }
 
+function parseBoolean(name, fallback = false) {
+  const raw = optionalString(name);
+  if (raw === null) return fallback;
+  if (!/^(true|false)$/i.test(raw)) {
+    throw new ConfigurationError(`${name} must be true or false`);
+  }
+  return raw.toLowerCase() === 'true';
+}
+
 function validateSecret(name, value, environment, policy) {
   const minimumLength = environment === 'production' ? policy.productionLength : policy.minimumLength;
   if (value.length < minimumLength) {
@@ -356,6 +365,10 @@ function parseSocialAdapters() {
 }
 
 const environment = parseEnvironment();
+const dashboardOnly = parseBoolean('GHOSTMINT_DASHBOARD_ONLY');
+if (dashboardOnly && environment === 'production') {
+  throw new ConfigurationError('GHOSTMINT_DASHBOARD_ONLY is restricted to development or test');
+}
 const supportedChains = parseSupportedChains();
 const telegram = parseTelegram();
 const discord = parseDiscord();
@@ -409,6 +422,7 @@ const CONFIG = Object.freeze({
   isDevelopment: environment === 'development',
   isTest: environment === 'test',
   isProduction: environment === 'production',
+  dashboardOnly,
   port: parsePort(),
   botToken: telegram.botToken,
   discordBotToken: discord.botToken,
@@ -456,10 +470,13 @@ Object.freeze(rpcOverrides);
 function getSafeConfigSummary() {
   return {
     environment: CONFIG.environment,
+    dashboardOnly: CONFIG.dashboardOnly,
     port: CONFIG.port,
     supportedChains: [...CONFIG.supportedChains],
-    telegramEnabled: CONFIG.botToken !== null,
-    discordEnabled: CONFIG.discordBotToken !== null,
+    telegramConfigured: CONFIG.botToken !== null,
+    discordConfigured: CONFIG.discordBotToken !== null,
+    telegramEnabled: CONFIG.botToken !== null && !CONFIG.dashboardOnly,
+    discordEnabled: CONFIG.discordBotToken !== null && !CONFIG.dashboardOnly,
     socialOfficialApiConfigured: CONFIG.socialOfficialApiUrl !== null && CONFIG.socialOfficialApiToken !== null,
     socialManagedServiceConfigured: CONFIG.socialManagedServiceUrl !== null && CONFIG.socialManagedServiceToken !== null,
     socialScraperAvailable: true,

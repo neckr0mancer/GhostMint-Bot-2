@@ -56,8 +56,8 @@ test('Schedule details are discoverable without replacing single-click row selec
     'selection and the circular detail action must be sibling buttons');
   assert.match(app,/const taskContext=`\$\{task\.name\} · \$\{rowMeta\(task\)\} · \$\{bucketOf\(task\)\}`/,
     'repeated task names must remain distinguishable by wallet, time, and state');
-  assert.match(app,/disabled=\{noWallets\|\|!scheduleWallet\|\|detecting\|\|submitting/,
-    'the custom wallet control must retain the old required submission guard');
+  assert.match(app,/disabled=\{noWallets\|\|!scheduleWallet\|\|!mintTime\|\|detecting\|\|submitting/,
+    'the custom wallet control must retain the required wallet and mint-time submission guards');
   assert.doesNotMatch(app,/>Details<\/button>/);
   assert.match(css,/\.ico-btn\.schedule-detail-open\{[^}]*border-radius:50%/);
   assert.match(css,/\.app\[data-m\] \.ico-btn\.schedule-detail-open\{[^}]*width:44px[^}]*height:44px/);
@@ -215,6 +215,16 @@ test('Schedule quantity controls obey the detected wallet cap',()=>{
   assert.match(schedule,/quantityPicks\(quantityMax\)/);
   assert.match(schedule,/Math\.min\(normalized,quantityPolicy\.max\)/,
     'a quantity entered before detection must be reduced to the detected legal maximum');
+});
+
+test('Schedule cannot submit until an explicit or detected mint time exists',()=>{
+  const start=app.indexOf('function Tasks(');
+  const end=app.indexOf('function Activity(',start);
+  const schedule=app.slice(start,end);
+  assert.match(schedule,/name="mintTime" type="datetime-local" step="1" required/);
+  assert.match(schedule,/disabled=\{noWallets\|\|!scheduleWallet\|\|!mintTime\|\|detecting\|\|submitting/);
+  assert.match(schedule,/!detecting&&ADDRESS_SHAPE\.test\(contractAddress\.trim\(\)\)&&lastDetected\.current===contractAddress\.trim\(\)\.toLowerCase\(\)/,
+    'clearing a successful form must not leave an empty address looking like a detected contract');
 });
 
 test('Schedule uses the server recommendation without pretending a future allowlist is already eligible',()=>{

@@ -120,6 +120,13 @@ must not be advertised as mint-capable until its end-to-end path passes that mat
 
 ### Still required before this broader schedule-intelligence request is complete
 
+- **Compact schedule preview and change policy — next after local acceptance, before Settings:**
+  replace the always-visible explanatory paragraph with an accessible circular information
+  disclosure; turn the detected-contract block into a concise schedule preview; and add durable,
+  per-task auto-reschedule and bounded price-change controls. Implement the schema and shared policy
+  once, expose the dashboard first, then add Telegram/Discord controls against that same service
+  before marking the feature complete. The detailed acceptance contract is recorded below under
+  **Scheduled Mint Price/Configuration/Opening Changes**.
 - **Wallet-aware planning display:** expose per-stage evidence/current minted/reserved/remaining
   values and distinguish the earliest confirmed-open recommendation from an earlier
   `check_at_open` possibility. OpenSea stage/order maxima remain unverified unless their scope is
@@ -2619,7 +2626,7 @@ with assertions unchanged.
 
 **Status:** Documented for prioritization; not implemented in this unit per owner instruction.
 
-## Feature Request — Scheduled Mint Price/Configuration/Opening Changes (Documented 2026-09-20, Not Implemented)
+## Feature Request — Scheduled Mint Preview + Price/Configuration/Opening Changes (Updated 2026-09-23, Not Implemented)
 
 **Original request (rephrased):** A project may change a scheduled mint's price, configuration, or
 opening time after the task was created. GhostMint must make the change visible, offer a clear
@@ -2632,6 +2639,36 @@ fresh phase/SeaDrop reads, balance/policy/simulation checks immediately before b
 prevent stale calldata from being sent, but they do not yet record user consent for a changed
 price/time.
 
+**Schedule-page information architecture:**
+
+- Fold the long "earliest attempt, not a blind launch" explanation into the existing compact,
+  circular information control. It is collapsed by default, keyboard accessible, labelled for
+  assistive technology, and does not consume permanent form space.
+- Replace the passive detected-contract strip with a clearly labelled **Schedule preview**. Its
+  compact state shows collection name and shortened contract address, chain, selected stage,
+  detected price, selected wallet, quantity, and planned earliest-attempt time. Never invent a
+  collection name, stage, price, eligibility, or limit when detection is incomplete.
+- A **View full details** disclosure shows the complete stage evidence, eligibility/proof state,
+  published and enforceable limits, already-minted/reserved quantity, full contract address,
+  detected method/call target where useful, preflight timing, deadline, and the change policies
+  below. The compact and expanded views must read from the same server response.
+- The existing wallet, quantity, and mint-time controls may remain in the form, but the preview must
+  update from their live values without duplicating or contradicting them.
+
+**Per-task controls shown in the schedule preview:**
+
+1. **Auto-reschedule** — OFF by default. When enabled, GhostMint may follow a verified opening-time
+   move only within an explicit maximum delay and the task's eligibility deadline. A move beyond
+   either boundary pauses for approval; it never silently extends the user's authorization.
+2. **Accept price changes up to a limit** — OFF by default. Enabling it requires a hard per-NFT or
+   total-mint cap. The UI may show and accept the user's preferred fiat currency for convenience,
+   but the saved authorization must resolve to an exact, enforceable chain-native amount and show
+   that amount before confirmation. If a required conversion/price feed is unavailable, fail closed
+   rather than guessing.
+3. **Optional alert threshold** — if later included, this is informational only (for example, notify
+   when the price reaches $0.25 while the hard cap is $0.50). It must never authorize spending above
+   the hard cap or be presented as another spending limit.
+
 **Safe product policy:**
 
 - Price decrease: continue automatically after the ordinary final checks.
@@ -2639,6 +2676,10 @@ price/time.
   per-task maximum price or maximum total debit. Never offer an unbounded "whatever it costs"
   override; the per-task cap applies even to owners, while governance ceilings remain an additional
   outer limit for non-owners.
+- If the observed price exceeds that hard cap, record **awaiting approval**, alert the user once,
+  and do not broadcast. If no decision arrives before the task's explicit decision/eligibility
+  deadline, expire the task without minting. "Alert me and mint anyway" above the hard cap is not a
+  valid safe default because it makes the cap meaningless.
 - Opening-time change: notify once and offer **Reschedule**. Automatic rescheduling is allowed only
   within the task's explicit maximum delay and existing eligibility deadline; extending either
   boundary requires explicit confirmation.
@@ -2654,9 +2695,13 @@ and the visible countdown together so the UI and worker never disagree.
 **Delivery/UX acceptance:** one shared approval/reschedule state across Dashboard, Telegram, and
 Discord; one durable notification per detected change; failed delivery on one platform must not
 duplicate a successful alert on another; task details show old/new price or time, evidence source,
-decision, and the final value used at execution.
+decision, and the final value used at execution. To control implementation cost, ship the shared
+schema/service and Dashboard controls first. Telegram and Discord may follow as a separate UI unit,
+but must call the same service and are required before this feature is considered cross-platform
+complete.
 
-**Status:** Deferred until the schedule-change policy/schema is implemented and reviewed as a
+**Priority/status:** Next schedule product unit after the current local acceptance test and before
+the Settings redesign. It remains unimplemented until the durable policy/schema is reviewed as a
 safety feature; the present final-time checks remain authoritative in the meantime.
 
 ## Feature Request — Wallet import surfaces and persistent wallet action bar (Documented 2026-09-21, Not Implemented)

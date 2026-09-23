@@ -1830,7 +1830,7 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint}){const mobile
             <ContractLookupStatus visible={detecting}/>
           </div></label>
         {detectionError&&<div className="nt w" role="status">{WARN_TRIANGLE_ICON}<div><b>{detectionError}</b>{detectionRetryable&&<div style={{marginTop:'8px'}}><button type="button" className="b sm" onClick={()=>detect(contractAddress)}>Retry</button></div>}</div></div>}
-        {!detecting&&lastDetected.current===contractAddress.trim().toLowerCase()&&<div className="nt i">{INFO_ICON}<div>
+        {!detecting&&ADDRESS_SHAPE.test(contractAddress.trim())&&lastDetected.current===contractAddress.trim().toLowerCase()&&<div className="nt i">{INFO_ICON}<div>
           Detected <b>{detectedName||'contract'}</b>{chain&&<> · {chain}</>}
           {viaOpenSea?<> · price and eligibility checked at opening</>
             :priceIssue?<> · price needed</>:Number(priceETH)===0?<> · free</>
@@ -1879,7 +1879,7 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint}){const mobile
             </div></label>
         </div>
         <label className="fl"><span>Mint time <span style={{color:'var(--faint)',fontWeight:500}}>· your local time; stored in UTC</span></span>
-          <input className="in tab mono" name="mintTime" type="datetime-local" step="1" disabled={noWallets}
+          <input className="in tab mono" name="mintTime" type="datetime-local" step="1" required disabled={noWallets}
             min={stageMintTimeLocalValue(stages.find(stage=>scheduleStageSelectionKey(stage)===selectedStageKey)?.startTime,{bufferMs:0})||undefined}
             value={mintTime} onChange={e=>setMintTime(e.target.value)}/></label>
         {!viaOpenSea&&priceIssue
@@ -1893,7 +1893,7 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint}){const mobile
           {scheduleError.action==='mint-now'&&<div style={{marginTop:'8px'}}><button type="button" className="b p sm"
             onClick={()=>{setPendingMintPrefill({contractAddress,quantity});onSwitchToMint?.();}}>Mint now</button></div>}
         </div></div>}
-        <button className="b p" disabled={noWallets||!scheduleWallet||detecting||submitting||(viaOpenSea&&!selectedStageKey&&!stageType)||!ADDRESS_SHAPE.test(contractAddress.trim())||lastDetected.current!==contractAddress.trim().toLowerCase()}>{submitting?'Scheduling…':detecting?'Reading contract…':'Schedule mint'}</button>
+        <button className="b p" disabled={noWallets||!scheduleWallet||!mintTime||detecting||submitting||(viaOpenSea&&!selectedStageKey&&!stageType)||!ADDRESS_SHAPE.test(contractAddress.trim())||lastDetected.current!==contractAddress.trim().toLowerCase()}>{submitting?'Scheduling…':detecting?'Reading contract…':'Schedule mint'}</button>
         </fieldset>
       </form>
     </div>

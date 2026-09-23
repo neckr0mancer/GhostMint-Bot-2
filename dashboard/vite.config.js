@@ -3,12 +3,12 @@ const react=require('@vitejs/plugin-react');
 const path=require('node:path');
 // Dev-only. `server` is ignored by `vite build`, so the production bundle is byte-identical with
 // or without this block -- it exists so the dashboard can be developed against the real deployed
-// API instead of booting a second local instance of src/server.js. Booting that instance against
-// the live database is actively unsafe: schedulerWorker/socialWatchWorker/retentionWorker and the
-// sniper chain watchers all start unconditionally (src/server.js:2299-2302, no env flag gates
-// them), so a second process would claim and broadcast real due mints. Proxying reads and writes
-// to the deployed instance leaves exactly one process owning the workers.
-const DEV_API_TARGET='https://ghostmint-bot-2-production.up.railway.app';
+// API instead of booting a second local instance of src/server.js. A local API must only be used
+// with an isolated database and GHOSTMINT_DASHBOARD_ONLY=true; otherwise a second process could
+// claim and broadcast due work. The default remains the deployed API so ordinary UI work leaves
+// exactly one process owning the workers.
+const DEV_API_TARGET=(process.env.GHOSTMINT_DEV_API_TARGET
+  || 'https://ghostmint-bot-2-production-d3ca.up.railway.app').replace(/\/+$/,'');
 const devProxyEntry={target:DEV_API_TARGET,changeOrigin:true,secure:true,
   // The session and CSRF cookies are Secure + SameSite=Strict. Stripping the domain attribute
   // re-scopes them to localhost, which counts as a secure context, so both survive the hop.

@@ -30,6 +30,7 @@ const VALID_ENV = Object.freeze({
   SOCIAL_MANAGED_SERVICE_URL: '',
   SOCIAL_MANAGED_SERVICE_TOKEN: '',
   SOCIAL_POLL_INTERVAL_MS: '30000',
+  GHOSTMINT_DASHBOARD_ONLY: '',
   ETHERSCAN_API_KEY: '',
   ETH_RPC: '',
   BASE_RPC: '',
@@ -90,6 +91,7 @@ test('accepts valid development configuration and returns only a safe summary', 
 
   const output = JSON.parse(result.stdout);
   assert.equal(output.summary.environment, 'development');
+  assert.equal(output.summary.dashboardOnly, false);
   assert.deepEqual(output.summary.supportedChains, ['ethereum', 'base', 'arbitrum', 'polygon']);
   assert.equal(output.summary.telegramEnabled, false);
   assert.equal(output.summary.discordEnabled, false);
@@ -110,6 +112,33 @@ test('accepts each explicit runtime mode when its policy is satisfied', () => {
     ENCRYPTION_SECRET: 'production-key-7Qv9!m2Lx4Rk8Zp3Cw6N5Hs8Df1Aa4Bb9Cc!',
   });
   assert.equal(production.status, 0, production.stderr);
+});
+
+test('dashboard-only mode is explicit, safely reported, and forbidden in production', () => {
+  const development = probeConfig({ GHOSTMINT_DASHBOARD_ONLY: 'true',
+    TELEGRAM_BOT_TOKEN: '123456:bot-token', DISCORD_BOT_TOKEN: 'discord-token',
+    DISCORD_APPLICATION_ID: '123456789012345678' });
+  assert.equal(development.status, 0, development.stderr);
+  const summary = JSON.parse(development.stdout).summary;
+  assert.equal(summary.dashboardOnly, true);
+  assert.equal(summary.telegramConfigured, true);
+  assert.equal(summary.discordConfigured, true);
+  assert.equal(summary.telegramEnabled, false);
+  assert.equal(summary.discordEnabled, false);
+
+  const malformed = probeConfig({ GHOSTMINT_DASHBOARD_ONLY: 'yes' });
+  assert.notEqual(malformed.status, 0);
+  assert.match(malformed.stderr, /GHOSTMINT_DASHBOARD_ONLY must be true or false/);
+
+  const production = probeConfig({
+    NODE_ENV: 'production',
+    GHOSTMINT_DASHBOARD_ONLY: 'true',
+    DATABASE_URL: 'postgresql://app:strong-value@pooler.example.com:6543/ghostmint',
+    DATABASE_URL_UNPOOLED: 'postgresql://migrator:strong-value@db.example.com:5432/ghostmint',
+    ENCRYPTION_SECRET: 'production-key-7Qv9!m2Lx4Rk8Zp3Cw6N5Hs8Df1Aa4Bb9Cc!',
+  });
+  assert.notEqual(production.status, 0);
+  assert.match(production.stderr, /restricted to development or test/);
 });
 
 test('refuses to start when any required setting is missing', () => {
