@@ -126,6 +126,37 @@ function buildScheduleStagePlan(drop, { now = Date.now() } = {}) {
   };
 }
 
+// Resolve a persisted/server-owned recommendation back to one exact stage from the latest drop
+// snapshot. UUID is the strongest identity OpenSea gives us, so when the plan carries one we never
+// fall back to a looser display-derived key. A key-only plan is supported for providers that do not
+// expose UUIDs, but only when it matches exactly one still-upcoming, non-ambiguous stage.
+//
+// This deliberately does not choose the first stage when the plan is absent or stale. Callers may
+// still offer every safe stage for manual selection, but an "automatic" action must only exist when
+// the shared planner supplied a recommendation that can be resolved without guessing.
+function resolveRecommendedScheduleStage({ drop, schedulePlan, now = Date.now() } = {}) {
+  if (!drop || !schedulePlan) return null;
+  const allStages = uniqueStages(drop);
+  const candidates = allStages.filter(stage => {
+    const startMs = Number(stage?.startTime) * 1000;
+    const endMs = Number(stage?.endTime) * 1000;
+    return Number.isFinite(startMs) && startMs > now
+      && (!Number.isFinite(endMs) || endMs <= 0 || endMs > now)
+      && scheduleStageFacts(stage, { stages: allStages }).schedulable;
+  });
+
+  const uuid = text(schedulePlan.recommendedStageUuid);
+  if (uuid) {
+    const matches = candidates.filter(stage => text(stage?.uuid) === uuid);
+    return matches.length === 1 ? matches[0] : null;
+  }
+
+  const key = text(schedulePlan.recommendedStageKey);
+  if (!key) return null;
+  const matches = candidates.filter(stage => scheduleStageKey(stage) === key);
+  return matches.length === 1 ? matches[0] : null;
+}
+
 module.exports = {
   buildScheduleStagePlan,
   decorateScheduleDrop,
@@ -135,4 +166,5 @@ module.exports = {
   scheduleStagePersistenceKey,
   scheduleReservationStageKey,
   stageRequiresEligibilityCheck,
+  resolveRecommendedScheduleStage,
 };

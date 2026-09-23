@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { buildScheduleStagePlan, decorateScheduleDrop, scheduleStageFacts, scheduleStageKey,
-  stageRequiresEligibilityCheck } = require('../src/mint/scheduleStagePlanning');
+  stageRequiresEligibilityCheck, resolveRecommendedScheduleStage } = require('../src/mint/scheduleStagePlanning');
 
 const NOW = 1_800_000_000_000;
 const stage = (uuid, startTime, overrides = {}) => ({
@@ -75,4 +75,29 @@ test('repeated UUID-less phase identities are marked ambiguous and never auto-se
   const decorated=decorateScheduleDrop({stages:[first,second]});
   assert.equal(decorated.stages.every(item=>item.identityAmbiguous&&!item.schedulable),true);
   assert.equal(buildScheduleStagePlan(decorated,{now:NOW}),null);
+});
+
+test('a server-owned recommendation resolves by UUID even when provider stage order changes',()=>{
+  const allow=stage('allow',1_800_000_100,{stageType:'allowlist'});
+  const publicStage=stage('public',1_800_003_700);
+  const plan=buildScheduleStagePlan({stages:[allow,publicStage]},{now:NOW});
+  const resolved=resolveRecommendedScheduleStage({drop:{stages:[publicStage,allow]},schedulePlan:plan,now:NOW});
+  assert.equal(resolved.uuid,'allow');
+});
+
+test('a provider without UUIDs resolves one exact stable key but never an ambiguous identity',()=>{
+  const unique={label:'Public sale',stageType:'public_sale',startTime:1_800_000_100,endTime:1_800_000_200};
+  const plan={recommendedStageUuid:null,recommendedStageKey:scheduleStageKey(unique)};
+  assert.equal(resolveRecommendedScheduleStage({drop:{stages:[unique]},schedulePlan:plan,now:NOW}),unique);
+
+  const first={label:'Allowlist',stageType:'allowlist',startTime:1_800_000_300,endTime:1_800_000_400};
+  const second={...first,startTime:1_800_000_500,endTime:1_800_000_600};
+  const ambiguousPlan={recommendedStageUuid:null,recommendedStageKey:scheduleStageKey(first)};
+  assert.equal(resolveRecommendedScheduleStage({drop:{stages:[first,second]},schedulePlan:ambiguousPlan,now:NOW}),null);
+});
+
+test('a stale UUID recommendation is rejected instead of falling back to a guessed key',()=>{
+  const publicStage=stage('public',1_800_000_100);
+  const stale={recommendedStageUuid:'removed-stage',recommendedStageKey:scheduleStageKey(publicStage)};
+  assert.equal(resolveRecommendedScheduleStage({drop:{stages:[publicStage]},schedulePlan:stale,now:NOW}),null);
 });

@@ -3,6 +3,7 @@ const test = require('node:test');
 const {
   mainMenu, walletsMenu, settingsMenu, chainSelect, walletSelect,
   confirmRemoveWallet, placeholderMenu, labelModal, collectionInfoCard,
+  openSeaPhasePicker,
   taskNameQuickPicks, taskConfirmation, tasksMenu, snipersMenu, adminOverviewMenu,
   modeMenu, MODE_META, sniperDetailsModal, sniperObservationMode, sniperPendingRiskWarning,
   sniperTolerancePrompt, sniperToleranceModal, sniperConfirmation,
@@ -76,6 +77,33 @@ test('modeMenu hides Degen and Fast unless advanced modes are allowed for this u
   const unlockedIds = flatButtons(unlocked.components).map(b => b.custom_id);
   assert.ok(unlockedIds.includes('mode:pick:ultra_fast'));
   assert.ok(unlockedIds.includes('mode:pick:fast'));
+});
+
+test('OpenSea phase picker adds a recommended action without consuming manual select capacity',()=>{
+  const stages=Array.from({length:25},(_,index)=>({
+    index,label:index===0?'Allowlist':`Phase ${index+1}`,stageType:index===0?'allowlist':'public_sale',
+    startTime:1_900_000_000+index*3600,priceETH:0,maxPerWallet:1,
+    eligibilityLabel:index===0?'Eligibility checked at opening':undefined,
+  }));
+  const picker=openSeaPhasePicker(stages,'ETH',stages[0]);
+  const buttons=flatButtons(picker.components);
+  assert.equal(buttons[0].custom_id,'flow:scheduleviaopenseaauto');
+  assert.match(buttons[0].label,/Schedule recommended: Allowlist/);
+  const phaseSelect=picker.components.flatMap(row=>row.components).find(component=>component.type===3);
+  assert.equal(phaseSelect.options.length,25);
+  assert.deepEqual(phaseSelect.options.map(option=>option.value),stages.map(stage=>String(stage.index)));
+  assert.match(picker.content,/Eligibility checked at opening/);
+});
+
+test('OpenSea phase picker leaves only manual options when the server has no recommendation',()=>{
+  const picker=openSeaPhasePicker([{index:3,label:'Public',startTime:1_900_000_000,priceETH:0}],'ETH');
+  assert.equal(flatButtons(picker.components).some(button=>button.custom_id==='flow:scheduleviaopenseaauto'),false);
+});
+
+test('an expired OpenSea phase picker renders no invalid empty select',()=>{
+  const picker=openSeaPhasePicker([],'ETH');
+  assert.equal(picker.components.flatMap(row=>row.components).some(component=>component.type===3),false);
+  assert.match(picker.content,/no longer available/i);
 });
 
 test('chain select offers EVM/Solana, not one option per configured chain, since an EVM key works identically on every one', () => {

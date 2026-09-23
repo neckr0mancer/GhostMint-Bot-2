@@ -560,15 +560,25 @@ function collectionInfoCard({ contractAddress, chainLabel, chainSym, isSeaDrop, 
 // drop.stages (not its OpenSea uuid -- a 36-char uuid plus this prefix would blow past Telegram's
 // 64-byte callback_data limit, same reasoning Section AF's own flow:phase:<n>:<address> already
 // relies on).
-function openSeaPhasePicker(stages) {
+function openSeaPhasePicker(stages, recommendedStage = null) {
   const shown = stages.slice(0, MAX_PHASE_LINES);
-  const rows = shown.map(stage => [button(
+  const rows = [];
+  if (recommendedStage) {
+    const recommendedLabel = recommendedStage.label || humanizeStageType(recommendedStage.stageType);
+    rows.push([button(`✨ Recommended: ${recommendedLabel}`, 'flow:scheduleviaopenseaauto')]);
+  }
+  rows.push(...shown.map(stage => [button(
     `🎫📅 ${stage.label || humanizeStageType(stage.stageType)} — opens ${formatGmtPlus1(stage.startTime * 1000)}`,
     `flow:scheduleviaopenseaphase:${stage.index}`,
-  )]);
-  const text = stages.length > MAX_PHASE_LINES
-    ? `Which phase should this be scheduled against? Showing the first ${MAX_PHASE_LINES} of ${stages.length}.`
-    : 'Which phase should this be scheduled against?';
+  )]));
+  const eligibilityNote = recommendedStage?.eligibilityLabel
+    ? `\n\nRecommended plan: ${escapeTelegramHtml(recommendedStage.eligibilityLabel)}.`
+    : '';
+  const text = stages.length
+    ? ((stages.length > MAX_PHASE_LINES
+      ? `Which phase should this be scheduled against? Showing the first ${MAX_PHASE_LINES} of ${stages.length}.`
+      : 'Which phase should this be scheduled against?') + eligibilityNote)
+    : 'Those phase options are no longer available. Refresh the contract details and choose Schedule again.';
   rows.push([button('❌ Cancel', 'flow:cancel:ask')]);
   return { text, replyMarkup: keyboard(rows), parseMode: 'HTML' };
 }

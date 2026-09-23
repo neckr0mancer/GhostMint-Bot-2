@@ -36,7 +36,9 @@ const { createPriceFeedService } = require('./mint/priceFeedService');
 const { computeSeaDropValueWei, validateOpenSeaMintCall } = require('./mint/seaDropCall');
 const { SEADROP_MINT_SIGNATURE } = require('./mint/seaDropRegistry');
 const mintFlowDecision = require('./mint/mintFlowDecision');
-const { stageRequiresEligibilityCheck } = require('./mint/scheduleStagePlanning');
+const { buildOpenSeaScheduleTaskData } = require('./mint/openSeaScheduleDraft');
+const { buildSeaDropAllowanceEvidence, unknownEvidence } = require('./mint/scheduleAllowance');
+const { scheduleStageKey, stageRequiresEligibilityCheck } = require('./mint/scheduleStagePlanning');
 const watchRuleFlowDecision = require('./social/watchRuleFlowDecision');
 const sniperFlowDecision = require('./sniper/sniperFlowDecision');
 const { createSchedulerRepository } = require('./scheduler/schedulerRepository');
@@ -364,12 +366,69 @@ function phaseWaitError(decision) {
   });
   const phaseStart = Number(nextStage?.startAt
     ?? (Number.isFinite(nextStage?.startTime) ? nextStage.startTime * 1_000 : null));
+  if (Number.isFinite(phaseStart)) error.phaseDeferral.stageStartAt = phaseStart;
   if (Number.isFinite(phaseStart) && phaseStart > (decision.checkedAt ?? Date.now())) {
     // Keep the user-facing launch/reminder time stable at the advertised phase opening. Internal
     // five/ten/sixty-second eligibility polls move only next_attempt_at, not mint_time.
     error.phaseDeferral.mintTime = phaseStart;
   }
   return error;
+}
+
+function scheduleAllowanceRefreshError() {
+  const error = new Error(
+    'The wallet allowance could not be refreshed while moving this schedule. GhostMint will check again shortly.');
+  error.code = 'SCHEDULE_ALLOWANCE_UNAVAILABLE';
+  return error;
+}
+
+// Refreshes only evidence whose scope can be proven from the contract. Marketplace stage maxima
+// are presentation data and are never promoted into a hard reservation boundary. A gated stage
+// stays unknown, but a fresh SeaDrop getMintStats value is retained so an existing later
+// contract-cumulative boundary can still be checked while this earlier reservation moves.
+async function resolvePhaseAllowanceEvidence(task, details) {
+  const stageStartAt = Number(details.stageStartAt ?? details.mintTime ?? details.retryAt);
+  const fallback = mintStats => unknownEvidence({
+    stageStartAt:Number.isFinite(stageStartAt) ? stageStartAt : task.mintTime,
+    mintStats,
+  });
+  const wallet = DB.wallets.find(item => item.userId === task.userId
+    && item.label === task.walletLabel);
+  const walletAddress = task.walletAddress || wallet?.address;
+  const chain = taskExecutionChain(task,wallet);
+  if (!walletAddress || !chain || !task.contract) return fallback();
+
+  let seaDrop;
+  try { seaDrop = await seaDropDiscoveryService.resolve(chain,task.contract); }
+  catch { throw scheduleAllowanceRefreshError(); }
+  if (!seaDrop?.address) return fallback();
+
+  const stage = {
+    uuid:details.stageUuid ?? task.stageUuid,
+    label:details.stageLabel ?? task.stageLabel,
+    stageType:details.stageType ?? task.stageType,
+    stageStartAt:Number.isFinite(stageStartAt) ? stageStartAt : task.mintTime,
+    startTime:Number.isFinite(stageStartAt) ? stageStartAt / 1_000 : null,
+    mintTime:Number(details.mintTime ?? task.mintTime) / 1_000,
+    directPublic:task.viaOpenSea !== true,
+  };
+  const gated = stageRequiresEligibilityCheck(stage);
+  let mintStats;
+  try {
+    mintStats = await seaDropPublicDropResolver.readMintStats(chain,task.contract,walletAddress);
+  } catch {
+    if (gated) return fallback();
+    throw scheduleAllowanceRefreshError();
+  }
+  if (gated) return fallback(mintStats);
+
+  let publicDrop;
+  try {
+    publicDrop = await seaDropPublicDropResolver.readPublicDrop(chain,seaDrop.address,task.contract);
+  } catch {
+    throw scheduleAllowanceRefreshError();
+  }
+  return buildSeaDropAllowanceEvidence({stage,publicDrop,mintStats});
 }
 
 function enforcePhaseDecision(decision) {
@@ -587,6 +646,10 @@ const schedulerWorker = createSchedulerWorker({
     const { drop, decision } = await refreshScheduledOpenSeaPhase(task, chain);
     return { phaseDrop:drop, phaseDecision:decision };
   },
+  preparePhaseDeferral: async (task,details) => ({
+    ...details,
+    allowanceEvidence:await resolvePhaseAllowanceEvidence(task,details),
+  }),
   onStageNotOpen: chain => ensureChainWatcher(chain),
   // Answers "when does this task's stage actually open?" after the stage-not-open retry burst is
   // spent, so the worker can re-arm once instead of discarding a task that exists precisely to be
@@ -1592,7 +1655,7 @@ const FLOW_CONTINUATION_PREFIXES = { wallet_create: ['flow:chain:'], wallet_impo
   // flow:priceaccept/flow:pricemanual (Section G's OpenSea-price-accept step) the same way.
   // flow:phase: is deliberately NOT listed: tapping "add phase N" on an older success screen while
   // some other flow is mid-air should raise the usual abandon prompt, not silently replace it.
-  task_guided: ['flow:mintdetailscontinue', 'flow:mintqty:', 'flow:priceaccept', 'flow:pricemanual', 'flow:phasepriceaccept', 'flow:phasetimeaccept', 'flow:taskname:', 'flow:taskwalletpick:', 'flow:taskconfirm'],
+  task_guided: ['flow:mintdetailscontinue', 'flow:scheduleviaopensea', 'flow:mintqty:', 'flow:priceaccept', 'flow:pricemanual', 'flow:phasepriceaccept', 'flow:phasetimeaccept', 'flow:taskname:', 'flow:taskwalletpick:', 'flow:taskconfirm'],
   watch_guided: ['flow:watchtype:', 'flow:watchmethod:', 'flow:watchconfirm'],
   sniper_guided: ['flow:sniperchain:', 'flow:sniperwalletpick:', 'flow:sniperobservation:',
     'flow:sniperpendingrisk:accept', 'flow:snipertoleranceaccept', 'flow:snipertolerancemanual', 'flow:sniperconfirm'] };
@@ -1753,7 +1816,8 @@ function renderFlowStep(flow, step, { userId, data = {} } = {}) {
     // stage (mintFlowDecision.afterScheduleViaOpenSeaTap); re-derived from data.drop rather than
     // stored separately, so a re-render (e.g. after a bot restart) shows the same list.
     if (step === 'awaiting_phase_pick') {
-      return telegramMenus.openSeaPhasePicker(mintFlowDecision.schedulableStages({ drop: data.drop }));
+      const decision = mintFlowDecision.afterScheduleViaOpenSeaTap({ drop: data.drop, schedulePlan: data.schedulePlan });
+      return telegramMenus.openSeaPhasePicker(decision.stages || [], decision.recommendedStage);
     }
     if (step === 'awaiting_wallet') {
       const wallets = botCommands.wallets(userId);
@@ -1823,6 +1887,10 @@ function renderFlowStep(flow, step, { userId, data = {} } = {}) {
   }
   if (flow === 'task_guided') {
     if (step === 'awaiting_contract') return { text: 'Send the contract address to schedule a mint for.', replyMarkup: cancelOnlyKeyboard(), parseMode: 'HTML' };
+    if (step === 'awaiting_phase_pick') {
+      const decision = mintFlowDecision.afterScheduleViaOpenSeaTap({ drop: data.drop, schedulePlan: data.schedulePlan });
+      return telegramMenus.openSeaPhasePicker(decision.stages || [], decision.recommendedStage);
+    }
     if (step === 'awaiting_details') {
       return telegramMenus.contractDetails({
         contractAddress: data.contractAddress,
@@ -1961,7 +2029,7 @@ async function startMintFlow({ chatId, messageId, userId, multi, contractAddress
     maxSupply: detected.maxSupply, maxPerWallet: detected.maxPerWallet,
     startTime: detected.startTime, endTime: detected.endTime, collection: detected.collection,
     soldOut: detected.soldOut, displayPrice: detected.displayPrice,
-    stats: detected.stats, drop: detected.drop, includeStats,
+    stats: detected.stats, drop: detected.drop, schedulePlan: detected.schedulePlan, includeStats,
     openSeaUrl: OPENSEA_CHAIN_SLUGS[detected.chain] ? `https://opensea.io/assets/${OPENSEA_CHAIN_SLUGS[detected.chain]}/${contractAddress}` : null,
     skipConfirm,
   };
@@ -2346,7 +2414,7 @@ async function startTaskScheduleFlow({ chatId, messageId, userId, contractAddres
   }
   let detected;
   try {
-    detected = await botCommands.detectMintContract(userId, { contractAddress, quantity: 1 });
+    detected = await botCommands.detectMintContract(userId, { contractAddress, quantity: 1, includeDrop: true });
   } catch (error) {
     if (error instanceof ValidationError) {
       return send({ text: 'Could not find this contract on any supported chain. Double-check the address.', replyMarkup: telegramMenus.mainMenu({}).replyMarkup });
@@ -2361,6 +2429,7 @@ async function startTaskScheduleFlow({ chatId, messageId, userId, contractAddres
     maxSupply: detected.maxSupply, maxPerWallet: detected.maxPerWallet,
     startTime: detected.startTime, endTime: detected.endTime, collection: detected.collection,
     soldOut: detected.soldOut, displayPrice: detected.displayPrice,
+    drop: detected.drop, schedulePlan: detected.schedulePlan,
     mintTime: futureStartTime ? new Date(futureStartTime * 1000).toISOString() : null,
   };
   if (phaseNumber > 1) {
@@ -2373,6 +2442,20 @@ async function startTaskScheduleFlow({ chatId, messageId, userId, contractAddres
       priceETH: undefined, priceUnknown: true, mintTime: null,
     });
     const flow = telegramFlowState.start('telegram', chatId, 'task_guided', 'awaiting_wallet', data);
+    return advanceFromTaskDetails(chatId, messageId, userId, flow);
+  }
+  const phaseDecision = mintFlowDecision.afterScheduleViaOpenSeaTap({
+    drop: data.drop,
+    schedulePlan: data.schedulePlan,
+  });
+  if (phaseDecision.type === 'pick') {
+    telegramFlowState.start('telegram', chatId, 'task_guided', 'awaiting_phase_pick', data);
+    return send(telegramMenus.openSeaPhasePicker(phaseDecision.stages, phaseDecision.recommendedStage));
+  }
+  const plannedStage = phaseDecision.stage;
+  if (plannedStage) {
+    const taskData = buildOpenSeaScheduleTaskData(data, plannedStage);
+    const flow = telegramFlowState.start('telegram', chatId, 'task_guided', 'awaiting_details', taskData);
     return advanceFromTaskDetails(chatId, messageId, userId, flow);
   }
   telegramFlowState.start('telegram', chatId, 'task_guided', 'awaiting_details', data);
@@ -2391,46 +2474,25 @@ async function advanceFromTaskDetails(chatId, messageId, userId, flow) {
   return advanceFromTaskQuantity(chatId, messageId, userId, flow, 1);
 }
 
-// Section AF -- shared shape for both the direct (single-stage) and picked (multi-stage) paths out
-// of flow:scheduleviaopensea, so they build identical task data from whichever stage was settled on.
-// name is "<collection> — <phase>" (the stage's own real label, or a humanized fallback from its
-// stage_type) -- which phase this is is a known fact now, not a guess, so advanceFromTaskWallet
-// skips the manual naming step entirely for a viaOpenSea task rather than asking the user to re-type
-// something already known. Live-reported follow-up: the phase label alone ("Public sale") isn't
-// enough to tell two different collections' tasks apart in /tasks once more than one is staged --
-// the collection name makes each row identifiable at a glance without opening it. Falls back to the
-// phase name alone when OpenSea has no collection name for this contract, same "unknown is fine"
-// convention the rest of this card already follows.
-function openSeaPhaseTaskName(mintFlowData, stage) {
-  const phase = stage.label || telegramMenus.humanizeStageType(stage.stageType);
-  return mintFlowData.collection?.name ? `${mintFlowData.collection.name} — ${phase}` : phase;
-}
-function openSeaPhaseEligibilityDeadline(mintFlowData, stage) {
-  const startTime = Number(stage.startTime);
-  const cap = startTime + 24 * 60 * 60;
-  const advertisedEnds = (mintFlowData.drop?.stages || [])
-    .filter(candidate => Number(candidate.startTime) >= startTime)
-    .map(candidate => Number(candidate.endTime))
-    .filter(endTime => Number.isFinite(endTime) && endTime > startTime);
-  const latest = advertisedEnds.length ? Math.max(...advertisedEnds) : cap;
-  return new Date(Math.min(latest, cap) * 1000).toISOString();
-}
+// Kept as the local call-site name so the existing flow remains easy to read, but task construction
+// itself is shared with Discord in one pure module. Stage identity, deadline, price handling, and
+// eligibility mode therefore cannot drift between the two bot surfaces.
 function openSeaPhaseTaskData(mintFlowData, stage) {
-  const requiresEligibilityCheck = stageRequiresEligibilityCheck(stage);
-  const viaOpenSea = !mintFlowData.isSeaDrop || requiresEligibilityCheck;
-  const detectedPrice = stage.priceWei !== null && stage.priceWei !== undefined
-    ? Number(ethers.formatEther(BigInt(stage.priceWei)))
-    : (Number.isFinite(stage.priceETH) ? stage.priceETH : undefined);
+  return buildOpenSeaScheduleTaskData(mintFlowData, stage);
+}
+
+async function refreshTelegramOpenSeaScheduleData(userId, data) {
+  const detected = await botCommands.detectMintContract(userId, {
+    contractAddress:data.contractAddress, quantity:1, includeDrop:true,
+  });
   return {
-    contractAddress: mintFlowData.contractAddress, chain: mintFlowData.chain, isSeaDrop: mintFlowData.isSeaDrop,
-    priceETH: viaOpenSea ? 0 : detectedPrice, priceUnknown: !viaOpenSea && detectedPrice === undefined,
-    viaOpenSea, collection: mintFlowData.collection,
-    stageUuid: stage.uuid || null, stageLabel: stage.label || null, stageType: stage.stageType || null,
-    eligibilityMode: requiresEligibilityCheck ? 'earliest_eligible' : 'specific_stage',
-    eligibilityDeadline: openSeaPhaseEligibilityDeadline(mintFlowData, stage),
-    mintTime: new Date(stage.startTime * 1000).toISOString(),
-    name: openSeaPhaseTaskName(mintFlowData, stage),
-    maxPerWallet: stage.maxPerWallet ?? mintFlowData.maxPerWallet,
+    ...data, chain:detected.chain, isSeaDrop:detected.isSeaDrop,
+    priceETH:detected.priceKnown ? Number(ethers.formatEther(BigInt(detected.valueWei))) : undefined,
+    priceUnknown:!detected.priceKnown, maxSupply:detected.maxSupply,
+    maxPerWallet:detected.maxPerWallet, startTime:detected.startTime,
+    endTime:detected.endTime, collection:detected.collection, soldOut:detected.soldOut,
+    displayPrice:detected.displayPrice, stats:detected.stats, drop:detected.drop,
+    schedulePlan:detected.schedulePlan,
   };
 }
 
@@ -3385,25 +3447,73 @@ if (BOT_TOKEN) {
     // step (already known from the stage). A single schedulable stage goes straight there
     // (afterScheduleViaOpenSeaTap); more than one shows a picker first (awaiting_phase_pick).
     if (data === 'flow:scheduleviaopensea') {
+      if (await gateBlocks({ chatId, messageId, userId, action: 'schedule' })) return;
       const flow = telegramFlowState.get('telegram', chatId);
       if (!flow || flow.flow !== 'mint_guided' || flow.step !== 'awaiting_details') return;
-      const decision = mintFlowDecision.afterScheduleViaOpenSeaTap({ drop: flow.data.drop });
-      if (decision.type === 'pick') {
-        telegramFlowState.advance('telegram', chatId, 'awaiting_phase_pick', flow.data);
-        return tgUpdate(chatId, messageId, telegramMenus.openSeaPhasePicker(decision.stages));
+      let refreshed;
+      try { refreshed = await refreshTelegramOpenSeaScheduleData(userId,flow.data); }
+      catch {
+        return tgUpdate(chatId,messageId,{text:'Could not re-check the mint phases right now. Try again shortly.',
+          replyMarkup:cancelOnlyKeyboard(),parseMode:'HTML'});
       }
-      if (!decision.stage) return;
-      const taskData = openSeaPhaseTaskData(flow.data, decision.stage);
+      const decision = mintFlowDecision.afterScheduleViaOpenSeaTap({
+        drop:refreshed.drop,schedulePlan:refreshed.schedulePlan,
+      });
+      if (decision.type === 'pick') {
+        telegramFlowState.advance('telegram', chatId, 'awaiting_phase_pick', refreshed);
+        return tgUpdate(chatId, messageId, telegramMenus.openSeaPhasePicker(decision.stages, decision.recommendedStage));
+      }
+      if (!decision.stage) {
+        telegramFlowState.advance('telegram', chatId, 'awaiting_phase_pick', refreshed);
+        return tgUpdate(chatId, messageId, telegramMenus.openSeaPhasePicker([]));
+      }
+      const taskData = openSeaPhaseTaskData(refreshed, decision.stage);
+      const started = telegramFlowState.start('telegram', chatId, 'task_guided', 'awaiting_details', taskData);
+      return advanceFromTaskDetails(chatId, messageId, userId, started);
+    }
+    if (data === 'flow:scheduleviaopenseaauto') {
+      const flow = telegramFlowState.get('telegram', chatId);
+      if (!flow || !['mint_guided','task_guided'].includes(flow.flow) || flow.step !== 'awaiting_phase_pick') return;
+      let refreshed;
+      try { refreshed = await refreshTelegramOpenSeaScheduleData(userId,flow.data); }
+      catch {
+        return tgUpdate(chatId,messageId,{text:'Could not re-check the mint phases right now. Try again shortly.',
+          replyMarkup:cancelOnlyKeyboard(),parseMode:'HTML'});
+      }
+      const decision = mintFlowDecision.afterScheduleViaOpenSeaTap({
+        drop:refreshed.drop,schedulePlan:refreshed.schedulePlan,
+      });
+      if (!decision.recommendedStage) {
+        telegramFlowState.advance('telegram',chatId,'awaiting_phase_pick',refreshed);
+        return tgUpdate(chatId, messageId, telegramMenus.openSeaPhasePicker(decision.stages || []));
+      }
+      const taskData = openSeaPhaseTaskData(refreshed, decision.recommendedStage);
       const started = telegramFlowState.start('telegram', chatId, 'task_guided', 'awaiting_details', taskData);
       return advanceFromTaskDetails(chatId, messageId, userId, started);
     }
     if (data.startsWith('flow:scheduleviaopenseaphase:')) {
       const flow = telegramFlowState.get('telegram', chatId);
-      if (!flow || flow.flow !== 'mint_guided' || flow.step !== 'awaiting_phase_pick') return;
+      if (!flow || !['mint_guided','task_guided'].includes(flow.flow) || flow.step !== 'awaiting_phase_pick') return;
       const index = Number(data.slice('flow:scheduleviaopenseaphase:'.length));
-      const stage = flow.data.drop?.stages?.[index];
-      if (!stage) return;
-      const taskData = openSeaPhaseTaskData(flow.data, stage);
+      const requestedStage = flow.data.drop?.stages?.[index] || null;
+      let refreshed;
+      try { refreshed = await refreshTelegramOpenSeaScheduleData(userId,flow.data); }
+      catch {
+        return tgUpdate(chatId,messageId,{text:'Could not re-check the mint phases right now. Try again shortly.',
+          replyMarkup:cancelOnlyKeyboard(),parseMode:'HTML'});
+      }
+      const decision = mintFlowDecision.afterScheduleViaOpenSeaTap({
+        drop:refreshed.drop,schedulePlan:refreshed.schedulePlan,
+      });
+      const requestedKey = requestedStage ? scheduleStageKey(requestedStage) : null;
+      const stage = (decision.stages || []).find(candidate => requestedKey
+        && scheduleStageKey(candidate) === requestedKey);
+      if (!stage) {
+        telegramFlowState.advance('telegram',chatId,'awaiting_phase_pick',refreshed);
+        return tgUpdate(chatId, messageId,
+          telegramMenus.openSeaPhasePicker(decision.stages || [], decision.recommendedStage));
+      }
+      const taskData = openSeaPhaseTaskData(refreshed, stage);
       const started = telegramFlowState.start('telegram', chatId, 'task_guided', 'awaiting_details', taskData);
       return advanceFromTaskDetails(chatId, messageId, userId, started);
     }
@@ -3424,7 +3534,7 @@ if (BOT_TOKEN) {
         maxSupply: detected.maxSupply, maxPerWallet: detected.maxPerWallet,
         startTime: detected.startTime, endTime: detected.endTime, collection: detected.collection,
         soldOut: detected.soldOut, displayPrice: detected.displayPrice,
-        stats: detected.stats, drop: detected.drop,
+        stats: detected.stats, drop: detected.drop, schedulePlan: detected.schedulePlan,
       };
       telegramFlowState.advance('telegram', chatId, 'awaiting_details', refreshed);
       return tgEditMenu(chatId, messageId, renderFlowStep('mint_guided', 'awaiting_details', { userId, data: refreshed }));

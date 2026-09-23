@@ -10,6 +10,7 @@ import {pnlBarLayout,pnlRecordSeries,pnlWindowTotals} from './pnlChart.js';
 import {mintDetectionMessage,mintPreviewError,scheduleSubmitError} from './mintFeedback.mjs';
 import {mintDetectionPricePerItem,mintQuantityPolicy,mintTotalValueWei} from './mintQuantityPolicy.mjs';
 import {formatScheduleDateTime,scheduleCountdown,scheduleEligibilityDeadline} from './scheduleDisplay.js';
+import {stageMintTimeLocalValue} from './scheduleTime.mjs';
 import {dashboardEvmChains} from './chainOptions.mjs';
 import {formatAdaptiveAmount,formatSignedAdaptiveAmount} from './amountDisplay.mjs';
 import {selectWalletHeadlineBalance,walletBalanceForChain,walletFundingStatus} from './walletDisplay.mjs';
@@ -1500,7 +1501,7 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint}){const mobile
         const recommended=result.schedulePlan;
         chosenStage=future.find(s=>(recommended?.recommendedStageUuid&&s.uuid===recommended.recommendedStageUuid)
           ||scheduleStageSelectionKey(s)===recommended?.recommendedStageKey)
-          ||future[0]||result.drop?.activeStage||null;
+          ||future[0]||null;
         setSelectedStageKey(chosenStage?scheduleStageSelectionKey(chosenStage):'');
         setStageType(chosenStage?.stageType||'');
       } else {
@@ -1520,6 +1521,13 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint}){const mobile
       setDetectedOpenSeaRecommendation(useOpenSea);
       setViaOpenSea(chosenUsesOpenSea);
       setMaxPerWallet(quantityPolicy.detected?quantityPolicy.max:null);
+      if(quantityPolicy.detected){
+        setQuantity(current=>{
+          const parsed=Number(current);
+          const normalized=Number.isFinite(parsed)&&parsed>=1?Math.floor(parsed):1;
+          return String(Math.min(normalized,quantityPolicy.max));
+        });
+      }
       const collectionName=result.collection?.name||'';
       setDetectedName(collectionName);
       if(result.chain && !profile.supportedChains.map(c=>c.toLowerCase()).includes(String(result.chain).toLowerCase())){
@@ -1546,10 +1554,7 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint}){const mobile
       }
       const detectedStart=chosenStage?.startTime||result.startTime;
       if(detectedStart&&detectedStart*1000>Date.now()){
-        const bufferMs=15*1000;
-        const local=new Date(detectedStart*1000+bufferMs);
-        local.setMinutes(local.getMinutes()-local.getTimezoneOffset());
-        setMintTime(local.toISOString().slice(0,16));
+        setMintTime(stageMintTimeLocalValue(detectedStart));
       }
       const label=result.isSeaDrop?'SeaDrop drop':'contract';
       if(chosenUsesOpenSea)notify(`Detected ${result.collection?.name||label} on ${result.chain}. OpenSea will prepare the mint at execution time.`,{type:'success'});
@@ -1643,7 +1648,7 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint}){const mobile
   // Provider/display maxima remain useful context and a quick "Max" choice, but they are not an
   // authorization boundary. The server verifies on-chain scope and every active reservation in
   // one database transaction; the browser must never block from a paginated, cross-stage guess.
-  const quantityMax=100;
+  const quantityMax=maxPerWallet||100;
   // ---- Filtering, and where it happens -------------------------------------------------------
   // The server does this: it filters by bucket and counts all of them in one round trip. But
   // dashboard/vite.config.js proxies /api to the DEPLOYED instance, which does not have that code
@@ -1832,7 +1837,7 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint}){const mobile
               :priceETH?<> · {formatAdaptiveAmount(priceETH,{minDecimals:6})} {nativeSymbolForChain(chain)} each</>:null}
           {maxPerWallet?<> · published max {maxPerWallet}/wallet</>:null}
         </div></div>}
-        {stages.length>1&&<SelectMenu className="fl" label="Stage" value={selectedStageKey} onChange={e=>{const s=stages.find(stage=>scheduleStageSelectionKey(stage)===e.target.value); if(!s)return; const nextViaOpenSea=!detectedSeaDrop||scheduleStageRequiresOpenSeaBuilder(s); setSelectedStageKey(scheduleStageSelectionKey(s)); setStageType(s.stageType); setViaOpenSea(nextViaOpenSea); if(nextViaOpenSea){setPriceETH('');setPriceIssue(null);} else if(s.priceWei!=null){setPriceETH(weiToEthDisplay(s.priceWei));setPriceIssue(null);} else {setPriceETH('');setPriceIssue('Enter the price per NFT. Use 0 only if the mint is free.');} const t=s.startTime; if(t&&t*1000>Date.now()){const local=new Date(t*1000+15000); local.setMinutes(local.getMinutes()-local.getTimezoneOffset()); setMintTime(local.toISOString().slice(0,16));}}}
+        {stages.length>1&&<SelectMenu className="fl" label="Stage" value={selectedStageKey} onChange={e=>{const s=stages.find(stage=>scheduleStageSelectionKey(stage)===e.target.value); if(!s)return; const nextViaOpenSea=!detectedSeaDrop||scheduleStageRequiresOpenSeaBuilder(s); setSelectedStageKey(scheduleStageSelectionKey(s)); setStageType(s.stageType); setViaOpenSea(nextViaOpenSea); if(nextViaOpenSea){setPriceETH('');setPriceIssue(null);} else if(s.priceWei!=null){setPriceETH(weiToEthDisplay(s.priceWei));setPriceIssue(null);} else {setPriceETH('');setPriceIssue('Enter the price per NFT. Use 0 only if the mint is free.');} const t=s.startTime; if(t&&t*1000>Date.now())setMintTime(stageMintTimeLocalValue(t));}}
           options={stages.map(s=>{
             const ended=s.endTime&&s.endTime*1000<Date.now();
             const live=s.startTime*1000<=Date.now()&&(!s.endTime||s.endTime*1000>Date.now());
@@ -1874,7 +1879,8 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint}){const mobile
             </div></label>
         </div>
         <label className="fl"><span>Mint time <span style={{color:'var(--faint)',fontWeight:500}}>· your local time; stored in UTC</span></span>
-          <input className="in tab mono" name="mintTime" type="datetime-local" disabled={noWallets}
+          <input className="in tab mono" name="mintTime" type="datetime-local" step="1" disabled={noWallets}
+            min={stageMintTimeLocalValue(stages.find(stage=>scheduleStageSelectionKey(stage)===selectedStageKey)?.startTime,{bufferMs:0})||undefined}
             value={mintTime} onChange={e=>setMintTime(e.target.value)}/></label>
         {!viaOpenSea&&priceIssue
           ?<label className="fl"><span>Price per mint <span style={{color:'var(--faint)',fontWeight:500}}>· {nativeSymbolForChain(chain)}</span></span>

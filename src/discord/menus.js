@@ -337,16 +337,28 @@ function collectionInfoCard({ contractAddress, chain, chainLabel, chainSym, isSe
 // select over buttons. The option VALUE carries the stage's index into drop.stages (not its OpenSea
 // uuid -- irrelevant here, but kept consistent with Telegram's own byte-budget reason for using an
 // index, see flow:scheduleviaopenseaphase's handler).
-function openSeaPhasePicker(stages, sym) {
+function openSeaPhasePicker(stages, sym, recommendedStage = null) {
   const options = stages.map(stage => ({
     label: `${stage.label || humanizeStageType(stage.stageType)} — opens ${formatGmtPlus1(stage.startTime * 1000)}`.slice(0, 100),
     description: stageSummaryLine(stage, sym).slice(0, 100),
     value: String(stage.index),
   }));
-  return {
-    content: 'Which phase should this be scheduled against?',
-    components: [select('flow:scheduleviaopenseaphase:select', options, 'Select a phase'), row([button('❌ Cancel', 'flow:cancel:ask', 'danger')])],
-  };
+  const components = [];
+  if (recommendedStage) {
+    const label = recommendedStage.label || humanizeStageType(recommendedStage.stageType);
+    components.push(row([button(`✨ Schedule recommended: ${label}`.slice(0, 80), 'flow:scheduleviaopenseaauto', 'success')]));
+  }
+  if (options.length) {
+    components.push(select('flow:scheduleviaopenseaphase:select', options, 'Choose another phase'));
+  }
+  components.push(row([button('❌ Cancel', 'flow:cancel:ask', 'danger')]));
+  const eligibilityNote = recommendedStage?.eligibilityLabel
+    ? `\n\nRecommended plan: ${recommendedStage.eligibilityLabel}.`
+    : '';
+  const content = options.length
+    ? `Which phase should this be scheduled against?${eligibilityNote}`
+    : 'Those phase options are no longer available. Refresh the contract details and choose Schedule again.';
+  return { content, components };
 }
 
 // Section AA -- Discord counterpart to Telegram's quantityStepPayload/Section L. A select menu

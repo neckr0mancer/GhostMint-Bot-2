@@ -113,8 +113,57 @@ test('afterScheduleViaOpenSeaTap goes direct with zero or one schedulable stage,
   const one = afterScheduleViaOpenSeaTap({ drop: { stages: [single] }, now: NOW });
   assert.equal(one.type, 'direct');
   assert.equal(one.stage.uuid, single.uuid);
+  assert.equal(one.recommendedStage, null, 'a direct stage is not relabelled as a server recommendation');
+  assert.equal(one.stages.length, 1);
+  assert.equal(one.recommendedStage, null, 'a direct stage is not relabelled as a server recommendation');
+  assert.equal(one.stages.length, 1);
 
   const two = afterScheduleViaOpenSeaTap({ drop: { stages: [stage(now + 100), stage(now + 200)] }, now: NOW });
   assert.equal(two.type, 'pick');
   assert.equal(two.stages.length, 2);
+});
+
+test('multi-stage scheduling exposes the shared recommendation without removing manual choices', () => {
+  const now = NOW / 1000;
+  const later = stage(now + 200, { uuid: 'later' });
+  const recommended = stage(now + 100, { uuid: 'recommended', stageType: 'allowlist', eligibilityLabel: 'Eligibility checked at opening' });
+  const drop = { stages: [later, recommended] };
+  const decision = afterScheduleViaOpenSeaTap({
+    drop,
+    schedulePlan: { recommendedStageUuid: 'recommended', recommendedStageKey: 'uuid:recommended' },
+    now: NOW,
+  });
+  assert.equal(decision.type, 'pick');
+  assert.equal(decision.recommendedStage.uuid, 'recommended');
+  assert.deepEqual(decision.stages.map(item => item.uuid), ['recommended', 'later']);
+  assert.deepEqual(decision.stages.map(item => item.index), [1, 0], 'manual callbacks retain original provider indices');
+});
+
+test('unsafe or stale stage recommendations do not invent an automatic choice', () => {
+  const now = NOW / 1000;
+  const first = stage(now + 100, { uuid: 'first' });
+  const second = stage(now + 200, { uuid: 'second' });
+  const decision = afterScheduleViaOpenSeaTap({
+    drop: { stages: [first, second] },
+    schedulePlan: { recommendedStageUuid: 'removed', recommendedStageKey: 'uuid:first' },
+    now: NOW,
+  });
+  assert.equal(decision.type, 'pick');
+  assert.equal(decision.recommendedStage, null);
+  assert.equal(decision.stages.length, 2, 'manual override remains available');
+
+  const oneRemaining = afterScheduleViaOpenSeaTap({
+    drop:{stages:[second]},
+    schedulePlan:{recommendedStageUuid:'first',recommendedStageKey:'uuid:first'},
+    now:NOW,
+  });
+  assert.equal(oneRemaining.type,'pick');
+  assert.equal(oneRemaining.recommendedStage,null);
+  assert.equal(oneRemaining.stage,null);
+  assert.deepEqual(oneRemaining.stages.map(item=>item.uuid),['second'],
+    'an old Recommended action must require an explicit manual choice instead of switching stages');
+
+  const ambiguousA = { label: 'Allowlist', stageType: 'allowlist', startTime: now + 300, endTime: now + 400 };
+  const ambiguousB = { ...ambiguousA, startTime: now + 500, endTime: now + 600 };
+  assert.deepEqual(schedulableStages({ drop: { stages: [ambiguousA, ambiguousB] }, now: NOW }), []);
 });

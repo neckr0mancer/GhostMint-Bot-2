@@ -1,4 +1,5 @@
 const { scheduleReservationStageKey } = require('../mint/scheduleStagePlanning');
+const { enforceScheduleAllowanceEnvelope, UNKNOWN } = require('../mint/scheduleAllowance');
 const { armTaskPreflightRows } = require('./scheduledPreflightRepository');
 
 // The seven statuses the schema allows (migrations/011_durable_scheduler.sql:30), grouped into the
@@ -59,6 +60,12 @@ function time(value) { return value === null ? null : new Date(value).getTime();
 function scheduleReservationConflict(message) {
   const error = new Error(message);
   error.code = 'SCHEDULE_STAGE_DUPLICATE';
+  return error;
+}
+
+function scheduleAllowanceUnavailable(message) {
+  const error = new Error(message);
+  error.code = 'SCHEDULE_ALLOWANCE_UNAVAILABLE';
   return error;
 }
 
@@ -331,9 +338,79 @@ function createSchedulerRepository(pool) {
         stageType:stageTypeSupplied ? stageType : task.stageType,
         mintTime:mintTimeSupplied ? mintTime : task.mintTime,
       }) : task.reservationStageKey;
+      const suppliedEvidence = details.allowanceEvidence && typeof details.allowanceEvidence === 'object'
+        ? details.allowanceEvidence : {};
+      const allowanceStageStartAt = suppliedEvidence.allowanceStageStartAt
+        ?? details.stageStartAt ?? (mintTimeSupplied ? mintTime : retryAt);
+      // A stage move with no authoritative resolver result remains unknown. That is deliberately
+      // different from zero: unknown evidence never creates a guessed hard cap, but the envelope
+      // check below still refuses the move if an existing later cumulative boundary needs a fresh
+      // contract-wide minted snapshot.
+      const allowanceEvidence = reservationChanged ? {
+        allowanceScope:suppliedEvidence.allowanceScope ?? UNKNOWN,
+        allowanceMaxPerWallet:suppliedEvidence.allowanceMaxPerWallet ?? null,
+        allowanceMintedSnapshot:suppliedEvidence.allowanceMintedSnapshot ?? null,
+        allowanceContractMintedSnapshot:suppliedEvidence.allowanceContractMintedSnapshot ?? null,
+        allowanceSource:suppliedEvidence.allowanceSource ?? null,
+        allowanceVerifiedAt:suppliedEvidence.allowanceVerifiedAt ?? null,
+        allowanceStageStartAt,
+      } : null;
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
+        if (reservationChanged) {
+          // The scheduler can encounter a legacy row whose wallet_address/chain columns predate
+          // reservation persistence. Resolve that identity from the owned wallet rather than
+          // moving it outside the same advisory-lock envelope used by new schedule creation.
+          const identity = await client.query(`SELECT
+              COALESCE(NULLIF(task.wallet_address,''),wallet.address) AS wallet_address,
+              COALESCE(NULLIF(task.chain,''),wallet.chain) AS chain,
+              task.contract_address
+            FROM mint_tasks task
+            LEFT JOIN wallets wallet ON wallet.user_id=task.user_id
+              AND LOWER(wallet.label)=LOWER(task.wallet_label)
+            WHERE task.user_id=$1 AND task.id=$2`,[task.userId,task.id]);
+          const envelope = identity.rows[0] || {};
+          if (!envelope.wallet_address || !envelope.chain || !envelope.contract_address
+            || !reservationStageKey) {
+            throw scheduleAllowanceUnavailable(
+              'The wallet allowance could not be rechecked while moving this schedule. Try again shortly.');
+          }
+          const lockKey = [task.userId,String(envelope.wallet_address).toLowerCase(),
+            String(envelope.chain).toLowerCase(),String(envelope.contract_address).toLowerCase()].join('|');
+          await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[lockKey]);
+          const active = await client.query(`SELECT active_task.* FROM mint_tasks active_task
+            LEFT JOIN wallets wallet ON wallet.user_id=active_task.user_id
+              AND LOWER(wallet.label)=LOWER(active_task.wallet_label)
+            WHERE active_task.user_id=$1 AND active_task.id<>$5
+              AND LOWER(COALESCE(NULLIF(active_task.wallet_address,''),wallet.address))=LOWER($2)
+              AND LOWER(COALESCE(NULLIF(active_task.chain,''),wallet.chain))=LOWER($3)
+              AND LOWER(active_task.contract_address)=LOWER($4)
+              AND active_task.status IN ('scheduled','claimed','retry','paused')
+            ORDER BY active_task.created_at,active_task.id FOR UPDATE OF active_task`,
+          [task.userId,envelope.wallet_address,envelope.chain,envelope.contract_address,task.id]);
+          const activeTasks = active.rows.map(mapTask);
+          const conflict = activeTasks.find(existing => {
+            const key = existing.reservationStageKey || scheduleReservationStageKey({
+              stageUuid:existing.stageUuid,stageLabel:existing.stageLabel,
+              stageType:existing.stageType,mintTime:existing.mintTime,
+            });
+            return key === reservationStageKey;
+          });
+          if (conflict) {
+            throw scheduleReservationConflict(
+              'This wallet already has an active mint scheduled for the next stage.');
+          }
+          enforceScheduleAllowanceEnvelope(activeTasks,{
+            ...task,walletAddress:envelope.wallet_address,chain:envelope.chain,
+            contract:envelope.contract_address,
+            mintTime:mintTimeSupplied ? mintTime : task.mintTime,
+            stageUuid:stageUuidSupplied ? stageUuid : task.stageUuid,
+            stageLabel:stageLabelSupplied ? stageLabel : task.stageLabel,
+            stageType:stageTypeSupplied ? stageType : task.stageType,
+            reservationStageKey,...allowanceEvidence,
+          });
+        }
         const updated = await client.query(`UPDATE mint_tasks SET status='retry',
           mint_time=CASE WHEN $5 THEN TO_TIMESTAMP($6 / 1000.0) ELSE mint_time END,
           next_attempt_at=TO_TIMESTAMP($4 / 1000.0),phase_wait_count=phase_wait_count+1,
@@ -344,13 +421,15 @@ function createSchedulerRepository(pool) {
           stage_label=CASE WHEN $11 THEN $12 ELSE stage_label END,
           stage_type=CASE WHEN $13 THEN $14 ELSE stage_type END,last_error=$15,
           reservation_stage_key=CASE WHEN $16 THEN $17 ELSE reservation_stage_key END,
-          allowance_scope=CASE WHEN $16 THEN 'unknown' ELSE allowance_scope END,
-          allowance_max_per_wallet=CASE WHEN $16 THEN NULL ELSE allowance_max_per_wallet END,
-          allowance_minted_snapshot=CASE WHEN $16 THEN NULL ELSE allowance_minted_snapshot END,
-          allowance_source=CASE WHEN $16 THEN NULL ELSE allowance_source END,
-          allowance_verified_at=CASE WHEN $16 THEN NULL ELSE allowance_verified_at END,
+          allowance_scope=CASE WHEN $16 THEN $18 ELSE allowance_scope END,
+          allowance_max_per_wallet=CASE WHEN $16 THEN $19 ELSE allowance_max_per_wallet END,
+          allowance_minted_snapshot=CASE WHEN $16 THEN $20 ELSE allowance_minted_snapshot END,
+          allowance_source=CASE WHEN $16 THEN $21 ELSE allowance_source END,
+          allowance_verified_at=CASE WHEN $16 THEN
+            CASE WHEN $22::BIGINT IS NULL THEN NULL ELSE TO_TIMESTAMP($22 / 1000.0) END
+            ELSE allowance_verified_at END,
           allowance_stage_start_at=CASE WHEN $16 THEN
-            CASE WHEN $5 THEN TO_TIMESTAMP($6 / 1000.0) ELSE TO_TIMESTAMP($4 / 1000.0) END
+            CASE WHEN $23::BIGINT IS NULL THEN NULL ELSE TO_TIMESTAMP($23 / 1000.0) END
             ELSE allowance_stage_start_at END,
           preflight_target_at=CASE WHEN $16 THEN
             CASE WHEN $5 THEN TO_TIMESTAMP($6 / 1000.0) ELSE TO_TIMESTAMP($4 / 1000.0) END
@@ -361,7 +440,10 @@ function createSchedulerRepository(pool) {
         [task.userId, task.id, task.attemptCount, retryAt, mintTimeSupplied, mintTime ?? null,
           deadlineSupplied, deadline, stageUuidSupplied, stageUuid ?? null,
           stageLabelSupplied, stageLabel ?? null, stageTypeSupplied, stageType ?? null, reason,
-          reservationChanged,reservationStageKey]);
+          reservationChanged,reservationStageKey,
+          allowanceEvidence?.allowanceScope ?? null,allowanceEvidence?.allowanceMaxPerWallet ?? null,
+          allowanceEvidence?.allowanceMintedSnapshot ?? null,allowanceEvidence?.allowanceSource ?? null,
+          allowanceEvidence?.allowanceVerifiedAt ?? null,allowanceEvidence?.allowanceStageStartAt ?? null]);
         if (updated.rowCount) {
           await finishAttempt(client, task, 'retry', reason, null);
           await armTaskPreflightRows(client,updated.rows[0]);

@@ -76,6 +76,11 @@ function createSchedulerWorker({ repository, intentRepository, transactionEngine
   // told execution is starting. Phase-aware schedules use it to defer without producing a false
   // "starting" notification; its returned snapshot is passed to executeTask for reuse.
   preflightTask = null,
+  // Optional phase-move enrichment. The server uses this to attach a fresh, authoritative wallet
+  // allowance snapshot before the repository changes a task's persisted stage. Keeping the hook
+  // injected leaves this generic worker independent from OpenSea/SeaDrop while still making the
+  // database move and its allowance check one serialized transaction.
+  preparePhaseDeferral = null,
   // A single in-flight task used to serialize every scheduled mint behind whichever one claimed
   // first, even though processTask() waits for full on-chain finality (up to policy's
   // transactionTimeoutMs, 10 minutes by default) before returning -- a second task whose own
@@ -195,9 +200,34 @@ function createSchedulerWorker({ repository, intentRepository, transactionEngine
       if (error?.code === SCHEDULE_PHASE_WAIT && error.phaseDeferral && repository.deferForPhase) {
         const reason = sanitizeError(error).slice(0, 500);
         let deferred;
-        try { deferred = await repository.deferForPhase(task, { ...error.phaseDeferral, reason }); }
+        try {
+          let details = { ...error.phaseDeferral, reason };
+          if (preparePhaseDeferral) {
+            const prepared = await preparePhaseDeferral(task, details);
+            if (prepared) details = prepared;
+          }
+          deferred = await repository.deferForPhase(task, details);
+        }
         catch (deferralError) {
-          if (deferralError?.code !== 'SCHEDULE_STAGE_DUPLICATE') throw deferralError;
+          if (deferralError?.code === 'SCHEDULE_ALLOWANCE_UNAVAILABLE') {
+            // Do not move with stale/absent evidence, and do not spend the normal RPC/execution
+            // retry budget either. Re-arm the SAME persisted stage briefly; the next claim will
+            // refresh both phase state and allowance again under the same bounded deadline.
+            const deadline = Number(error.phaseDeferral.deadline);
+            const allowanceRetryAt = Number.isFinite(deadline)
+              ? Math.min(now() + 1_000, deadline) : now() + 1_000;
+            const allowanceReason = sanitizeError(deferralError).slice(0, 500);
+            deferred = await repository.deferForPhase(task,{retryAt:allowanceRetryAt,
+              reason:allowanceReason});
+            if (!deferred) return 'retry';
+            Object.assign(task,deferred);
+            await Promise.resolve(notify?.({task,outcome:'retry',error:deferralError,
+              phaseWait:true})).catch(()=>{});
+            return 'retry';
+          }
+          if (!['SCHEDULE_STAGE_DUPLICATE','SCHEDULE_ALLOWANCE_EXCEEDED'].includes(deferralError?.code)) {
+            throw deferralError;
+          }
           const conflictReason = sanitizeError(deferralError).slice(0, 500);
           const outcome = await repository.fail(task,{reason:conflictReason,transient:false});
           await Promise.resolve(notify?.({task,outcome:'failed',error:deferralError})).catch(()=>{});

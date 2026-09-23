@@ -323,6 +323,29 @@ test('flow:scheduleviaopensea pre-fills the next stage\'s own opening time AND i
   assert.match(confirm.updates[0].content, /waits for a live phase/);
 });
 
+test('OpenSea scheduling cannot bypass the shared sensitive-action gate', async () => {
+  const flowState = createFlowStateStore();
+  const checked = [];
+  const ctx = {
+    identity: { resolveOrCreate: async () => 'internal-user' },
+    commands: withNextStage(), flowState, chains: CHAINS, rateLimiter: NO_LIMIT,
+    actionGate: {
+      allows: async (...args) => { checked.push(args); return false; },
+      submit: async () => ({ ok: true }),
+    },
+  };
+  await handleMintPasteMessage(ctx,
+    mockMessage('0x0000000000000000000000000000000000000001', 'osea-gated'));
+  const handler = createDiscordInteractionHandler(ctx);
+  const tap = buttonInteraction('flow:scheduleviaopensea', 'osea-gated');
+  await handler(tap);
+
+  assert.equal(checked.some(args => args[3] === 'schedule'), true);
+  assert.equal(flowState.get('discord', 'osea-gated').flow, 'mint_guided');
+  assert.equal(flowState.get('discord', 'osea-gated').step, 'awaiting_details');
+  assert.match(JSON.stringify(tap.updates[0] || tap.replies[0]), /unlock/i);
+});
+
 // Live-reported follow-up: the phase label alone ("Allowlist") isn't enough to tell two different
 // collections' tasks apart in /task list once more than one is staged -- the auto-derived name now
 // leads with the collection's own name too.
@@ -393,7 +416,7 @@ test('flow:scheduleviaopensea asks for a quantity when the contract allows more 
   assert.equal(created[0].input.quantity, 3, 'the quantity the user actually picked must reach createTask, not a hardcoded 1');
 });
 
-test('flow:scheduleviaopensea is a no-op when the card has no upcoming OpenSea stage, instead of scheduling against nothing', async () => {
+test('flow:scheduleviaopensea explains when no upcoming OpenSea stage remains instead of scheduling against nothing', async () => {
   const flowState = createFlowStateStore();
   const created = [];
   const commands = baseCommands({ createTask: async (userId, input) => { created.push({ userId, input }); return {}; } });
@@ -406,6 +429,8 @@ test('flow:scheduleviaopensea is a no-op when the card has no upcoming OpenSea s
   const tap = buttonInteraction('flow:scheduleviaopensea', 'osea-sched-2');
   await handler(tap);
   assert.equal(created.length, 0);
+  assert.equal(flowState.get('discord', 'osea-sched-2').step, 'awaiting_phase_pick');
+  assert.match(JSON.stringify(tap.replies[0] || tap.updates[0]), /no longer available/i);
 });
 
 // Round 22: a drop with more than one upcoming stage can't schedule "the next one" blindly anymore
@@ -494,6 +519,109 @@ test('flow:scheduleviaopensea shows a picker with more than one upcoming stage, 
   assert.equal(created.length, 1);
   assert.equal(created[0].input.name, 'Late FCFS');
   assert.equal(created[0].input.mintTime, new Date((FUTURE_START + 90_000) * 1000).toISOString());
+});
+
+test('the recommended action schedules the server-planned stage while manual override remains available',async()=>{
+  const flowState=createFlowStateStore();
+  const created=[];
+  const earlier={uuid:'e1',label:'Allowlist',startTime:FUTURE_START,endTime:FUTURE_START+600,
+    priceETH:0.05,maxPerWallet:1,stageType:'presale',eligibilityLabel:'Eligibility checked at opening'};
+  const later={uuid:'p1',label:'Public',startTime:FUTURE_START+600,endTime:FUTURE_START+3600,
+    priceETH:0.08,maxPerWallet:3,stageType:'public_sale',eligibilityLabel:'Open to all wallets'};
+  const commands=baseCommands({
+    detectMintContract:async()=>({
+      chain:'ethereum',isSeaDrop:true,priceKnown:false,valueWei:'0',maxSupply:100,maxPerWallet:1,
+      startTime:null,endTime:null,collection:{name:'Planned Drop'},soldOut:false,displayPrice:null,
+      drop:{isMinting:false,activeStage:null,nextStage:earlier,stages:[later,earlier]},
+      schedulePlan:{recommendedStageUuid:'e1',recommendedStageKey:'uuid:e1'},
+    }),
+    createTask:async(userId,input)=>{created.push({userId,input});return{id:'task-1',...input};},
+  });
+  const ctx={identity:{resolveOrCreate:async()=> 'internal-user'},commands,flowState,chains:CHAINS,rateLimiter:NO_LIMIT};
+  await handleMintPasteMessage(ctx,mockMessage('0x0000000000000000000000000000000000000001','osea-auto'));
+  const handler=createDiscordInteractionHandler(ctx);
+  const tap=buttonInteraction('flow:scheduleviaopensea','osea-auto');
+  await handler(tap);
+  const components=tap.replies[0].components.flatMap(row=>row.components);
+  assert.ok(components.some(component=>component.custom_id==='flow:scheduleviaopenseaauto'));
+  const manual=components.find(component=>component.custom_id==='flow:scheduleviaopenseaphase:select');
+  assert.deepEqual(manual.options.map(option=>option.value),['1','0'],'manual choices retain original provider indices');
+
+  await handler(buttonInteraction('flow:scheduleviaopenseaauto','osea-auto'));
+  const taskFlow=flowState.get('discord','osea-auto');
+  assert.equal(taskFlow.flow,'task_guided');
+  assert.equal(taskFlow.step,'awaiting_confirm');
+  assert.equal(taskFlow.data.stageUuid,'e1');
+  assert.equal(taskFlow.data.name,'Planned Drop — Allowlist');
+  assert.equal(taskFlow.data.eligibilityMode,'earliest_eligible');
+
+  await handler(buttonInteraction('flow:taskconfirm','osea-auto'));
+  assert.equal(created.length,1);
+  assert.equal(created[0].input.stageUuid,'e1');
+});
+
+test('stale recommended and manual phase controls require a fresh explicit phase choice',async()=>{
+  const flowState=createFlowStateStore();
+  const now=Math.floor(Date.now()/1000);
+  const opened={uuid:'old',label:'Allowlist',stageType:'allowlist',startTime:now-60,endTime:now+300,
+    priceETH:0,maxPerWallet:1};
+  const future={uuid:'next',label:'Public',stageType:'public_sale',startTime:now+3600,endTime:null,
+    priceETH:0,maxPerWallet:1};
+  const commands=baseCommands({
+    detectMintContract:async()=>({
+      chain:'ethereum',isSeaDrop:true,priceKnown:false,valueWei:'0',maxSupply:100,maxPerWallet:1,
+      startTime:null,endTime:null,collection:{name:'Changing Drop'},soldOut:false,displayPrice:null,
+      drop:{stages:[future]},schedulePlan:null,
+    }),
+  });
+  flowState.start('discord','stale-stage','mint_guided','awaiting_phase_pick',{
+    contractAddress:'0x0000000000000000000000000000000000000001',chain:'ethereum',isSeaDrop:true,
+    collection:{name:'Changing Drop'},drop:{stages:[opened,future]},
+    schedulePlan:{recommendedStageUuid:'old',recommendedStageKey:'uuid:old'},
+  });
+  const handler=createDiscordInteractionHandler({
+    identity:{resolveOrCreate:async()=> 'internal-user'},commands,flowState,chains:CHAINS,rateLimiter:NO_LIMIT,
+  });
+
+  const staleAuto=buttonInteraction('flow:scheduleviaopenseaauto','stale-stage');
+  await handler(staleAuto);
+  const autoPayload=staleAuto.updates[0]||staleAuto.replies[0];
+  const autoComponents=autoPayload.components.flatMap(row=>row.components);
+  assert.equal(autoComponents.some(component=>component.custom_id==='flow:scheduleviaopenseaauto'),false);
+  assert.deepEqual(autoComponents.find(component=>component.custom_id==='flow:scheduleviaopenseaphase:select').options
+    .map(option=>option.value),['0']);
+  assert.equal(flowState.get('discord','stale-stage').step,'awaiting_phase_pick');
+
+  flowState.start('discord','stale-manual','mint_guided','awaiting_phase_pick',{
+    contractAddress:'0x0000000000000000000000000000000000000001',chain:'ethereum',isSeaDrop:true,
+    collection:{name:'Changing Drop'},drop:{stages:[opened,future]},
+    schedulePlan:{recommendedStageUuid:'old',recommendedStageKey:'uuid:old'},
+  });
+  const staleManual=selectInteraction('flow:scheduleviaopenseaphase:select',['0'],'stale-manual');
+  await handler(staleManual);
+  const manualPayload=staleManual.updates[0]||staleManual.replies[0];
+  assert.match(manualPayload.content,/Which phase/);
+  assert.equal(flowState.get('discord','stale-manual').step,'awaiting_phase_pick');
+  assert.equal(flowState.get('discord','stale-manual').data.drop.stages[0].uuid,'next');
+});
+
+test('the schedule-suggestion recheck requests the complete drop plan before falling back to an on-chain time',async()=>{
+  const flowState=createFlowStateStore();
+  const inputs=[];
+  const commands=baseCommands({
+    detectMintContract:async(userId,input)=>{
+      inputs.push(input);
+      return {
+        chain:'ethereum',isSeaDrop:true,priceKnown:true,valueWei:'1000000000000000000',
+        maxSupply:100,maxPerWallet:1,startTime:FUTURE_START,endTime:null,collection:null,
+        soldOut:false,displayPrice:null,drop:null,schedulePlan:null,
+      };
+    },
+  });
+  const ctx={identity:{resolveOrCreate:async()=> 'internal-user'},commands,flowState,chains:CHAINS,rateLimiter:NO_LIMIT};
+  await pasteAndTapSchedule(ctx,'planner-recheck');
+  assert.ok(inputs.length>=2);
+  assert.equal(inputs.at(-1).includeDrop,true);
 });
 
 test('picking "custom" opens a modal; submitting it reaches the same confirm screen', async () => {

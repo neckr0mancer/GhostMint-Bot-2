@@ -1,9 +1,11 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
+const { Buffer } = require('node:buffer');
 const {
   mainMenu, walletsMenu, settingsMenu, tasksMenu, taskActions, confirmCancelTask, chainPicker, walletPicker,
   mintModeMenu, batchImportMenu,
   contractDetails, contractDetailsText, collectionInfoCard, mintConfirmation, gasTolerancePrompt,
+  openSeaPhasePicker,
   taskConfirmation, taskScheduled, confirmRemoveWallet, placeholderMenu,
   sniperMenu, sniperChainSelect, sniperObservationMode, sniperPendingRiskWarning,
   sniperTolerancePrompt, sniperConfirmation, activityMenu, adminOverviewMenu,
@@ -78,6 +80,33 @@ test('the remove-wallet confirmation embeds the exact label being removed', () =
 test('placeholder menu always offers a way back to the main menu', () => {
   const menu = placeholderMenu('Mint', 'Use /mintnow for now.');
   assert.deepEqual(flatButtons(menu.replyMarkup).map(b => b.callback_data), ['menu:main']);
+});
+
+test('OpenSea phase picker presents one recommendation first and keeps every manual phase choice',()=>{
+  const stages=[
+    {index:1,label:'Allowlist',stageType:'allowlist',startTime:1_900_000_000,eligibilityLabel:'Eligibility checked at opening'},
+    {index:4,label:'Public',stageType:'public_sale',startTime:1_900_003_600},
+  ];
+  const picker=openSeaPhasePicker(stages,stages[0]);
+  const buttons=flatButtons(picker.replyMarkup);
+  assert.equal(buttons[0].callback_data,'flow:scheduleviaopenseaauto');
+  assert.match(buttons[0].text,/Recommended: Allowlist/);
+  assert.deepEqual(buttons.slice(1,3).map(item=>item.callback_data),[
+    'flow:scheduleviaopenseaphase:1','flow:scheduleviaopenseaphase:4',
+  ]);
+  assert.match(picker.text,/Eligibility checked at opening/);
+  assert.ok(buttons.every(item=>!item.callback_data||Buffer.byteLength(item.callback_data)<=64));
+});
+
+test('OpenSea phase picker never invents an automatic choice when no recommendation exists',()=>{
+  const picker=openSeaPhasePicker([{index:0,label:'Public',startTime:1_900_000_000}]);
+  assert.equal(flatButtons(picker.replyMarkup).some(item=>item.callback_data==='flow:scheduleviaopenseaauto'),false);
+});
+
+test('an expired OpenSea phase picker gives a clear refresh path without a fake phase action',()=>{
+  const picker=openSeaPhasePicker([]);
+  assert.match(picker.text,/no longer available/i);
+  assert.deepEqual(flatButtons(picker.replyMarkup).map(item=>item.callback_data),['flow:cancel:ask']);
 });
 
 test('the tasks menu offers a way to schedule a mint and a way back to the main menu', () => {

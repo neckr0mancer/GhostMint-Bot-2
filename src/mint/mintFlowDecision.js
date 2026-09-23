@@ -9,6 +9,8 @@
 // returned step: it means "nothing left to ask, run the mint now," and it's the caller's job to
 // actually do that and render the result, matching how it renders every other step.
 //
+const { resolveRecommendedScheduleStage, scheduleStageFacts, scheduleStageKey } = require('./scheduleStagePlanning');
+
 // This intentionally covers only mint_guided's chain (details -> quantity -> wallet -> price ->
 // confirm/execute). task_guided's schedule flow has its own shape (it always wants a name and
 // never auto-selects a wallet the same way) and is out of scope here.
@@ -79,9 +81,16 @@ function schedulableStages({ drop, now = Date.now() }) {
   // reorders things) -- it's what a picker's callback carries back, short enough to fit Telegram's
   // 64-byte callback_data budget unlike OpenSea's own 36-char stage uuid, and the handler indexes
   // back into drop.stages with it rather than trusting a re-fetched/re-ordered list.
-  return (drop?.stages || [])
+  const allStages = drop?.stages || [];
+  return allStages
     .map((stage, index) => ({ ...stage, index }))
-    .filter(stage => stage.startTime && stage.startTime * 1000 > now)
+    .filter(stage => {
+      const startMs = Number(stage.startTime) * 1000;
+      const endMs = Number(stage.endTime) * 1000;
+      return Number.isFinite(startMs) && startMs > now
+        && (!Number.isFinite(endMs) || endMs <= 0 || endMs > now)
+        && scheduleStageFacts(stage, { stages: allStages }).schedulable;
+    })
     .sort((a, b) => a.startTime - b.startTime);
 }
 
@@ -89,10 +98,20 @@ function schedulableStages({ drop, now = Date.now() }) {
 // (same "don't ask when there's only one option" principle afterQuantity already applies to wallet
 // auto-select), so it goes straight to scheduling that one. More than one genuinely needs the
 // user's own choice -- OpenSea drops aren't capped at any fixed stage count.
-function afterScheduleViaOpenSeaTap({ drop, now = Date.now() }) {
+function afterScheduleViaOpenSeaTap({ drop, schedulePlan, now = Date.now() }) {
   const stages = schedulableStages({ drop, now });
-  if (stages.length <= 1) return { type: 'direct', stage: stages[0] || null };
-  return { type: 'pick', stages };
+  const recommended = resolveRecommendedScheduleStage({ drop, schedulePlan, now });
+  const recommendedStage = recommended
+    ? stages.find(stage => scheduleStageKey(stage) === scheduleStageKey(recommended)) || null
+    : null;
+  if (stages.length <= 1) {
+    const stage = stages[0] || null;
+    // If the server recommendation no longer resolves, do not silently turn an old Recommended
+    // button into the one different phase that happens to remain. Require an explicit manual pick.
+    if (stage && schedulePlan && !recommendedStage) return { type: 'pick', stage: null, stages, recommendedStage:null };
+    return { type: 'direct', stage, stages, recommendedStage };
+  }
+  return { type: 'pick', stages, recommendedStage };
 }
 
 module.exports = { afterDetails, afterQuantity, afterWalletSelection, afterPriceResolved, afterGasToleranceResolved, schedulableStages, afterScheduleViaOpenSeaTap };

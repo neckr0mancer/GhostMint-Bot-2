@@ -30,6 +30,13 @@ test('phase eligibility deadline never exceeds 24 hours from the submitted minut
   assert.equal(Date.parse(deadline)-Date.parse(mintTime),24*60*60*1000);
 });
 
+test('initial detection and stage switching preserve provider seconds in scheduled mint time',()=>{
+  assert.match(app,/setMintTime\(stageMintTimeLocalValue\(detectedStart\)\)/);
+  assert.match(app,/setMintTime\(stageMintTimeLocalValue\(t\)\)/);
+  assert.match(app,/type="datetime-local" step="1"/);
+  assert.doesNotMatch(app,/setMintTime\(local\.toISOString\(\)\.slice\(0,16\)\)/);
+});
+
 test('Schedule exposes its countdown and readable metadata on mobile',()=>{
   assert.match(app,/function rowCountdown\(task\)/);
   assert.match(app,/formatScheduleDateTime\(at\)/);
@@ -197,6 +204,17 @@ test('Schedule uses detected facts instead of asking the user to invent a task n
   assert.match(schedule,/Detected <b>\{detectedName\|\|'contract'\}<\/b>/);
   assert.match(schedule,/price and eligibility checked at opening/);
   assert.match(schedule,/max \{maxPerWallet\}\/wallet/);
+});
+
+test('Schedule quantity controls obey the detected wallet cap',()=>{
+  const start=app.indexOf('function Tasks(');
+  const end=app.indexOf('function Activity(',start);
+  const schedule=app.slice(start,end);
+  assert.match(schedule,/const quantityMax=maxPerWallet\|\|100/);
+  assert.match(schedule,/name="quantity" type="number" min=\{1\} max=\{quantityMax\}/);
+  assert.match(schedule,/quantityPicks\(quantityMax\)/);
+  assert.match(schedule,/Math\.min\(normalized,quantityPolicy\.max\)/,
+    'a quantity entered before detection must be reduced to the detected legal maximum');
 });
 
 test('Schedule uses the server recommendation without pretending a future allowlist is already eligible',()=>{

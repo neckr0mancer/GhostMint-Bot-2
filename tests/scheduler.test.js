@@ -161,10 +161,17 @@ test('waiting for a live eligible phase durably re-arms without spending the exe
   });
   const events = [];
   let executed = false;
+  let prepared = false;
   const worker = createSchedulerWorker({
     repository,
     intentRepository:{ get:async () => null, getByIdempotencyKey:async () => null },
     transactionEngine:{}, preflightTask:async () => { throw wait; },
+    preparePhaseDeferral:async (value,details) => {
+      prepared = true;
+      assert.equal(value.id,task().id);
+      return {...details,allowanceEvidence:{allowanceScope:'contract_cumulative',
+        allowanceMaxPerWallet:'10',allowanceMintedSnapshot:'2'}};
+    },
     executeTask:async () => { executed = true; throw new Error('must not execute while waiting'); },
     notify:async event => events.push(event),
   });
@@ -173,6 +180,8 @@ test('waiting for a live eligible phase durably re-arms without spending the exe
   const deferred = repository.calls.find(call => call[0] === 'deferForPhase');
   assert.equal(deferred[1].retryAt, retryAt);
   assert.equal(deferred[1].stageUuid, 'public-stage');
+  assert.equal(deferred[1].allowanceEvidence.allowanceScope,'contract_cumulative');
+  assert.equal(prepared,true);
   assert.equal(repository.calls.some(call => call[0] === 'fail'), false,
     'phase waiting must not pass through maxAttempts-based failure handling');
   assert.equal(executed, false);
@@ -180,6 +189,34 @@ test('waiting for a live eligible phase durably re-arms without spending the exe
     'waiting must not emit a misleading starting notification');
   assert.equal(events.at(-1).phaseWait, true);
   assert.equal(events.at(-1).task.stageUuid, 'public-stage');
+});
+
+test('an unavailable allowance refresh retries the same stage without spending execution attempts',async()=>{
+  const repository=repositoryFixture();
+  repository.deferForPhase=async(value,details)=>{
+    repository.calls.push(['deferForPhase',details,value]);
+    return {...value,status:'retry',nextAttemptAt:details.retryAt,
+      phaseWaitCount:(value.phaseWaitCount||0)+1};
+  };
+  const wait=Object.assign(new Error('Waiting for Public.'),{code:SCHEDULE_PHASE_WAIT,
+    phaseDeferral:{retryAt:9_000,deadline:20_000,stageUuid:'public-stage',stageLabel:'Public'}});
+  const unavailable=Object.assign(new Error('Allowance refresh unavailable'),{
+    code:'SCHEDULE_ALLOWANCE_UNAVAILABLE'});
+  const events=[];
+  const worker=createSchedulerWorker({repository,
+    intentRepository:{get:async()=>null,getByIdempotencyKey:async()=>null},transactionEngine:{},
+    now:()=>5_000,preflightTask:async()=>{throw wait;},
+    preparePhaseDeferral:async()=>{throw unavailable;},
+    executeTask:async()=>{throw new Error('must not execute');},
+    notify:async event=>events.push(event)});
+
+  assert.equal(await worker.processTask(task({attemptCount:8,phaseWaitCount:7,maxAttempts:1})),'retry');
+  const deferred=repository.calls.filter(call=>call[0]==='deferForPhase');
+  assert.equal(deferred.length,1);
+  assert.deepEqual(deferred[0][1],{retryAt:6_000,reason:'Allowance refresh unavailable'});
+  assert.equal(repository.calls.some(call=>call[0]==='fail'),false);
+  assert.equal(events.at(-1).phaseWait,true);
+  assert.equal(events.at(-1).error.code,'SCHEDULE_ALLOWANCE_UNAVAILABLE');
 });
 
 test('a phase advance into an already-reserved stage records one clear failure instead of crashing the worker',async()=>{
@@ -199,6 +236,25 @@ test('a phase advance into an already-reserved stage records one clear failure i
   assert.equal(failed[1].transient,false);
   assert.match(failed[1].reason,/already has an active mint scheduled/);
   assert.equal(events.at(-1).outcome,'failed');
+});
+
+test('a phase advance that exceeds a proven allowance records a permanent clear failure',async()=>{
+  const repository=repositoryFixture();
+  repository.deferForPhase=async()=>{const error=new Error('This wallet can schedule 1 more mint before that stage.');
+    error.code='SCHEDULE_ALLOWANCE_EXCEEDED';throw error;};
+  const wait=Object.assign(new Error('Moving to Public.'),{
+    code:SCHEDULE_PHASE_WAIT,phaseDeferral:{retryAt:9_000,stageUuid:'public-2',stageLabel:'Public'},
+  });
+  const events=[];
+  const worker=createSchedulerWorker({repository,
+    intentRepository:{get:async()=>null,getByIdempotencyKey:async()=>null},transactionEngine:{},
+    preflightTask:async()=>{throw wait;},executeTask:async()=>{throw new Error('must not execute');},
+    notify:async event=>events.push(event)});
+  assert.equal(await worker.processTask(task()),'failed');
+  const failed=repository.calls.find(call=>call[0]==='fail');
+  assert.equal(failed[1].transient,false);
+  assert.match(failed[1].reason,/schedule 1 more mint/);
+  assert.equal(events.at(-1).error.code,'SCHEDULE_ALLOWANCE_EXCEEDED');
 });
 
 test('many phase checks still leave the first real RPC failure on the first retry delay', async () => {

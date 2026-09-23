@@ -99,6 +99,14 @@ must not be advertised as mint-capable until its end-to-end path passes that mat
   contract-cumulative boundary, and already-minted plus every active earlier/equal reservation
   must fit. Display/OpenSea maxima remain informational and cannot block a schedule. The dashboard
   no longer derives enforcement from a paginated task list or mixes unrelated stage limits.
+- Phase advancement now uses that same wallet + chain + contract advisory-lock envelope. Before a
+  task changes its persisted stage, the worker refreshes authoritative evidence, locks and reloads
+  every active reservation, rejects a same-stage collision or over-cap move, and commits the new
+  stage plus evidence together. If the evidence RPC is temporarily unavailable, the task keeps its
+  old stage and retries without spending its execution-attempt budget. The allowance engine also
+  supports proven `per_stage` counters without subtracting other stages; a marketplace/display cap
+  without an authoritative stage-local minted counter remains `unknown` and cannot become a hard
+  limit.
 - Five-minute and 30-second readiness checks are now durable PostgreSQL rows, claimed with
   `FOR UPDATE SKIP LOCKED` and recoverable after an expired worker lease. A real phase/opening-time
   move increments a generation and re-arms both checkpoints; ordinary RPC retries do not.
@@ -112,14 +120,19 @@ must not be advertised as mint-capable until its end-to-end path passes that mat
 
 ### Still required before this broader schedule-intelligence request is complete
 
-- **Wallet-aware planning and phase changes:** expose per-stage evidence/current minted/reserved/
-  remaining values, distinguish the earliest confirmed-open recommendation from an earlier
-  `check_at_open` possibility, and recompute reservation evidence atomically if a task advances to
-  another phase. OpenSea stage/order maxima remain unverified unless their scope is proven.
-- **Shared bot auto-planning surface:** Telegram and Discord already persist picked OpenSea phases,
-  but their guided schedule UX still asks the user to choose rather than offering the dashboard's
-  new automatic earliest-stage recommendation. They must consume the same planner when automatic
-  selection is added; no third platform-specific planner.
+- **Wallet-aware planning display:** expose per-stage evidence/current minted/reserved/remaining
+  values and distinguish the earliest confirmed-open recommendation from an earlier
+  `check_at_open` possibility. OpenSea stage/order maxima remain unverified unless their scope is
+  proven.
+- **Shared bot auto-planning surface — completed locally 2026-09-22:** Telegram `/schedule`, the
+  Telegram collection flow, and Discord's guided collection flow now consume the same
+  server-produced `schedulePlan` as the dashboard. Multi-stage pickers put the recommendation first
+  while retaining every safe manual stage choice; stale/ambiguous recommendations never invent an
+  automatic phase. Both bots also build the resulting task through one shared schedule-draft helper,
+  so stage identity, eligibility mode, deadline, price, and quantity-cap handling cannot drift.
+  Expired recommendation/manual controls are revalidated before task creation and require a fresh
+  explicit choice; an open-ended later public phase keeps `earliest_eligible` alive only up to the
+  existing 24-hour safety bound rather than expiring at the earlier allowlist's end.
 
 ## 2026-09-02 checkpoint — configurable copy-sniper timing
 
@@ -2605,3 +2618,85 @@ with assertions unchanged.
 - Dark/Light, 375/768/1024/1440, keyboard focus preserved
 
 **Status:** Documented for prioritization; not implemented in this unit per owner instruction.
+
+## Feature Request — Scheduled Mint Price/Configuration/Opening Changes (Documented 2026-09-20, Not Implemented)
+
+**Original request (rephrased):** A project may change a scheduled mint's price, configuration, or
+opening time after the task was created. GhostMint must make the change visible, offer a clear
+continue/reschedule action, and support a per-task automatic policy instead of either failing with
+no explanation or silently spending an unexpected amount.
+
+**Current protection that must be preserved:** durable five-minute and 30-second readiness checks,
+fresh phase/SeaDrop reads, balance/policy/simulation checks immediately before broadcast, bounded
+24-hour stage re-arming, and the shared scheduler used by Dashboard, Telegram, and Discord. These
+prevent stale calldata from being sent, but they do not yet record user consent for a changed
+price/time.
+
+**Safe product policy:**
+
+- Price decrease: continue automatically after the ordinary final checks.
+- Price increase: pause and ask by default. An opt-in automatic path must require a concrete
+  per-task maximum price or maximum total debit. Never offer an unbounded "whatever it costs"
+  override; the per-task cap applies even to owners, while governance ceilings remain an additional
+  outer limit for non-owners.
+- Opening-time change: notify once and offer **Reschedule**. Automatic rescheduling is allowed only
+  within the task's explicit maximum delay and existing eligibility deadline; extending either
+  boundary requires explicit confirmation.
+- Configuration/calldata/fee-recipient change: rebuild, re-simulate, record exactly what changed,
+  and require the same approval rule when the change can increase spend or materially change the
+  call.
+
+**Required durable state:** accepted price/value, last-observed price/value, accepted opening time,
+price-change policy and cap, time-change policy and maximum delay, pending-approval state, and a
+change-event audit record. Re-arm `mint_time`, `next_attempt_at`, preflight generation, reminders,
+and the visible countdown together so the UI and worker never disagree.
+
+**Delivery/UX acceptance:** one shared approval/reschedule state across Dashboard, Telegram, and
+Discord; one durable notification per detected change; failed delivery on one platform must not
+duplicate a successful alert on another; task details show old/new price or time, evidence source,
+decision, and the final value used at execution.
+
+**Status:** Deferred until the schedule-change policy/schema is implemented and reviewed as a
+safety feature; the present final-time checks remain authoritative in the meantime.
+
+## Feature Request — Wallet import surfaces and persistent wallet action bar (Documented 2026-09-21, Not Implemented)
+
+**Original request (rephrased):** Restore or expose ordinary **Import wallet** and owner-only
+**Batch import wallets** on the dashboard Wallets page. In every expanded-wallet view, place a
+prominent action row above the Summary / Activity / Performance / Manage tabs with four icon-led
+actions: **Buy**, **Receive**, **Send**, and **Swap**. The row remains easy to reach regardless of
+which wallet detail tab is selected.
+
+**Existing capability to reuse:** private-key/seed import validation, encrypted persistence, duplicate
+wallet rejection, and owner-only batch import already exist in the shared service layer. Public
+receive-address QR generation also exists. This task must expose those same capabilities; it must
+not create parallel dashboard-only import or wallet logic.
+
+**Truthful rollout:**
+
+- **Receive** is the first functional action. It opens a dedicated, fully designed overlay showing
+  the selected wallet's public address, chain/network context, scannable QR code, copy-address
+  control, and an explicit warning to verify the chain before funding. No private key or recovery
+  phrase may ever be encoded in the QR.
+- **Buy**, **Send**, and **Swap** keep their final action positions and appropriate icons, but remain
+  visibly disabled or labelled **Coming soon** until each uses a real shared-service flow. They must
+  never imply a quote, route, balance effect, or transaction capability that is not implemented.
+- Dashboard import must keep the existing security copy: generated wallets remain recommended;
+  private-key/seed import is a fallback over HTTPS and must never echo secret material in any API
+  response, notification, activity entry, audit row, or log. Batch import stays owner-only and must
+  show per-wallet success/failure without exposing submitted secrets.
+
+**Layout and acceptance:**
+
+- The action row renders above the wallet detail tab switcher on desktop and mobile, with reachable
+  touch targets, keyboard focus, screen-reader labels, and no horizontal overflow at 390 px.
+- Opening Receive always uses the currently expanded wallet and refreshes the displayed public
+  address/chain when another wallet is selected; closing restores focus to the Receive action.
+- Import wallet and Batch import wallets are discoverable from the Wallets page. Batch import is
+  hidden or denied for non-owners using the existing server-side owner check, not UI hiding alone.
+- Import, QR, empty, loading, error, and success states are verified in both themes at
+  390/768/1024/1440 widths. Existing Summary / Activity / Performance / Manage behavior remains
+  unchanged beneath the new action row.
+
+**Status:** recorded for the Wallets dashboard fidelity pass. No Buy/Send/Swap transaction flow is
+claimed or implemented by this worklist entry.

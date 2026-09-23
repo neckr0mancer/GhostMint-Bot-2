@@ -25,7 +25,8 @@ const discordMenus = require('./menus');
 // see src/mint/mintFlowDecision.js for why this exists as one shared module instead of a
 // hand-mirrored copy per platform.
 const mintFlowDecision = require('../mint/mintFlowDecision');
-const { stageRequiresEligibilityCheck } = require('../mint/scheduleStagePlanning');
+const { buildOpenSeaScheduleTaskData } = require('../mint/openSeaScheduleDraft');
+const { scheduleStageKey } = require('../mint/scheduleStagePlanning');
 const watchRuleFlowDecision = require('../social/watchRuleFlowDecision');
 const sniperFlowDecision = require('../sniper/sniperFlowDecision');
 
@@ -213,7 +214,7 @@ const FLOW_CONTINUATIONS = {
   wallet_batch_import: ['wallet:batch-import:add', 'flow:batchkeys:submit', 'wallet:batch-import:confirm'],
   // Section AA -- every custom_id stays fixed (select-menu VALUES carry the chosen quantity/
   // wallet, never the custom_id itself), so this list needs no dynamic/prefix matching.
-  mint_guided: ['flow:mintdetailscontinue', 'flow:detailsrefresh', 'flow:schedulesuggest', 'flow:mintqty:select', 'flow:mintqty:submit', 'flow:mintwallet:select', 'flow:mintwalletmulti:select', 'flow:mintwalletmulti:continue', 'flow:priceaccept', 'flow:pricemanual', 'flow:mintprice:submit', 'flow:gastoleranceaccept', 'flow:gastolerancemanual', 'flow:gastolerance:submit', 'flow:mintconfirm', 'flow:mintviaopensea', 'flow:scheduleviaopensea', 'flow:scheduleviaopenseaphase:select'],
+  mint_guided: ['flow:mintdetailscontinue', 'flow:detailsrefresh', 'flow:schedulesuggest', 'flow:mintqty:select', 'flow:mintqty:submit', 'flow:mintwallet:select', 'flow:mintwalletmulti:select', 'flow:mintwalletmulti:continue', 'flow:priceaccept', 'flow:pricemanual', 'flow:mintprice:submit', 'flow:gastoleranceaccept', 'flow:gastolerancemanual', 'flow:gastolerance:submit', 'flow:mintconfirm', 'flow:mintviaopensea', 'flow:scheduleviaopensea', 'flow:scheduleviaopenseaauto', 'flow:scheduleviaopenseaphase:select'],
   // Section AF follow-up: Discord's mini schedule flow (Section S's full guided flow remains
   // unbuilt) -- a fixed chain, optional quantity select/modal (only when maxPerWallet > 1) ->
   // wallet select -> name select -> optional custom-name modal -> confirm, with no dynamic values
@@ -308,7 +309,8 @@ function mintFlowRenderPayload(step, data, { wallets = [], chains = {} } = {}) {
   // (mintFlowDecision.afterScheduleViaOpenSeaTap); re-derived from data.drop rather than stored
   // separately, so a re-render (e.g. after a bot restart) shows the same list.
   if (step === 'awaiting_phase_pick') {
-    return discordMenus.openSeaPhasePicker(mintFlowDecision.schedulableStages({ drop: data.drop }), chains[data.chain]?.sym);
+    const decision = mintFlowDecision.afterScheduleViaOpenSeaTap({ drop: data.drop, schedulePlan: data.schedulePlan });
+    return discordMenus.openSeaPhasePicker(decision.stages || [], chains[data.chain]?.sym, decision.recommendedStage);
   }
   if (step === 'awaiting_quantity') return discordMenus.mintQuantitySelect(data);
   if (step === 'awaiting_wallet') {
@@ -427,50 +429,10 @@ async function finishMintExecutionDiscord(ctx, respond, platformUserId, userId, 
 // viaOpenSea task rather than asking the user to re-type something already known. The collection
 // name makes each row identifiable in /task list once more than one collection is staged at once;
 // falls back to the phase name alone when OpenSea has no collection name for this contract.
-function openSeaPhaseTaskName(mintFlowData, stage) {
-  const phase = stage.label || discordMenus.humanizeStageType(stage.stageType);
-  return mintFlowData.collection?.name ? `${mintFlowData.collection.name} — ${phase}` : phase;
-}
-function openSeaPhaseEligibilityDeadline(mintFlowData, stage) {
-  const startTime = Number(stage.startTime);
-  const cap = startTime + 24 * 60 * 60;
-  // earliest_eligible may legitimately move from an ineligible allowlist into the following
-  // public phase, so use the latest advertised end at/after the selected phase, capped at 24h.
-  // Using only the selected allowlist's end would expire the task at the exact moment public opens.
-  const advertisedEnds = (mintFlowData.drop?.stages || [])
-    .filter(candidate => Number(candidate.startTime) >= startTime)
-    .map(candidate => Number(candidate.endTime))
-    .filter(endTime => Number.isFinite(endTime) && endTime > startTime);
-  const latestAdvertisedEnd = advertisedEnds.length ? Math.max(...advertisedEnds) : null;
-  const deadlineSeconds = latestAdvertisedEnd === null ? cap : Math.min(latestAdvertisedEnd, cap);
-  return new Date(deadlineSeconds * 1000).toISOString();
-}
+// Kept as the local call-site name so this flow remains readable; the actual task draft is shared
+// with Telegram and cannot drift in stage identity, deadline, price, or eligibility semantics.
 function openSeaPhaseTaskData(mintFlowData, stage) {
-  const requiresEligibilityCheck = stageRequiresEligibilityCheck(stage);
-  const viaOpenSea = !mintFlowData.isSeaDrop || requiresEligibilityCheck;
-  const detectedPrice = stage.priceWei !== null && stage.priceWei !== undefined
-    ? Number(formatEther(BigInt(stage.priceWei)))
-    : (Number.isFinite(stage.priceETH) ? stage.priceETH : undefined);
-  return {
-    contractAddress: mintFlowData.contractAddress, chain: mintFlowData.chain,
-    priceETH: viaOpenSea ? 0 : detectedPrice, priceUnknown: !viaOpenSea && detectedPrice === undefined,
-    viaOpenSea,
-    stageUuid: stage.uuid || null, stageLabel: stage.label || null, stageType: stage.stageType || null,
-    // The opening time is a not-before wake-up, not a promise to broadcast blindly at that
-    // second. Gated OpenSea-builder tasks may advance from an ineligible allowlist to a later
-    // advertised phase; direct public SeaDrop tasks stay pinned to this exact public-stage UUID.
-    eligibilityMode: requiresEligibilityCheck ? 'earliest_eligible' : 'specific_stage',
-    eligibilityDeadline: openSeaPhaseEligibilityDeadline(mintFlowData, stage),
-    mintTime: new Date(stage.startTime * 1000).toISOString(),
-    name: openSeaPhaseTaskName(mintFlowData, stage),
-    // The chosen stage carries its own per-wallet cap (normalizeStage maps OpenSea's
-    // max_per_wallet); mintFlowData's came from the collection card, which reads the on-chain
-    // PublicDrop -- a single MUTABLE struct holding whichever phase the project configured last,
-    // not the stage being scheduled. Using it asked "how many?" against the wrong stage entirely
-    // (live-reported on a 1-per-wallet PUBLIC phase). Falls back to the card value only when
-    // OpenSea gave no cap for this stage, so the gate never silently disappears.
-    maxPerWallet: stage.maxPerWallet ?? mintFlowData.maxPerWallet,
-  };
+  return buildOpenSeaScheduleTaskData(mintFlowData, stage);
 }
 
 function taskConfirmPayload(taskData, chains) {
@@ -583,7 +545,7 @@ async function startMintGuidedFlow(ctx, respond, platformUserId, userId, contrac
     maxSupply: detected.maxSupply, maxPerWallet: detected.maxPerWallet,
     startTime: detected.startTime, endTime: detected.endTime, collection: detected.collection,
     soldOut: detected.soldOut, displayPrice: detected.displayPrice,
-    stats: detected.stats, drop: detected.drop, includeStats,
+    stats: detected.stats, drop: detected.drop, schedulePlan: detected.schedulePlan, includeStats,
     openSeaUrl: OPENSEA_CHAIN_SLUGS[detected.chain] ? `https://opensea.io/assets/${OPENSEA_CHAIN_SLUGS[detected.chain]}/${contractAddress}` : null,
     skipConfirm: false,
     originMessagePublic,
@@ -641,6 +603,21 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
   // Section AA: shared bundle applyMintFlowStep/finishMintExecutionDiscord/startMintGuidedFlow
   // need, so every call site below passes the same four dependencies instead of re-listing them.
   const mintCtx = { commands, flowState, chains, rateLimiter };
+  const backToMenu = [discordMenus.row([discordMenus.button('⬅️ Back to menu', 'menu:main')])];
+  const refreshOpenSeaScheduleData = async (userId, data) => {
+    const detected = await commands.detectMintContract(userId, {
+      contractAddress:data.contractAddress, quantity:1, includeDrop:true,
+    });
+    return {
+      ...data, chain:detected.chain, isSeaDrop:detected.isSeaDrop,
+      priceETH:detected.priceKnown ? Number(formatEther(BigInt(detected.valueWei))) : undefined,
+      priceUnknown:!detected.priceKnown, maxSupply:detected.maxSupply,
+      maxPerWallet:detected.maxPerWallet, startTime:detected.startTime,
+      endTime:detected.endTime, collection:detected.collection, soldOut:detected.soldOut,
+      displayPrice:detected.displayPrice, stats:detected.stats, drop:detected.drop,
+      schedulePlan:detected.schedulePlan,
+    };
+  };
   // Deferred (or already-replied) is the common case now that handleComponent defers up front --
   // followUp() posts a fresh ephemeral message without needing a prior reply(). The one exception
   // is a modal-reserved tap (see willShowModal) that turns out to be stale/not-mine: no ack ever
@@ -1027,30 +1004,75 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
       // advance shape. A single schedulable stage goes straight there (afterScheduleViaOpenSeaTap);
       // more than one shows a picker first (awaiting_phase_pick).
       if (data === 'flow:scheduleviaopensea') {
+        if (!await actionGate.allows(userId, 'discord', platformUserId, 'schedule')) {
+          return dcRespond(interaction, discordMenus.gateUnlockCard({ action: 'schedule' }));
+        }
         const flow = flowState.get('discord', platformUserId);
         if (!flow || flow.flow !== 'mint_guided' || flow.step !== 'awaiting_details') return notYourMintPrompt(interaction);
-        const decision = mintFlowDecision.afterScheduleViaOpenSeaTap({ drop: flow.data.drop });
         const wentEphemeral = Boolean(flow.data.originMessagePublic);
-        if (wentEphemeral) neutralizeMintOriginMessage(interaction);
         const respond = payload => (wentEphemeral ? interaction.followUp({ ...payload, ephemeral: true }).catch(() => {}) : dcRespond(interaction, payload));
-        if (decision.type === 'pick') {
-          flowState.advance('discord', platformUserId, 'awaiting_phase_pick', { ...flow.data, originMessagePublic: false });
-          return respond(discordMenus.openSeaPhasePicker(decision.stages, chains[flow.data.chain]?.sym));
+        let refreshed;
+        try { refreshed = await refreshOpenSeaScheduleData(userId,flow.data); }
+        catch {
+          return respond({content:'Could not re-check the mint phases right now. Try again shortly.',components:backToMenu});
         }
-        if (!decision.stage) return notYourMintPrompt(interaction);
-        const taskData = openSeaPhaseTaskData(flow.data, decision.stage);
+        const decision = mintFlowDecision.afterScheduleViaOpenSeaTap({
+          drop:refreshed.drop,schedulePlan:refreshed.schedulePlan,
+        });
+        if (wentEphemeral) neutralizeMintOriginMessage(interaction);
+        if (decision.type === 'pick') {
+          flowState.advance('discord', platformUserId, 'awaiting_phase_pick', { ...refreshed, originMessagePublic: false });
+          return respond(discordMenus.openSeaPhasePicker(decision.stages, chains[refreshed.chain]?.sym, decision.recommendedStage));
+        }
+        if (!decision.stage) {
+          flowState.advance('discord', platformUserId, 'awaiting_phase_pick', {
+            ...refreshed, originMessagePublic: false,
+          });
+          return respond(discordMenus.openSeaPhasePicker([], chains[refreshed.chain]?.sym));
+        }
+        const taskData = openSeaPhaseTaskData(refreshed, decision.stage);
         return advanceFromTaskDetails(mintCtx, respond, platformUserId, userId, taskData);
+      }
+      if (data === 'flow:scheduleviaopenseaauto') {
+        const flow = flowState.get('discord', platformUserId);
+        if (!flow || flow.flow !== 'mint_guided' || flow.step !== 'awaiting_phase_pick') return notYourMintPrompt(interaction);
+        let refreshed;
+        try { refreshed = await refreshOpenSeaScheduleData(userId,flow.data); }
+        catch { return dcRespond(interaction,{content:'Could not re-check the mint phases right now. Try again shortly.',components:backToMenu}); }
+        const decision = mintFlowDecision.afterScheduleViaOpenSeaTap({
+          drop:refreshed.drop,schedulePlan:refreshed.schedulePlan,
+        });
+        if (!decision.recommendedStage) {
+          flowState.advance('discord',platformUserId,'awaiting_phase_pick',refreshed);
+          return dcRespond(interaction, discordMenus.openSeaPhasePicker(decision.stages || [], chains[refreshed.chain]?.sym));
+        }
+        const taskData = openSeaPhaseTaskData(refreshed, decision.recommendedStage);
+        return advanceFromTaskDetails(mintCtx, payload => dcRespond(interaction, payload), platformUserId, userId, taskData);
       }
       if (data === 'flow:scheduleviaopenseaphase:select') {
         const flow = flowState.get('discord', platformUserId);
         if (!flow || flow.flow !== 'mint_guided' || flow.step !== 'awaiting_phase_pick') return notYourMintPrompt(interaction);
         const index = Number(interaction.values?.[0]);
-        const stage = flow.data.drop?.stages?.[index];
-        if (!stage) return notYourMintPrompt(interaction);
-        const wentEphemeral = Boolean(flow.data.originMessagePublic);
+        const requestedStage = flow.data.drop?.stages?.[index] || null;
+        let refreshed;
+        try { refreshed = await refreshOpenSeaScheduleData(userId,flow.data); }
+        catch { return dcRespond(interaction,{content:'Could not re-check the mint phases right now. Try again shortly.',components:backToMenu}); }
+        const decision = mintFlowDecision.afterScheduleViaOpenSeaTap({
+          drop:refreshed.drop,schedulePlan:refreshed.schedulePlan,
+        });
+        const requestedKey = requestedStage ? scheduleStageKey(requestedStage) : null;
+        const stage = (decision.stages || []).find(candidate => requestedKey
+          && scheduleStageKey(candidate) === requestedKey);
+        if (!stage) {
+          flowState.advance('discord',platformUserId,'awaiting_phase_pick',refreshed);
+          return dcRespond(interaction,
+            discordMenus.openSeaPhasePicker(decision.stages || [], chains[refreshed.chain]?.sym,
+              decision.recommendedStage));
+        }
+        const wentEphemeral = Boolean(refreshed.originMessagePublic);
         if (wentEphemeral) neutralizeMintOriginMessage(interaction);
         const respond = payload => (wentEphemeral ? interaction.followUp({ ...payload, ephemeral: true }).catch(() => {}) : dcRespond(interaction, payload));
-        const taskData = openSeaPhaseTaskData(flow.data, stage);
+        const taskData = openSeaPhaseTaskData(refreshed, stage);
         return advanceFromTaskDetails(mintCtx, respond, platformUserId, userId, taskData);
       }
       if (data === 'flow:detailsrefresh') {
@@ -1070,7 +1092,7 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
           maxSupply: detected.maxSupply, maxPerWallet: detected.maxPerWallet,
           startTime: detected.startTime, endTime: detected.endTime, collection: detected.collection,
           soldOut: detected.soldOut, displayPrice: detected.displayPrice,
-          stats: detected.stats, drop: detected.drop,
+          stats: detected.stats, drop: detected.drop, schedulePlan: detected.schedulePlan,
         };
         flowState.advance('discord', platformUserId, 'awaiting_details', refreshed);
         return dcRespond(interaction, mintFlowRenderPayload('awaiting_details', refreshed, { chains }));
@@ -1250,9 +1272,31 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         const backToMenu = [discordMenus.row([discordMenus.button('⬅️ Back to menu', 'menu:main')])];
         let detected;
         try {
-          detected = await commands.detectMintContract(userId, { contractAddress: flow.data.contractAddress, quantity: 1 });
+          detected = await commands.detectMintContract(userId, { contractAddress: flow.data.contractAddress, quantity: 1, includeDrop: true });
         } catch {
           return respond({ content: 'Could not re-check this contract right now. Paste the address again to retry.', components: backToMenu });
+        }
+        const refreshedData = {
+          ...flow.data,
+          chain: detected.chain,
+          isSeaDrop: detected.isSeaDrop,
+          maxPerWallet: detected.maxPerWallet,
+          collection: detected.collection,
+          drop: detected.drop,
+          schedulePlan: detected.schedulePlan,
+        };
+        const phaseDecision = mintFlowDecision.afterScheduleViaOpenSeaTap({
+          drop: refreshedData.drop,
+          schedulePlan: refreshedData.schedulePlan,
+        });
+        if (phaseDecision.type === 'pick') {
+          flowState.advance('discord', platformUserId, 'awaiting_phase_pick', { ...refreshedData, originMessagePublic: false });
+          return respond(discordMenus.openSeaPhasePicker(
+            phaseDecision.stages, chains[refreshedData.chain]?.sym, phaseDecision.recommendedStage));
+        }
+        if (phaseDecision.stage) {
+          return advanceFromTaskDetails(mintCtx, respond, platformUserId, userId,
+            openSeaPhaseTaskData(refreshedData, phaseDecision.stage));
         }
         const futureStartTime = detected.startTime && detected.startTime * 1000 > Date.now() ? detected.startTime : null;
         if (!detected.priceKnown || !futureStartTime) {

@@ -10,6 +10,7 @@ const serverSource=fs.readFileSync(path.join(__dirname,'..','src','server.js'),'
 const apiSource=fs.readFileSync(path.join(__dirname,'..','src','dashboard','api.js'),'utf8');
 const botCommandSource=fs.readFileSync(path.join(__dirname,'..','src','commands','botCommandService.js'),'utf8');
 const discordSource=fs.readFileSync(path.join(__dirname,'..','src','discord','discordBot.js'),'utf8');
+const openSeaScheduleDraftSource=fs.readFileSync(path.join(__dirname,'..','src','mint','openSeaScheduleDraft.js'),'utf8');
 const transactionEngineSource=fs.readFileSync(path.join(__dirname,'..','src','transactions','transactionEngine.js'),'utf8');
 const batchPreviewSource=fs.readFileSync(path.join(__dirname,'..','dashboard','src','mintBatchPreview.mjs'),'utf8');
 const stylesSource=fs.readFileSync(path.join(__dirname,'..','dashboard','src','styles.css'),'utf8');
@@ -114,9 +115,9 @@ test('dashboard pins the chosen phase identity through scheduled-task creation',
   assert.match(appSource,/\(!detectedSeaDrop\|\|scheduleStageRequiresOpenSeaBuilder\(scheduledStage\)\)/);
   assert.match(appSource,/label="Stage" value=\{selectedStageKey\}/);
   assert.match(appSource,/return \{value:selectionKey,label:s\.label/);
-  assert.match(serverSource,/const requiresEligibilityCheck = stageRequiresEligibilityCheck\(stage\)/);
-  assert.match(serverSource,/eligibilityMode: requiresEligibilityCheck \? 'earliest_eligible' : 'specific_stage'/);
-  assert.match(discordSource,/eligibilityMode: requiresEligibilityCheck \? 'earliest_eligible' : 'specific_stage'/);
+  assert.match(openSeaScheduleDraftSource,/const requiresEligibilityCheck = stageRequiresEligibilityCheck\(stage\)/);
+  assert.match(openSeaScheduleDraftSource,/eligibilityMode: requiresEligibilityCheck \? 'earliest_eligible' : 'specific_stage'/,
+    'Telegram and Discord must both use the shared schedule-draft policy instead of duplicating it');
 });
 
 test('scheduled phases are checked again at the last safe pre-broadcast boundary',()=>{
@@ -130,6 +131,12 @@ test('scheduled phases are checked again at the last safe pre-broadcast boundary
   assert.ok(transactionEngineSource.indexOf('await request.preBroadcastGuard')
     < transactionEngineSource.indexOf('intent = await intentRepository.createSubmitted'),
   'phase deferral must happen before intent persistence so it cannot strand a fake submitted transaction');
+});
+
+test('a transient SeaDrop discovery failure does not move a schedule on unknown evidence',()=>{
+  assert.match(serverSource,
+    /try \{ seaDrop = await seaDropDiscoveryService\.resolve\(chain,task\.contract\); \}\s*catch \{ throw scheduleAllowanceRefreshError\(\); \}/,
+    'temporary provider failure must preserve the previous stage and retry instead of weakening its allowance evidence');
 });
 
 test('a completely successful batch clears its mint draft while failed results retain it',()=>{
@@ -379,6 +386,14 @@ test('Schedule shows specific reservation outcomes and never echoes the generic 
     detail:'Try again in a moment. Nothing was scheduled. Reference: abc123.'
   });
   assert.match(appSource,/scheduleSubmitError\(value\)/);
+});
+
+test('Schedule translates a stage-time mismatch into a useful instruction',async()=>{
+  const {scheduleSubmitError}=await import(pathToFileURL(path.join(__dirname,'..','dashboard','src','mintFeedback.mjs')));
+  assert.deepEqual(scheduleSubmitError({issues:[{field:'stageStartAt',message:'must not be after mintTime'}]}),{
+    title:'The mint time is before this stage opens.',
+    detail:'Use the detected opening time or choose a later time.'
+  });
 });
 
 test('scheduled auxiliary reads and activity use the persisted execution chain',()=>{

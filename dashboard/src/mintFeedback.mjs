@@ -20,9 +20,15 @@ export function mintDetectionMessage(error){
 // never becomes the only explanation on the Schedule surface.
 export function scheduleSubmitError(error){
   const code=String(error?.code||'');
-  const issue=Array.isArray(error?.issues)?error.issues[0]:null;
+  const issues=Array.isArray(error?.issues)?error.issues:[];
+  const stageTimeIssue=issues.find(item=>item?.field==='stageStartAt');
+  const issue=issues[0]||null;
   const issueText=String(issue?.message||error?.message||'').trim();
   const details=error?.details||{};
+  if(stageTimeIssue)return {
+    title:'The mint time is before this stage opens.',
+    detail:'Use the detected opening time or choose a later time.'
+  };
   if(code==='SCHEDULE_STAGE_DUPLICATE')return {
     title:'This mint is already scheduled.',
     detail:issueText&& !/request failed safely/i.test(issueText)

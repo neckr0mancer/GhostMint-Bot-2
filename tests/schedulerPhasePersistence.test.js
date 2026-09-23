@@ -19,6 +19,10 @@ function taskRow(overrides = {}) {
     lease_expires_at:new Date('2026-08-25T12:01:00.000Z'),transaction_intent_id:null,
     idempotency_key:'scheduled-mint:test',last_error:null,completed_at:null,via_opensea:true,
     stage_type:'allowlist',stage_uuid:'old-stage',stage_label:'Old stage',
+    wallet_address:'0x0000000000000000000000000000000000000002',
+    reservation_stage_key:'uuid:old-stage',allowance_scope:'unknown',
+    allowance_max_per_wallet:null,allowance_minted_snapshot:null,allowance_source:null,
+    allowance_verified_at:null,allowance_stage_start_at:new Date('2026-08-25T12:00:00.000Z'),
     eligibility_mode:'earliest_eligible',eligibility_deadline:new Date('2026-08-26T12:00:00.000Z'),
     phase_wait_count:0,
     ...overrides,
@@ -52,7 +56,10 @@ test('migration 061 adds active stage reservations without rewriting historical 
 
 test('Postgres storage persists phase eligibility fields and maps them on reads', async () => {
   let insert;
-  const row = taskRow();
+  // Keep this row in the pre-reservation shape so the mapper's conservative legacy defaults stay
+  // covered independently from the phase-move tests below.
+  const row = taskRow({wallet_address:null,reservation_stage_key:null,
+    allowance_stage_start_at:null});
   const query=async(sql,params)=>{
       if (sql.includes('INSERT INTO mint_tasks')) {
         insert = { sql, params };
@@ -91,11 +98,17 @@ test('Postgres storage persists phase eligibility fields and maps them on reads'
   assert.equal(mapped.reservationStageKey, null);
 });
 
-function phaseRepositoryFixture(updatedRow) {
+function phaseRepositoryFixture(updatedRow,{activeRows=[]}={}) {
   const calls = [];
   const client = {
     async query(sql, params) {
       calls.push({ sql, params });
+      if (sql.includes('COALESCE(NULLIF(task.wallet_address')) {
+        const source=updatedRow||taskRow();
+        return {rowCount:1,rows:[{wallet_address:source.wallet_address,
+          chain:source.chain,contract_address:source.contract_address}]};
+      }
+      if (sql.includes('SELECT active_task.*')) return {rowCount:activeRows.length,rows:activeRows};
       if (sql.includes('UPDATE mint_tasks SET')) {
         return updatedRow ? { rowCount:1, rows:[updatedRow] } : { rowCount:0, rows:[] };
       }
@@ -105,6 +118,16 @@ function phaseRepositoryFixture(updatedRow) {
   };
   const pool = { async connect() { return client; } };
   return { calls, repository:createSchedulerRepository(pool) };
+}
+
+function claimedTask(row=taskRow()) {
+  return {
+    userId:row.user_id,id:row.id,attemptCount:row.attempt_count,maxAttempts:row.max_attempts,
+    walletLabel:row.wallet_label,walletAddress:row.wallet_address,chain:row.chain,
+    contract:row.contract_address,qty:row.quantity,mintTime:row.mint_time.getTime(),
+    stageUuid:row.stage_uuid,stageLabel:row.stage_label,stageType:row.stage_type,
+    reservationStageKey:row.reservation_stage_key,
+  };
 }
 
 test('deferForPhase atomically re-arms a claimed task and records retry without consulting maxAttempts', async () => {
@@ -119,10 +142,11 @@ test('deferForPhase atomically re-arms a claimed task and records retry without 
   });
   const { calls, repository } = phaseRepositoryFixture(updated);
 
-  const result = await repository.deferForPhase({
-    userId:claimed.user_id,id:claimed.id,attemptCount:claimed.attempt_count,maxAttempts:claimed.max_attempts,
-  }, {
+  const result = await repository.deferForPhase(claimedTask(claimed), {
     retryAt,mintTime:retryAt,deadline,stageUuid:'public-stage',stageLabel:'Public sale',stageType:'public_sale',
+    allowanceEvidence:{allowanceScope:'contract_cumulative',allowanceMaxPerWallet:'10',
+      allowanceMintedSnapshot:'2',allowanceSource:'seadrop:PublicDrop+getMintStats',
+      allowanceVerifiedAt:retryAt,allowanceStageStartAt:retryAt},
     reason:'waiting for an eligible public phase',
   });
 
@@ -133,11 +157,16 @@ test('deferForPhase atomically re-arms a claimed task and records retry without 
   assert.equal(result.eligibilityDeadline, deadline);
   assert.equal(result.phaseWaitCount, 1);
   assert.equal(calls[0].sql, 'BEGIN');
+  assert.match(calls[2].sql,/pg_advisory_xact_lock/);
+  assert.match(calls[3].sql,/FOR UPDATE OF active_task/);
   const update = calls.find(call => call.sql.includes('UPDATE mint_tasks SET'));
   assert.match(update.sql, /WHERE user_id=\$1 AND id=\$2 AND status='claimed' AND attempt_count=\$3/);
   assert.doesNotMatch(update.sql, /max_attempts/);
   assert.match(update.sql, /phase_wait_count=phase_wait_count\+1/);
   assert.match(update.sql,/reservation_stage_key=CASE WHEN \$16 THEN \$17/);
+  assert.match(update.sql,/allowance_scope=CASE WHEN \$16 THEN \$18/);
+  assert.deepEqual(update.params.slice(17,23),['contract_cumulative','10','2',
+    'seadrop:PublicDrop+getMintStats',retryAt,retryAt]);
   assert.equal(update.params[3], retryAt);
   const audit = calls.find(call => call.sql.includes('UPDATE mint_task_attempts'));
   assert.equal(audit.params[3], 'retry');
@@ -171,4 +200,29 @@ test('phase-only claims do not exhaust a later real transient execution retry', 
   assert.equal(outcome, 'retry');
   const update = calls.find(call => call.sql.includes('UPDATE mint_tasks SET'));
   assert.equal(update.params[2], 'retry');
+});
+
+test('phase advance rolls back when it would exceed a proven later cumulative boundary',async()=>{
+  const claimed=taskRow({quantity:2});
+  const laterBoundary=taskRow({
+    id:'00000000-0000-4000-8000-000000000099',status:'scheduled',quantity:7,
+    mint_time:new Date('2026-08-25T14:00:00.000Z'),stage_uuid:'later-public',
+    stage_label:'Later public',stage_type:'public_sale',reservation_stage_key:'uuid:later-public',
+    allowance_scope:'contract_cumulative',allowance_max_per_wallet:'10',
+    allowance_minted_snapshot:'2',allowance_stage_start_at:new Date('2026-08-25T14:00:00.000Z'),
+  });
+  const {calls,repository}=phaseRepositoryFixture(null,{activeRows:[laterBoundary]});
+  await assert.rejects(repository.deferForPhase(claimedTask(claimed),{
+    retryAt:Date.parse('2026-08-25T12:10:00.000Z'),
+    mintTime:Date.parse('2026-08-25T12:10:00.000Z'),stageUuid:'allowlist-next',
+    stageLabel:'Next allowlist',stageType:'allowlist',
+    allowanceEvidence:{allowanceScope:'unknown',allowanceMintedSnapshot:'2',
+      allowanceSource:'seadrop:getMintStats',allowanceVerifiedAt:Date.now(),
+      allowanceStageStartAt:Date.parse('2026-08-25T12:10:00.000Z')},
+    reason:'moving to the next stage',
+  }),error=>error.code==='SCHEDULE_ALLOWANCE_EXCEEDED'&&error.details.remaining==='1');
+  assert.equal(calls.some(call=>call.sql.includes('UPDATE mint_tasks SET')),false,
+    'the persisted stage must not move when the new envelope is over capacity');
+  assert.equal(calls.at(-2).sql,'ROLLBACK');
+  assert.equal(calls.at(-1).sql,'RELEASE');
 });

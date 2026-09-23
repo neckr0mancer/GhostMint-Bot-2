@@ -55,3 +55,55 @@ integrationTest('two concurrent same-stage reservations have exactly one winner 
     await storageA.close();
   }
 });
+
+integrationTest('phase advancement uses the same envelope lock and rolls back an over-cap move',
+  {timeout:120_000},async()=>{
+  await runMigrations({connectionString:CONFIG.databaseUrlUnpooled,
+    migrationsDirectory:path.join(CONFIG.projectRoot,'migrations')});
+  const pool=createDatabasePool({connectionString:CONFIG.databaseUrl,max:4});
+  const storage=createPostgresStorage(pool);
+  const scheduler=createSchedulerRepository(pool);
+  const identity=createIdentityService(createPostgresIdentityRepository(pool));
+  const userId=await identity.resolveOrCreate('telegram',`phase-envelope-${process.pid}-${Date.now()}`);
+  const walletLabel=`phase-envelope-${Date.now()}`;
+  const walletAddress='0x0000000000000000000000000000000000000063';
+  const contract='0x0000000000000000000000000000000000000064';
+  const crypto=createKeyEncryption({activeVersion:CONFIG.encryptionKeyVersion,keys:CONFIG.encryptionKeys});
+  await storage.addWallet({userId,label:walletLabel,address:walletAddress,chain:'ethereum',
+    keyEnvelope:crypto.encrypt(`0x${'63'.repeat(32)}`),minted:0,addedAt:Date.now()});
+  const baseTime=Date.now()+86_400_000;
+  const makeTask=({name,stageUuid,mintTime,qty,scope='unknown',maximum=null,minted=null})=>({
+    userId,id:randomUUID(),name,walletLabel,walletAddress,contract,fn:'mint',qty,price:0,gas:null,
+    chain:'ethereum',mintTime,status:'scheduled',createdAt:Date.now(),nextAttemptAt:mintTime,
+    maxAttempts:3,stageUuid,stageLabel:name,stageType:'public_sale',
+    reservationStageKey:`uuid:${stageUuid}`,eligibilityMode:'specific_stage',
+    allowanceScope:scope,allowanceMaxPerWallet:maximum,allowanceMintedSnapshot:minted,
+    allowanceSource:scope==='unknown'?null:'integration:proven-cumulative',
+    allowanceVerifiedAt:Date.now(),allowanceStageStartAt:mintTime,
+  });
+  try {
+    const boundary=(await storage.createReservedTask(makeTask({name:'Public boundary',
+      stageUuid:'public-boundary',mintTime:baseTime+7_200_000,qty:7,
+      scope:'contract_cumulative',maximum:'10',minted:'2'}))).task;
+    const moving=(await storage.createReservedTask(makeTask({name:'Later phase',
+      stageUuid:'later-phase',mintTime:baseTime+10_800_000,qty:2,minted:'2'}))).task;
+    const claimed=await scheduler.claimSpecific({workerId:'phase-envelope-test',userId,
+      taskId:moving.id,now:moving.mintTime,leaseMs:60_000});
+    assert.ok(claimed,'the later phase should be claimed through the durable scheduler path');
+    await assert.rejects(scheduler.deferForPhase(claimed,{
+      retryAt:baseTime+3_600_000,mintTime:baseTime+3_600_000,
+      stageUuid:'earlier-phase',stageLabel:'Earlier phase',stageType:'allowlist',
+      allowanceEvidence:{allowanceScope:'unknown',allowanceMintedSnapshot:'2',
+        allowanceSource:'seadrop:getMintStats',allowanceVerifiedAt:Date.now(),
+        allowanceStageStartAt:baseTime+3_600_000},reason:'integration phase move',
+    }),error=>error.code==='SCHEDULE_ALLOWANCE_EXCEEDED');
+    const unchanged=(await pool.query(`SELECT status,reservation_stage_key,stage_uuid
+      FROM mint_tasks WHERE user_id=$1 AND id=$2`,[userId,moving.id])).rows[0];
+    assert.deepEqual(unchanged,{status:'claimed',reservation_stage_key:'uuid:later-phase',
+      stage_uuid:'later-phase'});
+    assert.ok(boundary.id);
+  } finally {
+    await pool.query('DELETE FROM users WHERE user_id=$1',[userId]).catch(()=>{});
+    await storage.close();
+  }
+});

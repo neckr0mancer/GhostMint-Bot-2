@@ -3,6 +3,7 @@
 const { stageRequiresEligibilityCheck } = require('./scheduleStagePlanning');
 
 const CONTRACT_CUMULATIVE = 'contract_cumulative';
+const PER_STAGE = 'per_stage';
 const UNKNOWN = 'unknown';
 
 function asBigInt(value) {
@@ -75,6 +76,29 @@ function buildSeaDropAllowanceEvidence({ stage, publicDrop, mintStats, verifiedA
   };
 }
 
+// Some contracts expose an authoritative stage-local counter as well as that stage's cap. Keep
+// that evidence distinct from SeaDrop's contract-wide getMintStats counter: a per-stage maximum
+// must never subtract mints or reservations from a different phase. Callers must supply both the
+// maximum and the CURRENT stage-local minted count from the same authoritative source; a display
+// or marketplace maximum on its own deliberately stays unknown.
+function buildPerStageAllowanceEvidence({ maximum, minted, source, stageStartAt = null,
+  verifiedAt = Date.now() } = {}) {
+  const parsedMaximum = asBigInt(maximum);
+  const parsedMinted = asBigInt(minted);
+  const evidenceSource = String(source || '').trim();
+  if (parsedMaximum === null || parsedMinted === null || !evidenceSource) {
+    return unknownEvidence({ stageStartAt });
+  }
+  return {
+    allowanceScope: PER_STAGE,
+    allowanceMaxPerWallet: parsedMaximum.toString(),
+    allowanceMintedSnapshot: parsedMinted.toString(),
+    allowanceSource:evidenceSource,
+    allowanceVerifiedAt:verifiedAt,
+    allowanceStageStartAt:asMilliseconds(stageStartAt),
+  };
+}
+
 function allowanceError(code, message, details = {}) {
   const error = new Error(message);
   error.code = code;
@@ -89,15 +113,54 @@ function allowanceError(code, message, details = {}) {
 function enforceScheduleAllowanceEnvelope(existingTasks, candidate) {
   const tasks = [...existingTasks, candidate];
   const candidateAt = stageStartMilliseconds(candidate);
+  let perStageResult = null;
+
+  // A proven per-stage counter constrains only the exact persisted phase identity. It cannot
+  // consume (or be consumed by) another stage, even when the other stage opened earlier. The
+  // database's active-stage unique index normally limits this set to one task, but summing here
+  // keeps the invariant correct for legacy rows and makes the rule explicit at the safety layer.
+  if (candidate?.allowanceScope === PER_STAGE) {
+    const maximum = asBigInt(candidate.allowanceMaxPerWallet);
+    const currentMinted = asBigInt(candidate.allowanceMintedSnapshot);
+    const stageKey = String(candidate.reservationStageKey || '').trim();
+    if (maximum === null || currentMinted === null || !stageKey) {
+      throw allowanceError('SCHEDULE_ALLOWANCE_UNAVAILABLE',
+        'The wallet allowance for this mint stage could not be verified. Try again shortly.');
+    }
+    const reserved = tasks.reduce((sum, task) => {
+      if (String(task?.reservationStageKey || '').trim() !== stageKey) return sum;
+      const quantity = asBigInt(task?.qty);
+      return quantity === null ? sum : sum + quantity;
+    }, 0n);
+    const total = currentMinted + reserved;
+    if (total > maximum) {
+      const candidateQuantity = asBigInt(candidate?.qty) ?? 0n;
+      const reservedBeforeCandidate = reserved >= candidateQuantity
+        ? reserved - candidateQuantity : reserved;
+      const remaining = maximum > currentMinted + reservedBeforeCandidate
+        ? maximum - currentMinted - reservedBeforeCandidate : 0n;
+      throw allowanceError('SCHEDULE_ALLOWANCE_EXCEEDED',
+        `This wallet can schedule ${remaining} more mint${remaining === 1n ? '' : 's'} in that stage.`, {
+          scope:PER_STAGE,stageKey,maximum:maximum.toString(),minted:currentMinted.toString(),
+          reserved:reservedBeforeCandidate.toString(),remaining:remaining.toString(),
+        });
+    }
+    perStageResult = { enforced:true, minted:currentMinted.toString(), boundaries:1 };
+  }
+
   const boundaries = tasks.filter(task => task?.allowanceScope === CONTRACT_CUMULATIVE
     && asBigInt(task.allowanceMaxPerWallet) !== null && stageStartMilliseconds(task) !== null);
   // Adding a later phase cannot consume capacity at an earlier boundary. Adding an earlier phase
   // can invalidate every later boundary, which is why the comparison is intentionally one-way.
   const affectedBoundaries = boundaries.filter(boundary => candidateAt === null
     || stageStartMilliseconds(boundary) >= candidateAt);
-  if (!affectedBoundaries.length) return { enforced:false };
+  if (!affectedBoundaries.length) return perStageResult || { enforced:false };
 
-  const currentMinted = asBigInt(candidate?.allowanceMintedSnapshot);
+  // A per-stage counter is not interchangeable with a contract-cumulative counter. An adapter
+  // that can prove both may pass allowanceContractMintedSnapshot transiently for this locked
+  // calculation; it is intentionally not persisted in the single stage-counter column.
+  const currentMinted = asBigInt(candidate?.allowanceContractMintedSnapshot
+    ?? (candidate?.allowanceScope === PER_STAGE ? null : candidate?.allowanceMintedSnapshot));
   if (currentMinted === null) {
     throw allowanceError('SCHEDULE_ALLOWANCE_UNAVAILABLE',
       'The wallet allowance could not be refreshed while another scheduled stage depends on it. Try again shortly.');
@@ -132,7 +195,9 @@ function enforceScheduleAllowanceEnvelope(existingTasks, candidate) {
 
 module.exports = {
   CONTRACT_CUMULATIVE,
+  PER_STAGE,
   UNKNOWN,
+  buildPerStageAllowanceEvidence,
   buildSeaDropAllowanceEvidence,
   enforceScheduleAllowanceEnvelope,
   stageMatchesPublicDrop,

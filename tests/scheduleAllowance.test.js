@@ -2,8 +2,8 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { buildSeaDropAllowanceEvidence, enforceScheduleAllowanceEnvelope,
-  stageMatchesPublicDrop } = require('../src/mint/scheduleAllowance');
+const { buildPerStageAllowanceEvidence, buildSeaDropAllowanceEvidence,
+  enforceScheduleAllowanceEnvelope, stageMatchesPublicDrop } = require('../src/mint/scheduleAllowance');
 
 const base = (overrides = {}) => ({
   qty:1,mintTime:Date.parse('2026-09-20T12:00:15Z'),
@@ -78,4 +78,58 @@ test('a later task does not consume an earlier stage boundary', () => {
   const later=base({qty:2,allowanceMintedSnapshot:null,
     allowanceStageStartAt:Date.parse('2026-09-21T12:00:00Z')});
   assert.deepEqual(enforceScheduleAllowanceEnvelope([earlyBoundary],later),{enforced:false});
+});
+
+test('authoritative per-stage evidence counts only the same persisted stage', () => {
+  const evidence=buildPerStageAllowanceEvidence({maximum:3,minted:1,
+    source:'contract:allowlistMinted',stageStartAt:Date.parse('2026-09-20T10:00:00Z'),verifiedAt:123});
+  assert.deepEqual(evidence,{
+    allowanceScope:'per_stage',allowanceMaxPerWallet:'3',allowanceMintedSnapshot:'1',
+    allowanceSource:'contract:allowlistMinted',allowanceVerifiedAt:123,
+    allowanceStageStartAt:Date.parse('2026-09-20T10:00:00Z'),
+  });
+  const otherStage=base({qty:100,reservationStageKey:'uuid:other-stage',
+    allowanceStageStartAt:Date.parse('2026-09-20T09:00:00Z')});
+  const candidate=base({...evidence,qty:2,reservationStageKey:'uuid:allowlist'});
+  assert.deepEqual(enforceScheduleAllowanceEnvelope([otherStage],candidate),{
+    enforced:true,minted:'1',boundaries:1,
+  });
+  assert.throws(()=>enforceScheduleAllowanceEnvelope([otherStage],{...candidate,qty:3}),error=>{
+    assert.equal(error.code,'SCHEDULE_ALLOWANCE_EXCEEDED');
+    assert.equal(error.details.scope,'per_stage');
+    assert.equal(error.details.remaining,'2');
+    return true;
+  });
+});
+
+test('a marketplace maximum without an authoritative stage counter stays unknown', () => {
+  const evidence=buildPerStageAllowanceEvidence({maximum:10,minted:null,
+    source:'opensea:max_per_wallet',stageStartAt:123});
+  assert.equal(evidence.allowanceScope,'unknown');
+  assert.equal(evidence.allowanceMaxPerWallet,null);
+});
+
+test('a per-stage reservation still respects a later contract-cumulative boundary',()=>{
+  const laterBoundary=base({qty:7,reservationStageKey:'uuid:public',
+    allowanceScope:'contract_cumulative',allowanceMaxPerWallet:'10',
+    allowanceStageStartAt:Date.parse('2026-09-20T12:00:00Z')});
+  const perStage=base({qty:2,reservationStageKey:'uuid:allowlist',allowanceScope:'per_stage',
+    allowanceMaxPerWallet:'5',allowanceMintedSnapshot:'0',
+    allowanceContractMintedSnapshot:'2',
+    allowanceStageStartAt:Date.parse('2026-09-20T10:00:00Z')});
+  assert.throws(()=>enforceScheduleAllowanceEnvelope([laterBoundary],perStage),error=>{
+    assert.equal(error.code,'SCHEDULE_ALLOWANCE_EXCEEDED');
+    assert.equal(error.details.remaining,'1');
+    return true;
+  });
+  assert.throws(()=>enforceScheduleAllowanceEnvelope([laterBoundary],{
+    ...perStage,qty:1,allowanceContractMintedSnapshot:null,
+  }),error=>error.code==='SCHEDULE_ALLOWANCE_UNAVAILABLE');
+});
+
+test('unknown stages do not subtract earlier-stage quantities or invent a cap', () => {
+  const earlier=base({qty:50,reservationStageKey:'uuid:allowlist'});
+  const candidate=base({qty:50,reservationStageKey:'uuid:fcfs',allowanceMintedSnapshot:null,
+    allowanceStageStartAt:Date.parse('2026-09-20T11:00:00Z')});
+  assert.deepEqual(enforceScheduleAllowanceEnvelope([earlier],candidate),{enforced:false});
 });
