@@ -197,6 +197,16 @@ function createSchedulerWorker({ repository, intentRepository, transactionEngine
       });
       return settleFromIntent(task, intent, false);
     } catch (error) {
+      // The schedule-change service has already committed this transition (accepted re-arm,
+      // paused-for-review, or terminal expiry) under the same claimed attempt. Do not run the
+      // generic failure path afterward: that would overwrite the durable decision or consume an
+      // execution retry for a project-side configuration change.
+      if (error?.code === 'SCHEDULE_CHANGE_HANDLED' && error.scheduleChangeResult) {
+        const { outcome, task:updatedTask }=error.scheduleChangeResult;
+        if(updatedTask)Object.assign(task,updatedTask);
+        await Promise.resolve(notify?.({task,outcome,error,scheduleChange:error.scheduleChange})).catch(()=>{});
+        return outcome;
+      }
       if (error?.code === SCHEDULE_PHASE_WAIT && error.phaseDeferral && repository.deferForPhase) {
         const reason = sanitizeError(error).slice(0, 500);
         let deferred;

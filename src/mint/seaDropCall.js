@@ -1,4 +1,5 @@
 const { formatEther, Interface, isAddress } = require('ethers');
+const { createHash } = require('node:crypto');
 const { ValidationError } = require('../validation/domain');
 const { CANONICAL_SEADROP_CORE_ADDRESS, MINT_PUBLIC_FRAGMENT, SEADROP_CORE_INTERFACE,
   SEADROP_MINT_SIGNATURE } = require('./seaDropRegistry');
@@ -25,6 +26,10 @@ const SEADROP_GATED_INTERFACE = new Interface([
   'function mintAllowedTokenHolder(address nftContract,address feeRecipient,address minterIfNotPayer,(address allowedNftToken,uint256[] allowedNftTokenIds) mintParams) payable',
 ]);
 const SEADROP_GATED_METHODS = Object.freeze(['mintAllowList', 'mintSigned', 'mintAllowedTokenHolder']);
+
+function configurationDigest(value) {
+  return createHash('sha256').update(JSON.stringify(value)).digest('hex');
+}
 
 function invalid(field, message, explicitMessage) {
   throw new ValidationError({ field, message }, 'VALIDATION_ERROR', explicitMessage || message);
@@ -157,6 +162,7 @@ function decodeArchetypeMintCall({ built, contractAddress, minterAddress }) {
   catch { invalid('calldata', `could not be decoded as Archetype ${method}`); }
   const [auth, qty] = decoded;
   const recipient = method === 'mintTo' ? decoded[2] : minterAddress;
+  const affiliate = decoded[method === 'mintTo' ? 3 : 2];
   if (method === 'mintTo' && (!isAddress(minterAddress) || recipient.toLowerCase() !== minterAddress.toLowerCase())) {
     invalid('walletAddress', "OpenSea's calldata sends the mint to a different wallet -- refusing to sign");
   }
@@ -173,6 +179,10 @@ function decodeArchetypeMintCall({ built, contractAddress, minterAddress }) {
       { name: 'recipient', type: 'address', value: recipient || 'sender wallet' },
       { name: 'signature', type: 'bytes', value: decoded[method === 'mintTo' ? 4 : 3] === '0x' ? 'no signature' : 'signature present' },
     ],
+    // Proof/signature bytes are deliberately excluded: they are wallet-specific authorization
+    // material and may rotate. The stable invite and affiliate context must not change silently.
+    configurationDigest:configurationDigest({method,inviteKey:String(auth.key).toLowerCase(),
+      affiliate:String(affiliate).toLowerCase()}),
     nativeValueWei: value.toString(),
     nativeValue: formatEther(value),
   };
@@ -211,6 +221,23 @@ function decodeSeaDropGatedMintCall({ built, method, minterAddress }) {
     : method === 'mintSigned'
       ? { name:'signature', type:'bytes', value:decoded[6] === '0x' ? 'empty signature' : 'signature present' }
       : { name:'allowedTokenIds', type:'uint256[]', value:`${mintParams.allowedNftTokenIds.length} token ID${mintParams.allowedNftTokenIds.length === 1 ? '' : 's'}` };
+  const stableStageContext=method === 'mintAllowedTokenHolder'
+    ?{method,allowedNftToken:String(mintParams.allowedNftToken).toLowerCase(),
+      allowedNftTokenIds:Array.from(mintParams.allowedNftTokenIds,value=>value.toString())}
+    :{method,dropStageIndex:mintParams.dropStageIndex.toString(),
+      maxTokenSupplyForStage:mintParams.maxTokenSupplyForStage.toString(),
+      maxTotalMintableByWallet:mintParams.maxTotalMintableByWallet.toString(),
+      feeBps:mintParams.feeBps.toString(),restrictFeeRecipients:Boolean(mintParams.restrictFeeRecipients)};
+  const stageArguments=method === 'mintAllowedTokenHolder'?[]:[
+    {name:'mintPriceWei',type:'uint256',value:mintParams.mintPrice.toString()},
+    {name:'maxPerWallet',type:'uint256',value:mintParams.maxTotalMintableByWallet.toString()},
+    {name:'startTime',type:'uint256',value:mintParams.startTime.toString()},
+    {name:'endTime',type:'uint256',value:mintParams.endTime.toString()},
+    {name:'stageIndex',type:'uint256',value:mintParams.dropStageIndex.toString()},
+    {name:'maxSupplyForStage',type:'uint256',value:mintParams.maxTokenSupplyForStage.toString()},
+    {name:'feeBps',type:'uint256',value:mintParams.feeBps.toString()},
+    {name:'restrictFeeRecipients',type:'bool',value:String(Boolean(mintParams.restrictFeeRecipients))},
+  ];
 
   return {
     contractAddress:nftContract,
@@ -223,8 +250,12 @@ function decodeSeaDropGatedMintCall({ built, method, minterAddress }) {
       { name:'feeRecipient', type:'address', value:feeRecipient },
       { name:'minter', type:'address', value:minter },
       { name:'quantity', type:'uint256', value:qty.toString() },
+      ...stageArguments,
       authorization,
     ],
+    // Never retain proof/signature bytes. This digest binds the stable stage/token-holder fields
+    // that materially define the authorized call, including values that are awkward to display.
+    configurationDigest:configurationDigest(stableStageContext),
     nativeValueWei:value.toString(),
     nativeValue:formatEther(value),
   };
@@ -251,12 +282,12 @@ function validateOpenSeaMintCall({ built, contractAddress, quantity: expectedQua
     && built.to.toLowerCase() === contractAddress.toLowerCase()) {
     invalid('target', 'the call target must be a SeaDrop core, not the NFT contract itself');
   }
-  // MINT-008: gated methods must target the canonical SeaDrop core (same CREATE2 address
-  // on every chain) — a malicious same-selector contract could retain msg.value.
-  if (gatedMethod) {
+  // MINT-008: every SeaDrop method must target the canonical core (same CREATE2 address on every
+  // supported chain). A malicious same-selector contract could otherwise retain msg.value.
+  if (selector === seaDropSelector || gatedMethod) {
     if (built?.to?.toLowerCase() !== CANONICAL_SEADROP_CORE_ADDRESS.toLowerCase()) {
-      invalid('target', `gated calldata must target the canonical SeaDrop core, got ${built?.to}`,
-        `gated calldata must target the canonical SeaDrop core, got ${built?.to}`);
+      invalid('target', `SeaDrop calldata must target the canonical SeaDrop core, got ${built?.to}`,
+        `SeaDrop calldata must target the canonical SeaDrop core, got ${built?.to}`);
     }
   }
   const decoded = selector === seaDropSelector

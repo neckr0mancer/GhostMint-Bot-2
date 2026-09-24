@@ -367,6 +367,22 @@ function validateTaskCreate(input, context) {
   if (input.viaOpenSea !== undefined && input.viaOpenSea !== null && typeof input.viaOpenSea !== 'boolean') {
     fail('viaOpenSea', 'must be a boolean');
   }
+  const autoReschedule = input.autoReschedule === undefined ? false
+    : optionalBoolean(input.autoReschedule, 'autoReschedule');
+  const maxOpeningDelayMinutes = finiteNumber(input.maxOpeningDelayMinutes,
+    'maxOpeningDelayMinutes', { min: 1, max: 1440, integer: true, required:autoReschedule });
+  const acceptPriceChanges = input.acceptPriceChanges === undefined ? false
+    : optionalBoolean(input.acceptPriceChanges, 'acceptPriceChanges');
+  const maxPriceWeiPerItem = optionalWei(input.maxPriceWeiPerItem, 'maxPriceWeiPerItem');
+  const expectedPriceWeiPerItem = optionalWei(input.expectedPriceWeiPerItem,
+    'expectedPriceWeiPerItem');
+  if (acceptPriceChanges && maxPriceWeiPerItem === null) {
+    fail('maxPriceWeiPerItem', 'is required when automatic price changes are enabled');
+  }
+  if (acceptPriceChanges && expectedPriceWeiPerItem !== null
+    && maxPriceWeiPerItem < expectedPriceWeiPerItem) {
+    fail('maxPriceWeiPerItem', 'must be at least the currently detected price');
+  }
   return {
     id: input.id === undefined ? randomUUID() : uuid(input.id, 'id'),
     name: string(input.name, 'name', { max: 100 }),
@@ -378,6 +394,23 @@ function validateTaskCreate(input, context) {
     stageStartAt: taskStageStart(input.stageStartAt, mintTime),
     eligibilityMode: taskEligibilityMode(input.eligibilityMode),
     eligibilityDeadline: taskEligibilityDeadline(input.eligibilityDeadline, mintTime),
+    timeChangePolicy:autoReschedule ? 'auto_within_limit' : 'approval',
+    maxOpeningDelayMs:autoReschedule ? maxOpeningDelayMinutes * 60_000 : null,
+    priceChangePolicy:acceptPriceChanges ? 'allow_up_to_cap' : 'approval',
+    maxPriceWeiPerItem:acceptPriceChanges ? maxPriceWeiPerItem : null,
+    expectedPriceWeiPerItem,
+  };
+}
+
+function validateTaskChangeDecision(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    fail('decision', 'must be an object');
+  }
+  const decision = string(input.decision, 'decision', { max: 10 }).toLowerCase();
+  if (!['approve', 'cancel'].includes(decision)) fail('decision', 'must be approve or cancel');
+  return {
+    decision,
+    version:finiteNumber(input.version, 'version', { min: 1, max:Number.MAX_SAFE_INTEGER, integer:true }),
   };
 }
 
@@ -509,6 +542,7 @@ const requestSchemas = Object.freeze({
     password: string(input.password, 'password', { min: 1, max: 200 }),
   }),
   taskCreate: validateTaskCreate,
+  taskChangeDecision: validateTaskChangeDecision,
   sniperCreate: validateSniper,
   pnlCreate: validatePnlRecord,
   transactionPolicy: validateTransactionPolicy,

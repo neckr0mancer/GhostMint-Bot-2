@@ -38,17 +38,20 @@ const { SEADROP_MINT_SIGNATURE } = require('./mint/seaDropRegistry');
 const mintFlowDecision = require('./mint/mintFlowDecision');
 const { buildOpenSeaScheduleTaskData } = require('./mint/openSeaScheduleDraft');
 const { buildSeaDropAllowanceEvidence, unknownEvidence } = require('./mint/scheduleAllowance');
-const { scheduleStageKey, stageRequiresEligibilityCheck } = require('./mint/scheduleStagePlanning');
+const { scheduleStageKey, scheduleStagePersistenceKey,
+  stageRequiresEligibilityCheck } = require('./mint/scheduleStagePlanning');
 const watchRuleFlowDecision = require('./social/watchRuleFlowDecision');
 const sniperFlowDecision = require('./sniper/sniperFlowDecision');
 const { createSchedulerRepository } = require('./scheduler/schedulerRepository');
 const { createScheduledPreflightEvaluator, scheduledPreflightDelivery } = require('./scheduler/scheduledPreflight');
 const { createScheduledPreflightRepository } = require('./scheduler/scheduledPreflightRepository');
 const { createScheduledPreflightWorker } = require('./scheduler/scheduledPreflightWorker');
+const { OPENSEA_VALIDATED_BUILDER_V1, configurationFingerprint, configurationSummary,
+  evaluateScheduleObservation } = require('./scheduler/scheduleChangePolicy');
 const { deliverFailureSideEffects, scheduledFailureFeedback } = require('./scheduler/scheduledFailureFeedback');
-const { SCHEDULE_PHASE_WAIT, createSchedulerWorker, STAGE_REARM_WINDOW_MS, errorReason, executionAttemptCount } = require('./scheduler/schedulerWorker');
+const { SCHEDULE_PHASE_WAIT, createSchedulerWorker, errorReason, executionAttemptCount } = require('./scheduler/schedulerWorker');
 const { DECISION_REASONS, resolveScheduledPhase } = require('./scheduler/scheduledPhaseResolver');
-const { classifySeaDropWindow, preArmRearm } = require('./scheduler/scheduledValidity');
+const { classifySeaDropWindow } = require('./scheduler/scheduledValidity');
 const { liveFeeRecipient, opaquePublicSimulationReason, publicMintCapacity,
   publicStageClock } = require('./scheduler/scheduledPublicPreflight');
 const { resolveTaskChain } = require('./scheduler/taskChain');
@@ -338,9 +341,7 @@ function phaseName(stage) {
 }
 
 function phaseIdentity(stage) {
-  if (!stage) return null;
-  if (stage.uuid) return `uuid:${stage.uuid}`;
-  return `legacy:${String(stage.stageType || '').toLowerCase()}:${String(stage.label || '').toLowerCase()}`;
+  return scheduleStagePersistenceKey(stage);
 }
 
 function phaseTerminalError(decision) {
@@ -447,10 +448,71 @@ function enforceEligibilityDeadline(task, now = Date.now()) {
   return now;
 }
 
+async function enforceScheduledChangePolicy(task, observation, options = {}) {
+  // Runtime callers may opt into a narrowly-scoped, validator-backed baseline promotion, but
+  // cannot replace the authoritative evaluation clock.
+  const evaluation=evaluateScheduleObservation(task,observation,{...options,now:Date.now()});
+  if(evaluation.action==='unchanged')return evaluation;
+  const result=await schedulerRepository.applyScheduleChange(task,evaluation);
+  if(result.task)Object.assign(task,result.task);
+  if(result.outcome==='continue')return evaluation;
+  const error=new Error(evaluation.reason);
+  error.code='SCHEDULE_CHANGE_HANDLED';
+  error.scheduleChange=evaluation;
+  error.scheduleChangeResult=result;
+  throw error;
+}
+
+// Keep only human-readable call facts. The decoded validators already replace raw proofs and
+// signatures with presence/count text, so schedule review never persists cryptographic material.
+function decodedMintConfiguration(decoded, extras={}) {
+  const args=Array.isArray(decoded?.arguments)?decoded.arguments:[];
+  const value=name=>args.find(argument=>argument?.name===name)?.value??null;
+  const authorization=args.find(argument=>['proof','signature','allowedTokenIds'].includes(argument?.name));
+  const restrictFeeRecipients=value('restrictFeeRecipients');
+  return configurationSummary({...extras,contract:decoded?.contractAddress,
+    callTarget:decoded?.callTarget||decoded?.contractAddress,
+    method:decoded?.methodSignature,standard:decoded?.standard,
+    feeRecipient:value('feeRecipient'),endTime:value('endTime'),maxPerWallet:value('maxPerWallet'),
+    feeBps:value('feeBps'),restrictFeeRecipients:restrictFeeRecipients===null
+      ?null:restrictFeeRecipients==='true',
+    inviteKey:value('inviteKey'),configurationDigest:decoded?.configurationDigest,
+    authorization:authorization?`${authorization.name}: ${authorization.value}`:null});
+}
+
 async function refreshScheduledOpenSeaPhase(task, chain, expectedPhaseIdentity = null) {
   enforceEligibilityDeadline(task);
   const drop = await openSeaService.getDrop(chain, task.contract);
   const decision = resolveScheduledPhase({ task, drop, now:Date.now() });
+  // While waiting, observe the persisted target stage, never an unrelated earlier active phase.
+  // Once ready, observe the active stage because that is the exact phase whose call will execute.
+  const observedStage=decision.status==='ready'
+    ?(decision.activeStage||decision.targetStage||null)
+    :(decision.targetStage||decision.nextStage||null);
+  // A phase resolver may legitimately advance an earliest-eligible task from its persisted stage
+  // to a later one. Move that identity, reservation key, and allowance envelope through the
+  // repository's atomic deferForPhase path before evaluating the later stage's time/price policy.
+  // Otherwise an approval pause (or an automatic timing update) can return early while the row is
+  // still reserved against the old stage, and a later claim could build calldata for the new one.
+  const persistedStageIdentity=scheduleStagePersistenceKey({uuid:task.stageUuid,
+    label:task.stageLabel,stageType:task.stageType});
+  const observedStageIdentity=phaseIdentity(observedStage);
+  const reservationMismatch=Boolean(task.reservationStageKey
+    &&observedStageIdentity&&task.reservationStageKey!==observedStageIdentity);
+  if(observedStage&&observedStageIdentity
+    &&(observedStageIdentity!==persistedStageIdentity||reservationMismatch)){
+    const checkedAt=Date.now();
+    const retryAt=decision.status==='wait'&&Number.isFinite(Number(decision.retryAt))
+      ?Number(decision.retryAt):Math.min(checkedAt+1_000,decision.deadline);
+    throw phaseWaitError({...decision,status:'wait',retryAt,nextStage:observedStage,checkedAt});
+  }
+  if(observedStage){
+    await enforceScheduledChangePolicy(task,{
+      openingAt:Number.isFinite(Number(observedStage.startAt))?Number(observedStage.startAt):null,
+      priceWeiPerItem:observedStage.priceWei??null,
+      source:'opensea-stage',
+    });
+  }
   enforcePhaseDecision(decision);
   enforceEligibilityDeadline(task);
   if (expectedPhaseIdentity && phaseIdentity(decision.activeStage) !== expectedPhaseIdentity) {
@@ -501,6 +563,15 @@ async function refreshScheduledPublicPhase(task, chain, expectedPhaseIdentity = 
   }
   const stage = { ...phase.decision.activeStage, startAt,
     endAt:Number.isFinite(endAt) && endAt > 0 ? endAt : null };
+  const configSummary=configurationSummary({chain,contract:task.contract,
+    callTarget:seaDrop.address,method:'mintPublic',standard:'SeaDrop',feeRecipient,
+    stageIdentity:phaseIdentity(phase.decision.activeStage),endTime:livePublicDrop.endTime,
+    maxPerWallet:livePublicDrop.maxTotalMintableByWallet,feeBps:livePublicDrop.feeBps,
+    restrictFeeRecipients:livePublicDrop.restrictFeeRecipients});
+  await enforceScheduledChangePolicy(task,{
+    openingAt:startAt,priceWeiPerItem:livePublicDrop.mintPriceWei,
+    configFingerprint:configurationFingerprint(configSummary),configSummary,source:'seadrop-public',
+  });
   const latestBlock = await fastProviderService.perform(chain, 'scheduledChainTime', provider =>
     provider.getBlock('latest'), { timeoutMs:3_000, retries:0 });
   const chainTimeMs = Number(latestBlock?.timestamp) * 1_000;
@@ -569,23 +640,15 @@ async function prearmScheduledTask(task) {
     const seaDrop = await seaDropDiscoveryService.resolve(executionChain, task.contract);
     if (seaDrop.address) {
       const livePublicDrop = await seaDropPublicDropResolver.getPublicDrop(executionChain, seaDrop.address, task.contract);
-      // INNOV-001: the advertised T is imperfect information. When the contract's own window
-      // differs from the schedule, move the fire moment to the REAL opening NOW -- before T
-      // arrives -- so the first attempt is valid and zero failed tries are spent discovering
-      // what a dedicated script would poll for. Bounded by the same 24h window the post-hoc
-      // re-arm uses; the drift check at executeTask remains the final gate either way.
+      // Pre-arm is deliberately read-only. The durable 30-second checkpoint and the final
+      // execution preflight own all opening/price/configuration decisions. An older version moved
+      // next_attempt_at here without the user's change policy or an audit event, which could bypass
+      // approval and race another instance.
       const classification = classifySeaDropWindow(livePublicDrop, Date.now());
-      const move = preArmRearm(classification, task.mintTime, STAGE_REARM_WINDOW_MS);
-      if (move) {
-        const moved = await schedulerRepository.moveFireTime(task.userId, task.id, move.fireAtMs);
-        if (moved) {
-          log(`Pre-arm re-arm: "${task.name}" (${executionChain}:${task.contract}) moved to the live opening ${new Date(move.fireAtMs).toISOString()} -- ${move.reason}`);
-          task.mintTime = move.fireAtMs;
-        }
-      } else if (classification.phase === 'late') {
+      if (classification.phase === 'late') {
         log(`Pre-arm notice: "${task.name}" (${executionChain}:${task.contract}) window already closed (ended ${classification.endTimeMs ? new Date(classification.endTimeMs).toISOString() : 'never set'}) -- fire-time drift check will reject it`);
       } else if (livePublicDrop && Math.abs(livePublicDrop.startTime * 1000 - task.mintTime) > PREARM_WINDOW_TOLERANCE_MS) {
-        log(`Pre-arm notice: "${task.name}" (${executionChain}:${task.contract}) fires at ${new Date(task.mintTime).toISOString()}, but its live SeaDrop window starts ${new Date(livePublicDrop.startTime * 1000).toISOString()} -- the fire-time drift check may reject it`);
+        log(`Pre-arm notice: "${task.name}" (${executionChain}:${task.contract}) fires at ${new Date(task.mintTime).toISOString()}, but its live SeaDrop window starts ${new Date(livePublicDrop.startTime * 1000).toISOString()} -- the durable change policy will decide it`);
       }
     }
     // Warm hot-path reads that executeTask will need at T0: fee data (5s TTL), balance, and
@@ -733,6 +796,17 @@ const schedulerWorker = createSchedulerWorker({
             decision = { ...decision, status:'wait', retryAt:Math.min(checkedAt + 1_000, decision.deadline),
               nextStage:decision.activeStage, checkedAt };
           }
+          // Let SCHEDULE_PHASE_WAIT own this transition before evaluating the new stage's
+          // opening/price policy. Its repository path moves the stage identity, reservation key,
+          // and freshly resolved allowance evidence in one transaction. Evaluating the time
+          // change first can commit an auto-reschedule (or pause for manual approval) and return
+          // before deferForPhase runs, leaving the task labelled/reserved against the old
+          // allowlist stage while a later public-stage call is eventually executed.
+          //
+          // The next claim (or one of the durable 5m/30s checks armed by deferForPhase) evaluates
+          // opening and price against the still-unchanged accepted baseline. This preserves both
+          // automatic and approval-required policy semantics, but no execution can reach the new
+          // stage until its durable identity and allowance envelope have moved first.
           enforcePhaseDecision(decision);
         }
         throw error;
@@ -756,7 +830,19 @@ const schedulerWorker = createSchedulerWorker({
         }
         // Same check executeMintViaOpenSea applies to the manual path -- OpenSea's eligibility
         // resolution is trusted, the mechanical shape of what it returned still is not.
-        validateOpenSeaMintCall({ built, contractAddress: task.contract, quantity: qty, minterAddress: wallet.address });
+        const decoded=validateOpenSeaMintCall({built,contractAddress:task.contract,quantity:qty,
+          minterAddress:wallet.address,chain:executionChain});
+        const builtValue=BigInt(built.valueWei);
+        const unitValue=(builtValue+BigInt(qty)-1n)/BigInt(qty);
+        const configSummary=decodedMintConfiguration(decoded,{chain:executionChain,
+          stageIdentity:expectedPhaseIdentity||task.stageUuid||task.stageType||task.stageLabel});
+        await enforceScheduledChangePolicy(task,{
+          openingAt:Number.isFinite(Number(hooks.preflight?.phaseDecision?.activeStage?.startAt))
+            ?Number(hooks.preflight.phaseDecision.activeStage.startAt):null,
+          priceWeiPerItem:unitValue.toString(),
+          configFingerprint:configurationFingerprint(configSummary),configSummary,
+          source:'opensea-built-call',
+        },{validatedConfigurationPromotion:OPENSEA_VALIDATED_BUILDER_V1});
         const prepared = { chain: executionChain, calldata: built.data, valueWei: BigInt(built.valueWei),
           method: { signature: 'opensea:drops-mint' }, preview: { contractAddress: task.contract, callTarget: built.to } };
         return mintExecution.executePrepared({ userId: task.userId, wallet, prepared, triggerSource: 'scheduled',
@@ -833,6 +919,26 @@ const schedulerWorker = createSchedulerWorker({
           livePublicDrop = await seaDropPublicDropResolver.getPublicDrop(executionChain, seaDrop.address, task.contract);
         }
         if (livePublicDrop) {
+          const allowedFeeRecipients=await seaDropPublicDropResolver.readAllowedFeeRecipients(
+            executionChain,seaDrop.address,task.contract);
+          const legacyFeeRecipient=liveFeeRecipient({cachedFeeRecipient:seaDrop.feeRecipient,
+            allowedFeeRecipients,restrictFeeRecipients:livePublicDrop.restrictFeeRecipients,
+            walletAddress:wallet.address});
+          if(!legacyFeeRecipient)throw new ValidationError({field:'contractAddress',
+            message:'The contract has no approved fee recipient for this public stage. Nothing was sent.'});
+          seaDrop={...seaDrop,feeRecipient:legacyFeeRecipient};
+          const configSummary=configurationSummary({chain:executionChain,contract:task.contract,
+            callTarget:seaDrop.address,method:'mintPublic',standard:'SeaDrop',
+            feeRecipient:legacyFeeRecipient,stageIdentity:task.stageUuid||task.stageType||task.stageLabel,
+            endTime:livePublicDrop.endTime,maxPerWallet:livePublicDrop.maxTotalMintableByWallet,
+            feeBps:livePublicDrop.feeBps,
+            restrictFeeRecipients:livePublicDrop.restrictFeeRecipients});
+          await enforceScheduledChangePolicy(task,{
+            openingAt:Number(livePublicDrop.startTime)*1_000,
+            priceWeiPerItem:livePublicDrop.mintPriceWei,
+            configFingerprint:configurationFingerprint(configSummary),configSummary,
+            source:'seadrop-public',
+          });
           const nowSec = Math.floor(Date.now() / 1000);
           if (nowSec < livePublicDrop.startTime) {
             // Early: the contract is not yet open, but may open seconds later (the advertised T
@@ -858,12 +964,30 @@ const schedulerWorker = createSchedulerWorker({
         const { fetchWhitelistProof, buildGlrtchWhitelistCall } = require('./mint/glrtchService');
         const { proof, maxAllowance, priceWei } = await fetchWhitelistProof(wallet.address);
         const glrtchPrepared = buildGlrtchWhitelistCall({ quantity: task.qty || 1, maxAllowance, priceWei, proof });
+        const configSummary=configurationSummary({chain:executionChain,contract:task.contract,
+          callTarget:glrtchPrepared.to,method:'whitelistMint(uint256,uint256,uint256,bytes32[])',
+          standard:'GLRTCH allowlist',stageIdentity:task.stageUuid||task.stageType||task.stageLabel,
+          maxPerWallet:maxAllowance});
+        await enforceScheduledChangePolicy(task,{
+          openingAt:task.stageStartAt??task.acceptedOpeningAt??task.mintTime,
+          priceWeiPerItem:String(priceWei),configFingerprint:configurationFingerprint(configSummary),
+          configSummary,source:'glrtch-allowlist',
+        });
         const prepared = { chain: executionChain, calldata: glrtchPrepared.data, valueWei: BigInt(glrtchPrepared.valueWei), method: { signature: 'whitelistMint(uint256,uint256,uint256,bytes32[])' }, preview: { contractAddress: task.contract, callTarget: glrtchPrepared.to, methodSignature: 'whitelistMint(uint256,uint256,uint256,bytes32[])', standard: 'GLRTCH allowlist', arguments: [{ name: 'quantity', type: 'uint256', value: String(task.qty || 1) }], nativeValueWei: glrtchPrepared.valueWei, nativeValue: String(Number(glrtchPrepared.valueWei)/1e18) } };
         return mintExecution.executePrepared({ userId:task.userId, wallet, prepared, triggerSource:'scheduled',
           gasPriceWei:undefined, idempotencyKey:hooks.idempotencyKey, onIntentPersisted:hooks.onIntentPersisted, onPreview:preview => notifyUser(task.userId, formatMintPreview(preview)) });
       } else {
         const { buildGlrtchPublicCall } = require('./mint/glrtchService');
-        const glrtchPrepared = buildGlrtchPublicCall({ quantity: task.qty || 1, valueWei: (1600000000000000n * BigInt(task.qty || 1)).toString() });
+        const unitPriceWei=1600000000000000n;
+        const glrtchPrepared = buildGlrtchPublicCall({ quantity: task.qty || 1, valueWei: (unitPriceWei * BigInt(task.qty || 1)).toString() });
+        const configSummary=configurationSummary({chain:executionChain,contract:task.contract,
+          callTarget:glrtchPrepared.to,method:'publicMint(uint256)',standard:'GLRTCH public',
+          stageIdentity:task.stageUuid||task.stageType||task.stageLabel,maxPerWallet:2});
+        await enforceScheduledChangePolicy(task,{
+          openingAt:task.stageStartAt??task.acceptedOpeningAt??task.mintTime,
+          priceWeiPerItem:unitPriceWei.toString(),configFingerprint:configurationFingerprint(configSummary),
+          configSummary,source:'glrtch-public',
+        });
         const prepared = { chain: executionChain, calldata: glrtchPrepared.data, valueWei: BigInt(glrtchPrepared.valueWei), method: { signature: 'publicMint(uint256)' }, preview: { contractAddress: task.contract, callTarget: glrtchPrepared.to, methodSignature: 'publicMint(uint256)', standard: 'GLRTCH public', arguments: [{ name: 'quantity', type: 'uint256', value: String(task.qty || 1) }], nativeValueWei: glrtchPrepared.valueWei, nativeValue: String(Number(glrtchPrepared.valueWei)/1e18) } };
         return mintExecution.executePrepared({ userId:task.userId, wallet, prepared, triggerSource:'scheduled',
           gasPriceWei:undefined, idempotencyKey:hooks.idempotencyKey, onIntentPersisted:hooks.onIntentPersisted, onPreview:preview => notifyUser(task.userId, formatMintPreview(preview)) });
@@ -878,6 +1002,18 @@ const schedulerWorker = createSchedulerWorker({
     const prepared = await prepareMintCall({ contractAddress:request.contractAddress,
       walletAddress:wallet.address, chain:request.chain, quantity:request.quantity, priceETH:request.priceETH,
       resolvedSeaDrop:scheduledSeaDrop, resolvedPublicDrop:livePublicDrop });
+    // A non-SeaDrop scheduled mint is encoded by the same audited mint(uint256) path that was
+    // authorized when the task was created. Compare the actual prepared call immediately before
+    // entering the transaction engine so a future implementation/configuration change cannot
+    // silently replace the contract target or method after the 30-second advisory checkpoint.
+    if(!scheduledSeaDrop?.address){
+      const configSummary=decodedMintConfiguration(prepared.preview,{chain:executionChain});
+      await enforceScheduledChangePolicy(task,{
+        openingAt:null,priceWeiPerItem:ethers.parseEther(String(request.priceETH)).toString(),
+        configFingerprint:configurationFingerprint(configSummary),configSummary,
+        source:'prepared-contract-call',
+      });
+    }
     try {
       return await mintExecution.executePrepared({ userId:task.userId, wallet, prepared, triggerSource:'scheduled',
         gasPriceWei:request.gasGwei === null ? undefined : ethers.parseUnits(String(request.gasGwei), 'gwei'),
@@ -904,7 +1040,7 @@ const schedulerWorker = createSchedulerWorker({
   },
   notify: async event => {
     const wallet = DB.wallets.find(item => item.userId === event.task.userId && item.label === event.task.walletLabel);
-    if (event.phaseWait) {
+    if (event.phaseWait || event.scheduleChange) {
       const cached = DB.tasks.find(item => item.userId === event.task.userId && item.id === event.task.id);
       if (cached) Object.assign(cached, event.task);
     }
@@ -912,8 +1048,21 @@ const schedulerWorker = createSchedulerWorker({
     // the durable-list invalidation first, before activity writes or Telegram/Discord delivery:
     // those secondary operations may fail, but they must never leave the dashboard showing an old
     // task state. WebSocket delivery itself is synchronous and safely no-ops for disconnected users.
-    if (['starting','retry','success','failure','failed'].includes(event.outcome)) {
+    if (['starting','retry','paused','success','failure','failed'].includes(event.outcome)) {
       dashboardWebSockets.broadcastToUser(event.task.userId, {type:'tasks.changed'});
+    }
+    if(event.scheduleChange){
+      const reason=escapeTelegramHtml(event.scheduleChange.reason||'The mint schedule changed.');
+      if(event.outcome==='paused'){
+        dashboardWebSockets.broadcastToUser(event.task.userId,{type:'task.change-review',
+          taskId:event.task.id,name:event.task.name,version:event.task.changeVersion,
+          kinds:event.scheduleChange.kinds||[],reason:event.scheduleChange.reason});
+        await notifyUser(event.task.userId,`⚠️ Scheduled mint <b>${escapeTelegramHtml(event.task.name)}</b> needs your review.\n${reason}\nOpen Schedule details to approve the exact change or cancel it.`);
+      }else if(event.outcome==='retry'){
+        await notifyUser(event.task.userId,`🕒 Scheduled mint <b>${escapeTelegramHtml(event.task.name)}</b> was safely rescheduled.\n${reason}`);
+      }else if(event.outcome==='failed'){
+        await notifyUser(event.task.userId,`❌ Scheduled mint <b>${escapeTelegramHtml(event.task.name)}</b> stopped.\n${reason}`);
+      }
     }
     if (event.outcome === 'starting') {
       dashboardWebSockets.broadcastToUser(event.task.userId, { type:'task.starting',
@@ -930,7 +1079,7 @@ const schedulerWorker = createSchedulerWorker({
       }
       await notifyUser(event.task.userId, `✅ Scheduled mint <b>${escapeTelegramHtml(event.task.name)}</b> confirmed.`);
     }
-    if (['failure','failed'].includes(event.outcome)) {
+    if (['failure','failed'].includes(event.outcome) && !event.scheduleChange) {
       // event.error is only set for a thrown-before-broadcast failure (ValidationError, the
       // drift-check TransactionSafetyError above, etc), not a transaction that broadcast and then
       // reverted (settleFromIntent's 'failure' path carries event.intent instead) -- showing the
@@ -1042,12 +1191,84 @@ const evaluateScheduledPreflight=createScheduledPreflightEvaluator({
   findWallet:task=>DB.wallets.find(item=>item.userId===task.userId&&item.label===task.walletLabel),
   inspectMint:async(task,wallet)=>{
     const detected=await botCommands.detectMintContract(task.userId,{contractAddress:task.contract,
-      quantity:task.qty||1,includeSupply:true,chain:taskExecutionChain(task,wallet)});
+      quantity:task.qty||1,includeSupply:true,includeDrop:true,
+      chain:taskExecutionChain(task,wallet)});
+    const executionChain=taskExecutionChain(task,wallet);
+    let scheduleObservation=null;
+    let livePriceWeiPerItem=detected?.priceWeiPerItem??null;
+    if(phaseAwareTask(task)){
+      if(!detected?.drop)throw new Error('The live mint-stage schedule is temporarily unavailable');
+      const targetKey=scheduleStagePersistenceKey({uuid:task.stageUuid,
+        stageType:task.stageType,label:task.stageLabel});
+      const matches=(detected.drop.stages||[])
+        .filter(stage=>scheduleStagePersistenceKey(stage)===targetKey);
+      if(matches.length!==1){
+        // This five-minute/30-second probe is advisory and has no concrete replacement phase to
+        // reserve. Turning an absent/ambiguous match into a review would create an approval loop:
+        // approval cannot change the stage UUID, so the next probe would pause on the same fact.
+        // Persist a check_failed result instead and leave final authoritative phase resolution to
+        // either move earliest-eligible tasks atomically or fail a pinned stage with a real reason.
+        throw new Error(matches.length
+          ?'The selected mint stage could not be identified uniquely during this early check.'
+          :'The selected mint stage was not found during this early check.');
+      }else{
+        const stage=matches[0];
+        scheduleObservation={openingAt:Number.isFinite(Number(stage.startTime))
+          ?Number(stage.startTime)*1_000:null,priceWeiPerItem:stage.priceWei??null,
+        source:'early-opensea-stage'};
+        if(stage.priceWei!==null&&stage.priceWei!==undefined)livePriceWeiPerItem=stage.priceWei;
+      }
+    }
+    const isGlrtch=executionChain==='robinhood'
+      &&task.contract.toLowerCase()==='0xda719be13af43757cede32d82f021c13ce29d991';
+    const isGlrtchlist=isGlrtch&&(`${task.stageType||''} ${task.stageLabel||''}`
+      .toLowerCase().includes('glrtchlist'));
+    if(detected?.isSeaDrop&&!task.viaOpenSea){
+      const publicDrop=await seaDropPublicDropResolver.readPublicDrop(executionChain,
+        detected.seaDropAddress,task.contract);
+      const allowedFeeRecipients=await seaDropPublicDropResolver.readAllowedFeeRecipients(
+        executionChain,detected.seaDropAddress,task.contract);
+      const feeRecipient=liveFeeRecipient({cachedFeeRecipient:detected.arguments?.[0],
+        allowedFeeRecipients,restrictFeeRecipients:publicDrop.restrictFeeRecipients,
+        walletAddress:wallet.address});
+      if(!feeRecipient)throw new Error('The public mint has no approved fee recipient right now');
+      livePriceWeiPerItem=publicDrop.mintPriceWei;
+      const configSummary=configurationSummary({chain:executionChain,contract:task.contract,
+        callTarget:detected.seaDropAddress,method:'mintPublic',standard:'SeaDrop',feeRecipient,
+        stageIdentity:scheduleStagePersistenceKey({uuid:task.stageUuid,
+          stageType:task.stageType,label:task.stageLabel}),endTime:publicDrop.endTime,
+        maxPerWallet:publicDrop.maxTotalMintableByWallet,feeBps:publicDrop.feeBps,
+        restrictFeeRecipients:publicDrop.restrictFeeRecipients});
+      scheduleObservation={openingAt:Number(publicDrop.startTime)*1_000,
+        priceWeiPerItem:publicDrop.mintPriceWei,
+        configFingerprint:configurationFingerprint(configSummary),configSummary,
+        source:'early-seadrop-public'};
+    }else if(isGlrtch){
+      // Keep this advisory fingerprint identical to the durable creation/final-execution shape.
+      // Generic detection labels are UI hints and may differ from the exact supported GLRTCH call.
+      const configSummary=configurationSummary({chain:executionChain,contract:task.contract,
+        callTarget:task.contract,
+        method:isGlrtchlist?'whitelistMint(uint256,uint256,uint256,bytes32[])':'publicMint(uint256)',
+        standard:isGlrtchlist?'GLRTCH allowlist':'GLRTCH public',
+        stageIdentity:task.stageUuid||task.stageType||task.stageLabel,
+        maxPerWallet:isGlrtchlist?1:2});
+      scheduleObservation={...(scheduleObservation||{}),priceWeiPerItem:livePriceWeiPerItem,
+        configFingerprint:configurationFingerprint(configSummary),configSummary,
+        source:'early-glrtch-call'};
+    }else if(!phaseAwareTask(task)){
+      const configSummary=configurationSummary({chain:executionChain,contract:task.contract,
+        callTarget:task.contract,method:detected?.methodSignature||'mint(uint256)',
+        standard:detected?.standard||'ERC-721'});
+      scheduleObservation={openingAt:null,priceWeiPerItem:livePriceWeiPerItem,
+        configFingerprint:configurationFingerprint(configSummary),configSummary,
+        source:'early-contract-read'};
+    }
     const soldOutBySupply=detected?.maxSupply!==null&&detected?.maxSupply!==undefined
       &&detected?.totalMinted!==null&&detected?.totalMinted!==undefined
       &&BigInt(detected.totalMinted)>=BigInt(detected.maxSupply);
     return {soldOut:soldOutBySupply,soldOutDefinitive:soldOutBySupply,
-      isSeaDrop:Boolean(detected?.isSeaDrop),priceWeiPerItem:detected?.priceWeiPerItem??null};
+      isSeaDrop:Boolean(detected?.isSeaDrop),priceWeiPerItem:livePriceWeiPerItem,
+      scheduleObservation};
   },
   resolveMintValueWei:async(task,wallet,inspection)=>{
     if(phaseAwareTask(task)){
@@ -1097,12 +1318,16 @@ const scheduledPreflightWorker=createScheduledPreflightWorker({
       escape:escapeTelegramHtml});
     const platformResults=await notificationService.sendToUser(task.userId,delivery.text);
     dashboardWebSockets.broadcastToUser(task.userId,delivery.event);
+    if(delivery.event?.type==='task.failed'){
+      dashboardWebSockets.broadcastToUser(task.userId,{type:'tasks.changed'});
+    }
     const failures=platformResults.filter(item=>item.status==='rejected').length;
     if(failures)throw new Error(`${failures} linked platform notification${failures===1?'':'s'} failed`);
   },
   onCommitted:(task,check,result,persisted)=>{
-    if(persisted.cancelled){const cached=DB.tasks.find(item=>item.userId===task.userId&&item.id===task.id);
-      if(cached){cached.status='cancelled';cached.completedAt=Date.now();}}
+    const cached=DB.tasks.find(item=>item.userId===task.userId&&item.id===task.id);
+    if(cached&&persisted.task)Object.assign(cached,persisted.task);
+    else if(persisted.cancelled&&cached){cached.status='cancelled';cached.completedAt=Date.now();}
     dashboardWebSockets.broadcastToUser(task.userId,{type:'tasks.changed'});
   },
   log,
@@ -2554,6 +2779,7 @@ async function finishTaskSchedule(chatId, messageId, userId, flowData) {
       viaOpenSea: flowData.viaOpenSea, stageUuid: flowData.stageUuid, stageLabel: flowData.stageLabel,
       stageType: flowData.stageType, eligibilityMode: flowData.eligibilityMode,
       eligibilityDeadline: flowData.eligibilityDeadline,
+      expectedPriceWeiPerItem: flowData.expectedPriceWeiPerItem,
     });
     telegramFlowState.clear('telegram', chatId);
     return tgUpdate(chatId, messageId, telegramMenus.taskScheduled({

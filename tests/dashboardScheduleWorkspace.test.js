@@ -47,7 +47,7 @@ test('Schedule exposes its countdown and readable metadata on mobile',()=>{
 });
 
 test('Schedule details are discoverable without replacing single-click row selection',()=>{
-  assert.match(app,/function TaskDetails\(\{summary,onClose\}\)/);
+  assert.match(app,/function TaskDetails\(\{summary,onClose,onChanged\}\)/);
   assert.match(app,/`\/api\/tasks\/\$\{encodeURIComponent\(summary\.id\)\}`/);
   assert.match(app,/onClick=\{\(\)=>chooseRow\(task\)\}/,
     'single click must remain the existing row-selection gesture');
@@ -201,9 +201,35 @@ test('Schedule uses detected facts instead of asking the user to invent a task n
   assert.doesNotMatch(schedule,/name="name"/);
   assert.doesNotMatch(schedule,/>Name(?:<|\{)/);
   assert.match(schedule,/input\.name=String\(detectedName\|\|scheduledStage\?\.label\|\|`Mint \$\{shortHex\(currentAddress\)\}`\)\.slice\(0,100\)/);
-  assert.match(schedule,/Detected <b>\{detectedName\|\|'contract'\}<\/b>/);
-  assert.match(schedule,/price and eligibility checked at opening/);
-  assert.match(schedule,/max \{maxPerWallet\}\/wallet/);
+  assert.match(schedule,/aria-label="Schedule preview"/);
+  assert.match(schedule,/\{detectedName\|\|'Detected contract'\}/);
+  assert.match(schedule,/current price, wallet eligibility, balance, and simulation again before sending/);
+  assert.match(schedule,/published max \$\{maxPerWallet\}\/wallet/);
+});
+
+test('Schedule change review displays exact values and locks every overlay exit while saving',()=>{
+  assert.match(app,/function scheduleChangeFact\(change,chain\)/);
+  assert.match(app,/Call target/);
+  assert.match(app,/Mint method/);
+  assert.match(app,/Fee recipient/);
+  assert.match(app,/Authorization/);
+  assert.match(app,/Opening: \$\{taskDetailTime\(change\.from\)\} → \$\{taskDetailTime\(change\.to\)\}/);
+  assert.match(app,/Price: \$\{freeOrNativeAmount\(change\.from,nativeSymbolForChain\(chain\)\)\} →/);
+  assert.match(app,/<Overlay open onClose=\{onClose\} wide busy=\{Boolean\(changeBusy\)\}/);
+  assert.match(app,/if\(event\.key==='Escape'&&!busyRef\.current\)onCloseRef\.current\(\)/);
+  assert.match(app,/event\.target===event\.currentTarget&&!busy/);
+  assert.match(app,/aria-label="Close" disabled=\{busy\}/);
+});
+
+test('Schedule help stays available before contract detection and has a mobile-safe touch target',()=>{
+  const start=app.indexOf('function Tasks(');
+  const end=app.indexOf('function Activity(',start);
+  const schedule=app.slice(start,end);
+  const help=schedule.indexOf('className="ico-btn schedule-help-open"');
+  const detected=schedule.indexOf("!detecting&&ADDRESS_SHAPE.test(contractAddress.trim())");
+  assert.ok(help>=0&&help<detected,'help must be reachable before a contract is detected');
+  assert.match(css,/\.ico-btn\.schedule-help-open\{width:44px;height:44px/);
+  assert.match(css,/\.schedule-preview-grid b\{white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere\}/);
 });
 
 test('Schedule quantity controls obey the detected wallet cap',()=>{

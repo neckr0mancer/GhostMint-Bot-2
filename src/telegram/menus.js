@@ -707,7 +707,9 @@ function taskActions(task) {
   const rows = [];
   if (task.status === 'scheduled' || task.status === 'retry') rows.push([button('⏸ Pause', `task:pause:${task.id}`)]);
   if (task.status === 'paused') rows.push([button('▶️ Resume', `task:resume:${task.id}`)]);
-  if (task.status === 'failed') rows.push([button('↻ Retry', `task:retry:${task.id}`)]);
+  if (task.status === 'failed' && !/^(?:SOLD_OUT|REVIEW_EXPIRED):/i.test(String(task.lastError || ''))) {
+    rows.push([button('↻ Retry', `task:retry:${task.id}`)]);
+  }
   if (CANCELLABLE_TASK_STATUSES.has(task.status)) rows.push([button('❌ Cancel', `task:cancel:ask:${task.id}`)]);
   rows.push([button('⬅️ Back to the list', 'menu:tasks')]);
   // A viaOpenSea task's price is always stored as 0 -- OpenSea's own response at execution time

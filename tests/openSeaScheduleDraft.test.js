@@ -20,6 +20,7 @@ test('Telegram and Discord share one gated-stage task draft with a bounded eligi
   assert.equal(draft.eligibilityMode,'earliest_eligible');
   assert.equal(draft.viaOpenSea,true);
   assert.equal(draft.priceETH,0);
+  assert.equal(draft.expectedPriceWeiPerItem,'1000000000000000');
   assert.equal(draft.maxPerWallet,2);
   assert.equal(draft.eligibilityDeadline,new Date((START+3600)*1000).toISOString());
 });
@@ -34,6 +35,7 @@ test('a public SeaDrop stage stays pinned and uses its own detected price and qu
   assert.equal(draft.eligibilityMode,'specific_stage');
   assert.equal(draft.viaOpenSea,false);
   assert.equal(draft.priceETH,0.0025);
+  assert.equal(draft.expectedPriceWeiPerItem,'2500000000000000');
   assert.equal(draft.maxPerWallet,7);
 });
 

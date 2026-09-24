@@ -82,6 +82,16 @@ test('OpenSea validation accepts the known Archetype ERC-721A mint shape and exp
   assert.equal(preview.methodSignature, 'mint((bytes32,bytes32[]),uint256,address,bytes)');
   assert.equal(preview.arguments.find(item => item.name === 'quantity').value, '2');
   assert.equal(preview.arguments.find(item => item.name === 'recipient').value, WALLET);
+  assert.match(preview.configurationDigest,/^[0-9a-f]{64}$/);
+});
+
+test('OpenSea Archetype configuration digest changes with the invite key',()=>{
+  const preview=key=>validateOpenSeaMintCall({built:{to:CONTRACT,
+    data:ARCHETYPE_INTERFACE.encodeFunctionData('mint',[
+      {key,proof:[]},1,ZERO_ADDRESS,'0x']),valueWei:'0'},contractAddress:CONTRACT,
+    quantity:1,minterAddress:WALLET});
+  assert.notEqual(preview(`0x${'11'.repeat(32)}`).configurationDigest,
+    preview(`0x${'22'.repeat(32)}`).configurationDigest);
 });
 
 test('OpenSea validation rejects an Archetype mintTo that redirects the NFT to another wallet', () => {
@@ -738,15 +748,18 @@ test('market cap is null (not a guess) when either the floor price or the live m
   assert.equal(noSupply.stats.marketCap, null);
 });
 
-function taskServiceFixture({ contractValueResolver, seaDropDiscoveryService, seaDropPublicDropResolver, createReservedTask }) {
-  const state = { wallets: [{ id: 1, userId: 'user-a', label: 'main', address: WALLET, chain: 'ethereum' }], tasks: [], activity: [], pnl: [], snipers: [] };
+function taskServiceFixture({ contractValueResolver, seaDropDiscoveryService, seaDropPublicDropResolver,
+  openSeaService,createReservedTask,supportedChains=['ethereum'],walletChain='ethereum' }) {
+  const state = { wallets: [{ id: 1, userId: 'user-a', label: 'main', address: WALLET, chain: walletChain }], tasks: [], activity: [], pnl: [], snipers: [] };
   const saved = [];
   const service = createBotCommandService({
     storage: { saveTask: async task => { saved.push(task); return true; },
       ...(createReservedTask ? {createReservedTask:async task=>{saved.push(task);return createReservedTask(task);}} : {}) },
     schedulerRepository: {}, providerService: {}, governance: {}, adminCommands: {}, sniperService: {},
-    supportedChains: ['ethereum'], chains: { ethereum: { sym: 'ETH' } }, getState: () => state,
-    contractValueResolver, seaDropDiscoveryService, seaDropPublicDropResolver, encryptPrivateKey: () => ({}),
+    supportedChains, chains:Object.fromEntries(supportedChains.map(chain=>[chain,{sym:'ETH'}])),
+    getState: () => state,
+    contractValueResolver, seaDropDiscoveryService, seaDropPublicDropResolver, openSeaService,
+    encryptPrivateKey: () => ({}),
   });
   return { saved, service };
 }
@@ -810,6 +823,50 @@ test('createTask forces priceETH to 0, persists its chosen phase, and safely def
   assert.equal(task.stageType, 'signed_presale');
   assert.equal(task.eligibilityMode, 'earliest_eligible');
   assert.equal(task.eligibilityDeadline, Date.parse(mintTime) + 24 * 60 * 60 * 1000);
+  assert.equal(task.acceptedConfigSummary.authorization,'opensea_validated_builder_v1');
+  assert.equal(task.acceptedConfigSummary.stageIdentity,'uuid:stage-allow-1');
+  assert.ok(task.acceptedConfigFingerprint);
+});
+
+test('createTask never erases an out-of-policy time and price change that raced the preview',async()=>{
+  const original=Math.floor(Date.now()/1000)+3_600;
+  const changed=original+3_600;
+  const {service}=taskServiceFixture({
+    contractValueResolver:{resolve:async()=>{throw new Error('must not be called');}},
+    seaDropDiscoveryService:{resolve:async()=>({address:null,publicDrop:null,feeRecipient:null})},
+    openSeaService:{getDrop:async()=>({stages:[{uuid:'allow-1',label:'Allowlist',
+      stageType:'signed_presale',startTime:changed,priceWei:'200'}]})},
+  });
+  await assert.rejects(service.createTask('user-a',{name:'raced allowlist',walletLabel:'main',
+    contractAddress:CONTRACT,quantity:1,mintTime:new Date(original*1000).toISOString(),
+    stageStartAt:new Date(original*1000).toISOString(),stageUuid:'allow-1',stageLabel:'Allowlist',
+    stageType:'signed_presale',viaOpenSea:true,expectedPriceWeiPerItem:'100',
+    acceptPriceChanges:true,maxPriceWeiPerItem:'150',autoReschedule:true,
+    maxOpeningDelayMinutes:120}),error=>(
+    error instanceof ValidationError&&error.code==='SCHEDULE_CHANGED_DURING_CREATE'
+      &&/Refresh the preview/.test(error.issues[0].message)
+  ));
+});
+
+test('createTask preserves the previewed original while applying an explicitly bounded race',async()=>{
+  const original=Math.floor(Date.now()/1000)+3_600;
+  const changed=original+1_800;
+  const {saved,service}=taskServiceFixture({
+    contractValueResolver:{resolve:async()=>{throw new Error('must not be called');}},
+    seaDropDiscoveryService:{resolve:async()=>({address:null,publicDrop:null,feeRecipient:null})},
+    openSeaService:{getDrop:async()=>({stages:[{uuid:'allow-1',label:'Allowlist',
+      stageType:'signed_presale',startTime:changed,priceWei:'125'}]})},
+  });
+  await service.createTask('user-a',{name:'bounded allowlist',walletLabel:'main',
+    contractAddress:CONTRACT,quantity:1,mintTime:new Date(original*1000).toISOString(),
+    stageStartAt:new Date(original*1000).toISOString(),stageUuid:'allow-1',stageLabel:'Allowlist',
+    stageType:'signed_presale',viaOpenSea:true,expectedPriceWeiPerItem:'100',
+    acceptPriceChanges:true,maxPriceWeiPerItem:'150',autoReschedule:true,
+    maxOpeningDelayMinutes:60});
+  assert.equal(saved[0].originalOpeningAt,original*1000);
+  assert.equal(saved[0].acceptedOpeningAt,changed*1000);
+  assert.equal(saved[0].mintTime,changed*1000);
+  assert.equal(saved[0].acceptedPriceWeiPerItem,'125');
 });
 
 test('createTask rejects a viaOpenSea schedule with no persisted phase identity', async () => {
@@ -865,6 +922,7 @@ test('createTask persists fresh, wallet-specific SeaDrop allowance evidence for 
     seaDropDiscoveryService:{resolve:async()=>({address:SEADROP,publicDrop:null,feeRecipient:FEE_RECIPIENT})},
     seaDropPublicDropResolver:{
       readPublicDrop:async()=>({startTime:start,endTime:end,maxTotalMintableByWallet:10,mintPriceWei:'0'}),
+      readAllowedFeeRecipients:async()=>[FEE_RECIPIENT],
       readMintStats:async(_chain,_contract,wallet)=>{assert.equal(wallet,WALLET);return {minterNumMinted:'2'};},
     },
     createReservedTask:async()=>({created:true}),
@@ -877,6 +935,9 @@ test('createTask persists fresh, wallet-specific SeaDrop allowance evidence for 
   assert.equal(saved[0].allowanceMaxPerWallet,'10');
   assert.equal(saved[0].allowanceMintedSnapshot,'2');
   assert.equal(saved[0].allowanceStageStartAt,start*1000);
+  assert.equal(saved[0].acceptedConfigSummary.standard,'SeaDrop');
+  assert.equal(saved[0].acceptedConfigSummary.method,'mintPublic');
+  assert.equal(saved[0].acceptedConfigSummary.callTarget,SEADROP.toLowerCase());
 });
 
 test('createTask reports an authoritative allowance conflict as a validation error',async()=>{
@@ -911,4 +972,27 @@ test('a non-viaOpenSea task never has viaOpenSea set on the saved row', async ()
   assert.equal(saved[0].viaOpenSea, false);
   assert.equal(saved[0].eligibilityMode, 'specific_stage');
   assert.equal(saved[0].eligibilityDeadline, null);
+  assert.equal(saved[0].acceptedConfigSummary.method,'mint(uint256)');
+  assert.equal(saved[0].acceptedConfigSummary.standard,'ERC-721');
+  assert.equal(saved[0].acceptedConfigSummary.callTarget,CONTRACT.toLowerCase());
+  assert.ok(saved[0].acceptedConfigFingerprint);
+});
+
+test('a GLRTCH schedule stores its exact supported method instead of a null baseline',async()=>{
+  const glrtch='0xda719be13af43757cede32d82f021c13ce29d991';
+  const {saved,service}=taskServiceFixture({
+    supportedChains:['ethereum','robinhood'],
+    contractValueResolver:{resolve:async()=>({price:{value:'1600000000000000'},
+      maxSupply:null,maxPerWallet:{value:'1'}})},
+    seaDropDiscoveryService:{resolve:async()=>({address:null,publicDrop:null,feeRecipient:null})},
+  });
+  await service.createTask('user-a',{name:'Glrtchlist Mint',walletLabel:'main',
+    contractAddress:glrtch,chain:'robinhood',quantity:1,
+    mintTime:new Date(Date.now()+60_000).toISOString(),stageUuid:'Glrtchlist Mint',
+    stageLabel:'Glrtchlist Mint',stageType:'glrtchlist'});
+  assert.equal(saved[0].acceptedConfigSummary.method,
+    'whitelistMint(uint256,uint256,uint256,bytes32[])');
+  assert.equal(saved[0].acceptedConfigSummary.standard,'GLRTCH allowlist');
+  assert.equal(saved[0].acceptedConfigSummary.callTarget,glrtch);
+  assert.equal(saved[0].acceptedConfigSummary.maxPerWallet,'1');
 });

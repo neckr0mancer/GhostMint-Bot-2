@@ -120,13 +120,13 @@ must not be advertised as mint-capable until its end-to-end path passes that mat
 
 ### Still required before this broader schedule-intelligence request is complete
 
-- **Compact schedule preview and change policy — next after local acceptance, before Settings:**
-  replace the always-visible explanatory paragraph with an accessible circular information
-  disclosure; turn the detected-contract block into a concise schedule preview; and add durable,
-  per-task auto-reschedule and bounded price-change controls. Implement the schema and shared policy
-  once, expose the dashboard first, then add Telegram/Discord controls against that same service
-  before marking the feature complete. The detailed acceptance contract is recorded below under
-  **Scheduled Mint Price/Configuration/Opening Changes**.
+- **Compact schedule preview and change policy — implemented locally 2026-09-24:** the explanatory
+  copy is behind an accessible circular information disclosure; the dashboard has a concise live
+  schedule preview plus per-task auto-reschedule and bounded price-change controls; and the shared
+  database policy pauses material changes for one durable review decision. Telegram and Discord
+  already inherit the same enforcement and notification state, but their interactive policy setup
+  and approve/cancel controls remain a follow-up before this is called cross-platform complete.
+  Production migration and one live Railway schedule acceptance run also remain pending.
 - **Wallet-aware planning display:** expose per-stage evidence/current minted/reserved/remaining
   values and distinguish the earliest confirmed-open recommendation from an earlier
   `check_at_open` possibility. OpenSea stage/order maxima remain unverified unless their scope is
@@ -2626,7 +2626,7 @@ with assertions unchanged.
 
 **Status:** Documented for prioritization; not implemented in this unit per owner instruction.
 
-## Feature Request — Scheduled Mint Preview + Price/Configuration/Opening Changes (Updated 2026-09-23, Not Implemented)
+## Feature Request — Scheduled Mint Preview + Price/Configuration/Opening Changes (Implemented locally 2026-09-24; bot UI and deployment pending)
 
 **Original request (rephrased):** A project may change a scheduled mint's price, configuration, or
 opening time after the task was created. GhostMint must make the change visible, offer a clear
@@ -2636,8 +2636,8 @@ no explanation or silently spending an unexpected amount.
 **Current protection that must be preserved:** durable five-minute and 30-second readiness checks,
 fresh phase/SeaDrop reads, balance/policy/simulation checks immediately before broadcast, bounded
 24-hour stage re-arming, and the shared scheduler used by Dashboard, Telegram, and Discord. These
-prevent stale calldata from being sent, but they do not yet record user consent for a changed
-price/time.
+prevent stale calldata from being sent. The local implementation now also records the accepted
+price/opening/configuration envelope and a versioned user decision for each material change.
 
 **Schedule-page information architecture:**
 
@@ -2700,9 +2700,12 @@ schema/service and Dashboard controls first. Telegram and Discord may follow as 
 but must call the same service and are required before this feature is considered cross-platform
 complete.
 
-**Priority/status:** Next schedule product unit after the current local acceptance test and before
-the Settings redesign. It remains unimplemented until the durable policy/schema is reviewed as a
-safety feature; the present final-time checks remain authoritative in the meantime.
+**Priority/status:** The shared schema/policy, Dashboard controls and review UI, scheduler
+enforcement, durable audit/outbox, and automated Postgres restart/concurrency coverage are complete
+locally. Both automatic controls default OFF per task. Remaining work is the Telegram/Discord
+interactive policy/review UI, optional future Settings defaults that only prefill new tasks, the
+production migration maintenance window, and one live Railway schedule acceptance run. Final-time
+balance, gas, stage, proof, price, governance, and simulation checks remain authoritative.
 
 ## Feature Request — Wallet import surfaces and persistent wallet action bar (Documented 2026-09-21, Not Implemented)
 

@@ -149,6 +149,16 @@ For a phase-aware OpenSea schedule, the selected UTC time is a **not-before wake
 
 Legacy OpenSea schedules that predate persisted phase identity fail closed and must be recreated from fresh detected phase data; the worker never guesses which live phase to use.
 
+Opening-time changes and price changes are separate per-task permissions. Both default to **off**:
+without an opt-in, a material change pauses the task and asks for review. Auto-reschedule can follow
+only a verified later opening within the saved maximum delay and eligibility deadline; it never
+moves a spend earlier. Automatic price acceptance requires an exact native-currency cap; a price
+above it pauses. A changed target/method/configuration always requires review. If an unanswered
+review reaches the eligibility deadline, the task fails with `REVIEW_EXPIRED`, sends one durable
+notification, and broadcasts nothing. Definitive sold-out evidence is a terminal failed outcome;
+`cancelled` is reserved for an explicit user cancellation. Future Settings defaults may prefill
+these controls for newly created tasks only and must never alter existing schedules retroactively.
+
 This builder is the preferred automatic eligibility path. A Merkle proof cannot be reconstructed from only a wallet address and Merkle root; a non-OpenSea project must provide a public wallet-specific proof/signature API, IPFS dataset plus exact tree rules, or a launchpad adapter. The existing proof resolver supports those public HTTP/IPFS responses and otherwise fails closed so a missing proof is never treated as an empty valid proof.
 
 All task timestamps are stored as PostgreSQL `TIMESTAMPTZ` values and displayed by Telegram as ISO-8601 UTC (`Z`). Current inputs must include an explicit offset or `Z`; a client accepting a local wall-clock time must convert it to an offset-bearing ISO timestamp before applying the shared task schema. Relative countdowns are informational only. Valid schedules may be up to five years ahead, a product safety bound independent of JavaScript's timer range.
@@ -207,7 +217,7 @@ Admin syntax uses precise wei values for monetary ceilings:
 
 The trailing `<allowed|not-allowed>` on `group-set` and `<allowed|not-allowed|inherit>` on `user-advanced-modes` gate access to the `Ultra Fast`/`Fast` presets (see below) -- group-level and per-user, respectively, the same override precedence as ceilings and simulation-forcing.
 
-Admin commands never bootstrap ownership. Before the first deployment, a database administrator must designate the initial trusted linked user directly, for example with a reviewed one-time `UPDATE users SET is_owner=TRUE WHERE user_id=...`. Thereafter, only an existing owner can add or remove owners, and the last owner cannot be removed.
+Admin commands never bootstrap ownership. Before the first deployment, a database administrator must designate the initial trusted linked user directly in one reviewed transaction with both `is_owner=TRUE` and `is_root_owner=TRUE`. Verify the platform identity first and confirm exactly one row changed; never paste a real user ID into documentation or Git. Thereafter, only an existing owner can add or remove owners, and the last owner cannot be removed.
 
 ### Flexible mint calls and presets
 
@@ -248,6 +258,10 @@ Wallet private keys use AES-256-GCM with a unique scrypt salt and nonce per wall
 Example shape (never commit real values): `ENCRYPTION_OLD_KEYS={"1":"previous-strong-secret"}`.
 
 ### Backup and restore
+
+For a complete Railway-to-Railway move—including the fresh-rebuild limitation of the current
+temporary deployment, credentials, full-data cutover, worker/bot fencing, verification, and
+rollback—follow [`docs/RAILWAY_MIGRATION_RUNBOOK.md`](docs/RAILWAY_MIGRATION_RUNBOOK.md).
 
 Use the direct URL for PostgreSQL maintenance; PgBouncer transaction mode is not suitable for schema migration or full backup/restore sessions.
 
@@ -323,7 +337,7 @@ The preferred fix is the owner-only `merge-account` admin action, available the 
 
 ## Deployment
 
-`railway.json` uses Nixpacks and starts the root compatibility entrypoint with `node index.js`. Configure environment variables, add Railway PgBouncer in transaction mode, and run `npm run db:migrate` with the direct URL before deployment.
+`railway.json` uses Nixpacks, builds the dashboard, and starts with `node scripts/migrate.js && node index.js`; each deployment therefore applies pending migrations through the direct URL before the app starts. Configure environment variables and add Railway PgBouncer in transaction mode. Follow the [Railway migration runbook](docs/RAILWAY_MIGRATION_RUNBOOK.md) for a database move, controlled worker/bot cutover, and rollback.
 
 Linked-account dashboard login, observability, and operational hardening remain future milestones.
 

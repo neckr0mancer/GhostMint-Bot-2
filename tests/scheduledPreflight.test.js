@@ -28,7 +28,7 @@ test('scheduled preflight records ready and short from exact integer snapshots',
   assert.deepEqual(await ready.evaluate(task,check),{
     result:'ready',reason:'The wallet covered the current estimated debit.',walletLabel:'alpha',
     currency:'ETH',mintValueWei:2n,estimatedGasWei:3n,totalDebitWei:5n,balanceWei:10n,
-    shortfallWei:0n,
+    shortfallWei:0n,scheduleObservation:null,
   });
   const short=evaluator({getBalance:4n});
   assert.equal((await short.evaluate(task,check)).result,'short');
@@ -45,7 +45,16 @@ test('unknown phase price is explicit and never falls back to a false free mint'
   assert.equal(feeReads,0);assert.equal(balanceReads,0);
 });
 
-test('only definitive sold-out evidence cancels the readiness path',async()=>{
+test('early readiness keeps the exact schedule observation for the atomic repository decision',async()=>{
+  const observation={openingAt:1_900_000_000_000,priceWeiPerItem:'125',
+    configFingerprint:'config-b',source:'early-seadrop-public'};
+  const value=evaluator({inspectMint:{soldOut:false,scheduleObservation:observation}});
+  const result=await value.evaluate(task,check);
+  assert.deepEqual(result.scheduleObservation,observation);
+  assert.equal(result.result,'ready');
+});
+
+test('only definitive sold-out evidence terminates the readiness path',async()=>{
   let valueReads=0;
   const sold=createScheduledPreflightEvaluator({findWallet:async()=>wallet,
     inspectMint:async()=>({soldOut:true,soldOutDefinitive:true}),
@@ -63,6 +72,38 @@ test('delivery copy is concise and distinguishes a 30-second low-balance warning
   assert.match(value.text,/about 30 seconds/);assert.match(value.text,/needs 2 ETH more/);
   assert.doesNotMatch(value.text,/retry|cheaper gas/i);
   assert.equal(value.event.type,'task.lowBalance');
+});
+
+test('a durable early schedule-change action produces one grouped review notification',()=>{
+  const value=scheduledPreflightDelivery(task,{checkpoint:'five_minute'},
+    {result:'short',shortfallWei:2n,scheduleChangeAction:'awaiting_approval',
+      scheduleChangeReason:'The opening and price changed together.'},
+    {formatWei:String,escape:String});
+  assert.equal(value.event.type,'task.change-review');
+  assert.match(value.text,/changed and is paused/i);
+  assert.match(value.text,/opening and price changed together/i);
+  assert.doesNotMatch(value.text,/needs 2 ETH more/,
+    'one grouped change decision takes priority over a duplicate secondary popup');
+});
+
+test('review expiry and sold-out delivery are terminal failures with concise truthful copy',()=>{
+  const expired=scheduledPreflightDelivery(task,{checkpoint:'change_review_expiry'},
+    {result:'review_expired',scheduleChangeAction:'expired',
+      scheduleChangeReason:'No decision was received before the safety deadline.'},
+    {formatWei:String,escape:String});
+  assert.equal(expired.event.type,'task.failed');
+  assert.equal(expired.event.failureCode,'REVIEW_EXPIRED');
+  assert.equal(expired.event.retryable,false);
+  assert.match(expired.text,/expired/i);assert.match(expired.text,/nothing was sent/i);
+  assert.doesNotMatch(expired.text,/cancelled/i);
+
+  const soldOut=scheduledPreflightDelivery(task,{checkpoint:'thirty_second'},
+    {result:'sold_out'},{formatWei:String,escape:String});
+  assert.equal(soldOut.event.type,'task.failed');
+  assert.equal(soldOut.event.failureCode,'SOLD_OUT');
+  assert.equal(soldOut.event.reschedulable,false);
+  assert.match(soldOut.text,/failed because.*sold out/i);
+  assert.doesNotMatch(soldOut.text,/cancelled/i);
 });
 
 function claim(){return {task,check:{...check,generation:1,targetAt:1_300_000}};}
@@ -93,6 +134,25 @@ test('a checkpoint result is durable before notification delivery',async()=>{
   const value=workerFixture();await value.worker.tick();
   assert.deepEqual(value.order,['sync','complete:ready','claim-notifications','deliver','notification-finish']);
   assert.equal(value.notifications[0].error,null);
+});
+
+test('the worker expires unanswered reviews before claiming work and delivers their durable outbox',async()=>{
+  const order=[];
+  const expiryClaim={task,check:{...check,checkpoint:'change_review_expiry',state:'completed',
+    result:'review_expired',scheduleChangeAction:'expired',
+    scheduleChangeReason:'No decision was received before the safety deadline.',
+    notificationAttempts:1,notificationClaimedBy:'worker-1'}};
+  let notification=expiryClaim;
+  const repository={
+    expirePendingReviews:async()=>{order.push('expire-reviews');return [{...task,status:'failed'}];},
+    sync:async()=>order.push('sync'),claimDue:async()=>[],
+    claimNotifications:async()=>{order.push('claim-notifications');return notification?[notification]:[];},
+    finishNotification:async()=>{order.push('notification-finish');notification=null;},
+  };
+  const worker=createScheduledPreflightWorker({repository,evaluate:async()=>({result:'ready'}),
+    deliver:async()=>order.push('deliver'),workerId:'worker-1',now:()=>1_000_000});
+  await worker.tick();
+  assert.deepEqual(order,['expire-reviews','sync','claim-notifications','deliver','notification-finish']);
 });
 
 test('notification failure cannot roll back or re-run a completed checkpoint',async()=>{

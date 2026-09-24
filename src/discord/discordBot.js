@@ -492,6 +492,7 @@ async function finishTaskScheduleDiscord(ctx, respond, platformUserId, userId, f
       viaOpenSea: flowData.viaOpenSea, stageUuid: flowData.stageUuid, stageLabel: flowData.stageLabel,
       stageType: flowData.stageType, eligibilityMode: flowData.eligibilityMode,
       eligibilityDeadline: flowData.eligibilityDeadline,
+      expectedPriceWeiPerItem: flowData.expectedPriceWeiPerItem,
     });
     flowState.clear('discord', platformUserId);
     // Reuses the same task:cancel:ask:<id> step tasksMenu/taskActions already use on Telegram -- a

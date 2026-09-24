@@ -205,6 +205,39 @@ main.loading{min-height:100vh;display:grid;place-items:center;padding:1.25rem;co
 .batch-detail-chevron{display:grid;place-items:center;width:18px;height:18px;color:var(--muted);transition:transform var(--fast) var(--ease)}
 .batch-detail-chevron svg{width:14px;height:14px}
 .batch-detail-toggle[aria-expanded="true"] .batch-detail-chevron{transform:rotate(180deg)}
+
+/* Schedule preview: a compact receipt plus two explicit, per-task change policies. The ordinary
+   wallet/quantity/time fields keep their shared Mint-page geometry; this card summarizes them
+   without creating a second editable form pattern that Mint now and Batch would have to copy. */
+.schedule-preview{display:grid;gap:11px;padding:14px;border:1px solid var(--border);border-radius:14px;background:var(--surface-2)}
+.schedule-preview-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.schedule-preview-head>div{display:grid;gap:2px;min-width:0}
+.schedule-preview-head span,.schedule-preview-grid span{color:var(--muted);font-size:.72rem;font-weight:700;letter-spacing:.04em;text-transform:uppercase}
+.schedule-preview-head b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.schedule-preview-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.schedule-preview-grid>div{display:grid;gap:3px;min-width:0;padding:9px 10px;border:1px solid var(--border);border-radius:10px;background:var(--surface)}
+.schedule-preview-grid b{font-size:.86rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.schedule-preview-grid .schedule-preview-time{grid-column:1/-1}
+.schedule-preview-info{display:grid;gap:7px;padding:10px 11px;border-left:3px solid var(--accent);background:var(--surface);border-radius:0 9px 9px 0;color:var(--muted);font-size:.82rem;line-height:1.45}
+.schedule-preview-info p{margin:0}
+.schedule-policy-list{display:grid;gap:9px;padding-top:2px}
+.schedule-policy{display:flex;align-items:flex-start;gap:10px;cursor:pointer}
+.schedule-policy>input{appearance:none;flex:0 0 36px;width:36px;height:20px;margin:1px 0 0;border:1px solid var(--border-strong);border-radius:999px;background:var(--surface);position:relative;transition:.16s ease}
+.schedule-policy>input::after{content:"";position:absolute;width:14px;height:14px;left:2px;top:2px;border-radius:50%;background:var(--muted);transition:.16s ease}
+.schedule-policy>input:checked{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 25%,var(--surface))}
+.schedule-policy>input:checked::after{left:18px;background:var(--accent)}
+.schedule-policy>input:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+.schedule-policy>span{display:grid;gap:2px;line-height:1.25}
+.schedule-policy small{color:var(--muted);font-size:.76rem;font-weight:500}
+.schedule-policy-field{padding-left:46px}
+.schedule-policy-field>span>span{color:var(--faint);font-weight:500}
+.schedule-change-review p{margin:.35rem 0 .65rem}.schedule-change-facts{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px}
+.schedule-change-facts span{padding:5px 8px;border:1px solid var(--border-strong);border-radius:999px;background:var(--surface);font-size:.74rem;text-transform:capitalize}
+@media(max-width:520px){
+  .schedule-preview{padding:12px}.schedule-preview-grid{grid-template-columns:1fr 1fr;gap:7px}
+  .schedule-preview-grid>div{padding:8px}.schedule-preview-grid b{white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere}
+  .schedule-policy-field{padding-left:0}.ico-btn.schedule-help-open{width:44px;height:44px;min-height:44px;padding:12px}
+}
 .batch-detail-panel{max-height:22rem;overflow-y:auto;overflow-x:hidden;border-top:1px solid var(--border);padding:9px;background:var(--surface-2)}
 .batch-detail-panel:focus-visible{outline:2px solid var(--focus);outline-offset:-3px}
 .batch-technical-line{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:start;gap:10px;padding:2px 3px 9px;

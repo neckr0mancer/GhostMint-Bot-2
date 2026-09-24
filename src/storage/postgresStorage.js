@@ -2,8 +2,8 @@ const { armTaskPreflightRows } = require('../scheduler/scheduledPreflightReposit
 const { scheduleReservationStageKey } = require('../mint/scheduleStagePlanning');
 const { enforceScheduleAllowanceEnvelope } = require('../mint/scheduleAllowance');
 
-function number(value) { return value === null ? null : Number(value); }
-function time(value) { return value === null ? null : new Date(value).getTime(); }
+function number(value) { return value === null || value === undefined ? null : Number(value); }
+function time(value) { return value === null || value === undefined ? null : new Date(value).getTime(); }
 
 function mapWallet(row) {
   return {
@@ -39,6 +39,25 @@ function mapTask(row) {
     phaseWaitCount: Number(row.phase_wait_count || 0),
     preflightTargetAt:time(row.preflight_target_at),
     preflightGeneration:Number(row.preflight_generation||1),
+    originalOpeningAt:time(row.original_opening_at),acceptedOpeningAt:time(row.accepted_opening_at),
+    lastObservedOpeningAt:time(row.last_observed_opening_at),
+    timeChangePolicy:row.time_change_policy ?? 'approval',
+    maxOpeningDelayMs:row.max_opening_delay_ms === null || row.max_opening_delay_ms === undefined
+      ? null:Number(row.max_opening_delay_ms),
+    acceptedPriceWeiPerItem:row.accepted_price_wei_per_item === null
+      || row.accepted_price_wei_per_item === undefined ? null:String(row.accepted_price_wei_per_item),
+    lastObservedPriceWeiPerItem:row.last_observed_price_wei_per_item === null
+      || row.last_observed_price_wei_per_item === undefined ? null:String(row.last_observed_price_wei_per_item),
+    priceChangePolicy:row.price_change_policy ?? 'approval',
+    maxPriceWeiPerItem:row.max_price_wei_per_item === null || row.max_price_wei_per_item === undefined
+      ? null:String(row.max_price_wei_per_item),
+    acceptedConfigFingerprint:row.accepted_config_fingerprint ?? null,
+    lastObservedConfigFingerprint:row.last_observed_config_fingerprint ?? null,
+    acceptedConfigSummary:row.accepted_config_summary ?? null,
+    lastObservedConfigSummary:row.last_observed_config_summary ?? null,
+    changeState:row.change_state ?? 'clear',changeVersion:Number(row.change_version||0),
+    pendingChange:row.pending_change ?? null,changeDetectedAt:time(row.change_detected_at),
+    changeReviewExpiresAt:time(row.change_review_expires_at),
   };
 }
 
@@ -77,6 +96,15 @@ function mapSniper(row) {
 function createPostgresStorage(pool) {
   async function writeTask(queryable, task, { upsert = true } = {}) {
     const status = task.status === 'waiting' ? 'scheduled' : task.status;
+    // Fingerprints are only useful when the corresponding safe, human-readable summary exists.
+    // Keep each pair atomic so a later review never asks the user to approve an opaque hash.
+    const acceptedConfigFingerprint=task.acceptedConfigFingerprint&&task.acceptedConfigSummary
+      ?task.acceptedConfigFingerprint:null;
+    const acceptedConfigSummary=acceptedConfigFingerprint?task.acceptedConfigSummary:null;
+    const lastObservedConfigFingerprint=task.lastObservedConfigFingerprint&&task.lastObservedConfigSummary
+      ?task.lastObservedConfigFingerprint:acceptedConfigFingerprint;
+    const lastObservedConfigSummary=lastObservedConfigFingerprint
+      ?(task.lastObservedConfigSummary||acceptedConfigSummary):null;
     const conflict = upsert ? `ON CONFLICT (user_id,id) DO UPDATE SET name=EXCLUDED.name,
         wallet_label=EXCLUDED.wallet_label,contract_address=EXCLUDED.contract_address,
         function_name=EXCLUDED.function_name,quantity=EXCLUDED.quantity,price_eth=EXCLUDED.price_eth,
@@ -92,6 +120,11 @@ function createPostgresStorage(pool) {
         allowance_source=EXCLUDED.allowance_source,
         allowance_verified_at=EXCLUDED.allowance_verified_at,
         allowance_stage_start_at=EXCLUDED.allowance_stage_start_at,
+        original_opening_at=EXCLUDED.original_opening_at,
+        time_change_policy=EXCLUDED.time_change_policy,
+        max_opening_delay_ms=EXCLUDED.max_opening_delay_ms,
+        price_change_policy=EXCLUDED.price_change_policy,
+        max_price_wei_per_item=EXCLUDED.max_price_wei_per_item,
         preflight_target_at=EXCLUDED.preflight_target_at,
         preflight_generation=CASE WHEN mint_tasks.preflight_target_at IS DISTINCT FROM EXCLUDED.preflight_target_at
           THEN mint_tasks.preflight_generation+1 ELSE mint_tasks.preflight_generation END` : '';
@@ -101,14 +134,25 @@ function createPostgresStorage(pool) {
         eligibility_mode,eligibility_deadline,wallet_address,reservation_stage_key,
         allowance_scope,allowance_max_per_wallet,allowance_minted_snapshot,allowance_source,
         allowance_verified_at,allowance_stage_start_at,
-        preflight_target_at,preflight_generation)
+        preflight_target_at,preflight_generation,
+        original_opening_at,accepted_opening_at,last_observed_opening_at,
+        time_change_policy,max_opening_delay_ms,accepted_price_wei_per_item,
+        last_observed_price_wei_per_item,price_change_policy,max_price_wei_per_item,
+        accepted_config_fingerprint,last_observed_config_fingerprint,
+        accepted_config_summary,last_observed_config_summary,change_state,change_version,
+        pending_change,change_detected_at,change_review_expires_at)
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,TO_TIMESTAMP($10 / 1000.0),$11,TO_TIMESTAMP($12 / 1000.0),
         TO_TIMESTAMP($13 / 1000.0),$14,$15,$16,$17,$18,$19,$20,$21,
         CASE WHEN $22::BIGINT IS NULL THEN NULL ELSE TO_TIMESTAMP($22 / 1000.0) END,$23,$24,
         $25,$26,$27,$28,
         CASE WHEN $29::BIGINT IS NULL THEN NULL ELSE TO_TIMESTAMP($29 / 1000.0) END,
         CASE WHEN $30::BIGINT IS NULL THEN NULL ELSE TO_TIMESTAMP($30 / 1000.0) END,
-        TO_TIMESTAMP($31 / 1000.0),$32)
+        TO_TIMESTAMP($31 / 1000.0),$32,
+        TO_TIMESTAMP($33 / 1000.0),TO_TIMESTAMP($34 / 1000.0),
+        CASE WHEN $35::BIGINT IS NULL THEN NULL ELSE TO_TIMESTAMP($35 / 1000.0) END,
+        $36,$37,$38,$39,$40,$41,$42,$43,$44::JSONB,$45::JSONB,$46,$47,$48,
+        CASE WHEN $49::BIGINT IS NULL THEN NULL ELSE TO_TIMESTAMP($49 / 1000.0) END,
+        CASE WHEN $50::BIGINT IS NULL THEN NULL ELSE TO_TIMESTAMP($50 / 1000.0) END)
       ${conflict}
       RETURNING *`,
     [task.userId, task.id, task.name, task.walletLabel, task.contract, task.fn || 'mint', task.qty,
@@ -121,7 +165,19 @@ function createPostgresStorage(pool) {
       task.allowanceScope ?? 'unknown',task.allowanceMaxPerWallet ?? null,
       task.allowanceMintedSnapshot ?? null,task.allowanceSource ?? null,
       task.allowanceVerifiedAt ?? null,task.allowanceStageStartAt ?? task.stageStartAt ?? task.mintTime,
-      task.preflightTargetAt ?? task.nextAttemptAt ?? task.mintTime,task.preflightGeneration??1]);
+      task.preflightTargetAt ?? task.nextAttemptAt ?? task.mintTime,task.preflightGeneration??1,
+      task.originalOpeningAt ?? task.stageStartAt ?? task.mintTime,
+      task.acceptedOpeningAt ?? task.stageStartAt ?? task.mintTime,
+      task.lastObservedOpeningAt ?? task.acceptedOpeningAt ?? task.stageStartAt ?? task.mintTime,
+      task.timeChangePolicy ?? 'approval',task.maxOpeningDelayMs ?? null,
+      task.acceptedPriceWeiPerItem ?? null,task.lastObservedPriceWeiPerItem ?? task.acceptedPriceWeiPerItem ?? null,
+      task.priceChangePolicy ?? 'approval',task.maxPriceWeiPerItem ?? null,
+      acceptedConfigFingerprint,lastObservedConfigFingerprint,
+      acceptedConfigSummary ? JSON.stringify(acceptedConfigSummary) : null,
+      lastObservedConfigSummary ? JSON.stringify(lastObservedConfigSummary) : null,
+      task.changeState ?? 'clear',task.changeVersion ?? 0,
+      task.pendingChange ? JSON.stringify(task.pendingChange) : null,task.changeDetectedAt ?? null,
+      task.changeReviewExpiresAt ?? null]);
   }
 
   async function loadState(userId = null) {

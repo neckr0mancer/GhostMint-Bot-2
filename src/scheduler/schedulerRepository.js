@@ -1,6 +1,6 @@
 const { scheduleReservationStageKey } = require('../mint/scheduleStagePlanning');
 const { enforceScheduleAllowanceEnvelope, UNKNOWN } = require('../mint/scheduleAllowance');
-const { armTaskPreflightRows } = require('./scheduledPreflightRepository');
+const { armTaskPreflightRows, REVIEW_EXPIRED_REASON } = require('./scheduledPreflightRepository');
 
 // The seven statuses the schema allows (migrations/011_durable_scheduler.sql:30), grouped into the
 // buckets the dashboard filters by. Every status belongs to EXACTLY ONE bucket, which is the point:
@@ -55,7 +55,7 @@ const BUCKET_PREDICATES = Object.freeze({
   succeeded: `status='succeeded'`,
 });
 
-function time(value) { return value === null ? null : new Date(value).getTime(); }
+function time(value) { return value === null || value === undefined ? null : new Date(value).getTime(); }
 
 function scheduleReservationConflict(message) {
   const error = new Error(message);
@@ -96,6 +96,25 @@ function mapTask(row) {
     phaseWaitCount: Number(row.phase_wait_count || 0),
     preflightTargetAt:time(row.preflight_target_at),
     preflightGeneration:Number(row.preflight_generation||1),
+    originalOpeningAt:time(row.original_opening_at),acceptedOpeningAt:time(row.accepted_opening_at),
+    lastObservedOpeningAt:time(row.last_observed_opening_at),
+    timeChangePolicy:row.time_change_policy ?? 'approval',
+    maxOpeningDelayMs:row.max_opening_delay_ms === null || row.max_opening_delay_ms === undefined
+      ? null:Number(row.max_opening_delay_ms),
+    acceptedPriceWeiPerItem:row.accepted_price_wei_per_item === null
+      || row.accepted_price_wei_per_item === undefined ? null:String(row.accepted_price_wei_per_item),
+    lastObservedPriceWeiPerItem:row.last_observed_price_wei_per_item === null
+      || row.last_observed_price_wei_per_item === undefined ? null:String(row.last_observed_price_wei_per_item),
+    priceChangePolicy:row.price_change_policy ?? 'approval',
+    maxPriceWeiPerItem:row.max_price_wei_per_item === null || row.max_price_wei_per_item === undefined
+      ? null:String(row.max_price_wei_per_item),
+    acceptedConfigFingerprint:row.accepted_config_fingerprint ?? null,
+    lastObservedConfigFingerprint:row.last_observed_config_fingerprint ?? null,
+    acceptedConfigSummary:row.accepted_config_summary ?? null,
+    lastObservedConfigSummary:row.last_observed_config_summary ?? null,
+    changeState:row.change_state ?? 'clear',changeVersion:Number(row.change_version||0),
+    pendingChange:row.pending_change ?? null,changeDetectedAt:time(row.change_detected_at),
+    changeReviewExpiresAt:time(row.change_review_expires_at),
   };
 }
 
@@ -165,7 +184,7 @@ function createSchedulerRepository(pool) {
       const taskResult = await pool.query(
         'SELECT * FROM mint_tasks WHERE user_id=$1 AND id=$2', [userId, id]);
       if (!taskResult.rowCount) return null;
-      const attempts = await pool.query(`SELECT attempt.*,
+      const [attempts,changes] = await Promise.all([pool.query(`SELECT attempt.*,
           intent.state AS intent_state,intent.tx_hash AS intent_tx_hash,
           intent.failure_reason AS intent_failure_reason,intent.chain AS intent_chain,
           intent.submitted_at AS intent_submitted_at,intent.finalized_at AS intent_finalized_at
@@ -173,8 +192,15 @@ function createSchedulerRepository(pool) {
         LEFT JOIN transaction_intents intent
           ON intent.intent_id=attempt.transaction_intent_id AND intent.user_id=attempt.user_id
         WHERE attempt.user_id=$1 AND attempt.task_id=$2
-        ORDER BY attempt.attempt_number DESC`, [userId, id]);
-      return { ...mapTask(taskResult.rows[0]), attempts:attempts.rows.map(mapAttempt) };
+        ORDER BY attempt.attempt_number DESC`, [userId, id]),pool.query(`SELECT event_id,change_version,
+          kinds,action,previous_snapshot,observed_snapshot,reason,created_at,resolved_at
+        FROM mint_task_change_events WHERE user_id=$1 AND task_id=$2
+        ORDER BY event_id DESC`,[userId,id])]);
+      return { ...mapTask(taskResult.rows[0]), attempts:attempts.rows.map(mapAttempt),
+        changeEvents:changes.rows.map(row=>({eventId:Number(row.event_id),version:Number(row.change_version),
+          kinds:row.kinds||[],action:row.action,previous:row.previous_snapshot,
+          observed:row.observed_snapshot,reason:row.reason,createdAt:time(row.created_at),
+          resolvedAt:time(row.resolved_at)})) };
     },
     async listPageForUser(userId,{limit,offset,search,status}={}) {
       // Two scopes, and the difference matters. `counts` is scoped to the SEARCH only, so every
@@ -321,6 +347,150 @@ function createSchedulerRepository(pool) {
         return updated.rowCount ? (retry ? 'retry' : 'failed') : 'superseded';
       } catch (error) { await client.query('ROLLBACK').catch(() => {}); throw error; }
       finally { client.release(); }
+    },
+
+    async applyScheduleChange(task, evaluation) {
+      const action=evaluation.action;
+      if (!['accepted','auto_rescheduled','awaiting_approval','expired'].includes(action)) {
+        return { outcome:'continue',task };
+      }
+      const observed=evaluation.observed||{};
+      const continueClaim=action==='accepted';
+      const nextStatus=continueClaim?'claimed':action==='auto_rescheduled'?'retry'
+        :action==='awaiting_approval'?'paused':'failed';
+      const version=Number(task.changeVersion||0)+1;
+      const pending=action==='awaiting_approval'?{...evaluation,version}:null;
+      const movedOpening=Number.isFinite(Number(observed.openingAt))?Number(observed.openingAt):null;
+      const currentAttempt=task.nextAttemptAt??task.mintTime??null;
+      const rescheduledTarget=action==='auto_rescheduled'&&movedOpening!==null
+        ?Math.max(movedOpening,Number(currentAttempt)||movedOpening):movedOpening;
+      const client=await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const updated=await client.query(`UPDATE mint_tasks SET
+          status=$4,
+          mint_time=CASE WHEN $5 AND $6::BIGINT IS NOT NULL THEN TO_TIMESTAMP($6 / 1000.0) ELSE mint_time END,
+          next_attempt_at=CASE WHEN $5 AND $6::BIGINT IS NOT NULL THEN TO_TIMESTAMP($6 / 1000.0) ELSE next_attempt_at END,
+          accepted_opening_at=CASE WHEN $8 AND $7::BIGINT IS NOT NULL THEN TO_TIMESTAMP($7 / 1000.0) ELSE accepted_opening_at END,
+          last_observed_opening_at=CASE WHEN $7::BIGINT IS NULL THEN last_observed_opening_at ELSE TO_TIMESTAMP($7 / 1000.0) END,
+          accepted_price_wei_per_item=CASE WHEN $8 AND $9::NUMERIC IS NOT NULL THEN $9::NUMERIC ELSE accepted_price_wei_per_item END,
+          last_observed_price_wei_per_item=COALESCE($9::NUMERIC,last_observed_price_wei_per_item),
+          accepted_config_fingerprint=CASE WHEN $8 AND $10::TEXT IS NOT NULL AND $11::JSONB IS NOT NULL THEN $10 ELSE accepted_config_fingerprint END,
+          last_observed_config_fingerprint=CASE WHEN $10::TEXT IS NOT NULL AND $11::JSONB IS NOT NULL THEN $10 ELSE last_observed_config_fingerprint END,
+          accepted_config_summary=CASE WHEN $8 AND $10::TEXT IS NOT NULL AND $11::JSONB IS NOT NULL THEN $11::JSONB ELSE accepted_config_summary END,
+          last_observed_config_summary=CASE WHEN $10::TEXT IS NOT NULL AND $11::JSONB IS NOT NULL THEN $11::JSONB ELSE last_observed_config_summary END,
+          change_state=CASE WHEN $12 THEN 'awaiting_approval' ELSE 'clear' END,
+          change_version=$13,pending_change=$14::JSONB,change_detected_at=NOW(),last_error=$15,
+          change_review_expires_at=CASE WHEN $12 THEN
+            LEAST(COALESCE(eligibility_deadline,'infinity'::TIMESTAMPTZ),NOW()+INTERVAL '24 hours')
+            ELSE NULL END,
+          preflight_target_at=CASE WHEN $5 AND $6::BIGINT IS NOT NULL THEN TO_TIMESTAMP($6 / 1000.0) ELSE preflight_target_at END,
+          preflight_generation=preflight_generation+CASE WHEN $5 THEN 1 ELSE 0 END,
+          claimed_by=CASE WHEN $16 THEN claimed_by ELSE NULL END,
+          claimed_at=CASE WHEN $16 THEN claimed_at ELSE NULL END,
+          lease_expires_at=CASE WHEN $16 THEN lease_expires_at ELSE NULL END,
+          completed_at=CASE WHEN $4='failed' THEN NOW() ELSE NULL END
+          WHERE user_id=$1 AND id=$2 AND status='claimed' AND attempt_count=$3
+            AND change_version=$17 RETURNING *`,
+        [task.userId,task.id,task.attemptCount,nextStatus,action==='auto_rescheduled',rescheduledTarget,
+          movedOpening,action==='accepted'||action==='auto_rescheduled',observed.priceWeiPerItem??null,
+          observed.configFingerprint??null,observed.configSummary?JSON.stringify(observed.configSummary):null,
+          action==='awaiting_approval',version,pending?JSON.stringify(pending):null,
+          evaluation.reason||null,continueClaim,
+          Number(task.changeVersion||0)]);
+        if(!updated.rowCount){await client.query('COMMIT');return {outcome:'superseded',task};}
+        const saved=mapTask(updated.rows[0]);
+        await client.query(`INSERT INTO mint_task_change_events
+          (user_id,task_id,change_version,event_fingerprint,kinds,action,previous_snapshot,observed_snapshot,reason)
+          VALUES ($1,$2,$3,$4,$5,$6,$7::JSONB,$8::JSONB,$9)
+          ON CONFLICT (user_id,task_id,change_version) DO NOTHING`,
+        [task.userId,task.id,version,evaluation.eventFingerprint,evaluation.kinds,action,
+          JSON.stringify(evaluation.previous),JSON.stringify(observed),evaluation.reason]);
+        if(action==='auto_rescheduled')await armTaskPreflightRows(client,updated.rows[0]);
+        if(!continueClaim)await finishAttempt(client,task,action==='expired'?'failure':'retry',evaluation.reason,null);
+        await client.query('COMMIT');
+        return {outcome:continueClaim?'continue':action==='auto_rescheduled'?'retry':action==='awaiting_approval'?'paused':'failed',task:saved};
+      }catch(error){await client.query('ROLLBACK').catch(()=>{});throw error;}
+      finally{client.release();}
+    },
+
+    async resolveScheduleChange(userId,id,{decision,version,now=Date.now()}) {
+      const client=await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const found=await client.query(`SELECT * FROM mint_tasks
+          WHERE user_id=$1 AND id=$2 FOR UPDATE`,[userId,id]);
+        if(!found.rowCount){await client.query('ROLLBACK');return null;}
+        const row=found.rows[0];
+        if(row.change_state==='awaiting_approval'&&row.status==='paused'
+          &&time(row.change_review_expires_at)!==null&&time(row.change_review_expires_at)<=now){
+          await client.query(`UPDATE mint_tasks SET status='failed',change_state='clear',
+              pending_change=NULL,change_review_expires_at=NULL,last_error=$3,
+              completed_at=TO_TIMESTAMP($4 / 1000.0),
+              claimed_by=NULL,claimed_at=NULL,lease_expires_at=NULL
+            WHERE user_id=$1 AND id=$2 AND status='paused' AND change_state='awaiting_approval'`,
+          [userId,id,REVIEW_EXPIRED_REASON,now]);
+          await client.query(`UPDATE mint_task_change_events SET action='expired',
+              resolved_at=TO_TIMESTAMP($4 / 1000.0)
+            WHERE user_id=$1 AND task_id=$2 AND change_version=$3 AND action='awaiting_approval'`,
+          [userId,id,row.change_version,now]);
+          await client.query(`UPDATE mint_task_preflight_checks SET state='superseded',
+              claimed_by=NULL,claimed_at=NULL,lease_expires_at=NULL
+            WHERE user_id=$1 AND task_id=$2 AND state IN ('pending','claimed')`,[userId,id]);
+          await client.query(`INSERT INTO mint_task_preflight_checks
+              (user_id,task_id,generation,target_at,checkpoint,due_at,state,result,reason,checked_at,
+               schedule_change_action,schedule_change_version,schedule_change_reason)
+            VALUES ($1,$2,$3,$4,'change_review_expiry',$5,'completed','review_expired',$6,$5,
+              'expired',$7,$6)
+            ON CONFLICT (user_id,task_id,generation,checkpoint) DO NOTHING`,
+          [userId,id,row.preflight_generation,row.change_review_expires_at,new Date(now),
+            REVIEW_EXPIRED_REASON,row.change_version]);
+          await client.query('COMMIT');
+          const error=new Error('This schedule review expired before a decision was received. Nothing was sent.');
+          error.code='SCHEDULE_CHANGE_EXPIRED';error.committed=true;throw error;
+        }
+        if(row.change_state!=='awaiting_approval'||Number(row.change_version)!==Number(version)
+          ||row.status!=='paused'){
+          const error=new Error('This schedule change is no longer current. Refresh its details.');
+          error.code='SCHEDULE_CHANGE_STALE';throw error;
+        }
+        const pending=row.pending_change||{};
+        let updated;
+        if(decision==='cancel'){
+          updated=await client.query(`UPDATE mint_tasks SET status='cancelled',change_state='clear',
+            pending_change=NULL,change_review_expires_at=NULL,
+            last_error='Cancelled after a schedule change was reviewed',completed_at=NOW()
+            WHERE user_id=$1 AND id=$2 RETURNING *`,[userId,id]);
+        }else{
+          const observed=pending.observed||{};
+          const opening=Number.isFinite(Number(observed.openingAt))?Number(observed.openingAt):null;
+          // Approval may accept a later opening, price, or call configuration, but it must never
+          // move the user's earliest execution time backwards. A price-only review for a stage
+          // that opened before the chosen mint time therefore remains pinned to that chosen time.
+          const approvedExecutionAt=Math.max(now,time(row.mint_time)??now,opening??0);
+          updated=await client.query(`UPDATE mint_tasks SET status='retry',
+            mint_time=TO_TIMESTAMP($3 / 1000.0),
+            next_attempt_at=TO_TIMESTAMP($4 / 1000.0),
+            accepted_opening_at=CASE WHEN $5::BIGINT IS NULL THEN accepted_opening_at ELSE TO_TIMESTAMP($5 / 1000.0) END,
+            accepted_price_wei_per_item=COALESCE($6::NUMERIC,accepted_price_wei_per_item),
+            accepted_config_fingerprint=CASE WHEN $7::TEXT IS NOT NULL AND $8::JSONB IS NOT NULL THEN $7 ELSE accepted_config_fingerprint END,
+            accepted_config_summary=CASE WHEN $7::TEXT IS NOT NULL AND $8::JSONB IS NOT NULL THEN $8::JSONB ELSE accepted_config_summary END,
+            change_state='clear',pending_change=NULL,change_review_expires_at=NULL,
+            last_error=NULL,completed_at=NULL,
+            claimed_by=NULL,claimed_at=NULL,lease_expires_at=NULL,
+            preflight_target_at=TO_TIMESTAMP($4 / 1000.0),preflight_generation=preflight_generation+1
+            WHERE user_id=$1 AND id=$2 RETURNING *`,[userId,id,approvedExecutionAt,
+          approvedExecutionAt,opening,observed.priceWeiPerItem??null,
+          observed.configFingerprint??null,
+          observed.configSummary?JSON.stringify(observed.configSummary):null]);
+          await armTaskPreflightRows(client,updated.rows[0]);
+        }
+        await client.query(`UPDATE mint_task_change_events SET action=$4,resolved_at=NOW()
+          WHERE user_id=$1 AND task_id=$2 AND change_version=$3`,
+        [userId,id,version,decision==='approve'?'approved':'cancelled']);
+        await client.query('COMMIT');return mapTask(updated.rows[0]);
+      }catch(error){if(!error?.committed)await client.query('ROLLBACK').catch(()=>{});throw error;}
+      finally{client.release();}
     },
 
     async deferForPhase(task, details) {
@@ -495,7 +665,7 @@ function createSchedulerRepository(pool) {
         const result=await client.query(`UPDATE mint_tasks SET status='scheduled',
             next_attempt_at=GREATEST(mint_time,TO_TIMESTAMP($3 / 1000.0)),
             preflight_target_at=GREATEST(mint_time,TO_TIMESTAMP($3 / 1000.0)),last_error=NULL
-          WHERE user_id=$1 AND id=$2 AND status='paused' RETURNING *`,[userId,id,now]);
+          WHERE user_id=$1 AND id=$2 AND status='paused' AND change_state='clear' RETURNING *`,[userId,id,now]);
         if(result.rowCount)await armTaskPreflightRows(client,result.rows[0]);
         await client.query('COMMIT');
         return mapTask(result.rows[0]);
@@ -507,7 +677,7 @@ function createSchedulerRepository(pool) {
       try {
         const result = await pool.query(`UPDATE mint_tasks SET status='retry',next_attempt_at=TO_TIMESTAMP($3 / 1000.0),
           last_error=NULL,completed_at=NULL
-          WHERE user_id=$1 AND id=$2 AND status='failed'
+          WHERE user_id=$1 AND id=$2 AND status='failed' AND change_state='clear'
             AND (attempt_count-phase_wait_count) < max_attempts RETURNING *`, [userId, id, now]);
         return mapTask(result.rows[0]);
       } catch (error) {

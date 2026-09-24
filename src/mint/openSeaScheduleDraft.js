@@ -54,6 +54,11 @@ function buildOpenSeaScheduleTaskData(mintFlowData, stage) {
     chain: mintFlowData.chain,
     isSeaDrop: Boolean(mintFlowData.isSeaDrop),
     priceETH: viaOpenSea ? 0 : detectedPrice,
+    // Preserve the exact per-item price shown in the phase picker even when OpenSea must build
+    // the eventual calldata. The command service deliberately stores priceETH=0 for that builder
+    // route, so this wei baseline is what prevents a paid stage from being mistaken for a free one.
+    expectedPriceWeiPerItem: stage.priceWei !== null && stage.priceWei !== undefined
+      ? String(stage.priceWei) : null,
     priceUnknown: !viaOpenSea && detectedPrice === undefined,
     viaOpenSea,
     collection: mintFlowData.collection,

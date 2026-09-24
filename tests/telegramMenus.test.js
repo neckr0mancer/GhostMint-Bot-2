@@ -149,6 +149,12 @@ test('taskActions shows only the action(s) valid for the task\'s current status'
     ['task:resume:a', 'task:cancel:ask:a', 'menu:tasks']);
   assert.deepEqual(flatButtons(taskActions({ ...base, status: 'failed' }).replyMarkup).map(b => b.callback_data),
     ['task:retry:a', 'menu:tasks']);
+  assert.deepEqual(flatButtons(taskActions({ ...base, status: 'failed',
+    lastError:'SOLD_OUT: The selected stage sold out. Nothing was sent.' }).replyMarkup)
+    .map(b => b.callback_data),['menu:tasks']);
+  assert.deepEqual(flatButtons(taskActions({ ...base, status: 'failed',
+    lastError:'REVIEW_EXPIRED: No decision was received. Nothing was sent.' }).replyMarkup)
+    .map(b => b.callback_data),['menu:tasks']);
   assert.deepEqual(flatButtons(taskActions({ ...base, status: 'claimed' }).replyMarkup).map(b => b.callback_data),
     ['menu:tasks']);
 });

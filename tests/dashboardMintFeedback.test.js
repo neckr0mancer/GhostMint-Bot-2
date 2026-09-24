@@ -110,7 +110,8 @@ test('dashboard pins the chosen phase identity through scheduled-task creation',
   assert.match(appSource,/input\.stageType=scheduledStage\.stageType/);
   assert.match(appSource,/input\.eligibilityMode=scheduledStage\?\.eligibilityMode/);
   assert.match(appSource,/scheduleEligibilityDeadline\(input\.mintTime,scheduledStage\?\.startTime,stages\)/);
-  assert.match(appSource,/scheduled time is the earliest attempt, not a blind launch/i);
+  assert.match(appSource,/saved time is the earliest attempt, not a blind launch/i);
+  assert.match(appSource,/checks the live phase, current price, wallet eligibility, balance, and simulation again before sending/i);
   assert.match(appSource,/scheduleStageRequiresOpenSeaBuilder\(scheduledStage\)/);
   assert.match(appSource,/\(!detectedSeaDrop\|\|scheduleStageRequiresOpenSeaBuilder\(scheduledStage\)\)/);
   assert.match(appSource,/label="Stage" value=\{selectedStageKey\}/);
@@ -163,7 +164,7 @@ test('scheduled lists resync after socket recovery and every scheduler retry tra
   assert.match(sharedSource,/connectedOnce\|\|needsResync/);
   assert.match(sharedSource,/setTimeout\(connect,delay\)/);
   assert.equal((workerSource.match(/outcome: 'retry'/g)||[]).length>=2,true);
-  assert.match(serverSource,/\['starting','retry','success','failure','failed'\]\.includes\(event\.outcome\)[\s\S]*type:'tasks\.changed'/);
+  assert.match(serverSource,/\['starting','retry','paused','success','failure','failed'\]\.includes\(event\.outcome\)[\s\S]*type:'tasks\.changed'/);
 });
 
 test('scheduled countdown labels advance without polling the API',()=>{

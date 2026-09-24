@@ -106,6 +106,13 @@ test('validateOpenSeaMintCall refuses calldata that is not a mintPublic call at 
     contractAddress: CONTRACT, quantity: 1, minterAddress:WALLET }), ValidationError);
 });
 
+test('public SeaDrop calldata cannot redirect value to a non-canonical same-selector target',()=>{
+  const built=fakeOpenSeaResponse({quantity:1});
+  assert.throws(()=>validateOpenSeaMintCall({built:{...built,
+    to:'0x00000000000000000000000000000000000000D4'},contractAddress:CONTRACT,
+    quantity:1,minterAddress:WALLET}),/canonical SeaDrop core/i);
+});
+
 const MINT_PARAMS = Object.freeze({
   mintPrice:1n, maxTotalMintableByWallet:5n, startTime:1n, endTime:9_999_999_999n,
   dropStageIndex:2n, maxTokenSupplyForStage:500n, feeBps:250n, restrictFeeRecipients:true,
@@ -126,6 +133,9 @@ test('OpenSea SeaDrop allowlist and signed calldata are decoded through explicit
   assert.equal(allowlist.standard, 'SeaDrop allowlist');
   assert.equal(allowlist.arguments.find(arg => arg.name === 'minter').value, WALLET);
   assert.match(allowlist.arguments.find(arg => arg.name === 'proof').value, /proof present/);
+  assert.equal(allowlist.arguments.find(arg=>arg.name==='maxPerWallet').value,'5');
+  assert.equal(allowlist.arguments.find(arg=>arg.name==='endTime').value,'9999999999');
+  assert.match(allowlist.configurationDigest,/^[0-9a-f]{64}$/);
 
   const signed = validateOpenSeaMintCall({
     built:gatedResponse('mintSigned', [CONTRACT, FEE_RECIPIENT, WALLET, 3, MINT_PARAMS, 17, '0x1234']),
@@ -134,6 +144,18 @@ test('OpenSea SeaDrop allowlist and signed calldata are decoded through explicit
   assert.equal(signed.standard, 'SeaDrop signed mint');
   assert.equal(signed.arguments.find(arg => arg.name === 'quantity').value, '3');
   assert.equal(signed.arguments.find(arg => arg.name === 'signature').value, 'signature present');
+});
+
+test('gated configuration digest changes when stable stage terms change but never contains proofs',()=>{
+  const proof=[`0x${'11'.repeat(32)}`];
+  const base=validateOpenSeaMintCall({built:gatedResponse('mintAllowList',
+    [CONTRACT,FEE_RECIPIENT,ZERO_ADDRESS,2,MINT_PARAMS,proof]),contractAddress:CONTRACT,
+    quantity:2,minterAddress:WALLET});
+  const changed=validateOpenSeaMintCall({built:gatedResponse('mintAllowList',
+    [CONTRACT,FEE_RECIPIENT,ZERO_ADDRESS,2,{...MINT_PARAMS,dropStageIndex:3n},proof]),
+    contractAddress:CONTRACT,quantity:2,minterAddress:WALLET});
+  assert.notEqual(base.configurationDigest,changed.configurationDigest);
+  assert.doesNotMatch(JSON.stringify(base),new RegExp('11'.repeat(32),'i'));
 });
 
 test('OpenSea SeaDrop token-gated calldata derives quantity from the redeemed token IDs', () => {

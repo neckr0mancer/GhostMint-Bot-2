@@ -12,8 +12,12 @@ const { MINT_METHODS } = require('../mint/mintRegistry');
 const { createWalletBalanceCache } = require('./walletBalanceCache');
 const { EXPIRY_GRACE_MS, TASK_BUCKETS, TASK_BUCKET_NAMES, bucketFor } = require('../scheduler/schedulerRepository');
 const { buildScheduleStagePlan, decorateScheduleDrop,
-  scheduleReservationStageKey, stageRequiresEligibilityCheck } = require('../mint/scheduleStagePlanning');
+  scheduleReservationStageKey, scheduleStagePersistenceKey,
+  stageRequiresEligibilityCheck } = require('../mint/scheduleStagePlanning');
 const { buildSeaDropAllowanceEvidence, unknownEvidence } = require('../mint/scheduleAllowance');
+const { configurationFingerprint,configurationSummary,evaluateScheduleObservation,
+  openSeaValidatedBuilderBaseline } = require('../scheduler/scheduleChangePolicy');
+const { liveFeeRecipient } = require('../scheduler/scheduledPublicPreflight');
 
 // The four controls a scheduled mint accepts, each with the past participle its error message
 // needs. `${action}d` got half of them wrong -- "canceld" and "retryd" both reached the user
@@ -24,6 +28,25 @@ const TASK_CONTROLS = Object.freeze({
   cancel: 'cancelled', pause: 'paused', resume: 'resumed', retry: 'retried',
 });
 const DEFAULT_PHASE_ELIGIBILITY_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+function plainDecimal(value) {
+  const text=String(value??0).trim().toLowerCase();
+  if(!text.includes('e'))return text;
+  const [coefficient,exponentText]=text.split('e');
+  const exponent=Number(exponentText);
+  if(!Number.isInteger(exponent))return text;
+  const negative=coefficient.startsWith('-');
+  const unsigned=negative?coefficient.slice(1):coefficient;
+  const dot=unsigned.indexOf('.');
+  const digits=unsigned.replace('.','');
+  const decimalAt=(dot===-1?unsigned.length:dot)+exponent;
+  const expanded=decimalAt<=0?`0.${'0'.repeat(-decimalAt)}${digits}`
+    :decimalAt>=digits.length?`${digits}${'0'.repeat(decimalAt-digits.length)}`
+      :`${digits.slice(0,decimalAt)}.${digits.slice(decimalAt)}`;
+  return `${negative?'-':''}${expanded}`;
+}
+
+function parseEtherAmount(value) { return parseEther(plainDecimal(value)); }
 
 // OpenSea's builder is needed when the current/next phase carries wallet-specific eligibility
 // (proof/signature/allowlist). A plain public SeaDrop remains on the direct, on-chain SeaDrop path
@@ -764,6 +787,89 @@ function createBotCommandService(dependencies) {
     return buildSeaDropAllowanceEvidence({ stage,publicDrop,mintStats });
   }
 
+  async function resolveScheduleBaseline(owned, validated, rawInput = {}) {
+    let openingAt = validated.stageStartAt ?? validated.mintTime;
+    let priceWeiPerItem = validated.expectedPriceWeiPerItem?.toString()
+      ?? parseEtherAmount(validated.priceETH || 0).toString();
+    const stageIdentity=scheduleStagePersistenceKey({uuid:validated.stageUuid,
+      stageType:validated.stageType,label:validated.stageLabel});
+    const viaOpenSea=rawInput.viaOpenSea===true;
+    const isGlrtch=validated.chain==='robinhood'
+      &&validated.contractAddress.toLowerCase()==='0xda719be13af43757cede32d82f021c13ce29d991';
+    const isGlrtchlist=isGlrtch&&(`${validated.stageType||''} ${validated.stageLabel||''}`
+      .toLowerCase().includes('glrtchlist'));
+    // Every newly-created task starts with a durable authorization baseline. Plain and GLRTCH
+    // routes are exactly known now. OpenSea's future wallet proof/signature is not, so that route
+    // receives a narrow versioned sentinel which can only be promoted after decoded validation.
+    let configSummary=viaOpenSea
+      ?openSeaValidatedBuilderBaseline({chain:validated.chain,
+        contract:validated.contractAddress,stageIdentity})
+      :isGlrtch
+        ?configurationSummary({chain:validated.chain,contract:validated.contractAddress,
+          callTarget:validated.contractAddress,
+          method:isGlrtchlist?'whitelistMint(uint256,uint256,uint256,bytes32[])':'publicMint(uint256)',
+          standard:isGlrtchlist?'GLRTCH allowlist':'GLRTCH public',
+          stageIdentity:validated.stageUuid||validated.stageType||validated.stageLabel,
+          maxPerWallet:isGlrtchlist?1:2})
+        :configurationSummary({chain:validated.chain,contract:validated.contractAddress,
+          callTarget:validated.contractAddress,method:'mint(uint256)',standard:'ERC-721'});
+    let configFingerprint=configurationFingerprint(configSummary);
+    let matchedStage = null;
+    let stageMissing = false;
+
+    if ((validated.stageUuid || validated.stageLabel || validated.stageType) && openSeaService) {
+      const drop = await openSeaService.getDrop(validated.chain, validated.contractAddress);
+      const candidates = Array.isArray(drop?.stages) ? drop.stages : [];
+      if (validated.stageUuid) {
+        matchedStage = candidates.find(stage => stage.uuid === validated.stageUuid) || null;
+      } else {
+        const matches = candidates.filter(stage => (
+          (!validated.stageLabel || stage.label === validated.stageLabel)
+          && (!validated.stageType || stage.stageType === validated.stageType)
+        ));
+        matchedStage = matches.length === 1 ? matches[0] : null;
+      }
+      stageMissing = !matchedStage;
+      if (matchedStage?.startTime) openingAt = Number(matchedStage.startTime) * 1_000;
+      if (matchedStage?.priceWei !== null && matchedStage?.priceWei !== undefined) {
+        priceWeiPerItem = BigInt(matchedStage.priceWei).toString();
+      }
+    }
+
+    // Public SeaDrop state is authoritative for price, window, target, and fee recipient. A
+    // temporary read failure retains the conservative plain-call baseline; a later SeaDrop read
+    // then differs and fails closed for review rather than silently authorizing a new call target.
+    if (!viaOpenSea&&!isGlrtch&&seaDropDiscoveryService && seaDropPublicDropResolver
+      && !stageRequiresEligibilityCheck(matchedStage || {
+        label:validated.stageLabel,stageType:validated.stageType,
+      })) {
+      try {
+        const seaDrop = await seaDropDiscoveryService.resolve(validated.chain,validated.contractAddress);
+        if (seaDrop?.address) {
+          const [publicDrop,allowedFeeRecipients] = await Promise.all([
+            seaDropPublicDropResolver.readPublicDrop(validated.chain,seaDrop.address,validated.contractAddress),
+            seaDropPublicDropResolver.readAllowedFeeRecipients(validated.chain,seaDrop.address,validated.contractAddress),
+          ]);
+          const feeRecipient = liveFeeRecipient({ cachedFeeRecipient:seaDrop.feeRecipient,
+            allowedFeeRecipients,restrictFeeRecipients:publicDrop.restrictFeeRecipients,
+            walletAddress:owned.address });
+          if (Number.isFinite(Number(publicDrop.startTime))) openingAt=Number(publicDrop.startTime)*1_000;
+          if (publicDrop.mintPriceWei !== null && publicDrop.mintPriceWei !== undefined) {
+            priceWeiPerItem=BigInt(publicDrop.mintPriceWei).toString();
+          }
+          configSummary=configurationSummary({chain:validated.chain,
+            contract:validated.contractAddress,callTarget:seaDrop.address,method:'mintPublic',
+            standard:'SeaDrop',feeRecipient,stageIdentity,
+            endTime:publicDrop.endTime,maxPerWallet:publicDrop.maxTotalMintableByWallet,
+            feeBps:publicDrop.feeBps,restrictFeeRecipients:publicDrop.restrictFeeRecipients});
+          configFingerprint=configurationFingerprint(configSummary);
+        }
+      } catch { /* final preflight remains fail-closed and establishes no guessed baseline */ }
+    }
+
+    return { openingAt,priceWeiPerItem,configFingerprint,configSummary,stageMissing };
+  }
+
   async function createTask(userId, input) {
     // TX-025 (Model 2 phase-2): only a real boolean may select builder routing. The string
     // 'false' is truthy and would silently switch to the OpenSea-backed path with price 0.
@@ -813,15 +919,52 @@ function createBotCommandService(dependencies) {
       stageType:validated.stageType,mintTime:validated.mintTime,
     });
     const allowance = await resolveScheduleAllowance(owned,validated.chain,validated.contractAddress,validated,input);
+    // Preserve what the user actually reviewed. A provider refresh can legitimately return a new
+    // opening or price between preview and POST; that fresh value is an observation, never a new
+    // authorization baseline. Evaluate the race through the same policy used by the workers.
+    const approvedOpeningAt=validated.stageStartAt??validated.mintTime;
+    const approvedPriceWeiPerItem=validated.expectedPriceWeiPerItem?.toString()
+      ??parseEtherAmount(validated.priceETH||0).toString();
+    const observedBaseline = await resolveScheduleBaseline(owned,validated,input);
+    const creationPolicy={id:validated.id,mintTime:validated.mintTime,
+      originalOpeningAt:approvedOpeningAt,acceptedOpeningAt:approvedOpeningAt,
+      acceptedPriceWeiPerItem:approvedPriceWeiPerItem,acceptedConfigFingerprint:null,
+      timeChangePolicy:validated.timeChangePolicy,maxOpeningDelayMs:validated.maxOpeningDelayMs,
+      priceChangePolicy:validated.priceChangePolicy,
+      maxPriceWeiPerItem:validated.maxPriceWeiPerItem?.toString()??null,
+      eligibilityDeadline:validated.eligibilityDeadline};
+    const creationDecision=evaluateScheduleObservation(creationPolicy,
+      {...observedBaseline,source:'schedule-create-refresh'},
+      {now:Date.now(),allowConfigurationBaseline:true});
+    if(['awaiting_approval','expired'].includes(creationDecision.action)){
+      throw new ValidationError({field:'mintTime',message:
+        `changed while you were scheduling. ${creationDecision.reason} Refresh the preview and review the current details.`},
+      'SCHEDULE_CHANGED_DURING_CREATE','The mint details changed before the schedule was saved.',
+      {changes:creationDecision.changes});
+    }
+    const baseline=creationDecision.observed;
+    const scheduledOpening=creationDecision.action==='auto_rescheduled'&&baseline.openingAt!==null
+      ?Math.max(validated.mintTime,baseline.openingAt):validated.mintTime;
     const task = { userId, id: validated.id, name: validated.name, walletLabel: owned.label,
       walletAddress:owned.address,reservationStageKey,
       contract: validated.contractAddress, fn: validated.functionName, qty: validated.quantity,
-      price: validated.priceETH, gas: validated.gasGwei, chain: validated.chain, mintTime: validated.mintTime,
-      nextAttemptAt: validated.mintTime, status: 'scheduled', createdAt: Date.now(), maxAttempts: 3,
+      price: validated.priceETH, gas: validated.gasGwei, chain: validated.chain, mintTime: scheduledOpening,
+      nextAttemptAt: scheduledOpening, status: 'scheduled', createdAt: Date.now(), maxAttempts: 3,
       idempotencyKey: `scheduled-mint:${userId}:${validated.id}`, viaOpenSea: Boolean(input.viaOpenSea),
       stageUuid: validated.stageUuid, stageLabel: validated.stageLabel, stageType: validated.stageType,
       stageStartAt:validated.stageStartAt,
       eligibilityMode: validated.eligibilityMode, eligibilityDeadline: validated.eligibilityDeadline,
+      originalOpeningAt:approvedOpeningAt,acceptedOpeningAt:baseline.openingAt,
+      lastObservedOpeningAt:baseline.openingAt,
+      timeChangePolicy:validated.timeChangePolicy,maxOpeningDelayMs:validated.maxOpeningDelayMs,
+      acceptedPriceWeiPerItem:baseline.priceWeiPerItem,
+      lastObservedPriceWeiPerItem:baseline.priceWeiPerItem,
+      priceChangePolicy:validated.priceChangePolicy,
+      maxPriceWeiPerItem:validated.maxPriceWeiPerItem?.toString() ?? null,
+      acceptedConfigFingerprint:baseline.configFingerprint,
+      lastObservedConfigFingerprint:baseline.configFingerprint,
+      acceptedConfigSummary:baseline.configSummary,lastObservedConfigSummary:baseline.configSummary,
+      changeState:'clear',changeVersion:0,pendingChange:null,
       ...allowance };
     if (storage.createReservedTask) {
       let reserved;
@@ -860,6 +1003,17 @@ function createBotCommandService(dependencies) {
       throw new ValidationError({ field: 'action', message: 'must be one of cancel, pause, resume, retry' });
     }
     const validated = requestSchemas.taskDeletion({ id });
+    {
+      const current=await schedulerRepository.detailsForUser(userId,validated.id);
+      if(current?.changeState==='awaiting_approval'){
+        throw new ValidationError({field:'action',message:'use the schedule-change review to approve or cancel this mint'},
+          'SCHEDULE_CHANGE_REVIEW_REQUIRED','This schedule change must be reviewed first.');
+      }
+      if(action==='retry'&&/^(?:SOLD_OUT|REVIEW_EXPIRED):/i.test(String(current?.lastError||''))){
+        throw new ValidationError({field:'action',message:'this failure is final and cannot be retried'},
+          'SCHEDULE_TERMINAL_FAILURE','This schedule cannot be retried. Create a new schedule only if the mint becomes available again.');
+      }
+    }
     const now = Date.now();
     let task;
     try { task = action === 'resume' || action === 'retry'
@@ -883,6 +1037,24 @@ function createBotCommandService(dependencies) {
     const preflights=scheduledPreflightRepository?.listForTask
       ?await scheduledPreflightRepository.listForTask(userId,validated.id):[];
     return {...task,preflights};
+  }
+
+  async function resolveTaskChange(userId,id,input) {
+    const taskId=requestSchemas.taskDeletion({id}).id;
+    const decision=requestSchemas.taskChangeDecision(input);
+    let task;
+    try { task=await schedulerRepository.resolveScheduleChange(userId,taskId,decision); }
+    catch(error){
+      const field=error?.code==='SCHEDULE_CHANGE_EXPIRED'?'review'
+        :error?.code==='SCHEDULE_CHANGE_STALE'?'version':null;
+      if(!field)throw error;
+      throw new ValidationError({field,message:error.message},error.code,error.message);
+    }
+    if(!task)throw new ValidationError({field:'id',message:'was not found'});
+    const cached=getState().tasks.find(item=>item.userId===userId&&item.id===task.id);
+    if(cached)Object.assign(cached,task);
+    broadcast(userId,'tasks');
+    return task;
   }
 
   async function addPnl(userId, input) {
@@ -1091,7 +1263,7 @@ function createBotCommandService(dependencies) {
     return calculateStatistics({activity:state(userId).activity,sniperEvents});}
 
   return {
-    createWallet, createWalletWithRecoveryPhrase, importWallet, importWalletsBatch, detectHomeChain, removeWallet, walletBalance, invalidateBalance, exportWalletKeyRaw, exportWalletKeystore, mint, mintViaOpenSea, batchMint, send, createTask, controlTask, taskDetails, addPnl, updatePnl, deletePnl,
+    createWallet, createWalletWithRecoveryPhrase, importWallet, importWalletsBatch, detectHomeChain, removeWallet, walletBalance, invalidateBalance, exportWalletKeyRaw, exportWalletKeystore, mint, mintViaOpenSea, batchMint, send, createTask, controlTask, taskDetails, resolveTaskChange, addPnl, updatePnl, deletePnl,
     prepareMint,submitPreparedMint,detectMintContract,resolveMintContractInput,isContractAddress,parseOpenSeaCollectionSlug,mintPresets:userId=>mintService.listPresets(userId),
     // The dashboard could LIST presets but never create one -- the only save path was
     // /mintpreset save on Telegram (server.js:2492), so the Presets tab displayed a thing the

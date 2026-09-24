@@ -18,7 +18,10 @@ function fixture(extraDependencies = {}) {
       addWallet: async value => { calls.push(['addWallet', value]); return { ...value, id: 3 }; },
       deleteWallet: async (...args) => { calls.push(['deleteWallet', ...args]); return true; },
     },
-    schedulerRepository: { cancel: async (...args) => { calls.push(['cancel', ...args]); return null; } },
+    schedulerRepository: {
+      detailsForUser: async () => null,
+      cancel: async (...args) => { calls.push(['cancel', ...args]); return null; },
+    },
     providerService: {}, governance: {}, adminCommands: {}, sniperService: {}, supportedChains: ['ethereum'],
     chains: { ethereum: { sym: 'ETH' } },
     encryptPrivateKey: value => { calls.push(['encrypt', value]); return { ciphertext: 'encrypted' }; },
@@ -151,6 +154,7 @@ test('a task control error names the action in real English, not `${action}d`', 
   // the user is shown. "canceld" and "retryd" both used to reach the dashboard's error toast.
   const repository = Object.fromEntries(['cancel', 'pause', 'resume', 'retry']
     .map(action => [action, async () => null]));
+  repository.detailsForUser = async () => null;
   const { service } = fixture({ schedulerRepository: repository });
   const seen = {};
   for (const action of ['cancel', 'pause', 'resume', 'retry']) {
@@ -165,6 +169,24 @@ test('a task control error names the action in real English, not `${action}d`', 
     pause: 'was not found or cannot be paused',
     resume: 'was not found or cannot be resumed',
     retry: 'was not found or cannot be retried',
+  });
+});
+
+test('an expired schedule-change review is a safe validation response, not an internal failure',async()=>{
+  const id='123e4567-e89b-42d3-a456-426614174000';
+  const expired=Object.assign(new Error('This schedule review expired before a decision was received. Nothing was sent.'),{
+    code:'SCHEDULE_CHANGE_EXPIRED',committed:true,
+  });
+  const {service}=fixture({schedulerRepository:{
+    detailsForUser:async()=>null,
+    resolveScheduleChange:async()=>{throw expired;},
+  }});
+  await assert.rejects(service.resolveTaskChange('user-a',id,{decision:'approve',version:1}),error=>{
+    assert.ok(error instanceof ValidationError);
+    assert.equal(error.code,'SCHEDULE_CHANGE_EXPIRED');
+    assert.equal(error.message,expired.message);
+    assert.deepEqual(error.issues,[{field:'review',message:expired.message}]);
+    return true;
   });
 });
 
@@ -185,6 +207,23 @@ test('a task control action outside the four is rejected before the repository i
     });
   }
   assert.deepEqual(touched, []);
+});
+
+test('sold-out and expired-review schedules cannot be retried through any command surface', async () => {
+  const id = '123e4567-e89b-42d3-a456-426614174000';
+  for (const lastError of [
+    'SOLD_OUT: The selected stage sold out. Nothing was sent.',
+    'REVIEW_EXPIRED: No decision was received. Nothing was sent.',
+  ]) {
+    let retried = false;
+    const { service } = fixture({ schedulerRepository: {
+      detailsForUser: async () => ({ id, status:'failed', changeState:'clear', lastError }),
+      retry: async () => { retried = true; return { id }; },
+    } });
+    await assert.rejects(service.controlTask('user-a','retry',id),error =>
+      error instanceof ValidationError && error.code === 'SCHEDULE_TERMINAL_FAILURE');
+    assert.equal(retried,false);
+  }
 });
 
 test('the pending task count spans the whole collection, not the page in view', async () => {

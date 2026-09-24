@@ -175,6 +175,7 @@ async function operationsServer(t,options={}){const sessions=new Map([['token-a'
   tasksPage:async userId=>({page:1,pageSize:10,total:userId==='user-a'?1:0,totalPages:1,items:userId==='user-a'?[{id:'task-a'}]:[]}),
   taskDetails:async(userId,id)=>{if(userId!=='user-a'||id!=='task-a')throw new ValidationError({field:'id',message:'was not found'});return {id,name:'Public mint',walletLabel:'alpha',attempts:[{attemptId:'1',attemptNumber:1,outcome:'failure',reason:'The chain had not reached the public opening yet.'}]};},
   createTask:options.createTask||(async(userId,input)=>{calls.push(['task',userId,input]);return {id:'task'};}),controlTask:async(userId,action,id)=>{if(userId!=='user-a'||id!=='task-a')throw new ValidationError({field:'id',message:'was not found'});calls.push(['control',userId,action,id]);return {id};},
+  resolveTaskChange:options.resolveTaskChange||(async(userId,id,input)=>({userId,id,...input})),
   activityPage:async(userId,input)=>({page:Number(input.page)||1,pageSize:2,total:5,totalPages:3,items:[{id:(Number(input.page)||1)*2-1},{id:(Number(input.page)||1)*2}].filter(x=>x.id<=5).map(x=>({...x,userId}))}),
   mintsPage:async(userId,input)=>({page:Number(input.page)||1,pageSize:10,total:userId==='user-a'?1:0,totalPages:1,items:userId==='user-a'?[{intentId:'mint-a',userId,chain:'robinhood',state:'confirmed'}]:[]}),
   pnl:userId=>userId==='user-a'?[{id:'pnl-a'}]:[],addPnl:async()=>({}),updatePnl:async()=>({}),deletePnl:async(userId,id)=>{if(userId!=='user-a'||id!=='pnl-a')throw new ValidationError({field:'id',message:'was not found'});calls.push(['deletePnl',userId,id]);},
@@ -212,6 +213,18 @@ test('schedule conflicts keep their domain code and safe allowance details',asyn
   assert.deepEqual(await response.json(),{error:'Validation failed',code:'SCHEDULE_ALLOWANCE_EXCEEDED',
     issues:[{field:'quantity',message:'this wallet can schedule 1 more mint'}],
     details:{remaining:'1',maximum:'10',minted:'2',reserved:'7'}});
+});
+
+test('an expired schedule review reaches the dashboard as a safe 400 with its stable code',async t=>{
+  const message='This schedule review expired before a decision was received. Nothing was sent.';
+  const {base}=await operationsServer(t,{resolveTaskChange:async()=>{
+    throw new ValidationError({field:'review',message},'SCHEDULE_CHANGE_EXPIRED',message);
+  }});
+  const response=await fetch(`${base}/api/tasks/task-a/change`,{method:'POST',headers:authHeaders('a',true),
+    body:JSON.stringify({decision:'approve',version:1,confirmation:'CONFIRM'})});
+  assert.equal(response.status,400);
+  assert.deepEqual(await response.json(),{error:'Validation failed',code:'SCHEDULE_CHANGE_EXPIRED',
+    issues:[{field:'review',message}]});
 });
 
 test('unexpected schedule failures are traceable without leaking the raw database error',async t=>{

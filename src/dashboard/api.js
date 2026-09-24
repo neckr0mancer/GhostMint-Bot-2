@@ -358,6 +358,7 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLo
     taskDetails:action(async(req,res)=>{noStore(res);res.json(await commands.taskDetails(user(req),req.params.id));}),
     createTask:action(async(req,res)=>{const task=await commands.createTask(user(req),req.body);res.status(201).json(task);}),
     controlTask:action(async(req,res)=>{if(req.body?.action==='cancel')confirmation(req);const result=await commands.controlTask(user(req),req.body?.action,req.params.id);res.json(result);}),
+    resolveTaskChange:action(async(req,res)=>{confirmation(req);const result=await commands.resolveTaskChange(user(req),req.params.id,req.body);res.json(result);}),
     activity:action(async(req,res)=>res.json(jsonSafe(await commands.activityPage(user(req),req.query)))),
     mints:action(async(req,res)=>res.json(jsonSafe(await commands.mintsPage(user(req),req.query)))),
     pnl:action(async(req,res)=>res.json(await commands.pnl(user(req)))),
@@ -455,6 +456,7 @@ function mountDashboardRoutes(app,api){
   app.get('/api/tasks/:id',api.requireSession,api.taskDetails);
   app.post('/api/tasks',api.requireSession,api.requireCsrf,api.createTask);
   app.post('/api/tasks/:id/control',api.requireSession,api.requireCsrf,api.controlTask);
+  app.post('/api/tasks/:id/change',api.requireSession,api.requireCsrf,api.resolveTaskChange);
   app.get('/api/activity',api.requireSession,api.activity);
   app.get('/api/mints/history',api.requireSession,api.mints);
   app.get('/api/pnl',api.requireSession,api.pnl);

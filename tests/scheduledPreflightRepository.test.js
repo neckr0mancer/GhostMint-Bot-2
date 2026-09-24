@@ -29,6 +29,30 @@ test('migration 063 and repository provide a bounded, lease-recoverable notifica
   assert.match(repository,/notificationAttempts>=maxAttempts/);
 });
 
+test('migration 065 carries schedule-change decisions through the same durable preflight outbox',()=>{
+  const sql=fs.readFileSync(path.join(__dirname,'..','migrations',
+    '065_schedule_change_policies.sql'),'utf8');
+  assert.match(sql,/ADD COLUMN schedule_change_action TEXT/);
+  assert.match(sql,/schedule_change_version INTEGER/);
+  assert.match(sql,/UNIQUE \(user_id,task_id,change_version\)/);
+  assert.match(sql,/mint_tasks_change_state_shape/);
+  assert.match(sql,/ADD COLUMN change_review_expires_at TIMESTAMPTZ/);
+  assert.match(sql,/change_review_expires_at IS NOT NULL/);
+  assert.match(sql,/change_review_expiry/);
+  assert.match(sql,/review_expired/);
+  const repository=fs.readFileSync(path.join(__dirname,'..','src','scheduler',
+    'scheduledPreflightRepository.js'),'utf8');
+  assert.match(repository,/evaluateScheduleObservation/);
+  assert.match(repository,/schedule_change_action=\$10/);
+  assert.match(repository,/await armTaskPreflightRows\(client,savedTaskRow\)/);
+  assert.match(repository,/async function expirePendingReviews/);
+  assert.match(repository,/AND change_review_expires_at<=/);
+  assert.match(repository,/NOW\(\)\+INTERVAL '24 hours'/);
+  assert.match(repository,/FOR UPDATE SKIP LOCKED LIMIT \$2/);
+  assert.match(repository,/status='failed',change_state='clear'/);
+  assert.match(repository,/ON CONFLICT \(user_id,task_id,generation,checkpoint\) DO NOTHING/);
+});
+
 test('arming uses the task generation and creates both checkpoints in the caller transaction',async()=>{
   const calls=[];const queryable={query:async(sql,params)=>{calls.push({sql,params});return {rows:[],rowCount:0};}};
   await armTaskPreflightRows(queryable,{user_id:'user-1',id:'task-1',status:'scheduled',

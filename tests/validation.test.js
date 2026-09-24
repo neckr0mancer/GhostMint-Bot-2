@@ -91,6 +91,28 @@ test('scheduled phase metadata is bounded, explicit, and cannot silently change 
     { supportedChains:CHAINS, now:NOW }), 'eligibilityDeadline');
 });
 
+test('schedule change policies require explicit bounded delay and price limits',()=>{
+  const task=requestSchemas.taskCreate(validTask({autoReschedule:true,maxOpeningDelayMinutes:90,
+    acceptPriceChanges:true,expectedPriceWeiPerItem:'100',maxPriceWeiPerItem:'125'}),
+  {supportedChains:CHAINS,now:NOW});
+  assert.equal(task.timeChangePolicy,'auto_within_limit');
+  assert.equal(task.maxOpeningDelayMs,90*60_000);
+  assert.equal(task.priceChangePolicy,'allow_up_to_cap');
+  assert.equal(task.maxPriceWeiPerItem,125n);
+  rejectsField(()=>requestSchemas.taskCreate(validTask({autoReschedule:true}),
+    {supportedChains:CHAINS,now:NOW}),'maxOpeningDelayMinutes');
+  rejectsField(()=>requestSchemas.taskCreate(validTask({autoReschedule:true,maxOpeningDelayMinutes:1441}),
+    {supportedChains:CHAINS,now:NOW}),'maxOpeningDelayMinutes');
+  rejectsField(()=>requestSchemas.taskCreate(validTask({acceptPriceChanges:true}),
+    {supportedChains:CHAINS,now:NOW}),'maxPriceWeiPerItem');
+  rejectsField(()=>requestSchemas.taskCreate(validTask({acceptPriceChanges:true,
+    expectedPriceWeiPerItem:'100',maxPriceWeiPerItem:'99'}),
+  {supportedChains:CHAINS,now:NOW}),'maxPriceWeiPerItem');
+  assert.deepEqual(requestSchemas.taskChangeDecision({decision:'approve',version:2}),
+    {decision:'approve',version:2});
+  rejectsField(()=>requestSchemas.taskChangeDecision({decision:'ignore',version:2}),'decision');
+});
+
 test('unsupported chains are rejected instead of defaulting to Ethereum', () => {
   rejectsField(() => requestSchemas.mint(validMint({ chain: 'solana' }), { supportedChains: CHAINS }), 'chain');
   rejectsField(() => requestSchemas.mint(validMint({ chain: '' }), { supportedChains: CHAINS }), 'chain');

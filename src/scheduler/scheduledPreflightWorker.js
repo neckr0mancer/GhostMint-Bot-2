@@ -44,7 +44,10 @@ function createScheduledPreflightWorker({
     const result={result:claim.check.result,reason:claim.check.reason,
       walletLabel:claim.task.walletLabel,mintValueWei:claim.check.mintValueWei,
       estimatedGasWei:claim.check.estimatedGasWei,totalDebitWei:claim.check.totalDebitWei,
-      balanceWei:claim.check.balanceWei,shortfallWei:claim.check.shortfallWei};
+      balanceWei:claim.check.balanceWei,shortfallWei:claim.check.shortfallWei,
+      scheduleChangeAction:claim.check.scheduleChangeAction,
+      scheduleChangeVersion:claim.check.scheduleChangeVersion,
+      scheduleChangeReason:claim.check.scheduleChangeReason};
     try { await deliver(claim.task,claim.check,result,{check:claim.check}); }
     catch(error) {
       deliveryError=sanitizeError(error);
@@ -61,6 +64,9 @@ function createScheduledPreflightWorker({
     running=true;lastTickAt=now();
     activeTick=(async()=>{
       try {
+        if(repository.expirePendingReviews){
+          await repository.expirePendingReviews({now:lastTickAt,limit:claimLimit});
+        }
         await repository.sync(lastTickAt);
         const claims=await repository.claimDue({workerId,now:lastTickAt,leaseMs,limit:claimLimit});
         await Promise.all(claims.map(claim=>processClaim(claim)
