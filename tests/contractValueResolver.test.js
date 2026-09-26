@@ -122,3 +122,27 @@ test('probeMaxSupply returns null when no candidate getter resolves, without thr
   const resolver = createContractValueResolver({ providerService, repository });
   assert.equal(await resolver.probeMaxSupply('ethereum', CONTRACT), null);
 });
+
+test('probeName returns a safe on-chain ERC-721 name without touching the numeric cache', async () => {
+  const iface = new Interface(['function name() view returns (string)']);
+  const repository = fakeRepository();
+  const resolver = createContractValueResolver({ repository, providerService: {
+    async perform(chain, operationName, operation) {
+      assert.equal(chain, 'ethereum');
+      assert.equal(operationName, 'resolve:name');
+      return operation({ call: async ({ data }) => {
+        assert.equal(data, iface.encodeFunctionData('name', []));
+        return iface.encodeFunctionResult('name', ['Example Collection']);
+      } });
+    },
+  } });
+  assert.equal(await resolver.probeName('ethereum', CONTRACT), 'Example Collection');
+  assert.equal(repository.saved.length, 0);
+});
+
+test('probeName treats a missing or malformed name getter as unknown', async () => {
+  const resolver = createContractValueResolver({ repository: fakeRepository(), providerService: {
+    perform: async () => { throw new Error('CALL_EXCEPTION'); },
+  } });
+  assert.equal(await resolver.probeName('ethereum', CONTRACT), null);
+});

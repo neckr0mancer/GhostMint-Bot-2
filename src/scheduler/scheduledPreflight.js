@@ -47,15 +47,19 @@ function scheduledPreflightDelivery(task,check,result,{formatWei,escape=value=>S
   const automatic='The final safety check still runs immediately before anything is sent.';
   const changeAction=result.scheduleChangeAction??null;
   const changeReason=result.scheduleChangeReason||result.reason;
+  const acceptedChange=changeAction==='accepted'&&changeReason
+    ?{scheduleChangeReason:changeReason}:{};
+  const eventIdentity=check.checkId
+    ?{notificationKey:`schedule:${task.id}:preflight:${check.checkId}`}:{};
   if(changeAction==='awaiting_approval')return {
     text:`⚠️ <b>${name}</b> changed and is paused. ${escape(changeReason||'Review the exact change before it can continue.')} Open Schedule details to approve it or cancel. Nothing was sent.`,
     event:{type:'task.change-review',taskId:task.id,name:task.name,reason:changeReason,
-      checkpoint:check.checkpoint},
+      checkpoint:check.checkpoint,...eventIdentity},
   };
   if(changeAction==='auto_rescheduled')return {
     text:`🕒 <b>${name}</b> was safely rescheduled. ${escape(changeReason||'The opening moved within your approved delay limit.')} ${automatic}`,
     event:{type:'task.rescheduled',taskId:task.id,name:task.name,reason:changeReason,
-      checkpoint:check.checkpoint},
+      checkpoint:check.checkpoint,...eventIdentity},
   };
   if(changeAction==='expired'){
     const expiredReason=String(changeReason||'No decision was received before its safety deadline.')
@@ -63,7 +67,8 @@ function scheduledPreflightDelivery(task,check,result,{formatWei,escape=value=>S
     return {
     text:`❌ <b>${name}</b> expired. ${escape(expiredReason)} Nothing was sent.`,
     event:{type:'task.failed',taskId:task.id,name:task.name,reason:expiredReason,
-      failureCode:'REVIEW_EXPIRED',severity:'warning',retryable:false,reschedulable:true},
+      failureCode:'REVIEW_EXPIRED',severity:'warning',retryable:false,reschedulable:true,
+      ...eventIdentity},
     };
   }
   const acceptedNote=changeAction==='accepted'
@@ -72,31 +77,32 @@ function scheduledPreflightDelivery(task,check,result,{formatWei,escape=value=>S
     text:`❌ <b>${name}</b> failed because the collection or selected stage sold out before it could run. Nothing was sent.`,
     event:{type:'task.failed',taskId:task.id,name:task.name,
       reason:'The collection or selected stage sold out before this scheduled mint could run. Nothing was sent.',
-      failureCode:'SOLD_OUT',severity:'error',retryable:false,reschedulable:false},
+      failureCode:'SOLD_OUT',severity:'error',retryable:false,reschedulable:false,...eventIdentity},
   };
   if(result.result==='short'){
     const short=formatWei(result.shortfallWei);
     return {
       text:`⚠️ <b>${name}</b> starts ${timing}, but <b>${wallet}</b> needs ${escape(short)} ${currency} more. Fund this wallet or use another wallet. Nothing was sent.${acceptedNote}`,
       event:{type:'task.lowBalance',taskId:task.id,name:task.name,walletLabel:result.walletLabel,
-        shortByNative:short,currency:result.currency,timing,checkpoint:check.checkpoint,automatic:true},
+        shortByNative:short,currency:result.currency,timing,checkpoint:check.checkpoint,automatic:true,
+        ...acceptedChange,...eventIdentity},
     };
   }
   if(result.result==='price_unknown')return {
     text:`⚠️ <b>${name}</b> starts ${timing}, but its mint price is not available yet. GhostMint will check again before sending. Nothing was sent.${acceptedNote}`,
     event:{type:'task.preflight',taskId:task.id,name:task.name,result:result.result,
-      timing,checkpoint:check.checkpoint},
+      timing,checkpoint:check.checkpoint,...acceptedChange,...eventIdentity},
   };
   if(result.result==='check_failed')return {
     text:`⚠️ GhostMint could not complete the early check for <b>${name}</b>. It will check again before sending. Nothing was sent.${acceptedNote}`,
     event:{type:'task.preflight',taskId:task.id,name:task.name,result:result.result,
-      timing,checkpoint:check.checkpoint},
+      timing,checkpoint:check.checkpoint,...acceptedChange,...eventIdentity},
   };
   return {
     text:`⏰ <b>${name}</b> starts ${timing} from <b>${wallet}</b>. The current funds check passed.${acceptedNote} ${automatic}`,
     event:{type:check.checkpoint==='five_minute'?'task.reminder':'task.preflight',
       taskId:task.id,name:task.name,walletLabel:result.walletLabel,result:'ready',timing,
-      checkpoint:check.checkpoint,automatic:true},
+      checkpoint:check.checkpoint,automatic:true,...acceptedChange,...eventIdentity},
   };
 }
 

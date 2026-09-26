@@ -61,7 +61,7 @@ test('controlled mint and wallet-display selectors share the accessible themed l
   assert.match(shared, /if\(!selectionChanged&&open&&current>=0&&!normalized\[current\]\?\.disabled\)return current/,
     'an open menu must preserve its valid keyboard target across Schedule parent refreshes');
   assert.match(app, /<SelectMenu className="fl" label="Wallet" value=\{walletLabel\}/);
-  assert.match(app, /<SelectMenu className="fl" label="Stage" value=\{selectedStageKey\}/);
+  assert.match(app, /<SelectMenu label="Earliest attempt" value=\{selectedStageKey\}/);
   assert.match(app, /<SelectMenu className="fl" name="walletLabel" label="Wallet" value=\{scheduleWallet\}/,
     'Schedule must retain the named value submitted through FormData');
   assert.match(app, /<SelectMenu className="fl" label="Warn below" value=\{value\}/);

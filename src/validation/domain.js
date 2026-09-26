@@ -370,7 +370,10 @@ function validateTaskCreate(input, context) {
   const autoReschedule = input.autoReschedule === undefined ? false
     : optionalBoolean(input.autoReschedule, 'autoReschedule');
   const maxOpeningDelayMinutes = finiteNumber(input.maxOpeningDelayMinutes,
-    'maxOpeningDelayMinutes', { min: 1, max: 1440, integer: true, required:autoReschedule });
+    'maxOpeningDelayMinutes', { min: 1, max: 1440, integer: true, required:false });
+  if (!autoReschedule && maxOpeningDelayMinutes !== null) {
+    fail('maxOpeningDelayMinutes', 'requires automatic rescheduling to be enabled');
+  }
   const acceptPriceChanges = input.acceptPriceChanges === undefined ? false
     : optionalBoolean(input.acceptPriceChanges, 'acceptPriceChanges');
   const maxPriceWeiPerItem = optionalWei(input.maxPriceWeiPerItem, 'maxPriceWeiPerItem');
@@ -394,8 +397,12 @@ function validateTaskCreate(input, context) {
     stageStartAt: taskStageStart(input.stageStartAt, mintTime),
     eligibilityMode: taskEligibilityMode(input.eligibilityMode),
     eligibilityDeadline: taskEligibilityDeadline(input.eligibilityDeadline, mintTime),
-    timeChangePolicy:autoReschedule ? 'auto_within_limit' : 'approval',
-    maxOpeningDelayMs:autoReschedule ? maxOpeningDelayMinutes * 60_000 : null,
+    // New first-party clients follow the exact same verified stage with no arbitrary 24-hour UI
+    // cutoff. Older clients that deliberately send a delay keep their bounded legacy policy.
+    timeChangePolicy:autoReschedule
+      ?(maxOpeningDelayMinutes===null?'auto_follow_stage':'auto_within_limit'):'approval',
+    maxOpeningDelayMs:autoReschedule&&maxOpeningDelayMinutes!==null
+      ?maxOpeningDelayMinutes * 60_000:null,
     priceChangePolicy:acceptPriceChanges ? 'allow_up_to_cap' : 'approval',
     maxPriceWeiPerItem:acceptPriceChanges ? maxPriceWeiPerItem : null,
     expectedPriceWeiPerItem,

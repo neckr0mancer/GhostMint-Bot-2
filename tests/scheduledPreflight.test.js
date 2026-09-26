@@ -75,15 +75,39 @@ test('delivery copy is concise and distinguishes a 30-second low-balance warning
 });
 
 test('a durable early schedule-change action produces one grouped review notification',()=>{
-  const value=scheduledPreflightDelivery(task,{checkpoint:'five_minute'},
+  const value=scheduledPreflightDelivery(task,{...check,checkpoint:'five_minute'},
     {result:'short',shortfallWei:2n,scheduleChangeAction:'awaiting_approval',
       scheduleChangeReason:'The opening and price changed together.'},
     {formatWei:String,escape:String});
   assert.equal(value.event.type,'task.change-review');
+  assert.equal(value.event.notificationKey,'schedule:task-1:preflight:1');
   assert.match(value.text,/changed and is paused/i);
   assert.match(value.text,/opening and price changed together/i);
   assert.doesNotMatch(value.text,/needs 2 ETH more/,
     'one grouped change decision takes priority over a duplicate secondary popup');
+});
+
+test('an accepted change is carried to the dashboard event without creating a second delivery',()=>{
+  const value=scheduledPreflightDelivery(task,{...check,checkpoint:'five_minute'},
+    {result:'ready',walletLabel:'alpha',scheduleChangeAction:'accepted',
+      scheduleChangeReason:'The mint price changed within your approved limit.'},
+    {formatWei:String,escape:String});
+  assert.equal(value.event.type,'task.reminder');
+  assert.equal(value.event.scheduleChangeReason,
+    'The mint price changed within your approved limit.');
+  assert.equal(value.event.notificationKey,'schedule:task-1:preflight:1');
+  assert.match(value.text,/changed within the limits you approved/i);
+});
+
+test('an automatic stage move produces one stable rescheduled notification',()=>{
+  const value=scheduledPreflightDelivery(task,{...check,checkpoint:'thirty_second'},
+    {result:'ready',walletLabel:'alpha',scheduleChangeAction:'auto_rescheduled',
+      scheduleChangeReason:'The project moved this stage to a new verified opening.'},
+    {formatWei:String,escape:String});
+  assert.equal(value.event.type,'task.rescheduled');
+  assert.equal(value.event.reason,'The project moved this stage to a new verified opening.');
+  assert.equal(value.event.notificationKey,'schedule:task-1:preflight:1');
+  assert.match(value.text,/safely rescheduled/i);
 });
 
 test('review expiry and sold-out delivery are terminal failures with concise truthful copy',()=>{

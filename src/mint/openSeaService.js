@@ -45,7 +45,8 @@ const OPENSEA_CHAIN_SLUGS = Object.freeze({
 // rather than blocking anything. Two API calls are needed because OpenSea's contract lookup only
 // returns a collection slug, not the collection's own name/image/stats.
 function createOpenSeaService({ apiKey, repository, baseUrl = 'https://api.opensea.io/api/v2',
-  http = axios, timeoutMs = 8_000, log = () => {} }) {
+  http = axios, timeoutMs = 8_000, emptyMetadataTtlMs = 5 * 60_000,
+  now = () => Date.now(), log = () => {} }) {
   // Contract -> collection membership is stable for the life of this process. Phase polling still
   // refreshes /drops/{slug}, but it should not pay for the identical contract lookup on every
   // five/ten/sixty-second check.
@@ -166,10 +167,28 @@ function createOpenSeaService({ apiKey, repository, baseUrl = 'https://api.opens
 
   async function getCollectionMetadata(chain, contractAddress) {
     const cached = await repository.getOpenSea(chain, contractAddress);
-    if (cached) return cached;
+    if (cached) {
+      const hasName = cached.name !== null && cached.name !== undefined && cached.name !== '';
+      const cachedAt = new Date(cached.resolvedAt).getTime();
+      const emptyCacheIsFresh = Number.isFinite(cachedAt) && now() - cachedAt < emptyMetadataTtlMs;
+      // A resolved name is stable enough for the existing cache. A missing name is different even
+      // if floor/image metadata happened to resolve: it can mean a temporary outage, missing key,
+      // rate limit, or a collection that had not been indexed yet. Retry that negative identity
+      // cache after a short TTL instead of pinning a truthful collection name to null forever.
+      if (hasName || emptyCacheIsFresh) return cached;
+    }
 
     const openSeaChain = OPENSEA_CHAIN_SLUGS[chain];
-    let metadata = { name: null, description: null, imageUrl: null, floorPrice: null, floorPriceSymbol: null };
+    // Start with any still-useful cached fields. An expired negative name should be retried, but
+    // a timeout during that retry must not erase a valid image or floor price that was already
+    // resolved successfully.
+    let metadata = {
+      name: cached?.name ?? null,
+      description: cached?.description ?? null,
+      imageUrl: cached?.imageUrl ?? null,
+      floorPrice: cached?.floorPrice ?? null,
+      floorPriceSymbol: cached?.floorPriceSymbol ?? null,
+    };
     if (apiKey && openSeaChain) {
       try {
         const slug = await fetchCollectionSlug(openSeaChain, contractAddress);
@@ -177,11 +196,11 @@ function createOpenSeaService({ apiKey, repository, baseUrl = 'https://api.opens
           const { collection, stats } = await fetchCollectionDetails(slug);
           if (collection) {
             metadata = {
-              name: collection.name || null,
-              description: collection.description || null,
-              imageUrl: collection.image_url || null,
-              floorPrice: stats?.total?.floor_price ?? null,
-              floorPriceSymbol: stats?.total?.floor_price_symbol ?? null,
+              name: collection.name || metadata.name,
+              description: collection.description || metadata.description,
+              imageUrl: collection.image_url || metadata.imageUrl,
+              floorPrice: stats?.total?.floor_price ?? metadata.floorPrice,
+              floorPriceSymbol: stats?.total?.floor_price_symbol ?? metadata.floorPriceSymbol,
             };
           }
         }
@@ -231,7 +250,9 @@ function createOpenSeaService({ apiKey, repository, baseUrl = 'https://api.opens
       const data = response.data;
       if (!data) return null;
       return {
-        isMinting: Boolean(data.is_minting),
+        // Missing is not the same as false. Preserve an omitted provider field so callers can
+        // safely fall back to active-stage/timestamp evidence instead of declaring the mint closed.
+        isMinting: typeof data.is_minting === 'boolean' ? data.is_minting : null,
         dropType: data.drop_type || null,
         maxSupply: data.max_supply !== undefined && data.max_supply !== null ? Number(data.max_supply) : null,
         openSeaUrl: data.opensea_url || null,

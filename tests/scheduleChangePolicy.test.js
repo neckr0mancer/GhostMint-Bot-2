@@ -68,6 +68,31 @@ test('an earlier opening never authorizes an earlier spend automatically',()=>{
   assert.match(decision.reason,/earlier/i);
 });
 
+test('an opted-in exact stage follows earlier and multi-day later openings',()=>{
+  const later=evaluateScheduleObservation({...base,timeChangePolicy:'auto_follow_stage',
+    maxOpeningDelayMs:null},{openingAt:base.acceptedOpeningAt+72*HOUR,
+    priceWeiPerItem:'100',configFingerprint:'config-a'},{now:base.acceptedOpeningAt-HOUR});
+  assert.equal(later.action,'auto_rescheduled');
+  assert.equal(later.nextEligibilityDeadline,base.eligibilityDeadline+72*HOUR);
+
+  const earlier=evaluateScheduleObservation({...base,timeChangePolicy:'auto_follow_stage',
+    maxOpeningDelayMs:null},{openingAt:base.acceptedOpeningAt-6*HOUR,
+    priceWeiPerItem:'100',configFingerprint:'config-a'},{now:base.acceptedOpeningAt-12*HOUR});
+  assert.equal(earlier.action,'auto_rescheduled');
+  assert.equal(earlier.nextEligibilityDeadline,base.eligibilityDeadline-6*HOUR);
+});
+
+test('exact time following never overrides a price cap, stage removal, or call change',()=>{
+  const exact={...base,timeChangePolicy:'auto_follow_stage',priceChangePolicy:'allow_up_to_cap',
+    maxPriceWeiPerItem:'110'};
+  assert.equal(evaluateScheduleObservation(exact,{openingAt:base.acceptedOpeningAt+72*HOUR,
+    priceWeiPerItem:'125',configFingerprint:'config-a'}).action,'awaiting_approval');
+  assert.equal(evaluateScheduleObservation(exact,{stageMissing:true}).action,'awaiting_approval');
+  assert.equal(evaluateScheduleObservation(exact,{openingAt:base.acceptedOpeningAt+72*HOUR,
+    priceWeiPerItem:'100',configFingerprint:'config-b',configSummary:{method:'mintSigned'}}).action,
+  'awaiting_approval');
+});
+
 test('a later stage opening still cannot pull execution before the user-approved mint time',()=>{
   const now=base.acceptedOpeningAt;
   const approvedAttempt=now+30*60_000;

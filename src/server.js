@@ -455,7 +455,26 @@ async function enforceScheduledChangePolicy(task, observation, options = {}) {
   if(evaluation.action==='unchanged')return evaluation;
   const result=await schedulerRepository.applyScheduleChange(task,evaluation);
   if(result.task)Object.assign(task,result.task);
-  if(result.outcome==='continue')return evaluation;
+  if(result.outcome==='continue'){
+    if(evaluation.action==='accepted'){
+      // A final-second price/configuration change within the user's explicit limit must remain
+      // visible on every connected surface. Delivery is deliberately best-effort: notification
+      // failure cannot change the durable schedule decision or interrupt transaction execution.
+      const dashboardEvent={type:'task.change-accepted',taskId:task.id,name:task.name,
+        kinds:evaluation.kinds||[],reason:evaluation.reason,
+        notificationKey:`schedule:${task.id}:change:${task.changeVersion}:accepted`};
+      try{
+        dashboardWebSockets.broadcastToUser(task.userId,{type:'tasks.changed'});
+        dashboardWebSockets.broadcastToUser(task.userId,dashboardEvent);
+      }catch{/* no connected dashboard */}
+      try{
+        Promise.resolve(notifyUser(task.userId,
+          `ℹ️ Scheduled mint <b>${escapeTelegramHtml(task.name)}</b> changed within the limits you approved.\n${escapeTelegramHtml(evaluation.reason)}\nThe final safety check still runs before anything is sent.`))
+          .catch(()=>{});
+      }catch{/* notification delivery never controls execution */}
+    }
+    return evaluation;
+  }
   const error=new Error(evaluation.reason);
   error.code='SCHEDULE_CHANGE_HANDLED';
   error.scheduleChange=evaluation;
@@ -1056,11 +1075,21 @@ const schedulerWorker = createSchedulerWorker({
       if(event.outcome==='paused'){
         dashboardWebSockets.broadcastToUser(event.task.userId,{type:'task.change-review',
           taskId:event.task.id,name:event.task.name,version:event.task.changeVersion,
-          kinds:event.scheduleChange.kinds||[],reason:event.scheduleChange.reason});
+          kinds:event.scheduleChange.kinds||[],reason:event.scheduleChange.reason,
+          notificationKey:`schedule:${event.task.id}:change:${event.task.changeVersion}:review`});
         await notifyUser(event.task.userId,`⚠️ Scheduled mint <b>${escapeTelegramHtml(event.task.name)}</b> needs your review.\n${reason}\nOpen Schedule details to approve the exact change or cancel it.`);
       }else if(event.outcome==='retry'){
+        dashboardWebSockets.broadcastToUser(event.task.userId,{type:'task.rescheduled',
+          taskId:event.task.id,name:event.task.name,kinds:event.scheduleChange.kinds||[],
+          reason:event.scheduleChange.reason,
+          notificationKey:`schedule:${event.task.id}:change:${event.task.changeVersion}:rescheduled`});
         await notifyUser(event.task.userId,`🕒 Scheduled mint <b>${escapeTelegramHtml(event.task.name)}</b> was safely rescheduled.\n${reason}`);
       }else if(event.outcome==='failed'){
+        dashboardWebSockets.broadcastToUser(event.task.userId,{type:'task.failed',
+          taskId:event.task.id,name:event.task.name,reason:event.scheduleChange.reason,
+          failureCode:'SCHEDULE_CHANGE_EXPIRED',severity:'warning',retryable:false,
+          reschedulable:true,
+          notificationKey:`schedule:${event.task.id}:change:${event.task.changeVersion}:failed`});
         await notifyUser(event.task.userId,`❌ Scheduled mint <b>${escapeTelegramHtml(event.task.name)}</b> stopped.\n${reason}`);
       }
     }

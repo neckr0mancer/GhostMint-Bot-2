@@ -107,7 +107,7 @@ function buildScheduleStagePlan(drop, { now = Date.now() } = {}) {
       const startMs = Number(stage?.startTime) * 1000;
       const endMs = Number(stage?.endTime) * 1000;
       return Number.isFinite(startMs) && startMs > now
-        && (!Number.isFinite(endMs) || endMs <= 0 || endMs > now)
+        && (!Number.isFinite(endMs) || endMs <= 0 || (endMs > now && endMs > startMs))
         && scheduleStageFacts(stage, { stages }).schedulable;
     })
     .sort((left, right) => Number(left.startTime) - Number(right.startTime));

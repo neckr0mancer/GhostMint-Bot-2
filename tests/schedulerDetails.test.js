@@ -53,6 +53,25 @@ test('another user receives no schedule detail or attempt history', async () => 
   assert.equal(calls,1,'attempts must not be queried after the owned task lookup fails');
 });
 
+test('schedule-change websocket events are state-refreshing, versioned, and deduplicable',()=>{
+  const source=fs.readFileSync(path.join(__dirname,'..','src','server.js'),'utf8');
+  const finalStart=source.indexOf('async function enforceScheduledChangePolicy');
+  const finalEnd=source.indexOf('\nasync function',finalStart+20);
+  const finalBranch=source.slice(finalStart,finalEnd);
+  assert.match(finalBranch,/type:'task\.change-accepted'/);
+  assert.match(finalBranch,/type:'tasks\.changed'/);
+  assert.match(finalBranch,/notificationKey:`schedule:\$\{task\.id\}:change:\$\{task\.changeVersion\}:accepted`/);
+
+  const runtimeStart=source.indexOf('if\(event\.scheduleChange\)');
+  const runtimeEnd=source.indexOf("if \(event.outcome === 'starting'\)",runtimeStart);
+  const runtimeBranch=source.slice(runtimeStart,runtimeEnd);
+  assert.match(runtimeBranch,/type:'task\.change-review'/);
+  assert.match(runtimeBranch,/type:'task\.rescheduled'/);
+  assert.match(runtimeBranch,/type:'task\.failed'/);
+  assert.match(runtimeBranch,/notificationKey:`schedule:\$\{event\.task\.id\}:change:\$\{event\.task\.changeVersion\}:review`/);
+  assert.match(runtimeBranch,/notificationKey:`schedule:\$\{event\.task\.id\}:change:\$\{event\.task\.changeVersion\}:rescheduled`/);
+});
+
 test('an earliest-eligible stage advance reaches the atomic phase deferral before change-policy handling',()=>{
   const source=fs.readFileSync(path.join(__dirname,'..','src','server.js'),'utf8');
   const start=source.indexOf("if (phaseAwareTask(task) && ['WALLET_NOT_ELIGIBLE','STAGE_NOT_OPEN'].includes(error?.code))");

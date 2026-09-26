@@ -22,6 +22,15 @@ function mapTask(row) {
     viaOpenSea:row.via_opensea,
     stageType:row.stage_type ?? null,stageUuid:row.stage_uuid ?? null,
     stageLabel:row.stage_label ?? null,eligibilityMode:row.eligibility_mode ?? 'specific_stage',
+    reservationStageKey:row.reservation_stage_key ?? null,
+    allowanceScope:row.allowance_scope ?? 'unknown',
+    allowanceMaxPerWallet:row.allowance_max_per_wallet===null
+      ||row.allowance_max_per_wallet===undefined?null:String(row.allowance_max_per_wallet),
+    allowanceMintedSnapshot:row.allowance_minted_snapshot===null
+      ||row.allowance_minted_snapshot===undefined?null:String(row.allowance_minted_snapshot),
+    allowanceSource:row.allowance_source ?? null,
+    allowanceVerifiedAt:time(row.allowance_verified_at),
+    allowanceStageStartAt:time(row.allowance_stage_start_at),
     eligibilityDeadline:time(row.eligibility_deadline),phaseWaitCount:Number(row.phase_wait_count||0),
     preflightTargetAt:time(row.preflight_target_at),
     preflightGeneration:Number(row.preflight_generation||1),
@@ -270,15 +279,18 @@ function createScheduledPreflightRepository(pool) {
           const observed=scheduleEvaluation.observed||{};
           const version=Number(taskRow.change_version||0)+1;
           const pending=action==='awaiting_approval'?{...scheduleEvaluation,version}:null;
-          const movedOpening=Number.isFinite(Number(observed.openingAt))?Number(observed.openingAt):null;
-          const currentAttempt=time(taskRow.next_attempt_at??taskRow.mint_time);
-          const rescheduledTarget=action==='auto_rescheduled'&&movedOpening!==null
-            ?Math.max(movedOpening,currentAttempt??movedOpening):movedOpening;
+           const movedOpening=Number.isFinite(Number(observed.openingAt))?Number(observed.openingAt):null;
+           const currentAttempt=time(taskRow.next_attempt_at??taskRow.mint_time);
+           const rescheduledTarget=action==='auto_rescheduled'&&movedOpening!==null
+             ?(taskRow.time_change_policy==='auto_follow_stage'
+               ?Math.max(movedOpening,Date.now())
+               :Math.max(movedOpening,currentAttempt??movedOpening)):movedOpening;
           const nextStatus=action==='auto_rescheduled'?'retry'
             :action==='awaiting_approval'?'paused':action==='expired'?'failed':taskRow.status;
           const changed=await client.query(`UPDATE mint_tasks SET status=$5,
-              mint_time=CASE WHEN $6 AND $7::BIGINT IS NOT NULL THEN TO_TIMESTAMP($7 / 1000.0) ELSE mint_time END,
-              next_attempt_at=CASE WHEN $6 AND $7::BIGINT IS NOT NULL THEN TO_TIMESTAMP($7 / 1000.0) ELSE next_attempt_at END,
+               mint_time=CASE WHEN $6 AND $7::BIGINT IS NOT NULL THEN TO_TIMESTAMP($7 / 1000.0) ELSE mint_time END,
+               next_attempt_at=CASE WHEN $6 AND $7::BIGINT IS NOT NULL THEN TO_TIMESTAMP($7 / 1000.0) ELSE next_attempt_at END,
+               eligibility_deadline=CASE WHEN $6 AND $18::BIGINT IS NOT NULL THEN TO_TIMESTAMP($18 / 1000.0) ELSE eligibility_deadline END,
               accepted_opening_at=CASE WHEN $9 AND $8::BIGINT IS NOT NULL THEN TO_TIMESTAMP($8 / 1000.0) ELSE accepted_opening_at END,
               last_observed_opening_at=CASE WHEN $8::BIGINT IS NULL THEN last_observed_opening_at ELSE TO_TIMESTAMP($8 / 1000.0) END,
               accepted_price_wei_per_item=CASE WHEN $9 AND $10::NUMERIC IS NOT NULL THEN $10::NUMERIC ELSE accepted_price_wei_per_item END,
@@ -302,8 +314,9 @@ function createScheduledPreflightRepository(pool) {
             nextStatus,action==='auto_rescheduled',rescheduledTarget,movedOpening,
             action==='accepted'||action==='auto_rescheduled',observed.priceWeiPerItem??null,
             observed.configFingerprint??null,observed.configSummary?JSON.stringify(observed.configSummary):null,
-            action==='awaiting_approval',version,pending?JSON.stringify(pending):null,
-            action!=='accepted',scheduleEvaluation.reason||null]);
+             action==='awaiting_approval',version,pending?JSON.stringify(pending):null,
+             action!=='accepted',scheduleEvaluation.reason||null,
+             scheduleEvaluation.nextEligibilityDeadline??null]);
           current=changed.rowCount>0;
           if(current){
             savedTaskRow=changed.rows[0];

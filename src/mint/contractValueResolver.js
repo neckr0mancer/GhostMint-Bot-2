@@ -38,6 +38,24 @@ function createContractValueResolver({ providerService, repository }) {
     return null;
   }
 
+  // ERC-721's name() is useful presentation metadata when a marketplace has not indexed a new
+  // collection yet (or its metadata request temporarily failed). Keep it live and display-only:
+  // it never participates in mint construction, validation, or transaction decisions, and a
+  // missing/non-standard getter remains an ordinary unknown value.
+  async function probeName(chain, contractAddress) {
+    const iface = new Interface(['function name() view returns (string)']);
+    try {
+      const data = await providerService.perform(chain, 'resolve:name', provider =>
+        provider.call({ to: contractAddress, data: iface.encodeFunctionData('name', []) }));
+      const [value] = iface.decodeFunctionResult('name', data);
+      const normalized = String(value ?? '').trim();
+      if (!normalized || normalized.length > 200 || /[\u0000-\u001f\u007f]/.test(normalized)) return null;
+      return normalized;
+    } catch {
+      return null;
+    }
+  }
+
   async function resolve(chain, contractAddress) {
     const cached = await repository.get(chain, contractAddress);
     if (cached) return cached;
@@ -75,7 +93,7 @@ function createContractValueResolver({ providerService, repository }) {
     return resolveOne(chain, contractAddress, 'maxSupply');
   }
 
-  return { resolve, probeTotalMinted, probeMaxSupply };
+  return { resolve, probeTotalMinted, probeMaxSupply, probeName };
 }
 
 module.exports = { createContractValueResolver, CANDIDATES };

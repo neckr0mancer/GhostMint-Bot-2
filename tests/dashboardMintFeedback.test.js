@@ -114,8 +114,8 @@ test('dashboard pins the chosen phase identity through scheduled-task creation',
   assert.match(appSource,/checks the live phase, current price, wallet eligibility, balance, and simulation again before sending/i);
   assert.match(appSource,/scheduleStageRequiresOpenSeaBuilder\(scheduledStage\)/);
   assert.match(appSource,/\(!detectedSeaDrop\|\|scheduleStageRequiresOpenSeaBuilder\(scheduledStage\)\)/);
-  assert.match(appSource,/label="Stage" value=\{selectedStageKey\}/);
-  assert.match(appSource,/return \{value:selectionKey,label:s\.label/);
+  assert.match(appSource,/<SelectMenu label="Earliest attempt" value=\{selectedStageKey\}/);
+  assert.match(appSource,/return \{value:scheduleStageSelectionKey\(stage\),label:`\$\{stageName\} · \$\{local\}`/);
   assert.match(openSeaScheduleDraftSource,/const requiresEligibilityCheck = stageRequiresEligibilityCheck\(stage\)/);
   assert.match(openSeaScheduleDraftSource,/eligibilityMode: requiresEligibilityCheck \? 'earliest_eligible' : 'specific_stage'/,
     'Telegram and Discord must both use the shared schedule-draft policy instead of duplicating it');

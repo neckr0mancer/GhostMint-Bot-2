@@ -53,6 +53,33 @@ test('migration 065 carries schedule-change decisions through the same durable p
   assert.match(repository,/ON CONFLICT \(user_id,task_id,generation,checkpoint\) DO NOTHING/);
 });
 
+test('migration 066 repairs a previously recorded 065 without rewriting migration history',()=>{
+  const sql=fs.readFileSync(path.join(__dirname,'..','migrations',
+    '066_repair_schedule_review_deadline.sql'),'utf8');
+  assert.match(sql,/ADD COLUMN IF NOT EXISTS change_review_expires_at TIMESTAMPTZ/);
+  assert.match(sql,/change_state='awaiting_approval'/);
+  assert.match(sql,/COALESCE\(change_detected_at,NOW\(\)\)\+INTERVAL '24 hours'/);
+  assert.match(sql,/mint_tasks_change_review_deadline_shape/);
+  assert.match(sql,/pg_indexes/);
+  assert.match(sql,/CREATE INDEX mint_tasks_change_review_deadline_idx/);
+});
+
+test('migration 067 adds exact same-stage time following without widening legacy schedules',()=>{
+  const sql=fs.readFileSync(path.join(__dirname,'..','migrations',
+    '067_auto_follow_schedule_stage.sql'),'utf8');
+  assert.match(sql,/auto_follow_stage/);
+  assert.match(sql,/auto_within_limit/);
+  assert.match(sql,/DROP CONSTRAINT IF EXISTS mint_tasks_time_change_policy_check/);
+  const preflight=fs.readFileSync(path.join(__dirname,'..','src','scheduler',
+    'scheduledPreflightRepository.js'),'utf8');
+  assert.match(preflight,/eligibility_deadline=CASE WHEN \$6 AND \$18::BIGINT IS NOT NULL/);
+  assert.match(preflight,/taskRow\.time_change_policy==='auto_follow_stage'/);
+  const scheduler=fs.readFileSync(path.join(__dirname,'..','src','scheduler',
+    'schedulerRepository.js'),'utf8');
+  assert.match(scheduler,/eligibility_deadline=CASE WHEN \$5 AND \$18::BIGINT IS NOT NULL/);
+  assert.match(scheduler,/task\.timeChangePolicy==='auto_follow_stage'/);
+});
+
 test('arming uses the task generation and creates both checkpoints in the caller transaction',async()=>{
   const calls=[];const queryable={query:async(sql,params)=>{calls.push({sql,params});return {rows:[],rowCount:0};}};
   await armTaskPreflightRows(queryable,{user_id:'user-1',id:'task-1',status:'scheduled',
@@ -76,4 +103,29 @@ test('preflight history reads are user and task scoped',async()=>{
   assert.deepEqual(calls[0].params,['user-1','task-1']);
   assert.match(calls[0].sql,/WHERE user_id=\$1 AND task_id=\$2/);
   assert.equal(rows[0].result,'short');assert.equal(rows[0].shortfallWei,'1');
+});
+
+test('claimDue maps stage reservation and allowance evidence onto the claimed task',async()=>{
+  const now=Date.parse('2026-09-25T12:00:00Z');
+  const row={check_id:'9',user_id:'11111111-1111-4111-8111-111111111111',
+    task_id:'22222222-2222-4222-8222-222222222222',id:'22222222-2222-4222-8222-222222222222',
+    generation:2,target_at:new Date(now+60_000),checkpoint:'thirty_second',
+    due_at:new Date(now-1_000),state:'pending',status:'scheduled',preflight_generation:2,
+    preflight_target_at:new Date(now+60_000),reservation_stage_key:'stage:public',
+    allowance_scope:'contract_cumulative',allowance_max_per_wallet:'10',allowance_minted_snapshot:'3',
+    allowance_source:'opensea',allowance_verified_at:new Date(now-5_000),
+    allowance_stage_start_at:new Date(now+60_000)};
+  const client={release(){},query:async sql=>{
+    if(/SELECT task\.\*/.test(sql))return {rows:[row],rowCount:1};
+    return {rows:[],rowCount:0};
+  }};
+  const claims=await createScheduledPreflightRepository({connect:async()=>client})
+    .claimDue({workerId:'worker-1',now,limit:1});
+  assert.equal(claims[0].task.reservationStageKey,'stage:public');
+  assert.equal(claims[0].task.allowanceScope,'contract_cumulative');
+  assert.equal(claims[0].task.allowanceMaxPerWallet,'10');
+  assert.equal(claims[0].task.allowanceMintedSnapshot,'3');
+  assert.equal(claims[0].task.allowanceSource,'opensea');
+  assert.equal(claims[0].task.allowanceVerifiedAt,now-5_000);
+  assert.equal(claims[0].task.allowanceStageStartAt,now+60_000);
 });

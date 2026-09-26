@@ -4,7 +4,7 @@ const { createHash } = require('node:crypto');
 const { CANONICAL_SEADROP_CORE_ADDRESS,SEADROP_MINT_SIGNATURE } = require('../mint/seaDropRegistry');
 const { ARCHETYPE_INTERFACE,SEADROP_GATED_INTERFACE } = require('../mint/seaDropCall');
 
-const TIME_POLICIES = Object.freeze(['approval', 'auto_within_limit']);
+const TIME_POLICIES = Object.freeze(['approval', 'auto_within_limit', 'auto_follow_stage']);
 const PRICE_POLICIES = Object.freeze(['approval', 'allow_up_to_cap']);
 const OPENSEA_VALIDATED_BUILDER_V1 = 'opensea_validated_builder_v1';
 const OPENSEA_SEADROP_METHODS = new Set(['mintAllowList','mintSigned','mintAllowedTokenHolder']
@@ -154,14 +154,15 @@ function evaluateScheduleObservation(task, observation,
     && observed.openingAt !== previous.openingAt) {
     const direction = observed.openingAt > previous.openingAt ? 'later' : 'earlier';
     changes.push({ kind:'opening', direction, from:previous.openingAt, to:observed.openingAt });
-    if (direction === 'earlier') {
+    const followsExactStage = task.timeChangePolicy === 'auto_follow_stage';
+    if (direction === 'earlier' && !followsExactStage) {
       reviews.push('The project moved this stage earlier. GhostMint will not spend earlier than you approved.');
-    } else {
+    } else if (direction === 'later') {
       const original = finiteTime(task.originalOpeningAt ?? task.mintTime);
       const maximum = Number(task.maxOpeningDelayMs);
       const totalDelay = original === null ? Number.POSITIVE_INFINITY : observed.openingAt - original;
-      const withinDelay = task.timeChangePolicy === 'auto_within_limit'
-        && Number.isFinite(maximum) && maximum >= 1_000 && totalDelay <= maximum;
+      const withinDelay = followsExactStage || (task.timeChangePolicy === 'auto_within_limit'
+        && Number.isFinite(maximum) && maximum >= 1_000 && totalDelay <= maximum);
       if (!withinDelay) reviews.push(task.timeChangePolicy === 'auto_within_limit'
         ? 'The new opening is later than the delay limit you approved.'
         : 'The project postponed this stage and automatic rescheduling is off.');
@@ -221,31 +222,41 @@ function evaluateScheduleObservation(task, observation,
 
   const deadline = finiteTime(task.eligibilityDeadline);
   const observedOpening = observed.openingAt;
-  if (observedOpening !== null && deadline !== null && observedOpening >= deadline) {
+  if (task.timeChangePolicy !== 'auto_follow_stage'
+    && observedOpening !== null && deadline !== null && observedOpening >= deadline) {
     return result('expired', previous, observed, changes,
       ['The new opening is outside this schedule\'s safety window.'], task);
   }
   if (!changes.length) return result('unchanged', previous, observed, changes, [], task);
   if (reviews.length) return result('awaiting_approval', previous, observed, changes, reviews, task);
+  const openingChanged = changes.some(change => change.kind === 'opening');
   const laterOpening = changes.some(change => change.kind === 'opening' && change.direction === 'later');
   // `mintTime` is the earliest execution time the user approved. A collection can move its stage
   // from 10:00 to 10:05 while the user deliberately chose 10:30; that is a stage change worth
   // recording, but it must never pull the spend forward to 10:05. Only re-arm when the new live
   // opening is later than both now and the already-approved execution time.
   const approvedAttempt = finiteTime(task.mintTime);
+  const followsExactStage = task.timeChangePolicy === 'auto_follow_stage' && openingChanged;
   const needsLaterAttempt = laterOpening && observedOpening > now
     && (approvedAttempt === null || observedOpening > approvedAttempt);
-  return result(needsLaterAttempt ? 'auto_rescheduled' : 'accepted',
+  return result(followsExactStage || needsLaterAttempt ? 'auto_rescheduled' : 'accepted',
     previous, observed, changes, [], task);
 }
 
 function result(action, previous, observed, changes, reasons, task) {
   const kinds = [...new Set(changes.map(change => change.kind))];
   const payload = { previous, observed, changes, reasons, taskId:task.id };
+  let nextEligibilityDeadline=null;
+  if(action==='auto_rescheduled'&&task.timeChangePolicy==='auto_follow_stage'
+    &&previous.openingAt!==null&&observed.openingAt!==null){
+    const currentDeadline=finiteTime(task.eligibilityDeadline);
+    if(currentDeadline!==null)nextEligibilityDeadline=currentDeadline+(observed.openingAt-previous.openingAt);
+  }
   return {
     action, previous, observed, changes, kinds, reasons,
     eventFingerprint:hash(payload),
     reason:reasons.join(' ') || changeSummary(changes),
+    nextEligibilityDeadline,
   };
 }
 

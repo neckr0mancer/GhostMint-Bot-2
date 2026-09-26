@@ -43,6 +43,11 @@ test('ended and already-live stages are not presented as future automatic select
   assert.equal(buildScheduleStagePlan({stages:[ended,live]},{now:NOW}),null);
 });
 
+test('a malformed stage that ends before its future start is never recommended',()=>{
+  const malformed=stage('malformed',1_800_003_700,{endTime:1_800_001_800});
+  assert.equal(buildScheduleStagePlan({stages:[malformed]},{now:NOW}),null);
+});
+
 test('label-only public stages and deterministic fallback keys remain unambiguous',()=>{
   const publicStage={label:'Public sale',startTime:1_800_000_100,endTime:1_800_000_200};
   assert.equal(stageRequiresEligibilityCheck(publicStage),false);

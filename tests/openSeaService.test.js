@@ -107,6 +107,67 @@ test('an already-cached row is returned immediately without any http calls', asy
   assert.equal(repository.saved.length, 0);
 });
 
+test('an expired all-empty metadata cache is retried instead of hiding a recovered collection name forever', async () => {
+  const now = Date.parse('2026-09-25T12:00:00Z');
+  const repository = fakeRepository({ name:null, description:null, imageUrl:null,
+    floorPrice:null, floorPriceSymbol:null, resolvedAt:new Date(now - 10 * 60_000) });
+  const calls=[];
+  const http={get:async url=>{
+    calls.push(url);
+    if(url.includes('/chain/ethereum/contract/'))return {data:{collection:'recovered'}};
+    if(url.endsWith('/collections/recovered'))return {data:{name:'Recovered Collection'}};
+    if(url.endsWith('/collections/recovered/stats'))return {data:{total:{}}};
+    throw new Error(`unexpected url ${url}`);
+  }};
+  const service=createOpenSeaService({apiKey:'test-key',repository,http,now:()=>now});
+  const result=await service.getCollectionMetadata('ethereum',CONTRACT);
+  assert.equal(result.name,'Recovered Collection');
+  assert.equal(calls.length,3);
+  assert.equal(repository.saved.length,1);
+});
+
+test('a fresh all-empty metadata cache is briefly respected to avoid hammering a failed provider', async () => {
+  const now = Date.parse('2026-09-25T12:00:00Z');
+  const cached={name:null,description:null,imageUrl:null,floorPrice:null,floorPriceSymbol:null,
+    resolvedAt:new Date(now-60_000)};
+  const repository=fakeRepository(cached);
+  const service=createOpenSeaService({apiKey:'test-key',repository,now:()=>now,
+    http:{get:async()=>{throw new Error('should not be called');}}});
+  assert.equal(await service.getCollectionMetadata('ethereum',CONTRACT),cached);
+  assert.equal(repository.saved.length,0);
+});
+
+test('an expired partial cache with no name retries identity even when floor metadata exists', async () => {
+  const now=Date.parse('2026-09-25T12:00:00Z');
+  const repository=fakeRepository({name:null,description:null,imageUrl:'https://example.com/old.png',
+    floorPrice:0.25,floorPriceSymbol:'ETH',resolvedAt:new Date(now-10*60_000)});
+  const http={get:async url=>{
+    if(url.includes('/chain/ethereum/contract/'))return {data:{collection:'now-named'}};
+    if(url.endsWith('/collections/now-named'))return {data:{name:'Now Named'}};
+    if(url.endsWith('/collections/now-named/stats'))return {data:{total:{floor_price:0.25,floor_price_symbol:'ETH'}}};
+    throw new Error(`unexpected url ${url}`);
+  }};
+  const result=await createOpenSeaService({apiKey:'test-key',repository,http,now:()=>now})
+    .getCollectionMetadata('ethereum',CONTRACT);
+  assert.equal(result.name,'Now Named');
+  assert.equal(repository.saved.length,1);
+});
+
+test('a failed expired-name refresh preserves useful cached image and floor metadata', async () => {
+  const now=Date.parse('2026-09-25T12:00:00Z');
+  const repository=fakeRepository({name:null,description:'Known description',
+    imageUrl:'https://example.com/known.png',floorPrice:0.25,floorPriceSymbol:'ETH',
+    resolvedAt:new Date(now-10*60_000)});
+  const result=await createOpenSeaService({apiKey:'test-key',repository,now:()=>now,
+    http:{get:async()=>{throw new Error('temporary outage');}}})
+    .getCollectionMetadata('ethereum',CONTRACT);
+  assert.equal(result.name,null);
+  assert.equal(result.description,'Known description');
+  assert.equal(result.imageUrl,'https://example.com/known.png');
+  assert.equal(result.floorPrice,0.25);
+  assert.equal(result.floorPriceSymbol,'ETH');
+});
+
 // Section Q -- resolving an opensea.io collection link's slug to its contract address.
 test('resolveCollectionContract returns the first contract deployed on a chain this app supports', async () => {
   const http = { get: async url => {
@@ -259,6 +320,25 @@ test('getDrop surfaces a future stage as nextStage when the drop is not currentl
   assert.equal(drop.activeStage, null);
   assert.equal(drop.nextStage.label, 'Public sale');
   assert.equal(drop.nextStage.startTime, Math.floor(Date.parse('2026-08-20T18:00:00Z') / 1000));
+});
+
+test('getDrop preserves an omitted live-state flag so active-stage fallback remains available', async () => {
+  const now=Date.parse('2026-09-25T12:00:00Z');
+  const start=new Date(now-60_000).toISOString();
+  const end=new Date(now+60*60_000).toISOString();
+  const http={get:async url=>{
+    if(url.includes('/chain/ethereum/contract/'))return {data:{collection:'cool-cats'}};
+    if(url.endsWith('/drops/cool-cats'))return {data:{
+      active_stage:{uuid:'live',label:'Public sale',start_time:start,end_time:end,
+        price:'0',stage_type:'public_sale',max_per_wallet:'5'},stages:[],
+    }};
+    throw new Error(`unexpected url ${url}`);
+  }};
+  const service=createOpenSeaService({apiKey:'test-key',repository:fakeRepository(),http});
+  const drop=await service.getDrop('ethereum',CONTRACT);
+  const availability=await import('../dashboard/src/scheduleStageAvailability.mjs');
+  assert.equal(drop.isMinting,null);
+  assert.equal(availability.scheduleStageAvailability({drop,now}).liveStage.label,'Public sale');
 });
 
 test('getDrop returns null (never throws) when unconfigured, unsupported, not a drop, or the API fails', async () => {

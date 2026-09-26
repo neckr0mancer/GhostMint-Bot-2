@@ -319,6 +319,23 @@ test('detectMintContract tries SeaDrop first and returns a SeaDrop-shaped result
   assert.deepEqual(result.collection, { name: 'Cool Cats', floorPrice: 0.5 });
 });
 
+test('detectMintContract falls back to the safe on-chain name when OpenSea metadata has no name', async () => {
+  const { service } = commandServiceFixture({
+    contractValueResolver: {
+      probeName: async () => 'On-chain Collection',
+      probeMaxSupply: async () => null,
+    },
+    seaDropDiscoveryService: { resolve: async () => ({ address: SEADROP,
+      publicDrop: { mintPriceWei: '0', maxTotalMintableByWallet: 5,
+        startTime: Math.floor(Date.now()/1000)-60, endTime: Math.floor(Date.now()/1000)+3600 },
+      feeRecipient: FEE_RECIPIENT }) },
+    openSeaService: { getCollectionMetadata: async () => ({ name:null, floorPrice:null }) },
+  });
+  const result = await service.detectMintContract('user-a', { contractAddress: CONTRACT, quantity: 1 });
+  assert.equal(result.collection.name, 'On-chain Collection');
+  assert.equal(result.collection.floorPrice, null);
+});
+
 test('detectMintContract falls back to the plain mint(uint256) assumption when no SeaDrop core is found, and has no opening time', async () => {
   const { service } = commandServiceFixture({
     contractValueResolver: { resolve: async () => ({ price: { value: '500' }, maxSupply: { value: '10000' }, maxPerWallet: { value: '3' } }) },
@@ -678,11 +695,13 @@ test('detectMintContract treats a SeaDrop drop as sold out once totalMinted reac
 test('the scheduler-only includeSupply check detects exhaustion without calling OpenSea collection stats', async () => {
   const futureEndTime = Math.floor(Date.now() / 1000) + 3_600;
   let statsCalls = 0;
+  let nameCalls = 0;
   const { service } = commandServiceFixture({
     contractValueResolver:{
       resolve:async()=>{ throw new Error('should not be reached -- SeaDrop was found first'); },
       probeTotalMinted:async()=>({ value:'4444', source:'totalSupply' }),
       probeMaxSupply:async()=>({ value:'4444', source:'maxSupply' }),
+      probeName:async()=>{ nameCalls += 1; return 'Should not be read'; },
     },
     seaDropDiscoveryService:{ resolve:async()=>({ address:SEADROP,
       publicDrop:{ mintPriceWei:'0', endTime:futureEndTime }, feeRecipient:FEE_RECIPIENT }) },
@@ -698,6 +717,7 @@ test('the scheduler-only includeSupply check detects exhaustion without calling 
   assert.equal(result.soldOut, true);
   assert.equal(result.stats, null, 'the reminder did not request the display stats payload');
   assert.equal(statsCalls, 0, 'the per-minute safety check does not consume an OpenSea stats call');
+  assert.equal(nameCalls, 0, 'the per-minute safety check does not add a display-only name RPC');
 });
 
 // Outside includeStats/includeSupply there is no live totalMinted to compare against (see the
@@ -867,6 +887,42 @@ test('createTask preserves the previewed original while applying an explicitly b
   assert.equal(saved[0].acceptedOpeningAt,changed*1000);
   assert.equal(saved[0].mintTime,changed*1000);
   assert.equal(saved[0].acceptedPriceWeiPerItem,'125');
+});
+
+test('createTask exact-follow uses an earlier refreshed opening instead of pinning the stale preview time',async()=>{
+  const original=Math.floor(Date.now()/1000)+4*3_600;
+  const changed=original-2*3_600;
+  const {saved,service}=taskServiceFixture({
+    contractValueResolver:{resolve:async()=>{throw new Error('must not be called');}},
+    seaDropDiscoveryService:{resolve:async()=>({address:null,publicDrop:null,feeRecipient:null})},
+    openSeaService:{getDrop:async()=>({stages:[{uuid:'allow-1',label:'Allowlist',
+      stageType:'signed_presale',startTime:changed,priceWei:'100'}]})},
+  });
+  await service.createTask('user-a',{name:'earlier allowlist',walletLabel:'main',
+    contractAddress:CONTRACT,quantity:1,mintTime:new Date(original*1000).toISOString(),
+    stageStartAt:new Date(original*1000).toISOString(),stageUuid:'allow-1',stageLabel:'Allowlist',
+    stageType:'signed_presale',viaOpenSea:true,expectedPriceWeiPerItem:'100',
+    autoReschedule:true});
+  assert.equal(saved[0].mintTime,changed*1000);
+  assert.equal(saved[0].stageStartAt,changed*1000);
+});
+
+test('createTask exact-follow shifts the eligibility deadline with a multi-day postponement',async()=>{
+  const original=Math.floor(Date.now()/1000)+3_600;
+  const changed=original+72*3_600;
+  const {saved,service}=taskServiceFixture({
+    contractValueResolver:{resolve:async()=>{throw new Error('must not be called');}},
+    seaDropDiscoveryService:{resolve:async()=>({address:null,publicDrop:null,feeRecipient:null})},
+    openSeaService:{getDrop:async()=>({stages:[{uuid:'allow-1',label:'Allowlist',
+      stageType:'signed_presale',startTime:changed,priceWei:'100'}]})},
+  });
+  await service.createTask('user-a',{name:'postponed allowlist',walletLabel:'main',
+    contractAddress:CONTRACT,quantity:1,mintTime:new Date(original*1000).toISOString(),
+    stageStartAt:new Date(original*1000).toISOString(),stageUuid:'allow-1',stageLabel:'Allowlist',
+    stageType:'signed_presale',viaOpenSea:true,expectedPriceWeiPerItem:'100',
+    autoReschedule:true});
+  assert.equal(saved[0].mintTime,changed*1000);
+  assert.equal(saved[0].eligibilityDeadline,changed*1000+24*60*60*1000);
 });
 
 test('createTask rejects a viaOpenSea schedule with no persisted phase identity', async () => {

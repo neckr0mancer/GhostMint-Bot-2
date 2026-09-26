@@ -91,7 +91,11 @@ test('scheduled phase metadata is bounded, explicit, and cannot silently change 
     { supportedChains:CHAINS, now:NOW }), 'eligibilityDeadline');
 });
 
-test('schedule change policies require explicit bounded delay and price limits',()=>{
+test('schedule change policies support exact stage following, legacy bounded delay, and price limits',()=>{
+  const exact=requestSchemas.taskCreate(validTask({autoReschedule:true}),
+    {supportedChains:CHAINS,now:NOW});
+  assert.equal(exact.timeChangePolicy,'auto_follow_stage');
+  assert.equal(exact.maxOpeningDelayMs,null);
   const task=requestSchemas.taskCreate(validTask({autoReschedule:true,maxOpeningDelayMinutes:90,
     acceptPriceChanges:true,expectedPriceWeiPerItem:'100',maxPriceWeiPerItem:'125'}),
   {supportedChains:CHAINS,now:NOW});
@@ -99,9 +103,9 @@ test('schedule change policies require explicit bounded delay and price limits',
   assert.equal(task.maxOpeningDelayMs,90*60_000);
   assert.equal(task.priceChangePolicy,'allow_up_to_cap');
   assert.equal(task.maxPriceWeiPerItem,125n);
-  rejectsField(()=>requestSchemas.taskCreate(validTask({autoReschedule:true}),
-    {supportedChains:CHAINS,now:NOW}),'maxOpeningDelayMinutes');
   rejectsField(()=>requestSchemas.taskCreate(validTask({autoReschedule:true,maxOpeningDelayMinutes:1441}),
+    {supportedChains:CHAINS,now:NOW}),'maxOpeningDelayMinutes');
+  rejectsField(()=>requestSchemas.taskCreate(validTask({autoReschedule:false,maxOpeningDelayMinutes:30}),
     {supportedChains:CHAINS,now:NOW}),'maxOpeningDelayMinutes');
   rejectsField(()=>requestSchemas.taskCreate(validTask({acceptPriceChanges:true}),
     {supportedChains:CHAINS,now:NOW}),'maxPriceWeiPerItem');

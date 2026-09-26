@@ -32,7 +32,7 @@ test('phase eligibility deadline never exceeds 24 hours from the submitted minut
 
 test('initial detection and stage switching preserve provider seconds in scheduled mint time',()=>{
   assert.match(app,/setMintTime\(stageMintTimeLocalValue\(detectedStart\)\)/);
-  assert.match(app,/setMintTime\(stageMintTimeLocalValue\(t\)\)/);
+  assert.match(app,/setMintTime\(stageMintTimeLocalValue\(opening\)\)/);
   assert.match(app,/type="datetime-local" step="1"/);
   assert.doesNotMatch(app,/setMintTime\(local\.toISOString\(\)\.slice\(0,16\)\)/);
 });
@@ -188,10 +188,98 @@ test('Automation has explicit loading, error, empty and locked-save states',()=>
 });
 
 test('an already-live schedule offers an emphasized Mint now hand-off with its draft intact',()=>{
-  assert.match(app,/setScheduleError\(\{title:'This stage is already open\.',detail,action:'mint-now'\}\)/);
+  assert.match(app,/const choice=stageChoice\(scheduledStage\)/);
+  assert.match(app,/if\(choice\.disabled\)/);
+  assert.match(app,/title:choice\.state==='live'\?'This stage is already open\.'/);
+  assert.match(app,/action:choice\.state==='live'\?'mint-now':undefined/);
   assert.match(app,/scheduleError\.action==='mint-now'[\s\S]*className="b p sm"[\s\S]*>Mint now<\/button>/);
-  assert.match(app,/setPendingMintPrefill\(\{contractAddress,quantity\}\);onSwitchToMint\?\.\(\)/);
+  assert.match(app,/setPendingMintPrefill\(\{contractAddress,quantity,walletLabel:scheduleWallet\}\);onSwitchToMint\?\.\(\)/);
   assert.match(app,/<Tasks profile=\{profile\}[\s\S]*onSwitchToMint=\{\(\)=>onTab\('now'\)\}/);
+  assert.match(app,/className="schedule-live-now"[\s\S]*There is nothing to schedule\.[\s\S]*>Mint now<\/button>/);
+  assert.match(app,/setPendingBatchPrefill\(\{contractAddress,quantity\}\);onSwitchToBatch\?\.\(\)/);
+  assert.match(app,/<Tasks profile=\{profile\}[\s\S]*onSwitchToBatch=\{\(\)=>onTab\('batch'\)\}/);
+  assert.match(app,/setStageType\(futureStage\?\.stageType\|\|''\)/,
+    'a live stage must not be reused as a fake future schedule choice');
+});
+
+test('Schedule trusts provider liveness instead of declaring a postponed timestamp live',async()=>{
+  const state=await import(pathToFileURL(path.join(root,'dashboard','src','scheduleStageAvailability.mjs')));
+  const now=Date.parse('2026-09-25T12:00:00Z');
+  const delayed={uuid:'delayed',label:'Public',stageType:'public',schedulable:true,
+    startTime:now/1000-600,endTime:now/1000+3600};
+  const result=state.scheduleStageAvailability({drop:{isMinting:false,activeStage:null,stages:[delayed]},now});
+  assert.equal(result.liveStage,null);
+  assert.equal(result.futureStages.length,0);
+});
+
+test('Schedule recognizes an authoritative final live stage and safe on-chain fallback',async()=>{
+  const state=await import(pathToFileURL(path.join(root,'dashboard','src','scheduleStageAvailability.mjs')));
+  const now=Date.parse('2026-09-25T12:00:00Z');
+  const live={uuid:'live',label:'Public',stageType:'public',startTime:now/1000-60,endTime:now/1000+3600};
+  assert.equal(state.scheduleStageAvailability({drop:{isMinting:true,activeStage:live,stages:[live]},now}).liveStage,live);
+  assert.equal(state.scheduleStageAvailability({startTime:live.startTime,endTime:live.endTime,
+    priceWeiPerItem:'0',now}).liveStage.label,'Public mint');
+});
+
+test('Schedule excludes stale future-stage records whose end has already passed',async()=>{
+  const state=await import(pathToFileURL(path.join(root,'dashboard','src','scheduleStageAvailability.mjs')));
+  const now=Date.parse('2026-09-25T12:00:00Z');
+  const stale={uuid:'stale',label:'Stale stage',stageType:'public',schedulable:true,
+    startTime:now/1000+3600,endTime:now/1000-60};
+  assert.deepEqual(state.scheduleStageAvailability({drop:{stages:[stale]},now}).futureStages,[]);
+  const inverted={...stale,endTime:now/1000+1800};
+  assert.deepEqual(state.scheduleStageAvailability({drop:{stages:[inverted]},now}).futureStages,[],
+    'a stage cannot end before its advertised future start');
+});
+
+test('Schedule stage choices never invent allowlist eligibility',async()=>{
+  const state=await import(pathToFileURL(path.join(root,'dashboard','src','scheduleStageAvailability.mjs')));
+  const now=Date.parse('2026-09-25T12:00:00Z');
+  assert.equal(state.scheduleStageDisplayName({stageType:'signed_presale'}),'Signed Presale');
+  assert.deepEqual(state.scheduleStageChoiceState({startTime:now/1000+3600,
+    eligibilityState:'eligible'},now),{tag:'Eligible',disabled:false,state:'eligible'});
+  assert.deepEqual(state.scheduleStageChoiceState({startTime:now/1000+3600,
+    eligibilityState:'ineligible'},now),{tag:'Not eligible',disabled:true,state:'ineligible'});
+  assert.deepEqual(state.scheduleStageChoiceState({startTime:now/1000+3600,
+    eligibilityState:'check_at_open'},now),
+  {tag:'Checked at opening',disabled:false,state:'check_at_open'});
+  assert.deepEqual(state.scheduleStageChoiceState({startTime:now/1000+3600,
+    eligibilityState:'open_to_all'},now),{tag:'Open to all',disabled:false,state:'open_to_all'});
+  assert.deepEqual(state.scheduleStageChoiceState({startTime:now/1000-60,endTime:now/1000+3600,
+    eligibilityState:'open_to_all'},now,{authoritativeLive:false}),
+  {tag:'Not live yet',disabled:true,state:'not_live'},
+  'an advertised start time must not override the provider saying the stage is not live');
+  assert.deepEqual(state.scheduleStageChoiceState({startTime:now/1000-3600,endTime:now/1000-60,
+    eligibilityState:'open_to_all'},now,{authoritativeLive:true}),
+  {tag:'Live - use Mint now',disabled:true,state:'live'},
+  'the provider active-stage signal must override stale published end timestamps');
+});
+
+test('Schedule notifications are deduplicated and deep-link to the durable task state',()=>{
+  assert.match(app,/SEEN_SCHEDULE_NOTIFICATION_KEYS=new Set\(\)/);
+  assert.match(app,/if\(SEEN_SCHEDULE_NOTIFICATION_KEYS\.has\(key\)\)return false/);
+  assert.match(app,/SEEN_SCHEDULE_NOTIFICATION_KEYS\.add\(key\)/);
+  assert.match(app,/firstScheduleNotification\(message\?\.notificationKey\)/);
+  assert.match(app,/message\?\.type==='task\.change-review'/);
+  assert.match(app,/tab=schedule&bucket=paused&task=\$\{encodeURIComponent\(message\.taskId\)\}/);
+  assert.match(app,/message\?\.type==='task\.rescheduled'/);
+  assert.match(app,/message\?\.type==='task\.change-accepted'/);
+  assert.ok((app.match(/tab=schedule&bucket=pending&task=\$\{encodeURIComponent\(message\.taskId\)\}/g)||[]).length>=2,
+    'automatic and accepted changes should both open the pending task');
+  assert.match(app,/BUCKETS\.some\(\(\[key\]\)=>key===value\)\?value:'pending'/);
+  assert.match(app,/requestedTaskId=useRef\(new URLSearchParams\(window\.location\.search\)\.get\('task'\)\)/);
+  assert.match(app,/api\(`\/api\/tasks\/\$\{encodeURIComponent\(taskId\)\}`\)\.then\(setDetailTask\)/);
+});
+
+test('Admin mounts only one notification listener for the active responsive shell',()=>{
+  const start=app.indexOf('function AdminShell(');
+  const end=app.indexOf('function isAdminPath',start);
+  const admin=app.slice(start,end);
+  assert.match(admin,/const mobile=useIsMobile\(\)/);
+  assert.match(admin,/\{mobile&&<NotificationBell\/>\}/);
+  assert.match(admin,/\{!mobile&&<div className="notification-bell-desktop"><NotificationBell\/><\/div>\}/);
+  assert.equal([...admin.matchAll(/<NotificationBell\/>/g)].length,2,
+    'both responsive placements should remain, guarded by mutually exclusive breakpoints');
 });
 
 test('Schedule uses detected facts instead of asking the user to invent a task name',()=>{
@@ -202,8 +290,9 @@ test('Schedule uses detected facts instead of asking the user to invent a task n
   assert.doesNotMatch(schedule,/>Name(?:<|\{)/);
   assert.match(schedule,/input\.name=String\(detectedName\|\|scheduledStage\?\.label\|\|`Mint \$\{shortHex\(currentAddress\)\}`\)\.slice\(0,100\)/);
   assert.match(schedule,/aria-label="Schedule preview"/);
-  assert.match(schedule,/\{detectedName\|\|'Detected contract'\}/);
+  assert.match(schedule,/<span>Contract name<\/span><b>\{detectedName\|\|'Name unavailable'\}<\/b>/);
   assert.match(schedule,/current price, wallet eligibility, balance, and simulation again before sending/);
+  assert.match(schedule,/Five minutes and 30 seconds before the attempt/);
   assert.match(schedule,/published max \$\{maxPerWallet\}\/wallet/);
 });
 
@@ -229,6 +318,8 @@ test('Schedule help stays available before contract detection and has a mobile-s
   const detected=schedule.indexOf("!detecting&&ADDRESS_SHAPE.test(contractAddress.trim())");
   assert.ok(help>=0&&help<detected,'help must be reachable before a contract is detected');
   assert.match(css,/\.ico-btn\.schedule-help-open\{width:44px;height:44px/);
+  assert.match(app,/onKeyDown=\{event=>\{if\(event\.key==='Escape'\)\{event\.stopPropagation\(\);setPinned\(false\);setDismissed\(true\);\}\}\}/,
+    'Escape must close the focused popover without relying only on a document listener');
   assert.match(css,/\.schedule-preview-grid b\{white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere\}/);
 });
 
@@ -249,7 +340,7 @@ test('Schedule cannot submit until an explicit or detected mint time exists',()=
   const schedule=app.slice(start,end);
   assert.match(schedule,/name="mintTime" type="datetime-local" step="1" required/);
   assert.match(schedule,/disabled=\{noWallets\|\|!scheduleWallet\|\|!mintTime\|\|detecting\|\|submitting/);
-  assert.match(schedule,/!detecting&&ADDRESS_SHAPE\.test\(contractAddress\.trim\(\)\)&&lastDetected\.current===contractAddress\.trim\(\)\.toLowerCase\(\)/,
+  assert.match(schedule,/!liveMintStage&&!detecting&&ADDRESS_SHAPE\.test\(contractAddress\.trim\(\)\)&&lastDetected\.current===contractAddress\.trim\(\)\.toLowerCase\(\)/,
     'clearing a successful form must not leave an empty address looking like a detected contract');
 });
 
@@ -258,11 +349,38 @@ test('Schedule uses the server recommendation without pretending a future allowl
   const end=app.indexOf('function Activity(',start);
   const schedule=app.slice(start,end);
   assert.match(schedule,/const recommended=result\.schedulePlan/);
-  assert.match(schedule,/recommended\?\.recommendedStageUuid/);
+  assert.match(schedule,/recommended\.recommendedStageUuid/);
+  assert.match(schedule,/const selectable=future\.filter\(stage=>!stageChoice\(stage,detectedAt,detectedLiveness\)\.disabled\)/);
+  assert.match(schedule,/if\(!chosenStage&&selectable\.length===1\)chosenStage=selectable\[0\]/);
+  assert.match(schedule,/if\(choice\.disabled\)/,
+    'submission must re-check that the chosen stage is still selectable');
+  assert.match(schedule,/Boolean\(stages\.find\(stage=>scheduleStageSelectionKey\(stage\)===selectedStageKey\)&&stageChoice/,
+    'the schedule action must disable when the selected stage becomes unavailable');
+  assert.doesNotMatch(schedule,/\|\|future\[0\]\|\|null/,
+    'a stale recommendation must not silently select the first of several stages');
   assert.doesNotMatch(schedule,/future\.find\(s=>!scheduleStageRequiresOpenSeaBuilder\(s\)\)/,
     'the client must not skip an earlier stage merely because eligibility is checked later');
-  assert.match(schedule,/A future allowlist cannot be verified from an address alone\./);
-  assert.match(schedule,/s\.advancesIfIneligible\?'If this wallet is not eligible, the task moves to the next published stage/);
-  assert.match(schedule,/No later stage is currently reachable within the 24-hour eligibility window/);
-  assert.match(schedule,/eligibility checked at opening/);
+  assert.match(schedule,/A future allowlist cannot be proven from the wallet address alone\./);
+  assert.match(schedule,/tag:choice\.tag,disabled:choice\.disabled/);
+  assert.match(schedule,/label:`\$\{stageName\} · \$\{local\}`/);
+  assert.match(schedule,/<SelectMenu label="Earliest attempt"/);
+  assert.doesNotMatch(schedule,/stages\.length>1&&<SelectMenu className="fl" label="Stage"/,
+    'the stage picker belongs inside Earliest attempt, including when only one stage exists');
+});
+
+test('Schedule change controls use plain-language safety copy and a stable switch animation',()=>{
+  const start=app.indexOf('function Tasks(');
+  const end=app.indexOf('function Activity(',start);
+  const schedule=app.slice(start,end);
+  assert.match(schedule,/Follow time changes automatically/);
+  assert.match(schedule,/Turn this off to approve each time change/);
+  assert.match(schedule,/same stage moves earlier or later/);
+  assert.match(schedule,/Allow a higher mint price/);
+  assert.match(schedule,/Above it, the task pauses and asks first\./);
+  assert.match(app,/role="switch" aria-checked=\{checked\}/);
+  assert.match(css,/\.schedule-switch-thumb\{[^}]*width:16px;height:16px/);
+  assert.match(css,/\.schedule-switch\[aria-checked="true"\] \.schedule-switch-thumb\{transform:translateX\(16px\)\}/);
+  assert.doesNotMatch(schedule,/maxOpeningDelayMinutes/);
+  assert.match(css,/\.info-popover-card\{position:absolute/,
+    'toggle help must overlay instead of moving later fields');
 });

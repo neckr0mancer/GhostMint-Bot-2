@@ -215,6 +215,15 @@ function createBotCommandService(dependencies) {
     // Display-only, same "unknown is fine" shape as everything else here -- a missing API key or
     // an OpenSea outage never blocks detection, it just leaves these fields null.
     const openSea = openSeaService ? await openSeaService.getCollectionMetadata(chain, contractAddress) : null;
+    const onChainName = !input.includeSupply && !openSea?.name && contractValueResolver?.probeName
+      ? await contractValueResolver.probeName(chain, contractAddress)
+      : null;
+    // Marketplace metadata is richer when available, but a newly deployed or temporarily
+    // unindexed ERC-721 should still show its truthful on-chain name. This fallback is display-only
+    // and never changes how the mint call is prepared.
+    const collection = openSea?.name
+      ? openSea
+      : onChainName ? { ...(openSea || {}), name:onChainName } : openSea;
 
     // Section AD Tier 1 (collection info card): opt-in and skipped entirely by the ordinary mint
     // flow, which has no use for it and shouldn't pay its extra RPC/API cost on every paste. Both
@@ -305,7 +314,7 @@ function createBotCommandService(dependencies) {
         valueWei: '1600000000000000', priceKnown: true,
         maxSupply: 3404, maxPerWallet: activeStage?.maxPerWallet ?? nextStage?.maxPerWallet ?? 2,
         startTime: activeStage?.startTime ?? nextStage?.startTime ?? null, endTime: activeStage?.endTime ?? nextStage?.endTime ?? null,
-        collection: openSea, soldOut: false, displayPrice: null, stats, drop, openSeaMintRecommended: false,
+        collection, soldOut: false, displayPrice: null, stats, drop, openSeaMintRecommended: false,
         glrtchStages: true,
       };
     }
@@ -348,7 +357,7 @@ function createBotCommandService(dependencies) {
         // on-chain concept, so these stay null in the branch below.
         startTime: seaDrop.publicDrop?.startTime ?? null,
         endTime: seaDrop.publicDrop?.endTime ?? null,
-        collection: openSea,
+        collection,
         soldOut,
         displayPrice,
         stats,
@@ -380,7 +389,7 @@ function createBotCommandService(dependencies) {
       maxPerWallet: resolved.maxPerWallet?.value ?? null,
       startTime: null,
       endTime: null,
-      collection: openSea,
+      collection,
       soldOut,
       displayPrice,
       stats,
@@ -944,7 +953,12 @@ function createBotCommandService(dependencies) {
     }
     const baseline=creationDecision.observed;
     const scheduledOpening=creationDecision.action==='auto_rescheduled'&&baseline.openingAt!==null
-      ?Math.max(validated.mintTime,baseline.openingAt):validated.mintTime;
+      ?(validated.timeChangePolicy==='auto_follow_stage'
+        ?Math.max(Date.now(),baseline.openingAt)
+        :Math.max(validated.mintTime,baseline.openingAt))
+      :validated.mintTime;
+    const scheduledEligibilityDeadline=creationDecision.nextEligibilityDeadline
+      ??validated.eligibilityDeadline;
     const task = { userId, id: validated.id, name: validated.name, walletLabel: owned.label,
       walletAddress:owned.address,reservationStageKey,
       contract: validated.contractAddress, fn: validated.functionName, qty: validated.quantity,
@@ -952,8 +966,8 @@ function createBotCommandService(dependencies) {
       nextAttemptAt: scheduledOpening, status: 'scheduled', createdAt: Date.now(), maxAttempts: 3,
       idempotencyKey: `scheduled-mint:${userId}:${validated.id}`, viaOpenSea: Boolean(input.viaOpenSea),
       stageUuid: validated.stageUuid, stageLabel: validated.stageLabel, stageType: validated.stageType,
-      stageStartAt:validated.stageStartAt,
-      eligibilityMode: validated.eligibilityMode, eligibilityDeadline: validated.eligibilityDeadline,
+      stageStartAt:baseline.openingAt??validated.stageStartAt,
+      eligibilityMode: validated.eligibilityMode, eligibilityDeadline: scheduledEligibilityDeadline,
       originalOpeningAt:approvedOpeningAt,acceptedOpeningAt:baseline.openingAt,
       lastObservedOpeningAt:baseline.openingAt,
       timeChangePolicy:validated.timeChangePolicy,maxOpeningDelayMs:validated.maxOpeningDelayMs,

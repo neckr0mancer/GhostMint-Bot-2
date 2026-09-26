@@ -11,6 +11,7 @@ import {mintDetectionMessage,mintPreviewError,scheduleSubmitError} from './mintF
 import {mintDetectionPricePerItem,mintQuantityPolicy,mintTotalValueWei} from './mintQuantityPolicy.mjs';
 import {formatScheduleDateTime,scheduleCountdown,scheduleEligibilityDeadline} from './scheduleDisplay.js';
 import {stageMintTimeLocalValue} from './scheduleTime.mjs';
+import {scheduleStageAvailability,scheduleStageChoiceState,scheduleStageDisplayName} from './scheduleStageAvailability.mjs';
 import {dashboardEvmChains} from './chainOptions.mjs';
 import {formatAdaptiveAmount,formatSignedAdaptiveAmount} from './amountDisplay.mjs';
 import {selectWalletHeadlineBalance,walletBalanceForChain,walletFundingStatus} from './walletDisplay.mjs';
@@ -917,6 +918,29 @@ const CARD_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strok
 const CROSS_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><path d="M18 6 6 18M6 6l12 12"/></svg>;
 const LOCK_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><rect x="4" y="10.5" width="16" height="10.5" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/></svg>;
 function shortHex(value){const v=String(value||"");return v.length>12?`${v.slice(0,6)}…${v.slice(-4)}`:v;}
+function InfoPopover({id,label,children}){
+  const [pinned,setPinned]=useState(false);const [dismissed,setDismissed]=useState(false);const root=useRef(null);
+  useEffect(()=>{
+    if(!pinned)return undefined;
+    const outside=event=>{if(root.current&&!root.current.contains(event.target))setPinned(false);};
+    const escape=event=>{if(event.key==='Escape'){setPinned(false);setDismissed(true);}};
+    document.addEventListener('pointerdown',outside);document.addEventListener('keydown',escape);
+    return()=>{document.removeEventListener('pointerdown',outside);document.removeEventListener('keydown',escape);};
+  },[pinned]);
+  return <span ref={root} className={`info-popover${pinned?' is-open':''}${dismissed?' is-dismissed':''}`}>
+    <button type="button" className="info-popover-trigger" aria-label={label} aria-describedby={id}
+      aria-expanded={pinned} onBlur={()=>setDismissed(false)}
+      onKeyDown={event=>{if(event.key==='Escape'){event.stopPropagation();setPinned(false);setDismissed(true);}}}
+      onClick={()=>{setDismissed(false);setPinned(value=>!value);}}>{INFO_ICON}</button>
+    <span className="info-popover-card" id={id} role="tooltip">{children}</span>
+  </span>;
+}
+function ScheduleSwitch({checked,onChange,labelledBy}){
+  return <button type="button" className="schedule-switch" role="switch" aria-checked={checked}
+    aria-labelledby={labelledBy} onClick={()=>onChange(!checked)}>
+    <span className="schedule-switch-thumb" aria-hidden="true"/>
+  </button>;
+}
 function ContractLookupStatus({visible}){
   return visible?<span className="contract-lookup-status" role="status" aria-live="polite">
     <span className="contract-lookup-spinner" aria-hidden="true"/>Reading…</span>:null;
@@ -1335,6 +1359,9 @@ function scheduleStageSelectionKey(stage){
 let pendingSchedulePrefill=null;
 function setPendingSchedulePrefill(value){pendingSchedulePrefill=value;}
 function consumePendingSchedulePrefill(){const value=pendingSchedulePrefill;pendingSchedulePrefill=null;return value;}
+let pendingBatchPrefill=null;
+function setPendingBatchPrefill(value){pendingBatchPrefill=value;}
+function consumePendingBatchPrefill(){const value=pendingBatchPrefill;pendingBatchPrefill=null;return value;}
 
 function taskDetailTime(value){return value?formatScheduleDateTime(value):'Not recorded';}
 function scheduleConfigValue(field,value){
@@ -1500,7 +1527,10 @@ function TaskDetails({summary,onClose,onChanged}){
     </div>}
   </Overlay>;
 }
-function Tasks({profile,active=true,onCommitChange,onSwitchToMint}){const mobile=useIsMobile();const [page,setPage]=useState(1);const [search,setSearch]=useState('');const [bucket,setBucket]=useState('pending');const [filtersOpen,setFiltersOpen]=useState(false);const [serverFilters,setServerFilters]=useState(null);const PAGE_SIZE=mobile?3:10;const COMPAT_LIMIT=50;const listing=useLoad(serverFilters===false?`/api/tasks?page=1&pageSize=${COMPAT_LIMIT}&search=${encodeURIComponent(search)}`:`/api/tasks?page=${page}&pageSize=${PAGE_SIZE}&status=${bucket}&search=${encodeURIComponent(search)}`,[page,bucket,search,serverFilters,PAGE_SIZE],'tasks.changed');const wallets=useLoad('/api/wallets',[],'wallets.changed');const contractInputRef=useRef(null);const [chain,setChain]=useState(profile.defaultChain||profile.supportedChains[0]);const [contractAddress,setContractAddress]=useState('');const [detectedName,setDetectedName]=useState('');const [detectedSeaDrop,setDetectedSeaDrop]=useState(false);const [quantity,setQuantity]=useState('1');const [maxPerWallet,setMaxPerWallet]=useState(null);const [priceETH,setPriceETH]=useState('');const [mintTime,setMintTime]=useState('');const [viaOpenSea,setViaOpenSea]=useState(false);const [detectedOpenSeaRecommendation,setDetectedOpenSeaRecommendation]=useState(false);const [stageType,setStageType]=useState('');const [stages,setStages]=useState([]);const [selectedStageKey,setSelectedStageKey]=useState('');const [scheduleWallet,setScheduleWallet]=useState('');const [detecting,setDetecting]=useState(false);const [detectionError,setDetectionError]=useState('');const [detectionRetryable,setDetectionRetryable]=useState(false);const [scheduleError,setScheduleError]=useState(null);const [submitting,setSubmitting]=useState(false);const [controlBusy,setControlBusy]=useState('');const [scheduleInfoOpen,setScheduleInfoOpen]=useState(false);const [autoReschedule,setAutoReschedule]=useState(false);const [maxDelayMinutes,setMaxDelayMinutes]=useState('60');const [acceptPriceChanges,setAcceptPriceChanges]=useState(false);const [maxPriceETH,setMaxPriceETH]=useState('');const lastDetected=useRef('');const detectingKey=useRef('');
+function Tasks({profile,active=true,onCommitChange,onSwitchToMint,onSwitchToBatch}){
+  const mobile=useIsMobile();const [page,setPage]=useState(1);const [search,setSearch]=useState('');
+  const [bucket,setBucket]=useState(()=>{const value=new URLSearchParams(window.location.search).get('bucket');return BUCKETS.some(([key])=>key===value)?value:'pending';});
+  const [filtersOpen,setFiltersOpen]=useState(false);const [serverFilters,setServerFilters]=useState(null);const PAGE_SIZE=mobile?3:10;const COMPAT_LIMIT=50;const listing=useLoad(serverFilters===false?`/api/tasks?page=1&pageSize=${COMPAT_LIMIT}&search=${encodeURIComponent(search)}`:`/api/tasks?page=${page}&pageSize=${PAGE_SIZE}&status=${bucket}&search=${encodeURIComponent(search)}`,[page,bucket,search,serverFilters,PAGE_SIZE],'tasks.changed');const wallets=useLoad('/api/wallets',[],'wallets.changed');const contractInputRef=useRef(null);const [chain,setChain]=useState(profile.defaultChain||profile.supportedChains[0]);const [contractAddress,setContractAddress]=useState('');const [detectedName,setDetectedName]=useState('');const [detectedSeaDrop,setDetectedSeaDrop]=useState(false);const [quantity,setQuantity]=useState('1');const [maxPerWallet,setMaxPerWallet]=useState(null);const [priceETH,setPriceETH]=useState('');const [mintTime,setMintTime]=useState('');const [viaOpenSea,setViaOpenSea]=useState(false);const [detectedOpenSeaRecommendation,setDetectedOpenSeaRecommendation]=useState(false);const [stageType,setStageType]=useState('');const [stages,setStages]=useState([]);const [selectedStageKey,setSelectedStageKey]=useState('');const [liveMintStage,setLiveMintStage]=useState(null);const [stageLiveness,setStageLiveness]=useState({authoritative:false,isMinting:false,activeKey:''});const [scheduleWallet,setScheduleWallet]=useState('');const [detecting,setDetecting]=useState(false);const [detectionError,setDetectionError]=useState('');const [detectionRetryable,setDetectionRetryable]=useState(false);const [scheduleError,setScheduleError]=useState(null);const [submitting,setSubmitting]=useState(false);const [controlBusy,setControlBusy]=useState('');const [scheduleInfoOpen,setScheduleInfoOpen]=useState(false);const [autoReschedule,setAutoReschedule]=useState(false);const [acceptPriceChanges,setAcceptPriceChanges]=useState(false);const [maxPriceETH,setMaxPriceETH]=useState('');const lastDetected=useRef('');const detectingKey=useRef('');
   // The prototype's Schedule form has no price field, because it assumes the contract can be
   // priced automatically. Some cannot -- the server then rejects with a priceETH issue and there
   // is nowhere to type one, which left the form unsubmittable for those contracts. So the field
@@ -1509,14 +1539,39 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint}){const mobile
   const [priceIssue,setPriceIssue]=useState(null);
   const [selectedIds,setSelectedIds]=useState([]);
   const [detailTask,setDetailTask]=useState(null);
+  const requestedTaskId=useRef(new URLSearchParams(window.location.search).get('task'));
   function clearScheduleDetection(){
-    setDetectedName('');setDetectedSeaDrop(false);setStages([]);setSelectedStageKey('');
+    setDetectedName('');setDetectedSeaDrop(false);setStages([]);setSelectedStageKey('');setLiveMintStage(null);
+    setStageLiveness({authoritative:false,isMinting:false,activeKey:''});
     setViaOpenSea(false);setDetectedOpenSeaRecommendation(false);setStageType('');
     setMaxPerWallet(null);setPriceETH('');setMintTime('');setPriceIssue(null);setScheduleError(null);
-    setScheduleInfoOpen(false);setAutoReschedule(false);setMaxDelayMinutes('60');setAcceptPriceChanges(false);setMaxPriceETH('');
+    setScheduleInfoOpen(false);setAutoReschedule(false);setAcceptPriceChanges(false);setMaxPriceETH('');
     setDetectionError('');setDetectionRetryable(false);setChain(profile.defaultChain||profile.supportedChains[0]);
   }
+  function selectScheduleStage(stage){
+    if(!stage)return;
+    const nextViaOpenSea=!detectedSeaDrop||scheduleStageRequiresOpenSeaBuilder(stage);
+    setSelectedStageKey(scheduleStageSelectionKey(stage));setStageType(stage.stageType||stage.stage_type||'');
+    setViaOpenSea(nextViaOpenSea);
+    if(nextViaOpenSea){setPriceETH('');setPriceIssue(null);}
+    else if(stage.priceWei!==null&&stage.priceWei!==undefined){setPriceETH(weiToEthDisplay(stage.priceWei));setPriceIssue(null);}
+    else {setPriceETH('');setPriceIssue('Enter the price per NFT. Use 0 only if the mint is free.');}
+    const opening=Number(stage.startTime);
+    if(Number.isFinite(opening)&&opening*1000>Date.now())setMintTime(stageMintTimeLocalValue(opening));
+  }
+  function stageChoice(stage,now=Date.now(),liveness=stageLiveness){
+    const authoritativeLive=liveness.authoritative
+      ?Boolean(liveness.isMinting&&scheduleStageSelectionKey(stage)===liveness.activeKey)
+      :null;
+    return scheduleStageChoiceState(stage,now,{authoritativeLive});
+  }
   useEffect(()=>{if(active)contractInputRef.current?.focus({preventScroll:true});},[active]);
+  useEffect(()=>{
+    if(!active||!requestedTaskId.current)return;
+    const taskId=requestedTaskId.current;requestedTaskId.current=null;
+    api(`/api/tasks/${encodeURIComponent(taskId)}`).then(setDetailTask)
+      .catch(error=>notify(error.message,{type:'error'}));
+  },[active]);
   useEffect(()=>{
     if(!contractAddress&&!lastDetected.current&&!detectingKey.current){
       setChain(profile.defaultChain||profile.supportedChains[0]);
@@ -1565,26 +1620,43 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint}){const mobile
       setChain(result.chain);
       setDetectedSeaDrop(Boolean(result.isSeaDrop));
       const useOpenSea=Boolean(result.openSeaMintRecommended);
-      const allStages=result.drop?.stages?[...result.drop.stages].sort((a,b)=>a.startTime-b.startTime):[];
+      const detectedAt=Date.now();
+      const availability=scheduleStageAvailability({drop:result.drop,startTime:result.startTime,
+        endTime:result.endTime,priceWeiPerItem:result.priceWeiPerItem,now:detectedAt});
+      const allStages=availability.stages;
+      const detectedLiveness={authoritative:availability.hasAuthoritativeMintingState,
+        isMinting:Boolean(result.drop?.isMinting),
+        activeKey:availability.liveStage?scheduleStageSelectionKey(availability.liveStage):''};
       setStages(allStages);
+      setStageLiveness(detectedLiveness);
       let chosenStage=null;
+      let liveOnlyStage=null;
       if(allStages.length){
-        const future=allStages.filter(s=>s.startTime*1000>Date.now()&&s.schedulable!==false).sort((a,b)=>a.startTime-b.startTime);
+        const future=availability.futureStages;
+        const selectable=future.filter(stage=>!stageChoice(stage,detectedAt,detectedLiveness).disabled);
         // The server owns the recommendation. It deliberately starts at the earliest future stage:
         // gated eligibility cannot be known yet, so the durable worker checks it at opening and
         // advances to the next published stage instead of skipping a potentially valid allowlist.
         const recommended=result.schedulePlan;
-        chosenStage=future.find(s=>(recommended?.recommendedStageUuid&&s.uuid===recommended.recommendedStageUuid)
-          ||scheduleStageSelectionKey(s)===recommended?.recommendedStageKey)
-          ||future[0]||null;
+        chosenStage=recommended?selectable.find(s=>(recommended.recommendedStageUuid&&s.uuid===recommended.recommendedStageUuid)
+          ||scheduleStageSelectionKey(s)===recommended.recommendedStageKey)||null:null;
+        // When the server recommendation is absent or stale, do not silently pretend the first of
+        // several phases was chosen. A single unambiguous future phase is safe to preselect; with
+        // several, the user must make the choice explicitly.
+        if(!chosenStage&&selectable.length===1)chosenStage=selectable[0];
+        liveOnlyStage=!chosenStage?availability.liveStage:null;
         setSelectedStageKey(chosenStage?scheduleStageSelectionKey(chosenStage):'');
-        setStageType(chosenStage?.stageType||'');
+        setStageType(chosenStage?.stageType||chosenStage?.stage_type||'');
       } else {
-        const futureStage=result.drop?.nextStage?.startTime*1000>Date.now()?result.drop.nextStage:null;
+        const candidate=result.drop?.nextStage?.startTime*1000>detectedAt?result.drop.nextStage:null;
+        const futureStage=candidate&&!stageChoice(candidate,detectedAt,detectedLiveness).disabled
+          ?candidate:null;
         chosenStage=futureStage;
+        liveOnlyStage=!futureStage?availability.liveStage:null;
         setSelectedStageKey('');
-        setStageType(futureStage?.stageType||result.drop?.activeStage?.stageType||'');
+        setStageType(futureStage?.stageType||'');
       }
+      setLiveMintStage(liveOnlyStage);
       const chosenUsesOpenSea=chosenStage
         ?(!result.isSeaDrop||scheduleStageRequiresOpenSeaBuilder(chosenStage))
         :useOpenSea;
@@ -1632,7 +1704,8 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint}){const mobile
         setMintTime(stageMintTimeLocalValue(detectedStart));
       }
       const label=result.isSeaDrop?'SeaDrop drop':'contract';
-      if(chosenUsesOpenSea)notify(`Detected ${result.collection?.name||label} on ${result.chain}. OpenSea will prepare the mint at execution time.`,{type:'success'});
+      if(liveOnlyStage)notify(`${result.collection?.name||label} is live now. Continue with Mint now or Batch mint.`,{type:'info'});
+      else if(chosenUsesOpenSea)notify(`Detected ${result.collection?.name||label} on ${result.chain}. OpenSea will prepare the mint at execution time.`,{type:'success'});
       else if(result.priceKnown)notify(`Detected ${label} on ${result.chain} — price read from the contract.`,{type:'success'});
       else notify(`Detected ${label} on ${result.chain}, but the price couldn't be read — enter it yourself.`,{type:'info'});
     }catch(error){
@@ -1645,14 +1718,14 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint}){const mobile
         const msg=`This contract is on ${chainLabel}, which isn't supported. Supported chains: ${supported}.`;
         setDetectionError(msg);
         setDetectionRetryable(false);
-        setDetectedName('');setDetectedSeaDrop(false);setStages([]);setSelectedStageKey('');setViaOpenSea(false);setDetectedOpenSeaRecommendation(false);setMaxPerWallet(null);setPriceETH('');setMintTime('');setPriceIssue(null);
+        setDetectedName('');setDetectedSeaDrop(false);setStages([]);setSelectedStageKey('');setLiveMintStage(null);setStageLiveness({authoritative:false,isMinting:false,activeKey:''});setViaOpenSea(false);setDetectedOpenSeaRecommendation(false);setMaxPerWallet(null);setPriceETH('');setMintTime('');setPriceIssue(null);
         notify(msg,{type:'error'});
       } else {
         const message=mintDetectionMessage(error);
         const retryable=/right now|in a moment/i.test(message);
         setDetectionError(message);
         setDetectionRetryable(retryable);
-        setDetectedName('');setDetectedSeaDrop(false);setStages([]);setSelectedStageKey('');setViaOpenSea(false);setDetectedOpenSeaRecommendation(false);setMaxPerWallet(null);setPriceETH('');setMintTime('');setPriceIssue(null);
+        setDetectedName('');setDetectedSeaDrop(false);setStages([]);setSelectedStageKey('');setLiveMintStage(null);setStageLiveness({authoritative:false,isMinting:false,activeKey:''});setViaOpenSea(false);setDetectedOpenSeaRecommendation(false);setMaxPerWallet(null);setPriceETH('');setMintTime('');setPriceIssue(null);
         notify(message,{type:'error'});
       }
     }
@@ -1681,12 +1754,16 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint}){const mobile
       setScheduleError({title:'No schedulable stage found.',detail});notify(detail,{type:'info'});return;
     }
     if(scheduledStage){
-      const live=scheduledStage.startTime*1000<=Date.now()&&(!scheduledStage.endTime||scheduledStage.endTime*1000>Date.now());
-      if(live){const detail=`"${scheduledStage.label}" is live right now.`;setScheduleError({title:'This stage is already open.',detail,action:'mint-now'});notify(`${detail} Use Mint now instead of scheduling it.`,{type:'info'});return;}
-    }
-    if(autoReschedule&&(!Number.isInteger(Number(maxDelayMinutes))||Number(maxDelayMinutes)<1||Number(maxDelayMinutes)>1440)){
-      const detail='Choose an automatic reschedule limit from 1 minute to 24 hours.';
-      setScheduleError({title:'Check the delay limit.',detail});notify(detail,{type:'info'});return;
+      const choice=stageChoice(scheduledStage);
+      if(choice.disabled){
+        const detail=choice.state==='live'?`"${scheduleStageDisplayName(scheduledStage)}" is live right now.`
+          :choice.state==='ineligible'?'This wallet is not eligible for the selected stage.'
+            :choice.state==='not_live'?'The project has not opened this stage and has not published a new time yet.'
+              :'The selected stage cannot be scheduled.';
+        setScheduleError({title:choice.state==='live'?'This stage is already open.':'Choose another stage.',
+          detail,action:choice.state==='live'?'mint-now':undefined});
+        notify(choice.state==='live'?`${detail} Use Mint now instead of scheduling it.`:detail,{type:'info'});return;
+      }
     }
     const detectedPriceWei=scheduledStage?.priceWei??(!viaOpenSea?ethToWei(priceETH)?.toString():null);
     const priceCapWei=acceptPriceChanges?ethToWei(maxPriceETH):null;
@@ -1728,11 +1805,10 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint}){const mobile
       }
       if(scheduledViaOpenSea)input.priceETH=0;else if(!input.priceETH)delete input.priceETH;
       input.autoReschedule=autoReschedule;
-      if(autoReschedule)input.maxOpeningDelayMinutes=Number(maxDelayMinutes);
       input.acceptPriceChanges=acceptPriceChanges;
       if(detectedPriceWei!==null&&detectedPriceWei!==undefined)input.expectedPriceWeiPerItem=String(detectedPriceWei);
       if(acceptPriceChanges)input.maxPriceWeiPerItem=priceCapWei.toString();
-      await api('/api/tasks',{method:'POST',body:JSON.stringify(input)});setPriceIssue(null);setScheduleError(null);form.reset();setContractAddress('');setDetectedName('');setDetectedSeaDrop(false);setStages([]);setSelectedStageKey('');setDetectionError('');setDetectionRetryable(false);setQuantity('1');setMaxPerWallet(null);setPriceETH('');setMintTime('');setViaOpenSea(false);setDetectedOpenSeaRecommendation(false);setStageType('');setScheduleInfoOpen(false);setAutoReschedule(false);setMaxDelayMinutes('60');setAcceptPriceChanges(false);setMaxPriceETH('');lastDetected.current='';detectingKey.current='';notify(hasPhaseIdentity?'Task scheduled. Its time is the earliest check; minting waits for a live phase this wallet can use.':'Task scheduled. It will run automatically at the saved UTC time.',{type:'success'});listing.load();
+      await api('/api/tasks',{method:'POST',body:JSON.stringify(input)});setPriceIssue(null);setScheduleError(null);form.reset();setContractAddress('');setDetectedName('');setDetectedSeaDrop(false);setStages([]);setSelectedStageKey('');setLiveMintStage(null);setStageLiveness({authoritative:false,isMinting:false,activeKey:''});setDetectionError('');setDetectionRetryable(false);setQuantity('1');setMaxPerWallet(null);setPriceETH('');setMintTime('');setViaOpenSea(false);setDetectedOpenSeaRecommendation(false);setStageType('');setScheduleInfoOpen(false);setAutoReschedule(false);setAcceptPriceChanges(false);setMaxPriceETH('');lastDetected.current='';detectingKey.current='';notify(hasPhaseIdentity?'Task scheduled. Its time is the earliest check; minting waits for a live phase this wallet can use.':'Task scheduled. It will run automatically at the saved UTC time.',{type:'success'});listing.load();
     }catch(value){const issue=value.issues?.find(entry=>entry.field==='priceETH');if(issue)setPriceIssue(issue.message);const feedback=scheduleSubmitError(value);setScheduleError(feedback);notify(`${feedback.title} ${feedback.detail}`,{type:'error'});}finally{setSubmitting(false);onCommitChange?.(false);}}async function control(id,action){try{await api(`/api/tasks/${id}/control`,{method:'POST',body:JSON.stringify({action,confirmation:action==='cancel'?'CONFIRM':undefined})});}catch(value){notify(value.message,{type:'error'});}}
   // Prototype docs/prototype-pages/mint.html:111-158. The Schedule tab is a .split: the form on
   // the left, the "Scheduled" list on the right. The old page-lead, the search toolbar, the chain
@@ -1932,60 +2008,84 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint}){const mobile
         {detectionError&&<div className="nt w" role="status">{WARN_TRIANGLE_ICON}<div><b>{detectionError}</b>{detectionRetryable&&<div style={{marginTop:'8px'}}><button type="button" className="b sm" onClick={()=>detect(contractAddress)}>Retry</button></div>}</div></div>}
         {scheduleInfoOpen&&<div className="schedule-preview-info" role="note">
           <p>The saved time is the earliest attempt, not a blind launch. GhostMint checks the live phase, current price, wallet eligibility, balance, and simulation again before sending.</p>
+          <p>Five minutes and 30 seconds before the attempt, it checks the mint price plus estimated gas against this wallet. If funds are short, you are told how much to add. A final check still prevents an underfunded transaction from being sent.</p>
           <p>For an OpenSea phase, a delayed opening is observed from its stage feed. A plain <code>mint(uint256)</code> contract has no equivalent opening-time feed, so only the time you enter can be used.</p>
         </div>}
-        {!detecting&&ADDRESS_SHAPE.test(contractAddress.trim())&&lastDetected.current===contractAddress.trim().toLowerCase()&&(()=>{
+        {!detecting&&liveMintStage&&ADDRESS_SHAPE.test(contractAddress.trim())&&lastDetected.current===contractAddress.trim().toLowerCase()&&
+          <section className="schedule-live-now" role="status" aria-label="Mint is live now">
+            <div><span>Live now</span><h3>{detectedName||liveMintStage.label||'This mint'} is open.</h3>
+              <p>There is nothing to schedule. Choose one wallet with Mint now, or several wallets with Batch mint.</p></div>
+            <div className="schedule-live-actions">
+              <button type="button" className="b p" onClick={()=>{setPendingMintPrefill({contractAddress,quantity,walletLabel:scheduleWallet});onSwitchToMint?.();}}>Mint now</button>
+              <button type="button" className="b" onClick={()=>{setPendingBatchPrefill({contractAddress,quantity});onSwitchToBatch?.();}}>Batch mint</button>
+            </div>
+          </section>}
+        {!liveMintStage&&!detecting&&ADDRESS_SHAPE.test(contractAddress.trim())&&lastDetected.current===contractAddress.trim().toLowerCase()&&(()=>{
           const selectedStage=stages.find(stage=>scheduleStageSelectionKey(stage)===selectedStageKey);
+          const selectedChoice=selectedStage?stageChoice(selectedStage):null;
           const unitPrice=selectedStage?.priceWei!==null&&selectedStage?.priceWei!==undefined
             ?freeOrNativeAmount(selectedStage.priceWei,nativeSymbolForChain(chain))
             :viaOpenSea?'Checked live at opening':priceIssue?'Price required':Number(priceETH)===0?'Free'
               :priceETH?`${formatAdaptiveAmount(priceETH,{minDecimals:6})} ${nativeSymbolForChain(chain)}`:'Not available';
+          const stageOptions=stages.map(stage=>{
+            const choice=stageChoice(stage);
+            const stageName=scheduleStageDisplayName(stage);
+            const at=new Date(Number(stage.startTime)*1000);
+            const hasTime=!Number.isNaN(at.getTime());
+            const local=hasTime?at.toLocaleString([],{weekday:'short',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}):'Time unavailable';
+            const utc=hasTime?`${String(at.getUTCHours()).padStart(2,'0')}:${String(at.getUTCMinutes()).padStart(2,'0')}Z`:null;
+            const facts=[utc,stage.maxPerWallet?`published max ${stage.maxPerWallet}/wallet`:null,
+              stage.priceWei!==null&&stage.priceWei!==undefined?freeOrNativeAmount(stage.priceWei,nativeSymbolForChain(chain)):null,
+              choice.state==='check_at_open'?'Wallet eligibility is verified when the stage opens':null]
+              .filter(Boolean).join(' · ');
+            return {value:scheduleStageSelectionKey(stage),label:`${stageName} · ${local}`,description:facts,
+              tag:choice.tag,disabled:choice.disabled,group:'Mint stages'};
+          });
           return <section className="schedule-preview" aria-label="Schedule preview">
-            <div className="schedule-preview-head"><div><span>Schedule preview</span><b>{detectedName||'Detected contract'}</b></div></div>
+            <div className="schedule-preview-head"><div><span>Schedule preview</span><b>Review before scheduling</b></div></div>
             <div className="schedule-preview-grid">
-              <div><span>Contract</span><b className="mono">{shortHex(contractAddress)}</b></div>
+              <div><span>Contract name</span><b>{detectedName||'Name unavailable'}</b></div>
               <div><span>Chain</span><b>{chainMeta(chain).label||chain}</b></div>
-              <div><span>Stage</span><b>{selectedStage?.label||stageType||'Manual time'}</b></div>
               <div><span>Price</span><b>{unitPrice}</b></div>
               <div><span>Wallet</span><b>{scheduleWallet||'Choose below'}</b></div>
               <div><span>Quantity</span><b>{quantity||'—'}</b></div>
-              <div className="schedule-preview-time"><span>Earliest attempt</span><b>{mintTime?taskDetailTime(new Date(mintTime).getTime()):'Choose below'}</b></div>
+              <div><span>Eligibility</span><b>{selectedChoice?.tag||'Choose a stage'}</b></div>
+              {stageOptions.length?<div className="schedule-preview-time schedule-preview-stage-control">
+                <SelectMenu label="Earliest attempt" value={selectedStageKey} placeholder="Choose a mint stage…"
+                  onChange={event=>selectScheduleStage(stages.find(stage=>scheduleStageSelectionKey(stage)===event.target.value))}
+                  options={stageOptions}/>
+              </div>:<div className="schedule-preview-time"><span>{viaOpenSea?'Earliest attempt':'Mint time'}</span>
+                <b>{viaOpenSea?'No upcoming stage published':mintTime?taskDetailTime(new Date(mintTime).getTime()):'Set below'}</b></div>}
             </div>
             <div className="schedule-policy-list">
-              <label className="schedule-policy"><input type="checkbox" checked={autoReschedule}
-                onChange={event=>setAutoReschedule(event.target.checked)}/><span><b>Auto-reschedule delayed openings</b><small>Never moves a mint earlier. Later moves must stay inside your limit.</small></span></label>
-              {autoReschedule&&<label className="fl schedule-policy-field"><span>Maximum delay <span>· minutes, up to 24 hours</span></span>
-                <input className="in tab" type="number" min="1" max="1440" step="1" value={maxDelayMinutes}
-                  onChange={event=>setMaxDelayMinutes(event.target.value)}/></label>}
-              <label className="schedule-policy"><input type="checkbox" checked={acceptPriceChanges}
-                onChange={event=>{const checked=event.target.checked;setAcceptPriceChanges(checked);if(checked&&!maxPriceETH){const current=selectedStage?.priceWei!=null?weiToEthDisplay(selectedStage.priceWei):priceETH;setMaxPriceETH(current||'');}}}/><span><b>Accept price increases up to a limit</b><small>Price drops are accepted automatically. Higher prices stop unless they are within this exact cap.</small></span></label>
-              {acceptPriceChanges&&<label className="fl schedule-policy-field"><span>Maximum price per NFT <span>· {nativeSymbolForChain(chain)}</span></span>
+              <div className="schedule-policy-row">
+                <ScheduleSwitch checked={autoReschedule} labelledBy="schedule-auto-time-label" onChange={setAutoReschedule}/>
+                <span className="schedule-policy-title" id="schedule-auto-time-label"><b>Follow time changes automatically</b></span>
+                <InfoPopover id="schedule-auto-time-help" label="About automatic time changes">
+                  If this same stage moves earlier or later, GhostMint follows its exact new time and tells you. Turn this off to approve each time change. A removed stage or changed mint method still pauses for review.
+                </InfoPopover>
+              </div>
+              <div className="schedule-policy-row">
+                <ScheduleSwitch checked={acceptPriceChanges} labelledBy="schedule-auto-price-label"
+                  onChange={checked=>{setAcceptPriceChanges(checked);if(checked&&!maxPriceETH){const current=selectedStage?.priceWei!=null?weiToEthDisplay(selectedStage.priceWei):priceETH;setMaxPriceETH(current||'');}}}/>
+                <span className="schedule-policy-title" id="schedule-auto-price-label"><b>Allow a higher mint price</b></span>
+                <InfoPopover id="schedule-auto-price-help" label="About automatic price changes">
+                  Set the highest price per NFT you approve. GhostMint accepts an increase only up to that amount and tells you. Above it, the task pauses and asks first.
+                </InfoPopover>
+              </div>
+              {acceptPriceChanges&&<label className="fl schedule-policy-field"><span>Highest price per NFT <span>· {nativeSymbolForChain(chain)}</span></span>
                 <input className="in tab" type="number" min="0" step="any" value={maxPriceETH}
                   placeholder="Highest price you approve" onChange={event=>setMaxPriceETH(event.target.value)}/></label>}
             </div>
           </section>;
         })()}
-        {stages.length>1&&<SelectMenu className="fl" label="Stage" value={selectedStageKey} onChange={e=>{const s=stages.find(stage=>scheduleStageSelectionKey(stage)===e.target.value); if(!s)return; const nextViaOpenSea=!detectedSeaDrop||scheduleStageRequiresOpenSeaBuilder(s); setSelectedStageKey(scheduleStageSelectionKey(s)); setStageType(s.stageType); setViaOpenSea(nextViaOpenSea); if(nextViaOpenSea){setPriceETH('');setPriceIssue(null);} else if(s.priceWei!=null){setPriceETH(weiToEthDisplay(s.priceWei));setPriceIssue(null);} else {setPriceETH('');setPriceIssue('Enter the price per NFT. Use 0 only if the mint is free.');} const t=s.startTime; if(t&&t*1000>Date.now())setMintTime(stageMintTimeLocalValue(t));}}
-          options={stages.map(s=>{
-            const ended=s.endTime&&s.endTime*1000<Date.now();
-            const live=s.startTime*1000<=Date.now()&&(!s.endTime||s.endTime*1000>Date.now());
-            const gated=scheduleStageRequiresOpenSeaBuilder(s);
-            const local=new Date(s.startTime*1000).toLocaleString([],{weekday:'short',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
-            const utc=`${String(new Date(s.startTime*1000).getUTCHours()).padStart(2,'0')}:${String(new Date(s.startTime*1000).getUTCMinutes()).padStart(2,'0')}Z`;
-            const selectionKey=scheduleStageSelectionKey(s);
-            const facts=[`${local} (${utc})`,s.maxPerWallet?`published max ${s.maxPerWallet}/wallet`:null,s.priceWei!=null?`${weiToEthDisplay(s.priceWei)} ${nativeSymbolForChain(chain)}`:null,
-              gated?'eligibility checked at opening':'open to all wallets'].filter(Boolean).join(' · ');
-            return {value:selectionKey,label:s.label,description:facts,
-              tag:ended?'Ended':s.identityAmbiguous?'Ambiguous':live?'Live':gated?'Check at open':'Public',
-              disabled:Boolean(ended||s.identityAmbiguous),group:'Mint stages'};
-          })}/>}
-        {(()=>{const s=stages.find(x=>scheduleStageSelectionKey(x)===selectedStageKey);
+        {!liveMintStage&&(()=>{const s=stages.find(x=>scheduleStageSelectionKey(x)===selectedStageKey);
           return s&&scheduleStageRequiresOpenSeaBuilder(s)
-            ?<div className="nt i" role="status">{INFO_ICON}<div><b>&ldquo;{s.label}&rdquo; requires a wallet eligibility check.</b> A future allowlist cannot be verified from an address alone. GhostMint starts checking when it opens and asks OpenSea for this wallet&apos;s proof or signature. {s.advancesIfIneligible?'If this wallet is not eligible, the task moves to the next published stage within its 24-hour eligibility window.':'No later stage is currently reachable within the 24-hour eligibility window, so an ineligible result will stop this task with a clear reason.'}</div></div>
+            ?<div className="nt i" role="status">{INFO_ICON}<div><b>&ldquo;{scheduleStageDisplayName(s)}&rdquo; is checked when it opens.</b> A future allowlist cannot be proven from the wallet address alone. If the wallet is not eligible, nothing is sent and the task records the reason{s.advancesIfIneligible?' before checking the next safely published stage.':'.'}</div></div>
             :null;})()}
-        {viaOpenSea&&!selectedStageKey&&!stageType&&<div className="nt w" role="status">{WARN_TRIANGLE_ICON}<div>
+        {!liveMintStage&&viaOpenSea&&!selectedStageKey&&!stageType&&<div className="nt w" role="status">{WARN_TRIANGLE_ICON}<div>
           <b>No schedulable stage is published yet.</b> Use Mint now if it is already open, or return after the project publishes a mint stage.</div></div>}
-        <div className="g gm2 g2 mint-wallet-quantity-row">
+        {!liveMintStage&&<div className="g gm2 g2 mint-wallet-quantity-row">
           <SelectMenu className="fl" name="walletLabel" label="Wallet" value={scheduleWallet}
             disabled={!walletsArrived||noWallets}
             options={noWallets?[{value:'',label:'No wallets yet',disabled:true}]
@@ -2003,23 +2103,23 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint}){const mobile
                   className={String(quantity)===String(quantityMax)?'on':undefined}
                   onClick={()=>setQuantity(String(quantityMax))}>Max</button></div>
             </div></label>
-        </div>
-        <label className="fl"><span>Mint time <span style={{color:'var(--faint)',fontWeight:500}}>· your local time; stored in UTC</span></span>
+        </div>}
+        {!liveMintStage&&<label className="fl"><span>Mint time <span style={{color:'var(--faint)',fontWeight:500}}>· your local time; stored in UTC</span></span>
           <input className="in tab mono" name="mintTime" type="datetime-local" step="1" required disabled={noWallets}
             min={stageMintTimeLocalValue(stages.find(stage=>scheduleStageSelectionKey(stage)===selectedStageKey)?.startTime,{bufferMs:0})||undefined}
-            value={mintTime} onChange={e=>setMintTime(e.target.value)}/></label>
-        {!viaOpenSea&&priceIssue
+            value={mintTime} onChange={e=>setMintTime(e.target.value)}/></label>}
+        {!liveMintStage&&(!viaOpenSea&&priceIssue
           ?<label className="fl"><span>Price per mint <span style={{color:'var(--faint)',fontWeight:500}}>· {nativeSymbolForChain(chain)}</span></span>
              <input className="in tab bad" name="priceETH" type="number" step="any" min="0" required
-               placeholder="e.g. 0.08" value={priceETH} onChange={e=>setPriceETH(e.target.value)}/>
-             <div className="fielderr">{ALERT_ICON}{priceIssue}</div></label>
-          :!viaOpenSea&&priceETH?<input type="hidden" name="priceETH" value={priceETH}/>:null}
+                placeholder="e.g. 0.08" value={priceETH} onChange={e=>setPriceETH(e.target.value)}/>
+              <div className="fielderr">{ALERT_ICON}{priceIssue}</div></label>
+          :!viaOpenSea&&priceETH?<input type="hidden" name="priceETH" value={priceETH}/>:null)}
         <input type="hidden" name="chain" value={chain}/>
-        {scheduleError&&<div className="nt w" role="status">{WARN_TRIANGLE_ICON}<div><b>{scheduleError.title}</b> {scheduleError.detail}
+        {!liveMintStage&&scheduleError&&<div className="nt w" role="status">{WARN_TRIANGLE_ICON}<div><b>{scheduleError.title}</b> {scheduleError.detail}
           {scheduleError.action==='mint-now'&&<div style={{marginTop:'8px'}}><button type="button" className="b p sm"
             onClick={()=>{setPendingMintPrefill({contractAddress,quantity});onSwitchToMint?.();}}>Mint now</button></div>}
         </div></div>}
-        <button className="b p" disabled={noWallets||!scheduleWallet||!mintTime||detecting||submitting||(viaOpenSea&&!selectedStageKey&&!stageType)||!ADDRESS_SHAPE.test(contractAddress.trim())||lastDetected.current!==contractAddress.trim().toLowerCase()}>{submitting?'Scheduling…':detecting?'Reading contract…':'Schedule mint'}</button>
+        {!liveMintStage&&<button className="b p" disabled={noWallets||!scheduleWallet||!mintTime||detecting||submitting||(viaOpenSea&&!selectedStageKey&&!stageType)||Boolean(stages.find(stage=>scheduleStageSelectionKey(stage)===selectedStageKey)&&stageChoice(stages.find(stage=>scheduleStageSelectionKey(stage)===selectedStageKey)).disabled)||!ADDRESS_SHAPE.test(contractAddress.trim())||lastDetected.current!==contractAddress.trim().toLowerCase()}>{submitting?'Scheduling…':detecting?'Reading contract…':'Schedule mint'}</button>}
         </fieldset>
       </form>
     </div>
@@ -2693,6 +2793,16 @@ function TargetPolicies({target,go}){
 }
 
 const BELL_ICON=<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M18 8A6 6 0 1 0 6 8c0 7-3 8-3 8h18s-3-1-3-8"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>;
+const SEEN_SCHEDULE_NOTIFICATION_KEYS=new Set();
+function firstScheduleNotification(key){
+  if(!key)return true;
+  if(SEEN_SCHEDULE_NOTIFICATION_KEYS.has(key))return false;
+  SEEN_SCHEDULE_NOTIFICATION_KEYS.add(key);
+  if(SEEN_SCHEDULE_NOTIFICATION_KEYS.size>200){
+    SEEN_SCHEDULE_NOTIFICATION_KEYS.delete(SEEN_SCHEDULE_NOTIFICATION_KEYS.values().next().value);
+  }
+  return true;
+}
 // The bell surfaces two different things: pending confirmations (actionable, drive the badge
 // count) and a short recent-notifications log (informational, sourced from the same notify() log
 // the toast host reads -- so anything a toast reported is still checkable here after it auto-dismisses).
@@ -2708,6 +2818,7 @@ function NotificationBell(){const [items,setItems]=useState([]);const [open,setO
   useEffect(()=>{
     function onMessage(event){
       const message=event.detail;
+      if(!firstScheduleNotification(message?.notificationKey))return;
       if(message?.type==='task.failed'){
         const action=message.retryable
           ?{label:'Retry',run:async()=>{
@@ -2722,17 +2833,32 @@ function NotificationBell(){const [items,setItems]=useState([]);const [open,setO
           ...(action?{action}:{})
         });
       }
+      if(message?.type==='task.change-review'){
+        notify(`${message.name} changed and is paused. ${message.reason||'Review the change before it can continue.'}`,
+          {type:'info',category:'auto',timeoutMs:12000,
+           action:{label:'Review schedule',run:()=>{window.location.href=`/dashboard/mint?tab=schedule&bucket=paused&task=${encodeURIComponent(message.taskId)}`;}}});
+      }
+      if(message?.type==='task.rescheduled'){
+        notify(`${message.name} was rescheduled automatically. ${message.reason||'The stage opening changed.'}`,
+          {type:'info',category:'auto',timeoutMs:10000,
+           action:{label:'View schedule',run:()=>{window.location.href=`/dashboard/mint?tab=schedule&bucket=pending&task=${encodeURIComponent(message.taskId)}`;}}});
+      }
+      if(message?.type==='task.change-accepted'){
+        notify(`${message.name} changed within your approved settings. ${message.reason||''}`.trim(),
+          {type:'info',category:'auto',timeoutMs:10000,
+           action:{label:'View schedule',run:()=>{window.location.href=`/dashboard/mint?tab=schedule&bucket=pending&task=${encodeURIComponent(message.taskId)}`;}}});
+      }
       if(message?.type==='task.autoCancelled'){
         notify(`${message.name} was cancelled because the mint sold out before its scheduled time. Nothing was sent.`,
           {type:'info',category:'auto',timeoutMs:9000});
       }
       if(message?.type==='task.lowBalance'){
-        notify(`${message.name} starts ${message.timing||`in ${message.minutes}m`} and ${message.walletLabel} needs ${message.shortByNative??message.shortByEth} ${message.currency||'ETH'} more.`,
+        notify(`${message.name} starts ${message.timing||`in ${message.minutes}m`} and ${message.walletLabel} needs ${message.shortByNative??message.shortByEth} ${message.currency||'ETH'} more.${message.scheduleChangeReason?` The schedule also changed within your approved settings: ${message.scheduleChangeReason}`:''}`,
           {type:'error',category:'money',timeoutMs:12000,
            action:{label:'Top up wallet',run:async()=>{window.location.href='/dashboard/wallets';}}});
       }
       if(message?.type==='task.reminder'){
-        notify(`${message.name} starts ${message.timing||`in ${message.minutes}m`} from ${message.walletLabel}. The current funds check passed.`,
+        notify(`${message.name} starts ${message.timing||`in ${message.minutes}m`} from ${message.walletLabel}. The current funds check passed.${message.scheduleChangeReason?` The schedule also changed within your approved settings: ${message.scheduleChangeReason}`:''}`,
           {type:'info',category:'auto',timeoutMs:9000});
       }
       if(message?.type==='task.preflight'){
@@ -2741,7 +2867,8 @@ function NotificationBell(){const [items,setItems]=useState([]);const [open,setO
           :message.result==='price_unknown'
             ?`${message.name}: the mint price is not available yet. GhostMint will check again before sending.`
             :`${message.name}: GhostMint could not complete the early check. It will check again before sending.`;
-        notify(text,{type:message.result==='ready'?'success':'info',category:'auto',timeoutMs:9000});
+        notify(`${text}${message.scheduleChangeReason?` The schedule also changed within your approved settings: ${message.scheduleChangeReason}`:''}`,
+          {type:message.result==='ready'?'success':'info',category:'auto',timeoutMs:9000});
       }
       if(message?.type==='task.starting'){
         notify(`${message.name} is starting now.`,{type:'info',category:'auto',timeoutMs:9000});
@@ -3409,6 +3536,15 @@ function MintBatch({active=true,onGoWallets,onSwitchToSchedule,onCommitChange,pr
   const lastDetected=useRef("");
   const detectingKey=useRef("");
   const batchSimulationSequence=useRef(0);
+  useEffect(()=>{
+    if(!active)return;
+    const prefill=consumePendingBatchPrefill();
+    if(!prefill?.contractAddress)return;
+    setContractAddress(prefill.contractAddress);
+    const nextQuantity=String(prefill.quantity||1);
+    setQuantity(nextQuantity);
+    detectPrice(prefill.contractAddress,nextQuantity);
+  },[active]);
   function invalidateBatchPreview({clearResults=true}={}){
     batchSimulationSequence.current+=1;
     setPreview(null);
@@ -3859,7 +3995,7 @@ function Mint({profile,go,tab,onTab,visible=true}){
     </div>
     <div className="mint-tab-panel" hidden={active!=='schedule'}>
       <Tasks profile={profile} active={visible&&active==='schedule'} onCommitChange={trackCommit}
-        onSwitchToMint={()=>onTab('now')}/>
+        onSwitchToMint={()=>onTab('now')} onSwitchToBatch={()=>onTab('batch')}/>
     </div>
     <div className="mint-tab-panel" hidden={active!=='batch'}>
       <MintBatch active={visible&&active==='batch'} preferredChain={profile.defaultChain}
@@ -5303,11 +5439,11 @@ function AdminNav({page,go}){return <nav aria-label="Admin sections" className="
 function AdminBottomBar({page,go,moreOpen,onOpenMore}){return <nav className="mobile-bottombar admin-mobile-bottombar" aria-label="Admin primary">{ADMIN_MOBILE_PRIMARY.map(id=>{const item=ADMIN_SECTIONS.find(section=>section.id===id);return <button key={id} type="button" aria-current={page===id?'page':undefined} onClick={()=>go(id)}><span className="nav-icon" aria-hidden="true">{item.icon}</span><span className="nav-label">{item.label}</span></button>})}<button type="button" aria-current={moreOpen||ADMIN_MOBILE_MORE.includes(page)?'page':undefined} onClick={onOpenMore}><span className="nav-icon" aria-hidden="true">{MORE_ICON}</span><span className="nav-label">More</span></button></nav>}
 function AdminMoreSheet({open,page,go,onClose,onLogout}){return <>{open&&<div className="sheet-backdrop" onClick={onClose}/>}<div className={`more-sheet admin-more-sheet${open?' open':''}`} role="dialog" aria-modal="true" aria-label="More admin pages" aria-hidden={!open}><button type="button" className="sheet-handle" aria-label="Close" onClick={onClose}/><h2>More admin pages</h2><div className="sheet-grid">{ADMIN_MOBILE_MORE.map(id=>{const item=ADMIN_SECTIONS.find(section=>section.id===id);return <button type="button" key={id} aria-current={page===id?'page':undefined} onClick={()=>go(id)}><span className="nav-icon" aria-hidden="true">{item.icon}</span><span className="nav-label">{item.label}</span></button>})}</div><div className="admin-sheet-actions"><a className="b g admin-link" href="/dashboard/">Back to user dashboard</a><button className="b g" onClick={onLogout}>Log out</button></div></div></>}
 function ScrollTop(){const [visible,setVisible]=useState(false);useEffect(()=>{const update=()=>setVisible(window.scrollY>480);update();window.addEventListener('scroll',update,{passive:true});return()=>window.removeEventListener('scroll',update);},[]);return visible?<button type="button" className="scroll-top" aria-label="Scroll to top" onClick={()=>window.scrollTo({top:0,behavior:'smooth'})}>↑</button>:null;}
-function AdminShell({profile,onLogout}){const theme=profile.theme||'ghost-mint';const [page,setPage]=useState(adminSectionFromLocation());const [moreOpen,setMoreOpen]=useState(false);const [railExpanded,setRailExpandedState]=useState(readRailExpanded);function setRailExpanded(next){setRailExpandedState(value=>{const resolved=typeof next==='function'?next(value):next;writeRailExpanded(resolved);return resolved;});}const live=useLiveSocket();
+function AdminShell({profile,onLogout}){const theme=profile.theme||'ghost-mint';const [page,setPage]=useState(adminSectionFromLocation());const [moreOpen,setMoreOpen]=useState(false);const [railExpanded,setRailExpandedState]=useState(readRailExpanded);function setRailExpanded(next){setRailExpandedState(value=>{const resolved=typeof next==='function'?next(value):next;writeRailExpanded(resolved);return resolved;});}const live=useLiveSocket();const mobile=useIsMobile();
   // Transient (not URL-based, unlike the section itself) -- which of the 4 user-related stat
   // cards on Overview brought the admin here, so Users can drill down instead of showing the same
   // unfiltered list no matter which card was clicked. Cleared on any navigation away from Users.
   const [usersFilter,setUsersFilter]=useState(null);
-  useEffect(()=>{document.documentElement.dataset.theme=theme;},[theme]);useEffect(()=>{function onPopState(){setPage(adminSectionFromLocation());}window.addEventListener('popstate',onPopState);return()=>window.removeEventListener('popstate',onPopState);},[]);if(!profile.isOwner)return <AdminDenied/>;function go(next,filter){const slug=ADMIN_SLUGS[next];const path=slug?`/dashboard/admin/${slug}`:'/dashboard/admin';if(window.location.pathname!==path)window.history.pushState(null,'',path);setPage(next);setUsersFilter(next==='Users'?filter||null:null);setMoreOpen(false);window.scrollTo({top:0});}const brandMark=<span className="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d={BOLT_PATH} fill="currentColor"/></svg></span>;return <div className={`shell rail-shell admin-shell${moreOpen?' more-open':''}`} data-rail={railExpanded?'expanded':'collapsed'}><ConfirmHost/><ToastHost/><header className="rail-mobile-header"><a className="brand" href="/dashboard/admin" onClick={event=>{event.preventDefault();go('Overview');}}>{brandMark}GhostMint Admin</a><div className="header-right"><span className="status-pill"><span className={`status-dot${live?' live':''}`} aria-hidden="true"/><span aria-live="polite">{live?'Live':'Connecting'}</span></span><NotificationBell/><a className="header-avatar" aria-label="Return to user dashboard" href="/dashboard/">{NAV_ICONS.Account}</a></div></header><aside><div className="rail-top"><a className="brand" href="/dashboard/admin" onClick={event=>{event.preventDefault();go('Overview');}}>{brandMark}<span className="nav-label">GhostMint Admin</span></a></div><AdminNav page={page} go={go}/><nav className="rail-bottom-nav" aria-label="Admin account"><ul><li><a className="admin-rail-link" href="/dashboard/"><span className="nav-icon" aria-hidden="true">{CHEVRON_LEFT}</span><span className="nav-label">User dashboard</span></a></li><li><button onClick={onLogout}><span className="nav-icon" aria-hidden="true">{NAV_ICONS.Account}</span><span className="nav-label">Log out</span></button></li></ul></nav></aside><button type="button" className="rail-edge-toggle" aria-label={railExpanded?'Collapse sidebar':'Expand sidebar'} onClick={()=>setRailExpanded(value=>!value)}>{railExpanded?CHEVRON_LEFT:CHEVRON_RIGHT}</button><div className="notification-bell-desktop"><NotificationBell/></div><main className="content admin-content" tabIndex="-1"><Admin profile={profile} section={page} go={go} usersFilter={usersFilter}/></main><AdminBottomBar page={page} go={go} moreOpen={moreOpen} onOpenMore={()=>setMoreOpen(value=>!value)}/><AdminMoreSheet open={moreOpen} page={page} go={go} onClose={()=>setMoreOpen(false)} onLogout={onLogout}/><ScrollTop/></div>;}
+  useEffect(()=>{document.documentElement.dataset.theme=theme;},[theme]);useEffect(()=>{function onPopState(){setPage(adminSectionFromLocation());}window.addEventListener('popstate',onPopState);return()=>window.removeEventListener('popstate',onPopState);},[]);if(!profile.isOwner)return <AdminDenied/>;function go(next,filter){const slug=ADMIN_SLUGS[next];const path=slug?`/dashboard/admin/${slug}`:'/dashboard/admin';if(window.location.pathname!==path)window.history.pushState(null,'',path);setPage(next);setUsersFilter(next==='Users'?filter||null:null);setMoreOpen(false);window.scrollTo({top:0});}const brandMark=<span className="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d={BOLT_PATH} fill="currentColor"/></svg></span>;return <div className={`shell rail-shell admin-shell${moreOpen?' more-open':''}`} data-rail={railExpanded?'expanded':'collapsed'}><ConfirmHost/><ToastHost/><header className="rail-mobile-header"><a className="brand" href="/dashboard/admin" onClick={event=>{event.preventDefault();go('Overview');}}>{brandMark}GhostMint Admin</a><div className="header-right"><span className="status-pill"><span className={`status-dot${live?' live':''}`} aria-hidden="true"/><span aria-live="polite">{live?'Live':'Connecting'}</span></span>{mobile&&<NotificationBell/>}<a className="header-avatar" aria-label="Return to user dashboard" href="/dashboard/">{NAV_ICONS.Account}</a></div></header><aside><div className="rail-top"><a className="brand" href="/dashboard/admin" onClick={event=>{event.preventDefault();go('Overview');}}>{brandMark}<span className="nav-label">GhostMint Admin</span></a></div><AdminNav page={page} go={go}/><nav className="rail-bottom-nav" aria-label="Admin account"><ul><li><a className="admin-rail-link" href="/dashboard/"><span className="nav-icon" aria-hidden="true">{CHEVRON_LEFT}</span><span className="nav-label">User dashboard</span></a></li><li><button onClick={onLogout}><span className="nav-icon" aria-hidden="true">{NAV_ICONS.Account}</span><span className="nav-label">Log out</span></button></li></ul></nav></aside><button type="button" className="rail-edge-toggle" aria-label={railExpanded?'Collapse sidebar':'Expand sidebar'} onClick={()=>setRailExpanded(value=>!value)}>{railExpanded?CHEVRON_LEFT:CHEVRON_RIGHT}</button>{!mobile&&<div className="notification-bell-desktop"><NotificationBell/></div>}<main className="content admin-content" tabIndex="-1"><Admin profile={profile} section={page} go={go} usersFilter={usersFilter}/></main><AdminBottomBar page={page} go={go} moreOpen={moreOpen} onOpenMore={()=>setMoreOpen(value=>!value)}/><AdminMoreSheet open={moreOpen} page={page} go={go} onClose={()=>setMoreOpen(false)} onLogout={onLogout}/><ScrollTop/></div>;}
 function isAdminPath(){const path=window.location.pathname.replace(/\/+$/,'');return path==='/dashboard/admin'||path.startsWith('/dashboard/admin/');}
 export default function App(){const [profile,setProfile]=useState(undefined);const [sessionMessage,setSessionMessage]=useState('');const [,forceRender]=useState(0);useEffect(()=>{api('/api/profile').then(value=>{setSessionMessage('');setProfile(value);}).catch(error=>{setSessionMessage(error.message);setProfile(null);});},[]);useEffect(()=>{function onSessionEnded(event){setSessionMessage(event.detail?.message||'Your session is no longer valid.');setProfile(null);}window.addEventListener('ghostmint-session-ended',onSessionEnded);return()=>window.removeEventListener('ghostmint-session-ended',onSessionEnded);},[]);useEffect(()=>{function onPopState(){forceRender(count=>count+1);}window.addEventListener('popstate',onPopState);return()=>window.removeEventListener('popstate',onPopState);},[]);async function logout(request){const all=request?.all===true;try{await api(all?'/api/auth/logout-all':'/api/auth/logout',{method:'POST'});}finally{setSessionMessage(all?'You chose to log out every browser session.':'You logged out of this browser.');setProfile(null);}}function login(value){setSessionMessage('');setProfile(value);}if(profile===undefined)return <main className="loading" aria-live="polite">Loading secure session...</main>;if(!profile)return <Login onLogin={login} sessionMessage={sessionMessage}/>;if(isAdminPath())return <AdminShell profile={profile} onLogout={logout}/>;return <Shell profile={profile} onLogout={logout} onProfileChange={setProfile}/>;}

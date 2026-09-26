@@ -360,17 +360,20 @@ function createSchedulerRepository(pool) {
         :action==='awaiting_approval'?'paused':'failed';
       const version=Number(task.changeVersion||0)+1;
       const pending=action==='awaiting_approval'?{...evaluation,version}:null;
-      const movedOpening=Number.isFinite(Number(observed.openingAt))?Number(observed.openingAt):null;
-      const currentAttempt=task.nextAttemptAt??task.mintTime??null;
-      const rescheduledTarget=action==='auto_rescheduled'&&movedOpening!==null
-        ?Math.max(movedOpening,Number(currentAttempt)||movedOpening):movedOpening;
+       const movedOpening=Number.isFinite(Number(observed.openingAt))?Number(observed.openingAt):null;
+       const currentAttempt=task.nextAttemptAt??task.mintTime??null;
+       const rescheduledTarget=action==='auto_rescheduled'&&movedOpening!==null
+         ?(task.timeChangePolicy==='auto_follow_stage'
+           ?Math.max(movedOpening,Date.now())
+           :Math.max(movedOpening,Number(currentAttempt)||movedOpening)):movedOpening;
       const client=await pool.connect();
       try {
         await client.query('BEGIN');
         const updated=await client.query(`UPDATE mint_tasks SET
           status=$4,
-          mint_time=CASE WHEN $5 AND $6::BIGINT IS NOT NULL THEN TO_TIMESTAMP($6 / 1000.0) ELSE mint_time END,
-          next_attempt_at=CASE WHEN $5 AND $6::BIGINT IS NOT NULL THEN TO_TIMESTAMP($6 / 1000.0) ELSE next_attempt_at END,
+           mint_time=CASE WHEN $5 AND $6::BIGINT IS NOT NULL THEN TO_TIMESTAMP($6 / 1000.0) ELSE mint_time END,
+           next_attempt_at=CASE WHEN $5 AND $6::BIGINT IS NOT NULL THEN TO_TIMESTAMP($6 / 1000.0) ELSE next_attempt_at END,
+           eligibility_deadline=CASE WHEN $5 AND $18::BIGINT IS NOT NULL THEN TO_TIMESTAMP($18 / 1000.0) ELSE eligibility_deadline END,
           accepted_opening_at=CASE WHEN $8 AND $7::BIGINT IS NOT NULL THEN TO_TIMESTAMP($7 / 1000.0) ELSE accepted_opening_at END,
           last_observed_opening_at=CASE WHEN $7::BIGINT IS NULL THEN last_observed_opening_at ELSE TO_TIMESTAMP($7 / 1000.0) END,
           accepted_price_wei_per_item=CASE WHEN $8 AND $9::NUMERIC IS NOT NULL THEN $9::NUMERIC ELSE accepted_price_wei_per_item END,
@@ -396,8 +399,8 @@ function createSchedulerRepository(pool) {
           movedOpening,action==='accepted'||action==='auto_rescheduled',observed.priceWeiPerItem??null,
           observed.configFingerprint??null,observed.configSummary?JSON.stringify(observed.configSummary):null,
           action==='awaiting_approval',version,pending?JSON.stringify(pending):null,
-          evaluation.reason||null,continueClaim,
-          Number(task.changeVersion||0)]);
+           evaluation.reason||null,continueClaim,
+           Number(task.changeVersion||0),evaluation.nextEligibilityDeadline??null]);
         if(!updated.rowCount){await client.query('COMMIT');return {outcome:'superseded',task};}
         const saved=mapTask(updated.rows[0]);
         await client.query(`INSERT INTO mint_task_change_events
