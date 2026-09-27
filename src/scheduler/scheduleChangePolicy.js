@@ -247,7 +247,8 @@ function result(action, previous, observed, changes, reasons, task) {
   const kinds = [...new Set(changes.map(change => change.kind))];
   const payload = { previous, observed, changes, reasons, taskId:task.id };
   let nextEligibilityDeadline=null;
-  if(action==='auto_rescheduled'&&task.timeChangePolicy==='auto_follow_stage'
+  if(['auto_rescheduled','awaiting_approval'].includes(action)
+    &&task.timeChangePolicy==='auto_follow_stage'
     &&previous.openingAt!==null&&observed.openingAt!==null){
     const currentDeadline=finiteTime(task.eligibilityDeadline);
     if(currentDeadline!==null)nextEligibilityDeadline=currentDeadline+(observed.openingAt-previous.openingAt);

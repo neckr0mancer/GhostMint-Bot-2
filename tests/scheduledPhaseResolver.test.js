@@ -3,8 +3,10 @@ const assert = require('node:assert/strict');
 const {
   DEFAULT_RECHECK_MS,
   DECISION_REASONS,
+  EXACT_STAGE_PROVIDER_OUTAGE_GRACE_MS,
   MAX_RECHECK_MS,
   normalizeOpenSeaStage,
+  resolveExactStageProviderOutage,
   resolveScheduledPhase,
   selectNextStageAfterIneligibility,
 } = require('../src/scheduler/scheduledPhaseResolver');
@@ -165,4 +167,40 @@ test('the eligibility deadline is mandatory and a passed deadline is terminal', 
   });
   assert.equal(expired.status, 'terminal');
   assert.equal(expired.reason, DECISION_REASONS.DEADLINE_PASSED);
+});
+
+test('exact-stage following refuses a label-only identity instead of following a replacement', () => {
+  const decision = resolveExactStageProviderOutage({
+    task:{ timeChangePolicy:'auto_follow_stage', stageType:'public_sale', stageLabel:'Public',
+      eligibilityDeadline:deadline },
+    now:deadline,
+  });
+  assert.equal(decision.status,'terminal');
+  assert.equal(decision.reason,DECISION_REASONS.STAGE_IDENTITY_REQUIRED);
+});
+
+test('an exact-stage provider outage at the former deadline retries within one fixed grace', () => {
+  const task={ timeChangePolicy:'auto_follow_stage', stageUuid:'public',
+    eligibilityDeadline:deadline, phaseWaitCount:0 };
+  const decision=resolveExactStageProviderOutage({task,now:deadline,recheckMs:DEFAULT_RECHECK_MS});
+  assert.equal(decision.status,'wait');
+  assert.equal(decision.reason,DECISION_REASONS.DROP_UNAVAILABLE);
+  assert.equal(decision.retryAt,deadline+DEFAULT_RECHECK_MS);
+  assert.equal(decision.outageDeadline,deadline+EXACT_STAGE_PROVIDER_OUTAGE_GRACE_MS);
+  assert.equal(decision.eligibilityDeadline,deadline);
+  assert.equal(decision.persistDeadline,false,
+    'the outage cutoff must never replace the stored deadline and grow on every retry');
+
+  const laterRetry=resolveExactStageProviderOutage({task,now:deadline+30*minute,
+    recheckMs:DEFAULT_RECHECK_MS});
+  assert.equal(laterRetry.outageDeadline,decision.outageDeadline,
+    'retries must derive the same fixed cutoff from the unchanged persisted deadline');
+  assert.equal(laterRetry.persistDeadline,false);
+
+  const expired=resolveExactStageProviderOutage({task,
+    now:deadline+EXACT_STAGE_PROVIDER_OUTAGE_GRACE_MS});
+  assert.equal(expired.status,'terminal');
+  assert.equal(expired.reason,DECISION_REASONS.PROVIDER_OUTAGE_EXPIRED);
+  assert.equal(expired.deadline,deadline);
+  assert.equal(expired.outageDeadline,deadline+EXACT_STAGE_PROVIDER_OUTAGE_GRACE_MS);
 });

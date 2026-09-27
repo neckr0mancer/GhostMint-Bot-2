@@ -17,6 +17,8 @@ import {formatAdaptiveAmount,formatSignedAdaptiveAmount} from './amountDisplay.m
 import {selectWalletHeadlineBalance,walletBalanceForChain,walletFundingStatus} from './walletDisplay.mjs';
 import {mintPreviewMetrics} from './mintPreviewMetrics.mjs';
 import {mintBatchPreviewModel,nativeSymbolForChain} from './mintBatchPreview.mjs';
+import {DISPLAY_CURRENCY_OPTIONS,fiatFromNative,fiatFromWei,quoteFor,
+  schedulePriceCapWei} from './currencyDisplay.mjs';
 import {ACTIVITY_EVENTS,api,Ledger,NumberField,SectionCard,confirmDialog,ConfirmHost,consumePendingMintPrefill,CopyButton,csrf,downloadFile,Empty,Field,Form,getNotificationLog,notify,Notice,PageTitle,Pager,promptDialog,relativeTime,resetSectionOrders,SearchField,Select,SelectMenu,Skeleton,StatusPill,SubTabs,subscribeNotificationLog,ToastHost,useLoad,useLiveSocket,setPendingMintPrefill,quantityPicks} from './shared.jsx';
 import Dashboard from './Dashboard.jsx';
 // Phase 4, unit 1 of 5 (brief §2). The 11->5 merge lands one page at a time so any single merge
@@ -250,6 +252,19 @@ function walletBalanceText(value,places){
   if(Number(value)===0)return '0.0';
   return formatAdaptiveAmount(value,{minDecimals:places===undefined?6:places});
 }
+function FiatAmount({profile,nativeAmount,wei,symbol,showUnavailable=true}){
+  const converted=wei!==undefined
+    ?fiatFromWei(wei,symbol,profile?.displayQuotes,profile?.displayCurrency)
+    :fiatFromNative(nativeAmount,symbol,profile?.displayQuotes,profile?.displayCurrency);
+  if(!converted)return showUnavailable?<small className="fiat-amount unavailable">Fiat unavailable</small>:null;
+  return <small className={`fiat-amount${converted.quote.stale?' stale':''}`}
+    title={`${converted.quote.source} quote · ${new Date(converted.quote.quotedAt).toLocaleString()}${converted.quote.stale?' · cached':''}`}>
+    ≈ {converted.text}{converted.quote.stale?' · cached':''}</small>;
+}
+function weiIsNonZero(value){
+  if(value===null||value===undefined)return false;
+  try{return BigInt(value)!==0n;}catch{return false;}
+}
 // Prefer the wallet's saved home chain when it actually carries funds. An EVM address is usable
 // across every supported EVM chain, though, so a zero home-chain row must not hide a funded row on
 // another chain (the live Robinhood wallet exposed exactly that bug). If every known balance is
@@ -285,7 +300,7 @@ function signedEth(value){
 //
 // Export key is deliberately absent: the Export tab is the one place a keystore comes from, and a
 // second door here made that tab look optional. Remove lives in the overlay's Manage tab.
-function WalletCard({wallet,records,windowLabel,windowMs,onOpen,lowThreshold,preferredChain}){
+function WalletCard({wallet,records,windowLabel,windowMs,onOpen,lowThreshold,preferredChain,profile}){
   const [open,setOpen]=useState(false);
   const home=walletHome(wallet,preferredChain);
   const status=walletStatus(wallet,lowThreshold,preferredChain);
@@ -298,7 +313,9 @@ function WalletCard({wallet,records,windowLabel,windowMs,onOpen,lowThreshold,pre
       <button type="button" className="colh" aria-expanded={open} onClick={()=>setOpen(value=>!value)}>
         <span className={`p ${status.tone}`}>{status.label}</span>
         <span className="cti">{wallet.label}</span>
-        <span className="ctv">{headline===null?'Unavailable':headline}</span>
+        <span className="ctv">{headline===null?'Unavailable':<>{headline} {home?.symbol||'ETH'}
+          <FiatAmount profile={profile} nativeAmount={home?.balance} symbol={home?.symbol||'ETH'}
+            showUnavailable={false}/></>}</span>
         <svg className="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"
           strokeLinecap="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
       </button>
@@ -312,6 +329,8 @@ function WalletCard({wallet,records,windowLabel,windowMs,onOpen,lowThreshold,pre
           color:status.tone==='wn'?'var(--warn-text)':undefined}}>
           {headline===null?'Unavailable':headline}
           {headline===null?null:<small>{home?.symbol||'ETH'}</small>}
+          {headline===null?null:<FiatAmount profile={profile} nativeAmount={home?.balance}
+            symbol={home?.symbol||'ETH'}/>}
         </div>
         {/* The prototype's funded wallets print the address as plain muted mono under the balance
             -- no box, no border. Its Cold card wraps the same thing in a bordered row, which is an
@@ -435,7 +454,7 @@ function ActivityRow({item,scope='wallet'}){
     </div>
   </div>;
 }
-function WalletDetails({wallet,records,windowKey,onWindow,onRemove,onClose,lowThreshold,preferredChain}){
+function WalletDetails({wallet,records,windowKey,onWindow,onRemove,onClose,lowThreshold,preferredChain,profile}){
   const [tab,setTab]=useState('summary');
   // Activity is scoped server-side by session and searched by wallet label. It is only fetched
   // once that tab is opened -- opening a wallet to read its balance should not cost a request for
@@ -458,6 +477,8 @@ function WalletDetails({wallet,records,windowKey,onWindow,onRemove,onClose,lowTh
       <div className="tv tab" style={{color:status.tone==='wn'?'var(--warn-text)':undefined}}>
         {walletBalanceText(home?.balance,3)??'Unavailable'}
         {home?.balance===undefined||home?.balance===null?null:<small>{home?.symbol||'ETH'}</small>}
+        {home?.balance===undefined||home?.balance===null?null:<FiatAmount profile={profile}
+          nativeAmount={home.balance} symbol={home.symbol||'ETH'}/>}
       </div>
       <p className="mono wallet-addr" style={{marginBottom:0}}>{wallet.address}
         <CopyButton value={wallet.address} label="Copy full wallet address"/></p>
@@ -467,7 +488,8 @@ function WalletDetails({wallet,records,windowKey,onWindow,onRemove,onClose,lowTh
           {(wallet.balances||[]).map(item=><tr key={item.chain}>
             <td>{chainMeta(item.chain).label||item.chain}</td>
             <td>{walletBalanceText(item.balance)===null?'Unavailable'
-              :`${walletBalanceText(item.balance)} ${item.symbol||''}`.trim()}</td></tr>)}
+              :<>{walletBalanceText(item.balance)} {item.symbol||''}<FiatAmount profile={profile}
+                nativeAmount={item.balance} symbol={item.symbol||nativeSymbolForChain(item.chain)}/></>}</td></tr>)}
           {(wallet.balances||[]).length===0&&<tr><td>Balances</td><td>Unavailable</td></tr>}
         </tbody></table></div>
       <div className="sober"><div className="sh">Wallet</div>
@@ -834,6 +856,7 @@ function Wallets({profile,onProfileChange,walletList,pnl,windowKey,onWindow,form
             records={pnl?.data} windowLabel={walletWindow(windowKey).label}
             windowMs={walletWindow(windowKey).ms} lowThreshold={profile.lowBalanceThreshold}
             preferredChain={profile.defaultChain}
+            profile={profile}
             onOpen={()=>setDetailLabel(wallet.label)}/>)}</div>
         :<Empty text="No wallets match this search."/>}
       <p style={{fontSize:'11.5px',color:'var(--faint)',marginTop:'10px'}}>A known zero renders
@@ -844,7 +867,7 @@ function Wallets({profile,onProfileChange,walletList,pnl,windowKey,onWindow,form
     </>}
     {detail&&<WalletDetails wallet={detail} records={pnl?.data} windowKey={windowKey}
       lowThreshold={profile.lowBalanceThreshold} preferredChain={profile.defaultChain}
-      onWindow={onWindow} onRemove={()=>remove(detail.label)} onClose={()=>setDetailLabel(null)}/>}
+      profile={profile} onWindow={onWindow} onRemove={()=>remove(detail.label)} onClose={()=>setDetailLabel(null)}/>}
     <NewWalletOverlay open={formsOpen} onClose={()=>onFormsOpen(false)} onDone={load}
       defaultChain={profile.defaultChain||DEFAULT_EVM_CHAIN}/>
   </>;}
@@ -945,7 +968,7 @@ function ContractLookupStatus({visible}){
   return visible?<span className="contract-lookup-status" role="status" aria-live="polite">
     <span className="contract-lookup-spinner" aria-hidden="true"/>Reading…</span>:null;
 }
-function Minting({active=true,onSwitchToBatch,onSwitchToSchedule,onGoWallets,onCommitChange}){const wallets=useLoad('/api/wallets',[],'wallets.changed');const limits=useLoad('/api/profile/limits');const [preview,setPreview]=useState(null);const [previewDiagnostics,setPreviewDiagnostics]=useState(null);const [previewExpired,setPreviewExpired]=useState(false);const [confirmResults,setConfirmResults]=useState(null);const formRef=useRef(null);const previewRef=useRef(null);const contractInputRef=useRef(null);const [walletLabel,setWalletLabel]=useState('');const [contractAddress,setContractAddress]=useState('');const [collectionName,setCollectionName]=useState('');const [viaOpenSea,setViaOpenSea]=useState(false);const [quantity,setQuantity]=useState('1');const [methodSignature,setMethodSignature]=useState('');const [argumentsJson,setArgumentsJson]=useState('');const [priceEth,setPriceEth]=useState('');const [seaDropAddress,setSeaDropAddress]=useState('');const [detectedChain,setDetectedChain]=useState('');const [maxPerWallet,setMaxPerWallet]=useState(null);const [activePresetName,setActivePresetName]=useState('');const [detecting,setDetecting]=useState(false);const [detectionError,setDetectionError]=useState('');const [detectionRetryable,setDetectionRetryable]=useState(false);const [submitting,setSubmitting]=useState(false);const lastDetected=useRef('');const detectingKey=useRef('');
+function Minting({profile,active=true,onSwitchToBatch,onSwitchToSchedule,onGoWallets,onCommitChange}){const wallets=useLoad('/api/wallets',[],'wallets.changed');const limits=useLoad('/api/profile/limits');const [preview,setPreview]=useState(null);const [previewDiagnostics,setPreviewDiagnostics]=useState(null);const [previewExpired,setPreviewExpired]=useState(false);const [confirmResults,setConfirmResults]=useState(null);const formRef=useRef(null);const previewRef=useRef(null);const contractInputRef=useRef(null);const [walletLabel,setWalletLabel]=useState('');const [contractAddress,setContractAddress]=useState('');const [collectionName,setCollectionName]=useState('');const [viaOpenSea,setViaOpenSea]=useState(false);const [quantity,setQuantity]=useState('1');const [methodSignature,setMethodSignature]=useState('');const [argumentsJson,setArgumentsJson]=useState('');const [priceEth,setPriceEth]=useState('');const [seaDropAddress,setSeaDropAddress]=useState('');const [detectedChain,setDetectedChain]=useState('');const [maxPerWallet,setMaxPerWallet]=useState(null);const [activePresetName,setActivePresetName]=useState('');const [detecting,setDetecting]=useState(false);const [detectionError,setDetectionError]=useState('');const [detectionRetryable,setDetectionRetryable]=useState(false);const [submitting,setSubmitting]=useState(false);const lastDetected=useRef('');const detectingKey=useRef('');
   const manualPriceOverride=useRef(null);
   // Simulation is no longer user-triggered (backlog §7.2): the prototype has no "Validate and
   // simulate" control, only a Re-simulate on an expired quote, so the first simulation runs on its
@@ -1218,6 +1241,8 @@ function Minting({active=true,onSwitchToBatch,onSwitchToSchedule,onGoWallets,onC
             <input className="in tab" type="number" step="any" min="0" value={priceEth} disabled={noWallets||viaOpenSea||Boolean(activePresetName)}
               placeholder={activePresetName?'Loaded from the saved preset':viaOpenSea?'OpenSea sets the price during preview':detected?'e.g. 0.08 — leave blank to use detected price':'Detected once a contract is entered'}
               onChange={e=>{setActivePresetName('');manualPriceOverride.current={contract:contractAddress.trim().toLowerCase(),value:e.target.value};setPriceEth(e.target.value);invalidateMintPreview();}}/>
+            {priceEth!==''&&<FiatAmount profile={profile} nativeAmount={priceEth}
+              symbol={nativeSymbolForChain(detectedChain||profile.defaultChain)} showUnavailable={false}/>}
           </label>
           {detected&&!activePresetName&&!viaOpenSea&&priceEth===''&&<div className="nt w" role="status">{WARN_TRIANGLE_ICON}<div><b>Mint price needed.</b> Enter the price per NFT to continue. Use 0 only if the mint is free.</div></div>}
           {/* Batch cross-link -- the prototype keeps this on the single-wallet form, where the
@@ -1232,7 +1257,7 @@ function Minting({active=true,onSwitchToBatch,onSwitchToSchedule,onGoWallets,onC
         {preview&&<PreviewExpiry preview={preview} onExpire={()=>{setPreviewExpired(true);notify('Preview expired. Re-simulate before confirming.',{type:'info'});}} onResimulate={inspect}/>}
         <MintTransactionPreview name={collectionName} method={methodSignature}
           chain={detectedChain} quantity={detected?quantity:'—'} preview={previewFacts}
-          simulation={simulation} wallet={selectedWallet}
+          simulation={simulation} wallet={selectedWallet} profile={profile}
           simulationLabel={detecting?'Reading contract…':simulating?'Running…':previewExpired?'Expired'
             :item?'Passed':balanceInsufficient?'Blocked · balance too low':'Not run'}/>
         {/* Detection already reports inside the contract field, and this ledger's Simulation row
@@ -1530,7 +1555,7 @@ function TaskDetails({summary,onClose,onChanged}){
 function Tasks({profile,active=true,onCommitChange,onSwitchToMint,onSwitchToBatch}){
   const mobile=useIsMobile();const [page,setPage]=useState(1);const [search,setSearch]=useState('');
   const [bucket,setBucket]=useState(()=>{const value=new URLSearchParams(window.location.search).get('bucket');return BUCKETS.some(([key])=>key===value)?value:'pending';});
-  const [filtersOpen,setFiltersOpen]=useState(false);const [serverFilters,setServerFilters]=useState(null);const PAGE_SIZE=mobile?3:10;const COMPAT_LIMIT=50;const listing=useLoad(serverFilters===false?`/api/tasks?page=1&pageSize=${COMPAT_LIMIT}&search=${encodeURIComponent(search)}`:`/api/tasks?page=${page}&pageSize=${PAGE_SIZE}&status=${bucket}&search=${encodeURIComponent(search)}`,[page,bucket,search,serverFilters,PAGE_SIZE],'tasks.changed');const wallets=useLoad('/api/wallets',[],'wallets.changed');const contractInputRef=useRef(null);const [chain,setChain]=useState(profile.defaultChain||profile.supportedChains[0]);const [contractAddress,setContractAddress]=useState('');const [detectedName,setDetectedName]=useState('');const [detectedSeaDrop,setDetectedSeaDrop]=useState(false);const [quantity,setQuantity]=useState('1');const [maxPerWallet,setMaxPerWallet]=useState(null);const [priceETH,setPriceETH]=useState('');const [mintTime,setMintTime]=useState('');const [viaOpenSea,setViaOpenSea]=useState(false);const [detectedOpenSeaRecommendation,setDetectedOpenSeaRecommendation]=useState(false);const [stageType,setStageType]=useState('');const [stages,setStages]=useState([]);const [selectedStageKey,setSelectedStageKey]=useState('');const [liveMintStage,setLiveMintStage]=useState(null);const [stageLiveness,setStageLiveness]=useState({authoritative:false,isMinting:false,activeKey:''});const [scheduleWallet,setScheduleWallet]=useState('');const [detecting,setDetecting]=useState(false);const [detectionError,setDetectionError]=useState('');const [detectionRetryable,setDetectionRetryable]=useState(false);const [scheduleError,setScheduleError]=useState(null);const [submitting,setSubmitting]=useState(false);const [controlBusy,setControlBusy]=useState('');const [scheduleInfoOpen,setScheduleInfoOpen]=useState(false);const [autoReschedule,setAutoReschedule]=useState(false);const [acceptPriceChanges,setAcceptPriceChanges]=useState(false);const [maxPriceETH,setMaxPriceETH]=useState('');const lastDetected=useRef('');const detectingKey=useRef('');
+  const [filtersOpen,setFiltersOpen]=useState(false);const [serverFilters,setServerFilters]=useState(null);const PAGE_SIZE=mobile?3:10;const COMPAT_LIMIT=50;const listing=useLoad(serverFilters===false?`/api/tasks?page=1&pageSize=${COMPAT_LIMIT}&search=${encodeURIComponent(search)}`:`/api/tasks?page=${page}&pageSize=${PAGE_SIZE}&status=${bucket}&search=${encodeURIComponent(search)}`,[page,bucket,search,serverFilters,PAGE_SIZE],'tasks.changed');const wallets=useLoad('/api/wallets',[],'wallets.changed');const contractInputRef=useRef(null);const [chain,setChain]=useState(profile.defaultChain||profile.supportedChains[0]);const [contractAddress,setContractAddress]=useState('');const [detectedName,setDetectedName]=useState('');const [detectedSeaDrop,setDetectedSeaDrop]=useState(false);const [quantity,setQuantity]=useState('1');const [maxPerWallet,setMaxPerWallet]=useState(null);const [priceETH,setPriceETH]=useState('');const [mintTime,setMintTime]=useState('');const [viaOpenSea,setViaOpenSea]=useState(false);const [detectedOpenSeaRecommendation,setDetectedOpenSeaRecommendation]=useState(false);const [stageType,setStageType]=useState('');const [stages,setStages]=useState([]);const [selectedStageKey,setSelectedStageKey]=useState('');const [liveMintStage,setLiveMintStage]=useState(null);const [stageLiveness,setStageLiveness]=useState({authoritative:false,isMinting:false,activeKey:''});const [scheduleWallet,setScheduleWallet]=useState('');const [detecting,setDetecting]=useState(false);const [detectionError,setDetectionError]=useState('');const [detectionRetryable,setDetectionRetryable]=useState(false);const [scheduleError,setScheduleError]=useState(null);const [submitting,setSubmitting]=useState(false);const [controlBusy,setControlBusy]=useState('');const [scheduleInfoOpen,setScheduleInfoOpen]=useState(false);const [autoReschedule,setAutoReschedule]=useState(false);const [acceptPriceChanges,setAcceptPriceChanges]=useState(false);const [allowedPriceIncreaseFiat,setAllowedPriceIncreaseFiat]=useState('');const lastDetected=useRef('');const detectingKey=useRef('');
   // The prototype's Schedule form has no price field, because it assumes the contract can be
   // priced automatically. Some cannot -- the server then rejects with a priceETH issue and there
   // is nowhere to type one, which left the form unsubmittable for those contracts. So the field
@@ -1545,7 +1570,7 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint,onSwitchToBatc
     setStageLiveness({authoritative:false,isMinting:false,activeKey:''});
     setViaOpenSea(false);setDetectedOpenSeaRecommendation(false);setStageType('');
     setMaxPerWallet(null);setPriceETH('');setMintTime('');setPriceIssue(null);setScheduleError(null);
-    setScheduleInfoOpen(false);setAutoReschedule(false);setAcceptPriceChanges(false);setMaxPriceETH('');
+    setScheduleInfoOpen(false);setAutoReschedule(false);setAcceptPriceChanges(false);setAllowedPriceIncreaseFiat('');
     setDetectionError('');setDetectionRetryable(false);setChain(profile.defaultChain||profile.supportedChains[0]);
   }
   function selectScheduleStage(stage){
@@ -1766,17 +1791,41 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint,onSwitchToBatc
       }
     }
     const detectedPriceWei=scheduledStage?.priceWei??(!viaOpenSea?ethToWei(priceETH)?.toString():null);
-    const priceCapWei=acceptPriceChanges?ethToWei(maxPriceETH):null;
-    if(acceptPriceChanges&&(maxPriceETH.trim()===''||priceCapWei===null)){
-      const detail='Enter the highest price per NFT this schedule may accept.';
-      setScheduleError({title:'Price limit required.',detail});notify(detail,{type:'info'});return;
-    }
-    if(acceptPriceChanges&&detectedPriceWei!==null&&detectedPriceWei!==undefined
-      &&priceCapWei<BigInt(detectedPriceWei)){
-      const detail='The price limit cannot be below the currently detected mint price.';
-      setScheduleError({title:'Raise the price limit.',detail});notify(detail,{type:'info'});return;
+    let priceCapWei=null;
+    if(acceptPriceChanges){
+      const displayCurrency=profile.displayCurrency||'USD';
+      const increase=Number(allowedPriceIncreaseFiat);
+      if(allowedPriceIncreaseFiat.trim()===''||!Number.isFinite(increase)||increase<=0){
+        const detail=`Enter how much more per NFT GhostMint may accept in ${displayCurrency}.`;
+        setScheduleError({title:'Price increase required.',detail});notify(detail,{type:'info'});return;
+      }
+      if(detectedPriceWei===null||detectedPriceWei===undefined){
+        const detail='GhostMint needs the current mint price before it can calculate a safe increase.';
+        setScheduleError({title:'Current price unavailable.',detail});notify(detail,{type:'info'});return;
+      }
     }
     setSubmitting(true);onCommitChange?.(true);try{
+      if(acceptPriceChanges){
+        const displayCurrency=profile.displayCurrency||'USD';
+        let latestQuotes;
+        try{latestQuotes=await api('/api/display-quotes');}
+        catch{
+          const detail=`A live ${displayCurrency} conversion is unavailable. Try again before saving this price increase.`;
+          setScheduleError({title:'Currency conversion unavailable.',detail});notify(detail,{type:'info'});return;
+        }
+        const priceQuote=latestQuotes?.displayCurrency===displayCurrency
+          ?quoteFor(latestQuotes,nativeSymbolForChain(chain),displayCurrency):null;
+        if(!priceQuote||priceQuote.currency!==displayCurrency||priceQuote.stale){
+          const detail=`A live ${displayCurrency} conversion is unavailable. Try again before saving this price increase.`;
+          setScheduleError({title:'Currency conversion unavailable.',detail});notify(detail,{type:'info'});return;
+        }
+        priceCapWei=schedulePriceCapWei({baselineWei:String(detectedPriceWei),
+          allowedIncreaseFiat:allowedPriceIncreaseFiat,quote:priceQuote});
+        if(priceCapWei===null){
+          const detail='Enter a valid positive price increase.';
+          setScheduleError({title:'Check the price increase.',detail});notify(detail,{type:'info'});return;
+        }
+      }
       const input=Object.fromEntries(new FormData(form));
       input.name=String(detectedName||scheduledStage?.label||`Mint ${shortHex(currentAddress)}`).slice(0,100);
       const scheduledViaOpenSea=scheduledStage
@@ -1808,7 +1857,7 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint,onSwitchToBatc
       input.acceptPriceChanges=acceptPriceChanges;
       if(detectedPriceWei!==null&&detectedPriceWei!==undefined)input.expectedPriceWeiPerItem=String(detectedPriceWei);
       if(acceptPriceChanges)input.maxPriceWeiPerItem=priceCapWei.toString();
-      await api('/api/tasks',{method:'POST',body:JSON.stringify(input)});setPriceIssue(null);setScheduleError(null);form.reset();setContractAddress('');setDetectedName('');setDetectedSeaDrop(false);setStages([]);setSelectedStageKey('');setLiveMintStage(null);setStageLiveness({authoritative:false,isMinting:false,activeKey:''});setDetectionError('');setDetectionRetryable(false);setQuantity('1');setMaxPerWallet(null);setPriceETH('');setMintTime('');setViaOpenSea(false);setDetectedOpenSeaRecommendation(false);setStageType('');setScheduleInfoOpen(false);setAutoReschedule(false);setAcceptPriceChanges(false);setMaxPriceETH('');lastDetected.current='';detectingKey.current='';notify(hasPhaseIdentity?'Task scheduled. Its time is the earliest check; minting waits for a live phase this wallet can use.':'Task scheduled. It will run automatically at the saved UTC time.',{type:'success'});listing.load();
+      await api('/api/tasks',{method:'POST',body:JSON.stringify(input)});setPriceIssue(null);setScheduleError(null);form.reset();setContractAddress('');setDetectedName('');setDetectedSeaDrop(false);setStages([]);setSelectedStageKey('');setLiveMintStage(null);setStageLiveness({authoritative:false,isMinting:false,activeKey:''});setDetectionError('');setDetectionRetryable(false);setQuantity('1');setMaxPerWallet(null);setPriceETH('');setMintTime('');setViaOpenSea(false);setDetectedOpenSeaRecommendation(false);setStageType('');setScheduleInfoOpen(false);setAutoReschedule(false);setAcceptPriceChanges(false);setAllowedPriceIncreaseFiat('');lastDetected.current='';detectingKey.current='';notify(hasPhaseIdentity?'Task scheduled. Its time is the earliest check; minting waits for a live phase this wallet can use.':'Task scheduled. It will run automatically at the saved UTC time.',{type:'success'});listing.load();
     }catch(value){const issue=value.issues?.find(entry=>entry.field==='priceETH');if(issue)setPriceIssue(issue.message);const feedback=scheduleSubmitError(value);setScheduleError(feedback);notify(`${feedback.title} ${feedback.detail}`,{type:'error'});}finally{setSubmitting(false);onCommitChange?.(false);}}async function control(id,action){try{await api(`/api/tasks/${id}/control`,{method:'POST',body:JSON.stringify({action,confirmation:action==='cancel'?'CONFIRM':undefined})});}catch(value){notify(value.message,{type:'error'});}}
   // Prototype docs/prototype-pages/mint.html:111-158. The Schedule tab is a .split: the form on
   // the left, the "Scheduled" list on the right. The old page-lead, the search toolbar, the chain
@@ -2023,10 +2072,17 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint,onSwitchToBatc
         {!liveMintStage&&!detecting&&ADDRESS_SHAPE.test(contractAddress.trim())&&lastDetected.current===contractAddress.trim().toLowerCase()&&(()=>{
           const selectedStage=stages.find(stage=>scheduleStageSelectionKey(stage)===selectedStageKey);
           const selectedChoice=selectedStage?stageChoice(selectedStage):null;
+          const unitPriceWei=selectedStage?.priceWei!==null&&selectedStage?.priceWei!==undefined
+            ?String(selectedStage.priceWei):(!viaOpenSea&&priceETH!==''?ethToWei(priceETH)?.toString():null);
+          const nativeSymbol=nativeSymbolForChain(chain);
+          const displayCurrency=profile.displayCurrency||'USD';
+          const priceQuote=quoteFor(profile.displayQuotes,nativeSymbol,displayCurrency);
+          const proposedPriceCap=acceptPriceChanges&&unitPriceWei!==null&&unitPriceWei!==undefined&&priceQuote
+            ?schedulePriceCapWei({baselineWei:unitPriceWei,allowedPriceIncreaseFiat,quote:priceQuote}):null;
           const unitPrice=selectedStage?.priceWei!==null&&selectedStage?.priceWei!==undefined
-            ?freeOrNativeAmount(selectedStage.priceWei,nativeSymbolForChain(chain))
+            ?freeOrNativeAmount(selectedStage.priceWei,nativeSymbol)
             :viaOpenSea?'Checked live at opening':priceIssue?'Price required':Number(priceETH)===0?'Free'
-              :priceETH?`${formatAdaptiveAmount(priceETH,{minDecimals:6})} ${nativeSymbolForChain(chain)}`:'Not available';
+              :priceETH?`${formatAdaptiveAmount(priceETH,{minDecimals:6})} ${nativeSymbol}`:'Not available';
           const stageOptions=stages.map(stage=>{
             const choice=stageChoice(stage);
             const stageName=scheduleStageDisplayName(stage);
@@ -2046,7 +2102,9 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint,onSwitchToBatc
             <div className="schedule-preview-grid">
               <div><span>Contract name</span><b>{detectedName||'Name unavailable'}</b></div>
               <div><span>Chain</span><b>{chainMeta(chain).label||chain}</b></div>
-              <div><span>Price</span><b>{unitPrice}</b></div>
+              <div><span>Price</span><b>{unitPrice}
+                {unitPriceWei!==null&&unitPriceWei!==undefined&&weiIsNonZero(unitPriceWei)&&<FiatAmount
+                  profile={profile} wei={unitPriceWei} symbol={nativeSymbol}/>}</b></div>
               <div><span>Wallet</span><b>{scheduleWallet||'Choose below'}</b></div>
               <div><span>Quantity</span><b>{quantity||'—'}</b></div>
               <div><span>Eligibility</span><b>{selectedChoice?.tag||'Choose a stage'}</b></div>
@@ -2067,15 +2125,22 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint,onSwitchToBatc
               </div>
               <div className="schedule-policy-row">
                 <ScheduleSwitch checked={acceptPriceChanges} labelledBy="schedule-auto-price-label"
-                  onChange={checked=>{setAcceptPriceChanges(checked);if(checked&&!maxPriceETH){const current=selectedStage?.priceWei!=null?weiToEthDisplay(selectedStage.priceWei):priceETH;setMaxPriceETH(current||'');}}}/>
+                  onChange={checked=>{setAcceptPriceChanges(checked);if(!checked)setAllowedPriceIncreaseFiat('');}}/>
                 <span className="schedule-policy-title" id="schedule-auto-price-label"><b>Allow a higher mint price</b></span>
                 <InfoPopover id="schedule-auto-price-help" label="About automatic price changes">
-                  Set the highest price per NFT you approve. GhostMint accepts an increase only up to that amount and tells you. Above it, the task pauses and asks first.
+                  Choose how much more per NFT you permit in {displayCurrency}. GhostMint saves one exact {nativeSymbol} cap. A higher price pauses the task and asks first.
                 </InfoPopover>
               </div>
-              {acceptPriceChanges&&<label className="fl schedule-policy-field"><span>Highest price per NFT <span>· {nativeSymbolForChain(chain)}</span></span>
-                <input className="in tab" type="number" min="0" step="any" value={maxPriceETH}
-                  placeholder="Highest price you approve" onChange={event=>setMaxPriceETH(event.target.value)}/></label>}
+              {acceptPriceChanges&&<label className="fl schedule-policy-field"><span>Allowed increase <span>· {displayCurrency}</span></span>
+                <div className="schedule-price-increase-input"><span aria-hidden="true">+</span><input className="in tab"
+                  type="number" min="0" step="0.01" inputMode="decimal" value={allowedPriceIncreaseFiat}
+                  placeholder="5.00" onChange={event=>setAllowedPriceIncreaseFiat(event.target.value)}/></div>
+                {!priceQuote?<div className="schedule-policy-help">Live {displayCurrency} conversion is unavailable. This option cannot be saved yet.</div>
+                  :priceQuote.stale?<div className="schedule-policy-help">The cached conversion is stale. Reconnect before saving this option.</div>
+                    :proposedPriceCap!==null?<div className="schedule-policy-help">Hard cap: {freeOrNativeAmount(proposedPriceCap,nativeSymbol)} <FiatAmount
+                      profile={profile} wei={proposedPriceCap} symbol={nativeSymbol} showUnavailable={false}/>. The native cap will not change with exchange rates.</div>
+                      :<div className="schedule-policy-help">Enter how much more than the detected price GhostMint may accept.</div>}
+              </label>}
             </div>
           </section>;
         })()}
@@ -2112,6 +2177,8 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint,onSwitchToBatc
           ?<label className="fl"><span>Price per mint <span style={{color:'var(--faint)',fontWeight:500}}>· {nativeSymbolForChain(chain)}</span></span>
              <input className="in tab bad" name="priceETH" type="number" step="any" min="0" required
                 placeholder="e.g. 0.08" value={priceETH} onChange={e=>setPriceETH(e.target.value)}/>
+             {priceETH!==''&&<FiatAmount profile={profile} nativeAmount={priceETH}
+               symbol={nativeSymbolForChain(chain)} showUnavailable={false}/>}
               <div className="fielderr">{ALERT_ICON}{priceIssue}</div></label>
           :!viaOpenSea&&priceETH?<input type="hidden" name="priceETH" value={priceETH}/>:null)}
         <input type="hidden" name="chain" value={chain}/>
@@ -3119,6 +3186,32 @@ function LowBalancePreferencePanel({profile,onProfileChange}){
         tag:label.includes('recommended')?'Recommended':null}))}/>
   </div>;
 }
+function DisplayCurrencyPanel({profile,onProfileChange}){
+  const [value,setValue]=useState(profile.displayCurrency||'USD');
+  const [busy,setBusy]=useState(false);
+  useEffect(()=>setValue(profile.displayCurrency||'USD'),[profile.displayCurrency]);
+  async function change(event){
+    const next=event.target.value;const previous=value;setValue(next);setBusy(true);
+    try{
+      const saved=await api('/api/profile/display-currency',{method:'PUT',
+        body:JSON.stringify({displayCurrency:next})});
+      setValue(saved.displayCurrency);
+      onProfileChange?.(current=>({...current,displayCurrency:saved.displayCurrency}));
+      notify(`Display currency changed to ${saved.displayCurrency}.`,{type:'success'});
+    }catch(error){setValue(previous);notify(error.message,{type:'error'});}
+    finally{setBusy(false);}
+  }
+  return <div className="panel settings-display-currency" aria-busy={busy||undefined}>
+    <div className="settings-panel-heading"><div><p className="eyebrow">Money display</p>
+      <h2>Display currency</h2></div><span className="pill">Display only</span></div>
+    <p>Shows an approximate local-currency value beside native-token amounts. Transactions,
+      balances, limits, and signatures always remain in the chain&apos;s native token.</p>
+    <SelectMenu className="fl" label="Preferred currency" value={value} disabled={busy}
+      onChange={change} options={DISPLAY_CURRENCY_OPTIONS.map(option=>({
+        value:option.value,label:`${option.symbol} · ${option.label}`,tag:option.value,
+      }))}/>
+  </div>;
+}
 // The ONLY place the bot action gate can be changed. Deliberately not a Telegram or Discord
 // control: if the gate could be switched off from chat, whoever picked up an unlocked phone would
 // switch it off and then remove the wallets, and the gate would protect nothing. The dashboard is
@@ -3274,6 +3367,7 @@ function Settings({profile,onThemeChange,onProfileChange}){
       </div>
       <DefaultChainPanel profile={profile} onProfileChange={onProfileChange}/>
       <LowBalancePreferencePanel profile={profile} onProfileChange={onProfileChange}/>
+      <DisplayCurrencyPanel profile={profile} onProfileChange={onProfileChange}/>
       <TransactionModePanel profile={profile}/>
       <SniperTimingSettingsPanel/>
       <BotSecurityPanel profile={profile} onProfileChange={onProfileChange}/>
@@ -3369,7 +3463,7 @@ function PreviewExpiry({preview,onExpire,onResimulate}){
 // simulation for this exact wallet/call; compatibility fallbacks only reconstruct values that the
 // older API already returned (gasLimit x fee, or the wallet's balance on the target chain).
 function MintTransactionPreview({title='Transaction preview',name,method,chain,quantity,preview,
-  simulation,wallet,simulationLabel='Not run',reason}){
+  simulation,wallet,profile,simulationLabel='Not run',reason}){
   const metrics=mintPreviewMetrics({simulation,preview,wallet,chain});
   const symbol=nativeSymbolForChain(chain);
   const technicalMethod=preview?.methodSignature||method||'';
@@ -3379,14 +3473,19 @@ function MintTransactionPreview({title='Transaction preview',name,method,chain,q
       <tr><td>Name</td><td>{name||'—'}</td></tr>
       <tr><td>Chain</td><td>{chain||'—'}</td></tr>
       <tr><td>Quantity</td><td>{quantity??'—'}</td></tr>
-      <tr><td>Mint price</td><td>{freeOrNativeAmount(metrics.nativeValueWei,symbol)}</td></tr>
+      <tr><td>Mint price</td><td>{freeOrNativeAmount(metrics.nativeValueWei,symbol)}
+        {weiIsNonZero(metrics.nativeValueWei)&&<FiatAmount profile={profile}
+          wei={metrics.nativeValueWei} symbol={symbol}/>}</td></tr>
       <tr><td>Est. gas</td><td>{metrics.estimatedGasWei!==null
-        ?`${weiAmountText(metrics.estimatedGasWei)} ${symbol}`:'—'}</td></tr>
+        ?<>{weiAmountText(metrics.estimatedGasWei)} {symbol}<FiatAmount profile={profile}
+          wei={metrics.estimatedGasWei} symbol={symbol}/></>:'—'}</td></tr>
       <tr><td>Wallet balance</td><td style={{color:metrics.balanceInsufficient?'var(--loss-text)':undefined}}>
-        {metrics.walletBalanceWei!==null?`${weiAmountText(metrics.walletBalanceWei)} ${symbol}`:'—'}</td></tr>
+        {metrics.walletBalanceWei!==null?<>{weiAmountText(metrics.walletBalanceWei)} {symbol}
+          <FiatAmount profile={profile} wei={metrics.walletBalanceWei} symbol={symbol}/></>:'—'}</td></tr>
       <tr><td>Simulation</td><td>{simulationLabel}</td></tr>
       <tr className="tot"><td>Total debit</td><td>{metrics.totalDebitWei!==null
-        ?`${weiAmountText(metrics.totalDebitWei)} ${symbol}`:'—'}</td></tr>
+        ?<>{weiAmountText(metrics.totalDebitWei)} {symbol}<FiatAmount profile={profile}
+          wei={metrics.totalDebitWei} symbol={symbol}/></>:'—'}</td></tr>
     </tbody></table>
     {technicalMethod&&<details className="mint-technical-details">
       <summary>Technical details</summary>
@@ -3404,7 +3503,11 @@ function batchAggregateAmount(metric,symbol,{knownBalance=false,zeroLabel=null}=
   }
   return metric?.unknownCount?`— · ${metric.unknownCount} unavailable`:'—';
 }
-function BatchTransactionPreview({model,name,method,quantity}){
+function BatchAggregateFiat({metric,symbol,profile}){
+  if(metric?.wei===null||metric?.wei===undefined)return null;
+  return <FiatAmount profile={profile} wei={metric.wei} symbol={symbol} showUnavailable={false}/>;
+}
+function BatchTransactionPreview({model,name,method,quantity,profile}){
   const [detailsOpen,setDetailsOpen]=useState(false);
   const detailsId='batch-wallet-preview-details';
   const detectedMethods=[...new Set(model.rows.map(row=>row.methodSignature).filter(Boolean))];
@@ -3430,32 +3533,40 @@ function BatchTransactionPreview({model,name,method,quantity}){
       <tr><td>Chain</td><td>{chainSummary}</td></tr>
       <tr><td>Quantity per wallet</td><td>{quantity??'—'}</td></tr>
       {primaryGroup&&<>
-        <tr><td>Mint value · ready</td><td>{batchAggregateAmount(primaryGroup.readyMintValue,primaryGroup.symbol,{zeroLabel:'Free'})}</td></tr>
-        <tr><td>Total estimated gas</td><td>{batchAggregateAmount(primaryGroup.readyEstimatedGas,primaryGroup.symbol)}</td></tr>
+        <tr><td>Mint value · ready</td><td>{batchAggregateAmount(primaryGroup.readyMintValue,primaryGroup.symbol,{zeroLabel:'Free'})}
+          <BatchAggregateFiat metric={primaryGroup.readyMintValue} symbol={primaryGroup.symbol} profile={profile}/></td></tr>
+        <tr><td>Total estimated gas</td><td>{batchAggregateAmount(primaryGroup.readyEstimatedGas,primaryGroup.symbol)}
+          <BatchAggregateFiat metric={primaryGroup.readyEstimatedGas} symbol={primaryGroup.symbol} profile={profile}/></td></tr>
         <tr className={primaryGroup.underfundedCount?'batch-balance-danger':undefined}><td>
           <span className="batch-balance-label">Combined balance
             <span className="batch-balance-help"><button type="button" aria-label="Why wallet balances are separate"
               aria-describedby="batch-balance-help-primary">{INFO_ICON}</button>
               <span className="batch-balance-tooltip" id="batch-balance-help-primary" role="tooltip">{balanceHelp}</span></span>
           </span></td><td>{batchAggregateAmount(primaryGroup.combinedBalance,primaryGroup.symbol,{knownBalance:true})}
+            <BatchAggregateFiat metric={primaryGroup.combinedBalance} symbol={primaryGroup.symbol} profile={profile}/>
             {primaryGroup.underfundedCount>0&&<span className="batch-underfunded-count"> · {primaryGroup.underfundedCount} underfunded</span>}</td></tr>
-        <tr className="tot"><td>Total estimated debit</td><td>{batchAggregateAmount(primaryGroup.readyEstimatedDebit,primaryGroup.symbol)}</td></tr>
+        <tr className="tot"><td>Total estimated debit</td><td>{batchAggregateAmount(primaryGroup.readyEstimatedDebit,primaryGroup.symbol)}
+          <BatchAggregateFiat metric={primaryGroup.readyEstimatedDebit} symbol={primaryGroup.symbol} profile={profile}/></td></tr>
       </>}
     </tbody></table>
     {!primaryGroup&&<div className="batch-asset-totals">
       {model.groups.map(group=><section className="batch-asset-total" key={group.key}>
         <div className="batch-asset-title"><span>{chainMeta(group.chain).label||'Unknown network'} · {group.symbol}</span></div>
         <table className="led"><tbody>
-          <tr><td>Mint value · ready</td><td>{batchAggregateAmount(group.readyMintValue,group.symbol,{zeroLabel:'Free'})}</td></tr>
-          <tr><td>Total estimated gas</td><td>{batchAggregateAmount(group.readyEstimatedGas,group.symbol)}</td></tr>
+          <tr><td>Mint value · ready</td><td>{batchAggregateAmount(group.readyMintValue,group.symbol,{zeroLabel:'Free'})}
+            <BatchAggregateFiat metric={group.readyMintValue} symbol={group.symbol} profile={profile}/></td></tr>
+          <tr><td>Total estimated gas</td><td>{batchAggregateAmount(group.readyEstimatedGas,group.symbol)}
+            <BatchAggregateFiat metric={group.readyEstimatedGas} symbol={group.symbol} profile={profile}/></td></tr>
           <tr className={group.underfundedCount?'batch-balance-danger':undefined}>
             <td><span className="batch-balance-label">Combined balance
               <span className="batch-balance-help"><button type="button" aria-label={`Why ${chainMeta(group.chain).label||'these'} wallet balances are separate`}
                 aria-describedby={`batch-balance-help-${group.key.replace(/[^a-z0-9_-]/gi,'-')}`}>{INFO_ICON}</button>
                 <span className="batch-balance-tooltip" id={`batch-balance-help-${group.key.replace(/[^a-z0-9_-]/gi,'-')}`} role="tooltip">{balanceHelp}</span></span>
             </span></td><td>{batchAggregateAmount(group.combinedBalance,group.symbol,{knownBalance:true})}
+              <BatchAggregateFiat metric={group.combinedBalance} symbol={group.symbol} profile={profile}/>
               {group.underfundedCount>0&&<span className="batch-underfunded-count"> · {group.underfundedCount} underfunded</span>}</td></tr>
-          <tr className="tot"><td>Total estimated debit</td><td>{batchAggregateAmount(group.readyEstimatedDebit,group.symbol)}</td></tr>
+          <tr className="tot"><td>Total estimated debit</td><td>{batchAggregateAmount(group.readyEstimatedDebit,group.symbol)}
+            <BatchAggregateFiat metric={group.readyEstimatedDebit} symbol={group.symbol} profile={profile}/></td></tr>
         </tbody></table>
       </section>)}
     </div>}
@@ -3476,7 +3587,9 @@ function BatchTransactionPreview({model,name,method,quantity}){
         return <div className={`batch-wallet-detail-card ${stateClass}`} role="listitem" key={row.label}
           aria-label={`${row.label}. ${stateLabel}. Balance ${balance}.`}>
           <div className="batch-wallet-detail-head"><span className="batch-wallet-state-dot" aria-hidden="true"/>
-            <strong>{row.label}</strong><span className="batch-wallet-detail-balance">{balance}</span></div>
+            <strong>{row.label}</strong><span className="batch-wallet-detail-balance">{balance}
+              {row.metrics.walletBalanceWei!==null&&<FiatAmount profile={profile}
+                wei={row.metrics.walletBalanceWei} symbol={row.symbol} showUnavailable={false}/>}</span></div>
           {(detectedMethods.length>1||model.groups.length>1)&&<div className="batch-wallet-technical">
             <span>{chainMeta(row.chain).label||'Unknown network'}</span><code>{row.methodSignature||method||'—'}</code></div>}
           {row.reason&&!reasonIsGrouped&&<p className="batch-wallet-reason"><b>Why this wallet was skipped:</b> {row.reason}</p>}
@@ -3504,7 +3617,7 @@ function nativeBalance(wallet,chain,preferredChain){
   if(!match||match.balance===null||match.balance===undefined)return null;
   return {amount:Number(match.balance),symbol:match.symbol||'ETH'};
 }
-function MintBatch({active=true,onGoWallets,onSwitchToSchedule,onCommitChange,preferredChain}){
+function MintBatch({profile,active=true,onGoWallets,onSwitchToSchedule,onCommitChange,preferredChain}){
   const wallets=useLoad('/api/wallets',[],'wallets.changed');
   const contractInputRef=useRef(null);
   const [selected,setSelected]=useState([]);
@@ -3791,6 +3904,8 @@ function MintBatch({active=true,onGoWallets,onSwitchToSchedule,onCommitChange,pr
           <input className="in tab" type="number" step="any" min="0" required value={detectedPrice??''}
             placeholder="Enter the price per NFT — use 0 only if free"
             onChange={event=>{batchManualPriceOverride.current={contract:contractAddress.trim().toLowerCase(),value:event.target.value};setDetectedPrice(event.target.value);invalidateBatchPreview();}}/>
+          {detectedPrice!==null&&detectedPrice!==''&&<FiatAmount profile={profile}
+            nativeAmount={detectedPrice} symbol={nativeSymbolForChain(detectedChain||profile.defaultChain)} showUnavailable={false}/>}
           <div className="nt w" role="status">{WARN_TRIANGLE_ICON}<div><b>Mint price needed.</b> The contract did not publish one GhostMint could read.</div></div>
         </label>}
         {batchError&&<div className="nt w" role="status">{WARN_TRIANGLE_ICON}<div><b>{batchError.title}</b> {batchError.detail}</div></div>}
@@ -3854,7 +3969,7 @@ function MintBatch({active=true,onGoWallets,onSwitchToSchedule,onCommitChange,pr
                    setPreviewExpired(true);notify('Batch preview expired. Re-simulate before confirming.',{type:'info'});
                  }} onResimulate={simulate}/>}
                  <BatchTransactionPreview model={batchPreviewModel} name={collectionName}
-                   method={methodSignature} quantity={quantity}/>
+                   method={methodSignature} quantity={quantity} profile={profile}/>
                    {!preview.items.length&&(()=>{
                      // A repeated reason is shown once only when every selected wallet has the
                      // same code and friendly explanation. Contract/system issues are additionally
@@ -3991,14 +4106,14 @@ function Mint({profile,go,tab,onTab,visible=true}){
         hidden attribute removes inactive panels from layout and accessibility while React keeps
         their state and in-flight request alive. */}
     <div className="mint-tab-panel" hidden={active!=='now'}>
-      <Minting active={visible&&active==='now'} onSwitchToBatch={()=>onTab('batch')} onSwitchToSchedule={()=>onTab('schedule')} onGoWallets={()=>go('Wallets')} onCommitChange={trackCommit}/>
+      <Minting profile={profile} active={visible&&active==='now'} onSwitchToBatch={()=>onTab('batch')} onSwitchToSchedule={()=>onTab('schedule')} onGoWallets={()=>go('Wallets')} onCommitChange={trackCommit}/>
     </div>
     <div className="mint-tab-panel" hidden={active!=='schedule'}>
       <Tasks profile={profile} active={visible&&active==='schedule'} onCommitChange={trackCommit}
         onSwitchToMint={()=>onTab('now')} onSwitchToBatch={()=>onTab('batch')}/>
     </div>
     <div className="mint-tab-panel" hidden={active!=='batch'}>
-      <MintBatch active={visible&&active==='batch'} preferredChain={profile.defaultChain}
+      <MintBatch profile={profile} active={visible&&active==='batch'} preferredChain={profile.defaultChain}
         onGoWallets={()=>go('Wallets')} onSwitchToSchedule={()=>onTab('schedule')} onCommitChange={trackCommit}/>
     </div>
     <div className="mint-tab-panel" hidden={active!=='presets'}>
@@ -5295,7 +5410,8 @@ function AccountMenu({profile,theme,initial,go,onChangeTheme,onLogout}){
     </div>}
   </div>;
 }
-function Shell({profile,onLogout,onProfileChange}){const navBadges=useNavBadges();const [route,setRoute]=useState(pageFromLocation);const {page,tab,target}=route;const live=useLiveSocket();
+function Shell({profile,onLogout,onProfileChange}){const navBadges=useNavBadges();const [route,setRoute]=useState(pageFromLocation);const {page,tab,target}=route;const live=useLiveSocket();const displayQuotes=useLoad('/api/display-quotes',[profile.displayCurrency]);
+  useEffect(()=>{const timer=setInterval(displayQuotes.load,5*60_000);return()=>clearInterval(timer);},[displayQuotes.load]);
   // Mint is a workspace rather than a disposable route. Once visited, keep it mounted while the
   // user checks Wallets, History, or another page so pasted addresses, selected wallets, previews,
   // and in-flight contract lookups are still exactly where they were on return.
@@ -5318,7 +5434,7 @@ function Shell({profile,onLogout,onProfileChange}){const navBadges=useNavBadges(
     }
     window.addEventListener('keydown',onKey);
     return()=>window.removeEventListener('keydown',onKey);
-  },[]);const [navOpen,setNavOpen]=useState(false);const [moreOpen,setMoreOpen]=useState(false);const mobile=useIsMobile();const [theme,setTheme]=useState(profile.theme||'ghost-mint');useEffect(()=>{document.documentElement.dataset.theme=theme;},[theme]);useEffect(()=>{function onPopState(){setRoute(pageFromLocation());}window.addEventListener('popstate',onPopState);return()=>window.removeEventListener('popstate',onPopState);},[]);useEffect(()=>{function onMessage(event){if(event.detail?.type==='identity.changed')api('/api/profile').then(onProfileChange).catch(()=>{});}window.addEventListener('ghostmint-ws',onMessage);return()=>window.removeEventListener('ghostmint-ws',onMessage);},[onProfileChange]);async function changeTheme(next){const previous=theme;setTheme(next);try{await api('/api/profile/theme',{method:'PUT',body:JSON.stringify({theme:next})});}catch{setTheme(previous);}}const View=VIEWS[page];const isRail=RAIL_THEMES.has(theme);const viewProfile=profile.theme===theme?profile:{...profile,theme};
+  },[]);const [navOpen,setNavOpen]=useState(false);const [moreOpen,setMoreOpen]=useState(false);const mobile=useIsMobile();const [theme,setTheme]=useState(profile.theme||'ghost-mint');useEffect(()=>{document.documentElement.dataset.theme=theme;},[theme]);useEffect(()=>{function onPopState(){setRoute(pageFromLocation());}window.addEventListener('popstate',onPopState);return()=>window.removeEventListener('popstate',onPopState);},[]);useEffect(()=>{function onMessage(event){if(event.detail?.type==='identity.changed')api('/api/profile').then(onProfileChange).catch(()=>{});}window.addEventListener('ghostmint-ws',onMessage);return()=>window.removeEventListener('ghostmint-ws',onMessage);},[onProfileChange]);async function changeTheme(next){const previous=theme;setTheme(next);try{await api('/api/profile/theme',{method:'PUT',body:JSON.stringify({theme:next})});}catch{setTheme(previous);}}const View=VIEWS[page];const isRail=RAIL_THEMES.has(theme);const viewProfile={...profile,theme,displayQuotes:displayQuotes.data};
   // The prototype's .av carries a single letter ("D" for deon). Nothing in /api/profile is
   // guaranteed non-empty, so this falls through displayName -> username -> userId and only then
   // to a neutral glyph, rather than rendering an empty circle.

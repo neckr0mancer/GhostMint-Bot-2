@@ -50,7 +50,9 @@ const { OPENSEA_VALIDATED_BUILDER_V1, configurationFingerprint, configurationSum
   evaluateScheduleObservation } = require('./scheduler/scheduleChangePolicy');
 const { deliverFailureSideEffects, scheduledFailureFeedback } = require('./scheduler/scheduledFailureFeedback');
 const { SCHEDULE_PHASE_WAIT, createSchedulerWorker, errorReason, executionAttemptCount } = require('./scheduler/schedulerWorker');
-const { DECISION_REASONS, resolveScheduledPhase } = require('./scheduler/scheduledPhaseResolver');
+const { DECISION_REASONS, hasStableProviderStageIdentity, matchSelectedStage,
+  normalizeOpenSeaDrop, resolveExactStageProviderOutage,
+  resolveScheduledPhase } = require('./scheduler/scheduledPhaseResolver');
 const { classifySeaDropWindow } = require('./scheduler/scheduledValidity');
 const { liveFeeRecipient, opaquePublicSimulationReason, publicMintCapacity,
   publicStageClock } = require('./scheduler/scheduledPublicPreflight');
@@ -347,6 +349,8 @@ function phaseIdentity(stage) {
 function phaseTerminalError(decision) {
   const messages = {
     [DECISION_REASONS.DEADLINE_PASSED]: 'The eligibility window ended before this wallet could mint. Nothing was broadcast.',
+    [DECISION_REASONS.PROVIDER_OUTAGE_EXPIRED]: 'Mint-stage data stayed unavailable past the one-hour safety window. Nothing was broadcast.',
+    [DECISION_REASONS.STAGE_IDENTITY_REQUIRED]: 'This schedule has no verified provider stage ID, so time changes cannot be followed safely. Nothing was broadcast.',
     [DECISION_REASONS.STAGE_REMOVED]: 'The selected mint phase is no longer available. Nothing was broadcast.',
     [DECISION_REASONS.STAGE_AMBIGUOUS]: 'The selected mint phase can no longer be identified safely. Nothing was broadcast.',
     [DECISION_REASONS.STAGE_ENDED]: 'The selected mint phase ended before this wallet could mint. Nothing was broadcast.',
@@ -363,7 +367,14 @@ function phaseWaitError(decision) {
     ? `Waiting for the ${phaseName(nextStage)} phase to go live for this wallet.`
     : 'Waiting to confirm the live mint phase for this wallet.'));
   error.code = SCHEDULE_PHASE_WAIT;
-  error.phaseDeferral = { retryAt:decision.retryAt, deadline:decision.deadline };
+  error.phaseDeferral = { retryAt:decision.retryAt };
+  // Some retry cutoffs (notably the exact-stage provider-outage grace) are deliberately ephemeral.
+  // Persisting such a cutoff as eligibility_deadline would add the grace again on every claim and
+  // could keep a schedule alive forever. Ordinary phase decisions continue to persist deadlines.
+  if(decision.persistDeadline!==false&&decision.deadline!==null&&decision.deadline!==undefined
+    &&decision.deadline!==''&&Number.isFinite(Number(decision.deadline))){
+    error.phaseDeferral.deadline=Number(decision.deadline);
+  }
   if (nextStage) Object.assign(error.phaseDeferral, {
     stageUuid:nextStage.uuid ?? null, stageLabel:nextStage.label ?? null,
     stageType:nextStage.stageType ?? null,
@@ -499,9 +510,44 @@ function decodedMintConfiguration(decoded, extras={}) {
     authorization:authorization?`${authorization.name}: ${authorization.value}`:null});
 }
 
+async function observeExactStageBeforeDeadline(task,drop){
+  const normalizedDrop=normalizeOpenSeaDrop(drop);
+  // A null drop means the provider is unavailable, not that the stage was removed. The caller
+  // handles that through the fixed outage grace before asking this helper to match an identity.
+  if(!normalizedDrop)return;
+  const selected=matchSelectedStage(task,normalizedDrop.stages);
+  if(!selected.stage){
+    // Approval cannot repair a missing/ambiguous persisted UUID: the user would approve, the same
+    // unchanged UUID would be claimed again, and the task would pause forever. Fail closed until a
+    // future explicit replacement-stage workflow can atomically adopt a verified new identity.
+    throw phaseTerminalError({reason:selected.reason||DECISION_REASONS.STAGE_IDENTITY_REQUIRED});
+  }
+  await enforceScheduledChangePolicy(task,{
+    openingAt:Number.isFinite(Number(selected.stage.startAt))?Number(selected.stage.startAt):null,
+    priceWeiPerItem:selected.stage.priceWei??null,
+    source:'opensea-stage',
+  });
+}
+
 async function refreshScheduledOpenSeaPhase(task, chain, expectedPhaseIdentity = null) {
-  enforceEligibilityDeadline(task);
+  // An opted-in exact-stage task is allowed to follow the same authoritative OpenSea stage beyond
+  // the deadline calculated from its previous opening. Fetch and match that persisted identity
+  // before applying the old deadline, otherwise the very postponement the user authorised can
+  // never be observed. Every bounded/legacy policy still fails at the original deadline first.
+  const requestsExactStage=task.timeChangePolicy==='auto_follow_stage';
+  const followsExactStage=requestsExactStage&&hasStableProviderStageIdentity(task);
+  // A label/type can be reused by a replacement stage. Existing legacy rows that opted into exact
+  // following without a provider ID therefore fail closed instead of silently following whichever
+  // similarly named phase happens to be unique today.
+  if(requestsExactStage&&!followsExactStage){
+    throw phaseTerminalError({reason:DECISION_REASONS.STAGE_IDENTITY_REQUIRED});
+  }
+  if(!followsExactStage)enforceEligibilityDeadline(task);
   const drop = await openSeaService.getDrop(chain, task.contract);
+  if(followsExactStage&&!normalizeOpenSeaDrop(drop)){
+    enforcePhaseDecision(resolveExactStageProviderOutage({task,now:Date.now()}));
+  }
+  if(followsExactStage)await observeExactStageBeforeDeadline(task,drop);
   const decision = resolveScheduledPhase({ task, drop, now:Date.now() });
   // While waiting, observe the persisted target stage, never an unrelated earlier active phase.
   // Once ready, observe the active stage because that is the exact phase whose call will execute.
@@ -4698,6 +4744,7 @@ const botCommands = createBotCommandService({
   exportKeystore: async ({ wallet, password }) => new ethers.Wallet(decryptPK(wallet)).encrypt(password),
 });
 const dashboardApi=createDashboardApi({auth:dashboardAuth,identityRepository,commands:botCommands,
+  priceFeedService,
   securityAudit:botSecurityRepository,broadcast:(userId,message)=>dashboardWebSockets.broadcastToUser(userId,message),
   broadcastToUsers:(userIds,message)=>dashboardWebSockets.broadcastToUsers(userIds,message),
   notifyUser,

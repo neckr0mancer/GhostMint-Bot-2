@@ -103,6 +103,39 @@ test('natural OpenSea phase advances move the reservation before schedule-change
     'the phase wait must carry the concrete replacement stage to the atomic repository path');
 });
 
+test('exact-stage followers refresh the authoritative stage before applying their old deadline',()=>{
+  const source=fs.readFileSync(path.join(__dirname,'..','src','server.js'),'utf8');
+  const helperStart=source.indexOf('async function observeExactStageBeforeDeadline');
+  const helperEnd=source.indexOf('\nasync function refreshScheduledOpenSeaPhase',helperStart);
+  const helper=source.slice(helperStart,helperEnd);
+  const start=source.indexOf('async function refreshScheduledOpenSeaPhase');
+  const end=source.indexOf('\nasync function refreshScheduledPublicPhase',start);
+  const branch=source.slice(start,end);
+  const fetch=branch.indexOf('openSeaService.getDrop');
+  const observe=branch.indexOf('observeExactStageBeforeDeadline');
+  const resolve=branch.indexOf('resolveScheduledPhase');
+  assert.ok(fetch>=0&&observe>fetch&&resolve>observe,
+    'exact-stage refresh must match the persisted stage before the old deadline can terminate it');
+  assert.match(helper,/matchSelectedStage/);
+  assert.doesNotMatch(helper,/stageMissing\s*:\s*true/,
+    'approval cannot repair a missing UUID, so final exact-stage matching must fail terminally');
+  assert.match(helper,/phaseTerminalError\(\{reason:selected\.reason/,
+    'a removed or ambiguous exact UUID must fail closed without an approval loop');
+  assert.match(branch,/if\(!followsExactStage\)enforceEligibilityDeadline\(task\)/,
+    'bounded and legacy schedules must retain their original deadline gate');
+  assert.match(helper,/if\(!normalizedDrop\)return/,
+    'an unavailable provider must remain retryable rather than looking like a removed stage');
+  assert.match(branch,/requestsExactStage&&!followsExactStage/,
+    'label/type-only legacy tasks must fail closed instead of following a replacement stage');
+  assert.match(branch,/resolveExactStageProviderOutage/,
+    'an unavailable provider at the former deadline must use the bounded outage grace');
+  const waitStart=source.indexOf('function phaseWaitError');
+  const waitEnd=source.indexOf('\nfunction scheduleAllowanceRefreshError',waitStart);
+  const waitBranch=source.slice(waitStart,waitEnd);
+  assert.match(waitBranch,/decision\.persistDeadline!==false/,
+    'the outage cutoff must not be persisted as a repeatedly growing eligibility deadline');
+});
+
 test('advisory preflights do not create an approval loop when a stage match is missing or ambiguous',()=>{
   const source=fs.readFileSync(path.join(__dirname,'..','src','server.js'),'utf8');
   const start=source.indexOf('const evaluateScheduledPreflight=createScheduledPreflightEvaluator');

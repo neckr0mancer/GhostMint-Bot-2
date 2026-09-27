@@ -11,6 +11,7 @@ const ELIGIBILITY_MODES = Object.freeze({
 const DECISION_REASONS = Object.freeze({
   READY: 'ACTIVE_STAGE_READY',
   DROP_UNAVAILABLE: 'DROP_UNAVAILABLE',
+  PROVIDER_OUTAGE_EXPIRED: 'STAGE_PROVIDER_OUTAGE_EXPIRED',
   TARGET_NOT_ACTIVE: 'TARGET_STAGE_NOT_ACTIVE',
   EARLIER_STAGE_ACTIVE: 'EARLIER_STAGE_ACTIVE',
   DEADLINE_REQUIRED: 'ELIGIBILITY_DEADLINE_REQUIRED',
@@ -25,6 +26,12 @@ const DECISION_REASONS = Object.freeze({
 
 const DEFAULT_RECHECK_MS = 5_000;
 const MAX_RECHECK_MS = 60_000;
+// Exact-stage following may reach the former eligibility deadline while the stage provider is
+// temporarily unavailable. Give the provider one bounded hour to reveal a genuine postponement,
+// but never persist this grace as a new eligibility deadline: doing so on every retry would turn a
+// temporary outage into an unbounded schedule. No transaction can be built or broadcast during
+// this grace because there is no authoritative stage snapshot.
+const EXACT_STAGE_PROVIDER_OUTAGE_GRACE_MS = 60 * 60_000;
 
 function nonEmpty(value) {
   if (typeof value !== 'string') return null;
@@ -103,6 +110,10 @@ function taskIdentity(task) {
     stageType: nonEmpty(task?.stageType ?? task?.stage_type),
     label: nonEmpty(task?.stageLabel ?? task?.stage_label ?? task?.phaseLabel ?? task?.phase_label),
   };
+}
+
+function hasStableProviderStageIdentity(task) {
+  return Boolean(taskIdentity(task).uuid);
 }
 
 function sameStage(left, right) {
@@ -220,6 +231,34 @@ function phaseRecheckMs(task) {
   return Math.min(MAX_RECHECK_MS, DEFAULT_RECHECK_MS * (2 ** Math.min(waits, 4)));
 }
 
+function resolveExactStageProviderOutage({ task, now, recheckMs = null } = {}) {
+  const normalizedNow = epochMs(now);
+  if (normalizedNow === null) throw new TypeError('now must be a valid timestamp');
+  const deadline = epochMs(task?.eligibilityDeadline ?? task?.eligibility_deadline);
+  if (deadline === null) return terminal(DECISION_REASONS.DEADLINE_REQUIRED, { deadline:null });
+  if (task?.timeChangePolicy !== 'auto_follow_stage' || !hasStableProviderStageIdentity(task)) {
+    return terminal(DECISION_REASONS.STAGE_IDENTITY_REQUIRED, { deadline });
+  }
+  const outageDeadline = deadline + EXACT_STAGE_PROVIDER_OUTAGE_GRACE_MS;
+  if (normalizedNow >= outageDeadline) {
+    return terminal(DECISION_REASONS.PROVIDER_OUTAGE_EXPIRED, {
+      deadline, outageDeadline, providerUnavailable:true,
+    });
+  }
+  const effectiveRecheckMs = recheckMs ?? phaseRecheckMs(task);
+  return wait(DECISION_REASONS.DROP_UNAVAILABLE, null, normalizedNow, outageDeadline,
+    effectiveRecheckMs, {
+      eligibilityDeadline:deadline,
+      outageDeadline,
+      // The worker may re-arm next_attempt_at, but must not write outageDeadline back to the row.
+      // Each subsequent retry therefore uses the same fixed deadline + grace cutoff.
+      persistDeadline:false,
+      providerUnavailable:true,
+      targetStage:null,
+      activeStage:null,
+    });
+}
+
 function terminal(reason, context = {}) {
   return { status: 'terminal', reason, retryAt: null, nextStage: null, ...context };
 }
@@ -318,10 +357,14 @@ module.exports = {
   DEFAULT_RECHECK_MS,
   DECISION_REASONS,
   ELIGIBILITY_MODES,
+  EXACT_STAGE_PROVIDER_OUTAGE_GRACE_MS,
   MAX_RECHECK_MS,
+  hasStableProviderStageIdentity,
+  matchSelectedStage,
   normalizeOpenSeaStage,
   normalizeOpenSeaDrop,
   phaseRecheckMs,
+  resolveExactStageProviderOutage,
   selectNextStageAfterIneligibility,
   resolveScheduledPhase,
 };

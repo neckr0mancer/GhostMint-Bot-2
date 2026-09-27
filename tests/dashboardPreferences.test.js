@@ -32,6 +32,15 @@ test('low-balance warning is a persisted display preference, not a transaction l
   }
 });
 
+test('display currency is persisted separately from native transaction amounts',()=>{
+  const sql=fs.readFileSync(path.join(root,'migrations','068_user_display_currency.sql'),'utf8');
+  assert.match(sql,/ADD COLUMN IF NOT EXISTS display_currency/);
+  assert.match(sql,/DEFAULT 'USD'/);
+  for(const currency of ['USD','NGN','EUR','GBP','CAD','AUD'])assert.match(sql,new RegExp(`'${currency}'`));
+  assert.match(app,/\/api\/profile\/display-currency/);
+  assert.match(app,/Display currency/);
+});
+
 test('wallet cards use the shared preferred-chain display helper', () => {
   assert.match(app, /selectWalletHeadlineBalance\(wallet,preferredChain\)/);
   assert.match(app, /walletFundingStatus\(wallet,\{preferredChain,lowThreshold\}\)/);

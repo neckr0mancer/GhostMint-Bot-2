@@ -376,7 +376,10 @@ test('Schedule change controls use plain-language safety copy and a stable switc
   assert.match(schedule,/Turn this off to approve each time change/);
   assert.match(schedule,/same stage moves earlier or later/);
   assert.match(schedule,/Allow a higher mint price/);
-  assert.match(schedule,/Above it, the task pauses and asks first\./);
+  assert.match(schedule,/A higher price pauses the task and asks first\./);
+  assert.match(schedule,/Allowed increase/);
+  assert.match(schedule,/latestQuotes\?\.displayCurrency===displayCurrency/,
+    'the enforceable native cap must use a freshly fetched quote for the saved display currency');
   assert.match(app,/role="switch" aria-checked=\{checked\}/);
   assert.match(css,/\.schedule-switch-thumb\{[^}]*width:16px;height:16px/);
   assert.match(css,/\.schedule-switch\[aria-checked="true"\] \.schedule-switch-thumb\{transform:translateX\(16px\)\}/);

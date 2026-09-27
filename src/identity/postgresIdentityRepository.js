@@ -40,7 +40,7 @@ async function findMergeEmptinessViolations(client, userId) {
   const user = await client.query(
     `SELECT is_owner,account_status,status_reason,suspended_until,subscription_active,
       good_standing_override,dashboard_theme,default_chain,low_balance_threshold_native,
-      sniper_observation_default
+      sniper_observation_default,display_currency
      FROM users WHERE user_id=$1`, [userId]);
   if (!user.rowCount) violations.push('source account no longer exists');
   else {
@@ -59,6 +59,9 @@ async function findMergeEmptinessViolations(client, userId) {
     }
     if (row.sniper_observation_default && row.sniper_observation_default !== 'confirmed') {
       violations.push('source account changed its sniper observation default');
+    }
+    if (row.display_currency && row.display_currency !== 'USD') {
+      violations.push('source account changed its display currency');
     }
   }
 
@@ -300,6 +303,18 @@ function createPostgresIdentityRepository(pool) {
         WHERE user_id=$1 RETURNING low_balance_threshold_native::TEXT AS value`, [userId, value]);
       if (!result.rowCount) throw new Error('User not found');
       return normalizeLowBalanceThreshold(result.rows[0].value);
+    },
+
+    async getDisplayCurrency(userId) {
+      const result = await pool.query('SELECT display_currency FROM users WHERE user_id=$1', [userId]);
+      return result.rows[0]?.display_currency || 'USD';
+    },
+
+    async setDisplayCurrency(userId, value) {
+      const result = await pool.query(`UPDATE users SET display_currency=$2
+        WHERE user_id=$1 RETURNING display_currency`, [userId, value]);
+      if (!result.rowCount) throw new Error('User not found');
+      return result.rows[0].display_currency;
     },
 
     async getSniperObservationDefault(userId) {

@@ -92,7 +92,7 @@ const SESSION_END_MESSAGES=Object.freeze({
 });
 function clientLabel(req){return String(req.get('user-agent')||'Unknown browser').replace(/[\r\n]/g,' ').slice(0,160)||'Unknown browser';}
 
-function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLoginRateLimiter,exportKeyRateLimiter,commands,securityAudit={record:async()=>{}},broadcast=()=>{},broadcastToUsers=()=>{},notifyUser=async()=>{},log=()=>{},chains={},supportedChains=[],now=()=>Date.now(),checkAccountStatus}) {
+function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLoginRateLimiter,exportKeyRateLimiter,commands,priceFeedService,securityAudit={record:async()=>{}},broadcast=()=>{},broadcastToUsers=()=>{},notifyUser=async()=>{},log=()=>{},chains={},supportedChains=[],now=()=>Date.now(),checkAccountStatus}) {
   const previews=new Map();
   const requireSession=async(req,res,next)=>{try{const result=auth.authenticateDetailed?await auth.authenticateDetailed(req.headers.cookie):{session:await auth.authenticate(req.headers.cookie),reason:'invalid'};const {session}=result;if(!session){const reason=result.reason||'invalid';return res.status(401).json({error:SESSION_END_MESSAGES[reason]||SESSION_END_MESSAGES.invalid,code:`SESSION_${reason.toUpperCase()}`,reason});}
       if(typeof checkAccountStatus==='function'){try{await checkAccountStatus(session.userId);}catch(error){if(error instanceof AccountBlockedError)return res.status(403).json({error:error.message,code:error.code,status:error.status});throw error;}}
@@ -219,7 +219,7 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLo
     },
     logout:async(req,res)=>{noStore(res);await auth.revoke(req.dashboardSession);res.setHeader('Set-Cookie',auth.clearCookies());res.status(204).end();},
     logoutAll:async(req,res)=>{noStore(res);await auth.revokeAll(req.dashboardSession);res.setHeader('Set-Cookie',auth.clearCookies());res.status(204).end();},
-    profile:async(req,res)=>{noStore(res);res.json({userId:user(req),isOwner:commands?.isOwner?await commands.isOwner(user(req)):false,isRootOwner:commands?.isRootOwner?await commands.isRootOwner(user(req)):false,linkedAccounts:await identityRepository.listLinkedAccounts(user(req)),supportedChains,theme:await identityRepository.getTheme(user(req)),displayName:identityRepository.getDisplayName?await identityRepository.getDisplayName(user(req)):null,defaultChain:identityRepository.getDefaultChain?await identityRepository.getDefaultChain(user(req)):null,lowBalanceThreshold:identityRepository.getLowBalanceThreshold?await identityRepository.getLowBalanceThreshold(user(req)):'0.01',securityPasswordSet:identityRepository.getSecurityPasswordHash?Boolean(await identityRepository.getSecurityPasswordHash(user(req))):false,botGateLevel:identityRepository.getBotGateLevel?await identityRepository.getBotGateLevel(user(req)):'off',botGateSkipMint:identityRepository.getBotGateSkipMint?await identityRepository.getBotGateSkipMint(user(req)):false,username:identityRepository.getUsername?await identityRepository.getUsername(user(req)):null,currentMode:commands?.currentMode?await commands.currentMode(user(req)):null,advancedModesAllowed:commands?.advancedModesAllowed?await commands.advancedModesAllowed(user(req)):false,session:auth.sessionSummary?await auth.sessionSummary(req.dashboardSession):null});},
+    profile:async(req,res)=>{noStore(res);res.json({userId:user(req),isOwner:commands?.isOwner?await commands.isOwner(user(req)):false,isRootOwner:commands?.isRootOwner?await commands.isRootOwner(user(req)):false,linkedAccounts:await identityRepository.listLinkedAccounts(user(req)),supportedChains,theme:await identityRepository.getTheme(user(req)),displayName:identityRepository.getDisplayName?await identityRepository.getDisplayName(user(req)):null,defaultChain:identityRepository.getDefaultChain?await identityRepository.getDefaultChain(user(req)):null,lowBalanceThreshold:identityRepository.getLowBalanceThreshold?await identityRepository.getLowBalanceThreshold(user(req)):'0.01',displayCurrency:identityRepository.getDisplayCurrency?await identityRepository.getDisplayCurrency(user(req)):'USD',securityPasswordSet:identityRepository.getSecurityPasswordHash?Boolean(await identityRepository.getSecurityPasswordHash(user(req))):false,botGateLevel:identityRepository.getBotGateLevel?await identityRepository.getBotGateLevel(user(req)):'off',botGateSkipMint:identityRepository.getBotGateSkipMint?await identityRepository.getBotGateSkipMint(user(req)):false,username:identityRepository.getUsername?await identityRepository.getUsername(user(req)):null,currentMode:commands?.currentMode?await commands.currentMode(user(req)):null,advancedModesAllowed:commands?.advancedModesAllowed?await commands.advancedModesAllowed(user(req)):false,session:auth.sessionSummary?await auth.sessionSummary(req.dashboardSession):null});},
     updateMode:action(async(req,res)=>{res.json({mode:await commands.selectMode(user(req),req.body.preset)});}),
     updateTheme:action(async(req,res)=>{const {theme}=requestSchemas.themeUpdate(req.body||{});res.json({theme:await identityRepository.setTheme(user(req),theme)});}),
     // The bot action gate is changed HERE and nowhere else. If it could be switched off from
@@ -235,6 +235,17 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLo
     updateDisplayName:action(async(req,res)=>{const {displayName}=requestSchemas.displayNameUpdate(req.body||{});res.json({displayName:await identityRepository.setDisplayName(user(req),displayName)});}),
     updateDefaultChain:action(async(req,res)=>{const {defaultChain}=requestSchemas.defaultChainUpdate(req.body||{},{supportedChains});res.json({defaultChain:await identityRepository.setDefaultChain(user(req),defaultChain)});}),
     updateLowBalanceThreshold:action(async(req,res)=>{const {lowBalanceThreshold}=requestSchemas.lowBalanceThresholdUpdate(req.body||{});res.json({lowBalanceThreshold:await identityRepository.setLowBalanceThreshold(user(req),lowBalanceThreshold)});}),
+    updateDisplayCurrency:action(async(req,res)=>{const {displayCurrency}=requestSchemas.displayCurrencyUpdate(req.body||{});res.json({displayCurrency:await identityRepository.setDisplayCurrency(user(req),displayCurrency)});}),
+    displayQuotes:action(async(req,res)=>{noStore(res);
+      const displayCurrency=identityRepository.getDisplayCurrency
+        ?await identityRepository.getDisplayCurrency(user(req)):'USD';
+      const symbols=[...new Set(supportedChains.map(chain=>chains[chain]?.sym).filter(Boolean))];
+      const quotes=Object.fromEntries(await Promise.all(symbols.map(async symbol=>[
+        symbol,priceFeedService?.getFiatQuote
+          ?await priceFeedService.getFiatQuote(symbol,displayCurrency):null,
+      ])));
+      res.json({displayCurrency,quotes});
+    }),
     // The caller's own effective ceilings, resolved user override -> group -> chain defaults.
     // No owner gate: these are the limits already being enforced against this caller.
     // Chain defaults to the account's saved default, then the first supported chain, because
@@ -434,6 +445,8 @@ function mountDashboardRoutes(app,api){
   app.put('/api/profile/display-name',api.requireSession,api.requireCsrf,api.updateDisplayName);
   app.put('/api/profile/default-chain',api.requireSession,api.requireCsrf,api.updateDefaultChain);
   app.put('/api/profile/low-balance-threshold',api.requireSession,api.requireCsrf,api.updateLowBalanceThreshold);
+  app.put('/api/profile/display-currency',api.requireSession,api.requireCsrf,api.updateDisplayCurrency);
+  app.get('/api/display-quotes',api.requireSession,api.displayQuotes);
   app.put('/api/auth/security-password',api.requireSession,api.requireCsrf,api.securityPasswordSet);
   app.put('/api/auth/username',api.requireSession,api.requireCsrf,api.usernameSet);
   app.put('/api/profile/mode',api.requireSession,api.requireCsrf,api.updateMode);

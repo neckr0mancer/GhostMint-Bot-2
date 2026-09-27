@@ -371,8 +371,12 @@ function validateTaskCreate(input, context) {
     : optionalBoolean(input.autoReschedule, 'autoReschedule');
   const maxOpeningDelayMinutes = finiteNumber(input.maxOpeningDelayMinutes,
     'maxOpeningDelayMinutes', { min: 1, max: 1440, integer: true, required:false });
+  const stageUuid = optionalTaskMetadata(input.stageUuid, 'stageUuid', 200);
   if (!autoReschedule && maxOpeningDelayMinutes !== null) {
     fail('maxOpeningDelayMinutes', 'requires automatic rescheduling to be enabled');
+  }
+  if (autoReschedule && maxOpeningDelayMinutes === null && !stageUuid) {
+    fail('stageUuid', 'is required to follow an exact provider stage automatically');
   }
   const acceptPriceChanges = input.acceptPriceChanges === undefined ? false
     : optionalBoolean(input.acceptPriceChanges, 'acceptPriceChanges');
@@ -391,7 +395,7 @@ function validateTaskCreate(input, context) {
     name: string(input.name, 'name', { max: 100 }),
     ...validateMintRequest(input, context),
     mintTime,
-    stageUuid: optionalTaskMetadata(input.stageUuid, 'stageUuid', 200),
+    stageUuid,
     stageLabel: optionalTaskMetadata(input.stageLabel, 'stageLabel', 100),
     stageType: optionalTaskMetadata(input.stageType, 'stageType', 64),
     stageStartAt: taskStageStart(input.stageStartAt, mintTime),
@@ -562,6 +566,12 @@ const requestSchemas = Object.freeze({
   displayNameUpdate: input => ({ displayName: displayName(input.displayName) }),
   defaultChainUpdate: (input, context) => ({ defaultChain: chainName(input.defaultChain, context.supportedChains, 'defaultChain') }),
   lowBalanceThresholdUpdate: input => ({ lowBalanceThreshold: lowBalanceThreshold(input.lowBalanceThreshold) }),
+  displayCurrencyUpdate: input => {
+    const displayCurrency=string(input.displayCurrency,'displayCurrency',{min:3,max:3}).toUpperCase();
+    const supported=new Set(['USD','NGN','EUR','GBP','CAD','AUD']);
+    if(!supported.has(displayCurrency))fail('displayCurrency',`must be one of: ${[...supported].join(', ')}`);
+    return {displayCurrency};
+  },
   sniperObservationDefault: input => ({ observationMode: sniperObservationMode(input.observationMode) }),
   socialUsagePeriod: input => ({ period: usagePeriod(input.period) }),
   liveAcceptanceRun: validateLiveAcceptanceRun,

@@ -56,7 +56,7 @@ function DashboardGreeting({displayName,onNamed}){
 // already read, so they need no edit at all.
 //
 // Only ETH is summed. balances[] carries one entry per supported chain and Polygon's symbol is
-// MATIC, so a naive sum adds ETH to MATIC (contract §5.3). A null balance is an RPC failure, NOT
+// POL, so a naive sum adds ETH to POL (contract §5.3). A null balance is an RPC failure, NOT
 // a zero -- counting it as zero would silently under-report a funded wallet, so nulls are counted
 // and surfaced instead.
 function walletTotals(wallet){
@@ -189,7 +189,7 @@ export default function Dashboard({profile,go,onProfileChange}){
     // The greeting IS the page's h1 in the prototype, so it is passed in rather than rendered
     // as a stray line above the header. Falls back to a plain "Home" before a name is set.
     const greetingText=profile.displayName?`${greetingForHour(new Date().getHours())}, ${profile.displayName}.`:'Home';
-    return <>{greeting}<Home summary={summary} sources={sources} go={go} greeting={greetingText}
+    return <>{greeting}<Home summary={summary} sources={sources} go={go} greeting={greetingText} profile={profile}
       pnlView={pnlView} pnl30={pnl30} pnlWindow={pnlWindow} onPnlWindow={setPnlWindow}/></>;
   }
 

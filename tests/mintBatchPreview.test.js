@@ -91,7 +91,7 @@ test('same-symbol networks and different native assets are never pooled together
     ready('polygon',{chain:'polygon',total:'3',balance:'30'}),
   ]}});
   assert.deepEqual(model.groups.map(group=>[group.chain,group.symbol,group.readyEstimatedDebit.wei]),[
-    ['ethereum','ETH','1'],['base','ETH','2'],['polygon','MATIC','3'],
+    ['ethereum','ETH','1'],['base','ETH','2'],['polygon','POL','3'],
   ]);
 });
 

@@ -380,6 +380,42 @@ test('low-balance warning choices are validated, CSRF-protected, and persisted p
   assert.equal((await (await fetch(`${base}/api/profile`,{headers:authHeaders('a')})).json()).lowBalanceThreshold,'0.025');
   assert.equal((await (await fetch(`${base}/api/profile`,{headers:authHeaders('b')})).json()).lowBalanceThreshold,'0.01');
 });
+test('display currency is user-scoped, validated, and its quotes retain source and freshness',async t=>{
+  const sessions=new Map([['token-a',{userId:'user-a',csrfTokenHash:'csrf'}],
+    ['token-b',{userId:'user-b',csrfTokenHash:'csrf'}]]);
+  const currencies=new Map();
+  const identityRepository={listLinkedAccounts:async()=>[],getTheme:async()=>'ghost-mint',
+    getDisplayCurrency:async userId=>currencies.get(userId)||'USD',
+    setDisplayCurrency:async(userId,value)=>{currencies.set(userId,value);return value;}};
+  const auth={authenticate:async header=>sessions.get(String(header||'').split('=')[1])||null,
+    verifyCsrf:({headerToken})=>headerToken==='csrf'};
+  const priceFeedService={getFiatQuote:async(symbol,currency)=>({symbol,currency,
+    rate:symbol==='ETH'?1500:600,quotedAt:123456,stale:false,source:'coingecko'})};
+  const api=createDashboardApi({auth,identityRepository,priceFeedService,
+    supportedChains:['ethereum','polygon'],chains:{ethereum:{sym:'ETH'},polygon:{sym:'POL'}},
+    loginRateLimiter:createCommandRateLimiter()});
+  const app=express();app.use(express.json());app.use(api.securityHeaders);mountDashboardRoutes(app,api);
+  app.use(api.error);const server=http.createServer(app);const base=await listenForFetch(server);
+  t.after(()=>new Promise(resolve=>server.close(resolve)));
+
+  const noCsrf=await fetch(`${base}/api/profile/display-currency`,{method:'PUT',
+    headers:authHeaders('a'),body:JSON.stringify({displayCurrency:'NGN'})});
+  assert.equal(noCsrf.status,403);
+  const invalid=await fetch(`${base}/api/profile/display-currency`,{method:'PUT',
+    headers:authHeaders('a',true),body:JSON.stringify({displayCurrency:'JPY'})});
+  assert.equal(invalid.status,400);
+  const saved=await fetch(`${base}/api/profile/display-currency`,{method:'PUT',
+    headers:authHeaders('a',true),body:JSON.stringify({displayCurrency:'ngn'})});
+  assert.equal(saved.status,200);assert.deepEqual(await saved.json(),{displayCurrency:'NGN'});
+  const profileA=await (await fetch(`${base}/api/profile`,{headers:authHeaders('a')})).json();
+  const profileB=await (await fetch(`${base}/api/profile`,{headers:authHeaders('b')})).json();
+  assert.equal(profileA.displayCurrency,'NGN');assert.equal(profileB.displayCurrency,'USD');
+  const quotes=await (await fetch(`${base}/api/display-quotes`,{headers:authHeaders('a')})).json();
+  assert.equal(quotes.displayCurrency,'NGN');
+  assert.deepEqual(Object.keys(quotes.quotes),['ETH','POL']);
+  assert.equal(quotes.quotes.ETH.source,'coingecko');
+  assert.equal(quotes.quotes.ETH.stale,false);
+});
 // This exercises the HTTP layer only (routing, CSRF, status codes) against operationsServer's
 // fake commands.selectMode (which accepts any of the 4 keys unconditionally) -- it does not run
 // through the real postgresGovernanceRepository.selectPreset, which now gates ultra_fast/fast

@@ -4,6 +4,7 @@ import {activitySucceeded} from '../activityFeed.js';
 import PnlBars from '../PnlBars.jsx';
 import {ChainDot,chainFromExplorer,CountdownRing,EmptyState,explorerForChain,formatEth,formatSigned,ICONS,Row,shortAddress,weiToEth} from './homeParts.jsx';
 import {formatAdaptiveAmount} from '../amountDisplay.mjs';
+import {fiatFromNative,fiatFromWei} from '../currencyDisplay.mjs';
 
 /* ==========================================================================
    Home — the redesigned page for the two primary themes (brief §9.1-D15).
@@ -35,7 +36,18 @@ function CardBody({source,empty,children,skeleton='row',rows=3}){
 /* --- Stat tiles (contract §3, corrected per §5.1-§5.6) --------------------
    Pinned: the row renders in every state, because zero is a value and a tile that
    vanishes when a figure is zero makes the page jump. */
-function Tiles({summary,sources,pnl30}){
+function fiatTextNative(value,profile,symbol='ETH'){
+  return fiatFromNative(value,symbol,profile?.displayQuotes,profile?.displayCurrency)?.text||null;
+}
+function fiatTextWei(value,profile,symbol='ETH'){
+  return fiatFromWei(value,symbol,profile?.displayQuotes,profile?.displayCurrency)?.text||null;
+}
+function MoneyValue({native,text,profile,symbol='ETH'}){
+  const fiat=fiatTextNative(native,profile,symbol);
+  return <>{text}{fiat&&<small className="fiat-amount">≈ {fiat}</small>}</>;
+}
+
+function Tiles({summary,sources,pnl30,profile}){
   const walletState=cardState(sources.wallets);
   const pnlState=cardState(sources.pnl);
   const activityState=cardState(sources.activity);
@@ -50,12 +62,16 @@ function Tiles({summary,sources,pnl30}){
   // value. With wallets present but every chain's balance null, the total is genuinely UNKNOWN
   // and prints "—"; showing 0.000 there would state that a possibly-funded wallet is empty.
   const eth=summary.portfolio.eth===null&&summary.walletCount===0?0:summary.portfolio.eth;
+  const portfolioFiat=eth===null?null:fiatTextNative(eth,profile);
+  const pnlFiat=fiatTextNative(pnl30.net,profile);
+  const budgetFiat=limits.ceilingExempt?null:fiatTextWei(limits.dailySpendingBudgetWei,profile);
   const portfolioMeta=[
     `${summary.walletCount} ${summary.walletCount===1?'wallet':'wallets'}`,
     // On the live deployment two of three chains routinely fail at the RPC, so this is the
     // normal render, not an edge case (contract §5.3).
     chainsUnavailable?`${chainsUnavailable} ${chainsUnavailable===1?'chain':'chains'} unavailable`:null,
-    ...other.map(entry=>`${formatAdaptiveAmount(entry.total)} ${entry.symbol}`),
+    portfolioFiat?`≈ ${portfolioFiat}`:null,
+    ...other.map(entry=>`${formatAdaptiveAmount(entry.total)} ${entry.symbol}${fiatTextNative(entry.total,profile,entry.symbol)?` (≈ ${fiatTextNative(entry.total,profile,entry.symbol)})`:''}`),
   ].filter(Boolean).join(' · ');
 
   return <div className="tiles">
@@ -76,7 +92,7 @@ function Tiles({summary,sources,pnl30}){
         :pnlState==='loading'?'Loading…'
         :pnl30.mints===0?'0 mints'
         :`${pnl30.mints} ${pnl30.mints===1?'mint':'mints'} · ${pnl30.sale>0
-          ?`${formatAdaptiveAmount(pnl30.sale)} ETH sales`:'no sales recorded'}`}>
+          ?`${formatAdaptiveAmount(pnl30.sale)} ETH sales`:'no sales recorded'}${pnlFiat?` · ≈ ${pnlFiat}`:''}`}>
       {pnlState==='ready'&&pnl30.points.length>1
         &&<Sparkline points={pnl30.trend} tone={pnl30.net<0?'loss':'gain'}/>}
     </StatTile>
@@ -98,7 +114,7 @@ function Tiles({summary,sources,pnl30}){
         // limit you already have, not a balance you accrue -- so the empty variant changes only
         // the meta line, never the value. Backlog §5.
         :summary.walletCount===0?'Applies once you mint'
-        :`Per transaction ${formatEth(weiToEth(limits.maxTransactionValueWei),3)} ETH · gas ${limits.gasCeilingGwei} gwei`}/>
+        :`${budgetFiat?`≈ ${budgetFiat} · `:''}Per transaction ${formatEth(weiToEth(limits.maxTransactionValueWei),3)} ETH · gas ${limits.gasCeilingGwei} gwei`}/>
 
     {/* This measures final on-chain outcomes after broadcast, never the user's competence and
         never previews that simulation/validation safely stopped before money could be spent. */}
@@ -147,7 +163,7 @@ function mintRewardContext(item,streak){
   if(String(item.triggerSource||'').includes('social'))return '✓ Social mint confirmed';
   return '✓ Mint confirmed on-chain';
 }
-function CelebrateCard({summary,onDismiss}){
+function CelebrateCard({summary,onDismiss,profile}){
   const item=summary.latestSuccess;
   if(!item)return null;
   const itemKey=item.id??item.txHash??item.time??item.title;
@@ -155,7 +171,8 @@ function CelebrateCard({summary,onDismiss}){
   const mintValue=weiToEth(item.transactionValueWei);
   return <Celebrate title={mintRewardTitle(item)}
     detail={<>{mintRewardSubject(item)}{item.walletLabel&&<> → <b>{item.walletLabel}</b></>}
-      {mintValue!==null&&<> for {formatAdaptiveAmount(mintValue,{minDecimals:6})} ETH</>}.</>}>
+      {mintValue!==null&&<> for <MoneyValue native={mintValue} profile={profile}
+        text={`${formatAdaptiveAmount(mintValue,{minDecimals:6})} ETH`}/></>}.</>}>
     {/* Never invent a streak. A single success gets truthful execution context instead. */}
     <div className="streak">{mintRewardContext(item,summary.streak)}</div>
     <div className="br celebrate-actions">
@@ -168,7 +185,7 @@ function CelebrateCard({summary,onDismiss}){
 
 const PNL_WINDOWS=[{id:7,label:'7d'},{id:30,label:'30d'},{id:90,label:'90d'},{id:null,label:'All'}];
 
-function PnlCard({summary,sources,pnlView,pnlWindow,onPnlWindow,go}){
+function PnlCard({summary,sources,pnlView,pnlWindow,onPnlWindow,go,profile}){
   const windows=<div className="seg" role="group" aria-label="P&L window">
     {PNL_WINDOWS.map(option=><button key={option.label} type="button"
       className={pnlWindow===option.id?'on':undefined}
@@ -177,7 +194,8 @@ function PnlCard({summary,sources,pnlView,pnlWindow,onPnlWindow,go}){
   return <SectionCard title="P&L by day" icon={ICONS.chart} actions={windows}
     mobileCollapsible mobileDefaultOpen={false}
     collapsedLeading={PNL_WINDOWS.find(option=>option.id===pnlWindow)?.label||'All'}
-    collapsedValue={pnlView.points.length?formatSigned(pnlView.net):'0.000'}>
+    collapsedValue={<MoneyValue native={pnlView.net} profile={profile}
+      text={pnlView.points.length?formatSigned(pnlView.net):'0.000'}/> }>
     <CardBody source={sources.pnl} skeleton="chart" rows={1}
       empty={pnlView.points.length===0?<EmptyState icon={ICONS.chart} title="No profit or loss yet"
         action={<button type="button" className="b sm" onClick={()=>go('Mint')}>Go to Mint</button>}>
@@ -189,7 +207,7 @@ function PnlCard({summary,sources,pnlView,pnlWindow,onPnlWindow,go}){
   </SectionCard>;
 }
 
-function ActivityCard({summary,sources,go}){
+function ActivityCard({summary,sources,go,profile}){
   return <SectionCard title="Recent activity" icon={ICONS.clock}
     mobileCollapsible mobileDefaultOpen collapsedLeading={`${summary.activityItems.length} recent`}
     actions={<button type="button" className="b g sm" onClick={()=>go('Activity')}>View all</button>}>
@@ -211,14 +229,15 @@ function ActivityCard({summary,sources,go}){
             {item.time?new Date(item.time).toLocaleString():'No timestamp'}</>}
           /* actual_network_cost_wei is GAS ONLY, not the mint price -- labelled so it can
              never be read as the cost of the mint (contract §5.8). */
-          valueLabel="gas" value={gasText}/>;
+          valueLabel="gas" value={gas===null?gasText:<MoneyValue native={gas} profile={profile}
+            text={gasText}/>}/>;
       })}
     </CardBody>
   </SectionCard>;
 }
 
 /* --- Right column --------------------------------------------------------- */
-function NextDropCard({summary,sources,go}){
+function NextDropCard({summary,sources,go,profile}){
   const displayed=summary.nextTask;
   const actions=<button type="button" className="b g sm" onClick={()=>go('Mint','schedule')}>Schedule</button>;
   return <SectionCard title="Next scheduled mint" icon={ICONS.clock}
@@ -230,7 +249,7 @@ function NextDropCard({summary,sources,go}){
       </EmptyState>:null}>
       {displayed&&<CountdownRing target={displayed.mintTime} from={displayed.createdAt}
         title={displayed.name||'Scheduled mint'}
-        meta={[displayed.walletLabel,displayed.price?`${displayed.price} ETH`:null]
+        meta={[displayed.walletLabel,displayed.price?`${displayed.price} ETH${fiatTextNative(displayed.price,profile)?` (≈ ${fiatTextNative(displayed.price,profile)})`:''}`:null]
           .filter(Boolean).join(' · ')||null}/>}
     </CardBody>
   </SectionCard>;
@@ -271,7 +290,7 @@ function QueueCard({summary,sources,go}){
   </SectionCard>;
 }
 
-function WalletsCard({summary,sources,go}){
+function WalletsCard({summary,sources,go,profile}){
   return <SectionCard title="Wallets" icon={ICONS.wallet}
     mobileCollapsible mobileDefaultOpen={false}
     collapsedLeading={summary.walletCount?`${summary.fundedWalletCount} funded`:'None'}
@@ -284,7 +303,8 @@ function WalletsCard({summary,sources,go}){
       </EmptyState>:null}>
       {summary.walletRows.map(wallet=><Row key={wallet.label} title={wallet.label}
         sub={<span className="mono">{shortAddress(wallet.address)}</span>}
-        value={wallet.ethBalance===null?'—':formatEth(wallet.ethBalance)}
+        value={wallet.ethBalance===null?'—':<MoneyValue native={wallet.ethBalance} profile={profile}
+          text={`${formatEth(wallet.ethBalance)} ETH`}/>}
         valueTone={wallet.ethBalance!==null&&wallet.ethBalance<summary.lowBalanceThreshold?'warn':undefined}/>)}
       {summary.walletCount>summary.walletRows.length
         &&<button type="button" className="b g sm card-more" onClick={()=>go('Wallets')}>
@@ -295,7 +315,7 @@ function WalletsCard({summary,sources,go}){
 }
 
 /* --- Page ----------------------------------------------------------------- */
-export default function Home({summary,sources,go,greeting,pnlView,pnl30,pnlWindow,onPnlWindow}){
+export default function Home({summary,sources,go,greeting,pnlView,pnl30,pnlWindow,onPnlWindow,profile}){
   const [dismissedItem,setDismissedItem]=useState(()=>readDismissedReward('home'));
   function dismissCelebration(itemKey){
     const key=String(itemKey);
@@ -336,7 +356,7 @@ export default function Home({summary,sources,go,greeting,pnlView,pnl30,pnlWindo
 
     {firstRun&&<FirstRun step={firstRunStep} go={go}/>}
 
-    <Tiles summary={summary} sources={sources} pnl30={pnl30}/>
+    <Tiles summary={summary} sources={sources} pnl30={pnl30} profile={profile}/>
 
     {failed.length>0&&<Notice error={{
       title:failed.length===sourceEntries.length?'Could not load your dashboard.':`Could not load ${failed.length} of ${sourceEntries.length} sections.`,
@@ -352,15 +372,15 @@ export default function Home({summary,sources,go,greeting,pnlView,pnl30,pnlWindo
       <ReorderableStack stackKey="home-left" className="home-col" items={[
         {id:'celebrate',label:'mint confirmation',visible:Boolean(summary.latestSuccess)
           &&dismissedItem!==String(summary.latestSuccess.id??summary.latestSuccess.txHash??summary.latestSuccess.time??summary.latestSuccess.title),
-        content:<CelebrateCard summary={summary} onDismiss={dismissCelebration}/>},
+        content:<CelebrateCard summary={summary} onDismiss={dismissCelebration} profile={profile}/>},
         {id:'pnl',label:'P&L by day',content:<PnlCard summary={summary} sources={sources} pnlView={pnlView}
-          pnlWindow={pnlWindow} onPnlWindow={onPnlWindow} go={go}/>},
-        {id:'activity',label:'recent activity',content:<ActivityCard summary={summary} sources={sources} go={go}/>},
+          pnlWindow={pnlWindow} onPnlWindow={onPnlWindow} go={go} profile={profile}/>},
+        {id:'activity',label:'recent activity',content:<ActivityCard summary={summary} sources={sources} go={go} profile={profile}/>},
       ]}/>
       <ReorderableStack stackKey="home-right" className="home-col" items={[
-        {id:'next-drop',label:'next scheduled mint',content:<NextDropCard summary={summary} sources={sources} go={go}/>},
+        {id:'next-drop',label:'next scheduled mint',content:<NextDropCard summary={summary} sources={sources} go={go} profile={profile}/>},
         {id:'alerts',label:'alerts',content:<AlertsCard summary={summary} go={go}/>},
-        {id:'wallets',label:'wallets',content:<WalletsCard summary={summary} sources={sources} go={go}/>},
+        {id:'wallets',label:'wallets',content:<WalletsCard summary={summary} sources={sources} go={go} profile={profile}/>},
       ]}/>
     </div>
   </>;

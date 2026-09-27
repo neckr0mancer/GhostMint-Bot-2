@@ -42,7 +42,7 @@ const CHAIN_DEFINITIONS = Object.freeze({
     // requests -- confirmed live 2026-08-18, no longer usable as a free public default. Same
     // PublicNode family already used for the ethereum default above, confirmed live working.
     defaultRpc: 'https://polygon.publicnode.com',
-    sym: 'MATIC',
+    sym: 'POL',
     ex: 'https://polygonscan.com/tx/',
     isTestnet: false,
   }),

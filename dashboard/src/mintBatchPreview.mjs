@@ -1,7 +1,7 @@
 import {mintPreviewMetrics} from './mintPreviewMetrics.mjs';
 
 const NATIVE_SYMBOLS=Object.freeze({
-  ethereum:'ETH',base:'ETH',arbitrum:'ETH',polygon:'MATIC',robinhood:'ETH',ink:'ETH',hyperevm:'HYPE',
+  ethereum:'ETH',base:'ETH',arbitrum:'ETH',polygon:'POL',robinhood:'ETH',ink:'ETH',hyperevm:'HYPE',
 });
 
 const CONTRACT_FAILURE_CODES=new Set(['MINT_SOLD_OUT','STAGE_SUPPLY_EXHAUSTED','STAGE_NOT_OPEN']);

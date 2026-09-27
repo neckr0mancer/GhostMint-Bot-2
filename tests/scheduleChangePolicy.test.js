@@ -82,6 +82,33 @@ test('an opted-in exact stage follows earlier and multi-day later openings',()=>
   assert.equal(earlier.nextEligibilityDeadline,base.eligibilityDeadline-6*HOUR);
 });
 
+test('an opted-in exact stage follows repeated postponements without reusing the old deadline',()=>{
+  const first=evaluateScheduleObservation({...base,timeChangePolicy:'auto_follow_stage'},
+    {openingAt:base.acceptedOpeningAt+26*HOUR,priceWeiPerItem:'100',configFingerprint:'config-a'},
+    {now:base.acceptedOpeningAt-HOUR});
+  assert.equal(first.action,'auto_rescheduled');
+  assert.equal(first.nextEligibilityDeadline,base.eligibilityDeadline+26*HOUR);
+
+  const moved={...base,timeChangePolicy:'auto_follow_stage',
+    acceptedOpeningAt:first.observed.openingAt,eligibilityDeadline:first.nextEligibilityDeadline,
+    mintTime:first.observed.openingAt};
+  const second=evaluateScheduleObservation(moved,
+    {openingAt:first.observed.openingAt+26*HOUR,priceWeiPerItem:'100',configFingerprint:'config-a'},
+    {now:first.observed.openingAt-HOUR});
+  assert.equal(second.action,'auto_rescheduled');
+  assert.equal(second.nextEligibilityDeadline,base.eligibilityDeadline+52*HOUR);
+});
+
+test('a simultaneous exact-stage postponement and above-cap price keeps the moved review deadline',()=>{
+  const decision=evaluateScheduleObservation({...base,timeChangePolicy:'auto_follow_stage',
+    priceChangePolicy:'allow_up_to_cap',maxPriceWeiPerItem:'110'},
+  {openingAt:base.acceptedOpeningAt+26*HOUR,priceWeiPerItem:'125',configFingerprint:'config-a'},
+  {now:base.acceptedOpeningAt-HOUR});
+  assert.equal(decision.action,'awaiting_approval');
+  assert.equal(decision.nextEligibilityDeadline,base.eligibilityDeadline+26*HOUR);
+  assert.match(decision.reason,/above the price limit/i);
+});
+
 test('exact time following never overrides a price cap, stage removal, or call change',()=>{
   const exact={...base,timeChangePolicy:'auto_follow_stage',priceChangePolicy:'allow_up_to_cap',
     maxPriceWeiPerItem:'110'};

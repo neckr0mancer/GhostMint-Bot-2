@@ -385,7 +385,8 @@ function createSchedulerRepository(pool) {
           change_state=CASE WHEN $12 THEN 'awaiting_approval' ELSE 'clear' END,
           change_version=$13,pending_change=$14::JSONB,change_detected_at=NOW(),last_error=$15,
           change_review_expires_at=CASE WHEN $12 THEN
-            LEAST(COALESCE(eligibility_deadline,'infinity'::TIMESTAMPTZ),NOW()+INTERVAL '24 hours')
+            LEAST(COALESCE(TO_TIMESTAMP($18 / 1000.0),eligibility_deadline,'infinity'::TIMESTAMPTZ),
+              NOW()+INTERVAL '24 hours')
             ELSE NULL END,
           preflight_target_at=CASE WHEN $5 AND $6::BIGINT IS NOT NULL THEN TO_TIMESTAMP($6 / 1000.0) ELSE preflight_target_at END,
           preflight_generation=preflight_generation+CASE WHEN $5 THEN 1 ELSE 0 END,
@@ -467,6 +468,10 @@ function createSchedulerRepository(pool) {
         }else{
           const observed=pending.observed||{};
           const opening=Number.isFinite(Number(observed.openingAt))?Number(observed.openingAt):null;
+          const proposedDeadline=pending.nextEligibilityDeadline!==null
+            &&pending.nextEligibilityDeadline!==undefined
+            &&Number.isFinite(Number(pending.nextEligibilityDeadline))
+            ?Number(pending.nextEligibilityDeadline):null;
           // Approval may accept a later opening, price, or call configuration, but it must never
           // move the user's earliest execution time backwards. A price-only review for a stage
           // that opened before the chosen mint time therefore remains pinned to that chosen time.
@@ -474,6 +479,8 @@ function createSchedulerRepository(pool) {
           updated=await client.query(`UPDATE mint_tasks SET status='retry',
             mint_time=TO_TIMESTAMP($3 / 1000.0),
             next_attempt_at=TO_TIMESTAMP($4 / 1000.0),
+            eligibility_deadline=CASE WHEN $9::BIGINT IS NULL THEN eligibility_deadline
+              ELSE TO_TIMESTAMP($9 / 1000.0) END,
             accepted_opening_at=CASE WHEN $5::BIGINT IS NULL THEN accepted_opening_at ELSE TO_TIMESTAMP($5 / 1000.0) END,
             accepted_price_wei_per_item=COALESCE($6::NUMERIC,accepted_price_wei_per_item),
             accepted_config_fingerprint=CASE WHEN $7::TEXT IS NOT NULL AND $8::JSONB IS NOT NULL THEN $7 ELSE accepted_config_fingerprint END,
@@ -485,7 +492,7 @@ function createSchedulerRepository(pool) {
             WHERE user_id=$1 AND id=$2 RETURNING *`,[userId,id,approvedExecutionAt,
           approvedExecutionAt,opening,observed.priceWeiPerItem??null,
           observed.configFingerprint??null,
-          observed.configSummary?JSON.stringify(observed.configSummary):null]);
+          observed.configSummary?JSON.stringify(observed.configSummary):null,proposedDeadline]);
           await armTaskPreflightRows(client,updated.rows[0]);
         }
         await client.query(`UPDATE mint_task_change_events SET action=$4,resolved_at=NOW()

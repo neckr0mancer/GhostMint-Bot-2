@@ -92,10 +92,12 @@ test('scheduled phase metadata is bounded, explicit, and cannot silently change 
 });
 
 test('schedule change policies support exact stage following, legacy bounded delay, and price limits',()=>{
-  const exact=requestSchemas.taskCreate(validTask({autoReschedule:true}),
+  const exact=requestSchemas.taskCreate(validTask({autoReschedule:true,stageUuid:'stage-public-1'}),
     {supportedChains:CHAINS,now:NOW});
   assert.equal(exact.timeChangePolicy,'auto_follow_stage');
   assert.equal(exact.maxOpeningDelayMs,null);
+  rejectsField(()=>requestSchemas.taskCreate(validTask({autoReschedule:true}),
+    {supportedChains:CHAINS,now:NOW}),'stageUuid');
   const task=requestSchemas.taskCreate(validTask({autoReschedule:true,maxOpeningDelayMinutes:90,
     acceptPriceChanges:true,expectedPriceWeiPerItem:'100',maxPriceWeiPerItem:'125'}),
   {supportedChains:CHAINS,now:NOW});
