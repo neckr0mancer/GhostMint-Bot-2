@@ -521,7 +521,7 @@ test('flow:scheduleviaopensea shows a picker with more than one upcoming stage, 
   assert.equal(created[0].input.mintTime, new Date((FUTURE_START + 90_000) * 1000).toISOString());
 });
 
-test('the recommended action schedules the server-planned stage while manual override remains available',async()=>{
+test('the recommended action skips an unproven allowlist and schedules the confirmed-safe public stage',async()=>{
   const flowState=createFlowStateStore();
   const created=[];
   const earlier={uuid:'e1',label:'Allowlist',startTime:FUTURE_START,endTime:FUTURE_START+600,
@@ -533,7 +533,7 @@ test('the recommended action schedules the server-planned stage while manual ove
       chain:'ethereum',isSeaDrop:true,priceKnown:false,valueWei:'0',maxSupply:100,maxPerWallet:1,
       startTime:null,endTime:null,collection:{name:'Planned Drop'},soldOut:false,displayPrice:null,
       drop:{isMinting:false,activeStage:null,nextStage:earlier,stages:[later,earlier]},
-      schedulePlan:{recommendedStageUuid:'e1',recommendedStageKey:'uuid:e1'},
+      schedulePlan:{recommendedStageUuid:'p1',recommendedStageKey:'uuid:p1'},
     }),
     createTask:async(userId,input)=>{created.push({userId,input});return{id:'task-1',...input};},
   });
@@ -548,16 +548,18 @@ test('the recommended action schedules the server-planned stage while manual ove
   assert.deepEqual(manual.options.map(option=>option.value),['1','0'],'manual choices retain original provider indices');
 
   await handler(buttonInteraction('flow:scheduleviaopenseaauto','osea-auto'));
+  assert.equal(flowState.get('discord','osea-auto').step,'awaiting_quantity');
+  await handler(selectInteraction('flow:mintqty:select',['1'],'osea-auto'));
   const taskFlow=flowState.get('discord','osea-auto');
   assert.equal(taskFlow.flow,'task_guided');
   assert.equal(taskFlow.step,'awaiting_confirm');
-  assert.equal(taskFlow.data.stageUuid,'e1');
-  assert.equal(taskFlow.data.name,'Planned Drop — Allowlist');
-  assert.equal(taskFlow.data.eligibilityMode,'earliest_eligible');
+  assert.equal(taskFlow.data.stageUuid,'p1');
+  assert.equal(taskFlow.data.name,'Planned Drop — Public');
+  assert.equal(taskFlow.data.eligibilityMode,'specific_stage');
 
   await handler(buttonInteraction('flow:taskconfirm','osea-auto'));
   assert.equal(created.length,1);
-  assert.equal(created[0].input.stageUuid,'e1');
+  assert.equal(created[0].input.stageUuid,'p1');
 });
 
 test('stale recommended and manual phase controls require a fresh explicit phase choice',async()=>{

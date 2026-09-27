@@ -125,8 +125,9 @@ test('afterScheduleViaOpenSeaTap goes direct with zero or one schedulable stage,
 
 test('multi-stage scheduling exposes the shared recommendation without removing manual choices', () => {
   const now = NOW / 1000;
-  const later = stage(now + 200, { uuid: 'later' });
-  const recommended = stage(now + 100, { uuid: 'recommended', stageType: 'allowlist', eligibilityLabel: 'Eligibility checked at opening' });
+  const later = stage(now + 200, { uuid: 'later', stageType:'public_sale' });
+  const recommended = stage(now + 100, { uuid: 'recommended', stageType: 'allowlist',
+    eligibilityState:'eligible', eligibilityLabel: 'Eligible for this wallet' });
   const drop = { stages: [later, recommended] };
   const decision = afterScheduleViaOpenSeaTap({
     drop,
@@ -137,6 +138,17 @@ test('multi-stage scheduling exposes the shared recommendation without removing 
   assert.equal(decision.recommendedStage.uuid, 'recommended');
   assert.deepEqual(decision.stages.map(item => item.uuid), ['recommended', 'later']);
   assert.deepEqual(decision.stages.map(item => item.index), [1, 0], 'manual callbacks retain original provider indices');
+});
+
+test('an unknown allowlist recommendation is rejected while its manual choice remains visible',()=>{
+  const now=NOW/1000;
+  const allowlist=stage(now+100,{uuid:'allow',stageType:'allowlist',eligibilityState:'check_at_open'});
+  const publicStage=stage(now+200,{uuid:'public',stageType:'public_sale',eligibilityState:'open_to_all'});
+  const decision=afterScheduleViaOpenSeaTap({drop:{stages:[allowlist,publicStage]},
+    schedulePlan:{recommendedStageUuid:'allow',recommendedStageKey:'uuid:allow'},now:NOW});
+  assert.equal(decision.type,'pick');
+  assert.equal(decision.recommendedStage,null);
+  assert.deepEqual(decision.stages.map(item=>item.uuid),['allow','public']);
 });
 
 test('unsafe or stale stage recommendations do not invent an automatic choice', () => {

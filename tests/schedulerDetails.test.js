@@ -101,6 +101,12 @@ test('natural OpenSea phase advances move the reservation before schedule-change
     'the persisted identity must use task field names rather than stage field names');
   assert.match(branch,/nextStage:observedStage/,
     'the phase wait must carry the concrete replacement stage to the atomic repository path');
+  assert.match(branch,/const observedReservationStageKey=observedStage\?scheduleReservationStageKey\([\s\S]{0,300}directPublic:task\.viaOpenSea!==true/,
+    'a direct public task must compare the observed phase through the same canonical reservation identity');
+  assert.match(branch,/task\.reservationStageKey!==observedReservationStageKey/,
+    'OpenSea metadata must not make the same direct PublicDrop look like a different reservation');
+  assert.doesNotMatch(branch,/task\.reservationStageKey!==observedStageIdentity/,
+    'the canonical direct-public reservation key must never be compared to a raw OpenSea UUID');
 });
 
 test('exact-stage followers refresh the authoritative stage before applying their old deadline',()=>{
@@ -146,6 +152,24 @@ test('advisory preflights do not create an approval loop when a stage match is m
     'an approval cannot resolve a missing stage when it has no concrete replacement identity');
   assert.match(branch,/if\(matches\.length!==1\)[\s\S]{0,700}throw new Error/,
     'the advisory probe should persist check_failed and leave final phase resolution authoritative');
+});
+
+test('direct PublicDrop schedules never depend on an OpenSea stage envelope',()=>{
+  const source=fs.readFileSync(path.join(__dirname,'..','src','server.js'),'utf8');
+  const publicStart=source.indexOf('async function refreshScheduledPublicPhase');
+  const publicEnd=source.indexOf('\n// Round 16 item A3',publicStart);
+  const publicBranch=source.slice(publicStart,publicEnd);
+  assert.match(publicBranch,/if \(!isDirectPublicDropStage\(task\)\) \{[\s\S]{0,180}refreshScheduledOpenSeaPhase/,
+    'only the explicitly synthesized PublicDrop may bypass the provider phase gate');
+  assert.match(publicBranch,/task\.stageType \|\| task\.stageLabel/,
+    'UUID-less direct public tasks use their truthful public semantic identity');
+  assert.match(publicBranch,/await enforceScheduledChangePolicy[\s\S]{0,300}enforceEligibilityDeadline/,
+    'a repeated authorised time move must be observed before the former deadline is enforced');
+  const preflightStart=source.indexOf('const evaluateScheduledPreflight=createScheduledPreflightEvaluator');
+  const valueStart=source.indexOf('\n  resolveMintValueWei:',preflightStart);
+  const preflight=source.slice(preflightStart,valueStart);
+  assert.match(preflight,/phaseAwareTask\(task\)[\s\S]{0,120}detected\?\.isSeaDrop&&!isDirectPublicDropStage\(task\)/,
+    'UUID-less provider SeaDrop phases retain their OpenSea stage gate during advisory checks');
 });
 
 test('validated OpenSea calls promote their provisional baseline only after decoded validation',()=>{

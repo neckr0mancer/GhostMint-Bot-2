@@ -96,6 +96,12 @@ test('schedule change policies support exact stage following, legacy bounded del
     {supportedChains:CHAINS,now:NOW});
   assert.equal(exact.timeChangePolicy,'auto_follow_stage');
   assert.equal(exact.maxOpeningDelayMs,null);
+  const onChainPublic=requestSchemas.taskCreate(validTask({autoReschedule:true,viaOpenSea:false,
+    stageLabel:'Public sale',stageType:'seadrop_public_drop'}),{supportedChains:CHAINS,now:NOW});
+  assert.equal(onChainPublic.timeChangePolicy,'auto_follow_stage',
+    'the one on-chain PublicDrop can be followed exactly without inventing an OpenSea UUID');
+  rejectsField(()=>requestSchemas.taskCreate(validTask({autoReschedule:true,viaOpenSea:false,
+    stageLabel:'Provider public',stageType:'public_sale'}),{supportedChains:CHAINS,now:NOW}),'stageUuid');
   rejectsField(()=>requestSchemas.taskCreate(validTask({autoReschedule:true}),
     {supportedChains:CHAINS,now:NOW}),'stageUuid');
   const task=requestSchemas.taskCreate(validTask({autoReschedule:true,maxOpeningDelayMinutes:90,

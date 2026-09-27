@@ -105,14 +105,15 @@ test('OpenSea validation rejects an Archetype mintTo that redirects the NFT to a
   }), ValidationError);
 });
 
-function commandServiceFixture({ contractValueResolver, seaDropDiscoveryService, openSeaService, priceFeedService, wallets,
+function commandServiceFixture({ contractValueResolver, seaDropDiscoveryService, seaDropPublicDropResolver,
+  openSeaService, priceFeedService, wallets,
   providerService, supportedChains = ['ethereum'], chains = { ethereum: { sym: 'ETH' } } }) {
   const state = { wallets: wallets || [{ userId: 'user-a', label: 'main', address: WALLET, chain: 'ethereum' }], tasks: [], activity: [], pnl: [], snipers: [] };
   const calls = [];
   const service = createBotCommandService({
     storage: {}, schedulerRepository: {}, providerService: providerService || { perform: async () => '0x1234' }, governance: {}, adminCommands: {}, sniperService: {},
     supportedChains, chains, getState: () => state,
-    contractValueResolver, seaDropDiscoveryService, openSeaService, priceFeedService,
+    contractValueResolver, seaDropDiscoveryService, seaDropPublicDropResolver, openSeaService, priceFeedService,
     executeMint: async ({ userId, wallet, request }) => { calls.push(['executeMint', userId, wallet.label, request]); return { txHash: '0xabc' }; },
     executeMintViaOpenSea: async ({ userId, wallet, request, built }) => { calls.push(['executeMintViaOpenSea', userId, wallet.label, request, built]); return { txHash: '0xdef' }; },
   });
@@ -415,7 +416,7 @@ test('detectMintContract attaches real phase data from OpenSea when includeStats
     'a direct public SeaDrop must not acquire an unnecessary OpenSea-builder dependency');
 });
 
-test('detectMintContract recommends the OpenSea builder for a wallet-gated SeaDrop phase', async () => {
+test('detectMintContract keeps a future wallet-gated SeaDrop phase manual until eligibility is known', async () => {
   const gated = { uuid: 'allow-1', label: 'Allowlist', startTime: 1_800_000_000,
     endTime: 1_800_003_600, priceWei: '0', maxPerWallet: 1, stageType: 'signed_presale' };
   const { service } = commandServiceFixture({
@@ -432,10 +433,23 @@ test('detectMintContract recommends the OpenSea builder for a wallet-gated SeaDr
   assert.equal(result.openSeaMintRecommended, true);
   assert.equal(result.drop.stages[0].requiresEligibilityCheck, true);
   assert.equal(result.drop.stages[0].eligibilityState, 'check_at_open');
-  assert.equal(result.schedulePlan.recommendedStageUuid, 'allow-1');
-  assert.equal(result.schedulePlan.eligibilityMode, 'earliest_eligible');
-  assert.equal(result.schedulePlan.advancesIfIneligible, false,
-    'a single gated phase must not promise a later-stage advance that does not exist');
+  assert.equal(result.schedulePlan, null,
+    'unknown future allowlist eligibility must not be presented as an automatic recommendation');
+});
+
+test('wallet-specific detection rejects labels outside the requesting user before provider work',async()=>{
+  let providerCalls=0;
+  const {service}=commandServiceFixture({
+    wallets:[
+      {userId:'user-a',label:'main',address:WALLET,chain:'ethereum'},
+      {userId:'user-b',label:'private',address:FEE_RECIPIENT,chain:'ethereum'},
+    ],
+    providerService:{perform:async()=>{providerCalls+=1;return '0x1234';}},
+  });
+  await assert.rejects(service.detectMintContract('user-a',{
+    contractAddress:CONTRACT,quantity:1,includeDrop:true,walletLabel:'private',
+  }),error=>error instanceof ValidationError&&error.issues.some(issue=>issue.field==='walletLabel'));
+  assert.equal(providerCalls,0,'an unauthorized label must fail before any contract/provider lookup');
 });
 
 test('an active public phase keeps the direct SeaDrop path even when a later gated phase exists', async () => {
@@ -503,14 +517,132 @@ test('detectMintContract skips getDrop when includeDrop is explicitly false, eve
   assert.equal(result.drop, null);
 });
 
-test('detectMintContract leaves drop null when the contract is not an OpenSea-tracked drop, without throwing', async () => {
+test('detectMintContract uses the on-chain PublicDrop when OpenSea has no stage metadata', async () => {
+  const futureStart = Math.floor(Date.now() / 1000) + 3_600;
+  const futureEnd = futureStart + 3_600;
   const { service } = commandServiceFixture({
     contractValueResolver: { resolve: async () => { throw new Error('should not be reached'); }, probeMaxSupply: async () => null, probeTotalMinted: async () => null },
-    seaDropDiscoveryService: { resolve: async () => ({ address: SEADROP, publicDrop: { mintPriceWei: '1000', maxTotalMintableByWallet: 5 }, feeRecipient: FEE_RECIPIENT }) },
+    seaDropDiscoveryService: { resolve: async () => ({ address: SEADROP, publicDrop: {
+      mintPriceWei: '0', maxTotalMintableByWallet: 1, startTime:futureStart, endTime:futureEnd,
+    }, feeRecipient: FEE_RECIPIENT }) },
     openSeaService: { getCollectionMetadata: async () => null, getCollectionStats: async () => null, getDrop: async () => null },
   });
   const result = await service.detectMintContract('user-a', { contractAddress: CONTRACT, quantity: 1, includeStats: true });
+  assert.equal(result.drop.isMinting, false);
+  assert.equal(result.drop.activeStage, null);
+  assert.equal(result.drop.stages.length, 1);
+  assert.deepEqual(result.drop.nextStage, result.drop.stages[0]);
+  assert.deepEqual(result.drop.stages[0], {
+    label:'Public sale', stageType:'seadrop_public_drop', startTime:futureStart, endTime:futureEnd,
+    priceWei:'0', priceETH:0, maxPerWallet:1, requiresEligibilityCheck:false,
+    eligibilityMode:'specific_stage', eligibilityState:'open_to_all',
+    eligibilityLabel:'Open to all wallets', advancesIfIneligible:false,
+    identityAmbiguous:false, schedulable:true,
+  });
+  assert.equal(result.schedulePlan.recommendedStageUuid, null);
+  assert.equal(result.schedulePlan.recommendedStageLabel, 'Public sale');
+  assert.equal(result.schedulePlan.recommendedStageType, 'seadrop_public_drop');
+  assert.equal(result.schedulePlan.eligibilityState, 'open_to_all');
+  assert.equal(result.openSeaMintRecommended, false);
+  assert.equal(result.startTime, futureStart);
+  assert.equal(result.endTime, futureEnd);
+  assert.equal(result.maxPerWallet, 1);
+});
+
+test('schedule detection refreshes cached PublicDrop timing before recommending a phase',async()=>{
+  const cachedStart=Math.floor(Date.now()/1000)+1_800;
+  const freshStart=cachedStart+7_200;
+  const fresh={mintPriceWei:'250',maxTotalMintableByWallet:4,startTime:freshStart,
+    endTime:freshStart+3_600};
+  const reads=[];
+  const {service}=commandServiceFixture({
+    contractValueResolver:{resolve:async()=>{throw new Error('should not be reached');},
+      probeMaxSupply:async()=>null,probeTotalMinted:async()=>null},
+    seaDropDiscoveryService:{resolve:async()=>({address:SEADROP,publicDrop:{...fresh,
+      mintPriceWei:'0',startTime:cachedStart,endTime:cachedStart+3_600},feeRecipient:FEE_RECIPIENT})},
+    seaDropPublicDropResolver:{readPublicDrop:async(...args)=>{reads.push(args);return fresh;}},
+    openSeaService:{getCollectionMetadata:async()=>null,getCollectionStats:async()=>null,getDrop:async()=>null},
+  });
+  const result=await service.detectMintContract('user-a',{
+    contractAddress:CONTRACT,quantity:1,includeDrop:true,
+  });
+  assert.deepEqual(reads,[['ethereum',SEADROP,CONTRACT]]);
+  assert.equal(result.drop.stages[0].startTime,freshStart);
+  assert.equal(result.drop.stages[0].priceWei,'250');
+  assert.equal(result.startTime,freshStart);
+});
+
+test('an incomplete on-chain PublicDrop is never advertised as a schedulable phase',async()=>{
+  const futureStart=Math.floor(Date.now()/1000)+3_600;
+  for(const publicDrop of [
+    {mintPriceWei:'0',maxTotalMintableByWallet:1,startTime:futureStart,endTime:0},
+    {mintPriceWei:'0',maxTotalMintableByWallet:0,startTime:futureStart,endTime:futureStart+3_600},
+  ]){
+    const {service}=commandServiceFixture({
+      contractValueResolver:{resolve:async()=>{throw new Error('should not be reached');},
+        probeMaxSupply:async()=>null},
+      seaDropDiscoveryService:{resolve:async()=>({address:SEADROP,publicDrop,feeRecipient:FEE_RECIPIENT})},
+      openSeaService:{getCollectionMetadata:async()=>null,getDrop:async()=>null},
+    });
+    const result=await service.detectMintContract('user-a',{
+      contractAddress:CONTRACT,quantity:1,includeDrop:true,
+    });
+    assert.equal(result.drop,null);
+    assert.equal(result.schedulePlan,null);
+  }
+});
+
+test('detectMintContract fills an empty OpenSea stage envelope without discarding its metadata', async () => {
+  const futureStart = Math.floor(Date.now() / 1000) + 3_600;
+  const { service } = commandServiceFixture({
+    contractValueResolver: { resolve: async () => { throw new Error('should not be reached'); }, probeMaxSupply: async () => null },
+    seaDropDiscoveryService: { resolve: async () => ({ address: SEADROP, publicDrop: {
+      mintPriceWei:'1000', maxTotalMintableByWallet:2, startTime:futureStart,
+      endTime:futureStart+3_600,
+    }, feeRecipient:FEE_RECIPIENT }) },
+    openSeaService: { getCollectionMetadata: async () => null, getDrop: async () => ({
+      isMinting:false, dropType:'seadrop_v1_erc721', openSeaUrl:'https://opensea.io/collection/example',
+      activeStage:null, nextStage:null, stages:[],
+    }) },
+  });
+  const result = await service.detectMintContract('user-a', {
+    contractAddress:CONTRACT, quantity:1, includeDrop:true,
+  });
+  assert.equal(result.drop.dropType, 'seadrop_v1_erc721');
+  assert.equal(result.drop.openSeaUrl, 'https://opensea.io/collection/example');
+  assert.equal(result.drop.stages.length, 1);
+  assert.equal(result.drop.stages[0].stageType, 'seadrop_public_drop');
+  assert.equal(result.schedulePlan.recommendedStageType, 'seadrop_public_drop');
+});
+
+test('detectMintContract represents a live on-chain PublicDrop without recommending a schedule', async () => {
+  const now = Math.floor(Date.now() / 1000);
+  const { service } = commandServiceFixture({
+    contractValueResolver: { resolve: async () => { throw new Error('should not be reached'); }, probeMaxSupply: async () => null },
+    seaDropDiscoveryService: { resolve: async () => ({ address:SEADROP, publicDrop:{
+      mintPriceWei:'0', maxTotalMintableByWallet:1, startTime:now-60, endTime:now+3_600,
+    }, feeRecipient:FEE_RECIPIENT }) },
+    openSeaService: { getCollectionMetadata: async () => null, getDrop: async () => null },
+  });
+  const result = await service.detectMintContract('user-a', {
+    contractAddress:CONTRACT, quantity:1, includeDrop:true,
+  });
+  assert.equal(result.drop.isMinting, true);
+  assert.deepEqual(result.drop.activeStage, result.drop.stages[0]);
+  assert.equal(result.drop.nextStage, null);
+  assert.equal(result.schedulePlan, null);
+  assert.equal(result.openSeaMintRecommended, false);
+});
+
+test('detectMintContract does not invent a stage when neither OpenSea nor PublicDrop supplies one', async () => {
+  const { service } = commandServiceFixture({
+    contractValueResolver: { resolve: async () => ({ price:null, maxSupply:null, maxPerWallet:null }), probeTotalMinted: async () => null },
+    seaDropDiscoveryService: { resolve: async () => ({ address:null, publicDrop:null, feeRecipient:null }) },
+    openSeaService: { getCollectionMetadata: async () => null, getCollectionStats: async () => null, getDrop: async () => null },
+  });
+  const result = await service.detectMintContract('user-a', { contractAddress:CONTRACT, quantity:1, includeStats:true });
   assert.equal(result.drop, null);
+  assert.equal(result.schedulePlan, null);
 });
 
 // The plain mint(uint256) branch shares the same includeStats-gated drop fetch as the SeaDrop
@@ -981,6 +1113,8 @@ test('createTask persists fresh, wallet-specific SeaDrop allowance evidence for 
       readAllowedFeeRecipients:async()=>[FEE_RECIPIENT],
       readMintStats:async(_chain,_contract,wallet)=>{assert.equal(wallet,WALLET);return {minterNumMinted:'2'};},
     },
+    openSeaService:{getDrop:async()=>({stages:[{uuid:'public-1',label:'Public',
+      stageType:'public_sale',startTime:start,endTime:end,priceWei:'0'}]})},
     createReservedTask:async()=>({created:true}),
   });
   await service.createTask('user-a',{name:'verified public',walletLabel:'main',contractAddress:CONTRACT,
@@ -994,6 +1128,59 @@ test('createTask persists fresh, wallet-specific SeaDrop allowance evidence for 
   assert.equal(saved[0].acceptedConfigSummary.standard,'SeaDrop');
   assert.equal(saved[0].acceptedConfigSummary.method,'mintPublic');
   assert.equal(saved[0].acceptedConfigSummary.callTarget,SEADROP.toLowerCase());
+});
+
+test('createTask does not replace a missing provider UUID with an unrelated on-chain public phase',async()=>{
+  const start=Math.floor(Date.now()/1000)+3_600;
+  const end=start+3_600;
+  const publicDrop={startTime:start,endTime:end,maxTotalMintableByWallet:10,mintPriceWei:'0',
+    feeBps:0,restrictFeeRecipients:false};
+  const {service}=taskServiceFixture({
+    contractValueResolver:{resolve:async()=>({price:{value:'0'},maxSupply:null,maxPerWallet:null})},
+    seaDropDiscoveryService:{resolve:async()=>({address:SEADROP,publicDrop,feeRecipient:FEE_RECIPIENT})},
+    seaDropPublicDropResolver:{
+      readPublicDrop:async()=>publicDrop,
+      readAllowedFeeRecipients:async()=>[FEE_RECIPIENT],
+      readMintStats:async()=>({minterNumMinted:'0'}),
+    },
+    openSeaService:{getDrop:async()=>null},
+    createReservedTask:async()=>({created:true}),
+  });
+  await assert.rejects(service.createTask('user-a',{name:'stale provider phase',walletLabel:'main',
+    contractAddress:CONTRACT,quantity:1,mintTime:new Date(start*1000).toISOString(),
+    stageStartAt:new Date(start*1000).toISOString(),stageUuid:'removed-public-stage',
+    stageLabel:'Public',stageType:'public_sale'}),error=>(
+    error instanceof ValidationError&&error.code==='SCHEDULE_CHANGED_DURING_CREATE'
+      &&/Refresh the preview/.test(error.issues[0].message)
+  ));
+});
+
+test('createTask can auto-follow a UUID-less on-chain PublicDrop without requiring OpenSea metadata',async()=>{
+  const start=Math.floor(Date.now()/1000)+3_600;
+  const end=start+3_600;
+  const publicDrop={startTime:start,endTime:end,maxTotalMintableByWallet:5,mintPriceWei:'0',
+    feeBps:0,restrictFeeRecipients:false};
+  const {saved,service}=taskServiceFixture({
+    contractValueResolver:{resolve:async()=>({price:{value:'0'},maxSupply:null,maxPerWallet:null})},
+    seaDropDiscoveryService:{resolve:async()=>({address:SEADROP,publicDrop,feeRecipient:FEE_RECIPIENT})},
+    seaDropPublicDropResolver:{
+      readPublicDrop:async()=>publicDrop,
+      readAllowedFeeRecipients:async()=>[FEE_RECIPIENT],
+      readMintStats:async()=>({minterNumMinted:'0'}),
+    },
+    openSeaService:{getDrop:async()=>null},
+    createReservedTask:async()=>({created:true}),
+  });
+  await service.createTask('user-a',{name:'on-chain public',walletLabel:'main',
+    contractAddress:CONTRACT,quantity:1,mintTime:new Date(start*1000).toISOString(),
+    stageStartAt:new Date(start*1000).toISOString(),stageLabel:'Public sale',
+    stageType:'seadrop_public_drop',eligibilityDeadline:new Date((start+86_400)*1000).toISOString(),
+    viaOpenSea:false,autoReschedule:true});
+  assert.equal(saved[0].stageUuid,null);
+  assert.equal(saved[0].timeChangePolicy,'auto_follow_stage');
+  assert.equal(saved[0].reservationStageKey,'phase:direct_public');
+  assert.equal(saved[0].acceptedConfigSummary.standard,'SeaDrop');
+  assert.equal(saved[0].acceptedConfigSummary.stageIdentity,'phase:seadrop_public_drop:public sale');
 });
 
 test('createTask reports an authoritative allowance conflict as a validation error',async()=>{

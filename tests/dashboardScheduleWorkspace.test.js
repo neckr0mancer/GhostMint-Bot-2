@@ -33,7 +33,9 @@ test('phase eligibility deadline never exceeds 24 hours from the submitted minut
 test('initial detection and stage switching preserve provider seconds in scheduled mint time',()=>{
   assert.match(app,/setMintTime\(stageMintTimeLocalValue\(detectedStart\)\)/);
   assert.match(app,/setMintTime\(stageMintTimeLocalValue\(opening\)\)/);
-  assert.match(app,/type="datetime-local" step="1"/);
+  assert.match(app,/<DateTimePicker name="mintTime"/);
+  assert.doesNotMatch(app,/type="datetime-local"/,
+    'Schedule must use the themed picker rather than the browser-native calendar');
   assert.doesNotMatch(app,/setMintTime\(local\.toISOString\(\)\.slice\(0,16\)\)/);
 });
 
@@ -338,7 +340,7 @@ test('Schedule cannot submit until an explicit or detected mint time exists',()=
   const start=app.indexOf('function Tasks(');
   const end=app.indexOf('function Activity(',start);
   const schedule=app.slice(start,end);
-  assert.match(schedule,/name="mintTime" type="datetime-local" step="1" required/);
+  assert.match(schedule,/<DateTimePicker name="mintTime"[\s\S]*required disabled=\{noWallets\}/);
   assert.match(schedule,/disabled=\{noWallets\|\|!scheduleWallet\|\|!mintTime\|\|detecting\|\|submitting/);
   assert.match(schedule,/!liveMintStage&&!detecting&&ADDRESS_SHAPE\.test\(contractAddress\.trim\(\)\)&&lastDetected\.current===contractAddress\.trim\(\)\.toLowerCase\(\)/,
     'clearing a successful form must not leave an empty address looking like a detected contract');
@@ -351,21 +353,37 @@ test('Schedule uses the server recommendation without pretending a future allowl
   assert.match(schedule,/const recommended=result\.schedulePlan/);
   assert.match(schedule,/recommended\.recommendedStageUuid/);
   assert.match(schedule,/const selectable=future\.filter\(stage=>!stageChoice\(stage,detectedAt,detectedLiveness\)\.disabled\)/);
-  assert.match(schedule,/if\(!chosenStage&&selectable\.length===1\)chosenStage=selectable\[0\]/);
+  assert.match(schedule,/selectable\.length===1&&stageChoice\(selectable\[0\],[^)]*\)\.state!=='check_at_open'/,
+    'an unknown gated stage must not become the automatic choice merely because it is the only one');
+  assert.match(schedule,/liveOnlyStage=!chosenStage&&selectable\.length===0\?availability\.liveStage:null/,
+    'a live phase must not hide selectable future stages whose eligibility is checked at opening');
   assert.match(schedule,/if\(choice\.disabled\)/,
     'submission must re-check that the chosen stage is still selectable');
   assert.match(schedule,/Boolean\(stages\.find\(stage=>scheduleStageSelectionKey\(stage\)===selectedStageKey\)&&stageChoice/,
     'the schedule action must disable when the selected stage becomes unavailable');
   assert.doesNotMatch(schedule,/\|\|future\[0\]\|\|null/,
     'a stale recommendation must not silently select the first of several stages');
-  assert.doesNotMatch(schedule,/future\.find\(s=>!scheduleStageRequiresOpenSeaBuilder\(s\)\)/,
-    'the client must not skip an earlier stage merely because eligibility is checked later');
+  assert.match(schedule,/It never auto-selects a gated phase whose[\s\S]*wallet eligibility is still unknown/,
+    'the client must explain why an unproven allowlist is not recommended automatically');
   assert.match(schedule,/A future allowlist cannot be proven from the wallet address alone\./);
   assert.match(schedule,/tag:choice\.tag,disabled:choice\.disabled/);
   assert.match(schedule,/label:`\$\{stageName\} · \$\{local\}`/);
-  assert.match(schedule,/<SelectMenu label="Earliest attempt"/);
+  assert.match(schedule,/<SelectMenu label="Mint stage"/);
+  assert.equal((schedule.match(/<SelectMenu label="Mint stage"/g)||[]).length,1,
+    'the preview must expose one stage decision, not separate stage and eligibility controls');
+  assert.doesNotMatch(schedule,/<div><span>Stage<\/span><b>/,
+    'the selected stage belongs in the single stage selector, not a duplicate summary row');
+  assert.doesNotMatch(schedule,/<div><span>Eligibility<\/span><b>/,
+    'eligibility belongs on each stage option and the selected-stage tag, not a second field');
+  assert.match(schedule,/walletLabel=\$\{encodeURIComponent\(normalizedWallet\)\}/,
+    'the planner request must be tied to the selected owned wallet');
+  assert.match(schedule,/lastEligibilityWallet\.current!==scheduleWallet/,
+    'submission must remain disabled until the selected wallet owns the current eligibility read');
+  assert.match(schedule,/onChange=\{e=>changeScheduleWallet\(e\.target\.value\)\}/,
+    'changing wallets must synchronously invalidate the previous wallet plan');
+  assert.match(schedule,/Eligibility for \$\{scheduleWallet\|\|'this wallet'\} is verified when the stage opens/);
   assert.doesNotMatch(schedule,/stages\.length>1&&<SelectMenu className="fl" label="Stage"/,
-    'the stage picker belongs inside Earliest attempt, including when only one stage exists');
+    'the stage picker belongs inside the schedule preview, including when only one stage exists');
 });
 
 test('Schedule change controls use plain-language safety copy and a stable switch animation',()=>{

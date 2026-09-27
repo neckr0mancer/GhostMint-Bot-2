@@ -1,4 +1,5 @@
-const { scheduleReservationStageKey } = require('../mint/scheduleStagePlanning');
+const { isDirectPublicDropStage, scheduleReservationStageKey,
+  scheduleReservationStagesConflict } = require('../mint/scheduleStagePlanning');
 const { enforceScheduleAllowanceEnvelope, UNKNOWN } = require('../mint/scheduleAllowance');
 const { armTaskPreflightRows, REVIEW_EXPIRED_REASON } = require('./scheduledPreflightRepository');
 
@@ -517,6 +518,10 @@ function createSchedulerRepository(pool) {
         stageLabel:stageLabelSupplied ? stageLabel : task.stageLabel,
         stageType:stageTypeSupplied ? stageType : task.stageType,
         mintTime:mintTimeSupplied ? mintTime : task.mintTime,
+        directPublic:task.viaOpenSea !== true && isDirectPublicDropStage({
+          stageUuid:stageUuidSupplied ? stageUuid : task.stageUuid,
+          stageType:stageTypeSupplied ? stageType : task.stageType,
+        }),
       }) : task.reservationStageKey;
       const suppliedEvidence = details.allowanceEvidence && typeof details.allowanceEvidence === 'object'
         ? details.allowanceEvidence : {};
@@ -570,13 +575,24 @@ function createSchedulerRepository(pool) {
             ORDER BY active_task.created_at,active_task.id FOR UPDATE OF active_task`,
           [task.userId,envelope.wallet_address,envelope.chain,envelope.contract_address,task.id]);
           const activeTasks = active.rows.map(mapTask);
-          const conflict = activeTasks.find(existing => {
-            const key = existing.reservationStageKey || scheduleReservationStageKey({
-              stageUuid:existing.stageUuid,stageLabel:existing.stageLabel,
-              stageType:existing.stageType,mintTime:existing.mintTime,
-            });
-            return key === reservationStageKey;
-          });
+          const candidateReservation = {
+            stageUuid:stageUuidSupplied ? stageUuid : task.stageUuid,
+            stageLabel:stageLabelSupplied ? stageLabel : task.stageLabel,
+            stageType:stageTypeSupplied ? stageType : task.stageType,
+            stageStartAt:details.allowanceEvidence?.allowanceStageStartAt ?? details.stageStartAt
+              ?? (mintTimeSupplied ? mintTime : task.allowanceStageStartAt ?? task.stageStartAt),
+            mintTime:mintTimeSupplied ? mintTime : task.mintTime,
+            directPublic:task.viaOpenSea !== true && isDirectPublicDropStage({
+              stageUuid:stageUuidSupplied ? stageUuid : task.stageUuid,
+              stageType:stageTypeSupplied ? stageType : task.stageType,
+            }),
+          };
+          const conflict = activeTasks.find(existing => scheduleReservationStagesConflict({
+            stageUuid:existing.stageUuid,stageLabel:existing.stageLabel,
+            stageType:existing.stageType,stageStartAt:existing.allowanceStageStartAt ?? existing.stageStartAt,
+            mintTime:existing.mintTime,directPublic:existing.viaOpenSea !== true
+              && isDirectPublicDropStage(existing),
+          },candidateReservation));
           if (conflict) {
             throw scheduleReservationConflict(
               'This wallet already has an active mint scheduled for the next stage.');

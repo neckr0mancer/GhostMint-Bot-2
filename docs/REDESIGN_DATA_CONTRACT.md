@@ -277,7 +277,7 @@ and re-preview on expiry.
 | Security ledger | `/api/profile` → `securityPasswordSet`, `username` | SERVER |
 | Active sessions count / expiry / last key export | — | **MISSING (§5.12)** |
 | Account status | `/api/profile` does **not** return it; a blocked user gets `403` at `requireSession` instead | DERIVED (always "Active" if the page loaded) |
-| Theme picker | `PUT /api/profile/theme` | SERVER |
+| Theme picker | `PUT /api/profile/theme`; an account-keyed local pending value bridges an offline change and is removed after sync | SERVER after sync |
 | **Transaction mode cards** | `/api/mode-presets` + `profile.currentMode` + `profile.advancedModesAllowed` | SERVER — fully supported, no change needed |
 | Transaction mode effect ledger | `/api/mode-presets` → the selected preset's fields | SERVER |
 | Gas panel | `GET /api/gas/:chain` | SERVER — `503` without an API key |

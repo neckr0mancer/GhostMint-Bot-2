@@ -361,6 +361,15 @@ function validateSendRequest(input, context) {
   };
 }
 
+function directPublicScheduleIdentity(input, stageType, stageLabel) {
+  if (input.viaOpenSea === true) return false;
+  const type = String(stageType || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+  // Only the internal on-chain fallback may follow without a provider UUID. A provider can publish
+  // several UUID-less public phases with the same label/type; treating those as the mutable
+  // PublicDrop would let execution drift onto a different phase.
+  return type === 'seadrop_public_drop';
+}
+
 function validateTaskCreate(input, context) {
   const mintTime = scheduleTimestamp(input.mintTime, context);
   // TX-025 (Model 2 phase-2): only a real boolean may select the OpenSea builder routing path.
@@ -372,10 +381,13 @@ function validateTaskCreate(input, context) {
   const maxOpeningDelayMinutes = finiteNumber(input.maxOpeningDelayMinutes,
     'maxOpeningDelayMinutes', { min: 1, max: 1440, integer: true, required:false });
   const stageUuid = optionalTaskMetadata(input.stageUuid, 'stageUuid', 200);
+  const stageLabel = optionalTaskMetadata(input.stageLabel, 'stageLabel', 100);
+  const stageType = optionalTaskMetadata(input.stageType, 'stageType', 64);
   if (!autoReschedule && maxOpeningDelayMinutes !== null) {
     fail('maxOpeningDelayMinutes', 'requires automatic rescheduling to be enabled');
   }
-  if (autoReschedule && maxOpeningDelayMinutes === null && !stageUuid) {
+  if (autoReschedule && maxOpeningDelayMinutes === null && !stageUuid
+    && !directPublicScheduleIdentity(input,stageType,stageLabel)) {
     fail('stageUuid', 'is required to follow an exact provider stage automatically');
   }
   const acceptPriceChanges = input.acceptPriceChanges === undefined ? false
@@ -396,8 +408,8 @@ function validateTaskCreate(input, context) {
     ...validateMintRequest(input, context),
     mintTime,
     stageUuid,
-    stageLabel: optionalTaskMetadata(input.stageLabel, 'stageLabel', 100),
-    stageType: optionalTaskMetadata(input.stageType, 'stageType', 64),
+    stageLabel,
+    stageType,
     stageStartAt: taskStageStart(input.stageStartAt, mintTime),
     eligibilityMode: taskEligibilityMode(input.eligibilityMode),
     eligibilityDeadline: taskEligibilityDeadline(input.eligibilityDeadline, mintTime),

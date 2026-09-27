@@ -2,6 +2,7 @@
 import React,{useCallback,useEffect,useRef,useState} from 'react';
 import QRCode from 'qrcode';
 import Admin from './Admin.jsx';
+import DateTimePicker from './DateTimePicker.jsx';
 import {CountdownRing,shortAddress} from './dashboardWidgets/homeParts.jsx';
 import PnlBars from './PnlBars.jsx';
 import {loadError,batchRowDetail,useRetryAfter} from './shared.jsx';
@@ -19,6 +20,7 @@ import {mintPreviewMetrics} from './mintPreviewMetrics.mjs';
 import {mintBatchPreviewModel,nativeSymbolForChain} from './mintBatchPreview.mjs';
 import {DISPLAY_CURRENCY_OPTIONS,fiatFromNative,fiatFromWei,quoteFor,
   schedulePriceCapWei} from './currencyDisplay.mjs';
+import {clearPendingTheme,readPendingTheme,resolveDashboardTheme,savePendingTheme} from './themePreference.mjs';
 import {ACTIVITY_EVENTS,api,Ledger,NumberField,SectionCard,confirmDialog,ConfirmHost,consumePendingMintPrefill,CopyButton,csrf,downloadFile,Empty,Field,Form,getNotificationLog,notify,Notice,PageTitle,Pager,promptDialog,relativeTime,resetSectionOrders,SearchField,Select,SelectMenu,Skeleton,StatusPill,SubTabs,subscribeNotificationLog,ToastHost,useLoad,useLiveSocket,setPendingMintPrefill,quantityPicks} from './shared.jsx';
 import Dashboard from './Dashboard.jsx';
 // Phase 4, unit 1 of 5 (brief §2). The 11->5 merge lands one page at a time so any single merge
@@ -1555,7 +1557,7 @@ function TaskDetails({summary,onClose,onChanged}){
 function Tasks({profile,active=true,onCommitChange,onSwitchToMint,onSwitchToBatch}){
   const mobile=useIsMobile();const [page,setPage]=useState(1);const [search,setSearch]=useState('');
   const [bucket,setBucket]=useState(()=>{const value=new URLSearchParams(window.location.search).get('bucket');return BUCKETS.some(([key])=>key===value)?value:'pending';});
-  const [filtersOpen,setFiltersOpen]=useState(false);const [serverFilters,setServerFilters]=useState(null);const PAGE_SIZE=mobile?3:10;const COMPAT_LIMIT=50;const listing=useLoad(serverFilters===false?`/api/tasks?page=1&pageSize=${COMPAT_LIMIT}&search=${encodeURIComponent(search)}`:`/api/tasks?page=${page}&pageSize=${PAGE_SIZE}&status=${bucket}&search=${encodeURIComponent(search)}`,[page,bucket,search,serverFilters,PAGE_SIZE],'tasks.changed');const wallets=useLoad('/api/wallets',[],'wallets.changed');const contractInputRef=useRef(null);const [chain,setChain]=useState(profile.defaultChain||profile.supportedChains[0]);const [contractAddress,setContractAddress]=useState('');const [detectedName,setDetectedName]=useState('');const [detectedSeaDrop,setDetectedSeaDrop]=useState(false);const [quantity,setQuantity]=useState('1');const [maxPerWallet,setMaxPerWallet]=useState(null);const [priceETH,setPriceETH]=useState('');const [mintTime,setMintTime]=useState('');const [viaOpenSea,setViaOpenSea]=useState(false);const [detectedOpenSeaRecommendation,setDetectedOpenSeaRecommendation]=useState(false);const [stageType,setStageType]=useState('');const [stages,setStages]=useState([]);const [selectedStageKey,setSelectedStageKey]=useState('');const [liveMintStage,setLiveMintStage]=useState(null);const [stageLiveness,setStageLiveness]=useState({authoritative:false,isMinting:false,activeKey:''});const [scheduleWallet,setScheduleWallet]=useState('');const [detecting,setDetecting]=useState(false);const [detectionError,setDetectionError]=useState('');const [detectionRetryable,setDetectionRetryable]=useState(false);const [scheduleError,setScheduleError]=useState(null);const [submitting,setSubmitting]=useState(false);const [controlBusy,setControlBusy]=useState('');const [scheduleInfoOpen,setScheduleInfoOpen]=useState(false);const [autoReschedule,setAutoReschedule]=useState(false);const [acceptPriceChanges,setAcceptPriceChanges]=useState(false);const [allowedPriceIncreaseFiat,setAllowedPriceIncreaseFiat]=useState('');const lastDetected=useRef('');const detectingKey=useRef('');
+  const [filtersOpen,setFiltersOpen]=useState(false);const [serverFilters,setServerFilters]=useState(null);const PAGE_SIZE=mobile?3:10;const COMPAT_LIMIT=50;const listing=useLoad(serverFilters===false?`/api/tasks?page=1&pageSize=${COMPAT_LIMIT}&search=${encodeURIComponent(search)}`:`/api/tasks?page=${page}&pageSize=${PAGE_SIZE}&status=${bucket}&search=${encodeURIComponent(search)}`,[page,bucket,search,serverFilters,PAGE_SIZE],'tasks.changed');const wallets=useLoad('/api/wallets',[],'wallets.changed');const contractInputRef=useRef(null);const [chain,setChain]=useState(profile.defaultChain||profile.supportedChains[0]);const [contractAddress,setContractAddress]=useState('');const [detectedName,setDetectedName]=useState('');const [detectedSeaDrop,setDetectedSeaDrop]=useState(false);const [quantity,setQuantity]=useState('1');const [maxPerWallet,setMaxPerWallet]=useState(null);const [priceETH,setPriceETH]=useState('');const [mintTime,setMintTime]=useState('');const [viaOpenSea,setViaOpenSea]=useState(false);const [detectedOpenSeaRecommendation,setDetectedOpenSeaRecommendation]=useState(false);const [stageType,setStageType]=useState('');const [stages,setStages]=useState([]);const [selectedStageKey,setSelectedStageKey]=useState('');const [recommendedStageKey,setRecommendedStageKey]=useState('');const [liveMintStage,setLiveMintStage]=useState(null);const [stageLiveness,setStageLiveness]=useState({authoritative:false,isMinting:false,activeKey:''});const [scheduleWallet,setScheduleWallet]=useState('');const [detecting,setDetecting]=useState(false);const [detectionError,setDetectionError]=useState('');const [detectionRetryable,setDetectionRetryable]=useState(false);const [scheduleError,setScheduleError]=useState(null);const [submitting,setSubmitting]=useState(false);const [controlBusy,setControlBusy]=useState('');const [scheduleInfoOpen,setScheduleInfoOpen]=useState(false);const [autoReschedule,setAutoReschedule]=useState(false);const [acceptPriceChanges,setAcceptPriceChanges]=useState(false);const [allowedPriceIncreaseFiat,setAllowedPriceIncreaseFiat]=useState('');const lastDetected=useRef('');const lastEligibilityWallet=useRef('');const lastEligibilityAttempt=useRef('');const detectingKey=useRef('');
   // The prototype's Schedule form has no price field, because it assumes the contract can be
   // priced automatically. Some cannot -- the server then rejects with a priceETH issue and there
   // is nowhere to type one, which left the form unsubmittable for those contracts. So the field
@@ -1566,11 +1568,12 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint,onSwitchToBatc
   const [detailTask,setDetailTask]=useState(null);
   const requestedTaskId=useRef(new URLSearchParams(window.location.search).get('task'));
   function clearScheduleDetection(){
-    setDetectedName('');setDetectedSeaDrop(false);setStages([]);setSelectedStageKey('');setLiveMintStage(null);
+    setDetectedName('');setDetectedSeaDrop(false);setStages([]);setSelectedStageKey('');setRecommendedStageKey('');setLiveMintStage(null);
     setStageLiveness({authoritative:false,isMinting:false,activeKey:''});
     setViaOpenSea(false);setDetectedOpenSeaRecommendation(false);setStageType('');
     setMaxPerWallet(null);setPriceETH('');setMintTime('');setPriceIssue(null);setScheduleError(null);
     setScheduleInfoOpen(false);setAutoReschedule(false);setAcceptPriceChanges(false);setAllowedPriceIncreaseFiat('');
+    lastEligibilityWallet.current='';lastEligibilityAttempt.current='';
     setDetectionError('');setDetectionRetryable(false);setChain(profile.defaultChain||profile.supportedChains[0]);
   }
   function selectScheduleStage(stage){
@@ -1589,6 +1592,19 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint,onSwitchToBatc
       ?Boolean(liveness.isMinting&&scheduleStageSelectionKey(stage)===liveness.activeKey)
       :null;
     return scheduleStageChoiceState(stage,now,{authoritativeLive});
+  }
+  function changeScheduleWallet(nextWallet){
+    if(nextWallet===scheduleWallet)return;
+    setScheduleWallet(nextWallet);
+    // Wallet eligibility is wallet-scoped. Remove the previous wallet's phase state immediately,
+    // then launch a keyed read for the new wallet so no render can submit stale eligibility.
+    setStages([]);setSelectedStageKey('');setRecommendedStageKey('');setStageType('');setLiveMintStage(null);
+    setStageLiveness({authoritative:false,isMinting:false,activeKey:''});
+    lastEligibilityWallet.current='';lastEligibilityAttempt.current='';detectingKey.current='';
+    const address=contractAddress.trim();
+    if(nextWallet&&ADDRESS_SHAPE.test(address)&&lastDetected.current===address.toLowerCase()){
+      detect(address,{walletLabel:nextWallet,walletRefresh:true,silent:true});
+    }
   }
   useEffect(()=>{if(active)contractInputRef.current?.focus({preventScroll:true});},[active]);
   useEffect(()=>{
@@ -1625,11 +1641,14 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint,onSwitchToBatc
   // immediate mint does, so this reuses the identical /api/mints/detect endpoint rather than making
   // the user look those up by hand. Price and time stay editable afterward -- detection pre-fills,
   // it never locks the field.
-  async function detect(addressOverride){
+  async function detect(addressOverride,{walletLabel=scheduleWallet,walletRefresh=false,silent=false}={}){
     const trimmed=(addressOverride??contractAddress).trim();
     if(!trimmed){notify('Enter a contract address first.',{type:'error'});return;}
-    const requestKey=trimmed.toLowerCase();
-    if(requestKey===lastDetected.current||requestKey===detectingKey.current)return;
+    const normalizedWallet=String(walletLabel||'').trim();
+    const requestKey=`${trimmed.toLowerCase()}:${normalizedWallet.toLowerCase()}`;
+    if(requestKey===detectingKey.current
+      ||(trimmed.toLowerCase()===lastDetected.current&&normalizedWallet===lastEligibilityWallet.current))return;
+    lastEligibilityAttempt.current=requestKey;
     detectingKey.current=requestKey;
     setDetecting(true);
     setDetectionError('');
@@ -1640,7 +1659,8 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint,onSwitchToBatc
       // Schedule stores price per item, so detection intentionally asks for ONE item. Asking with
       // the selected quantity returns a total value and would incorrectly save that total as the
       // per-item price. Quantity policy itself is independent of this probe quantity.
-      const result=await api(`/api/mints/detect?contractAddress=${encodeURIComponent(trimmed)}&quantity=1`);
+      const walletQuery=normalizedWallet?`&walletLabel=${encodeURIComponent(normalizedWallet)}`:'';
+      const result=await api(`/api/mints/detect?contractAddress=${encodeURIComponent(trimmed)}&quantity=1${walletQuery}`);
       if(detectingKey.current!==requestKey)return;
       setChain(result.chain);
       setDetectedSeaDrop(Boolean(result.isSeaDrop));
@@ -1659,20 +1679,30 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint,onSwitchToBatc
       if(allStages.length){
         const future=availability.futureStages;
         const selectable=future.filter(stage=>!stageChoice(stage,detectedAt,detectedLiveness).disabled);
-        // The server owns the recommendation. It deliberately starts at the earliest future stage:
-        // gated eligibility cannot be known yet, so the durable worker checks it at opening and
-        // advances to the next published stage instead of skipping a potentially valid allowlist.
+        // The server owns the safe recommendation. It never auto-selects a gated phase whose
+        // wallet eligibility is still unknown; those phases remain visible for an explicit choice,
+        // while an open-to-all or explicitly eligible phase is selected automatically.
         const recommended=result.schedulePlan;
-        chosenStage=recommended?selectable.find(s=>(recommended.recommendedStageUuid&&s.uuid===recommended.recommendedStageUuid)
+        const recommendedStage=recommended?selectable.find(s=>(recommended.recommendedStageUuid&&s.uuid===recommended.recommendedStageUuid)
           ||scheduleStageSelectionKey(s)===recommended.recommendedStageKey)||null:null;
+        setRecommendedStageKey(recommendedStage?scheduleStageSelectionKey(recommendedStage):'');
+        chosenStage=recommendedStage;
         // When the server recommendation is absent or stale, do not silently pretend the first of
         // several phases was chosen. A single unambiguous future phase is safe to preselect; with
         // several, the user must make the choice explicitly.
-        if(!chosenStage&&selectable.length===1)chosenStage=selectable[0];
-        liveOnlyStage=!chosenStage?availability.liveStage:null;
+        if(walletRefresh&&selectedStageKey){
+          const previous=selectable.find(stage=>scheduleStageSelectionKey(stage)===selectedStageKey);
+          if(previous&&stageChoice(previous,detectedAt,detectedLiveness).state!=='ineligible')chosenStage=previous;
+        }
+        if(!chosenStage&&selectable.length===1&&stageChoice(selectable[0],detectedAt,detectedLiveness).state!=='check_at_open')chosenStage=selectable[0];
+        // A currently live phase is a Mint-now handoff only when there is nothing later to
+        // schedule. Future allowlists with eligibility checked at opening must remain visible and
+        // selectable even while an earlier public phase is live.
+        liveOnlyStage=!chosenStage&&selectable.length===0?availability.liveStage:null;
         setSelectedStageKey(chosenStage?scheduleStageSelectionKey(chosenStage):'');
         setStageType(chosenStage?.stageType||chosenStage?.stage_type||'');
       } else {
+        setRecommendedStageKey('');
         const candidate=result.drop?.nextStage?.startTime*1000>detectedAt?result.drop.nextStage:null;
         const futureStage=candidate&&!stageChoice(candidate,detectedAt,detectedLiveness).disabled
           ?candidate:null;
@@ -1711,7 +1741,8 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint,onSwitchToBatc
         notify(msg,{type:'error'});
         return;
       }
-      lastDetected.current=requestKey;
+      lastDetected.current=trimmed.toLowerCase();
+      lastEligibilityWallet.current=normalizedWallet;
       setPriceETH('');
       setMintTime('');
       if(allStages.length && chosenStage){
@@ -1729,10 +1760,12 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint,onSwitchToBatc
         setMintTime(stageMintTimeLocalValue(detectedStart));
       }
       const label=result.isSeaDrop?'SeaDrop drop':'contract';
-      if(liveOnlyStage)notify(`${result.collection?.name||label} is live now. Continue with Mint now or Batch mint.`,{type:'info'});
-      else if(chosenUsesOpenSea)notify(`Detected ${result.collection?.name||label} on ${result.chain}. OpenSea will prepare the mint at execution time.`,{type:'success'});
-      else if(result.priceKnown)notify(`Detected ${label} on ${result.chain} — price read from the contract.`,{type:'success'});
-      else notify(`Detected ${label} on ${result.chain}, but the price couldn't be read — enter it yourself.`,{type:'info'});
+      if(!silent){
+        if(liveOnlyStage)notify(`${result.collection?.name||label} is live now. Continue with Mint now or Batch mint.`,{type:'info'});
+        else if(chosenUsesOpenSea)notify(`Detected ${result.collection?.name||label} on ${result.chain}. OpenSea will prepare the mint at execution time.`,{type:'success'});
+        else if(result.priceKnown)notify(`Detected ${label} on ${result.chain} — price read from the contract.`,{type:'success'});
+        else notify(`Detected ${label} on ${result.chain}, but the price couldn't be read — enter it yourself.`,{type:'info'});
+      }
     }catch(error){
       if(detectingKey.current!==requestKey)return;
       const raw=String(error?.message||'');
@@ -1743,14 +1776,14 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint,onSwitchToBatc
         const msg=`This contract is on ${chainLabel}, which isn't supported. Supported chains: ${supported}.`;
         setDetectionError(msg);
         setDetectionRetryable(false);
-        setDetectedName('');setDetectedSeaDrop(false);setStages([]);setSelectedStageKey('');setLiveMintStage(null);setStageLiveness({authoritative:false,isMinting:false,activeKey:''});setViaOpenSea(false);setDetectedOpenSeaRecommendation(false);setMaxPerWallet(null);setPriceETH('');setMintTime('');setPriceIssue(null);
+        setDetectedName('');setDetectedSeaDrop(false);setStages([]);setSelectedStageKey('');setRecommendedStageKey('');setLiveMintStage(null);setStageLiveness({authoritative:false,isMinting:false,activeKey:''});setViaOpenSea(false);setDetectedOpenSeaRecommendation(false);setMaxPerWallet(null);setPriceETH('');setMintTime('');setPriceIssue(null);
         notify(msg,{type:'error'});
       } else {
         const message=mintDetectionMessage(error);
         const retryable=/right now|in a moment/i.test(message);
         setDetectionError(message);
         setDetectionRetryable(retryable);
-        setDetectedName('');setDetectedSeaDrop(false);setStages([]);setSelectedStageKey('');setLiveMintStage(null);setStageLiveness({authoritative:false,isMinting:false,activeKey:''});setViaOpenSea(false);setDetectedOpenSeaRecommendation(false);setMaxPerWallet(null);setPriceETH('');setMintTime('');setPriceIssue(null);
+        setDetectedName('');setDetectedSeaDrop(false);setStages([]);setSelectedStageKey('');setRecommendedStageKey('');setLiveMintStage(null);setStageLiveness({authoritative:false,isMinting:false,activeKey:''});setViaOpenSea(false);setDetectedOpenSeaRecommendation(false);setMaxPerWallet(null);setPriceETH('');setMintTime('');setPriceIssue(null);
         notify(message,{type:'error'});
       }
     }
@@ -1762,13 +1795,24 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint,onSwitchToBatc
   function autoDetectIfReady(value=contractAddress){const trimmed=value.trim();if(ADDRESS_SHAPE.test(trimmed)&&trimmed.toLowerCase()!==lastDetected.current)detect(trimmed);}
   function handleContractBlur(){autoDetectIfReady();}
   useEffect(()=>{if(wallets.data?.length&&(!scheduleWallet||!wallets.data.some(item=>item.label===scheduleWallet)))setScheduleWallet(wallets.data[0].label);},[wallets.data,scheduleWallet]);
+  // Eligibility belongs to the selected wallet, not just the contract. Re-run the read-only plan
+  // whenever that wallet changes, preserving an explicit still-valid stage choice and rejecting
+  // stale responses with the address+wallet request key inside detect().
+  useEffect(()=>{
+    const address=contractAddress.trim();
+    if(detecting||!scheduleWallet||!ADDRESS_SHAPE.test(address)||lastDetected.current!==address.toLowerCase())return;
+    const requestKey=`${address.toLowerCase()}:${scheduleWallet.toLowerCase()}`;
+    if(lastEligibilityWallet.current===scheduleWallet||lastEligibilityAttempt.current===requestKey)return;
+    detect(address,{walletLabel:scheduleWallet,walletRefresh:true,silent:true});
+  },[scheduleWallet,contractAddress,detecting]);
   async function create(event){event.preventDefault();if(submitting)return;const form=event.currentTarget;const currentAddress=contractAddress.trim();
     setScheduleError(null);
     if(!scheduleWallet){
       const detail='Choose a wallet before scheduling this mint.';
       setScheduleError({title:'Wallet required.',detail});notify(detail,{type:'info'});return;
     }
-    if(detecting||!ADDRESS_SHAPE.test(currentAddress)||lastDetected.current!==currentAddress.toLowerCase()){
+    if(detecting||!ADDRESS_SHAPE.test(currentAddress)||lastDetected.current!==currentAddress.toLowerCase()
+      ||lastEligibilityWallet.current!==scheduleWallet){
       const message=detecting?'GhostMint is still reading this contract.':'Wait for GhostMint to finish checking this contract before scheduling it.';
       setScheduleError({title:'Contract check not finished.',detail:message});
       notify(message,{type:'info'});return;
@@ -1857,7 +1901,7 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint,onSwitchToBatc
       input.acceptPriceChanges=acceptPriceChanges;
       if(detectedPriceWei!==null&&detectedPriceWei!==undefined)input.expectedPriceWeiPerItem=String(detectedPriceWei);
       if(acceptPriceChanges)input.maxPriceWeiPerItem=priceCapWei.toString();
-      await api('/api/tasks',{method:'POST',body:JSON.stringify(input)});setPriceIssue(null);setScheduleError(null);form.reset();setContractAddress('');setDetectedName('');setDetectedSeaDrop(false);setStages([]);setSelectedStageKey('');setLiveMintStage(null);setStageLiveness({authoritative:false,isMinting:false,activeKey:''});setDetectionError('');setDetectionRetryable(false);setQuantity('1');setMaxPerWallet(null);setPriceETH('');setMintTime('');setViaOpenSea(false);setDetectedOpenSeaRecommendation(false);setStageType('');setScheduleInfoOpen(false);setAutoReschedule(false);setAcceptPriceChanges(false);setAllowedPriceIncreaseFiat('');lastDetected.current='';detectingKey.current='';notify(hasPhaseIdentity?'Task scheduled. Its time is the earliest check; minting waits for a live phase this wallet can use.':'Task scheduled. It will run automatically at the saved UTC time.',{type:'success'});listing.load();
+      await api('/api/tasks',{method:'POST',body:JSON.stringify(input)});setPriceIssue(null);setScheduleError(null);form.reset();setContractAddress('');setDetectedName('');setDetectedSeaDrop(false);setStages([]);setSelectedStageKey('');setRecommendedStageKey('');setLiveMintStage(null);setStageLiveness({authoritative:false,isMinting:false,activeKey:''});setDetectionError('');setDetectionRetryable(false);setQuantity('1');setMaxPerWallet(null);setPriceETH('');setMintTime('');setViaOpenSea(false);setDetectedOpenSeaRecommendation(false);setStageType('');setScheduleInfoOpen(false);setAutoReschedule(false);setAcceptPriceChanges(false);setAllowedPriceIncreaseFiat('');lastDetected.current='';lastEligibilityWallet.current='';lastEligibilityAttempt.current='';detectingKey.current='';notify(hasPhaseIdentity?'Task scheduled. Its time is the earliest check; minting waits for a live phase this wallet can use.':'Task scheduled. It will run automatically at the saved UTC time.',{type:'success'});listing.load();
     }catch(value){const issue=value.issues?.find(entry=>entry.field==='priceETH');if(issue)setPriceIssue(issue.message);const feedback=scheduleSubmitError(value);setScheduleError(feedback);notify(`${feedback.title} ${feedback.detail}`,{type:'error'});}finally{setSubmitting(false);onCommitChange?.(false);}}async function control(id,action){try{await api(`/api/tasks/${id}/control`,{method:'POST',body:JSON.stringify({action,confirmation:action==='cancel'?'CONFIRM':undefined})});}catch(value){notify(value.message,{type:'error'});}}
   // Prototype docs/prototype-pages/mint.html:111-158. The Schedule tab is a .split: the form on
   // the left, the "Scheduled" list on the right. The old page-lead, the search toolbar, the chain
@@ -2071,11 +2115,11 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint,onSwitchToBatc
           </section>}
         {!liveMintStage&&!detecting&&ADDRESS_SHAPE.test(contractAddress.trim())&&lastDetected.current===contractAddress.trim().toLowerCase()&&(()=>{
           const selectedStage=stages.find(stage=>scheduleStageSelectionKey(stage)===selectedStageKey);
-          const selectedChoice=selectedStage?stageChoice(selectedStage):null;
           const unitPriceWei=selectedStage?.priceWei!==null&&selectedStage?.priceWei!==undefined
             ?String(selectedStage.priceWei):(!viaOpenSea&&priceETH!==''?ethToWei(priceETH)?.toString():null);
           const nativeSymbol=nativeSymbolForChain(chain);
           const displayCurrency=profile.displayCurrency||'USD';
+          const displayCurrencySymbol=DISPLAY_CURRENCY_OPTIONS.find(option=>option.value===displayCurrency)?.symbol||displayCurrency;
           const priceQuote=quoteFor(profile.displayQuotes,nativeSymbol,displayCurrency);
           const proposedPriceCap=acceptPriceChanges&&unitPriceWei!==null&&unitPriceWei!==undefined&&priceQuote
             ?schedulePriceCapWei({baselineWei:unitPriceWei,allowedPriceIncreaseFiat,quote:priceQuote}):null;
@@ -2085,16 +2129,17 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint,onSwitchToBatc
               :priceETH?`${formatAdaptiveAmount(priceETH,{minDecimals:6})} ${nativeSymbol}`:'Not available';
           const stageOptions=stages.map(stage=>{
             const choice=stageChoice(stage);
+            const stageKey=scheduleStageSelectionKey(stage);
             const stageName=scheduleStageDisplayName(stage);
             const at=new Date(Number(stage.startTime)*1000);
             const hasTime=!Number.isNaN(at.getTime());
             const local=hasTime?at.toLocaleString([],{weekday:'short',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}):'Time unavailable';
             const utc=hasTime?`${String(at.getUTCHours()).padStart(2,'0')}:${String(at.getUTCMinutes()).padStart(2,'0')}Z`:null;
-            const facts=[utc,stage.maxPerWallet?`published max ${stage.maxPerWallet}/wallet`:null,
+            const facts=[stageKey===recommendedStageKey?'Recommended earliest confirmed stage':null,utc,stage.maxPerWallet?`published max ${stage.maxPerWallet}/wallet`:null,
               stage.priceWei!==null&&stage.priceWei!==undefined?freeOrNativeAmount(stage.priceWei,nativeSymbolForChain(chain)):null,
-              choice.state==='check_at_open'?'Wallet eligibility is verified when the stage opens':null]
+              choice.state==='check_at_open'?`Eligibility for ${scheduleWallet||'this wallet'} is verified when the stage opens`:null]
               .filter(Boolean).join(' · ');
-            return {value:scheduleStageSelectionKey(stage),label:`${stageName} · ${local}`,description:facts,
+            return {value:stageKey,label:`${stageName} · ${local}`,description:facts,
               tag:choice.tag,disabled:choice.disabled,group:'Mint stages'};
           });
           return <section className="schedule-preview" aria-label="Schedule preview">
@@ -2107,9 +2152,8 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint,onSwitchToBatc
                   profile={profile} wei={unitPriceWei} symbol={nativeSymbol}/>}</b></div>
               <div><span>Wallet</span><b>{scheduleWallet||'Choose below'}</b></div>
               <div><span>Quantity</span><b>{quantity||'—'}</b></div>
-              <div><span>Eligibility</span><b>{selectedChoice?.tag||'Choose a stage'}</b></div>
               {stageOptions.length?<div className="schedule-preview-time schedule-preview-stage-control">
-                <SelectMenu label="Earliest attempt" value={selectedStageKey} placeholder="Choose a mint stage…"
+                <SelectMenu label="Mint stage" value={selectedStageKey} placeholder="Choose a stage…"
                   onChange={event=>selectScheduleStage(stages.find(stage=>scheduleStageSelectionKey(stage)===event.target.value))}
                   options={stageOptions}/>
               </div>:<div className="schedule-preview-time"><span>{viaOpenSea?'Earliest attempt':'Mint time'}</span>
@@ -2132,7 +2176,8 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint,onSwitchToBatc
                 </InfoPopover>
               </div>
               {acceptPriceChanges&&<label className="fl schedule-policy-field"><span>Allowed increase <span>· {displayCurrency}</span></span>
-                <div className="schedule-price-increase-input"><span aria-hidden="true">+</span><input className="in tab"
+                <div className="schedule-price-increase-input"><span aria-hidden="true">+ {displayCurrencySymbol}</span><input className="in tab"
+                  aria-label={`Allowed increase in ${DISPLAY_CURRENCY_OPTIONS.find(option=>option.value===displayCurrency)?.label||displayCurrency}`}
                   type="number" min="0" step="0.01" inputMode="decimal" value={allowedPriceIncreaseFiat}
                   placeholder="5.00" onChange={event=>setAllowedPriceIncreaseFiat(event.target.value)}/></div>
                 {!priceQuote?<div className="schedule-policy-help">Live {displayCurrency} conversion is unavailable. This option cannot be saved yet.</div>
@@ -2155,7 +2200,7 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint,onSwitchToBatc
             disabled={!walletsArrived||noWallets}
             options={noWallets?[{value:'',label:'No wallets yet',disabled:true}]
               :(wallets.data||[]).map(entry=>({value:entry.label,label:entry.label,group:'EVM'}))}
-            onChange={e=>setScheduleWallet(e.target.value)}/>
+            onChange={e=>changeScheduleWallet(e.target.value)}/>
           <label className="fl"><span>Quantity <span style={{color:'var(--faint)',fontWeight:500}}>· {maxPerWallet?`published max ${maxPerWallet}/wallet; verified when saved`:`up to ${quantityMax}; verified when saved`}</span></span>
             <div className="qty">
               <input className="in tab" name="quantity" type="number" min={1} max={quantityMax} disabled={noWallets}
@@ -2169,10 +2214,11 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint,onSwitchToBatc
                   onClick={()=>setQuantity(String(quantityMax))}>Max</button></div>
             </div></label>
         </div>}
-        {!liveMintStage&&<label className="fl"><span>Mint time <span style={{color:'var(--faint)',fontWeight:500}}>· your local time; stored in UTC</span></span>
-          <input className="in tab mono" name="mintTime" type="datetime-local" step="1" required disabled={noWallets}
-            min={stageMintTimeLocalValue(stages.find(stage=>scheduleStageSelectionKey(stage)===selectedStageKey)?.startTime,{bufferMs:0})||undefined}
-            value={mintTime} onChange={e=>setMintTime(e.target.value)}/></label>}
+        {!liveMintStage&&<DateTimePicker name="mintTime" active={active}
+          label={<>Mint time <span className="date-time-picker-label-note">· your local time; stored in UTC</span></>}
+          required disabled={noWallets}
+          min={stageMintTimeLocalValue(stages.find(stage=>scheduleStageSelectionKey(stage)===selectedStageKey)?.startTime,{bufferMs:0})||''}
+          value={mintTime} onChange={event=>setMintTime(event.target.value)}/>}
         {!liveMintStage&&(!viaOpenSea&&priceIssue
           ?<label className="fl"><span>Price per mint <span style={{color:'var(--faint)',fontWeight:500}}>· {nativeSymbolForChain(chain)}</span></span>
              <input className="in tab bad" name="priceETH" type="number" step="any" min="0" required
@@ -2186,7 +2232,7 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint,onSwitchToBatc
           {scheduleError.action==='mint-now'&&<div style={{marginTop:'8px'}}><button type="button" className="b p sm"
             onClick={()=>{setPendingMintPrefill({contractAddress,quantity});onSwitchToMint?.();}}>Mint now</button></div>}
         </div></div>}
-        {!liveMintStage&&<button className="b p" disabled={noWallets||!scheduleWallet||!mintTime||detecting||submitting||(viaOpenSea&&!selectedStageKey&&!stageType)||Boolean(stages.find(stage=>scheduleStageSelectionKey(stage)===selectedStageKey)&&stageChoice(stages.find(stage=>scheduleStageSelectionKey(stage)===selectedStageKey)).disabled)||!ADDRESS_SHAPE.test(contractAddress.trim())||lastDetected.current!==contractAddress.trim().toLowerCase()}>{submitting?'Scheduling…':detecting?'Reading contract…':'Schedule mint'}</button>}
+        {!liveMintStage&&<button className="b p" disabled={noWallets||!scheduleWallet||!mintTime||detecting||submitting||(viaOpenSea&&!selectedStageKey&&!stageType)||Boolean(stages.find(stage=>scheduleStageSelectionKey(stage)===selectedStageKey)&&stageChoice(stages.find(stage=>scheduleStageSelectionKey(stage)===selectedStageKey)).disabled)||!ADDRESS_SHAPE.test(contractAddress.trim())||lastDetected.current!==contractAddress.trim().toLowerCase()||lastEligibilityWallet.current!==scheduleWallet}>{submitting?'Scheduling…':detecting?'Reading contract…':'Schedule mint'}</button>}
         </fieldset>
       </form>
     </div>
@@ -5434,7 +5480,7 @@ function Shell({profile,onLogout,onProfileChange}){const navBadges=useNavBadges(
     }
     window.addEventListener('keydown',onKey);
     return()=>window.removeEventListener('keydown',onKey);
-  },[]);const [navOpen,setNavOpen]=useState(false);const [moreOpen,setMoreOpen]=useState(false);const mobile=useIsMobile();const [theme,setTheme]=useState(profile.theme||'ghost-mint');useEffect(()=>{document.documentElement.dataset.theme=theme;},[theme]);useEffect(()=>{function onPopState(){setRoute(pageFromLocation());}window.addEventListener('popstate',onPopState);return()=>window.removeEventListener('popstate',onPopState);},[]);useEffect(()=>{function onMessage(event){if(event.detail?.type==='identity.changed')api('/api/profile').then(onProfileChange).catch(()=>{});}window.addEventListener('ghostmint-ws',onMessage);return()=>window.removeEventListener('ghostmint-ws',onMessage);},[onProfileChange]);async function changeTheme(next){const previous=theme;setTheme(next);try{await api('/api/profile/theme',{method:'PUT',body:JSON.stringify({theme:next})});}catch{setTheme(previous);}}const View=VIEWS[page];const isRail=RAIL_THEMES.has(theme);const viewProfile={...profile,theme,displayQuotes:displayQuotes.data};
+  },[]);const [navOpen,setNavOpen]=useState(false);const [moreOpen,setMoreOpen]=useState(false);const mobile=useIsMobile();const [theme,setTheme]=useState(()=>resolveDashboardTheme(profile.userId,profile.theme));const pendingThemeRef=useRef(readPendingTheme(profile.userId));const themeFlushRunning=useRef(false);const themeSyncNotice=useRef(false);useEffect(()=>{document.documentElement.dataset.theme=theme;},[theme]);useEffect(()=>{if(!pendingThemeRef.current)setTheme(resolveDashboardTheme(profile.userId,profile.theme));},[profile.userId,profile.theme]);const flushPendingTheme=useCallback(async()=>{if(themeFlushRunning.current)return;themeFlushRunning.current=true;try{while(true){const pending=pendingThemeRef.current||readPendingTheme(profile.userId);if(!pending)break;try{const saved=await api('/api/profile/theme',{method:'PUT',body:JSON.stringify({theme:pending})});clearPendingTheme(profile.userId,pending);if(pendingThemeRef.current===pending)pendingThemeRef.current=null;onProfileChange?.(current=>current?{...current,theme:saved.theme||pending}:current);themeSyncNotice.current=false;}catch{if(!themeSyncNotice.current)notify('Theme changed on this device. It will sync when you are back online.',{type:'info'});themeSyncNotice.current=true;break;}}}finally{themeFlushRunning.current=false;}},[profile.userId,onProfileChange]);useEffect(()=>{flushPendingTheme();function onOnline(){flushPendingTheme();}function onSocket(event){if(event.detail?.type==='ws.reconnected')flushPendingTheme();}window.addEventListener('online',onOnline);window.addEventListener('ghostmint-ws',onSocket);return()=>{window.removeEventListener('online',onOnline);window.removeEventListener('ghostmint-ws',onSocket);};},[flushPendingTheme]);useEffect(()=>{function onPopState(){setRoute(pageFromLocation());}window.addEventListener('popstate',onPopState);return()=>window.removeEventListener('popstate',onPopState);},[]);useEffect(()=>{function onMessage(event){if(event.detail?.type==='identity.changed')api('/api/profile').then(onProfileChange).catch(()=>{});}window.addEventListener('ghostmint-ws',onMessage);return()=>window.removeEventListener('ghostmint-ws',onMessage);},[onProfileChange]);async function changeTheme(next){setTheme(next);pendingThemeRef.current=next;savePendingTheme(profile.userId,next);await flushPendingTheme();}const View=VIEWS[page];const isRail=RAIL_THEMES.has(theme);const viewProfile={...profile,theme,displayQuotes:displayQuotes.data};
   // The prototype's .av carries a single letter ("D" for deon). Nothing in /api/profile is
   // guaranteed non-empty, so this falls through displayName -> username -> userId and only then
   // to a neutral glyph, rather than rendering an empty circle.
@@ -5555,7 +5601,7 @@ function AdminNav({page,go}){return <nav aria-label="Admin sections" className="
 function AdminBottomBar({page,go,moreOpen,onOpenMore}){return <nav className="mobile-bottombar admin-mobile-bottombar" aria-label="Admin primary">{ADMIN_MOBILE_PRIMARY.map(id=>{const item=ADMIN_SECTIONS.find(section=>section.id===id);return <button key={id} type="button" aria-current={page===id?'page':undefined} onClick={()=>go(id)}><span className="nav-icon" aria-hidden="true">{item.icon}</span><span className="nav-label">{item.label}</span></button>})}<button type="button" aria-current={moreOpen||ADMIN_MOBILE_MORE.includes(page)?'page':undefined} onClick={onOpenMore}><span className="nav-icon" aria-hidden="true">{MORE_ICON}</span><span className="nav-label">More</span></button></nav>}
 function AdminMoreSheet({open,page,go,onClose,onLogout}){return <>{open&&<div className="sheet-backdrop" onClick={onClose}/>}<div className={`more-sheet admin-more-sheet${open?' open':''}`} role="dialog" aria-modal="true" aria-label="More admin pages" aria-hidden={!open}><button type="button" className="sheet-handle" aria-label="Close" onClick={onClose}/><h2>More admin pages</h2><div className="sheet-grid">{ADMIN_MOBILE_MORE.map(id=>{const item=ADMIN_SECTIONS.find(section=>section.id===id);return <button type="button" key={id} aria-current={page===id?'page':undefined} onClick={()=>go(id)}><span className="nav-icon" aria-hidden="true">{item.icon}</span><span className="nav-label">{item.label}</span></button>})}</div><div className="admin-sheet-actions"><a className="b g admin-link" href="/dashboard/">Back to user dashboard</a><button className="b g" onClick={onLogout}>Log out</button></div></div></>}
 function ScrollTop(){const [visible,setVisible]=useState(false);useEffect(()=>{const update=()=>setVisible(window.scrollY>480);update();window.addEventListener('scroll',update,{passive:true});return()=>window.removeEventListener('scroll',update);},[]);return visible?<button type="button" className="scroll-top" aria-label="Scroll to top" onClick={()=>window.scrollTo({top:0,behavior:'smooth'})}>↑</button>:null;}
-function AdminShell({profile,onLogout}){const theme=profile.theme||'ghost-mint';const [page,setPage]=useState(adminSectionFromLocation());const [moreOpen,setMoreOpen]=useState(false);const [railExpanded,setRailExpandedState]=useState(readRailExpanded);function setRailExpanded(next){setRailExpandedState(value=>{const resolved=typeof next==='function'?next(value):next;writeRailExpanded(resolved);return resolved;});}const live=useLiveSocket();const mobile=useIsMobile();
+function AdminShell({profile,onLogout}){const theme=resolveDashboardTheme(profile.userId,profile.theme);const [page,setPage]=useState(adminSectionFromLocation());const [moreOpen,setMoreOpen]=useState(false);const [railExpanded,setRailExpandedState]=useState(readRailExpanded);function setRailExpanded(next){setRailExpandedState(value=>{const resolved=typeof next==='function'?next(value):next;writeRailExpanded(resolved);return resolved;});}const live=useLiveSocket();const mobile=useIsMobile();
   // Transient (not URL-based, unlike the section itself) -- which of the 4 user-related stat
   // cards on Overview brought the admin here, so Users can drill down instead of showing the same
   // unfiltered list no matter which card was clicked. Cleared on any navigation away from Users.

@@ -72,6 +72,25 @@ test('createReservedTask performs an insert-only write after the locked duplicat
   assert.deepEqual(insert.params.slice(22,24),[taskInput().walletAddress,'uuid:public-1']);
 });
 
+test('new provider metadata conflicts with an existing UUID-less direct public reservation at the same opening',async()=>{
+  const fallback=row({stage_uuid:null,stage_type:'seadrop_public_drop',
+    reservation_stage_key:'phase:direct_public'});
+  const {calls,storage}=fixture(fallback);
+  const result=await storage.createReservedTask(taskInput());
+  assert.equal(result.created,false);
+  assert.equal(result.conflict.stageUuid,null);
+  assert.equal(calls.some(call=>call.sql.includes('INSERT INTO mint_tasks')),false);
+});
+
+test('two distinct provider-indexed public stages remain independently schedulable',async()=>{
+  const later=row({stage_uuid:'public-2',reservation_stage_key:'uuid:public-2',
+    mint_time:new Date('2026-09-15T18:00:00Z'),allowance_stage_start_at:new Date('2026-09-15T18:00:00Z')});
+  const {calls,storage}=fixture(later);
+  const result=await storage.createReservedTask(taskInput());
+  assert.equal(result.created,true);
+  assert.equal(calls.some(call=>call.sql.includes('INSERT INTO mint_tasks')),true);
+});
+
 test('createReservedTask enforces a later cumulative boundary before inserting an earlier stage',async()=>{
   const publicBoundary=row({id:'33333333-3333-4333-8333-333333333333',quantity:7,
     stage_uuid:'public-2',reservation_stage_key:'uuid:public-2',

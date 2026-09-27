@@ -1,5 +1,5 @@
 const { armTaskPreflightRows } = require('../scheduler/scheduledPreflightRepository');
-const { scheduleReservationStageKey } = require('../mint/scheduleStagePlanning');
+const { isDirectPublicDropStage, scheduleReservationStagesConflict } = require('../mint/scheduleStagePlanning');
 const { enforceScheduleAllowanceEnvelope } = require('../mint/scheduleAllowance');
 
 function number(value) { return value === null || value === undefined ? null : Number(value); }
@@ -291,13 +291,16 @@ function createPostgresStorage(pool) {
           ORDER BY task.created_at,task.id FOR UPDATE OF task`,
         [task.userId,task.walletAddress,task.chain,task.contract]);
         const activeTasks = active.rows.map(mapTask);
-        const conflict = activeTasks.find(existing => {
-          const key = existing.reservationStageKey || scheduleReservationStageKey({
-            stageUuid:existing.stageUuid,stageLabel:existing.stageLabel,
-            stageType:existing.stageType,mintTime:existing.mintTime,
-          });
-          return key === task.reservationStageKey;
-        });
+        const conflict = activeTasks.find(existing => scheduleReservationStagesConflict({
+          stageUuid:existing.stageUuid,stageLabel:existing.stageLabel,
+          stageType:existing.stageType,stageStartAt:existing.allowanceStageStartAt ?? existing.stageStartAt,
+          mintTime:existing.mintTime,directPublic:existing.viaOpenSea !== true
+            && isDirectPublicDropStage(existing),
+        },{
+          stageUuid:task.stageUuid,stageLabel:task.stageLabel,stageType:task.stageType,
+          stageStartAt:task.allowanceStageStartAt ?? task.stageStartAt,mintTime:task.mintTime,
+          directPublic:task.viaOpenSea !== true && isDirectPublicDropStage(task),
+        }));
         if (conflict) {
           await client.query('COMMIT');
           return { created:false, conflict };

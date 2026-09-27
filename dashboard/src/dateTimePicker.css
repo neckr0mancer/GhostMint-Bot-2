@@ -1,0 +1,64 @@
+.date-time-picker{position:relative;display:grid;gap:.4rem;min-width:0;color:var(--text)}
+.date-time-picker-label{font-size:11.5px;color:var(--muted);font-weight:650}
+.date-time-picker-label-note{color:var(--faint);font-weight:500}
+.date-time-picker-trigger{display:flex;align-items:center;gap:.65rem;width:100%;min-width:0;min-height:44px;
+  padding:.7rem .8rem;border:1px solid var(--border-strong);border-radius:var(--radius-sm);
+  background:var(--surface-deep);color:var(--text);font:inherit;font-size:.9rem;font-weight:650;text-align:left;
+  box-shadow:none;transition:border-color var(--fast) var(--ease),box-shadow var(--fast) var(--ease)}
+.date-time-picker-trigger:hover:not(:disabled){filter:none;border-color:color-mix(in srgb,var(--border-strong) 55%,var(--accent) 45%)}
+.date-time-picker-trigger:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+.date-time-picker-icon{display:grid;place-items:center;width:1.15rem;height:1.15rem;flex:none;color:var(--accent)}
+.date-time-picker-icon svg{width:100%;height:100%}
+.date-time-picker-value{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.date-time-picker-value.placeholder{color:var(--faint);font-weight:550}
+.date-time-picker-backdrop{position:fixed;inset:0;z-index:74;background:color-mix(in srgb,var(--bg) 18%,transparent);backdrop-filter:blur(1px)}
+.date-time-picker-dialog{position:absolute;z-index:75;top:calc(100% + .45rem);left:0;width:min(24rem,calc(100vw - 2rem));
+  display:grid;gap:.75rem;padding:.85rem;border:1px solid var(--border-strong);border-radius:var(--radius-lg);
+  background:linear-gradient(180deg,var(--surface-2),var(--surface));box-shadow:var(--shadow-lg);color:var(--text)}
+.date-time-picker-header{display:flex;align-items:center;justify-content:space-between;gap:.75rem}
+.date-time-picker-header>div:first-child{display:grid;gap:.15rem;min-width:0}
+.date-time-picker-header span{color:var(--muted);font-size:.69rem;font-weight:700;letter-spacing:.05em;text-transform:uppercase}
+.date-time-picker-header b{font-size:.96rem}
+.date-time-picker-month-actions{display:flex;gap:.3rem}
+.date-time-picker-month-actions button{display:grid;place-items:center;width:36px;height:36px;min-height:36px;padding:0;
+  border:1px solid var(--border);border-radius:50%;background:var(--surface);color:var(--text);box-shadow:none}
+.date-time-picker-month-actions button:hover:not(:disabled){filter:none;background:var(--accent-soft);border-color:var(--accent-line)}
+.date-time-picker-month-actions svg{width:1rem;height:1rem}
+.date-time-picker-weekdays,.date-time-picker-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:.2rem}
+.date-time-picker-grid-row{display:contents}
+.date-time-picker-weekdays span{display:grid;place-items:center;min-height:1.4rem;color:var(--faint);font-size:.64rem;
+  font-weight:800;text-transform:uppercase}
+.date-time-picker-grid button{display:grid;place-items:center;aspect-ratio:1;min-height:34px;padding:0;border:1px solid transparent;
+  border-radius:9px;background:transparent;color:var(--text);font:inherit;font-size:.79rem;font-weight:650;box-shadow:none}
+.date-time-picker-grid button:hover:not(:disabled),.date-time-picker-grid button:focus-visible{filter:none;background:var(--accent-soft);border-color:var(--accent-line)}
+.date-time-picker-grid button:focus-visible{outline:2px solid var(--focus);outline-offset:1px}
+.date-time-picker-grid button.outside{color:var(--faint)}
+.date-time-picker-grid button.today{border-color:var(--accent-line)}
+.date-time-picker-grid button.selected{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.date-time-picker-grid button:disabled{opacity:.35;cursor:not-allowed}
+.date-time-picker-time{display:flex;align-items:flex-end;justify-content:center;gap:.4rem;margin:0;padding:.7rem;
+  border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface-2)}
+.date-time-picker-time legend{padding:0 .3rem;color:var(--muted);font-size:.69rem;font-weight:700;text-transform:uppercase;letter-spacing:.04em}
+.date-time-picker-time label{display:grid;gap:.25rem;color:var(--faint);font-size:.62rem;font-weight:700;text-align:center;text-transform:uppercase}
+.date-time-picker-time input{width:3rem;min-height:40px;padding:.45rem;border:1px solid var(--border-strong);border-radius:var(--radius-sm);
+  background:var(--surface);color:var(--text);font:inherit;font-size:.9rem;font-variant-numeric:tabular-nums;text-align:center}
+.date-time-picker-time input:focus{outline:2px solid var(--focus);outline-offset:1px;border-color:var(--accent)}
+.date-time-picker-time>span{padding-bottom:.65rem;color:var(--muted);font-weight:800}
+.date-time-picker-error{margin:0;color:var(--loss);font-size:.74rem;line-height:1.4}
+.date-time-picker-footer{display:flex;justify-content:flex-end;gap:.5rem;padding-top:.1rem}
+@media(min-width:701px){
+  .date-time-picker-dialog{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);
+    max-height:calc(100vh - 2rem);overflow-y:auto}
+}
+@media(max-width:700px){
+  .date-time-picker-dialog{position:fixed;inset:auto 0 0;width:100%;max-height:min(92vh,46rem);overflow-y:auto;
+    padding:1rem max(1rem,env(safe-area-inset-right)) calc(1rem + env(safe-area-inset-bottom)) max(1rem,env(safe-area-inset-left));
+    border-width:1px 0 0;border-radius:18px 18px 0 0}
+  .date-time-picker-backdrop{background:color-mix(in srgb,var(--bg) 56%,transparent);backdrop-filter:blur(3px)}
+  .date-time-picker-month-actions button,.date-time-picker-grid button{min-height:44px}
+  .date-time-picker-grid button{border-radius:11px}
+  .date-time-picker-footer{position:sticky;bottom:calc(-1rem - env(safe-area-inset-bottom));margin:0 -1rem calc(-1rem - env(safe-area-inset-bottom));
+    padding:.75rem 1rem calc(.75rem + env(safe-area-inset-bottom));background:var(--surface);border-top:1px solid var(--border)}
+  .date-time-picker-footer .b{flex:1}
+}
+@media(prefers-reduced-motion:reduce){.date-time-picker-trigger{transition:none}}

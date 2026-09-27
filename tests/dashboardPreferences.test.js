@@ -70,7 +70,7 @@ test('controlled mint and wallet-display selectors share the accessible themed l
   assert.match(shared, /if\(!selectionChanged&&open&&current>=0&&!normalized\[current\]\?\.disabled\)return current/,
     'an open menu must preserve its valid keyboard target across Schedule parent refreshes');
   assert.match(app, /<SelectMenu className="fl" label="Wallet" value=\{walletLabel\}/);
-  assert.match(app, /<SelectMenu label="Earliest attempt" value=\{selectedStageKey\}/);
+  assert.match(app, /<SelectMenu label="Mint stage" value=\{selectedStageKey\}/);
   assert.match(app, /<SelectMenu className="fl" name="walletLabel" label="Wallet" value=\{scheduleWallet\}/,
     'Schedule must retain the named value submitted through FormData');
   assert.match(app, /<SelectMenu className="fl" label="Warn below" value=\{value\}/);
@@ -79,4 +79,13 @@ test('controlled mint and wallet-display selectors share the accessible themed l
   assert.match(css, /\.select-menu-option-copy small\{[^}]*overflow-wrap:anywhere/);
   assert.match(shared, /export function Select\([\s\S]*<select required=\{!optional\}/,
     'uncontrolled Admin forms keep native required validation until deliberately migrated');
+});
+
+test('theme changes apply locally first and synchronize after connectivity returns',()=>{
+  assert.match(app,/resolveDashboardTheme\(profile\.userId,profile\.theme\)/);
+  assert.match(app,/savePendingTheme\(profile\.userId,next\)/);
+  assert.match(app,/window\.addEventListener\('online',onOnline\)/);
+  assert.match(app,/event\.detail\?\.type==='ws\.reconnected'/);
+  assert.doesNotMatch(app,/catch\{setTheme\(previous\);\}/,
+    'an offline save failure must not undo the theme the user just selected');
 });

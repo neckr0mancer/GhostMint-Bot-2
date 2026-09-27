@@ -767,10 +767,12 @@ These were checked directly against the repo, not assumed.
   is a small job, not a sweep. `themes.css` is full of raw hex by design — that
   is the token layer and it stays literal. *(Count unverified — see §9-O4.)*
 
-- **`localStorage` is used in exactly one place today** — the rail
-  expanded/collapsed preference, `App.jsx:18–19`. Theme is server-persisted via
-  `PUT /api/profile/theme`. No `sessionStorage` anywhere. §3.6 adds one further
-  use — section order — and nothing else.
+- **`localStorage` originally held only layout preferences** — the rail and
+  section order. Theme remains server-persisted via `PUT /api/profile/theme`,
+  but a newer offline-resilience requirement permits one narrowly-scoped extra
+  value: an account-keyed theme change that has not synchronized yet. It is
+  removed after that exact value reaches the server. No session, token, or
+  product data is stored there, and no `sessionStorage` is used.
 
 ### 6.2 General
 
@@ -791,8 +793,9 @@ These were checked directly against the repo, not assumed.
   plus the durable server-backed pending-confirmations list. Do not promote the
   log into an inbox
 - **`localStorage` is limited to two standing layout preferences** — the rail's
-  expanded/collapsed state and section order (§3.6). Nothing else. No session
-  state, no data, no tokens
+  expanded/collapsed state and section order (§3.6) — plus the account-keyed,
+  temporary pending-theme value described above. Nothing else: no session
+  state, product data, or tokens
 - **The top-bar breadcrumb is removed.** With five pages and a persistent rail
   plus an active-state indicator, a `GhostMint / Home` crumb states the obvious
   and costs a row of vertical space. The page's own `h1` is the location

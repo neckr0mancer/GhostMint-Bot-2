@@ -38,7 +38,7 @@ const { SEADROP_MINT_SIGNATURE } = require('./mint/seaDropRegistry');
 const mintFlowDecision = require('./mint/mintFlowDecision');
 const { buildOpenSeaScheduleTaskData } = require('./mint/openSeaScheduleDraft');
 const { buildSeaDropAllowanceEvidence, unknownEvidence } = require('./mint/scheduleAllowance');
-const { scheduleStageKey, scheduleStagePersistenceKey,
+const { isDirectPublicDropStage, scheduleReservationStageKey, scheduleStageKey, scheduleStagePersistenceKey,
   stageRequiresEligibilityCheck } = require('./mint/scheduleStagePlanning');
 const watchRuleFlowDecision = require('./social/watchRuleFlowDecision');
 const sniperFlowDecision = require('./sniper/sniperFlowDecision');
@@ -562,8 +562,13 @@ async function refreshScheduledOpenSeaPhase(task, chain, expectedPhaseIdentity =
   const persistedStageIdentity=scheduleStagePersistenceKey({uuid:task.stageUuid,
     label:task.stageLabel,stageType:task.stageType});
   const observedStageIdentity=phaseIdentity(observedStage);
+  const observedReservationStageKey=observedStage?scheduleReservationStageKey({
+    stageUuid:observedStage.uuid,stageLabel:observedStage.label,
+    stageType:observedStage.stageType,mintTime:observedStage.startAt??task.mintTime,
+    directPublic:task.viaOpenSea!==true,
+  }):null;
   const reservationMismatch=Boolean(task.reservationStageKey
-    &&observedStageIdentity&&task.reservationStageKey!==observedStageIdentity);
+    &&observedReservationStageKey&&task.reservationStageKey!==observedReservationStageKey);
   if(observedStage&&observedStageIdentity
     &&(observedStageIdentity!==persistedStageIdentity||reservationMismatch)){
     const checkedAt=Date.now();
@@ -591,12 +596,17 @@ async function refreshScheduledOpenSeaPhase(task, chain, expectedPhaseIdentity =
 
 async function refreshScheduledPublicPhase(task, chain, expectedPhaseIdentity = null,
   walletAddress = null, expectedFeeRecipient = null, expectedMintPriceWei = null) {
-  // A direct public mint does not need OpenSea to build its calldata, but the selected OpenSea UUID
-  // is still the only safe way to distinguish repeated/rescheduled public phases. OpenSea proves
-  // which advertised phase is active; SeaDrop's fresh PublicDrop proves the on-chain window/price.
-  const phase = await refreshScheduledOpenSeaPhase(task, chain, expectedPhaseIdentity);
-  if (needsOpenSeaEligibility(phase.decision.activeStage?.stageType
-    || phase.decision.activeStage?.label)) {
+  // When OpenSea supplied a UUID, keep its exact phase gate. Some SeaDrop collections publish no
+  // Drops envelope at all; for those, the one mutable on-chain PublicDrop is itself the stable
+  // direct-public identity. It is safe to follow that struct without inventing a provider UUID,
+  // but never safe to use this fallback for an allowlist/signature phase.
+  let phase = null;
+  if (!isDirectPublicDropStage(task)) {
+    phase = await refreshScheduledOpenSeaPhase(task, chain, expectedPhaseIdentity);
+  }
+  const selectedStageType = phase?.decision?.activeStage?.stageType
+    || phase?.decision?.activeStage?.label || task.stageType || task.stageLabel;
+  if (needsOpenSeaEligibility(selectedStageType)) {
     throw new ValidationError({ field:'contractAddress',
       message:'This live phase needs wallet eligibility data. Nothing was broadcast.' });
   }
@@ -619,24 +629,41 @@ async function refreshScheduledPublicPhase(task, chain, expectedPhaseIdentity = 
     throw new ValidationError({ field:'contractAddress',
       message:'The contract has no approved fee recipient for this public stage. Nothing was sent.' });
   }
-  const now = enforceEligibilityDeadline(task);
+  const now = Date.now();
   const startAt = Number(livePublicDrop.startTime) * 1_000;
   const endAt = Number(livePublicDrop.endTime) * 1_000;
   if (!Number.isFinite(startAt)) {
     throw new ValidationError({ field:'contractAddress',
       message:'The public mint start could not be verified. Nothing was broadcast.' });
   }
-  const stage = { ...phase.decision.activeStage, startAt,
-    endAt:Number.isFinite(endAt) && endAt > 0 ? endAt : null };
+  const stage = {
+    ...(phase?.decision?.activeStage || {}),
+    uuid:phase?.decision?.activeStage?.uuid || null,
+    label:phase?.decision?.activeStage?.label || task.stageLabel || 'Public sale',
+    stageType:phase?.decision?.activeStage?.stageType || task.stageType || 'public_sale',
+    startAt,
+    endAt:Number.isFinite(endAt) && endAt > 0 ? endAt : null,
+    priceWei:livePublicDrop.mintPriceWei,
+  };
+  const currentPhaseIdentity=phaseIdentity(stage);
   const configSummary=configurationSummary({chain,contract:task.contract,
     callTarget:seaDrop.address,method:'mintPublic',standard:'SeaDrop',feeRecipient,
-    stageIdentity:phaseIdentity(phase.decision.activeStage),endTime:livePublicDrop.endTime,
+    stageIdentity:currentPhaseIdentity,endTime:livePublicDrop.endTime,
     maxPerWallet:livePublicDrop.maxTotalMintableByWallet,feeBps:livePublicDrop.feeBps,
     restrictFeeRecipients:livePublicDrop.restrictFeeRecipients});
+  // Observe an exact auto-follow move before enforcing the old deadline. The policy repository
+  // extends the same task's deadline when the on-chain PublicDrop moves again (and again), while
+  // approval-mode tasks pause instead of silently adopting the change.
   await enforceScheduledChangePolicy(task,{
     openingAt:startAt,priceWeiPerItem:livePublicDrop.mintPriceWei,
     configFingerprint:configurationFingerprint(configSummary),configSummary,source:'seadrop-public',
   });
+  enforceEligibilityDeadline(task,now);
+  if(expectedPhaseIdentity&&expectedPhaseIdentity!==currentPhaseIdentity){
+    throw phaseWaitError({status:'wait',retryAt:Math.min(now+250,task.eligibilityDeadline),
+      deadline:task.eligibilityDeadline,nextStage:stage,checkedAt:now,
+      waitMessage:'The public mint phase changed. GhostMint will rebuild and check it again automatically.'});
+  }
   const latestBlock = await fastProviderService.perform(chain, 'scheduledChainTime', provider =>
     provider.getBlock('latest'), { timeoutMs:3_000, retries:0 });
   const chainTimeMs = Number(latestBlock?.timestamp) * 1_000;
@@ -675,8 +702,10 @@ async function refreshScheduledPublicPhase(task, chain, expectedPhaseIdentity = 
       deadline:task.eligibilityDeadline, nextStage:stage, checkedAt:now,
       waitMessage:'The public mint price changed. GhostMint will rebuild and check it again automatically.' });
   }
-  return { ...phase, seaDrop, livePublicDrop, feeRecipient, mintStats, capacity,
-    chainTimeMs, directPublic:true };
+  const decision={...(phase?.decision||{}),status:'ready',activeStage:stage,targetStage:stage,
+    nextStage:null,retryAt:null,deadline:task.eligibilityDeadline,checkedAt:now};
+  return { ...(phase||{drop:null}),decision,seaDrop,livePublicDrop,feeRecipient,mintStats,capacity,
+    chainTimeMs,directPublic:true };
 }
 
 // Round 16 item A3 follow-through -- pre-arming scheduled mints. When SCHEDULE_PREARM_LEAD_MS is
@@ -1271,7 +1300,8 @@ const evaluateScheduledPreflight=createScheduledPreflightEvaluator({
     const executionChain=taskExecutionChain(task,wallet);
     let scheduleObservation=null;
     let livePriceWeiPerItem=detected?.priceWeiPerItem??null;
-    if(phaseAwareTask(task)){
+    if(phaseAwareTask(task)&&(task.viaOpenSea
+      ||(detected?.isSeaDrop&&!isDirectPublicDropStage(task)))){
       if(!detected?.drop)throw new Error('The live mint-stage schedule is temporarily unavailable');
       const targetKey=scheduleStagePersistenceKey({uuid:task.stageUuid,
         stageType:task.stageType,label:task.stageLabel});
@@ -1346,7 +1376,8 @@ const evaluateScheduledPreflight=createScheduledPreflightEvaluator({
       scheduleObservation};
   },
   resolveMintValueWei:async(task,wallet,inspection)=>{
-    if(phaseAwareTask(task)){
+    if(phaseAwareTask(task)&&(task.viaOpenSea
+      ||(inspection?.isSeaDrop&&!isDirectPublicDropStage(task)))){
       const drop=await openSeaService.getDrop(taskExecutionChain(task,wallet),task.contract);
       const stages=[...(drop?.stages||[]),drop?.activeStage,drop?.nextStage].filter(Boolean);
       const normalized=value=>String(value||'').trim().toLowerCase().replace(/[\s-]+/g,'_');
@@ -1357,13 +1388,12 @@ const evaluateScheduledPreflight=createScheduledPreflightEvaluator({
       if(stage?.priceWei!==null&&stage?.priceWei!==undefined){
         return BigInt(stage.priceWei)*BigInt(Number(task.qty)||1);
       }
-      // Direct public SeaDrop tasks may have a fresh on-chain PublicDrop price even when OpenSea's
-      // stage metadata omits one. Never use this fallback for builder/gated mints, where the price
-      // is wallet-specific and the builder remains authoritative.
-      if(!task.viaOpenSea&&inspection?.isSeaDrop&&inspection.priceWeiPerItem!==null){
-        return BigInt(inspection.priceWeiPerItem)*BigInt(Number(task.qty)||1);
-      }
       return null;
+    }
+    // Direct public SeaDrop tasks use the freshly read on-chain PublicDrop price. They do not need
+    // (and, for on-chain-only collections, cannot obtain) an OpenSea phase envelope.
+    if(!task.viaOpenSea&&inspection?.isSeaDrop&&inspection.priceWeiPerItem!==null){
+      return BigInt(inspection.priceWeiPerItem)*BigInt(Number(task.qty)||1);
     }
     return ethers.parseEther(String(task.price??0))*BigInt(Number(task.qty)||1);
   },

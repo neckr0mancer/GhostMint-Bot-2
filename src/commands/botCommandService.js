@@ -12,7 +12,7 @@ const { MINT_METHODS } = require('../mint/mintRegistry');
 const { createWalletBalanceCache } = require('./walletBalanceCache');
 const { EXPIRY_GRACE_MS, TASK_BUCKETS, TASK_BUCKET_NAMES, bucketFor } = require('../scheduler/schedulerRepository');
 const { buildScheduleStagePlan, decorateScheduleDrop,
-  scheduleReservationStageKey, scheduleStagePersistenceKey,
+  isDirectPublicDropStage, scheduleReservationStageKey, scheduleStagePersistenceKey,
   stageRequiresEligibilityCheck } = require('../mint/scheduleStagePlanning');
 const { buildSeaDropAllowanceEvidence, unknownEvidence } = require('../mint/scheduleAllowance');
 const { configurationFingerprint,configurationSummary,evaluateScheduleObservation,
@@ -58,6 +58,48 @@ const openSeaStageRequiresBuilder = stageRequiresEligibilityCheck;
 function dropRequiresOpenSeaBuilder(drop) {
   if (!drop) return false;
   return openSeaStageRequiresBuilder(drop.activeStage || drop.nextStage || drop.stages?.[0]);
+}
+
+// OpenSea can know the collection while its Drops endpoint returns no phase envelope. SeaDrop's
+// PublicDrop struct is still authoritative on-chain for the one public phase it contains. Convert
+// only that real struct into the shared stage shape so clients can display/select the public sale
+// instead of showing an empty picker. This deliberately does not invent allowlist/whitelist
+// phases: those remain unavailable until a provider supplies their actual metadata/eligibility.
+function publicDropScheduleFallback(publicDrop, existingDrop = null, now = Date.now()) {
+  const startTime = Number(publicDrop?.startTime);
+  if (!Number.isFinite(startTime) || startTime <= 0) return existingDrop;
+  const endTimeValue = Number(publicDrop?.endTime);
+  if (!Number.isFinite(endTimeValue) || endTimeValue <= startTime) return existingDrop;
+  const endTime = endTimeValue;
+  const maxPerWallet = Number(publicDrop?.maxTotalMintableByWallet);
+  if (!Number.isSafeInteger(maxPerWallet) || maxPerWallet < 1) return existingDrop;
+  let priceWei;
+  try {
+    priceWei = BigInt(publicDrop?.mintPriceWei).toString();
+    if (BigInt(priceWei) < 0n) return existingDrop;
+  } catch { return existingDrop; }
+  const stage = {
+    label:'Public sale',
+    // This internal type is explicit provenance: unlike a provider phase with no UUID, this row
+    // was synthesized from SeaDrop's one authoritative on-chain PublicDrop struct.
+    stageType:'seadrop_public_drop',
+    startTime,
+    endTime,
+    priceWei,
+    priceETH:priceWei === null ? null : Number(formatEther(BigInt(priceWei))),
+    maxPerWallet,
+  };
+  const startMs = startTime * 1_000;
+  const endMs = endTime === null ? null : endTime * 1_000;
+  const isMinting = startMs <= now && (endMs === null || now < endMs);
+  return decorateScheduleDrop({
+    ...(existingDrop || {}),
+    dropType:existingDrop?.dropType || 'seadrop_public_drop',
+    isMinting,
+    activeStage:isMinting ? stage : null,
+    nextStage:!isMinting && startMs > now ? stage : null,
+    stages:[stage],
+  });
 }
 
 function createBotCommandService(dependencies) {
@@ -195,6 +237,13 @@ function createBotCommandService(dependencies) {
   async function detectMintContract(userId, input) {
     const contractAddress = String(input.contractAddress || '').trim();
     if (!isAddress(contractAddress)) throw new ValidationError({ field: 'contractAddress', message: 'must be a valid Ethereum address' });
+    // Schedule planning is wallet-sensitive. Resolving the label here both proves ownership and
+    // gives provider-specific planners a trustworthy wallet context without ever accepting an
+    // arbitrary address from the browser. Generic future OpenSea allowlists still remain
+    // `check_at_open` until OpenSea can return a real proof/eligibility decision.
+    if (input.walletLabel !== undefined && input.walletLabel !== null && String(input.walletLabel).trim()) {
+      wallet(userId, input.walletLabel);
+    }
     const requestedChain = input.chain === undefined || input.chain === null || input.chain === ''
       ? null : String(input.chain).trim().toLowerCase();
     if (requestedChain && !supportedChains.map(value => String(value).toLowerCase()).includes(requestedChain)) {
@@ -290,7 +339,7 @@ function createBotCommandService(dependencies) {
           stages:liveDrop.stages.map(toEthStage) });
       }
     }
-    const schedulePlan = buildScheduleStagePlan(drop);
+    let schedulePlan = buildScheduleStagePlan(drop);
 
     // GLRTCH Genesis on Robinhood — custom mint site glrtch.xyz/mint, not SeaDrop not OpenSea.
     // Hard-coded stages from live site (Sep 14 12:30 Treasury free 44, 13:00 Glrtchlist 0.0016/1, 14:00 Public 0.0016/2).
@@ -323,7 +372,28 @@ function createBotCommandService(dependencies) {
       ? await seaDropDiscoveryService.resolve(chain, contractAddress)
       : { address: null, publicDrop: null, feeRecipient: null };
     if (seaDrop.address) {
-      const priceKnown = Boolean(seaDrop.publicDrop);
+      let publicDrop = seaDrop.publicDrop;
+      let verifiedSchedulePublicDrop = publicDrop;
+      if (wantsDrop && !drop?.stages?.length && seaDropPublicDropResolver?.readPublicDrop) {
+        try {
+          verifiedSchedulePublicDrop = await seaDropPublicDropResolver.readPublicDrop(
+            chain, seaDrop.address, contractAddress);
+          publicDrop = verifiedSchedulePublicDrop;
+        } catch {
+          // Cached discovery is still useful for ordinary display/mint preparation, but it is not
+          // fresh enough to create a recommended scheduled phase after an RPC failure.
+          verifiedSchedulePublicDrop = null;
+        }
+      }
+      // Preserve a provider's real stages whenever it supplied any. When it supplied none, the
+      // on-chain PublicDrop is the truthful fallback for the public phase only. `wantsDrop` keeps
+      // ordinary lean detection unchanged: callers that did not ask for phase data still receive
+      // no drop envelope, exactly as before.
+      if (wantsDrop && verifiedSchedulePublicDrop && !drop?.stages?.length) {
+        drop = publicDropScheduleFallback(verifiedSchedulePublicDrop, drop);
+        schedulePlan = buildScheduleStagePlan(drop);
+      }
+      const priceKnown = Boolean(publicDrop);
       // SeaDrop's own PublicDrop struct has no current-supply field, so the stage's endTime having
       // already passed is one sold-out signal here -- but a popular drop can sell out well before
       // its window closes, so that alone isn't enough. `liveTotalMintedValue` above is the only live
@@ -331,32 +401,32 @@ function createBotCommandService(dependencies) {
       // behind includeStats; scheduler reminders use the lean includeSupply flag so they can make
       // the same comparison without fetching floor/owner/volume data every minute. maxSupply is
       // probed unconditionally either way, same as the card's own "Max supply" line further down.
-      const timeWindowClosed = Boolean(seaDrop.publicDrop?.endTime && seaDrop.publicDrop.endTime * 1000 <= Date.now());
+      const timeWindowClosed = Boolean(publicDrop?.endTime && publicDrop.endTime * 1000 <= Date.now());
       const liveMaxSupply = contractValueResolver ? await contractValueResolver.probeMaxSupply(chain, contractAddress) : null;
       const maxSupplyValue = liveMaxSupply ? Number(liveMaxSupply.value) : null;
       const soldOut = Boolean(timeWindowClosed || (maxSupplyValue !== null && typeof liveTotalMintedValue === 'number'
         && liveTotalMintedValue >= maxSupplyValue));
       const displayPrice = await resolveDisplayPrice({ chain, soldOut, mintPriceKnown: priceKnown,
-        mintPriceWeiPerItem: priceKnown ? BigInt(seaDrop.publicDrop.mintPriceWei) : null, floorPrice: openSea?.floorPrice });
+        mintPriceWeiPerItem: priceKnown ? BigInt(publicDrop.mintPriceWei) : null, floorPrice: openSea?.floorPrice });
       return {
         chain,
         isSeaDrop: true,
         methodSignature: SEADROP_MINT_SIGNATURE,
         seaDropAddress: seaDrop.address,
         arguments: [seaDrop.feeRecipient || null, '$wallet', quantity],
-        valueWei: priceKnown ? computeSeaDropValueWei({ mintPriceWei: seaDrop.publicDrop.mintPriceWei, quantity }).toString() : null,
-        priceWeiPerItem: priceKnown ? String(seaDrop.publicDrop.mintPriceWei) : null,
+        valueWei: priceKnown ? computeSeaDropValueWei({ mintPriceWei: publicDrop.mintPriceWei, quantity }).toString() : null,
+        priceWeiPerItem: priceKnown ? String(publicDrop.mintPriceWei) : null,
         priceKnown,
         // SeaDrop's PublicDrop struct has no supply-cap field -- probed live from the token contract
         // itself, separately from the SeaDrop core's price/timing above.
         maxSupply: liveMaxSupply ? Number(liveMaxSupply.value) : null,
         totalMinted:liveTotalMintedValue,
-        maxPerWallet: seaDrop.publicDrop?.maxTotalMintableByWallet ?? null,
+        maxPerWallet: publicDrop?.maxTotalMintableByWallet ?? null,
         // Real on-chain SeaDrop PublicDrop fields (unix seconds) -- null for a drop with no known
         // PublicDrop yet, not "no opening time exists." Non-SeaDrop contracts have no equivalent
         // on-chain concept, so these stay null in the branch below.
-        startTime: seaDrop.publicDrop?.startTime ?? null,
-        endTime: seaDrop.publicDrop?.endTime ?? null,
+        startTime: publicDrop?.startTime ?? null,
+        endTime: publicDrop?.endTime ?? null,
         collection,
         soldOut,
         displayPrice,
@@ -872,6 +942,11 @@ function createBotCommandService(dependencies) {
             endTime:publicDrop.endTime,maxPerWallet:publicDrop.maxTotalMintableByWallet,
             feeBps:publicDrop.feeBps,restrictFeeRecipients:publicDrop.restrictFeeRecipients});
           configFingerprint=configurationFingerprint(configSummary);
+          // Only a UUID-less fallback is identified entirely by the one on-chain PublicDrop. A
+          // caller that submitted a provider UUID must still prove that exact indexed phase; an
+          // on-chain public configuration cannot prove which of several advertised UUIDs it is.
+          if (isDirectPublicDropStage({ stageUuid:validated.stageUuid,
+            stageType:validated.stageType })) stageMissing=false;
         }
       } catch { /* final preflight remains fail-closed and establishes no guessed baseline */ }
     }
@@ -926,6 +1001,10 @@ function createBotCommandService(dependencies) {
     const reservationStageKey = scheduleReservationStageKey({
       stageUuid:validated.stageUuid,stageLabel:validated.stageLabel,
       stageType:validated.stageType,mintTime:validated.mintTime,
+      directPublic:input.viaOpenSea !== true && isDirectPublicDropStage({
+        stageUuid:validated.stageUuid,stageLabel:validated.stageLabel,
+        stageType:validated.stageType,
+      }),
     });
     const allowance = await resolveScheduleAllowance(owned,validated.chain,validated.contractAddress,validated,input);
     // Preserve what the user actually reviewed. A provider refresh can legitimately return a new
