@@ -365,8 +365,14 @@ test('Schedule uses the server recommendation without pretending a future allowl
     'a stale recommendation must not silently select the first of several stages');
   assert.match(schedule,/It never auto-selects a gated phase whose[\s\S]*wallet eligibility is still unknown/,
     'the client must explain why an unproven allowlist is not recommended automatically');
-  assert.match(schedule,/A future allowlist cannot be proven from the wallet address alone\./);
-  assert.match(schedule,/tag:choice\.tag,disabled:choice\.disabled/);
+  assert.match(schedule,/Enable the read-only OpenSea check above to confirm this wallet earlier\./,
+    'an unconnected wallet must be offered a truthful opt-in instead of being shown as eligible');
+  assert.match(schedule,/const eligibilityTag=choice\.state==='open_to_all'\?'Eligible':choice\.tag/,
+    'public stages should use the same clear green Eligible state as OpenSea while remaining open to all');
+  assert.match(schedule,/tag:eligibilityTag,tone:choice\.state,disabled:choice\.disabled/,
+    'every stage option must carry its authoritative eligibility state into the visual treatment');
+  assert.match(schedule,/choice\.state==='open_to_all'\?'Open to all wallets':null/,
+    'the green public-stage eligibility must remain explicitly explained');
   assert.match(schedule,/label:`\$\{stageName\} · \$\{local\}`/);
   assert.match(schedule,/<SelectMenu label="Mint stage"/);
   assert.equal((schedule.match(/<SelectMenu label="Mint stage"/g)||[]).length,1,
@@ -375,12 +381,28 @@ test('Schedule uses the server recommendation without pretending a future allowl
     'the selected stage belongs in the single stage selector, not a duplicate summary row');
   assert.doesNotMatch(schedule,/<div><span>Eligibility<\/span><b>/,
     'eligibility belongs on each stage option and the selected-stage tag, not a second field');
+  assert.match(css,/\.schedule-preview-stage-control \.select-menu-option-copy b\{[^}]*font-size:\.94rem[^}]*font-weight:800/,
+    'the stage name and date should be visually stronger than the supporting facts');
+  assert.match(css,/\[data-option-tone="eligible"\] \.select-menu-tag[\s\S]*color:var\(--success\)/,
+    'confirmed eligibility should be visibly green in both themes');
+  assert.match(css,/\[data-option-tone="ineligible"\] \.select-menu-tag[\s\S]*color:var\(--muted\)/,
+    'confirmed ineligibility should use the requested subdued treatment');
   assert.match(schedule,/walletLabel=\$\{encodeURIComponent\(normalizedWallet\)\}/,
     'the planner request must be tied to the selected owned wallet');
   assert.match(schedule,/lastEligibilityWallet\.current!==scheduleWallet/,
     'submission must remain disabled until the selected wallet owns the current eligibility read');
   assert.match(schedule,/onChange=\{e=>changeScheduleWallet\(e\.target\.value\)\}/,
     'changing wallets must synchronously invalidate the previous wallet plan');
+  assert.match(schedule,/setStages\(\[\]\);setStageCatalogComplete\(null\);setSelectedStageKey\(''\);setRecommendedStageKey\(''\)/,
+    'wallet switching must remove the previous wallet stage decision before any network wait');
+  assert.match(schedule,/detectionSequence\.current\+=1;detectionAbort\.current\?\.abort\(\)/,
+    'wallet switching must invalidate and abort an older eligibility request');
+  assert.match(schedule,/detect\(address,\{walletLabel:nextWallet,walletRefresh:true,silent:true,force:true\}\)/,
+    'wallet switching must force a fresh read for the newly selected wallet');
+  assert.match(schedule,/\{signal:controller\.signal\}/,
+    'the wallet-scoped detection request must be abortable');
+  assert.match(schedule,/sequence!==detectionSequence\.current\|\|detectingKey\.current!==requestKey[\s\S]*scheduleWalletRef\.current!==normalizedWallet[\s\S]*contractAddressRef\.current\.trim\(\)\.toLowerCase\(\)!==trimmed\.toLowerCase\(\)/,
+    'a stale response must not overwrite a newer wallet or contract selection');
   assert.match(schedule,/Eligibility for \$\{scheduleWallet\|\|'this wallet'\} is verified when the stage opens/);
   assert.match(schedule,/Only the public stage could be verified right now\./,
     'an on-chain one-stage fallback must not masquerade as a complete project stage catalog');

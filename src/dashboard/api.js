@@ -6,6 +6,7 @@ const {ValidationError,sendValidationError,requestSchemas}=require('../validatio
 const {AccountBlockedError,AuthorizationError}=require('../governance/governanceService');
 const {GasLookupError}=require('../gas/etherscanGasService');
 const {TransactionSafetyError}=require('../transactions/transactionEngine');
+const {OpenSeaEligibilityError}=require('../mint/openSeaEligibilityService');
 const {hashSecurityPassword,verifySecurityPassword}=require('../security/securityPassword');
 const SECURITY_HEADERS=Object.freeze({
   'Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' ws: wss:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
@@ -92,7 +93,7 @@ const SESSION_END_MESSAGES=Object.freeze({
 });
 function clientLabel(req){return String(req.get('user-agent')||'Unknown browser').replace(/[\r\n]/g,' ').slice(0,160)||'Unknown browser';}
 
-function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLoginRateLimiter,exportKeyRateLimiter,commands,priceFeedService,securityAudit={record:async()=>{}},broadcast=()=>{},broadcastToUsers=()=>{},notifyUser=async()=>{},log=()=>{},chains={},supportedChains=[],now=()=>Date.now(),checkAccountStatus}) {
+function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLoginRateLimiter,exportKeyRateLimiter,eligibilityRateLimiter,commands,priceFeedService,securityAudit={record:async()=>{}},broadcast=()=>{},broadcastToUsers=()=>{},notifyUser=async()=>{},log=()=>{},chains={},supportedChains=[],now=()=>Date.now(),checkAccountStatus}) {
   const previews=new Map();
   const requireSession=async(req,res,next)=>{try{const result=auth.authenticateDetailed?await auth.authenticateDetailed(req.headers.cookie):{session:await auth.authenticate(req.headers.cookie),reason:'invalid'};const {session}=result;if(!session){const reason=result.reason||'invalid';return res.status(401).json({error:SESSION_END_MESSAGES[reason]||SESSION_END_MESSAGES.invalid,code:`SESSION_${reason.toUpperCase()}`,reason});}
       if(typeof checkAccountStatus==='function'){try{await checkAccountStatus(session.userId);}catch(error){if(error instanceof AccountBlockedError)return res.status(403).json({error:error.message,code:error.code,status:error.status});throw error;}}
@@ -103,7 +104,7 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLo
   // a client sending a bad/missing confirmation is a 400, not a server fault. Every route that
   // calls confirmation(req) (removeWallet, deletePnl, removeSniper, removeWatchRule, confirmMint,
   // adminWrite's ban/unban/suspend/etc.) gets the correct status from this one fix.
-  const action=handler=>async(req,res,next)=>{try{await handler(req,res);}catch(error){if(error instanceof ValidationError)return sendValidationError(res,error);if(error instanceof BotContextError)return res.status(400).json({error:error.message});if(error instanceof AuthorizationError)return res.status(403).json({error:'Owner access required'});if(error instanceof TransactionSafetyError)return res.status(400).json({error:error.message,code:error.code,...(error.details?{details:jsonSafe(error.details)}:{})});next(error);}};
+  const action=handler=>async(req,res,next)=>{try{await handler(req,res);}catch(error){if(error instanceof ValidationError)return sendValidationError(res,error);if(error instanceof BotContextError)return res.status(400).json({error:error.message});if(error instanceof RateLimitError){res.set('Retry-After',String(Math.ceil(error.retryAfterMs/1000)));return res.status(429).json({error:'Too many eligibility changes. Try again shortly.'});}if(error instanceof AuthorizationError)return res.status(403).json({error:'Owner access required'});if(error instanceof OpenSeaEligibilityError)return res.status(error.status||503).json({error:error.message,code:error.code});if(error instanceof TransactionSafetyError)return res.status(400).json({error:error.message,code:error.code,...(error.details?{details:jsonSafe(error.details)}:{})});next(error);}};
   function confirmation(req){requireTextConfirmation(req.body?.confirmation);}
   function issuePreview(userId,entries){const token=randomUUID();previews.set(token,{userId,entries,expiresAt:now()+5*60_000});return token;}
   function consumePreview(userId,token){const value=previews.get(String(token||''));previews.delete(String(token||''));if(!value||value.userId!==userId||value.expiresAt<=now())throw new ValidationError({field:'previewToken',message:'is invalid or expired'});return value;}
@@ -306,6 +307,19 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLo
     importWallet:action(async(req,res)=>{const wallet=await commands.importWallet(user(req),req.body);res.status(201).json(publicWallet(wallet));}),
     importWalletsBatch:action(async(req,res)=>{const results=await commands.importWalletsBatch(user(req),req.body);res.status(201).json({results});}),
     removeWallet:action(async(req,res)=>{confirmation(req);await commands.removeWallet(user(req),req.params.label);res.status(204).end();}),
+    openSeaEligibilityStatus:action(async(req,res)=>{noStore(res);res.json(await commands.openSeaEligibilityStatus(user(req),req.params.label));}),
+    authorizeOpenSeaEligibility:action(async(req,res)=>{confirmation(req);noStore(res);
+      eligibilityRateLimiter?.check('dashboard',user(req),'opensea-eligibility-authorize');
+      const result=await commands.authorizeOpenSeaEligibility(user(req),req.params.label);
+      await Promise.resolve(securityAudit.record({userId:user(req),platform:'dashboard',contextId:req.dashboardSession.sessionId,
+        command:'opensea-eligibility-authorize',outcome:'success',reason:'Read-only OpenSea eligibility enabled for one wallet'})).catch(()=>{});
+      changed(req,'wallets');res.json(result);}),
+    revokeOpenSeaEligibility:action(async(req,res)=>{confirmation(req);noStore(res);
+      eligibilityRateLimiter?.check('dashboard',user(req),'opensea-eligibility-revoke');
+      const result=await commands.revokeOpenSeaEligibility(user(req),req.params.label);
+      await Promise.resolve(securityAudit.record({userId:user(req),platform:'dashboard',contextId:req.dashboardSession.sessionId,
+        command:'opensea-eligibility-revoke',outcome:'success',reason:'Read-only OpenSea eligibility disabled for one wallet'})).catch(()=>{});
+      changed(req,'wallets');res.json(result);}),
     // SEC-01, web half: the raw key never reaches this response -- commands.exportWalletKeystore
     // (botCommandService -> server.js's exportKeystore) decrypts the stored envelope and immediately
     // re-encrypts it into a standard V3 keystore under the account's security password, so only the
@@ -461,6 +475,9 @@ function mountDashboardRoutes(app,api){
   app.post('/api/wallets/import',api.requireSession,api.requireCsrf,api.importWallet);
   app.post('/api/wallets/batch-import',api.requireSession,api.requireCsrf,api.importWalletsBatch);
   app.delete('/api/wallets/:label',api.requireSession,api.requireCsrf,api.removeWallet);
+  app.get('/api/wallets/:label/opensea-eligibility',api.requireSession,api.openSeaEligibilityStatus);
+  app.post('/api/wallets/:label/opensea-eligibility/authorize',api.requireSession,api.requireCsrf,api.authorizeOpenSeaEligibility);
+  app.delete('/api/wallets/:label/opensea-eligibility',api.requireSession,api.requireCsrf,api.revokeOpenSeaEligibility);
   app.post('/api/wallets/:label/export',api.requireSession,api.requireCsrf,api.exportWalletKey);
   app.post('/api/wallets/:label/export/raw',api.requireSession,api.requireCsrf,api.exportWalletRaw);
   app.get('/api/mint-presets',api.requireSession,api.mintPresets);

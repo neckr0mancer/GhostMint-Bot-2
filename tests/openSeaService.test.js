@@ -75,6 +75,41 @@ test('returns empty when the contract has no OpenSea collection slug', async () 
   assert.equal(result.name, null);
 });
 
+test('wallet eligibility uses both API-key and wallet JWT and normalizes stage UUID results',async()=>{
+  const calls=[];
+  const http={get:async(url,config)=>{
+    calls.push({url,config});
+    if(url.includes('/chain/ethereum/contract/'))return {data:{collection:'hundred'}};
+    if(url.endsWith('/drops/hundred/eligibility'))return {data:{stages:[{
+      stage_uuid:'11111111-1111-4111-8111-111111111111',is_eligible:false,price:'1000',
+      max_total_mintable_by_wallet:5,max_total_mintable_by_wallet_per_token:null,
+    }]}};
+    throw new Error(`unexpected url ${url}`);
+  }};
+  const result=await createOpenSeaService({apiKey:'app-key',repository:fakeRepository(),http})
+    .getDropEligibility('ethereum',CONTRACT,'wallet-jwt');
+  assert.deepEqual(result,{stages:[{uuid:'11111111-1111-4111-8111-111111111111',
+    isEligible:false,priceWei:'1000',maxTotalMintableByWallet:5,
+    maxTotalMintableByWalletPerToken:null}]});
+  const request=calls.at(-1);
+  assert.equal(request.config.headers['x-api-key'],'app-key');
+  assert.equal(request.config.headers.Authorization,'Bearer wallet-jwt');
+});
+
+test('wallet eligibility preserves unknown provider facts instead of turning them into ineligibility',async()=>{
+  const http={get:async url=>url.includes('/chain/ethereum/contract/')
+    ?{data:{collection:'unknown-drop'}}
+    :{data:{stages:[
+      {stage_uuid:'11111111-1111-4111-8111-111111111111',price:'not-a-number',max_total_mintable_by_wallet:-1},
+      {stage_uuid:'not-a-uuid',is_eligible:false,price:'0'},
+    ]}}};
+  const result=await createOpenSeaService({apiKey:'app-key',repository:fakeRepository(),http})
+    .getDropEligibility('ethereum',CONTRACT,'wallet-jwt');
+  assert.deepEqual(result,{stages:[{uuid:'11111111-1111-4111-8111-111111111111',
+    isEligible:null,priceWei:null,maxTotalMintableByWallet:null,
+    maxTotalMintableByWalletPerToken:null}]});
+});
+
 test('a network failure or timeout degrades to empty metadata instead of throwing', async () => {
   const http = { get: async () => { throw new Error('network error'); } };
   const repository = fakeRepository();

@@ -27,6 +27,21 @@ function rejectionCode(detail) {
   return undefined;
 }
 
+function stageUuid(value) {
+  const normalized=String(value||'').trim();
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(normalized)
+    ?normalized:null;
+}
+function unsignedIntegerString(value) {
+  const normalized=String(value??'').trim();
+  return /^\d+$/.test(normalized)?normalized:null;
+}
+function safeNonnegativeInteger(value) {
+  if(value===null||value===undefined||value==='')return null;
+  const number=Number(value);
+  return Number.isSafeInteger(number)&&number>=0?number:null;
+}
+
 // This app's internal chain names -> OpenSea's own chain identifiers. Chains with no entry here
 // (e.g. a custom/obscure chain OpenSea has never indexed) are simply "not looked up" -- same
 // "unknown is a valid outcome, never a thrown error" philosophy as seaDropDiscoveryService.js.
@@ -284,6 +299,30 @@ function createOpenSeaService({ apiKey, repository, baseUrl = 'https://api.opens
     }
   }
 
+  // Wallet-specific OpenSea eligibility is deliberately separate from getDrop(). The public drop
+  // catalog describes every stage, while this endpoint evaluates the wallet represented by the
+  // short-lived bearer JWT. Callers must therefore obtain a token for the currently selected wallet
+  // and must never cache this result by contract alone.
+  async function getDropEligibility(chain, contractAddress, accessToken) {
+    const openSeaChain = OPENSEA_CHAIN_SLUGS[chain];
+    if (!apiKey || !openSeaChain || !accessToken) return { stages:[] };
+    const slug = await fetchCollectionSlug(openSeaChain, contractAddress);
+    if (!slug) return { stages:[] };
+    const response = await http.get(`${baseUrl}/drops/${slug}/eligibility`, {
+      timeout:timeoutMs,
+      maxContentLength:1_000_000,
+      headers:{ 'x-api-key':apiKey, Authorization:`Bearer ${accessToken}` },
+    });
+    const stages = Array.isArray(response.data?.stages) ? response.data.stages : [];
+    return { stages:stages.map(stage => ({
+      uuid:stageUuid(stage.stage_uuid),
+      isEligible:typeof stage.is_eligible==='boolean'?stage.is_eligible:null,
+      priceWei:unsignedIntegerString(stage.price),
+      maxTotalMintableByWallet:safeNonnegativeInteger(stage.max_total_mintable_by_wallet),
+      maxTotalMintableByWalletPerToken:safeNonnegativeInteger(stage.max_total_mintable_by_wallet_per_token),
+    })).filter(stage => stage.uuid) };
+  }
+
   // Section AF -- the point of all of this: an allowlist/GTD/FCFS SeaDrop stage has no on-chain way
   // for this app to prove eligibility (no merkle proof, no signature this app can produce), because
   // that verification lives entirely in OpenSea's own backend. POST /drops/{slug}/mint (live-verified
@@ -341,7 +380,8 @@ function createOpenSeaService({ apiKey, repository, baseUrl = 'https://api.opens
     return { to: data.to, data: data.data, valueWei: BigInt(data.value ?? '0x0').toString(), chain: data.chain };
   }
 
-  return { getCollectionMetadata, resolveCollectionContract, getCollectionStats, getDrop, buildMintTransaction };
+  return { getCollectionMetadata, resolveCollectionContract, getCollectionStats, getDrop,
+    getDropEligibility, buildMintTransaction };
 }
 
 module.exports = { OPENSEA_CHAIN_SLUGS, createOpenSeaService };

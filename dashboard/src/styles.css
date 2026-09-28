@@ -226,7 +226,23 @@ main.loading{min-height:100vh;display:grid;place-items:center;padding:1.25rem;co
 .schedule-preview-grid .schedule-preview-time{grid-column:1/-1}
 .schedule-preview-grid>div.schedule-preview-stage-control{padding:0;border:0;background:transparent}
 .schedule-preview-stage-control .select-menu-trigger{background:var(--surface)}
-.schedule-preview-stage-control .select-menu-value{font-size:.86rem}
+.schedule-preview-stage-control .select-menu-value,
+.schedule-preview-stage-control .select-menu-option-copy b{color:var(--text);font-size:.94rem;font-weight:800;line-height:1.3;letter-spacing:.005em}
+.schedule-preview-stage-control [data-option-tone="eligible"] .select-menu-tag,
+.schedule-preview-stage-control [data-option-tone="open_to_all"] .select-menu-tag{color:var(--success);
+  border-color:color-mix(in srgb,var(--success) 40%,var(--border));
+  background:color-mix(in srgb,var(--success) 10%,var(--surface-2))}
+.schedule-preview-stage-control [data-option-tone="ineligible"] .select-menu-tag,
+.schedule-preview-stage-control [data-option-tone="check_at_open"] .select-menu-tag{color:var(--muted);
+  border-color:var(--border-strong);background:var(--surface-3)}
+.schedule-preview-stage-control [data-option-tone="ineligible"] .select-menu-option-copy b{color:var(--muted)}
+.schedule-eligibility-access{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 11px;
+  border:1px solid var(--border);border-radius:10px;background:var(--surface)}
+.schedule-eligibility-access.is-connected{border-color:color-mix(in srgb,var(--success) 35%,var(--border));
+  background:color-mix(in srgb,var(--success) 6%,var(--surface))}
+.schedule-eligibility-access>div:first-child{display:grid;gap:2px;min-width:0}
+.schedule-eligibility-access b{font-size:.82rem}.schedule-eligibility-access span{color:var(--muted);font-size:.75rem;line-height:1.4}
+.schedule-eligibility-actions{display:flex;align-items:center;flex:0 0 auto;gap:7px}
 .schedule-preview-info{display:grid;gap:7px;padding:10px 11px;border-left:3px solid var(--accent);background:var(--surface);border-radius:0 9px 9px 0;color:var(--muted);font-size:.82rem;line-height:1.45}
 .schedule-preview-info p{margin:0}
 .schedule-live-now{display:grid;gap:12px;padding:14px;border:1px solid color-mix(in srgb,var(--success) 38%,var(--border));
@@ -274,6 +290,7 @@ main.loading{min-height:100vh;display:grid;place-items:center;padding:1.25rem;co
   .schedule-preview{padding:12px}.schedule-preview-grid{grid-template-columns:1fr 1fr;gap:7px}
   .schedule-preview-grid>div{padding:8px}.schedule-preview-grid b{white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere}
   .schedule-live-actions .b{flex:1 1 8.5rem}
+  .schedule-eligibility-access{align-items:stretch;flex-direction:column}.schedule-eligibility-actions .b{flex:1}
   .schedule-policy-field{padding-left:0}.ico-btn.schedule-help-open{width:44px;height:44px;min-height:44px;padding:12px}
 }
 @media(prefers-reduced-motion:reduce){.schedule-switch,.schedule-switch-thumb,.info-popover-card{transition:none}}

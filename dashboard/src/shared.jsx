@@ -557,6 +557,7 @@ export function SelectMenu({label,options=[],optional=false,name,value,defaultVa
     )}
     <div className="select-menu-control">
       <button type="button" className="select-menu-trigger" ref={triggerRef} disabled={disabled} autoFocus={autoFocus}
+        data-option-tone={selected?.tone||undefined}
         aria-haspopup="listbox" aria-expanded={open} aria-controls={listId} aria-labelledby={`${labelId} ${valueId}`}
         aria-required={required||undefined} {...ariaProps}
         onClick={()=>open?close():openList()} onKeyDown={onTriggerKeyDown}>
@@ -573,7 +574,7 @@ export function SelectMenu({label,options=[],optional=false,name,value,defaultVa
           lastGroup=option.group||lastGroup;
           return <React.Fragment key={`${option.value}:${index}`}>
             {groupChanged&&<li className="select-menu-group-label" role="presentation">{option.group}</li>}
-            <li id={`${listId}-option-${index}`} data-option-index={index} role="option"
+            <li id={`${listId}-option-${index}`} data-option-index={index} data-option-tone={option.tone||undefined} role="option"
               aria-disabled={option.disabled||undefined} aria-selected={option.value===selectedValue}
               className={`select-menu-option${option.value===selectedValue?' selected':''}${index===activeIndex?' active':''}${option.disabled?' disabled':''}`}
               onMouseEnter={()=>!option.disabled&&setActiveIndex(index)} onClick={()=>choose(option)}>

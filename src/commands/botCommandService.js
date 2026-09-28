@@ -115,7 +115,7 @@ function createBotCommandService(dependencies) {
   const { storage, schedulerRepository, scheduledPreflightRepository, providerService, governance, adminCommands, sniperService,
     socialWatchService, socialUsageService, targetPolicyService, triggerExecutionService, governanceRepository,
     triggerAuditRepository, transactionIntentRepository, gasService, supportedChains, chains, encryptPrivateKey, getState, executeMint, executeMintViaOpenSea, executeSend,
-    sniperRepository, mintService, previewMint, executePreparedMint, identity, contractValueResolver, seaDropDiscoveryService, seaDropPublicDropResolver, openSeaService, priceFeedService,
+    sniperRepository, mintService, previewMint, executePreparedMint, identity, contractValueResolver, seaDropDiscoveryService, seaDropPublicDropResolver, openSeaService, openSeaEligibilityService, priceFeedService,
     exportRawKey, exportKeystore, botSecurityRepository,
     ensureChainWatcher = () => {}, syncChainWatcher = ensureChainWatcher,
     supportsPendingSniper = () => false, pendingSniperChains = [],
@@ -250,8 +250,9 @@ function createBotCommandService(dependencies) {
     // gives provider-specific planners a trustworthy wallet context without ever accepting an
     // arbitrary address from the browser. Generic future OpenSea allowlists still remain
     // `check_at_open` until OpenSea can return a real proof/eligibility decision.
+    let eligibilityWallet = null;
     if (input.walletLabel !== undefined && input.walletLabel !== null && String(input.walletLabel).trim()) {
-      wallet(userId, input.walletLabel);
+      eligibilityWallet = wallet(userId, input.walletLabel);
     }
     const requestedChain = input.chain === undefined || input.chain === null || input.chain === ''
       ? null : String(input.chain).trim().toLowerCase();
@@ -336,16 +337,43 @@ function createBotCommandService(dependencies) {
     // prices convert wei -> ETH here (not in openSeaService, which stays ethers-free) the same way
     // every other price this function resolves already does.
     let drop = null;
+    let walletEligibilityAuthorization = eligibilityWallet && openSeaEligibilityService
+      ? await openSeaEligibilityService.status(userId, eligibilityWallet)
+      : null;
     const wantsDrop = input.includeDrop ?? input.includeStats;
     if (wantsDrop && openSeaService?.getDrop) {
       const liveDrop = await openSeaService.getDrop(chain, contractAddress);
       if (liveDrop) {
+        let walletEligibility = null;
+        if (eligibilityWallet && openSeaEligibilityService) {
+          walletEligibility = await openSeaEligibilityService.eligibility(
+            userId, eligibilityWallet, chain, contractAddress);
+          walletEligibilityAuthorization = walletEligibility.authorization;
+        }
+        const eligibilityByStage = new Map((walletEligibility?.stages || [])
+          .filter(stage => stage?.uuid).map(stage => [String(stage.uuid),stage]));
+        const mergeWalletEligibility = stage => {
+          if (!stage) return null;
+          const eligibility = eligibilityByStage.get(String(stage.uuid));
+          if (!eligibility) return stage;
+          const walletCap = eligibility.maxTotalMintableByWalletPerToken
+            ?? eligibility.maxTotalMintableByWallet;
+          return { ...stage,
+            ...(typeof eligibility.isEligible==='boolean'?{
+              eligibilityState:eligibility.isEligible ? 'eligible' : 'ineligible',
+              eligibilitySource:'opensea_wallet',
+            }:{}),
+            priceWei:eligibility.priceWei ?? stage.priceWei,
+            maxPerWallet:Number.isSafeInteger(walletCap)&&walletCap>=0 ? walletCap : stage.maxPerWallet,
+          };
+        };
         const toEthStage = stage => (stage ? { ...stage,
           priceETH: stage.priceWei != null ? Number(formatEther(BigInt(stage.priceWei))) : null,
         } : null);
         drop = decorateScheduleDrop({ ...liveDrop,
-          activeStage:toEthStage(liveDrop.activeStage), nextStage:toEthStage(liveDrop.nextStage),
-          stages:liveDrop.stages.map(toEthStage) });
+          activeStage:toEthStage(mergeWalletEligibility(liveDrop.activeStage)),
+          nextStage:toEthStage(mergeWalletEligibility(liveDrop.nextStage)),
+          stages:liveDrop.stages.map(mergeWalletEligibility).map(toEthStage) });
       }
     }
     let schedulePlan = buildScheduleStagePlan(drop);
@@ -372,7 +400,8 @@ function createBotCommandService(dependencies) {
         valueWei: '1600000000000000', priceKnown: true,
         maxSupply: 3404, maxPerWallet: activeStage?.maxPerWallet ?? nextStage?.maxPerWallet ?? 2,
         startTime: activeStage?.startTime ?? nextStage?.startTime ?? null, endTime: activeStage?.endTime ?? nextStage?.endTime ?? null,
-        collection, soldOut: false, displayPrice: null, stats, drop, openSeaMintRecommended: false,
+        collection, soldOut: false, displayPrice: null, stats, drop, schedulePlan,
+        walletEligibilityAuthorization, openSeaMintRecommended: false,
         glrtchStages: true,
       };
     }
@@ -442,6 +471,7 @@ function createBotCommandService(dependencies) {
         stats,
         drop,
         schedulePlan,
+        walletEligibilityAuthorization,
         openSeaMintRecommended: dropRequiresOpenSeaBuilder(drop),
       };
     }
@@ -474,6 +504,7 @@ function createBotCommandService(dependencies) {
       stats,
       drop,
       schedulePlan,
+      walletEligibilityAuthorization,
       // An OpenSea-indexed collection that is not SeaDrop-backed may use a launchpad-specific ABI
       // (Archetype is a common example). Ask OpenSea to build that known call instead of making the
       // old, unsafe mint(uint256) guess. `collection.name` is also sufficient because a read-key
@@ -488,6 +519,22 @@ function createBotCommandService(dependencies) {
     const result = findOwnedWallet(getState(), userId, label);
     if (!result) throw new ValidationError({ field: 'walletLabel', message: 'was not found' });
     return result;
+  }
+
+  async function openSeaEligibilityStatus(userId,label) {
+    const owned=wallet(userId,label);
+    if(!openSeaEligibilityService)return {configured:false,status:'not_connected',connected:false};
+    return openSeaEligibilityService.status(userId,owned);
+  }
+  async function authorizeOpenSeaEligibility(userId,label) {
+    const owned=wallet(userId,label);
+    if(!openSeaEligibilityService)throw new ValidationError({field:'walletLabel',message:'cannot enable OpenSea eligibility on this server'});
+    return openSeaEligibilityService.authorize(userId,owned);
+  }
+  async function revokeOpenSeaEligibility(userId,label) {
+    const owned=wallet(userId,label);
+    if(!openSeaEligibilityService)return {configured:false,status:'not_connected',connected:false};
+    return openSeaEligibilityService.revoke(userId,owned);
   }
 
   async function persistWallet(userId, input) {
@@ -616,6 +663,10 @@ function createBotCommandService(dependencies) {
   async function removeWallet(userId, label) {
     const validated = requestSchemas.walletDeletion({ label });
     const owned = wallet(userId, validated.label);
+    // A wallet-scoped OpenSea PAT remains exchangeable until expiry even though it cannot spend.
+    // Revoke it before the wallet row cascades away, otherwise GhostMint loses the only token id it
+    // can use to clean up that remote permission. A provider outage therefore fails deletion safely.
+    if(openSeaEligibilityService)await openSeaEligibilityService.revoke(userId,owned);
     await storage.deleteWallet(userId, owned.label);
     getState().wallets.splice(getState().wallets.indexOf(owned), 1);
     broadcast(userId, 'wallets');
@@ -1366,7 +1417,9 @@ function createBotCommandService(dependencies) {
 
   return {
     createWallet, createWalletWithRecoveryPhrase, importWallet, importWalletsBatch, detectHomeChain, removeWallet, walletBalance, invalidateBalance, exportWalletKeyRaw, exportWalletKeystore, mint, mintViaOpenSea, batchMint, send, createTask, controlTask, taskDetails, resolveTaskChange, addPnl, updatePnl, deletePnl,
-    prepareMint,submitPreparedMint,detectMintContract,resolveMintContractInput,isContractAddress,parseOpenSeaCollectionSlug,mintPresets:userId=>mintService.listPresets(userId),
+    prepareMint,submitPreparedMint,detectMintContract,resolveMintContractInput,isContractAddress,parseOpenSeaCollectionSlug,
+    openSeaEligibilityStatus,authorizeOpenSeaEligibility,revokeOpenSeaEligibility,
+    mintPresets:userId=>mintService.listPresets(userId),
     // The dashboard could LIST presets but never create one -- the only save path was
     // /mintpreset save on Telegram (server.js:2492), so the Presets tab displayed a thing the
     // dashboard had no way to produce. Same validated mintService.savePreset the bot calls,

@@ -16,6 +16,7 @@ const MERGE_DATA_TABLES = [
   ['trigger_execution_requests', 'user_id'],
   ['trigger_execution_audit', 'user_id'],
   ['dashboard_sessions', 'user_id'],
+  ['opensea_wallet_eligibility_authorizations', 'user_id'],
   ['group_retention_events', 'user_id'],
   ['seat_groups', 'created_by'],
   ['mode_presets', 'updated_by'],

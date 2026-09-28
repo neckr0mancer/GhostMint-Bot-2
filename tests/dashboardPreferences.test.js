@@ -62,6 +62,10 @@ test('controlled mint and wallet-display selectors share the accessible themed l
   assert.match(shared, /aria-controls=\{listId\}/);
   assert.match(shared, /aria-labelledby=\{`\$\{labelId\} \$\{valueId\}`\}/);
   assert.match(shared, /aria-activedescendant=/);
+  assert.match(shared, /data-option-tone=\{selected\?\.tone\|\|undefined\}/,
+    'the selected value must expose its state for stage-specific status styling');
+  assert.match(shared, /data-option-tone=\{option\.tone\|\|undefined\}/,
+    'each menu option must expose its own state without relying on brittle label text');
   for(const key of ['ArrowDown','ArrowUp','Home','End','Escape','Tab'])assert.match(shared,new RegExp(`'${key}'`));
   assert.match(shared, /option\.value!==selectedValue[\s\S]*onChange\?\./,
     're-selecting the current option must not repeat saves or invalidate a preview');

@@ -32,6 +32,8 @@ const { createContractValueResolver } = require('./mint/contractValueResolver');
 const { createSeaDropDiscoveryService } = require('./mint/seaDropDiscoveryService');
 const { createSeaDropPublicDropResolver } = require('./mint/seaDropPublicDropResolver');
 const { createOpenSeaService, OPENSEA_CHAIN_SLUGS } = require('./mint/openSeaService');
+const { createOpenSeaEligibilityRepository } = require('./mint/openSeaEligibilityRepository');
+const { createOpenSeaEligibilityService } = require('./mint/openSeaEligibilityService');
 const { createPriceFeedService } = require('./mint/priceFeedService');
 const { computeSeaDropValueWei, validateOpenSeaMintCall } = require('./mint/seaDropCall');
 const { SEADROP_MINT_SIGNATURE } = require('./mint/seaDropRegistry');
@@ -123,6 +125,7 @@ const sniperRepository = createSniperRepository(pool);
 const socialWatchRepository = createSocialWatchRepository(pool);
 const targetPolicyRepository = createTargetPolicyRepository(pool);
 const botSecurityRepository = createBotSecurityRepository(pool);
+const openSeaEligibilityRepository = createOpenSeaEligibilityRepository(pool);
 const commandRateLimiter = createCommandRateLimiter();
 // Key export gets its own, much stricter bucket than every other sensitive command -- shared
 // across Telegram and the dashboard (this one instance is passed into createDashboardApi below) so
@@ -206,6 +209,7 @@ const openSeaService = {
   resolveCollectionContract: openSeaReadService.resolveCollectionContract,
   getCollectionStats: openSeaReadService.getCollectionStats,
   getDrop: openSeaReadService.getDrop,
+  getDropEligibility: openSeaReadService.getDropEligibility,
   buildMintTransaction: openSeaWriteService.buildMintTransaction,
 };
 const priceFeedService = createPriceFeedService();
@@ -233,10 +237,21 @@ const redact = createRedactor([
   CONFIG.socialManagedServiceToken,
   CONFIG.etherscanApiKey,
   CONFIG.openSeaApiKey,
+  CONFIG.openSeaReadApiKey,
   ...Object.values(CONFIG.encryptionKeys),
 ]);
 const log = msg => console.log(`[${new Date().toISOString()}] ${redact(msg)}`);
 const safeError = error => redact(error?.reason || error?.message || 'Unknown error');
+const openSeaEligibilityService = createOpenSeaEligibilityService({
+  repository: openSeaEligibilityRepository,
+  encryptToken: value => keyEncryption.encrypt(value),
+  decryptToken: envelope => keyEncryption.decrypt(envelope),
+  decryptPrivateKey: decryptPK,
+  fetchEligibility: (chain, contractAddress, accessToken) =>
+    openSeaReadService.getDropEligibility(chain, contractAddress, accessToken),
+  apiKey: CONFIG.openSeaReadApiKey,
+  log,
+});
 const dashboardWebSockets=createDashboardWebSocketHub({auth:dashboardAuth,log});
 log(`Configuration loaded: ${JSON.stringify(getSafeConfigSummary())}`);
 const transactionEngine = createTransactionEngine({
@@ -4708,6 +4723,7 @@ const botCommands = createBotCommandService({
   seaDropDiscoveryService,
   seaDropPublicDropResolver,
   openSeaService,
+  openSeaEligibilityService,
   priceFeedService,
   governance,
   adminCommands,
@@ -4784,7 +4800,7 @@ const dashboardApi=createDashboardApi({auth:dashboardAuth,identityRepository,com
   checkAccountStatus:userId=>governance.checkAccountStatus(userId),
   loginRateLimiter:createCommandRateLimiter({limit:5,windowMs:60_000}),
   passwordLoginRateLimiter:createCommandRateLimiter({limit:5,windowMs:15*60_000}),
-  exportKeyRateLimiter});
+  exportKeyRateLimiter,eligibilityRateLimiter:commandRateLimiter});
 
 if (CONFIG.discordBotToken && !CONFIG.dashboardOnly) {
   discordBot = createDiscordBot({ token: CONFIG.discordBotToken,

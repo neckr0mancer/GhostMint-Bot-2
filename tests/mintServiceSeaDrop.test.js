@@ -106,14 +106,14 @@ test('OpenSea validation rejects an Archetype mintTo that redirects the NFT to a
 });
 
 function commandServiceFixture({ contractValueResolver, seaDropDiscoveryService, seaDropPublicDropResolver,
-  openSeaService, priceFeedService, wallets,
+  openSeaService, openSeaEligibilityService, priceFeedService, wallets,
   providerService, supportedChains = ['ethereum'], chains = { ethereum: { sym: 'ETH' } } }) {
   const state = { wallets: wallets || [{ userId: 'user-a', label: 'main', address: WALLET, chain: 'ethereum' }], tasks: [], activity: [], pnl: [], snipers: [] };
   const calls = [];
   const service = createBotCommandService({
     storage: {}, schedulerRepository: {}, providerService: providerService || { perform: async () => '0x1234' }, governance: {}, adminCommands: {}, sniperService: {},
     supportedChains, chains, getState: () => state,
-    contractValueResolver, seaDropDiscoveryService, seaDropPublicDropResolver, openSeaService, priceFeedService,
+    contractValueResolver, seaDropDiscoveryService, seaDropPublicDropResolver, openSeaService, openSeaEligibilityService, priceFeedService,
     executeMint: async ({ userId, wallet, request }) => { calls.push(['executeMint', userId, wallet.label, request]); return { txHash: '0xabc' }; },
     executeMintViaOpenSea: async ({ userId, wallet, request, built }) => { calls.push(['executeMintViaOpenSea', userId, wallet.label, request, built]); return { txHash: '0xdef' }; },
   });
@@ -450,6 +450,45 @@ test('wallet-specific detection rejects labels outside the requesting user befor
     contractAddress:CONTRACT,quantity:1,includeDrop:true,walletLabel:'private',
   }),error=>error instanceof ValidationError&&error.issues.some(issue=>issue.field==='walletLabel'));
   assert.equal(providerCalls,0,'an unauthorized label must fail before any contract/provider lookup');
+});
+
+test('switching wallets replaces OpenSea eligibility and recomputes the recommended stage by exact UUID',async()=>{
+  const allow={uuid:'11111111-1111-4111-8111-111111111111',label:'WL',startTime:1_900_000_000,
+    endTime:1_900_003_600,priceWei:'0',maxPerWallet:1,stageType:'signed_presale'};
+  const publicStage={uuid:'22222222-2222-4222-8222-222222222222',label:'PUBLIC',startTime:1_900_004_000,
+    endTime:1_900_007_600,priceWei:'0',maxPerWallet:10,stageType:'public'};
+  const wallets=[
+    {id:1,userId:'user-a',label:'eligible',address:WALLET,chain:'ethereum'},
+    {id:2,userId:'user-a',label:'public-only',address:FEE_RECIPIENT,chain:'ethereum'},
+  ];
+  const authorization=wallet=>({configured:true,status:'connected',connected:true,walletAddress:wallet.address});
+  const openSeaEligibilityService={
+    status:async(_userId,wallet)=>authorization(wallet),
+    eligibility:async(_userId,wallet)=>({authorization:authorization(wallet),stages:[{
+      uuid:allow.uuid,isEligible:wallet.label==='eligible',priceWei:'0',
+      maxTotalMintableByWallet:wallet.label==='eligible'?2:1,maxTotalMintableByWalletPerToken:null,
+    }] }),
+  };
+  const {service}=commandServiceFixture({wallets,openSeaEligibilityService,
+    contractValueResolver:{resolve:async()=>{throw new Error('should not be reached');},probeMaxSupply:async()=>null},
+    seaDropDiscoveryService:{resolve:async()=>({address:SEADROP,
+      publicDrop:{mintPriceWei:'0',maxTotalMintableByWallet:10},feeRecipient:FEE_RECIPIENT})},
+    openSeaService:{getCollectionMetadata:async()=>null,getDrop:async()=>({
+      isMinting:false,activeStage:null,nextStage:allow,stages:[allow,publicStage],
+    })},
+  });
+  const first=await service.detectMintContract('user-a',{contractAddress:CONTRACT,quantity:1,
+    includeDrop:true,walletLabel:'eligible'});
+  assert.equal(first.drop.stages[0].eligibilityState,'eligible');
+  assert.equal(first.drop.stages[0].maxPerWallet,2);
+  assert.equal(first.schedulePlan.recommendedStageUuid,allow.uuid);
+  assert.equal(first.walletEligibilityAuthorization.walletAddress,WALLET);
+
+  const second=await service.detectMintContract('user-a',{contractAddress:CONTRACT,quantity:1,
+    includeDrop:true,walletLabel:'public-only'});
+  assert.equal(second.drop.stages[0].eligibilityState,'ineligible');
+  assert.equal(second.schedulePlan.recommendedStageUuid,publicStage.uuid);
+  assert.equal(second.walletEligibilityAuthorization.walletAddress,FEE_RECIPIENT);
 });
 
 test('an active public phase keeps the direct SeaDrop path even when a later gated phase exists', async () => {
