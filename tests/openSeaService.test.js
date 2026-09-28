@@ -281,8 +281,10 @@ test('getDrop normalizes a real-shaped response: active/next stage, full stage l
       active_stage: { uuid: 'a1', label: 'Public sale', start_time: '2026-08-19T18:00:00Z', end_time: '2026-08-26T18:00:00Z', price: '50000000000000000', price_currency_address: '0x0000000000000000000000000000000000000000', stage_type: 'public_sale', max_per_wallet: '5' },
       next_stage: null,
       stages: [
-        { uuid: 'a0', label: 'Allowlist', start_time: '2026-08-18T18:00:00Z', end_time: '2026-08-19T18:00:00Z', price: '0', price_currency_address: '0x0000000000000000000000000000000000000000', stage_type: 'presale', max_per_wallet: '2' },
-        { uuid: 'a1', label: 'Public sale', start_time: '2026-08-19T18:00:00Z', end_time: '2026-08-26T18:00:00Z', price: '50000000000000000', price_currency_address: '0x0000000000000000000000000000000000000000', stage_type: 'public_sale', max_per_wallet: '5' },
+        { uuid: 'a0', label: 'HUNDRED', start_time: '2026-08-18T18:00:00Z', end_time: '2026-08-19T18:00:00Z', price: '0', price_currency_address: '0x0000000000000000000000000000000000000000', stage_type: 'presale', max_per_wallet: '100', allowlist_wallet_count: 12 },
+        { uuid: 'a0b', label: 'TEAM', start_time: '2026-08-18T18:15:00Z', end_time: '2026-08-19T18:00:00Z', price: '0', price_currency_address: '0x0000000000000000000000000000000000000000', stage_type: 'presale', max_per_wallet: '5' },
+        { uuid: 'a0c', label: 'WL', start_time: '2026-08-18T18:30:00Z', end_time: '2026-08-19T18:00:00Z', price: '0', price_currency_address: '0x0000000000000000000000000000000000000000', stage_type: 'presale', max_per_wallet: '1' },
+        { uuid: 'a1', label: 'PUBLIC', start_time: '2026-08-19T18:00:00Z', end_time: '2026-08-26T18:00:00Z', price: '50000000000000000', price_currency_address: '0x0000000000000000000000000000000000000000', stage_type: 'public_sale', max_per_wallet: '5' },
       ],
     } };
     throw new Error(`unexpected url ${url}`);
@@ -298,8 +300,11 @@ test('getDrop normalizes a real-shaped response: active/next stage, full stage l
   assert.equal(drop.activeStage.maxPerWallet, 5);
   assert.equal(drop.activeStage.startTime, Math.floor(Date.parse('2026-08-19T18:00:00Z') / 1000));
   assert.equal(drop.nextStage, null);
-  assert.equal(drop.stages.length, 2);
-  assert.equal(drop.stages[0].label, 'Allowlist');
+  assert.equal(drop.stageCatalogComplete, true);
+  assert.equal(drop.stageCatalogSource, 'opensea');
+  assert.equal(drop.stages.length, 4);
+  assert.deepEqual(drop.stages.map(stage => stage.label), ['HUNDRED','TEAM','WL','PUBLIC']);
+  assert.equal(drop.stages[0].allowlistWalletCount, 12);
   assert.equal(drop.stages[0].priceWei, '0');
 });
 

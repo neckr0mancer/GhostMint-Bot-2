@@ -79,7 +79,11 @@ function publicDropScheduleFallback(publicDrop, existingDrop = null, now = Date.
     if (BigInt(priceWei) < 0n) return existingDrop;
   } catch { return existingDrop; }
   const stage = {
-    label:'Public sale',
+    // SeaDrop itself does not publish a project-authored label for this struct. Use the neutral
+    // protocol name instead of inventing "Public sale"; when OpenSea is configured its real stage
+    // label (for example exactly "PUBLIC") is preserved by openSeaService and this fallback is not
+    // used at all.
+    label:'Public',
     // This internal type is explicit provenance: unlike a provider phase with no UUID, this row
     // was synthesized from SeaDrop's one authoritative on-chain PublicDrop struct.
     stageType:'seadrop_public_drop',
@@ -94,6 +98,11 @@ function publicDropScheduleFallback(publicDrop, existingDrop = null, now = Date.
   const isMinting = startMs <= now && (endMs === null || now < endMs);
   return decorateScheduleDrop({
     ...(existingDrop || {}),
+    // One on-chain PublicDrop is authoritative for that phase, but it is not a complete catalog:
+    // gated OpenSea stages live off-chain. Clients must not silently present this one row as if it
+    // proved the collection has no allowlists.
+    stageCatalogComplete:false,
+    stageCatalogSource:'onchain_public_drop',
     dropType:existingDrop?.dropType || 'seadrop_public_drop',
     isMinting,
     activeStage:isMinting ? stage : null,

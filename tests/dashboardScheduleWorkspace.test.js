@@ -382,6 +382,8 @@ test('Schedule uses the server recommendation without pretending a future allowl
   assert.match(schedule,/onChange=\{e=>changeScheduleWallet\(e\.target\.value\)\}/,
     'changing wallets must synchronously invalidate the previous wallet plan');
   assert.match(schedule,/Eligibility for \$\{scheduleWallet\|\|'this wallet'\} is verified when the stage opens/);
+  assert.match(schedule,/Only the public stage could be verified right now\./,
+    'an on-chain one-stage fallback must not masquerade as a complete project stage catalog');
   assert.doesNotMatch(schedule,/stages\.length>1&&<SelectMenu className="fl" label="Stage"/,
     'the stage picker belongs inside the schedule preview, including when only one stage exists');
 });

@@ -26,6 +26,22 @@ test('the automatic schedule skips an unknown gated stage and recommends the ear
     'an unknown allowlist remains a manual choice rather than an automatic eligibility claim');
 });
 
+test('a complete four-stage catalog stays visible while PUBLIC is the safe automatic choice',()=>{
+  const stages=[
+    stage('hundred',1_800_000_100,{label:'HUNDRED',stageType:'presale',maxPerWallet:100}),
+    stage('team',1_800_000_200,{label:'TEAM',stageType:'presale',maxPerWallet:5}),
+    stage('wl',1_800_000_300,{label:'WL',stageType:'presale',maxPerWallet:1}),
+    stage('public',1_800_000_400,{label:'PUBLIC',stageType:'public_sale',maxPerWallet:1}),
+  ];
+  const decorated=decorateScheduleDrop({stages});
+
+  assert.deepEqual(decorated.stages.map(item=>item.label),['HUNDRED','TEAM','WL','PUBLIC']);
+  assert.deepEqual(decorated.stages.slice(0,3).map(item=>item.eligibilityState),
+    ['check_at_open','check_at_open','check_at_open']);
+  assert.equal(decorated.stages[3].eligibilityState,'open_to_all');
+  assert.equal(buildScheduleStagePlan(decorated,{now:NOW}).recommendedStageLabel,'PUBLIC');
+});
+
 test('explicit wallet eligibility evidence survives decoration and governs automatic recommendations',()=>{
   const eligible=stage('eligible',1_800_000_100,{stageType:'signed_presale',eligibilityState:'eligible'});
   const ineligible=stage('ineligible',1_800_000_050,{stageType:'allowlist',eligibility_state:'ineligible'});

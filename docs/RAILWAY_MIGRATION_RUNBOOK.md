@@ -133,7 +133,11 @@ document. Review these groups:
   failure.
 - Providers: every configured chain's HTTP URL list, optional WebSocket/fast/sniper lanes,
   `OPENSEA_API_KEY`, optional separate `OPENSEA_READ_API_KEY`, `ETHERSCAN_API_KEY`, and social
-  adapter URLs/tokens. Each RPC list has a hard cap of five unique URLs.
+  adapter URLs/tokens. Each RPC list has a hard cap of five unique URLs. `OPENSEA_API_KEY` is
+  operationally required for the complete OpenSea stage catalog and OpenSea-built gated mints:
+  without it, GhostMint can verify only SeaDrop's single on-chain public phase and must not claim
+  that no allowlist phases exist. If an instant free-tier key is used, record its expiry and rotate
+  it before expiry; prefer a long-lived developer key for a permanent production deployment.
 - Scheduler/transaction tuning such as `SCHEDULE_PREARM_LEAD_MS` and `TX_BUMP_*`.
 
 Do **not** deploy cleanup, merge, or live-acceptance confirmation variables. Never set
@@ -141,6 +145,12 @@ Do **not** deploy cleanup, merge, or live-acceptance confirmation variables. Nev
 
 Railway variable changes are staged and require a deploy. Review the redacted list twice before
 applying it.
+
+After the deploy, filter the startup log for `Configuration loaded` and verify the safe summary
+contains `"openSeaConfigured":true`. This check exposes only configuration presence, never the
+key. Then paste a known multi-stage drop into Schedule and confirm every provider stage and its
+exact project-authored label appears; seeing only `Public` means the app is safely using the
+incomplete on-chain fallback and the OpenSea variable still is not effective.
 
 ## 5. Full historical data move
 

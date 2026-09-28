@@ -223,6 +223,11 @@ function createOpenSeaService({ apiKey, repository, baseUrl = 'https://api.opens
   // never a thrown error into the card renderer.
   function normalizeStage(stage) {
     if (!stage) return null;
+    const explicitEligibility = typeof stage.is_eligible === 'boolean'
+      ? (stage.is_eligible ? 'eligible' : 'ineligible')
+      : typeof stage.eligible === 'boolean'
+        ? (stage.eligible ? 'eligible' : 'ineligible')
+        : null;
     return {
       uuid: stage.uuid || null,
       label: stage.label || null,
@@ -237,6 +242,12 @@ function createOpenSeaService({ apiKey, repository, baseUrl = 'https://api.opens
       priceWei: stage.price ?? null,
       maxPerWallet: stage.max_per_wallet !== undefined && stage.max_per_wallet !== null ? Number(stage.max_per_wallet) : null,
       stageType: stage.stage_type || null,
+      // The public drop catalog normally cannot answer this wallet-specific question. Preserve an
+      // explicit provider answer when one is present, but leave it null otherwise so the planner
+      // truthfully says "checked at opening" rather than guessing eligible/ineligible.
+      eligibilityState: explicitEligibility,
+      allowlistWalletCount: stage.allowlist_wallet_count !== undefined && stage.allowlist_wallet_count !== null
+        ? Number(stage.allowlist_wallet_count) : null,
     };
   }
 
@@ -256,6 +267,8 @@ function createOpenSeaService({ apiKey, repository, baseUrl = 'https://api.opens
         dropType: data.drop_type || null,
         maxSupply: data.max_supply !== undefined && data.max_supply !== null ? Number(data.max_supply) : null,
         openSeaUrl: data.opensea_url || null,
+        stageCatalogComplete: true,
+        stageCatalogSource: 'opensea',
         activeStage: normalizeStage(data.active_stage),
         nextStage: normalizeStage(data.next_stage),
         stages: Array.isArray(data.stages) ? data.stages.map(normalizeStage) : [],

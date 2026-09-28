@@ -533,14 +533,16 @@ test('detectMintContract uses the on-chain PublicDrop when OpenSea has no stage 
   assert.equal(result.drop.stages.length, 1);
   assert.deepEqual(result.drop.nextStage, result.drop.stages[0]);
   assert.deepEqual(result.drop.stages[0], {
-    label:'Public sale', stageType:'seadrop_public_drop', startTime:futureStart, endTime:futureEnd,
+    label:'Public', stageType:'seadrop_public_drop', startTime:futureStart, endTime:futureEnd,
     priceWei:'0', priceETH:0, maxPerWallet:1, requiresEligibilityCheck:false,
     eligibilityMode:'specific_stage', eligibilityState:'open_to_all',
     eligibilityLabel:'Open to all wallets', advancesIfIneligible:false,
     identityAmbiguous:false, schedulable:true,
   });
+  assert.equal(result.drop.stageCatalogComplete,false);
+  assert.equal(result.drop.stageCatalogSource,'onchain_public_drop');
   assert.equal(result.schedulePlan.recommendedStageUuid, null);
-  assert.equal(result.schedulePlan.recommendedStageLabel, 'Public sale');
+  assert.equal(result.schedulePlan.recommendedStageLabel, 'Public');
   assert.equal(result.schedulePlan.recommendedStageType, 'seadrop_public_drop');
   assert.equal(result.schedulePlan.eligibilityState, 'open_to_all');
   assert.equal(result.openSeaMintRecommended, false);
