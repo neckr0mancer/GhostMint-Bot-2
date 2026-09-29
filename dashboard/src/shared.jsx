@@ -562,7 +562,10 @@ export function SelectMenu({label,options=[],optional=false,name,value,defaultVa
         aria-required={required||undefined} {...ariaProps}
         onClick={()=>open?close():openList()} onKeyDown={onTriggerKeyDown}>
         {selected?.icon&&<span className="select-menu-icon" aria-hidden="true">{selected.icon}</span>}
-        <span className={`select-menu-value${selected?'':' placeholder'}`} id={valueId}>{selected?.label||placeholder}</span>
+        <span className={`select-menu-value${selected?'':' placeholder'}`} id={valueId}>
+          <span className="select-menu-value-text">{selected?.label||placeholder}</span>
+          {selected?.inlineStatus&&<span className={`select-menu-inline-status ${selected.inlineStatusTone||''}`.trim()}>{selected.inlineStatus}</span>}
+        </span>
         {selected?.tag&&<span className="select-menu-tag">{selected.tag}</span>}
         <span className="select-menu-chevron">{SELECT_MENU_CHEVRON}</span>
       </button>
@@ -579,7 +582,9 @@ export function SelectMenu({label,options=[],optional=false,name,value,defaultVa
               className={`select-menu-option${option.value===selectedValue?' selected':''}${index===activeIndex?' active':''}${option.disabled?' disabled':''}`}
               onMouseEnter={()=>!option.disabled&&setActiveIndex(index)} onClick={()=>choose(option)}>
               {option.icon&&<span className="select-menu-icon" aria-hidden="true">{option.icon}</span>}
-              <span className="select-menu-option-copy"><b>{option.label??option.value}</b>{option.description&&<small>{option.description}</small>}</span>
+              <span className="select-menu-option-copy"><b><span>{option.label??option.value}</span>
+                {option.inlineStatus&&<span className={`select-menu-inline-status ${option.inlineStatusTone||''}`.trim()}>{option.inlineStatus}</span>}</b>
+                {option.description&&<small>{option.description}</small>}</span>
               <span className="select-menu-option-end">{option.tag&&<span className="select-menu-tag">{option.tag}</span>}
                 {option.value===selectedValue&&<span className="select-menu-check">{SELECT_MENU_CHECK}</span>}</span>
             </li>

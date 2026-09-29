@@ -960,9 +960,9 @@ function InfoPopover({id,label,children}){
     <span className="info-popover-card" id={id} role="tooltip">{children}</span>
   </span>;
 }
-function ScheduleSwitch({checked,onChange,labelledBy}){
+function ScheduleSwitch({checked,onChange,labelledBy,disabled=false}){
   return <button type="button" className="schedule-switch" role="switch" aria-checked={checked}
-    aria-labelledby={labelledBy} onClick={()=>onChange(!checked)}>
+    aria-labelledby={labelledBy} disabled={disabled} onClick={()=>onChange(!checked)}>
     <span className="schedule-switch-thumb" aria-hidden="true"/>
   </button>;
 }
@@ -1554,7 +1554,7 @@ function TaskDetails({summary,onClose,onChanged}){
     </div>}
   </Overlay>;
 }
-function Tasks({profile,active=true,onCommitChange,onSwitchToMint,onSwitchToBatch}){
+function Tasks({profile,active=true,onCommitChange,onSwitchToMint,onSwitchToBatch,onOpenSettings}){
   const mobile=useIsMobile();const [page,setPage]=useState(1);const [search,setSearch]=useState('');
   const [bucket,setBucket]=useState(()=>{const value=new URLSearchParams(window.location.search).get('bucket');return BUCKETS.some(([key])=>key===value)?value:'pending';});
   const [filtersOpen,setFiltersOpen]=useState(false);const [serverFilters,setServerFilters]=useState(null);const PAGE_SIZE=mobile?3:10;const COMPAT_LIMIT=50;const listing=useLoad(serverFilters===false?`/api/tasks?page=1&pageSize=${COMPAT_LIMIT}&search=${encodeURIComponent(search)}`:`/api/tasks?page=${page}&pageSize=${PAGE_SIZE}&status=${bucket}&search=${encodeURIComponent(search)}`,[page,bucket,search,serverFilters,PAGE_SIZE],'tasks.changed');const wallets=useLoad('/api/wallets',[],'wallets.changed');const contractInputRef=useRef(null);const [chain,setChain]=useState(profile.defaultChain||profile.supportedChains[0]);const [contractAddress,setContractAddress]=useState('');const [detectedName,setDetectedName]=useState('');const [detectedSeaDrop,setDetectedSeaDrop]=useState(false);const [quantity,setQuantity]=useState('1');const [maxPerWallet,setMaxPerWallet]=useState(null);const [priceETH,setPriceETH]=useState('');const [mintTime,setMintTime]=useState('');const [viaOpenSea,setViaOpenSea]=useState(false);const [detectedOpenSeaRecommendation,setDetectedOpenSeaRecommendation]=useState(false);const [stageType,setStageType]=useState('');const [stages,setStages]=useState([]);const [stageCatalogComplete,setStageCatalogComplete]=useState(null);const [selectedStageKey,setSelectedStageKey]=useState('');const [recommendedStageKey,setRecommendedStageKey]=useState('');const [liveMintStage,setLiveMintStage]=useState(null);const [stageLiveness,setStageLiveness]=useState({authoritative:false,isMinting:false,activeKey:''});const [scheduleWallet,setScheduleWallet]=useState('');const [walletEligibilityAuthorization,setWalletEligibilityAuthorization]=useState(null);const [eligibilityBusy,setEligibilityBusy]=useState('');const [detecting,setDetecting]=useState(false);const [detectionError,setDetectionError]=useState('');const [detectionRetryable,setDetectionRetryable]=useState(false);const [scheduleError,setScheduleError]=useState(null);const [submitting,setSubmitting]=useState(false);const [controlBusy,setControlBusy]=useState('');const [scheduleInfoOpen,setScheduleInfoOpen]=useState(false);const [autoReschedule,setAutoReschedule]=useState(false);const [acceptPriceChanges,setAcceptPriceChanges]=useState(false);const [allowedPriceIncreaseFiat,setAllowedPriceIncreaseFiat]=useState('');const lastDetected=useRef('');const lastEligibilityWallet=useRef('');const lastEligibilityAttempt=useRef('');const detectingKey=useRef('');const detectionSequence=useRef(0);const detectionAbort=useRef(null);const scheduleWalletRef=useRef('');const contractAddressRef=useRef('');
@@ -1570,6 +1570,18 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint,onSwitchToBatc
   useEffect(()=>{scheduleWalletRef.current=scheduleWallet;},[scheduleWallet]);
   useEffect(()=>{contractAddressRef.current=contractAddress;},[contractAddress]);
   useEffect(()=>()=>detectionAbort.current?.abort(),[]);
+  useEffect(()=>{
+    function onEligibilityChange(event){
+      if(event.detail?.walletLabel!==scheduleWalletRef.current)return;
+      setWalletEligibilityAuthorization(event.detail.authorization||null);
+      lastEligibilityWallet.current='';lastEligibilityAttempt.current='';
+      const address=contractAddressRef.current.trim();
+      if(ADDRESS_SHAPE.test(address))detect(address,{walletLabel:scheduleWalletRef.current,
+        walletRefresh:true,silent:true,force:true});
+    }
+    window.addEventListener('ghostmint-opensea-eligibility-changed',onEligibilityChange);
+    return()=>window.removeEventListener('ghostmint-opensea-eligibility-changed',onEligibilityChange);
+  },[]);
   function clearScheduleDetection(){
     detectionSequence.current+=1;detectionAbort.current?.abort();detectionAbort.current=null;detectingKey.current='';setDetecting(false);
     setDetectedName('');setDetectedSeaDrop(false);setStages([]);setSelectedStageKey('');setRecommendedStageKey('');setLiveMintStage(null);
@@ -1709,7 +1721,10 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint,onSwitchToBatc
         // A currently live phase is a Mint-now handoff only when there is nothing later to
         // schedule. Future allowlists with eligibility checked at opening must remain visible and
         // selectable even while an earlier public phase is live.
-        liveOnlyStage=!chosenStage&&selectable.length===0?availability.liveStage:null;
+        const liveChoice=availability.liveStage
+          ?stageChoice(availability.liveStage,detectedAt,detectedLiveness):null;
+        liveOnlyStage=!chosenStage&&selectable.length===0&&liveChoice?.tone!=='ineligible'
+          ?availability.liveStage:null;
         setSelectedStageKey(chosenStage?scheduleStageSelectionKey(chosenStage):'');
         setStageType(chosenStage?.stageType||chosenStage?.stage_type||'');
       } else {
@@ -1718,7 +1733,9 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint,onSwitchToBatc
         const futureStage=candidate&&!stageChoice(candidate,detectedAt,detectedLiveness).disabled
           ?candidate:null;
         chosenStage=futureStage;
-        liveOnlyStage=!futureStage?availability.liveStage:null;
+        const liveChoice=availability.liveStage
+          ?stageChoice(availability.liveStage,detectedAt,detectedLiveness):null;
+        liveOnlyStage=!futureStage&&liveChoice?.tone!=='ineligible'?availability.liveStage:null;
         setSelectedStageKey('');
         setStageType(futureStage?.stageType||'');
       }
@@ -1816,38 +1833,6 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint,onSwitchToBatc
     if(lastEligibilityWallet.current===scheduleWallet||lastEligibilityAttempt.current===requestKey)return;
     detect(address,{walletLabel:scheduleWallet,walletRefresh:true,silent:true});
   },[scheduleWallet,contractAddress,detecting]);
-  async function authorizeWalletEligibility(){
-    const targetWallet=scheduleWalletRef.current;
-    if(!targetWallet)return;
-    const approved=await confirmDialog(`Enable early allowlist checks for ${targetWallet}? GhostMint will sign a gas-free OpenSea login message using this stored wallet and request only read-only eligibility access. This permission cannot mint, transfer, approve, or spend funds. Its encrypted authorization is kept for up to 30 days.`);
-    if(!approved)return;
-    const busyKey=`authorize:${targetWallet}`;setEligibilityBusy(busyKey);
-    try{
-      const result=await api(`/api/wallets/${encodeURIComponent(targetWallet)}/opensea-eligibility/authorize`,{
-        method:'POST',body:JSON.stringify({confirmation:'CONFIRM'})});
-      if(scheduleWalletRef.current!==targetWallet)return;
-      setWalletEligibilityAuthorization(result);
-      notify(`Early allowlist checks are enabled for ${targetWallet}.`,{type:'success'});
-      const address=contractAddressRef.current.trim();
-      if(ADDRESS_SHAPE.test(address))await detect(address,{walletLabel:targetWallet,walletRefresh:true,silent:true,force:true});
-    }catch(error){if(scheduleWalletRef.current===targetWallet)notify(error.message,{type:'error'});}
-    finally{setEligibilityBusy(current=>current===busyKey?'':current);}
-  }
-  async function revokeWalletEligibility(){
-    const targetWallet=scheduleWalletRef.current;
-    if(!targetWallet||!await confirmDialog(`Stop early allowlist checks for ${targetWallet}? Public stages will still work, but gated-stage eligibility will be checked only when that stage opens.`))return;
-    const busyKey=`revoke:${targetWallet}`;setEligibilityBusy(busyKey);
-    try{
-      const result=await api(`/api/wallets/${encodeURIComponent(targetWallet)}/opensea-eligibility`,{
-        method:'DELETE',body:JSON.stringify({confirmation:'CONFIRM'})});
-      if(scheduleWalletRef.current!==targetWallet)return;
-      setWalletEligibilityAuthorization(result);
-      notify(`Early allowlist checks are off for ${targetWallet}.`,{type:'success'});
-      const address=contractAddressRef.current.trim();
-      if(ADDRESS_SHAPE.test(address))await detect(address,{walletLabel:targetWallet,walletRefresh:true,silent:true,force:true});
-    }catch(error){if(scheduleWalletRef.current===targetWallet)notify(error.message,{type:'error'});}
-    finally{setEligibilityBusy(current=>current===busyKey?'':current);}
-  }
   async function create(event){event.preventDefault();if(submitting)return;const form=event.currentTarget;const currentAddress=contractAddress.trim();
     setScheduleError(null);
     if(!scheduleWallet){
@@ -2178,20 +2163,32 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint,onSwitchToBatc
             const hasTime=!Number.isNaN(at.getTime());
             const local=hasTime?at.toLocaleString([],{weekday:'short',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}):'Time unavailable';
             const utc=hasTime?`${String(at.getUTCHours()).padStart(2,'0')}:${String(at.getUTCMinutes()).padStart(2,'0')}Z`:null;
-            const eligibilityTag=choice.state==='open_to_all'?'Eligible':choice.tag;
+            const authorizationEnabled=Boolean(walletEligibilityAuthorization?.enabled
+              ??walletEligibilityAuthorization?.connected
+              ??walletEligibilityAuthorization?.credentialStored);
+            const needsEarlyAuthorization=scheduleStageRequiresOpenSeaBuilder(stage)
+              &&choice.state==='check_at_open'&&!authorizationEnabled;
+            const eligibilityTag=choice.state==='open_to_all'?'Eligible'
+              :needsEarlyAuthorization?'Check not enabled':choice.tag;
             const facts=[stageKey===recommendedStageKey?'Recommended earliest confirmed stage':null,utc,stage.maxPerWallet?`published max ${stage.maxPerWallet}/wallet`:null,
               stage.priceWei!==null&&stage.priceWei!==undefined?freeOrNativeAmount(stage.priceWei,nativeSymbolForChain(chain)):null,
               choice.state==='open_to_all'?'Open to all wallets':null,
-              choice.state==='check_at_open'?`Eligibility for ${scheduleWallet||'this wallet'} is verified when the stage opens`:null]
+              choice.state==='check_at_open'?(needsEarlyAuthorization
+                ?`Turn on read-only eligibility for ${scheduleWallet||'this wallet'} in Settings`
+                :`Eligibility for ${scheduleWallet||'this wallet'} is verified when the stage opens`):null]
               .filter(Boolean).join(' · ');
             return {value:stageKey,label:`${stageName} · ${local}`,description:facts,
-              tag:eligibilityTag,tone:choice.state,disabled:choice.disabled,group:'Mint stages'};
+              inlineStatus:choice.live?'Live':null,inlineStatusTone:choice.live?'success':null,
+              tag:eligibilityTag,tone:needsEarlyAuthorization?'authorization_required':choice.tone||choice.state,
+              disabled:choice.disabled,group:'Mint stages'};
           });
           const hasGatedStages=stages.some(scheduleStageRequiresOpenSeaBuilder);
           const authorizationStatus=walletEligibilityAuthorization?.status||'not_connected';
+          const eligibilityEnabled=Boolean(walletEligibilityAuthorization?.enabled
+            ??walletEligibilityAuthorization?.connected
+            ??walletEligibilityAuthorization?.credentialStored);
           const eligibilityNotConfigured=walletEligibilityAuthorization?.configured===false;
           const eligibilityUnavailable=authorizationStatus==='unavailable';
-          const eligibilityNeedsConnection=['not_connected','expired','reauthorize'].includes(authorizationStatus);
           return <section className="schedule-preview" aria-label="Schedule preview">
             <div className="schedule-preview-head"><div><span>Schedule preview</span><b>Review before scheduling</b></div></div>
             <div className="schedule-preview-grid">
@@ -2211,23 +2208,20 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint,onSwitchToBatc
             </div>
             {hasGatedStages&&<div className={`schedule-eligibility-access ${authorizationStatus==='connected'?'is-connected':''}`}
               role="status" aria-live="polite">
-              <div><b>{authorizationStatus==='connected'?'Early allowlist checks enabled'
+              <div><b>{authorizationStatus==='connected'?'Automatic eligibility checks are on'
                 :eligibilityNotConfigured?'Early allowlist checks are unavailable on this server'
-                  :eligibilityUnavailable?'OpenSea eligibility is temporarily unavailable':'Check allowlist access before opening'}</b>
+                  :eligibilityEnabled?'Automatic eligibility needs attention':'Eligibility check not enabled'}</b>
                 <span>{authorizationStatus==='connected'
-                  ?`Eligibility shown above belongs to ${scheduleWallet}. Changing wallets checks the new wallet separately.`
+                  ?`GhostMint checks ${scheduleWallet} automatically. Changing wallets checks the new wallet's own setting.`
                   :eligibilityNotConfigured?'Published and public stages still work; only advance allowlist checks are unavailable.'
-                    :eligibilityUnavailable?'Published stages remain available. Retry without changing the selected wallet.'
-                      :'Connect this wallet with a gas-free, read-only OpenSea permission. It cannot mint or spend funds.'}</span></div>
+                    :eligibilityUnavailable?'OpenSea could not refresh this wallet right now. Manage it in Settings.'
+                      :eligibilityEnabled?'Open Settings to restore this wallet\'s read-only check.'
+                        :`Open Settings to enable the read-only check for ${scheduleWallet}. Until then, gated stages are checked only at opening.`}</span></div>
               <div className="schedule-eligibility-actions">
-                {authorizationStatus==='connected'&&<button type="button" className="b sm" disabled={Boolean(eligibilityBusy)}
-                  aria-label={`Disconnect OpenSea eligibility for ${scheduleWallet}`} onClick={revokeWalletEligibility}>{eligibilityBusy.startsWith('revoke:')?'Disconnecting…':'Disconnect'}</button>}
-                {eligibilityUnavailable&&<button type="button" className="b sm" disabled={detecting||Boolean(eligibilityBusy)}
-                  aria-label={`Retry OpenSea eligibility for ${scheduleWallet}`}
-                  onClick={()=>detect(contractAddressRef.current,{walletLabel:scheduleWalletRef.current,walletRefresh:true,silent:true,force:true})}>Retry</button>}
-                {eligibilityNeedsConnection&&!eligibilityNotConfigured&&<button type="button" className="b p sm"
-                  disabled={Boolean(eligibilityBusy)} aria-label={`Check OpenSea allowlist access for ${scheduleWallet}`} onClick={authorizeWalletEligibility}>
-                  {eligibilityBusy.startsWith('authorize:')?'Connecting…':authorizationStatus==='reauthorize'||authorizationStatus==='expired'?'Reconnect wallet':'Check allowlist now'}</button>}
+                <button type="button" className={`b ${eligibilityEnabled?'':'p'} sm`}
+                  disabled={eligibilityNotConfigured||Boolean(eligibilityBusy)}
+                  aria-label={`Open eligibility settings for ${scheduleWallet}`}
+                  onClick={()=>{setEligibilityBusy('settings');onOpenSettings?.();}}>Open Settings</button>
               </div>
             </div>}
             {stageCatalogComplete===false&&<div className="nt w schedule-stage-catalog-warning" role="status">{WARN_TRIANGLE_ICON}<div>
@@ -2269,7 +2263,7 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint,onSwitchToBatc
               ?<><b>Eligibility is confirmed for {scheduleWallet} now.</b> GhostMint checks it again when &ldquo;{scheduleStageDisplayName(s)}&rdquo; opens. If OpenSea reports a different result then, nothing is sent and the task records why.</>
               :walletEligibilityAuthorization?.status==='connected'
                 ?<><b>Eligibility has not been confirmed for this stage yet.</b> GhostMint has read-only access for {scheduleWallet}, but OpenSea did not return a wallet decision for &ldquo;{scheduleStageDisplayName(s)}&rdquo;. It checks again when the stage opens and sends nothing if the wallet is not eligible.</>
-              :<><b>&ldquo;{scheduleStageDisplayName(s)}&rdquo; is checked when it opens.</b> Enable the read-only OpenSea check above to confirm this wallet earlier. Without it, GhostMint waits until opening; if the wallet is not eligible, nothing is sent and the task records the reason{s.advancesIfIneligible?' before checking the next safely published stage.':'.'}</>}</div></div>
+              :<><b>&ldquo;{scheduleStageDisplayName(s)}&rdquo; is checked when it opens.</b> Turn on the read-only eligibility check in Settings to confirm this wallet earlier. Without it, GhostMint waits until opening; if the wallet is not eligible, nothing is sent and the task records the reason{s.advancesIfIneligible?' before checking the next safely published stage.':'.'}</>}</div></div>
             :null;})()}
         {!liveMintStage&&viaOpenSea&&!selectedStageKey&&!stageType&&<div className="nt w" role="status">{WARN_TRIANGLE_ICON}<div>
           <b>No schedulable stage is published yet.</b> Use Mint now if it is already open, or return after the project publishes a mint stage.</div></div>}
@@ -3462,7 +3456,74 @@ function TransactionModePanel({profile}){
 }
 const USAGE_PERIODS=[['today','Today'],['day','24 hours'],['week','7 days'],['month','Month']];
 function ApiUsagePanel(){const [period,setPeriod]=useState('month');const usage=useLoad(`/api/social-usage?period=${period}`,[period]);const {data}=usage;return <div className="panel settings-usage"><div className="settings-panel-heading"><div><p className="eyebrow">Owner reporting</p><h2>Social API usage</h2></div><div className="seg usage-period" role="radiogroup" aria-label="Usage period">{USAGE_PERIODS.map(([value,label])=><button type="button" key={value} className={period===value?'on':undefined} aria-pressed={period===value} onClick={()=>setPeriod(value)}>{label}</button>)}</div></div><p>Observed adapter requests, provider-reported consumption, and current pricing estimates.</p><Notice error={loadError(usage,'Could not load social API usage.')}/>{data===null?<Skeleton variant="lines" rows={4}/>:<><div className="usage-stats"><div><span>Total requests</span><strong>{data.requests}</strong></div><div><span>Reported cost</span><strong>${data.reportedCostUsd.toFixed(4)}</strong></div><div><span>Reported credits</span><strong>{data.reportedCredits.toFixed(2)}</strong></div><div><span>Pay-per-use estimate</span><strong>${data.payPerUseEstimateUsd.toFixed(2)}</strong></div><div><span>Projected monthly</span><strong>{Math.round(data.projectedMonthlyRequests).toLocaleString()}</strong></div></div><div className="settings-usage-tables"><div className="table-wrap"><table><thead><tr><th>Rule</th><th>Method</th><th>Type</th><th>Requests</th></tr></thead><tbody>{data.rows.map(row=><tr key={`${row.ruleId}-${row.method}-${row.requestType}`}><td>{row.ruleName}</td><td>{row.method}</td><td>{row.requestType}</td><td>{row.requests}</td></tr>)}</tbody></table>{data.rows.length===0&&<Empty text="No social adapter requests recorded for this period."/>}</div><div className="table-wrap"><table><thead><tr><th>Managed tier</th><th>Break-even reads</th><th>Break-even posts</th></tr></thead><tbody>{data.breakEvenRequests.map(tier=><tr key={tier.price}><td>${tier.price}/mo</td><td>{tier.atReadRate.toLocaleString()}</td><td>{tier.atPostRate.toLocaleString()}</td></tr>)}</tbody></table></div></div></>}</div>}
-function Settings({profile,onThemeChange,onProfileChange}){
+function OpenSeaEligibilitySettingsPanel({focus=false}){
+  const wallets=useLoad('/api/wallets',[],'wallets.changed');
+  const [statuses,setStatuses]=useState({});
+  const [busy,setBusy]=useState('');
+  const panelRef=useRef(null);
+  useEffect(()=>{
+    if(focus)setTimeout(()=>{panelRef.current?.scrollIntoView({behavior:'smooth',block:'start'});panelRef.current?.focus({preventScroll:true});},0);
+  },[focus]);
+  useEffect(()=>{
+    if(!Array.isArray(wallets.data))return;
+    let cancelled=false;
+    Promise.all(wallets.data.map(async wallet=>{
+      try{return [wallet.label,{data:await api(`/api/wallets/${encodeURIComponent(wallet.label)}/opensea-eligibility`),error:''}];}
+      catch(error){return [wallet.label,{data:null,error:error.message||'Could not load this wallet setting.'}];}
+    })).then(entries=>{if(!cancelled)setStatuses(Object.fromEntries(entries));});
+    return()=>{cancelled=true;};
+  },[wallets.data]);
+  async function change(wallet,nextEnabled){
+    const current=statuses[wallet.label]?.data;
+    if(!nextEnabled){
+      const approved=await confirmDialog(`Turn off automatic OpenSea eligibility checks for ${wallet.label}? Future gated stages will be checked only when they open.`);
+      if(!approved)return;
+    }
+    setBusy(wallet.label);setStatuses(value=>({...value,[wallet.label]:{data:current,error:''}}));
+    try{
+      const result=nextEnabled
+        ?await api(`/api/wallets/${encodeURIComponent(wallet.label)}/opensea-eligibility/authorize`,{
+          method:'POST',body:JSON.stringify({confirmation:'CONFIRM'})})
+        :await api(`/api/wallets/${encodeURIComponent(wallet.label)}/opensea-eligibility`,{
+          method:'DELETE',body:JSON.stringify({confirmation:'CONFIRM'})});
+      setStatuses(value=>({...value,[wallet.label]:{data:result,error:''}}));
+      window.dispatchEvent(new CustomEvent('ghostmint-opensea-eligibility-changed',{
+        detail:{walletLabel:wallet.label,authorization:result}}));
+      notify(`Automatic eligibility checks are ${nextEnabled?'on':'off'} for ${wallet.label}.`,{type:'success'});
+    }catch(error){
+      setStatuses(value=>({...value,[wallet.label]:{data:current,error:error.message||'This setting could not be changed.'}}));
+      notify(error.message||'This setting could not be changed.',{type:'error'});
+    }finally{setBusy(value=>value===wallet.label?'':value);}
+  }
+  return <section id="opensea-eligibility-settings" ref={panelRef} tabIndex="-1"
+    className="panel settings-opensea-eligibility">
+    <div className="settings-panel-heading"><div><p className="eyebrow">Wallet permissions</p>
+      <h2>OpenSea eligibility checks</h2></div></div>
+    <p>Turn this on once for each wallet you want GhostMint to check automatically. GhostMint signs a gas-free OpenSea login with that stored wallet and safely renews its encrypted, read-only permission while the switch stays on.</p>
+    <p className="settings-hint">This permission can only read allowlist eligibility. It cannot mint, transfer, approve, or spend funds. Turning it off safely revokes the permission.</p>
+    <Notice error={loadError(wallets,'Could not load wallets for eligibility settings.')}/>
+    {wallets.data===null?<Skeleton variant="lines" rows={2}/>
+      :wallets.data.length===0?<Empty text="Create or import a wallet before enabling eligibility checks."/>
+        :<div className="settings-wallet-permissions">{wallets.data.map(wallet=>{
+          const entry=statuses[wallet.label];const authorization=entry?.data;
+          const enabled=Boolean(authorization?.enabled??authorization?.connected??authorization?.credentialStored);
+          const unavailable=authorization?.configured===false;
+          const changing=busy===wallet.label;
+          const controlId=`opensea-eligibility-${String(wallet.id||wallet.label).replace(/[^a-zA-Z0-9_-]/g,'-')}`;
+          const state=changing?'Saving…':!entry?'Checking…':entry.error?'Could not load':unavailable?'Unavailable on this server'
+            :enabled&&authorization?.status==='connected'?'On · automatic':enabled?'On · reconnecting when needed':'Off';
+          return <div className="settings-wallet-permission" key={wallet.id||wallet.label}>
+            <div><b>{wallet.label}</b><span className="mono">{shortAddress(wallet.address)}</span>
+              <small className={entry?.error?'is-error':''}>{entry?.error||state}</small></div>
+            <ScheduleSwitch checked={enabled} labelledBy={controlId}
+              disabled={changing||!entry||unavailable} onChange={changeTo=>change(wallet,changeTo)} />
+            <span id={controlId} className="sr-only">
+              Automatic OpenSea eligibility checks for {wallet.label}</span>
+          </div>;
+        })}</div>}
+  </section>;
+}
+function Settings({profile,onThemeChange,onProfileChange,target}){
   const secondaryActive=SECONDARY_THEMES.some(option=>option.value===profile.theme);
   return <>
     <PageTitle eyebrow="Preferences" title="Settings"
@@ -3489,6 +3550,7 @@ function Settings({profile,onThemeChange,onProfileChange}){
         <button type="button" className="b g sm settings-reset-layout"
           onClick={()=>{resetSectionOrders();notify('Layout reset.',{type:'success'});}}>Reset layout</button>
       </div>
+      <OpenSeaEligibilitySettingsPanel focus={target==='opensea-eligibility'}/>
       <DefaultChainPanel profile={profile} onProfileChange={onProfileChange}/>
       <LowBalancePreferencePanel profile={profile} onProfileChange={onProfileChange}/>
       <DisplayCurrencyPanel profile={profile} onProfileChange={onProfileChange}/>
@@ -4234,7 +4296,8 @@ function Mint({profile,go,tab,onTab,visible=true}){
     </div>
     <div className="mint-tab-panel" hidden={active!=='schedule'}>
       <Tasks profile={profile} active={visible&&active==='schedule'} onCommitChange={trackCommit}
-        onSwitchToMint={()=>onTab('now')} onSwitchToBatch={()=>onTab('batch')}/>
+        onSwitchToMint={()=>onTab('now')} onSwitchToBatch={()=>onTab('batch')}
+        onOpenSettings={()=>go('Settings',null,'opensea-eligibility')}/>
     </div>
     <div className="mint-tab-panel" hidden={active!=='batch'}>
       <MintBatch profile={profile} active={visible&&active==='batch'} preferredChain={profile.defaultChain}
@@ -5563,18 +5626,18 @@ function Shell({profile,onLogout,onProfileChange}){const navBadges=useNavBadges(
   // guaranteed non-empty, so this falls through displayName -> username -> userId and only then
   // to a neutral glyph, rather than rendering an empty circle.
   const avatarInitial=(profile.displayName||profile.username||profile.userId||'?').trim().charAt(0).toUpperCase()||'?';// go(page) still behaves exactly as before for all ~40 existing callers; the optional second
-  // argument is what lets a redirect, a nav item or (in unit 5) the command palette land on a
-  // specific sub-tab. Compared against pathname+search rather than pathname alone, so switching
+  // argument lets a redirect, a nav item or (in unit 5) the command palette land on a specific
+  // sub-tab; the optional third carries a focused panel target. Compared against pathname+search, so switching
   // tabs on the same page is a real history entry -- Back from Schedule returns to Mint now
   // instead of leaving the page entirely.
-  function go(item,nextTab=null){
+  function go(item,nextTab=null,nextTarget=null){
     const alias=PAGE_ALIASES[item];
     const page=alias?alias.page:item;
     const tabValue=alias&&nextTab===null?alias.tab:nextTab;
-    const path=pathFor(page,tabValue);
+    const path=pathFor(page,tabValue,nextTarget);
     if(`${window.location.pathname}${window.location.search}`!==path)window.history.pushState(null,'',path);
     if(page==='Mint'){setMintWorkspaceMounted(true);setMintWorkspaceTab(tabValue);}
-    setRoute({page,tab:tabValue,redirected:false});setNavOpen(false);setMoreOpen(false);window.scrollTo({top:0});
+    setRoute({page,tab:tabValue,target:nextTarget,redirected:false});setNavOpen(false);setMoreOpen(false);window.scrollTo({top:0});
   }
   function renderCurrentPage(){return <>
     {mintWorkspaceMounted&&<div className="mint-workspace" hidden={page!=='Mint'}>

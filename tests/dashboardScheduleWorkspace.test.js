@@ -167,7 +167,7 @@ test('Automation configuration editing is distinct from target-policy editing',(
 test('sniper timing is scoped to the form while its future-sniper default lives in Settings',()=>{
   assert.match(app,/<label className="fl"><span>Copy timing for this sniper<\/span>/,
     'create and edit must make clear that the selection belongs to this sniper');
-  const settingsStart=app.indexOf('function Settings({profile,onThemeChange,onProfileChange})');
+  const settingsStart=app.indexOf('function Settings({profile,onThemeChange,onProfileChange,target})');
   const settings=app.slice(settingsStart,app.indexOf('function Login(',settingsStart));
   assert.match(settings,/<SniperTimingSettingsPanel\/>/,
     'the account-level future-sniper default belongs with account preferences');
@@ -253,8 +253,12 @@ test('Schedule stage choices never invent allowlist eligibility',async()=>{
   'an advertised start time must not override the provider saying the stage is not live');
   assert.deepEqual(state.scheduleStageChoiceState({startTime:now/1000-3600,endTime:now/1000-60,
     eligibilityState:'open_to_all'},now,{authoritativeLive:true}),
-  {tag:'Live - use Mint now',disabled:true,state:'live'},
-  'the provider active-stage signal must override stale published end timestamps');
+  {tag:'Eligible',tone:'open_to_all',disabled:true,state:'live',live:true},
+  'the provider active-stage signal must override stale published end timestamps without replacing eligibility');
+  assert.deepEqual(state.scheduleStageChoiceState({startTime:now/1000-3600,endTime:now/1000+3600,
+    eligibilityState:'ineligible'},now,{authoritativeLive:true}),
+  {tag:'Not eligible',tone:'ineligible',disabled:true,state:'live',live:true},
+  'a live stage must still say that this wallet is not eligible');
 });
 
 test('Schedule notifications are deduplicated and deep-link to the durable task state',()=>{
@@ -355,8 +359,10 @@ test('Schedule uses the server recommendation without pretending a future allowl
   assert.match(schedule,/const selectable=future\.filter\(stage=>!stageChoice\(stage,detectedAt,detectedLiveness\)\.disabled\)/);
   assert.match(schedule,/selectable\.length===1&&stageChoice\(selectable\[0\],[^)]*\)\.state!=='check_at_open'/,
     'an unknown gated stage must not become the automatic choice merely because it is the only one');
-  assert.match(schedule,/liveOnlyStage=!chosenStage&&selectable\.length===0\?availability\.liveStage:null/,
+  assert.match(schedule,/liveOnlyStage=!chosenStage&&selectable\.length===0&&liveChoice\?\.tone!=='ineligible'/,
     'a live phase must not hide selectable future stages whose eligibility is checked at opening');
+  assert.ok((schedule.match(/liveChoice\?\.tone!=='ineligible'/g)||[]).length>=2,
+    'a live but explicitly ineligible phase must never become a Mint now hand-off');
   assert.match(schedule,/if\(choice\.disabled\)/,
     'submission must re-check that the chosen stage is still selectable');
   assert.match(schedule,/Boolean\(stages\.find\(stage=>scheduleStageSelectionKey\(stage\)===selectedStageKey\)&&stageChoice/,
@@ -365,11 +371,13 @@ test('Schedule uses the server recommendation without pretending a future allowl
     'a stale recommendation must not silently select the first of several stages');
   assert.match(schedule,/It never auto-selects a gated phase whose[\s\S]*wallet eligibility is still unknown/,
     'the client must explain why an unproven allowlist is not recommended automatically');
-  assert.match(schedule,/Enable the read-only OpenSea check above to confirm this wallet earlier\./,
-    'an unconnected wallet must be offered a truthful opt-in instead of being shown as eligible');
-  assert.match(schedule,/const eligibilityTag=choice\.state==='open_to_all'\?'Eligible':choice\.tag/,
+  assert.match(schedule,/Turn on the read-only eligibility check in Settings to confirm this wallet earlier\./,
+    'an unconnected wallet must be directed to its durable Settings opt-in instead of being shown as eligible');
+  assert.match(schedule,/const eligibilityTag=choice\.state==='open_to_all'\?'Eligible'[\s\S]*:needsEarlyAuthorization\?'Check not enabled':choice\.tag/,
     'public stages should use the same clear green Eligible state as OpenSea while remaining open to all');
-  assert.match(schedule,/tag:eligibilityTag,tone:choice\.state,disabled:choice\.disabled/,
+  assert.match(schedule,/inlineStatus:choice\.live\?'Live':null,inlineStatusTone:choice\.live\?'success':null/,
+    'live belongs beside the stage name and time rather than replacing wallet eligibility');
+  assert.match(schedule,/tag:eligibilityTag,tone:needsEarlyAuthorization\?'authorization_required':choice\.tone\|\|choice\.state,[\s\S]*disabled:choice\.disabled/,
     'every stage option must carry its authoritative eligibility state into the visual treatment');
   assert.match(schedule,/choice\.state==='open_to_all'\?'Open to all wallets':null/,
     'the green public-stage eligibility must remain explicitly explained');
@@ -387,6 +395,10 @@ test('Schedule uses the server recommendation without pretending a future allowl
     'confirmed eligibility should be visibly green in both themes');
   assert.match(css,/\[data-option-tone="ineligible"\] \.select-menu-tag[\s\S]*color:var\(--muted\)/,
     'confirmed ineligibility should use the requested subdued treatment');
+  assert.match(css,/\.schedule-preview-stage-control \.select-menu-inline-status\.success\{color:var\(--success\)\}/,
+    'the inline Live status should be green in both themes');
+  assert.match(css,/\.schedule-preview-stage-control \.select-menu-inline-status\.success::before\{content:'·'/,
+    'the live state should read visually as stage name, date and time, then a separator and Live');
   assert.match(schedule,/walletLabel=\$\{encodeURIComponent\(normalizedWallet\)\}/,
     'the planner request must be tied to the selected owned wallet');
   assert.match(schedule,/lastEligibilityWallet\.current!==scheduleWallet/,
@@ -408,6 +420,31 @@ test('Schedule uses the server recommendation without pretending a future allowl
     'an on-chain one-stage fallback must not masquerade as a complete project stage catalog');
   assert.doesNotMatch(schedule,/stages\.length>1&&<SelectMenu className="fl" label="Stage"/,
     'the stage picker belongs inside the schedule preview, including when only one stage exists');
+});
+
+test('Settings owns the persistent per-wallet eligibility permission while Schedule only links to it',()=>{
+  const taskStart=app.indexOf('function Tasks(');
+  const taskEnd=app.indexOf('function Activity(',taskStart);
+  const schedule=app.slice(taskStart,taskEnd);
+  const panelStart=app.indexOf('function OpenSeaEligibilitySettingsPanel(');
+  const panelEnd=app.indexOf('function Settings(',panelStart);
+  const panel=app.slice(panelStart,panelEnd);
+  assert.ok(panelStart>=0&&panelEnd>panelStart);
+  assert.match(panel,/api\(`\/api\/wallets\/\$\{encodeURIComponent\(wallet\.label\)\}\/opensea-eligibility`\)/,
+    'Settings must load the permission separately for every owned wallet');
+  assert.match(panel,/opensea-eligibility\/authorize/);
+  assert.match(panel,/confirmation:'CONFIRM'/,
+    'turning the Settings switch on is explicit consent and must satisfy the server boundary');
+  assert.match(panel,/method:'DELETE'/);
+  assert.match(panel,/safely renews its encrypted, read-only permission while the switch stays on/);
+  assert.match(panel,/cannot mint, transfer, approve, or spend funds/);
+  assert.doesNotMatch(schedule,/function authorizeWalletEligibility|function revokeWalletEligibility/,
+    'Schedule must not own a second authorization flow');
+  assert.match(schedule,/Eligibility check not enabled/);
+  assert.match(schedule,/Check not enabled/);
+  assert.match(schedule,/onOpenSettings\?\.\(\)/);
+  assert.match(app,/onOpenSettings=\{\(\)=>go\('Settings',null,'opensea-eligibility'\)\}/,
+    'the Schedule action must deep-link to the exact Settings panel');
 });
 
 test('Schedule change controls use plain-language safety copy and a stable switch animation',()=>{

@@ -66,6 +66,9 @@ test('controlled mint and wallet-display selectors share the accessible themed l
     'the selected value must expose its state for stage-specific status styling');
   assert.match(shared, /data-option-tone=\{option\.tone\|\|undefined\}/,
     'each menu option must expose its own state without relying on brittle label text');
+  assert.match(shared,/selected\?\.inlineStatus/);
+  assert.match(shared,/option\.inlineStatus/,
+    'the shared selector must support an inline status beside an option name without replacing its right-side tag');
   for(const key of ['ArrowDown','ArrowUp','Home','End','Escape','Tab'])assert.match(shared,new RegExp(`'${key}'`));
   assert.match(shared, /option\.value!==selectedValue[\s\S]*onChange\?\./,
     're-selecting the current option must not repeat saves or invalidate a preview');
@@ -92,4 +95,15 @@ test('theme changes apply locally first and synchronize after connectivity retur
   assert.match(app,/event\.detail\?\.type==='ws\.reconnected'/);
   assert.doesNotMatch(app,/catch\{setTheme\(previous\);\}/,
     'an offline save failure must not undo the theme the user just selected');
+});
+
+test('OpenSea eligibility is a durable per-wallet Settings permission',()=>{
+  assert.match(app,/function OpenSeaEligibilitySettingsPanel\(\{focus=false\}\)/);
+  assert.match(app,/id="opensea-eligibility-settings"/);
+  assert.match(app,/wallets\.data\.map\(wallet=>/,
+    'one account-level switch must not silently authorize every wallet');
+  assert.match(app,/Automatic OpenSea eligibility checks for \{wallet\.label\}/);
+  assert.match(app,/disabled=\{changing\|\|!entry\|\|unavailable\}/);
+  assert.match(app,/ghostmint-opensea-eligibility-changed/,
+    'a changed Settings permission must invalidate the mounted Schedule workspace');
 });

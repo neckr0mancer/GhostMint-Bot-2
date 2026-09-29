@@ -111,7 +111,15 @@ For the selected unit, list:
 
 ### Step 5 — Verify behavior and fidelity
 
-- Run focused tests for touched logic, then the documented full validation gate when proportional.
+- Use proportional validation. Always run the focused tests for the files and behavior changed.
+  Build the dashboard when dashboard code changes, and run relevant syntax/lint checks. Do **not**
+  run the remote PostgreSQL integration suite merely because a UI, copy, CSS, or isolated pure
+  function changed.
+- Run database-backed tests when the change touches a migration, repository/SQL, persistence,
+  database locking/concurrency, sessions, scheduler/transaction durability, or a service contract
+  whose correctness depends on stored rows. Run the complete validation gate for release gates,
+  dependency/runtime changes, broad cross-cutting work, or whenever the owner explicitly requests
+  it. A commit or push alone does not automatically justify the slow database suite.
 - Build the production dashboard; syntax checking alone is not runtime verification.
 - In the browser, test real interaction—not only screenshots. Check focus, keyboard navigation,
   confirmations, in-flight locks, scroll behavior, and state transitions.
@@ -228,6 +236,12 @@ Run the complete validation gate:
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\project-npm.ps1 run validate
 ```
+
+The command above deliberately includes the serial remote PostgreSQL integration suite and is not
+the default for every small change. Use affected focused tests plus the relevant build/check/lint
+stages during ordinary implementation. Reserve `run validate` for changes that cross several
+subsystems, release/deployment gates, explicit owner requests, or the database-affecting categories
+listed in Step 5. Report exactly which tier was run and why.
 
 Focused Node commands may use the bundled runtime directly:
 

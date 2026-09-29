@@ -55,19 +55,80 @@ test('authorization stores only an encrypted least-scope PAT and returns no cred
   assert.equal(verify.body.message.accountType,'Ethereum');
 });
 
-test('expired or revoked wallet authorization fails closed and records only a sanitized code',async()=>{
-  let marked=null;let fetched=false;
-  const repository={get:async()=>savedRecord(),markError:async(_userId,_walletId,code)=>{marked=code;}};
-  const http={post:async()=>{const error=new Error('provider body must not be persisted');error.response={status:403};throw error;}};
-  const service=createOpenSeaEligibilityService({repository,http,apiKey:'app-key',now:()=>Date.parse('2026-09-28T12:00:00Z'),
-    encryptToken:value=>value,decryptToken:()=> 'scoped-token',decryptPrivateKey:()=>PRIVATE_KEY,
-    fetchEligibility:async()=>{fetched=true;return {stages:[]};}});
+test('a wallet with no Settings opt-in never signs automatically',async()=>{
+  let signed=false;
+  const repository={get:async()=>null};
+  const service=createOpenSeaEligibilityService({repository,apiKey:'app-key',
+    http:{post:async()=>{signed=true;throw new Error('must not sign');}},
+    encryptToken:value=>value,decryptToken:value=>value,decryptPrivateKey:()=>PRIVATE_KEY,
+    fetchEligibility:async()=>({stages:[]})});
   const result=await service.eligibility('user-a',WALLET,'ethereum','0x0000000000000000000000000000000000000001');
+  assert.equal(result.authorization.enabled,false);
+  assert.equal(result.authorization.status,'not_connected');
   assert.equal(result.stages,null);
-  assert.equal(result.authorization.status,'reauthorize');
-  assert.equal(result.authorization.connected,false);
-  assert.equal(marked,'OPENSEA_AUTH_REAUTHORIZE');
-  assert.equal(fetched,false);
+  assert.equal(signed,false);
+});
+
+test('an expired Settings opt-in renews automatically and keeps eligibility on',async()=>{
+  let current=savedRecord({expiresAt:Date.parse('2026-09-01T00:00:00Z')});let signed=0;let fetchedToken='';
+  const repository={get:async()=>current,markUsed:async()=>{},markError:async()=>{},save:async input=>{
+    current=savedRecord({...input,tokenEnvelope:input.tokenEnvelope,scopedTokenId:input.scopedTokenId,
+      expiresAt:input.expiresAt});return current;}};
+  const http={post:async(url,body)=>{
+    if(url.endsWith('/siwe/nonce')){signed+=1;return {data:{nonce:'abcdefgh'}};}
+    if(url.endsWith('/siwe/verify'))return {headers:{'set-cookie':['access_token=a; HttpOnly','refresh_token=r; HttpOnly']}};
+    if(url.endsWith('/auth/tokens'))return {data:{id:'renewed-pat',token:'renewed-token',scopes:[ELIGIBILITY_SCOPE]}};
+    if(url.endsWith('/tokens/exchange'))return {data:{accessToken:`jwt-${body.subjectToken}`,tokenScopes:[ELIGIBILITY_SCOPE],expiresIn:3600}};
+    throw new Error(`unexpected POST ${url}`);
+  },delete:async()=>({status:204})};
+  const service=createOpenSeaEligibilityService({repository,http,apiKey:'app-key',now:()=>Date.parse('2026-09-28T12:00:00Z'),
+    encryptToken:value=>({...ENVELOPE,ciphertext:value}),decryptToken:envelope=>envelope.ciphertext,
+    decryptPrivateKey:()=>PRIVATE_KEY,fetchEligibility:async(_chain,_contract,token)=>{
+      fetchedToken=token;return {stages:[{uuid:'public'}]};}});
+  const before=await service.status('user-a',WALLET);
+  assert.equal(before.enabled,true);assert.equal(before.status,'expired');
+  const result=await service.eligibility('user-a',WALLET,'ethereum','0x0000000000000000000000000000000000000001');
+  assert.equal(signed,1);assert.equal(current.scopedTokenId,'renewed-pat');
+  assert.equal(fetchedToken,'jwt-renewed-token');
+  assert.equal(result.authorization.enabled,true);assert.equal(result.authorization.connected,true);
+  assert.deepEqual(result.stages,[{uuid:'public'}]);
+});
+
+test('automatic renewal cannot turn a wallet back on after a concurrent Settings disable',async()=>{
+  const expired=savedRecord({expiresAt:Date.parse('2026-09-01T00:00:00Z')});let reads=0;let signed=false;
+  const repository={get:async()=>{reads+=1;return reads===1?expired:null;},markError:async()=>{}};
+  const service=createOpenSeaEligibilityService({repository,apiKey:'app-key',now:()=>Date.parse('2026-09-28T12:00:00Z'),
+    http:{post:async()=>{signed=true;throw new Error('must not sign');}},encryptToken:value=>value,
+    decryptToken:value=>value,decryptPrivateKey:()=>PRIVATE_KEY,fetchEligibility:async()=>({stages:[]})});
+  const result=await service.eligibility('user-a',WALLET,'ethereum','0x0000000000000000000000000000000000000001');
+  assert.equal(signed,false);
+  assert.equal(result.authorization.enabled,false);
+  assert.equal(result.authorization.status,'not_connected');
+  assert.equal(result.stages,null);
+});
+
+test('a remotely revoked token is renewed once and the eligibility read is retried',async()=>{
+  let current=savedRecord({tokenEnvelope:{...ENVELOPE,ciphertext:'old-token'}});let oldExchange=0;let created=0;
+  const repository={get:async()=>current,markUsed:async()=>{},markError:async()=>{},save:async input=>{
+    current=savedRecord({...input,tokenEnvelope:input.tokenEnvelope,scopedTokenId:input.scopedTokenId,
+      expiresAt:input.expiresAt});return current;}};
+  const http={post:async(url,body)=>{
+    if(url.endsWith('/tokens/exchange')&&body.subjectToken==='old-token'){
+      oldExchange+=1;const error=new Error('revoked');error.response={status:403};throw error;
+    }
+    if(url.endsWith('/siwe/nonce'))return {data:{nonce:'abcdefgh'}};
+    if(url.endsWith('/siwe/verify'))return {headers:{'set-cookie':['access_token=a; HttpOnly','refresh_token=r; HttpOnly']}};
+    if(url.endsWith('/auth/tokens')){created+=1;return {data:{id:'new-pat',token:'new-token',scopes:[ELIGIBILITY_SCOPE]}};}
+    if(url.endsWith('/tokens/exchange'))return {data:{accessToken:'jwt-new',tokenScopes:[ELIGIBILITY_SCOPE],expiresIn:3600}};
+    throw new Error(`unexpected POST ${url}`);
+  },delete:async()=>({status:204})};
+  const service=createOpenSeaEligibilityService({repository,http,apiKey:'app-key',
+    encryptToken:value=>({...ENVELOPE,ciphertext:value}),decryptToken:envelope=>envelope.ciphertext,
+    decryptPrivateKey:()=>PRIVATE_KEY,fetchEligibility:async()=>({stages:[{uuid:'wl'}]})});
+  const result=await service.eligibility('user-a',WALLET,'ethereum','0x0000000000000000000000000000000000000001');
+  assert.equal(oldExchange,1);assert.equal(created,1);
+  assert.equal(current.scopedTokenId,'new-pat');assert.equal(result.authorization.connected,true);
+  assert.deepEqual(result.stages,[{uuid:'wl'}]);
 });
 
 test('disconnect keeps the encrypted record when remote revocation is unavailable',async()=>{
@@ -124,13 +185,14 @@ test('missing server configuration never reports a stored authorization as usabl
   assert.equal(result.connected,false);assert.equal(result.credentialStored,true);
 });
 
-test('an unexpected exchanged scope is classified as reauthorization, never as usable',async()=>{
+test('an unexpected exchanged scope attempts one renewal and remains unavailable when renewal fails',async()=>{
   const repository={get:async()=>savedRecord(),markError:async()=>{}};
   const service=createOpenSeaEligibilityService({repository,apiKey:'app-key',
     http:{post:async()=>({data:{accessToken:'jwt',tokenScopes:[ELIGIBILITY_SCOPE,'write:orders']}})},
     encryptToken:value=>value,decryptToken:()=> 'scoped-token',decryptPrivateKey:()=>PRIVATE_KEY,
     fetchEligibility:async()=>({stages:[]})});
   const result=await service.eligibility('user-a',WALLET,'ethereum','0x0000000000000000000000000000000000000001');
-  assert.equal(result.authorization.status,'reauthorize');
+  assert.equal(result.authorization.status,'unavailable');
+  assert.equal(result.authorization.enabled,true);
   assert.equal(result.authorization.connected,false);
 });

@@ -159,7 +159,7 @@ notification, and broadcasts nothing. Definitive sold-out evidence is a terminal
 `cancelled` is reserved for an explicit user cancellation. Future Settings defaults may prefill
 these controls for newly created tasks only and must never alter existing schedules retroactively.
 
-For OpenSea drops, an application API key can list the published stages but cannot answer whether a particular wallet is allowlisted. A user may explicitly enable **read-only OpenSea eligibility** for one stored wallet at a time. GhostMint signs OpenSea's gas-free login challenge with that wallet, requests only the `read:eligibility` scope, encrypts the resulting scoped token at rest, and keeps the exchanged short-lived bearer token only in memory. This permission cannot mint, transfer, approve, or spend funds, and it can be revoked from the Schedule preview. Eligibility is never shared across wallets: changing the selected wallet immediately clears the previous result and performs a fresh wallet-scoped check. Public stages remain usable without this opt-in.
+For OpenSea drops, an application API key can list the published stages but cannot answer whether a particular wallet is allowlisted. A user may explicitly enable **read-only OpenSea eligibility** for each stored wallet in Dashboard **Settings → OpenSea eligibility checks**. GhostMint signs OpenSea's gas-free login challenge with that wallet, requests only the `read:eligibility` scope, encrypts the resulting scoped token at rest, and keeps the exchanged short-lived bearer token only in memory. The persisted per-wallet switch is the user's continuing opt-in: while it remains on, GhostMint safely renews an expired or remotely revoked least-scope token and retries the eligibility read once. Turning it off revokes the remote permission before removing the local encrypted record. This permission cannot mint, transfer, approve, or spend funds. Eligibility is never shared across wallets: changing the selected wallet immediately clears the previous result and performs a fresh wallet-scoped check. Public stages remain usable without this opt-in, and Schedule links to Settings rather than signing independently.
 
 This OpenSea builder is the preferred automatic eligibility path. A Merkle proof cannot be reconstructed from only a wallet address and Merkle root; a non-OpenSea project must provide a public wallet-specific proof/signature API, IPFS dataset plus exact tree rules, or a launchpad adapter. The existing proof resolver supports those public HTTP/IPFS responses and otherwise fails closed so a missing proof is never treated as an empty valid proof.
 
@@ -391,7 +391,17 @@ Wallet receive surfaces show a QR containing only the public EVM address, includ
 
 ## Validation
 
-Before opening a pull request or deploying, run:
+Validation is proportional to the change:
+
+- Always run tests focused on the behavior and files changed. Dashboard changes also require a
+  production dashboard build and the relevant syntax/lint checks.
+- Run PostgreSQL integration tests when migrations, repositories/SQL, persistence, locking,
+  sessions, scheduler/transaction durability, or stored-data service contracts changed.
+- Run the complete validation gate for release gates, dependency/runtime changes, broad
+  cross-cutting changes, or when it is explicitly requested. Pure UI, copy, CSS, or isolated
+  deterministic-function changes do not require the slow remote database suite.
+
+Before a release or other full validation gate, run:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\project-npm.ps1 ci

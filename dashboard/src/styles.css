@@ -228,6 +228,8 @@ main.loading{min-height:100vh;display:grid;place-items:center;padding:1.25rem;co
 .schedule-preview-stage-control .select-menu-trigger{background:var(--surface)}
 .schedule-preview-stage-control .select-menu-value,
 .schedule-preview-stage-control .select-menu-option-copy b{color:var(--text);font-size:.94rem;font-weight:800;line-height:1.3;letter-spacing:.005em}
+.schedule-preview-stage-control .select-menu-inline-status.success{color:var(--success)}
+.schedule-preview-stage-control .select-menu-inline-status.success::before{content:'·';margin-right:.35rem;color:var(--muted)}
 .schedule-preview-stage-control [data-option-tone="eligible"] .select-menu-tag,
 .schedule-preview-stage-control [data-option-tone="open_to_all"] .select-menu-tag{color:var(--success);
   border-color:color-mix(in srgb,var(--success) 40%,var(--border));
@@ -236,6 +238,8 @@ main.loading{min-height:100vh;display:grid;place-items:center;padding:1.25rem;co
 .schedule-preview-stage-control [data-option-tone="check_at_open"] .select-menu-tag{color:var(--muted);
   border-color:var(--border-strong);background:var(--surface-3)}
 .schedule-preview-stage-control [data-option-tone="ineligible"] .select-menu-option-copy b{color:var(--muted)}
+.schedule-preview-stage-control [data-option-tone="authorization_required"] .select-menu-tag{color:var(--warning);
+  border-color:color-mix(in srgb,var(--warning) 32%,var(--border));background:color-mix(in srgb,var(--warning) 8%,var(--surface))}
 .schedule-eligibility-access{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 11px;
   border:1px solid var(--border);border-radius:10px;background:var(--surface)}
 .schedule-eligibility-access.is-connected{border-color:color-mix(in srgb,var(--success) 35%,var(--border));
@@ -263,6 +267,7 @@ main.loading{min-height:100vh;display:grid;place-items:center;padding:1.25rem;co
   transition:transform var(--fast) var(--ease)}
 .schedule-switch[aria-checked="true"] .schedule-switch-thumb{transform:translateX(16px)}
 .schedule-switch:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+.schedule-switch:disabled{cursor:not-allowed;opacity:.55}
 .info-popover{position:relative;display:grid;place-items:center}
 .info-popover-trigger{display:grid;place-items:center;width:24px;height:24px;min-height:24px;padding:0;border:0;
   border-radius:50%;background:transparent;color:var(--muted);box-shadow:none;cursor:help}
@@ -432,7 +437,8 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
   background:var(--surface-deep);color:var(--text);font-size:.9rem;font-weight:650;box-shadow:none;
   transition:border-color var(--fast) var(--ease),box-shadow var(--fast) var(--ease)}
 .select-menu-trigger:hover:not(:disabled){filter:none;border-color:color-mix(in srgb,var(--border-strong) 55%,var(--accent) 45%)}
-.select-menu-value{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.select-menu-value{display:flex;align-items:center;gap:.35rem;flex:1;min-width:0;white-space:nowrap}
+.select-menu-value-text{min-width:0;overflow:hidden;text-overflow:ellipsis}
 .select-menu-value.placeholder{color:var(--text-faint);font-weight:550}
 .select-menu-chevron{width:1rem;height:1rem;display:grid;place-items:center;flex:none;color:var(--text-faint);transition:transform var(--fast) var(--ease)}
 .select-menu-chevron svg{width:100%;height:100%}
@@ -448,7 +454,9 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
 .select-menu-option.active,.select-menu-option:hover{background:var(--accent-soft)}
 .select-menu-option.selected{color:var(--accent)}
 .select-menu-option-copy{display:grid;gap:2px;min-width:0;flex:1}
-.select-menu-option-copy b{min-width:0;overflow-wrap:anywhere;font:inherit;color:inherit}
+.select-menu-option-copy b{display:flex;align-items:baseline;gap:.35rem;min-width:0;overflow-wrap:anywhere;font:inherit;color:inherit}
+.select-menu-inline-status{flex:none;font-size:.68em;font-weight:850;letter-spacing:.05em;text-transform:uppercase}
+.select-menu-inline-status.success{color:var(--success)}
 .select-menu-option-copy small{min-width:0;color:var(--muted);font-size:.69rem;font-weight:500;line-height:1.35;overflow-wrap:anywhere}
 .select-menu-option-end{margin-left:auto;flex:none;display:flex;align-items:center;gap:.4rem}
 .select-menu-check{width:1rem;height:1rem;display:grid;place-items:center;flex:none;color:var(--accent)}
@@ -711,6 +719,16 @@ tbody tr:last-child td{border-bottom:0}
 .settings-panel-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:1rem;margin-bottom:.7rem}
 .settings-panel-heading h2{margin:.15rem 0 0}
 .settings-panel-heading>.chain-select{min-width:13rem}
+.settings-opensea-eligibility{grid-column:1/-1;scroll-margin-top:1rem}
+.settings-opensea-eligibility:focus{outline:none}
+.settings-opensea-eligibility:focus-visible{outline:2px solid var(--focus);outline-offset:3px}
+.settings-wallet-permissions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.625rem;margin-top:1rem}
+.settings-wallet-permission{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:.75rem;
+  min-height:64px;padding:.75rem;border:1px solid var(--border);border-radius:10px;background:var(--surface)}
+.settings-wallet-permission>div{display:grid;gap:2px;min-width:0}
+.settings-wallet-permission b,.settings-wallet-permission span,.settings-wallet-permission small{min-width:0;overflow-wrap:anywhere}
+.settings-wallet-permission small{color:var(--muted)}
+.settings-wallet-permission small.is-error{color:var(--danger)}
 .settings-chain .chain-select{margin-top:1rem}
 .settings-gas{grid-column:1/-1}
 .settings-usage{grid-column:1/-1}
@@ -1371,6 +1389,7 @@ html[data-theme="ghost-mint"] .dash-hero button,html[data-theme="ghost-mint-ligh
   .settings-panel-heading>.chain-select{min-width:0;width:100%}
   .usage-period{justify-content:flex-start;width:100%}
   .settings-usage .settings-panel-heading{display:grid}
+  .settings-wallet-permissions{grid-template-columns:1fr}
   .admin-metric-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
   .admin-metric-grid .panel:last-child{grid-column:1/-1}
   .admin-group-form .fields,.admin-control-grid .form .fields,

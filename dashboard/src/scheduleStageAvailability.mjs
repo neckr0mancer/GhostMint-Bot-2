@@ -39,6 +39,18 @@ export function scheduleStageChoiceState(stage, now = Date.now(), { authoritativ
     && (!Number.isFinite(endMs) || endMs <= 0 || endMs > now);
   const eligibility = text(stage?.eligibilityState).toLowerCase();
 
+  // Liveness and wallet eligibility answer different questions. A stage can be live while this
+  // wallet is explicitly ineligible, so "Live - use Mint now" must never replace the wallet's
+  // eligibility badge. Live is rendered beside the stage name; the right-side badge keeps the
+  // wallet result. The stage still stays disabled for scheduling because it has already opened.
+  const liveEligibility = eligibility === 'ineligible'
+    ? { tag:'Not eligible', tone:'ineligible' }
+    : eligibility === 'eligible'
+      ? { tag:'Eligible', tone:'eligible' }
+      : eligibility === 'open_to_all'
+        ? { tag:'Eligible', tone:'open_to_all' }
+        : { tag:'Checked at opening', tone:'check_at_open' };
+
   if (stage?.identityAmbiguous || stage?.schedulable === false) {
     return { tag:'Unavailable', disabled:true, state:'unavailable' };
   }
@@ -46,12 +58,12 @@ export function scheduleStageChoiceState(stage, now = Date.now(), { authoritativ
   // leave a stale end time behind while the phase is still open, just as they can postpone a
   // phase after its advertised start. Keep both cases truthful instead of letting timestamps
   // override an explicit live/not-live response.
-  if (authoritativeLive === true) return { tag:'Live - use Mint now', disabled:true, state:'live' };
+  if (authoritativeLive === true) return { ...liveEligibility, disabled:true, state:'live', live:true };
   if (ended) return { tag:'Ended', disabled:true, state:'ended' };
   if (live && authoritativeLive === false) {
     return { tag:'Not live yet', disabled:true, state:'not_live' };
   }
-  if (live) return { tag:'Live - use Mint now', disabled:true, state:'live' };
+  if (live) return { ...liveEligibility, disabled:true, state:'live', live:true };
   if (eligibility === 'ineligible') return { tag:'Not eligible', disabled:true, state:'ineligible' };
   if (eligibility === 'eligible') return { tag:'Eligible', disabled:false, state:'eligible' };
   if (eligibility === 'open_to_all') return { tag:'Open to all', disabled:false, state:'open_to_all' };
