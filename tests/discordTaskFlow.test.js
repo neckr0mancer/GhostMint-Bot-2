@@ -773,3 +773,66 @@ test('a phase whose own cap is 1 never asks for a quantity, even when the collec
   assert.equal(created[0].input.eligibilityDeadline,
     new Date((FUTURE_START + 3600) * 1000).toISOString());
 });
+
+test('Discord schedule policy controls persist exact time-follow and bounded price choices into createTask',async()=>{
+  const flowState=createFlowStateStore();
+  const seen=[];
+  const commands=baseCommands({createTask:async(_userId,input)=>{seen.push(input);return{id:'task-1',
+    name:input.name,mintTime:input.mintTime,status:'scheduled'};}});
+  const identity={resolveOrCreate:async()=> 'internal-user'};
+  const handler=createDiscordInteractionHandler({identity,commands,flowState,chains:CHAINS,rateLimiter:NO_LIMIT});
+  const data={name:'Public',contractAddress:'0x0000000000000000000000000000000000000001',
+    chain:'ethereum',walletLabel:'main',quantity:1,mintTime:FUTURE_ISO,priceETH:'0.01',
+    expectedPriceWeiPerItem:'10000000000000000',stageUuid:'stage-public',
+    eligibilityDeadline:new Date(Date.now()+7_200_000).toISOString(),viaOpenSea:true};
+  flowState.start('discord','policy-user','task_guided','awaiting_confirm',data);
+
+  const time=buttonInteraction('flow:taskautotime:toggle','policy-user');
+  await handler(time);
+  assert.equal(flowState.get('discord','policy-user').data.autoReschedule,true);
+  assert.match(time.updates[0].content,/follow this exact stage automatically/);
+
+  const ask=buttonInteraction('flow:taskpricecap:ask','policy-user');
+  await handler(ask);
+  assert.equal(ask.deferred,false,'a modal-opening interaction must not be acknowledged first');
+  assert.equal(ask.modal.custom_id,'flow:taskpricecap:submit');
+
+  const submit=modalInteraction('flow:taskpricecap:submit',{value:'0.025'},'policy-user');
+  await handler(submit);
+  assert.equal(flowState.get('discord','policy-user').data.maxPriceWeiPerItem,'25000000000000000');
+  assert.match(submit.replies[0].content,/allow up to 0\.025 ETH per NFT/);
+
+  await handler(buttonInteraction('flow:taskconfirm','policy-user'));
+  assert.equal(seen.length,1);
+  assert.equal(seen[0].autoReschedule,true);
+  assert.equal(seen[0].acceptPriceChanges,true);
+  assert.equal(seen[0].maxPriceWeiPerItem,'25000000000000000');
+});
+
+test('Discord resolves the same versioned schedule review state and confirms cancellation separately',async()=>{
+  const id='123e4567-e89b-42d3-a456-426614174000';
+  const task={id,name:'Public',status:'paused',changeState:'awaiting_approval',changeVersion:3,
+    mintTime:FUTURE_ISO,pendingChange:{reason:'The price changed.',changes:[
+      {kind:'price',from:'0',to:'10000000000000000'}]}};
+  const resolved=[];
+  const commands=baseCommands({tasks:async()=>[task],resolveTaskChange:async(userId,taskId,input)=>{
+    resolved.push({userId,taskId,input});return{...task,status:input.decision==='cancel'?'cancelled':'retry',
+      changeState:'clear',name:'Public'};}});
+  const identity={resolveOrCreate:async()=> 'internal-user'};
+  const handler=createDiscordInteractionHandler({identity,commands,flowState:createFlowStateStore(),
+    chains:CHAINS,rateLimiter:NO_LIMIT});
+
+  const picker=selectInteraction('task:review:pick',[id],'review-user');
+  await handler(picker);
+  assert.match(picker.updates[0].content,/needs review/);
+  const approve=buttonInteraction(`task:chg:a:3:${id}`,'review-user');
+  await handler(approve);
+  assert.deepEqual(resolved[0],{userId:'internal-user',taskId:id,input:{decision:'approve',version:3}});
+
+  const ask=buttonInteraction(`task:chg:q:3:${id}`,'review-user');
+  await handler(ask);
+  assert.match(ask.updates[0].content,/cannot be undone/);
+  const cancel=buttonInteraction(`task:chg:c:3:${id}`,'review-user');
+  await handler(cancel);
+  assert.deepEqual(resolved[1],{userId:'internal-user',taskId:id,input:{decision:'cancel',version:3}});
+});

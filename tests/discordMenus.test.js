@@ -4,7 +4,8 @@ const {
   mainMenu, walletsMenu, settingsMenu, chainSelect, walletSelect,
   confirmRemoveWallet, placeholderMenu, labelModal, collectionInfoCard,
   openSeaPhasePicker,
-  taskNameQuickPicks, taskConfirmation, tasksMenu, snipersMenu, adminOverviewMenu,
+  taskNameQuickPicks, taskConfirmation, tasksMenu, scheduleChangeReview,
+  confirmScheduleChangeCancel, snipersMenu, adminOverviewMenu,
   modeMenu, MODE_META, sniperDetailsModal, sniperObservationMode, sniperPendingRiskWarning,
   sniperTolerancePrompt, sniperToleranceModal, sniperConfirmation,
 } = require('../src/discord/menus');
@@ -308,7 +309,49 @@ test('taskConfirmation states plainly that the bot executes unattended, not a re
   assert.match(confirm.content, /not a reminder/);
   assert.match(confirm.content, /GTD/);
   assert.match(confirm.content, /0\.1 per item/);
-  assert.deepEqual(flatButtons(confirm.components).map(b => b.custom_id), ['flow:taskconfirm', 'flow:cancel:ask']);
+  assert.deepEqual(flatButtons(confirm.components).map(b => b.custom_id),
+    ['flow:taskpricecap:ask','flow:taskconfirm','flow:cancel:ask']);
+});
+
+test('Discord schedule confirmation keeps automatic changes off until a concrete cap is selected',()=>{
+  const base={name:'GTD',contractAddress:'0xabc',chainLabel:'Ethereum',nativeSymbol:'ETH',
+    walletLabel:'main',mintTime:'2026-08-20T18:00:00.000Z',priceETH:0.1,priceUnknown:false,
+    phaseAware:true,canFollowTimeChanges:true};
+  const closed=taskConfirmation(base);
+  assert.match(closed.content,/Time changes: \*\*ask me first\*\*/);
+  assert.match(closed.content,/Price increases: \*\*ask me first\*\*/);
+  const bounded=taskConfirmation({...base,autoReschedule:true,acceptPriceChanges:true,
+    maxPriceWeiPerItem:'250000000000000000'});
+  assert.match(bounded.content,/follow this exact stage automatically/);
+  assert.match(bounded.content,/allow up to 0\.25 ETH per NFT/);
+  assert.deepEqual(flatButtons(bounded.components).map(button=>button.custom_id),[
+    'flow:taskautotime:toggle','flow:taskpricecap:ask','flow:taskpricecap:clear','flow:taskconfirm','flow:cancel:ask']);
+});
+
+test('Discord renders one versioned shared-state review with a separate destructive confirmation',()=>{
+  const task={id:'123e4567-e89b-42d3-a456-426614174000',name:'Public',changeVersion:9,
+    pendingChange:{reason:'The opening and price changed.',changes:[
+      {kind:'opening',from:Date.now()+60_000,to:Date.now()+120_000},
+      {kind:'price',from:'0',to:'10000000000000000'},
+    ]}};
+  const review=scheduleChangeReview(task,'POL');
+  assert.match(review.content,/Opening:/);
+  assert.match(review.content,/Price per NFT: 0\.0 POL → 0\.01 POL/);
+  assert.deepEqual(flatButtons(review.components).map(button=>button.custom_id),[
+    `task:chg:a:9:${task.id}`,`task:chg:q:9:${task.id}`,'menu:tasks']);
+  const cancel=confirmScheduleChangeCancel(task);
+  assert.deepEqual(flatButtons(cancel.components).map(button=>button.custom_id),[
+    `task:chg:c:9:${task.id}`,`task:chg:r:9:${task.id}`]);
+});
+
+test('Discord pending reviews are not also offered through the generic cancel picker',()=>{
+  const task={id:'123e4567-e89b-42d3-a456-426614174000',name:'Moved stage',status:'paused',
+    mintTime:Date.now()+60_000,changeState:'awaiting_approval',changeVersion:2,
+    pendingChange:{reason:'Opening changed.',changes:[]}};
+  const menu=tasksMenu({items:[task],page:1,totalPages:1,total:1});
+  const customIds=menu.components.map(component=>component.components?.[0]?.custom_id).filter(Boolean);
+  assert.equal(customIds.includes('task:cancel:pick'),false);
+  assert.equal(customIds.includes('task:review:pick'),true);
 });
 
 test('collectionInfoCard omits the stats table entirely when stats is null, and renders an aligned floor/holders/minted/volume table -- never a market cap -- when it is not', () => {

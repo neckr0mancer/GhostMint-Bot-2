@@ -150,14 +150,17 @@ For a phase-aware OpenSea schedule, the selected UTC time is a **not-before wake
 Legacy OpenSea schedules that predate persisted phase identity fail closed and must be recreated from fresh detected phase data; the worker never guesses which live phase to use.
 
 Opening-time changes and price changes are separate per-task permissions. Both default to **off**:
-without an opt-in, a material change pauses the task and asks for review. Auto-reschedule can follow
-only a verified later opening within the saved maximum delay and eligibility deadline; it never
-moves a spend earlier. Automatic price acceptance requires an exact native-currency cap; a price
-above it pauses. A changed target/method/configuration always requires review. If an unanswered
-review reaches the eligibility deadline, the task fails with `REVIEW_EXPIRED`, sends one durable
-notification, and broadcasts nothing. Definitive sold-out evidence is a terminal failed outcome;
-`cancelled` is reserved for an explicit user cancellation. Future Settings defaults may prefill
-these controls for newly created tasks only and must never alter existing schedules retroactively.
+without an opt-in, a material change pauses the task and asks for review. **Follow time changes**
+tracks verified earlier or later moves of the same stable provider stage and moves its eligibility
+window by the same amount; a removed/replaced stage or unverified identity still pauses. Automatic
+price acceptance requires an exact native-currency per-NFT cap; a price above it pauses. A changed
+target/method/configuration always requires review. Dashboard, Telegram, and Discord create these
+same per-task policies and resolve the same versioned review state, so approving on one surface
+removes the pending review everywhere. If an unanswered review reaches the eligibility deadline,
+the task fails with `REVIEW_EXPIRED`, sends one durable notification, and broadcasts nothing.
+Definitive sold-out evidence is a terminal failed outcome; `cancelled` is reserved for an explicit
+user cancellation. Future Settings defaults may prefill these controls for newly created tasks only
+and must never alter existing schedules retroactively.
 
 For OpenSea drops, an application API key can list the published stages but cannot answer whether a particular wallet is allowlisted. A user may explicitly enable **read-only OpenSea eligibility** for each stored wallet in Dashboard **Settings → OpenSea eligibility checks**. GhostMint signs OpenSea's gas-free login challenge with that wallet, requests only the `read:eligibility` scope, encrypts the resulting scoped token at rest, and keeps the exchanged short-lived bearer token only in memory. The persisted per-wallet switch is the user's continuing opt-in: while it remains on, GhostMint safely renews an expired or remotely revoked least-scope token and retries the eligibility read once. Turning it off revokes the remote permission before removing the local encrypted record. This permission cannot mint, transfer, approve, or spend funds. Eligibility is never shared across wallets: changing the selected wallet immediately clears the previous result and performs a fresh wallet-scoped check. Public stages remain usable without this opt-in, and Schedule links to Settings rather than signing independently.
 

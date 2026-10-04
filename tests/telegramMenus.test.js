@@ -2,7 +2,8 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const { Buffer } = require('node:buffer');
 const {
-  mainMenu, walletsMenu, settingsMenu, tasksMenu, taskActions, confirmCancelTask, chainPicker, walletPicker,
+  mainMenu, walletsMenu, settingsMenu, tasksMenu, taskActions, confirmCancelTask,
+  confirmScheduleChangeCancel, chainPicker, walletPicker,
   mintModeMenu, batchImportMenu,
   contractDetails, contractDetailsText, collectionInfoCard, mintConfirmation, gasTolerancePrompt,
   openSeaPhasePicker,
@@ -469,7 +470,53 @@ test('task confirmation names the auto-detected opening time distinctly from a m
     mintTime, autoDetectedTime: false, priceETH: 0.1, priceUnknown: false,
   });
   assert.equal(manual.text.includes("this contract's own opening time"), false);
-  assert.deepEqual(flatButtons(auto.replyMarkup).map(b => b.callback_data), ['flow:taskconfirm', 'flow:cancel:ask']);
+  assert.deepEqual(flatButtons(auto.replyMarkup).map(b => b.callback_data),
+    ['flow:taskpricecap:ask','flow:taskconfirm','flow:cancel:ask']);
+});
+
+test('task confirmation exposes closed-by-default time and price policies, then shows an exact cap',()=>{
+  const base={name:'drop',contractAddress:'0xabc',chainLabel:'Ethereum',nativeSymbol:'ETH',
+    walletLabel:'main',mintTime:'2026-08-20T18:00:00.000Z',priceETH:0.1,priceUnknown:false,
+    phaseAware:true,canFollowTimeChanges:true};
+  const closed=taskConfirmation(base);
+  assert.match(closed.text,/Time changes: <b>ask me first<\/b>/);
+  assert.match(closed.text,/Price increases: <b>ask me first<\/b>/);
+  const bounded=taskConfirmation({...base,autoReschedule:true,acceptPriceChanges:true,
+    maxPriceWeiPerItem:'250000000000000000'});
+  assert.match(bounded.text,/follow this exact stage automatically/);
+  assert.match(bounded.text,/allow up to 0\.25 ETH per NFT/);
+  assert.deepEqual(flatButtons(bounded.replyMarkup).map(button=>button.callback_data),
+    ['flow:taskautotime:toggle','flow:taskpricecap:ask','flow:taskpricecap:clear','flow:taskconfirm','flow:cancel:ask']);
+});
+
+test('pending schedule changes replace invalid resume controls with versioned approve and cancel actions',()=>{
+  const task={id:'123e4567-e89b-42d3-a456-426614174000',name:'Public',status:'paused',
+    changeState:'awaiting_approval',changeVersion:4,contract:'0xabc',walletLabel:'main',qty:1,
+    price:0,mintTime:Date.now()+60_000,pendingChange:{reason:'The opening and price changed.',changes:[
+      {kind:'opening',from:Date.now()+60_000,to:Date.now()+120_000},
+      {kind:'price',from:'0',to:'10000000000000000'},
+    ]}};
+  const review=taskActions(task,'POL');
+  assert.match(review.text,/Opening:/);
+  assert.match(review.text,/Price per NFT: 0\.0 POL → 0\.01 POL/);
+  assert.deepEqual(flatButtons(review.replyMarkup).map(button=>button.callback_data),[
+    `task:chg:a:4:${task.id}`,`task:chg:q:4:${task.id}`,'menu:tasks']);
+  assert.ok(flatButtons(review.replyMarkup).every(button=>Buffer.byteLength(button.callback_data)<=64));
+  const cancel=confirmScheduleChangeCancel(task);
+  assert.deepEqual(flatButtons(cancel.replyMarkup).map(button=>button.callback_data),[
+    `task:chg:c:4:${task.id}`,`task:manage:${task.id}`]);
+});
+
+test('a pending schedule review is labelled for review and never exposes the invalid generic cancel path',()=>{
+  const task={id:'123e4567-e89b-42d3-a456-426614174000',name:'Moved stage',status:'paused',
+    changeState:'awaiting_approval',changeVersion:Number.MAX_SAFE_INTEGER,
+    pendingChange:{reason:'Opening changed.',changes:[]}};
+  const menu=tasksMenu({items:[task],page:1,totalPages:1,total:1});
+  const buttons=flatButtons(menu.replyMarkup);
+  assert.match(buttons[0].text,/needs review/);
+  assert.equal(buttons.some(item=>item.callback_data.startsWith('task:cancel:ask:')),false);
+  const review=taskActions(task);
+  assert.ok(flatButtons(review.replyMarkup).every(item=>Buffer.byteLength(item.callback_data)<=64));
 });
 
 test('task confirmation appends a USD equivalent to the price when a displayPrice is known', () => {

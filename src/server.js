@@ -51,6 +51,8 @@ const { createScheduledPreflightRepository } = require('./scheduler/scheduledPre
 const { createScheduledPreflightWorker } = require('./scheduler/scheduledPreflightWorker');
 const { OPENSEA_VALIDATED_BUILDER_V1, configurationFingerprint, configurationSummary,
   evaluateScheduleObservation } = require('./scheduler/scheduleChangePolicy');
+const { canFollowTimeChanges, clearPriceCap, setPriceCap, taskPolicyInput,
+  toggleAutoReschedule } = require('./scheduler/schedulePolicyDraft');
 const { deliverFailureSideEffects, scheduledFailureFeedback } = require('./scheduler/scheduledFailureFeedback');
 const { SCHEDULE_PHASE_WAIT, createSchedulerWorker, errorReason, executionAttemptCount } = require('./scheduler/schedulerWorker');
 const { DECISION_REASONS, hasStableProviderStageIdentity, matchSelectedStage,
@@ -1168,7 +1170,7 @@ const schedulerWorker = createSchedulerWorker({
           taskId:event.task.id,name:event.task.name,version:event.task.changeVersion,
           kinds:event.scheduleChange.kinds||[],reason:event.scheduleChange.reason,
           notificationKey:`schedule:${event.task.id}:change:${event.task.changeVersion}:review`});
-        await notifyUser(event.task.userId,`⚠️ Scheduled mint <b>${escapeTelegramHtml(event.task.name)}</b> needs your review.\n${reason}\nOpen Schedule details to approve the exact change or cancel it.`);
+        await notifyUser(event.task.userId,`⚠️ Scheduled mint <b>${escapeTelegramHtml(event.task.name)}</b> needs your review.\n${reason}\nOpen Tasks in Telegram/Discord, or Schedule details on the dashboard, to approve the exact change or cancel it.`);
       }else if(event.outcome==='retry'){
         dashboardWebSockets.broadcastToUser(event.task.userId,{type:'task.rescheduled',
           taskId:event.task.id,name:event.task.name,kinds:event.scheduleChange.kinds||[],
@@ -2012,7 +2014,7 @@ const FLOW_CONTINUATION_PREFIXES = { wallet_create: ['flow:chain:'], wallet_impo
   // flow:priceaccept/flow:pricemanual (Section G's OpenSea-price-accept step) the same way.
   // flow:phase: is deliberately NOT listed: tapping "add phase N" on an older success screen while
   // some other flow is mid-air should raise the usual abandon prompt, not silently replace it.
-  task_guided: ['flow:mintdetailscontinue', 'flow:scheduleviaopensea', 'flow:mintqty:', 'flow:priceaccept', 'flow:pricemanual', 'flow:phasepriceaccept', 'flow:phasetimeaccept', 'flow:taskname:', 'flow:taskwalletpick:', 'flow:taskconfirm'],
+  task_guided: ['flow:mintdetailscontinue', 'flow:scheduleviaopensea', 'flow:mintqty:', 'flow:priceaccept', 'flow:pricemanual', 'flow:phasepriceaccept', 'flow:phasetimeaccept', 'flow:taskname:', 'flow:taskwalletpick:', 'flow:taskautotime:', 'flow:taskpricecap:', 'flow:taskconfirm'],
   watch_guided: ['flow:watchtype:', 'flow:watchmethod:', 'flow:watchconfirm'],
   sniper_guided: ['flow:sniperchain:', 'flow:sniperwalletpick:', 'flow:sniperobservation:',
     'flow:sniperpendingrisk:accept', 'flow:snipertoleranceaccept', 'flow:snipertolerancemanual', 'flow:sniperconfirm'] };
@@ -2270,6 +2272,12 @@ function renderFlowStep(flow, step, { userId, data = {} } = {}) {
     if (step === 'awaiting_price') return priceStepPayload(data);
     if (step === 'awaiting_name') return taskNameStepPayload(data);
     if (step === 'awaiting_time') return taskTimeStepPayload(data);
+    if (step === 'awaiting_price_cap') {
+      const symbol=CHAINS[data.chain]?.sym||'ETH';
+      return {text:`Send the maximum price per NFT in <b>${escapeTelegramHtml(symbol)}</b>. Example: <code>0.01</code>. GhostMint will pause instead of spending above it.`,
+        replyMarkup:telegramMenus.keyboard([[telegramMenus.button('⬅️ Back to review','flow:taskpricecap:back')],
+          [telegramMenus.button('❌ Cancel','flow:cancel:ask')]]),parseMode:'HTML'};
+    }
     if (step === 'awaiting_confirm') {
       return telegramMenus.taskConfirmation({
         name: data.name,
@@ -2285,6 +2293,11 @@ function renderFlowStep(flow, step, { userId, data = {} } = {}) {
         phaseNumber: data.phaseNumber,
         viaOpenSea: data.viaOpenSea,
         phaseAware: Boolean(data.eligibilityDeadline),
+        nativeSymbol:CHAINS[data.chain]?.sym||'ETH',
+        autoReschedule:data.autoReschedule,
+        acceptPriceChanges:data.acceptPriceChanges,
+        maxPriceWeiPerItem:data.maxPriceWeiPerItem,
+        canFollowTimeChanges:canFollowTimeChanges(data),
       });
     }
   }
@@ -2898,7 +2911,7 @@ async function finishTaskSchedule(chatId, messageId, userId, flowData) {
       viaOpenSea: flowData.viaOpenSea, stageUuid: flowData.stageUuid, stageLabel: flowData.stageLabel,
       stageType: flowData.stageType, eligibilityMode: flowData.eligibilityMode,
       eligibilityDeadline: flowData.eligibilityDeadline,
-      expectedPriceWeiPerItem: flowData.expectedPriceWeiPerItem,
+      ...taskPolicyInput(flowData),
     });
     telegramFlowState.clear('telegram', chatId);
     return tgUpdate(chatId, messageId, telegramMenus.taskScheduled({
@@ -3067,7 +3080,7 @@ async function handleFlowTextMessage(msg) {
     || (flow.flow === 'gate_unlock' && flow.step === 'awaiting_password')
     || (flow.flow === 'mint_guided' && ['awaiting_contract', 'awaiting_quantity', 'awaiting_price', 'awaiting_gastolerance'].includes(flow.step))
     || (flow.flow === 'send_guided' && (flow.step === 'awaiting_amount' || flow.step === 'awaiting_destination'))
-    || (flow.flow === 'task_guided' && ['awaiting_contract', 'awaiting_quantity', 'awaiting_price', 'awaiting_name', 'awaiting_time'].includes(flow.step))
+    || (flow.flow === 'task_guided' && ['awaiting_contract', 'awaiting_quantity', 'awaiting_price', 'awaiting_name', 'awaiting_time', 'awaiting_price_cap'].includes(flow.step))
     || (flow.flow === 'watch_guided' && ['awaiting_name', 'awaiting_config'].includes(flow.step))
     || (flow.flow === 'sniper_guided' && ['awaiting_label', 'awaiting_target', 'awaiting_tolerance_gas', 'awaiting_tolerance_value', 'awaiting_tolerance_cap'].includes(flow.step))
   );
@@ -3219,6 +3232,17 @@ async function handleFlowTextMessage(msg) {
       return;
     }
     await advanceFromPriceResolved(chatId, null, userId, flow, priceETH);
+    return;
+  }
+  if (flow.flow === 'task_guided' && flow.step === 'awaiting_price_cap') {
+    const result=setPriceCap(flow.data,value);
+    if(!result.ok){
+      const prompt=renderFlowStep('task_guided','awaiting_price_cap',{data:flow.data});
+      tgRender(chatId,{...prompt,text:`${escapeTelegramHtml(result.message)}\n\n${prompt.text}`});
+      return;
+    }
+    telegramFlowState.advance('telegram',chatId,'awaiting_confirm',result.data);
+    tgRender(chatId,renderFlowStep('task_guided','awaiting_confirm',{userId,data:result.data}));
     return;
   }
   if (flow.flow === 'mint_guided' && flow.step === 'awaiting_gastolerance') {
@@ -3572,7 +3596,25 @@ if (BOT_TOKEN && !CONFIG.dashboardOnly) {
       const id = data.slice('task:manage:'.length);
       const task = (await botCommands.tasks(userId)).find(item => item.id === id);
       if (!task) return tgEditMenu(chatId, messageId, telegramMenus.tasksMenu(await botCommands.tasksPage(userId, { page: 1 })));
-      return tgEditMenu(chatId, messageId, telegramMenus.taskActions(task));
+      return tgEditMenu(chatId, messageId, telegramMenus.taskActions(task,
+        CHAINS[task.chain]?.sym || 'native currency'));
+    }
+    if (data.startsWith('task:chg:')) {
+      const match=/^task:chg:(a|q|c):(\d+):([0-9a-f-]{36})$/i.exec(data);
+      if(!match)return;
+      const [,action,versionText,id]=match;
+      const task=(await botCommands.tasks(userId)).find(item=>item.id===id);
+      if(!task)return tgEditMenu(chatId,messageId,telegramMenus.tasksMenu(await botCommands.tasksPage(userId,{page:1})));
+      if(action==='q')return tgEditMenu(chatId,messageId,telegramMenus.confirmScheduleChangeCancel(task));
+      const decision=action==='a'?'approve':'cancel';
+      const updated=await botCommands.resolveTaskChange(userId,id,{decision,version:Number(versionText)});
+      const text=decision==='approve'
+        ?`✅ Approved the exact change for <b>${escapeTelegramHtml(updated.name)}</b>. Fresh safety checks still run before minting.`
+        :`❌ Cancelled <b>${escapeTelegramHtml(updated.name)}</b>. Nothing will be sent.`;
+      return tgEditMenu(chatId,messageId,{text,parseMode:'HTML',replyMarkup:telegramMenus.keyboard([
+        [telegramMenus.button('🗓️ See all tasks','menu:tasks')],
+        [telegramMenus.button('⬅️ Back to base','menu:main')],
+      ])});
     }
     if (data.startsWith('task:cancel:ask:')) {
       const id = data.slice('task:cancel:ask:'.length);
@@ -3981,6 +4023,32 @@ if (BOT_TOKEN && !CONFIG.dashboardOnly) {
       const flow = telegramFlowState.get('telegram', chatId);
       if (!flow || flow.flow !== 'task_guided') return;
       return advanceFromTaskWallet(chatId, messageId, userId, flow, label);
+    }
+    if (data === 'flow:taskautotime:toggle') {
+      const flow=telegramFlowState.get('telegram',chatId);
+      if(!flow||flow.flow!=='task_guided'||flow.step!=='awaiting_confirm')return;
+      const taskData=toggleAutoReschedule(flow.data);
+      telegramFlowState.advance('telegram',chatId,'awaiting_confirm',taskData);
+      return tgEditMenu(chatId,messageId,renderFlowStep('task_guided','awaiting_confirm',{userId,data:taskData}));
+    }
+    if (data === 'flow:taskpricecap:ask') {
+      const flow=telegramFlowState.get('telegram',chatId);
+      if(!flow||flow.flow!=='task_guided'||flow.step!=='awaiting_confirm')return;
+      telegramFlowState.advance('telegram',chatId,'awaiting_price_cap',flow.data);
+      return tgEditMenu(chatId,messageId,renderFlowStep('task_guided','awaiting_price_cap',{userId,data:flow.data}));
+    }
+    if (data === 'flow:taskpricecap:back') {
+      const flow=telegramFlowState.get('telegram',chatId);
+      if(!flow||flow.flow!=='task_guided'||flow.step!=='awaiting_price_cap')return;
+      telegramFlowState.advance('telegram',chatId,'awaiting_confirm',flow.data);
+      return tgEditMenu(chatId,messageId,renderFlowStep('task_guided','awaiting_confirm',{userId,data:flow.data}));
+    }
+    if (data === 'flow:taskpricecap:clear') {
+      const flow=telegramFlowState.get('telegram',chatId);
+      if(!flow||flow.flow!=='task_guided'||flow.step!=='awaiting_confirm')return;
+      const taskData=clearPriceCap(flow.data);
+      telegramFlowState.advance('telegram',chatId,'awaiting_confirm',taskData);
+      return tgEditMenu(chatId,messageId,renderFlowStep('task_guided','awaiting_confirm',{userId,data:taskData}));
     }
     if (data === 'flow:taskconfirm') {
       const flow = telegramFlowState.get('telegram', chatId);

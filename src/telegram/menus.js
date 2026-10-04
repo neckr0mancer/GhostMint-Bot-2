@@ -9,6 +9,7 @@
 
 const { escapeTelegramHtml } = require('../security/botSecurity');
 const { LIMITS, MIN_BATCH_WALLETS } = require('../validation/domain');
+const { formatEther } = require('ethers');
 
 function button(text, callbackData) {
   return { text, callback_data: callbackData };
@@ -586,7 +587,10 @@ function openSeaPhasePicker(stages, recommendedStage = null) {
 // phaseNumber > 1 means this task is a later stage of a multi-stage drop (Section AF). Its price and
 // time were typed by hand off the project's own announcement -- nothing on-chain describes a stage
 // that isn't live yet -- so the price line must not claim the contract said so.
-function taskConfirmation({ name, contractAddress, chainLabel, walletLabel, quantity, mintTime, autoDetectedTime, priceETH, priceUnknown, displayPrice, phaseNumber, viaOpenSea, phaseAware = viaOpenSea }) {
+function taskConfirmation({ name, contractAddress, chainLabel, nativeSymbol = 'ETH', walletLabel,
+  quantity, mintTime, autoDetectedTime, priceETH, priceUnknown, displayPrice, phaseNumber,
+  viaOpenSea, phaseAware = viaOpenSea, autoReschedule = false, acceptPriceChanges = false,
+  maxPriceWeiPerItem = null, canFollowTimeChanges = phaseAware }) {
   const phase = Number(phaseNumber) > 1 ? Number(phaseNumber) : null;
   let priceLine;
   // Section AF -- OpenSea's own response at execution time determines the real price for an
@@ -601,9 +605,25 @@ function taskConfirmation({ name, contractAddress, chainLabel, walletLabel, quan
       ? `Fires: <b>${formatGmtPlus1(mintTime)}</b> (this contract's own opening time)`
       : `Fires: <b>${formatGmtPlus1(mintTime)}</b>`;
   const heading = viaOpenSea ? '<b>⏰🎫 Confirm OpenSea-backed schedule</b>' : phase ? `<b>⏰ Confirm phase ${phase}</b>` : '<b>⏰ Confirm scheduled mint</b>';
+  const priceCap = acceptPriceChanges && maxPriceWeiPerItem !== null
+    && maxPriceWeiPerItem !== undefined
+    ? `${formatEther(BigInt(maxPriceWeiPerItem))} ${nativeSymbol}` : null;
+  const timePolicyLine = canFollowTimeChanges
+    ? `Time changes: <b>${autoReschedule ? 'follow this exact stage automatically' : 'ask me first'}</b>\n`
+    : '';
+  const policyLines = timePolicyLine
+    + `Price increases: <b>${priceCap ? `allow up to ${escapeTelegramHtml(priceCap)} per NFT` : 'ask me first'}</b>`;
+  const rows = [];
+  if (canFollowTimeChanges) {
+    rows.push([button(autoReschedule ? '✅ Follow stage time changes' : '▫️ Ask about time changes', 'flow:taskautotime:toggle')]);
+  }
+  rows.push(acceptPriceChanges
+      ? [button(`💸 Cap: ${priceCap}`, 'flow:taskpricecap:ask'), button('Ask instead', 'flow:taskpricecap:clear')]
+      : [button('▫️ Set maximum price per NFT', 'flow:taskpricecap:ask')]);
+  rows.push([button('✅ Schedule it', 'flow:taskconfirm')], [button('❌ Cancel', 'flow:cancel:ask')]);
   return {
-    text: `${heading}\nName: ${escapeTelegramHtml(name)}\nContract: <code>${contractAddress}</code>\nChain: ${chainLabel}\nWallet: ${escapeTelegramHtml(walletLabel)}\nQuantity: ${quantity || 1}\n${priceLine}\n${timeLine}\n\n${phaseAware ? 'The bot waits for a live phase this wallet can use, then signs and sends automatically.' : 'This is not a reminder — the bot signs and sends the mint itself at that moment, phone in your pocket, you asleep.'}\n\nLock it in?`,
-    replyMarkup: keyboard([[button('✅ Schedule it', 'flow:taskconfirm')], [button('❌ Cancel', 'flow:cancel:ask')]]),
+    text: `${heading}\nName: ${escapeTelegramHtml(name)}\nContract: <code>${contractAddress}</code>\nChain: ${chainLabel}\nWallet: ${escapeTelegramHtml(walletLabel)}\nQuantity: ${quantity || 1}\n${priceLine}\n${timeLine}\n\n${policyLines}\n\n${phaseAware ? 'The bot waits for a live phase this wallet can use, tied to the selected stage, and runs fresh safety checks before it signs and sends.' : 'This is not a reminder — the bot signs and sends the mint itself at that moment.'}\n\nReview the available change rules, then schedule it.`,
+    replyMarkup: keyboard(rows),
     parseMode: 'HTML',
   };
 }
@@ -686,8 +706,12 @@ function tasksMenu(page) {
   }
   const rows = tasks.map(task => {
     const shortName = task.name.length > 28 ? `${task.name.slice(0, 27)}…` : task.name;
-    const row = [button(`${task.viaOpenSea ? '🎫' : '⏱'} ${shortName} [${task.status}]`, `task:manage:${task.id}`)];
-    if (CANCELLABLE_TASK_STATUSES.has(task.status)) row.push(button('❌', `task:cancel:ask:${task.id}`));
+    const reviewing = task.changeState === 'awaiting_approval' && task.pendingChange;
+    const state = reviewing ? 'needs review' : task.status;
+    const row = [button(`${task.viaOpenSea ? '🎫' : '⏱'} ${shortName} [${state}]`, `task:manage:${task.id}`)];
+    if (!reviewing && CANCELLABLE_TASK_STATUSES.has(task.status)) {
+      row.push(button('❌', `task:cancel:ask:${task.id}`));
+    }
     return row;
   });
   const nav = [];
@@ -703,8 +727,19 @@ function tasksMenu(page) {
   };
 }
 
-function taskActions(task) {
+function taskActions(task, nativeSymbol = 'native currency') {
   const rows = [];
+  if (task.changeState === 'awaiting_approval' && task.pendingChange) {
+    const version = Number(task.changeVersion || task.pendingChange.version || 0);
+    const facts = scheduleChangeFacts(task.pendingChange, nativeSymbol);
+    rows.push([button('✅ Approve exact change', `task:chg:a:${version}:${task.id}`)]);
+    rows.push([button('❌ Cancel this schedule', `task:chg:q:${version}:${task.id}`)]);
+    rows.push([button('⬅️ Back to the list', 'menu:tasks')]);
+    return {
+      text: `<b>⚠️ ${escapeTelegramHtml(task.name)} needs review</b>\n\n${facts.map(escapeTelegramHtml).join('\n')}\n\n${escapeTelegramHtml(task.pendingChange.reason || 'The saved schedule changed.')}\n\nNothing will be broadcast until you approve this exact change.`,
+      replyMarkup: keyboard(rows), parseMode:'HTML',
+    };
+  }
   if (task.status === 'scheduled' || task.status === 'retry') rows.push([button('⏸ Pause', `task:pause:${task.id}`)]);
   if (task.status === 'paused') rows.push([button('▶️ Resume', `task:resume:${task.id}`)]);
   if (task.status === 'failed' && !/^(?:SOLD_OUT|REVIEW_EXPIRED):/i.test(String(task.lastError || ''))) {
@@ -723,6 +758,32 @@ function taskActions(task) {
     text: `<b>${escapeTelegramHtml(task.name)}</b>${task.viaOpenSea ? ' 🎫' : ''} [${task.status}]\nContract: <code>${task.contract}</code>\nWallet: ${escapeTelegramHtml(task.walletLabel)}\nQty: ${task.qty} | Price: ${priceLine}\nDue: <b>${formatGmtPlus1(task.mintTime)}</b>${failureLine}\nID: <code>${task.id}</code>`,
     replyMarkup: keyboard(rows),
     parseMode: 'HTML',
+  };
+}
+
+function scheduleChangeFacts(pending = {}, nativeSymbol = 'native currency') {
+  const facts=[];
+  for (const change of pending.changes || []) {
+    if (change.kind === 'opening') facts.push(`Opening: ${formatGmtPlus1(change.from)} → ${formatGmtPlus1(change.to)}`);
+    else if (change.kind === 'price') {
+      const from=change.from === null || change.from === undefined ? 'unverified' : `${formatEther(BigInt(change.from))} ${nativeSymbol}`;
+      facts.push(`Price per NFT: ${from} → ${formatEther(BigInt(change.to))} ${nativeSymbol}`);
+    } else if (change.kind === 'stage_removed') facts.push('Stage: the selected stage was removed');
+    else if (change.kind === 'configuration' || change.kind === 'configuration_baseline') facts.push('Transaction target or mint method changed');
+    else if (change.kind === 'closing') facts.push('Stage closing time changed');
+  }
+  return facts.length ? facts : ['The saved mint details changed.'];
+}
+
+function confirmScheduleChangeCancel(task) {
+  const version=Number(task.changeVersion || task.pendingChange?.version || 0);
+  return {
+    text:`Cancel <b>${escapeTelegramHtml(task.name)}</b> instead of accepting this schedule change? This cannot be undone.`,
+    replyMarkup:keyboard([
+      [button('✅ Yes, cancel it',`task:chg:c:${version}:${task.id}`)],
+      [button('⬅️ Review the change',`task:manage:${task.id}`)],
+    ]),
+    parseMode:'HTML',
   };
 }
 
@@ -1056,6 +1117,7 @@ module.exports = {
   tasksMenu,
   taskActions,
   confirmCancelTask,
+  confirmScheduleChangeCancel,
   placeholderMenu,
   chainPicker,
   walletPicker,

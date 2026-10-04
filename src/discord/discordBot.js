@@ -27,6 +27,8 @@ const discordMenus = require('./menus');
 const mintFlowDecision = require('../mint/mintFlowDecision');
 const { buildOpenSeaScheduleTaskData } = require('../mint/openSeaScheduleDraft');
 const { scheduleStageKey } = require('../mint/scheduleStagePlanning');
+const { canFollowTimeChanges, clearPriceCap, setPriceCap, taskPolicyInput,
+  toggleAutoReschedule } = require('../scheduler/schedulePolicyDraft');
 const watchRuleFlowDecision = require('../social/watchRuleFlowDecision');
 const sniperFlowDecision = require('../sniper/sniperFlowDecision');
 
@@ -221,7 +223,7 @@ const FLOW_CONTINUATIONS = {
   // in any of its own custom_ids. Shares flow:mintqty:select/submit with mint_guided -- the
   // quantity picker is the same component either way (see mintFlowRenderPayload's counterpart in
   // discordBot.js), and the callback handler branches on flow.flow.
-  task_guided: ['flow:taskwallet:select', 'flow:mintqty:select', 'flow:mintqty:submit', 'flow:taskname:select', 'flow:taskname:submit', 'flow:taskconfirm'],
+  task_guided: ['flow:taskwallet:select', 'flow:mintqty:select', 'flow:mintqty:submit', 'flow:taskname:select', 'flow:taskname:submit', 'flow:taskautotime:toggle', 'flow:taskpricecap:ask', 'flow:taskpricecap:submit', 'flow:taskpricecap:clear', 'flow:taskconfirm'],
   watch_guided: ['flow:watchname:submit', 'flow:watchtype:select', 'flow:watchmethod:select', 'flow:watchconfig:submit', 'flow:watchconfirm'],
   sniper_guided: ['flow:snipercreate:submit', 'flow:sniperchain:select', 'flow:sniperwallet:select',
     'flow:sniperobservation:default', 'flow:sniperobservation:confirmed', 'flow:sniperobservation:pending',
@@ -440,6 +442,9 @@ function taskConfirmPayload(taskData, chains) {
     name: taskData.name, contractAddress: taskData.contractAddress, chainLabel: chains[taskData.chain]?.name || taskData.chain,
     walletLabel: taskData.walletLabel, quantity: taskData.quantity || 1, mintTime: taskData.mintTime, priceETH: taskData.priceETH, priceUnknown: taskData.priceUnknown,
     viaOpenSea: taskData.viaOpenSea, phaseAware:Boolean(taskData.eligibilityDeadline),
+    nativeSymbol:chains[taskData.chain]?.sym||'ETH',autoReschedule:taskData.autoReschedule,
+    acceptPriceChanges:taskData.acceptPriceChanges,maxPriceWeiPerItem:taskData.maxPriceWeiPerItem,
+    canFollowTimeChanges:canFollowTimeChanges(taskData),
   });
 }
 
@@ -492,7 +497,7 @@ async function finishTaskScheduleDiscord(ctx, respond, platformUserId, userId, f
       viaOpenSea: flowData.viaOpenSea, stageUuid: flowData.stageUuid, stageLabel: flowData.stageLabel,
       stageType: flowData.stageType, eligibilityMode: flowData.eligibilityMode,
       eligibilityDeadline: flowData.eligibilityDeadline,
-      expectedPriceWeiPerItem: flowData.expectedPriceWeiPerItem,
+      ...taskPolicyInput(flowData),
     });
     flowState.clear('discord', platformUserId);
     // Reuses the same task:cancel:ask:<id> step tasksMenu/taskActions already use on Telegram -- a
@@ -632,7 +637,7 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
   // conditional ones, the already-available interaction.values) -- showModal() is mutually
   // exclusive with defer/reply, so handleComponent's blanket up-front defer below must skip these
   // or every one of them would throw "already acknowledged" the moment it tried to open its modal.
-  const MODAL_CUSTOM_IDS = new Set(['menu:mint:single', 'menu:mint:batch', 'link:enter', 'wallet:create:start', 'wallet:import:start', 'wallet:import:key-modal', 'wallet:batch-import:add', 'gate:unlock:open', 'flow:pricemanual', 'flow:gastolerancemanual', 'watch:add:start', 'flow:watchmethod:select', 'sniper:create:start', 'flow:snipertolerancemanual']);
+  const MODAL_CUSTOM_IDS = new Set(['menu:mint:single', 'menu:mint:batch', 'link:enter', 'wallet:create:start', 'wallet:import:start', 'wallet:import:key-modal', 'wallet:batch-import:add', 'gate:unlock:open', 'flow:pricemanual', 'flow:gastolerancemanual', 'flow:taskpricecap:ask', 'watch:add:start', 'flow:watchmethod:select', 'sniper:create:start', 'flow:snipertolerancemanual']);
   function willShowModal(data, interaction) {
     if (MODAL_CUSTOM_IDS.has(data)) return true;
     if (data === 'flow:mintqty:select' && interaction.values?.[0] === 'custom') return true;
@@ -1338,6 +1343,27 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         flowState.advance('discord', platformUserId, 'awaiting_confirm', taskData);
         return dcRespond(interaction, taskConfirmPayload(taskData, chains));
       }
+      if(data==='flow:taskautotime:toggle'){
+        const flow=flowState.get('discord',platformUserId);
+        if(!flow||flow.flow!=='task_guided'||flow.step!=='awaiting_confirm')return notYourMintPrompt(interaction);
+        const taskData=toggleAutoReschedule(flow.data);
+        flowState.advance('discord',platformUserId,'awaiting_confirm',taskData);
+        return dcRespond(interaction,taskConfirmPayload(taskData,chains));
+      }
+      if(data==='flow:taskpricecap:ask'){
+        const flow=flowState.get('discord',platformUserId);
+        if(!flow||flow.flow!=='task_guided'||flow.step!=='awaiting_confirm')return notYourMintPrompt(interaction);
+        const symbol=chains[flow.data.chain]?.sym||'ETH';
+        return interaction.showModal(discordMenus.numberModal({customId:'flow:taskpricecap:submit',
+          title:`Maximum price per NFT (${symbol})`,placeholder:'0.01'}));
+      }
+      if(data==='flow:taskpricecap:clear'){
+        const flow=flowState.get('discord',platformUserId);
+        if(!flow||flow.flow!=='task_guided'||flow.step!=='awaiting_confirm')return notYourMintPrompt(interaction);
+        const taskData=clearPriceCap(flow.data);
+        flowState.advance('discord',platformUserId,'awaiting_confirm',taskData);
+        return dcRespond(interaction,taskConfirmPayload(taskData,chains));
+      }
       if (data === 'flow:taskconfirm') {
         const flow = flowState.get('discord', platformUserId);
         if (!flow || flow.flow !== 'task_guided' || flow.step !== 'awaiting_confirm') return notYourMintPrompt(interaction);
@@ -1346,6 +1372,36 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
       // Not part of the task_guided flow (reachable straight off the schedule success screen, no
       // flow state to check) -- mirrors Telegram's task:cancel:ask:/task:cancel:do: exactly, sharing
       // the same commands.tasks/controlTask calls so both platforms stay in sync.
+      if(data==='task:review:pick'){
+        const id=interaction.values?.[0];
+        if(!id)return dcRespond(interaction,{content:'Pick a changed schedule first.',components:backToMenu});
+        const task=(await commands.tasks(userId)).find(item=>item.id===id);
+        if(!task||task.changeState!=='awaiting_approval'||!task.pendingChange){
+          return dcRespond(interaction,{content:'That change is no longer waiting for review. Refresh Tasks.',components:backToMenu});
+        }
+        return dcRespond(interaction,discordMenus.scheduleChangeReview(task,
+          chains[task.chain]?.sym||'native currency'));
+      }
+      if(data.startsWith('task:chg:')){
+        const match=/^task:chg:(a|q|c|r):(\d+):([0-9a-f-]{36})$/i.exec(data);
+        if(!match)return undefined;
+        const [,action,versionText,id]=match;
+        const task=(await commands.tasks(userId)).find(item=>item.id===id);
+        if(!task)return dcRespond(interaction,{content:'That schedule no longer exists.',components:backToMenu});
+        if(action==='r'){
+          if(task.changeState!=='awaiting_approval'||!task.pendingChange){
+            return dcRespond(interaction,{content:'That change is no longer waiting for review. Refresh Tasks.',components:backToMenu});
+          }
+          return dcRespond(interaction,discordMenus.scheduleChangeReview(task,
+            chains[task.chain]?.sym||'native currency'));
+        }
+        if(action==='q')return dcRespond(interaction,discordMenus.confirmScheduleChangeCancel(task));
+        const decision=action==='a'?'approve':'cancel';
+        const updated=await commands.resolveTaskChange(userId,id,{decision,version:Number(versionText)});
+        return dcRespond(interaction,{content:decision==='approve'
+          ?`✅ Approved the exact change for **${escapeDiscord(updated.name)}**. Fresh safety checks still run before minting.`
+          :`❌ Cancelled **${escapeDiscord(updated.name)}**. Nothing will be sent.`,components:backToMenu});
+      }
       if (data.startsWith('task:cancel:ask:')) {
         const id = data.slice('task:cancel:ask:'.length);
         const task = (await commands.tasks(userId)).find(item => item.id === id);
@@ -1731,11 +1787,22 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         }
         const taskData = { ...flow.data, name };
         flowState.advance('discord', platformUserId, 'awaiting_confirm', taskData);
-        await interaction.reply({ ...discordMenus.taskConfirmation({
-          name: taskData.name, contractAddress: taskData.contractAddress, chainLabel: chains[taskData.chain]?.name || taskData.chain,
-          walletLabel: taskData.walletLabel, quantity: taskData.quantity || 1, mintTime: taskData.mintTime, priceETH: taskData.priceETH, priceUnknown: taskData.priceUnknown,
-          viaOpenSea: taskData.viaOpenSea, phaseAware:Boolean(taskData.eligibilityDeadline),
-        }), ephemeral: true });
+        await interaction.reply({ ...taskConfirmPayload(taskData,chains), ephemeral: true });
+        return;
+      }
+      if(data==='flow:taskpricecap:submit'){
+        if(flow.flow!=='task_guided'||flow.step!=='awaiting_confirm'){
+          await interaction.reply({content:'This schedule review expired. Start the schedule again.',ephemeral:true}).catch(()=>{});
+          return;
+        }
+        const raw=String(interaction.fields.getTextInputValue('value')||'').trim();
+        const result=setPriceCap(flow.data,raw);
+        if(!result.ok){
+          await interaction.reply({content:`${result.message} Reopen the maximum-price control to retry.`,ephemeral:true}).catch(()=>{});
+          return;
+        }
+        flowState.advance('discord',platformUserId,'awaiting_confirm',result.data);
+        await interaction.reply({...taskConfirmPayload(result.data,chains),ephemeral:true});
         return;
       }
 

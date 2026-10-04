@@ -7,6 +7,7 @@
 
 const { LIMITS, MIN_BATCH_WALLETS } = require('../validation/domain');
 const { escapeDiscord } = require('../security/botSecurity');
+const { formatEther } = require('ethers');
 
 const ROW = 1;
 const BUTTON = 2;
@@ -462,7 +463,10 @@ function taskNameQuickPicks() {
   };
 }
 
-function taskConfirmation({ name, contractAddress, chainLabel, walletLabel, quantity, mintTime, priceETH, priceUnknown, viaOpenSea, phaseAware = viaOpenSea }) {
+function taskConfirmation({ name, contractAddress, chainLabel, nativeSymbol = 'ETH', walletLabel,
+  quantity, mintTime, priceETH, priceUnknown, viaOpenSea, phaseAware = viaOpenSea,
+  autoReschedule = false, acceptPriceChanges = false, maxPriceWeiPerItem = null,
+  canFollowTimeChanges = phaseAware }) {
   // Section AF -- OpenSea's own response at execution time determines the real price for an
   // allowlist/GTD/FCFS stage; nothing scheduled up front could ever be the real number.
   const priceLine = viaOpenSea
@@ -471,9 +475,21 @@ function taskConfirmation({ name, contractAddress, chainLabel, walletLabel, quan
       ? 'Price: not exposed by this contract'
       : `Price: ${priceETH} per item (read from the contract)`;
   const heading = viaOpenSea ? '## Confirm OpenSea-backed schedule' : '## Confirm scheduled mint';
+  const priceCap=acceptPriceChanges&&maxPriceWeiPerItem!==null&&maxPriceWeiPerItem!==undefined
+    ?`${formatEther(BigInt(maxPriceWeiPerItem))} ${nativeSymbol}`:null;
+  const timeLine=canFollowTimeChanges
+    ?`Time changes: **${autoReschedule?'follow this exact stage automatically':'ask me first'}**\n`:'';
+  const components=[];
+  if(canFollowTimeChanges){
+    components.push(row([button(autoReschedule?'✅ Follow stage time changes':'▫️ Ask about time changes','flow:taskautotime:toggle')]));
+  }
+  components.push(row(acceptPriceChanges
+    ?[button(`💸 Cap: ${priceCap}`,'flow:taskpricecap:ask'),button('Ask instead','flow:taskpricecap:clear')]
+    :[button('▫️ Set maximum price per NFT','flow:taskpricecap:ask')]));
+  components.push(row([button('✅ Schedule it', 'flow:taskconfirm', 'success'), button('❌ Cancel', 'flow:cancel:ask', 'danger')]));
   return {
-    content: `${heading}\nName: ${name}\nContract: \`${contractAddress}\`\nChain: ${chainLabel}\nWallet: ${walletLabel}\nQuantity: ${quantity || 1}\n${priceLine}\n${phaseAware ? 'Eligibility checks begin' : 'Fires'}: ${formatGmtPlus1(mintTime)}\n\n${phaseAware ? 'The bot waits for a live phase this wallet can use, then signs and sends automatically.' : 'This is not a reminder -- the bot signs and sends the mint itself at that moment.'}\n\nProceed?`,
-    components: [row([button('✅ Schedule it', 'flow:taskconfirm', 'success'), button('❌ Cancel', 'flow:cancel:ask', 'danger')])],
+    content: `${heading}\nName: ${escapeDiscord(name)}\nContract: \`${contractAddress}\`\nChain: ${escapeDiscord(chainLabel)}\nWallet: ${escapeDiscord(walletLabel)}\nQuantity: ${quantity || 1}\n${priceLine}\n${phaseAware ? 'Eligibility checks begin' : 'Fires'}: ${formatGmtPlus1(mintTime)}\n\n${timeLine}Price increases: **${priceCap?`allow up to ${priceCap} per NFT`:'ask me first'}**\n\n${phaseAware ? 'The bot waits for the selected stage and runs fresh safety checks before it signs and sends.' : 'This is not a reminder -- the bot signs and sends the mint itself at that moment.'}\n\nReview the available change rules, then schedule it.`,
+    components,
   };
 }
 
@@ -713,10 +729,13 @@ function tasksMenu(page) {
       const reason = task.status === 'failed' && task.lastError
         ? ` — reason: ${escapeDiscord(String(task.lastError))}`
         : '';
-      return `${task.eligibilityDeadline ? '🎫 ' : ''}${escapeDiscord(task.name)} [${task.status}] — ${task.eligibilityDeadline ? 'eligibility checks ' : ''}${formatGmtPlus1(task.mintTime)} — ${task.id}${reason}`;
+      const state=task.changeState==='awaiting_approval'?'needs review':task.status;
+      return `${task.eligibilityDeadline ? '🎫 ' : ''}${escapeDiscord(task.name)} [${state}] — ${task.eligibilityDeadline ? 'eligibility checks ' : ''}${formatGmtPlus1(task.mintTime)} — ${task.id}${reason}`;
     }).join('\n')
     : 'No scheduled tasks.';
-  const cancellable = page.items.filter(task => CANCELLABLE_TASK_STATUSES.has(task.status));
+  const cancellable = page.items.filter(task => CANCELLABLE_TASK_STATUSES.has(task.status)
+    && !(task.changeState==='awaiting_approval'&&task.pendingChange));
+  const reviews=page.items.filter(task=>task.changeState==='awaiting_approval'&&task.pendingChange);
   const nav = [];
   if (page.page > 1) nav.push(button('◀️ Prev', `tasks:page:${page.page - 1}`));
   if (page.page < page.totalPages) nav.push(button('▶️ Next', `tasks:page:${page.page + 1}`));
@@ -729,11 +748,45 @@ function tasksMenu(page) {
     }));
     rows.push(select('task:cancel:pick', options, 'Cancel a schedule — pick one'));
   }
+  if(reviews.length){
+    const options=reviews.slice(0,10).map(task=>({label:`Review ${task.name}`.slice(0,100),
+      description:(task.pendingChange?.reason||'Schedule details changed').slice(0,100),value:task.id}));
+    rows.push(select('task:review:pick',options,'Review a changed schedule'));
+  }
   rows.push(row([button('🗓️ Schedule mint', 'menu:mint'), button('⬅️ Back to menu', 'menu:main')]));
   return {
     content: `## 🗓️ Tasks (page ${page.page}/${page.totalPages}, ${page.total} total)\n${lines}`,
     components: rows,
   };
+}
+
+function scheduleChangeFacts(pending={},nativeSymbol='native currency'){
+  const facts=[];
+  for(const change of pending.changes||[]){
+    if(change.kind==='opening')facts.push(`Opening: ${formatGmtPlus1(change.from)} → ${formatGmtPlus1(change.to)}`);
+    else if(change.kind==='price'){
+      const from=change.from===null||change.from===undefined?'unverified':`${formatEther(BigInt(change.from))} ${nativeSymbol}`;
+      facts.push(`Price per NFT: ${from} → ${formatEther(BigInt(change.to))} ${nativeSymbol}`);
+    }else if(change.kind==='stage_removed')facts.push('Stage: the selected stage was removed');
+    else if(change.kind==='configuration'||change.kind==='configuration_baseline')facts.push('Transaction target or mint method changed');
+    else if(change.kind==='closing')facts.push('Stage closing time changed');
+  }
+  return facts.length?facts:['The saved mint details changed.'];
+}
+
+function scheduleChangeReview(task,nativeSymbol='native currency'){
+  const version=Number(task.changeVersion||task.pendingChange?.version||0);
+  return {content:`## ⚠️ ${escapeDiscord(task.name)} needs review\n${scheduleChangeFacts(task.pendingChange,nativeSymbol).join('\n')}\n\n${escapeDiscord(task.pendingChange?.reason||'The saved schedule changed.')}\n\nNothing will be broadcast until you approve this exact change.`,
+    components:[row([button('✅ Approve exact change',`task:chg:a:${version}:${task.id}`,'success')]),
+      row([button('❌ Cancel this schedule',`task:chg:q:${version}:${task.id}`,'danger')]),
+      row([button('⬅️ Back to tasks','menu:tasks')])]};
+}
+
+function confirmScheduleChangeCancel(task){
+  const version=Number(task.changeVersion||task.pendingChange?.version||0);
+  return {content:`Cancel **${escapeDiscord(task.name)}** instead of accepting this schedule change? This cannot be undone.`,
+    components:[row([button('✅ Yes, cancel it',`task:chg:c:${version}:${task.id}`,'danger')]),
+      row([button('⬅️ Review the change',`task:chg:r:${version}:${task.id}`)])]};
 }
 
 // Section O -- performs the same lookup /sniper list already does and labels each sniper's real
@@ -1024,7 +1077,8 @@ function labelModal({ customId, title, placeholder = '', style = 'short', maxLen
 module.exports = {
   button, row, select, mainMenu, mintModeMenu, batchImportMenu, gateUnlockCard,
   securityBanner, securityNeedsAttention, securitySetupCard, walletsMenu, settingsMenu, placeholderMenu,
-  chainSelect, walletSelect, walletMultiSelect, confirmRemoveWallet, confirmExportWallet, confirmCancelTask, labelModal, gasMenu, activityMenu, tasksMenu, snipersMenu, adminOverviewMenu,
+  chainSelect, walletSelect, walletMultiSelect, confirmRemoveWallet, confirmExportWallet, confirmCancelTask,
+  confirmScheduleChangeCancel, scheduleChangeReview, labelModal, gasMenu, activityMenu, tasksMenu, snipersMenu, adminOverviewMenu,
   sniperDetailsModal, sniperObservationMode, sniperPendingRiskWarning,
   sniperTolerancePrompt, sniperToleranceModal, sniperConfirmation,
   modeMenu, MODE_META,

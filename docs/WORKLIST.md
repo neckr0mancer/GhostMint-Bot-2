@@ -2626,7 +2626,7 @@ with assertions unchanged.
 
 **Status:** Documented for prioritization; not implemented in this unit per owner instruction.
 
-## Feature Request — Scheduled Mint Preview + Price/Configuration/Opening Changes (Implemented locally 2026-09-24; bot UI and deployment pending)
+## Feature Request — Scheduled Mint Preview + Price/Configuration/Opening Changes (Cross-platform UI completed locally 2026-10-05; deployment and live acceptance pending)
 
 **Original request (rephrased):** A project may change a scheduled mint's price, configuration, or
 opening time after the task was created. GhostMint must make the change visible, offer a clear
@@ -2657,9 +2657,10 @@ price/opening/configuration envelope and a versioned user decision for each mate
 
 **Per-task controls shown in the schedule preview:**
 
-1. **Auto-reschedule** — OFF by default. When enabled, GhostMint may follow a verified opening-time
-   move only within an explicit maximum delay and the task's eligibility deadline. A move beyond
-   either boundary pauses for approval; it never silently extends the user's authorization.
+1. **Follow time changes automatically** — OFF by default. When enabled for a provider-backed stage
+   with a stable identity, GhostMint follows each verified earlier or later opening of that exact
+   stage and moves its eligibility window by the same amount. A removed/replaced stage, changed
+   transaction target/method, or unverified stage identity still pauses for review.
 2. **Accept price changes up to a limit** — OFF by default. Enabling it requires a hard per-NFT or
    total-mint cap. The UI may show and accept the user's preferred fiat currency for convenience,
    but the saved authorization must resolve to an exact, enforceable chain-native amount and show
@@ -2680,9 +2681,8 @@ price/opening/configuration envelope and a versioned user decision for each mate
   and do not broadcast. If no decision arrives before the task's explicit decision/eligibility
   deadline, expire the task without minting. "Alert me and mint anyway" above the hard cap is not a
   valid safe default because it makes the cap meaningless.
-- Opening-time change: notify once and offer **Reschedule**. Automatic rescheduling is allowed only
-  within the task's explicit maximum delay and existing eligibility deadline; extending either
-  boundary requires explicit confirmation.
+- Opening-time change: notify once and offer **Reschedule**. The automatic option follows only the
+  same stable provider stage; it does not treat a similarly named replacement as the same stage.
 - Configuration/calldata/fee-recipient change: rebuild, re-simulate, record exactly what changed,
   and require the same approval rule when the change can increase spend or materially change the
   call.
@@ -2701,11 +2701,11 @@ but must call the same service and are required before this feature is considere
 complete.
 
 **Priority/status:** The shared schema/policy, Dashboard controls and review UI, scheduler
-enforcement, durable audit/outbox, and automated Postgres restart/concurrency coverage are complete
-locally. Both automatic controls default OFF per task. Remaining work is the Telegram/Discord
-interactive policy/review UI, optional future Settings defaults that only prefill new tasks, the
-production migration maintenance window, and one live Railway schedule acceptance run. Final-time
-balance, gas, stage, proof, price, governance, and simulation checks remain authoritative.
+enforcement, durable audit/outbox, automated Postgres restart/concurrency coverage, and Telegram /
+Discord interactive policy and versioned review UI are complete locally. Both automatic controls
+default OFF per task. Remaining work is deployment plus one live Railway schedule acceptance run;
+optional future Settings defaults may prefill only new tasks. Final-time balance, gas, stage, proof,
+price, governance, and simulation checks remain authoritative.
 
 ## Feature Request — Wallet import surfaces and persistent wallet action bar (Documented 2026-09-21, Not Implemented)
 
