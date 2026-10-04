@@ -45,7 +45,8 @@ const { isDirectPublicDropStage, scheduleReservationStageKey, scheduleStageKey, 
 const watchRuleFlowDecision = require('./social/watchRuleFlowDecision');
 const sniperFlowDecision = require('./sniper/sniperFlowDecision');
 const { createSchedulerRepository } = require('./scheduler/schedulerRepository');
-const { createScheduledPreflightEvaluator, scheduledPreflightDelivery } = require('./scheduler/scheduledPreflight');
+const { authoritativeSupplyInspection, createScheduledPreflightEvaluator,
+  scheduledPreflightDelivery } = require('./scheduler/scheduledPreflight');
 const { createScheduledPreflightRepository } = require('./scheduler/scheduledPreflightRepository');
 const { createScheduledPreflightWorker } = require('./scheduler/scheduledPreflightWorker');
 const { OPENSEA_VALIDATED_BUILDER_V1, configurationFingerprint, configurationSummary,
@@ -1383,10 +1384,8 @@ const evaluateScheduledPreflight=createScheduledPreflightEvaluator({
         configFingerprint:configurationFingerprint(configSummary),configSummary,
         source:'early-contract-read'};
     }
-    const soldOutBySupply=detected?.maxSupply!==null&&detected?.maxSupply!==undefined
-      &&detected?.totalMinted!==null&&detected?.totalMinted!==undefined
-      &&BigInt(detected.totalMinted)>=BigInt(detected.maxSupply);
-    return {soldOut:soldOutBySupply,soldOutDefinitive:soldOutBySupply,
+    const supplyInspection=authoritativeSupplyInspection(detected);
+    return {...supplyInspection,
       isSeaDrop:Boolean(detected?.isSeaDrop),priceWeiPerItem:livePriceWeiPerItem,
       scheduleObservation};
   },

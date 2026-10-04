@@ -8,6 +8,7 @@ const root=path.join(__dirname,'..');
 const app=fs.readFileSync(path.join(root,'dashboard','src','App.jsx'),'utf8');
 const css=fs.readFileSync(path.join(root,'dashboard','src','styles.css'),'utf8');
 const shared=fs.readFileSync(path.join(root,'dashboard','src','shared.jsx'),'utf8');
+const dashboardApi=fs.readFileSync(path.join(root,'src','dashboard','api.js'),'utf8');
 
 test('scheduled timestamps are readable and countdowns retain useful precision',async()=>{
   const display=await import(pathToFileURL(path.join(root,'dashboard','src','scheduleDisplay.js')));
@@ -197,11 +198,98 @@ test('an already-live schedule offers an emphasized Mint now hand-off with its d
   assert.match(app,/scheduleError\.action==='mint-now'[\s\S]*className="b p sm"[\s\S]*>Mint now<\/button>/);
   assert.match(app,/setPendingMintPrefill\(\{contractAddress,quantity,walletLabel:scheduleWallet\}\);onSwitchToMint\?\.\(\)/);
   assert.match(app,/<Tasks profile=\{profile\}[\s\S]*onSwitchToMint=\{\(\)=>onTab\('now'\)\}/);
-  assert.match(app,/className="schedule-live-now"[\s\S]*There is nothing to schedule\.[\s\S]*>Mint now<\/button>/);
+  assert.match(app,/!detecting&&!scheduleTerminal&&liveMintStage[\s\S]*className="schedule-live-now"[\s\S]*There is nothing to schedule\.[\s\S]*>Mint now<\/button>/,
+    'an authoritative live, non-sold-out stage must offer the Mint now hand-off');
   assert.match(app,/setPendingBatchPrefill\(\{contractAddress,quantity\}\);onSwitchToBatch\?\.\(\)/);
   assert.match(app,/<Tasks profile=\{profile\}[\s\S]*onSwitchToBatch=\{\(\)=>onTab\('batch'\)\}/);
   assert.match(app,/setStageType\(futureStage\?\.stageType\|\|''\)/,
     'a live stage must not be reused as a fake future schedule choice');
+  assert.match(app,/liveOnlyStage=liveChoice\?\.tone!=='ineligible'[\s\S]*\?availability\.liveStage:null/,
+    'a wallet-eligible live stage must keep its Mint now handoff even when a future stage is selected');
+  assert.match(app,/scheduleFormAvailable=!scheduleTerminal&&!verifiedWindowEnded&&\(!liveMintStage\|\|Boolean\(selectedStageKey\)\)/,
+    'a safely selected future stage must remain schedulable beside the live-stage handoff');
+  assert.match(app,/selectedStageKey\?'Mint this live stage now, or keep the selected future stage scheduled below\.'/,
+    'the simultaneous live and future-stage state must explain both available actions');
+  assert.match(app,/liveOnlyStage=liveChoice\?\.tone!=='ineligible'/,
+    'an explicitly ineligible wallet must never receive the live Mint now handoff');
+});
+
+test('a live stage keeps an unconfirmed future gated stage reachable for explicit selection',async()=>{
+  const state=await import(pathToFileURL(path.join(root,'dashboard','src','scheduleStageAvailability.mjs')));
+  const now=Date.parse('2026-09-25T12:00:00Z');
+  const live={uuid:'public-live',label:'Public',stageType:'public',startTime:now/1000-60,
+    endTime:now/1000+1800,eligibilityState:'open_to_all'};
+  const future={uuid:'allowlist-next',label:'Allowlist',stageType:'signed_presale',
+    startTime:now/1000+3600,endTime:now/1000+7200,eligibilityState:'check_at_open'};
+  const availability=state.scheduleStageAvailability({
+    drop:{isMinting:true,activeStage:live,stages:[live,future]},now,
+  });
+  assert.equal(availability.liveStage,live);
+  assert.deepEqual(availability.futureStages,[future]);
+  assert.equal(state.scheduleStageChoiceState(future,now,{authoritativeLive:false}).disabled,false,
+    'unknown-at-opening eligibility stays an explicit schedulable choice');
+  assert.match(app,/const hasSelectableFutureStage=stages\.some\(stage=>\{/);
+  assert.match(app,/!liveMintStage\|\|Boolean\(selectedStageKey\)\|\|hasSelectableFutureStage/,
+    'the live handoff must not hide the picker before the user selects the gated future stage');
+  assert.match(app,/hasSelectableFutureStage\?'Mint this live stage now, or choose a future stage below to schedule\.'/,
+    'the live-state copy must explain the still-available future-stage choice');
+});
+
+test('a sold-out collection is terminal and keeps a non-blank read-only stage summary',async()=>{
+  const state=await import(pathToFileURL(path.join(root,'dashboard','src','scheduleStageAvailability.mjs')));
+  const now=Date.parse('2026-09-25T12:00:00Z');
+  const ended={uuid:'ended',label:'Allowlist',stageType:'allowlist',startTime:now/1000-7200,endTime:now/1000-3600};
+  const final={uuid:'public',label:'Public',stageType:'public',startTime:now/1000-1800,endTime:now/1000+3600,
+    eligibilityState:'open_to_all'};
+  const availability=state.scheduleStageAvailability({
+    drop:{isMinting:false,activeStage:null,stages:[ended,final],soldOut:true},now,
+  });
+  assert.equal(availability.soldOut,true);
+  assert.equal(availability.liveStage,null,'sold out must never fall through to the live Mint now path');
+  assert.deepEqual(availability.futureStages,[],'sold out must expose no schedulable stage');
+  assert.equal(availability.soldOutStage,final,'the final started stage keeps the selector summary from going blank');
+  assert.deepEqual(state.scheduleStageChoiceState(final,now,{authoritativeLive:false,authoritativeSoldOut:true}),{
+    tag:'Eligible',tone:'open_to_all',eligibilityState:'open_to_all',stageStatus:'Sold Out',stageStatusTone:'ended',
+    disabled:true,state:'sold_out',soldOut:true,
+  });
+  assert.match(app,/if\(!chosenStage&&availability\.soldOutStage\)chosenStage=availability\.soldOutStage/,
+    'the terminal preview must retain the final stage instead of showing Choose a stage');
+  assert.match(app,/scheduleTerminal[\s\S]*stageLiveness\.soldOut\?'is-sold-out':'is-ended'[\s\S]*All available items have been minted\.[\s\S]*Nothing can be scheduled or sent\./);
+  assert.match(app,/scheduleFormAvailable&&<button className="b p"/,
+    'sold out must remove the scheduling action rather than merely disabling it ambiguously');
+});
+
+test('an ended but not exhausted collection is terminal without claiming every item was minted',async()=>{
+  const state=await import(pathToFileURL(path.join(root,'dashboard','src','scheduleStageAvailability.mjs')));
+  const now=Date.parse('2026-09-25T12:00:00Z');
+  const ended={uuid:'public',label:'Public',stageType:'public',startTime:now/1000-7200,
+    endTime:now/1000-3600,eligibilityState:'open_to_all'};
+  const availability=state.scheduleStageAvailability({
+    drop:{isMinting:false,activeStage:null,stages:[ended],soldOut:false},soldOut:false,now,
+  });
+  assert.equal(availability.soldOut,false);
+  assert.equal(availability.liveStage,null);
+  assert.equal(availability.endedStage,ended,'the final ended stage keeps the preview summary non-blank');
+  assert.match(app,/if\(!chosenStage&&availability\.endedStage\)chosenStage=availability\.endedStage/);
+  assert.match(app,/stageLiveness\.soldOut\?'All available items have been minted\.':'The published mint window is over\.'/,
+    'ended and sold-out terminal copy must remain distinct');
+});
+
+test('an incomplete stage catalog scopes an ended public window without ending the whole drop',async()=>{
+  const state=await import(pathToFileURL(path.join(root,'dashboard','src','scheduleStageAvailability.mjs')));
+  assert.deepEqual(state.scheduleDropEndState({soldOut:false,ended:true,stageCatalogComplete:false}),{
+    terminal:false,verifiedWindowEnded:true,
+  });
+  assert.deepEqual(state.scheduleDropEndState({soldOut:false,ended:true,stageCatalogComplete:true}),{
+    terminal:true,verifiedWindowEnded:false,
+  });
+  assert.deepEqual(state.scheduleDropEndState({soldOut:true,ended:true,stageCatalogComplete:false}),{
+    terminal:true,verifiedWindowEnded:false,
+  });
+  assert.match(app,/No verified future stage is available right now\. Other collection stages may still exist, so GhostMint is not treating the whole drop as ended\./,
+    'incomplete-catalog copy must stay scoped to the verified public window');
+  assert.match(app,/scheduleDropEndState\(\{soldOut:stageLiveness\.soldOut,ended:stageLiveness\.ended,stageCatalogComplete\}\)/,
+    'the UI terminal decision must include catalog completeness rather than assuming the verified window is the whole drop');
 });
 
 test('Schedule trusts provider liveness instead of declaring a postponed timestamp live',async()=>{
@@ -239,26 +327,44 @@ test('Schedule stage choices never invent allowlist eligibility',async()=>{
   const now=Date.parse('2026-09-25T12:00:00Z');
   assert.equal(state.scheduleStageDisplayName({stageType:'signed_presale'}),'Signed Presale');
   assert.deepEqual(state.scheduleStageChoiceState({startTime:now/1000+3600,
-    eligibilityState:'eligible'},now),{tag:'Eligible',disabled:false,state:'eligible'});
+    eligibilityState:'eligible'},now),{
+    tag:'Eligible',tone:'eligible',eligibilityState:'eligible',stageStatus:'Not Started',stageStatusTone:'pending',
+    disabled:false,state:'eligible'
+  });
   assert.deepEqual(state.scheduleStageChoiceState({startTime:now/1000+3600,
-    eligibilityState:'ineligible'},now),{tag:'Not eligible',disabled:true,state:'ineligible'});
+    eligibilityState:'ineligible'},now),{
+    tag:'Not eligible',tone:'ineligible',eligibilityState:'ineligible',stageStatus:'Not Started',stageStatusTone:'pending',
+    disabled:true,state:'ineligible'
+  });
   assert.deepEqual(state.scheduleStageChoiceState({startTime:now/1000+3600,
     eligibilityState:'check_at_open'},now),
-  {tag:'Checked at opening',disabled:false,state:'check_at_open'});
+  {tag:'Checked at opening',tone:'check_at_open',eligibilityState:'check_at_open',stageStatus:'Not Started',stageStatusTone:'pending',
+    disabled:false,state:'check_at_open'});
   assert.deepEqual(state.scheduleStageChoiceState({startTime:now/1000+3600,
-    eligibilityState:'open_to_all'},now),{tag:'Open to all',disabled:false,state:'open_to_all'});
+    eligibilityState:'open_to_all'},now),{
+    tag:'Eligible',tone:'open_to_all',eligibilityState:'open_to_all',stageStatus:'Not Started',stageStatusTone:'pending',
+    disabled:false,state:'open_to_all'
+  });
   assert.deepEqual(state.scheduleStageChoiceState({startTime:now/1000-60,endTime:now/1000+3600,
     eligibilityState:'open_to_all'},now,{authoritativeLive:false}),
-  {tag:'Not live yet',disabled:true,state:'not_live'},
-  'an advertised start time must not override the provider saying the stage is not live');
+  {tag:'Eligible',tone:'open_to_all',eligibilityState:'open_to_all',stageStatus:'Not Active',stageStatusTone:'pending',
+    disabled:true,state:'not_live'},
+  'a provider-inactive stage whose advertised start passed must keep eligibility while saying Not Active');
   assert.deepEqual(state.scheduleStageChoiceState({startTime:now/1000-3600,endTime:now/1000-60,
     eligibilityState:'open_to_all'},now,{authoritativeLive:true}),
-  {tag:'Eligible',tone:'open_to_all',disabled:true,state:'live',live:true},
+  {tag:'Eligible',tone:'open_to_all',eligibilityState:'open_to_all',stageStatus:'Live',stageStatusTone:'success',
+    disabled:true,state:'live',live:true},
   'the provider active-stage signal must override stale published end timestamps without replacing eligibility');
   assert.deepEqual(state.scheduleStageChoiceState({startTime:now/1000-3600,endTime:now/1000+3600,
     eligibilityState:'ineligible'},now,{authoritativeLive:true}),
-  {tag:'Not eligible',tone:'ineligible',disabled:true,state:'live',live:true},
+  {tag:'Not eligible',tone:'ineligible',eligibilityState:'ineligible',stageStatus:'Live',stageStatusTone:'success',
+    disabled:true,state:'live',live:true},
   'a live stage must still say that this wallet is not eligible');
+  assert.deepEqual(state.scheduleStageChoiceState({startTime:now/1000-7200,endTime:now/1000-3600,
+    eligibilityState:'eligible'},now,{authoritativeLive:false}),
+  {tag:'Eligible',tone:'eligible',eligibilityState:'eligible',stageStatus:'Ended',stageStatusTone:'ended',
+    disabled:true,state:'ended'},
+  'an ended stage must keep its wallet eligibility badge and put Ended beside the stage name');
 });
 
 test('Schedule notifications are deduplicated and deep-link to the durable task state',()=>{
@@ -321,7 +427,7 @@ test('Schedule help stays available before contract detection and has a mobile-s
   const end=app.indexOf('function Activity(',start);
   const schedule=app.slice(start,end);
   const help=schedule.indexOf('className="ico-btn schedule-help-open"');
-  const detected=schedule.indexOf("!detecting&&ADDRESS_SHAPE.test(contractAddress.trim())");
+  const detected=schedule.indexOf('ADDRESS_SHAPE.test(contractAddress.trim())&&lastDetected.current');
   assert.ok(help>=0&&help<detected,'help must be reachable before a contract is detected');
   assert.match(css,/\.ico-btn\.schedule-help-open\{width:44px;height:44px/);
   assert.match(app,/onKeyDown=\{event=>\{if\(event\.key==='Escape'\)\{event\.stopPropagation\(\);setPinned\(false\);setDismissed\(true\);\}\}\}/,
@@ -346,7 +452,7 @@ test('Schedule cannot submit until an explicit or detected mint time exists',()=
   const schedule=app.slice(start,end);
   assert.match(schedule,/<DateTimePicker name="mintTime"[\s\S]*required disabled=\{noWallets\}/);
   assert.match(schedule,/disabled=\{noWallets\|\|!scheduleWallet\|\|!mintTime\|\|detecting\|\|submitting/);
-  assert.match(schedule,/!liveMintStage&&!detecting&&ADDRESS_SHAPE\.test\(contractAddress\.trim\(\)\)&&lastDetected\.current===contractAddress\.trim\(\)\.toLowerCase\(\)/,
+  assert.match(schedule,/!detecting&&\(!liveMintStage\|\|Boolean\(selectedStageKey\)\|\|hasSelectableFutureStage\)&&ADDRESS_SHAPE\.test\(contractAddress\.trim\(\)\)&&lastDetected\.current===contractAddress\.trim\(\)\.toLowerCase\(\)/,
     'clearing a successful form must not leave an empty address looking like a detected contract');
 });
 
@@ -357,10 +463,10 @@ test('Schedule uses the server recommendation without pretending a future allowl
   assert.match(schedule,/const recommended=result\.schedulePlan/);
   assert.match(schedule,/recommended\.recommendedStageUuid/);
   assert.match(schedule,/const selectable=future\.filter\(stage=>!stageChoice\(stage,detectedAt,detectedLiveness\)\.disabled\)/);
-  assert.match(schedule,/selectable\.length===1&&stageChoice\(selectable\[0\],[^)]*\)\.state!=='check_at_open'/,
+  assert.match(schedule,/selectable\.length===1&&stageChoice\(selectable\[0\],[^)]*\)\.eligibilityState!=='check_at_open'/,
     'an unknown gated stage must not become the automatic choice merely because it is the only one');
-  assert.match(schedule,/liveOnlyStage=!chosenStage&&selectable\.length===0&&liveChoice\?\.tone!=='ineligible'/,
-    'a live phase must not hide selectable future stages whose eligibility is checked at opening');
+  assert.match(schedule,/liveOnlyStage=liveChoice\?\.tone!=='ineligible'[\s\S]*\?availability\.liveStage:null/,
+    'a live phase must keep its handoff without hiding a safely selected future stage');
   assert.ok((schedule.match(/liveChoice\?\.tone!=='ineligible'/g)||[]).length>=2,
     'a live but explicitly ineligible phase must never become a Mint now hand-off');
   assert.match(schedule,/if\(choice\.disabled\)/,
@@ -373,13 +479,15 @@ test('Schedule uses the server recommendation without pretending a future allowl
     'the client must explain why an unproven allowlist is not recommended automatically');
   assert.match(schedule,/Turn on the read-only eligibility check in Settings to confirm this wallet earlier\./,
     'an unconnected wallet must be directed to its durable Settings opt-in instead of being shown as eligible');
-  assert.match(schedule,/const eligibilityTag=choice\.state==='open_to_all'\?'Eligible'[\s\S]*:needsEarlyAuthorization\?'Check not enabled':choice\.tag/,
+  assert.match(schedule,/const historicalDecisionMissing=providerDecisionMissing&&choice\.stageStatus==='Ended'/,
+    'an omitted historical OpenSea result must remain distinct from an explicit ineligible decision');
+  assert.match(schedule,/const eligibilityTag=choice\.eligibilityState==='open_to_all'\?'Eligible'[\s\S]*:needsEarlyAuthorization\?'Check not enabled'[\s\S]*:providerDecisionMissing\?\(authorizationUnavailable\?'Check unavailable'[\s\S]*:historicalDecisionMissing\?'Result unavailable':'Awaiting result'\)[\s\S]*:choice\.tag/,
     'public stages should use the same clear green Eligible state as OpenSea while remaining open to all');
-  assert.match(schedule,/inlineStatus:choice\.live\?'Live':null,inlineStatusTone:choice\.live\?'success':null/,
-    'live belongs beside the stage name and time rather than replacing wallet eligibility');
+  assert.match(schedule,/inlineStatus:choice\.stageStatus,inlineStatusTone:choice\.stageStatusTone/,
+    'Live, Ended, and Not Started belong beside the stage name and time rather than replacing wallet eligibility');
   assert.match(schedule,/tag:eligibilityTag,tone:needsEarlyAuthorization\?'authorization_required':choice\.tone\|\|choice\.state,[\s\S]*disabled:choice\.disabled/,
     'every stage option must carry its authoritative eligibility state into the visual treatment');
-  assert.match(schedule,/choice\.state==='open_to_all'\?'Open to all wallets':null/,
+  assert.match(schedule,/choice\.eligibilityState==='open_to_all'\?'Open to all wallets':null/,
     'the green public-stage eligibility must remain explicitly explained');
   assert.match(schedule,/label:`\$\{stageName\} · \$\{local\}`/);
   assert.match(schedule,/<SelectMenu label="Mint stage"/);
@@ -397,8 +505,24 @@ test('Schedule uses the server recommendation without pretending a future allowl
     'confirmed ineligibility should use the requested subdued treatment');
   assert.match(css,/\.schedule-preview-stage-control \.select-menu-inline-status\.success\{color:var\(--success\)\}/,
     'the inline Live status should be green in both themes');
-  assert.match(css,/\.schedule-preview-stage-control \.select-menu-inline-status\.success::before\{content:'·'/,
-    'the live state should read visually as stage name, date and time, then a separator and Live');
+  assert.match(css,/\.schedule-preview-stage-control \.select-menu-inline-status::before\{content:'·'/,
+    'every stage state should read visually as stage name, date and time, then a separator and its timing');
+  assert.match(css,/\.schedule-preview-stage-control \.select-menu-inline-status\.ended\{color:var\(--muted\)\}/);
+  assert.match(css,/\.schedule-preview-stage-control \.select-menu-inline-status\.pending\{color:var\(--faint\)\}/);
+  assert.match(schedule,/const compactFacts=\[stage\.maxPerWallet\?`Max \$\{stage\.maxPerWallet\}\/wallet`/,
+    'mobile options should keep only useful max and price facts rather than repeating eligibility prose');
+  assert.match(schedule,/className="schedule-stage-facts-full"/);
+  assert.match(schedule,/className="schedule-stage-facts-mobile"/);
+  assert.match(css,/@media\(max-width:700px\)\{[\s\S]*\.schedule-preview-stage-control \.select-menu-panel\{[^}]*max-height:min\(13\.25rem,36dvh\)[^}]*overscroll-behavior:contain/,
+    'the mobile stage menu must use a bounded internally scrolling panel');
+  assert.match(css,/\.schedule-preview-stage-control \.select-menu-option\{[^}]*min-height:44px[^}]*padding:\.38rem \.45rem/,
+    'compact mobile options must retain a 44px touch target');
+  assert.match(css,/\.schedule-preview-stage-control \.select-menu-group-label\{display:none\}/,
+    'the mobile menu must not repeat its Mint stage label as a second panel heading');
+  assert.match(css,/\.schedule-stage-facts-full\{display:none\}/);
+  assert.match(css,/\.schedule-stage-facts-mobile\{display:block/);
+  assert.match(css,/\.schedule-stage-facts-mobile\{display:none\}/,
+    'desktop keeps the full stage facts and hides the mobile-only summary');
   assert.match(schedule,/walletLabel=\$\{encodeURIComponent\(normalizedWallet\)\}/,
     'the planner request must be tied to the selected owned wallet');
   assert.match(schedule,/lastEligibilityWallet\.current!==scheduleWallet/,
@@ -415,11 +539,25 @@ test('Schedule uses the server recommendation without pretending a future allowl
     'the wallet-scoped detection request must be abortable');
   assert.match(schedule,/sequence!==detectionSequence\.current\|\|detectingKey\.current!==requestKey[\s\S]*scheduleWalletRef\.current!==normalizedWallet[\s\S]*contractAddressRef\.current\.trim\(\)\.toLowerCase\(\)!==trimmed\.toLowerCase\(\)/,
     'a stale response must not overwrite a newer wallet or contract selection');
-  assert.match(schedule,/Eligibility for \$\{scheduleWallet\|\|'this wallet'\} is verified when the stage opens/);
+  assert.match(schedule,/`No historical eligibility result is available for \$\{scheduleWallet\|\|'this wallet'\}`/,
+    'an ended stage omitted from the provider response must use clear historical-result copy without inventing ineligibility');
+  assert.match(schedule,/`OpenSea has not returned an eligibility result for \$\{scheduleWallet\|\|'this wallet'\} yet`/,
+    'a future stage with a pending provider result must stay distinct from a historical omission');
+  assert.match(schedule,/'OpenSea could not check this wallet right now'/,
+    'a provider outage must be distinct from a wallet that has not enabled the check');
+  assert.match(schedule,/authorizationNeedsReconnect=walletEligibilityAuthorization\?\.status==='reauthorize'/);
+  assert.match(schedule,/Reconnect to check/);
+  assert.match(schedule,/Reconnect eligibility check/,
+    'an expired read-only authorization must direct the wallet back to Settings');
   assert.match(schedule,/Only the public stage could be verified right now\./,
     'an on-chain one-stage fallback must not masquerade as a complete project stage catalog');
   assert.doesNotMatch(schedule,/stages\.length>1&&<SelectMenu className="fl" label="Stage"/,
     'the stage picker belongs inside the schedule preview, including when only one stage exists');
+});
+
+test('dashboard contract detection requests authoritative supply facts',()=>{
+  assert.match(dashboardApi,/detectMint:action[\s\S]*walletLabel:req\.query\.walletLabel,includeDrop:true,includeSupply:true/,
+    'Schedule needs provider and on-chain supply facts to distinguish live from sold out');
 });
 
 test('Settings owns the persistent per-wallet eligibility permission while Schedule only links to it',()=>{
@@ -442,6 +580,12 @@ test('Settings owns the persistent per-wallet eligibility permission while Sched
     'Schedule must not own a second authorization flow');
   assert.match(schedule,/Eligibility check not enabled/);
   assert.match(schedule,/Check not enabled/);
+  assert.match(schedule,/hasGatedStages&&!eligibilityEnabled&&<div className="schedule-eligibility-access"/,
+    'the selected wallet opt-in prompt must disappear after that wallet has approved automatic checks');
+  assert.doesNotMatch(schedule,/Automatic eligibility checks are on/,
+    'approved wallets should not retain a success banner that becomes permanent visual noise');
+  assert.doesNotMatch(schedule,/eligibilityBusy|setEligibilityBusy/,
+    'opening Settings is synchronous navigation and must not leave an ignored wallet prompt permanently disabled');
   assert.match(schedule,/onOpenSettings\?\.\(\)/);
   assert.match(app,/onOpenSettings=\{\(\)=>go\('Settings',null,'opensea-eligibility'\)\}/,
     'the Schedule action must deep-link to the exact Settings panel');

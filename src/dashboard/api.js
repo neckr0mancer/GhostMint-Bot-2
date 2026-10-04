@@ -353,7 +353,7 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLo
     mintPresets:action(async(req,res)=>res.json(jsonSafe(await commands.mintPresets(user(req))))),
     detectMint:action(async(req,res)=>{noStore(res);res.json(jsonSafe(await commands.detectMintContract(user(req),{
       contractAddress:req.query.contractAddress,quantity:req.query.quantity,
-      walletLabel:req.query.walletLabel,includeDrop:true,
+      walletLabel:req.query.walletLabel,includeDrop:true,includeSupply:true,includeName:true,
     })));}),
     previewMint:action(async(req,res)=>{const isBatch=Array.isArray(req.body.walletLabels);let labels=isBatch?req.body.walletLabels:[req.body.walletLabel];
       // TX-024 (Model 2 phase-2): reject empty, duplicate, case-insensitive duplicate, and >100-label

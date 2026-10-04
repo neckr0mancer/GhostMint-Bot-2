@@ -48,6 +48,12 @@ function plainDecimal(value) {
 
 function parseEtherAmount(value) { return parseEther(plainDecimal(value)); }
 
+function providerStageKey(value) {
+  const normalized=String(value??'').trim().toLowerCase();
+  return normalized&&normalized.length<=128&&!/[\u0000-\u001f\u007f]/.test(normalized)
+    ?normalized:null;
+}
+
 // OpenSea's builder is needed when the current/next phase carries wallet-specific eligibility
 // (proof/signature/allowlist). A plain public SeaDrop remains on the direct, on-chain SeaDrop path
 // so a future gated phase elsewhere in the collection does not unnecessarily make today's public
@@ -274,7 +280,11 @@ function createBotCommandService(dependencies) {
     // Display-only, same "unknown is fine" shape as everything else here -- a missing API key or
     // an OpenSea outage never blocks detection, it just leaves these fields null.
     const openSea = openSeaService ? await openSeaService.getCollectionMetadata(chain, contractAddress) : null;
-    const onChainName = !input.includeSupply && !openSea?.name && contractValueResolver?.probeName
+    // Background supply checks deliberately skip the display-only name RPC. Dashboard detection
+    // asks for it explicitly so adding includeSupply for sold-out safety cannot blank a collection
+    // name that the same contract can provide on-chain.
+    const onChainName = (input.includeName===true||!input.includeSupply)
+      && !openSea?.name && contractValueResolver?.probeName
       ? await contractValueResolver.probeName(chain, contractAddress)
       : null;
     // Marketplace metadata is richer when available, but a newly deployed or temporarily
@@ -293,6 +303,7 @@ function createBotCommandService(dependencies) {
     // and plain-mint branches below, since collection-level stats don't depend on mint mechanism.
     let stats = null;
     let liveTotalMintedValue = null;
+    let liveTotalMintedRaw = null;
     if (input.includeStats) {
       const [liveTotalMinted, liveStats] = await Promise.all([
         contractValueResolver ? contractValueResolver.probeTotalMinted(chain, contractAddress) : null,
@@ -300,6 +311,7 @@ function createBotCommandService(dependencies) {
       ]);
       const totalMintedValue = liveTotalMinted ? Number(liveTotalMinted.value) : null;
       liveTotalMintedValue = totalMintedValue;
+      liveTotalMintedRaw = liveTotalMinted ? String(liveTotalMinted.value) : null;
       const floorPrice = liveStats?.floorPrice ?? null;
       stats = {
         totalMinted: totalMintedValue,
@@ -321,6 +333,7 @@ function createBotCommandService(dependencies) {
         ? await contractValueResolver.probeTotalMinted(chain, contractAddress)
         : null;
       liveTotalMintedValue = liveTotalMinted ? Number(liveTotalMinted.value) : null;
+      liveTotalMintedRaw = liveTotalMinted ? String(liveTotalMinted.value) : null;
     }
 
     // Section AF -- "can't you read the phases from OpenSea and the contract?" On-chain SeaDrop only
@@ -351,10 +364,11 @@ function createBotCommandService(dependencies) {
           walletEligibilityAuthorization = walletEligibility.authorization;
         }
         const eligibilityByStage = new Map((walletEligibility?.stages || [])
-          .filter(stage => stage?.uuid).map(stage => [String(stage.uuid),stage]));
+          .map(stage => [providerStageKey(stage?.uuid),stage])
+          .filter(([key]) => key));
         const mergeWalletEligibility = stage => {
           if (!stage) return null;
-          const eligibility = eligibilityByStage.get(String(stage.uuid));
+          const eligibility = eligibilityByStage.get(providerStageKey(stage.uuid));
           if (!eligibility) return stage;
           const walletCap = eligibility.maxTotalMintableByWalletPerToken
             ?? eligibility.maxTotalMintableByWallet;
@@ -432,19 +446,39 @@ function createBotCommandService(dependencies) {
         schedulePlan = buildScheduleStagePlan(drop);
       }
       const priceKnown = Boolean(publicDrop);
-      // SeaDrop's own PublicDrop struct has no current-supply field, so the stage's endTime having
-      // already passed is one sold-out signal here -- but a popular drop can sell out well before
-      // its window closes, so that alone isn't enough. `liveTotalMintedValue` above is the only live
-      // minted-count already available without probing twice. Ordinary card detection keeps that
+      // SeaDrop's own PublicDrop struct has no current-supply field. An expired endTime closes that
+      // mint window and switches display pricing to the market floor, but it is not proof that all
+      // items were minted. `liveTotalMintedValue` above is the only live minted count already
+      // available without probing twice. Ordinary card detection keeps that
       // behind includeStats; scheduler reminders use the lean includeSupply flag so they can make
       // the same comparison without fetching floor/owner/volume data every minute. maxSupply is
       // probed unconditionally either way, same as the card's own "Max supply" line further down.
       const timeWindowClosed = Boolean(publicDrop?.endTime && publicDrop.endTime * 1000 <= Date.now());
       const liveMaxSupply = contractValueResolver ? await contractValueResolver.probeMaxSupply(chain, contractAddress) : null;
-      const maxSupplyValue = liveMaxSupply ? Number(liveMaxSupply.value) : null;
-      const soldOut = Boolean(timeWindowClosed || (maxSupplyValue !== null && typeof liveTotalMintedValue === 'number'
-        && liveTotalMintedValue >= maxSupplyValue));
-      const displayPrice = await resolveDisplayPrice({ chain, soldOut, mintPriceKnown: priceKnown,
+      // `probeMaxSupply()` deliberately falls back to ERC-721 totalSupply() for display-only
+      // compatibility with older contracts. That fallback is the current minted count, not a
+      // fixed cap. Never use it as authoritative exhaustion evidence or totalSupply would be
+      // compared with itself and every non-empty collection would look sold out.
+      const authoritativeLiveMaxSupply = liveMaxSupply?.source === 'totalSupply' ? null : liveMaxSupply;
+      const maxSupplyValue = authoritativeLiveMaxSupply ? Number(authoritativeLiveMaxSupply.value) : null;
+      // OpenSea normalizes missing supply fields to null. Number(null) is 0, so checking finiteness
+      // alone would turn "unknown / unknown" into an exhausted 0-of-0 collection.
+      const providerTotalSupply = drop?.totalSupply!==null&&drop?.totalSupply!==undefined
+        &&Number.isFinite(Number(drop.totalSupply))?Number(drop.totalSupply):null;
+      const effectiveTotalMinted = typeof liveTotalMintedValue === 'number'
+        ?liveTotalMintedValue:providerTotalSupply;
+      const providerMaxSupply = drop?.maxSupply!==null&&drop?.maxSupply!==undefined
+        &&Number.isFinite(Number(drop.maxSupply))?Number(drop.maxSupply):null;
+      const effectiveMaxSupply = maxSupplyValue ?? providerMaxSupply;
+      const liveSupplyExhausted=Boolean(authoritativeLiveMaxSupply?.value&&liveTotalMintedRaw
+        &&BigInt(authoritativeLiveMaxSupply.value)>0n
+        &&BigInt(liveTotalMintedRaw)>=BigInt(authoritativeLiveMaxSupply.value));
+      // OpenSea performs its provider comparison from the original decimal strings, so its
+      // boolean is safe even above Number.MAX_SAFE_INTEGER. The live RPC comparison also stays in
+      // BigInt; the Number-shaped fields below are presentation values only.
+      const supplyExhausted = Boolean(drop?.soldOut===true || liveSupplyExhausted);
+      const soldOut = supplyExhausted;
+      const displayPrice = await resolveDisplayPrice({ chain, soldOut:supplyExhausted||timeWindowClosed, mintPriceKnown: priceKnown,
         mintPriceWeiPerItem: priceKnown ? BigInt(publicDrop.mintPriceWei) : null, floorPrice: openSea?.floorPrice });
       return {
         chain,
@@ -457,8 +491,8 @@ function createBotCommandService(dependencies) {
         priceKnown,
         // SeaDrop's PublicDrop struct has no supply-cap field -- probed live from the token contract
         // itself, separately from the SeaDrop core's price/timing above.
-        maxSupply: liveMaxSupply ? Number(liveMaxSupply.value) : null,
-        totalMinted:liveTotalMintedValue,
+        maxSupply:effectiveMaxSupply,
+        totalMinted:effectiveTotalMinted,
         maxPerWallet: publicDrop?.maxTotalMintableByWallet ?? null,
         // Real on-chain SeaDrop PublicDrop fields (unix seconds) -- null for a drop with no known
         // PublicDrop yet, not "no opening time exists." Non-SeaDrop contracts have no equivalent
@@ -467,10 +501,12 @@ function createBotCommandService(dependencies) {
         endTime: publicDrop?.endTime ?? null,
         collection,
         soldOut,
+        supplyExhausted,
+        mintEnded:timeWindowClosed,
         displayPrice,
         stats,
         drop,
-        schedulePlan,
+        schedulePlan:supplyExhausted?null:schedulePlan,
         walletEligibilityAuthorization,
         openSeaMintRecommended: dropRequiresOpenSeaBuilder(drop),
       };
@@ -480,8 +516,14 @@ function createBotCommandService(dependencies) {
       ? await contractValueResolver.resolve(chain, contractAddress)
       : { price: null, maxSupply: null, maxPerWallet: null, totalMinted: null };
     const priceKnown = Boolean(resolved.price);
-    const soldOut = Boolean(resolved.maxSupply?.value && resolved.totalMinted?.value
-      && BigInt(resolved.totalMinted.value) >= BigInt(resolved.maxSupply.value));
+    // `maxSupply` retains totalSupply() as a legacy display fallback. That getter reports how many
+    // tokens exist now, not the collection cap, so it must never be compared with totalMinted as
+    // authoritative exhaustion evidence.
+    const authoritativeMaxSupply=resolved.maxSupply?.source==='totalSupply'?null:resolved.maxSupply;
+    const supplyExhausted = Boolean(authoritativeMaxSupply?.value
+      && BigInt(authoritativeMaxSupply.value)>0n && resolved.totalMinted?.value
+      && BigInt(resolved.totalMinted.value) >= BigInt(authoritativeMaxSupply.value));
+    const soldOut = supplyExhausted;
     const displayPrice = await resolveDisplayPrice({ chain, soldOut, mintPriceKnown: priceKnown,
       mintPriceWeiPerItem: priceKnown ? BigInt(resolved.price.value) : null, floorPrice: openSea?.floorPrice });
     return {
@@ -500,6 +542,7 @@ function createBotCommandService(dependencies) {
       endTime: null,
       collection,
       soldOut,
+      supplyExhausted,
       displayPrice,
       stats,
       drop,
@@ -926,7 +969,7 @@ function createBotCommandService(dependencies) {
     return buildSeaDropAllowanceEvidence({ stage,publicDrop,mintStats });
   }
 
-  async function resolveScheduleBaseline(owned, validated, rawInput = {}) {
+  async function resolveScheduleBaseline(userId, owned, validated, rawInput = {}) {
     let openingAt = validated.stageStartAt ?? validated.mintTime;
     let priceWeiPerItem = validated.expectedPriceWeiPerItem?.toString()
       ?? parseEtherAmount(validated.priceETH || 0).toString();
@@ -960,7 +1003,8 @@ function createBotCommandService(dependencies) {
       const drop = await openSeaService.getDrop(validated.chain, validated.contractAddress);
       const candidates = Array.isArray(drop?.stages) ? drop.stages : [];
       if (validated.stageUuid) {
-        matchedStage = candidates.find(stage => stage.uuid === validated.stageUuid) || null;
+        const requestedStageKey=providerStageKey(validated.stageUuid);
+        matchedStage = candidates.find(stage => providerStageKey(stage.uuid)===requestedStageKey) || null;
       } else {
         const matches = candidates.filter(stage => (
           (!validated.stageLabel || stage.label === validated.stageLabel)
@@ -972,6 +1016,29 @@ function createBotCommandService(dependencies) {
       if (matchedStage?.startTime) openingAt = Number(matchedStage.startTime) * 1_000;
       if (matchedStage?.priceWei !== null && matchedStage?.priceWei !== undefined) {
         priceWeiPerItem = BigInt(matchedStage.priceWei).toString();
+      }
+
+      // The browser's stage list is advisory; creation is the shared authorization boundary used
+      // by Dashboard, Telegram, Discord, and direct API callers. Re-read the same wallet-specific
+      // eligibility source here and reject only a definitive negative for the exact gated stage.
+      // A missing decision/provider outage remains eligible-at-opening, and public stages remain
+      // open-to-all instead of being made dependent on an OpenSea wallet token.
+      if (matchedStage&&stageRequiresEligibilityCheck(matchedStage)&&openSeaEligibilityService) {
+        let walletEligibility=null;
+        try {
+          walletEligibility=await openSeaEligibilityService.eligibility(
+            userId,owned,validated.chain,validated.contractAddress);
+        } catch { /* unknown at opening; final execution remains fail-closed */ }
+        const requestedStageKey=providerStageKey(matchedStage.uuid);
+        const decision=requestedStageKey
+          ?(walletEligibility?.stages||[])
+            .find(stage=>providerStageKey(stage?.uuid)===requestedStageKey)
+          :null;
+        if(decision?.isEligible===false){
+          throw new ValidationError({field:'stageUuid',
+            message:'this wallet is not eligible for the selected mint stage; choose another eligible stage or wallet'},
+          'SCHEDULE_STAGE_INELIGIBLE','This wallet is not eligible for the selected mint stage.');
+        }
       }
     }
 
@@ -1073,7 +1140,7 @@ function createBotCommandService(dependencies) {
     const approvedOpeningAt=validated.stageStartAt??validated.mintTime;
     const approvedPriceWeiPerItem=validated.expectedPriceWeiPerItem?.toString()
       ??parseEtherAmount(validated.priceETH||0).toString();
-    const observedBaseline = await resolveScheduleBaseline(owned,validated,input);
+    const observedBaseline = await resolveScheduleBaseline(userId,owned,validated,input);
     const creationPolicy={id:validated.id,mintTime:validated.mintTime,
       originalOpeningAt:approvedOpeningAt,acceptedOpeningAt:approvedOpeningAt,
       acceptedPriceWeiPerItem:approvedPriceWeiPerItem,acceptedConfigFingerprint:null,

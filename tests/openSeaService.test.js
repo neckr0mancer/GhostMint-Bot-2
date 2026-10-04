@@ -96,7 +96,7 @@ test('wallet eligibility uses both API-key and wallet JWT and normalizes stage U
   assert.equal(request.config.headers.Authorization,'Bearer wallet-jwt');
 });
 
-test('wallet eligibility preserves unknown provider facts instead of turning them into ineligibility',async()=>{
+test('wallet eligibility preserves unknown provider facts and bounded opaque stage IDs',async()=>{
   const http={get:async url=>url.includes('/chain/ethereum/contract/')
     ?{data:{collection:'unknown-drop'}}
     :{data:{stages:[
@@ -105,9 +105,23 @@ test('wallet eligibility preserves unknown provider facts instead of turning the
     ]}}};
   const result=await createOpenSeaService({apiKey:'app-key',repository:fakeRepository(),http})
     .getDropEligibility('ethereum',CONTRACT,'wallet-jwt');
-  assert.deepEqual(result,{stages:[{uuid:'11111111-1111-4111-8111-111111111111',
-    isEligible:null,priceWei:null,maxTotalMintableByWallet:null,
-    maxTotalMintableByWalletPerToken:null}]});
+  assert.deepEqual(result,{stages:[
+    {uuid:'11111111-1111-4111-8111-111111111111',isEligible:null,priceWei:null,
+      maxTotalMintableByWallet:null,maxTotalMintableByWalletPerToken:null},
+    {uuid:'not-a-uuid',isEligible:false,priceWei:'0',maxTotalMintableByWallet:null,
+      maxTotalMintableByWalletPerToken:null},
+  ]});
+});
+
+test('wallet eligibility accepts newer UUIDs and documented response aliases',async()=>{
+  const id='0192f8a1-7b3c-7def-8123-0123456789ab';
+  const http={get:async url=>url.includes('/chain/ethereum/contract/')
+    ?{data:{collection:'future-id-drop'}}
+    :{data:{stages:[{uuid:id.toUpperCase(),eligible:true,price:'0'}]}}};
+  const result=await createOpenSeaService({apiKey:'app-key',repository:fakeRepository(),http})
+    .getDropEligibility('ethereum',CONTRACT,'wallet-jwt');
+  assert.equal(result.stages[0].uuid,id);
+  assert.equal(result.stages[0].isEligible,true);
 });
 
 test('a network failure or timeout degrades to empty metadata instead of throwing', async () => {
@@ -312,7 +326,7 @@ test('getDrop normalizes a real-shaped response: active/next stage, full stage l
   const http = { get: async url => {
     if (url.includes('/chain/ethereum/contract/')) return { data: { collection: 'cool-cats' } };
     if (url.endsWith('/drops/cool-cats')) return { data: {
-      is_minting: true, drop_type: 'seadrop_v1_erc721', max_supply: '10000', opensea_url: 'https://opensea.io/collection/cool-cats',
+      is_minting: true, drop_type: 'seadrop_v1_erc721', max_supply: '10000', total_supply:'9999', opensea_url: 'https://opensea.io/collection/cool-cats',
       active_stage: { uuid: 'a1', label: 'Public sale', start_time: '2026-08-19T18:00:00Z', end_time: '2026-08-26T18:00:00Z', price: '50000000000000000', price_currency_address: '0x0000000000000000000000000000000000000000', stage_type: 'public_sale', max_per_wallet: '5' },
       next_stage: null,
       stages: [
@@ -329,6 +343,8 @@ test('getDrop normalizes a real-shaped response: active/next stage, full stage l
   assert.equal(drop.isMinting, true);
   assert.equal(drop.dropType, 'seadrop_v1_erc721');
   assert.equal(drop.maxSupply, 10000);
+  assert.equal(drop.totalSupply, 9999);
+  assert.equal(drop.soldOut, false);
   assert.equal(drop.openSeaUrl, 'https://opensea.io/collection/cool-cats');
   assert.equal(drop.activeStage.label, 'Public sale');
   assert.equal(drop.activeStage.priceWei, '50000000000000000');
@@ -341,6 +357,29 @@ test('getDrop normalizes a real-shaped response: active/next stage, full stage l
   assert.deepEqual(drop.stages.map(stage => stage.label), ['HUNDRED','TEAM','WL','PUBLIC']);
   assert.equal(drop.stages[0].allowlistWalletCount, 12);
   assert.equal(drop.stages[0].priceWei, '0');
+});
+
+test('getDrop marks exhausted provider supply as sold out even when is_minting is false',async()=>{
+  const http={get:async url=>url.includes('/chain/ethereum/contract/')
+    ?{data:{collection:'sold-out-drop'}}
+    :{data:{is_minting:false,max_supply:'11111',total_supply:'11111',active_stage:null,
+      next_stage:null,stages:[]}}};
+  const drop=await createOpenSeaService({apiKey:'test-key',repository:fakeRepository(),http})
+    .getDrop('ethereum',CONTRACT);
+  assert.equal(drop.totalSupply,11111);
+  assert.equal(drop.soldOut,true);
+});
+
+test('getDrop treats a zero provider max supply as unknown rather than sold out',async()=>{
+  const http={get:async url=>url.includes('/chain/ethereum/contract/')
+    ?{data:{collection:'unknown-cap-drop'}}
+    :{data:{is_minting:false,max_supply:'0',total_supply:'0',active_stage:null,
+      next_stage:null,stages:[]}}};
+  const drop=await createOpenSeaService({apiKey:'test-key',repository:fakeRepository(),http})
+    .getDrop('ethereum',CONTRACT);
+  assert.equal(drop.maxSupply,0);
+  assert.equal(drop.totalSupply,0);
+  assert.equal(drop.soldOut,false);
 });
 
 test('getDrop surfaces a future stage as nextStage when the drop is not currently minting', async () => {

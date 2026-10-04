@@ -1,6 +1,7 @@
 const assert=require('node:assert/strict');
 const test=require('node:test');
-const {createScheduledPreflightEvaluator,scheduledPreflightDelivery}=require('../src/scheduler/scheduledPreflight');
+const {authoritativeSupplyInspection,createScheduledPreflightEvaluator,
+  scheduledPreflightDelivery}=require('../src/scheduler/scheduledPreflight');
 const {createScheduledPreflightWorker}=require('../src/scheduler/scheduledPreflightWorker');
 
 const task={id:'task-1',userId:'user-1',name:'Public mint',walletLabel:'alpha',qty:2};
@@ -63,6 +64,21 @@ test('only definitive sold-out evidence terminates the readiness path',async()=>
   assert.equal((await sold(task,check)).result,'sold_out');assert.equal(valueReads,0);
   const uncertain=evaluator({inspectMint:{soldOut:true,soldOutDefinitive:false}});
   assert.equal((await uncertain.evaluate(task,check)).result,'ready');
+});
+
+test('preflight sold-out inspection prefers authoritative verdicts and rejects zero or unknown caps',()=>{
+  assert.deepEqual(authoritativeSupplyInspection({supplyExhausted:true,maxSupply:null,totalMinted:null}),
+    {soldOut:true,soldOutDefinitive:true});
+  assert.deepEqual(authoritativeSupplyInspection({drop:{soldOut:true},maxSupply:null,totalMinted:null}),
+    {soldOut:true,soldOutDefinitive:true});
+  assert.deepEqual(authoritativeSupplyInspection({supplyExhausted:false,maxSupply:10,totalMinted:10}),
+    {soldOut:false,soldOutDefinitive:false},'an explicit service verdict beats presentation values');
+  assert.deepEqual(authoritativeSupplyInspection({maxSupply:0,totalMinted:0}),
+    {soldOut:false,soldOutDefinitive:false});
+  assert.deepEqual(authoritativeSupplyInspection({maxSupply:null,totalMinted:100}),
+    {soldOut:false,soldOutDefinitive:false});
+  assert.deepEqual(authoritativeSupplyInspection({maxSupply:'100',totalMinted:'100'}),
+    {soldOut:true,soldOutDefinitive:true},'legacy detectors retain a guarded positive fallback');
 });
 
 test('delivery copy is concise and distinguishes a 30-second low-balance warning',()=>{

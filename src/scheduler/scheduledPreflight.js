@@ -5,6 +5,30 @@ function bigintOrNull(value) {
   return typeof value==='bigint'?value:BigInt(value);
 }
 
+function nonnegativeWholeOrNull(value) {
+  try {
+    const parsed=bigintOrNull(value);
+    return parsed!==null&&parsed>=0n?parsed:null;
+  } catch { return null; }
+}
+
+// Convert detection into the one terminal signal the early worker understands. Prefer the
+// service's explicit supply verdict (or OpenSea's exact-string comparison) over Number-shaped
+// presentation fields. The guarded fallback exists for older/custom detectors only: unknown/zero
+// max supply is never proof that a collection sold out.
+function authoritativeSupplyInspection(detected) {
+  if(detected?.supplyExhausted===true||detected?.drop?.soldOut===true){
+    return {soldOut:true,soldOutDefinitive:true};
+  }
+  if(typeof detected?.supplyExhausted==='boolean'||typeof detected?.drop?.soldOut==='boolean'){
+    return {soldOut:false,soldOutDefinitive:false};
+  }
+  const maxSupply=nonnegativeWholeOrNull(detected?.maxSupply);
+  const totalMinted=nonnegativeWholeOrNull(detected?.totalMinted);
+  const exhausted=maxSupply!==null&&maxSupply>0n&&totalMinted!==null&&totalMinted>=maxSupply;
+  return {soldOut:exhausted,soldOutDefinitive:exhausted};
+}
+
 function createScheduledPreflightEvaluator({findWallet,inspectMint,resolveMintValueWei,
   estimateGasWei,getBalance,nativeCurrency=()=> 'ETH'}) {
   return async function evaluate(task,check) {
@@ -106,4 +130,4 @@ function scheduledPreflightDelivery(task,check,result,{formatWei,escape=value=>S
   };
 }
 
-module.exports={createScheduledPreflightEvaluator,scheduledPreflightDelivery};
+module.exports={authoritativeSupplyInspection,createScheduledPreflightEvaluator,scheduledPreflightDelivery};

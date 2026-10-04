@@ -452,8 +452,8 @@ test('wallet-specific detection rejects labels outside the requesting user befor
   assert.equal(providerCalls,0,'an unauthorized label must fail before any contract/provider lookup');
 });
 
-test('switching wallets replaces OpenSea eligibility and recomputes the recommended stage by exact UUID',async()=>{
-  const allow={uuid:'11111111-1111-4111-8111-111111111111',label:'WL',startTime:1_900_000_000,
+test('switching wallets replaces OpenSea eligibility and recomputes the recommendation across provider-ID casing',async()=>{
+  const allow={uuid:'0192f8a1-7b3c-7def-8123-0123456789ab',label:'WL',startTime:1_900_000_000,
     endTime:1_900_003_600,priceWei:'0',maxPerWallet:1,stageType:'signed_presale'};
   const publicStage={uuid:'22222222-2222-4222-8222-222222222222',label:'PUBLIC',startTime:1_900_004_000,
     endTime:1_900_007_600,priceWei:'0',maxPerWallet:10,stageType:'public'};
@@ -465,7 +465,7 @@ test('switching wallets replaces OpenSea eligibility and recomputes the recommen
   const openSeaEligibilityService={
     status:async(_userId,wallet)=>authorization(wallet),
     eligibility:async(_userId,wallet)=>({authorization:authorization(wallet),stages:[{
-      uuid:allow.uuid,isEligible:wallet.label==='eligible',priceWei:'0',
+      uuid:allow.uuid.toUpperCase(),isEligible:wallet.label==='eligible',priceWei:'0',
       maxTotalMintableByWallet:wallet.label==='eligible'?2:1,maxTotalMintableByWalletPerToken:null,
     }] }),
   };
@@ -489,6 +489,44 @@ test('switching wallets replaces OpenSea eligibility and recomputes the recommen
   assert.equal(second.drop.stages[0].eligibilityState,'ineligible');
   assert.equal(second.schedulePlan.recommendedStageUuid,publicStage.uuid);
   assert.equal(second.walletEligibilityAuthorization.walletAddress,FEE_RECIPIENT);
+});
+
+test('four-stage exhausted drop keeps wallet eligibility truthful and suppresses scheduling',async()=>{
+  const base=1_790_000_000;
+  const stages=[
+    {uuid:'0192f8a1-0001-7000-8000-000000000001',label:'GTD',startTime:base,
+      endTime:base+900,priceWei:'0',maxPerWallet:1,stageType:'signed_presale'},
+    {uuid:'0192f8a1-0002-7000-8000-000000000002',label:'FCFS',startTime:base+1_800,
+      endTime:base+2_700,priceWei:'0',maxPerWallet:1,stageType:'signed_presale'},
+    {uuid:'0192f8a1-0003-7000-8000-000000000003',label:'WL',startTime:base+3_600,
+      endTime:base+4_500,priceWei:'0',maxPerWallet:1,stageType:'signed_presale'},
+    {uuid:'0192f8a1-0004-7000-8000-000000000004',label:'PUBLIC',startTime:base+5_400,
+      endTime:base+7_200,priceWei:'0',maxPerWallet:1,stageType:'public'},
+  ];
+  const wallet={id:1,userId:'user-a',label:'main',address:WALLET,chain:'ethereum'};
+  const authorization={configured:true,status:'connected',connected:true,walletAddress:WALLET};
+  const {service}=commandServiceFixture({wallets:[wallet],
+    openSeaEligibilityService:{status:async()=>authorization,eligibility:async()=>({authorization,
+      stages:stages.map((stage,index)=>({uuid:stage.uuid.toUpperCase(),isEligible:index===3}))})},
+    contractValueResolver:{resolve:async()=>{throw new Error('should not be reached');},
+      probeTotalMinted:async()=>null,probeMaxSupply:async()=>null},
+    seaDropDiscoveryService:{resolve:async()=>({address:SEADROP,
+      publicDrop:{mintPriceWei:'0',maxTotalMintableByWallet:1,startTime:stages[3].startTime,
+        endTime:stages[3].endTime},feeRecipient:FEE_RECIPIENT})},
+    openSeaService:{getCollectionMetadata:async()=>({name:'Kid Story'}),getDrop:async()=>({
+      isMinting:false,activeStage:null,nextStage:null,stages,maxSupply:11111,totalSupply:11111,soldOut:true,
+    })},
+  });
+  const result=await service.detectMintContract('user-a',{contractAddress:CONTRACT,quantity:1,
+    includeDrop:true,includeSupply:true,walletLabel:'main'});
+  assert.equal(result.drop.stages.length,4);
+  assert.deepEqual(result.drop.stages.map(stage=>stage.eligibilityState),
+    ['ineligible','ineligible','ineligible','eligible']);
+  assert.equal(result.supplyExhausted,true);
+  assert.equal(result.soldOut,true);
+  assert.equal(result.maxSupply,11111);
+  assert.equal(result.totalMinted,11111);
+  assert.equal(result.schedulePlan,null,'an exhausted collection must never retain a schedule recommendation');
 });
 
 test('an active public phase keeps the direct SeaDrop path even when a later gated phase exists', async () => {
@@ -718,7 +756,7 @@ test('detectMintContract shows the mint price as displayPrice while a SeaDrop dr
   assert.deepEqual(result.displayPrice, { eth: 1, usd: null, source: 'mint' });
 });
 
-test('detectMintContract switches displayPrice to the OpenSea floor once a SeaDrop drop\'s endTime has passed', async () => {
+test('detectMintContract switches displayPrice to the OpenSea floor once a SeaDrop mint window has ended without calling it sold out', async () => {
   const pastEndTime = Math.floor(Date.now() / 1000) - 3_600;
   const { service } = commandServiceFixture({
     contractValueResolver: { resolve: async () => { throw new Error('should not be reached'); }, probeMaxSupply: async () => null },
@@ -726,29 +764,33 @@ test('detectMintContract switches displayPrice to the OpenSea floor once a SeaDr
     openSeaService: { getCollectionMetadata: async () => ({ floorPrice: 2.5 }) },
   });
   const result = await service.detectMintContract('user-a', { contractAddress: CONTRACT, quantity: 1 });
-  assert.equal(result.soldOut, true);
+  assert.equal(result.soldOut, false);
+  assert.equal(result.supplyExhausted, false);
+  assert.equal(result.mintEnded, true);
   assert.deepEqual(result.displayPrice, { eth: 2.5, usd: null, source: 'floor' });
 });
 
-test('a genuine floor price of exactly 0 on a sold-out collection is shown as 0, not treated as unavailable', async () => {
+test('a genuine floor price of exactly 0 after an ended mint window is shown as 0, not treated as unavailable', async () => {
   const pastEndTime = Math.floor(Date.now() / 1000) - 3_600;
   const { service } = commandServiceFixture({
     seaDropDiscoveryService: { resolve: async () => ({ address: SEADROP, publicDrop: { mintPriceWei: '1000000000000000000', endTime: pastEndTime }, feeRecipient: FEE_RECIPIENT }) },
     openSeaService: { getCollectionMetadata: async () => ({ floorPrice: 0, floorPriceSymbol: 'ETH' }) },
   });
   const result = await service.detectMintContract('user-a', { contractAddress: CONTRACT, quantity: 1 });
-  assert.equal(result.soldOut, true);
+  assert.equal(result.soldOut, false);
+  assert.equal(result.mintEnded, true);
   assert.equal(result.displayPrice.eth, 0);
   assert.notEqual(result.displayPrice, null);
 });
 
-test('a sold-out drop with no OpenSea floor data available has no displayPrice at all', async () => {
+test('an ended drop with no OpenSea floor data available has no displayPrice at all', async () => {
   const pastEndTime = Math.floor(Date.now() / 1000) - 3_600;
   const { service } = commandServiceFixture({
     seaDropDiscoveryService: { resolve: async () => ({ address: SEADROP, publicDrop: { mintPriceWei: '1000000000000000000', endTime: pastEndTime }, feeRecipient: FEE_RECIPIENT }) },
   });
   const result = await service.detectMintContract('user-a', { contractAddress: CONTRACT, quantity: 1 });
-  assert.equal(result.soldOut, true);
+  assert.equal(result.soldOut, false);
+  assert.equal(result.mintEnded, true);
   assert.equal(result.displayPrice, null);
 });
 
@@ -865,6 +907,94 @@ test('detectMintContract treats a SeaDrop drop as sold out once totalMinted reac
   assert.equal(result.displayPrice.source, 'floor');
 });
 
+test('detectMintContract preserves OpenSea exhausted-supply evidence without a second stats request',async()=>{
+  const futureEndTime=Math.floor(Date.now()/1000)+3_600;
+  const {service}=commandServiceFixture({
+    contractValueResolver:{resolve:async()=>{throw new Error('should not be reached');},
+      probeMaxSupply:async()=>null},
+    seaDropDiscoveryService:{resolve:async()=>({address:SEADROP,
+      publicDrop:{mintPriceWei:'0',endTime:futureEndTime},feeRecipient:FEE_RECIPIENT})},
+    openSeaService:{getCollectionMetadata:async()=>null,getDrop:async()=>({
+      isMinting:false,maxSupply:11111,totalSupply:11111,soldOut:true,
+      activeStage:null,nextStage:null,stages:[],
+    })},
+  });
+  const result=await service.detectMintContract('user-a',{
+    contractAddress:CONTRACT,quantity:1,includeDrop:true,
+  });
+  assert.equal(result.soldOut,true);
+  assert.equal(result.totalMinted,11111);
+  assert.equal(result.maxSupply,11111);
+});
+
+test('detectMintContract does not turn absent provider supply into a sold-out zero-of-zero collection',async()=>{
+  const futureEndTime=Math.floor(Date.now()/1000)+3_600;
+  const {service}=commandServiceFixture({
+    contractValueResolver:{resolve:async()=>{throw new Error('should not be reached');},
+      probeMaxSupply:async()=>null},
+    seaDropDiscoveryService:{resolve:async()=>({address:SEADROP,
+      publicDrop:{mintPriceWei:'0',endTime:futureEndTime},feeRecipient:FEE_RECIPIENT})},
+    openSeaService:{getCollectionMetadata:async()=>null,getDrop:async()=>(
+      {isMinting:false,maxSupply:null,totalSupply:null,soldOut:false,stages:[]})},
+  });
+  const result=await service.detectMintContract('user-a',{
+    contractAddress:CONTRACT,quantity:1,includeDrop:true,
+  });
+  assert.equal(result.soldOut,false);
+  assert.equal(result.totalMinted,null);
+  assert.equal(result.maxSupply,null);
+});
+
+test('detectMintContract never treats totalSupply fallback as a fixed max-supply cap',async()=>{
+  const futureEndTime=Math.floor(Date.now()/1000)+3_600;
+  const {service}=commandServiceFixture({
+    contractValueResolver:{resolve:async()=>{throw new Error('should not be reached');},
+      probeTotalMinted:async()=>({value:'1',source:'totalSupply'}),
+      probeMaxSupply:async()=>({value:'1',source:'totalSupply'})},
+    seaDropDiscoveryService:{resolve:async()=>({address:SEADROP,
+      publicDrop:{mintPriceWei:'0',endTime:futureEndTime},feeRecipient:FEE_RECIPIENT})},
+    openSeaService:{getCollectionMetadata:async()=>null,getDrop:async()=>(
+      {isMinting:true,maxSupply:11111,totalSupply:1,soldOut:false,stages:[]})},
+  });
+  const result=await service.detectMintContract('user-a',{
+    contractAddress:CONTRACT,quantity:1,includeDrop:true,includeSupply:true,
+  });
+  assert.equal(result.soldOut,false);
+  assert.equal(result.totalMinted,1);
+  assert.equal(result.maxSupply,11111,
+    'the provider cap wins over an ambiguous totalSupply() fallback');
+});
+
+test('plain-contract detection never treats totalSupply as both current supply and a fixed cap',async()=>{
+  const {service}=commandServiceFixture({
+    contractValueResolver:{resolve:async()=>({price:{value:'0',source:'mintPrice'},
+      maxSupply:{value:'25',source:'totalSupply'},maxPerWallet:null,
+      totalMinted:{value:'25',source:'totalSupply'}})},
+    seaDropDiscoveryService:{resolve:async()=>({address:null,publicDrop:null,feeRecipient:null})},
+    openSeaService:{getCollectionMetadata:async()=>null},
+  });
+  const result=await service.detectMintContract('user-a',{contractAddress:CONTRACT,quantity:1});
+  assert.equal(result.supplyExhausted,false);
+  assert.equal(result.soldOut,false);
+});
+
+test('dashboard supply detection may still request the safe on-chain collection name',async()=>{
+  let nameReads=0;
+  const {service}=commandServiceFixture({
+    contractValueResolver:{
+      resolve:async()=>({price:{value:'0',source:'mintPrice'},maxSupply:null,maxPerWallet:null,totalMinted:null}),
+      probeTotalMinted:async()=>null,
+      probeName:async()=>{nameReads+=1;return 'On-chain collection';},
+    },
+    seaDropDiscoveryService:{resolve:async()=>({address:null,publicDrop:null,feeRecipient:null})},
+    openSeaService:{getCollectionMetadata:async()=>null,getDrop:async()=>null},
+  });
+  const result=await service.detectMintContract('user-a',{contractAddress:CONTRACT,quantity:1,
+    includeDrop:true,includeSupply:true,includeName:true});
+  assert.equal(result.collection.name,'On-chain collection');
+  assert.equal(nameReads,1);
+});
+
 test('the scheduler-only includeSupply check detects exhaustion without calling OpenSea collection stats', async () => {
   const futureEndTime = Math.floor(Date.now() / 1000) + 3_600;
   let statsCalls = 0;
@@ -942,7 +1072,7 @@ test('market cap is null (not a guess) when either the floor price or the live m
 });
 
 function taskServiceFixture({ contractValueResolver, seaDropDiscoveryService, seaDropPublicDropResolver,
-  openSeaService,createReservedTask,supportedChains=['ethereum'],walletChain='ethereum' }) {
+  openSeaService,openSeaEligibilityService,createReservedTask,supportedChains=['ethereum'],walletChain='ethereum' }) {
   const state = { wallets: [{ id: 1, userId: 'user-a', label: 'main', address: WALLET, chain: walletChain }], tasks: [], activity: [], pnl: [], snipers: [] };
   const saved = [];
   const service = createBotCommandService({
@@ -952,6 +1082,7 @@ function taskServiceFixture({ contractValueResolver, seaDropDiscoveryService, se
     supportedChains, chains:Object.fromEntries(supportedChains.map(chain=>[chain,{sym:'ETH'}])),
     getState: () => state,
     contractValueResolver, seaDropDiscoveryService, seaDropPublicDropResolver, openSeaService,
+    openSeaEligibilityService,
     encryptPrivateKey: () => ({}),
   });
   return { saved, service };
@@ -1019,6 +1150,73 @@ test('createTask forces priceETH to 0, persists its chosen phase, and safely def
   assert.equal(task.acceptedConfigSummary.authorization,'opensea_validated_builder_v1');
   assert.equal(task.acceptedConfigSummary.stageIdentity,'uuid:stage-allow-1');
   assert.ok(task.acceptedConfigFingerprint);
+});
+
+test('createTask rejects a definitively ineligible gated stage at the shared service boundary',async()=>{
+  const start=Math.floor(Date.now()/1000)+3_600;
+  const stage={uuid:'0192F8A1-7B3C-7DEF-8123-0123456789AB',label:'Whitelist',
+    stageType:'signed_presale',startTime:start,priceWei:'0'};
+  const authorization={configured:true,status:'connected',connected:true,walletAddress:WALLET};
+  const {service}=taskServiceFixture({
+    seaDropDiscoveryService:{resolve:async()=>({address:null,publicDrop:null,feeRecipient:null})},
+    openSeaService:{getDrop:async()=>({stages:[stage]})},
+    openSeaEligibilityService:{eligibility:async(_userId,wallet)=>{
+      assert.equal(wallet.address,WALLET);
+      return {authorization,stages:[{uuid:stage.uuid.toLowerCase(),isEligible:false}]};
+    }},
+  });
+  await assert.rejects(service.createTask('user-a',{name:'ineligible whitelist',walletLabel:'main',
+    contractAddress:CONTRACT,quantity:1,mintTime:new Date(start*1000).toISOString(),
+    stageStartAt:new Date(start*1000).toISOString(),stageUuid:stage.uuid.toLowerCase(),
+    stageLabel:stage.label,stageType:stage.stageType,viaOpenSea:true}),error=>(
+    error instanceof ValidationError&&error.code==='SCHEDULE_STAGE_INELIGIBLE'
+      &&error.issues[0].field==='stageUuid'
+  ));
+});
+
+test('createTask preserves unknown-at-opening gated stages and public stages',async()=>{
+  const start=Math.floor(Date.now()/1000)+3_600;
+  const gated={uuid:'gated-1',label:'Whitelist',stageType:'signed_presale',startTime:start,priceWei:'0'};
+  const publicStage={uuid:'public-1',label:'Public',stageType:'public_sale',startTime:start,priceWei:'0'};
+  let eligibilityReads=0;
+  const unknown=taskServiceFixture({
+    seaDropDiscoveryService:{resolve:async()=>({address:null,publicDrop:null,feeRecipient:null})},
+    openSeaService:{getDrop:async()=>({stages:[gated]})},
+    openSeaEligibilityService:{eligibility:async()=>{eligibilityReads+=1;return {stages:null};}},
+  });
+  await unknown.service.createTask('user-a',{name:'unknown whitelist',walletLabel:'main',
+    contractAddress:CONTRACT,quantity:1,mintTime:new Date(start*1000).toISOString(),
+    stageStartAt:new Date(start*1000).toISOString(),stageUuid:gated.uuid,
+    stageLabel:gated.label,stageType:gated.stageType,viaOpenSea:true});
+  assert.equal(unknown.saved.length,1);
+  assert.equal(eligibilityReads,1);
+
+  const uuidlessStage={uuid:null,label:'Partner list',stageType:'signed_presale',
+    startTime:start,priceWei:'0'};
+  const uuidless=taskServiceFixture({
+    seaDropDiscoveryService:{resolve:async()=>({address:null,publicDrop:null,feeRecipient:null})},
+    openSeaService:{getDrop:async()=>({stages:[uuidlessStage]})},
+    openSeaEligibilityService:{eligibility:async()=>({
+      stages:[{uuid:null,isEligible:false}],
+    })},
+  });
+  await uuidless.service.createTask('user-a',{name:'uuidless partner list',walletLabel:'main',
+    contractAddress:CONTRACT,quantity:1,mintTime:new Date(start*1000).toISOString(),
+    stageStartAt:new Date(start*1000).toISOString(),stageLabel:uuidlessStage.label,
+    stageType:uuidlessStage.stageType,viaOpenSea:true});
+  assert.equal(uuidless.saved.length,1,
+    'a missing provider ID is not exact wallet-stage evidence and remains checked at opening');
+
+  const publicValue=taskServiceFixture({
+    seaDropDiscoveryService:{resolve:async()=>({address:null,publicDrop:null,feeRecipient:null})},
+    openSeaService:{getDrop:async()=>({stages:[publicStage]})},
+    openSeaEligibilityService:{eligibility:async()=>{throw new Error('public must not need wallet authorization');}},
+  });
+  await publicValue.service.createTask('user-a',{name:'public',walletLabel:'main',
+    contractAddress:CONTRACT,quantity:1,mintTime:new Date(start*1000).toISOString(),
+    stageStartAt:new Date(start*1000).toISOString(),stageUuid:publicStage.uuid,
+    stageLabel:publicStage.label,stageType:publicStage.stageType,viaOpenSea:true});
+  assert.equal(publicValue.saved.length,1);
 });
 
 test('createTask never erases an out-of-policy time and price change that raced the preview',async()=>{

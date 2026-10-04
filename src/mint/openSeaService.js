@@ -29,8 +29,11 @@ function rejectionCode(detail) {
 
 function stageUuid(value) {
   const normalized=String(value||'').trim();
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(normalized)
-    ?normalized:null;
+  // OpenSea stage IDs are provider-owned identifiers, not values GhostMint generates. Treat them
+  // as bounded opaque keys: rejecting a newer UUID version (or a non-UUID provider key) silently
+  // discards a valid wallet eligibility result and makes an authorized wallet look unchecked.
+  return normalized&&normalized.length<=128&&!/[\u0000-\u001f\u007f]/.test(normalized)
+    ?normalized.toLowerCase():null;
 }
 function unsignedIntegerString(value) {
   const normalized=String(value??'').trim();
@@ -244,7 +247,7 @@ function createOpenSeaService({ apiKey, repository, baseUrl = 'https://api.opens
         ? (stage.eligible ? 'eligible' : 'ineligible')
         : null;
     return {
-      uuid: stage.uuid || null,
+      uuid: stageUuid(stage.uuid),
       label: stage.label || null,
       // The API returns ISO 8601 strings; every other timestamp this app already threads through
       // menus (SeaDrop's own on-chain startTime/endTime) is unix seconds, so this converts once here
@@ -275,12 +278,20 @@ function createOpenSeaService({ apiKey, repository, baseUrl = 'https://api.opens
       const response = await http.get(`${baseUrl}/drops/${slug}`, { timeout: timeoutMs, maxContentLength: 1_000_000, headers: { 'x-api-key': apiKey } });
       const data = response.data;
       if (!data) return null;
+      const maxSupplyValue=unsignedIntegerString(data.max_supply);
+      const totalSupplyValue=unsignedIntegerString(data.total_supply);
       return {
         // Missing is not the same as false. Preserve an omitted provider field so callers can
         // safely fall back to active-stage/timestamp evidence instead of declaring the mint closed.
         isMinting: typeof data.is_minting === 'boolean' ? data.is_minting : null,
         dropType: data.drop_type || null,
-        maxSupply: data.max_supply !== undefined && data.max_supply !== null ? Number(data.max_supply) : null,
+        maxSupply: maxSupplyValue===null?null:Number(maxSupplyValue),
+        totalSupply: totalSupplyValue===null?null:Number(totalSupplyValue),
+        // Compare the original decimal strings so large supplies never lose precision through a
+        // JavaScript Number conversion. `is_minting:false` alone cannot distinguish delayed from
+        // ended or sold out, while exhausted supply is authoritative.
+        soldOut:maxSupplyValue!==null&&totalSupplyValue!==null&&BigInt(maxSupplyValue)>0n
+          ?BigInt(totalSupplyValue)>=BigInt(maxSupplyValue):false,
         openSeaUrl: data.opensea_url || null,
         stageCatalogComplete: true,
         stageCatalogSource: 'opensea',
@@ -315,8 +326,9 @@ function createOpenSeaService({ apiKey, repository, baseUrl = 'https://api.opens
     });
     const stages = Array.isArray(response.data?.stages) ? response.data.stages : [];
     return { stages:stages.map(stage => ({
-      uuid:stageUuid(stage.stage_uuid),
-      isEligible:typeof stage.is_eligible==='boolean'?stage.is_eligible:null,
+      uuid:stageUuid(stage.stage_uuid??stage.uuid),
+      isEligible:typeof stage.is_eligible==='boolean'?stage.is_eligible
+        :typeof stage.eligible==='boolean'?stage.eligible:null,
       priceWei:unsignedIntegerString(stage.price),
       maxTotalMintableByWallet:safeNonnegativeInteger(stage.max_total_mintable_by_wallet),
       maxTotalMintableByWalletPerToken:safeNonnegativeInteger(stage.max_total_mintable_by_wallet_per_token),

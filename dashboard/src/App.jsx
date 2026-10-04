@@ -12,7 +12,7 @@ import {mintDetectionMessage,mintPreviewError,scheduleSubmitError} from './mintF
 import {mintDetectionPricePerItem,mintQuantityPolicy,mintTotalValueWei} from './mintQuantityPolicy.mjs';
 import {formatScheduleDateTime,scheduleCountdown,scheduleEligibilityDeadline} from './scheduleDisplay.js';
 import {stageMintTimeLocalValue} from './scheduleTime.mjs';
-import {scheduleStageAvailability,scheduleStageChoiceState,scheduleStageDisplayName} from './scheduleStageAvailability.mjs';
+import {scheduleDropEndState,scheduleStageAvailability,scheduleStageChoiceState,scheduleStageDisplayName} from './scheduleStageAvailability.mjs';
 import {dashboardEvmChains} from './chainOptions.mjs';
 import {formatAdaptiveAmount,formatSignedAdaptiveAmount} from './amountDisplay.mjs';
 import {selectWalletHeadlineBalance,walletBalanceForChain,walletFundingStatus} from './walletDisplay.mjs';
@@ -1557,7 +1557,7 @@ function TaskDetails({summary,onClose,onChanged}){
 function Tasks({profile,active=true,onCommitChange,onSwitchToMint,onSwitchToBatch,onOpenSettings}){
   const mobile=useIsMobile();const [page,setPage]=useState(1);const [search,setSearch]=useState('');
   const [bucket,setBucket]=useState(()=>{const value=new URLSearchParams(window.location.search).get('bucket');return BUCKETS.some(([key])=>key===value)?value:'pending';});
-  const [filtersOpen,setFiltersOpen]=useState(false);const [serverFilters,setServerFilters]=useState(null);const PAGE_SIZE=mobile?3:10;const COMPAT_LIMIT=50;const listing=useLoad(serverFilters===false?`/api/tasks?page=1&pageSize=${COMPAT_LIMIT}&search=${encodeURIComponent(search)}`:`/api/tasks?page=${page}&pageSize=${PAGE_SIZE}&status=${bucket}&search=${encodeURIComponent(search)}`,[page,bucket,search,serverFilters,PAGE_SIZE],'tasks.changed');const wallets=useLoad('/api/wallets',[],'wallets.changed');const contractInputRef=useRef(null);const [chain,setChain]=useState(profile.defaultChain||profile.supportedChains[0]);const [contractAddress,setContractAddress]=useState('');const [detectedName,setDetectedName]=useState('');const [detectedSeaDrop,setDetectedSeaDrop]=useState(false);const [quantity,setQuantity]=useState('1');const [maxPerWallet,setMaxPerWallet]=useState(null);const [priceETH,setPriceETH]=useState('');const [mintTime,setMintTime]=useState('');const [viaOpenSea,setViaOpenSea]=useState(false);const [detectedOpenSeaRecommendation,setDetectedOpenSeaRecommendation]=useState(false);const [stageType,setStageType]=useState('');const [stages,setStages]=useState([]);const [stageCatalogComplete,setStageCatalogComplete]=useState(null);const [selectedStageKey,setSelectedStageKey]=useState('');const [recommendedStageKey,setRecommendedStageKey]=useState('');const [liveMintStage,setLiveMintStage]=useState(null);const [stageLiveness,setStageLiveness]=useState({authoritative:false,isMinting:false,activeKey:''});const [scheduleWallet,setScheduleWallet]=useState('');const [walletEligibilityAuthorization,setWalletEligibilityAuthorization]=useState(null);const [eligibilityBusy,setEligibilityBusy]=useState('');const [detecting,setDetecting]=useState(false);const [detectionError,setDetectionError]=useState('');const [detectionRetryable,setDetectionRetryable]=useState(false);const [scheduleError,setScheduleError]=useState(null);const [submitting,setSubmitting]=useState(false);const [controlBusy,setControlBusy]=useState('');const [scheduleInfoOpen,setScheduleInfoOpen]=useState(false);const [autoReschedule,setAutoReschedule]=useState(false);const [acceptPriceChanges,setAcceptPriceChanges]=useState(false);const [allowedPriceIncreaseFiat,setAllowedPriceIncreaseFiat]=useState('');const lastDetected=useRef('');const lastEligibilityWallet=useRef('');const lastEligibilityAttempt=useRef('');const detectingKey=useRef('');const detectionSequence=useRef(0);const detectionAbort=useRef(null);const scheduleWalletRef=useRef('');const contractAddressRef=useRef('');
+  const [filtersOpen,setFiltersOpen]=useState(false);const [serverFilters,setServerFilters]=useState(null);const PAGE_SIZE=mobile?3:10;const COMPAT_LIMIT=50;const listing=useLoad(serverFilters===false?`/api/tasks?page=1&pageSize=${COMPAT_LIMIT}&search=${encodeURIComponent(search)}`:`/api/tasks?page=${page}&pageSize=${PAGE_SIZE}&status=${bucket}&search=${encodeURIComponent(search)}`,[page,bucket,search,serverFilters,PAGE_SIZE],'tasks.changed');const wallets=useLoad('/api/wallets',[],'wallets.changed');const contractInputRef=useRef(null);const [chain,setChain]=useState(profile.defaultChain||profile.supportedChains[0]);const [contractAddress,setContractAddress]=useState('');const [detectedName,setDetectedName]=useState('');const [detectedSeaDrop,setDetectedSeaDrop]=useState(false);const [quantity,setQuantity]=useState('1');const [maxPerWallet,setMaxPerWallet]=useState(null);const [priceETH,setPriceETH]=useState('');const [mintTime,setMintTime]=useState('');const [viaOpenSea,setViaOpenSea]=useState(false);const [detectedOpenSeaRecommendation,setDetectedOpenSeaRecommendation]=useState(false);const [stageType,setStageType]=useState('');const [stages,setStages]=useState([]);const [stageCatalogComplete,setStageCatalogComplete]=useState(null);const [selectedStageKey,setSelectedStageKey]=useState('');const [recommendedStageKey,setRecommendedStageKey]=useState('');const [liveMintStage,setLiveMintStage]=useState(null);const [stageLiveness,setStageLiveness]=useState({authoritative:false,isMinting:false,activeKey:'',soldOut:false,soldOutKey:'',ended:false,endedKey:''});const [scheduleWallet,setScheduleWallet]=useState('');const [walletEligibilityAuthorization,setWalletEligibilityAuthorization]=useState(null);const [detecting,setDetecting]=useState(false);const [detectionError,setDetectionError]=useState('');const [detectionRetryable,setDetectionRetryable]=useState(false);const [scheduleError,setScheduleError]=useState(null);const [submitting,setSubmitting]=useState(false);const [controlBusy,setControlBusy]=useState('');const [scheduleInfoOpen,setScheduleInfoOpen]=useState(false);const [autoReschedule,setAutoReschedule]=useState(false);const [acceptPriceChanges,setAcceptPriceChanges]=useState(false);const [allowedPriceIncreaseFiat,setAllowedPriceIncreaseFiat]=useState('');const lastDetected=useRef('');const lastEligibilityWallet=useRef('');const lastEligibilityAttempt=useRef('');const detectingKey=useRef('');const detectionSequence=useRef(0);const detectionAbort=useRef(null);const scheduleWalletRef=useRef('');const contractAddressRef=useRef('');
   // The prototype's Schedule form has no price field, because it assumes the contract can be
   // priced automatically. Some cannot -- the server then rejects with a priceETH issue and there
   // is nowhere to type one, which left the form unsubmittable for those contracts. So the field
@@ -1585,7 +1585,7 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint,onSwitchToBatc
   function clearScheduleDetection(){
     detectionSequence.current+=1;detectionAbort.current?.abort();detectionAbort.current=null;detectingKey.current='';setDetecting(false);
     setDetectedName('');setDetectedSeaDrop(false);setStages([]);setSelectedStageKey('');setRecommendedStageKey('');setLiveMintStage(null);
-    setStageLiveness({authoritative:false,isMinting:false,activeKey:''});
+    setStageLiveness({authoritative:false,isMinting:false,activeKey:'',soldOut:false,soldOutKey:'',ended:false,endedKey:''});
     setViaOpenSea(false);setDetectedOpenSeaRecommendation(false);setStageType('');
     setMaxPerWallet(null);setPriceETH('');setMintTime('');setPriceIssue(null);setScheduleError(null);
     setScheduleInfoOpen(false);setAutoReschedule(false);setAcceptPriceChanges(false);setAllowedPriceIncreaseFiat('');
@@ -1604,18 +1604,32 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint,onSwitchToBatc
     if(Number.isFinite(opening)&&opening*1000>Date.now())setMintTime(stageMintTimeLocalValue(opening));
   }
   function stageChoice(stage,now=Date.now(),liveness=stageLiveness){
+    const stageKey=scheduleStageSelectionKey(stage);
     const authoritativeLive=liveness.authoritative
-      ?Boolean(liveness.isMinting&&scheduleStageSelectionKey(stage)===liveness.activeKey)
+      ?Boolean(liveness.isMinting&&stageKey===liveness.activeKey)
       :null;
-    return scheduleStageChoiceState(stage,now,{authoritativeLive});
+    const authoritativeSoldOut=Boolean(liveness.soldOut&&stageKey===liveness.soldOutKey);
+    return scheduleStageChoiceState(stage,now,{authoritativeLive,authoritativeSoldOut});
   }
+  const scheduleEndState=scheduleDropEndState({soldOut:stageLiveness.soldOut,ended:stageLiveness.ended,stageCatalogComplete});
+  const scheduleTerminal=scheduleEndState.terminal;
+  const verifiedWindowEnded=scheduleEndState.verifiedWindowEnded;
+  const futureChoiceNow=Date.now();
+  const hasSelectableFutureStage=stages.some(stage=>{
+    const startMs=Number(stage?.startTime)*1000;
+    const endMs=Number(stage?.endTime)*1000;
+    return Number.isFinite(startMs)&&startMs>futureChoiceNow
+      &&(!Number.isFinite(endMs)||endMs<=0||(endMs>futureChoiceNow&&endMs>startMs))
+      &&!stageChoice(stage,futureChoiceNow).disabled;
+  });
+  const scheduleFormAvailable=!scheduleTerminal&&!verifiedWindowEnded&&(!liveMintStage||Boolean(selectedStageKey));
   function changeScheduleWallet(nextWallet){
     if(nextWallet===scheduleWallet)return;
     scheduleWalletRef.current=nextWallet;setScheduleWallet(nextWallet);
     // Wallet eligibility is wallet-scoped. Remove the previous wallet's phase state immediately,
     // then launch a keyed read for the new wallet so no render can submit stale eligibility.
     setStages([]);setStageCatalogComplete(null);setSelectedStageKey('');setRecommendedStageKey('');setStageType('');setLiveMintStage(null);
-    setStageLiveness({authoritative:false,isMinting:false,activeKey:''});
+    setStageLiveness({authoritative:false,isMinting:false,activeKey:'',soldOut:false,soldOutKey:'',ended:false,endedKey:''});
     setWalletEligibilityAuthorization(null);lastEligibilityWallet.current='';lastEligibilityAttempt.current='';
     detectionSequence.current+=1;detectionAbort.current?.abort();detectionAbort.current=null;detectingKey.current='';setDetecting(false);
     const address=contractAddressRef.current.trim();
@@ -1692,13 +1706,21 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint,onSwitchToBatc
       setDetectedSeaDrop(Boolean(result.isSeaDrop));
       const useOpenSea=Boolean(result.openSeaMintRecommended);
       const detectedAt=Date.now();
+      const supplyExhausted=result.supplyExhausted!==undefined
+        ?result.supplyExhausted===true
+        :result.drop?.soldOut===true||(Number.isFinite(Number(result.maxSupply))&&Number(result.maxSupply)>0
+          &&Number.isFinite(Number(result.totalMinted))&&Number(result.totalMinted)>=Number(result.maxSupply));
       const availability=scheduleStageAvailability({drop:result.drop,startTime:result.startTime,
-        endTime:result.endTime,priceWeiPerItem:result.priceWeiPerItem,now:detectedAt});
+        endTime:result.endTime,priceWeiPerItem:result.priceWeiPerItem,soldOut:supplyExhausted,now:detectedAt});
       const allStages=availability.stages;
       setStageCatalogComplete(result.drop?result.drop.stageCatalogComplete!==false:null);
       const detectedLiveness={authoritative:availability.hasAuthoritativeMintingState,
         isMinting:Boolean(result.drop?.isMinting),
-        activeKey:availability.liveStage?scheduleStageSelectionKey(availability.liveStage):''};
+        activeKey:availability.liveStage?scheduleStageSelectionKey(availability.liveStage):'',
+        soldOut:availability.soldOut,
+        soldOutKey:availability.soldOutStage?scheduleStageSelectionKey(availability.soldOutStage):'',
+        ended:Boolean(availability.endedStage),
+        endedKey:availability.endedStage?scheduleStageSelectionKey(availability.endedStage):''};
       setStages(allStages);
       setStageLiveness(detectedLiveness);
       let chosenStage=null;
@@ -1717,14 +1739,18 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint,onSwitchToBatc
         // When the server recommendation is absent or stale, do not silently pretend the first of
         // several phases was chosen. A single unambiguous future phase is safe to preselect; with
         // several, the user must make the choice explicitly.
-        if(!chosenStage&&selectable.length===1&&stageChoice(selectable[0],detectedAt,detectedLiveness).state!=='check_at_open')chosenStage=selectable[0];
-        // A currently live phase is a Mint-now handoff only when there is nothing later to
-        // schedule. Future allowlists with eligibility checked at opening must remain visible and
-        // selectable even while an earlier public phase is live.
+        if(!chosenStage&&selectable.length===1&&stageChoice(selectable[0],detectedAt,detectedLiveness).eligibilityState!=='check_at_open')chosenStage=selectable[0];
+        // A live stage and a future stage are independent choices: always surface the immediate
+        // Mint-now handoff when this wallet is not explicitly ineligible, while retaining the
+        // safely recommended future stage below for Schedule.
         const liveChoice=availability.liveStage
           ?stageChoice(availability.liveStage,detectedAt,detectedLiveness):null;
-        liveOnlyStage=!chosenStage&&selectable.length===0&&liveChoice?.tone!=='ineligible'
+        liveOnlyStage=liveChoice?.tone!=='ineligible'
           ?availability.liveStage:null;
+        // A sold-out collection is terminal rather than schedulable. Keep the final started stage
+        // selected for a truthful read-only summary, but never treat it as a recommendation.
+        if(!chosenStage&&availability.soldOutStage)chosenStage=availability.soldOutStage;
+        if(!chosenStage&&availability.endedStage)chosenStage=availability.endedStage;
         setSelectedStageKey(chosenStage?scheduleStageSelectionKey(chosenStage):'');
         setStageType(chosenStage?.stageType||chosenStage?.stage_type||'');
       } else {
@@ -1735,7 +1761,7 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint,onSwitchToBatc
         chosenStage=futureStage;
         const liveChoice=availability.liveStage
           ?stageChoice(availability.liveStage,detectedAt,detectedLiveness):null;
-        liveOnlyStage=!futureStage&&liveChoice?.tone!=='ineligible'?availability.liveStage:null;
+        liveOnlyStage=liveChoice?.tone!=='ineligible'?availability.liveStage:null;
         setSelectedStageKey('');
         setStageType(futureStage?.stageType||'');
       }
@@ -1789,7 +1815,12 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint,onSwitchToBatc
       }
       const label=result.isSeaDrop?'SeaDrop drop':'contract';
       if(!silent){
-        if(liveOnlyStage)notify(`${result.collection?.name||label} is live now. Continue with Mint now or Batch mint.`,{type:'info'});
+        if(availability.soldOut)notify(`${result.collection?.name||label} is sold out. Nothing can be scheduled or sent.`,{type:'info'});
+        else if(availability.endedStage&&result.drop?.stageCatalogComplete===false)notify(`The verified public window for ${result.collection?.name||label} has ended. No verified future stage is available right now.`,{type:'info'});
+        else if(availability.endedStage)notify(`${result.collection?.name||label} has ended. Nothing can be scheduled or sent.`,{type:'info'});
+        else if(liveOnlyStage)notify(chosenStage
+          ?`${result.collection?.name||label} is live now. Mint immediately, or keep the selected future stage scheduled.`
+          :`${result.collection?.name||label} is live now. Continue with Mint now or Batch mint.`,{type:'info'});
         else if(chosenUsesOpenSea)notify(`Detected ${result.collection?.name||label} on ${result.chain}. OpenSea will prepare the mint at execution time.`,{type:'success'});
         else if(result.priceKnown)notify(`Detected ${label} on ${result.chain} — price read from the contract.`,{type:'success'});
         else notify(`Detected ${label} on ${result.chain}, but the price couldn't be read — enter it yourself.`,{type:'info'});
@@ -1804,14 +1835,14 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint,onSwitchToBatc
         const msg=`This contract is on ${chainLabel}, which isn't supported. Supported chains: ${supported}.`;
         setDetectionError(msg);
         setDetectionRetryable(false);
-        setDetectedName('');setDetectedSeaDrop(false);setStages([]);setSelectedStageKey('');setRecommendedStageKey('');setLiveMintStage(null);setStageLiveness({authoritative:false,isMinting:false,activeKey:''});setViaOpenSea(false);setDetectedOpenSeaRecommendation(false);setMaxPerWallet(null);setPriceETH('');setMintTime('');setPriceIssue(null);
+        setDetectedName('');setDetectedSeaDrop(false);setStages([]);setSelectedStageKey('');setRecommendedStageKey('');setLiveMintStage(null);setStageLiveness({authoritative:false,isMinting:false,activeKey:'',soldOut:false,soldOutKey:'',ended:false,endedKey:''});setViaOpenSea(false);setDetectedOpenSeaRecommendation(false);setMaxPerWallet(null);setPriceETH('');setMintTime('');setPriceIssue(null);
         notify(msg,{type:'error'});
       } else {
         const message=mintDetectionMessage(error);
         const retryable=/right now|in a moment/i.test(message);
         setDetectionError(message);
         setDetectionRetryable(retryable);
-        setDetectedName('');setDetectedSeaDrop(false);setStages([]);setSelectedStageKey('');setRecommendedStageKey('');setLiveMintStage(null);setStageLiveness({authoritative:false,isMinting:false,activeKey:''});setViaOpenSea(false);setDetectedOpenSeaRecommendation(false);setMaxPerWallet(null);setPriceETH('');setMintTime('');setPriceIssue(null);
+        setDetectedName('');setDetectedSeaDrop(false);setStages([]);setSelectedStageKey('');setRecommendedStageKey('');setLiveMintStage(null);setStageLiveness({authoritative:false,isMinting:false,activeKey:'',soldOut:false,soldOutKey:'',ended:false,endedKey:''});setViaOpenSea(false);setDetectedOpenSeaRecommendation(false);setMaxPerWallet(null);setPriceETH('');setMintTime('');setPriceIssue(null);
         notify(message,{type:'error'});
       }
     }
@@ -1929,7 +1960,7 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint,onSwitchToBatc
       input.acceptPriceChanges=acceptPriceChanges;
       if(detectedPriceWei!==null&&detectedPriceWei!==undefined)input.expectedPriceWeiPerItem=String(detectedPriceWei);
       if(acceptPriceChanges)input.maxPriceWeiPerItem=priceCapWei.toString();
-      await api('/api/tasks',{method:'POST',body:JSON.stringify(input)});setPriceIssue(null);setScheduleError(null);form.reset();contractAddressRef.current='';setContractAddress('');setDetectedName('');setDetectedSeaDrop(false);setStages([]);setSelectedStageKey('');setRecommendedStageKey('');setLiveMintStage(null);setStageLiveness({authoritative:false,isMinting:false,activeKey:''});setWalletEligibilityAuthorization(null);setDetectionError('');setDetectionRetryable(false);setQuantity('1');setMaxPerWallet(null);setPriceETH('');setMintTime('');setViaOpenSea(false);setDetectedOpenSeaRecommendation(false);setStageType('');setScheduleInfoOpen(false);setAutoReschedule(false);setAcceptPriceChanges(false);setAllowedPriceIncreaseFiat('');lastDetected.current='';lastEligibilityWallet.current='';lastEligibilityAttempt.current='';detectingKey.current='';notify(hasPhaseIdentity?'Task scheduled. Its time is the earliest check; minting waits for a live phase this wallet can use.':'Task scheduled. It will run automatically at the saved UTC time.',{type:'success'});listing.load();
+      await api('/api/tasks',{method:'POST',body:JSON.stringify(input)});setPriceIssue(null);setScheduleError(null);form.reset();contractAddressRef.current='';setContractAddress('');setDetectedName('');setDetectedSeaDrop(false);setStages([]);setSelectedStageKey('');setRecommendedStageKey('');setLiveMintStage(null);setStageLiveness({authoritative:false,isMinting:false,activeKey:'',soldOut:false,soldOutKey:'',ended:false,endedKey:''});setWalletEligibilityAuthorization(null);setDetectionError('');setDetectionRetryable(false);setQuantity('1');setMaxPerWallet(null);setPriceETH('');setMintTime('');setViaOpenSea(false);setDetectedOpenSeaRecommendation(false);setStageType('');setScheduleInfoOpen(false);setAutoReschedule(false);setAcceptPriceChanges(false);setAllowedPriceIncreaseFiat('');lastDetected.current='';lastEligibilityWallet.current='';lastEligibilityAttempt.current='';detectingKey.current='';notify(hasPhaseIdentity?'Task scheduled. Its time is the earliest check; minting waits for a live phase this wallet can use.':'Task scheduled. It will run automatically at the saved UTC time.',{type:'success'});listing.load();
     }catch(value){const issue=value.issues?.find(entry=>entry.field==='priceETH');if(issue)setPriceIssue(issue.message);const feedback=scheduleSubmitError(value);setScheduleError(feedback);notify(`${feedback.title} ${feedback.detail}`,{type:'error'});}finally{setSubmitting(false);onCommitChange?.(false);}}async function control(id,action){try{await api(`/api/tasks/${id}/control`,{method:'POST',body:JSON.stringify({action,confirmation:action==='cancel'?'CONFIRM':undefined})});}catch(value){notify(value.message,{type:'error'});}}
   // Prototype docs/prototype-pages/mint.html:111-158. The Schedule tab is a .split: the form on
   // the left, the "Scheduled" list on the right. The old page-lead, the search toolbar, the chain
@@ -2132,16 +2163,29 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint,onSwitchToBatc
           <p>Five minutes and 30 seconds before the attempt, it checks the mint price plus estimated gas against this wallet. If funds are short, you are told how much to add. A final check still prevents an underfunded transaction from being sent.</p>
           <p>For an OpenSea phase, a delayed opening is observed from its stage feed. A plain <code>mint(uint256)</code> contract has no equivalent opening-time feed, so only the time you enter can be used.</p>
         </div>}
-        {!detecting&&liveMintStage&&ADDRESS_SHAPE.test(contractAddress.trim())&&lastDetected.current===contractAddress.trim().toLowerCase()&&
+        {!detecting&&scheduleTerminal&&ADDRESS_SHAPE.test(contractAddress.trim())&&lastDetected.current===contractAddress.trim().toLowerCase()&&
+          <section className={`schedule-live-now ${stageLiveness.soldOut?'is-sold-out':'is-ended'}`} role="status"
+            aria-label={stageLiveness.soldOut?'Mint is sold out':'Mint has ended'}>
+            <div><span>{stageLiveness.soldOut?'Sold out':'Ended'}</span><h3>{detectedName||'This mint'} has ended.</h3>
+              <p>{stageLiveness.soldOut?'All available items have been minted.':'The published mint window is over.'} Nothing can be scheduled or sent.</p></div>
+          </section>}
+        {!detecting&&verifiedWindowEnded&&ADDRESS_SHAPE.test(contractAddress.trim())&&lastDetected.current===contractAddress.trim().toLowerCase()&&
+          <section className="schedule-live-now is-ended" role="status" aria-label="Verified public mint window has ended">
+            <div><span>Verified stage ended</span><h3>The verified public mint window is over.</h3>
+              <p>No verified future stage is available right now. Other collection stages may still exist, so GhostMint is not treating the whole drop as ended.</p></div>
+          </section>}
+        {!detecting&&!scheduleTerminal&&liveMintStage&&ADDRESS_SHAPE.test(contractAddress.trim())&&lastDetected.current===contractAddress.trim().toLowerCase()&&
           <section className="schedule-live-now" role="status" aria-label="Mint is live now">
             <div><span>Live now</span><h3>{detectedName||liveMintStage.label||'This mint'} is open.</h3>
-              <p>There is nothing to schedule. Choose one wallet with Mint now, or several wallets with Batch mint.</p></div>
+              <p>{selectedStageKey?'Mint this live stage now, or keep the selected future stage scheduled below.'
+                :hasSelectableFutureStage?'Mint this live stage now, or choose a future stage below to schedule.'
+                  :'There is nothing to schedule. Choose one wallet with Mint now, or several wallets with Batch mint.'}</p></div>
             <div className="schedule-live-actions">
               <button type="button" className="b p" onClick={()=>{setPendingMintPrefill({contractAddress,quantity,walletLabel:scheduleWallet});onSwitchToMint?.();}}>Mint now</button>
               <button type="button" className="b" onClick={()=>{setPendingBatchPrefill({contractAddress,quantity});onSwitchToBatch?.();}}>Batch mint</button>
             </div>
           </section>}
-        {!liveMintStage&&!detecting&&ADDRESS_SHAPE.test(contractAddress.trim())&&lastDetected.current===contractAddress.trim().toLowerCase()&&(()=>{
+        {!detecting&&(!liveMintStage||Boolean(selectedStageKey)||hasSelectableFutureStage)&&ADDRESS_SHAPE.test(contractAddress.trim())&&lastDetected.current===contractAddress.trim().toLowerCase()&&(()=>{
           const selectedStage=stages.find(stage=>scheduleStageSelectionKey(stage)===selectedStageKey);
           const unitPriceWei=selectedStage?.priceWei!==null&&selectedStage?.priceWei!==undefined
             ?String(selectedStage.priceWei):(!viaOpenSea&&priceETH!==''?ethToWei(priceETH)?.toString():null);
@@ -2166,25 +2210,49 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint,onSwitchToBatc
             const authorizationEnabled=Boolean(walletEligibilityAuthorization?.enabled
               ??walletEligibilityAuthorization?.connected
               ??walletEligibilityAuthorization?.credentialStored);
+            const authorizationUnavailable=walletEligibilityAuthorization?.status==='unavailable';
+            const authorizationNeedsReconnect=walletEligibilityAuthorization?.status==='reauthorize';
             const needsEarlyAuthorization=scheduleStageRequiresOpenSeaBuilder(stage)
-              &&choice.state==='check_at_open'&&!authorizationEnabled;
-            const eligibilityTag=choice.state==='open_to_all'?'Eligible'
-              :needsEarlyAuthorization?'Check not enabled':choice.tag;
+              &&choice.eligibilityState==='check_at_open'&&(!authorizationEnabled||authorizationNeedsReconnect);
+            const providerDecisionMissing=choice.eligibilityState==='check_at_open'&&authorizationEnabled&&!authorizationNeedsReconnect;
+            // OpenSea can omit historical wallet decisions after a gated stage ends. That absence
+            // is not proof that the wallet was ineligible, so keep it distinct from an explicit
+            // provider `false` while replacing the developer-facing "No decision returned" copy.
+            const historicalDecisionMissing=providerDecisionMissing&&choice.stageStatus==='Ended';
+            const eligibilityTag=choice.eligibilityState==='open_to_all'?'Eligible'
+              :authorizationNeedsReconnect&&choice.eligibilityState==='check_at_open'?'Reconnect to check'
+                :needsEarlyAuthorization?'Check not enabled'
+                :providerDecisionMissing?(authorizationUnavailable?'Check unavailable'
+                  :historicalDecisionMissing?'Result unavailable':'Awaiting result')
+                  :choice.tag;
             const facts=[stageKey===recommendedStageKey?'Recommended earliest confirmed stage':null,utc,stage.maxPerWallet?`published max ${stage.maxPerWallet}/wallet`:null,
               stage.priceWei!==null&&stage.priceWei!==undefined?freeOrNativeAmount(stage.priceWei,nativeSymbolForChain(chain)):null,
-              choice.state==='open_to_all'?'Open to all wallets':null,
-              choice.state==='check_at_open'?(needsEarlyAuthorization
-                ?`Turn on read-only eligibility for ${scheduleWallet||'this wallet'} in Settings`
-                :`Eligibility for ${scheduleWallet||'this wallet'} is verified when the stage opens`):null]
+              choice.eligibilityState==='open_to_all'?'Open to all wallets':null,
+              choice.eligibilityState==='check_at_open'?(needsEarlyAuthorization
+                ?authorizationNeedsReconnect?`Reconnect read-only eligibility for ${scheduleWallet||'this wallet'} in Settings`
+                  :`Turn on read-only eligibility for ${scheduleWallet||'this wallet'} in Settings`
+                :authorizationUnavailable?'OpenSea could not check this wallet right now'
+                  :historicalDecisionMissing
+                    ?`No historical eligibility result is available for ${scheduleWallet||'this wallet'}`
+                    :`OpenSea has not returned an eligibility result for ${scheduleWallet||'this wallet'} yet`):null]
               .filter(Boolean).join(' · ');
-            return {value:stageKey,label:`${stageName} · ${local}`,description:facts,
-              inlineStatus:choice.live?'Live':null,inlineStatusTone:choice.live?'success':null,
+            // Phones keep the same stage decision and eligibility badge, but the popup uses a
+            // short supporting line. The full desktop facts remain available without making a
+            // four-stage chooser consume most of a small screen or repeat the badge in prose.
+            const compactFacts=[stage.maxPerWallet?`Max ${stage.maxPerWallet}/wallet`:null,
+              stage.priceWei!==null&&stage.priceWei!==undefined?freeOrNativeAmount(stage.priceWei,nativeSymbolForChain(chain)):null]
+              .filter(Boolean).join(' · ');
+            const stageDescription=<><span className="schedule-stage-facts-full">{facts}</span>
+              {compactFacts&&<span className="schedule-stage-facts-mobile">{compactFacts}</span>}</>;
+            return {value:stageKey,label:`${stageName} · ${local}`,description:stageDescription,
+              inlineStatus:choice.stageStatus,inlineStatusTone:choice.stageStatusTone,
               tag:eligibilityTag,tone:needsEarlyAuthorization?'authorization_required':choice.tone||choice.state,
               disabled:choice.disabled,group:'Mint stages'};
           });
           const hasGatedStages=stages.some(scheduleStageRequiresOpenSeaBuilder);
           const authorizationStatus=walletEligibilityAuthorization?.status||'not_connected';
-          const eligibilityEnabled=Boolean(walletEligibilityAuthorization?.enabled
+          const eligibilityNeedsReconnect=authorizationStatus==='reauthorize';
+          const eligibilityEnabled=!eligibilityNeedsReconnect&&Boolean(walletEligibilityAuthorization?.enabled
             ??walletEligibilityAuthorization?.connected
             ??walletEligibilityAuthorization?.credentialStored);
           const eligibilityNotConfigured=walletEligibilityAuthorization?.configured===false;
@@ -2206,27 +2274,24 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint,onSwitchToBatc
               </div>:<div className="schedule-preview-time"><span>{viaOpenSea?'Earliest attempt':'Mint time'}</span>
                 <b>{viaOpenSea?'No upcoming stage published':mintTime?taskDetailTime(new Date(mintTime).getTime()):'Set below'}</b></div>}
             </div>
-            {hasGatedStages&&<div className={`schedule-eligibility-access ${authorizationStatus==='connected'?'is-connected':''}`}
+            {hasGatedStages&&!eligibilityEnabled&&<div className="schedule-eligibility-access"
               role="status" aria-live="polite">
-              <div><b>{authorizationStatus==='connected'?'Automatic eligibility checks are on'
-                :eligibilityNotConfigured?'Early allowlist checks are unavailable on this server'
-                  :eligibilityEnabled?'Automatic eligibility needs attention':'Eligibility check not enabled'}</b>
-                <span>{authorizationStatus==='connected'
-                  ?`GhostMint checks ${scheduleWallet} automatically. Changing wallets checks the new wallet's own setting.`
-                  :eligibilityNotConfigured?'Published and public stages still work; only advance allowlist checks are unavailable.'
-                    :eligibilityUnavailable?'OpenSea could not refresh this wallet right now. Manage it in Settings.'
-                      :eligibilityEnabled?'Open Settings to restore this wallet\'s read-only check.'
-                        :`Open Settings to enable the read-only check for ${scheduleWallet}. Until then, gated stages are checked only at opening.`}</span></div>
+              <div><b>{eligibilityNotConfigured?'Early allowlist checks are unavailable on this server'
+                :eligibilityNeedsReconnect?'Reconnect eligibility check':'Eligibility check not enabled'}</b>
+                <span>{eligibilityNotConfigured?'Published and public stages still work; only advance allowlist checks are unavailable.'
+                  :eligibilityNeedsReconnect?`Open Settings to reconnect the read-only check for ${scheduleWallet}.`
+                  :eligibilityUnavailable?'OpenSea could not check this wallet right now. Manage it in Settings.'
+                    :`Open Settings to enable the read-only check for ${scheduleWallet}. Until then, gated stages are checked only at opening.`}</span></div>
               <div className="schedule-eligibility-actions">
-                <button type="button" className={`b ${eligibilityEnabled?'':'p'} sm`}
-                  disabled={eligibilityNotConfigured||Boolean(eligibilityBusy)}
+                <button type="button" className="b p sm"
+                  disabled={eligibilityNotConfigured}
                   aria-label={`Open eligibility settings for ${scheduleWallet}`}
-                  onClick={()=>{setEligibilityBusy('settings');onOpenSettings?.();}}>Open Settings</button>
+                  onClick={()=>onOpenSettings?.()}>Open Settings</button>
               </div>
             </div>}
             {stageCatalogComplete===false&&<div className="nt w schedule-stage-catalog-warning" role="status">{WARN_TRIANGLE_ICON}<div>
               <b>Only the public stage could be verified right now.</b> This collection may also have allowlist stages. GhostMint will show them here when the project stage feed is available.</div></div>}
-            <div className="schedule-policy-list">
+            {scheduleFormAvailable&&<div className="schedule-policy-list">
               <div className="schedule-policy-row">
                 <ScheduleSwitch checked={autoReschedule} labelledBy="schedule-auto-time-label" onChange={setAutoReschedule}/>
                 <span className="schedule-policy-title" id="schedule-auto-time-label"><b>Follow time changes automatically</b></span>
@@ -2253,21 +2318,23 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint,onSwitchToBatc
                       profile={profile} wei={proposedPriceCap} symbol={nativeSymbol} showUnavailable={false}/>. The native cap will not change with exchange rates.</div>
                       :<div className="schedule-policy-help">Enter how much more than the detected price GhostMint may accept.</div>}
               </label>}
-            </div>
+            </div>}
           </section>;
         })()}
-        {!liveMintStage&&(()=>{const s=stages.find(x=>scheduleStageSelectionKey(x)===selectedStageKey);
-          const selectedEligibility=s?stageChoice(s).state:null;
+        {scheduleFormAvailable&&(()=>{const s=stages.find(x=>scheduleStageSelectionKey(x)===selectedStageKey);
+          const selectedEligibility=s?stageChoice(s).eligibilityState:null;
           return s&&scheduleStageRequiresOpenSeaBuilder(s)
             ?<div className="nt i" role="status">{INFO_ICON}<div>{selectedEligibility==='eligible'
               ?<><b>Eligibility is confirmed for {scheduleWallet} now.</b> GhostMint checks it again when &ldquo;{scheduleStageDisplayName(s)}&rdquo; opens. If OpenSea reports a different result then, nothing is sent and the task records why.</>
+              :walletEligibilityAuthorization?.status==='reauthorize'
+                ?<><b>Reconnect the eligibility check for {scheduleWallet}.</b> Open Settings to restore read-only access before relying on an early allowlist decision.</>
               :walletEligibilityAuthorization?.status==='connected'
                 ?<><b>Eligibility has not been confirmed for this stage yet.</b> GhostMint has read-only access for {scheduleWallet}, but OpenSea did not return a wallet decision for &ldquo;{scheduleStageDisplayName(s)}&rdquo;. It checks again when the stage opens and sends nothing if the wallet is not eligible.</>
               :<><b>&ldquo;{scheduleStageDisplayName(s)}&rdquo; is checked when it opens.</b> Turn on the read-only eligibility check in Settings to confirm this wallet earlier. Without it, GhostMint waits until opening; if the wallet is not eligible, nothing is sent and the task records the reason{s.advancesIfIneligible?' before checking the next safely published stage.':'.'}</>}</div></div>
             :null;})()}
-        {!liveMintStage&&viaOpenSea&&!selectedStageKey&&!stageType&&<div className="nt w" role="status">{WARN_TRIANGLE_ICON}<div>
+        {!liveMintStage&&!scheduleTerminal&&!verifiedWindowEnded&&viaOpenSea&&!selectedStageKey&&!stageType&&<div className="nt w" role="status">{WARN_TRIANGLE_ICON}<div>
           <b>No schedulable stage is published yet.</b> Use Mint now if it is already open, or return after the project publishes a mint stage.</div></div>}
-        {!liveMintStage&&<div className="g gm2 g2 mint-wallet-quantity-row">
+        {scheduleFormAvailable&&<div className="g gm2 g2 mint-wallet-quantity-row">
           <SelectMenu className="fl" name="walletLabel" label="Wallet" value={scheduleWallet}
             disabled={!walletsArrived||noWallets}
             options={noWallets?[{value:'',label:'No wallets yet',disabled:true}]
@@ -2286,12 +2353,12 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint,onSwitchToBatc
                   onClick={()=>setQuantity(String(quantityMax))}>Max</button></div>
             </div></label>
         </div>}
-        {!liveMintStage&&<DateTimePicker name="mintTime" active={active}
+        {scheduleFormAvailable&&<DateTimePicker name="mintTime" active={active}
           label={<>Mint time <span className="date-time-picker-label-note">· your local time; stored in UTC</span></>}
           required disabled={noWallets}
           min={stageMintTimeLocalValue(stages.find(stage=>scheduleStageSelectionKey(stage)===selectedStageKey)?.startTime,{bufferMs:0})||''}
           value={mintTime} onChange={event=>setMintTime(event.target.value)}/>}
-        {!liveMintStage&&(!viaOpenSea&&priceIssue
+        {scheduleFormAvailable&&(!viaOpenSea&&priceIssue
           ?<label className="fl"><span>Price per mint <span style={{color:'var(--faint)',fontWeight:500}}>· {nativeSymbolForChain(chain)}</span></span>
              <input className="in tab bad" name="priceETH" type="number" step="any" min="0" required
                 placeholder="e.g. 0.08" value={priceETH} onChange={e=>setPriceETH(e.target.value)}/>
@@ -2300,11 +2367,11 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint,onSwitchToBatc
               <div className="fielderr">{ALERT_ICON}{priceIssue}</div></label>
           :!viaOpenSea&&priceETH?<input type="hidden" name="priceETH" value={priceETH}/>:null)}
         <input type="hidden" name="chain" value={chain}/>
-        {!liveMintStage&&scheduleError&&<div className="nt w" role="status">{WARN_TRIANGLE_ICON}<div><b>{scheduleError.title}</b> {scheduleError.detail}
+        {scheduleFormAvailable&&scheduleError&&<div className="nt w" role="status">{WARN_TRIANGLE_ICON}<div><b>{scheduleError.title}</b> {scheduleError.detail}
           {scheduleError.action==='mint-now'&&<div style={{marginTop:'8px'}}><button type="button" className="b p sm"
             onClick={()=>{setPendingMintPrefill({contractAddress,quantity});onSwitchToMint?.();}}>Mint now</button></div>}
         </div></div>}
-        {!liveMintStage&&<button className="b p" disabled={noWallets||!scheduleWallet||!mintTime||detecting||submitting||(viaOpenSea&&!selectedStageKey&&!stageType)||Boolean(stages.find(stage=>scheduleStageSelectionKey(stage)===selectedStageKey)&&stageChoice(stages.find(stage=>scheduleStageSelectionKey(stage)===selectedStageKey)).disabled)||!ADDRESS_SHAPE.test(contractAddress.trim())||lastDetected.current!==contractAddress.trim().toLowerCase()||lastEligibilityWallet.current!==scheduleWallet}>{submitting?'Scheduling…':detecting?'Reading contract…':'Schedule mint'}</button>}
+        {scheduleFormAvailable&&<button className="b p" disabled={noWallets||!scheduleWallet||!mintTime||detecting||submitting||(viaOpenSea&&!selectedStageKey&&!stageType)||Boolean(stages.find(stage=>scheduleStageSelectionKey(stage)===selectedStageKey)&&stageChoice(stages.find(stage=>scheduleStageSelectionKey(stage)===selectedStageKey)).disabled)||!ADDRESS_SHAPE.test(contractAddress.trim())||lastDetected.current!==contractAddress.trim().toLowerCase()||lastEligibilityWallet.current!==scheduleWallet}>{submitting?'Scheduling…':detecting?'Reading contract…':'Schedule mint'}</button>}
         </fieldset>
       </form>
     </div>

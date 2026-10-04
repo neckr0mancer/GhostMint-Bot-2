@@ -60,7 +60,8 @@ test('saving a default chain refreshes the shared profile used by other forms', 
 test('controlled mint and wallet-display selectors share the accessible themed listbox', () => {
   assert.match(shared, /export function SelectMenu/);
   assert.match(shared, /aria-controls=\{listId\}/);
-  assert.match(shared, /aria-labelledby=\{`\$\{labelId\} \$\{valueId\}`\}/);
+  assert.match(shared, /aria-labelledby=\{`\$\{labelId\} \$\{valueId\}\$\{selected\?\.tag\?` \$\{tagId\}`:''\}`\}/,
+    'the selected option tag must be part of the trigger accessible name');
   assert.match(shared, /aria-activedescendant=/);
   assert.match(shared, /data-option-tone=\{selected\?\.tone\|\|undefined\}/,
     'the selected value must expose its state for stage-specific status styling');

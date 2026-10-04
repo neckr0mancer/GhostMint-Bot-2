@@ -466,6 +466,7 @@ export function SelectMenu({label,options=[],optional=false,name,value,defaultVa
   const uid=useId().replace(/:/g,'');
   const labelId=`select-label-${uid}`;
   const valueId=`select-value-${uid}`;
+  const tagId=`select-tag-${uid}`;
   const listId=`select-list-${uid}`;
   useEffect(()=>{if(controlled)setInternalValue(String(value??''));},[controlled,value]);
   useEffect(()=>{
@@ -558,7 +559,8 @@ export function SelectMenu({label,options=[],optional=false,name,value,defaultVa
     <div className="select-menu-control">
       <button type="button" className="select-menu-trigger" ref={triggerRef} disabled={disabled} autoFocus={autoFocus}
         data-option-tone={selected?.tone||undefined}
-        aria-haspopup="listbox" aria-expanded={open} aria-controls={listId} aria-labelledby={`${labelId} ${valueId}`}
+        aria-haspopup="listbox" aria-expanded={open} aria-controls={listId}
+        aria-labelledby={`${labelId} ${valueId}${selected?.tag?` ${tagId}`:''}`}
         aria-required={required||undefined} {...ariaProps}
         onClick={()=>open?close():openList()} onKeyDown={onTriggerKeyDown}>
         {selected?.icon&&<span className="select-menu-icon" aria-hidden="true">{selected.icon}</span>}
@@ -566,7 +568,7 @@ export function SelectMenu({label,options=[],optional=false,name,value,defaultVa
           <span className="select-menu-value-text">{selected?.label||placeholder}</span>
           {selected?.inlineStatus&&<span className={`select-menu-inline-status ${selected.inlineStatusTone||''}`.trim()}>{selected.inlineStatus}</span>}
         </span>
-        {selected?.tag&&<span className="select-menu-tag">{selected.tag}</span>}
+        {selected?.tag&&<span className="select-menu-tag" id={tagId}>{selected.tag}</span>}
         <span className="select-menu-chevron">{SELECT_MENU_CHEVRON}</span>
       </button>
       {open&&<ul className="select-menu-panel" id={listId} role="listbox" tabIndex="-1" ref={panelRef}

@@ -228,8 +228,10 @@ main.loading{min-height:100vh;display:grid;place-items:center;padding:1.25rem;co
 .schedule-preview-stage-control .select-menu-trigger{background:var(--surface)}
 .schedule-preview-stage-control .select-menu-value,
 .schedule-preview-stage-control .select-menu-option-copy b{color:var(--text);font-size:.94rem;font-weight:800;line-height:1.3;letter-spacing:.005em}
+.schedule-preview-stage-control .select-menu-inline-status::before{content:'·';margin-right:.35rem;color:var(--muted)}
 .schedule-preview-stage-control .select-menu-inline-status.success{color:var(--success)}
-.schedule-preview-stage-control .select-menu-inline-status.success::before{content:'·';margin-right:.35rem;color:var(--muted)}
+.schedule-preview-stage-control .select-menu-inline-status.ended{color:var(--muted)}
+.schedule-preview-stage-control .select-menu-inline-status.pending{color:var(--faint)}
 .schedule-preview-stage-control [data-option-tone="eligible"] .select-menu-tag,
 .schedule-preview-stage-control [data-option-tone="open_to_all"] .select-menu-tag{color:var(--success);
   border-color:color-mix(in srgb,var(--success) 40%,var(--border));
@@ -254,6 +256,10 @@ main.loading{min-height:100vh;display:grid;place-items:center;padding:1.25rem;co
 .schedule-live-now>div:first-child{display:grid;gap:4px}.schedule-live-now span{color:var(--success);font-size:.72rem;
   font-weight:800;letter-spacing:.06em;text-transform:uppercase}.schedule-live-now h3,.schedule-live-now p{margin:0}
 .schedule-live-now p{color:var(--muted);font-size:.82rem;line-height:1.45}.schedule-live-actions{display:flex;flex-wrap:wrap;gap:8px}
+.schedule-live-now.is-sold-out{border-color:var(--border-strong);background:var(--surface)}
+.schedule-live-now.is-sold-out span{color:var(--muted)}
+.schedule-live-now.is-ended{border-color:color-mix(in srgb,var(--muted) 34%,var(--border));background:color-mix(in srgb,var(--surface) 94%,var(--muted) 6%)}
+.schedule-live-now.is-ended span{color:var(--muted)}
 .schedule-policy-list{display:grid;gap:10px;padding-top:2px}
 .schedule-policy-row{display:grid;grid-template-columns:40px minmax(0,1fr) 24px;align-items:center;gap:10px;min-width:0}
 .schedule-policy-title{min-width:0;line-height:1.25}
@@ -295,7 +301,7 @@ main.loading{min-height:100vh;display:grid;place-items:center;padding:1.25rem;co
   .schedule-preview{padding:12px}.schedule-preview-grid{grid-template-columns:1fr 1fr;gap:7px}
   .schedule-preview-grid>div{padding:8px}.schedule-preview-grid b{white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere}
   .schedule-live-actions .b{flex:1 1 8.5rem}
-  .schedule-eligibility-access{align-items:stretch;flex-direction:column}.schedule-eligibility-actions .b{flex:1}
+  .schedule-eligibility-access{align-items:stretch;flex-direction:column}.schedule-eligibility-actions .b{flex:1;min-height:44px}
   .schedule-policy-field{padding-left:0}.ico-btn.schedule-help-open{width:44px;height:44px;min-height:44px;padding:12px}
 }
 @media(prefers-reduced-motion:reduce){.schedule-switch,.schedule-switch-thumb,.info-popover-card{transition:none}}
@@ -466,10 +472,31 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
 .select-menu-option.disabled{cursor:not-allowed;color:var(--text-faint)}
 .select-menu-option.disabled:hover{background:transparent}
 .select-menu-option.disabled .select-menu-icon{opacity:.5}
+.schedule-stage-facts-mobile{display:none}
 @media(max-width:700px){
   .select-menu-panel{max-height:min(18rem,52vh)}
   .select-menu-option{align-items:flex-start}
   .select-menu-option-end{padding-top:2px}
+
+  /* The Schedule picker can contain several project phases. On a phone it is a compact chooser,
+     not a second receipt: timing stays with the stage name, eligibility stays in its badge, and
+     only max/price facts remain underneath. A bounded panel scrolls internally instead of
+     covering the form or pushing the document. Desktop keeps the complete provider facts. */
+  .schedule-preview-stage-control .select-menu-panel{top:calc(100% + .25rem);max-height:min(13.25rem,36dvh);
+    padding:.25rem;overscroll-behavior:contain;scrollbar-width:thin}
+  .schedule-preview-stage-control .select-menu-group-label{display:none}
+  .schedule-preview-stage-control .select-menu-option{min-height:44px;padding:.38rem .45rem;gap:.35rem;align-items:center}
+  .schedule-preview-stage-control .select-menu-option-copy{gap:1px}
+  .schedule-preview-stage-control .select-menu-option-copy b{font-size:.76rem;line-height:1.2}
+  .schedule-preview-stage-control .select-menu-option-copy small{font-size:.62rem;line-height:1.2;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .schedule-preview-stage-control .select-menu-option-end{padding-top:0;gap:.25rem}
+  .schedule-preview-stage-control .select-menu-tag{padding:.08rem .32rem;font-size:.54rem;letter-spacing:.02em}
+  .schedule-preview-stage-control .select-menu-check{width:.82rem;height:.82rem}
+  .schedule-preview-stage-control .select-menu-value{font-size:.78rem}
+  .schedule-preview-stage-control .select-menu-inline-status{font-size:.6em}
+  .schedule-stage-facts-full{display:none}
+  .schedule-stage-facts-mobile{display:block;overflow:hidden;text-overflow:ellipsis}
 }
 
 /* The quantity control becomes taller on mobile. Keep its paired wallet selector pinned to the
