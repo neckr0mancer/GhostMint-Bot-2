@@ -324,15 +324,25 @@ function createOpenSeaService({ apiKey, repository, baseUrl = 'https://api.opens
       maxContentLength:1_000_000,
       headers:{ 'x-api-key':apiKey, Authorization:`Bearer ${accessToken}` },
     });
-    const stages = Array.isArray(response.data?.stages) ? response.data.stages : [];
-    return { stages:stages.map(stage => ({
+    if (!Array.isArray(response.data?.stages)) {
+      throw new Error('OpenSea eligibility response did not include its required stages array');
+    }
+    const stages = response.data.stages;
+    const normalized=stages.map(stage => ({
       uuid:stageUuid(stage.stage_uuid??stage.uuid),
       isEligible:typeof stage.is_eligible==='boolean'?stage.is_eligible
         :typeof stage.eligible==='boolean'?stage.eligible:null,
       priceWei:unsignedIntegerString(stage.price),
       maxTotalMintableByWallet:safeNonnegativeInteger(stage.max_total_mintable_by_wallet),
       maxTotalMintableByWalletPerToken:safeNonnegativeInteger(stage.max_total_mintable_by_wallet_per_token),
-    })).filter(stage => stage.uuid) };
+    }));
+    // OpenSea documents both fields as required. Silently dropping a malformed row makes an
+    // authorized wallet look as if the provider is still deciding forever. Reject the whole
+    // response instead so the caller can expose a retryable provider-unavailable state.
+    if (normalized.some(stage=>!stage.uuid||typeof stage.isEligible!=='boolean')) {
+      throw new Error('OpenSea eligibility response contained an invalid stage decision');
+    }
+    return { stages:normalized };
   }
 
   // Section AF -- the point of all of this: an allowlist/GTD/FCFS SeaDrop stage has no on-chain way

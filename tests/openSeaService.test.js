@@ -96,21 +96,22 @@ test('wallet eligibility uses both API-key and wallet JWT and normalizes stage U
   assert.equal(request.config.headers.Authorization,'Bearer wallet-jwt');
 });
 
-test('wallet eligibility preserves unknown provider facts and bounded opaque stage IDs',async()=>{
+test('wallet eligibility rejects a response missing a required wallet decision',async()=>{
   const http={get:async url=>url.includes('/chain/ethereum/contract/')
     ?{data:{collection:'unknown-drop'}}
     :{data:{stages:[
       {stage_uuid:'11111111-1111-4111-8111-111111111111',price:'not-a-number',max_total_mintable_by_wallet:-1},
       {stage_uuid:'not-a-uuid',is_eligible:false,price:'0'},
     ]}}};
-  const result=await createOpenSeaService({apiKey:'app-key',repository:fakeRepository(),http})
-    .getDropEligibility('ethereum',CONTRACT,'wallet-jwt');
-  assert.deepEqual(result,{stages:[
-    {uuid:'11111111-1111-4111-8111-111111111111',isEligible:null,priceWei:null,
-      maxTotalMintableByWallet:null,maxTotalMintableByWalletPerToken:null},
-    {uuid:'not-a-uuid',isEligible:false,priceWei:'0',maxTotalMintableByWallet:null,
-      maxTotalMintableByWalletPerToken:null},
-  ]});
+  await assert.rejects(createOpenSeaService({apiKey:'app-key',repository:fakeRepository(),http})
+    .getDropEligibility('ethereum',CONTRACT,'wallet-jwt'),/invalid stage decision/);
+});
+
+test('wallet eligibility rejects a response without the required stage list',async()=>{
+  const http={get:async url=>url.includes('/chain/ethereum/contract/')
+    ?{data:{collection:'unknown-drop'}}:{data:{}}};
+  await assert.rejects(createOpenSeaService({apiKey:'app-key',repository:fakeRepository(),http})
+    .getDropEligibility('ethereum',CONTRACT,'wallet-jwt'),/required stages array/);
 });
 
 test('wallet eligibility accepts newer UUIDs and documented response aliases',async()=>{

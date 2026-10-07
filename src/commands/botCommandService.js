@@ -363,13 +363,24 @@ function createBotCommandService(dependencies) {
             userId, eligibilityWallet, chain, contractAddress);
           walletEligibilityAuthorization = walletEligibility.authorization;
         }
+        const eligibilityDecisionsComplete=Array.isArray(walletEligibility?.stages);
         const eligibilityByStage = new Map((walletEligibility?.stages || [])
           .map(stage => [providerStageKey(stage?.uuid),stage])
           .filter(([key]) => key));
         const mergeWalletEligibility = stage => {
           if (!stage) return null;
           const eligibility = eligibilityByStage.get(providerStageKey(stage.uuid));
-          if (!eligibility) return stage;
+          if (!eligibility) {
+            const endTime=Number(stage.endTime);
+            const expired=Number.isFinite(endTime)&&endTime>0&&endTime*1_000<=Date.now();
+            // A successful authenticated OpenSea response is the complete per-stage decision
+            // set. For a future/live gated stage, omission therefore means this wallet is not on
+            // that stage. Preserve historical omissions as unknown: OpenSea may prune old stage
+            // decisions, and absence after expiry is not evidence about the wallet's old status.
+            return eligibilityDecisionsComplete&&stageRequiresEligibilityCheck(stage)&&!expired
+              ?{...stage,eligibilityState:'ineligible',eligibilitySource:'opensea_wallet'}
+              :stage;
+          }
           const walletCap = eligibility.maxTotalMintableByWalletPerToken
             ?? eligibility.maxTotalMintableByWallet;
           return { ...stage,

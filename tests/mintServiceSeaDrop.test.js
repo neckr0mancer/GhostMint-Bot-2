@@ -491,6 +491,33 @@ test('switching wallets replaces OpenSea eligibility and recomputes the recommen
   assert.equal(second.walletEligibilityAuthorization.walletAddress,FEE_RECIPIENT);
 });
 
+test('a complete wallet eligibility result treats an omitted future gated stage as ineligible',async()=>{
+  const allow={uuid:'0192f8a1-7b3c-7def-8123-0123456789ab',label:'TEAM',
+    startTime:Math.floor(Date.now()/1000)+3_600,endTime:Math.floor(Date.now()/1000)+7_200,
+    priceWei:'0',maxPerWallet:1,stageType:'signed_presale'};
+  const publicStage={uuid:'22222222-2222-4222-8222-222222222222',label:'PUBLIC',
+    startTime:allow.endTime+600,endTime:allow.endTime+4_200,priceWei:'0',maxPerWallet:5,
+    stageType:'public'};
+  const wallet={id:1,userId:'user-a',label:'main',address:WALLET,chain:'ethereum'};
+  const authorization={configured:true,status:'connected',connected:true,walletAddress:WALLET};
+  const {service}=commandServiceFixture({wallets:[wallet],
+    openSeaEligibilityService:{status:async()=>authorization,
+      eligibility:async()=>({authorization,stages:[]})},
+    contractValueResolver:{resolve:async()=>{throw new Error('should not be reached');},
+      probeMaxSupply:async()=>null},
+    seaDropDiscoveryService:{resolve:async()=>({address:SEADROP,
+      publicDrop:{mintPriceWei:'0',maxTotalMintableByWallet:5},feeRecipient:FEE_RECIPIENT})},
+    openSeaService:{getCollectionMetadata:async()=>null,getDrop:async()=>({
+      isMinting:false,activeStage:null,nextStage:allow,stages:[allow,publicStage],
+    })},
+  });
+  const result=await service.detectMintContract('user-a',{contractAddress:CONTRACT,quantity:1,
+    includeDrop:true,walletLabel:'main'});
+  assert.equal(result.drop.stages[0].eligibilityState,'ineligible');
+  assert.equal(result.drop.stages[0].eligibilitySource,'opensea_wallet');
+  assert.equal(result.schedulePlan.recommendedStageUuid,publicStage.uuid);
+});
+
 test('four-stage exhausted drop keeps wallet eligibility truthful and suppresses scheduling',async()=>{
   const base=1_790_000_000;
   const stages=[
