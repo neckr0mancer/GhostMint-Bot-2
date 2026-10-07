@@ -2748,3 +2748,141 @@ not create parallel dashboard-only import or wallet logic.
 
 **Status:** recorded for the Wallets dashboard fidelity pass. No Buy/Send/Swap transaction flow is
 claimed or implemented by this worklist entry.
+
+## Feature Request - Canonical Dashboard / Telegram / Discord state parity (P0 correctness closure, documented 2026-10-05)
+
+**Reported defect:** A schedule created from Discord did not appear on the linked account's
+dashboard. Dashboard, Telegram, and Discord are three interfaces to one GhostMint account; they
+must not behave like separate products or keep separate business state.
+
+**Existing architecture to preserve:** all three surfaces already call the shared command service,
+the durable PostgreSQL scheduler, and user-scoped repositories. A successful task creation emits a
+user-scoped `tasks.changed` event and the dashboard refetches durable state. Do not add a second
+sync store or copy rows between platform-specific tables to hide an identity problem.
+
+**First diagnostic and repair requirement:** prove that the authenticated dashboard session, linked
+Discord identity, and linked Telegram identity resolve to the same internal `user_id`. First contact
+on a bot can currently create a separate internal account; a later link can then conflict after that
+duplicate account has acquired real data. If this is the cause, implement an explicit, audited,
+transactional, data-preserving account-merge/relink path. Never silently discard or reassign data.
+
+**Parity scope:**
+
+- Wallets, including labels, archived state, and the currently selected/default wallet where that
+  preference is account-backed.
+- Scheduled tasks and every durable state: scheduled, claimed/running, retrying, paused, failed,
+  expired, cancelled, succeeded, and archived. Each surface exposes only status-valid Pause,
+  Resume, Retry, Cancel, Reschedule, or Archive controls.
+- Snipers, social/watch rules, policies, and presets.
+- Sends/withdrawals, mints, confirmations, P&L inputs, and operational Activity.
+- Persisted safety, transaction, notification, and account preferences. Browser-only drafts,
+  expanded panels, and layout order may remain local but must be labelled and must not masquerade
+  as account-wide settings.
+
+**Acceptance:**
+
+- Provide a safe diagnostic that compares the three platform mappings without exposing tokens,
+  login codes, wallet secrets, or another tenant's identifiers.
+- Create a schedule from Discord and Telegram independently; its stored `user_id` must equal the
+  dashboard session's user and the same row must appear in the correct dashboard status filter both
+  immediately through WebSocket refresh and after a hard reload/restart.
+- Create and control a dashboard schedule and verify the same row and final state from both bots.
+- Repeat create/list/update/control coverage for the other shared resources above; test pagination,
+  reconnect, restart, and every relevant terminal-state filter.
+- Cover link-before-first-use and link-after-first-use. Any duplicate-account reconciliation must
+  re-key all owned records atomically, revoke stale sessions, preserve audit evidence, be idempotent,
+  and maintain tenant isolation.
+
+**Priority/status:** P0 correctness work, immediately after closing the already-active Settings
+unit. Start with the reported bot-created schedule visibility defect. The shared storage path already
+exists; runtime identity evidence is still required before choosing the repair.
+
+## Feature Request - Address-backed on-chain wallet history with origin provenance (documented 2026-10-05)
+
+**Original request (rephrased):** Importing or expanding a wallet should show its real public
+transaction and NFT history, including activity performed outside GhostMint through products such
+as OpenSea or Zerion. GhostMint-originated and externally initiated activity should appear in one
+timeline with a small, clear source distinction. Removing an account and later importing the same
+address should rebuild all public on-chain history that remains available on the chain.
+
+**Truth and provenance model:**
+
+- The blockchain is authoritative for confirmed/reverted transactions and emitted events.
+  GhostMint intents, schedules, Activity, and immutable audit evidence are authoritative for
+  first-party attempts and decisions, including actions that never reached the chain.
+- Normalize on-chain records by chain, wallet address, transaction hash, and log/trace index so
+  retries, restarts, and overlapping provider pages do not create duplicates.
+- Label an event **GhostMint** only when its chain and transaction hash match a durable GhostMint
+  intent/broadcast record. Label it **External** only after backfill coverage is complete and no
+  first-party match exists. Otherwise label it **Source unknown**; never infer origin from calldata,
+  contract shape, or the application currently displaying the wallet.
+- Off-chain schedules, cancellations, eligibility checks, approvals, and review decisions remain
+  operational Activity. Do not present them as blockchain transactions.
+
+**Coverage and ingestion:**
+
+- Cover native and token sends/receives, NFT mint/burn/transfer events, approvals, supported
+  contract interactions, receipt status, gas, block time, chain, counterparty, metadata, and the
+  correct explorer link where the provider supplies authoritative data.
+- Use an address-history indexer/provider for every currently supported EVM chain. Ordinary RPC
+  access alone cannot honestly promise complete historical address coverage. Persist pagination
+  cursors/checkpoints, backfill progress, retries/rate limits, finality, reorg corrections, and
+  explicit partial/unsupported states. Solana remains out of scope until it is genuinely supported.
+- Merge the indexed ledger with GhostMint transaction intents without double-counting Activity,
+  P&L, or success metrics.
+
+**Deletion and reimport rule:** public chain history can be re-indexed after the same address is
+reimported. Exact GhostMint provenance cannot survive a true hard deletion if all first-party intent
+and provenance evidence is also erased. Before implementation, choose and disclose one policy:
+soft-deactivate and retain the necessary evidence; retain a privacy-reviewed minimal provenance
+ledger keyed only by chain/address/transaction hash; or honour hard erasure and truthfully show old
+events as **Source unknown** after reimport. Do not promise both total erasure and retained origin.
+
+**UI and cross-surface acceptance:**
+
+- Wallet Activity and global History read one paginated server-backed ledger with filters for
+  wallet, chain, event type, status, source, address, and transaction hash. Telegram and Discord may
+  use a compact paginated representation of the same data.
+- Background synchronization exposes distinct loading, progress/partial, unavailable/error, empty,
+  and populated states without disabling unrelated sections of the app.
+- Verify backfill restart, provider pagination overlap, deduplication, reorgs, account relinking,
+  wallet removal/reimport, both deletion policies, tenant isolation, both themes, and
+  390/768/1024/1440 layouts.
+
+**Priority/status:** Not implemented. Define its provider, normalized schema, provenance retention,
+and API contract after P0 linked-surface parity and current Settings/Schedule release acceptance,
+but before final Wallets and History fidelity acceptance because those pages must not invent a
+complete ledger that the backend cannot yet supply.
+
+## Prioritized remaining execution register (updated 2026-10-05)
+
+1. Close and verify the active uncommitted Settings fidelity unit; preserve the current schedule
+   and eligibility fixes and do not mix unrelated work into its commit.
+2. Complete **P0 canonical Dashboard / Telegram / Discord state parity**, beginning with the
+   reported bot-created schedule visibility and linked-identity diagnosis.
+3. Deploy and live-accept the recent cross-platform Schedule price/time/configuration controls as
+   part of the same three-surface parity matrix.
+4. Design and implement the **address-backed wallet history, evidence-based provenance, and reimport
+   recovery** data contract before claiming Wallet or History completeness.
+5. Complete the Admin page-by-page fidelity and state pass for Overview, Groups, Users, Effective
+   lookup, Presets, Owners, Wallet import, Audit, and Health.
+6. Complete Account live verification: refreshed-code invalidation, two-browser logout-all, expiry
+   messaging, linked-platform identity behavior, and consequential-form locking.
+7. Complete Wallets surfaces: dashboard import/batch import, persistent Buy/Receive/Send/Swap action
+   row, functional Receive QR, truthful disabled future actions, display-mode decision, historical
+   data integration, and wallet-to-wallet fund dispersion.
+8. Complete History integration and fidelity: Activity, Mints, Trigger Audit, immutable Audit
+   evidence, owner Security log, address/hash/source filters, and the chosen schedule-archive
+   destination.
+9. Run the global acceptance sweep across all user/admin pages at 390/768/1024/1440, Dark/Light,
+   keyboard/focus, overlays, internal scrolling, and populated/loading/empty/error states.
+10. Finish deferred schedule lifecycle UI: retention/archive of old cancelled/expired tasks,
+    status-correct actions, Select all/Unselect all where genuine, and decoded Schedule/Batch
+    receipt-preview parity.
+11. Finish deferred Automation lifecycle actions for failed and paused snipers, including audited
+    Retry/Resume/Archive behavior.
+12. Re-audit remaining guided bot flows and optional product/backend work before implementing it;
+    older placeholder claims may be stale.
+13. Complete release gates and documentation reconciliation: human walkthroughs, public-stage and
+    Railway pending-transaction acceptance, backup/restore/rollback exercises, full validation, CI,
+    deployment evidence, and correction of stale ROADMAP/test-plan claims.

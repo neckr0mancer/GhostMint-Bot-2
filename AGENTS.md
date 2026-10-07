@@ -259,6 +259,30 @@ tooling attempts and report the exact error.
 This register is a routing summary, not permission to implement everything at once. Re-audit each
 item before starting because the application is active and the older backlog contains stale notes.
 
+### Priority execution order (updated 2026-10-05)
+
+1. Close and verify the active local Settings fidelity unit.
+2. Complete P0 canonical state parity across Dashboard, Telegram, and Discord, beginning with the
+   reported bot-created schedule that is missing from the linked dashboard account.
+3. Deploy and live-accept the recent Schedule price/time/configuration controls through all three
+   surfaces.
+4. Define and implement the address-backed wallet-history, evidence-based provenance, and reimport
+   recovery contract before claiming Wallets or History complete.
+5. Complete Admin fidelity and state behavior.
+6. Complete Account live verification.
+7. Complete the remaining Wallets surfaces and integrate the authoritative history source.
+8. Complete History integration and fidelity.
+9. Run the global responsive, theme, focus, overlay, and response-state sweep.
+10. Complete deferred schedule lifecycle and multi-select/preview behavior.
+11. Complete deferred Automation lifecycle behavior.
+12. Re-audit and finish only the still-genuine guided bot and optional product/backend gaps.
+13. Complete release gates and reconcile stale documentation.
+
+The full acceptance criteria and status for the two new data milestones are in
+`docs/WORKLIST.md` under **Canonical Dashboard / Telegram / Discord state parity** and
+**Address-backed on-chain wallet history with origin provenance**. This ordering takes precedence
+over the category order below.
+
 ### A. Required dashboard redesign completion
 
 1. **History:** finish prototype fidelity for Activity, Audit evidence, and owner Security log;
@@ -296,19 +320,26 @@ item before starting because the application is active and the older backlog con
 
 ### C. Product/backend work still open or conditional
 
-1. Finish guided Telegram/Discord flows still represented by placeholders: Mint, Tasks, Snipers,
+1. **P0 linked-surface state parity:** prove Dashboard, Telegram, and Discord resolve the same
+   internal `user_id`, then ensure wallets, schedules, snipers, sends/withdrawals, Activity, and
+   persisted settings use one durable source of truth. Repair duplicate linked identities with an
+   explicit audited data-preserving path rather than a parallel sync store.
+2. **P1 address-backed wallet history:** index supported EVM address history with pagination,
+   finality/reorg handling, deduplication, truthful partial states, and evidence-based
+   `ghostmint` / `external` / `unknown` provenance. Define deletion retention before promising
+   that provenance survives account deletion and wallet reimport.
+3. Finish guided Telegram/Discord flows still represented by placeholders: Mint, Tasks, Snipers,
    Watch Rules, Activity, and Gas. Re-audit existing parity first; old worklist entries can be stale.
-2. Investigate Discord `/info` only if the no-response report recurs, using the exact contract and
+4. Investigate Discord `/info` only if the no-response report recurs, using the exact contract and
    timestamp plus production logs.
-3. Consider scheduler pre-arming only after real `Transaction timing` logs show preparation is a
+5. Consider scheduler pre-arming only after real `Transaction timing` logs show preparation is a
    material bottleneck; do not build it speculatively.
-4. Optional performance/research work: dynamic fee strategies, RPC health scoring, latency
+6. Optional performance/research work: dynamic fee strategies, RPC health scoring, latency
    dashboards, token-ID extraction, canonical bytecode verification, capture-then-revalidate,
    pure fee-policy functions, and explicit decrypted-key log-leak tests. A hot-key cache requires
    separate security approval.
-5. Optional product work: additional social adapters, secondary-market `/buy`, transaction-watch
-   notifications, contract-open auto-detection, OpenSea sale detection for P&L, and merging duplicate
-   accounts that already contain real data.
+7. Optional product work: additional social adapters, secondary-market `/buy`, transaction-watch
+   notifications, contract-open auto-detection, and OpenSea sale detection for P&L.
 
 ### D. Release and acceptance work
 
