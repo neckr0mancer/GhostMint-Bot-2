@@ -521,9 +521,10 @@ therefore inherent to the token rather than introduced here.
 - Scheduled rows show their live remaining time on both desktop and mobile. Exact times use the
   compact `26 Aug 2026 · 20:00 UTC` shape, never a raw ISO timestamp.
 
-**Deferred setting:** add an account-level 12-hour/24-hour display preference during the Settings
-fidelity pass. Until then, dashboard schedule timestamps remain explicit 24-hour UTC so they are
-unambiguous; this note does not authorize building the setting in the current unit.
+**Implemented locally 2026-10-05; isolated migration verification, commit, deployment, and live
+acceptance pending.** Settings now provides a persisted account-level 12-hour/24-hour display
+preference. It changes presentation only: timestamps remain stored as UTC instants, and 24-hour
+display remains the default.
 
 ### 11.1 "2 pending" above three rows
 
@@ -710,6 +711,21 @@ adding a second identity request, and exposes real session summary data plus bot
 The older prototype sentence saying the dashboard could only consume a link code was superseded
 by the owner's later Generate/Refresh request; the prototype, README, and roadmap now record that
 an already-authenticated dashboard session may generate one while Discord remains consume-only.
+
+**Settings fidelity implementation substantially completed locally 2026-10-07; commit,
+deployment, and live acceptance remain pending.** Migration 070 passed a disposable in-memory
+PostgreSQL upgrade check covering existing-user backfill, defaults, NOT NULL and CHECK
+enforcement, repository restart persistence, tenant separation, and idempotent reruns. The focused
+render matrix passed at desktop, tablet, and a true 390px emulated viewport across Dark and
+Light, including Appearance, Transaction mode, Gas, and the API-usage empty state. Settings is
+now organized into **Appearance**, **Transaction mode**, **Gas**,
+**Notifications**, and owner-only **API usage** tabs. Existing default-chain,
+transaction-governance, bot-security, OpenSea eligibility, sniper-timing, gas, currency,
+low-balance, and API-usage behavior remains backed by the existing services rather than parallel
+UI logic. Profile-backed writes use per-control busy states and roll back failed optimistic
+changes with inline errors; request-owning Gas, API-usage, and OpenSea surfaces retain truthful
+loading, empty, error, and retry states. The new persisted 12/24-hour preference is shared across
+dashboard timestamp displays without changing UTC storage.
 
 ## 11.7 Batch — two findings, one of which was not a bug
 
@@ -916,7 +932,13 @@ still unverified on:
 - **Automation** — all tabs: snipers, social rules, and the policy editors inside them
 - **Wallets** — including the create and import forms, which have had no prototype pass at all
 - **History** — all tabs
-- **Settings** — no prototype pass yet
+- **Settings** — local fidelity implementation substantially complete 2026-10-07: tabbed
+  organization, owner-only API usage, shared 12/24-hour preference, keyboard-accessible tab
+  navigation, and targeted loading/empty/failure/retry states are implemented. A focused
+  Dark/Light render matrix passed at 1440, 1024, 768, and a true emulated 390px viewport, with
+  no document-level mobile overflow and the active tab kept visible. Migration 070 also passed
+  its disposable in-memory PostgreSQL upgrade and repository checks. Commit, deployment, and
+  production live acceptance remain pending.
 - **Account** — populated-state prototype pass complete; Dark/Light browser checks with a truthful,
   browser-only profile fixture completed at phone, tablet, and desktop widths. Live code generation/
   logout-all still remain human walkthrough items because they intentionally affect real account/session state.

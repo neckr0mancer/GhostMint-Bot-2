@@ -14,6 +14,7 @@ test('scheduled timestamps are readable and countdowns retain useful precision',
   const display=await import(pathToFileURL(path.join(root,'dashboard','src','scheduleDisplay.js')));
   const at=new Date('2026-08-26T20:00:00.000Z');
   assert.equal(display.formatScheduleDateTime(at),'26 Aug 2026 · 20:00 UTC');
+  assert.equal(display.formatScheduleDateTime(at,'12h'),'26 Aug 2026 · 8:00 PM UTC');
   assert.doesNotMatch(display.formatScheduleDateTime(at),/\dT\d|\.000Z|Z$/);
   assert.equal(display.scheduleCountdown(at,new Date('2026-08-26T18:33:00.000Z').getTime()),'1h 27m');
   assert.equal(display.scheduleCountdown(at,new Date('2026-08-25T17:00:00.000Z').getTime()),'1d 3h');
@@ -42,7 +43,7 @@ test('initial detection and stage switching preserve provider seconds in schedul
 
 test('Schedule exposes its countdown and readable metadata on mobile',()=>{
   assert.match(app,/function rowCountdown\(task\)/);
-  assert.match(app,/formatScheduleDateTime\(at\)/);
+  assert.match(app,/formatScheduleDateTime\(at,profile\.timeFormat\)/);
   assert.match(app,/className="rv schedule-row-right">\{rowCountdown\(task\)\}\{rowPill\(task\)\}/);
   assert.match(css,/\.app\[data-m\] \.schedule-list-card \.rs\.fold\{display:block/);
   assert.match(css,/\.app\[data-m\] \.schedule-countdown/);
@@ -112,8 +113,8 @@ test('mint workspace progress indicators never insert layout-shifting loader blo
 });
 
 test('consequential Mint workspace requests lock their complete participating controls',()=>{
-  assert.match(shared,/function SubTabs\(\{tabs=\[\],active,onChange,label='Sections',badges=\{\},disabled=false\}\)/);
-  assert.match(shared,/role="tab" aria-selected=\{active===tab\.id\} disabled=\{disabled\}/);
+  assert.match(shared,/function SubTabs\(\{tabs=\[\],active,onChange,label='Sections',badges=\{\},disabled=false,idPrefix=null\}\)/);
+  assert.match(shared,/role="tab"[\s\S]*?aria-selected=\{active===tab\.id\}[\s\S]*?disabled=\{disabled\}/);
   assert.match(app,/<SubTabs tabs=\{MINT_TABS\}[\s\S]*disabled=\{commitLocked\}/);
   assert.match(app,/const trackCommit=useCallback\(locked=>setActiveCommits/);
   assert.ok((app.match(/onCommitChange\?\.\(true\)/g)||[]).length>=4,
@@ -168,7 +169,7 @@ test('Automation configuration editing is distinct from target-policy editing',(
 test('sniper timing is scoped to the form while its future-sniper default lives in Settings',()=>{
   assert.match(app,/<label className="fl"><span>Copy timing for this sniper<\/span>/,
     'create and edit must make clear that the selection belongs to this sniper');
-  const settingsStart=app.indexOf('function Settings({profile,onThemeChange,onProfileChange,target})');
+  const settingsStart=app.indexOf('function Settings(');
   const settings=app.slice(settingsStart,app.indexOf('function Login(',settingsStart));
   assert.match(settings,/<SniperTimingSettingsPanel\/>/,
     'the account-level future-sniper default belongs with account preferences');
@@ -409,12 +410,12 @@ test('Schedule uses detected facts instead of asking the user to invent a task n
 });
 
 test('Schedule change review displays exact values and locks every overlay exit while saving',()=>{
-  assert.match(app,/function scheduleChangeFact\(change,chain\)/);
+  assert.match(app,/function scheduleChangeFact\(change,chain,timeFormat='24h'\)/);
   assert.match(app,/Call target/);
   assert.match(app,/Mint method/);
   assert.match(app,/Fee recipient/);
   assert.match(app,/Authorization/);
-  assert.match(app,/Opening: \$\{taskDetailTime\(change\.from\)\} → \$\{taskDetailTime\(change\.to\)\}/);
+  assert.match(app,/Opening: \$\{taskDetailTime\(change\.from,timeFormat\)\} → \$\{taskDetailTime\(change\.to,timeFormat\)\}/);
   assert.match(app,/Price: \$\{freeOrNativeAmount\(change\.from,nativeSymbolForChain\(chain\)\)\} →/);
   assert.match(app,/<Overlay open onClose=\{onClose\} wide busy=\{Boolean\(changeBusy\)\}/);
   assert.match(app,/if\(event\.key==='Escape'&&!busyRef\.current\)onCloseRef\.current\(\)/);
@@ -587,7 +588,7 @@ test('Settings owns the persistent per-wallet eligibility permission while Sched
   assert.doesNotMatch(schedule,/eligibilityBusy|setEligibilityBusy/,
     'opening Settings is synchronous navigation and must not leave an ignored wallet prompt permanently disabled');
   assert.match(schedule,/onOpenSettings\?\.\(\)/);
-  assert.match(app,/onOpenSettings=\{\(\)=>go\('Settings',null,'opensea-eligibility'\)\}/,
+  assert.match(app,/onOpenSettings=\{\(\)=>go\('Settings','transaction','opensea-eligibility'\)\}/,
     'the Schedule action must deep-link to the exact Settings panel');
 });
 

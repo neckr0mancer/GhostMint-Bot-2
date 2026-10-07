@@ -247,14 +247,32 @@ export function downloadFile(filename,content,mimeType='application/json'){
   document.body.appendChild(link);link.click();document.body.removeChild(link);
   URL.revokeObjectURL(url);
 }
-// `status` carries api()'s HTTP status alongside the message so a failure surface can render the
-// code (brief §3.8 requires it visible: "it said 429" is the single most useful thing a user can
-// report back). It was being discarded here -- api() sets .status on the thrown Error, and this
-// catch kept only .message, so no caller could ever show it.
+// `status` remains available to internal callers for control flow and diagnostics, but customer
+// notices intentionally do not render transport codes. AGENTS.md requires short plain-language
+// errors; raw HTTP/provider detail belongs in safe logs rather than the customer surface.
 // A null path means "not yet" -- the caller has nothing to fetch for the current state (a tab that
 // has not been opened, an id that is not chosen). It stays in the loading shape rather than firing
 // a request for the string "null", so a panel can defer its own load until someone looks at it.
-export function useLoad(path,dependencies=[],wsEvents){const [data,setData]=useState(null);const [error,setError]=useState('');const [status,setStatus]=useState(null);const load=useCallback(()=>{if(!path)return Promise.resolve();setError('');setStatus(null);return api(path).then(setData).catch(value=>{setError(value.message);setStatus(value.status??null);});},[path,...dependencies]);useEffect(()=>{load();},[load]);useEffect(()=>{if(!wsEvents)return;const watched=[].concat(wsEvents);const listener=event=>{if(event.detail?.type==='ws.reconnected'||watched.includes(event.detail?.type))load();};window.addEventListener('ghostmint-ws',listener);return()=>window.removeEventListener('ghostmint-ws',listener);},[load,wsEvents]);return {data,error,status,load};}
+export function useLoad(path,dependencies=[],wsEvents){
+  const [data,setData]=useState(null);
+  const [error,setError]=useState('');
+  const [status,setStatus]=useState(null);
+  const requestId=useRef(0);
+  const load=useCallback(()=>{
+    if(!path)return Promise.resolve();
+    const activeRequest=++requestId.current;
+    setError('');setStatus(null);
+    return api(path).then(value=>{
+      if(activeRequest===requestId.current)setData(value);
+      return value;
+    }).catch(value=>{
+      if(activeRequest===requestId.current){setError(value.message);setStatus(value.status??null);}
+    });
+  },[path,...dependencies]);
+  useEffect(()=>{load();return()=>{requestId.current+=1;};},[load]);
+  useEffect(()=>{if(!wsEvents)return;const watched=[].concat(wsEvents);const listener=event=>{if(event.detail?.type==='ws.reconnected'||watched.includes(event.detail?.type))load();};window.addEventListener('ghostmint-ws',listener);return()=>window.removeEventListener('ghostmint-ws',listener);},[load,wsEvents]);
+  return {data,error,status,load};
+}
 // Opens the one live-update socket for the whole session (shared by both the regular dashboard
 // shell and the admin shell, which previously never opened one at all -- so admin pages had no live
 // listener). Every server-side change is broadcast as a 'ghostmint-ws' window CustomEvent; useLoad's
@@ -301,9 +319,7 @@ export function useLiveSocket(){
 }
 // Two shapes, deliberately. `error` as a STRING keeps the original one-line notice every existing
 // caller passes (useLoad's error is always a string). `error` as an OBJECT renders the richer
-// failure surface brief §3.8 requires on a money surface: what failed, what was NOT changed, the
-// status code shown visibly, and a Retry. The status code is rendered rather than swallowed
-// because "it said 429" is the single most useful thing a user can tell you.
+// failure surface: what failed, what was NOT changed, and a Retry.
 // Prototype .notice (docs/prototype-pages/mint.html, auto.html, admin.html): a flex row of
 // warning glyph + .nb body, where the title is a <b> (block, via prototype.css), the detail is
 // plain text and the status code is a <code> at the end -- NOT a coloured heading with a chip.
@@ -311,7 +327,7 @@ export function useLiveSocket(){
 // a different component there (.nt.i / .nt.w / .nt.e), which is what the string variants map to.
 const NOTICE_GLYPH=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>;
 // Every prototype page draws the SAME error shape (.notice.ox): a bold sentence naming what
-// failed, the status code and "Request failed safely" together in a <code>, and a Retry button.
+// failed, a short safety state, and a Retry button.
 // Built here rather than at each call site because there are eight of them and they had already
 // drifted -- every one passed a bare string, so none of them offered the Retry at all, which is
 // the part that turns an error state from a dead end into something the user can act on.
@@ -319,7 +335,7 @@ export { batchRowDetail } from './batchRow.js';
 export function loadError(listing,title){
   if(!listing?.error)return null;
   return {title,onRetry:listing.load,
-    code:listing.status?listing.status+' · Request failed safely':'Request failed safely'};
+    code:'Request failed safely'};
 }
 export function Notice({error,ok}){
   if(error&&typeof error==='object'){
@@ -758,12 +774,38 @@ export function SearchField({label,value='',onChange,placeholder='Label, address
 // `tag` is a plain qualifier rendered in the same muted style WITHOUT the "was" prefix --
 // history.html's "Security log owner only" marker, where the point is a permission boundary,
 // not a rename.
-export function SubTabs({tabs=[],active,onChange,label='Sections',badges={},disabled=false}){
+export function SubTabs({tabs=[],active,onChange,label='Sections',badges={},disabled=false,idPrefix=null}){
+  const generatedId=useId().replace(/:/g,'');
+  const tabRefs=useRef(new Map());
+  useEffect(()=>{
+    const button=tabRefs.current.get(active);
+    const row=button?.parentElement;
+    if(!row||row.scrollWidth<=row.clientWidth)return;
+    const rowRect=row.getBoundingClientRect();
+    const buttonRect=button.getBoundingClientRect();
+    if(buttonRect.left<rowRect.left)row.scrollLeft-=rowRect.left-buttonRect.left;
+    else if(buttonRect.right>rowRect.right)row.scrollLeft+=buttonRect.right-rowRect.right;
+  },[active,tabs.length]);
+  const prefix=idPrefix||`subtabs-${generatedId}`;
+  function moveFocus(event,index){
+    const direction={ArrowRight:1,ArrowDown:1,ArrowLeft:-1,ArrowUp:-1}[event.key];
+    let nextIndex=direction?index+direction:null;
+    if(event.key==='Home')nextIndex=0;
+    if(event.key==='End')nextIndex=tabs.length-1;
+    if(nextIndex===null)return;
+    event.preventDefault();
+    nextIndex=(nextIndex+tabs.length)%tabs.length;
+    const next=tabs[nextIndex];
+    onChange(next.id);
+    setTimeout(()=>tabRefs.current.get(next.id)?.focus(),0);
+  }
   return <div className="subtabs" role="tablist" aria-label={label} aria-busy={disabled||undefined}>
-    {tabs.map(tab=>{
+    {tabs.map((tab,index)=>{
       const badge=badges[tab.id];
-      return <button key={tab.id} type="button" role="tab" aria-selected={active===tab.id} disabled={disabled}
-        className={active===tab.id?'on':undefined} onClick={()=>onChange(tab.id)}>
+      return <button key={tab.id} type="button" role="tab" id={`${prefix}-tab-${tab.id}`}
+        aria-controls={idPrefix?`${prefix}-panel-${tab.id}`:undefined} aria-selected={active===tab.id}
+        tabIndex={active===tab.id?0:-1} disabled={disabled} ref={node=>{if(node)tabRefs.current.set(tab.id,node);else tabRefs.current.delete(tab.id);}}
+        className={active===tab.id?'on':undefined} onClick={()=>onChange(tab.id)} onKeyDown={event=>moveFocus(event,index)}>
         <span>{tab.label}</span>{tab.was&&<span className="was">was {tab.was}</span>}
         {tab.tag&&<span className="was">{' '}{tab.tag}</span>}
         {badge&&badge.count>0&&<span className={`cnt sub${badge.tone==='bad'?' hot':badge.tone==='wn'?' warn':''}`}

@@ -54,9 +54,9 @@ export function StatsStrip({summary,go}){return <section className="panel dash-q
   <button className="b g" onClick={()=>go('P&L')}>View P&amp;L</button>
 </section>;}
 
-export function TasksSnipersSummary({summary,go}){return <section className="panel dash-quiet">
+export function TasksSnipersSummary({summary,go,profile}){return <section className="panel dash-quiet">
   <h2>Tasks and snipers</h2>
-  <p>{summary.tasksTotal} active tasks{summary.nextTaskTime?`. Next run: ${formatWhen(summary.nextTaskTime)}`:'.'}</p>
+  <p>{summary.tasksTotal} active tasks{summary.nextTaskTime?`. Next run: ${formatWhen(summary.nextTaskTime,profile?.timeFormat)}`:'.'}</p>
   <p>{summary.sniperCount} active snipers.</p>
   <div className="br"><button className="b" onClick={()=>go('Tasks')}>View tasks</button><button className="b" onClick={()=>go('Snipers')}>View snipers</button></div>
 </section>;}
@@ -68,12 +68,12 @@ export function WatchTargetSummary({summary,go}){return <section className="pane
   <div className="br"><button className="b" onClick={()=>go('Watch Rules')}>View watch rules</button><button className="b" onClick={()=>go('Target Policies')}>View target policies</button></div>
 </section>;}
 
-export function ActivityFeed({summary,go}){return <section className="panel dash-quiet">
+export function ActivityFeed({summary,go,profile}){return <section className="panel dash-quiet">
   <h2>Recent activity</h2>
   {summary.activityItems.length===0
     ?<Empty text="No activity recorded yet."/>
     :<div className="dash-plain-list">{summary.activityItems.map(item=><AdvancedRow key={item.id}
-        summaryLine={<><StatusPill status={item.status}/> {item.title} - {formatWhen(item.time)}</>}
+        summaryLine={<><StatusPill status={item.status}/> {item.title} - {formatWhen(item.time,profile?.timeFormat)}</>}
         details={<><p>Wallet: {item.walletLabel||'none'}</p><p>Trigger: {item.triggerSource||'legacy/unrecorded'}</p><p>Verification: {item.verificationState||'not applicable'}</p></>}/>)}</div>}
   <button className="b g" onClick={()=>go('Activity')}>View all activity</button>
 </section>;}

@@ -163,7 +163,7 @@ test('WebSocket rejects unauthenticated clients and isolates user broadcasts',as
 
 test('dashboard production bundle contains no server secrets or secret variable names',()=>{const root=path.join(__dirname,'..','public','dashboard');assert.equal(fs.existsSync(path.join(root,'index.html')),true,'dashboard must be built before tests');const content=fs.readdirSync(path.join(root,'assets')).map(name=>fs.readFileSync(path.join(root,'assets',name),'utf8')).join('\n');const forbidden=['ENCRYPTION_SECRET','DATABASE_URL','DISCORD_BOT_TOKEN','TELEGRAM_BOT_TOKEN','dev-encryption-key-7Qv9'];const envPath=path.join(__dirname,'..','.env');if(fs.existsSync(envPath)){const values=require('dotenv').parse(fs.readFileSync(envPath));for(const name of ['ENCRYPTION_SECRET','DISCORD_BOT_TOKEN','TELEGRAM_BOT_TOKEN','SOCIAL_OFFICIAL_API_TOKEN','SOCIAL_MANAGED_SERVICE_TOKEN'])if(values[name]?.length>=8)forbidden.push(values[name]);}for(const value of forbidden)assert.equal(content.includes(value),false,`bundle contains forbidden server value: ${value.startsWith('dev-')?value:'[redacted]'}`);});
 
-async function operationsServer(t,options={}){const sessions=new Map([['token-a',{userId:'user-a',csrfTokenHash:'csrf'}],['token-b',{userId:'user-b',csrfTokenHash:'csrf'}]]);const privateKey=`0x${'11'.repeat(32)}`;const recoveryPhrase='test test test test test test test test test test test junk';const calls=[];const notifications=[];const errors=[];const selectedPresets=new Map();const defaultChains=new Map();const lowBalanceThresholds=new Map();const commands={
+async function operationsServer(t,options={}){const sessions=new Map([['token-a',{userId:'user-a',csrfTokenHash:'csrf'}],['token-b',{userId:'user-b',csrfTokenHash:'csrf'}]]);const privateKey=`0x${'11'.repeat(32)}`;const recoveryPhrase='test test test test test test test test test test test junk';const calls=[];const notifications=[];const errors=[];const selectedPresets=new Map();const defaultChains=new Map();const lowBalanceThresholds=new Map();const timeFormats=new Map();const commands={
   wallets:userId=>userId==='user-a'?[{label:'alpha',address:'0x0000000000000000000000000000000000000001',chain:'ethereum',keyEnvelope:{ciphertext:'secret'}}]:[],
   walletBalance:async(userId,label)=>({label,address:'0x0000000000000000000000000000000000000001',chain:'ethereum',balances:[{chain:'ethereum',balance:'1.0',symbol:'ETH'}]}),
   createWalletWithRecoveryPhrase:async()=>({label:'new',address:'0x0000000000000000000000000000000000000002',chain:'ethereum',privateKey,recoveryPhrase}),
@@ -198,7 +198,7 @@ async function operationsServer(t,options={}){const sessions=new Map([['token-a'
  const themes=new Map();
  const securityPasswordHashes=new Map([['user-a',hashSecurityPassword('a-strong-enough-password')],['user-b',hashSecurityPassword('a-strong-enough-password')]]);
  const usernames=new Map();
- const api=createDashboardApi({auth,commands,supportedChains:['ethereum','robinhood'],identityRepository:{listLinkedAccounts:async()=>[],getTheme:async userId=>themes.get(userId)||'ghost-mint',setTheme:async(userId,theme)=>{themes.set(userId,theme);return theme;},getDisplayName:async()=>null,getDefaultChain:async userId=>defaultChains.get(userId)||null,setDefaultChain:async(userId,value)=>{defaultChains.set(userId,value);return value;},getLowBalanceThreshold:async userId=>lowBalanceThresholds.get(userId)||'0.01',setLowBalanceThreshold:async(userId,value)=>{lowBalanceThresholds.set(userId,value);return value;},getSecurityPasswordHash:async userId=>securityPasswordHashes.get(userId)||null,setSecurityPasswordHash:async(userId,hash)=>{securityPasswordHashes.set(userId,hash);},
+ const api=createDashboardApi({auth,commands,supportedChains:['ethereum','robinhood'],identityRepository:{listLinkedAccounts:async()=>[],getTheme:async userId=>themes.get(userId)||'ghost-mint',setTheme:async(userId,theme)=>{themes.set(userId,theme);return theme;},getDisplayName:async()=>null,getDefaultChain:async userId=>defaultChains.get(userId)||null,setDefaultChain:async(userId,value)=>{defaultChains.set(userId,value);return value;},getLowBalanceThreshold:async userId=>lowBalanceThresholds.get(userId)||'0.01',setLowBalanceThreshold:async(userId,value)=>{lowBalanceThresholds.set(userId,value);return value;},getTimeFormat:async userId=>timeFormats.get(userId)||'24h',setTimeFormat:async(userId,value)=>{timeFormats.set(userId,value);return value;},getSecurityPasswordHash:async userId=>securityPasswordHashes.get(userId)||null,setSecurityPasswordHash:async(userId,hash)=>{securityPasswordHashes.set(userId,hash);},
    getUsername:async userId=>usernames.get(userId)||null,
    setUsername:async(userId,value)=>{if([...usernames.values()].includes(value))throw new UsernameTakenError();usernames.set(userId,value);},
    findUserIdByUsername:async value=>[...usernames.entries()].find(([,name])=>name===value)?.[0]||null,
@@ -351,7 +351,7 @@ test('dashboard exposes and writes the shared per-user sniper timing default wit
   assert.deepEqual(calls.at(-1),['sniper-default','user-a',{observationMode:'pending',pendingRiskAccepted:true}]);
 });
 
-test('profile reports the account dashboard theme and display preferences',async t=>{const {base}=await operationsServer(t);const profile=await (await fetch(`${base}/api/profile`,{headers:authHeaders('a')})).json();assert.equal(profile.theme,'ghost-mint');assert.equal(profile.defaultChain,null);assert.equal(profile.lowBalanceThreshold,'0.01');});
+test('profile reports the account dashboard theme and display preferences',async t=>{const {base}=await operationsServer(t);const profile=await (await fetch(`${base}/api/profile`,{headers:authHeaders('a')})).json();assert.equal(profile.theme,'ghost-mint');assert.equal(profile.defaultChain,null);assert.equal(profile.lowBalanceThreshold,'0.01');assert.equal(profile.timeFormat,'24h');});
 test('dashboard theme updates persist per account, reject unknown themes, and require CSRF',async t=>{const {base}=await operationsServer(t);
   const noCsrf=await fetch(`${base}/api/profile/theme`,{method:'PUT',headers:{cookie:'ghostmint_session=token-a','content-type':'application/json'},body:JSON.stringify({theme:'clean-vault'})});
   assert.equal(noCsrf.status,403);
@@ -384,6 +384,16 @@ test('low-balance warning choices are validated, CSRF-protected, and persisted p
   assert.equal(updated.status,200);assert.deepEqual(await updated.json(),{lowBalanceThreshold:'0.025'});
   assert.equal((await (await fetch(`${base}/api/profile`,{headers:authHeaders('a')})).json()).lowBalanceThreshold,'0.025');
   assert.equal((await (await fetch(`${base}/api/profile`,{headers:authHeaders('b')})).json()).lowBalanceThreshold,'0.01');
+});
+test('time format is validated, CSRF-protected, and persisted per user',async t=>{const {base}=await operationsServer(t);
+  const noCsrf=await fetch(`${base}/api/profile/time-format`,{method:'PUT',headers:authHeaders('a'),body:JSON.stringify({timeFormat:'12h'})});
+  assert.equal(noCsrf.status,403);
+  const invalid=await fetch(`${base}/api/profile/time-format`,{method:'PUT',headers:authHeaders('a',true),body:JSON.stringify({timeFormat:'ampm'})});
+  assert.equal(invalid.status,400);
+  const updated=await fetch(`${base}/api/profile/time-format`,{method:'PUT',headers:authHeaders('a',true),body:JSON.stringify({timeFormat:'12h'})});
+  assert.equal(updated.status,200);assert.deepEqual(await updated.json(),{timeFormat:'12h'});
+  assert.equal((await (await fetch(`${base}/api/profile`,{headers:authHeaders('a')})).json()).timeFormat,'12h');
+  assert.equal((await (await fetch(`${base}/api/profile`,{headers:authHeaders('b')})).json()).timeFormat,'24h');
 });
 test('display currency is user-scoped, validated, and its quotes retain source and freshness',async t=>{
   const sessions=new Map([['token-a',{userId:'user-a',csrfTokenHash:'csrf'}],

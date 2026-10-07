@@ -41,7 +41,7 @@ async function findMergeEmptinessViolations(client, userId) {
   const user = await client.query(
     `SELECT is_owner,account_status,status_reason,suspended_until,subscription_active,
       good_standing_override,dashboard_theme,default_chain,low_balance_threshold_native,
-      sniper_observation_default,display_currency
+      sniper_observation_default,display_currency,time_format
      FROM users WHERE user_id=$1`, [userId]);
   if (!user.rowCount) violations.push('source account no longer exists');
   else {
@@ -63,6 +63,9 @@ async function findMergeEmptinessViolations(client, userId) {
     }
     if (row.display_currency && row.display_currency !== 'USD') {
       violations.push('source account changed its display currency');
+    }
+    if (row.time_format && row.time_format !== '24h') {
+      violations.push('source account changed its time format');
     }
   }
 
@@ -316,6 +319,18 @@ function createPostgresIdentityRepository(pool) {
         WHERE user_id=$1 RETURNING display_currency`, [userId, value]);
       if (!result.rowCount) throw new Error('User not found');
       return result.rows[0].display_currency;
+    },
+
+    async getTimeFormat(userId) {
+      const result = await pool.query('SELECT time_format FROM users WHERE user_id=$1', [userId]);
+      return result.rows[0]?.time_format || '24h';
+    },
+
+    async setTimeFormat(userId, value) {
+      const result = await pool.query(`UPDATE users SET time_format=$2
+        WHERE user_id=$1 RETURNING time_format`, [userId, value]);
+      if (!result.rowCount) throw new Error('User not found');
+      return result.rows[0].time_format;
     },
 
     async getSniperObservationDefault(userId) {

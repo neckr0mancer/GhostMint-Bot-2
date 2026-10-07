@@ -1,8 +1,11 @@
 import React,{useEffect,useRef,useState} from 'react';
 import {api,confirmDialog,Field,Form,notify,promptDialog,Select,setPendingMintPrefill,useLoad} from '../shared.jsx';
 import {formatAdaptiveAmount} from '../amountDisplay.mjs';
+import {formatDashboardDateTime} from '../timeDisplay.mjs';
 
-export function formatWhen(value){if(!value)return 'No timestamp';const date=new Date(value);return Number.isNaN(date.getTime())?'No timestamp':date.toLocaleString();}
+export function formatWhen(value,timeFormat='24h'){return value
+  ?formatDashboardDateTime(value,{timeFormat,fallback:'No timestamp'})
+  :'No timestamp';}
 export function formatAmount(value,suffix=''){return `${formatAdaptiveAmount(value,{minDecimals:4,fallback:'0.0000'})}${suffix}`;}
 
 const ADDRESS_SHAPE=/^0x[0-9a-fA-F]{40}$/;

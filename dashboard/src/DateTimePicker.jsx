@@ -1,10 +1,11 @@
 /* global clearTimeout, document, setTimeout, window */
 import React,{useEffect,useId,useMemo,useRef,useState} from 'react';
 import {
-  addCalendarDays,addCalendarMonths,calendarDayBefore,calendarMonthDays,
+  addCalendarDays,addCalendarMonths,calendarDayBefore,calendarMonthDays,clockPartsToStorage,
   clampLocalDateTime,combineLocalDateAndTime,localDateTimeValue,parseLocalDateTime,
   pickerDisplayValue,sameCalendarDay,startOfCalendarMonth,
 } from './dateTimePicker.mjs';
+import {useTimeFormat} from './timeDisplayContext.jsx';
 import './dateTimePicker.css';
 
 const CALENDAR_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"
@@ -17,7 +18,11 @@ const NEXT_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strok
 const WEEKDAYS=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 
 function pad(value){return String(value).padStart(2,'0');}
-function timeParts(date){return {hour:pad(date.getHours()),minute:pad(date.getMinutes()),second:pad(date.getSeconds())};}
+function timeParts(date,timeFormat){
+  const hour=date.getHours();
+  return {hour:pad(timeFormat==='12h'?((hour+11)%12)+1:hour),minute:pad(date.getMinutes()),
+    second:pad(date.getSeconds()),period:hour>=12?'PM':'AM'};
+}
 function dayLabel(date){return new Intl.DateTimeFormat(undefined,{weekday:'long',year:'numeric',month:'long',day:'numeric'}).format(date);}
 function monthLabel(date){return new Intl.DateTimeFormat(undefined,{month:'long',year:'numeric'}).format(date);}
 function firstUsableValue(value,min){
@@ -42,6 +47,7 @@ function normalizeTimePart(value,max){
 export default function DateTimePicker({name,label,value='',min='',onChange,disabled=false,required=false,
   active=true,className='',placeholder='Choose date and time',autoFocus=false,
   'aria-describedby':describedBy}){
+  const timeFormat=useTimeFormat();
   const uid=useId().replace(/:/g,'');
   const labelId=`date-time-label-${uid}`;
   const dialogId=`date-time-dialog-${uid}`;
@@ -54,17 +60,17 @@ export default function DateTimePicker({name,label,value='',min='',onChange,disa
   const [selectedDate,setSelectedDate]=useState(()=>firstUsableValue(value,min));
   const [viewMonth,setViewMonth]=useState(()=>startOfCalendarMonth(firstUsableValue(value,min)));
   const [activeDate,setActiveDate]=useState(()=>firstUsableValue(value,min));
-  const [time,setTime]=useState(()=>timeParts(firstUsableValue(value,min)));
+  const [time,setTime]=useState(()=>timeParts(firstUsableValue(value,min),timeFormat));
   const minimum=useMemo(()=>parseLocalDateTime(min),[min]);
   const days=useMemo(()=>calendarMonthDays(viewMonth),[viewMonth]);
   const weeks=useMemo(()=>Array.from({length:6},(_,index)=>days.slice(index*7,index*7+7)),[days]);
-  const combined=combineLocalDateAndTime(selectedDate,time);
+  const combined=combineLocalDateAndTime(selectedDate,clockPartsToStorage(time,timeFormat));
   const valid=Boolean(combined&&(!minimum||combined.getTime()>=minimum.getTime()));
-  const display=pickerDisplayValue(value);
+  const display=pickerDisplayValue(value,undefined,timeFormat);
 
   function resetDraft(){
     const seed=firstUsableValue(value,min);
-    setSelectedDate(seed);setActiveDate(seed);setViewMonth(startOfCalendarMonth(seed));setTime(timeParts(seed));
+    setSelectedDate(seed);setActiveDate(seed);setViewMonth(startOfCalendarMonth(seed));setTime(timeParts(seed,timeFormat));
   }
   function openPicker(){if(disabled)return;resetDraft();setOpen(true);}
   function closePicker({restoreFocus=true}={}){setOpen(false);if(restoreFocus)setTimeout(()=>triggerRef.current?.focus(),0);}
@@ -78,8 +84,8 @@ export default function DateTimePicker({name,label,value='',min='',onChange,disa
   function selectDate(date){
     if(minimum&&calendarDayBefore(date,minimum))return;
     let nextTime=time;
-    const next=combineLocalDateAndTime(date,time);
-    if(minimum&&next&&next.getTime()<minimum.getTime())nextTime=timeParts(minimum);
+    const next=combineLocalDateAndTime(date,clockPartsToStorage(time,timeFormat));
+    if(minimum&&next&&next.getTime()<minimum.getTime())nextTime=timeParts(minimum,timeFormat);
     setSelectedDate(date);setActiveDate(date);setViewMonth(startOfCalendarMonth(date));setTime(nextTime);
   }
   function focusDate(date){
@@ -106,7 +112,10 @@ export default function DateTimePicker({name,label,value='',min='',onChange,disa
     const digits=event.target.value.replace(/\D/g,'').slice(0,2);
     setTime(current=>({...current,[part]:digits&&Number(digits)>max?String(max):digits}));
   }
-  function finishTime(part,max){setTime(current=>({...current,[part]:normalizeTimePart(current[part],max)}));}
+  function finishTime(part,max,min=0){setTime(current=>{
+    const normalized=normalizeTimePart(current[part],max);
+    return {...current,[part]:normalized&&Number(normalized)<min?pad(min):normalized};
+  });}
   function changeMonth(amount){
     const next=addCalendarMonths(viewMonth,amount);
     if(!next)return;
@@ -186,15 +195,22 @@ export default function DateTimePicker({name,label,value='',min='',onChange,disa
         <fieldset className="date-time-picker-time">
           <legend>Local time</legend>
           <label><span>Hour</span><input type="text" inputMode="numeric" maxLength="2" value={time.hour}
-            aria-label="Hour, 00 to 23" onChange={event=>changeTime('hour',23,event)} onBlur={()=>finishTime('hour',23)}/></label>
+            aria-label={timeFormat==='12h'?'Hour, 1 to 12':'Hour, 00 to 23'}
+            onChange={event=>changeTime('hour',timeFormat==='12h'?12:23,event)}
+            onBlur={()=>finishTime('hour',timeFormat==='12h'?12:23,timeFormat==='12h'?1:0)}/></label>
           <span aria-hidden="true">:</span>
           <label><span>Minute</span><input type="text" inputMode="numeric" maxLength="2" value={time.minute}
             aria-label="Minute, 00 to 59" onChange={event=>changeTime('minute',59,event)} onBlur={()=>finishTime('minute',59)}/></label>
           <span aria-hidden="true">:</span>
           <label><span>Second</span><input type="text" inputMode="numeric" maxLength="2" value={time.second}
             aria-label="Second, 00 to 59" onChange={event=>changeTime('second',59,event)} onBlur={()=>finishTime('second',59)}/></label>
+          {timeFormat==='12h'&&<div className="seg date-time-picker-period" role="radiogroup" aria-label="AM or PM">
+            {['AM','PM'].map(period=><button type="button" key={period} className={time.period===period?'on':undefined}
+              role="radio" aria-checked={time.period===period}
+              onClick={()=>setTime(current=>({...current,period}))}>{period}</button>)}
+          </div>}
         </fieldset>
-        {!valid&&<p className="date-time-picker-error" role="alert">Choose a valid time{minimum?` on or after ${pickerDisplayValue(min)}`:''}.</p>}
+        {!valid&&<p className="date-time-picker-error" role="alert">Choose a valid time{minimum?` on or after ${pickerDisplayValue(min,undefined,timeFormat)}`:''}.</p>}
         <div className="date-time-picker-footer">
           <button type="button" className="b g" onClick={cancel}>Cancel</button>
           <button type="button" className="b p" disabled={!valid} onClick={apply}>Apply</button>

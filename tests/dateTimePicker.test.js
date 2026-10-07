@@ -59,6 +59,25 @@ test('time composition rejects malformed or out-of-range fields',async()=>{
     '2026-09-27T12:30:05');
 });
 
+test('picker display changes only the clock convention',async()=>{
+  const picker=await load();
+  const value='2026-09-27T20:04:09';
+  const twelve=picker.pickerDisplayValue(value,'en-US','12h');
+  const twentyFour=picker.pickerDisplayValue(value,'en-US','24h');
+  assert.match(twelve,/8:04:09 PM/);
+  assert.match(twentyFour,/20:04:09/);
+  assert.match(twelve,/Sep 27, 2026/);
+  assert.match(twentyFour,/Sep 27, 2026/);
+});
+
+test('12-hour picker values convert to the same local storage clock',async()=>{
+  const picker=await load();
+  assert.equal(picker.clockPartsToStorage({hour:'12',minute:'00',second:'00',period:'AM'},'12h').hour,'0');
+  assert.equal(picker.clockPartsToStorage({hour:'12',minute:'00',second:'00',period:'PM'},'12h').hour,'12');
+  assert.equal(picker.clockPartsToStorage({hour:'1',minute:'00',second:'00',period:'PM'},'12h').hour,'13');
+  assert.equal(picker.clockPartsToStorage({hour:'20',minute:'00',second:'00'},'24h').hour,'20');
+});
+
 test('the reusable component contains dialog, grid, keyboard, and cancel/apply semantics',()=>{
   const source=fs.readFileSync(path.join(root,'dashboard','src','DateTimePicker.jsx'),'utf8');
   const css=fs.readFileSync(path.join(root,'dashboard','src','dateTimePicker.css'),'utf8');
@@ -69,6 +88,8 @@ test('the reusable component contains dialog, grid, keyboard, and cancel/apply s
   }
   assert.match(source,/>Cancel<\/button>/);
   assert.match(source,/>Apply<\/button>/);
+  assert.match(source,/role="radiogroup" aria-label="AM or PM"/);
+  assert.match(source,/role="radio" aria-checked=/);
   assert.match(source,/if\(!active&&open\)setOpen\(false\)/,
     'an inactive mounted tab must close the picker and release its body scroll lock');
   assert.doesNotMatch(source,/type="datetime-local"/);

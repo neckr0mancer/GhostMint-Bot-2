@@ -73,9 +73,9 @@ export function StatsStrip({summary,go}){const streak=useMemo(()=>{let count=0;f
     <button className="b g sm" onClick={()=>go('P&L')}>View P&amp;L</button>
   </section>;}
 
-export function TasksSnipersSummary({summary,go}){return <section className="panel glow dash-tile">
+export function TasksSnipersSummary({summary,go,profile}){return <section className="panel glow dash-tile">
   <h2>Tasks &amp; snipers</h2>
-  <p>{summary.tasksTotal} active tasks {summary.nextTaskTime?`- next run ${formatWhen(summary.nextTaskTime)}`:''}</p>
+  <p>{summary.tasksTotal} active tasks {summary.nextTaskTime?`- next run ${formatWhen(summary.nextTaskTime,profile?.timeFormat)}`:''}</p>
   <p>{summary.sniperCount} active snipers</p>
   <div className="br"><button className="b sm" onClick={()=>go('Tasks')}>View tasks</button><button className="b sm" onClick={()=>go('Snipers')}>View snipers</button></div>
 </section>;}
@@ -87,11 +87,11 @@ export function WatchTargetSummary({summary,go}){return <section className="pane
   <div className="br"><button className="b sm" onClick={()=>go('Watch Rules')}>View watch rules</button><button className="b sm" onClick={()=>go('Target Policies')}>View target policies</button></div>
 </section>;}
 
-export function ActivityFeed({summary,go}){return <section className="panel glow dash-activity">
+export function ActivityFeed({summary,go,profile}){return <section className="panel glow dash-activity">
   <h2>Recent activity</h2>
   {summary.activityItems.length===0
     ?<Empty text="No activity recorded yet."/>
-    :<div className="feed">{summary.activityItems.map(item=><article className="feed-item" key={item.id}><div><StatusPill status={item.status}/><h2>{item.title}</h2><p>{formatWhen(item.time)}</p></div></article>)}</div>}
+    :<div className="feed">{summary.activityItems.map(item=><article className="feed-item" key={item.id}><div><StatusPill status={item.status}/><h2>{item.title}</h2><p>{formatWhen(item.time,profile?.timeFormat)}</p></div></article>)}</div>}
   <button className="b g sm" onClick={()=>go('Activity')}>View all activity</button>
 </section>;}
 

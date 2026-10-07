@@ -2,6 +2,7 @@
 import React,{useEffect,useState} from 'react';
 import {countdownState} from '../countdown.js';
 import {formatAdaptiveAmount,formatSignedAdaptiveAmount} from '../amountDisplay.mjs';
+import {useDateTimeFormatter} from '../timeDisplayContext.jsx';
 
 /* ==========================================================================
    Home page presentational parts (brief §3.3, §4; contract §3).
@@ -94,6 +95,7 @@ export function weiToEth(wei){
    timer down as soon as the target passes or unmounts, so an idle Home holds no timer. */
 const RING_CIRCUMFERENCE=2*Math.PI*17;
 export function CountdownRing({target,from,title,meta}){
+  const formatDateTime=useDateTimeFormatter();
   const [now,setNow]=useState(()=>Date.now());
   useEffect(()=>{
     if(!target)return undefined;
@@ -121,7 +123,7 @@ export function CountdownRing({target,from,title,meta}){
     <div>
       <div className="ring-time tab">{remaining===0?'due now':clock}</div>
       <div className="ring-sub">{title}</div>
-      <div className="ring-meta">Due {new Date(targetMs).toLocaleString()}</div>
+      <div className="ring-meta">Due {formatDateTime(targetMs)}</div>
       {meta&&<div className="ring-meta"><span className="pill">{meta}</span></div>}
     </div>
   </div>;

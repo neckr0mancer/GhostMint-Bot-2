@@ -5,6 +5,7 @@ import PnlBars from '../PnlBars.jsx';
 import {ChainDot,chainFromExplorer,CountdownRing,EmptyState,explorerForChain,formatEth,formatSigned,ICONS,Row,shortAddress,weiToEth} from './homeParts.jsx';
 import {formatAdaptiveAmount} from '../amountDisplay.mjs';
 import {fiatFromNative,fiatFromWei} from '../currencyDisplay.mjs';
+import {useDateTimeFormatter} from '../timeDisplayContext.jsx';
 
 /* ==========================================================================
    Home — the redesigned page for the two primary themes (brief §9.1-D15).
@@ -208,6 +209,7 @@ function PnlCard({summary,sources,pnlView,pnlWindow,onPnlWindow,go,profile}){
 }
 
 function ActivityCard({summary,sources,go,profile}){
+  const formatDateTime=useDateTimeFormatter();
   return <SectionCard title="Recent activity" icon={ICONS.clock}
     mobileCollapsible mobileDefaultOpen collapsedLeading={`${summary.activityItems.length} recent`}
     actions={<button type="button" className="b g sm" onClick={()=>go('Activity')}>View all</button>}>
@@ -226,7 +228,7 @@ function ActivityCard({summary,sources,go,profile}){
         return <Row key={item.id} icon={success?ICONS.check:ICONS.cross} tone={success?'gain':'loss'}
           title={item.title||'Untitled'}
           sub={<>{item.walletLabel&&<>{item.walletLabel} · </>}{chain&&<><ChainDot chain={chain}/> · </>}
-            {item.time?new Date(item.time).toLocaleString():'No timestamp'}</>}
+            {item.time?formatDateTime(item.time):'No timestamp'}</>}
           /* actual_network_cost_wei is GAS ONLY, not the mint price -- labelled so it can
              never be read as the cost of the mint (contract §5.8). */
           valueLabel="gas" value={gas===null?gasText:<MoneyValue native={gas} profile={profile}

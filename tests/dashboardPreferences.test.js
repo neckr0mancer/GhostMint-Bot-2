@@ -41,6 +41,111 @@ test('display currency is persisted separately from native transaction amounts',
   assert.match(app,/Display currency/);
 });
 
+test('time format is a persisted appearance preference shared by the dashboard',()=>{
+  const sql=fs.readFileSync(path.join(root,'migrations','070_user_time_format.sql'),'utf8');
+  assert.match(sql,/ADD COLUMN IF NOT EXISTS time_format/);
+  assert.match(sql,/DEFAULT '24h'/);
+  assert.match(sql,/time_format IN \('12h','24h'\)/);
+  assert.match(app,/\/api\/profile\/time-format/);
+  assert.match(app,/<TimeFormatProvider value=\{profile\.timeFormat\}>/);
+});
+
+test('Settings is organized into scoped tabs and hides global usage from non-owners',()=>{
+  for(const id of ['appearance','transaction','gas','notifications','api-usage']){
+    assert.match(app,new RegExp(`id:'${id}'`));
+  }
+  assert.match(app,/ownerOnly:true/);
+  assert.match(app,/SETTINGS_TABS\.filter\(item=>!item\.ownerOnly\|\|profile\.isOwner\)/);
+  assert.match(app,/target==='opensea-eligibility'\?'transaction':tab/);
+  assert.match(app,/onOpenSettings=\{\(\)=>go\('Settings','transaction','opensea-eligibility'\)\}/);
+  assert.match(app,/onClick=\{\(\)=>choose\(\(\)=>go\('Settings','transaction'\)\)\}[\s\S]*?Transaction mode/,
+    'the account-menu shortcut must open the Transaction mode tab, not Appearance');
+  assert.match(css,/\.settings-tab-panel\[hidden\]\{display:none\}/);
+  for(const id of ['appearance','transaction','gas','notifications']){
+    assert.match(app,new RegExp(`id="settings-panel-${id}"[\\s\\S]*?active==='${id}'&&<div`),
+      'inactive Settings tab bodies must not mount or fire hidden requests');
+  }
+  assert.match(app,/id="settings-panel-api-usage"[\s\S]*?active==='api-usage'&&<>/);
+});
+
+test('shared Settings tabs expose keyboard and panel relationships',()=>{
+  assert.match(shared,/function SubTabs\([\s\S]*ArrowRight:[\s\S]*ArrowLeft:/);
+  assert.match(shared,/event\.key==='Home'/);
+  assert.match(shared,/event\.key==='End'/);
+  assert.match(shared,/row\.scrollWidth<=row\.clientWidth[\s\S]*row\.scrollLeft/,
+    'the active tab must remain visible when the shared tab row overflows on narrow screens');
+  assert.match(shared,/aria-controls=\{idPrefix\?/);
+  assert.match(app,/idPrefix="settings"/);
+  assert.match(app,/id="settings-panel-appearance" aria-labelledby="settings-tab-appearance"/);
+});
+
+test('Settings card rows align and shared register rows keep prototype gutters',()=>{
+  assert.match(css,/\.settings-layout\{[^}]*align-items:stretch/);
+  assert.match(css,/\.ledger-row\{[^}]*padding:var\(--row-pad\) 13px/);
+  assert.match(css,/\.ledger-row\{grid-template-columns:52% minmax\(0,1fr\);padding:6px 11px\}/);
+  assert.match(css,/\.admin-compact-list>div\{[^}]*padding:\.7rem 13px/);
+  assert.match(css,/\.admin-detail-list>div\{[^}]*padding:0 13px \.45rem/);
+  assert.match(css,/@media\(max-width:900px\)\{[\s\S]*?\.settings-layout[^}]*grid-template-columns:minmax\(0,1fr\)/,
+    'Settings must collapse before the 768px layout can overflow');
+  assert.match(css,/\.theme-option\.theme-primary-option\{display:grid;[^}]*justify-content:stretch\}/,
+    'the later shared theme-option rule must not turn primary previews back into overflowing flex rows');
+  assert.match(css,/@media\(max-width:700px\)\{[\s\S]*?\.settings-layout,\.settings-usage-tables,[\s\S]*?grid-template-columns:minmax\(0,1fr\)/,
+    'the later phone rule must preserve a shrinkable Settings column');
+});
+
+test('Appearance, transaction effects, and API usage match the complete Settings prototype states',()=>{
+  assert.match(app,/className="theme-primary-grid" role="group"/);
+  assert.match(app,/className="settings-theme-label">More styles · optional/);
+  assert.doesNotMatch(app,/<details className="settings-more-themes"/);
+  assert.match(app,/<div className="rt">Sidebar<\/div>/);
+  assert.match(app,/<span className="p nu">Remembered<\/span>/);
+  assert.match(app,/{label:'Max transaction'/);
+  assert.match(app,/total=\{\{label:'Daily budget'/);
+  assert.match(app,/onClick=\{\(\)=>choose\(selected\.key\)\}/,
+    'mode cards preview; the explicit action performs the consequential save');
+  assert.match(app,/No adapter requests yet/);
+  assert.match(app,/onCreateRule=\{\(\)=>go\?\.\('Automation','social'\)\}/);
+});
+
+test('Settings loading and wallet permission controls expose accessible state without oversized visuals',()=>{
+  assert.match(app,/settings-mode-skeleton/);
+  assert.match(app,/settings-gas-skeleton/);
+  assert.match(app,/aria-label="Loading gas prices"/);
+  assert.match(app,/prefers-reduced-motion: reduce/);
+  assert.match(app,/className=\{entry\?\.error\?'is-error':''\} aria-live="polite"/);
+  assert.match(css,/\.schedule-switch\{[^}]*width:44px;height:44px;min-height:44px/);
+  assert.match(css,/\.schedule-switch::before\{[^}]*width:40px;height:24px/,
+    'the hit target grows to 44px while the visible switch remains compact');
+});
+
+test('Settings writes keep the previous choice and expose retryable inline failures',()=>{
+  for(const copy of [
+    'Could not save the password gate.',
+    'Could not save the minting prompt.',
+    'Could not change the transaction mode.',
+    'Could not reset the transaction mode.',
+    'Could not save the default copy timing.',
+  ])assert.ok(app.includes(copy),copy);
+  assert.match(app,/function settingsSaveError\(title,error,onRetry\)/);
+  assert.match(app,/detail:'Your previous choice is still active\.'/);
+  assert.match(app,/setSkipMint\(previous\)/);
+  assert.match(app,/setLevel\(previous\)/);
+  assert.match(app,/<Notice error=\{saveError\}\/>/);
+});
+
+test('Settings data loads ignore stale responses and Gas distinguishes configuration from outages',()=>{
+  assert.match(shared,/const requestId=useRef\(0\)/);
+  assert.match(shared,/if\(activeRequest===requestId\.current\)setData\(value\)/);
+  assert.match(shared,/return\(\)=>\{requestId\.current\+=1;\}/,
+    'a superseded or unmounted loader must invalidate its in-flight request');
+  assert.match(app,/function GasPanel\([\s\S]*const requestId=useRef\(0\)/);
+  assert.match(app,/reason\.code==='MISSING_API_KEY'/);
+  assert.ok(app.includes('Could not load gas prices.'));
+  assert.match(app,/onRetry:\(\)=>load\(next\)/);
+  assert.match(app,/disabled=\{loading\}/,
+    'only the chain selector involved in the request is locked while Gas refreshes');
+});
+
 test('wallet cards use the shared preferred-chain display helper', () => {
   assert.match(app, /selectWalletHeadlineBalance\(wallet,preferredChain\)/);
   assert.match(app, /walletFundingStatus\(wallet,\{preferredChain,lowThreshold\}\)/);
@@ -104,7 +209,9 @@ test('OpenSea eligibility is a durable per-wallet Settings permission',()=>{
   assert.match(app,/wallets\.data\.map\(wallet=>/,
     'one account-level switch must not silently authorize every wallet');
   assert.match(app,/Automatic OpenSea eligibility checks for \{wallet\.label\}/);
-  assert.match(app,/disabled=\{changing\|\|!entry\|\|unavailable\}/);
+  assert.match(app,/disabled=\{changing\|\|!entry\|\|entry\.loading\|\|unavailable\}/);
+  assert.match(app,/entry\?\.error&&<button[^>]+onClick=\{\(\)=>reloadWallet\(wallet\)\}>Retry<\/button>/,
+    'an individual wallet status read must remain retryable');
   assert.match(app,/ghostmint-opensea-eligibility-changed/,
     'a changed Settings permission must invalidate the mounted Schedule workspace');
 });

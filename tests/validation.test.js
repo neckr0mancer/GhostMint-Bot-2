@@ -130,7 +130,7 @@ test('unsupported chains are rejected instead of defaulting to Ethereum', () => 
   rejectsField(() => requestSchemas.mint(validMint({ chain: '' }), { supportedChains: CHAINS }), 'chain');
 });
 
-test('dashboard chain and low-balance preferences accept only configured, explicit choices', () => {
+test('dashboard chain, balance, and time preferences accept only configured, explicit choices', () => {
   assert.deepEqual(requestSchemas.defaultChainUpdate({ defaultChain:'robinhood' },
     { supportedChains:['ethereum','robinhood'] }), { defaultChain:'robinhood' });
   rejectsField(() => requestSchemas.defaultChainUpdate({ defaultChain:'robinhood' },
@@ -142,6 +142,12 @@ test('dashboard chain and low-balance preferences accept only configured, explic
   for (const value of [undefined,0,'0.02','0.101','NaN']) {
     rejectsField(() => requestSchemas.lowBalanceThresholdUpdate({ lowBalanceThreshold:value }),
       'lowBalanceThreshold');
+  }
+  for(const value of ['12h','24h']){
+    assert.deepEqual(requestSchemas.timeFormatUpdate({timeFormat:value}),{timeFormat:value});
+  }
+  for(const value of [undefined,null,'','12H','ampm','24-hour']){
+    rejectsField(()=>requestSchemas.timeFormatUpdate({timeFormat:value}),'timeFormat');
   }
 });
 

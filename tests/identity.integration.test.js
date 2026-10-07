@@ -180,7 +180,7 @@ integrationTest('mergeAccount refuses and changes nothing if the duplicate accou
   }
 });
 
-integrationTest('Robinhood default chain and low-balance preference persist through PostgreSQL', { timeout: 120_000 }, async () => {
+integrationTest('dashboard chain, balance, and time preferences persist through PostgreSQL', { timeout: 120_000 }, async () => {
   await migrate();
   const pool = createDatabasePool({ connectionString: CONFIG.databaseUrl, max: 2 });
   const identity = createIdentityService(createPostgresIdentityRepository(pool));
@@ -191,11 +191,13 @@ integrationTest('Robinhood default chain and low-balance preference persist thro
     const firstRepository = createPostgresIdentityRepository(pool);
     assert.equal(await firstRepository.setDefaultChain(userId, 'robinhood'), 'robinhood');
     assert.equal(await firstRepository.setLowBalanceThreshold(userId, '0.025'), '0.025');
+    assert.equal(await firstRepository.setTimeFormat(userId, '12h'), '12h');
 
     // A fresh repository object proves these are database values, not process-local state.
     const restartedRepository = createPostgresIdentityRepository(pool);
     assert.equal(await restartedRepository.getDefaultChain(userId), 'robinhood');
     assert.equal(await restartedRepository.getLowBalanceThreshold(userId), '0.025');
+    assert.equal(await restartedRepository.getTimeFormat(userId), '12h');
   } finally {
     if (userId) await pool.query('DELETE FROM users WHERE user_id=$1', [userId]).catch(() => {});
     await pool.end();

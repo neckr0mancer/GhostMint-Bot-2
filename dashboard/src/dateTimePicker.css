@@ -44,6 +44,8 @@
   background:var(--surface);color:var(--text);font:inherit;font-size:.9rem;font-variant-numeric:tabular-nums;text-align:center}
 .date-time-picker-time input:focus{outline:2px solid var(--focus);outline-offset:1px;border-color:var(--accent)}
 .date-time-picker-time>span{padding-bottom:.65rem;color:var(--muted);font-weight:800}
+.date-time-picker-period{align-self:flex-end;min-height:40px}
+.date-time-picker-period button{min-height:38px;padding:.35rem .55rem}
 .date-time-picker-error{margin:0;color:var(--loss);font-size:.74rem;line-height:1.4}
 .date-time-picker-footer{display:flex;justify-content:flex-end;gap:.5rem;padding-top:.1rem}
 @media(min-width:701px){
@@ -57,6 +59,8 @@
   .date-time-picker-backdrop{background:color-mix(in srgb,var(--bg) 56%,transparent);backdrop-filter:blur(3px)}
   .date-time-picker-month-actions button,.date-time-picker-grid button{min-height:44px}
   .date-time-picker-grid button{border-radius:11px}
+  .date-time-picker-time{flex-wrap:wrap}
+  .date-time-picker-period{flex-basis:100%;justify-content:center}
   .date-time-picker-footer{position:sticky;bottom:calc(-1rem - env(safe-area-inset-bottom));margin:0 -1rem calc(-1rem - env(safe-area-inset-bottom));
     padding:.75rem 1rem calc(.75rem + env(safe-area-inset-bottom));background:var(--surface);border-top:1px solid var(--border)}
   .date-time-picker-footer .b{flex:1}

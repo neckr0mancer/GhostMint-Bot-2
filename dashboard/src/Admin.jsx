@@ -1,6 +1,9 @@
 /* global FormData, URLSearchParams, setInterval, clearInterval */
 import React,{useState,useEffect} from 'react';
 import {api,confirmDialog,CopyButton,Empty,Field,Form,GroupedChainOptions,notify,Pager,PageTitle,promptDialog,relativeTime,Select,Skeleton,StatusPill,useLoad} from './shared.jsx';
+import {useDateTimeFormatter} from './timeDisplayContext.jsx';
+
+function DateTimeValue({value}){const formatDateTime=useDateTimeFormatter();return formatDateTime(value);}
 
 function identity(user){return user.linkedAccounts?.[0]||null;}
 function simulation(value){return value===true?'forced':value===false?'optional':'inherit';}
@@ -115,7 +118,7 @@ function UserCrossData({userId}){
     <h4>Wallets</h4>
     {wallets.data===null?<Skeleton variant="lines" rows={2}/>:wallets.data.length===0?<Empty text="No wallets."/>:<div className="admin-compact-list">{wallets.data.map(w=><div key={w.label}><strong>{w.label}</strong><span>{w.chain} · {w.balances?.[0]?.balance??'—'} {w.balances?.[0]?.symbol||''} · {w.minted} minted</span></div>)}</div>}
     <h4>Recent activity</h4>
-    {activity.data===null?<Skeleton variant="lines" rows={2}/>:activity.data.items.length===0?<Empty text="No activity."/>:<div className="admin-compact-list">{activity.data.items.map(item=><div key={item.id}><strong>{item.title}</strong><span>{item.status} · {new Date(item.time).toLocaleString()}</span></div>)}</div>}
+    {activity.data===null?<Skeleton variant="lines" rows={2}/>:activity.data.items.length===0?<Empty text="No activity."/>:<div className="admin-compact-list">{activity.data.items.map(item=><div key={item.id}><strong>{item.title}</strong><span>{item.status} · <DateTimeValue value={item.time}/></span></div>)}</div>}
     <h4>P&amp;L</h4>
     {pnl.data===null?<Skeleton variant="lines" rows={2}/>:pnl.data.length===0?<Empty text="No P&L records."/>:<div className="admin-compact-list">{pnl.data.slice(0,5).map(item=><div key={item.id}><strong>{item.nm}</strong><span>Net {item.net}</span></div>)}</div>}
   </div>;
@@ -141,10 +144,10 @@ function UserDetail({user,onClose,write,presets}){const [sensitiveOpen,setSensit
       <div><dt>Gas</dt><dd>{ceilingDisplay(user.gasCeilingGwei,user.groupGasCeilingGwei,' gwei')}</dd></div>
     </>}
     <div><dt>Account status</dt><dd>{user.accountStatus||'active'}{user.statusReason?`: ${user.statusReason}`:''}</dd></div>
-    {user.suspendedUntil&&<div><dt>Suspended until</dt><dd>{new Date(user.suspendedUntil).toLocaleString()}</dd></div>}
+    {user.suspendedUntil&&<div><dt>Suspended until</dt><dd><DateTimeValue value={user.suspendedUntil}/></dd></div>}
     <div><dt>Subscription active</dt><dd>{user.subscriptionActive?'Yes':'No'}</dd></div>
     <div><dt>Good standing override</dt><dd>{user.goodStandingOverride?'Yes':'No'}</dd></div>
-    {user.scheduledRemovalAt&&<div><dt>Scheduled group removal</dt><dd>{new Date(user.scheduledRemovalAt).toLocaleString()}</dd></div>}
+    {user.scheduledRemovalAt&&<div><dt>Scheduled group removal</dt><dd><DateTimeValue value={user.scheduledRemovalAt}/></dd></div>}
   </dl>
   {!user.isOwner&&<div className="user-detail-extra-actions"><ScheduleRemovalControl user={user} write={write}/></div>}
   <details className="admin-sensitive-disclosure" onToggle={event=>setSensitiveOpen(event.target.open)}>
@@ -229,7 +232,7 @@ function BatchImport({profile}){
   </>;
 }
 
-function SecurityAudit(){const listing=useLoad('/api/admin/security-audit?limit=200');return <><PageTitle eyebrow="Sensitive -- review before launch" title="Audit log" subtitle="Recent authorization outcomes across Telegram, Discord, and the dashboard: successes, rejections, and failures."/>{listing.data===null?<Skeleton variant="lines" rows={6}/>:listing.data.length===0?<Empty text="No audit events recorded yet."/>:<div className="table-wrap"><table><thead><tr><th>When</th><th>Platform</th><th>Command</th><th>Outcome</th><th>Reason</th></tr></thead><tbody>{listing.data.map(row=><tr key={row.auditId}><td>{new Date(row.attemptedAt).toLocaleString()}</td><td>{row.platform}{row.platformUserId?`:${row.platformUserId}`:''}</td><td>{row.command}</td><td><StatusPill status={row.outcome}/></td><td>{row.reason}</td></tr>)}</tbody></table></div>}</>;}
+function SecurityAudit(){const listing=useLoad('/api/admin/security-audit?limit=200');return <><PageTitle eyebrow="Sensitive -- review before launch" title="Audit log" subtitle="Recent authorization outcomes across Telegram, Discord, and the dashboard: successes, rejections, and failures."/>{listing.data===null?<Skeleton variant="lines" rows={6}/>:listing.data.length===0?<Empty text="No audit events recorded yet."/>:<div className="table-wrap"><table><thead><tr><th>When</th><th>Platform</th><th>Command</th><th>Outcome</th><th>Reason</th></tr></thead><tbody>{listing.data.map(row=><tr key={row.auditId}><td><DateTimeValue value={row.attemptedAt}/></td><td>{row.platform}{row.platformUserId?`:${row.platformUserId}`:''}</td><td>{row.command}</td><td><StatusPill status={row.outcome}/></td><td>{row.reason}</td></tr>)}</tbody></table></div>}</>;}
 
 function HealthRow({name,result}){return <div key={name}><strong>{name}</strong><StatusPill status={result.status}/>{result.error&&<span className="warning">{result.error}</span>}</div>;}
 function SystemHealth(){const listing=useLoad('/api/admin/health');const dependencies=listing.data?.dependencies;return <><PageTitle eyebrow="Live infrastructure" title="System health" subtitle="Database, RPC providers, and background workers -- the same signal the public /health endpoint reports, gated behind owner access."/>{listing.data===null?<Skeleton variant="lines" rows={6}/>:<><p className={listing.data.status==='ok'?'ok':'warning'}>Overall: {listing.data.status}</p><div className="admin-compact-list"><HealthRow name="Database" result={dependencies.database}/>{Object.entries(dependencies.rpc).map(([chain,result])=><HealthRow key={chain} name={`RPC: ${chain}`} result={result}/>)}<HealthRow name="Scheduler worker" result={dependencies.scheduler}/><HealthRow name="Social watcher" result={dependencies.socialWatcher}/><HealthRow name="Retention worker" result={dependencies.retentionWorker}/><HealthRow name="Sniper watchers" result={dependencies.sniperWatchers}/></div></>}</>;}

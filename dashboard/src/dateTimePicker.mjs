@@ -94,6 +94,13 @@ export function combineLocalDateAndTime(date, { hour, minute, second } = {}) {
     && combined.getMinutes() === m && combined.getSeconds() === s ? combined : null;
 }
 
+export function clockPartsToStorage(time, timeFormat='24h') {
+  if (timeFormat !== '12h') return time;
+  const hour = Number(time.hour);
+  if (!Number.isInteger(hour) || hour < 1 || hour > 12) return { ...time, hour:'' };
+  return { ...time, hour:String((hour % 12) + (time.period === 'PM' ? 12 : 0)) };
+}
+
 export function clampLocalDateTime(value, minimum) {
   const date = value instanceof Date ? value : parseLocalDateTime(value);
   const min = minimum instanceof Date ? minimum : parseLocalDateTime(minimum);
@@ -102,11 +109,12 @@ export function clampLocalDateTime(value, minimum) {
   return new Date(date.getTime());
 }
 
-export function pickerDisplayValue(value, locale) {
+export function pickerDisplayValue(value, locale, timeFormat='24h') {
   const date = value instanceof Date ? value : parseLocalDateTime(value);
   if (!date) return '';
   return new Intl.DateTimeFormat(locale, {
     weekday:'short', year:'numeric', month:'short', day:'numeric',
     hour:'2-digit', minute:'2-digit', second:'2-digit',
+    ...(timeFormat==='12h'?{hour12:true}:{hourCycle:'h23'}),
   }).format(date);
 }

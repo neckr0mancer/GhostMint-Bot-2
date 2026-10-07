@@ -584,6 +584,11 @@ const requestSchemas = Object.freeze({
     if(!supported.has(displayCurrency))fail('displayCurrency',`must be one of: ${[...supported].join(', ')}`);
     return {displayCurrency};
   },
+  timeFormatUpdate: input => {
+    const timeFormat=string(input.timeFormat,'timeFormat',{min:3,max:3});
+    if(!new Set(['12h','24h']).has(timeFormat))fail('timeFormat','must be 12h or 24h');
+    return {timeFormat};
+  },
   sniperObservationDefault: input => ({ observationMode: sniperObservationMode(input.observationMode) }),
   socialUsagePeriod: input => ({ period: usagePeriod(input.period) }),
   liveAcceptanceRun: validateLiveAcceptanceRun,

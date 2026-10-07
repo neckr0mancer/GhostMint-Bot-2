@@ -43,7 +43,8 @@ test('Account reuses the shell profile and preserves all existing identity and s
 test('transaction mode and default chain point to Settings instead of duplicating controls',()=>{
   const source=accountSource();
   assert.match(source,/Settings → Transaction mode/);
-  assert.match(source,/onClick=\{\(\)=>go\?\.\('Settings'\)\}/);
+  assert.match(source,/go\?\.\('Settings','gas'\)/);
+  assert.match(source,/go\?\.\('Settings','transaction'\)/);
   assert.doesNotMatch(source,/api\('\/api\/profile\/mode'/);
   assert.doesNotMatch(source,/api\('\/api\/profile\/default-chain'/);
 });

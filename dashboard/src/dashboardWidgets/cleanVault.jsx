@@ -46,9 +46,9 @@ export function StatsStrip({summary,go}){return <section className="panel">
   <button className="b g sm" onClick={()=>go('P&L')}>View P&amp;L</button>
 </section>;}
 
-export function TasksSnipersSummary({summary,go}){return <section className="panel">
+export function TasksSnipersSummary({summary,go,profile}){return <section className="panel">
   <h2>Tasks &amp; snipers</h2>
-  <p>{summary.tasksTotal} active tasks {summary.nextTaskTime?`- next run ${formatWhen(summary.nextTaskTime)}`:''}</p>
+  <p>{summary.tasksTotal} active tasks {summary.nextTaskTime?`- next run ${formatWhen(summary.nextTaskTime,profile?.timeFormat)}`:''}</p>
   <p>{summary.sniperCount} active snipers</p>
   <div className="br"><button className="b sm" onClick={()=>go('Tasks')}>View tasks</button><button className="b sm" onClick={()=>go('Snipers')}>View snipers</button></div>
 </section>;}
@@ -60,7 +60,7 @@ export function WatchTargetSummary({summary,go}){return <section className="pane
   <div className="br"><button className="b sm" onClick={()=>go('Watch Rules')}>View watch rules</button><button className="b sm" onClick={()=>go('Target Policies')}>View target policies</button></div>
 </section>;}
 
-export function ActivityFeed({summary,go}){const [sort,setSort]=useState({key:'time',direction:'desc'});
+export function ActivityFeed({summary,go,profile}){const [sort,setSort]=useState({key:'time',direction:'desc'});
   const rows=useMemo(()=>{const copy=[...summary.activityItems];copy.sort((a,b)=>{const left=String(a[sort.key]??'');const right=String(b[sort.key]??'');const compared=left.localeCompare(right);return sort.direction==='asc'?compared:-compared;});return copy;},[summary.activityItems,sort]);
   function toggleSort(key){setSort(current=>({key,direction:current.key===key&&current.direction==='asc'?'desc':'asc'}));}
   return <section className="panel dash-activity">
@@ -69,7 +69,7 @@ export function ActivityFeed({summary,go}){const [sort,setSort]=useState({key:'t
       <th><button type="button" className="sort-head" onClick={()=>toggleSort('title')}>Event</button></th>
       <th><button type="button" className="sort-head" onClick={()=>toggleSort('status')}>Status</button></th>
       <th><button type="button" className="sort-head" onClick={()=>toggleSort('time')}>When</button></th>
-    </tr></thead><tbody>{rows.map(item=><tr key={item.id}><td>{item.title}</td><td><StatusPill status={item.status}/></td><td>{formatWhen(item.time)}</td></tr>)}</tbody></table></div>}
+    </tr></thead><tbody>{rows.map(item=><tr key={item.id}><td>{item.title}</td><td><StatusPill status={item.status}/></td><td>{formatWhen(item.time,profile?.timeFormat)}</td></tr>)}</tbody></table></div>}
     <button className="b g sm" onClick={()=>go('Activity')}>View all activity</button>
   </section>;}
 

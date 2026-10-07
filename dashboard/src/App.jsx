@@ -21,6 +21,8 @@ import {mintBatchPreviewModel,nativeSymbolForChain} from './mintBatchPreview.mjs
 import {DISPLAY_CURRENCY_OPTIONS,fiatFromNative,fiatFromWei,quoteFor,
   schedulePriceCapWei} from './currencyDisplay.mjs';
 import {clearPendingTheme,readPendingTheme,resolveDashboardTheme,savePendingTheme} from './themePreference.mjs';
+import {formatDashboardDateTime} from './timeDisplay.mjs';
+import {TimeFormatProvider,useDateTimeFormatter,useTimeFormat} from './timeDisplayContext.jsx';
 import {ACTIVITY_EVENTS,api,Ledger,NumberField,SectionCard,confirmDialog,ConfirmHost,consumePendingMintPrefill,CopyButton,csrf,downloadFile,Empty,Field,Form,getNotificationLog,notify,Notice,PageTitle,Pager,promptDialog,relativeTime,resetSectionOrders,SearchField,Select,SelectMenu,Skeleton,StatusPill,SubTabs,subscribeNotificationLog,ToastHost,useLoad,useLiveSocket,setPendingMintPrefill,quantityPicks} from './shared.jsx';
 import Dashboard from './Dashboard.jsx';
 // Phase 4, unit 1 of 5 (brief §2). The 11->5 merge lands one page at a time so any single merge
@@ -87,10 +89,12 @@ function pathFor(page,tab,target){
 // sidebar), not per-session UI state -- persisted in localStorage so it survives a reload, shared
 // between the regular dashboard and the admin shell since it's visually the same rail.
 const RAIL_EXPANDED_KEY='ghostmint-rail-expanded';
-// Pinned expanded while the design is being matched to the prototype. The collapsed rail is a
-// second layout that would have to be kept identical too, and it is not the state the prototype
-// shows. Restore the stored preference once the expanded rail matches.
-function readRailExpanded(){return true;}
+function readRailExpanded(){
+  try{
+    const stored=localStorage.getItem(RAIL_EXPANDED_KEY);
+    return stored===null?true:stored!=='false';
+  }catch{return true;}
+}
 function writeRailExpanded(value){try{localStorage.setItem(RAIL_EXPANDED_KEY,String(value));}catch{/* private browsing or storage disabled -- falls back to session-only */}}
 const RAIL_THEMES=new Set(['ghost-mint','ghost-mint-light']);
 const THEME_OPTIONS=[{value:'ghost-mint',label:'Ghost Mint'},{value:'ghost-mint-light',label:'Ghost Mint Light'},{value:'clean-vault',label:'Clean Vault'},{value:'neon-arcade',label:'Neon Arcade'},{value:'quiet-ledger',label:'Quiet Ledger'}];
@@ -172,12 +176,12 @@ function useIsMobile(){
   },[]);
   return mobile;
 }
-function ChainSelect({name,label,options,value,onChange}){
+function ChainSelect({name,label,options,value,onChange,disabled=false}){
   const choices=dashboardEvmChains(options).map(option=>{const meta=chainMeta(option);return {
     value:option,label:meta.label,icon:meta.icon,tag:meta.testnet?'Testnet':null,group:'EVM',
   };});
   choices.push({value:'solana',label:'Solana',icon:SOLANA_ICON,tag:'Coming soon',group:'Other networks',disabled:true});
-  return <SelectMenu name={name} label={label} options={choices} value={value} onChange={onChange}/>;
+  return <SelectMenu name={name} label={label} options={choices} value={value} disabled={disabled} onChange={onChange}/>;
 }
 // Wallet create/import only need to distinguish the chain family (EVM vs Solana), not a specific
 // EVM chain -- one address already works on every EVM chain. The saved account default becomes its
@@ -255,12 +259,13 @@ function walletBalanceText(value,places){
   return formatAdaptiveAmount(value,{minDecimals:places===undefined?6:places});
 }
 function FiatAmount({profile,nativeAmount,wei,symbol,showUnavailable=true}){
+  const formatDateTime=useDateTimeFormatter();
   const converted=wei!==undefined
     ?fiatFromWei(wei,symbol,profile?.displayQuotes,profile?.displayCurrency)
     :fiatFromNative(nativeAmount,symbol,profile?.displayQuotes,profile?.displayCurrency);
   if(!converted)return showUnavailable?<small className="fiat-amount unavailable">Fiat unavailable</small>:null;
   return <small className={`fiat-amount${converted.quote.stale?' stale':''}`}
-    title={`${converted.quote.source} quote · ${new Date(converted.quote.quotedAt).toLocaleString()}${converted.quote.stale?' · cached':''}`}>
+    title={`${converted.quote.source} quote · ${formatDateTime(converted.quote.quotedAt)}${converted.quote.stale?' · cached':''}`}>
     ≈ {converted.text}{converted.quote.stale?' · cached':''}</small>;
 }
 function weiIsNonZero(value){
@@ -1390,17 +1395,17 @@ let pendingBatchPrefill=null;
 function setPendingBatchPrefill(value){pendingBatchPrefill=value;}
 function consumePendingBatchPrefill(){const value=pendingBatchPrefill;pendingBatchPrefill=null;return value;}
 
-function taskDetailTime(value){return value?formatScheduleDateTime(value):'Not recorded';}
-function scheduleConfigValue(field,value){
+function taskDetailTime(value,timeFormat='24h'){return value?formatScheduleDateTime(value,timeFormat):'Not recorded';}
+function scheduleConfigValue(field,value,timeFormat='24h'){
   if(value===null||value===undefined||value==='')return 'Not recorded';
-  if(field==='endTime')return taskDetailTime(Number(value)*1000);
+  if(field==='endTime')return taskDetailTime(Number(value)*1000,timeFormat);
   if(field==='feeBps')return `${value} bps`;
   if(field==='restrictFeeRecipients')return value?'Restricted':'Not restricted';
   return String(value);
 }
-function scheduleChangeFact(change,chain){
+function scheduleChangeFact(change,chain,timeFormat='24h'){
   const kind=String(change?.kind||'change').replaceAll('_',' ');
-  if(change?.kind==='opening')return `Opening: ${taskDetailTime(change.from)} → ${taskDetailTime(change.to)}`;
+  if(change?.kind==='opening')return `Opening: ${taskDetailTime(change.from,timeFormat)} → ${taskDetailTime(change.to,timeFormat)}`;
   if(change?.kind==='price')return `Price: ${freeOrNativeAmount(change.from,nativeSymbolForChain(chain))} → ${freeOrNativeAmount(change.to,nativeSymbolForChain(chain))}`;
   if(change?.kind==='configuration'){
     const before=change.fromSummary||{},after=change.toSummary||{};
@@ -1409,7 +1414,7 @@ function scheduleChangeFact(change,chain){
       endTime:'Stage end',maxPerWallet:'Wallet limit',feeBps:'Fee',
       restrictFeeRecipients:'Fee recipients'};
     const facts=Object.keys(labels).filter(field=>before[field]!==after[field])
-      .map(field=>`${labels[field]}: ${scheduleConfigValue(field,before[field])} → ${scheduleConfigValue(field,after[field])}`);
+      .map(field=>`${labels[field]}: ${scheduleConfigValue(field,before[field],timeFormat)} → ${scheduleConfigValue(field,after[field],timeFormat)}`);
     return facts.length?facts.join(' · '):'Mint configuration changed';
   }
   if(change?.kind==='configuration_baseline')return 'Mint configuration recorded';
@@ -1421,6 +1426,8 @@ function taskPreflightTone(value){return ({ready:'ok',short:'bad',price_unknown:
   check_failed:'wn',pending:'nu',claimed:'info',superseded:'nu'})[value]||'nu';}
 function taskPreflightLabel(value){return value==='five_minute'?'5-minute check':'30-second check';}
 function TaskDetails({summary,onClose,onChanged}){
+  const timeFormat=useTimeFormat();
+  const detailTime=value=>taskDetailTime(value,timeFormat);
   const detail=useLoad(`/api/tasks/${encodeURIComponent(summary.id)}`,[summary.id],'tasks.changed');
   const [changeBusy,setChangeBusy]=useState('');
   const task=detail.data||summary;
@@ -1469,7 +1476,7 @@ function TaskDetails({summary,onClose,onChanged}){
           <p>{task.pendingChange.reason||'Review the exact change before this mint can continue.'}</p>
           <div className="schedule-change-facts">
             {task.pendingChange.changes?.map((change,index)=><span key={`${change.kind}-${index}`}>
-              <b>{scheduleChangeFact(change,task.chain)}</b>
+              <b>{scheduleChangeFact(change,task.chain,timeFormat)}</b>
             </span>)}
           </div>
           <div className="br"><button type="button" className="b p sm" disabled={Boolean(changeBusy)} onClick={()=>resolveChange('approve')}>
@@ -1489,15 +1496,15 @@ function TaskDetails({summary,onClose,onChanged}){
           <tr><td>Stage</td><td>{task.stageLabel||task.stageType||'Not stage-linked'}</td></tr>
         </tbody></table></div>
         <div className="sober"><div className="sh">Timing</div><table className="led"><tbody>
-          <tr><td>Created</td><td>{taskDetailTime(task.createdAt)}</td></tr>
-          <tr><td>Scheduled for</td><td>{taskDetailTime(task.mintTime)}</td></tr>
-          <tr><td>Next worker check</td><td>{taskDetailTime(task.nextAttemptAt)}</td></tr>
-          <tr><td>Eligibility deadline</td><td>{taskDetailTime(task.eligibilityDeadline)}</td></tr>
+          <tr><td>Created</td><td>{detailTime(task.createdAt)}</td></tr>
+          <tr><td>Scheduled for</td><td>{detailTime(task.mintTime)}</td></tr>
+          <tr><td>Next worker check</td><td>{detailTime(task.nextAttemptAt)}</td></tr>
+          <tr><td>Eligibility deadline</td><td>{detailTime(task.eligibilityDeadline)}</td></tr>
           <tr><td>Opening changes</td><td>{task.timeChangePolicy==='auto_within_limit'
             ?`Auto within ${Math.round(Number(task.maxOpeningDelayMs||0)/60000)} minutes`:'Ask before rescheduling'}</td></tr>
           <tr><td>Price increases</td><td>{task.priceChangePolicy==='allow_up_to_cap'
             ?`Up to ${freeOrNativeAmount(task.maxPriceWeiPerItem,nativeSymbolForChain(task.chain))}`:'Ask first'}</td></tr>
-          <tr><td>Completed</td><td>{taskDetailTime(task.completedAt)}</td></tr>
+          <tr><td>Completed</td><td>{detailTime(task.completedAt)}</td></tr>
           <tr><td>Execution attempts</td><td>{Math.max(0,Number(task.attemptCount||0)-Number(task.phaseWaitCount||0))} of {task.maxAttempts||3}</td></tr>
           <tr><td>Phase checks</td><td>{task.phaseWaitCount||0}</td></tr>
         </tbody></table></div>
@@ -1508,7 +1515,7 @@ function TaskDetails({summary,onClose,onChanged}){
           <p>The saved opening, price, and transaction configuration still match.</p></div>}
         {(detail.data?.changeEvents||[]).map(event=><div className="r schedule-attempt" key={event.eventId}>
           <div className="rm"><div className="rt">{event.kinds.join(', ').replaceAll('_',' ')||'Schedule change'}</div>
-            <div className="rs">{taskDetailTime(event.createdAt)} · version {event.version}</div>
+            <div className="rs">{detailTime(event.createdAt)} · version {event.version}</div>
             <div className="schedule-attempt-reason">{event.reason}</div></div>
           <div className="rv schedule-attempt-state"><span className={`p ${event.action==='cancelled'||event.action==='expired'?'bad':event.action==='awaiting_approval'?'wn':'ok'}`}>{event.action.replaceAll('_',' ')}</span></div>
         </div>)}
@@ -1519,7 +1526,7 @@ function TaskDetails({summary,onClose,onChanged}){
           <p>Five-minute and 30-second checks appear here when their time arrives.</p></div>}
         {preflights.map(item=>{const state=item.result||item.state;return <div className="r schedule-attempt" key={item.checkId}>
           <div className="rm"><div className="rt">{taskPreflightLabel(item.checkpoint)}</div>
-            <div className="rs">Target {taskDetailTime(item.targetAt)}{item.checkedAt?` · checked ${taskDetailTime(item.checkedAt)}`:''}</div>
+            <div className="rs">Target {detailTime(item.targetAt)}{item.checkedAt?` · checked ${detailTime(item.checkedAt)}`:''}</div>
             {item.reason&&<div className="schedule-attempt-reason">{item.reason}</div>}
             {item.notificationState==='failed'&&<div className="schedule-attempt-reason">
               GhostMint could not deliver this early alert to a linked platform. The schedule was not changed.
@@ -1539,7 +1546,7 @@ function TaskDetails({summary,onClose,onChanged}){
           const explorer=attempt.transaction?.txHash&&explorerForChain(attempt.transaction.chain||task.chain);
           return <div className="r schedule-attempt" key={attempt.attemptId}>
             <div className="rm"><div className="rt">Attempt {attempt.attemptNumber}</div>
-              <div className="rs">{taskDetailTime(attempt.startedAt)}{attempt.finishedAt?` · finished ${taskDetailTime(attempt.finishedAt)}`:''}</div>
+              <div className="rs">{detailTime(attempt.startedAt)}{attempt.finishedAt?` · finished ${detailTime(attempt.finishedAt)}`:''}</div>
               {attempt.reason&&<div className="schedule-attempt-reason">{attempt.reason}</div>}
               {attempt.transaction&&<div className="rs mono">Transaction: {attempt.transaction.state||'recorded'}</div>}
             </div>
@@ -2115,7 +2122,7 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint,onSwitchToBatc
     if(key==='paused')return `${task.walletLabel} · paused`;
     const at=task.mintTime?new Date(task.mintTime):null;
     if(!at||Number.isNaN(at.getTime()))return String(task.walletLabel||'');
-    const when=formatScheduleDateTime(at);
+    const when=formatScheduleDateTime(at,profile.timeFormat);
     if(at.getTime()>scheduleNow)return `${task.walletLabel} · ${when}`;
     if(task.eligibilityDeadline&&['scheduled','retry','claimed'].includes(String(task.status||'').toLowerCase())){
       return `${task.walletLabel} · waiting for a live eligible phase · ${when}`;
@@ -2205,7 +2212,8 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint,onSwitchToBatc
             const stageName=scheduleStageDisplayName(stage);
             const at=new Date(Number(stage.startTime)*1000);
             const hasTime=!Number.isNaN(at.getTime());
-            const local=hasTime?at.toLocaleString([],{weekday:'short',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}):'Time unavailable';
+            const local=hasTime?formatDashboardDateTime(at,{timeFormat:profile.timeFormat,
+              weekday:'short',month:'short',day:'numeric',year:undefined}):'Time unavailable';
             const utc=hasTime?`${String(at.getUTCHours()).padStart(2,'0')}:${String(at.getUTCMinutes()).padStart(2,'0')}Z`:null;
             const authorizationEnabled=Boolean(walletEligibilityAuthorization?.enabled
               ??walletEligibilityAuthorization?.connected
@@ -2272,7 +2280,7 @@ function Tasks({profile,active=true,onCommitChange,onSwitchToMint,onSwitchToBatc
                   onChange={event=>selectScheduleStage(stages.find(stage=>scheduleStageSelectionKey(stage)===event.target.value))}
                   options={stageOptions}/>
               </div>:<div className="schedule-preview-time"><span>{viaOpenSea?'Earliest attempt':'Mint time'}</span>
-                <b>{viaOpenSea?'No upcoming stage published':mintTime?taskDetailTime(new Date(mintTime).getTime()):'Set below'}</b></div>}
+                <b>{viaOpenSea?'No upcoming stage published':mintTime?taskDetailTime(new Date(mintTime).getTime(),profile.timeFormat):'Set below'}</b></div>}
             </div>
             {hasGatedStages&&!eligibilityEnabled&&<div className="schedule-eligibility-access"
               role="status" aria-live="polite">
@@ -2847,7 +2855,7 @@ function jsonForm(event){event.preventDefault();const form=event.currentTarget;r
 // now lives ON that target's card rather than on a page of its own (brief §2). Same PolicyEditor,
 // same routes, new place -- including the bypass challenge, which keeps its explicit CONFIRM step.
 function Snipers({formOnly=false}={}){const listing=useLoad('/api/snipers',[],'snipers.changed');const [editing,setEditing]=useState(null);const [query,setQuery]=useState('');const [policyFor,setPolicyFor]=useState(null);async function save(event){try{const {form,value}=jsonForm(event);const wasEditing=editing;await api(editing?`/api/snipers/${editing}`:'/api/snipers',{method:editing?'PUT':'POST',body:JSON.stringify(value)});form.reset();setEditing(null);notify(wasEditing?'Sniper updated.':'Sniper created.',{type:'success'});listing.load();}catch(value){notify(value.message,{type:'error'});}}async function remove(id){if(!await confirmDialog('Remove this wallet-copy sniper?'))return;try{await api(`/api/snipers/${id}`,{method:'DELETE',body:JSON.stringify({confirmation:'CONFIRM'})});listing.load();}catch(value){notify(value.message,{type:'error'});}}const normalized=query.trim().toLowerCase();const filtered=listing.data?{...listing.data,items:normalized?listing.data.items.filter(item=>[item.label,item.chain,item.walletLabel].filter(Boolean).some(value=>String(value).toLowerCase().includes(normalized))):listing.data.items}:null;return <>{!formOnly&&<><p className="page-lead">After-confirmation is the safe default. Pending-mempool timing is an explicit high-risk option.</p><Notice error={loadError(listing,'Could not load your triggers.')}/><div className="page-toolbar"><label className="page-search">Find a sniper<input type="search" value={query} placeholder="Label, chain, wallet…" onChange={e=>setQuery(e.target.value)}/></label></div></>}<Form className="form-json" title={editing?'Edit sniper patch':'Create sniper'} note="The same M10 validation and M7a ceilings used by Telegram and Discord apply here." onSubmit={save}><label>Configuration JSON<textarea name="json" required defaultValue={editing?'{}':'{"label":"copy","targetAddress":"0x0000000000000000000000000000000000000001","chain":"ethereum","walletLabel":"wallet","observationMode":"confirmed","maxValueETH":0.01,"maxGasGwei":50,"dailySpendingCapETH":0.05,"cooldownMs":60000,"maxAttempts":3}'}/></label><button className="b p">{editing?'Apply validated patch':'Create sniper'}</button></Form>{!formOnly&&(listing.data===null?<Skeleton/>:<div className="card-grid sniper-grid">{filtered.items.map(item=>{const recent=listing.data.events.filter(event=>event.sniperId===item.id)[0];return <article className="card" key={item.id}><StatusPill status={recent?.state||'no events'}/><h2>{item.label}</h2><p className="warning">{(item.observationMode||'confirmed')==='pending'?'Pending mempool · high risk':'After confirmation · safer'}</p><p>{item.chain} · wallet {item.walletLabel}</p><p>Max {item.maxValueETH} ETH · Gas {item.maxGasGwei} gwei · Daily {item.dailySpendingCapETH} ETH</p><p>Cooldown {item.cooldownMs} ms · Attempts {item.maxAttempts}</p><p>Allow: {item.contractAllowlist.join(', ')||'any'}<br/>Deny: {item.contractDenylist.join(', ')||'none'}</p><div className="br"><button className="b g sm" onClick={()=>setEditing(item.id)}>Edit</button><button className="b g sm" aria-expanded={policyFor===item.id} onClick={()=>setPolicyFor(policyFor===item.id?null:item.id)}>{policyFor===item.id?'Hide policy':'Policy'}</button><button className="b d sm" onClick={()=>remove(item.id)}>Remove</button></div>{policyFor===item.id&&<PolicyEditor target={{id:item.id,label:item.label,type:'sniper'}}/>}</article>})}{filtered.items.length===0&&<Empty text={normalized?'No snipers match this search.':'No snipers yet. Create one above to start wallet-copy automation.'}/>}</div>)}</>}
-function WatchRules({formOnly=false}={}){const listing=useLoad('/api/watch-rules',[],'watchrules.changed');const [editing,setEditing]=useState(null);const [query,setQuery]=useState('');const [policyFor,setPolicyFor]=useState(null);async function save(event){try{const {form,value}=jsonForm(event);const wasEditing=editing;await api(editing?`/api/watch-rules/${editing}`:'/api/watch-rules',{method:editing?'PUT':'POST',body:JSON.stringify(value)});form.reset();setEditing(null);notify(wasEditing?'Watch rule updated.':'Watch rule created.',{type:'success'});listing.load();}catch(value){notify(value.message,{type:'error'});}}async function action(id,name){try{await api(`/api/watch-rules/${id}${name==='disable'?'/disable':''}`,{method:name==='remove'?'DELETE':'POST',body:JSON.stringify(name==='remove'?{confirmation:'CONFIRM'}:{})});listing.load();}catch(value){notify(value.message,{type:'error'});}}const normalized=query.trim().toLowerCase();const filtered=listing.data?{...listing.data,items:normalized?listing.data.items.filter(item=>[item.name,item.type,item.method].filter(Boolean).some(value=>String(value).toLowerCase().includes(normalized))):listing.data.items}:null;return <>{!formOnly&&<><p className="page-lead">Manage adapter-backed Twitter/X and Discord source monitoring.</p><Notice error={loadError(listing,'Could not load your triggers.')}/><div className="page-toolbar"><label className="page-search">Find a watch rule<input type="search" value={query} placeholder="Name, type, method…" onChange={e=>setQuery(e.target.value)}/></label></div></>}<Form className="form-json" title={editing?'Edit watch rule patch':'Create watch rule'} onSubmit={save}><label>Configuration JSON<textarea name="json" required defaultValue={editing?'{}':'{"name":"announcements","type":"discord_channel","method":"scraper","config":{"channelId":"123","keywords":["mint"],"sourceUrl":"https://example.com/feed"}}'}/></label><button className="b p">{editing?'Apply validated patch':'Create rule'}</button></Form>{!formOnly&&(listing.data===null?<Skeleton/>:<div className="card-grid watch-grid">{filtered.items.map(item=>{const events=listing.data.events.filter(event=>event.matchedRuleIds.includes(item.id)).slice(0,3);return <article className="card" key={item.id}><StatusPill status={item.enabled?'enabled':'disabled'}/><h2>{item.name}</h2><p>{item.type} · {item.method}</p><p className={item.consecutiveFailures?'warning':''}>Adapter health: {item.consecutiveFailures?`failing (${item.consecutiveFailures} consecutive)`:'healthy'} </p>{events.map(event=><p key={event.id}><code>{event.address}</code><br/>{new Date(event.detectedAt).toLocaleString()}</p>)}<div className="br"><button className="b g sm" onClick={()=>setEditing(item.id)}>Edit</button><button className="b g sm" onClick={()=>action(item.id,'disable')}>Disable</button><button className="b g sm" aria-expanded={policyFor===item.id} onClick={()=>setPolicyFor(policyFor===item.id?null:item.id)}>{policyFor===item.id?'Hide policy':'Policy'}</button><button className="b d sm" onClick={async()=>{if(await confirmDialog('Remove this watch rule?'))action(item.id,'remove');}}>Remove</button></div>{policyFor===item.id&&<PolicyEditor target={{id:item.id,label:item.name,type:'social_rule'}}/>}</article>})}{filtered.items.length===0&&<Empty text={normalized?'No watch rules match this search.':'No watch rules yet. Create one above to start social-trigger detection.'}/>}</div>)}</>}
+function WatchRules({formOnly=false}={}){const formatDateTime=useDateTimeFormatter();const listing=useLoad('/api/watch-rules',[],'watchrules.changed');const [editing,setEditing]=useState(null);const [query,setQuery]=useState('');const [policyFor,setPolicyFor]=useState(null);async function save(event){try{const {form,value}=jsonForm(event);const wasEditing=editing;await api(editing?`/api/watch-rules/${editing}`:'/api/watch-rules',{method:editing?'PUT':'POST',body:JSON.stringify(value)});form.reset();setEditing(null);notify(wasEditing?'Watch rule updated.':'Watch rule created.',{type:'success'});listing.load();}catch(value){notify(value.message,{type:'error'});}}async function action(id,name){try{await api(`/api/watch-rules/${id}${name==='disable'?'/disable':''}`,{method:name==='remove'?'DELETE':'POST',body:JSON.stringify(name==='remove'?{confirmation:'CONFIRM'}:{})});listing.load();}catch(value){notify(value.message,{type:'error'});}}const normalized=query.trim().toLowerCase();const filtered=listing.data?{...listing.data,items:normalized?listing.data.items.filter(item=>[item.name,item.type,item.method].filter(Boolean).some(value=>String(value).toLowerCase().includes(normalized))):listing.data.items}:null;return <>{!formOnly&&<><p className="page-lead">Manage adapter-backed Twitter/X and Discord source monitoring.</p><Notice error={loadError(listing,'Could not load your triggers.')}/><div className="page-toolbar"><label className="page-search">Find a watch rule<input type="search" value={query} placeholder="Name, type, method…" onChange={e=>setQuery(e.target.value)}/></label></div></>}<Form className="form-json" title={editing?'Edit watch rule patch':'Create watch rule'} onSubmit={save}><label>Configuration JSON<textarea name="json" required defaultValue={editing?'{}':'{"name":"announcements","type":"discord_channel","method":"scraper","config":{"channelId":"123","keywords":["mint"],"sourceUrl":"https://example.com/feed"}}'}/></label><button className="b p">{editing?'Apply validated patch':'Create rule'}</button></Form>{!formOnly&&(listing.data===null?<Skeleton/>:<div className="card-grid watch-grid">{filtered.items.map(item=>{const events=listing.data.events.filter(event=>event.matchedRuleIds.includes(item.id)).slice(0,3);return <article className="card" key={item.id}><StatusPill status={item.enabled?'enabled':'disabled'}/><h2>{item.name}</h2><p>{item.type} · {item.method}</p><p className={item.consecutiveFailures?'warning':''}>Adapter health: {item.consecutiveFailures?`failing (${item.consecutiveFailures} consecutive)`:'healthy'} </p>{events.map(event=><p key={event.id}><code>{event.address}</code><br/>{formatDateTime(event.detectedAt)}</p>)}<div className="br"><button className="b g sm" onClick={()=>setEditing(item.id)}>Edit</button><button className="b g sm" onClick={()=>action(item.id,'disable')}>Disable</button><button className="b g sm" aria-expanded={policyFor===item.id} onClick={()=>setPolicyFor(policyFor===item.id?null:item.id)}>{policyFor===item.id?'Hide policy':'Policy'}</button><button className="b d sm" onClick={async()=>{if(await confirmDialog('Remove this watch rule?'))action(item.id,'remove');}}>Remove</button></div>{policyFor===item.id&&<PolicyEditor target={{id:item.id,label:item.name,type:'social_rule'}}/>}</article>})}{filtered.items.length===0&&<Empty text={normalized?'No watch rules match this search.':'No watch rules yet. Create one above to start social-trigger detection.'}/>}</div>)}</>}
 // Laid out as auto.html's at-pol panel: a .split with the policy form on the left and, on the
 // right, a read-only Human verification table above the bypass challenge.
 //
@@ -3244,6 +3252,7 @@ const ACCOUNT_ICONS={
 function linkedAccountLabel(platform){return platform==='telegram'?'Telegram':platform==='discord'?'Discord':String(platform||'Platform');}
 function shortPlatformId(value){const id=String(value||'');return id.length>12?`${id.slice(0,4)}…${id.slice(-4)}`:id;}
 function Account({profile,onLogout,onProfileChange,tab,onTab,go}){
+  const formatDateTime=useDateTimeFormatter();
   const active=ACCOUNT_TABS.some(item=>item.id===tab)?tab:'identity';
   const [linking,setLinking]=useState(null);const [linkBusy,setLinkBusy]=useState(false);const [clock,setClock]=useState(Date.now());
   const [displayName,setDisplayName]=useState(profile.displayName||'');const [profileBusy,setProfileBusy]=useState(false);
@@ -3272,11 +3281,11 @@ function Account({profile,onLogout,onProfileChange,tab,onTab,go}){
           <form onSubmit={saveProfile} className="account-profile-form">
             <label className="fl"><span>Display name</span><input className="in" value={displayName} maxLength="40" required autoFocus onChange={event=>setDisplayName(event.target.value)} placeholder="How GhostMint should address you"/></label>
             <div className="account-readonly-field"><span>Username</span><strong>{profile.username||'Not set'}</strong><button type="button" className="b g sm" disabled={!profile.securityPasswordSet} onClick={()=>promptSetUsername({isChange:Boolean(profile.username),onProfileChange})}>{profile.username?'Change':'Set'}</button></div>
-            <div className="account-readonly-field"><span>Default chain</span><strong>{defaultChain}</strong><button type="button" className="b g sm" onClick={()=>go?.('Settings')}>Settings</button></div>
+            <div className="account-readonly-field"><span>Default chain</span><strong>{defaultChain}</strong><button type="button" className="b g sm" onClick={()=>go?.('Settings','gas')}>Settings</button></div>
             <div className="br"><button className="b p sm" disabled={profileBusy||displayName.trim()===(profile.displayName||'')}>{profileBusy?'Saving…':'Save profile'}</button></div>
           </form>
         </section>
-        <div className="nt i account-mode-note">{INFO_ICON}<div>Transaction mode is currently <b>{mode}</b>. It changes execution safety, so it lives in <button type="button" className="b sm" onClick={()=>go?.('Settings')}>Settings → Transaction mode</button>.</div></div>
+        <div className="nt i account-mode-note">{INFO_ICON}<div>Transaction mode is currently <b>{mode}</b>. It changes execution safety, so it lives in <button type="button" className="b sm" onClick={()=>go?.('Settings','transaction')}>Settings → Transaction mode</button>.</div></div>
       </div>
       <div className="g">
         <div className="sober"><div className="sh">{ACCOUNT_ICONS.identity}Account</div><Ledger rows={accountRows} total={{label:'Account status',value:'Active'}}/></div>
@@ -3315,7 +3324,7 @@ function Account({profile,onLogout,onProfileChange,tab,onTab,go}){
         <div className="ch"><span className="chip-ico">{ACCOUNT_ICONS.sessions}</span><h2>Connect another platform</h2></div>
         <p>Generate a five-minute, single-use code here, then enter it on the Telegram or Discord account you want to connect. Refreshing invalidates the previous unused code.</p>
         <button className="b p" disabled={linkBusy} onClick={generate}>{linkBusy?'Generating…':linking?'Refresh code':'Generate link code'}</button>
-        {linking&&<div className="link-code-result" aria-live="polite"><div className="link-code-heading"><strong>{linking.code}</strong><CopyButton value={linking.code} label="Copy link code"/></div><p>{remaining>0?`Expires in ${Math.floor(remaining/60)}:${String(remaining%60).padStart(2,'0')}`:'Expired — refresh to generate a new code.'}</p><p>Exact expiry: {new Date(linking.expiresAt).toLocaleString()}</p></div>}
+        {linking&&<div className="link-code-result" aria-live="polite"><div className="link-code-heading"><strong>{linking.code}</strong><CopyButton value={linking.code} label="Copy link code"/></div><p>{remaining>0?`Expires in ${Math.floor(remaining/60)}:${String(remaining%60).padStart(2,'0')}`:'Expired — refresh to generate a new code.'}</p><p>Exact expiry: {formatDateTime(linking.expiresAt)}</p></div>}
       </section>
     </div>}
 
@@ -3323,7 +3332,7 @@ function Account({profile,onLogout,onProfileChange,tab,onTab,go}){
       <section className="card">
         <div className="ch"><span className="chip-ico">{ACCOUNT_ICONS.sessions}</span><h2>This session</h2><span className="p ok">Current</span></div>
         <p className="account-client-label">{session?.clientLabel||'Browser details unavailable'}</p>
-        <div className="session-policy"><div><span>Active browser sessions</span><strong>{session?`${session.activeCount} of ${session.maxActiveSessions}`:'Unavailable'}</strong></div><div><span>Created</span><strong>{session?.createdAt?new Date(session.createdAt).toLocaleString():'Unavailable'}</strong></div><div><span>Idle timeout</span><strong>{session?`${Math.round(session.idleTimeoutMs/3_600_000)} hours`:'Unavailable'}</strong></div><div><span>Refreshes until</span><strong>{session?.expiresAt?new Date(session.expiresAt).toLocaleString():'Unavailable'}</strong></div></div>
+        <div className="session-policy"><div><span>Active browser sessions</span><strong>{session?`${session.activeCount} of ${session.maxActiveSessions}`:'Unavailable'}</strong></div><div><span>Created</span><strong>{session?.createdAt?formatDateTime(session.createdAt):'Unavailable'}</strong></div><div><span>Idle timeout</span><strong>{session?`${Math.round(session.idleTimeoutMs/3_600_000)} hours`:'Unavailable'}</strong></div><div><span>Refreshes until</span><strong>{session?.expiresAt?formatDateTime(session.expiresAt):'Unavailable'}</strong></div></div>
       </section>
       <section className="card tight account-session-actions">
         <div className="ch"><h2>Session controls</h2></div>
@@ -3339,7 +3348,19 @@ const MOON_ICON=<svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 14.5A8
 const PRIMARY_THEMES=[{value:'ghost-mint-light',label:'Light',icon:SUN_ICON},{value:'ghost-mint',label:'Dark',icon:MOON_ICON}];
 const SECONDARY_THEMES=THEME_OPTIONS.filter(option=>option.value!=='ghost-mint'&&option.value!=='ghost-mint-light');
 function ThemeSwatch({value}){return <span className={`theme-swatch theme-swatch-${value}`} aria-hidden="true"><span className="theme-swatch-accent"/></span>}
-function DefaultChainPanel({profile,onProfileChange}){const [value,setValue]=useState(profile.defaultChain||profile.supportedChains[0]);useEffect(()=>setValue(profile.defaultChain||profile.supportedChains[0]),[profile.defaultChain,profile.supportedChains]);async function change(event){const next=event.target.value;const previous=value;setValue(next);try{const saved=await api('/api/profile/default-chain',{method:'PUT',body:JSON.stringify({defaultChain:next})});setValue(saved.defaultChain);onProfileChange?.(current=>({...current,defaultChain:saved.defaultChain}));notify('Default chain saved.',{type:'success'});}catch(error){setValue(previous);notify(error.message,{type:'error'});}}return <div className="panel settings-chain"><div className="settings-panel-heading"><div><p className="eyebrow">Network preference</p><h2>Default chain</h2></div><span className="pill">Account setting</span></div><p>Pre-selects this chain on wallet and scheduled-task forms.</p><ChainSelect name="defaultChain" label="Default chain" options={profile.supportedChains} value={value} onChange={change}/></div>}
+function DefaultChainPanel({profile,onProfileChange}){
+  const [value,setValue]=useState(profile.defaultChain||profile.supportedChains[0]);
+  const [busy,setBusy]=useState(false);const [error,setError]=useState('');
+  useEffect(()=>setValue(profile.defaultChain||profile.supportedChains[0]),[profile.defaultChain,profile.supportedChains]);
+  async function change(event){
+    const next=event.target.value;const previous=value;setValue(next);setBusy(true);setError('');
+    try{const saved=await api('/api/profile/default-chain',{method:'PUT',body:JSON.stringify({defaultChain:next})});setValue(saved.defaultChain);onProfileChange?.(current=>({...current,defaultChain:saved.defaultChain}));notify('Default chain saved.',{type:'success'});}
+    catch(value){setValue(previous);setError(value.message||'Your default chain could not be saved.');notify(value.message,{type:'error'});}
+    finally{setBusy(false);}
+  }
+  return <div className="panel settings-chain" aria-busy={busy||undefined}><div className="settings-panel-heading"><div><p className="eyebrow">Network preference</p><h2>Default chain</h2></div><span className="pill">Account setting</span></div><p>Pre-selects this chain on wallet and scheduled-task forms.</p>
+    <Notice error={error?{title:'Could not save your default chain.',detail:'Your previous choice is still active.'}:null}/>
+    <ChainSelect name="defaultChain" label="Default chain" options={profile.supportedChains} value={value} disabled={busy} onChange={change}/></div>}
 const LOW_BALANCE_CHOICES=[
   ['0.0001','0.0001 native'],['0.0005','0.0005 native'],
   ['0.001','0.001 native'],['0.005','0.005 native'],['0.01','0.01 native · recommended'],
@@ -3349,16 +3370,17 @@ function LowBalancePreferencePanel({profile,onProfileChange}){
   const initial=String(profile.lowBalanceThreshold??DEFAULT_WALLET_LOW_THRESHOLD);
   const [value,setValue]=useState(initial);
   const [busy,setBusy]=useState(false);
+  const [error,setError]=useState('');
   useEffect(()=>setValue(String(profile.lowBalanceThreshold??DEFAULT_WALLET_LOW_THRESHOLD)),[profile.lowBalanceThreshold]);
   async function change(event){
-    const next=event.target.value;const previous=value;setValue(next);setBusy(true);
+    const next=event.target.value;const previous=value;setValue(next);setBusy(true);setError('');
     try{
       const saved=await api('/api/profile/low-balance-threshold',{method:'PUT',
         body:JSON.stringify({lowBalanceThreshold:next})});
       setValue(String(saved.lowBalanceThreshold));
       onProfileChange?.(current=>({...current,lowBalanceThreshold:saved.lowBalanceThreshold}));
       notify('Low-balance warning saved.',{type:'success'});
-    }catch(error){setValue(previous);notify(error.message,{type:'error'});}
+    }catch(value){setValue(previous);setError(value.message||'Your warning threshold could not be saved.');notify(value.message,{type:'error'});}
     finally{setBusy(false);}
   }
   return <div className="panel settings-low-balance" aria-busy={busy||undefined}>
@@ -3366,6 +3388,7 @@ function LowBalancePreferencePanel({profile,onProfileChange}){
       <h2>Low-balance warning</h2></div><span className="pill">Display only</span></div>
     <p>Wallets below this amount in their native currency are labelled Low. This warning does not
       change transaction limits or reserve funds.</p>
+    <Notice error={error?{title:'Could not save the low-balance warning.',detail:'Your previous choice is still active.'}:null}/>
     <SelectMenu className="fl" label="Warn below" value={value} disabled={busy} onChange={change}
       options={LOW_BALANCE_CHOICES.map(([option,label])=>({value:option,label:label.replace(' · recommended',''),
         tag:label.includes('recommended')?'Recommended':null}))}/>
@@ -3374,16 +3397,17 @@ function LowBalancePreferencePanel({profile,onProfileChange}){
 function DisplayCurrencyPanel({profile,onProfileChange}){
   const [value,setValue]=useState(profile.displayCurrency||'USD');
   const [busy,setBusy]=useState(false);
+  const [error,setError]=useState('');
   useEffect(()=>setValue(profile.displayCurrency||'USD'),[profile.displayCurrency]);
   async function change(event){
-    const next=event.target.value;const previous=value;setValue(next);setBusy(true);
+    const next=event.target.value;const previous=value;setValue(next);setBusy(true);setError('');
     try{
       const saved=await api('/api/profile/display-currency',{method:'PUT',
         body:JSON.stringify({displayCurrency:next})});
       setValue(saved.displayCurrency);
       onProfileChange?.(current=>({...current,displayCurrency:saved.displayCurrency}));
       notify(`Display currency changed to ${saved.displayCurrency}.`,{type:'success'});
-    }catch(error){setValue(previous);notify(error.message,{type:'error'});}
+    }catch(value){setValue(previous);setError(value.message||'Your display currency could not be saved.');notify(value.message,{type:'error'});}
     finally{setBusy(false);}
   }
   return <div className="panel settings-display-currency" aria-busy={busy||undefined}>
@@ -3391,10 +3415,36 @@ function DisplayCurrencyPanel({profile,onProfileChange}){
       <h2>Display currency</h2></div><span className="pill">Display only</span></div>
     <p>Shows an approximate local-currency value beside native-token amounts. Transactions,
       balances, limits, and signatures always remain in the chain&apos;s native token.</p>
+    <Notice error={error?{title:'Could not save the display currency.',detail:'Your previous choice is still active.'}:null}/>
     <SelectMenu className="fl" label="Preferred currency" value={value} disabled={busy}
       onChange={change} options={DISPLAY_CURRENCY_OPTIONS.map(option=>({
         value:option.value,label:`${option.symbol} · ${option.label}`,tag:option.value,
       }))}/>
+  </div>;
+}
+const TIME_FORMAT_OPTIONS=[
+  {value:'24h',label:'24-hour clock',description:'20:30 · explicit and compact'},
+  {value:'12h',label:'12-hour clock',description:'8:30 PM · morning and evening labels'},
+];
+function TimeFormatPreferencePanel({profile,onProfileChange}){
+  const [value,setValue]=useState(profile.timeFormat||'24h');
+  const [busy,setBusy]=useState(false);const [error,setError]=useState('');
+  useEffect(()=>setValue(profile.timeFormat||'24h'),[profile.timeFormat]);
+  async function change(event){
+    const next=event.target.value;const previous=value;setValue(next);setBusy(true);setError('');
+    try{
+      const saved=await api('/api/profile/time-format',{method:'PUT',body:JSON.stringify({timeFormat:next})});
+      setValue(saved.timeFormat);onProfileChange?.(current=>({...current,timeFormat:saved.timeFormat}));
+      notify(`Times now use the ${saved.timeFormat==='12h'?'12-hour':'24-hour'} clock.`,{type:'success'});
+    }catch(value){setValue(previous);setError(value.message||'Your time format could not be saved.');notify(value.message,{type:'error'});}
+    finally{setBusy(false);}
+  }
+  return <div className="panel settings-time-format" aria-busy={busy||undefined}>
+    <div className="settings-panel-heading"><div><p className="eyebrow">Time display</p><h2>Clock format</h2></div><span className="pill">Display only</span></div>
+    <p>Changes how times are written throughout the dashboard. It never changes the saved moment or its timezone.</p>
+    <Notice error={error?{title:'Could not save the clock format.',detail:'Your previous choice is still active.'}:null}/>
+    <SelectMenu className="fl" label="Clock format" value={value} disabled={busy} onChange={change}
+      options={TIME_FORMAT_OPTIONS}/>
   </div>;
 }
 // The ONLY place the bot action gate can be changed. Deliberately not a Telegram or Discord
@@ -3406,38 +3456,56 @@ const BOT_GATE_OPTIONS=[
   {value:'sensitive',label:'Sensitive',hint:'Ask before exporting a key, removing a wallet, sending funds, or importing.'},
   {value:'strict',label:'Strict',hint:'Everything above, plus reading your wallet list, balances, and activity.'},
 ];
+function settingsSaveError(title,error,onRetry){
+  return {
+    title,
+    detail:'Your previous choice is still active.',
+    code:'Request failed safely',
+    onRetry,
+  };
+}
 function BotSecurityPanel({profile,onProfileChange}){
   const [level,setLevel]=useState(profile.botGateLevel||'off');
   const [saving,setSaving]=useState(false);
   const [skipMint,setSkipMint]=useState(Boolean(profile.botGateSkipMint));
   const [savingMint,setSavingMint]=useState(false);
+  const [saveError,setSaveError]=useState(null);
   async function changeMint(next){
-    const previous=skipMint;setSkipMint(next);setSavingMint(true);
+    const previous=skipMint;setSaveError(null);setSkipMint(next);setSavingMint(true);
     try{
       await api('/api/profile/bot-gate-mint',{method:'PUT',body:JSON.stringify({skipMint:next})});
       onProfileChange?.(current=>({...current,botGateSkipMint:next}));
       notify(next?'Minting will no longer ask for your password.':'Minting will ask for your password.',{type:next?'error':'success'});
-    }catch(error){setSkipMint(previous);notify(error.message,{type:'error'});}
+    }catch(error){
+      setSkipMint(previous);
+      setSaveError(settingsSaveError('Could not save the minting prompt.',error,()=>changeMint(next)));
+      notify(error.message,{type:'error'});
+    }
     finally{setSavingMint(false);}
   }
   const noPassword=!profile.securityPasswordSet;
   async function change(next){
     if(next===level)return;
-    const previous=level;setLevel(next);setSaving(true);
+    const previous=level;setSaveError(null);setLevel(next);setSaving(true);
     try{
       await api('/api/profile/bot-gate',{method:'PUT',body:JSON.stringify({level:next})});
       onProfileChange?.(current=>({...current,botGateLevel:next}));
       notify(next==='off'?'Bot password gate turned off.':`Bot password gate set to ${next}.`,{type:'success'});
-    }catch(error){setLevel(previous);notify(error.message,{type:'error'});}
+    }catch(error){
+      setLevel(previous);
+      setSaveError(settingsSaveError('Could not save the password gate.',error,()=>change(next)));
+      notify(error.message,{type:'error'});
+    }
     finally{setSaving(false);}
   }
-  return <div className="panel settings-bot-gate">
+  return <div className="panel settings-bot-gate" aria-busy={(saving||savingMint)||undefined}>
     <div className="settings-panel-heading">
       <div><p className="eyebrow">Bot security</p><h2>Password gate</h2></div>
       <span className={`p ${level==='off'?'idle':'ok'}`}>{level==='off'?'Off':'On'}</span>
     </div>
     <p>Requires your security password before sensitive actions taken from Telegram or Discord. It
     uses the same password as this dashboard, and each conversation stays unlocked for 10 minutes.</p>
+    <Notice error={saveError}/>
     {noPassword&&<p className="notice notice-warning">Set a security password on the Account page
     first. It cannot be set from a chat, because a password typed there stays in your message
     history.</p>}
@@ -3470,15 +3538,58 @@ function BotSecurityPanel({profile,onProfileChange}){
     your message the moment it arrives.</p>
   </div>;
 }
-function GasPanel({profile}){const [chain,setChain]=useState(profile.defaultChain||profile.supportedChains[0]);const [result,setResult]=useState(null);const [error,setError]=useState('');const [unavailable,setUnavailable]=useState('');const [loading,setLoading]=useState(false);const load=useCallback(async next=>{setLoading(true);setError('');setUnavailable('');setResult(null);try{setResult(await api(`/api/gas/${next}`));}catch(err){if(['MISSING_API_KEY','PROVIDER_ERROR','TIMEOUT','UNAVAILABLE'].includes(err.code))setUnavailable(err.message);else setError(err.message);}finally{setLoading(false);}},[]);useEffect(()=>{load(chain);},[chain,load]);return <div className="panel settings-gas"><div className="settings-panel-heading"><div><p className="eyebrow">Live network data</p><h2>Gas prices</h2></div><ChainSelect name="gasChain" label="Chain" options={profile.supportedChains} value={chain} onChange={e=>setChain(e.target.value)}/></div><p>Etherscan V2 gas oracle. An unavailable provider never blocks the rest of Settings.</p><Notice error={error?{title:'Could not load gas prices.',code:'Request failed safely',onRetry:()=>load(chain)}:null}/>{unavailable&&<p className="notice notice-warning" role="status">{unavailable}</p>}{loading&&<Skeleton variant="lines" rows={1}/>}{result&&<div className="gas-readout"><div><span>Safe</span><strong>{result.safeGasPriceGwei} gwei</strong></div><div><span>Standard</span><strong>{result.gasPriceGwei} gwei</strong></div><div><span>Fast</span><strong>{result.maxFeePerGasGwei} gwei</strong></div></div>}</div>}
+function GasPanel({profile}){
+  const [chain,setChain]=useState(profile.defaultChain||profile.supportedChains[0]);
+  const [result,setResult]=useState(null);
+  const [error,setError]=useState(null);
+  const [unavailable,setUnavailable]=useState('');
+  const [loading,setLoading]=useState(false);
+  const requestId=useRef(0);
+  const load=useCallback(async next=>{
+    const activeRequest=++requestId.current;
+    setLoading(true);setError(null);setUnavailable('');setResult(null);
+    try{
+      const value=await api(`/api/gas/${next}`);
+      if(activeRequest===requestId.current)setResult(value);
+    }catch(reason){
+      if(activeRequest!==requestId.current)return;
+      if(reason.code==='MISSING_API_KEY'){
+        setUnavailable('Live gas prices are not configured for this chain yet. You can still use the rest of Settings.');
+      }else{
+        setError({
+          title:'Could not load gas prices.',
+          detail:'Nothing else in Settings was affected.',
+          code:'Request failed safely',
+          onRetry:()=>load(next),
+        });
+      }
+    }finally{
+      if(activeRequest===requestId.current)setLoading(false);
+    }
+  },[]);
+  useEffect(()=>{load(chain);return()=>{requestId.current+=1;};},[chain,load]);
+  return <div className="panel settings-gas" aria-busy={loading||undefined}>
+    <div className="settings-panel-heading"><div><p className="eyebrow">Live network data</p><h2>Gas prices</h2></div>
+      <ChainSelect name="gasChain" label="Chain" options={profile.supportedChains} value={chain}
+        disabled={loading} onChange={e=>setChain(e.target.value)}/>
+    </div>
+    <p>Etherscan V2 gas oracle. An unavailable provider never blocks the rest of Settings.</p>
+    <Notice error={error}/>
+    {unavailable&&<p className="notice notice-warning" role="status">{unavailable}</p>}
+    {loading&&<div className="gas-readout settings-gas-skeleton" role="status" aria-label="Loading gas prices">
+      {['Safe','Standard','Fast'].map(label=><div key={label}><span>{label}</span><Skeleton variant="big-value" rows={1}/></div>)}
+    </div>}
+    {result&&<div className="gas-readout"><div><span>Safe</span><strong>{result.safeGasPriceGwei} gwei</strong></div><div><span>Standard</span><strong>{result.gasPriceGwei} gwei</strong></div><div><span>Fast</span><strong>{result.maxFeePerGasGwei} gwei</strong></div></div>}
+  </div>;
+}
 // Self-service counterpart to Admin > Mode presets (which edits the four shared preset
 // definitions) -- this only ever picks which of those four the signed-in user is currently on,
 // same PUT /api/profile/mode -> commands.selectMode every platform's /mode command already calls.
 // Display names (Degen/Fast/Cautious/Normie) now come straight from preset.displayName -- the DB
 // is the single source of truth (migration 038) so this only needs to carry the extra hint text.
 const MODE_HINT={
-  ultra_fast:'Fastest, high gas, no confirmation',
-  fast:'Quick, higher gas, still confirms',
+  ultra_fast:'Fastest gas, skips the human approval prompt',
+  fast:'Quick, higher gas, keeps the human approval prompt',
   semi_safe:'Careful, moderate gas',
   safe:'Slowest, safest, network-price gas',
 };
@@ -3486,50 +3597,123 @@ const MODE_HINT={
 // backend is the real gate (selectPreset rejects these for an ineligible caller regardless of
 // what the UI shows); this list only avoids sending a doomed request and explains why upfront.
 const GATED_PRESET_KEYS=['ultra_fast','fast'];
-function TransactionModePanel({profile}){
+function modeSimulationLabel(value){
+  if(value==='on'||value==='forced'||value===true)return 'Always simulate';
+  if(value==='blockchain_off')return 'Social only';
+  return 'Optional';
+}
+function modeVerificationLabel(value){return value==='bypass'||value==='off'||value===false?'Bypassed':'On';}
+function modeLimitLabel(value,ceilingExempt){
+  return ceilingExempt||value===null||value===undefined?'Owner exempt':`${weiAmountText(value)} ETH`;
+}
+function TransactionModePanel({profile,onProfileChange}){
   const presets=useLoad('/api/mode-presets');
+  const limitChain=profile.defaultChain||profile.supportedChains?.[0]||DEFAULT_EVM_CHAIN;
+  const limits=useLoad(`/api/profile/limits?chain=${encodeURIComponent(limitChain)}`,[limitChain]);
   const [current,setCurrent]=useState(profile.currentMode?.key||null);
+  const [previewKey,setPreviewKey]=useState(null);
   const [busy,setBusy]=useState(false);
+  const [saveError,setSaveError]=useState(null);
   const defaultKey=presets.data?.find(preset=>preset.isDefault)?.key;
+  const effectiveKey=current||defaultKey||null;
+  const selectedKey=previewKey||effectiveKey;
+  const selected=presets.data?.find(preset=>preset.key===selectedKey)||null;
+  const selectedLocked=Boolean(selected&&GATED_PRESET_KEYS.includes(selected.key)&&!profile.advancedModesAllowed);
+  useEffect(()=>{setCurrent(profile.currentMode?.key||null);setPreviewKey(null);},[profile.currentMode?.key]);
   async function choose(key){
-    if(key===current||busy)return;
-    setBusy(true);
-    try{await api('/api/profile/mode',{method:'PUT',body:JSON.stringify({preset:key})});setCurrent(key);notify(`Transaction mode set to ${presets.data?.find(preset=>preset.key===key)?.displayName||key}.`,{type:'success'});}
-    catch(value){notify(value.message,{type:'error'});}
+    if(key===effectiveKey||busy)return;
+    const preset=presets.data?.find(item=>item.key===key);
+    if(!await confirmDialog(`Use ${preset?.displayName||key} for future transactions? This changes gas, simulation, and confirmation behaviour. Owner ceilings still win.`))return;
+    setSaveError(null);setBusy(true);
+    try{await api('/api/profile/mode',{method:'PUT',body:JSON.stringify({preset:key})});setCurrent(key);setPreviewKey(key);onProfileChange?.(value=>({...value,currentMode:preset||{key,displayName:key}}));notify(`Transaction mode set to ${preset?.displayName||key}.`,{type:'success'});}
+    catch(value){
+      setSaveError(settingsSaveError('Could not change the transaction mode.',value,()=>choose(key)));
+      notify(value.message,{type:'error'});
+    }
     finally{setBusy(false);}
   }
   async function resetToDefault(){
-    if(!defaultKey||current===defaultKey||busy)return;
-    setBusy(true);
-    try{await api('/api/profile/mode',{method:'PUT',body:JSON.stringify({preset:null})});setCurrent(defaultKey);notify('Transaction mode reset to the default.',{type:'success'});}
-    catch(value){notify(value.message,{type:'error'});}
+    if(!defaultKey||effectiveKey===defaultKey||busy)return;
+    if(!await confirmDialog('Reset future transactions to the account default mode? Owner ceilings still win.'))return;
+    setSaveError(null);setBusy(true);
+    try{await api('/api/profile/mode',{method:'PUT',body:JSON.stringify({preset:null})});const preset=presets.data?.find(item=>item.key===defaultKey);setCurrent(defaultKey);setPreviewKey(defaultKey);onProfileChange?.(value=>({...value,currentMode:preset||{key:defaultKey,displayName:defaultKey}}));notify('Transaction mode reset to the default.',{type:'success'});}
+    catch(value){
+      setSaveError(settingsSaveError('Could not reset the transaction mode.',value,resetToDefault));
+      notify(value.message,{type:'error'});
+    }
     finally{setBusy(false);}
   }
-  return <div className="panel settings-mode">
+  return <div className="panel settings-mode" aria-busy={busy||undefined}>
     <div className="settings-panel-heading"><div><p className="eyebrow">Speed vs. safety</p><h2>Transaction mode</h2></div>
-      <button type="button" className="b g sm" disabled={busy||!defaultKey||current===defaultKey} onClick={resetToDefault}>Reset to default</button>
+      <button type="button" className="b g sm" disabled={busy||!defaultKey||effectiveKey===defaultKey} onClick={resetToDefault}>Reset to default</button>
     </div>
     <p>Controls confirmation prompts and gas aggression for every mint on every platform. Ceilings and forced simulation (Section 7a governance) always take precedence regardless of mode.</p>
-    {presets.data===null?<Skeleton variant="lines" rows={1}/>:<div className="card-grid mode-grid">{presets.data.map(preset=>{
+    <div className="nt i settings-mode-note">{INFO_ICON}<div>Changing this affects future transactions only. An owner&apos;s ceiling or forced-simulation rule can make a mode safer, never less safe.</div></div>
+    <Notice error={loadError(presets,'Could not load transaction modes.')}/>
+    <Notice error={loadError(limits,'Could not load your transaction limits.')}/>
+    <Notice error={saveError}/>
+    {presets.data===null&&!presets.error?<div className="settings-mode-layout settings-mode-skeleton" role="status" aria-label="Loading transaction modes">
+      <div className="card-grid mode-grid">{Array.from({length:4},(_,index)=><div className="mode-card" key={index}><Skeleton variant="lines" rows={2}/></div>)}</div>
+      <div className="sober settings-mode-effect"><Skeleton variant="lines" rows={5}/></div>
+    </div>:presets.data&&<div className="settings-mode-layout"><div className="card-grid mode-grid">{presets.data.map(preset=>{
       const locked=GATED_PRESET_KEYS.includes(preset.key)&&!profile.advancedModesAllowed;
-      return <button type="button" key={preset.key} disabled={busy||locked} title={locked?'Requires group access or a manual admin grant -- ask an owner to enable it.':undefined} className={`mode-card${current===preset.key?' active':''}`} onClick={()=>choose(preset.key)}>
-        <strong>{preset.displayName}{preset.isDefault?<span className="pill mode-card-default">Default</span>:null}</strong>
+      return <button type="button" key={preset.key} disabled={busy||locked} title={locked?'Requires group access or a manual admin grant -- ask an owner to enable it.':undefined} className={`mode-card${effectiveKey===preset.key?' active':''}${selectedKey===preset.key&&effectiveKey!==preset.key?' preview':''}`} aria-pressed={selectedKey===preset.key} onClick={()=>setPreviewKey(preset.key)}>
+        <strong>{preset.displayName}{preset.isDefault?<span className="pill mode-card-default">Default</span>:null}{effectiveKey===preset.key?<span className="pill mode-card-default">Active</span>:null}</strong>
         <span>{MODE_HINT[preset.key]||''}</span>
-        <span className="mode-card-detail">Gas × {preset.gasPriceMultiplier} · {preset.humanVerification==='bypass'?'no confirmation':`${preset.confirmationCount} confirmation(s)`}</span>
+        <span className="mode-card-detail">Gas × {preset.gasPriceMultiplier??1} · {modeSimulationLabel(preset.simulationMode)}</span>
+        <span className="mode-card-detail">{preset.confirmationCount} network confirmation(s) · verification {modeVerificationLabel(preset.humanVerification).toLowerCase()}</span>
         {locked&&<span className="mode-card-locked">🔒 Requires access</span>}
       </button>;
-    })}</div>}
+    })}</div>{selected&&<div className="settings-mode-summary"><div className="sober settings-mode-effect"><div className="sh">Effect of {selected.displayName} · {chainMeta(limits.data?.chain||limitChain).label}</div><Ledger rows={[
+      {label:'Gas multiplier',value:`${selected.gasPriceMultiplier??1}× network`},
+      {label:'Simulation',value:modeSimulationLabel(selected.simulationMode)},
+      {label:'Network confirmations',value:String(selected.confirmationCount)},
+      {label:'Human verification',value:modeVerificationLabel(selected.humanVerification)},
+      {label:'Max transaction',value:limits.data?modeLimitLabel(limits.data.maxTransactionValueWei,limits.data.ceilingExempt):'Loading…'},
+    ]} total={{label:'Daily budget',value:limits.data?modeLimitLabel(limits.data.dailySpendingBudgetWei,limits.data.ceilingExempt):'Loading…'}}/></div>
+      <button type="button" className="b p bl" disabled={busy||selectedLocked||selected.key===effectiveKey}
+        onClick={()=>choose(selected.key)}>{selected.key===effectiveKey?`${selected.displayName} is active`:`Use ${selected.displayName}`}</button>
+      <p className="settings-note">Switching modes asks you to confirm first.</p>
+    </div>}</div>}
   </div>;
 }
 const USAGE_PERIODS=[['today','Today'],['day','24 hours'],['week','7 days'],['month','Month']];
-function ApiUsagePanel(){const [period,setPeriod]=useState('month');const usage=useLoad(`/api/social-usage?period=${period}`,[period]);const {data}=usage;return <div className="panel settings-usage"><div className="settings-panel-heading"><div><p className="eyebrow">Owner reporting</p><h2>Social API usage</h2></div><div className="seg usage-period" role="radiogroup" aria-label="Usage period">{USAGE_PERIODS.map(([value,label])=><button type="button" key={value} className={period===value?'on':undefined} aria-pressed={period===value} onClick={()=>setPeriod(value)}>{label}</button>)}</div></div><p>Observed adapter requests, provider-reported consumption, and current pricing estimates.</p><Notice error={loadError(usage,'Could not load social API usage.')}/>{data===null?<Skeleton variant="lines" rows={4}/>:<><div className="usage-stats"><div><span>Total requests</span><strong>{data.requests}</strong></div><div><span>Reported cost</span><strong>${data.reportedCostUsd.toFixed(4)}</strong></div><div><span>Reported credits</span><strong>{data.reportedCredits.toFixed(2)}</strong></div><div><span>Pay-per-use estimate</span><strong>${data.payPerUseEstimateUsd.toFixed(2)}</strong></div><div><span>Projected monthly</span><strong>{Math.round(data.projectedMonthlyRequests).toLocaleString()}</strong></div></div><div className="settings-usage-tables"><div className="table-wrap"><table><thead><tr><th>Rule</th><th>Method</th><th>Type</th><th>Requests</th></tr></thead><tbody>{data.rows.map(row=><tr key={`${row.ruleId}-${row.method}-${row.requestType}`}><td>{row.ruleName}</td><td>{row.method}</td><td>{row.requestType}</td><td>{row.requests}</td></tr>)}</tbody></table>{data.rows.length===0&&<Empty text="No social adapter requests recorded for this period."/>}</div><div className="table-wrap"><table><thead><tr><th>Managed tier</th><th>Break-even reads</th><th>Break-even posts</th></tr></thead><tbody>{data.breakEvenRequests.map(tier=><tr key={tier.price}><td>${tier.price}/mo</td><td>{tier.atReadRate.toLocaleString()}</td><td>{tier.atPostRate.toLocaleString()}</td></tr>)}</tbody></table></div></div></>}</div>}
+function ApiUsagePanel({onCreateRule}){
+  const [period,setPeriod]=useState('month');
+  const usage=useLoad(`/api/social-usage?period=${period}`,[period]);
+  const {data}=usage;
+  const empty=Boolean(data&&Number(data.requests||0)===0&&data.rows?.length===0);
+  return <div className="panel settings-usage" aria-busy={(data===null&&!usage.error)||undefined}>
+    <div className="settings-panel-heading"><div><p className="eyebrow">Owner reporting</p><h2>Social API usage</h2></div>
+      <div className="seg usage-period" role="group" aria-label="Usage period">
+        {USAGE_PERIODS.map(([value,label])=><button type="button" key={value}
+          className={period===value?'on':undefined} aria-pressed={period===value}
+          onClick={()=>setPeriod(value)}>{label}</button>)}
+      </div>
+    </div>
+    <p>Observed adapter requests, provider-reported consumption, and current pricing estimates.</p>
+    <Notice error={loadError(usage,'Could not load social API usage.')}/>
+    {data===null&&!usage.error?<Skeleton variant="lines" rows={4}/>:empty
+      ?<div className="emp oe settings-usage-empty">
+        <div className="ei">{TREND_ICON}</div><h3>No adapter requests yet</h3>
+        <p>Usage appears here once a social watch rule starts polling.</p>
+        <button type="button" className="b sm" onClick={onCreateRule}>Create a watch rule</button>
+      </div>
+      :data&&<><div className="usage-stats"><div><span>Total requests</span><strong>{data.requests}</strong></div><div><span>Reported cost</span><strong>${data.reportedCostUsd.toFixed(4)}</strong></div><div><span>Reported credits</span><strong>{data.reportedCredits.toFixed(2)}</strong></div><div><span>Pay-per-use estimate</span><strong>${data.payPerUseEstimateUsd.toFixed(2)}</strong></div><div><span>Projected monthly</span><strong>{Math.round(data.projectedMonthlyRequests).toLocaleString()}</strong></div></div><div className="settings-usage-tables"><div className="table-wrap"><table><thead><tr><th>Rule</th><th>Method</th><th>Type</th><th>Requests</th></tr></thead><tbody>{data.rows.map(row=><tr key={`${row.ruleId}-${row.method}-${row.requestType}`}><td>{row.ruleName}</td><td>{row.method}</td><td>{row.requestType}</td><td>{row.requests}</td></tr>)}</tbody></table></div><div className="table-wrap"><table><thead><tr><th>Managed tier</th><th>Break-even reads</th><th>Break-even posts</th></tr></thead><tbody>{data.breakEvenRequests.map(tier=><tr key={tier.price}><td>${tier.price}/mo</td><td>{tier.atReadRate.toLocaleString()}</td><td>{tier.atPostRate.toLocaleString()}</td></tr>)}</tbody></table></div></div></>}
+    <p className="settings-note">Estimates for planning, not billing records.</p>
+  </div>;
+}
 function OpenSeaEligibilitySettingsPanel({focus=false}){
   const wallets=useLoad('/api/wallets',[],'wallets.changed');
   const [statuses,setStatuses]=useState({});
   const [busy,setBusy]=useState('');
   const panelRef=useRef(null);
   useEffect(()=>{
-    if(focus)setTimeout(()=>{panelRef.current?.scrollIntoView({behavior:'smooth',block:'start'});panelRef.current?.focus({preventScroll:true});},0);
+    if(focus)setTimeout(()=>{
+      const reduced=window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+      panelRef.current?.scrollIntoView({behavior:reduced?'auto':'smooth',block:'start'});
+      panelRef.current?.focus({preventScroll:true});
+    },0);
   },[focus]);
   useEffect(()=>{
     if(!Array.isArray(wallets.data))return;
@@ -3540,6 +3724,15 @@ function OpenSeaEligibilitySettingsPanel({focus=false}){
     })).then(entries=>{if(!cancelled)setStatuses(Object.fromEntries(entries));});
     return()=>{cancelled=true;};
   },[wallets.data]);
+  async function reloadWallet(wallet){
+    setStatuses(value=>({...value,[wallet.label]:{data:value[wallet.label]?.data||null,error:'',loading:true}}));
+    try{
+      const data=await api(`/api/wallets/${encodeURIComponent(wallet.label)}/opensea-eligibility`);
+      setStatuses(value=>({...value,[wallet.label]:{data,error:'',loading:false}}));
+    }catch(error){
+      setStatuses(value=>({...value,[wallet.label]:{data:null,error:error.message||'Could not load this wallet setting.',loading:false}}));
+    }
+  }
   async function change(wallet,nextEnabled){
     const current=statuses[wallet.label]?.data;
     if(!nextEnabled){
@@ -3563,13 +3756,15 @@ function OpenSeaEligibilitySettingsPanel({focus=false}){
     }finally{setBusy(value=>value===wallet.label?'':value);}
   }
   return <section id="opensea-eligibility-settings" ref={panelRef} tabIndex="-1"
-    className="panel settings-opensea-eligibility">
+    className="panel settings-opensea-eligibility"
+    aria-busy={(wallets.data===null&&!wallets.error)||undefined}>
     <div className="settings-panel-heading"><div><p className="eyebrow">Wallet permissions</p>
       <h2>OpenSea eligibility checks</h2></div></div>
     <p>Turn this on once for each wallet you want GhostMint to check automatically. GhostMint signs a gas-free OpenSea login with that stored wallet and safely renews its encrypted, read-only permission while the switch stays on.</p>
     <p className="settings-hint">This permission can only read allowlist eligibility. It cannot mint, transfer, approve, or spend funds. Turning it off safely revokes the permission.</p>
     <Notice error={loadError(wallets,'Could not load wallets for eligibility settings.')}/>
-    {wallets.data===null?<Skeleton variant="lines" rows={2}/>
+    {wallets.data===null&&!wallets.error?<Skeleton variant="lines" rows={2}/>
+      :wallets.error?null
       :wallets.data.length===0?<Empty text="Create or import a wallet before enabling eligibility checks."/>
         :<div className="settings-wallet-permissions">{wallets.data.map(wallet=>{
           const entry=statuses[wallet.label];const authorization=entry?.data;
@@ -3577,56 +3772,115 @@ function OpenSeaEligibilitySettingsPanel({focus=false}){
           const unavailable=authorization?.configured===false;
           const changing=busy===wallet.label;
           const controlId=`opensea-eligibility-${String(wallet.id||wallet.label).replace(/[^a-zA-Z0-9_-]/g,'-')}`;
-          const state=changing?'Saving…':!entry?'Checking…':entry.error?'Could not load':unavailable?'Unavailable on this server'
+          const state=changing?'Saving…':!entry||entry.loading?'Checking…':entry.error?'Could not load':unavailable?'Unavailable on this server'
             :enabled&&authorization?.status==='connected'?'On · automatic':enabled?'On · reconnecting when needed':'Off';
-          return <div className="settings-wallet-permission" key={wallet.id||wallet.label}>
+          return <div className="settings-wallet-permission" key={wallet.id||wallet.label}
+            aria-busy={(changing||!entry||entry.loading)||undefined}>
             <div><b>{wallet.label}</b><span className="mono">{shortAddress(wallet.address)}</span>
-              <small className={entry?.error?'is-error':''}>{entry?.error||state}</small></div>
+              <small className={entry?.error?'is-error':''} aria-live="polite">{entry?.error||state}</small>
+              {entry?.error&&<button type="button" className="b g sm" onClick={()=>reloadWallet(wallet)}>Retry</button>}</div>
             <ScheduleSwitch checked={enabled} labelledBy={controlId}
-              disabled={changing||!entry||unavailable} onChange={changeTo=>change(wallet,changeTo)} />
+              disabled={changing||!entry||entry.loading||unavailable} onChange={changeTo=>change(wallet,changeTo)} />
             <span id={controlId} className="sr-only">
               Automatic OpenSea eligibility checks for {wallet.label}</span>
           </div>;
         })}</div>}
   </section>;
 }
-function Settings({profile,onThemeChange,onProfileChange,target}){
-  const secondaryActive=SECONDARY_THEMES.some(option=>option.value===profile.theme);
+const SETTINGS_TABS=[
+  {id:'appearance',label:'Appearance'},
+  {id:'transaction',label:'Transaction mode'},
+  {id:'gas',label:'Gas'},
+  {id:'notifications',label:'Notifications'},
+  {id:'api-usage',label:'API usage',tag:'owner only',ownerOnly:true},
+];
+function AppearancePanel({profile,onThemeChange}){
+  return <div className="panel settings-appearance">
+    <div className="settings-panel-heading"><div><p className="eyebrow">Display</p><h2>Appearance</h2></div></div>
+    <p>Light and dark are the primary choices. Everything else is an optional style.</p>
+    <div className="theme-primary-grid" role="group" aria-label="Primary dashboard appearance">
+      {PRIMARY_THEMES.map(option=><button type="button" key={option.value}
+        aria-pressed={profile.theme===option.value}
+        className={`theme-option theme-primary-option${profile.theme===option.value?' active':''}`}
+        onClick={()=>onThemeChange(option.value)}><ThemeSwatch value={option.value}/>
+        <span className="theme-option-label">{option.label}</span></button>)}
+    </div>
+    <div className="settings-theme-label">More styles · optional</div>
+    <div className="theme-grid" role="group" aria-label="Optional dashboard themes">
+      {SECONDARY_THEMES.map(option=><button type="button" key={option.value}
+        aria-pressed={profile.theme===option.value}
+        className={`theme-option${profile.theme===option.value?' active':''}`}
+        onClick={()=>onThemeChange(option.value)}><ThemeSwatch value={option.value}/>
+        <span className="theme-option-label">{option.label}</span></button>)}
+    </div>
+  </div>;
+}
+function LayoutPreferencePanel(){
+  const railExpanded=readRailExpanded();
+  return <div className="panel settings-layout-control"><div className="settings-panel-heading"><div>
+    <p className="eyebrow">Workspace</p><h2>Layout</h2></div></div>
+    <p>Home, Automation, and Wallets remember the order you arrange their sections in. Reset clears those saved section orders.</p>
+    <div className="r"><div className="rm"><div className="rt">Section order</div><div className="rs">Saved in this browser</div></div>
+      <div className="rv"><button type="button" className="b g sm"
+        onClick={()=>{resetSectionOrders();notify('Layout reset.',{type:'success'});}}>Reset layout</button></div></div>
+    <div className="r"><div className="rm"><div className="rt">Sidebar</div>
+      <div className="rs">{railExpanded?'Expanded':'Collapsed'}</div></div>
+      <div className="rv"><span className="p nu">Remembered</span></div></div>
+  </div>;
+}
+const NOTIFICATION_ROUTES=[
+  ['Money','Mints, sends, and budget warnings','Always kept','ok'],
+  ['Automation','Sniper events and watch-rule failures','Kept','ok'],
+  ['Security','Logins, key exports, and owner actions','Always kept','ok'],
+  ['System','Connection and sync status','Toast only','nu'],
+  ['Interface','Copied, saved, and form feedback','Toast only','nu'],
+];
+function NotificationRoutingPanel(){return <div className="panel settings-notifications">
+  <div className="settings-panel-heading"><div><p className="eyebrow">Delivery rules</p><h2>Notification routing</h2></div><span className="pill">Read only</span></div>
+  <p>These rules decide what remains in the notification bell after a temporary message disappears. They are fixed so a new feature cannot quietly turn the bell into an inbox.</p>
+  <div className="settings-routing-list">{NOTIFICATION_ROUTES.map(([title,description,state,tone])=><div className="r" key={title}>
+    <div className="rm"><div className="rt">{title}</div><div className="rs fold">{description}</div></div>
+    <div className="rv"><span className={`p ${tone}`}>{state}</span></div>
+  </div>)}</div>
+  </div>}
+function Settings({profile,onThemeChange,onProfileChange,target,tab,onTab,go}){
+  const tabs=SETTINGS_TABS.filter(item=>!item.ownerOnly||profile.isOwner);
+  const requested=target==='opensea-eligibility'?'transaction':tab;
+  const active=tabs.some(item=>item.id===requested)?requested:'appearance';
   return <>
     <PageTitle eyebrow="Preferences" title="Settings"
-      subtitle="Display, network defaults, transaction safety, and automation preferences."/>
-    <div className="settings-layout">
-      <div className="panel settings-appearance">
-        <div className="settings-panel-heading"><div><p className="eyebrow">Display</p><h2>Appearance</h2></div>
-          <div className="seg theme-picker" role="radiogroup" aria-label="Dashboard appearance">
-            {PRIMARY_THEMES.map(option=><button type="button" key={option.value}
-              aria-pressed={profile.theme===option.value} className={profile.theme===option.value?'on':undefined}
-              onClick={()=>onThemeChange(option.value)}><span className="theme-picker-icon" aria-hidden="true">
-                {option.icon}</span>{option.label}</button>)}
-          </div>
-        </div>
-        <details className="settings-more-themes" open={secondaryActive}><summary>More themes</summary>
-          <div className="theme-grid" role="radiogroup" aria-label="More dashboard themes">
-            {SECONDARY_THEMES.map(option=><button type="button" key={option.value}
-              aria-pressed={profile.theme===option.value}
-              className={`theme-option${profile.theme===option.value?' active':''}`}
-              onClick={()=>onThemeChange(option.value)}><ThemeSwatch value={option.value}/>
-              <span className="theme-option-label">{option.label}</span></button>)}
-          </div>
-        </details>
-        <button type="button" className="b g sm settings-reset-layout"
-          onClick={()=>{resetSectionOrders();notify('Layout reset.',{type:'success'});}}>Reset layout</button>
-      </div>
-      <OpenSeaEligibilitySettingsPanel focus={target==='opensea-eligibility'}/>
-      <DefaultChainPanel profile={profile} onProfileChange={onProfileChange}/>
-      <LowBalancePreferencePanel profile={profile} onProfileChange={onProfileChange}/>
-      <DisplayCurrencyPanel profile={profile} onProfileChange={onProfileChange}/>
-      <TransactionModePanel profile={profile}/>
-      <SniperTimingSettingsPanel/>
-      <BotSecurityPanel profile={profile} onProfileChange={onProfileChange}/>
-      <GasPanel profile={profile}/>
-      {profile.isOwner&&<ApiUsagePanel/>}
-    </div>
+      subtitle="Display, network defaults, transaction safety, and notification rules."/>
+    <SubTabs tabs={tabs} active={active} onChange={onTab} label="Settings sections" idPrefix="settings"/>
+    <section id="settings-panel-appearance" aria-labelledby="settings-tab-appearance" className="settings-tab-panel" role="tabpanel" hidden={active!=='appearance'}>
+      {active==='appearance'&&<div className="settings-layout">
+        <AppearancePanel profile={profile} onThemeChange={onThemeChange}/>
+        <LayoutPreferencePanel/>
+        <DisplayCurrencyPanel profile={profile} onProfileChange={onProfileChange}/>
+        <TimeFormatPreferencePanel profile={profile} onProfileChange={onProfileChange}/>
+        <LowBalancePreferencePanel profile={profile} onProfileChange={onProfileChange}/>
+      </div>}
+    </section>
+    <section id="settings-panel-transaction" aria-labelledby="settings-tab-transaction" className="settings-tab-panel" role="tabpanel" hidden={active!=='transaction'}>
+      {active==='transaction'&&<div className="settings-layout settings-transaction-layout">
+        <TransactionModePanel profile={profile} onProfileChange={onProfileChange}/>
+        <OpenSeaEligibilitySettingsPanel focus={active==='transaction'&&target==='opensea-eligibility'}/>
+        <BotSecurityPanel profile={profile} onProfileChange={onProfileChange}/>
+        <SniperTimingSettingsPanel/>
+      </div>}
+    </section>
+    <section id="settings-panel-gas" aria-labelledby="settings-tab-gas" className="settings-tab-panel" role="tabpanel" hidden={active!=='gas'}>
+      {active==='gas'&&<div className="settings-layout settings-gas-layout">
+        <DefaultChainPanel profile={profile} onProfileChange={onProfileChange}/>
+        <GasPanel profile={profile}/>
+      </div>}
+    </section>
+    <section id="settings-panel-notifications" aria-labelledby="settings-tab-notifications" className="settings-tab-panel" role="tabpanel" hidden={active!=='notifications'}>
+      {active==='notifications'&&<div className="settings-layout settings-notification-layout"><NotificationRoutingPanel/></div>}
+    </section>
+    {profile.isOwner&&<section id="settings-panel-api-usage" aria-labelledby="settings-tab-api-usage" className="settings-tab-panel" role="tabpanel" hidden={active!=='api-usage'}>
+      {active==='api-usage'&&<><div className="abn settings-owner-banner">{SECURITY_SHIELD_ICON}<span><b>Owner view.</b> Usage spans every user&apos;s social watch rules, so this tab is hidden for regular accounts.</span></div>
+      <div className="settings-layout settings-api-layout"><ApiUsagePanel onCreateRule={()=>go?.('Automation','social')}/></div></>}
+    </section>}
   </>;
 }
 function Login({onLogin,sessionMessage}){
@@ -4364,7 +4618,7 @@ function Mint({profile,go,tab,onTab,visible=true}){
     <div className="mint-tab-panel" hidden={active!=='schedule'}>
       <Tasks profile={profile} active={visible&&active==='schedule'} onCommitChange={trackCommit}
         onSwitchToMint={()=>onTab('now')} onSwitchToBatch={()=>onTab('batch')}
-        onOpenSettings={()=>go('Settings',null,'opensea-eligibility')}/>
+        onOpenSettings={()=>go('Settings','transaction','opensea-eligibility')}/>
     </div>
     <div className="mint-tab-panel" hidden={active!=='batch'}>
       <MintBatch profile={profile} active={visible&&active==='batch'} preferredChain={profile.defaultChain}
@@ -4853,6 +5107,7 @@ function SniperDefaultControl({data,onSaved}){
   const current=data?.defaultObservationMode||'confirmed';
   const pendingAvailable=(data?.capabilities?.pendingSupportedChains||[]).length>0;
   const [busy,setBusy]=useState(false);
+  const [saveError,setSaveError]=useState(null);
   async function setDefault(next){
     if(next===current)return;
     let pendingRiskAccepted=false;
@@ -4860,18 +5115,22 @@ function SniperDefaultControl({data,onSaved}){
       pendingRiskAccepted=await confirmDialog('Make pending-mempool timing the default for newly created copy snipers? A pending copy can still spend if its source is dropped, replaced, or reverts. Existing snipers do not change.');
       if(!pendingRiskAccepted)return;
     }
-    setBusy(true);
+    setSaveError(null);setBusy(true);
     try{
       await api('/api/snipers/default',{method:'PUT',body:JSON.stringify({observationMode:next,pendingRiskAccepted})});
       notify(`New snipers now default to ${next==='pending'?'pending mempool (high risk)':'after confirmation'}.`,{type:'success'});
       onSaved?.();
-    }catch(error){notify(error.message,{type:'error'});}
+    }catch(error){
+      setSaveError(settingsSaveError('Could not save the default copy timing.',error,()=>setDefault(next)));
+      notify(error.message,{type:'error'});
+    }
     finally{setBusy(false);}
   }
   return <div className="panel" aria-busy={busy||undefined}>
     <div className="settings-panel-heading"><div><p className="eyebrow">Automation preference</p>
       <h2>Default copy timing</h2></div></div>
     <p>Preselects timing when you create a new sniper. Existing snipers keep their own timing.</p>
+    <Notice error={saveError}/>
     <div className="br">
       <button type="button" className={`b sm ${current==='confirmed'?'p':'g'}`} disabled={busy}
         onClick={()=>setDefault('confirmed')}>After confirmation · safer</button>
@@ -5642,7 +5901,7 @@ function AccountMenu({profile,theme,initial,go,onChangeTheme,onLogout}){
         <div className="an">{profile.displayName||profile.username||'GhostMint user'}</div>
         {shortId&&<div className="ai mono">user {shortId}</div>}
       </div>
-      <button type="button" className="acct-i" role="menuitem" onClick={()=>choose(()=>go('Settings'))}>
+      <button type="button" className="acct-i" role="menuitem" onClick={()=>choose(()=>go('Settings','transaction'))}>
         {ACCT_ICONS.mode}<span className="sp">Transaction mode</span>
         {/* Having chosen no mode yet is a real state; the prototype only ever draws a chosen one. */}
         {mode&&<span className="mchip">{mode}</span>}</button>
@@ -5816,4 +6075,4 @@ function AdminShell({profile,onLogout}){const theme=resolveDashboardTheme(profil
   const [usersFilter,setUsersFilter]=useState(null);
   useEffect(()=>{document.documentElement.dataset.theme=theme;},[theme]);useEffect(()=>{function onPopState(){setPage(adminSectionFromLocation());}window.addEventListener('popstate',onPopState);return()=>window.removeEventListener('popstate',onPopState);},[]);if(!profile.isOwner)return <AdminDenied/>;function go(next,filter){const slug=ADMIN_SLUGS[next];const path=slug?`/dashboard/admin/${slug}`:'/dashboard/admin';if(window.location.pathname!==path)window.history.pushState(null,'',path);setPage(next);setUsersFilter(next==='Users'?filter||null:null);setMoreOpen(false);window.scrollTo({top:0});}const brandMark=<span className="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d={BOLT_PATH} fill="currentColor"/></svg></span>;return <div className={`shell rail-shell admin-shell${moreOpen?' more-open':''}`} data-rail={railExpanded?'expanded':'collapsed'}><ConfirmHost/><ToastHost/><header className="rail-mobile-header"><a className="brand" href="/dashboard/admin" onClick={event=>{event.preventDefault();go('Overview');}}>{brandMark}GhostMint Admin</a><div className="header-right"><span className="status-pill"><span className={`status-dot${live?' live':''}`} aria-hidden="true"/><span aria-live="polite">{live?'Live':'Connecting'}</span></span>{mobile&&<NotificationBell/>}<a className="header-avatar" aria-label="Return to user dashboard" href="/dashboard/">{NAV_ICONS.Account}</a></div></header><aside><div className="rail-top"><a className="brand" href="/dashboard/admin" onClick={event=>{event.preventDefault();go('Overview');}}>{brandMark}<span className="nav-label">GhostMint Admin</span></a></div><AdminNav page={page} go={go}/><nav className="rail-bottom-nav" aria-label="Admin account"><ul><li><a className="admin-rail-link" href="/dashboard/"><span className="nav-icon" aria-hidden="true">{CHEVRON_LEFT}</span><span className="nav-label">User dashboard</span></a></li><li><button onClick={onLogout}><span className="nav-icon" aria-hidden="true">{NAV_ICONS.Account}</span><span className="nav-label">Log out</span></button></li></ul></nav></aside><button type="button" className="rail-edge-toggle" aria-label={railExpanded?'Collapse sidebar':'Expand sidebar'} onClick={()=>setRailExpanded(value=>!value)}>{railExpanded?CHEVRON_LEFT:CHEVRON_RIGHT}</button>{!mobile&&<div className="notification-bell-desktop"><NotificationBell/></div>}<main className="content admin-content" tabIndex="-1"><Admin profile={profile} section={page} go={go} usersFilter={usersFilter}/></main><AdminBottomBar page={page} go={go} moreOpen={moreOpen} onOpenMore={()=>setMoreOpen(value=>!value)}/><AdminMoreSheet open={moreOpen} page={page} go={go} onClose={()=>setMoreOpen(false)} onLogout={onLogout}/><ScrollTop/></div>;}
 function isAdminPath(){const path=window.location.pathname.replace(/\/+$/,'');return path==='/dashboard/admin'||path.startsWith('/dashboard/admin/');}
-export default function App(){const [profile,setProfile]=useState(undefined);const [sessionMessage,setSessionMessage]=useState('');const [,forceRender]=useState(0);useEffect(()=>{api('/api/profile').then(value=>{setSessionMessage('');setProfile(value);}).catch(error=>{setSessionMessage(error.message);setProfile(null);});},[]);useEffect(()=>{function onSessionEnded(event){setSessionMessage(event.detail?.message||'Your session is no longer valid.');setProfile(null);}window.addEventListener('ghostmint-session-ended',onSessionEnded);return()=>window.removeEventListener('ghostmint-session-ended',onSessionEnded);},[]);useEffect(()=>{function onPopState(){forceRender(count=>count+1);}window.addEventListener('popstate',onPopState);return()=>window.removeEventListener('popstate',onPopState);},[]);async function logout(request){const all=request?.all===true;try{await api(all?'/api/auth/logout-all':'/api/auth/logout',{method:'POST'});}finally{setSessionMessage(all?'You chose to log out every browser session.':'You logged out of this browser.');setProfile(null);}}function login(value){setSessionMessage('');setProfile(value);}if(profile===undefined)return <main className="loading" aria-live="polite">Loading secure session...</main>;if(!profile)return <Login onLogin={login} sessionMessage={sessionMessage}/>;if(isAdminPath())return <AdminShell profile={profile} onLogout={logout}/>;return <Shell profile={profile} onLogout={logout} onProfileChange={setProfile}/>;}
+export default function App(){const [profile,setProfile]=useState(undefined);const [sessionMessage,setSessionMessage]=useState('');const [,forceRender]=useState(0);useEffect(()=>{api('/api/profile').then(value=>{setSessionMessage('');setProfile(value);}).catch(error=>{setSessionMessage(error.message);setProfile(null);});},[]);useEffect(()=>{function onSessionEnded(event){setSessionMessage(event.detail?.message||'Your session is no longer valid.');setProfile(null);}window.addEventListener('ghostmint-session-ended',onSessionEnded);return()=>window.removeEventListener('ghostmint-session-ended',onSessionEnded);},[]);useEffect(()=>{function onPopState(){forceRender(count=>count+1);}window.addEventListener('popstate',onPopState);return()=>window.removeEventListener('popstate',onPopState);},[]);async function logout(request){const all=request?.all===true;try{await api(all?'/api/auth/logout-all':'/api/auth/logout',{method:'POST'});}finally{setSessionMessage(all?'You chose to log out every browser session.':'You logged out of this browser.');setProfile(null);}}function login(value){setSessionMessage('');setProfile(value);}if(profile===undefined)return <main className="loading" aria-live="polite">Loading secure session...</main>;if(!profile)return <Login onLogin={login} sessionMessage={sessionMessage}/>;const shell=isAdminPath()?<AdminShell profile={profile} onLogout={logout}/>:<Shell profile={profile} onLogout={logout} onProfileChange={setProfile}/>;return <TimeFormatProvider value={profile.timeFormat}>{shell}</TimeFormatProvider>;}
