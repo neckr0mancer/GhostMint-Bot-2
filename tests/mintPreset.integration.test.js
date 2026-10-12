@@ -1,21 +1,16 @@
 const assert = require('node:assert/strict');
 const path = require('node:path');
-const test = require('node:test');
 const { CONFIG } = require('../src/config');
-const { runMigrations } = require('../src/db/migrate');
-const { createDatabasePool } = require('../src/db/pool');
 const { createIdentityService } = require('../src/identity/identityService');
 const { createPostgresIdentityRepository } = require('../src/identity/postgresIdentityRepository');
 const { createMintService } = require('../src/mint/mintService');
 const { createPostgresMintPresetRepository } = require('../src/mint/postgresMintPresetRepository');
 const { createProofResolver } = require('../src/mint/proofResolver');
-
-const integrationTest = CONFIG.databaseUrl && CONFIG.databaseUrlUnpooled ? test : test.skip;
+const { createTestDatabasePool, integrationTest, runTestMigrations } = require('./helpers/disposableDatabase');
 
 integrationTest('a saved user-owned mint preset reproduces manual calldata', { timeout: 60_000 }, async () => {
-  await runMigrations({ connectionString: CONFIG.databaseUrlUnpooled,
-    migrationsDirectory: path.join(CONFIG.projectRoot, 'migrations') });
-  const pool = createDatabasePool({ connectionString: CONFIG.databaseUrl, max: 2 });
+  await runTestMigrations({ migrationsDirectory: path.join(CONFIG.projectRoot, 'migrations') });
+  const pool = await createTestDatabasePool({ max: 2 });
   const identity = createIdentityService(createPostgresIdentityRepository(pool));
   const repository = createPostgresMintPresetRepository(pool);
   const service = createMintService({ presetRepository: repository,

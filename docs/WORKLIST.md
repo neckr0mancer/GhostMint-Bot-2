@@ -2700,6 +2700,104 @@ schema/service and Dashboard controls first. Telegram and Discord may follow as 
 but must call the same service and are required before this feature is considered cross-platform
 complete.
 
+**Account reconciliation Phase 1A (completed locally 2026-10-09):** the Admin Owners surface now
+has an owner-gated, CSRF-protected **read-only review** backed by a PostgreSQL repeatable-read
+snapshot. It resolves the exact source and retained account IDs, inventories every known owned
+domain, separately identifies access that must be revoked, reports active-work and uniqueness
+conflicts, and returns a deterministic sanitized plan digest. The review never re-keys data,
+revokes sessions, writes audit rows, or broadcasts a state change. The existing mutation remains
+strictly limited to a genuinely empty source account; non-empty plans are visibly preview-only.
+The empty-source guard now also refuses any `user_governance` row and preserved lifecycle history.
+
+The next reconciliation phase is intentionally not folded into Phase 1A: first add an atomic,
+append-only account-merge event and production-catalog/FK audit; then add the required composite-FK
+`ON UPDATE CASCADE` foundation and UUID ownership for legacy launch squads. A mutating data merge
+must be root-owner-only, re-plan inside a serializable transaction, require an exact source/target
+confirmation plus matching digest, hard-fail every unresolved wallet/label/preset/policy/reservation
+collision or in-flight money path, revoke both accounts' sessions/codes, refresh process memory,
+disconnect stale sockets, and preserve all evidence. No production data-moving executor is claimed
+by the current preview.
+
+**Account reconciliation Phase 1B foundation (completed locally 2026-10-10):** migration `071`
+adds a terminal, append-only `account_merge_events` ledger. It keeps actor/source/target UUIDs and
+identity snapshots as historical evidence without account foreign keys, enforces one terminal row
+per server-generated idempotency key, validates the reviewed plan digest, resolution/count shapes,
+and outcome timeline, and rejects `UPDATE`, `DELETE`, and `TRUNCATE` even for the table owner. This
+is storage only: no non-empty account merge executor or production data movement is enabled.
+
+The read-only production catalog audit confirmed 27 direct/self account references and seven
+composite ownership foreign keys, all still `ON UPDATE NO ACTION`; `launch_squads.user_id` remains
+`TEXT` without an account foreign key. Current production has no launch-squad UUID/orphan rows and
+no detected cross-owner graph mismatches, but migration `072` must still validate those conditions
+inside the migration before converting the column or replacing constraints. Migration `070` was
+not yet recorded in production during this audit, so deployment must apply `070` before `071` and
+must not skip the normal ordered migration runner.
+
+**Account reconciliation Phase 1C foundation (completed locally 2026-10-10):** migration `072`
+locks and fail-closed validates legacy launch-squad ownership, converts its owner column from text
+to UUID, and adds a restricting account foreign key. It replaces the seven verified composite
+ownership foreign keys with validated `ON UPDATE CASCADE` equivalents while retaining every prior
+`ON DELETE CASCADE` or `ON DELETE RESTRICT` decision and the established constraint names. It does
+not change the intentionally independent transaction-intent/wallet references, resolve a collision,
+or expose a non-empty merge action. Guarded catalog integration tests require the approved disposable
+database and never fall back to the application database.
+
+**Account reconciliation Phase 1D safety gate (completed locally 2026-10-10):** the read-only
+preview now emits plan version 2 and requires migration `072` to be recorded before it inspects an
+account. Its private digest input fingerprints every merge-relevant source and retained-account row in a
+fixed, versioned ownership inventory, including task/sniper/intent/squad children, authentication
+capabilities, attribution edges, and reverse weak references from wallets, intents, and social
+rules. PostgreSQL normally aggregates and hashes tuple revision/location metadata internally, returning only
+per-domain counts and SHA-256 fingerprints to the private planner; wallet ciphertext, passwords, session/link
+hashes, OpenSea authorization material, calldata, payloads, platform IDs, and tuple tokens never
+appear in the public review. Dashboard sessions intentionally use their stable session ID plus
+active/revoked state instead: authentication slides `last_seen_at` and `expires_at` on every request,
+so physical tuple metadata would make the execute request invalidate its own review. A new login,
+logout, revocation, or removed session still changes the digest, while a normal authenticated
+heartbeat does not. Same-count merge-relevant updates in every other domain invalidate an old
+review. A physical table rewrite may also invalidate it and require review again, which is the safe
+outcome.
+
+The preview also hard-blocks detected cross-owner wallet/intent, task/intent, attempt/intent,
+sniper/intent, trigger-audit/intent, acceptance-run/intent, social-usage/rule, and squad-member/intent
+edges. Guarded PostgreSQL integration now includes a same-count wallet-update drift case, but it
+still requires the explicitly approved disposable database. This phase does **not** enable the
+non-empty executor: root-owner transactional authorization, explicit collision resolutions,
+serializable locking/replanning, idempotent atomic evidence, two-account access revocation, and
+post-commit runtime/socket reconciliation remain mandatory before any data can move.
+
+**Account reconciliation Phase 1E collision-free executor (completed locally 2026-10-10):** a
+dedicated structured Admin flow can now execute only a current plan-v2 review classified `ready`.
+It is root-owner-only and requires the exact reviewed source UUID, retained UUID, plan version,
+snapshot digest, an empty resolution map, and the exact phrase
+`MERGE <source UUID> INTO <target UUID>`. The server derives the idempotency key; the generic
+whitespace admin command cannot invoke this path.
+
+Execution runs in a retry-bounded serializable transaction. It deterministically locks both
+identities, actor/accounts, and the complete direct and reverse ownership graph, rebuilds the plan
+inside that transaction, and refuses stale, blocked, choice-required, schema-outdated, count-drift,
+or access-drift states before commit. A clear plan re-parents the reviewed ownership graphs, relies
+on migration `072` for composite child ownership cascades, revokes active sessions plus unused
+codes/challenges for **both** accounts, proves no source-owned row remains, deletes the duplicate,
+and inserts one immutable `account_merge_events` receipt atomically. Exact retries replay that
+receipt without repeating runtime side effects. After commit, the process snapshot is refreshed,
+source and retained dashboard sockets receive a terminal `session.ended` message containing the
+evidence event ID, and unrelated users remain connected.
+
+Focused local evidence is green: transaction fixtures cover success, root authorization, stale and
+blocked plans, ownership/access drift rollback, immutable replay, and serialization retry; the
+service/API/WebSocket tests cover structured-field binding, server idempotency, generic-command
+bypass rejection, safe stale-plan responses, evidence audit, targeted logout, and post-commit
+failure isolation. The dashboard production build passes. Local overlay acceptance also passed in
+Dark and Light at 1440/1024/768/375 widths, including focus entry/restoration, background inertness,
+body scroll locking, and the stale-plan refresh path. Guarded disposable-PostgreSQL acceptance also
+passed for read-only/non-root review, stale-plan rejection without mutation, a collision-free merge,
+two-account session teardown with the evidence ID, unrelated-session preservation, immutable event
+evidence, idempotent replay, and generic-endpoint bypass rejection. The synthetic acceptance rows
+were removed afterward. Production migrations/deployment verification remain release gates; no
+production merge or migration was performed. Plans with any collision or settings choice remain
+blocked until an explicit resolution phase is designed and separately approved.
+
 **Priority/status:** The shared schema/policy, Dashboard controls and review UI, scheduler
 enforcement, durable audit/outbox, automated Postgres restart/concurrency coverage, and Telegram /
 Discord interactive policy and versioned review UI are complete locally. Both automatic controls

@@ -1,20 +1,15 @@
 const assert = require('node:assert/strict');
 const { Buffer } = require('node:buffer');
 const path = require('node:path');
-const test = require('node:test');
 const { CONFIG } = require('../src/config');
-const { runMigrations } = require('../src/db/migrate');
-const { createDatabasePool } = require('../src/db/pool');
 const { createIdentityService } = require('../src/identity/identityService');
 const { createPostgresIdentityRepository } = require('../src/identity/postgresIdentityRepository');
 const { createKeyEncryption, KeyDecryptionError } = require('../src/security/keyEncryption');
 const { createPostgresStorage } = require('../src/storage/postgresStorage');
-
-const integrationTest = CONFIG.databaseUrl && CONFIG.databaseUrlUnpooled ? test : test.skip;
+const { createTestDatabasePool, integrationTest, runTestMigrations } = require('./helpers/disposableDatabase');
 
 integrationTest('wallet data survives a pool restart and tampering fails authentication', { timeout: 120_000 }, async () => {
-  const migration = await runMigrations({
-    connectionString: CONFIG.databaseUrlUnpooled,
+  const migration = await runTestMigrations({
     migrationsDirectory: path.join(CONFIG.projectRoot, 'migrations'),
   });
   assert.equal(migration.connection, 'unpooled');
@@ -23,7 +18,7 @@ integrationTest('wallet data survives a pool restart and tampering fails authent
   const privateKey = `0x${'34'.repeat(32)}`;
   const crypto = createKeyEncryption({ activeVersion: CONFIG.encryptionKeyVersion, keys: CONFIG.encryptionKeys });
 
-  const firstPool = createDatabasePool({ connectionString: CONFIG.databaseUrl, max: 2 });
+  const firstPool = await createTestDatabasePool({ max: 2 });
   const firstStorage = createPostgresStorage(firstPool);
   const identity = createIdentityService(createPostgresIdentityRepository(firstPool));
   const userId = await identity.resolveOrCreate('telegram', `storage-${process.pid}-${Date.now()}`);
@@ -33,7 +28,7 @@ integrationTest('wallet data survives a pool restart and tampering fails authent
   });
   await firstStorage.close();
 
-  const secondPool = createDatabasePool({ connectionString: CONFIG.databaseUrl, max: 2 });
+  const secondPool = await createTestDatabasePool({ max: 2 });
   const secondStorage = createPostgresStorage(secondPool);
   try {
     const state = await secondStorage.loadState(userId);
@@ -52,13 +47,12 @@ integrationTest('wallet data survives a pool restart and tampering fails authent
 });
 
 integrationTest('listActivityPage search filters at the database level, not just the currently-loaded page', { timeout: 120_000 }, async () => {
-  const migration = await runMigrations({
-    connectionString: CONFIG.databaseUrlUnpooled,
+  const migration = await runTestMigrations({
     migrationsDirectory: path.join(CONFIG.projectRoot, 'migrations'),
   });
   assert.equal(migration.connection, 'unpooled');
 
-  const pool = createDatabasePool({ connectionString: CONFIG.databaseUrl, max: 2 });
+  const pool = await createTestDatabasePool({ max: 2 });
   const storage = createPostgresStorage(pool);
   const identity = createIdentityService(createPostgresIdentityRepository(pool));
   const userId = await identity.resolveOrCreate('telegram', `search-activity-${process.pid}-${Date.now()}`);

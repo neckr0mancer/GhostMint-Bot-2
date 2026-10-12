@@ -1,13 +1,38 @@
 # GhostMint manual test plan
 
-Every milestone (M1-M16) has passed a code-level review and the full automated suite
-(`npm run validate`) is green. This plan is for the step the automated suite can't
-cover: actually using the bot as a human would, across Telegram, Discord, and the
-dashboard, to catch anything that only shows up in real interaction.
+This plan covers the behavior an automated suite cannot prove: actually using the bot as a human
+would across Telegram, Discord, and the dashboard. A release still requires the full guarded
+`validate` command to pass against a marked disposable database, plus the human checks below.
 
 Check items off as you go (`- [ ]` → `- [x]`). If something fails, note the exact
 command/click sequence and the observed vs. expected result before moving on --
 that reproduction detail is what makes a bug fixable.
+
+## Automated PostgreSQL safety gate
+
+Normal `.env` database credentials never enable integration or smoke tests. Database-backed
+tests require a separately provisioned disposable database and these process variables:
+
+- `NODE_ENV=test`
+- `GHOSTMINT_TEST_DATABASE_URL`
+- `GHOSTMINT_TEST_DATABASE_URL_UNPOOLED`
+- `GHOSTMINT_TEST_DATABASE_ID=<a new version-4 UUID>`
+- `GHOSTMINT_TEST_DATABASE_CONFIRM=RUN_DISPOSABLE_DB_TESTS`
+
+Before setting them, mark that disposable database manually. Replace both placeholders only after
+confirming the database is not used by any deployment:
+
+```sql
+COMMENT ON DATABASE "<disposable_database_name>"
+IS 'ghostmint-disposable:<the same UUID>';
+```
+
+The test guard reads this marker through both URLs before any migration or write and rejects a
+missing marker, different databases, partial configuration, production mode, or an obvious reuse
+of the application database target. Never mark a production or shared database as disposable.
+The full `validate` release gate intentionally fails when this proof is absent. Ordinary focused
+unit tests remain database-free and should be preferred when the changed code does not depend on
+PostgreSQL behavior.
 
 ## Before you start
 
@@ -263,9 +288,38 @@ angle. This section is the general M16 surface.)
 - [ ] Set a group's retention policy (e.g. require activity within 30 days), then
       check `group_retention_events` (or the admin UI if it's surfaced there)
       after the retention worker's next tick to confirm it evaluated correctly.
-- [ ] Merge a duplicate empty account (`merge-account`) -- confirm the platform
-      identity now resolves to the target account and the duplicate is gone.
-      Confirm attempting the same merge again is refused (already merged).
+- [x] Review a split account from Admin -> Owners -- confirm the read-only plan
+      names the exact duplicate and retained internal IDs, reports every owned
+      domain and blocker, and does not change either platform mapping, row count,
+      session, audit record, or live dashboard state.
+- [x] As a non-root owner, review a collision-free split account and confirm the
+      plan is visible but the execute control is absent. The generic
+      `/api/admin/merge-account` action must reject the request and move nothing.
+- [x] As a root owner, review a disposable split account containing non-conflicting
+      wallet/activity history. Open the dedicated merge overlay and confirm focus
+      enters it, Escape and Cancel restore focus, every underlying field/action is
+      locked while it is open or submitting, and execution stays disabled until
+      the exact `MERGE <source UUID> INTO <target UUID>` phrase is entered.
+  - [x] Rendered acceptance passed against marked disposable PostgreSQL rows in both
+        themes at 1440/1024/768/375, including focus restoration, inert background,
+        scroll lock, confirmation gating, targeted session teardown, and refresh.
+- [x] Change one reviewed source row before executing. Expect a safe stale-plan
+      response and a refreshed review; neither account, identity, session, owned
+      row, nor merge-event count may change.
+- [x] Execute the unchanged collision-free plan in the marked disposable/staging
+      environment. Confirm all reviewed rows and both identities belong to the
+      retained account, the duplicate user is gone, both accounts' active browser
+      sessions end with the merge reason/evidence ID, unrelated users stay logged
+      in, and Telegram/Discord now read the same retained data.
+- [x] Verify one immutable `account_merge_events` row contains the actor/source/
+      target snapshots, exact plan digest, moved/revoked counts, and committed
+      outcome. Repeat the identical request after an uncertain response: it must
+      return the same event ID with replay status and must not repeat runtime
+      teardown or insert a second event.
+- [ ] Repeat with every blocked class available (active schedule/sniper/social
+      rule, non-final transaction, wallet/label/preset/policy collision, source
+      preference/governance evidence). Each must remain review-only and leave both
+      accounts untouched. Collision resolution is not part of Phase 1E.
 
 ---
 

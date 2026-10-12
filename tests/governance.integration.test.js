@@ -1,22 +1,18 @@
 const assert = require('node:assert/strict');
 const path = require('node:path');
-const test = require('node:test');
 const { CONFIG } = require('../src/config');
-const { runMigrations } = require('../src/db/migrate');
-const { createDatabasePool } = require('../src/db/pool');
 const { createGovernanceService } = require('../src/governance/governanceService');
 const { createPostgresGovernanceRepository } = require('../src/governance/postgresGovernanceRepository');
 const { createIdentityService } = require('../src/identity/identityService');
 const { createPostgresIdentityRepository } = require('../src/identity/postgresIdentityRepository');
 const { createTransactionPolicyRepository } = require('../src/transactions/policyRepository');
-
-const integrationTest = CONFIG.databaseUrl && CONFIG.databaseUrlUnpooled ? test : test.skip;
+const { createTestDatabasePool, integrationTest, runTestMigrations } = require('./helpers/disposableDatabase');
 
 integrationTest('group, individual, simulation, owner, and editable-preset precedence persists', { timeout: 60_000 }, async () => {
-  const migration = await runMigrations({ connectionString: CONFIG.databaseUrlUnpooled,
+  const migration = await runTestMigrations({
     migrationsDirectory: path.join(CONFIG.projectRoot, 'migrations') });
   assert.equal(migration.connection, 'unpooled');
-  const pool = createDatabasePool({ connectionString: CONFIG.databaseUrl, max: 2 });
+  const pool = await createTestDatabasePool({ max: 2 });
   const identity = createIdentityService(createPostgresIdentityRepository(pool));
   const repository = createPostgresGovernanceRepository(pool);
   const governance = createGovernanceService(repository);

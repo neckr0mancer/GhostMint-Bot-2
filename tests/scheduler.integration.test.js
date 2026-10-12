@@ -1,25 +1,21 @@
 const assert = require('node:assert/strict');
 const path = require('node:path');
-const test = require('node:test');
 const { randomUUID } = require('node:crypto');
 const { CONFIG } = require('../src/config');
-const { runMigrations } = require('../src/db/migrate');
-const { createDatabasePool } = require('../src/db/pool');
 const { createIdentityService } = require('../src/identity/identityService');
 const { createPostgresIdentityRepository } = require('../src/identity/postgresIdentityRepository');
 const { createSchedulerRepository } = require('../src/scheduler/schedulerRepository');
 const { createKeyEncryption } = require('../src/security/keyEncryption');
 const { createPostgresStorage } = require('../src/storage/postgresStorage');
 const { requestSchemas } = require('../src/validation/domain');
-
-const integrationTest = CONFIG.databaseUrl && CONFIG.databaseUrlUnpooled ? test : test.skip;
+const { createTestDatabasePool, integrationTest, runTestMigrations } = require('./helpers/disposableDatabase');
 
 integrationTest('durable scheduler stores distant jobs, claims once, audits attempts, and supports controls', { timeout:120_000 }, async () => {
-  const migration = await runMigrations({ connectionString:CONFIG.databaseUrlUnpooled,
+  const migration = await runTestMigrations({
     migrationsDirectory:path.join(CONFIG.projectRoot, 'migrations') });
   assert.equal(migration.connection, 'unpooled');
 
-  const pool = createDatabasePool({ connectionString:CONFIG.databaseUrl, max:4 });
+  const pool = await createTestDatabasePool({ max:4 });
   const storage = createPostgresStorage(pool);
   const schedulerA = createSchedulerRepository(pool);
   const schedulerB = createSchedulerRepository(pool);
@@ -72,11 +68,11 @@ integrationTest('durable scheduler stores distant jobs, claims once, audits atte
 });
 
 integrationTest('listPageForUser search filters at the database level, not just the currently-loaded page', { timeout:120_000 }, async () => {
-  const migration = await runMigrations({ connectionString:CONFIG.databaseUrlUnpooled,
+  const migration = await runTestMigrations({
     migrationsDirectory:path.join(CONFIG.projectRoot, 'migrations') });
   assert.equal(migration.connection, 'unpooled');
 
-  const pool = createDatabasePool({ connectionString:CONFIG.databaseUrl, max:2 });
+  const pool = await createTestDatabasePool({ max:2 });
   const storage = createPostgresStorage(pool);
   const scheduler = createSchedulerRepository(pool);
   const identity = createIdentityService(createPostgresIdentityRepository(pool));
@@ -121,11 +117,11 @@ integrationTest('listPageForUser search filters at the database level, not just 
 // claimed/retried/paused rows are owned by other paths, and mint_time (what the user sees)
 // is deliberately kept while only the internal fire moment moves.
 integrationTest('moveFireTime moves a scheduled task to the real opening and refuses non-scheduled rows', { timeout:120_000 }, async () => {
-  const migration = await runMigrations({ connectionString: CONFIG.databaseUrlUnpooled,
+  const migration = await runTestMigrations({
     migrationsDirectory: path.join(CONFIG.projectRoot, 'migrations') });
   assert.equal(migration.connection, 'unpooled');
 
-  const pool = createDatabasePool({ connectionString: CONFIG.databaseUrl, max: 2 });
+  const pool = await createTestDatabasePool({ max: 2 });
   const storage = createPostgresStorage(pool);
   const scheduler = createSchedulerRepository(pool);
   const identity = createIdentityService(createPostgresIdentityRepository(pool));

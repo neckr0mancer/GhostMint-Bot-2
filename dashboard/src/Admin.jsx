@@ -1,6 +1,8 @@
 /* global FormData, URLSearchParams, setInterval, clearInterval */
-import React,{useState,useEffect} from 'react';
+import React,{useState,useEffect,useRef} from 'react';
+import {createPortal} from 'react-dom';
 import {api,confirmDialog,CopyButton,Empty,Field,Form,GroupedChainOptions,notify,Pager,PageTitle,promptDialog,relativeTime,Select,Skeleton,StatusPill,useLoad} from './shared.jsx';
+import {accountMergeStatus} from './accountMergeStatus.mjs';
 import {useDateTimeFormatter} from './timeDisplayContext.jsx';
 
 function DateTimeValue({value}){const formatDateTime=useDateTimeFormatter();return formatDateTime(value);}
@@ -41,8 +43,11 @@ function findLinkedUser(users,platform,platformUserId){
 // and their primary linked identity with a copy button. The full card (group, ceilings, actions)
 // stays exclusive to the Users & Ceilings grid -- everywhere else a user is referenced just needs
 // enough to recognize them, not manage them.
-function UserCardMini({user}){
-  const account=identity(user);
+function UserCardMini({user,platform,platformUserId}){
+  const selectedId=String(platformUserId||'').trim();
+  const account=(platform&&selectedId
+    ? user.linkedAccounts.find(item=>item.platform===platform&&item.platformUserId===selectedId)
+    : null)||identity(user);
   return <div className="user-card-mini">
     <span className="user-avatar" aria-hidden="true">{PERSON_ICON}</span>
     <div className="user-card-mini-body">
@@ -54,11 +59,11 @@ function UserCardMini({user}){
     </div>
   </div>;
 }
-function UserMatchPreview({platformUserId,user}){
+function UserMatchPreview({platform,platformUserId,user}){
   if(!String(platformUserId||'').trim())return null;
   if(!user)return <p className="notice error" role="alert">No registered user found with this platform and ID.</p>;
   return <div className="user-match-preview">
-    <UserCardMini user={user}/>
+    <UserCardMini user={user} platform={platform} platformUserId={platformUserId}/>
     <p className="user-match-meta">Group: {user.groupName||'none'}{user.accountStatus&&user.accountStatus!=='active'?` · Status: ${user.accountStatus}`:''}</p>
   </div>;
 }
@@ -72,16 +77,212 @@ const PERSON_ICON=<svg {...ICON_PROPS}><circle cx="12" cy="8" r="3.5"/><path d="
 // validation). Without this, nothing stops a blank platform user ID from reaching CONFIRM.
 function ConfirmAction({label,warning,onConfirm,disabledReason}){const [open,setOpen]=useState(false);const [text,setText]=useState('');const [attempted,setAttempted]=useState(false);function start(){if(disabledReason){setAttempted(true);return;}setAttempted(false);setOpen(true);}const blocked=attempted?disabledReason:'';return open?<div className="warning-box"><strong>{warning}</strong><p>Type CONFIRM exactly to continue.</p><input aria-label={`${label} confirmation`} value={text} onChange={event=>setText(event.target.value)} autoComplete="off"/><div className="br"><button type="button" className="b d" disabled={text!=='CONFIRM'} onClick={async()=>{setOpen(false);setText('');try{await onConfirm();}catch{/* write() already surfaces the error */}}}>Confirm {label}</button><button type="button" className="b g" onClick={()=>setOpen(false)}>Cancel</button></div></div>:<><button type="button" className="b d sm" onClick={start}>{label}</button>{blocked&&<p className="notice error" role="alert">{blocked}</p>}</>}
 
-function OwnerControl({write,users}){const [platform,setPlatform]=useState('telegram');const [platformUserId,setPlatformUserId]=useState('');const [enabled,setEnabled]=useState('on');function reset(){setPlatform('telegram');setPlatformUserId('');setEnabled('on');}const matched=findLinkedUser(users,platform,platformUserId);const disabledReason=!platformUserId.trim()?'Enter a platform user ID first.':!matched?'No registered user found with this platform and ID.':enabled==='off'&&matched.isRootOwner?'This account is a root owner -- remove root owner status first.':'';return <div className="fields"><Select label="Platform" options={['telegram','discord']} value={platform} onChange={event=>setPlatform(event.target.value)}/><Field label="Platform user ID" value={platformUserId} onChange={event=>setPlatformUserId(event.target.value)}/><UserMatchPreview platformUserId={platformUserId} user={matched}/><Select label="Owner status" options={['on','off']} value={enabled} onChange={event=>setEnabled(event.target.value)}/><ConfirmAction label="Change owner status" warning="This changes global owner access. The final owner can never be removed." disabledReason={disabledReason} onConfirm={async()=>{await write('owner',{platform,platformUserId,enabled,confirmation:'CONFIRM'});reset();}}/></div>}
+function OwnerControl({write,users}){const [platform,setPlatform]=useState('telegram');const [platformUserId,setPlatformUserId]=useState('');const [enabled,setEnabled]=useState('on');function reset(){setPlatform('telegram');setPlatformUserId('');setEnabled('on');}const matched=findLinkedUser(users,platform,platformUserId);const disabledReason=!platformUserId.trim()?'Enter a platform user ID first.':!matched?'No registered user found with this platform and ID.':enabled==='off'&&matched.isRootOwner?'This account is a root owner -- remove root owner status first.':'';return <div className="fields"><Select label="Platform" options={['telegram','discord']} value={platform} onChange={event=>setPlatform(event.target.value)}/><Field label="Platform user ID" value={platformUserId} onChange={event=>setPlatformUserId(event.target.value)}/><UserMatchPreview platform={platform} platformUserId={platformUserId} user={matched}/><Select label="Owner status" options={['on','off']} value={enabled} onChange={event=>setEnabled(event.target.value)}/><ConfirmAction label="Change owner status" warning="This changes global owner access. The final owner can never be removed." disabledReason={disabledReason} onConfirm={async()=>{await write('owner',{platform,platformUserId,enabled,confirmation:'CONFIRM'});reset();}}/></div>}
 
 // The top tier: max 2, drawn only from existing owners. Only rendered for root owners (see Owners
 // below) -- the backend enforces this regardless, but there is no reason to show a control to
 // someone it will always reject.
-function RootOwnerControl({write,users}){const [platform,setPlatform]=useState('telegram');const [platformUserId,setPlatformUserId]=useState('');const [enabled,setEnabled]=useState('on');function reset(){setPlatform('telegram');setPlatformUserId('');setEnabled('on');}const matched=findLinkedUser(users,platform,platformUserId);const rootCount=users?.filter(user=>user.isRootOwner).length??0;const disabledReason=!platformUserId.trim()?'Enter a platform user ID first.':!matched?'No registered user found with this platform and ID.':enabled==='on'&&!matched.isOwner?'This account must already be an owner before it can become a root owner.':enabled==='on'&&!matched.isRootOwner&&rootCount>=2?'There are already 2 root owners -- remove one first.':'';return <div className="fields"><Select label="Platform" options={['telegram','discord']} value={platform} onChange={event=>setPlatform(event.target.value)}/><Field label="Platform user ID" value={platformUserId} onChange={event=>setPlatformUserId(event.target.value)}/><UserMatchPreview platformUserId={platformUserId} user={matched}/><Select label="Root owner status" options={['on','off']} value={enabled} onChange={event=>setEnabled(event.target.value)}/><ConfirmAction label="Change root owner status" warning="Root owners can grant or revoke owner status and are the only ones who can act on an existing owner. Capped at 2; the final root owner can never be removed." disabledReason={disabledReason} onConfirm={async()=>{await write('root-owner',{platform,platformUserId,enabled,confirmation:'CONFIRM'});reset();}}/></div>}
+function RootOwnerControl({write,users}){const [platform,setPlatform]=useState('telegram');const [platformUserId,setPlatformUserId]=useState('');const [enabled,setEnabled]=useState('on');function reset(){setPlatform('telegram');setPlatformUserId('');setEnabled('on');}const matched=findLinkedUser(users,platform,platformUserId);const rootCount=users?.filter(user=>user.isRootOwner).length??0;const disabledReason=!platformUserId.trim()?'Enter a platform user ID first.':!matched?'No registered user found with this platform and ID.':enabled==='on'&&!matched.isOwner?'This account must already be an owner before it can become a root owner.':enabled==='on'&&!matched.isRootOwner&&rootCount>=2?'There are already 2 root owners -- remove one first.':'';return <div className="fields"><Select label="Platform" options={['telegram','discord']} value={platform} onChange={event=>setPlatform(event.target.value)}/><Field label="Platform user ID" value={platformUserId} onChange={event=>setPlatformUserId(event.target.value)}/><UserMatchPreview platform={platform} platformUserId={platformUserId} user={matched}/><Select label="Root owner status" options={['on','off']} value={enabled} onChange={event=>setEnabled(event.target.value)}/><ConfirmAction label="Change root owner status" warning="Root owners can grant or revoke owner status and are the only ones who can act on an existing owner. Capped at 2; the final root owner can never be removed." disabledReason={disabledReason} onConfirm={async()=>{await write('root-owner',{platform,platformUserId,enabled,confirmation:'CONFIRM'});reset();}}/></div>}
 
-function MergeAccountControl({write,users}){const [sourcePlatform,setSourcePlatform]=useState('discord');const [sourcePlatformUserId,setSourcePlatformUserId]=useState('');const [targetPlatform,setTargetPlatform]=useState('telegram');const [targetPlatformUserId,setTargetPlatformUserId]=useState('');function reset(){setSourcePlatform('discord');setSourcePlatformUserId('');setTargetPlatform('telegram');setTargetPlatformUserId('');}const matchedSource=findLinkedUser(users,sourcePlatform,sourcePlatformUserId);const matchedTarget=findLinkedUser(users,targetPlatform,targetPlatformUserId);const disabledReason=!sourcePlatformUserId.trim()?"Enter the duplicate's platform user ID first.":!matchedSource?'No registered user found for the duplicate platform and ID.':!targetPlatformUserId.trim()?'Enter the platform user ID to keep first.':!matchedTarget?'No registered user found for the platform and ID to keep.':'';return <div className="fields"><Select label="Duplicate's platform" options={['telegram','discord']} value={sourcePlatform} onChange={event=>setSourcePlatform(event.target.value)}/><Field label="Duplicate's platform user ID" value={sourcePlatformUserId} onChange={event=>setSourcePlatformUserId(event.target.value)}/><UserMatchPreview platformUserId={sourcePlatformUserId} user={matchedSource}/><Select label="Keep this platform" options={['telegram','discord']} value={targetPlatform} onChange={event=>setTargetPlatform(event.target.value)}/><Field label="Keep this platform user ID" value={targetPlatformUserId} onChange={event=>setTargetPlatformUserId(event.target.value)}/><UserMatchPreview platformUserId={targetPlatformUserId} user={matchedTarget}/><ConfirmAction label="Merge accounts" warning="Only succeeds if the duplicate account is completely empty (no wallets, tasks, or other data). If it isn't, nothing changes." disabledReason={disabledReason} onConfirm={async()=>{await write('merge-account',{sourcePlatform,sourcePlatformUserId,targetPlatform,targetPlatformUserId,confirmation:'CONFIRM'});reset();}}/></div>}
+const MERGE_DOMAIN_LABELS={
+  wallets:'wallets',mintTasks:'scheduled tasks',activity:'activity records',pnlRecords:'P&L records',
+  snipers:'snipers',sniperEvents:'sniper events',transactionPolicies:'transaction policies',
+  transactionIntents:'transaction records',mintPresets:'mint presets',socialWatchRules:'social watch rules',
+  socialTriggerEvents:'social trigger events',socialAdapterUsage:'social API usage records',
+  targetTriggerPolicies:'target policies',targetBypassChallenges:'pending bypass checks',
+  triggerExecutionRequests:'trigger requests',triggerExecutionAudit:'trigger audit records',
+  botSecurityAudit:'security audit records',liveAcceptanceRuns:'live acceptance records',
+  openSeaEligibilityAuthorizations:'OpenSea eligibility authorizations',groupRetentionEvents:'retention records',
+  launchSquads:'launch squads',seatGroupsCreated:'groups created by this account',
+  modePresetsUpdated:'mode presets last updated by this account',governanceRowsUpdated:'governance records updated by this account',
+  userStatusesUpdated:'account statuses updated by this account',dashboardSessions:'dashboard sessions',
+  accountLinkCodes:'unused link codes',activeMintTasks:'active scheduled tasks',activePreflightWork:'claimed preflight work',
+  nonfinalTransactionIntents:'transactions still in progress',activeSniperEvents:'sniper events still in progress',
+  activeSnipers:'active snipers',activeSocialWatchRules:'enabled social watch rules',
+  activeTriggerExecutions:'trigger executions still in progress',activeLaunchSquads:'launch squads still in progress',
+  walletAddressCollisions:'wallet addresses already on the kept account',walletLabelCollisions:'wallet labels already on the kept account',
+  mintTaskIdCollisions:'conflicting task IDs',sniperIdCollisions:'conflicting sniper IDs',
+  mintPresetNameCollisions:'conflicting mint preset names',socialRuleNameCollisions:'conflicting social rule names',
+  transactionPolicyCollisions:'conflicting transaction policies',targetPolicyCollisions:'conflicting target policies',
+  triggerRequestCollisions:'conflicting trigger requests',activeScheduleReservationCollisions:'conflicting active schedule reservations',
+  crossOwnerIntentWallets:'transactions attached to another account\'s wallet',
+  crossOwnerMintTaskIntents:'scheduled tasks attached to another account\'s transaction',
+  crossOwnerAttemptIntents:'task attempts attached to another account\'s transaction',
+  crossOwnerSniperEventIntents:'sniper events attached to another account\'s transaction',
+  crossOwnerTriggerAuditIntents:'trigger audits attached to another account\'s transaction',
+  crossOwnerLiveRunIntents:'live acceptance runs attached to another account\'s transaction',
+  crossOwnerSocialUsageRules:'social API usage attached to another account\'s rule',
+  crossOwnerSquadMemberIntents:'launch squad members attached to another account\'s transaction',
+  sourceGovernance:'source governance record',sourceAccountSettings:'source account settings or lifecycle evidence',
+};
+const MERGE_SETTING_LABELS={
+  accountStatus:'account status',statusReason:'status reason',statusChangedAt:'account status history',
+  suspendedUntil:'suspension',subscriptionActive:'subscription status',goodStandingOverride:'good-standing override',
+  dashboardTheme:'dashboard theme',defaultChain:'default chain',lowBalanceThresholdNative:'low-balance warning',
+  sniperObservationDefault:'sniper observation mode',displayCurrency:'display currency',timeFormat:'clock format',
+  username:'username',securityPassword:'security password',displayName:'display name',botSecurity:'bot security level',
+  mintSecurityExemption:'mint security exemption',governance:'governance settings',
+};
+function plainMergeLabel(key){return MERGE_DOMAIN_LABELS[key]||MERGE_SETTING_LABELS[key]
+  ||String(key||'record').replaceAll('_',' ').replace(/([a-z0-9])([A-Z])/g,'$1 $2').toLowerCase();}
+function MergeCountList({title,summary}){if(!summary?.rows)return null;return <div className="admin-compact-list"><strong>{title} · {summary.rows}</strong>{summary.domains.map(item=><div key={item.key}><span>{plainMergeLabel(item.key)}</span><strong>{item.count}</strong></div>)}</div>;}
+function MergePreview({plan}){
+  let message='This is a read-only preview. Nothing has been moved.';let tone='i';
+  if(plan.classification==='already_unified'){message='These identities already use the same GhostMint account.';tone='i';}
+  else if(plan.classification==='blocked'){message='This reconciliation is blocked. Resolve the items below before any account data can move.';tone='w';}
+  else if(plan.classification==='choice_required'){message='Some account settings differ. A future data-preserving merge must ask which values to keep.';tone='w';}
+  else if(plan.executionAvailable){message='This review is clear. A root owner can merge these accounts after typing the exact account IDs.';tone='i';}
+  else {message='This review is clear, but only a root owner can execute the merge.';tone='w';}
+  return <section className="panel field-full account-merge-preview" aria-label="Account reconciliation preview">
+    <p className={`nt ${tone}`} role="status">{message}</p>
+    <dl className="ledger"><div className="ledger-row"><dt>Duplicate account</dt><dd className="ledger-value"><code>{plan.sourceUserId}</code></dd></div><div className="ledger-row"><dt>Account to keep</dt><dd className="ledger-value"><code>{plan.targetUserId}</code></dd></div><div className="ledger-row"><dt>Linked identities</dt><dd className="ledger-value">{plan.summary.sourceIdentityCount} duplicate · {plan.summary.targetIdentityCount} retained</dd></div><div className="ledger-row"><dt>Platforms moving</dt><dd className="ledger-value">{plan.summary.identityPlatformsToMove?.join(', ')||'none'}</dd></div><div className="ledger-row"><dt>Plan</dt><dd className="ledger-value">{plan.classification.replaceAll('_',' ')}</dd></div></dl>
+    <MergeCountList title="Rows that would need moving" summary={plan.summary.movable}/>
+    <MergeCountList title="Access that would be revoked" summary={plan.summary.revocable}/>
+    <MergeCountList title="Blocking records or conflicts" summary={plan.summary.blocking}/>
+    {plan.blockers.some(item=>item.category!=='data')&&<div className="notice error"><strong>Blockers</strong><ul>{plan.blockers.filter(item=>item.category!=='data').map((item,index)=><li key={`${item.code}:${index}`}>{item.message}</li>)}</ul></div>}
+    {plan.requiredChoices.length>0&&<div className="notice notice-warning"><strong>Choices still required</strong><ul>{plan.requiredChoices.map(item=><li key={item.key}>Choose which {plainMergeLabel(item.key)} to keep.</li>)}</ul></div>}
+    <p className="muted">Preview digest <code>{plan.snapshotDigest}</code></p>
+  </section>;
+}
 
-function RestrictAccountControl({write,users,profile}){const [platform,setPlatform]=useState('telegram');const [platformUserId,setPlatformUserId]=useState('');const [action,setAction]=useState('ban');const [durationDays,setDurationDays]=useState('');const [reason,setReason]=useState('');function reset(){setPlatform('telegram');setPlatformUserId('');setAction('ban');setDurationDays('');setReason('');}const matched=findLinkedUser(users,platform,platformUserId);const disabledReason=!platformUserId.trim()?'Enter a platform user ID first.':!matched?'No registered user found with this platform and ID.':matched.isRootOwner?'This account is a root owner -- remove root owner status first.':matched.isOwner&&!profile?.isRootOwner?'This account is an owner -- only a root owner can take this action against an owner.':!reason.trim()?'Enter a reason first.':'';return <div className="fields"><Select label="Platform" options={['telegram','discord']} value={platform} onChange={event=>setPlatform(event.target.value)}/><Field label="Platform user ID" value={platformUserId} onChange={event=>setPlatformUserId(event.target.value)}/><UserMatchPreview platformUserId={platformUserId} user={matched}/><Select label="Action" options={['ban','suspend','deactivate']} value={action} onChange={event=>setAction(event.target.value)}/><Field label="Duration in days (suspend only, blank = indefinite)" required={false} value={durationDays} onChange={event=>setDurationDays(event.target.value)}/><Field label="Reason" value={reason} onChange={event=>setReason(event.target.value)}/><ConfirmAction label={`Confirm ${action}`} warning={`This blocks the account from using the bot on every platform (Telegram, Discord, and the dashboard) immediately.`} disabledReason={disabledReason} onConfirm={async()=>{await write(action,{platform,platformUserId,durationDays:durationDays||'indefinite',reason,confirmation:'CONFIRM'});reset();}}/></div>}
+function MergeAccountControl({users}){
+  const [sourcePlatform,setSourcePlatform]=useState('discord');
+  const [sourcePlatformUserId,setSourcePlatformUserId]=useState('');
+  const [targetPlatform,setTargetPlatform]=useState('telegram');
+  const [targetPlatformUserId,setTargetPlatformUserId]=useState('');
+  const [preview,setPreview]=useState(null);const [previewError,setPreviewError]=useState('');
+  const [previewing,setPreviewing]=useState(false);const [mergeBusy,setMergeBusy]=useState(false);
+  const [confirmOpen,setConfirmOpen]=useState(false);const [confirmText,setConfirmText]=useState('');
+  const [executionError,setExecutionError]=useState('');const [receipt,setReceipt]=useState(null);
+  const previewRequestId=useRef(0);const confirmDialogRef=useRef(null);
+  const confirmInputRef=useRef(null);const mergeTriggerRef=useRef(null);
+  const restoreMergeTriggerFocus=useRef(false);
+  function clearPreview(){previewRequestId.current+=1;setPreviewing(false);setPreview(null);setPreviewError('');setExecutionError('');setReceipt(null);setConfirmOpen(false);setConfirmText('');}
+  function update(setter){return event=>{setter(event.target.value);clearPreview();};}
+  const matchedSource=findLinkedUser(users,sourcePlatform,sourcePlatformUserId);
+  const matchedTarget=findLinkedUser(users,targetPlatform,targetPlatformUserId);
+  const {disabledReason,notice}=accountMergeStatus({
+    sourcePlatformUserId,targetPlatformUserId,sourcePlatform,matchedSource,matchedTarget,
+  });
+  const reviewedPlan=preview?.plan;
+  const exactConfirmation=reviewedPlan?`MERGE ${reviewedPlan.sourceUserId} INTO ${reviewedPlan.targetUserId}`:'';
+  const controlsLocked=previewing||mergeBusy||confirmOpen;
+  const sourceLookupFailed=Boolean(sourcePlatformUserId.trim()&&!matchedSource);
+  const targetLookupFailed=Boolean(targetPlatformUserId.trim()&&!matchedTarget);
+  async function review(){
+    if(disabledReason||controlsLocked)return;
+    const requestId=++previewRequestId.current;
+    const reviewedInput={sourcePlatform,sourcePlatformUserId,targetPlatform,targetPlatformUserId};
+    setPreviewing(true);setPreviewError('');setPreview(null);
+    try{
+      const plan=await api('/api/admin/account-merge-preview',{
+        method:'POST',body:JSON.stringify(reviewedInput),
+      });
+      if(requestId===previewRequestId.current)setPreview({plan,reviewedInput});
+    }catch(reason){if(requestId===previewRequestId.current)setPreviewError(reason.message);}
+    finally{if(requestId===previewRequestId.current)setPreviewing(false);}
+  }
+  useEffect(()=>{
+    if(!confirmOpen)return undefined;
+    const appRoot=document.getElementById('root');
+    const rootWasInert=appRoot?.inert===true;
+    const bodyOverflow=document.body.style.overflow;
+    if(appRoot)appRoot.inert=true;
+    document.body.style.overflow='hidden';
+    confirmInputRef.current?.focus();
+    function onKeyDown(event){
+      if(event.key==='Escape'&&!mergeBusy){event.preventDefault();closeConfirmation();return;}
+      if(event.key!=='Tab')return;
+      const focusable=[...(confirmDialogRef.current?.querySelectorAll('button:not([disabled]), input:not([disabled])')||[])];
+      if(!focusable.length){event.preventDefault();return;}
+      const first=focusable[0];const last=focusable[focusable.length-1];
+      if(event.shiftKey&&(document.activeElement===first||!confirmDialogRef.current?.contains(document.activeElement))){event.preventDefault();last.focus();}
+      else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus();}
+    }
+    document.addEventListener('keydown',onKeyDown);return()=>{
+      document.removeEventListener('keydown',onKeyDown);
+      if(appRoot)appRoot.inert=rootWasInert;
+      document.body.style.overflow=bodyOverflow;
+    };
+  },[confirmOpen,mergeBusy]);
+  useEffect(()=>{
+    if(controlsLocked||!restoreMergeTriggerFocus.current)return;
+    restoreMergeTriggerFocus.current=false;
+    mergeTriggerRef.current?.focus();
+  },[controlsLocked,reviewedPlan?.snapshotDigest]);
+  function closeConfirmation(){if(mergeBusy)return;restoreMergeTriggerFocus.current=true;setConfirmOpen(false);setConfirmText('');setExecutionError('');}
+  async function executeMerge(){
+    if(mergeBusy||confirmText!==exactConfirmation||!preview)return;
+    setMergeBusy(true);setExecutionError('');
+    try{
+      const result=await api('/api/admin/account-merge-execute',{method:'POST',body:JSON.stringify({
+        ...preview.reviewedInput,
+        expectedSourceUserId:reviewedPlan.sourceUserId,
+        expectedTargetUserId:reviewedPlan.targetUserId,
+        expectedPlanVersion:reviewedPlan.planVersion,
+        expectedSnapshotDigest:reviewedPlan.snapshotDigest,
+        resolutionMap:{},confirmationText:confirmText,
+      })});
+      setReceipt(result);setConfirmOpen(false);setConfirmText('');setPreview(null);
+      notify('Accounts merged. Every dashboard session for both accounts was signed out.',{type:'success'});
+    }catch(reason){
+      setExecutionError(reason.message);
+      if(reason.status===409){
+        restoreMergeTriggerFocus.current=true;
+        setConfirmOpen(false);setConfirmText('');
+        const requestId=++previewRequestId.current;
+        try{
+          const plan=await api('/api/admin/account-merge-preview',{method:'POST',body:JSON.stringify(preview.reviewedInput)});
+          if(requestId===previewRequestId.current)setPreview({plan,reviewedInput:preview.reviewedInput});
+        }catch(refreshError){if(requestId===previewRequestId.current){setPreview(null);setPreviewError(refreshError.message);}}
+      }
+    }finally{setMergeBusy(false);}
+  }
+  const confirmationDialog=confirmOpen&&createPortal(<div id="account-merge-confirmation"
+    className="confirm-modal-backdrop" onClick={closeConfirmation}>
+    <div ref={confirmDialogRef} className="confirm-modal account-merge-confirm" role="alertdialog" aria-modal="true"
+      aria-labelledby="account-merge-confirm-title" aria-describedby="account-merge-confirm-help"
+      aria-busy={mergeBusy} onClick={event=>event.stopPropagation()}>
+      <h2 id="account-merge-confirm-title">Merge these accounts?</h2>
+      <p id="account-merge-confirm-help">This moves the reviewed wallets, tasks, history, and identities into the retained account. Every dashboard session, link code, and pending bypass for both accounts is revoked. This cannot be undone here.</p>
+      <p>Type this exact phrase:</p><code className="account-merge-confirm-phrase">{exactConfirmation}</code>
+      <input ref={confirmInputRef} aria-label="Exact account merge confirmation" autoComplete="off"
+        value={confirmText} disabled={mergeBusy} onChange={event=>setConfirmText(event.target.value)}/>
+      {executionError&&<p className="notice error" role="alert">{executionError}</p>}
+      <div className="confirm-modal-actions"><button type="button" className="b g" disabled={mergeBusy}
+        onClick={closeConfirmation}>Cancel</button><button type="button" className="b d"
+        disabled={mergeBusy||confirmText!==exactConfirmation} onClick={executeMerge}>{mergeBusy?'Merging…':'Merge accounts'}</button></div>
+    </div>
+  </div>,document.body);
+  return <><div className="fields" aria-busy={controlsLocked}>
+    <Select label="Duplicate's platform" options={['telegram','discord']} value={sourcePlatform}
+      onChange={update(setSourcePlatform)} disabled={controlsLocked}/>
+    <Field label="Duplicate's platform user ID" value={sourcePlatformUserId}
+      onChange={update(setSourcePlatformUserId)} disabled={controlsLocked}/>
+    <UserMatchPreview platform={sourcePlatform} platformUserId={sourcePlatformUserId} user={matchedSource}/>
+    <Select label="Keep this platform" options={['telegram','discord']} value={targetPlatform}
+      onChange={update(setTargetPlatform)} disabled={controlsLocked}/>
+    <Field label="Keep this platform user ID" value={targetPlatformUserId}
+      onChange={update(setTargetPlatformUserId)} disabled={controlsLocked}/>
+    <UserMatchPreview platform={targetPlatform} platformUserId={targetPlatformUserId} user={matchedTarget}/>
+    {notice&&<p className={`nt ${notice.tone}`} role="status">{notice.text}</p>}
+    <button type="button" className="b g sm" disabled={Boolean(disabledReason)||controlsLocked}
+      onClick={review}>{previewing?'Reviewing…':'Review accounts'}</button>
+    {disabledReason&&!sourceLookupFailed&&!targetLookupFailed&&<p className="muted">{disabledReason}</p>}
+    {previewError&&<p className="notice error" role="alert">{previewError} <button type="button" className="link-button" onClick={review}>Retry</button></p>}
+    {reviewedPlan&&<MergePreview plan={reviewedPlan}/>}
+    {reviewedPlan?.executionAvailable&&reviewedPlan.classification==='ready'&&<button ref={mergeTriggerRef}
+      type="button" className="b d sm" disabled={controlsLocked}
+      onClick={()=>{setExecutionError('');setConfirmOpen(true);}}>Merge reviewed accounts</button>}
+    {executionError&&!confirmOpen&&<p className="notice error" role="alert">{executionError}</p>}
+    {receipt&&<section className="panel field-full account-merge-receipt" role="status">
+      <p className="ok"><strong>Accounts merged.</strong> The duplicate account was removed and both accounts' dashboard sessions were revoked.</p>
+      <dl className="ledger"><div className="ledger-row"><dt>Evidence event</dt><dd className="ledger-value"><code>{receipt.eventId}</code></dd></div><div className="ledger-row"><dt>Account kept</dt><dd className="ledger-value"><code>{receipt.targetUserId}</code></dd></div><div className="ledger-row"><dt>Finished</dt><dd className="ledger-value"><DateTimeValue value={receipt.finishedAt}/></dd></div></dl>
+    </section>}
+  </div>{confirmationDialog}</>;
+}
+
+function RestrictAccountControl({write,users,profile}){const [platform,setPlatform]=useState('telegram');const [platformUserId,setPlatformUserId]=useState('');const [action,setAction]=useState('ban');const [durationDays,setDurationDays]=useState('');const [reason,setReason]=useState('');function reset(){setPlatform('telegram');setPlatformUserId('');setAction('ban');setDurationDays('');setReason('');}const matched=findLinkedUser(users,platform,platformUserId);const disabledReason=!platformUserId.trim()?'Enter a platform user ID first.':!matched?'No registered user found with this platform and ID.':matched.isRootOwner?'This account is a root owner -- remove root owner status first.':matched.isOwner&&!profile?.isRootOwner?'This account is an owner -- only a root owner can take this action against an owner.':!reason.trim()?'Enter a reason first.':'';return <div className="fields"><Select label="Platform" options={['telegram','discord']} value={platform} onChange={event=>setPlatform(event.target.value)}/><Field label="Platform user ID" value={platformUserId} onChange={event=>setPlatformUserId(event.target.value)}/><UserMatchPreview platform={platform} platformUserId={platformUserId} user={matched}/><Select label="Action" options={['ban','suspend','deactivate']} value={action} onChange={event=>setAction(event.target.value)}/><Field label="Duration in days (suspend only, blank = indefinite)" required={false} value={durationDays} onChange={event=>setDurationDays(event.target.value)}/><Field label="Reason" value={reason} onChange={event=>setReason(event.target.value)}/><ConfirmAction label={`Confirm ${action}`} warning={`This blocks the account from using the bot on every platform (Telegram, Discord, and the dashboard) immediately.`} disabledReason={disabledReason} onConfirm={async()=>{await write(action,{platform,platformUserId,durationDays:durationDays||'indefinite',reason,confirmation:'CONFIRM'});reset();}}/></div>}
 
 function RestoreAccountControl({write}){const [platform,setPlatform]=useState('telegram');const [platformUserId,setPlatformUserId]=useState('');const [action,setAction]=useState('unban');const [reason,setReason]=useState('');async function submit(event){event.preventDefault();try{await write(action,{platform,platformUserId,reason});setPlatform('telegram');setPlatformUserId('');setAction('unban');setReason('');}catch{}}return <form className="panel form" onSubmit={submit}><h2>Restore account</h2><div className="fields"><Select label="Platform" options={['telegram','discord']} value={platform} onChange={event=>setPlatform(event.target.value)}/><Field label="Platform user ID" value={platformUserId} onChange={event=>setPlatformUserId(event.target.value)}/><Select label="Action" options={['unban','unsuspend','reactivate']} value={action} onChange={event=>setAction(event.target.value)}/><Field label="Reason" value={reason} onChange={event=>setReason(event.target.value)}/><button className="b p">Restore</button></div></form>}
 
@@ -191,7 +392,19 @@ function Effective({profile,inspect,effective}){return <><PageTitle eyebrow="Pol
 
 function Presets({data,formWrite}){return <><PageTitle eyebrow="Execution modes" title="Mode presets" subtitle="Edit the four shared speed and safety profiles without changing per-target bypass confirmation rules."/><p className="notice notice-warning">Human verification is preparatory per-target configuration. A preset never bypasses verification by itself; the explicit CONFIRM challenge still applies.</p><p className="notice">Degen and Fast require access -- grant it per seat group or per user on the Groups and Users pages.</p><div className="card-grid admin-preset-grid">{data?.presets.map(preset=><Form key={`${preset.key}:${preset.simulationMode}:${preset.confirmationCount}:${preset.humanVerification}:${preset.gasPriceMultiplier}`} title={preset.displayName} onSubmit={event=>formWrite(event,'preset-set')}><input type="hidden" name="preset" value={preset.key}/><Select name="simulation" label="Simulation" options={['on','off','blockchain_off']} defaultValue={preset.simulationMode}/><Field name="confirmations" label="Confirmations" type="number" min="1" max="1000" defaultValue={preset.confirmationCount}/><Select name="verification" label="Verification" options={['on','bypass']} defaultValue={preset.humanVerification}/><Field name="gasMultiplier" label="Gas price multiplier (x network price)" type="number" step="0.05" min="1" max="10" defaultValue={preset.gasPriceMultiplier??1}/><button className="b p">Save preset</button></Form>)}</div></>}
 
-function Owners({data,write,profile}){const owners=data?.users.filter(user=>user.isOwner)||[];const rootCount=owners.filter(user=>user.isRootOwner).length;return <><PageTitle eyebrow="Global access" title="Owner access" subtitle="Two tiers: root owners (max 2) can grant or revoke owner status and are the only ones who can act on an existing owner; owners get admin access but cannot touch another owner."/><div className="admin-owner-layout"><section className="panel form">{profile?.isRootOwner?<><p className="warning">Owner changes affect global administration rights. The final owner can never be removed.</p><OwnerControl write={write} users={data?.users}/></>:<p className="notice">Only a root owner can grant or revoke owner status.</p>}</section><section className="panel form">{profile?.isRootOwner?<><p className="warning">Root owner changes affect who can manage owners at all. Capped at 2 ({rootCount} currently); the final root owner can never be removed.</p><RootOwnerControl write={write} users={data?.users}/></>:<p className="notice">Only a root owner can grant or revoke root owner status.</p>}</section><section className="panel"><div className="section-heading"><div><p className="eyebrow">Current owners</p><h2>{owners.length} owner{owners.length===1?'':'s'} · {rootCount} root</h2></div></div><div className="admin-compact-list">{owners.map(user=>{const account=identity(user);return <div key={user.userId}><strong>{account?`${account.platform}:${account.platformUserId}`:user.userId}</strong><span className="pill">{tierLabel(user)}</span><code>{user.userId}</code><CopyButton value={user.userId} label="Copy internal ID"/></div>})}</div></section><section className="panel form field-full"><p className="notice">Merge an empty platform-created duplicate account into an existing one -- for example, a platform that was used before it was ever linked. Find the duplicate's platform and ID on the Users page (it will show only one linked account and no group). Refuses safely and changes nothing if the duplicate has any wallets, tasks, or other data.</p><MergeAccountControl write={write} users={data?.users}/></section></div></>}
+function Owners({data,error,retry,write,profile}){
+  const heading=<PageTitle eyebrow="Global access" title="Owner access" subtitle="Two tiers: root owners (max 2) can grant or revoke owner status and are the only ones who can act on an existing owner; owners get admin access but cannot touch another owner."/>;
+  if(error)return <>{heading}<div className="notice error admin-load-error" role="alert"><strong>Owner access could not be loaded.</strong><span>{error}</span><button type="button" className="b g sm" onClick={retry}>Retry</button></div></>;
+  if(!data)return <>{heading}<Skeleton variant="lines" rows={7}/></>;
+  const owners=data.users.filter(user=>user.isOwner);
+  const rootCount=owners.filter(user=>user.isRootOwner).length;
+  return <>{heading}<div className="admin-owner-layout">
+    <section className="panel form">{profile?.isRootOwner?<><p className="warning">Owner changes affect global administration rights. The final owner can never be removed.</p><OwnerControl write={write} users={data.users}/></>:<p className="notice">Only a root owner can grant or revoke owner status.</p>}</section>
+    <section className="panel form">{profile?.isRootOwner?<><p className="warning">Root owner changes affect who can manage owners at all. Capped at 2 ({rootCount} currently); the final root owner can never be removed.</p><RootOwnerControl write={write} users={data.users}/></>:<p className="notice">Only a root owner can grant or revoke root owner status.</p>}</section>
+    <section className="panel"><div className="section-heading"><div><p className="eyebrow">Current owners</p><h2>{owners.length} owner{owners.length===1?'':'s'} · {rootCount} root</h2></div></div><div className="admin-compact-list">{owners.map(user=>{const account=identity(user);return <div key={user.userId}><strong>{account?`${account.platform}:${account.platformUserId}`:user.userId}</strong><span className="pill">{tierLabel(user)}</span><code>{user.userId}</code><CopyButton value={user.userId} label="Copy internal ID"/></div>})}</div></section>
+    <section className="panel form field-full" aria-labelledby="account-reconciliation-title"><div className="section-heading"><div><p className="eyebrow">Identity repair</p><h2 id="account-reconciliation-title">Account reconciliation</h2></div></div><p className="notice">Review a platform-created duplicate against the account you want to keep. Reviews never change data. Only a root owner can execute a clear plan with no active work, conflicting records, or account-setting choices.</p><MergeAccountControl users={data.users}/></section>
+  </div></>;
+}
 
 // Owner-only bulk wallet import: a paste of comma-separated private keys instead of one key per
 // form submission. Labels are auto-generated server-side (prefix-1, prefix-2, ...) since a bare
@@ -247,6 +460,6 @@ export default function Admin({profile,section='Overview',go,usersFilter}){const
   async function submitterWrite(event){return formWrite(event,event.nativeEvent.submitter.value);}
   async function inspect(event){event.preventDefault();try{const query=new URLSearchParams(Object.fromEntries(new FormData(event.currentTarget)));setEffective(await api(`/api/admin/effective?${query}`));}catch(reason){notify(reason.message,{type:'error'});}}
   const shared={data:overview.data,formWrite,write};let view;
-  if(section==='Groups')view=<Groups {...shared}/>;else if(section==='Users')view=<Users data={overview.data} formWrite={formWrite} submitterWrite={submitterWrite} write={write} profile={profile} filter={usersFilter} go={go}/>;else if(section==='Effective')view=<Effective profile={profile} inspect={inspect} effective={effective}/>;else if(section==='Presets')view=<Presets data={overview.data} formWrite={formWrite}/>;else if(section==='Owners')view=<Owners data={overview.data} write={write} profile={profile}/>;else if(section==='Wallets')view=<BatchImport profile={profile}/>;else if(section==='Audit')view=<SecurityAudit/>;else if(section==='Health')view=<SystemHealth/>;else view=<Overview {...shared} go={go} profile={profile}/>;
-  return <div className="admin-view">{overview.error&&<p className="notice error" role="alert">{overview.error}</p>}{view}</div>;
+  if(section==='Groups')view=<Groups {...shared}/>;else if(section==='Users')view=<Users data={overview.data} formWrite={formWrite} submitterWrite={submitterWrite} write={write} profile={profile} filter={usersFilter} go={go}/>;else if(section==='Effective')view=<Effective profile={profile} inspect={inspect} effective={effective}/>;else if(section==='Presets')view=<Presets data={overview.data} formWrite={formWrite}/>;else if(section==='Owners')view=<Owners data={overview.data} error={overview.error} retry={overview.load} write={write} profile={profile}/>;else if(section==='Wallets')view=<BatchImport profile={profile}/>;else if(section==='Audit')view=<SecurityAudit/>;else if(section==='Health')view=<SystemHealth/>;else view=<Overview {...shared} go={go} profile={profile}/>;
+  return <div className="admin-view">{overview.error&&section!=='Owners'&&<p className="notice error" role="alert">{overview.error}</p>}{view}</div>;
 }

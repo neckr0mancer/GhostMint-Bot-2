@@ -82,12 +82,14 @@ function createAdminCommandService(governance, identity) {
           await governance.scheduleRemoval(callerUserId, { platform: args[0], platformUserId: args[1], days: args[2] });
           return args[2] === 'off' ? 'Scheduled removal cleared.' : 'Scheduled removal set.';
 
-        // ── Merge an empty platform-created duplicate account into an existing one ──
+        // Account reconciliation is intentionally not representable as this whitespace-split
+        // command. The dedicated endpoint binds an exact preview digest, both UUIDs, root-owner
+        // authorization, and the full typed confirmation inside one structured request.
         case 'merge-account': {
-          if (!identity) throw new ValidationError({ field: 'action', message: 'merge-account is not available' });
-          const result = await identity.mergeAccount({ sourcePlatform: args[0], sourcePlatformUserId: args[1],
-            targetPlatform: args[2], targetPlatformUserId: args[3] });
-          return `Merged ${args[0]}:${args[1]} into account ${result.targetUserId}; the empty duplicate account has been removed.`;
+          throw new ValidationError({
+            field: 'action',
+            message: 'account merges require the dedicated reviewed root-owner confirmation flow',
+          });
         }
 
         default: throw new ValidationError({ field: 'action', message: `is unknown: ${action}` });

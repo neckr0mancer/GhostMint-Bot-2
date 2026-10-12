@@ -88,6 +88,7 @@ const SESSION_END_MESSAGES=Object.freeze({
   idle_expired:'Your session ended after 8 hours without dashboard activity.',
   absolute_expired:'Your session reached its 7-day maximum lifetime. Sign in again to continue.',
   session_limit:'This session was signed out because a newer login exceeded the three-browser limit.',
+  account_merge:'This session ended because two GhostMint accounts were securely combined. Sign in again to continue.',
   logout_all:'This session was ended by Log out everywhere.',logout:'This session has been logged out.',
   revoked:'This session was revoked.',invalid:'This session is no longer valid.',
 });
@@ -104,7 +105,7 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLo
   // a client sending a bad/missing confirmation is a 400, not a server fault. Every route that
   // calls confirmation(req) (removeWallet, deletePnl, removeSniper, removeWatchRule, confirmMint,
   // adminWrite's ban/unban/suspend/etc.) gets the correct status from this one fix.
-  const action=handler=>async(req,res,next)=>{try{await handler(req,res);}catch(error){if(error instanceof ValidationError)return sendValidationError(res,error);if(error instanceof BotContextError)return res.status(400).json({error:error.message});if(error instanceof RateLimitError){res.set('Retry-After',String(Math.ceil(error.retryAfterMs/1000)));return res.status(429).json({error:'Too many eligibility changes. Try again shortly.'});}if(error instanceof AuthorizationError)return res.status(403).json({error:'Owner access required'});if(error instanceof OpenSeaEligibilityError)return res.status(error.status||503).json({error:error.message,code:error.code});if(error instanceof TransactionSafetyError)return res.status(400).json({error:error.message,code:error.code,...(error.details?{details:jsonSafe(error.details)}:{})});next(error);}};
+  const action=handler=>async(req,res,next)=>{try{await handler(req,res);}catch(error){if(error instanceof ValidationError)return sendValidationError(res,error);if(error instanceof BotContextError)return res.status(400).json({error:error.message});if(error instanceof RateLimitError){res.set('Retry-After',String(Math.ceil(error.retryAfterMs/1000)));return res.status(429).json({error:'Too many eligibility changes. Try again shortly.'});}if(error instanceof AuthorizationError)return res.status(403).json({error:error.message||'Owner access required'});if(String(error?.code||'').startsWith('ACCOUNT_MERGE_')||['SOURCE_NOT_FOUND','TARGET_NOT_FOUND'].includes(error?.code)){return res.status(error.code==='ACCOUNT_MERGE_ROOT_REQUIRED'?403:409).json({error:error.message,code:error.code,...(error.details?{details:jsonSafe(error.details)}:{})});}if(error instanceof OpenSeaEligibilityError)return res.status(error.status||503).json({error:error.message,code:error.code});if(error instanceof TransactionSafetyError)return res.status(400).json({error:error.message,code:error.code,...(error.details?{details:jsonSafe(error.details)}:{})});next(error);}};
   function confirmation(req){requireTextConfirmation(req.body?.confirmation);}
   function issuePreview(userId,entries){const token=randomUUID();previews.set(token,{userId,entries,expiresAt:now()+5*60_000});return token;}
   function consumePreview(userId,token){const value=previews.get(String(token||''));previews.delete(String(token||''));if(!value||value.userId!==userId||value.expiresAt<=now())throw new ValidationError({field:'previewToken',message:'is invalid or expired'});return value;}
@@ -124,7 +125,6 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLo
     subscription:['platform','platformUserId','active'],'good-standing':['platform','platformUserId','enabled'],
     'group-retention':['groupName','retentionPeriodDays','requireActiveSubscription','requireRecentActivityDays'],
     'schedule-removal':['platform','platformUserId','days'],
-    'merge-account':['sourcePlatform','sourcePlatformUserId','targetPlatform','targetPlatformUserId'],
   });
   // Every field here becomes one whitespace-joined, then re-split, positional token in
   // adminCommandService's shared command syntax -- except 'reason', which is deliberately designed
@@ -431,8 +431,41 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLo
     adminUserActivity:action(async(req,res)=>res.json(jsonSafe(await commands.adminUserActivity(user(req),req.params.userId,req.query)))),
     adminUserTasks:action(async(req,res)=>res.json(jsonSafe(await commands.adminUserTasks(user(req),req.params.userId,req.query)))),
     adminUserPnl:action(async(req,res)=>res.json(await commands.adminUserPnl(user(req),req.params.userId))),
+    adminAccountMergePreview:action(async(req,res)=>{
+      const body=req.body||{};
+      const plan=await commands.adminAccountMergePreview(user(req),{
+        sourcePlatform:body.sourcePlatform,
+        sourcePlatformUserId:body.sourcePlatformUserId,
+        targetPlatform:body.targetPlatform,
+        targetPlatformUserId:body.targetPlatformUserId,
+      });
+      res.json(jsonSafe(plan));
+    }),
+    adminAccountMergeExecute:action(async(req,res)=>{
+      const body=req.body||{};
+      const result=await commands.adminAccountMergeExecute(user(req),{
+        sourcePlatform:body.sourcePlatform,
+        sourcePlatformUserId:body.sourcePlatformUserId,
+        targetPlatform:body.targetPlatform,
+        targetPlatformUserId:body.targetPlatformUserId,
+        expectedSourceUserId:body.expectedSourceUserId,
+        expectedTargetUserId:body.expectedTargetUserId,
+        expectedPlanVersion:body.expectedPlanVersion,
+        expectedSnapshotDigest:body.expectedSnapshotDigest,
+        resolutionMap:body.resolutionMap,
+        confirmationText:body.confirmationText,
+      });
+      await Promise.resolve(securityAudit.record({userId:user(req),platform:'dashboard',
+        contextId:req.dashboardSession.sessionId,command:'admin:account-merge-execute',outcome:'success',
+        reason:`Committed account merge event ${result.eventId}`})).catch(()=>{});
+      try{
+        const ownerIds=commands.listOwnerUserIds?await commands.listOwnerUserIds():[user(req)];
+        broadcastToUsers(ownerIds,{type:'admin.changed'});
+      }catch{/* the merge is already durable; live-refresh failure cannot turn it into a failed response */}
+      res.json(jsonSafe(result));
+    }),
     adminWrite:action(async(req,res)=>{const actionName=String(req.params.action||'').toLowerCase();
-      if(['group-delete','owner','ban','unban','suspend','unsuspend','deactivate','reactivate','merge-account'].includes(actionName))confirmation(req);
+      if(['group-delete','owner','ban','unban','suspend','unsuspend','deactivate','reactivate'].includes(actionName))confirmation(req);
       let result;try{result=await commands.admin(user(req),adminInput(actionName,req.body));}
       catch(error){if(error instanceof AuthorizationError||error instanceof ValidationError)throw error;throw new ValidationError({field:'admin',message:error.message});}
       await auditAdminWrite(req,actionName);
@@ -525,6 +558,8 @@ function mountDashboardRoutes(app,api){
   app.get('/api/admin/users/:userId/activity',api.requireSession,api.adminUserActivity);
   app.get('/api/admin/users/:userId/tasks',api.requireSession,api.adminUserTasks);
   app.get('/api/admin/users/:userId/pnl',api.requireSession,api.adminUserPnl);
+  app.post('/api/admin/account-merge-preview',api.requireSession,api.requireCsrf,api.adminAccountMergePreview);
+  app.post('/api/admin/account-merge-execute',api.requireSession,api.requireCsrf,api.adminAccountMergeExecute);
   app.post('/api/admin/:action',api.requireSession,api.requireCsrf,api.adminWrite);
 }
 module.exports={SECURITY_HEADERS,createDashboardApi,jsonSafe,mountDashboardRoutes,noStore,publicWallet};

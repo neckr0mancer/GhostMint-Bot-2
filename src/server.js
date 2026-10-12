@@ -119,6 +119,20 @@ const identityRepository = createPostgresIdentityRepository(pool);
 // the closure only runs later, once a link code is actually consumed (well after the hub exists).
 const identity = createIdentityService(identityRepository, {
   broadcast: (userId, message) => dashboardWebSockets.broadcastToUser(userId, message),
+  onAccountMergeCommitted: async ({ eventId, sourceUserId, targetUserId }) => {
+    // The database transaction is already committed. Re-key the process snapshot immediately so
+    // workers cannot keep addressing the removed UUID while a full authoritative reload is in
+    // flight, then terminate every now-revoked browser session for both accounts.
+    for (const collection of [DB.wallets, DB.tasks, DB.activity, DB.pnl, DB.snipers]) {
+      for (const value of collection) if (value.userId === sourceUserId) value.userId = targetUserId;
+    }
+    dashboardWebSockets.disconnectUsers([sourceUserId, targetUserId], {
+      reason: 'account_merge',
+      message: `Your session ended because two GhostMint accounts were securely combined (evidence ${eventId}). Sign in again to continue.`,
+    });
+    try { DB = await storage.loadSystemState(); }
+    catch (error) { try { log(`Account merge runtime reload failed safely: ${error.message}`); } catch {} }
+  },
 });
 const dashboardAuth=createDashboardAuthService({identity,repository:createDashboardSessionRepository(pool),secureCookies:CONFIG.isProduction});
 const transactionIntentRepository = createTransactionIntentRepository(pool);

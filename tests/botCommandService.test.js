@@ -634,3 +634,63 @@ test('a duplicate inside a batch import fails only its own entry, and the others
   assert.match(results[0].error, /already imported as "already-here"/);
   assert.equal(results[1].status, 'success', 'the good key still imports -- one duplicate is not a whole-batch failure');
 });
+
+test('account merge command wrapper enforces owner and root-owner boundaries', async () => {
+  const previewInput = {
+    sourcePlatform: 'discord', sourcePlatformUserId: '111',
+    targetPlatform: 'telegram', targetPlatformUserId: '222',
+  };
+  const previewCalls = [];
+  const owner = fixture({
+    governance: {
+      requireOwner: async userId => previewCalls.push(['requireOwner', userId]),
+    },
+    governanceRepository: {
+      isRootOwner: async userId => { previewCalls.push(['isRootOwner', userId]); return false; },
+    },
+    identity: {
+      previewAccountMerge: async input => {
+        previewCalls.push(['preview', input]);
+        assert.equal(input, previewInput);
+        return { classification: 'ready', planVersion: 3, snapshotDigest: 'digest-a' };
+      },
+    },
+  });
+  assert.deepEqual(await owner.service.adminAccountMergePreview('owner-a', previewInput), {
+    classification: 'ready', planVersion: 3, snapshotDigest: 'digest-a', executionAvailable: false,
+  });
+  assert.deepEqual(previewCalls, [
+    ['requireOwner', 'owner-a'], ['preview', previewInput], ['isRootOwner', 'owner-a'],
+  ]);
+
+  const executeInput = { expectedSnapshotDigest: 'digest-a' };
+  const executeCalls = [];
+  const rootOwner = fixture({
+    governance: {
+      requireRootOwner: async userId => executeCalls.push(['requireRootOwner', userId]),
+    },
+    identity: {
+      executeAccountMerge: async (actorUserId, input) => {
+        executeCalls.push(['execute', actorUserId, input]);
+        assert.equal(input, executeInput);
+        return { eventId: 'event-a', status: 'committed' };
+      },
+    },
+  });
+  assert.deepEqual(await rootOwner.service.adminAccountMergeExecute('root-a', executeInput), {
+    eventId: 'event-a', status: 'committed',
+  });
+  assert.deepEqual(executeCalls, [
+    ['requireRootOwner', 'root-a'], ['execute', 'root-a', executeInput],
+  ]);
+
+  const ownerError = new ValidationError({ field: 'owner', message: 'Owner access required' });
+  let previewCalled = false;
+  const nonOwner = fixture({
+    governance: { requireOwner: async () => { throw ownerError; } },
+    governanceRepository: { isRootOwner: async () => true },
+    identity: { previewAccountMerge: async () => { previewCalled = true; } },
+  });
+  await assert.rejects(nonOwner.service.adminAccountMergePreview('user-a', previewInput), error => error === ownerError);
+  assert.equal(previewCalled, false);
+});

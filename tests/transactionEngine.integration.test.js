@@ -1,10 +1,7 @@
 const assert = require('node:assert/strict');
 const { randomBytes } = require('node:crypto');
 const path = require('node:path');
-const test = require('node:test');
 const { CONFIG } = require('../src/config');
-const { runMigrations } = require('../src/db/migrate');
-const { createDatabasePool } = require('../src/db/pool');
 const { createIdentityService } = require('../src/identity/identityService');
 const { createPostgresIdentityRepository } = require('../src/identity/postgresIdentityRepository');
 const { createKeyEncryption } = require('../src/security/keyEncryption');
@@ -12,12 +9,10 @@ const { createPostgresStorage } = require('../src/storage/postgresStorage');
 const { createTransactionIntentRepository } = require('../src/transactions/intentRepository');
 const { createTransactionPolicyRepository } = require('../src/transactions/policyRepository');
 const { createTransactionEngine } = require('../src/transactions/transactionEngine');
-
-const integrationTest = CONFIG.databaseUrl && CONFIG.databaseUrlUnpooled ? test : test.skip;
+const { createTestDatabasePool, integrationTest, runTestMigrations } = require('./helpers/disposableDatabase');
 
 integrationTest('persisted submitted intent and editable policies survive a process-style pool restart', { timeout: 120_000 }, async () => {
-  const migration = await runMigrations({
-    connectionString: CONFIG.databaseUrlUnpooled,
+  const migration = await runTestMigrations({
     migrationsDirectory: path.join(CONFIG.projectRoot, 'migrations'),
   });
   assert.equal(migration.connection, 'unpooled');
@@ -27,7 +22,7 @@ integrationTest('persisted submitted intent and editable policies survive a proc
   let userId;
   let wallet;
   let intentId;
-  const firstPool = createDatabasePool({ connectionString: CONFIG.databaseUrl, max: 2 });
+  const firstPool = await createTestDatabasePool({ max: 2 });
   try {
     const identity = createIdentityService(createPostgresIdentityRepository(firstPool));
     userId = await identity.resolveOrCreate('telegram', platformId);
@@ -71,7 +66,7 @@ integrationTest('persisted submitted intent and editable policies survive a proc
     await firstPool.end();
   }
 
-  const secondPool = createDatabasePool({ connectionString: CONFIG.databaseUrl, max: 2 });
+  const secondPool = await createTestDatabasePool({ max: 2 });
   try {
     const intents = createTransactionIntentRepository(secondPool);
     // This integration suite shares the configured database with other tests (and may be run
@@ -123,7 +118,7 @@ integrationTest('persisted submitted intent and editable policies survive a proc
 integrationTest('rollingSpendWei counts value plus actual fee for confirmed intents, and the estimate before one', { timeout: 120_000 }, async () => {
   const platformId = `rollingspend-${process.pid}-${Date.now()}`;
   let userId;
-  const pool = createDatabasePool({ connectionString: CONFIG.databaseUrl, max: 2 });
+  const pool = await createTestDatabasePool({ max: 2 });
   try {
     const identity = createIdentityService(createPostgresIdentityRepository(pool));
     userId = await identity.resolveOrCreate('telegram', platformId);

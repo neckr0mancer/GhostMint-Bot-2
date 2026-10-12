@@ -135,6 +135,7 @@ function createGovernanceService(repository) {
 
   return {
     requireOwner,
+    requireRootOwner,
 
     // ── Milestone 16a: account lifecycle ──
     banUser(callerUserId, input) {

@@ -166,6 +166,16 @@ main.loading{min-height:100vh;display:grid;place-items:center;padding:1.25rem;co
 .confirm-modal p{margin:0 0 1.1rem;line-height:1.5}
 .confirm-modal input{width:100%;padding:.75rem .85rem;border:1px solid var(--border-strong);border-radius:var(--radius-sm);background:var(--surface-deep);color:var(--text);font-size:.95rem;margin-bottom:1.1rem}
 .confirm-modal-actions{display:flex;justify-content:flex-end;gap:.6rem}
+.account-merge-confirm{width:min(38rem,100%)}
+.account-merge-confirm h2{margin:0 0 .75rem}
+.account-merge-confirm-phrase{display:block;overflow-wrap:anywhere;margin:-.35rem 0 1rem;padding:.7rem .8rem;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface-deep);color:var(--text)}
+.account-merge-receipt .ledger{margin-top:.75rem}
+.account-merge-preview,.account-merge-receipt{min-width:0}
+.account-merge-preview .ledger-row,.account-merge-receipt .ledger-row,
+.account-merge-preview .ledger-value,.account-merge-receipt .ledger-value{min-width:0}
+.account-merge-preview code,.account-merge-receipt code{max-width:100%;overflow-wrap:anywhere;word-break:break-word}
+.admin-load-error{display:flex;align-items:center;gap:.75rem;flex-wrap:wrap}
+.admin-load-error span{flex:1 1 18rem}
 
 /* Toast notifications: bottom-right stack, newest closest to the corner. Slide/scale in on
    mount; the "leaving" class is applied ~220ms before a toast actually unmounts (see notify()

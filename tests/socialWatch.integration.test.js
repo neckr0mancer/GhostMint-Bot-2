@@ -1,20 +1,15 @@
 const assert = require('node:assert/strict');
 const path = require('node:path');
-const test = require('node:test');
 const { CONFIG } = require('../src/config');
-const { runMigrations } = require('../src/db/migrate');
-const { createDatabasePool } = require('../src/db/pool');
 const { createIdentityService } = require('../src/identity/identityService');
 const { createPostgresIdentityRepository } = require('../src/identity/postgresIdentityRepository');
 const { createSocialWatchRepository } = require('../src/social/socialWatchRepository');
 const { createSocialWatchService } = require('../src/social/socialWatchService');
-
-const integrationTest = CONFIG.databaseUrl && CONFIG.databaseUrlUnpooled ? test : test.skip;
+const { createTestDatabasePool, integrationTest, runTestMigrations } = require('./helpers/disposableDatabase');
 
 integrationTest('social rules and deduplicated trigger events persist in PostgreSQL', { timeout:120_000 }, async () => {
-  await runMigrations({ connectionString:CONFIG.databaseUrlUnpooled,
-    migrationsDirectory:path.join(CONFIG.projectRoot,'migrations') });
-  const pool=createDatabasePool({connectionString:CONFIG.databaseUrl,max:2});
+  await runTestMigrations({ migrationsDirectory:path.join(CONFIG.projectRoot,'migrations') });
+  const pool=await createTestDatabasePool({max:2});
   const identity=createIdentityService(createPostgresIdentityRepository(pool));
   const userId=await identity.resolveOrCreate('telegram',`social-${process.pid}-${Date.now()}`);
   const repository=createSocialWatchRepository(pool); const emitted=[];
@@ -39,9 +34,8 @@ integrationTest('social rules and deduplicated trigger events persist in Postgre
 });
 
 integrationTest('Milestone 10b-2: a Farcaster watch rule persists and its trigger events carry the farcaster platform', { timeout:120_000 }, async () => {
-  await runMigrations({ connectionString:CONFIG.databaseUrlUnpooled,
-    migrationsDirectory:path.join(CONFIG.projectRoot,'migrations') });
-  const pool=createDatabasePool({connectionString:CONFIG.databaseUrl,max:2});
+  await runTestMigrations({ migrationsDirectory:path.join(CONFIG.projectRoot,'migrations') });
+  const pool=await createTestDatabasePool({max:2});
   const identity=createIdentityService(createPostgresIdentityRepository(pool));
   const userId=await identity.resolveOrCreate('telegram',`social-farcaster-${process.pid}-${Date.now()}`);
   const repository=createSocialWatchRepository(pool); const emitted=[];

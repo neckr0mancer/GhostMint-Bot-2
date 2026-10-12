@@ -1,17 +1,13 @@
 const assert=require('node:assert/strict');
 const path=require('node:path');
-const test=require('node:test');
 const {CONFIG}=require('../src/config');
-const {runMigrations}=require('../src/db/migrate');
-const {createDatabasePool}=require('../src/db/pool');
 const {createIdentityService}=require('../src/identity/identityService');
 const {createPostgresIdentityRepository}=require('../src/identity/postgresIdentityRepository');
 const {createTargetPolicyRepository}=require('../src/triggers/targetPolicyRepository');
-
-const integrationTest=CONFIG.databaseUrl&&CONFIG.databaseUrlUnpooled?test:test.skip;
+const {createTestDatabasePool,integrationTest,runTestMigrations}=require('./helpers/disposableDatabase');
 integrationTest('target acknowledgement, durable confirmation request, and execution audit persist', {timeout:120_000},async()=>{
- await runMigrations({connectionString:CONFIG.databaseUrlUnpooled,migrationsDirectory:path.join(CONFIG.projectRoot,'migrations')});
- const pool=createDatabasePool({connectionString:CONFIG.databaseUrl,max:2});
+ await runTestMigrations({migrationsDirectory:path.join(CONFIG.projectRoot,'migrations')});
+ const pool=await createTestDatabasePool({max:2});
  const identity=createIdentityService(createPostgresIdentityRepository(pool));
  const userId=await identity.resolveOrCreate('telegram',`policy-${process.pid}-${Date.now()}`);
  const repository=createTargetPolicyRepository(pool);

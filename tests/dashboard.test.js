@@ -7,7 +7,7 @@ const express=require('express');
 const {WebSocket}=require('ws');
 const {createDashboardApi,mountDashboardRoutes}=require('../src/dashboard/api');
 const {createDashboardAuthService,SESSION_COOKIE,CSRF_COOKIE}=require('../src/dashboard/authService');
-const {createDashboardWebSocketHub}=require('../src/dashboard/webSocketHub');
+const {createDashboardWebSocketHub,sendPayloadSafely}=require('../src/dashboard/webSocketHub');
 const {LinkCodeError}=require('../src/identity/identityService');
 const {createCommandRateLimiter}=require('../src/security/botSecurity');
 const {createBotCommandService}=require('../src/commands/botCommandService');
@@ -160,6 +160,60 @@ function openSocket(url,cookie){return new Promise((resolve,reject)=>{const sock
 function nextMessage(socket){return new Promise(resolve=>socket.once('message',value=>resolve(JSON.parse(value.toString()))));}
 test('WebSocket rejects unauthenticated clients and isolates user broadcasts',async t=>{const sessions=new Map([['token-a',{userId:'user-a'}],['token-b',{userId:'user-b'}]]);const auth={authenticate:async header=>sessions.get(String(header||'').split('=')[1])||null};const hub=createDashboardWebSocketHub({auth});const server=http.createServer();hub.attach(server);await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(async()=>{await hub.close();await new Promise(resolve=>server.close(resolve));});const url=`ws://127.0.0.1:${server.address().port}/ws`;
   await assert.rejects(openSocket(url),error=>error.statusCode===401);const a=await openSocket(url,`${SESSION_COOKIE}=token-a`);const b=await openSocket(url,`${SESSION_COOKIE}=token-b`);await new Promise(resolve=>setTimeout(resolve,10));assert.deepEqual(a.messages.shift(),{type:'connected'});assert.deepEqual(b.messages.shift(),{type:'connected'});const message=nextMessage(a.socket);hub.broadcastToUser('user-a',{type:'test',value:'only-a'});assert.deepEqual(await message,{type:'test',value:'only-a'});await new Promise(resolve=>setTimeout(resolve,30));assert.deepEqual(b.messages,[]);a.socket.close();b.socket.close();});
+
+test('disconnectUsers ends every targeted account session and leaves unrelated users connected',async t=>{
+  const sessions=new Map([
+    ['token-source',{userId:'source-user'}],
+    ['token-target',{userId:'target-user'}],
+    ['token-other',{userId:'other-user'}],
+  ]);
+  const auth={authenticate:async header=>sessions.get(String(header||'').split('=')[1])||null};
+  const hub=createDashboardWebSocketHub({auth});
+  const server=http.createServer();
+  hub.attach(server);
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  t.after(async()=>{await hub.close();await new Promise(resolve=>server.close(resolve));});
+  const url=`ws://127.0.0.1:${server.address().port}/ws`;
+  const source=await openSocket(url,`${SESSION_COOKIE}=token-source`);
+  const target=await openSocket(url,`${SESSION_COOKIE}=token-target`);
+  const other=await openSocket(url,`${SESSION_COOKIE}=token-other`);
+  await new Promise(resolve=>setTimeout(resolve,10));
+  assert.deepEqual(source.messages.shift(),{type:'connected'});
+  assert.deepEqual(target.messages.shift(),{type:'connected'});
+  assert.deepEqual(other.messages.shift(),{type:'connected'});
+
+  const sourceEnded=nextMessage(source.socket);
+  const targetEnded=nextMessage(target.socket);
+  const sourceClosed=new Promise(resolve=>source.socket.once('close',(code,reason)=>resolve({code,reason:reason.toString()})));
+  const targetClosed=new Promise(resolve=>target.socket.once('close',(code,reason)=>resolve({code,reason:reason.toString()})));
+  hub.disconnectUsers(['source-user','target-user','source-user'],{
+    reason:'account_merge',
+    message:'Accounts were securely combined. Sign in again.',
+  });
+
+  const expected={type:'session.ended',reason:'account_merge',message:'Accounts were securely combined. Sign in again.'};
+  assert.deepEqual(await sourceEnded,expected);
+  assert.deepEqual(await targetEnded,expected);
+  assert.deepEqual(await sourceClosed,{code:4001,reason:'Session ended'});
+  assert.deepEqual(await targetClosed,{code:4001,reason:'Session ended'});
+
+  const stillConnected=nextMessage(other.socket);
+  hub.broadcastToUser('other-user',{type:'test',value:'still-connected'});
+  assert.deepEqual(await stillConnected,{type:'test',value:'still-connected'});
+  other.socket.close();
+});
+
+test('WebSocket delivery failures never escape after the underlying write has completed',()=>{
+  const logs=[];
+  const throwing={OPEN:1,readyState:1,send:()=>{throw new Error('socket closed');}};
+  assert.equal(sendPayloadSafely(throwing,'{}',message=>logs.push(message)),false);
+  const callbackFailure={OPEN:1,readyState:1,send:(payload,done)=>done(new Error('write failed'))};
+  assert.equal(sendPayloadSafely(callbackFailure,'{}',message=>logs.push(message)),true);
+  assert.deepEqual(logs,[
+    'WebSocket delivery failed safely: socket closed',
+    'WebSocket delivery failed safely: write failed',
+  ]);
+});
 
 test('dashboard production bundle contains no server secrets or secret variable names',()=>{const root=path.join(__dirname,'..','public','dashboard');assert.equal(fs.existsSync(path.join(root,'index.html')),true,'dashboard must be built before tests');const content=fs.readdirSync(path.join(root,'assets')).map(name=>fs.readFileSync(path.join(root,'assets',name),'utf8')).join('\n');const forbidden=['ENCRYPTION_SECRET','DATABASE_URL','DISCORD_BOT_TOKEN','TELEGRAM_BOT_TOKEN','dev-encryption-key-7Qv9'];const envPath=path.join(__dirname,'..','.env');if(fs.existsSync(envPath)){const values=require('dotenv').parse(fs.readFileSync(envPath));for(const name of ['ENCRYPTION_SECRET','DISCORD_BOT_TOKEN','TELEGRAM_BOT_TOKEN','SOCIAL_OFFICIAL_API_TOKEN','SOCIAL_MANAGED_SERVICE_TOKEN'])if(values[name]?.length>=8)forbidden.push(values[name]);}for(const value of forbidden)assert.equal(content.includes(value),false,`bundle contains forbidden server value: ${value.startsWith('dev-')?value:'[redacted]'}`);});
 

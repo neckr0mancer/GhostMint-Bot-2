@@ -1,25 +1,20 @@
 const assert = require('node:assert/strict');
 const path = require('node:path');
-const test = require('node:test');
 const { CONFIG } = require('../src/config');
-const { runMigrations } = require('../src/db/migrate');
-const { createDatabasePool } = require('../src/db/pool');
 const { createIdentityService } = require('../src/identity/identityService');
 const { createPostgresIdentityRepository } = require('../src/identity/postgresIdentityRepository');
 const { createPostgresGovernanceRepository } = require('../src/governance/postgresGovernanceRepository');
 const { createKeyEncryption } = require('../src/security/keyEncryption');
 const { createPostgresStorage } = require('../src/storage/postgresStorage');
 const { createLiveAcceptanceRunRepository } = require('../src/acceptance/liveAcceptanceRunRepository');
-
-const integrationTest = CONFIG.databaseUrl && CONFIG.databaseUrlUnpooled ? test : test.skip;
+const { createTestDatabasePool, integrationTest, runTestMigrations } = require('./helpers/disposableDatabase');
 
 integrationTest('live acceptance runs persist durably and stay owner-scoped', { timeout: 120_000 }, async () => {
-  await runMigrations({
-    connectionString: CONFIG.databaseUrlUnpooled,
+  await runTestMigrations({
     migrationsDirectory: path.join(CONFIG.projectRoot, 'migrations'),
   });
 
-  const pool = createDatabasePool({ connectionString: CONFIG.databaseUrl, max: 2 });
+  const pool = await createTestDatabasePool({ max: 2 });
   const storage = createPostgresStorage(pool);
   const identity = createIdentityService(createPostgresIdentityRepository(pool));
   const governanceRepository = createPostgresGovernanceRepository(pool);

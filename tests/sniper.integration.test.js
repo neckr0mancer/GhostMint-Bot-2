@@ -1,23 +1,18 @@
 const assert = require('node:assert/strict');
 const path = require('node:path');
-const test = require('node:test');
 const { randomUUID } = require('node:crypto');
 const { Interface, parseEther, parseUnits } = require('ethers');
 const { CONFIG } = require('../src/config');
-const { runMigrations } = require('../src/db/migrate');
-const { createDatabasePool } = require('../src/db/pool');
 const { createIdentityService } = require('../src/identity/identityService');
 const { createPostgresIdentityRepository } = require('../src/identity/postgresIdentityRepository');
 const { createSniperRepository } = require('../src/sniper/sniperRepository');
 const { createPostgresStorage } = require('../src/storage/postgresStorage');
-
-const integrationTest = CONFIG.databaseUrl && CONFIG.databaseUrlUnpooled ? test : test.skip;
+const { createTestDatabasePool, integrationTest, runTestMigrations } = require('./helpers/disposableDatabase');
 const MINT_DATA=new Interface(['function mint(uint256)']).encodeFunctionData('mint',[1]);
 
 integrationTest('source transaction deduplication survives a repository restart', { timeout:120_000 }, async () => {
-  await runMigrations({ connectionString:CONFIG.databaseUrlUnpooled,
-    migrationsDirectory:path.join(CONFIG.projectRoot,'migrations') });
-  const pool=createDatabasePool({connectionString:CONFIG.databaseUrl,max:2});
+  await runTestMigrations({ migrationsDirectory:path.join(CONFIG.projectRoot,'migrations') });
+  const pool=await createTestDatabasePool({max:2});
   const storage=createPostgresStorage(pool);
   const identityRepository=createPostgresIdentityRepository(pool);
   const identity=createIdentityService(identityRepository);
@@ -68,9 +63,8 @@ integrationTest('source transaction deduplication survives a repository restart'
 });
 
 integrationTest('sniper claim serializes daily-cap and cooldown reservations across workers', { timeout:120_000 }, async () => {
-  await runMigrations({ connectionString:CONFIG.databaseUrlUnpooled,
-    migrationsDirectory:path.join(CONFIG.projectRoot,'migrations') });
-  const pool=createDatabasePool({connectionString:CONFIG.databaseUrl,max:3});
+  await runTestMigrations({ migrationsDirectory:path.join(CONFIG.projectRoot,'migrations') });
+  const pool=await createTestDatabasePool({max:3});
   const storage=createPostgresStorage(pool);const identity=createIdentityService(createPostgresIdentityRepository(pool));
   const userId=await identity.resolveOrCreate('telegram',`sniper-claim-${process.pid}-${Date.now()}`);
   const sniper={userId,id:randomUUID(),label:'atomic claim',targetAddress:'0x0000000000000000000000000000000000000011',

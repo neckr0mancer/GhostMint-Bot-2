@@ -1,24 +1,19 @@
 'use strict';
 
 const path=require('node:path');
-const test=require('node:test');
 const assert=require('node:assert/strict');
 const {randomUUID}=require('node:crypto');
 const {CONFIG}=require('../src/config');
-const {runMigrations}=require('../src/db/migrate');
-const {createDatabasePool}=require('../src/db/pool');
 const {createPostgresStorage}=require('../src/storage/postgresStorage');
 const {createSchedulerRepository}=require('../src/scheduler/schedulerRepository');
 const {createPostgresIdentityRepository}=require('../src/identity/postgresIdentityRepository');
 const {createIdentityService}=require('../src/identity/identityService');
 const {createKeyEncryption}=require('../src/security/keyEncryption');
-
-const integrationTest=CONFIG.databaseUrl&&CONFIG.databaseUrlUnpooled?test:test.skip;
+const {createTestDatabasePool,integrationTest,runTestMigrations}=require('./helpers/disposableDatabase');
 
 integrationTest('two concurrent same-stage reservations have exactly one winner and paused tasks keep the slot',{timeout:120_000},async()=>{
-  await runMigrations({connectionString:CONFIG.databaseUrlUnpooled,
-    migrationsDirectory:path.join(CONFIG.projectRoot,'migrations')});
-  const pool=createDatabasePool({connectionString:CONFIG.databaseUrl,max:4});
+  await runTestMigrations({migrationsDirectory:path.join(CONFIG.projectRoot,'migrations')});
+  const pool=await createTestDatabasePool({max:4});
   const storageA=createPostgresStorage(pool);const storageB=createPostgresStorage(pool);
   const scheduler=createSchedulerRepository(pool);
   const identity=createIdentityService(createPostgresIdentityRepository(pool));
@@ -58,9 +53,8 @@ integrationTest('two concurrent same-stage reservations have exactly one winner 
 
 integrationTest('phase advancement uses the same envelope lock and rolls back an over-cap move',
   {timeout:120_000},async()=>{
-  await runMigrations({connectionString:CONFIG.databaseUrlUnpooled,
-    migrationsDirectory:path.join(CONFIG.projectRoot,'migrations')});
-  const pool=createDatabasePool({connectionString:CONFIG.databaseUrl,max:4});
+  await runTestMigrations({migrationsDirectory:path.join(CONFIG.projectRoot,'migrations')});
+  const pool=await createTestDatabasePool({max:4});
   const storage=createPostgresStorage(pool);
   const scheduler=createSchedulerRepository(pool);
   const identity=createIdentityService(createPostgresIdentityRepository(pool));

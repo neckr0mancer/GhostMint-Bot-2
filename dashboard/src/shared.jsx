@@ -289,6 +289,13 @@ export function useLiveSocket(){
       socket=next;
       next.onmessage=event=>{
         let message;try{message=JSON.parse(event.data);}catch{return;}
+        if(message.type==='session.ended'){
+          stopped=true;if(retryTimer){clearTimeout(retryTimer);retryTimer=null;}setLive(false);
+          window.dispatchEvent(new CustomEvent('ghostmint-ws',{detail:message}));
+          window.dispatchEvent(new CustomEvent('ghostmint-session-ended',{detail:{message:message.message,reason:message.reason}}));
+          try{next.close();}catch{}
+          return;
+        }
         if(message.type==='connected'){
           setLive(true);attempt=0;
           if(connectedOnce||needsResync)window.dispatchEvent(new CustomEvent('ghostmint-ws',{detail:{type:'ws.reconnected'}}));

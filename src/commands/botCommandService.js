@@ -1554,6 +1554,23 @@ function createBotCommandService(dependencies) {
     stats,
     selectMode: (userId, preset) => governance.selectPreset(userId, preset),
     admin: (userId, input) => adminCommands.execute(userId, input),
+    adminAccountMergePreview: async (userId, input) => {
+      await governance.requireOwner(userId);
+      if (!identity?.previewAccountMerge) {
+        throw new ValidationError({ field: 'merge', message: 'account reconciliation preview is unavailable' });
+      }
+      const plan = await identity.previewAccountMerge(input);
+      const executionAvailable = plan.classification === 'ready'
+        && await governanceRepository.isRootOwner(userId);
+      return { ...plan, executionAvailable };
+    },
+    adminAccountMergeExecute: async (userId, input) => {
+      await governance.requireRootOwner(userId);
+      if (!identity?.executeAccountMerge) {
+        throw new ValidationError({ field: 'merge', message: 'account merge execution is unavailable' });
+      }
+      return identity.executeAccountMerge(userId, input);
+    },
     // Discord's batch-mint gas-tolerance step (mirrors Telegram's withGasToleranceContext in
     // server.js) needs the account's own effective gas ceiling for context, without needing
     // discordBot.js to take a direct dependency on governanceRepository.

@@ -21,7 +21,43 @@ function fixture(){const users=new Map([['owner',{userId:'owner',isOwner:true,pl
   async getEffectiveGovernance(userId,chain){const user=users.get(userId);const rule=rules.get(userId)||{};const group=groups.get(rule.groupName);const defaults=defaultPolicy(chain);return {isOwner:user.isOwner,maxTransactionValueWei:BigInt(rule.maxTransactionValueWei??group?.maxTransactionValueWei??defaults.maxTransactionValueWei),dailySpendingBudgetWei:BigInt(rule.dailySpendingBudgetWei??group?.dailySpendingBudgetWei??defaults.dailySpendingBudgetWei),gasCeilingGwei:Number(rule.gasCeilingGwei??group?.gasCeilingGwei??defaults.gasCeilingGwei),simulationForced:rule.simulationForced??group?.simulationForced??true,preset:null};},
  };return {repository,users,groups,rules};}
 
-async function server(t){const data=fixture();const governance=createGovernanceService(data.repository);const admin=createAdminCommandService(governance);const audits=[];const broadcasts=[];const sessions=new Map([['owner',{userId:'owner',sessionId:'session-owner'}],['member',{userId:'member',sessionId:'session-member'}]]);const commands={admin:(id,input)=>admin.execute(id,input),adminOverview:id=>governance.dashboardOverview(id),adminEffective:(id,input)=>governance.effectiveForLinkedUser(id,input),isOwner:id=>data.repository.isOwner(id)};const auth={authenticate:async header=>sessions.get(String(header||'').split('=')[1])||null,verifyCsrf:({headerToken})=>headerToken==='csrf',sessionCookies:()=>[],clearCookies:()=>[],revoke:async()=>{},revokeAll:async()=>{}};const api=createDashboardApi({auth,commands,securityAudit:{record:async value=>audits.push(value)},broadcast:(userId,message)=>broadcasts.push({userId,message}),broadcastToUsers:(userIds,message)=>userIds.forEach(userId=>broadcasts.push({userId,message})),supportedChains:['ethereum'],identityRepository:{listLinkedAccounts:async()=>[],getTheme:async()=>'ghost-mint'},loginRateLimiter:createCommandRateLimiter()});const app=express();app.use(express.json());app.use(api.securityHeaders);mountDashboardRoutes(app,api);app.use(api.error);const httpServer=http.createServer(app);await new Promise(resolve=>httpServer.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>httpServer.close(resolve)));return {...data,audits,broadcasts,base:`http://127.0.0.1:${httpServer.address().port}`};}
+async function server(t,options={}){
+  const data=fixture();
+  const governance=createGovernanceService(data.repository);
+  const previewCalls=[];
+  const executeCalls=[];
+  const identity={
+    mergeAccount:async()=>{throw new Error('legacy merge must not be called');},
+    previewAccountMerge:async input=>{
+      previewCalls.push(input);
+      return {previewOnly:true,executionAvailable:false,classification:'blocked',sourceUserId:'source-uuid',targetUserId:'target-uuid',snapshotDigest:'sha256:test',blockers:[],requiredChoices:[],summary:{sourceIdentityCount:1,targetIdentityCount:1,movable:{rows:2,domains:[{key:'mintTasks',count:2}]},revocable:{rows:0,domains:[]},blocking:{rows:0,domains:[]},singleton:{takeFromSource:[],keepTarget:[],alreadyEqual:[],choiceRequired:[]}}};
+    },
+    executeAccountMerge:async(actorUserId,input)=>{
+      executeCalls.push({actorUserId,input});
+      if(options.executeError)throw options.executeError;
+      return options.executeResult||{eventId:'event-uuid',sourceUserId:'source-uuid',targetUserId:'target-uuid',replayed:false};
+    },
+  };
+  const admin=createAdminCommandService(governance,identity);
+  const audits=[];
+  const broadcasts=[];
+  const sessions=new Map([['owner',{userId:'owner',sessionId:'session-owner'}],['member',{userId:'member',sessionId:'session-member'}]]);
+  const commands={
+    admin:(id,input)=>admin.execute(id,input),
+    adminOverview:id=>governance.dashboardOverview(id),
+    adminEffective:(id,input)=>governance.effectiveForLinkedUser(id,input),
+    adminAccountMergePreview:async(id,input)=>{await governance.requireOwner(id);return identity.previewAccountMerge(input);},
+    adminAccountMergeExecute:async(id,input)=>{await governance.requireRootOwner(id);return identity.executeAccountMerge(id,input);},
+    listOwnerUserIds:async()=>['owner'],
+    isOwner:id=>data.repository.isOwner(id),
+  };
+  const auth={authenticate:async header=>sessions.get(String(header||'').split('=')[1])||null,verifyCsrf:({headerToken})=>headerToken==='csrf',sessionCookies:()=>[],clearCookies:()=>[],revoke:async()=>{},revokeAll:async()=>{}};
+  const api=createDashboardApi({auth,commands,securityAudit:{record:async value=>audits.push(value)},broadcast:(userId,message)=>broadcasts.push({userId,message}),broadcastToUsers:(userIds,message)=>userIds.forEach(userId=>broadcasts.push({userId,message})),supportedChains:['ethereum'],identityRepository:{listLinkedAccounts:async()=>[],getTheme:async()=>'ghost-mint'},loginRateLimiter:createCommandRateLimiter()});
+  const app=express();app.use(express.json());app.use(api.securityHeaders);mountDashboardRoutes(app,api);app.use(api.error);
+  const httpServer=http.createServer(app);await new Promise(resolve=>httpServer.listen(0,'127.0.0.1',resolve));
+  t.after(()=>new Promise(resolve=>httpServer.close(resolve)));
+  return {...data,audits,broadcasts,previewCalls,executeCalls,base:`http://127.0.0.1:${httpServer.address().port}`};
+}
 function headers(user='owner'){return {cookie:`ghostmint_session=${user}`,'content-type':'application/json','x-csrf-token':'csrf'};}
 async function write(base,user,action,body){return fetch(`${base}/api/admin/${action}`,{method:'POST',headers:headers(user),body:JSON.stringify(body)});}
 
@@ -29,10 +65,138 @@ test('every dashboard admin write rejects a non-owner session',async t=>{const {
 
 test('owner overview returns truthful database-backed identity and activity metrics',async t=>{const {base}=await server(t);const response=await fetch(`${base}/api/admin`,{headers:headers()});assert.equal(response.status,200);const body=await response.json();assert.deepEqual(body.metrics,{totalUsers:2,activeUsers:1,activeAnyPlatform24h:1,linkedAccounts:2,groups:0,owners:1,activeWindowMinutes:15});assert.equal(body.users.length,2);});
 
+test('account reconciliation preview is owner-only, read-only, and returns the exact resolved accounts',async t=>{
+  const {base,previewCalls,audits,broadcasts}=await server(t);
+  const request={sourcePlatform:'discord',sourcePlatformUserId:'123',targetPlatform:'telegram',targetPlatformUserId:'456'};
+  const denied=await write(base,'member','account-merge-preview',request);
+  assert.equal(denied.status,403);
+  assert.equal(previewCalls.length,0);
+  const response=await write(base,'owner','account-merge-preview',request);
+  assert.equal(response.status,200);
+  const plan=await response.json();
+  assert.equal(plan.previewOnly,true);
+  assert.equal(plan.executionAvailable,false);
+  assert.equal(plan.sourceUserId,'source-uuid');
+  assert.equal(plan.targetUserId,'target-uuid');
+  assert.deepEqual(previewCalls,[request]);
+  assert.deepEqual(audits,[],'a read-only preview is not a successful governance mutation');
+  assert.deepEqual(broadcasts,[],'a read-only preview must not announce a state change');
+});
+
+test('the account merge control diagnoses unified and split platform identities before mutation',async()=>{
+  const {accountMergeStatus}=await import('../dashboard/src/accountMergeStatus.mjs');
+  const target={userId:'target-user',linkedAccounts:[{platform:'telegram',platformUserId:'telegram-1'}]};
+  const unified=accountMergeStatus({
+    sourcePlatformUserId:'discord-1',targetPlatformUserId:'telegram-1',
+    matchedSource:target,matchedTarget:target,
+  });
+  assert.equal(unified.sameAccount,true);
+  assert.equal(unified.disabledReason,'');
+  assert.deepEqual(unified.notice,{
+    tone:'i',text:'Unified: both platforms already read and write the same account.',
+  });
+  const split=accountMergeStatus({
+    sourcePlatformUserId:'discord-1',targetPlatformUserId:'telegram-1',
+    sourcePlatform:'discord',
+    matchedSource:{userId:'duplicate-user',linkedAccounts:[{platform:'discord',platformUserId:'discord-1'}]},matchedTarget:target,
+  });
+  assert.equal(split.sameAccount,false);
+  assert.equal(split.disabledReason,'');
+  assert.deepEqual(split.notice,{
+    tone:'w',text:'Split account detected: these identities currently map to different GhostMint accounts.',
+  });
+  const conflict=accountMergeStatus({
+    sourcePlatform:'discord',sourcePlatformUserId:'discord-1',targetPlatformUserId:'telegram-1',
+    matchedSource:{userId:'duplicate-user',linkedAccounts:[{platform:'discord',platformUserId:'discord-1'}]},
+    matchedTarget:{...target,linkedAccounts:[...target.linkedAccounts,
+      {platform:'discord',platformUserId:'discord-other'}]},
+  });
+  assert.equal(conflict.disabledReason,'');
+  assert.equal(conflict.notice.text,
+    'Split account detected: these identities currently map to different GhostMint accounts.');
+});
+
+function accountMergeExecutionRequest(overrides={}){
+  return {
+    sourcePlatform:'discord',
+    sourcePlatformUserId:'123',
+    targetPlatform:'telegram',
+    targetPlatformUserId:'456',
+    expectedSourceUserId:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    expectedTargetUserId:'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+    expectedPlanVersion:2,
+    expectedSnapshotDigest:`sha256:${'d'.repeat(64)}`,
+    resolutionMap:{},
+    confirmationText:'MERGE bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb INTO cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+    ...overrides,
+  };
+}
+
+test('the dedicated account merge endpoint is root-owner-only',async t=>{
+  const {base,executeCalls,audits,broadcasts}=await server(t);
+  const response=await write(base,'member','account-merge-execute',accountMergeExecutionRequest());
+  assert.equal(response.status,403);
+  assert.match((await response.json()).error,/Root owner access required/);
+  assert.deepEqual(executeCalls,[]);
+  assert.deepEqual(audits,[]);
+  assert.deepEqual(broadcasts,[]);
+});
+
+test('the dedicated endpoint forwards only its structured reviewed fields and records immutable evidence',async t=>{
+  const {base,executeCalls,audits,broadcasts}=await server(t);
+  const request=accountMergeExecutionRequest({idempotencyKey:'client-must-not-control-this'});
+  const response=await write(base,'owner','account-merge-execute',request);
+  assert.equal(response.status,200);
+  assert.deepEqual(await response.json(),{
+    eventId:'event-uuid',sourceUserId:'source-uuid',targetUserId:'target-uuid',replayed:false,
+  });
+  assert.deepEqual(executeCalls,[{
+    actorUserId:'owner',
+    input:accountMergeExecutionRequest(),
+  }]);
+  assert.equal(audits.length,1);
+  assert.equal(audits[0].command,'admin:account-merge-execute');
+  assert.equal(audits[0].outcome,'success');
+  assert.match(audits[0].reason,/event-uuid/);
+  assert.deepEqual(broadcasts,[{userId:'owner',message:{type:'admin.changed'}}]);
+});
+
+test('a stale reviewed merge returns a retryable 409 with the safe fresh-plan evidence',async t=>{
+  const stale=Object.assign(new Error('The reviewed account plan changed. Review it again.'),{
+    code:'ACCOUNT_MERGE_STALE',
+    details:{freshPlan:{classification:'blocked',snapshotDigest:`sha256:${'e'.repeat(64)}`}},
+  });
+  const {base,executeCalls,audits,broadcasts}=await server(t,{executeError:stale});
+  const response=await write(base,'owner','account-merge-execute',accountMergeExecutionRequest());
+  assert.equal(response.status,409);
+  assert.deepEqual(await response.json(),{
+    error:'The reviewed account plan changed. Review it again.',
+    code:'ACCOUNT_MERGE_STALE',
+    details:{freshPlan:{classification:'blocked',snapshotDigest:`sha256:${'e'.repeat(64)}`}},
+  });
+  assert.equal(executeCalls.length,1);
+  assert.deepEqual(audits,[]);
+  assert.deepEqual(broadcasts,[]);
+});
+
+test('the generic admin endpoint cannot bypass reviewed account-merge execution',async t=>{
+  const {base,executeCalls,audits,broadcasts}=await server(t);
+  const response=await write(base,'owner','merge-account',{
+    sourcePlatform:'discord',sourcePlatformUserId:'123',targetPlatform:'telegram',
+    targetPlatformUserId:'456',confirmation:'CONFIRM',
+  });
+  assert.equal(response.status,400);
+  const body=await response.json();
+  assert.equal(body.issues?.[0]?.field,'action');
+  assert.deepEqual(executeCalls,[]);
+  assert.deepEqual(audits,[]);
+  assert.deepEqual(broadcasts,[]);
+});
+
 test('last owner cannot be removed through the dashboard API',async t=>{const {base}=await server(t);const response=await write(base,'owner','owner',{platform:'telegram',platformUserId:'1',enabled:'off',confirmation:'CONFIRM'});assert.equal(response.status,400);assert.match(JSON.stringify(await response.json()),/last owner/i);});
 
 // Regression test: unban/unsuspend/reactivate could previously be called with no confirmation field
-// at all, unlike their forward counterparts ban/suspend/deactivate (and owner/group-delete/merge-account),
+// at all, unlike their forward counterparts ban/suspend/deactivate (and owner/group-delete),
 // which all required an explicit CONFIRM. Restoring an account's access is not obviously lower-stakes
 // than restricting it, so the confirmation gate is now symmetric. group-delete (already gated, and
 // fully mocked in this fixture) establishes what a missing-confirmation rejection actually looks like;

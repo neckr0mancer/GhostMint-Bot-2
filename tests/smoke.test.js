@@ -5,16 +5,18 @@ const net = require('node:net');
 const path = require('node:path');
 const test = require('node:test');
 const dotenv = require('dotenv');
-const { runMigrations } = require('../src/db/migrate');
-const { createDatabasePool } = require('../src/db/pool');
 const { createIdentityService } = require('../src/identity/identityService');
 const { createPostgresIdentityRepository } = require('../src/identity/postgresIdentityRepository');
 const { randomUUID } = require('node:crypto');
+const {
+  createTestDatabasePool,
+  getVerifiedTestDatabase,
+  integrationTest,
+  runTestMigrations,
+} = require('./helpers/disposableDatabase');
 
 const PROJECT_ROOT = path.join(__dirname, '..');
 const EXAMPLE_ENV = dotenv.parse(fs.readFileSync(path.join(PROJECT_ROOT, '.env.example')));
-const localEnvPath = path.join(PROJECT_ROOT, '.env');
-const LOCAL_ENV = fs.existsSync(localEnvPath) ? dotenv.parse(fs.readFileSync(localEnvPath)) : {};
 
 function reservePort() {
   return new Promise((resolve, reject) => {
@@ -54,19 +56,31 @@ async function waitForHealth(url, child, output) {
   throw new Error(`Timed out waiting for ${url}.\n${output()}`);
 }
 
+async function stopChild(child) {
+  if (child.exitCode !== null) return;
+  const waitForClose = () => new Promise(resolve => child.once('close', resolve));
+  let closed = waitForClose();
+  child.kill();
+  await Promise.race([closed, new Promise(resolve => setTimeout(resolve, 5_000))]);
+  if (child.exitCode !== null) return;
+  closed = waitForClose();
+  child.kill('SIGKILL');
+  await Promise.race([closed, new Promise(resolve => setTimeout(resolve, 5_000))]);
+}
+
 // Booting the real server starts real workers -- scheduler, social watcher, retention, sniper
-// watchers -- against whatever DATABASE_URL points at. With production credentials in .env that
-// means a second worker instance could claim and broadcast a real due mint (the exact hazard
-// dashboard/vite.config.js documents for dev booting). Smoke therefore runs only against an
-// explicitly disposable database: point the env vars at throwaway credentials AND set
-// SMOKE_ALLOW=RUN. Absent either, these skip instead of silently risking production.
-const smokeTest = LOCAL_ENV.DATABASE_URL && LOCAL_ENV.DATABASE_URL_UNPOOLED && process.env.SMOKE_ALLOW === 'RUN' ? test : test.skip;
+// watchers -- so every smoke test is wrapped by the same read-only marker verification as the
+// integration suite. Normal application .env credentials can never enable this file. The extra
+// SMOKE_ALLOW flag makes booting background workers a separately deliberate choice.
+const smokeTest = process.env.SMOKE_ALLOW === 'RUN'
+  ? integrationTest
+  : (name, options, callback) => test(name, { ...options, skip: true }, callback);
 
 smokeTest('the application starts and exposes a healthy database-backed service', { timeout: 60_000 }, async t => {
-  await runMigrations({
-    connectionString: LOCAL_ENV.DATABASE_URL_UNPOOLED,
+  await runTestMigrations({
     migrationsDirectory: path.join(PROJECT_ROOT, 'migrations'),
   });
+  const database = await getVerifiedTestDatabase();
   const port = await reservePort();
   let stdout = '';
   let stderr = '';
@@ -75,10 +89,11 @@ smokeTest('the application starts and exposes a healthy database-backed service'
     env: {
       ...process.env,
       ...EXAMPLE_ENV,
-      DATABASE_URL: LOCAL_ENV.DATABASE_URL,
-      DATABASE_URL_UNPOOLED: LOCAL_ENV.DATABASE_URL_UNPOOLED,
+      DATABASE_URL: database.pooledUrl,
+      DATABASE_URL_UNPOOLED: database.unpooledUrl,
       PORT: String(port),
       TELEGRAM_BOT_TOKEN: '',
+      DISCORD_BOT_TOKEN: '',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -88,9 +103,7 @@ smokeTest('the application starts and exposes a healthy database-backed service'
   child.stdout.on('data', chunk => { stdout += chunk; });
   child.stderr.on('data', chunk => { stderr += chunk; });
 
-  t.after(() => {
-    if (child.exitCode === null) child.kill();
-  });
+  t.after(() => stopChild(child));
 
   const output = () => `stdout:\n${stdout}\nstderr:\n${stderr}`;
   const response = await waitForHealth(`http://127.0.0.1:${port}/health`, child, output);
@@ -118,10 +131,10 @@ smokeTest('the application starts and exposes a healthy database-backed service'
 // the social watch worker, the retention worker, and sniper-watcher restoration never ran either,
 // even though every one of those is otherwise fully independent of Discord.
 smokeTest('a Discord login failure does not prevent the HTTP server and workers from starting', { timeout: 60_000 }, async t => {
-  await runMigrations({
-    connectionString: LOCAL_ENV.DATABASE_URL_UNPOOLED,
+  await runTestMigrations({
     migrationsDirectory: path.join(PROJECT_ROOT, 'migrations'),
   });
+  const database = await getVerifiedTestDatabase();
   const port = await reservePort();
   let stdout = '';
   let stderr = '';
@@ -130,8 +143,8 @@ smokeTest('a Discord login failure does not prevent the HTTP server and workers 
     env: {
       ...process.env,
       ...EXAMPLE_ENV,
-      DATABASE_URL: LOCAL_ENV.DATABASE_URL,
-      DATABASE_URL_UNPOOLED: LOCAL_ENV.DATABASE_URL_UNPOOLED,
+      DATABASE_URL: database.pooledUrl,
+      DATABASE_URL_UNPOOLED: database.unpooledUrl,
       PORT: String(port),
       TELEGRAM_BOT_TOKEN: '',
       DISCORD_BOT_TOKEN: 'smoke-test-invalid-token-will-fail-login',
@@ -146,9 +159,7 @@ smokeTest('a Discord login failure does not prevent the HTTP server and workers 
   child.stdout.on('data', chunk => { stdout += chunk; });
   child.stderr.on('data', chunk => { stderr += chunk; });
 
-  t.after(() => {
-    if (child.exitCode === null) child.kill();
-  });
+  t.after(() => stopChild(child));
 
   const output = () => `stdout:\n${stdout}\nstderr:\n${stderr}`;
   const response = await waitForHealth(`http://127.0.0.1:${port}/health`, child, output);
@@ -168,11 +179,11 @@ smokeTest('a Discord login failure does not prevent the HTTP server and workers 
 // created while the owner was in good standing kept executing and spending from their wallet even
 // after they were banned. This proves the real, running scheduler now refuses the task instead.
 smokeTest('a banned account\'s due scheduled task fails without executing, instead of spending funds', { timeout: 120_000 }, async t => {
-  await runMigrations({
-    connectionString: LOCAL_ENV.DATABASE_URL_UNPOOLED,
+  await runTestMigrations({
     migrationsDirectory: path.join(PROJECT_ROOT, 'migrations'),
   });
-  const pool = createDatabasePool({ connectionString: LOCAL_ENV.DATABASE_URL, max: 2 });
+  const database = await getVerifiedTestDatabase();
+  const pool = await createTestDatabasePool({ max: 2 });
   const identity = createIdentityService(createPostgresIdentityRepository(pool));
   const suffix = `${process.pid}-${Date.now()}`;
   const userId = await identity.resolveOrCreate('telegram', `banned-scheduler-${suffix}`);
@@ -197,10 +208,11 @@ smokeTest('a banned account\'s due scheduled task fails without executing, inste
       env: {
         ...process.env,
         ...EXAMPLE_ENV,
-        DATABASE_URL: LOCAL_ENV.DATABASE_URL,
-        DATABASE_URL_UNPOOLED: LOCAL_ENV.DATABASE_URL_UNPOOLED,
+        DATABASE_URL: database.pooledUrl,
+        DATABASE_URL_UNPOOLED: database.unpooledUrl,
         PORT: String(port),
         TELEGRAM_BOT_TOKEN: '',
+        DISCORD_BOT_TOKEN: '',
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -208,7 +220,7 @@ smokeTest('a banned account\'s due scheduled task fails without executing, inste
     child.stderr.setEncoding('utf8');
     child.stdout.on('data', chunk => { stdout += chunk; });
     child.stderr.on('data', chunk => { stderr += chunk; });
-    t.after(() => { if (child.exitCode === null) child.kill(); });
+    t.after(() => stopChild(child));
 
     const output = () => `stdout:\n${stdout}\nstderr:\n${stderr}`;
     await waitForHealth(`http://127.0.0.1:${port}/health`, child, output);

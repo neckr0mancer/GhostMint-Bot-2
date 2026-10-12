@@ -1,26 +1,21 @@
 'use strict';
 
 const path=require('node:path');
-const test=require('node:test');
 const assert=require('node:assert/strict');
 const {randomUUID}=require('node:crypto');
 const {CONFIG}=require('../src/config');
-const {runMigrations}=require('../src/db/migrate');
-const {createDatabasePool}=require('../src/db/pool');
 const {createPostgresStorage}=require('../src/storage/postgresStorage');
 const {createSchedulerRepository}=require('../src/scheduler/schedulerRepository');
 const {createScheduledPreflightRepository}=require('../src/scheduler/scheduledPreflightRepository');
 const {createPostgresIdentityRepository}=require('../src/identity/postgresIdentityRepository');
 const {createIdentityService}=require('../src/identity/identityService');
 const {createKeyEncryption}=require('../src/security/keyEncryption');
-
-const integrationTest=CONFIG.databaseUrl&&CONFIG.databaseUrlUnpooled?test:test.skip;
+const {createTestDatabasePool,integrationTest,runTestMigrations}=require('./helpers/disposableDatabase');
 
 integrationTest('durable schedule checks claim once, recover an expired lease, and re-arm by generation',
   {timeout:120_000},async()=>{
-    await runMigrations({connectionString:CONFIG.databaseUrlUnpooled,
-      migrationsDirectory:path.join(CONFIG.projectRoot,'migrations')});
-    const pool=createDatabasePool({connectionString:CONFIG.databaseUrl,max:4});
+    await runTestMigrations({migrationsDirectory:path.join(CONFIG.projectRoot,'migrations')});
+    const pool=await createTestDatabasePool({max:4});
     const storage=createPostgresStorage(pool);
     const scheduler=createSchedulerRepository(pool);
     const left=createScheduledPreflightRepository(pool);
@@ -91,9 +86,8 @@ integrationTest('durable schedule checks claim once, recover an expired lease, a
 
 integrationTest('schedule changes commit atomically, reject stale work, survive restart, and expire safely',
   {timeout:120_000},async()=>{
-    await runMigrations({connectionString:CONFIG.databaseUrlUnpooled,
-      migrationsDirectory:path.join(CONFIG.projectRoot,'migrations')});
-    const pool=createDatabasePool({connectionString:CONFIG.databaseUrl,max:6});
+    await runTestMigrations({migrationsDirectory:path.join(CONFIG.projectRoot,'migrations')});
+    const pool=await createTestDatabasePool({max:6});
     const storage=createPostgresStorage(pool);
     const scheduler=createSchedulerRepository(pool);
     const left=createScheduledPreflightRepository(pool);
