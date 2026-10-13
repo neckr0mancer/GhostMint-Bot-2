@@ -5,7 +5,7 @@
     "buildCommand": "npm run dashboard:build"
   },
   "deploy": {
-    "startCommand": "node scripts/check-goldrush-wallet-history.js && node scripts/migrate.js && node index.js",
+    "startCommand": "node scripts/migrate.js && node index.js",
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 10
   }
