@@ -6,6 +6,7 @@ const {
   checkGoldRushWalletHistory,
   configuredChains,
   printResult,
+  startupProbeEnabled,
 } = require('../scripts/check-goldrush-wallet-history');
 
 function response(body, { status = 200 } = {}) {
@@ -68,4 +69,11 @@ test('sanitizes provider failures and printed output never contains the key or r
 test('normalizes and deduplicates configured chain names', () => {
   assert.deepEqual(configuredChains(' Ethereum,base,ethereum, robinhood '),
     ['ethereum','base','robinhood']);
+});
+
+test('startup probing is fail-closed and requires an explicit true flag', () => {
+  assert.equal(startupProbeEnabled({}), false);
+  assert.equal(startupProbeEnabled({ GOLDRUSH_HISTORY_PROBE_ON_STARTUP:'false' }), false);
+  assert.equal(startupProbeEnabled({ GOLDRUSH_HISTORY_PROBE_ON_STARTUP:'1' }), false);
+  assert.equal(startupProbeEnabled({ GOLDRUSH_HISTORY_PROBE_ON_STARTUP:' TRUE ' }), true);
 });

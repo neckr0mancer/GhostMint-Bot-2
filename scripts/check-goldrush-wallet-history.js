@@ -2,14 +2,20 @@
 
 // Production-safe, read-only provider contract probe. This script deliberately imports neither
 // server.js nor any database module: it cannot start workers, queue history, run migrations, or
-// submit blockchain transactions. Railway runs it before the normal migrate/start command while
-// the approved secret is available in the application service environment.
+// submit blockchain transactions. The real Railway entrypoint may run it only when the explicit
+// one-shot startup flag is enabled; merely configuring the API key must never create recurring
+// provider traffic on every deployment.
 
 const { createGoldRushWalletHistoryAdapter, GOLDRUSH_CHAIN_SLUGS } = require('../src/walletHistory/goldRushAdapter');
 const { createWalletHistoryProviderRegistry } = require('../src/walletHistory/provider');
 
 const PROBE_ADDRESS = '0x0000000000000000000000000000000000000001';
 const MAX_CONCURRENCY = 2;
+const STARTUP_PROBE_FLAG = 'GOLDRUSH_HISTORY_PROBE_ON_STARTUP';
+
+function startupProbeEnabled(env = process.env) {
+  return String(env[STARTUP_PROBE_FLAG] || '').trim().toLowerCase() === 'true';
+}
 
 function configuredChains(raw = process.env.SUPPORTED_CHAINS) {
   return [...new Set(String(raw || '')
@@ -96,9 +102,11 @@ if (require.main === module) void main();
 module.exports = {
   MAX_CONCURRENCY,
   PROBE_ADDRESS,
+  STARTUP_PROBE_FLAG,
   checkGoldRushWalletHistory,
   configuredChains,
   mapWithConcurrency,
   printResult,
   safeFailure,
+  startupProbeEnabled,
 };
