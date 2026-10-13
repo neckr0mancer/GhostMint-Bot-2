@@ -249,6 +249,24 @@ function parseSupportedChains() {
   return Object.freeze(names);
 }
 
+function parseOptionalChainSubset(name, supportedChains) {
+  const raw = optionalString(name);
+  if (raw === null) return Object.freeze([]);
+  const names = raw.split(',').map(value => value.trim().toLowerCase()).filter(Boolean);
+  if (new Set(names).size !== names.length) {
+    throw new ConfigurationError(`${name} must not contain duplicates`);
+  }
+  const unknown = names.filter(value => !Object.hasOwn(CHAIN_DEFINITIONS, value));
+  if (unknown.length) {
+    throw new ConfigurationError(`${name} contains unsupported names: ${unknown.join(', ')}`);
+  }
+  const unavailable = names.filter(value => !supportedChains.includes(value));
+  if (unavailable.length) {
+    throw new ConfigurationError(`${name} must be a subset of SUPPORTED_CHAINS; unavailable: ${unavailable.join(', ')}`);
+  }
+  return Object.freeze(names);
+}
+
 // `plural` picks the error phrasing: true for an actual comma-separated list ("must contain...
 // URLs"), false for parseRpcUrls' own single-value legacy fallback ("must be a valid... URL").
 function validateUrlList(rawUrls, sourceName, listLabel, plural) {
@@ -370,6 +388,22 @@ if (dashboardOnly && environment === 'production') {
   throw new ConfigurationError('GHOSTMINT_DASHBOARD_ONLY is restricted to development or test');
 }
 const supportedChains = parseSupportedChains();
+const goldRushApiKey = optionalString('GOLDRUSH_API_KEY');
+const walletHistoryGoldRushEnabled = parseBoolean('WALLET_HISTORY_GOLDRUSH_ENABLED');
+const walletHistoryWorkerEnabled = parseBoolean('WALLET_HISTORY_WORKER_ENABLED');
+const walletHistoryChains = parseOptionalChainSubset('WALLET_HISTORY_CHAINS', supportedChains);
+if (walletHistoryGoldRushEnabled && !goldRushApiKey) {
+  throw new ConfigurationError('WALLET_HISTORY_GOLDRUSH_ENABLED requires GOLDRUSH_API_KEY');
+}
+if (walletHistoryGoldRushEnabled && walletHistoryChains.length === 0) {
+  throw new ConfigurationError('WALLET_HISTORY_GOLDRUSH_ENABLED requires at least one WALLET_HISTORY_CHAINS entry');
+}
+if (walletHistoryWorkerEnabled && !walletHistoryGoldRushEnabled) {
+  throw new ConfigurationError('WALLET_HISTORY_WORKER_ENABLED requires WALLET_HISTORY_GOLDRUSH_ENABLED=true');
+}
+if (walletHistoryWorkerEnabled && dashboardOnly) {
+  throw new ConfigurationError('WALLET_HISTORY_WORKER_ENABLED is unavailable in GHOSTMINT_DASHBOARD_ONLY mode');
+}
 const telegram = parseTelegram();
 const discord = parseDiscord();
 const socialAdapters = parseSocialAdapters();
@@ -434,6 +468,12 @@ const CONFIG = Object.freeze({
   socialManagedServiceUrl: socialAdapters.managedServiceEndpoint,
   socialManagedServiceToken: socialAdapters.managedServiceToken,
   etherscanApiKey,
+  goldRushApiKey,
+  walletHistoryGoldRushEnabled,
+  walletHistoryWorkerEnabled,
+  walletHistoryChains,
+  walletHistoryWorkerIntervalMs: parseInteger('WALLET_HISTORY_WORKER_INTERVAL_MS', 15_000, 5_000, 3_600_000),
+  walletHistoryWorkerLeaseMs: parseInteger('WALLET_HISTORY_WORKER_LEASE_MS', 90_000, 15_000, 3_600_000),
   openSeaApiKey,
   openSeaReadApiKey,
   socialPollIntervalMs: parseInteger('SOCIAL_POLL_INTERVAL_MS', 30_000, 5_000, 3_600_000),
@@ -481,6 +521,10 @@ function getSafeConfigSummary() {
     socialManagedServiceConfigured: CONFIG.socialManagedServiceUrl !== null && CONFIG.socialManagedServiceToken !== null,
     socialScraperAvailable: true,
     etherscanGasConfigured: CONFIG.etherscanApiKey !== null,
+    walletHistoryGoldRushConfigured: CONFIG.goldRushApiKey !== null,
+    walletHistoryGoldRushEnabled: CONFIG.walletHistoryGoldRushEnabled,
+    walletHistoryWorkerEnabled: CONFIG.walletHistoryWorkerEnabled,
+    walletHistoryChains: [...CONFIG.walletHistoryChains],
     openSeaConfigured: CONFIG.openSeaApiKey !== null,
     openSeaReadKeySeparate: CONFIG.openSeaReadApiKey !== CONFIG.openSeaApiKey,
     fastRpcChainsConfigured: Object.entries(FAST_CHAINS).filter(([name, chain]) => chain.rpcUrls[0] !== CHAINS[name].rpcUrls[0]).map(([name]) => name),

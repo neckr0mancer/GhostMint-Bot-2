@@ -75,9 +75,10 @@ test('graceful shutdown stops both bots, workers, watchers, HTTP, and database o
  const shutdown=createGracefulShutdown({getHttpServer:()=>http,telegramBot:{stopPolling:async()=>calls.push('telegram')},
   discordBot:{stop:async()=>calls.push('discord')},schedulerWorker:{stop:()=>calls.push('scheduler')},
   scheduledPreflightWorker:{stop:()=>calls.push('preflight')},
-  socialWatchWorker:{stop:()=>calls.push('social')},stopWatchers:()=>calls.push('watchers'),pool:{end:async()=>calls.push('pool')}});
+  socialWatchWorker:{stop:()=>calls.push('social')},walletHistoryWorker:{stop:()=>calls.push('history')},
+  stopWatchers:()=>calls.push('watchers'),pool:{end:async()=>calls.push('pool')}});
  await Promise.all([shutdown('SIGTERM'),shutdown('SIGINT')]);
- assert.deepEqual(calls.sort(),['discord','http','pool','preflight','scheduler','social','telegram','watchers'].sort());
+ assert.deepEqual(calls.sort(),['discord','history','http','pool','preflight','scheduler','social','telegram','watchers'].sort());
 });
 
 // The Telegram single-instance advisory lock (telegramSingleInstanceLock.js) must be released
@@ -108,6 +109,19 @@ test('graceful shutdown keeps the database open until an active preflight tick s
  releasePreflight();
  await stopping;
  assert.deepEqual(calls,['preflight','pool']);
+});
+
+test('graceful shutdown keeps the database open until an active wallet history tick settles',async()=>{
+ let releaseHistory;const calls=[];
+ const shutdown=createGracefulShutdown({getHttpServer:()=>null,
+  walletHistoryWorker:{stop:()=>new Promise(resolve=>{releaseHistory=()=>{calls.push('history');resolve();};})},
+  pool:{end:async()=>calls.push('pool')}});
+ const stopping=shutdown('SIGTERM');
+ await Promise.resolve();
+ assert.deepEqual(calls,[]);
+ releaseHistory();
+ await stopping;
+ assert.deepEqual(calls,['history','pool']);
 });
 
 test('a channel allowlist narrows guild channels without touching DMs or other guilds', () => {

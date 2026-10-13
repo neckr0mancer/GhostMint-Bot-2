@@ -1,5 +1,5 @@
 function createGracefulShutdown({getHttpServer=()=>null,telegramBot,discordBot,schedulerWorker,
-  scheduledPreflightWorker,socialWatchWorker,retentionWorker,webSocketHub,stopWatchers,
+  scheduledPreflightWorker,socialWatchWorker,retentionWorker,walletHistoryWorker,webSocketHub,stopWatchers,
   releasePollingLock,pool,log=()=>{}}) {
   let stopping=null;
   return async function shutdown(signal='shutdown') {
@@ -10,7 +10,10 @@ function createGracefulShutdown({getHttpServer=()=>null,telegramBot,discordBot,s
       retentionWorker?.stop();stopWatchers?.();
       // A readiness tick may already have committed a checkpoint and be finishing its outbox
       // delivery. Keep the pool and bot transports alive until that bounded work has settled.
-      await scheduledPreflightWorker?.stop?.();
+      await Promise.all([
+        scheduledPreflightWorker?.stop?.(),
+        walletHistoryWorker?.stop?.(),
+      ]);
       await Promise.allSettled([
         telegramBot?.stopPolling?.({cancel:true}),discordBot?.stop?.(),
         webSocketHub?.close?.(),

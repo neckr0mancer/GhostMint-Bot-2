@@ -71,6 +71,27 @@ test('readiness distinctly reports database and RPC outages', async () => {
   assert.equal(preflightResult.dependencies.scheduledPreflights.status,'down');
 });
 
+test('wallet history readiness is ignored while disabled and authoritative when enabled', async () => {
+  const worker={health:()=>({status:'up'})};
+  let historyHealthCalls=0;
+  const historyWorker={health:()=>{historyHealthCalls+=1;return {status:'down',lastError:'safe failure'};}};
+  const disabled=createReadinessService({database:{health:async()=>true},
+    providerService:{perform:async()=>123},chains:['ethereum'],schedulerWorker:worker,
+    socialWatchWorker:worker,walletHistoryWorker:historyWorker});
+  const disabledResult=await disabled.inspect();
+  assert.equal(disabledResult.status,'ok');
+  assert.deepEqual(disabledResult.dependencies.walletHistory,{status:'disabled',detail:'not enabled'});
+  assert.equal(historyHealthCalls,0);
+
+  const enabled=createReadinessService({database:{health:async()=>true},
+    providerService:{perform:async()=>123},chains:['ethereum'],schedulerWorker:worker,
+    socialWatchWorker:worker,walletHistoryWorker:historyWorker,walletHistoryEnabled:true});
+  const enabledResult=await enabled.inspect();
+  assert.equal(enabledResult.status,'degraded');
+  assert.equal(enabledResult.dependencies.walletHistory.status,'down');
+  assert.equal(historyHealthCalls,1);
+});
+
 test('dashboard-only readiness reports workers disabled without hiding database or RPC outages', async () => {
   let workerHealthCalls=0;
   const mustNotRun={health:()=>{workerHealthCalls+=1;throw new Error('disabled worker health ran');}};
@@ -83,7 +104,7 @@ test('dashboard-only readiness reports workers disabled without hiding database 
   assert.equal(result.status,'ok');
   assert.equal(result.dependencies.database.status,'up');
   assert.equal(result.dependencies.rpc.ethereum.status,'up');
-  for(const name of ['scheduler','scheduledPreflights','socialWatcher','retentionWorker','sniperWatchers']){
+  for(const name of ['scheduler','scheduledPreflights','socialWatcher','retentionWorker','walletHistory','sniperWatchers']){
     assert.deepEqual(result.dependencies[name],{status:'disabled',detail:'dashboard-only test mode'});
   }
   assert.equal(workerHealthCalls,0);

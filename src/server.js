@@ -100,6 +100,8 @@ const { createTransactionIntentRepository } = require('./transactions/intentRepo
 const { createTransactionPolicyRepository } = require('./transactions/policyRepository');
 const { createProviderService } = require('./transactions/providerService');
 const { createTransactionEngine, TransactionSafetyError } = require('./transactions/transactionEngine');
+const { createWalletHistoryRepository } = require('./walletHistory/repository');
+const { createWalletHistoryRuntime } = require('./walletHistory/runtime');
 const { createTriggerPipeline } = require('./triggers/triggerPipeline');
 const { createTargetPolicyRepository } = require('./triggers/targetPolicyRepository');
 const { createTargetPolicyService } = require('./triggers/targetPolicyService');
@@ -136,6 +138,7 @@ const identity = createIdentityService(identityRepository, {
 });
 const dashboardAuth=createDashboardAuthService({identity,repository:createDashboardSessionRepository(pool),secureCookies:CONFIG.isProduction});
 const transactionIntentRepository = createTransactionIntentRepository(pool);
+const walletHistoryRepository = createWalletHistoryRepository(pool);
 const schedulerRepository = createSchedulerRepository(pool);
 const scheduledPreflightRepository=createScheduledPreflightRepository(pool);
 const sniperRepository = createSniperRepository(pool);
@@ -253,12 +256,32 @@ const redact = createRedactor([
   CONFIG.socialOfficialApiToken,
   CONFIG.socialManagedServiceToken,
   CONFIG.etherscanApiKey,
+  CONFIG.goldRushApiKey,
   CONFIG.openSeaApiKey,
   CONFIG.openSeaReadApiKey,
   ...Object.values(CONFIG.encryptionKeys),
 ]);
 const log = msg => console.log(`[${new Date().toISOString()}] ${redact(msg)}`);
 const safeError = error => redact(error?.reason || error?.message || 'Unknown error');
+// Key presence alone never enables provider traffic. The adapter and the recurring worker each
+// have their own default-off gate so migration 073 can deploy without beginning a production scan.
+const walletHistoryRuntime = createWalletHistoryRuntime({
+  repository:walletHistoryRepository,
+  supportedChains:CONFIG.supportedChains,
+  goldRush:{
+    enabled:CONFIG.walletHistoryGoldRushEnabled,
+    apiKey:CONFIG.goldRushApiKey,
+    chains:CONFIG.walletHistoryChains,
+  },
+  worker:{
+    enabled:CONFIG.walletHistoryWorkerEnabled,
+    intervalMs:CONFIG.walletHistoryWorkerIntervalMs,
+    leaseMs:CONFIG.walletHistoryWorkerLeaseMs,
+  },
+  log,
+});
+const walletHistoryService = walletHistoryRuntime.service;
+const walletHistoryWorker = walletHistoryRuntime.worker;
 const openSeaEligibilityService = createOpenSeaEligibilityService({
   repository: openSeaEligibilityRepository,
   encryptToken: value => keyEncryption.encrypt(value),
@@ -4815,6 +4838,7 @@ const botCommands = createBotCommandService({
   triggerExecutionService,
   triggerAuditRepository:targetPolicyRepository,
   transactionIntentRepository,
+  walletHistoryService,
   gasService,
   sniperRepository,
   mintService,
@@ -4933,6 +4957,7 @@ app.use(express.static(path.join(PROJECT_ROOT,'public'),{setHeaders:(res,file)=>
 // ── API ───────────────────────────────────────────────────
 const readinessService=createReadinessService({database:storage,providerService,
   chains:CONFIG.supportedChains,schedulerWorker,scheduledPreflightWorker,socialWatchWorker,retentionWorker,
+  walletHistoryWorker,walletHistoryEnabled:CONFIG.walletHistoryWorkerEnabled,
   workersDisabled:CONFIG.dashboardOnly,
   sniperHealth:()=>{const sourceHealth=Object.values(pendingSources).map(source=>source.health());
     const expectedPendingChains=[...new Set(DB.snipers.filter(sniper=>sniper.active
@@ -4980,6 +5005,10 @@ async function start() {
     log('Started durable scheduled-mint preflights (5m and 30s checkpoints)');
     socialWatchWorker.start();
     retentionWorker.start();
+    if (walletHistoryWorker) {
+      walletHistoryWorker.start();
+      log(`Started wallet history worker for ${CONFIG.walletHistoryChains.join(', ')}`);
+    }
     log('Started social watch-rule worker');
     log('Started governance-group retention worker');
     log(`Started durable scheduler with ${await schedulerRepository.countActive()} active tasks`);
@@ -4994,7 +5023,7 @@ async function start() {
 }
 
 const gracefulShutdown=createGracefulShutdown({getHttpServer:()=>httpServer,telegramBot:bot,discordBot,
-  schedulerWorker,scheduledPreflightWorker,socialWatchWorker,retentionWorker,
+  schedulerWorker,scheduledPreflightWorker,socialWatchWorker,retentionWorker,walletHistoryWorker,
   webSocketHub:dashboardWebSockets,stopWatchers:()=>Object.keys(chainWatchers).forEach(chain=>{
     chainWatchers[chain].stop();delete chainWatchers[chain];pendingSources[chain]?.stop();delete pendingSources[chain];
     pendingDispatchers[chain]?.stop();delete pendingDispatchers[chain];

@@ -6,7 +6,8 @@ const test = require('node:test');
 const PROJECT_ROOT = path.join(__dirname, '..');
 const CONFIG_PROBE = [
   "const { CONFIG, getSafeConfigSummary } = require('./src/config');",
-  'process.stdout.write(JSON.stringify({ summary: getSafeConfigSummary(), poolMax: CONFIG.databasePoolMax }));',
+  'process.stdout.write(JSON.stringify({ summary: getSafeConfigSummary(), poolMax: CONFIG.databasePoolMax,',
+  'walletHistoryTiming: { intervalMs: CONFIG.walletHistoryWorkerIntervalMs, leaseMs: CONFIG.walletHistoryWorkerLeaseMs } }));',
 ].join(' ');
 
 const VALID_ENV = Object.freeze({
@@ -31,6 +32,12 @@ const VALID_ENV = Object.freeze({
   SOCIAL_MANAGED_SERVICE_TOKEN: '',
   SOCIAL_POLL_INTERVAL_MS: '30000',
   GHOSTMINT_DASHBOARD_ONLY: '',
+  GOLDRUSH_API_KEY: '',
+  WALLET_HISTORY_GOLDRUSH_ENABLED: '',
+  WALLET_HISTORY_WORKER_ENABLED: '',
+  WALLET_HISTORY_CHAINS: '',
+  WALLET_HISTORY_WORKER_INTERVAL_MS: '',
+  WALLET_HISTORY_WORKER_LEASE_MS: '',
   ETHERSCAN_API_KEY: '',
   ETH_RPC: '',
   BASE_RPC: '',
@@ -97,9 +104,109 @@ test('accepts valid development configuration and returns only a safe summary', 
   assert.equal(output.summary.discordEnabled, false);
   assert.equal(output.summary.databaseConfigured, false);
   assert.equal(output.poolMax, 5);
+  assert.equal(output.summary.walletHistoryGoldRushConfigured, false);
+  assert.equal(output.summary.walletHistoryGoldRushEnabled, false);
+  assert.equal(output.summary.walletHistoryWorkerEnabled, false);
+  assert.deepEqual(output.summary.walletHistoryChains, []);
+  assert.deepEqual(output.walletHistoryTiming, { intervalMs:15000, leaseMs:90000 });
 
   const serialized = JSON.stringify(output.summary);
   assert.doesNotMatch(serialized, /7Qv9|encryptionSecret/);
+});
+
+test('wallet history stays off when only the GoldRush key is configured', () => {
+  const key = 'goldrush-private-key';
+  const result = probeConfig({ GOLDRUSH_API_KEY:key, WALLET_HISTORY_CHAINS:'ethereum' });
+  assert.equal(result.status, 0, result.stderr);
+  const output = JSON.parse(result.stdout);
+  assert.equal(output.summary.walletHistoryGoldRushConfigured, true);
+  assert.equal(output.summary.walletHistoryGoldRushEnabled, false);
+  assert.equal(output.summary.walletHistoryWorkerEnabled, false);
+  assert.deepEqual(output.summary.walletHistoryChains, ['ethereum']);
+  assert.doesNotMatch(result.stdout, new RegExp(key));
+});
+
+test('wallet history accepts an explicit canary adapter and worker configuration without exposing its key', () => {
+  const key = 'goldrush-private-key';
+  const result = probeConfig({
+    GOLDRUSH_API_KEY:key,
+    WALLET_HISTORY_GOLDRUSH_ENABLED:'true',
+    WALLET_HISTORY_WORKER_ENABLED:'true',
+    WALLET_HISTORY_CHAINS:'ethereum,base',
+    WALLET_HISTORY_WORKER_INTERVAL_MS:'20000',
+    WALLET_HISTORY_WORKER_LEASE_MS:'120000',
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const output = JSON.parse(result.stdout);
+  assert.equal(output.summary.walletHistoryGoldRushConfigured, true);
+  assert.equal(output.summary.walletHistoryGoldRushEnabled, true);
+  assert.equal(output.summary.walletHistoryWorkerEnabled, true);
+  assert.deepEqual(output.summary.walletHistoryChains, ['ethereum', 'base']);
+  assert.deepEqual(output.walletHistoryTiming, { intervalMs:20000, leaseMs:120000 });
+  assert.doesNotMatch(result.stdout, new RegExp(key));
+});
+
+test('wallet history feature gates fail closed when malformed or missing dependencies', () => {
+  for (const [name, value] of [
+    ['WALLET_HISTORY_GOLDRUSH_ENABLED', 'yes'],
+    ['WALLET_HISTORY_WORKER_ENABLED', '1'],
+  ]) {
+    const malformed = probeConfig({ [name]:value });
+    assert.notEqual(malformed.status, 0);
+    assert.match(malformed.stderr, new RegExp(`${name} must be true or false`));
+  }
+
+  const missingKey = probeConfig({
+    WALLET_HISTORY_GOLDRUSH_ENABLED:'true', WALLET_HISTORY_CHAINS:'ethereum',
+  });
+  assert.notEqual(missingKey.status, 0);
+  assert.match(missingKey.stderr, /WALLET_HISTORY_GOLDRUSH_ENABLED requires GOLDRUSH_API_KEY/);
+
+  const missingChains = probeConfig({
+    GOLDRUSH_API_KEY:'configured', WALLET_HISTORY_GOLDRUSH_ENABLED:'true',
+  });
+  assert.notEqual(missingChains.status, 0);
+  assert.match(missingChains.stderr, /requires at least one WALLET_HISTORY_CHAINS entry/);
+
+  const missingAdapter = probeConfig({ WALLET_HISTORY_WORKER_ENABLED:'true' });
+  assert.notEqual(missingAdapter.status, 0);
+  assert.match(missingAdapter.stderr, /requires WALLET_HISTORY_GOLDRUSH_ENABLED=true/);
+
+  const dashboardOnly = probeConfig({
+    GHOSTMINT_DASHBOARD_ONLY:'true', GOLDRUSH_API_KEY:'configured',
+    WALLET_HISTORY_GOLDRUSH_ENABLED:'true', WALLET_HISTORY_WORKER_ENABLED:'true',
+    WALLET_HISTORY_CHAINS:'ethereum',
+  });
+  assert.notEqual(dashboardOnly.status, 0);
+  assert.match(dashboardOnly.stderr, /unavailable in GHOSTMINT_DASHBOARD_ONLY mode/);
+});
+
+test('wallet history chain allowlists reject duplicates, unknown chains, and disabled chains', () => {
+  const base = { GOLDRUSH_API_KEY:'configured', WALLET_HISTORY_GOLDRUSH_ENABLED:'true' };
+  const duplicate = probeConfig({ ...base, WALLET_HISTORY_CHAINS:'ethereum,ethereum' });
+  assert.notEqual(duplicate.status, 0);
+  assert.match(duplicate.stderr, /must not contain duplicates/);
+
+  const unknown = probeConfig({ ...base, WALLET_HISTORY_CHAINS:'ethereum,solana' });
+  assert.notEqual(unknown.status, 0);
+  assert.match(unknown.stderr, /contains unsupported names: solana/);
+
+  const disabled = probeConfig({ ...base, WALLET_HISTORY_CHAINS:'ethereum,ink' });
+  assert.notEqual(disabled.status, 0);
+  assert.match(disabled.stderr, /must be a subset of SUPPORTED_CHAINS; unavailable: ink/);
+});
+
+test('wallet history worker timing limits are validated', () => {
+  for (const [name, value, range] of [
+    ['WALLET_HISTORY_WORKER_INTERVAL_MS', '4999', '5000 to 3600000'],
+    ['WALLET_HISTORY_WORKER_INTERVAL_MS', '3600001', '5000 to 3600000'],
+    ['WALLET_HISTORY_WORKER_LEASE_MS', '14999', '15000 to 3600000'],
+    ['WALLET_HISTORY_WORKER_LEASE_MS', '3600001', '15000 to 3600000'],
+  ]) {
+    const invalid = probeConfig({ [name]:value });
+    assert.notEqual(invalid.status, 0);
+    assert.match(invalid.stderr, new RegExp(`${name} must be an integer from ${range}`));
+  }
 });
 
 test('accepts each explicit runtime mode when its policy is satisfied', () => {
