@@ -122,7 +122,7 @@ function createBotCommandService(dependencies) {
     socialWatchService, socialUsageService, targetPolicyService, triggerExecutionService, governanceRepository,
     triggerAuditRepository, transactionIntentRepository, gasService, supportedChains, chains, encryptPrivateKey, getState, executeMint, executeMintViaOpenSea, executeSend,
     sniperRepository, mintService, previewMint, executePreparedMint, identity, contractValueResolver, seaDropDiscoveryService, seaDropPublicDropResolver, openSeaService, openSeaEligibilityService, priceFeedService,
-    exportRawKey, exportKeystore, botSecurityRepository,
+    exportRawKey, exportKeystore, botSecurityRepository, walletHistoryService,
     ensureChainWatcher = () => {}, syncChainWatcher = ensureChainWatcher,
     supportsPendingSniper = () => false, pendingSniperChains = [],
     broadcast = () => {}, walletBalanceCache = createWalletBalanceCache() } = dependencies;
@@ -573,6 +573,34 @@ function createBotCommandService(dependencies) {
     const result = findOwnedWallet(getState(), userId, label);
     if (!result) throw new ValidationError({ field: 'walletLabel', message: 'was not found' });
     return result;
+  }
+
+  function walletById(userId, value) {
+    const id = Number(value);
+    if (!Number.isSafeInteger(id) || id < 1) {
+      throw new ValidationError({ field: 'walletId', message: 'must be a positive wallet ID' });
+    }
+    const result = state(userId).wallets.find(item => Number(item.id) === id);
+    if (!result) throw new ValidationError({ field: 'walletId', message: 'was not found' });
+    return result;
+  }
+
+  async function walletHistoryPage(userId, walletId, input) {
+    if (!walletHistoryService) {
+      throw new ValidationError({ field: 'walletId', message: 'history is not available on this server' });
+    }
+    return walletHistoryService.listHistory(userId, walletById(userId, walletId), input);
+  }
+
+  async function requestWalletHistorySync(userId, walletId, input) {
+    if (!walletHistoryService) {
+      throw new ValidationError({ field: 'walletId', message: 'history sync is not available on this server' });
+    }
+    // Provider selection is server configuration, not a browser-controlled input. Keeping the
+    // public request to an optional chain prevents a forged provider key from replacing an
+    // existing queued provider or invalidating a worker that is already backfilling this wallet.
+    const request = input?.chain === undefined ? {} : { chain:input.chain };
+    return walletHistoryService.requestSync(userId, walletById(userId, walletId), request);
   }
 
   async function openSeaEligibilityStatus(userId,label) {
@@ -1516,6 +1544,8 @@ function createBotCommandService(dependencies) {
     sniperCapabilities: () => ({ pendingSupportedChains:[...pendingSniperChains] }),
     sniperEvents:userId=>sniperRepository.listRecentForUser(userId),
     wallets: userId => state(userId).wallets,
+    walletHistoryPage,
+    requestWalletHistorySync,
     tasks: userId => schedulerRepository.listForUser(userId),
     tasksPage:(userId,input)=>pageFrom(schedulerRepository.listPageForUser?.bind(schedulerRepository),()=>state(userId).tasks,userId,input,['name','walletLabel'],TASK_PAGE_HOOKS),
     activity: userId => state(userId).activity.slice(0, 10),

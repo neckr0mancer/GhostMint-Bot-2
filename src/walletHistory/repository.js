@@ -220,6 +220,60 @@ function createWalletHistoryRepository(pool) {
     return mapSyncState(result.rows[0]);
   }
 
+  // Queueing is deliberately separate from setSyncState(). A user can press refresh while a
+  // worker owns this row; resetting the state and lease in that moment would make the in-flight
+  // page stale and could multiply provider work. This upsert refreshes an existing request while
+  // preserving queued/backfill progress and any live worker lease, including retryable errors.
+  async function queueSync(input) {
+    const key = subjectKey(input);
+    const providerKey = normalizedText(input.providerKey, 'providerKey');
+    const result = await pool.query(`INSERT INTO wallet_history_sync_state
+      (user_id,chain,wallet_address,provider_key,state,last_requested_at)
+      VALUES ($1,$2,$3,$4,'queued',NOW())
+      ON CONFLICT (user_id,chain,wallet_address) DO UPDATE SET
+        provider_key=CASE WHEN wallet_history_sync_state.state IN ('queued','backfilling')
+            OR (wallet_history_sync_state.claimed_by IS NOT NULL
+              AND wallet_history_sync_state.lease_expires_at>NOW())
+          THEN wallet_history_sync_state.provider_key ELSE EXCLUDED.provider_key END,
+        state=CASE WHEN wallet_history_sync_state.state IN ('queued','backfilling')
+            OR (wallet_history_sync_state.claimed_by IS NOT NULL
+              AND wallet_history_sync_state.lease_expires_at>NOW())
+          THEN wallet_history_sync_state.state ELSE 'queued' END,
+        cursor=CASE WHEN wallet_history_sync_state.state IN ('queued','backfilling')
+            OR (wallet_history_sync_state.claimed_by IS NOT NULL
+              AND wallet_history_sync_state.lease_expires_at>NOW())
+          THEN wallet_history_sync_state.cursor ELSE NULL END,
+        last_requested_at=NOW(),
+        last_error_at=CASE WHEN wallet_history_sync_state.state IN ('queued','backfilling')
+            OR (wallet_history_sync_state.claimed_by IS NOT NULL
+              AND wallet_history_sync_state.lease_expires_at>NOW())
+          THEN wallet_history_sync_state.last_error_at ELSE NULL END,
+        last_error_code=CASE WHEN wallet_history_sync_state.state IN ('queued','backfilling')
+            OR (wallet_history_sync_state.claimed_by IS NOT NULL
+              AND wallet_history_sync_state.lease_expires_at>NOW())
+          THEN wallet_history_sync_state.last_error_code ELSE NULL END,
+        last_error_message=CASE WHEN wallet_history_sync_state.state IN ('queued','backfilling')
+            OR (wallet_history_sync_state.claimed_by IS NOT NULL
+              AND wallet_history_sync_state.lease_expires_at>NOW())
+          THEN wallet_history_sync_state.last_error_message ELSE NULL END,
+        retry_after=CASE WHEN wallet_history_sync_state.state IN ('queued','backfilling')
+            OR (wallet_history_sync_state.claimed_by IS NOT NULL
+              AND wallet_history_sync_state.lease_expires_at>NOW())
+          THEN wallet_history_sync_state.retry_after ELSE NULL END,
+        claimed_by=CASE WHEN wallet_history_sync_state.claimed_by IS NOT NULL
+            AND wallet_history_sync_state.lease_expires_at>NOW()
+          THEN wallet_history_sync_state.claimed_by ELSE NULL END,
+        claimed_at=CASE WHEN wallet_history_sync_state.claimed_by IS NOT NULL
+            AND wallet_history_sync_state.lease_expires_at>NOW()
+          THEN wallet_history_sync_state.claimed_at ELSE NULL END,
+        lease_expires_at=CASE WHEN wallet_history_sync_state.claimed_by IS NOT NULL
+            AND wallet_history_sync_state.lease_expires_at>NOW()
+          THEN wallet_history_sync_state.lease_expires_at ELSE NULL END,
+        updated_at=NOW()
+      RETURNING *`, [key.userId, key.chain, key.walletAddress, providerKey]);
+    return mapSyncState(result.rows[0]);
+  }
+
   async function beginSync(input) {
     const key = subjectKey(input);
     const providerKey = normalizedText(input.providerKey, 'providerKey');
@@ -556,7 +610,7 @@ function createWalletHistoryRepository(pool) {
     };
   }
 
-  return { registerSubject, getSubject, listSubjects, deleteSubject, setSyncState, beginSync,
+  return { registerSubject, getSubject, listSubjects, deleteSubject, setSyncState, queueSync, beginSync,
     claimDue, releaseClaim, applyProviderPage, markSyncError, listPage };
 }
 

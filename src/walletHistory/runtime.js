@@ -31,6 +31,7 @@ function createWalletHistoryRuntime({ repository, supportedChains = [], goldRush
     providerRegistry,
     defaultProviderKey:goldRushEnabled ? 'goldrush' : null,
     supportedChains,
+    syncEnabled:workerEnabled,
   });
   const historyWorker = workerEnabled ? createWalletHistoryWorker({
     repository,

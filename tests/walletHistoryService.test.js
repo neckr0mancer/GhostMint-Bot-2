@@ -16,6 +16,7 @@ function fixture({ supported = false, subject = null, fetchError = null, support
     },
     registerSubject: async input => { calls.push(['register', input]); return input; },
     setSyncState: async input => { calls.push(['state', input]); return { state: input.state }; },
+    queueSync: async input => { calls.push(['queue', input]); return { state:'queued' }; },
     getSubject: async input => { calls.push(['get', input]); return subject; },
     beginSync: async input => { calls.push(['begin', input]); return { generation: 3 }; },
     applyProviderPage: async input => { calls.push(['apply', input]); return { state: 'current', generation: input.generation, cursor: null }; },
@@ -84,6 +85,19 @@ test('configured wallet history sync is queued without pretending it already ran
   assert.equal(result.supported, true);
   assert.equal(calls[0][1].trackingStartBlock, '100');
   assert.equal(calls.some(call => call[0] === 'fetch'), false);
+  assert.equal(calls.some(call => call[0] === 'queue'), true);
+});
+
+test('wallet history sync reports disabled without creating a queue when no worker can consume it', async () => {
+  const { calls, repository } = fixture({ supported:true, supportedChains:['ethereum'] });
+  const providerRegistry={describe:()=>{throw new Error('disabled sync must not inspect a provider');}};
+  const service=createWalletHistoryService({repository,providerRegistry,
+    supportedChains:['ethereum'],syncEnabled:false});
+  assert.deepEqual(await service.requestSync('user-a',wallet),{
+    accepted:false,supported:false,state:'disabled',
+    message:'Wallet history sync is not enabled on this server.',
+  });
+  assert.deepEqual(calls,[]);
 });
 
 test('an unqualified sync request covers every supported EVM chain independently', async () => {

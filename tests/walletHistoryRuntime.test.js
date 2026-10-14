@@ -21,7 +21,7 @@ test('wallet history runtime is inert by default even when a repository exists',
   });
 });
 
-test('an explicitly enabled adapter is selectable without implicitly starting a worker', () => {
+test('an explicitly enabled adapter is selectable without implicitly starting a worker', async () => {
   const runtime = createWalletHistoryRuntime({
     repository:repository(),
     supportedChains:['ethereum'],
@@ -33,6 +33,12 @@ test('an explicitly enabled adapter is selectable without implicitly starting a 
   ]);
   assert.equal(runtime.worker, null);
   assert.equal(runtime.health().providerConfigured, true);
+  assert.deepEqual(await runtime.service.requestSync('user-a',{
+    chain:'ethereum',address:'0x0000000000000000000000000000000000000001',
+  }),{
+    accepted:false,supported:false,state:'disabled',
+    message:'Wallet history sync is not enabled on this server.',
+  });
 });
 
 test('the worker exists only behind its separate explicit gate', () => {

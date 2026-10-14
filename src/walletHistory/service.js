@@ -50,7 +50,7 @@ function retryAfterFor(error, now) {
 }
 
 function createWalletHistoryService({ repository, providerRegistry, defaultProviderKey = null,
-  supportedChains = [], now = () => Date.now() }) {
+  supportedChains = [], syncEnabled = true, now = () => Date.now() }) {
   if (!repository) throw new TypeError('wallet history repository is required');
   if (!providerRegistry) throw new TypeError('wallet history provider registry is required');
   const allowedChains = [...new Set(supportedChains.map(value => String(value || '').trim().toLowerCase())
@@ -106,6 +106,10 @@ function createWalletHistoryService({ repository, providerRegistry, defaultProvi
       : optionalText(input.providerKey ?? defaultProviderKey, 'providerKey', 64);
     const chains = input.chain ? [resolveChain(wallet, input.chain)]
       : allowedChains.length ? allowedChains : [resolveChain(wallet, null)];
+    if (!syncEnabled) {
+      return { accepted:false, supported:false, state:'disabled',
+        message:'Wallet history sync is not enabled on this server.' };
+    }
     const results = [];
     for (const chain of chains) {
       const key = { chain, walletAddress:address };
@@ -119,8 +123,8 @@ function createWalletHistoryService({ repository, providerRegistry, defaultProvi
         results.push({ chain, supported:false, state:sync.state, providerKey:descriptor.providerKey,
           message:descriptor.reason || `Wallet history is not configured for ${chain} yet.` });
       } else {
-        const sync = await repository.setSyncState({ userId, ...key,
-          providerKey:descriptor.providerKey, state:'queued' });
+        const sync = await repository.queueSync({ userId, ...key,
+          providerKey:descriptor.providerKey });
         results.push({ chain, supported:true, state:sync.state, providerKey:descriptor.providerKey,
           message:'Wallet history sync is queued.' });
       }

@@ -136,6 +136,12 @@ integrationTest('wallet history migration stores pages and derives provenance fr
       assert.equal(firstClaim.chain, 'ink');
       assert.equal(firstClaim.state, 'backfilling');
       assert.equal(firstClaim.generation, 1);
+      const repeatedRequest = await repository.queueSync({ userId,chain:'ink',walletAddress:address,
+        providerKey:'fixture' });
+      assert.equal(repeatedRequest.state,'backfilling');
+      assert.equal(repeatedRequest.generation,firstClaim.generation);
+      assert.equal(repeatedRequest.claimedBy,'worker-a');
+      assert.equal(repeatedRequest.leaseExpiresAt,firstClaim.leaseExpiresAt);
       assert.equal(await repository.claimDue({ workerId:'worker-b',now:leaseNow,leaseMs:1_000 }), null);
       const recoveredClaim = await repository.claimDue({ workerId:'worker-b',
         now:leaseNow+1_001,leaseMs:30_000 });
@@ -154,6 +160,31 @@ integrationTest('wallet history migration stores pages and derives provenance fr
       assert.equal(partial.state, 'partial');
       assert.equal(partial.claimedBy, null);
       await repository.deleteSubject({userId,chain:'ink',walletAddress:address});
+
+      await repository.registerSubject({ userId,chain:'arbitrum',walletAddress:address,
+        trackingStartBlock:'250' });
+      await repository.setSyncState({ userId,chain:'arbitrum',walletAddress:address,
+        providerKey:'fixture',state:'error',errorCode:'RATE_LIMITED',
+        errorMessage:'retry the provider request',retryAfter:new Date(leaseNow-1_000) });
+      const retryClaim = await repository.claimDue({
+        workerId:'worker-retry',now:leaseNow,leaseMs:30_000,
+      });
+      assert.equal(retryClaim.chain,'arbitrum');
+      assert.equal(retryClaim.state,'error');
+      assert.equal(retryClaim.claimedBy,'worker-retry');
+      const repeatedRetryRequest = await repository.queueSync({
+        userId,chain:'arbitrum',walletAddress:address,providerKey:'fixture',
+      });
+      assert.equal(repeatedRetryRequest.state,'error');
+      assert.equal(repeatedRetryRequest.generation,retryClaim.generation);
+      assert.deepEqual(repeatedRetryRequest.cursor,retryClaim.cursor);
+      assert.equal(repeatedRetryRequest.lastErrorCode,'RATE_LIMITED');
+      assert.equal(repeatedRetryRequest.claimedBy,'worker-retry');
+      assert.equal(repeatedRetryRequest.leaseExpiresAt,retryClaim.leaseExpiresAt);
+      assert.equal(await repository.claimDue({
+        workerId:'worker-race',now:leaseNow+1_000,leaseMs:1_000,
+      }),null);
+      await repository.deleteSubject({userId,chain:'arbitrum',walletAddress:address});
 
       await repository.registerSubject({ userId,chain:'polygon',walletAddress:address,
         trackingStartBlock:'300' });

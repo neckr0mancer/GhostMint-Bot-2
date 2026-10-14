@@ -7,8 +7,8 @@ const { ValidationError } = require('../src/validation/domain');
 function fixture(extraDependencies = {}) {
   const state = {
     wallets: [
-      { userId: 'user-a', label: 'alpha', address: '0x0000000000000000000000000000000000000001', chain: 'ethereum' },
-      { userId: 'user-b', label: 'beta', address: '0x0000000000000000000000000000000000000002', chain: 'ethereum' },
+      { id: 1, userId: 'user-a', label: 'alpha', address: '0x0000000000000000000000000000000000000001', chain: 'ethereum' },
+      { id: 2, userId: 'user-b', label: 'beta', address: '0x0000000000000000000000000000000000000002', chain: 'ethereum' },
     ],
     tasks: [], activity: [], pnl: [], snipers: [],
   };
@@ -36,6 +36,26 @@ test('shared wallet commands cannot read or remove another Discord user wallet',
   assert.deepEqual(service.wallets('user-a').map(item => item.label), ['alpha']);
   await assert.rejects(service.removeWallet('user-a', 'beta'), ValidationError);
   assert.deepEqual(calls, []);
+});
+
+test('wallet history commands resolve numeric wallet IDs inside the authenticated tenant', async () => {
+  const calls = [];
+  const walletHistoryService = {
+    listHistory: async (userId, owned, input) => { calls.push(['list', userId, owned.id, input]); return { items: [] }; },
+    requestSync: async (userId, owned, input) => { calls.push(['sync', userId, owned.id, input]); return { state: 'unsupported' }; },
+  };
+  const { service } = fixture({ walletHistoryService });
+  assert.deepEqual(await service.walletHistoryPage('user-a', '1', { page: '2' }), { items: [] });
+  assert.deepEqual(await service.requestWalletHistorySync('user-a', 1,
+    {chain:'ethereum',providerKey:'browser-must-not-select-this'}), { state: 'unsupported' });
+  await assert.rejects(service.walletHistoryPage('user-a', 2, {}), error =>
+    error instanceof ValidationError && error.issues[0].field === 'walletId');
+  await assert.rejects(service.requestWalletHistorySync('user-a', 2, {}), error =>
+    error instanceof ValidationError && error.issues[0].field === 'walletId');
+  await assert.rejects(service.requestWalletHistorySync('user-a', 'alpha', {}), error =>
+    error instanceof ValidationError && error.issues[0].field === 'walletId');
+  assert.deepEqual(calls, [['list', 'user-a', 1, { page: '2' }],
+    ['sync', 'user-a', 1, {chain:'ethereum'}]]);
 });
 
 test('pending sniper mode is opt-in, WebSocket-gated, and a persisted per-user creation default',async()=>{

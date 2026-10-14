@@ -18,7 +18,7 @@ const SECURITY_HEADERS=Object.freeze({
 const DUMMY_SECURITY_PASSWORD_HASH=hashSecurityPassword(randomBytes(32).toString('hex'));
 const DASHBOARD_BATCH_CONCURRENCY=5;
 function noStore(res){res.set('Cache-Control','no-store, private');}
-function publicWallet(value){return {label:value.label,address:value.address,chain:value.chain,balances:value.balances??[],minted:value.minted??0,addedAt:value.addedAt??null};}
+function publicWallet(value){return {id:value.id??null,label:value.label,address:value.address,chain:value.chain,balances:value.balances??[],minted:value.minted??0,addedAt:value.addedAt??null};}
 function jsonSafe(value){return JSON.parse(JSON.stringify(value,(_key,item)=>typeof item==='bigint'?item.toString():item));}
 function mintPreviewFailure(error){
   if(error instanceof ValidationError)return error.issues.map(issue=>`${issue.field} ${issue.message}`).join('; ');
@@ -298,6 +298,12 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLo
     socialUsage:action(async(req,res)=>{noStore(res);const {period}=requestSchemas.socialUsagePeriod(req.query);res.json(jsonSafe(await commands.socialUsage(user(req),period)));}),
     linkCode:action(async(req,res)=>{noStore(res);res.json(await commands.linkCode(user(req)));}),
     wallets:action(async(req,res)=>{const values=commands.wallets(user(req));const settled=await Promise.allSettled(values.map(value=>commands.walletBalance(user(req),value.label)));res.json(settled.map((result,index)=>publicWallet(result.status==='fulfilled'?result.value:values[index])));}),
+    walletHistory:action(async(req,res)=>{noStore(res);
+      res.json(jsonSafe(await commands.walletHistoryPage(user(req),req.params.walletId,req.query||{})));}),
+    syncWalletHistory:action(async(req,res)=>{noStore(res);
+      const result=await commands.requestWalletHistorySync(user(req),req.params.walletId,req.body||{});
+      if(result?.accepted!==false){changed(req,'wallet-history');return res.status(202).json(jsonSafe(result));}
+      res.status(503).json(jsonSafe(result));}),
     // Dashboard generation is the sole creation surface that receives the mnemonic. The shared
     // service persists only the encrypted private key and attaches recoveryPhrase after storage;
     // this no-store response is therefore the user's one opportunity to save it. Bot creation
@@ -506,6 +512,8 @@ function mountDashboardRoutes(app,api){
   app.get('/api/social-usage',api.requireSession,api.socialUsage);
   app.post('/api/auth/link-code',api.requireSession,api.requireCsrf,api.linkCode);
   app.get('/api/wallets',api.requireSession,api.wallets);
+  app.get('/api/wallets/:walletId/history',api.requireSession,api.walletHistory);
+  app.post('/api/wallets/:walletId/history/sync',api.requireSession,api.requireCsrf,api.syncWalletHistory);
   app.post('/api/wallets/create',api.requireSession,api.requireCsrf,api.createWallet);
   app.post('/api/wallets/import',api.requireSession,api.requireCsrf,api.importWallet);
   app.post('/api/wallets/batch-import',api.requireSession,api.requireCsrf,api.importWalletsBatch);

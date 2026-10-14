@@ -57,3 +57,51 @@ test('releaseClaim is scoped to the exact account, chain, address, and owner', a
   assert.deepEqual(calls[0].params,[USER,'ethereum',ADDRESS,'worker-a']);
   assert.match(calls[0].sql,/wallet_address=\$3 AND claimed_by=\$4/);
 });
+
+test('queueSync preserves an active backfill cursor and lease instead of resetting its worker', async () => {
+  const calls=[];
+  const pool={query:async(sql,params)=>{
+    calls.push({sql,params});
+    return {rowCount:1,rows:[{
+      user_id:USER,chain:'ethereum',wallet_address:ADDRESS,provider_key:'goldrush',
+      state:'backfilling',cursor:{page:2},generation:'4',attempts:2,
+      claimed_by:'worker-a',claimed_at:new Date('2026-10-13T12:00:00Z'),
+      lease_expires_at:new Date('2026-10-13T12:01:00Z'),
+    }]};
+  }};
+  const queued=await createWalletHistoryRepository(pool).queueSync({
+    userId:USER,chain:'ethereum',walletAddress:ADDRESS,providerKey:'goldrush',
+  });
+  assert.equal(queued.state,'backfilling');
+  assert.equal(queued.claimedBy,'worker-a');
+  assert.deepEqual(queued.cursor,{page:2});
+  assert.deepEqual(calls[0].params,[USER,'ethereum',ADDRESS,'goldrush']);
+  assert.match(calls[0].sql,/state IN \('queued','backfilling'\)/);
+  assert.match(calls[0].sql,/claimed_by IS NOT NULL\s+AND wallet_history_sync_state\.lease_expires_at>NOW\(\)/);
+  assert.match(calls[0].sql,/THEN wallet_history_sync_state\.claimed_by ELSE NULL/);
+});
+
+test('queueSync preserves a retry worker that owns a live error lease', async () => {
+  const calls=[];
+  const pool={query:async(sql,params)=>{
+    calls.push({sql,params});
+    return {rowCount:1,rows:[{
+      user_id:USER,chain:'ethereum',wallet_address:ADDRESS,provider_key:'goldrush',
+      state:'error',cursor:{page:3},generation:'7',attempts:4,
+      last_error_code:'RATE_LIMITED',last_error_message:'retrying provider request',
+      retry_after:new Date('2026-10-13T11:59:00Z'),claimed_by:'worker-retry',
+      claimed_at:new Date('2026-10-13T12:00:00Z'),
+      lease_expires_at:new Date('2026-10-13T12:01:00Z'),
+    }]};
+  }};
+  const queued=await createWalletHistoryRepository(pool).queueSync({
+    userId:USER,chain:'ethereum',walletAddress:ADDRESS,providerKey:'goldrush',
+  });
+  assert.equal(queued.state,'error');
+  assert.equal(queued.generation,7);
+  assert.equal(queued.claimedBy,'worker-retry');
+  assert.deepEqual(queued.cursor,{page:3});
+  assert.equal(queued.lastErrorCode,'RATE_LIMITED');
+  assert.match(calls[0].sql,/state IN \('queued','backfilling'\)\s+OR \(wallet_history_sync_state\.claimed_by IS NOT NULL/);
+  assert.match(calls[0].sql,/claimed_by=CASE WHEN wallet_history_sync_state\.claimed_by IS NOT NULL/);
+});
