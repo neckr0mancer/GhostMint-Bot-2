@@ -1,8 +1,8 @@
 const { createHash } = require('node:crypto');
 
-const ACCOUNT_MERGE_PLAN_VERSION = 2;
-const ACCOUNT_MERGE_GRAPH_INVENTORY_VERSION = 1;
-const ACCOUNT_MERGE_SCHEMA_REVISION = '072_account_merge_ownership_fks.sql';
+const ACCOUNT_MERGE_PLAN_VERSION = 3;
+const ACCOUNT_MERGE_GRAPH_INVENTORY_VERSION = 2;
+const ACCOUNT_MERGE_SCHEMA_REVISION = '073_wallet_history_foundation.sql';
 const ACCOUNT_MERGE_GUARD_DOMAINS = Object.freeze([
   'accountLinkCodes',
   'activity',
@@ -49,6 +49,10 @@ const ACCOUNT_MERGE_GUARD_DOMAINS = Object.freeze([
   'users',
   'userStatusesUpdated',
   'wallets',
+  'walletHistoryMovements',
+  'walletHistorySubjects',
+  'walletHistorySyncState',
+  'walletHistoryTransactions',
 ]);
 const SAFE_KEY = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/;
 const SHA256_FINGERPRINT = /^sha256:[a-f0-9]{64}$/;

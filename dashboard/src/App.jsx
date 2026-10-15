@@ -5,6 +5,8 @@ import Admin from './Admin.jsx';
 import DateTimePicker from './DateTimePicker.jsx';
 import {CountdownRing,shortAddress} from './dashboardWidgets/homeParts.jsx';
 import PnlBars from './PnlBars.jsx';
+import AccountWalletHistory from './AccountWalletHistory.jsx';
+import WalletHistory from './WalletHistory.jsx';
 import {loadError,batchRowDetail,useRetryAfter} from './shared.jsx';
 import {walletPerformance,pnlWalletLabel} from './walletPerformance.js';
 import {pnlBarLayout,pnlRecordSeries,pnlWindowTotals} from './pnlChart.js';
@@ -463,12 +465,13 @@ function ActivityRow({item,scope='wallet'}){
 }
 function WalletDetails({wallet,records,windowKey,onWindow,onRemove,onClose,lowThreshold,preferredChain,profile}){
   const [tab,setTab]=useState('summary');
+  const [activityView,setActivityView]=useState('transactions');
   // Activity is scoped server-side by session and searched by wallet label. It is only fetched
   // once that tab is opened -- opening a wallet to read its balance should not cost a request for
   // a list nobody looked at.
-  const activity=useLoad(tab==='activity'
+  const activity=useLoad(tab==='activity'&&activityView==='app'
     ?`/api/activity?page=1&pageSize=25&search=${encodeURIComponent(wallet.label)}`:null,
-    [tab,wallet.label],'activity.changed');
+    [tab,activityView,wallet.label],'activity.changed');
   const status=walletStatus(wallet,lowThreshold,preferredChain);
   const home=walletHome(wallet,preferredChain);
   const created=walletCreatedText(wallet);
@@ -515,7 +518,14 @@ function WalletDetails({wallet,records,windowKey,onWindow,onRemove,onClose,lowTh
           by hand moves one and not the other.</div></div>
     </div>}
 
-    {tab==='activity'&&(()=>{
+    {tab==='activity'&&<>
+      <SubTabs tabs={[{id:'transactions',label:'Transactions'},{id:'app',label:'App activity'}]}
+        active={activityView} onChange={setActivityView} label="Wallet activity type"
+        idPrefix="wallet-activity"/>
+      {activityView==='transactions'&&<WalletHistory wallet={wallet}
+        supportedChains={profile?.supportedChains||[]} chainLabel={value=>chainMeta(value).label||value}
+        explorerForChain={explorerForChain} nativeSymbolForChain={nativeSymbolForChain}/>}
+      {activityView==='app'&&(()=>{
       // history.html's row vocabulary -- .r / .rm / .rt / .rs / .rv -- rather than the two-column
       // ledger this was. A ledger is for figures that line up; an event has a title, a set of
       // identifying details, and an outcome, which is exactly what .r lays out.
@@ -544,6 +554,7 @@ function WalletDetails({wallet,records,windowKey,onWindow,onRemove,onClose,lowTh
           wallet. The full feed, across every wallet, is on <b>History</b>.</p>}
       </>;
     })()}
+    </>}
 
     {tab==='performance'&&<div className="g">
       <div className="seg" role="group" aria-label="Performance window">
@@ -5595,6 +5606,7 @@ function History({profile,tab,onTab,go}){
   // by someone who has since lost owner access.
   const tabs=[
     {id:'activity',label:'Activity'},
+    {id:'transactions',label:'Transactions'},
     {id:'mints',label:'Mints'},
     {id:'audit',label:'Audit evidence'},
     ...(profile.isOwner?[{id:'security',label:'Security log',tag:'owner only'}]:[]),
@@ -5607,6 +5619,9 @@ function History({profile,tab,onTab,go}){
     <SubTabs tabs={tabs} active={active} onChange={onTab} label="History sections"/>
     <div className="history-flow">
       {active==='activity'&&<Activity go={go}/>}
+      {active==='transactions'&&<AccountWalletHistory supportedChains={profile.supportedChains||[]}
+        chainLabel={value=>chainMeta(value).label||value} explorerForChain={explorerForChain}
+        nativeSymbolForChain={nativeSymbolForChain}/>}
       {active==='mints'&&<MintHistory/>}
       {active==='audit'&&<div className="unav">
         <div className="ei">{AUDIT_ICON}</div>

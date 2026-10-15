@@ -30,6 +30,12 @@ function numberOrNull(value) {
   return value === null || value === undefined ? null : Number(value);
 }
 
+function walletIdNumber(value) {
+  const id = Number(value);
+  if (!Number.isSafeInteger(id) || id < 1) throw new TypeError('walletId exceeds the safe API range');
+  return id;
+}
+
 function decimalOrNull(value) {
   return value === null || value === undefined ? null : String(value);
 }
@@ -82,6 +88,14 @@ function mapTransaction(row) {
     firstObservedAt: timeOrNull(row.first_observed_at),
     lastObservedAt: timeOrNull(row.last_observed_at),
     movements: movements.map(mapMovement),
+  };
+}
+
+function mapAccountTransaction(row) {
+  return {
+    ...mapTransaction(row),
+    walletId: walletIdNumber(row.wallet_id),
+    walletLabel: row.wallet_label ?? null,
   };
 }
 
@@ -610,8 +624,151 @@ function createWalletHistoryRepository(pool) {
     };
   }
 
+  async function listAccountPage(userId, input = {}) {
+    const chain = input.chain ? normalizedText(input.chain, 'chain') : null;
+    const walletId = input.walletId === null || input.walletId === undefined || input.walletId === ''
+      ? null : Number(input.walletId);
+    if (walletId !== null && (!Number.isSafeInteger(walletId) || walletId < 1)) {
+      throw new TypeError('walletId is invalid');
+    }
+    const supportedChains = [...new Set((Array.isArray(input.supportedChains)
+      ? input.supportedChains : []).map(value => normalizedText(value, 'supportedChains')))].sort();
+    const coverageChains = chain ? [chain] : supportedChains;
+    const limit = Math.min(100, Math.max(1, Number(input.limit) || 20));
+    const offset = Math.max(0, Number(input.offset) || 0);
+    const snapshotAt = input.snapshotAt ? dateValue(input.snapshotAt, 'snapshotAt') : new Date();
+    const source = input.source ? normalizedText(input.source, 'source') : null;
+    if (source && !['ghostmint', 'external', 'source_unknown'].includes(source)) {
+      throw new TypeError('source is invalid');
+    }
+    const values = [String(userId), walletId, chain, snapshotAt, input.status || null,
+      input.type || null, input.direction || null,
+      input.address ? String(input.address).toLowerCase() : null,
+      input.txHash ? String(input.txHash).toLowerCase() : null, source, limit, offset];
+    const result = await pool.query(`WITH owned_wallets AS (
+        SELECT DISTINCT ON (LOWER(address)) id,label,LOWER(address) AS wallet_address
+        FROM wallets
+        WHERE user_id=$1 AND ($2::BIGINT IS NULL OR id=$2)
+        ORDER BY LOWER(address),id
+      ), classified AS (
+        SELECT tx.*,wallet.id AS wallet_id,wallet.label AS wallet_label,
+          subject.tracking_start_block,
+          sync.provenance_complete_from_block,sync.provenance_complete_through_block,
+          CASE WHEN EXISTS (
+            SELECT 1 FROM transaction_intents intent
+            LEFT JOIN transaction_broadcast_hashes broadcast ON broadcast.intent_id=intent.intent_id
+            WHERE intent.user_id=tx.user_id AND intent.chain=tx.chain
+              AND LOWER(intent.from_address)=tx.wallet_address
+              AND (LOWER(intent.tx_hash)=tx.tx_hash
+                OR LOWER(intent.replacement_tx_hash)=tx.tx_hash
+                OR LOWER(intent.bumped_from_tx_hash)=tx.tx_hash
+                OR LOWER(broadcast.tx_hash)=tx.tx_hash)
+          ) THEN 'ghostmint'
+          WHEN subject.tracking_start_block IS NOT NULL
+            AND tx.block_number > subject.tracking_start_block
+            AND sync.provenance_complete_from_block IS NOT NULL
+            AND sync.provenance_complete_through_block IS NOT NULL
+            AND tx.block_number BETWEEN sync.provenance_complete_from_block
+              AND sync.provenance_complete_through_block
+          THEN 'external'
+          ELSE 'source_unknown' END AS source
+        FROM wallet_history_transactions tx
+        JOIN owned_wallets wallet ON wallet.wallet_address=tx.wallet_address
+        JOIN wallet_history_subjects subject
+          ON subject.user_id=tx.user_id AND subject.chain=tx.chain
+            AND subject.wallet_address=tx.wallet_address
+        LEFT JOIN wallet_history_sync_state sync
+          ON sync.user_id=tx.user_id AND sync.chain=tx.chain
+            AND sync.wallet_address=tx.wallet_address
+        WHERE tx.user_id=$1 AND ($3::TEXT IS NULL OR tx.chain=$3)
+          AND tx.first_observed_at <= $4 AND tx.canonical=TRUE
+      ), filtered AS (
+        SELECT classified.* FROM classified
+        WHERE ($5::TEXT IS NULL OR classified.execution_status=$5)
+          AND ($6::TEXT IS NULL OR EXISTS (SELECT 1 FROM wallet_history_movements movement
+            WHERE movement.user_id=classified.user_id AND movement.chain=classified.chain
+              AND movement.wallet_address=classified.wallet_address AND movement.tx_hash=classified.tx_hash
+              AND (movement.event_type=$6 OR movement.asset_standard=$6)))
+          AND ($7::TEXT IS NULL OR EXISTS (SELECT 1 FROM wallet_history_movements movement
+            WHERE movement.user_id=classified.user_id AND movement.chain=classified.chain
+              AND movement.wallet_address=classified.wallet_address AND movement.tx_hash=classified.tx_hash
+              AND movement.direction=$7))
+          AND ($8::TEXT IS NULL OR classified.from_address=$8 OR classified.to_address=$8
+            OR EXISTS (SELECT 1 FROM wallet_history_movements movement
+              WHERE movement.user_id=classified.user_id AND movement.chain=classified.chain
+                AND movement.wallet_address=classified.wallet_address AND movement.tx_hash=classified.tx_hash
+                AND (movement.asset_address=$8 OR movement.from_address=$8 OR movement.to_address=$8)))
+          AND ($9::TEXT IS NULL OR classified.tx_hash LIKE $9 || '%')
+          AND ($10::TEXT IS NULL OR classified.source=$10)
+      ), paged AS (
+        SELECT filtered.*,
+          COALESCE((SELECT JSONB_AGG(TO_JSONB(movement) - 'user_id' - 'chain' - 'wallet_address' - 'tx_hash'
+            ORDER BY movement.event_locator)
+            FROM wallet_history_movements movement
+            WHERE movement.user_id=filtered.user_id AND movement.chain=filtered.chain
+              AND movement.wallet_address=filtered.wallet_address AND movement.tx_hash=filtered.tx_hash),'[]'::JSONB)
+            AS movements
+        FROM filtered
+        ORDER BY occurred_at DESC,chain,block_number DESC,transaction_index DESC NULLS LAST,
+          tx_hash DESC,wallet_id
+        LIMIT $11 OFFSET $12
+      )
+      SELECT paged.*,totals.result_total
+      FROM (SELECT COUNT(*)::BIGINT AS result_total FROM filtered) totals
+      LEFT JOIN paged ON TRUE
+      ORDER BY paged.occurred_at DESC,paged.chain,paged.block_number DESC,
+        paged.transaction_index DESC NULLS LAST,paged.tx_hash DESC,paged.wallet_id`, values);
+    const coverageResult = coverageChains.length ? await pool.query(`WITH owned_wallets AS (
+        SELECT DISTINCT ON (LOWER(address)) id,label,LOWER(address) AS wallet_address
+        FROM wallets
+        WHERE user_id=$1 AND ($2::BIGINT IS NULL OR id=$2)
+        ORDER BY LOWER(address),id
+      ), requested_chains AS (
+        SELECT UNNEST($3::TEXT[]) AS chain
+      )
+      SELECT wallet.id AS wallet_id,wallet.label AS wallet_label,
+        wallet.wallet_address,requested.chain,
+        COALESCE(sync.state,'not_started') AS state,
+        sync.history_complete_from_block,sync.history_complete_through_block,
+        sync.provenance_complete_from_block,sync.provenance_complete_through_block,
+        sync.finalized_through_block
+      FROM owned_wallets wallet
+      CROSS JOIN requested_chains requested
+      LEFT JOIN wallet_history_subjects subject
+        ON subject.user_id=$1 AND subject.chain=requested.chain
+          AND subject.wallet_address=wallet.wallet_address
+      LEFT JOIN wallet_history_sync_state sync
+        ON sync.user_id=subject.user_id AND sync.chain=subject.chain
+          AND sync.wallet_address=subject.wallet_address
+      ORDER BY wallet.id,requested.chain`, [String(userId), walletId, coverageChains])
+      : { rows:[] };
+    const chainCoverage = coverageResult.rows.map(row => ({
+      walletId:walletIdNumber(row.wallet_id),
+      walletLabel:row.wallet_label,
+      walletAddress:row.wallet_address,
+      chain:row.chain,
+      state:row.state || 'not_started',
+      historyFromBlock:decimalOrNull(row.history_complete_from_block),
+      historyThroughBlock:decimalOrNull(row.history_complete_through_block),
+      provenanceFromBlock:decimalOrNull(row.provenance_complete_from_block),
+      provenanceThroughBlock:decimalOrNull(row.provenance_complete_through_block),
+      finalizedThroughBlock:decimalOrNull(row.finalized_through_block),
+    }));
+    const coverageState = chainCoverage.length === 0 ? 'not_started'
+      : chainCoverage.every(item => item.state === chainCoverage[0].state)
+        ? chainCoverage[0].state : 'mixed';
+    return {
+      items:result.rows.filter(row => row.tx_hash).map(mapAccountTransaction),
+      total:result.rowCount ? Number(result.rows[0].result_total) : 0,
+      snapshotAt:snapshotAt.toISOString(),
+      snapshotScope:'first_observed_at',
+      coverage:{state:coverageState,chains:chainCoverage},
+    };
+  }
+
   return { registerSubject, getSubject, listSubjects, deleteSubject, setSyncState, queueSync, beginSync,
-    claimDue, releaseClaim, applyProviderPage, markSyncError, listPage };
+    claimDue, releaseClaim, applyProviderPage, markSyncError, listPage, listAccountPage };
 }
 
-module.exports = { createWalletHistoryRepository, mapMovement, mapSubject, mapSyncState, mapTransaction };
+module.exports = { createWalletHistoryRepository, mapMovement, mapSubject, mapSyncState, mapTransaction,
+  mapAccountTransaction };

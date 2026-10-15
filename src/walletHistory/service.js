@@ -12,6 +12,15 @@ function positiveInteger(value, fallback, maximum, field) {
   return parsed;
 }
 
+function optionalPositiveInteger(value, field) {
+  if (value === undefined || value === null || value === '') return null;
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 1) {
+    throw new ValidationError({ field, message: 'must be a positive integer' });
+  }
+  return parsed;
+}
+
 function optionalChoice(value, choices, field) {
   if (value === undefined || value === null || value === '') return null;
   const normalized = String(value).trim().toLowerCase();
@@ -98,6 +107,42 @@ function createWalletHistoryService({ repository, providerRegistry, defaultProvi
     return { page, pageSize, total: result.total, totalPages: Math.max(1, Math.ceil(result.total / pageSize)),
       snapshotAt: result.snapshotAt, snapshotScope: result.snapshotScope,
       coverage: result.coverage, items: result.items };
+  }
+
+  async function listAccountHistory(userId, input = {}) {
+    const walletId = optionalPositiveInteger(input.walletId, 'walletId');
+    const chain = resolveChain(null, input.chain, { optional:true });
+    const page = positiveInteger(input.page, 1, 1_000_000, 'page');
+    const pageSize = positiveInteger(input.pageSize, 20, 100, 'pageSize');
+    const source = optionalChoice(input.source, ['ghostmint', 'external', 'source_unknown'], 'source');
+    const status = optionalChoice(input.status, ['success', 'reverted', 'unknown'], 'status');
+    const direction = optionalChoice(input.direction, ['in', 'out', 'self', 'unknown'], 'direction');
+    const type = optionalText(input.type, 'type', 32);
+    const txHash = optionalText(input.txHash, 'txHash', 66);
+    const address = optionalText(input.address, 'address', 42);
+    if (address && !isAddress(address)) {
+      throw new ValidationError({ field:'address', message:'must be a valid Ethereum address' });
+    }
+    if (txHash && !/^0x[0-9a-f]{1,64}$/.test(txHash)) {
+      throw new ValidationError({ field:'txHash', message:'must be a transaction hash or hash prefix' });
+    }
+    let snapshotAt = null;
+    if (input.snapshotAt) {
+      const parsed = new Date(input.snapshotAt);
+      if (!Number.isFinite(parsed.getTime())) {
+        throw new ValidationError({ field:'snapshotAt', message:'must be a valid timestamp' });
+      }
+      snapshotAt = parsed;
+    }
+    const result = await repository.listAccountPage(userId, {
+      walletId,chain,supportedChains:allowedChains,limit:pageSize,offset:(page - 1) * pageSize,
+      snapshotAt,source,status,direction,type,txHash,address,
+    });
+    return {
+      page,pageSize,total:result.total,totalPages:Math.max(1,Math.ceil(result.total / pageSize)),
+      snapshotAt:result.snapshotAt,snapshotScope:result.snapshotScope,
+      coverage:result.coverage,items:result.items,
+    };
   }
 
   async function requestSync(userId, wallet, input = {}) {
@@ -207,7 +252,7 @@ function createWalletHistoryService({ repository, providerRegistry, defaultProvi
     return results.some(Boolean);
   }
 
-  return { listHistory, requestSync, runSyncPage, forgetWallet };
+  return { listHistory, listAccountHistory, requestSync, runSyncPage, forgetWallet };
 }
 
 module.exports = { createWalletHistoryService };

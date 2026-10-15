@@ -10,6 +10,10 @@ const {
 // must be empty before a duplicate account is safe to remove in mergeAccount below.
 const MERGE_DATA_TABLES = [
   ['wallets', 'user_id'],
+  ['wallet_history_subjects', 'user_id'],
+  ['wallet_history_sync_state', 'user_id'],
+  ['wallet_history_transactions', 'user_id'],
+  ['wallet_history_movements', 'user_id'],
   ['mint_tasks', 'user_id'],
   ['activity', 'user_id'],
   ['pnl_records', 'user_id'],
@@ -45,6 +49,10 @@ const MERGE_DATA_TABLES = [
 // added to one path while being invisible to the other.
 const MERGE_PREVIEW_MOVABLE_DOMAINS = [
   ['wallets', 'wallets', 'user_id'],
+  ['walletHistorySubjects', 'wallet_history_subjects', 'user_id'],
+  ['walletHistorySyncState', 'wallet_history_sync_state', 'user_id'],
+  ['walletHistoryTransactions', 'wallet_history_transactions', 'user_id'],
+  ['walletHistoryMovements', 'wallet_history_movements', 'user_id'],
   ['mintTasks', 'mint_tasks', 'user_id'],
   ['activity', 'activity', 'user_id'],
   ['pnlRecords', 'pnl_records', 'user_id'],
@@ -76,11 +84,14 @@ const MERGE_PREVIEW_REVOCABLE_DOMAINS = [
 ];
 
 // Phase 1E intentionally executes only plans with no collisions and no setting choices. Every
-// row below can therefore be reassigned verbatim. Children protected by migration 072 are omitted:
-// updating their owned parent cascades the user_id atomically and preserves the complete graph.
+// row below can therefore be reassigned verbatim. Children protected by migrations 072 and 073
+// are omitted: updating their owned parent cascades user_id atomically and preserves the complete
+// graph. wallet_history_subjects is the wallet-history ownership root; its sync, transaction, and
+// movement children therefore move through their composite ON UPDATE CASCADE foreign keys.
 const MERGE_EXECUTION_MOVES = [
   ['linkedAccounts', 'linked_accounts', 'user_id'],
   ['wallets', 'wallets', 'user_id'],
+  ['walletHistorySubjects', 'wallet_history_subjects', 'user_id'],
   ['mintTasks', 'mint_tasks', 'user_id'],
   ['activity', 'activity', 'user_id'],
   ['pnlRecords', 'pnl_records', 'user_id'],
@@ -106,7 +117,7 @@ const MERGE_EXECUTION_MOVES = [
 const MERGE_SERIALIZATION_RETRY_CODES = new Set(['40001', '40P01']);
 const MERGE_EXECUTION_MAX_ATTEMPTS = 3;
 
-// Plan-v2 approval fingerprints cover both accounts' complete physical ownership graphs. The
+// Plan-v3 approval fingerprints cover both accounts' complete physical ownership graphs. The
 // query returns only MVCC tuple identity (xmin + ctid); encrypted keys, password/session hashes,
 // authorization tokens, calldata, and platform IDs never leave PostgreSQL for this guard. A
 // content UPDATE creates a new tuple version, while INSERT/DELETE changes the tuple set. Physical
@@ -116,6 +127,10 @@ const MERGE_GUARD_DIRECT_DOMAINS = [
   ['linkedAccounts', 'linked_accounts', 'user_id'],
   ['accountLinkCodes', 'account_link_codes', 'user_id'],
   ['wallets', 'wallets', 'user_id'],
+  ['walletHistorySubjects', 'wallet_history_subjects', 'user_id'],
+  ['walletHistorySyncState', 'wallet_history_sync_state', 'user_id'],
+  ['walletHistoryTransactions', 'wallet_history_transactions', 'user_id'],
+  ['walletHistoryMovements', 'wallet_history_movements', 'user_id'],
   ['mintTasks', 'mint_tasks', 'user_id'],
   ['activity', 'activity', 'user_id'],
   ['pnlRecords', 'pnl_records', 'user_id'],
@@ -284,7 +299,7 @@ function assertMergeGuardInventoryParity() {
   if (new Set(queried).size !== queried.length
     || queried.length !== expected.length
     || queried.some((domain, index) => domain !== expected[index])) {
-    throw new Error('Account merge plan-v2 guard query does not match its ownership inventory');
+    throw new Error('Account merge plan-v3 guard query does not match its ownership inventory');
   }
 }
 assertMergeGuardInventoryParity();
@@ -304,13 +319,13 @@ function fingerprintMergeGuardRows(rows) {
       || !Number.isSafeInteger(row.row_count) || row.row_count < 0
       || typeof row.fingerprint !== 'string'
       || !/^sha256:[a-f0-9]{64}$/.test(row.fingerprint)) {
-      throw new Error('Account merge plan-v2 guard query returned an invalid ownership fingerprint');
+      throw new Error('Account merge plan-v3 guard query returned an invalid ownership fingerprint');
     }
     seen.add(key);
     graph[row.side][row.domain] = { count: row.row_count, fingerprint: row.fingerprint };
   }
   if (seen.size !== expected.size || [...expected].some(key => !seen.has(key))) {
-    throw new Error('Account merge plan-v2 guard query returned an incomplete ownership inventory');
+    throw new Error('Account merge plan-v3 guard query returned an incomplete ownership inventory');
   }
   return {
     graphInventoryVersion: ACCOUNT_MERGE_GRAPH_INVENTORY_VERSION,
@@ -908,6 +923,11 @@ function createPostgresIdentityRepository(pool) {
               JOIN wallets target ON target.user_id=$2
                AND LOWER(target.address)=LOWER(source.address) AND LOWER(target.chain)=LOWER(source.chain)
               WHERE source.user_id=$1`],
+            ['walletHistorySubjectCollisions', `SELECT COUNT(*)::INTEGER AS count
+              FROM wallet_history_subjects source
+              JOIN wallet_history_subjects target ON target.user_id=$2
+               AND target.chain=source.chain AND target.wallet_address=source.wallet_address
+              WHERE source.user_id=$1`],
             ['walletLabelCollisions', `WITH source_labels AS (
                 SELECT LOWER(label) AS wallet_label FROM wallets WHERE user_id=$1
                 UNION SELECT LOWER(wallet_label) FROM mint_tasks WHERE user_id=$1
@@ -1011,7 +1031,7 @@ function createPostgresIdentityRepository(pool) {
       }
     },
 
-    // Executes only a collision-free plan-v2 review. The caller supplies the exact account IDs,
+    // Executes only a collision-free plan-v3 review. The caller supplies the exact account IDs,
     // digest, and confirmation it showed to the root owner; this transaction locks and rebuilds
     // that plan before a single ownership row changes. Conflict resolution is deliberately not
     // accepted here -- any blocker or choice returns a fresh review instead of guessing.
@@ -1191,7 +1211,7 @@ function createPostgresIdentityRepository(pool) {
 
           const movedCounts = positiveCountMap(expectedMovedCounts);
           const evidence = {
-            executor: 'ready_plan_v1',
+            executor: 'ready_plan_v3',
             schemaRevision: ACCOUNT_MERGE_SCHEMA_REVISION,
             graphInventoryVersion: ACCOUNT_MERGE_GRAPH_INVENTORY_VERSION,
             sourceIdentityCount: sourceIdentitiesBefore.length,

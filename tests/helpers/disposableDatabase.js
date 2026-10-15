@@ -100,10 +100,12 @@ async function readDatabaseMarker(connectionString) {
 
 async function verifyDisposableDatabase(configuration, readMarker = readDatabaseMarker) {
   const expectedMarker = `${MARKER_PREFIX}${configuration.databaseId}`;
-  const [pooled, unpooled] = await Promise.all([
-    readMarker(configuration.pooledUrl),
-    readMarker(configuration.unpooledUrl),
-  ]);
+  // Verify both endpoints, but do it sequentially. Small disposable Railway instances may expose
+  // the same public proxy for pooled and unpooled traffic and reject the second simultaneous
+  // connection. Sequential reads preserve the two-endpoint identity proof without creating a
+  // false failure from connection pressure.
+  const pooled = await readMarker(configuration.pooledUrl);
+  const unpooled = await readMarker(configuration.unpooledUrl);
   if (pooled.databaseName !== unpooled.databaseName
     || pooled.marker !== expectedMarker || unpooled.marker !== expectedMarker) {
     throw new Error('Database tests require pooled and unpooled URLs for the same marked disposable database.');

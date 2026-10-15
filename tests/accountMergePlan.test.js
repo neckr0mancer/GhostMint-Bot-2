@@ -232,8 +232,14 @@ test('malformed repository snapshots fail closed', () => {
     /identities must be an array/);
 });
 
-test('plan v2 changes when either ownership side changes without exposing private graph guards', () => {
-  assert.equal(ACCOUNT_MERGE_PLAN_VERSION, 2);
+test('plan v3 changes when either ownership side changes without exposing private graph guards', () => {
+  assert.equal(ACCOUNT_MERGE_PLAN_VERSION, 3);
+  assert.equal(ACCOUNT_MERGE_GRAPH_INVENTORY_VERSION, 2);
+  assert.equal(ACCOUNT_MERGE_SCHEMA_REVISION, '073_wallet_history_foundation.sql');
+  for (const domain of ['walletHistorySubjects', 'walletHistorySyncState',
+    'walletHistoryTransactions', 'walletHistoryMovements']) {
+    assert.equal(ACCOUNT_MERGE_GUARD_DOMAINS.includes(domain), true);
+  }
   const original = snapshot();
   const sourceChanged = snapshot({ guardValues: guardValues({ source: {
     mintTaskAttempts: { count: 1, fingerprint: fingerprint('source-attempt-update') },

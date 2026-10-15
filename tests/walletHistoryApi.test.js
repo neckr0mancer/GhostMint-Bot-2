@@ -78,6 +78,20 @@ async function walletHistoryServer(t,{syncResult={accepted:true,supported:false,
         items: [{ txHash: `0x${'ab'.repeat(32)}`, valueWei: 1n }],
       };
     },
+    accountWalletHistoryPage: async (userId, input) => {
+      if (input.walletId !== undefined && input.walletId !== null && input.walletId !== '') {
+        requireOwnedWallet(userId,input.walletId);
+      }
+      calls.push(['account-list',userId,input]);
+      if (userId !== 'user-a') return {page:1,pageSize:20,total:0,totalPages:1,
+        snapshotAt:'2026-01-01T00:00:00.000Z',coverage:{state:'not_started',chains:[]},items:[]};
+      return {page:Number(input.page)||1,pageSize:20,total:1,totalPages:1,
+        snapshotAt:'2026-01-01T00:00:00.000Z',snapshotScope:'first_observed_at',
+        coverage:{state:'mixed',chains:[{walletId:41,walletLabel:'Trading',
+          walletAddress:ownedWallet.address,chain:'ethereum',state:'current'}]},
+        items:[{walletId:41,walletLabel:'Trading',walletAddress:ownedWallet.address,
+          txHash:`0x${'cd'.repeat(32)}`,valueWei:2n,source:'ghostmint'}]};
+    },
     requestWalletHistorySync: async (userId, walletId, input) => {
       requireOwnedWallet(userId, walletId);
       calls.push(['sync', userId, walletId, input]);
@@ -136,6 +150,25 @@ test('wallet history GET is authenticated, tenant scoped, no-store, and JSON saf
   const crossTenant = await fetch(`${base}/api/wallets/41/history`, { headers: authHeaders('b') });
   assert.equal(crossTenant.status, 400);
   assert.deepEqual(calls.map(call => call.slice(0, 3)), [['list', 'user-a', '41']]);
+});
+
+test('account transaction history is authenticated, tenant scoped, no-store, snapshot shaped, and wallet filterable',async t=>{
+  const {base,calls}=await walletHistoryServer(t);
+  const route=`${base}/api/history/transactions`;
+  assert.equal((await fetch(route)).status,401);
+  const response=await fetch(`${route}?walletId=41&page=2`,{headers:authHeaders('a')});
+  assert.equal(response.status,200);
+  assert.match(response.headers.get('cache-control'),/no-store/);
+  const body=await response.json();
+  assert.equal(body.page,2);
+  assert.equal(body.snapshotScope,'first_observed_at');
+  assert.equal(body.items[0].walletId,41);
+  assert.equal(body.items[0].walletLabel,'Trading');
+  assert.equal(body.items[0].walletAddress,'0x0000000000000000000000000000000000000041');
+  assert.equal(body.items[0].valueWei,'2');
+  assert.equal(body.coverage.chains[0].walletLabel,'Trading');
+  assert.equal((await fetch(`${route}?walletId=41`,{headers:authHeaders('b')})).status,400);
+  assert.deepEqual(calls.map(call=>call.slice(0,2)),[['account-list','user-a']]);
 });
 
 test('wallet history sync checks CSRF and tenancy before broadcasting a refresh', async t => {

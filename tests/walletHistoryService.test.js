@@ -14,6 +14,12 @@ function fixture({ supported = false, subject = null, fetchError = null, support
       return { items: [{ txHash: '0x1' }], total: 1, snapshotAt: '2026-01-01T00:00:00.000Z',
         snapshotScope:'first_observed_at', coverage: { state: 'partial' } };
     },
+    listAccountPage: async (userId, input) => {
+      calls.push(['account-list', userId, input]);
+      return { items:[{txHash:'0x2',walletId:7,walletLabel:'Trading'}],total:1,
+        snapshotAt:'2026-01-01T00:00:00.000Z',snapshotScope:'first_observed_at',
+        coverage:{state:'mixed',chains:[]} };
+    },
     registerSubject: async input => { calls.push(['register', input]); return input; },
     setSyncState: async input => { calls.push(['state', input]); return { state: input.state }; },
     queueSync: async input => { calls.push(['queue', input]); return { state:'queued' }; },
@@ -58,6 +64,28 @@ test('wallet history rejects unsafe filters before reaching storage', async () =
   const scoped = fixture({ supportedChains:['ethereum', 'base'] }).service;
   await assert.rejects(scoped.listHistory('user-a', wallet, { chain:'ink' }),
     error => error instanceof ValidationError && error.issues[0].field === 'chain');
+});
+
+test('account wallet history validates the shared filters and forwards the optional owned wallet scope', async () => {
+  const {calls,service}=fixture({supportedChains:['ethereum','base']});
+  const result=await service.listAccountHistory('user-a',{
+    walletId:'7',page:'2',pageSize:'25',source:'external',direction:'in',txHash:'0xabc',
+  });
+  assert.equal(result.page,2);
+  assert.equal(result.items[0].walletLabel,'Trading');
+  const call=calls.find(item=>item[0]==='account-list');
+  assert.equal(call[1],'user-a');
+  assert.equal(call[2].walletId,7);
+  assert.equal(call[2].chain,null);
+  assert.deepEqual(call[2].supportedChains,['ethereum','base']);
+  assert.equal(call[2].offset,25);
+  assert.equal(call[2].source,'external');
+  await assert.rejects(service.listAccountHistory('user-a',{walletId:'0'}),error=>
+    error instanceof ValidationError&&error.issues[0].field==='walletId');
+  await assert.rejects(service.listAccountHistory('user-a',{chain:'ink'}),error=>
+    error instanceof ValidationError&&error.issues[0].field==='chain');
+  await assert.rejects(service.listAccountHistory('user-a',{address:'not-an-address'}),error=>
+    error instanceof ValidationError&&error.issues[0].field==='address');
 });
 
 test('unsupported wallet history sync is accepted but reports unsupported truthfully', async () => {

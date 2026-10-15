@@ -129,7 +129,8 @@ test('link-code consumption leaves the code unused when the target already has a
   assert.equal(released(),true);
 });
 
-function previewFixture({graphRows, schemaCurrent=true}={}){
+function previewFixture({graphRows, schemaCurrent=true, walletAddressCollisions=1,
+  walletHistorySubjectCollisions=0}={}){
   const queries=[];let released=false;
   const ownershipRows=graphRows || ownershipFingerprints({
     source:{users:{count:1},wallets:{count:1}},target:{users:{count:1}},
@@ -139,7 +140,7 @@ function previewFixture({graphRows, schemaCurrent=true}={}){
       const normalized=String(sql).replace(/\s+/g,' ').trim();queries.push(normalized);
       if(['BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY','COMMIT','ROLLBACK'].includes(normalized))return result();
       if(normalized.startsWith('SELECT filename FROM schema_migrations'))return schemaCurrent
-        ?result([{filename:'072_account_merge_ownership_fks.sql'}]):result();
+        ?result([{filename:'073_wallet_history_foundation.sql'}]):result();
       if(normalized.startsWith('SELECT platform,platform_user_id,user_id FROM linked_accounts'))return result([
         {platform:'discord',platform_user_id:'discord-1',user_id:'source-user'},
         {platform:'telegram',platform_user_id:'telegram-1',user_id:'target-user'},
@@ -162,7 +163,12 @@ function previewFixture({graphRows, schemaCurrent=true}={}){
       ]);
       if(normalized.startsWith('SELECT user_id,group_id,max_transaction_value_wei'))return result();
       if(normalized.startsWith('SELECT COUNT(*)::INTEGER AS count FROM wallets WHERE user_id=$1'))return result([{count:2}]);
-      if(normalized.includes('FROM wallets source JOIN wallets target')&&normalized.includes('LOWER(target.address)'))return result([{count:1}]);
+      if(normalized.includes('FROM wallets source JOIN wallets target')&&normalized.includes('LOWER(target.address)')){
+        return result([{count:walletAddressCollisions}]);
+      }
+      if(normalized.includes('FROM wallet_history_subjects source JOIN wallet_history_subjects target')){
+        return result([{count:walletHistorySubjectCollisions}]);
+      }
       if(normalized.startsWith('WITH source_labels AS'))return result([{count:0}]);
       if(normalized.startsWith('SELECT COUNT(*)::INTEGER AS count FROM'))return result([{count:0}]);
       if(normalized.startsWith('WITH graph_rows AS'))return result(ownershipRows);
@@ -193,6 +199,10 @@ test('account merge preview uses a repeatable read-only snapshot and never mutat
   const graphQuery=queries.find(sql=>sql.startsWith('WITH graph_rows AS'));
   assert.match(graphQuery,/transaction_state_transitions/);
   assert.match(graphQuery,/transaction_broadcast_hashes/);
+  assert.match(graphQuery,/wallet_history_subjects/);
+  assert.match(graphQuery,/wallet_history_sync_state/);
+  assert.match(graphQuery,/wallet_history_transactions/);
+  assert.match(graphQuery,/wallet_history_movements/);
   assert.match(graphQuery,/owned_row\.session_id::TEXT AS row_locator/);
   assert.match(graphQuery,/owned_row\.revoked_at IS NULL THEN 'active' ELSE 'revoked'/);
   assert.match(graphQuery,/mint_task_preflight_checks/);
@@ -204,7 +214,7 @@ test('account merge preview uses a repeatable read-only snapshot and never mutat
   assert.match(graphQuery,/JSONB_AGG\(JSONB_BUILD_ARRAY\(graph_rows\.row_locator,graph_rows\.row_version\)/);
   assert.match(graphQuery,/ENCODE\(SHA256\(CONVERT_TO\(/);
   assert.doesNotMatch(graphQuery,/encrypted_private_key|security_password_hash|code_hash|token_hash|calldata/);
-  assert.equal(plan.planVersion,2);
+  assert.equal(plan.planVersion,3);
   assert.equal(queries[0],'BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
   assert.equal(queries.includes('COMMIT'),true);
   assert.equal(queries.some(sql=>/^(INSERT|UPDATE|DELETE|ALTER|DROP|TRUNCATE|LOCK)\b/.test(sql)),false);
@@ -233,7 +243,24 @@ test('account merge preview digest changes on same-count tuple drift on either a
     'row fingerprints, not count changes, must invalidate the reviewed plan');
 });
 
-test('account merge preview fails closed before reading identities when ownership migration 072 is absent',async()=>{
+test('account merge preview blocks a duplicate wallet-history subject before execution',async()=>{
+  const {queries,repository}=previewFixture({
+    walletAddressCollisions:0,
+    walletHistorySubjectCollisions:1,
+  });
+  const plan=await repository.previewAccountMerge({
+    sourcePlatform:'discord',sourcePlatformUserId:'discord-1',
+    targetPlatform:'telegram',targetPlatformUserId:'telegram-1',
+  });
+  assert.equal(plan.classification,'blocked');
+  assert.deepEqual(plan.summary.blocking.domains,
+    [{key:'walletHistorySubjectCollisions',count:1}]);
+  const collisionQuery=queries.find(sql=>sql.includes('FROM wallet_history_subjects source'));
+  assert.match(collisionQuery,/target\.chain=source\.chain/);
+  assert.match(collisionQuery,/target\.wallet_address=source\.wallet_address/);
+});
+
+test('account merge preview fails closed before reading identities when migration 073 is absent',async()=>{
   const {queries,released,repository}=previewFixture({schemaCurrent:false});
   await assert.rejects(repository.previewAccountMerge({
     sourcePlatform:'discord',sourcePlatformUserId:'discord-1',
@@ -264,6 +291,10 @@ const EXECUTOR_EVENT_ID='33333333-3333-4333-8333-333333333333';
 
 const EXECUTOR_DOMAIN_BY_OWNER={
   'wallets.user_id':'wallets',
+  'wallet_history_subjects.user_id':'walletHistorySubjects',
+  'wallet_history_sync_state.user_id':'walletHistorySyncState',
+  'wallet_history_transactions.user_id':'walletHistoryTransactions',
+  'wallet_history_movements.user_id':'walletHistoryMovements',
   'mint_tasks.user_id':'mintTasks',
   'activity.user_id':'activity',
   'pnl_records.user_id':'pnlRecords',
@@ -360,7 +391,7 @@ function executorFixture({rootOwner=true,movableCounts={wallets:1,activity:2},ac
         }
         if(normalized.startsWith('SELECT owned_row.ctid FROM '))return result();
         if(normalized.startsWith('SELECT filename FROM schema_migrations')){
-          return result([{filename:'072_account_merge_ownership_fks.sql'}]);
+          return result([{filename:'073_wallet_history_foundation.sql'}]);
         }
         if(normalized.startsWith('SELECT user_id,created_at,is_owner'))return result(accountRows());
         if(normalized.startsWith('SELECT user_id,platform,platform_user_id FROM linked_accounts')){
@@ -489,6 +520,31 @@ test('ready-plan executor moves reviewed rows, revokes both accounts, records ev
   assert.equal(fixture.clients.every(client=>client.released()),true);
 });
 
+test('executor moves wallet-history subjects once and relies on cascades for history children',async()=>{
+  const fixture=executorFixture({movableCounts:{
+    walletHistorySubjects:1,
+    walletHistorySyncState:1,
+    walletHistoryTransactions:3,
+    walletHistoryMovements:5,
+  }});
+  const {plan,input}=await reviewedExecution(fixture);
+  assert.equal(plan.classification,'ready');
+  const receipt=await fixture.repository.executeAccountMerge(input);
+  assert.deepEqual(receipt.movedCounts,{
+    linkedAccounts:1,
+    walletHistoryMovements:5,
+    walletHistorySubjects:1,
+    walletHistorySyncState:1,
+    walletHistoryTransactions:3,
+  });
+  const execution=fixture.queries.map(entry=>entry.sql);
+  assert.equal(execution.filter(sql=>sql
+    ==='UPDATE wallet_history_subjects SET user_id=$2 WHERE user_id=$1').length,1);
+  assert.equal(execution.some(sql=>sql.startsWith('UPDATE wallet_history_sync_state SET')),false);
+  assert.equal(execution.some(sql=>sql.startsWith('UPDATE wallet_history_transactions SET')),false);
+  assert.equal(execution.some(sql=>sql.startsWith('UPDATE wallet_history_movements SET')),false);
+});
+
 test('executor rejects a stale digest before any ownership mutation',async()=>{
   const fixture=executorFixture();
   const {input}=await reviewedExecution(fixture);
@@ -555,7 +611,7 @@ test('executor refuses a current blocked plan without mutating either account',a
 
 test('executor checks root ownership before reading merge evidence or locking account graphs',async()=>{
   const fixture=executorFixture({rootOwner:false});
-  const input={...executionInput({planVersion:2,snapshotDigest:`sha256:${'1'.repeat(64)}`})};
+  const input={...executionInput({planVersion:3,snapshotDigest:`sha256:${'1'.repeat(64)}`})};
   await assert.rejects(fixture.repository.executeAccountMerge(input),
     error=>error.code==='ACCOUNT_MERGE_ROOT_REQUIRED');
   const execution=fixture.queries.map(entry=>entry.sql);

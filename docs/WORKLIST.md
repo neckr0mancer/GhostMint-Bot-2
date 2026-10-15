@@ -2947,10 +2947,67 @@ events as **Source unknown** after reimport. Do not promise both total erasure a
   wallet removal/reimport, both deletion policies, tenant isolation, both themes, and
   390/768/1024/1440 layouts.
 
-**Priority/status:** Not implemented. Define its provider, normalized schema, provenance retention,
-and API contract after P0 linked-surface parity and current Settings/Schedule release acceptance,
-but before final Wallets and History fidelity acceptance because those pages must not invent a
-complete ledger that the backend cannot yet supply.
+**Priority/status (foundation and read UI release-ready 2026-10-15):** migration 073 now
+defines account-scoped address subjects, durable sync checkpoints/coverage, normalized
+transactions and movements, reorg generations, and cascade-safe account-merge ownership. The
+provider registry rejects malformed or precision-losing pages and reports unsupported chains
+truthfully when no adapter is configured. Cleanup ranges must now be contained in explicit
+provider-proven history, multi-page cursors remain in one generation, final-page reorg cleanup is
+atomic with that generation, and stale workers cannot overwrite newer state. One address can be
+listed across all chains and an unqualified sync request fans out across every supported EVM chain.
+The repository derives **GhostMint** only from an exact
+same-user/chain/from-address/hash match against durable intent or broadcast evidence; **External**
+requires a post-tracking-boundary transaction inside provider-declared complete provenance
+coverage; everything else remains **Source unknown**. Tenant-scoped paginated read and idempotent
+sync-request endpoints are wired. A provider-independent worker foundation now uses durable,
+recoverable database leases, one page per claim, strict owner checks, retry deadlines, and bounded
+start/stop/health behavior. The migration/provenance integration test passed against the separately
+marked disposable database and left zero synthetic wallets, intents, subjects, or transactions.
+The earlier guard refusal was caused by the ordinary local `.env` also pointing at that same test
+target, not by a missing second test database; the guarded test now loads only the marked disposable
+environment. The approved GoldRush key is configured in Railway, but key presence alone cannot
+activate history. The adapter and lease worker now have separate default-off flags, an explicit
+supported-chain allowlist, readiness reporting, and graceful shutdown. Both production gates remain
+off, so no background process consumes queued requests.
+
+The local Dashboard now has a read-only **Transactions** view under each wallet and a global
+**History -> Transactions** view. Both render the normalized server ledger, preserve `Activity` as
+the operational/off-chain feed, and expose wallet/network/source/outcome/type plus address/hash
+filters with stable snapshot pagination. The account route aggregates on the server rather than
+client-merging wallet pages, remains tenant-scoped and `no-store`, enriches rows with the owned wallet,
+deduplicates repeated records of the same address, and reports coverage per wallet/network including
+truthful `not_started` entries. There is deliberately no account-wide refresh button: a user opens an
+individual wallet to request a supported sync, while the global ledger only reports what is actually
+stored. Loading, partial, unavailable, error, empty, and populated copy never claims coverage early.
+Focused display/repository/service/command/API tests, targeted lint, and the Vite production build
+pass. The aggregate PostgreSQL assertion also passed against the explicitly marked disposable
+database on 2026-10-14. That acceptance found and fixed an ambiguous subject/sync join in the account
+ledger before release. The guard now checks the saved pooled and unpooled markers sequentially so the
+trial proxy is not asked to open two verification connections at once; both endpoints must still
+identify the same marked database, and production remains an impossible fallback. The focused
+guard/repository/integration run passed 12/12.
+
+**Indexer activation proof still required (reviewed 2026-10-15):** existing Alchemy RPC access is not, by
+itself, proof of complete address-history coverage. Alchemy documents `alchemy_getAssetTransfers`
+for Ethereum and selected L2s, while its multi-network Transfers By Wallet endpoint is still a
+14-network beta that may return partial network/category failures. GhostMint currently supports
+chains beyond the explicitly documented core set, including Ink, Robinhood Chain, and HyperEVM.
+Do not extract an API key from an RPC URL or silently enable a partial adapter. GoldRush is the
+selected, configured candidate, but complete-history, finality, internal-transfer, and reorg
+semantics remain unproven. Before provider-backed ingestion or the worker is activated, verify every
+configured chain against those contracts; unsupported chains must remain visibly unsupported.
+
+The current recommended candidate is **GoldRush Foundational API**: its chain matrix lists Ethereum,
+Base, Arbitrum, Polygon, Ink, Robinhood Chain, and HyperEVM under the slugs GhostMint needs. An
+inactive adapter and contract tests now normalize that paginated endpoint without inventing missing
+calldata/nonce/finality, importing unrelated third-party movements, requesting undocumented trace
+options, or treating a final page plus chain tip as proof of complete history. It preserves safe
+authentication/rate-limit diagnostics for a future worker. The Railway key passed the read-only
+response-contract probe for all seven configured production chains, but the default-off adapter and
+worker flags remain disabled; a Dashboard sync request therefore remains truthfully queued. Worker
+activation still requires the guarded canary sequence and independent proof for completeness,
+finality, internal transfers, and destructive reorg cleanup rather than provider marketing or page
+exhaustion.
 
 ## Prioritized remaining execution register (updated 2026-10-05)
 
@@ -2960,8 +3017,13 @@ complete ledger that the backend cannot yet supply.
    reported bot-created schedule visibility and linked-identity diagnosis.
 3. Deploy and live-accept the recent cross-platform Schedule price/time/configuration controls as
    part of the same three-surface parity matrix.
-4. Design and implement the **address-backed wallet history, evidence-based provenance, and reimport
-   recovery** data contract before claiming Wallet or History completeness.
+4. Finish the **address-backed wallet history** work now that its normalized schema, provider
+   contract, evidence-based provenance, merge graph, inactive lease-backed worker, Wallet Activity
+   view, and server-aggregated global Transactions view exist locally: run the guarded provider canary;
+   activate and accept the adapter/worker only after that canary; add independently proven reorg
+   verification; decide and enforce wallet-removal/reimport retention; then complete the populated
+   responsive/deployed acceptance matrix. Do not add an account-wide sync control or claim complete
+   coverage before those gates pass.
 5. Complete the Admin page-by-page fidelity and state pass for Overview, Groups, Users, Effective
    lookup, Presets, Owners, Wallet import, Audit, and Health.
 6. Complete Account live verification: refreshed-code invalidation, two-browser logout-all, expiry

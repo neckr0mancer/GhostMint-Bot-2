@@ -127,12 +127,38 @@ integrationTest('wallet history migration stores pages and derives provenance fr
       assert.equal(everyChain.total, 5);
       assert.deepEqual(everyChain.coverage.chains.map(item => item.chain), ['base', 'ethereum']);
 
+      const accountPage = await repository.listAccountPage(userId, {
+        supportedChains:['ethereum','base','ink'],limit:20,offset:0,
+        snapshotAt:everyChain.snapshotAt,
+      });
+      assert.equal(accountPage.total,5);
+      assert.equal(accountPage.items.every(item => item.walletId===Number(wallet.rows[0].id)),true);
+      assert.equal(accountPage.items.every(item => item.walletLabel==='history-wallet'),true);
+      assert.equal(accountPage.items.every(item => item.walletAddress===address),true);
+      assert.deepEqual(accountPage.coverage.chains.map(item=>[item.walletLabel,item.chain,item.state]),[
+        ['history-wallet','base','current'],
+        ['history-wallet','ethereum','current'],
+        ['history-wallet','ink','not_started'],
+      ]);
+      const ethereumAccountPage=await repository.listAccountPage(userId,{
+        walletId:wallet.rows[0].id,chain:'ethereum',supportedChains:['ethereum','base','ink'],
+        source:'ghostmint',limit:20,offset:0,snapshotAt:accountPage.snapshotAt,
+      });
+      assert.deepEqual(ethereumAccountPage.items.map(item=>item.txHash),[ghostMintHash]);
+      assert.deepEqual(ethereumAccountPage.coverage.chains.map(item=>item.chain),['ethereum']);
+
       await repository.registerSubject({ userId,chain:'ink',walletAddress:address,
         trackingStartBlock:'200' });
       await repository.setSyncState({ userId,chain:'ink',walletAddress:address,
         providerKey:'fixture',state:'queued' });
       const leaseNow = Date.now();
-      const firstClaim = await repository.claimDue({ workerId:'worker-a',now:leaseNow,leaseMs:1_000 });
+      // The disposable Railway database crosses a public proxy, so a one-second lease can expire
+      // between the claim and the following queue request even when the implementation is correct.
+      // Use a realistic worker lease while keeping the recovery boundary deterministic below.
+      const activeLeaseMs = 30_000;
+      const firstClaim = await repository.claimDue({
+        workerId:'worker-a',now:leaseNow,leaseMs:activeLeaseMs,
+      });
       assert.equal(firstClaim.chain, 'ink');
       assert.equal(firstClaim.state, 'backfilling');
       assert.equal(firstClaim.generation, 1);
@@ -142,9 +168,11 @@ integrationTest('wallet history migration stores pages and derives provenance fr
       assert.equal(repeatedRequest.generation,firstClaim.generation);
       assert.equal(repeatedRequest.claimedBy,'worker-a');
       assert.equal(repeatedRequest.leaseExpiresAt,firstClaim.leaseExpiresAt);
-      assert.equal(await repository.claimDue({ workerId:'worker-b',now:leaseNow,leaseMs:1_000 }), null);
+      assert.equal(await repository.claimDue({
+        workerId:'worker-b',now:leaseNow,leaseMs:activeLeaseMs,
+      }), null);
       const recoveredClaim = await repository.claimDue({ workerId:'worker-b',
-        now:leaseNow+1_001,leaseMs:30_000 });
+        now:leaseNow+activeLeaseMs+1,leaseMs:30_000 });
       assert.equal(recoveredClaim.claimedBy, 'worker-b');
       await assert.rejects(repository.applyProviderPage({ userId,chain:'ink',walletAddress:address,
         providerKey:'fixture',generation:recoveredClaim.generation,expectedCursor:null,

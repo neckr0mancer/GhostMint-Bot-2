@@ -298,6 +298,8 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLo
     socialUsage:action(async(req,res)=>{noStore(res);const {period}=requestSchemas.socialUsagePeriod(req.query);res.json(jsonSafe(await commands.socialUsage(user(req),period)));}),
     linkCode:action(async(req,res)=>{noStore(res);res.json(await commands.linkCode(user(req)));}),
     wallets:action(async(req,res)=>{const values=commands.wallets(user(req));const settled=await Promise.allSettled(values.map(value=>commands.walletBalance(user(req),value.label)));res.json(settled.map((result,index)=>publicWallet(result.status==='fulfilled'?result.value:values[index])));}),
+    historyTransactions:action(async(req,res)=>{noStore(res);
+      res.json(jsonSafe(await commands.accountWalletHistoryPage(user(req),req.query||{})));}),
     walletHistory:action(async(req,res)=>{noStore(res);
       res.json(jsonSafe(await commands.walletHistoryPage(user(req),req.params.walletId,req.query||{})));}),
     syncWalletHistory:action(async(req,res)=>{noStore(res);
@@ -512,6 +514,7 @@ function mountDashboardRoutes(app,api){
   app.get('/api/social-usage',api.requireSession,api.socialUsage);
   app.post('/api/auth/link-code',api.requireSession,api.requireCsrf,api.linkCode);
   app.get('/api/wallets',api.requireSession,api.wallets);
+  app.get('/api/history/transactions',api.requireSession,api.historyTransactions);
   app.get('/api/wallets/:walletId/history',api.requireSession,api.walletHistory);
   app.post('/api/wallets/:walletId/history/sync',api.requireSession,api.requireCsrf,api.syncWalletHistory);
   app.post('/api/wallets/create',api.requireSession,api.requireCsrf,api.createWallet);

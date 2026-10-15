@@ -42,20 +42,27 @@ test('wallet history commands resolve numeric wallet IDs inside the authenticate
   const calls = [];
   const walletHistoryService = {
     listHistory: async (userId, owned, input) => { calls.push(['list', userId, owned.id, input]); return { items: [] }; },
+    listAccountHistory: async (userId, input) => { calls.push(['account-list', userId, input]); return { items: [] }; },
     requestSync: async (userId, owned, input) => { calls.push(['sync', userId, owned.id, input]); return { state: 'unsupported' }; },
   };
   const { service } = fixture({ walletHistoryService });
   assert.deepEqual(await service.walletHistoryPage('user-a', '1', { page: '2' }), { items: [] });
   assert.deepEqual(await service.requestWalletHistorySync('user-a', 1,
     {chain:'ethereum',providerKey:'browser-must-not-select-this'}), { state: 'unsupported' });
+  assert.deepEqual(await service.accountWalletHistoryPage('user-a',{page:'3'}),{items:[]});
+  assert.deepEqual(await service.accountWalletHistoryPage('user-a',{walletId:'1',page:'4'}),{items:[]});
   await assert.rejects(service.walletHistoryPage('user-a', 2, {}), error =>
     error instanceof ValidationError && error.issues[0].field === 'walletId');
   await assert.rejects(service.requestWalletHistorySync('user-a', 2, {}), error =>
     error instanceof ValidationError && error.issues[0].field === 'walletId');
   await assert.rejects(service.requestWalletHistorySync('user-a', 'alpha', {}), error =>
     error instanceof ValidationError && error.issues[0].field === 'walletId');
+  await assert.rejects(service.accountWalletHistoryPage('user-a',{walletId:'2'}), error =>
+    error instanceof ValidationError && error.issues[0].field === 'walletId');
   assert.deepEqual(calls, [['list', 'user-a', 1, { page: '2' }],
-    ['sync', 'user-a', 1, {chain:'ethereum'}]]);
+    ['sync', 'user-a', 1, {chain:'ethereum'}],
+    ['account-list','user-a',{page:'3',walletId:null}],
+    ['account-list','user-a',{walletId:1,page:'4'}]]);
 });
 
 test('pending sniper mode is opt-in, WebSocket-gated, and a persisted per-user creation default',async()=>{

@@ -321,6 +321,78 @@ angle. This section is the general M16 surface.)
       preference/governance evidence). Each must remain review-only and leave both
       accounts untouched. Collision resolution is not part of Phase 1E.
 
+## M17: Address-backed wallet history
+
+- [x] Focused unit/API checks: provider pages reject numeric blockchain quantities, implicit
+      completeness, duplicate hashes/locators, mismatched chain/provider data, and cleanup ranges
+      outside provider-proven history. Saved cursors resume in the same generation, failures cannot
+      overwrite a newer generation, an unqualified request covers every supported EVM chain, and
+      an unconfigured chain returns an explicit `unsupported` state. History routes are
+      authenticated, tenant-scoped, paginated, no-store, and CSRF-protected for sync writes.
+- [x] Inactive GoldRush adapter contract checks cover exact chain slugs, bearer-key trimming,
+      strict cursors and pagination, nullable undocumented calldata/nonce, wallet-involved ERC
+      movement filtering, malformed/custom-log isolation, sanitized auth/rate-limit errors, and
+      retry timing. The adapter deliberately makes no completeness or reorg-cleanup claim from page
+      exhaustion or `chain_tip_height`, does not request undocumented paginated trace options, and
+      remains disabled by default until approved credentials and per-chain live contracts are verified.
+- [x] Provider-independent worker checks cover one page per lease, overlapping-tick coalescing,
+      safe error logging, start/stop/health, explicit retry deadlines, permanent configuration
+      failures awaiting manual retry, and stale-owner refusal before a provider call. Migration 073
+      and repository checks require `FOR UPDATE SKIP LOCKED`, recoverable lease expiry, and exact
+      ownership guards. The worker stays behind its default-off runtime gate, so these checks do not
+      enable syncing.
+- [x] On a separately marked disposable PostgreSQL database, apply migration 073 and run
+      `tests/walletHistory.integration.test.js`. Verify overlapping pages upsert rather than
+      duplicate, exact intent/broadcast hashes classify as GhostMint, only complete post-boundary
+      unmatched rows classify as External, older/incomplete rows remain Source unknown, and user
+      deletion cascades the imported ledger and broadcast-hash evidence. Also verify final-page
+      reorg cleanup commits atomically with its generation, every row from a provider-proven
+      complete multi-page generation is finalized as provider-complete, a stale generation cannot
+      overwrite or orphan newer rows, two workers cannot own the same page, an expired lease is
+      recoverable, a stale owner cannot write or release the replacement claim, and an offset past
+      the last row still returns the correct total.
+  - Passed on 2026-10-13 using only the marked disposable database environment. The prior refusal
+    was traced to the ordinary local `.env` also pointing at that same test target; no second test
+    database was needed. The fixture now uses per-run transaction hashes, removes wallets before
+    users to respect the production foreign key, and left zero synthetic wallets, intents,
+    subjects, or transactions after the run. The guard remains mandatory: never mark a shared/live
+    application database disposable.
+- [ ] Configure an approved history adapter for every currently supported EVM chain and prove
+      restartable cursor progression, rate-limit retry, overlap, receipt finality, and reorg
+      correction. A provider must explicitly declare coverage; page exhaustion alone is not proof
+      of complete history or provenance. Wire the existing bounded lease worker only after approved
+      credentials and per-chain live response contracts are available. The production worker flag
+      remains off, so `runSyncPage` is not called there.
+  - The GoldRush key, adapter, and worker now have separate default-off runtime gates. A key by
+    itself makes no request. Enabling the adapter requires an explicit supported-chain subset;
+    enabling the lease worker additionally requires the adapter and is refused in dashboard-only
+    mode. Readiness and graceful shutdown cover the worker, but the production flags remain off
+    until the remaining canary acceptance is complete.
+- [ ] Decide and document wallet-removal retention separately from full account deletion. Test
+      remove/reimport in the same account, import into another account, and delete/recreate account;
+      old first-party origin must become Source unknown wherever the required evidence was erased.
+- [x] Local read surfaces use the same normalized ledger: Wallet Details separates on-chain
+      Transactions from operational App activity, while History adds a server-aggregated
+      Transactions tab without changing the default Activity tab. The aggregate endpoint is
+      authenticated, tenant-scoped, `no-store`, snapshot-paginated, wallet-enriched, deterministic
+      for duplicate imported addresses, and exposes truthful per-wallet/per-network coverage. UI
+      filters cover wallet, network, source, outcome, activity type, address, and transaction hash;
+      stale rows are withheld while a new filter/page path loads; there is no misleading
+      account-wide refresh control. Focused display/repository/service/command/API tests, targeted
+      lint, and the production Dashboard build pass.
+- [x] Re-run the new account-ledger PostgreSQL assertion against both saved endpoints for the
+      explicitly marked disposable database. On 2026-10-14 the first run exposed an ambiguous SQL
+      join in the aggregate ledger; the query now joins the subject and sync rows explicitly. The
+      guard verifies the pooled and unpooled markers sequentially to avoid exhausting the trial
+      proxy with simultaneous connections, while still requiring both to identify the same marked
+      database. The focused guard/repository/integration run passed 12/12 and never fell back to the
+      application/production database.
+- [ ] Render Wallet Activity and global History from the same server ledger at
+      390/768/1024/1440 in both themes, covering loading/progress, partial, unsupported, error,
+      empty, and populated states without blocking unrelated wallet actions. Then verify the same
+      read contract after deployment while the adapter and worker remain off; provider-enabled
+      populated acceptance belongs to the later guarded canary.
+
 ---
 
 ## After this pass

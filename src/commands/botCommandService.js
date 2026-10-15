@@ -592,6 +592,18 @@ function createBotCommandService(dependencies) {
     return walletHistoryService.listHistory(userId, walletById(userId, walletId), input);
   }
 
+  async function accountWalletHistoryPage(userId, input = {}) {
+    if (!walletHistoryService?.listAccountHistory) {
+      throw new ValidationError({ field:'history', message:'is not available on this server' });
+    }
+    const requestedWalletId = input?.walletId;
+    if (requestedWalletId === undefined || requestedWalletId === null || requestedWalletId === '') {
+      return walletHistoryService.listAccountHistory(userId, { ...input, walletId:null });
+    }
+    const owned = walletById(userId, requestedWalletId);
+    return walletHistoryService.listAccountHistory(userId, { ...input, walletId:owned.id });
+  }
+
   async function requestWalletHistorySync(userId, walletId, input) {
     if (!walletHistoryService) {
       throw new ValidationError({ field: 'walletId', message: 'history sync is not available on this server' });
@@ -1545,6 +1557,7 @@ function createBotCommandService(dependencies) {
     sniperEvents:userId=>sniperRepository.listRecentForUser(userId),
     wallets: userId => state(userId).wallets,
     walletHistoryPage,
+    accountWalletHistoryPage,
     requestWalletHistorySync,
     tasks: userId => schedulerRepository.listForUser(userId),
     tasksPage:(userId,input)=>pageFrom(schedulerRepository.listPageForUser?.bind(schedulerRepository),()=>state(userId).tasks,userId,input,['name','walletLabel'],TASK_PAGE_HOOKS),
