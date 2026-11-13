@@ -23,6 +23,34 @@ snipers, watch rules, sessions, notifications, and transaction history did not m
 wallet restores its address/key access only; it cannot reconstruct GhostMint records or arbitrary
 on-chain history. A permanent move must use the full-data procedure below.
 
+## What the subsequent new-account recovery added
+
+The later move from another expired Railway trial used the same fresh-start model and exposed a few
+steps that were not explicit above:
+
+1. Production was provisioned with Postgres, PgBouncer, point-in-time recovery, a generated domain,
+   an explicit `/health` check, and the explicit start command
+   `node scripts/migrate.js && node index.js`.
+2. The destination database was proven empty before first boot. Because no encrypted rows were
+   restored, production received a new strong `ENCRYPTION_SECRET`; an inaccessible, invalid, or
+   short secret from an abandoned empty database was not copied forward.
+3. The application was first deployed without bot credentials. All migrations ran through the
+   unpooled connection, and the next deployment reported zero pending migrations.
+4. Existing bot/provider values were copied manually by variable name. Optional variables that did
+   not exist in the source were left absent rather than created as blank placeholders.
+5. Startup logs were checked by safe configuration booleans only. Telegram acquired its polling
+   lock, Discord authenticated, OpenSea was configured, every enabled chain RPC answered, and
+   GoldRush remained configured but ingestion-disabled.
+6. The trusted user sent Telegram `/start`, requested a dashboard link, logged in with that link,
+   and reimported the wallet. Discord must then be linked to that same internal account before any
+   ordinary Discord command is used.
+7. A separate `local-test` environment contained disposable Postgres only—never the production app,
+   bots, wallets, or automation. Migrations were run twice there and temporary Railway SSH keys were
+   revoked and deleted after the rehearsal.
+
+This sequence is the verified fresh-start path. It recreates service and account access; it does
+not recover records from an unavailable old database.
+
 ## Non-negotiable safety rules
 
 - Keep the old project and database intact until the new deployment passes acceptance and the
@@ -55,6 +83,19 @@ Have all of the following before starting:
 
 A Railway workspace token, if used, is a local operator credential only. Never add it to the
 application's Railway variables or the repository.
+
+The verified Windows CLI for the later recovery was the clean bundled copy under
+`.project-tools/railway-cli-v5.71.0-clean/railway.exe`, with automatic updates disabled for each
+operator session:
+
+```powershell
+$env:RAILWAY_NO_AUTO_UPDATE = '1'
+& .\.project-tools\railway-cli-v5.71.0-clean\railway.exe status
+```
+
+Use `railway status` before every operation to verify the linked project, environment, and service.
+Do not continue merely because the browser is logged in; browser and CLI sessions can belong to
+different Railway accounts.
 
 ## 2. Inventory the source before changing it
 
@@ -143,6 +184,34 @@ document. Review these groups:
 Do **not** deploy cleanup, merge, or live-acceptance confirmation variables. Never set
 `GHOSTMINT_DASHBOARD_ONLY=true` in production; startup rejects it.
 
+Do not create blank values for optional entries that were absent in the source. In particular:
+
+- `OPENSEA_READ_API_KEY` is only for a genuinely separate read key. With it absent,
+  `OPENSEA_API_KEY` remains the OpenSea key and startup reports `openSeaReadKeySeparate:false`.
+- `ETHERSCAN_API_KEY` enables the Etherscan-specific gas source but is not required for application
+  startup or ordinary RPC health.
+- `SOCIAL_OFFICIAL_API_URL`, `SOCIAL_OFFICIAL_API_TOKEN`,
+  `SOCIAL_MANAGED_SERVICE_URL`, `SOCIAL_MANAGED_SERVICE_TOKEN`, and
+  `SOCIAL_POLL_INTERVAL_MS` are optional adapters/tuning. Their absence is valid when the configured
+  scraper/fallback is the intended source.
+- `GOLDRUSH_API_KEY` only proves that the provider is configured. Keep
+  `WALLET_HISTORY_GOLDRUSH_ENABLED=false` and `WALLET_HISTORY_WORKER_ENABLED=false` until the
+  semantic canary is approved. `WALLET_HISTORY_CHAINS`,
+  `WALLET_HISTORY_WORKER_INTERVAL_MS`, and `WALLET_HISTORY_WORKER_LEASE_MS` may stay absent while
+  the worker is disabled.
+- Missing custom `*_RPC_FAST_URLS`, `*_RPC_SNIPER_URLS`, `*_RPC_WS`, and
+  `*_RPC_SNIPER_WS` entries mean those optimized/pending lanes are unavailable; they do not imply
+  that the normal chain RPC is down. Confirm this distinction in the startup summary and `/health`.
+
+Never copy Railway-injected `RAILWAY_*` values, `PORT`, local test-database confirmation values,
+cleanup confirmations, account-merge inputs, live-acceptance confirmations, or a local
+`GHOSTMINT_DEV_API_TARGET` into production. `ALCHEMY_API_KEY` by itself is not consumed by the
+current runtime; configure complete RPC URLs instead. Set `DISCORD_DEV_GUILD_ID` or
+`DISCORD_CHANNEL_IDS` only when that restriction is deliberately required.
+
+`railway variable list --json` contains raw values. Do not paste or log its output. Use Railway's
+redacted UI or a local wrapper that discards every value and prints only sorted variable names.
+
 Railway variable changes are staged and require a deploy. Review the redacted list twice before
 applying it.
 
@@ -197,7 +266,26 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\project-npm.ps
 The first run applies only pending files; the second must apply zero. `scripts/migrate.js` uses the
 unpooled connection, an advisory lock, one transaction per file, and redacts connection strings.
 
-### 5.4 Reconcile data before starting the app
+### 5.4 Disposable database rehearsal
+
+When the production database must remain available, create a separate Railway environment with a
+disposable Postgres service only. Do not deploy the GhostMint app or copy bot/provider credentials
+into it. Point the integration-test connection at its direct/public URL or a temporary Railway
+tunnel, verify the database identity marker, run migrations twice, and run only the tests affected
+by the database change.
+
+If Railway SSH/tunnelling requires a temporary key, create a dedicated key rather than reusing a
+personal default. When testing is finished:
+
+1. close the tunnel;
+2. remove the temporary public key from Railway;
+3. delete the exact temporary private and `.pub` files locally; and
+4. run `railway ssh keys list` and confirm the key is absent.
+
+A second cleanup command can report that the file no longer exists; that is expected after the
+first cleanup succeeds. Never delete a broad `.ssh` directory or an unverified path.
+
+### 5.5 Reconcile data before starting the app
 
 Compare source and destination row counts, latest timestamps, owner/root-owner counts, key-version
 counts, highest migration, active task states, and transaction idempotency keys. Perform a
@@ -210,13 +298,17 @@ GhostMint data will be lost:
 
 1. Point the new app at an empty Postgres database.
 2. Let `node scripts/migrate.js && node index.js` build/start it.
-3. Have the first trusted Telegram identity issue a normal command so its `users` and
-   `linked_accounts` rows exist.
+3. Have the first trusted Telegram identity send `/start`, request a dashboard link code, enter it
+   on the dashboard, and verify that the resulting dashboard session belongs to the intended
+   internal user.
 4. In one reviewed database transaction, promote exactly that verified user with both
    `is_owner=TRUE` and `is_root_owner=TRUE`; confirm exactly one intended row changed.
-5. Link Discord to that same internal identity with `/link` before first using Discord, so it does
-   not auto-create a second user.
-6. Reimport wallets through the encrypted application flow and recreate desired settings/rules.
+5. Reimport wallets through the encrypted application flow and confirm their public addresses—do
+   not reveal or export private keys during acceptance.
+6. Link Discord to that same internal identity with `/link` before first using any other Discord
+   command, so it does not auto-create a second user.
+7. Recreate desired settings/rules and verify every cross-surface record uses the same internal
+   account.
 
 This is the procedure used for the temporary recovery. It does not recover activity or wallet
 history.
@@ -257,6 +349,10 @@ Complete these without a value-moving final action unless separately authorized:
 - A link code logs into the dashboard; WebSocket live updates connect.
 - Owner/root-owner state and linked Telegram/Discord identity are correct.
 - Expected wallets, tasks, activity, P&L, snipers, watch rules, presets, and policies are present.
+- History and Transactions resolve to a populated, empty, disabled, or retryable-error state; they
+  must not remain on a loader after their API request returns. Confirm `/api/history/transactions`
+  is successful separately from the rendered state. A disabled wallet-history worker must be shown
+  truthfully and must not be mistaken for a recovered/backfilled ledger.
 - Wallet rows decrypt to their existing public address without revealing private keys.
 - Non-value contract detection, preview, scheduling-plan, pagination, and admin health reads work.
 - No duplicate bot instance or scheduler fleet is running.
@@ -264,6 +360,10 @@ Complete these without a value-moving final action unless separately authorized:
 
 After any service move, update local Vite's API target. `dashboard/vite.config.js` can be overridden
 with `GHOSTMINT_DEV_API_TARGET`; a stale target previously caused local login/API 404 failures.
+
+Railway currently warns that `railway.json` Config as Code is deprecated and remains supported only
+until 2026-12-01. This warning does not invalidate a healthy deployment, but migration to
+`.railway/railway.ts` must be handled as a separate reviewed infrastructure change before that date.
 
 ## 9. Rollback
 

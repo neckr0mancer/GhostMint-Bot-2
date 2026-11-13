@@ -257,21 +257,26 @@ export function useLoad(path,dependencies=[],wsEvents){
   const [data,setData]=useState(null);
   const [error,setError]=useState('');
   const [status,setStatus]=useState(null);
+  const [resolvedPath,setResolvedPath]=useState(null);
+  const [dataPath,setDataPath]=useState(null);
   const requestId=useRef(0);
   const load=useCallback(()=>{
     if(!path)return Promise.resolve();
     const activeRequest=++requestId.current;
     setError('');setStatus(null);
     return api(path).then(value=>{
-      if(activeRequest===requestId.current)setData(value);
+      if(activeRequest===requestId.current){setData(value);setDataPath(path);setResolvedPath(path);}
       return value;
     }).catch(value=>{
-      if(activeRequest===requestId.current){setError(value.message);setStatus(value.status??null);}
+      if(activeRequest===requestId.current){setError(value.message);setStatus(value.status??null);setResolvedPath(path);}
     });
   },[path,...dependencies]);
   useEffect(()=>{load();return()=>{requestId.current+=1;};},[load]);
   useEffect(()=>{if(!wsEvents)return;const watched=[].concat(wsEvents);const listener=event=>{if(event.detail?.type==='ws.reconnected'||watched.includes(event.detail?.type))load();};window.addEventListener('ghostmint-ws',listener);return()=>window.removeEventListener('ghostmint-ws',listener);},[load,wsEvents]);
-  return {data,error,status,load};
+  // resolvedPath identifies the latest settled request (success or failure); dataPath identifies
+  // the request that produced `data`. Consumers with changing query parameters need both so an
+  // error or retry cannot relabel an older successful payload as the newly selected scope.
+  return {data,error,status,load,resolvedPath,dataPath};
 }
 // Opens the one live-update socket for the whole session (shared by both the regular dashboard
 // shell and the admin shell, which previously never opened one at all -- so admin pages had no live

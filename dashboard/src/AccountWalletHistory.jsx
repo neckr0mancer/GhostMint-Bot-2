@@ -28,7 +28,7 @@ export default function AccountWalletHistory({supportedChains=[],chainLabel=valu
   const PAGE_SIZE=10;
   const path=buildAccountWalletHistoryPath({page,pageSize:PAGE_SIZE,...filters,search,snapshotAt});
   const listing=useLoad(path,[],'wallet-history.changed');
-  const historyData=listing.resolvedPath===path?listing.data:null;
+  const historyData=listing.dataPath===path?listing.data:null;
   const currentError=listing.resolvedPath===path?listing.error:'';
   const coverage=walletHistoryCoverageMeta(historyData?.coverage);
   const polling=!currentError&&coverage.polling;

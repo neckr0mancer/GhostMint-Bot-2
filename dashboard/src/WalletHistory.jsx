@@ -103,7 +103,7 @@ export default function WalletHistory({wallet,supportedChains=[],chainLabel=valu
   // useLoad intentionally retains the prior result during an ordinary refresh. A filter/page path
   // change is different: showing the old rows under new controls is false, so withhold them until
   // that exact path has settled.
-  const historyData=listing.resolvedPath===path?listing.data:null;
+  const historyData=listing.dataPath===path?listing.data:null;
   const currentError=listing.resolvedPath===path?listing.error:'';
   const coverage=walletHistoryCoverageMeta(historyData?.coverage);
   const rows=historyData?.items||[];
