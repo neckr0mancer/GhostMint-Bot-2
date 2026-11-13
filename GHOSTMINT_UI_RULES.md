@@ -77,12 +77,39 @@ in which case update this document in the same change.
 - A recorded numeric zero renders as `0`, never as a blank or "Unavailable"
   placeholder. Use nullish coalescing (`??`), not truthiness checks, when a
   legitimate value can be zero (wallet balances, P&L net, etc.).
-- Two-column field rows (`.field-row`) collapse to one column under 640px;
-  keep new multi-field rows on this same breakpoint instead of inventing a
-  new one.
+- Form density follows the usable width and the relationship between fields,
+  not a blanket "every mobile field is full width" rule. Ordinary
+  `.field-row` groups may still collapse under 640px, but Admin uses the
+  documented `.admin-compact-row` exception: related controls stay two-up
+  from 360px through 1050px while the outer panel grid stacks first. The
+  platform selector is narrower than its platform-user-ID partner, and paired
+  action buttons fill their individual cells. Paired fields stretch to a
+  shared row height so wrapped labels never push one control out of alignment.
+- Below 360px, compact Admin rows return to the parent's one-column stack.
+  Long reasons, textareas, user previews, validation/error copy, destructive
+  confirmations, and other sensitive or conditional blocks always span the
+  full form width. Preserve DOM/tab order, visible labels, 44px touch targets,
+  `min-width:0`, and no horizontal page overflow when adding a compact row.
 - Conditional forms react immediately to the governing choice (e.g. the
   wallet-import method toggle swapping the private-key/seed-phrase field) —
   no stale hidden requirement left over from a prior choice.
+
+## Mobile information density
+
+- A phone-width overview is for scanning, not a desktop card stack squeezed
+  into one column. Short, read-only facts and summary metrics should normally
+  use two columns from 360px upward; an unmatched final fact may span the row.
+  Reduce card padding and value size at the mobile breakpoint, and omit only
+  redundant supporting copy when the visible label and value remain clear.
+- This compact treatment does **not** apply to forms, validation/error copy,
+  confirmations, receipts, long descriptions, or consequential actions. Those
+  retain the space required for readable text, 44px touch targets, and safe
+  interaction. Never trade horizontal overflow or ambiguous truncation for
+  fewer vertical pixels.
+- Apply the rule consistently to dashboard and Admin information groups. When
+  a summary needs more detail, keep the compact facts visible first and place
+  the explanation behind a details surface instead of making every fact a
+  full-width mobile row.
 
 ## Motion and reduced motion
 

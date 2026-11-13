@@ -50,12 +50,18 @@ function retryAfterFor(error, now) {
   const permanent = new Set([
     'GOLDRUSH_AUTH_FAILED','GOLDRUSH_RESPONSE_INVALID','GOLDRUSH_CHAIN_UNSUPPORTED',
     'GOLDRUSH_CURSOR_INVALID','GOLDRUSH_RANGE_UNSUPPORTED',
+    'WALLET_HISTORY_CHAIN_MISMATCH','WALLET_HISTORY_CHAIN_UNSUPPORTED',
+    'WALLET_HISTORY_FINALIZED_CONFLICT',
   ]);
   if (permanent.has(error?.code)) return null;
   const explicit = Number.isSafeInteger(error?.retryAfterMs) && error.retryAfterMs >= 0
     ? Math.min(error.retryAfterMs, 86_400_000) : null;
   const fallback = error?.code === 'GOLDRUSH_RATE_LIMITED' ? 60_000 : 30_000;
   return new Date(now() + (explicit ?? fallback));
+}
+
+function isLifecycleStale(error) {
+  return error?.code === 'WALLET_HISTORY_SYNC_STALE';
 }
 
 function createWalletHistoryService({ repository, providerRegistry, defaultProviderKey = null,
@@ -161,27 +167,38 @@ function createWalletHistoryService({ repository, providerRegistry, defaultProvi
       const descriptor = providerRegistry.describe({ chain, providerKey });
       const trackingStartBlock = descriptor.supported && descriptor.currentHeadBlock !== undefined
         ? descriptor.currentHeadBlock : null;
-      await repository.registerSubject({ userId, ...key, trackingStartBlock });
-      if (!descriptor.supported) {
-        const sync = await repository.setSyncState({ userId, ...key, providerKey:descriptor.providerKey,
-          state: 'unsupported', errorCode: null, errorMessage: null });
-        results.push({ chain, supported:false, state:sync.state, providerKey:descriptor.providerKey,
-          message:descriptor.reason || `Wallet history is not configured for ${chain} yet.` });
-      } else {
-        const sync = await repository.queueSync({ userId, ...key,
-          providerKey:descriptor.providerKey });
-        results.push({ chain, supported:true, state:sync.state, providerKey:descriptor.providerKey,
-          message:'Wallet history sync is queued.' });
+      try {
+        await repository.registerSubject({ userId, ...key, trackingStartBlock });
+        if (!descriptor.supported) {
+          const sync = await repository.setSyncState({ userId, ...key, providerKey:descriptor.providerKey,
+            state: 'unsupported', errorCode: null, errorMessage: null });
+          results.push({ chain, supported:false, state:sync.state, providerKey:descriptor.providerKey,
+            message:descriptor.reason || `Wallet history is not configured for ${chain} yet.` });
+        } else {
+          const sync = await repository.queueSync({ userId, ...key,
+            providerKey:descriptor.providerKey });
+          results.push({ chain, supported:true, state:sync.state, providerKey:descriptor.providerKey,
+            message:'Wallet history sync is queued.' });
+        }
+      } catch (error) {
+        if (!isLifecycleStale(error)) throw error;
+        results.push({ accepted:false,chain,supported:descriptor.supported,state:'paused',
+          providerKey:descriptor.providerKey,
+          message:'This wallet was removed. Reimport it before refreshing history.' });
       }
     }
     if (results.length === 1) return { accepted:true, ...results[0] };
     const supportedCount = results.filter(result => result.supported).length;
+    const queuedCount = results.filter(result => result.accepted !== false && result.supported).length;
+    const pausedCount = results.filter(result => result.accepted === false && result.state === 'paused').length;
     const states = [...new Set(results.map(result => result.state))];
-    return { accepted:true, supported:supportedCount > 0,
+    return { accepted:results.some(result=>result.accepted!==false), supported:supportedCount > 0,
       state:states.length === 1 ? states[0] : 'partial',
       requestedChains:results.length, supportedChains:supportedCount, chains:results,
-      message:supportedCount
-        ? `${supportedCount} of ${results.length} chain history syncs are queued.`
+      message:queuedCount
+        ? `${queuedCount} of ${results.length} chain history syncs are queued.`
+        : pausedCount
+          ? 'This wallet was removed. Reimport it before refreshing history.'
         : 'Wallet history is not configured for any supported chain yet.' };
   }
 
@@ -195,10 +212,23 @@ function createWalletHistoryService({ repository, providerRegistry, defaultProvi
       chain:key.chain,
       providerKey,
     });
-    if (!workerId) await repository.registerSubject({ userId, ...key,
-      trackingStartBlock: descriptor.currentHeadBlock ?? null });
     const selectedProviderKey = descriptor.providerKey;
+    if (!workerId) {
+      try {
+        await repository.registerSubject({ userId, ...key,
+          trackingStartBlock: descriptor.currentHeadBlock ?? null });
+      } catch (error) {
+        if (!isLifecycleStale(error)) throw error;
+        return { accepted:false,supported:true,stale:true,paused:true,state:'queued',
+          providerKey:selectedProviderKey,generation:0,cursor:null };
+      }
+    }
     const subject = await repository.getSubject({ userId, ...key });
+    if (subject?.syncEnabled === false || (workerId && !subject)) {
+      return { accepted:false,supported:true,stale:true,paused:true,
+        state:subject?.sync?.state || 'queued',providerKey:selectedProviderKey,
+        generation:subject?.sync?.generation ?? 0,cursor:subject?.sync?.cursor ?? null };
+    }
     const resumable = subject?.sync
       && subject.sync.providerKey === selectedProviderKey
       && ['backfilling', 'error'].includes(subject.sync.state)
@@ -209,8 +239,18 @@ function createWalletHistoryService({ repository, providerRegistry, defaultProvi
         state:subject?.sync?.state || 'queued', providerKey:selectedProviderKey,
         generation:subject?.sync?.generation ?? 0, cursor:subject?.sync?.cursor ?? null };
     }
-    const sync = resumable ? subject.sync
-      : await repository.beginSync({ userId, ...key, providerKey:selectedProviderKey });
+    let sync;
+    try {
+      sync = resumable ? subject.sync
+        : await repository.beginSync({ userId, ...key, providerKey:selectedProviderKey });
+    } catch (error) {
+      if (!isLifecycleStale(error)) throw error;
+      const latest = await repository.getSubject({ userId, ...key });
+      return { accepted:latest?.syncEnabled !== false,supported:true,stale:true,
+        paused:latest?.syncEnabled===false,state:latest?.sync?.state || 'queued',
+        providerKey:selectedProviderKey,generation:latest?.sync?.generation ?? 0,
+        cursor:latest?.sync?.cursor ?? null };
+    }
     const requestedCursor = input.cursor ?? sync.cursor ?? null;
     try {
       const page = await providerRegistry.fetchPage({ chain: key.chain, providerKey:selectedProviderKey, walletAddress: key.walletAddress,
@@ -227,32 +267,32 @@ function createWalletHistoryService({ repository, providerRegistry, defaultProvi
       return { accepted: true, supported: true, state: next.state, providerKey:selectedProviderKey,
         generation: next.generation, cursor: next.cursor };
     } catch (error) {
-      if (error?.code === 'WALLET_HISTORY_SYNC_STALE') {
+      if (isLifecycleStale(error)) {
         const latest = await repository.getSubject({ userId, ...key });
-        return { accepted: true, supported: true, state: latest?.sync?.state || 'queued',
+        return { accepted: latest?.syncEnabled !== false, supported: true, stale:true,
+          paused:latest?.syncEnabled === false,state: latest?.sync?.state || 'queued',
           providerKey:selectedProviderKey, generation:latest?.sync?.generation ?? sync.generation,
           cursor:latest?.sync?.cursor ?? null };
       }
-      await repository.markSyncError({ userId, ...key, providerKey:selectedProviderKey,
+      const marked = await repository.markSyncError({ userId, ...key, providerKey:selectedProviderKey,
         generation:sync.generation, expectedCursor:requestedCursor, workerId,
         errorCode: typeof error?.code === 'string' && /^[A-Z0-9_]{1,64}$/.test(error.code)
           ? error.code : 'PROVIDER_SYNC_FAILED',
         errorMessage:redact(error?.message || 'Wallet history sync failed')
           .replace(/[\r\n\t]+/g, ' ').slice(0, 500),
         retryAfter:retryAfterFor(error, now) });
+      if (!marked) {
+        const latest = await repository.getSubject({ userId, ...key });
+        return { accepted:latest?.syncEnabled !== false,supported:true,stale:true,
+          paused:latest?.syncEnabled===false,state:latest?.sync?.state || 'queued',
+          providerKey:selectedProviderKey,generation:latest?.sync?.generation ?? sync.generation,
+          cursor:latest?.sync?.cursor ?? null };
+      }
       throw error;
     }
   }
 
-  async function forgetWallet(userId, wallet) {
-    const address = walletAddress(wallet);
-    const chains = allowedChains.length ? allowedChains : [resolveChain(wallet, null)];
-    const results = await Promise.all(chains.map(chain => repository.deleteSubject({ userId, chain,
-      walletAddress:address })));
-    return results.some(Boolean);
-  }
-
-  return { listHistory, listAccountHistory, requestSync, runSyncPage, forgetWallet };
+  return { listHistory, listAccountHistory, requestSync, runSyncPage };
 }
 
 module.exports = { createWalletHistoryService };

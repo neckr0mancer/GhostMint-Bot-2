@@ -229,17 +229,69 @@ function createPostgresStorage(pool) {
 
     async addWallet(wallet) {
       const e = wallet.keyEnvelope;
-      const result = await pool.query(`INSERT INTO wallets
-        (user_id,label,address,chain,encrypted_private_key,encryption_salt,encryption_nonce,
-          encryption_auth_tag,encryption_key_version,minted,added_at)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,TO_TIMESTAMP($11 / 1000.0)) RETURNING *`,
-      [wallet.userId, wallet.label, wallet.address, wallet.chain, e.ciphertext, e.salt, e.nonce,
-        e.authTag, e.keyVersion, wallet.minted || 0, wallet.addedAt]);
-      return mapWallet(result.rows[0]);
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const owner = await client.query('SELECT user_id FROM users WHERE user_id=$1 FOR UPDATE',
+          [wallet.userId]);
+        if (!owner.rowCount) throw new Error('Wallet owner not found');
+        const result = await client.query(`INSERT INTO wallets
+          (user_id,label,address,chain,encrypted_private_key,encryption_salt,encryption_nonce,
+            encryption_auth_tag,encryption_key_version,minted,added_at)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,TO_TIMESTAMP($11 / 1000.0)) RETURNING *`,
+        [wallet.userId, wallet.label, wallet.address, wallet.chain, e.ciphertext, e.salt, e.nonce,
+          e.authTag, e.keyVersion, wallet.minted || 0, wallet.addedAt]);
+        // A same-account reimport restores the retained, address-backed ledger. It does not queue
+        // provider work or create a new subject; it only makes existing subjects eligible again.
+        await client.query(`UPDATE wallet_history_subjects SET
+            sync_enabled=TRUE,last_imported_at=NOW(),last_removed_at=NULL,updated_at=NOW()
+          WHERE user_id=$1 AND wallet_address=LOWER($2)`,
+        [wallet.userId, wallet.address]);
+        await client.query('COMMIT');
+        return mapWallet(result.rows[0]);
+      } catch (error) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw error;
+      } finally { client.release(); }
     },
     async deleteWallet(userId, label) {
-      const result = await pool.query('DELETE FROM wallets WHERE user_id=$1 AND label=$2', [userId, label]);
-      return result.rowCount > 0;
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const owner = await client.query('SELECT user_id FROM users WHERE user_id=$1 FOR UPDATE',
+          [userId]);
+        if (!owner.rowCount) {
+          await client.query('COMMIT');
+          return false;
+        }
+        const selected = await client.query(`SELECT id,address FROM wallets
+          WHERE user_id=$1 AND label=$2 FOR UPDATE`, [userId, label]);
+        if (!selected.rowCount) {
+          await client.query('COMMIT');
+          return false;
+        }
+        const wallet = selected.rows[0];
+        await client.query('DELETE FROM wallets WHERE user_id=$1 AND id=$2', [userId, wallet.id]);
+        const remaining = await client.query(`SELECT 1 FROM wallets
+          WHERE user_id=$1 AND LOWER(address)=LOWER($2) LIMIT 1`, [userId, wallet.address]);
+        if (!remaining.rowCount) {
+          // Wallet removal is a soft history boundary: retain the ledger and provenance for this
+          // account, but stop claims and make every in-flight page fail its write-time guard.
+          await client.query(`UPDATE wallet_history_subjects SET
+              sync_enabled=FALSE,last_removed_at=NOW(),updated_at=NOW()
+            WHERE user_id=$1 AND wallet_address=LOWER($2)`, [userId, wallet.address]);
+          await client.query(`UPDATE wallet_history_sync_state SET
+              state='partial',cursor=NULL,generation=generation+1,
+              last_error_at=NULL,last_error_code=NULL,last_error_message=NULL,retry_after=NULL,
+              claimed_by=NULL,claimed_at=NULL,lease_expires_at=NULL,updated_at=NOW()
+            WHERE user_id=$1 AND wallet_address=LOWER($2)`, [userId, wallet.address]);
+        }
+        await client.query('COMMIT');
+        return true;
+      } catch (error) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw error;
+      } finally { client.release(); }
     },
     async updateWalletMinted(userId, label, minted) {
       const result = await pool.query('UPDATE wallets SET minted=$3 WHERE user_id=$1 AND label=$2', [userId, label, minted]);
@@ -326,10 +378,11 @@ function createPostgresStorage(pool) {
     },
 
     async addActivity(entry) {
+      const occurredAt = entry.time ?? entry.occurredAt;
       const result = await pool.query(`INSERT INTO activity
         (user_id,status,title,wallet_label,tx_hash,explorer,occurred_at,actual_network_cost_wei,trigger_source,verification_state,address)
         VALUES ($1,$2,$3,$4,$5,$6,TO_TIMESTAMP($7 / 1000.0),$8,$9,$10,$11) RETURNING *`,
-      [entry.userId, entry.status, entry.title, entry.walletLabel, entry.txHash, entry.explorer, entry.time,
+      [entry.userId, entry.status, entry.title, entry.walletLabel, entry.txHash, entry.explorer, occurredAt,
         entry.actualNetworkCostWei?.toString()??null,entry.triggerSource??null,entry.verificationState??null,entry.address??null]);
       return mapActivity(result.rows[0]);
     },

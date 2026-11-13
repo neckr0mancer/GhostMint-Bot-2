@@ -65,6 +65,17 @@ test('wallet rail badge counts every wallet and still refreshes from wallets.cha
   assert.match(appSource,/item==='Wallets'\?`\$\{badge\} wallets`/);
 });
 
+test('saved presets can be deleted through a themed, confirmed, live-refreshing dashboard action',()=>{
+  const presets=appSource.slice(appSource.indexOf('function MintPresets'),appSource.indexOf('const MINT_TABS'));
+  assert.match(presets,/confirmDialog\(`Delete \$\{preset\.name\}\?/);
+  assert.match(presets,/api\(`\/api\/mint-presets\/\$\{encodeURIComponent\(preset\.name\)\}`/);
+  assert.match(presets,/method:'DELETE',body:JSON\.stringify\(\{confirmation:'CONFIRM'\}\)/);
+  assert.match(presets,/await presets\.load\(\)/);
+  assert.match(presets,/deletingPreset===preset\.name\?'Deleting…':'Delete'/);
+  assert.match(apiSource,/deleteMintPreset:action\([\s\S]*confirmation\(req\)[\s\S]*commands\.deleteMintPreset\(user\(req\),req\.params\.name\)/);
+  assert.match(apiSource,/app\.delete\('\/api\/mint-presets\/:name',api\.requireSession,api\.requireCsrf,api\.deleteMintPreset\)/);
+});
+
 test('dashboard and guided bot batches preserve the OpenSea preparation decision',()=>{
   assert.doesNotMatch(appSource,/batch cannot encode/);
   assert.match(appSource,/chain:detectedChain,viaOpenSea,methodSignature:viaOpenSea\?undefined:methodSignature/);

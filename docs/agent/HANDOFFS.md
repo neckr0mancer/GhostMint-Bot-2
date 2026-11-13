@@ -2,6 +2,176 @@
 
 ---
 
+## 2026-10-19 — Codex — transaction-mode truth and revocation closure
+
+- **Branch / starting HEAD:** `main` at `a77829b`; no commit or push requested.
+- **Scope:** make Degen, Fast, Cautious, and Normie behavior truthful and fail-safe without changing
+  ordinary manual mint confirmation or broadening the documented Scheduled + Degen simulation
+  exception.
+- **Changed:** revoked Degen/Fast access now resolves immediately to Normie and clears the stale
+  account selection with a guarded write; an explicit per-user denial correctly overrides a group
+  grant; transaction policy independently blocks revoked account and target-level advanced presets
+  and refuses execution if Normie itself cannot be resolved. Discord button selection now uses a
+  two-step confirmation and rechecks both the password gate and current advanced access. Direct
+  Discord/Telegram mode commands and Telegram's delayed confirm boundary also recheck the password
+  gate. Dashboard, Telegram, Discord, and stale action-gate comments now distinguish the ordinary
+  Mint flow's approval from the explicit one-shot `/mintnow` exception.
+- **Verification:** 248 focused non-database assertions, targeted syntax, ESLint, and diff checks
+  passed. A distinct `ghostmint_disposable_20261019` database was created in the approved Railway
+  test PostgreSQL service, marked with the existing disposable identity, and configured only in the
+  ignored local test environment. All 74 migrations are applied. The one guarded
+  `tests/governance.integration.test.js` acceptance passed 1/1, covering group/user precedence,
+  revoked Fast/Degen fallback, simulation rules, owner behavior, and editable presets. The app
+  database target remained distinct and untouched. A proxy-tolerant timeout keeps both endpoint
+  marker reads fail-closed while avoiding false failures from Railway public-proxy latency.
+- **Remaining:** perform rendered Settings mode review. The production dashboard build passed
+  (83 modules; existing chunk-size warning only). Production deployment and live account-mode
+  switching await explicit authorization.
+
+---
+
+## 2026-10-19 — Codex — canonical schedule visibility handler closure
+
+- **Branch / starting HEAD:** `main` at `a77829b`; no commit or push requested.
+- **Scope:** close the reported Discord/Telegram-created schedule visibility wiring defect locally,
+  without creating a live schedule, starting a scheduler worker, or adding a platform-specific store.
+- **Changed:** Telegram's real final confirmation boundary now lives in
+  `src/telegram/taskScheduleConfirmation.js`; `server.js` registers that exact handler. Telegram and
+  Discord both resolve to the canonical internal user and converge on the same validated task command,
+  durable scheduler repository, `tasks.changed` broadcast, Dashboard API, and status-valid controls.
+- **Verification:** focused cross-surface checks passed 69/69. The guarded marked disposable-
+  PostgreSQL acceptance passed 1/1 while driving both real bot confirmation handlers, Dashboard API,
+  WebSocket refresh, tenant isolation, cross-surface pause/resume, and reconstructed-service reads;
+  fixtures were far-future, no worker ran, and cleanup is mandatory. Targeted syntax, ESLint, and
+  diff checks passed. A signed-in local Schedule route also completed a hard reload in its truthful
+  empty state. No mint, live schedule, production database write, logout, commit, or push occurred.
+- **Remaining:** deployed Telegram and Discord creation plus a populated Dashboard hard-reload/control
+  check stay in release acceptance because they require a real linked bot action. The next bounded
+  implementation unit is transaction-mode truth/acceptance for Degen, Fast, Cautious, and Normie.
+
+---
+
+## 2026-10-19 — Codex — Admin shell/navigation fidelity correction
+
+- **Branch / starting HEAD:** `main` at `a77829b`; no commit or push requested.
+- **Scope:** close the concrete navigation gap left after the nine Admin page/state pass, without
+  reopening those page implementations or pulling transaction-mode behavior into this UI unit.
+- **Changed:** Admin now uses the dashboard prototype's labelled 222px rail, grouped destinations,
+  active stripe, bare glyphs, and rail footer. The destination groups now expand independently; only
+  their middle region may scroll when several are open, its scrollbar is hidden, and the User
+  dashboard / Log out actions remain pinned at the bottom. The undefined Overview icon was replaced
+  with a real dashboard glyph; Dashboard now uses the house glyph and Log out uses the established
+  red danger treatment with a distinct exit-door glyph. Mobile now fills four
+  destination slots plus More, where Dashboard and Log out share one row with their own icons. Both
+  Admin and user More sheets keep their scrim inside the modal branch, so tapping above the sheet
+  closes it while focus containment and restoration remain intact. The prioritized register now carries a distinct
+  transaction-mode truth/acceptance closure for Degen, Fast, Cautious, and Normie.
+- **Verification:** the focused Admin fidelity/navigation file passed 18/18 in-process after the sandboxed Node runner hit its
+  known `spawn EPERM`; targeted ESLint and diff checks passed; the production Vite build passed
+  (83 modules, existing chunk-size warning only). Signed-in rendered review covered the desktop
+  labelled rail, group expand/collapse, pinned footer/no rail scrollbar, the five-slot 390px Admin
+  bar, paired Dashboard/Log out actions and their glyphs, and Escape dismissal with focus restored.
+  No Admin write, mint, schedule, logout, commit, or push occurred.
+- **Exact next implementation unit:** P0 canonical Dashboard / Telegram / Discord state parity.
+  Transaction-mode semantic closure is explicitly item 4 and must not be conflated with the
+  already-completed Presets page fidelity work.
+
+---
+
+## 2026-10-19 — Codex — Admin fidelity and state closure
+
+- **Branch / starting HEAD:** `main` at `a77829b`; no commit or push requested.
+- **Scope:** complete the owner-locked Admin unit after Settings, without repeating completed bot
+  work or pulling optional backlog ahead of the queue.
+- **Changed:** all nine Admin pages now keep truthful loading/empty/error/retry behavior; stale
+  polling failures retain last-good data and open forms. Consequential writes lock only their form
+  and restore previous disabled states. Audit is searchable/filterable and paginated at 25 rows;
+  Groups shows saved retention; activity drilldowns use exact server classifications; Wallet import
+  auto-detects each wallet's chain unless an owner deliberately overrides it; and scoped
+  `admin.changed` / `profile.changed` events refresh current owners and affected users across open
+  dashboards. User cards and Admin overlays also received the completed interaction/focus pass.
+- **Verification:** 69 focused named checks passed across Admin API/UI, Settings live refresh,
+  governance mapping, and audit pagination. Targeted ESLint, `git diff --check`, and the production
+  Vite build passed (83 modules; only the existing chunk-size warning). Signed-in narrow browser
+  review covered all nine pages, mobile navigation/sheets, User Details focus containment, saved
+  retention rendering, and mixed-chain Wallet import. No consequential control was submitted.
+- **Remaining:** commit/deployment await explicit instruction. Production error injection, true
+  non-root account-merge execution, and end-to-end DB/socket merge refresh belong to the global and
+  release acceptance matrix. **Exact next implementation unit: P0 canonical Dashboard / Telegram /
+  Discord state parity, starting from the reported bot-created schedule visibility path.**
+
+---
+
+## 2026-10-18 — Codex — Settings fidelity closure and queue lock
+
+- **Branch / starting HEAD:** `main` at `a77829b`; no commit or push requested.
+- **Scope:** close the existing Settings fidelity unit without reopening completed bot work, and
+  lock Admin as the next implementation unit per the owner's sequencing instruction.
+- **Changed:** Settings now locks its participating controls during consequential writes, distinguishes
+  profile outages from expired sessions, rejects stale request data across periods/chains, keeps only
+  Money/Automation/Security notifications, honors the clock preference in Security Log, and gives
+  confirmation dialogs focus containment/restoration and background inertness. Routing documents now
+  record Settings as locally closed and prevent optional/bot backlog from pre-empting Admin again.
+- **Verification:** changed-area Settings/dashboard/admin/account/security suites passed 149/149 when run directly after
+  the sandbox's multi-file Node test runner hit `spawn EPERM`; the production Dashboard build passed
+  with 83 modules and only the existing large-chunk warning. Signed-in in-app browser acceptance
+  covered every Settings tab, keyboard tab movement, confirmation Escape/focus restoration, Gas
+  loading-to-populated, API usage loading-to-empty, and Dark/Light switching in a narrow viewport;
+  Dark was restored.
+- **Remaining:** commit/deployment are pending explicit instruction. Production error injection and
+  non-owner API-tab visibility remain part of the later acceptance matrix, not another Settings
+  redesign. **Exact next implementation unit: Admin fidelity/state pass.**
+
+---
+
+## 2026-10-17 — Codex — finalized partial wallet-history runtime
+
+- **Branch / starting HEAD:** `main` at `a77829b`; no commit or push requested.
+- **Scope:** implement the approved truthful partial-history unit without provider traffic, database
+  access, browser mutation, or production flag changes.
+- **Changed:** the GoldRush adapter now supports a strict `finalizedOnly` mode that requires an
+  independent verifier; the production runtime always selects it. Only RPC-verified canonical,
+  finalized transactions can reach persistence. Recent-only pages still advance their cursor, while
+  history/provenance coverage and recheck range remain null.
+- **Safety:** destructive cleanup remains unreachable, unmatched activity remains **Source unknown**,
+  exact account-scoped evidence can still establish **GhostMint**, and Ink/HyperEVM remain partial.
+  Both production wallet-history flags remain off.
+- **Verification:** focused adapter/runtime/finality/provider/repository/service tests passed 63/63
+  when executed directly;
+  the first multi-file `node --test` invocation could not spawn child processes in the sandbox and was
+  rerun per file. The guarded marked-database wallet-history integration passed 1/1 after one fixture
+  expectation was corrected from the old unfinalized-visible contract. Targeted syntax, ESLint, and
+  diff checks passed.
+- **Exact next action:** obtain a documented completeness/reorg contract or complementary provider
+  before enabling live ingestion; then run the guarded seven-chain semantic canary and populated UI
+  acceptance. Finalized-only mode is not proof of complete history.
+
+---
+
+## 2026-10-16 — Codex — GoldRush activation preflight made explicit
+
+- **Branch / starting HEAD:** `main` at `a77829b`; no commit or push requested.
+- **Scope:** review the guarded GoldRush wallet-history semantic canary against the current adapter
+  and current official provider contract, without reading credentials, calling the provider, touching
+  PostgreSQL, or changing either production history flag.
+- **Changed:** `scripts/run-goldrush-wallet-history-canary.js` adds typed setup/execution failures and
+  a `--preflight` no-network mode; `tests/goldRushWalletHistoryCanaryCli.test.js` pins redaction and
+  no-read/no-request behavior; `package.json` exposes `wallet-history:canary:preflight`;
+  `docs/TEST_PLAN.md` and `docs/WORKLIST.md` record the accepted blocker state.
+- **Verification:** canary core/CLI tests 21/21 passed; targeted ESLint passed; the full
+  `check:wallet-history` syntax gate passed; the actual preflight exited 2 by design and reported all
+  four blockers with no credential, manifest, network, database, or blockchain access.
+- **Verified blockers:** the paginated endpoint does not expose machine-verifiable complete-history
+  or bounded-recheck evidence; Ink and HyperEVM lack documented GoldRush trace support; the
+  standalone canary does not yet use the independent RPC finality verifier. Page exhaustion and
+  `chain_tip_height` remain insufficient, so provider and worker production flags stay off.
+- **Exact next action:** choose one bounded architecture path before a paid live scan: obtain a
+  documented GoldRush coverage/reorg contract, prove a time-bucket design without reinterpreting its
+  undocumented `complete` flag, or add a complementary provider. Then review a seven-chain public
+  fixture manifest and run the guarded live canary.
+
+---
+
 ## 2026-09-01 — Codex — dashboard EVM mint parity
 
 - **Branch / starting HEAD:** `main` at `bb5f0cc`; no commit or push requested.

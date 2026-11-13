@@ -1,6 +1,7 @@
 /* global Blob, clearTimeout, CustomEvent, localStorage, navigator, URL, WebSocket, setTimeout */
 import React,{useCallback,useEffect,useId,useMemo,useRef,useState} from 'react';
 import {dashboardEvmChains} from './chainOptions.mjs';
+import {restoreModalFocus} from './modalFocus.mjs';
 
 export {ACTIVITY_EVENTS} from './activityFeed.js';
 
@@ -115,29 +116,116 @@ export function ConfirmHost(){
   const [request,setRequest]=useState(activeDialogRequest);
   useEffect(()=>subscribeDialogRequest(setRequest),[]);
   const [value,setValue]=useState('');
+  const modalRef=useRef(null);
+  const promptRef=useRef(null);
+  const cancelRef=useRef(null);
+  const descriptionId=useId().replace(/:/g,'');
   useEffect(()=>{if(request?.type==='prompt')setValue(request.defaultValue||'');},[request]);
   function confirmChoice(){request.resolve(request.type==='confirm'?true:value);}
   function cancelChoice(){request.resolve(request.type==='confirm'?false:null);}
   useEffect(()=>{
     if(!request)return;
+    const previouslyFocused=document.activeElement;
+    const modal=modalRef.current;
+    const host=modal?.parentElement;
+    const siblings=host?[...host.children].filter(element=>element!==modal):[];
+    const previousSiblingState=siblings.map(element=>({
+      element,inert:Boolean(element.inert),ariaHidden:element.getAttribute('aria-hidden'),
+    }));
+    for(const element of siblings){element.inert=true;element.setAttribute('aria-hidden','true');}
+    const previousOverflow=document.body.style.overflow;
+    document.body.style.overflow='hidden';
+    (request.type==='prompt'?promptRef.current:cancelRef.current)?.focus({preventScroll:true});
     function onKeyDown(event){
       if(event.key==='Escape'){event.preventDefault();cancelChoice();}
       else if(event.key==='Enter'&&request.type==='confirm'){event.preventDefault();confirmChoice();}
+      else if(event.key==='Tab'){
+        const focusable=[...(modalRef.current?.querySelectorAll('button:not(:disabled),input:not(:disabled),[href],[tabindex]:not([tabindex="-1"])')||[])];
+        if(!focusable.length){event.preventDefault();return;}
+        const first=focusable[0];const last=focusable[focusable.length-1];
+        if(event.shiftKey&&(document.activeElement===first||!modalRef.current?.contains(document.activeElement))){event.preventDefault();last.focus();}
+        else if(!event.shiftKey&&(document.activeElement===last||!modalRef.current?.contains(document.activeElement))){event.preventDefault();first.focus();}
+      }
     }
     document.addEventListener('keydown',onKeyDown);
-    return()=>document.removeEventListener('keydown',onKeyDown);
+    return()=>{
+      document.removeEventListener('keydown',onKeyDown);
+      document.body.style.overflow=previousOverflow;
+      for(const {element,inert,ariaHidden} of previousSiblingState){
+        element.inert=inert;
+        if(ariaHidden===null)element.removeAttribute('aria-hidden');else element.setAttribute('aria-hidden',ariaHidden);
+      }
+      if(previouslyFocused&&typeof previouslyFocused.focus==='function'&&document.contains(previouslyFocused))previouslyFocused.focus({preventScroll:true});
+    };
   },[request]);
   if(!request)return null;
-  return <div className="confirm-modal-backdrop" onClick={cancelChoice}>
-    <div className="confirm-modal" role="alertdialog" aria-modal="true" onClick={event=>event.stopPropagation()}>
-      <p>{request.message}</p>
-      {request.type==='prompt'&&<input autoFocus type={request.masked?'password':'text'} autoComplete="off" value={value} placeholder={request.placeholder} onChange={event=>setValue(event.target.value)} onKeyDown={event=>{if(event.key==='Enter'){event.preventDefault();confirmChoice();}}}/>}
+  return <div className="confirm-modal-backdrop" ref={modalRef} onClick={cancelChoice}>
+    <div className="confirm-modal" role="alertdialog" aria-modal="true" aria-describedby={descriptionId} onClick={event=>event.stopPropagation()}>
+      <p id={descriptionId}>{request.message}</p>
+      {request.type==='prompt'&&<input ref={promptRef} type={request.masked?'password':'text'} autoComplete="off" value={value} placeholder={request.placeholder} onChange={event=>setValue(event.target.value)} onKeyDown={event=>{if(event.key==='Enter'){event.preventDefault();confirmChoice();}}}/>}
       <div className="confirm-modal-actions">
-        <button type="button" className="b g" onClick={cancelChoice}>Cancel</button>
+        <button ref={cancelRef} type="button" className="b g" onClick={cancelChoice}>Cancel</button>
         <button type="button" className="b p" onClick={confirmChoice}>{request.type==='prompt'?'OK':'Confirm'}</button>
       </div>
     </div>
   </div>;
+}
+
+// Shared modal behavior for overlays that remain inside the application tree. Walking from the
+// dialog to <body> and making each ancestor's siblings inert keeps every background surface out of
+// the tab order without making the dialog itself inert. It also composes with ConfirmHost: a
+// confirmation opened from an existing modal temporarily becomes the only active layer, then the
+// underlying modal resumes with its original focus and background lock intact.
+export function useModalAccessibility(open,modalRef,{onClose,initialFocusRef,closeDisabled=false,restoreFocusFallback}={}){
+  const onCloseRef=useRef(onClose);
+  const closeDisabledRef=useRef(closeDisabled);
+  const restoreFocusFallbackRef=useRef(restoreFocusFallback);
+  onCloseRef.current=onClose;
+  closeDisabledRef.current=closeDisabled;
+  restoreFocusFallbackRef.current=restoreFocusFallback;
+  useEffect(()=>{
+    if(!open)return undefined;
+    const modal=modalRef.current;
+    if(!modal)return undefined;
+    const previouslyFocused=document.activeElement;
+    const previousOverflow=document.body.style.overflow;
+    const outside=[];
+    let branch=modal;
+    while(branch&&branch!==document.body){
+      const parent=branch.parentElement;
+      if(!parent)break;
+      for(const sibling of parent.children){
+        if(sibling===branch||outside.some(item=>item.element===sibling))continue;
+        outside.push({element:sibling,inert:Boolean(sibling.inert),ariaHidden:sibling.getAttribute('aria-hidden')});
+        sibling.inert=true;
+        sibling.setAttribute('aria-hidden','true');
+      }
+      branch=parent;
+    }
+    document.body.style.overflow='hidden';
+    const focusable=()=>[...(modal.querySelectorAll('button:not(:disabled),input:not(:disabled),select:not(:disabled),textarea:not(:disabled),summary,[href],[tabindex]:not([tabindex="-1"])')||[])];
+    (initialFocusRef?.current||focusable()[0]||modal).focus?.({preventScroll:true});
+    function onKeyDown(event){
+      if(event.key==='Escape'&&!closeDisabledRef.current){event.preventDefault();onCloseRef.current?.();return;}
+      if(event.key!=='Tab')return;
+      const available=focusable();
+      if(!available.length){event.preventDefault();modal.focus?.({preventScroll:true});return;}
+      const first=available[0];const last=available[available.length-1];
+      if(event.shiftKey&&(document.activeElement===first||!modal.contains(document.activeElement))){event.preventDefault();last.focus();}
+      else if(!event.shiftKey&&(document.activeElement===last||!modal.contains(document.activeElement))){event.preventDefault();first.focus();}
+    }
+    document.addEventListener('keydown',onKeyDown);
+    return()=>{
+      document.removeEventListener('keydown',onKeyDown);
+      document.body.style.overflow=previousOverflow;
+      for(const {element,inert,ariaHidden} of outside.reverse()){
+        element.inert=inert;
+        if(ariaHidden===null)element.removeAttribute('aria-hidden');else element.setAttribute('aria-hidden',ariaHidden);
+      }
+      const fallback=typeof restoreFocusFallbackRef.current==='function'?restoreFocusFallbackRef.current():null;
+      restoreModalFocus(previouslyFocused,fallback);
+    };
+  },[open,modalRef,initialFocusRef]);
 }
 
 // Toast notifications -- transient, auto-dismissing feedback for one-off events (a save succeeded,
@@ -164,6 +252,7 @@ export function getNotificationLog(){return notificationLog;}
 // wearing the wrong domain is worse than one wearing none, and a keyword sniffer would be wrong
 // silently. Call sites that know their domain pass it; the rest render no chip.
 export const NOTIFICATION_CATEGORIES=Object.freeze({money:'Money',auto:'Auto',security:'Security'});
+export function shouldRetainNotification(category){return Boolean(category&&NOTIFICATION_CATEGORIES[category]);}
 // `action` is the owner's rule generalised: any notification about something that can be retried,
 // resumed or reviewed carries the control to do it, so reading the notification and acting on it
 // are the same gesture rather than a trip back to the page it came from. Shape is
@@ -173,8 +262,13 @@ export function notify(message,{type='info',timeoutMs=5000,category,action}={}){
   const id=++toastSeq;
   toastItems=[...toastItems,{id,message,type,leaving:false}];
   publishToasts();
-  notificationLog=[{id,message,type,category,action,at:Date.now()},...notificationLog].slice(0,NOTIFICATION_LOG_LIMIT);
-  publishNotificationLog();
+  // Only the three durable routes declared in Settings belong in Recent. System/interface
+  // feedback intentionally remains toast-only; retaining uncategorised saves and connection
+  // messages would make the read-only routing table false.
+  if(shouldRetainNotification(category)){
+    notificationLog=[{id,message,type,category,action,at:Date.now()},...notificationLog].slice(0,NOTIFICATION_LOG_LIMIT);
+    publishNotificationLog();
+  }
   if(timeoutMs>0)setTimeout(()=>dismissToast(id),timeoutMs);
   return id;
 }
@@ -763,12 +857,14 @@ export function Celebrate({title,detail,children}){
 //
 // onChange receives the VALUE, not the event: every existing call site does e.target.value at the
 // callsite, and this is a new component with no callers yet, so it gets the cleaner contract.
-export function SearchField({label,value='',onChange,placeholder='Label, address, chain…',id,name}){
+export function SearchField({label,value='',onChange,placeholder='Label, address, chain…',id,name,
+  ariaInvalid,ariaDescribedBy}){
   const inputRef=useRef(null);
   function clear(){onChange('');inputRef.current?.focus();}
   return <label className="page-search search-field">{label}
     <span className="search-field-control">
       <input ref={inputRef} id={id} name={name} type="search" value={value} placeholder={placeholder}
+        aria-invalid={ariaInvalid||undefined} aria-describedby={ariaDescribedBy||undefined}
         onChange={event=>onChange(event.target.value)}/>
       {value!==''&&<button type="button" className="search-clear" aria-label="Clear search" onClick={clear}>×</button>}
     </span>

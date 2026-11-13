@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const {
   GOLDRUSH_CHAIN_SLUGS,
+  GOLDRUSH_INTERNAL_TRANSFER_CHAINS,
   GoldRushWalletHistoryError,
   createGoldRushWalletHistoryAdapter,
 } = require('../src/walletHistory/goldRushAdapter');
@@ -66,6 +67,14 @@ test('maps every current GhostMint chain to the documented GoldRush REST slug', 
   });
 });
 
+test('requests documented wallet traces only on GoldRush trace-supported chains', () => {
+  assert.deepEqual([...GOLDRUSH_INTERNAL_TRANSFER_CHAINS].sort(), [
+    'arbitrum', 'base', 'ethereum', 'polygon', 'robinhood',
+  ]);
+  assert.equal(GOLDRUSH_INTERNAL_TRANSFER_CHAINS.has('ink'), false);
+  assert.equal(GOLDRUSH_INTERNAL_TRANSFER_CHAINS.has('hyperevm'), false);
+});
+
 test('normalizes a GoldRush page through the provider contract without inventing calldata', async () => {
   let captured;
   const adapter = createGoldRushWalletHistoryAdapter({
@@ -82,7 +91,7 @@ test('normalizes a GoldRush page through the provider contract without inventing
 
   assert.match(captured.url, /\/eth-mainnet\/address\/0x[0-9a-f]{40}\/transactions_v3\/page\/0\//);
   assert.match(captured.url, /block-signed-at-asc=true/);
-  assert.doesNotMatch(captured.url, /with-internal/);
+  assert.match(captured.url, /with-internal=true/);
   assert.equal(captured.options.headers.authorization, 'Bearer private-test-key');
   assert.deepEqual(page.nextCursor, { page:1 });
   assert.equal(page.transactions[0].input, null);
@@ -91,16 +100,18 @@ test('normalizes a GoldRush page through the provider contract without inventing
   assert.equal(page.transactions[0].finalityStatus, 'unfinalized');
   assert.equal(page.transactions[0].rawSummary.calldataAvailable, false);
   assert.deepEqual(page.transactions[0].movements.map(item => item.eventType),
-    ['native_transfer', 'fee', 'mint']);
+    ['native_transfer', 'fee', 'native_transfer', 'mint']);
+  assert.equal(page.transactions[0].movements[2].details.kind, 'internal_transfer');
   const minted = page.transactions[0].movements.at(-1);
   assert.equal(minted.assetStandard, 'erc721');
   assert.equal(minted.tokenId, '42');
   assert.equal(minted.direction, 'in');
   assert.equal(page.coverage.history, null);
+  assert.equal(page.finalizedThroughBlock, null);
   assert.equal(page.recheckRange, null);
 });
 
-test('does not request undocumented internal transfers or infer completeness from a final page', async () => {
+test('does not request unsupported Ink traces or infer completeness from a final page', async () => {
   let requestedUrl;
   const adapter = createGoldRushWalletHistoryAdapter({
     apiKey:'private-test-key', chains:['ink'], baseUrl:'https://history.example/v1/',
@@ -119,7 +130,94 @@ test('does not request undocumented internal transfers or infer completeness fro
   assert.equal(page.recheckRange, null);
 });
 
-test('keeps only wallet-involved movements and skips malformed or custom transfer logs', async () => {
+test('applies an injected RPC finality verifier without claiming history completeness', async () => {
+  let verificationInput;
+  const adapter = createGoldRushWalletHistoryAdapter({
+    apiKey:'private-test-key', baseUrl:'https://history.example/v1',
+    finalityVerifier:{ verifyPage:async input => {
+      verificationInput = input;
+      return {
+        finalizedThroughBlock:'100',
+        transactions:input.transactions.map(item => ({ ...item, finalityStatus:'finalized' })),
+      };
+    } },
+    fetchImpl:async () => response({ data:{ current_page:0, chain_tip_height:120,
+      links:{ next:null }, items:[transaction()] } }),
+  });
+  const page = await createWalletHistoryProviderRegistry({ adapters:[adapter] }).fetchPage({
+    chain:'ethereum', walletAddress:WALLET,
+  });
+  assert.equal(verificationInput.chain, 'ethereum');
+  assert.equal(verificationInput.observedHeadBlock, '120');
+  assert.equal(page.transactions[0].finalityStatus, 'finalized');
+  assert.equal(page.finalizedThroughBlock, '100');
+  assert.equal(page.coverage.history, null);
+  assert.equal(page.recheckRange, null);
+});
+
+test('finalized-only mode requires a verifier and rejects malformed configuration', () => {
+  assert.throws(() => createGoldRushWalletHistoryAdapter({
+    apiKey:'private-test-key', finalizedOnly:true,
+  }), /finalizedOnly requires a finalityVerifier/);
+  assert.throws(() => createGoldRushWalletHistoryAdapter({
+    apiKey:'private-test-key', finalizedOnly:'yes',
+  }), /finalizedOnly must be a boolean/);
+});
+
+test('finalized-only mode retains only independently verified canonical finalized rows', async () => {
+  const finalizedHash = `0x${'56'.repeat(32)}`;
+  const recentHash = `0x${'78'.repeat(32)}`;
+  const nonCanonicalHash = `0x${'9a'.repeat(32)}`;
+  const adapter = createGoldRushWalletHistoryAdapter({
+    apiKey:'private-test-key', baseUrl:'https://history.example/v1', finalizedOnly:true,
+    finalityVerifier:{ verifyPage:async input => ({
+      finalizedThroughBlock:'100',
+      transactions:input.transactions.map(item => ({
+        ...item,
+        canonical:item.txHash !== nonCanonicalHash,
+        finalityStatus:item.blockNumber === '101' ? 'unfinalized' : 'finalized',
+      })),
+    }) },
+    fetchImpl:async () => response({ data:{ current_page:0, chain_tip_height:120,
+      links:{ next:'https://history.example/next' }, items:[
+        transaction({ tx_hash:finalizedHash, block_height:100 }),
+        transaction({ tx_hash:recentHash, block_height:101 }),
+        transaction({ tx_hash:nonCanonicalHash, block_height:99 }),
+      ] } }),
+  });
+  const page = await createWalletHistoryProviderRegistry({ adapters:[adapter] }).fetchPage({
+    chain:'ethereum', walletAddress:WALLET,
+  });
+  assert.deepEqual(page.transactions.map(item => item.txHash), [finalizedHash]);
+  assert.deepEqual(page.nextCursor, { page:1 });
+  assert.equal(page.hasMore, true);
+  assert.equal(page.finalizedThroughBlock, '100');
+  assert.deepEqual(page.coverage, { history:null, provenance:null });
+  assert.equal(page.recheckRange, null);
+});
+
+test('finalized-only mode advances pagination when every observed row is still recent', async () => {
+  const adapter = createGoldRushWalletHistoryAdapter({
+    apiKey:'private-test-key', baseUrl:'https://history.example/v1', finalizedOnly:true,
+    finalityVerifier:{ verifyPage:async input => ({
+      finalizedThroughBlock:'99',
+      transactions:input.transactions.map(item => ({ ...item, finalityStatus:'unfinalized' })),
+    }) },
+    fetchImpl:async () => response({ data:{ current_page:0, chain_tip_height:120,
+      links:{ next:'https://history.example/next' }, items:[transaction()] } }),
+  });
+  const page = await createWalletHistoryProviderRegistry({ adapters:[adapter] }).fetchPage({
+    chain:'ethereum', walletAddress:WALLET,
+  });
+  assert.deepEqual(page.transactions, []);
+  assert.deepEqual(page.nextCursor, { page:1 });
+  assert.equal(page.hasMore, true);
+  assert.equal(page.finalizedThroughBlock, '99');
+  assert.deepEqual(page.coverage, { history:null, provenance:null });
+  assert.equal(page.recheckRange, null);
+});
+
+test('keeps wallet-involved traces and logs while skipping malformed or custom transfers', async () => {
   const custom = { log_offset:3, sender_address:NFT, supports_erc:[], decoded:{
     name:'Transfer', params:[{ name:'from', value:'not-an-address' }],
   } };
@@ -144,7 +242,45 @@ test('keeps only wallet-involved movements and skips malformed or custom transfe
   const page = await registry.fetchPage({ chain:'ethereum', walletAddress:WALLET });
   assert.deepEqual(page.transactions[0].movements.map(item => ({
     type:item.eventType, direction:item.direction, amount:item.amountRaw,
-  })), [{ type:'erc20_transfer', direction:'in', amount:'5' }]);
+  })), [
+    { type:'native_transfer', direction:'in', amount:'3' },
+    { type:'erc20_transfer', direction:'in', amount:'5' },
+  ]);
+});
+
+test('fails closed when documented internal-transfer data is missing or malformed', async () => {
+  const replies = [
+    transaction({ internal_transfers:undefined }),
+    transaction({ internal_transfers:null }),
+    transaction({ internal_transfers:{} }),
+    transaction({ internal_transfers:[{ from_address:'not-an-address',
+      to_address:WALLET, value:'3' }] }),
+    transaction({ internal_transfers:[{ from_address:OTHER,
+      to_address:NFT, value:'not-a-value' }] }),
+  ];
+  const adapter = createGoldRushWalletHistoryAdapter({
+    apiKey:'private-test-key', baseUrl:'https://history.example/v1',
+    fetchImpl:async () => response({ data:{ current_page:0, chain_tip_height:120,
+      links:{ next:null }, items:[replies.shift()] } }),
+  });
+  const request = { chain:'ethereum', walletAddress:WALLET, cursor:null,
+    fromBlock:null, throughBlock:null };
+  for (let index = 0; index < 5; index += 1) {
+    await assert.rejects(adapter.fetchPage(request), error =>
+      error instanceof GoldRushWalletHistoryError && error.code === 'GOLDRUSH_RESPONSE_INVALID');
+  }
+});
+
+test('does not require internal-transfer data on a chain without documented trace support', async () => {
+  const adapter = createGoldRushWalletHistoryAdapter({
+    apiKey:'private-test-key', chains:['ink'], baseUrl:'https://history.example/v1',
+    fetchImpl:async () => response({ data:{ current_page:0, chain_tip_height:120,
+      links:{ next:null }, items:[transaction({ internal_transfers:'ignored-on-ink' })] } }),
+  });
+  const page = await adapter.fetchPage({ chain:'ink', walletAddress:WALLET, cursor:null,
+    fromBlock:null, throughBlock:null });
+  assert.equal(page.transactions.length, 1);
+  assert.equal(page.transactions[0].rawSummary.internalTransfersRequested, false);
 });
 
 test('rejects stale cursors, wrong pages, block ranges, and unsafe provider integers', async () => {

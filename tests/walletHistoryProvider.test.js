@@ -15,6 +15,8 @@ const OTHER = '0x00000000000000000000000000000000000000BB';
 const CONTRACT = '0x00000000000000000000000000000000000000CC';
 const TX_HASH = `0x${'AB'.repeat(32)}`;
 const BLOCK_HASH = `0x${'CD'.repeat(32)}`;
+const OTHER_BLOCK_HASH = `0x${'EF'.repeat(32)}`;
+const OTHER_TX_HASH = `0x${'12'.repeat(32)}`;
 
 function nativeMovement(overrides = {}) {
   return {
@@ -66,6 +68,7 @@ function page(overrides = {}) {
     nextCursor:{ page:'opaque-2' },
     hasMore:true,
     observedHeadBlock:'9007199254741000',
+    finalizedThroughBlock:'9007199254740993',
     coverage:{
       history:{ fromBlock:'9007199254740000', throughBlock:'9007199254740993', complete:false },
       provenance:null,
@@ -147,6 +150,7 @@ test('selects an adapter, normalizes its request, and validates its page without
   assert.equal(result.transactions[0].occurredAt, '2026-10-13T12:00:00.000Z');
   assert.equal(result.coverage.history.complete, false);
   assert.equal(result.coverage.provenance, null);
+  assert.equal(result.finalizedThroughBlock, '9007199254740993');
 });
 
 test('requires explicit completeness fields and never infers coverage from the end of pagination', () => {
@@ -217,6 +221,83 @@ test('rejects provider ranges that could orphan rows outside proven history', ()
       provenance:{ fromBlock:'0', throughBlock:'100', complete:true } },
   })), error => error instanceof WalletHistoryProviderContractError
     && error.path === 'page.coverage.provenance');
+});
+
+test('requires explicit and internally consistent finalized-page evidence', () => {
+  const omitted = page();
+  delete omitted.finalizedThroughBlock;
+  assert.throws(() => validateProviderPage(omitted), error =>
+    error instanceof WalletHistoryProviderContractError
+    && error.path === 'page.finalizedThroughBlock');
+  assert.throws(() => validateProviderPage(page({ finalizedThroughBlock:10 })), error =>
+    error instanceof WalletHistoryProviderContractError
+    && error.path === 'page.finalizedThroughBlock');
+  assert.throws(() => validateProviderPage(page({ finalizedThroughBlock:'01' })), error =>
+    error instanceof WalletHistoryProviderContractError
+    && error.path === 'page.finalizedThroughBlock');
+  assert.throws(() => validateProviderPage(page({
+    finalizedThroughBlock:'9223372036854775808',
+  })), /must not exceed/);
+  assert.throws(() => validateProviderPage(page({ finalizedThroughBlock:null })), error =>
+    error instanceof WalletHistoryProviderContractError
+    && error.path === 'page.transactions[0].finalityStatus');
+  assert.throws(() => validateProviderPage(page({
+    transactions:[transaction({ canonical:false })],
+  })), error => error instanceof WalletHistoryProviderContractError
+    && error.path === 'page.transactions[0]');
+  assert.throws(() => validateProviderPage(page({
+    transactions:[transaction({ blockHash:null })],
+  })), error => error instanceof WalletHistoryProviderContractError
+    && error.path === 'page.transactions[0].blockHash');
+  assert.throws(() => validateProviderPage(page({
+    finalizedThroughBlock:'9007199254741001',
+  })), error => error instanceof WalletHistoryProviderContractError
+    && error.path === 'page.finalizedThroughBlock');
+  assert.throws(() => validateProviderPage(page({
+    observedHeadBlock:null,
+  })), error => error instanceof WalletHistoryProviderContractError
+    && error.path === 'page.finalizedThroughBlock');
+  assert.throws(() => validateProviderPage(page({
+    transactions:[transaction({ finalityStatus:'unfinalized' })],
+  })), error => error instanceof WalletHistoryProviderContractError
+    && error.path === 'page.transactions[0].finalityStatus');
+  assert.throws(() => validateProviderPage(page({
+    finalizedThroughBlock:'9007199254740992',
+  })), error => error instanceof WalletHistoryProviderContractError
+    && error.path === 'page.transactions[0].finalityStatus');
+  assert.throws(() => validateProviderPage(page({
+    finalizedThroughBlock:'9007199254740992',
+    transactions:[transaction({ finalityStatus:'unfinalized', blockNumber:'9007199254740994',
+      blockHash:null })],
+  })), error => error instanceof WalletHistoryProviderContractError
+    && error.path === 'page.transactions[0].blockHash');
+  assert.throws(() => validateProviderPage(page({
+    transactions:[
+      transaction(),
+      transaction({ txHash:OTHER_TX_HASH, blockHash:OTHER_BLOCK_HASH }),
+    ],
+  })), error => error instanceof WalletHistoryProviderContractError
+    && error.path === 'page.transactions[1].blockHash');
+
+  const mixed = validateProviderPage(page({
+    transactions:[
+      transaction(),
+      transaction({ txHash:OTHER_TX_HASH, blockNumber:'9007199254740994',
+        blockHash:OTHER_BLOCK_HASH, finalityStatus:'unfinalized' }),
+    ],
+  }));
+  assert.deepEqual(mixed.transactions.map(item => item.finalityStatus),
+    ['finalized', 'unfinalized']);
+  const unverified = validateProviderPage(page({
+    finalizedThroughBlock:null,
+    transactions:[transaction({ finalityStatus:'unfinalized' })],
+  }));
+  assert.equal(unverified.finalizedThroughBlock, null);
+  const tombstone = validateProviderPage(page({
+    finalizedThroughBlock:null,
+    transactions:[transaction({ finalityStatus:'unfinalized', canonical:false, blockHash:null })],
+  }));
+  assert.equal(tombstone.transactions[0].canonical, false);
 });
 
 test('requires explicit provider selection when a chain has multiple adapters and no default', async () => {

@@ -16,9 +16,23 @@ test('migration and repository define recoverable ownership-guarded leases', () 
   assert.match(migration,/state IN \('queued','backfilling','error'\)/);
   const source = fs.readFileSync(path.join(__dirname,'..','src','walletHistory','repository.js'),'utf8');
   assert.match(source,/FOR UPDATE OF sync SKIP LOCKED LIMIT 1/);
+  assert.match(source,/SELECT sync_enabled FROM wallet_history_subjects/);
+  assert.match(source,/Wallet history sync is stale because the wallet was removed/);
+  assert.match(source,/WITH owned_wallet AS/);
+  assert.match(source,/WHERE user_id=\$1 AND LOWER\(address\)=\$3 LIMIT 1 FOR KEY SHARE/);
+  assert.match(source,/WITH active_subject AS/);
   assert.match(source,/sync\.state='error' AND sync\.retry_after IS NOT NULL/);
   assert.match(source,/claimed_by=\$7 AND lease_expires_at>NOW\(\)/);
   assert.match(source,/claimed_by=\$10 AND lease_expires_at>NOW\(\)/);
+  assert.match(source,/wallet_history_transactions\.finality_status<>'finalized'/);
+  assert.match(source,/block_number=ANY\(\$4::BIGINT\[\]\) AND canonical=TRUE/);
+  assert.match(source,/incomingCanonicalByBlock/);
+  assert.match(source,/finality_status='finalized' LIMIT 1/);
+  assert.match(source,/AND finality_status<>'finalized'/);
+  assert.match(source,/Per-page RPC finality proves the labels on that page only/);
+  assert.equal((source.match(/tx\.finality_status='finalized'/g) || []).length,2);
+  assert.equal((source.match(/sync\.state='current'/g) || []).length,2);
+  assert.equal((source.match(/tx\.provider_complete=TRUE/g) || []).length,2);
 });
 
 test('claimDue maps one lease and starts a queued generation atomically', async () => {
@@ -160,6 +174,9 @@ test('account ledger is tenant scoped, deduplicates an address, classifies prove
   assert.match(calls[0].sql,/JOIN wallet_history_subjects subject\s+ON subject\.user_id=tx\.user_id AND subject\.chain=tx\.chain\s+AND subject\.wallet_address=tx\.wallet_address/);
   assert.doesNotMatch(calls[0].sql,/JOIN wallet_history_subjects subject USING/);
   assert.match(calls[0].sql,/EXISTS \(\s*SELECT 1 FROM transaction_intents intent/);
+  assert.match(calls[0].sql,/sync\.state='current'/);
+  assert.match(calls[0].sql,/tx\.provider_complete=TRUE/);
+  assert.match(calls[0].sql,/tx\.finality_status='finalized'/);
   assert.match(calls[0].sql,/ELSE 'source_unknown' END AS source/);
   assert.deepEqual(calls[1].params,[USER,null,['base','ethereum']]);
   assert.match(calls[1].sql,/COALESCE\(sync\.state,'not_started'\) AS state/);

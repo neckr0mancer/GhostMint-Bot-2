@@ -10,6 +10,7 @@ const {
   taskConfirmation, taskScheduled, confirmRemoveWallet, placeholderMenu,
   sniperMenu, sniperChainSelect, sniperObservationMode, sniperPendingRiskWarning,
   sniperTolerancePrompt, sniperConfirmation, activityMenu, adminOverviewMenu,
+  modeMenu,
 } = require('../src/telegram/menus');
 
 function flatButtons(replyMarkup) {
@@ -42,6 +43,15 @@ test('settings shows the link button to every user and admin console only to own
   assert.ok(buttons.includes('link:generate'));
   assert.equal(buttons.includes('menu:admin'), false);
   assert.ok(flatButtons(settingsMenu({ isOwner: true }).replyMarkup).some(b => b.callback_data === 'menu:admin'));
+});
+
+test('transaction mode distinguishes the ordinary Mint flow from the explicit /mintnow exception', () => {
+  const menu = modeMenu('ultra_fast', [
+    { key: 'ultra_fast', displayName: 'Degen' }, { key: 'safe', displayName: 'Normie' },
+  ], true);
+  assert.match(menu.text, /ordinary Mint flow's final approval/);
+  assert.match(menu.text, /\/mintnow.*one-shot no-confirmation shortcut/);
+  assert.match(menu.text, /Scheduled \+ Degen opt-out/);
 });
 
 test('chain picker offers EVM/Solana, not one button per configured chain, since an EVM key works identically on every one', () => {
@@ -642,11 +652,13 @@ test('sniperMenu shows the same disclaimer and per-sniper detail as /snipers, wi
   assert.ok(flatButtons(empty.replyMarkup).some(b => b.callback_data === 'menu:main'));
   assert.ok(flatButtons(empty.replyMarkup).some(b => b.callback_data === 'sniper:create:start'));
 
-  const list = sniperMenu([{ label: 'Copy Cool Cats', active: true, targetAddress: '0x1234567890abcdef1234567890abcdef12345678', chain: 'ethereum', walletLabel: 'main', hits: 3, fails: 1 }]);
+  const list = sniperMenu([{ id: '00000000-0000-4000-8000-000000000001', label: 'Copy Cool Cats', active: true, targetAddress: '0x1234567890abcdef1234567890abcdef12345678', chain: 'ethereum', walletLabel: 'main', hits: 3, fails: 1 }]);
   assert.match(list.text, /Wallet-copy snipers \(1\)/);
   assert.match(list.text, /After-confirmation is the default/);
   assert.match(list.text, /Copy Cool Cats/);
   assert.match(list.text, /Hits: 3 · Fails: 1/);
+  assert.match(list.text, /ID: <code>00000000-0000-4000-8000-000000000001<\/code>/);
+  assert.match(list.text, /\/removesniper &lt;id&gt;/);
   // The full address, never truncated -- a shortened display is still <code>-wrapped and looks
   // tap-to-copy, but copying it hands back a string that isn't a real usable address.
   assert.match(list.text, /<code>0x1234567890abcdef1234567890abcdef12345678<\/code>/);

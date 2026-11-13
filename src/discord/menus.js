@@ -607,8 +607,8 @@ function settingsMenu({ isOwner = false } = {}) {
 // Same 4 presets/labels as Telegram's already-shipped MODE_META (src/telegram/menus.js) -- kept in
 // sync by hand since the two platforms build their option lists in entirely different shapes.
 const MODE_META = {
-  ultra_fast: { label: 'Degen', hint: 'Full send. Aggressive gas, minimal friction.' },
-  fast: { label: 'Fast', hint: 'quick, higher gas, still asks before it fires' },
+  ultra_fast: { label: 'Degen', hint: 'highest gas, least automation friction; ordinary Mint still confirms' },
+  fast: { label: 'Fast', hint: 'quick, higher gas; ordinary Mint still confirms' },
   semi_safe: { label: 'Cautious', hint: 'measured, moderate gas' },
   safe: { label: 'Normie', hint: 'slow and steady, network-price gas, zero surprises' },
 };
@@ -629,8 +629,20 @@ function modeMenu({ currentKey, presets, advancedModesAllowed = false }) {
   const currentLabel = MODE_META[currentKey]?.label || 'none selected';
   const lockedNote = advancedModesAllowed ? '' : '\n\n🔒 Degen and Fast require group or admin access.';
   return {
-    content: `## 🎛️ Transaction mode\nCurrent mode: **${currentLabel}**\n\nControls confirmation prompts and how hard this thing sends gas on every mint. Ceilings and forced simulation always have the final say, no matter which mode you pick.${lockedNote}`,
+    content: `## 🎛️ Transaction mode\nCurrent mode: **${currentLabel}**\n\nControls gas aggression, simulation defaults, and network finality. Choosing a mode never removes the ordinary Mint flow's final approval; \`/mintnow\` remains an explicit one-shot no-confirmation shortcut. Ceilings always apply; forced simulation applies except for the documented Scheduled + Degen opt-out.${lockedNote}`,
     components: rows,
+  };
+}
+
+function modeConfirmation(presetKey) {
+  const meta = MODE_META[presetKey];
+  if (!meta) return null;
+  return {
+    content: `## Confirm transaction mode\nSwitch to **${meta.label}**?\n\n${meta.hint}. This changes future transactions on every GhostMint surface. The ordinary Mint flow will still ask before sending; \`/mintnow\` remains the explicit one-shot shortcut.`,
+    components: [
+      row([button(`Use ${meta.label}`, `mode:apply:${presetKey}`, 'primary')]),
+      row([button('Cancel', 'menu:mode')]),
+    ],
   };
 }
 
@@ -1081,7 +1093,7 @@ module.exports = {
   confirmScheduleChangeCancel, scheduleChangeReview, labelModal, gasMenu, activityMenu, tasksMenu, snipersMenu, adminOverviewMenu,
   sniperDetailsModal, sniperObservationMode, sniperPendingRiskWarning,
   sniperTolerancePrompt, sniperToleranceModal, sniperConfirmation,
-  modeMenu, MODE_META,
+  modeMenu, modeConfirmation, MODE_META, GATED_PRESET_KEYS,
   contractDetailsText, collectionInfoCard, openSeaPhasePicker, humanizeStageType, mintQuantitySelect, mintPriceStep, gasTolerancePrompt, mintConfirmation, numberModal,
   taskNameQuickPicks, taskConfirmation,
   watchTypeSelect, watchMethodSelect, watchConfigModal, watchRuleConfirmation,

@@ -6,6 +6,7 @@ const { createPostgresGovernanceRepository } = require('../src/governance/postgr
 const { createIdentityService } = require('../src/identity/identityService');
 const { createPostgresIdentityRepository } = require('../src/identity/postgresIdentityRepository');
 const { createTransactionPolicyRepository } = require('../src/transactions/policyRepository');
+const { ValidationError } = require('../src/validation/domain');
 const { createTestDatabasePool, integrationTest, runTestMigrations } = require('./helpers/disposableDatabase');
 
 integrationTest('group, individual, simulation, owner, and editable-preset precedence persists', { timeout: 60_000 }, async () => {
@@ -41,6 +42,19 @@ integrationTest('group, individual, simulation, owner, and editable-preset prece
     assert.equal(effective.maxTransactionValueWei, 100n);
     assert.equal(effective.dailySpendingBudgetWei, 200n);
     assert.equal(effective.gasCeilingGwei, 10);
+    assert.equal(effective.gasPriceMultiplier, 1.5);
+
+    await governance.upsertGroup(ownerId, { name: groupName, maxTransactionValueWei: 100n,
+      dailySpendingBudgetWei: 200n, gasCeilingGwei: 10, simulationForced: 'optional', advancedModesAllowed: 'not-allowed' });
+    effective = await policies.resolvePolicy({ userId, walletId: 1, chain: 'ethereum' });
+    assert.equal(effective.simulationEnabled, true);
+    assert.equal(effective.requiredConfirmations, 128);
+    assert.equal(effective.gasPriceMultiplier, 1);
+    const clearedMode = await pool.query('SELECT selected_preset_key FROM user_governance WHERE user_id=$1', [userId]);
+    assert.equal(clearedMode.rows[0].selected_preset_key, null);
+    await assert.rejects(governance.selectPreset(userId, 'fast'), error =>
+      error instanceof ValidationError && error.issues?.some(issue => issue.field === 'preset'
+        && /require group access or a manual admin grant/.test(issue.message)));
 
     await governance.setUserCeilings(ownerId, { platform: 'telegram', platformUserId: `user-${suffix}`,
       maxTransactionValueWei: 50n, dailySpendingBudgetWei: 150n, gasCeilingGwei: 5 });

@@ -6,7 +6,7 @@ const {
   openSeaPhasePicker,
   taskNameQuickPicks, taskConfirmation, tasksMenu, scheduleChangeReview,
   confirmScheduleChangeCancel, snipersMenu, adminOverviewMenu,
-  modeMenu, MODE_META, sniperDetailsModal, sniperObservationMode, sniperPendingRiskWarning,
+  modeMenu, modeConfirmation, MODE_META, sniperDetailsModal, sniperObservationMode, sniperPendingRiskWarning,
   sniperTolerancePrompt, sniperToleranceModal, sniperConfirmation,
 } = require('../src/discord/menus');
 
@@ -78,6 +78,15 @@ test('modeMenu hides Degen and Fast unless advanced modes are allowed for this u
   const unlockedIds = flatButtons(unlocked.components).map(b => b.custom_id);
   assert.ok(unlockedIds.includes('mode:pick:ultra_fast'));
   assert.ok(unlockedIds.includes('mode:pick:fast'));
+});
+
+test('modeConfirmation requires a second tap and says manual mint approval remains', () => {
+  const confirmation = modeConfirmation('ultra_fast');
+  assert.match(confirmation.content, /Confirm transaction mode/);
+  assert.match(confirmation.content, /ordinary Mint flow will still ask before sending/);
+  assert.match(confirmation.content, /\/mintnow.*one-shot shortcut/);
+  assert.deepEqual(flatButtons(confirmation.components).map(button => button.custom_id),
+    ['mode:apply:ultra_fast', 'menu:mode']);
 });
 
 test('OpenSea phase picker adds a recommended action without consuming manual select capacity',()=>{

@@ -666,11 +666,25 @@ function createPostgresIdentityRepository(pool) {
     },
 
     async createLinkCode({ userId, codeHash, expiresAt }) {
-      await pool.query('DELETE FROM account_link_codes WHERE user_id=$1 AND used_at IS NULL', [userId]);
-      await pool.query(
-        'INSERT INTO account_link_codes (code_hash,user_id,expires_at) VALUES ($1,$2,TO_TIMESTAMP($3 / 1000.0))',
-        [codeHash, userId, expiresAt],
-      );
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        // Serialize replacement for one account before deleting its previous code. Without this
+        // lock, two concurrent refreshes can both delete first and then each insert a different
+        // unused code. The durable user row is the stable per-account lock target.
+        await client.query('SELECT user_id FROM users WHERE user_id=$1 FOR UPDATE', [userId]);
+        await client.query('DELETE FROM account_link_codes WHERE user_id=$1 AND used_at IS NULL', [userId]);
+        await client.query(
+          'INSERT INTO account_link_codes (code_hash,user_id,expires_at) VALUES ($1,$2,TO_TIMESTAMP($3 / 1000.0))',
+          [codeHash, userId, expiresAt],
+        );
+        await client.query('COMMIT');
+      } catch (error) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw error;
+      } finally {
+        client.release();
+      }
     },
 
     async consumeLinkCode({ codeHash, platform, platformUserId, now }) {

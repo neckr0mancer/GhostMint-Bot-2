@@ -7,6 +7,8 @@ const root = path.join(__dirname, '..');
 const app = fs.readFileSync(path.join(root, 'dashboard', 'src', 'App.jsx'), 'utf8');
 const css = fs.readFileSync(path.join(root, 'dashboard', 'src', 'styles.css'), 'utf8');
 const shared = fs.readFileSync(path.join(root, 'dashboard', 'src', 'shared.jsx'), 'utf8');
+const admin = fs.readFileSync(path.join(root, 'dashboard', 'src', 'Admin.jsx'), 'utf8');
+const dashboardApi = fs.readFileSync(path.join(root, 'src', 'dashboard', 'api.js'), 'utf8');
 
 test('default-chain migration accepts every currently supported EVM dashboard network', () => {
   const sql = fs.readFileSync(path.join(root, 'migrations',
@@ -50,6 +52,53 @@ test('time format is a persisted appearance preference shared by the dashboard',
   assert.match(app,/<TimeFormatProvider value=\{profile\.timeFormat\}>/);
 });
 
+test('account preference events refetch the shared profile in every open dashboard session',()=>{
+  const root=app.slice(app.indexOf('export default function App'));
+  assert.match(root,/\['identity\.changed','profile\.changed','ws\.reconnected'\]\.includes\(event\.detail\?\.type\)/);
+  assert.match(root,/const value=await api\('\/api\/profile'\)/);
+  assert.match(root,/loadProfile\(\)/);
+  assert.match(root,/profileRequestId=useRef\(0\)/);
+  assert.match(root,/if\(active!==profileRequestId\.current\)return/);
+  assert.match(root,/if\(error\.status===401\)[\s\S]*?setProfile\(null\)/,
+    'only an authentication failure may turn a profile refresh into the signed-out screen');
+  assert.match(root,/else setProfileError\(error\)/,
+    'transport and server failures must remain retryable without claiming the session ended');
+});
+
+test('governance changes refresh mode presets and selected-chain limits in open dashboards',()=>{
+  const modeLoads=[...app.matchAll(/useLoad\('\/api\/mode-presets',\[\],\['profile\.changed','admin\.changed'\]\)/g)];
+  assert.equal(modeLoads.length,2,'both the account mode selector and Settings must refresh');
+  assert.match(app,/useLoad\(limitsPath,\[limitChain\],\['profile\.changed','admin\.changed'\]\)/);
+});
+
+test('transaction-mode copy distinguishes automated safeguards from manual mint approval',()=>{
+  assert.match(app,/ordinary Mint flow&apos;s final approval/);
+  assert.match(app,/\/mintnow<\/code> remains an explicit one-shot no-confirmation shortcut/);
+  assert.match(app,/Automation verification default/);
+  assert.match(app,/Target opt-in required/);
+  assert.doesNotMatch(app,/skips the human approval prompt/);
+});
+
+test('an open target policy refetches after Telegram, Discord, or another dashboard changes it',()=>{
+  assert.match(app,/function PolicyEditor[\s\S]*?useLoad\(\`\/api\/targets\/\$\{target\.id\}\?type=\$\{target\.type\}\`,\[target\.id,target\.type\],[\s\S]*?'policies\.changed'\)/);
+  assert.match(app,/const policyFormKey=value\?\[/);
+  assert.match(app,/<form key=\{policyFormKey\} onSubmit=\{update\}>/);
+});
+
+test('live account settings and confirmations reconcile after remote writes or reconnects',()=>{
+  assert.match(app,/if\(!saving\)setLevel\(profile\.botGateLevel\|\|'off'\)/);
+  assert.match(app,/if\(!savingMint\)setSkipMint\(Boolean\(profile\.botGateSkipMint\)\)/);
+  assert.match(app,/message\.type==='ws\.reconnected'\|\|message\.type==='confirmations\.changed'/);
+});
+
+test('notification bell invalidates stale confirmation loads when live payloads arrive',()=>{
+  const bell=app.slice(app.indexOf('function NotificationBell()'),app.indexOf('function SearchOverlay'));
+  assert.match(bell,/loadRequestId=useRef\(0\)/);
+  assert.match(bell,/requestId===loadRequestId\.current\)setItems\(value\)/);
+  assert.match(bell,/message\.type==='confirmation\.pending'\)\{loadRequestId\.current\+=1/);
+  assert.match(bell,/message\.type==='confirmation\.resolved'\)\{loadRequestId\.current\+=1/);
+});
+
 test('Settings is organized into scoped tabs and hides global usage from non-owners',()=>{
   for(const id of ['appearance','transaction','gas','notifications','api-usage']){
     assert.match(app,new RegExp(`id:'${id}'`));
@@ -62,7 +111,7 @@ test('Settings is organized into scoped tabs and hides global usage from non-own
     'the account-menu shortcut must open the Transaction mode tab, not Appearance');
   assert.match(css,/\.settings-tab-panel\[hidden\]\{display:none\}/);
   for(const id of ['appearance','transaction','gas','notifications']){
-    assert.match(app,new RegExp(`id="settings-panel-${id}"[\\s\\S]*?active==='${id}'&&<div`),
+    assert.match(app,new RegExp(`id="settings-panel-${id}"[\\s\\S]*?active==='${id}'&&<(?:fieldset|div)`),
       'inactive Settings tab bodies must not mount or fire hidden requests');
   }
   assert.match(app,/id="settings-panel-api-usage"[\s\S]*?active==='api-usage'&&<>/);
@@ -113,6 +162,7 @@ test('Settings loading and wallet permission controls expose accessible state wi
   assert.match(app,/aria-label="Loading gas prices"/);
   assert.match(app,/prefers-reduced-motion: reduce/);
   assert.match(app,/className=\{entry\?\.error\?'is-error':''\} aria-live="polite"/);
+  assert.match(css,/@media\(prefers-reduced-motion:reduce\)\{[\s\S]*?\.skeleton-card[\s\S]*?animation:none/);
   assert.match(css,/\.schedule-switch\{[^}]*width:44px;height:44px;min-height:44px/);
   assert.match(css,/\.schedule-switch::before\{[^}]*width:40px;height:24px/,
     'the hit target grows to 44px while the visible switch remains compact');
@@ -135,7 +185,8 @@ test('Settings writes keep the previous choice and expose retryable inline failu
 
 test('Settings data loads ignore stale responses and Gas distinguishes configuration from outages',()=>{
   assert.match(shared,/const requestId=useRef\(0\)/);
-  assert.match(shared,/if\(activeRequest===requestId\.current\)setData\(value\)/);
+  assert.match(shared,/if\(activeRequest===requestId\.current\)\{setData\(value\);setDataPath\(path\);setResolvedPath\(path\);\}/,
+    'only the newest request may publish its data and the path that produced it');
   assert.match(shared,/return\(\)=>\{requestId\.current\+=1;\}/,
     'a superseded or unmounted loader must invalidate its in-flight request');
   assert.match(app,/function GasPanel\([\s\S]*const requestId=useRef\(0\)/);
@@ -154,9 +205,9 @@ test('wallet cards use the shared preferred-chain display helper', () => {
 });
 
 test('saving a default chain refreshes the shared profile used by other forms', () => {
-  assert.match(app, /function DefaultChainPanel\(\{profile,onProfileChange\}\)/);
+  assert.match(app, /function DefaultChainPanel\(\{profile,onProfileChange,onBusyChange\}\)/);
   assert.match(app, /onProfileChange\?\.\(current=>\(\{\.\.\.current,defaultChain:saved\.defaultChain\}\)\)/);
-  assert.match(app, /<DefaultChainPanel profile=\{profile\} onProfileChange=\{onProfileChange\}\/\>/);
+  assert.match(app, /<DefaultChainPanel profile=\{profile\} onProfileChange=\{onProfileChange\} onBusyChange=\{setBusySource\}\/\>/);
   assert.match(app, /defaultChain=\{profile\.defaultChain\|\|DEFAULT_EVM_CHAIN\}/,
     'new and imported wallets should use the saved EVM home chain');
   assert.match(app, /chain:chain==='evm'\?defaultChain:chain/);
@@ -204,14 +255,72 @@ test('theme changes apply locally first and synchronize after connectivity retur
 });
 
 test('OpenSea eligibility is a durable per-wallet Settings permission',()=>{
-  assert.match(app,/function OpenSeaEligibilitySettingsPanel\(\{focus=false\}\)/);
+  assert.match(app,/function OpenSeaEligibilitySettingsPanel\(\{focus=false,onBusyChange\}\)/);
   assert.match(app,/id="opensea-eligibility-settings"/);
   assert.match(app,/wallets\.data\.map\(wallet=>/,
     'one account-level switch must not silently authorize every wallet');
   assert.match(app,/Automatic OpenSea eligibility checks for \{wallet\.label\}/);
-  assert.match(app,/disabled=\{changing\|\|!entry\|\|entry\.loading\|\|unavailable\}/);
+  assert.match(app,/disabled=\{changing\|\|!entry\|\|entry\.loading\|\|Boolean\(entry\.error\)\|\|unavailable\}/);
   assert.match(app,/entry\?\.error&&<button[^>]+onClick=\{\(\)=>reloadWallet\(wallet\)\}>Retry<\/button>/,
     'an individual wallet status read must remain retryable');
   assert.match(app,/ghostmint-opensea-eligibility-changed/,
     'a changed Settings permission must invalidate the mounted Schedule workspace');
+  assert.match(dashboardApi,/authorizeOpenSeaEligibility:[\s\S]*?changed\(req,'wallets'\)/,
+    'authorizing a wallet must invalidate eligibility state in every open dashboard session');
+  assert.match(dashboardApi,/revokeOpenSeaEligibility:[\s\S]*?changed\(req,'wallets'\)/,
+    'revoking a wallet must invalidate eligibility state in every open dashboard session');
+});
+
+test('Settings locks its participating controls and tab exits during consequential saves',()=>{
+  assert.match(app,/const settingsBusy=Object\.keys\(busySources\)\.length>0/);
+  assert.match(app,/<SubTabs[^>]+disabled=\{settingsBusy\}/);
+  assert.match(app,/className="settings-tab-lock settings-layout" disabled=\{settingsBusy\}/);
+  assert.match(app,/onBusyChange=\{setBusySource\}/);
+  assert.match(app,/const busy=saving\|\|savingMint/);
+  assert.match(app,/aria-checked=\{level===option\.value\} disabled=\{busy\|\|/,
+    'bot security writes must not overlap each other');
+  assert.match(css,/\.settings-tab-lock\{border:0;padding:0;margin:0;min-width:0\}/);
+});
+
+test('usage and transaction limits never relabel stale data as the newly selected scope',()=>{
+  assert.match(app,/const currentLimits=limits\.dataPath===limitsPath\?limits\.data:null/);
+  assert.match(app,/limitsUnavailable=limits\.resolvedPath===limitsPath&&Boolean\(limits\.error\)/);
+  assert.match(app,/limitsUnavailable\?'Unavailable':'Loading…'/);
+  assert.match(app,/modeLimitLabel\(currentLimits\.maxTransactionValueWei,currentLimits\.ceilingExempt,limitSymbol\)/,
+    'limits must use the selected chain native symbol rather than hard-coded ETH');
+  assert.match(app,/const data=usage\.dataPath===usagePath\?usage\.data:null/);
+  assert.match(app,/const loading=usage\.resolvedPath!==usagePath&&!usage\.error/);
+});
+
+test('notification routing keeps only Money, Automation, and Security in Recent',()=>{
+  assert.match(shared,/export function shouldRetainNotification\(category\)/);
+  assert.match(shared,/if\(shouldRetainNotification\(category\)\)\{[\s\S]*?notificationLog=/);
+  assert.match(app,/\['System','Connection and sync status','Toast only','nu'\]/);
+  assert.match(app,/\['Interface','Copied, saved, and form feedback','Toast only','nu'\]/);
+  assert.match(admin,/category:'security'/,
+    'owner actions promised by the routing table must be categorised for retention');
+});
+
+test('shared confirmation dialogs trap focus, restore focus, and make the background inert',()=>{
+  const host=shared.slice(shared.indexOf('export function ConfirmHost'),shared.indexOf('// Toast notifications'));
+  assert.match(host,/previouslyFocused=document\.activeElement/);
+  assert.match(host,/element\.inert=true/);
+  assert.match(host,/event\.key==='Tab'/);
+  assert.match(host,/cancelRef\.current\)\?\.focus/);
+  assert.match(host,/previouslyFocused\.focus/);
+  assert.match(host,/aria-modal="true" aria-describedby=/);
+});
+
+test('clock preference reaches the owner Security Log instead of rendering fixed ISO time',()=>{
+  const security=app.slice(app.indexOf('function SecurityLogTab'),app.indexOf('function MintHistory'));
+  assert.match(security,/const formatDateTime=useDateTimeFormatter\(\)/);
+  assert.match(security,/formatDateTime\(when,\{seconds:true\}\)/);
+  assert.doesNotMatch(security,/iso\.slice\(11,19\)/);
+});
+
+test('profile outages have a retry surface and are not described as expired sessions',()=>{
+  assert.match(app,/function ProfileLoadFailure/);
+  assert.match(app,/Dashboard temporarily unavailable/);
+  assert.match(app,/Your session has not been treated as signed out/);
+  assert.match(app,/onRetry=\{\(\)=>loadProfile\(\{showLoading:true\}\)\}/);
 });

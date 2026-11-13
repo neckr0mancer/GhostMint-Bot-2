@@ -162,6 +162,18 @@ test('every action the tier table classifies is actually consulted somewhere in 
   }
 });
 
+test('direct and delayed transaction-mode writes recheck the bot password gate', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const telegram = fs.readFileSync(path.join(__dirname, '..', 'src', 'server.js'), 'utf8');
+  const discord = fs.readFileSync(path.join(__dirname, '..', 'src', 'discord', 'discordBot.js'), 'utf8');
+
+  assert.match(discord, /case 'mode':[\s\S]{0,500}actionGate\.allows\(userId, 'discord', discordId, 'mode'\)/);
+  assert.match(telegram, /data\.startsWith\('mode:pick:'\)[\s\S]{0,250}gateBlocks\(\{ chatId, messageId, userId, action: 'mode' \}\)/);
+  assert.match(telegram, /pending\.action && await gateBlocks\(\{ chatId, messageId, userId, action: pending\.action \}\)/);
+  assert.match(telegram, /bot\.onText\(\/\^\\\/mode[\s\S]{0,500}gateBlocks\(\{ chatId: msg\.chat\.id, messageId: null, userId, action: 'mode' \}\)/);
+});
+
 test('strict genuinely gates more than sensitive, rather than being a decorative third option', () => {
   const { requiresPassword, ACTION_TIERS } = require('../src/security/actionGate');
   const gatedAt = level => Object.keys(ACTION_TIERS).filter(action => requiresPassword(level, action));

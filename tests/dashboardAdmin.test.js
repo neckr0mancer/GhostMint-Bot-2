@@ -10,7 +10,7 @@ const {defaultPolicy}=require('../src/transactions/defaults');
 
 function fixture(){const users=new Map([['owner',{userId:'owner',isOwner:true,platform:'telegram',platformUserId:'1'}],['member',{userId:'member',isOwner:false,platform:'telegram',platformUserId:'2'}]]);const groups=new Map();const rules=new Map();const presets=[{key:'ultra_fast',displayName:'Ultra Fast',simulationMode:'off',confirmationCount:1,humanVerification:'bypass'}];const repository={
   isOwner:async id=>users.get(id)?.isOwner===true,isRootOwner:async id=>users.get(id)?.isOwner===true,findUserByPlatform:async(platform,id)=>[...users.values()].find(user=>user.platform===platform&&user.platformUserId===String(id))?.userId||null,
-  async setOwner(id,enabled){const current=users.get(id);if(!enabled&&current.isOwner&&[...users.values()].filter(user=>user.isOwner).length<=1)throw new Error('Cannot remove the last owner');current.isOwner=enabled;return current;},
+  async setOwner(id,enabled){const current=users.get(id);if(!enabled&&current.isOwner&&[...users.values()].filter(user=>user.isOwner).length<=1)throw new Error('Cannot remove the last owner');current.isOwner=enabled;return current;},async setRootOwner(id,enabled){const current=users.get(id);current.isRootOwner=enabled;return current;},
   async upsertGroup(value){groups.set(value.name.toLowerCase(),{...value});return value;},async deleteGroup(name){return groups.delete(name.toLowerCase());},
   async assignGroup(userId,name){if(!groups.has(name.toLowerCase()))throw new Error('Group not found');rules.set(userId,{...(rules.get(userId)||{}),groupName:name.toLowerCase()});},async removeGroup(userId){rules.set(userId,{...(rules.get(userId)||{}),groupName:null});},
   async setUserCeilings(value){rules.set(value.userId,{...(rules.get(value.userId)||{}),...value});},async setUserSimulation(value){rules.set(value.userId,{...(rules.get(value.userId)||{}),simulationForced:value.simulationForced});},
@@ -44,11 +44,12 @@ async function server(t,options={}){
   const sessions=new Map([['owner',{userId:'owner',sessionId:'session-owner'}],['member',{userId:'member',sessionId:'session-member'}]]);
   const commands={
     admin:(id,input)=>admin.execute(id,input),
-    adminOverview:id=>governance.dashboardOverview(id),
+    adminOverview:id=>{if(options.adminOverviewError)throw new Error('Overview unavailable');return governance.dashboardOverview(id);},
     adminEffective:(id,input)=>governance.effectiveForLinkedUser(id,input),
     adminAccountMergePreview:async(id,input)=>{await governance.requireOwner(id);return identity.previewAccountMerge(input);},
     adminAccountMergeExecute:async(id,input)=>{await governance.requireRootOwner(id);return identity.executeAccountMerge(id,input);},
-    listOwnerUserIds:async()=>['owner'],
+    adminSecurityAudit:async(id,input)=>{await governance.requireOwner(id);return {page:Number(input.page),pageSize:Number(input.pageSize),total:1,totalPages:1,items:[{auditId:'audit-1',command:'admin:ban',outcome:'success'}]};},
+    listOwnerUserIds:async()=>{if(options.ownerLookupError)throw new Error('Owner lookup unavailable');return [...data.users.values()].filter(value=>value.isOwner).map(value=>value.userId);},
     isOwner:id=>data.repository.isOwner(id),
   };
   const auth={authenticate:async header=>sessions.get(String(header||'').split('=')[1])||null,verifyCsrf:({headerToken})=>headerToken==='csrf',sessionCookies:()=>[],clearCookies:()=>[],revoke:async()=>{},revokeAll:async()=>{}};
@@ -61,9 +62,11 @@ async function server(t,options={}){
 function headers(user='owner'){return {cookie:`ghostmint_session=${user}`,'content-type':'application/json','x-csrf-token':'csrf'};}
 async function write(base,user,action,body){return fetch(`${base}/api/admin/${action}`,{method:'POST',headers:headers(user),body:JSON.stringify(body)});}
 
-test('every dashboard admin write rejects a non-owner session',async t=>{const {base}=await server(t);const cases=[['group-set',{name:'G',maxWei:'1',dailyWei:'2',gasGwei:'3',simulation:'forced',advancedModes:'not-allowed'}],['group-delete',{name:'G',confirmation:'CONFIRM'}],['assign',{platform:'telegram',platformUserId:'2',group:'G'}],['unassign',{platform:'telegram',platformUserId:'2'}],['user-ceilings',{platform:'telegram',platformUserId:'2',maxWei:'1',dailyWei:'2',gasGwei:'3'}],['user-ceilings-clear',{platform:'telegram',platformUserId:'2'}],['user-simulation',{platform:'telegram',platformUserId:'2',simulation:'forced'}],['group-simulation',{group:'G',simulation:'forced'}],['preset-set',{preset:'safe',simulation:'on',confirmations:'12',verification:'on',gasMultiplier:'1.2'}],['owner',{platform:'telegram',platformUserId:'2',enabled:'on',confirmation:'CONFIRM'}]];for(const [action,body] of cases)assert.equal((await write(base,'member',action,body)).status,403,action);});
+test('every dashboard admin write rejects a non-owner session',async t=>{const {base}=await server(t);const cases=[['group-set',{name:'G',maxWei:'1',dailyWei:'2',gasGwei:'3',simulation:'forced',advancedModes:'not-allowed'}],['group-delete',{name:'G',confirmation:'CONFIRM'}],['assign',{platform:'telegram',platformUserId:'2',group:'G'}],['unassign',{platform:'telegram',platformUserId:'2'}],['user-ceilings',{platform:'telegram',platformUserId:'2',maxWei:'1',dailyWei:'2',gasGwei:'3'}],['user-ceilings-clear',{platform:'telegram',platformUserId:'2'}],['user-simulation',{platform:'telegram',platformUserId:'2',simulation:'forced'}],['group-simulation',{group:'G',simulation:'forced'}],['preset-set',{preset:'safe',simulation:'on',confirmations:'12',verification:'on',gasMultiplier:'1.2'}],['owner',{platform:'telegram',platformUserId:'2',enabled:'on',confirmation:'CONFIRM'}],['root-owner',{platform:'telegram',platformUserId:'1',enabled:'on',confirmation:'CONFIRM'}]];for(const [action,body] of cases)assert.equal((await write(base,'member',action,body)).status,403,action);});
 
 test('owner overview returns truthful database-backed identity and activity metrics',async t=>{const {base}=await server(t);const response=await fetch(`${base}/api/admin`,{headers:headers()});assert.equal(response.status,200);const body=await response.json();assert.deepEqual(body.metrics,{totalUsers:2,activeUsers:1,activeAnyPlatform24h:1,linkedAccounts:2,groups:0,owners:1,activeWindowMinutes:15});assert.equal(body.users.length,2);});
+
+test('owner audit endpoint returns pageable evidence and rejects non-owners',async t=>{const {base}=await server(t);const denied=await fetch(`${base}/api/admin/security-audit?page=2&pageSize=25`,{headers:headers('member')});assert.equal(denied.status,403);const response=await fetch(`${base}/api/admin/security-audit?page=2&pageSize=25`,{headers:headers()});assert.equal(response.status,200);const body=await response.json();assert.equal(body.page,2);assert.equal(body.pageSize,25);assert.equal(body.total,1);assert.equal(body.items[0].auditId,'audit-1');});
 
 test('account reconciliation preview is owner-only, read-only, and returns the exact resolved accounts',async t=>{
   const {base,previewCalls,audits,broadcasts}=await server(t);
@@ -195,6 +198,8 @@ test('the generic admin endpoint cannot bypass reviewed account-merge execution'
 
 test('last owner cannot be removed through the dashboard API',async t=>{const {base}=await server(t);const response=await write(base,'owner','owner',{platform:'telegram',platformUserId:'1',enabled:'off',confirmation:'CONFIRM'});assert.equal(response.status,400);assert.match(JSON.stringify(await response.json()),/last owner/i);});
 
+test('root-owner changes are supported only with explicit confirmation',async t=>{const {base,users}=await server(t);const missing=await write(base,'owner','root-owner',{platform:'telegram',platformUserId:'1',enabled:'on'});assert.equal(missing.status,400);const response=await write(base,'owner','root-owner',{platform:'telegram',platformUserId:'1',enabled:'on',confirmation:'CONFIRM'});assert.equal(response.status,200);assert.equal(users.get('owner').isRootOwner,true);});
+
 // Regression test: unban/unsuspend/reactivate could previously be called with no confirmation field
 // at all, unlike their forward counterparts ban/suspend/deactivate (and owner/group-delete),
 // which all required an explicit CONFIRM. Restoring an account's access is not obviously lower-stakes
@@ -264,6 +269,81 @@ test('group edits immediately change an assigned user effective ceiling and succ
 
 test('effective governance reports owners as exempt instead of numeric ceilings',async t=>{const {base}=await server(t);const effective=await (await fetch(`${base}/api/admin/effective?platform=telegram&platformUserId=1&chain=ethereum`,{headers:headers()})).json();assert.equal(effective.isOwner,true);assert.equal(effective.ceilingExempt,true);assert.equal(effective.maxTransactionValueWei,null);assert.equal(effective.dailySpendingBudgetWei,null);assert.equal(effective.gasCeilingGwei,null);});
 
-test('a successful admin write broadcasts admin.changed to the acting owner so open admin tabs can live-refresh',async t=>{const {base,broadcasts}=await server(t);assert.equal((await write(base,'owner','group-set',{name:'Standard',maxWei:'100',dailyWei:'200',gasGwei:'10',simulation:'optional',advancedModes:'not-allowed'})).status,200);assert.equal(broadcasts.length,1);assert.equal(broadcasts[0].userId,'owner');assert.deepEqual(broadcasts[0].message,{type:'admin.changed'});});
+test('shared group and preset writes refresh every profile and the current owners',async t=>{
+  const {base,broadcasts,users}=await server(t);
+  users.set('other-owner',{userId:'other-owner',isOwner:true,platform:'discord',platformUserId:'3'});
+  const cases=[
+    ['group-set',{name:'Standard',maxWei:'100',dailyWei:'200',gasGwei:'10',simulation:'optional',advancedModes:'not-allowed'}],
+    ['group-simulation',{group:'Standard',simulation:'forced'}],
+    ['preset-set',{preset:'safe',simulation:'on',confirmations:'12',verification:'on',gasMultiplier:'1.2'}],
+    ['group-delete',{name:'Standard',confirmation:'CONFIRM'}],
+  ];
+  for(const [action,body] of cases){
+    broadcasts.length=0;
+    assert.equal((await write(base,'owner',action,body)).status,200,action);
+    assert.deepEqual(broadcasts,[
+      {userId:'owner',message:{type:'admin.changed'}},
+      {userId:'other-owner',message:{type:'admin.changed'}},
+      {userId:'owner',message:{type:'profile.changed'}},
+      {userId:'member',message:{type:'profile.changed'}},
+      {userId:'other-owner',message:{type:'profile.changed'}},
+    ],action);
+  }
+});
+
+test('individual governance writes refresh only the affected internal user profile',async t=>{
+  const {base,broadcasts,users}=await server(t);
+  users.set('unrelated',{userId:'unrelated',isOwner:false,platform:'discord',platformUserId:'2'});
+  const target={platform:'telegram',platformUserId:'2'};
+  for(const [action,body] of [
+    ['user-ceilings',{...target,maxWei:'100',dailyWei:'200',gasGwei:'10'}],
+    ['user-ceilings-clear',target],
+    ['user-simulation',{...target,simulation:'forced'}],
+  ]){
+    broadcasts.length=0;
+    assert.equal((await write(base,'owner',action,body)).status,200,action);
+    assert.deepEqual(broadcasts,[
+      {userId:'owner',message:{type:'admin.changed'}},
+      {userId:'member',message:{type:'profile.changed'}},
+    ],action);
+  }
+});
+
+test('owner promotion includes the new owner and self-demotion still refreshes the actor',async t=>{
+  const {base,broadcasts,users}=await server(t);
+  assert.equal((await write(base,'owner','owner',{platform:'telegram',platformUserId:'2',enabled:'on',confirmation:'CONFIRM'})).status,200);
+  assert.deepEqual(broadcasts,[
+    {userId:'owner',message:{type:'admin.changed'}},
+    {userId:'member',message:{type:'admin.changed'}},
+    {userId:'member',message:{type:'profile.changed'}},
+  ]);
+  broadcasts.length=0;
+  assert.equal((await write(base,'owner','owner',{platform:'telegram',platformUserId:'1',enabled:'off',confirmation:'CONFIRM'})).status,200);
+  assert.equal(users.get('owner').isOwner,false);
+  assert.deepEqual(broadcasts,[
+    {userId:'member',message:{type:'admin.changed'}},
+    {userId:'owner',message:{type:'admin.changed'}},
+    {userId:'owner',message:{type:'profile.changed'}},
+  ]);
+});
+
+test('post-write owner refresh lookup failure does not report a durable write as failed',async t=>{
+  const {base,broadcasts,rules}=await server(t,{ownerLookupError:true});
+  const response=await write(base,'owner','user-simulation',{platform:'telegram',platformUserId:'2',simulation:'forced'});
+  assert.equal(response.status,200);
+  assert.equal(rules.get('member').simulationForced,true);
+  assert.deepEqual(broadcasts,[
+    {userId:'owner',message:{type:'admin.changed'}},
+    {userId:'member',message:{type:'profile.changed'}},
+  ]);
+});
+
+test('pre-write refresh-recipient lookup failure does not block the authoritative admin command',async t=>{
+  const {base,broadcasts,rules}=await server(t,{adminOverviewError:true});
+  const response=await write(base,'owner','user-simulation',{platform:'telegram',platformUserId:'2',simulation:'forced'});
+  assert.equal(response.status,200);
+  assert.equal(rules.get('member').simulationForced,true);
+  assert.deepEqual(broadcasts,[{userId:'owner',message:{type:'admin.changed'}}]);
+});
 
 test('a failed admin write does not broadcast a change',async t=>{const {base,broadcasts}=await server(t);assert.equal((await write(base,'owner','assign',{platform:'telegram',platformUserId:'2',group:'NoSuchGroup'})).status,400);assert.equal(broadcasts.length,0);});

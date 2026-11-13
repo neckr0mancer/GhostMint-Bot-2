@@ -1,6 +1,6 @@
 const { Pool } = require('pg');
 
-function createDatabasePool({ connectionString, max = 5 }) {
+function createDatabasePool({ connectionString, max = 5, sessionOptions = null }) {
   if (!connectionString) throw new Error('DATABASE_URL is required to create the application database pool');
   const pool = new Pool({
     connectionString,
@@ -8,6 +8,7 @@ function createDatabasePool({ connectionString, max = 5 }) {
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 10_000,
     allowExitOnIdle: true,
+    ...(sessionOptions ? { options: sessionOptions } : {}),
   });
   pool.on('error', () => console.error('Unexpected idle PostgreSQL connection error'));
   return pool;

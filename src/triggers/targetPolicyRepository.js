@@ -11,6 +11,18 @@ function mapRequest(row) {
     triggerSource:row.trigger_source,sourceEventId:row.source_event_id,preview:row.preview,
     executionPayload:row.execution_payload,status:row.status,expiresAt:new Date(row.expires_at).getTime() };
 }
+function mapAudit(row) {
+  if (!row) return null;
+  const executedAt = row.executed_at == null ? null : new Date(row.executed_at);
+  return {
+    auditId:String(row.audit_id),userId:row.user_id,targetType:row.target_type,targetId:row.target_id,
+    triggerSource:row.trigger_source,sourceEventId:row.source_event_id,
+    verificationState:row.verification_state,dontAskAgainActive:row.dont_ask_again_active,
+    confirmationShown:row.confirmation_shown,transactionIntentId:row.transaction_intent_id,
+    transactionHash:row.transaction_hash,chain:row.chain||null,outcome:row.outcome,
+    executedAt:executedAt && !Number.isNaN(executedAt.getTime()) ? executedAt.toISOString() : null,
+  };
+}
 function createTargetPolicyRepository(pool) {
   return {
     async get(userId,targetType,targetId) { const r=await pool.query(`SELECT * FROM target_trigger_policies
@@ -53,9 +65,31 @@ function createTargetPolicyRepository(pool) {
       value.dontAskAgain,value.confirmationShown,value.intentId||null,value.txHash||null,value.outcome]); },
     async listAudit(userId,limit=20) { const r=await pool.query(`SELECT * FROM trigger_execution_audit WHERE user_id=$1
       ORDER BY executed_at DESC LIMIT $2`,[userId,limit]); return r.rows; },
+    async listAuditPage(userId,{limit=10,offset=0,search=''}) {
+      const normalizedSearch=String(search||'').trim();
+      const term=normalizedSearch?`%${normalizedSearch}%`:null;
+      const predicate=term?`WHERE audit.user_id=$1 AND (
+        audit.trigger_source ILIKE $4 OR audit.source_event_id ILIKE $4 OR
+        audit.target_type ILIKE $4 OR audit.target_id::TEXT ILIKE $4 OR
+        COALESCE(audit.transaction_hash,'') ILIKE $4 OR audit.outcome ILIKE $4 OR
+        audit.verification_state ILIKE $4
+      )`:'WHERE audit.user_id=$1';
+      const rowParams=term?[userId,limit,offset,term]:[userId,limit,offset];
+      const countPredicate=term?predicate.replaceAll('$4','$2'):predicate;
+      const countParams=term?[userId,term]:[userId];
+      const [rows,count]=await Promise.all([
+        pool.query(`SELECT audit.*,intent.chain FROM trigger_execution_audit audit
+          LEFT JOIN transaction_intents intent ON intent.intent_id=audit.transaction_intent_id
+            AND intent.user_id=audit.user_id
+          ${predicate} ORDER BY audit.executed_at DESC,audit.audit_id DESC LIMIT $2 OFFSET $3`,rowParams),
+        pool.query(`SELECT COUNT(*)::INTEGER AS total FROM trigger_execution_audit audit ${countPredicate}`,
+          countParams),
+      ]);
+      return {items:rows.rows.map(mapAudit),total:Number(count.rows[0]?.total||0)};
+    },
     async listPendingRequests(userId,limit=20) { const r=await pool.query(`SELECT * FROM trigger_execution_requests
       WHERE user_id=$1 AND status='pending' AND expires_at>NOW() ORDER BY created_at DESC LIMIT $2`,[userId,limit]);
       return r.rows.map(mapRequest); },
   };
 }
-module.exports={createTargetPolicyRepository,mapPolicy,mapRequest};
+module.exports={createTargetPolicyRepository,mapPolicy,mapRequest,mapAudit};

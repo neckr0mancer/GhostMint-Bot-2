@@ -6,7 +6,10 @@ const { runMigrations } = require('../../src/db/migrate');
 
 const CONFIRM_VALUE = 'RUN_DISPOSABLE_DB_TESTS';
 const MARKER_PREFIX = 'ghostmint-disposable:';
-const VERIFY_TIMEOUT_MS = 10_000;
+// Railway's public PostgreSQL proxy can take several seconds to open a second sequential
+// connection on small test instances. Keep the identity proof fail-closed, but leave enough
+// room for that proxy latency so a marked disposable database does not fail spuriously.
+const VERIFY_TIMEOUT_MS = 20_000;
 const CONFIG_KEYS = [
   'GHOSTMINT_TEST_DATABASE_URL',
   'GHOSTMINT_TEST_DATABASE_URL_UNPOOLED',
@@ -74,7 +77,7 @@ async function readDatabaseMarker(connectionString) {
   const pool = new Pool({
     connectionString,
     max: 1,
-    connectionTimeoutMillis: 5_000,
+    connectionTimeoutMillis: 15_000,
     query_timeout: 7_500,
     statement_timeout: 7_500,
     allowExitOnIdle: true,
@@ -139,11 +142,14 @@ function integrationTest(name, options, callback) {
 
 async function createTestDatabasePool({ max = 5 } = {}) {
   await assertDisposableDatabase();
-  const pool = createDatabasePool({ connectionString: configuration.pooledUrl, max });
-  pool.on('connect', client => {
-    client.query("SET statement_timeout='30s'; SET lock_timeout='15s'").catch(() => {});
+  // Apply test timeouts during PostgreSQL connection startup. An async `pool.on('connect')`
+  // query races the borrower's first query and is deprecated by pg; startup options are active
+  // before the connection can be checked out.
+  return createDatabasePool({
+    connectionString: configuration.pooledUrl,
+    max,
+    sessionOptions: '-c statement_timeout=30000 -c lock_timeout=15000',
   });
-  return pool;
 }
 
 async function runTestMigrations({ migrationsDirectory }) {

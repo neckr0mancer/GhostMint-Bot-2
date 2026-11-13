@@ -261,7 +261,7 @@ function validateProviderPage(value, expected = {}) {
   requireObject(value, path);
   assertOnlyFields(value, new Set([
     'chain', 'providerKey', 'transactions', 'nextCursor', 'hasMore', 'observedHeadBlock',
-    'coverage', 'recheckRange',
+    'finalizedThroughBlock', 'coverage', 'recheckRange',
   ]), path);
   const chain = normalizeChain(value.chain);
   const providerKey = normalizeProviderKey(value.providerKey);
@@ -294,6 +294,23 @@ function validateProviderPage(value, expected = {}) {
   const observedHeadBlock = normalizeUint(value.observedHeadBlock, 'page.observedHeadBlock', {
     nullable:true, maximum:PG_BIGINT_MAX,
   });
+  const finalizedThroughBlock = normalizeUint(value.finalizedThroughBlock,
+    'page.finalizedThroughBlock', { nullable:true, maximum:PG_BIGINT_MAX });
+  const canonicalBlockHashes = new Map();
+  for (let index = 0; index < transactions.length; index += 1) {
+    const transaction = transactions[index];
+    if (!transaction.canonical) continue;
+    if (transaction.blockHash === null) {
+      contractError(`page.transactions[${index}].blockHash`,
+        'is required for a canonical transaction');
+    }
+    const prior = canonicalBlockHashes.get(transaction.blockNumber);
+    if (prior && prior !== transaction.blockHash) {
+      contractError(`page.transactions[${index}].blockHash`,
+        'conflicts with another canonical transaction in the same block');
+    }
+    canonicalBlockHashes.set(transaction.blockNumber, transaction.blockHash);
+  }
   const historyCoverage = normalizeCoverageRange(value.coverage.history, 'page.coverage.history');
   const provenanceCoverage = normalizeCoverageRange(value.coverage.provenance, 'page.coverage.provenance');
   const recheckRange = normalizeRecheckRange(value.recheckRange, 'page.recheckRange');
@@ -308,6 +325,31 @@ function validateProviderPage(value, expected = {}) {
       if (range && BigInt(range.throughBlock) > head) {
         contractError(`page.coverage.${name}.throughBlock`, 'must not exceed page.observedHeadBlock');
       }
+    }
+  }
+  if (finalizedThroughBlock !== null) {
+    if (observedHeadBlock === null || BigInt(finalizedThroughBlock) > BigInt(observedHeadBlock)) {
+      contractError('page.finalizedThroughBlock', 'must not exceed page.observedHeadBlock');
+    }
+  }
+  for (let index = 0; index < transactions.length; index += 1) {
+    const transaction = transactions[index];
+    const withinFinalizedBoundary = finalizedThroughBlock !== null
+      && BigInt(transaction.blockNumber) <= BigInt(finalizedThroughBlock);
+    if (withinFinalizedBoundary && transaction.canonical
+      && transaction.finalityStatus !== 'finalized') {
+      contractError(`page.transactions[${index}].finalityStatus`,
+        'must be finalized within page.finalizedThroughBlock');
+    }
+    if (transaction.finalityStatus !== 'finalized') continue;
+    if (!transaction.canonical) {
+      contractError(`page.transactions[${index}]`,
+        'must be canonical when finalized');
+    }
+    if (finalizedThroughBlock === null
+      || BigInt(transaction.blockNumber) > BigInt(finalizedThroughBlock)) {
+      contractError(`page.transactions[${index}].finalityStatus`,
+        'requires page.finalizedThroughBlock to cover the transaction');
     }
   }
   if (historyCoverage && provenanceCoverage
@@ -334,6 +376,7 @@ function validateProviderPage(value, expected = {}) {
     nextCursor,
     hasMore:value.hasMore,
     observedHeadBlock,
+    finalizedThroughBlock,
     // Null means the provider made no completeness claim. A non-null claim must always carry an
     // explicit boolean; ending a page never silently upgrades either coverage dimension.
     coverage:{

@@ -811,10 +811,10 @@ function sniperMenu(snipers) {
   // The full address, never truncated -- a shortened display would still be <code>-wrapped and look
   // tap-to-copy, but copying it hands back a truncated string that isn't a usable address at all.
   const list = snipers.map(s =>
-    `${s.active ? '🟢' : '⚪'} <b>${escapeTelegramHtml(s.label)}</b>\nTarget: <code>${s.targetAddress}</code>\nChain: ${s.chain} · Wallet: ${escapeTelegramHtml(s.walletLabel)}\nMode: ${(s.observationMode || 'confirmed') === 'pending' ? '⚡ pending mempool (high risk)' : '🛡️ after confirmation'}\nHits: ${s.hits || 0} · Fails: ${s.fails || 0}`,
+    `${s.active ? '🟢' : '⚪'} <b>${escapeTelegramHtml(s.label)}</b>\nTarget: <code>${s.targetAddress}</code>\nChain: ${s.chain} · Wallet: ${escapeTelegramHtml(s.walletLabel)}\nMode: ${(s.observationMode || 'confirmed') === 'pending' ? '⚡ pending mempool (high risk)' : '🛡️ after confirmation'}\nHits: ${s.hits || 0} · Fails: ${s.fails || 0}\nID: <code>${escapeTelegramHtml(s.id)}</code>`,
   ).join('\n\n');
   return {
-    text: `<b>🎯 Wallet-copy snipers (${snipers.length})</b>\n<i>After-confirmation is the default. Pending-mempool mode is opt-in and labelled per sniper.</i>\n\n${list}`,
+    text: `<b>🎯 Wallet-copy snipers (${snipers.length})</b>\n<i>After-confirmation is the default. Pending-mempool mode is opt-in and labelled per sniper.</i>\n\n${list}\n\nRemove one with <code>/removesniper &lt;id&gt;</code>.`,
     replyMarkup: keyboard([[button('➕ Create sniper', 'sniper:create:start')], [button('⬅️ Back to base', 'menu:main')]]),
     parseMode: 'HTML',
   };
@@ -872,8 +872,8 @@ function adminOverviewMenu({ metrics, groups }) {
 // the two platforms build their option lists in entirely different shapes (inline keyboard vs.
 // slash-command choices).
 const MODE_META = {
-  ultra_fast: { label: 'Degen', hint: 'Full send. Aggressive gas, minimal friction.' },
-  fast: { label: 'Fast', hint: 'quick, higher gas, still asks before it fires' },
+  ultra_fast: { label: 'Degen', hint: 'highest gas, least automation friction; ordinary Mint still confirms' },
+  fast: { label: 'Fast', hint: 'quick, higher gas; ordinary Mint still confirms' },
   semi_safe: { label: 'Cautious', hint: 'measured, moderate gas' },
   safe: { label: 'Normie', hint: 'slow and steady, network-price gas, zero surprises' },
 };
@@ -894,7 +894,7 @@ function modeMenu(currentKey, presets, advancedModesAllowed = false) {
   const currentLabel = MODE_META[currentKey]?.label || 'none selected';
   const lockedNote = advancedModesAllowed ? '' : '\n\n🔒 Degen and Fast require group or admin access.';
   return {
-    text: `<b>🎛️ Transaction mode</b>\n\nCurrent mode: <b>${escapeTelegramHtml(currentLabel)}</b>\n\nControls confirmation prompts and how hard this thing sends gas on every mint. Ceilings and forced simulation always have the final say, no matter which mode you pick.${lockedNote}`,
+    text: `<b>🎛️ Transaction mode</b>\n\nCurrent mode: <b>${escapeTelegramHtml(currentLabel)}</b>\n\nControls gas aggression, simulation defaults, and network finality. Choosing a mode never removes the ordinary Mint flow's final approval; <code>/mintnow</code> remains an explicit one-shot no-confirmation shortcut. Ceilings always apply; forced simulation applies except for the documented Scheduled + Degen opt-out.${lockedNote}`,
     replyMarkup: keyboard(rows),
     parseMode: 'HTML',
   };

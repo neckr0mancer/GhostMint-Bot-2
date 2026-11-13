@@ -25,7 +25,7 @@ import {DISPLAY_CURRENCY_OPTIONS,fiatFromNative,fiatFromWei,quoteFor,
 import {clearPendingTheme,readPendingTheme,resolveDashboardTheme,savePendingTheme} from './themePreference.mjs';
 import {formatDashboardDateTime} from './timeDisplay.mjs';
 import {TimeFormatProvider,useDateTimeFormatter,useTimeFormat} from './timeDisplayContext.jsx';
-import {ACTIVITY_EVENTS,api,Ledger,NumberField,SectionCard,confirmDialog,ConfirmHost,consumePendingMintPrefill,CopyButton,csrf,downloadFile,Empty,Field,Form,getNotificationLog,notify,Notice,PageTitle,Pager,promptDialog,relativeTime,resetSectionOrders,SearchField,Select,SelectMenu,Skeleton,StatusPill,SubTabs,subscribeNotificationLog,ToastHost,useLoad,useLiveSocket,setPendingMintPrefill,quantityPicks} from './shared.jsx';
+import {ACTIVITY_EVENTS,api,Ledger,NumberField,SectionCard,confirmDialog,ConfirmHost,consumePendingMintPrefill,CopyButton,csrf,downloadFile,Empty,Field,Form,getNotificationLog,notify,Notice,PageTitle,Pager,promptDialog,relativeTime,resetSectionOrders,SearchField,Select,SelectMenu,Skeleton,StatusPill,SubTabs,subscribeNotificationLog,ToastHost,useLoad,useLiveSocket,useModalAccessibility,setPendingMintPrefill,quantityPicks} from './shared.jsx';
 import Dashboard from './Dashboard.jsx';
 // Phase 4, unit 1 of 5 (brief §2). The 11->5 merge lands one page at a time so any single merge
 // can be reverted alone. Mint = Minting + Tasks is done; Automation, Wallets+P&L and History are
@@ -368,25 +368,13 @@ function WalletCard({wallet,records,windowLabel,windowMs,onOpen,lowThreshold,pre
 //
 // Escape closes, the backdrop closes, focus moves in on open and the page behind stops scrolling.
 function Overlay({open,onClose,title,subtitle,children,wide,busy=false}){
+  // Keep the scrim and dialog in one active modal branch. Pointing the accessibility hook at the
+  // panel alone would make its backdrop inert, preventing the established outside-click exit.
+  const layerRef=useRef(null);
   const panelRef=useRef(null);
-  // Keep the latest close handler available without making it an effect dependency. Several
-  // callers pass an inline function, so depending on onClose reran this effect after every input
-  // change and focused the panel again, stealing focus from the field after each keystroke.
-  const onCloseRef=useRef(onClose);
-  const busyRef=useRef(busy);
-  onCloseRef.current=onClose;
-  busyRef.current=busy;
-  useEffect(()=>{
-    if(!open)return undefined;
-    function onKey(event){if(event.key==='Escape'&&!busyRef.current)onCloseRef.current();}
-    document.addEventListener('keydown',onKey);
-    const previous=document.body.style.overflow;
-    document.body.style.overflow='hidden';
-    panelRef.current?.focus();
-    return()=>{document.removeEventListener('keydown',onKey);document.body.style.overflow=previous;};
-  },[open]);
+  useModalAccessibility(open,layerRef,{onClose,initialFocusRef:panelRef,closeDisabled:busy});
   if(!open)return null;
-  return <div className="ovl-bd" onMouseDown={event=>{if(event.target===event.currentTarget&&!busy)onClose();}}>
+  return <div ref={layerRef} className="ovl-bd" onMouseDown={event=>{if(event.target===event.currentTarget&&!busy)onClose();}}>
     <div className={`ovl${wide?' wide':''}`} role="dialog" aria-modal="true" aria-label={title}
       aria-busy={busy||undefined} tabIndex={-1} ref={panelRef}>
       <div className="ovl-h">
@@ -413,6 +401,12 @@ const WALLET_DETAIL_TABS=[
   {id:'performance',label:'Performance'},
   {id:'manage',label:'Manage'},
 ];
+const WALLET_ACTION_ICONS={
+  buy:<svg {...ICON_PROPS}><path d="M12 3v18M17 7.5c0-2-1.8-3.5-5-3.5S7 5.5 7 7.5 8.8 11 12 11s5 1.5 5 3.5S15.2 18 12 18s-5-1.5-5-3.5"/></svg>,
+  receive:<svg {...ICON_PROPS}><path d="M12 3v12M7.5 10.5 12 15l4.5-4.5"/><path d="M5 20h14"/></svg>,
+  send:<svg {...ICON_PROPS}><path d="M21 4 3 11l7 3 3 7z"/><path d="m10 14 11-10"/></svg>,
+  swap:<svg {...ICON_PROPS}><path d="m7 7-3 3 3 3"/><path d="M4 10h13a3 3 0 0 1 3 3v1"/><path d="m17 17 3-3-3-3"/><path d="M20 14H7a3 3 0 0 1-3-3v-1"/></svg>,
+};
 function walletCreatedText(wallet){
   if(!wallet?.addedAt)return null;
   const at=new Date(wallet.addedAt);
@@ -466,6 +460,29 @@ function ActivityRow({item,scope='wallet'}){
 function WalletDetails({wallet,records,windowKey,onWindow,onRemove,onClose,lowThreshold,preferredChain,profile}){
   const [tab,setTab]=useState('summary');
   const [activityView,setActivityView]=useState('transactions');
+  const [detailView,setDetailView]=useState('tabs');
+  const receiveTriggerRef=useRef(null);
+  const restoreReceiveFocus=useRef(false);
+  const detailWalletAddress=useRef(wallet.address);
+  const walletChanged=detailWalletAddress.current!==wallet.address;
+  const showingReceive=detailView==='receive'&&!walletChanged;
+  useEffect(()=>{
+    // A reused details component must never leave wallet A's Receive view open for wallet B.
+    detailWalletAddress.current=wallet.address;
+    restoreReceiveFocus.current=false;
+    setDetailView('tabs');
+  },[wallet.address]);
+  useEffect(()=>{
+    if(detailView!=='tabs'||!restoreReceiveFocus.current)return undefined;
+    restoreReceiveFocus.current=false;
+    const timer=setTimeout(()=>receiveTriggerRef.current?.focus(),0);
+    return()=>clearTimeout(timer);
+  },[detailView,wallet.address]);
+  function openReceive(){restoreReceiveFocus.current=false;setDetailView('receive');}
+  function closeWalletOverlay(){
+    if(showingReceive){restoreReceiveFocus.current=true;setDetailView('tabs');return;}
+    onClose();
+  }
   // Activity is scoped server-side by session and searched by wallet label. It is only fetched
   // once that tab is opened -- opening a wallet to read its balance should not cost a request for
   // a list nobody looked at.
@@ -479,8 +496,33 @@ function WalletDetails({wallet,records,windowKey,onWindow,onRemove,onClose,lowTh
   const performance=walletPerformance(records,wallet.label,chosen.ms);
   const mine=Array.isArray(records)
     ?records.filter(item=>pnlWalletLabel(item)===wallet.label):[];
-  return <Overlay open onClose={onClose} wide title={wallet.label}
-    subtitle={`${chainMeta(wallet.chain).label||wallet.chain} · ${status.label}`}>
+  const networkLabel=chainMeta(wallet.chain).label||wallet.chain;
+  return <Overlay open onClose={closeWalletOverlay} wide
+    title={showingReceive?`Receive · ${wallet.label}`:wallet.label}
+    subtitle={showingReceive?`${networkLabel} · Public EVM address`:`${networkLabel} · ${status.label}`}>
+    {showingReceive?<div className="g wallet-receive-view">
+      <div className="nt w" role="note">{WARN_TRIANGLE_ICON}<div>
+        <b>Verify the network before funding.</b> {networkLabel} is this wallet&apos;s saved home
+        network. This public EVM address can work across supported EVM networks, but the sending
+        platform and asset must use the same network. An incompatible transfer may be unrecoverable.
+      </div></div>
+      <AddressQr address={wallet.address} label={`${wallet.label} public address`}/>
+    </div>:<>
+    <div className="wallet-action-row" role="group" aria-label={`Actions for ${wallet.label}`}>
+      <button type="button" className="wallet-action" disabled aria-label="Buy — Coming soon"
+        title="Coming soon"><span className="wallet-action-icon" aria-hidden="true">{WALLET_ACTION_ICONS.buy}</span>
+        <span className="wallet-action-label">Buy</span><small>Coming soon</small></button>
+      <button type="button" className="wallet-action is-ready" ref={receiveTriggerRef}
+        aria-label={`Receive to ${wallet.label}`} aria-haspopup="dialog" onClick={openReceive}>
+        <span className="wallet-action-icon" aria-hidden="true">{WALLET_ACTION_ICONS.receive}</span>
+        <span className="wallet-action-label">Receive</span><small>Public address</small></button>
+      <button type="button" className="wallet-action" disabled aria-label="Send — Coming soon"
+        title="Coming soon"><span className="wallet-action-icon" aria-hidden="true">{WALLET_ACTION_ICONS.send}</span>
+        <span className="wallet-action-label">Send</span><small>Coming soon</small></button>
+      <button type="button" className="wallet-action" disabled aria-label="Swap — Coming soon"
+        title="Coming soon"><span className="wallet-action-icon" aria-hidden="true">{WALLET_ACTION_ICONS.swap}</span>
+        <span className="wallet-action-label">Swap</span><small>Coming soon</small></button>
+    </div>
     <SubTabs tabs={WALLET_DETAIL_TABS} active={tab} onChange={setTab} label="Wallet details"/>
 
     {tab==='summary'&&<div className="g">
@@ -492,7 +534,6 @@ function WalletDetails({wallet,records,windowKey,onWindow,onRemove,onClose,lowTh
       </div>
       <p className="mono wallet-addr" style={{marginBottom:0}}>{wallet.address}
         <CopyButton value={wallet.address} label="Copy full wallet address"/></p>
-      <AddressQr address={wallet.address} label={`${wallet.label} address`}/>
       <div className="sober"><div className="sh">Balances · by chain</div>
         <table className="led"><tbody>
           {(wallet.balances||[]).map(item=><tr key={item.chain}>
@@ -591,6 +632,7 @@ function WalletDetails({wallet,records,windowKey,onWindow,onRemove,onClose,lowTh
           <b> Export</b> tab first. Past transactions stay in your history either way.</div></div>
       <div className="br"><button type="button" className="b d sm" onClick={onRemove}>Remove wallet</button></div>
     </div>}
+    </>}
   </Overlay>;
 }
 // ── New wallet: choose, then do ──────────────────────────────────────────────
@@ -943,7 +985,6 @@ const CLOCK_ICON=<svg width="13" height="13" viewBox="0 0 24 24" fill="none" str
 // one the .tokbar uses.
 const CLOCK_ICON_LG=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg>;
 // history.html's audit-evidence glyph: a checked circle -- the record exists and holds.
-const AUDIT_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>;
 // history.html's owner-only security banner uses the same restrained shield as the admin rail.
 const SECURITY_SHIELD_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><path d="M12 3l7 3v5c0 5-3 8.5-7 10-4-1.5-7-5-7-10V6z"/></svg>;
 const PAUSE_ICON=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" xmlns="http://www.w3.org/2000/svg"><path d="M6 4h4v16H6zM14 4h4v16h-4z"/></svg>;
@@ -2885,8 +2926,9 @@ function WatchRules({formOnly=false}={}){const formatDateTime=useDateTimeFormatt
 // Verification is deliberately read-only. Turning it off is the one change that lets funds move
 // with no human check, so it goes through the explicit challenge rather than a dropdown.
 function PolicyEditor({target,onChanged,highlighted}){
-  const details=useLoad(`/api/targets/${target.id}?type=${target.type}`,[target.id,target.type]);
-  const modes=useLoad('/api/mode-presets');
+  const details=useLoad(`/api/targets/${target.id}?type=${target.type}`,[target.id,target.type],
+    'policies.changed');
+  const modes=useLoad('/api/mode-presets',[],['profile.changed','admin.changed']);
   const wallets=useLoad('/api/wallets',[],'wallets.changed');
   const mintPresets=useLoad('/api/mint-presets',[],'presets.changed');
   const [challenge,setChallenge]=useState(null);
@@ -2935,12 +2977,19 @@ function PolicyEditor({target,onChanged,highlighted}){
 
   const social=target.type==='social_rule';
   const verification=value?.policy?.humanVerification||'on';
+  // These controls intentionally remain ordinary form controls, but an authoritative policy
+  // arriving over WebSocket must replace their defaults. Remount only when the persisted policy
+  // values change; a balance refresh or unrelated render must not erase an in-progress edit.
+  const policyFormKey=value?[
+    target.id,value.policy.blockchainTrigger,value.policy.socialTrigger,
+    value.policy.walletLabel||'',value.policy.mintPresetName||'',
+  ].join(':'):target.id;
   return <div className="split">
     <div className={`card${highlighted?' policy-highlighted':''}`}>
       <div className="ch"><h2>{target.label} · policy</h2></div>
       <Notice error={loadError(details,'Could not load this target policy.')}/>
       {details.data===null&&!details.error?<Skeleton rows={2}/>:null}
-      {value&&<form onSubmit={update}>
+      {value&&<form key={policyFormKey} onSubmit={update}>
         <div className="g gm2 g2" style={{marginBottom:'11px'}}>
           <label className="fl"><span>Blockchain trigger</span>
             <select className="in" name="blockchainTrigger" defaultValue={value.policy.blockchainTrigger||'manual'}>
@@ -3075,9 +3124,9 @@ function firstScheduleNotification(key){
   return true;
 }
 // The bell surfaces two different things: pending confirmations (actionable, drive the badge
-// count) and a short recent-notifications log (informational, sourced from the same notify() log
-// the toast host reads -- so anything a toast reported is still checkable here after it auto-dismisses).
-function NotificationBell(){const [items,setItems]=useState([]);const [open,setOpen]=useState(false);const [log,setLog]=useState(getNotificationLog());const load=useCallback(()=>api('/api/confirmations').then(setItems).catch(x=>notify(x.message,{type:'error'})),[]);useEffect(()=>{load();const listener=event=>{const message=event.detail;if(message.type==='confirmation.pending')setItems(current=>[message.request,...current.filter(x=>x.id!==message.request.id)]);if(message.type==='confirmation.resolved')setItems(current=>current.filter(x=>x.id!==message.requestId));};window.addEventListener('ghostmint-ws',listener);return()=>window.removeEventListener('ghostmint-ws',listener);},[load]);
+// count) and a short recent-notifications log. Only Money, Automation, and Security notifications
+// are retained; System and Interface feedback remains toast-only, matching Settings exactly.
+function NotificationBell(){const [items,setItems]=useState([]);const [open,setOpen]=useState(false);const [log,setLog]=useState(getNotificationLog());const loadRequestId=useRef(0);const load=useCallback(()=>{const requestId=++loadRequestId.current;return api('/api/confirmations').then(value=>{if(requestId===loadRequestId.current)setItems(value);}).catch(x=>{if(requestId===loadRequestId.current)notify(x.message,{type:'error'});});},[]);useEffect(()=>{load();const listener=event=>{const message=event.detail;if(message.type==='ws.reconnected'||message.type==='confirmations.changed')load();if(message.type==='confirmation.pending'){loadRequestId.current+=1;setItems(current=>[message.request,...current.filter(x=>x.id!==message.request.id)]);}if(message.type==='confirmation.resolved'){loadRequestId.current+=1;setItems(current=>current.filter(x=>x.id!==message.requestId));}};window.addEventListener('ghostmint-ws',listener);return()=>{loadRequestId.current+=1;window.removeEventListener('ghostmint-ws',listener);};},[load]);
   // Server-side outcomes become actionable notifications here. The scheduler already knew a mint
   // had failed and why; until now that only reached Telegram, so on the dashboard a scheduled
   // mint just quietly changed colour in a list you had to already be looking at.
@@ -3262,17 +3311,36 @@ const ACCOUNT_ICONS={
 };
 function linkedAccountLabel(platform){return platform==='telegram'?'Telegram':platform==='discord'?'Discord':String(platform||'Platform');}
 function shortPlatformId(value){const id=String(value||'');return id.length>12?`${id.slice(0,4)}…${id.slice(-4)}`:id;}
-function Account({profile,onLogout,onProfileChange,tab,onTab,go}){
+function Account({profile,onLogout,onProfileChange,onBusyChange,tab,onTab,go}){
   const formatDateTime=useDateTimeFormatter();
   const active=ACCOUNT_TABS.some(item=>item.id===tab)?tab:'identity';
-  const [linking,setLinking]=useState(null);const [linkBusy,setLinkBusy]=useState(false);const [clock,setClock]=useState(Date.now());
+  const [linking,setLinking]=useState(null);const [linkBusy,setLinkBusy]=useState(false);const [linkError,setLinkError]=useState(null);const [clock,setClock]=useState(Date.now());
   const [displayName,setDisplayName]=useState(profile.displayName||'');const [profileBusy,setProfileBusy]=useState(false);
+  const [credentialBusy,setCredentialBusy]=useState('');const [sessionBusy,setSessionBusy]=useState('');
+  const accountBusy=profileBusy||Boolean(credentialBusy)||linkBusy||Boolean(sessionBusy);
+  useEffect(()=>{onBusyChange?.(accountBusy);},[accountBusy,onBusyChange]);
+  useEffect(()=>()=>onBusyChange?.(false),[onBusyChange]);
   useEffect(()=>setDisplayName(profile.displayName||''),[profile.displayName]);
-  useEffect(()=>{if(!linking)return;const timer=setInterval(()=>setClock(Date.now()),1000);return()=>clearInterval(timer);},[linking]);
-  async function generate(){setLinkBusy(true);try{setLinking(await api('/api/auth/link-code',{method:'POST',body:JSON.stringify({})}));setClock(Date.now());}catch(value){notify(value.message,{type:'error'});}finally{setLinkBusy(false);}}
-  async function saveProfile(event){event.preventDefault();setProfileBusy(true);try{const result=await api('/api/profile/display-name',{method:'PUT',body:JSON.stringify({displayName})});setDisplayName(result.displayName);onProfileChange?.(current=>({...current,displayName:result.displayName}));notify('Profile saved.',{type:'success'});}catch(value){notify(value.message,{type:'error'});}finally{setProfileBusy(false);}}
-  async function logoutEverywhere(){if(await confirmDialog('Log out every dashboard session for this account, including this browser?'))onLogout({all:true});}
+  useEffect(()=>{if(!linking)return;const expiresAt=new Date(linking.expiresAt).getTime();const timer=setInterval(()=>{const now=Date.now();setClock(now);if(now>=expiresAt)clearInterval(timer);},1000);return()=>clearInterval(timer);},[linking]);
+  useEffect(()=>{function onIdentityChanged(event){if(event.detail?.type!=='identity.changed')return;setLinking(null);setLinkError(null);}window.addEventListener('ghostmint-ws',onIdentityChanged);return()=>window.removeEventListener('ghostmint-ws',onIdentityChanged);},[]);
+  async function generate(){
+    if(linkBusy)return;
+    const refreshing=Boolean(linking);
+    setLinkBusy(true);setLinkError(null);setLinking(null);
+    try{setLinking(await api('/api/auth/link-code',{method:'POST',body:JSON.stringify({})}));setClock(Date.now());}
+    catch(value){
+      setLinkError(refreshing
+        ?{title:'Could not refresh the link code.',detail:'The previous code is hidden because its validity cannot be confirmed. Generate a new code before linking.'}
+        :{title:'Could not generate a link code.',detail:value.message||'Try again in a moment.'});
+      notify(value.message,{type:'error'});
+    }finally{setLinkBusy(false);}
+  }
+  async function runCredential(kind,action){if(credentialBusy||profileBusy)return false;setCredentialBusy(kind);try{return await action();}finally{setCredentialBusy('');}}
+  async function saveProfile(event){event.preventDefault();if(profileBusy||credentialBusy)return;setProfileBusy(true);try{const result=await api('/api/profile/display-name',{method:'PUT',body:JSON.stringify({displayName})});setDisplayName(result.displayName);onProfileChange?.(current=>({...current,displayName:result.displayName}));notify('Profile saved.',{type:'success'});}catch(value){notify(value.message,{type:'error'});}finally{setProfileBusy(false);}}
+  async function logoutCurrent(){if(sessionBusy)return;setSessionBusy('current');try{await onLogout(false);}finally{setSessionBusy('');}}
+  async function logoutEverywhere(){if(sessionBusy||!await confirmDialog('Log out every dashboard session for this account, including this browser?'))return;setSessionBusy('all');try{await onLogout({all:true});}finally{setSessionBusy('');}}
   const remaining=linking?Math.max(0,Math.ceil((new Date(linking.expiresAt).getTime()-clock)/1000)):0;
+  const linkExpired=Boolean(linking)&&remaining===0;
   const session=profile.session;
   const linkedAccounts=profile.linkedAccounts||[];
   const mode=profile.currentMode?.displayName||profile.currentMode?.key||'Not selected';
@@ -3283,34 +3351,38 @@ function Account({profile,onLogout,onProfileChange,tab,onTab,go}){
     {label:'Linked identities',value:String(linkedAccounts.length)},
   ];
   return <><PageTitle eyebrow="Identity" title="Account" subtitle="One internal account. Telegram, Discord, and this browser are linked identities of it."/>
-    <SubTabs tabs={ACCOUNT_TABS} active={active} onChange={onTab} label="Account sections"/>
+    <SubTabs tabs={ACCOUNT_TABS} active={active} onChange={onTab} label="Account sections" disabled={accountBusy}/>
 
     {active==='identity'&&<div className="split account-tab-panel" role="tabpanel" aria-label="Identity">
       <div className="g">
         <section className="card account-profile-card">
           <div className="ch"><span className="chip-ico">{ACCOUNT_ICONS.identity}</span><h2>Profile</h2></div>
-          <form onSubmit={saveProfile} className="account-profile-form">
-            <label className="fl"><span>Display name</span><input className="in" value={displayName} maxLength="40" required autoFocus onChange={event=>setDisplayName(event.target.value)} placeholder="How GhostMint should address you"/></label>
-            <div className="account-readonly-field"><span>Username</span><strong>{profile.username||'Not set'}</strong><button type="button" className="b g sm" disabled={!profile.securityPasswordSet} onClick={()=>promptSetUsername({isChange:Boolean(profile.username),onProfileChange})}>{profile.username?'Change':'Set'}</button></div>
-            <div className="account-readonly-field"><span>Default chain</span><strong>{defaultChain}</strong><button type="button" className="b g sm" onClick={()=>go?.('Settings','gas')}>Settings</button></div>
-            <div className="br"><button className="b p sm" disabled={profileBusy||displayName.trim()===(profile.displayName||'')}>{profileBusy?'Saving…':'Save profile'}</button></div>
+          <form onSubmit={saveProfile} className="account-profile-form" aria-busy={(profileBusy||Boolean(credentialBusy))||undefined}>
+            <fieldset disabled={profileBusy||Boolean(credentialBusy)}>
+              <label className="fl"><span>Display name</span><input className="in" value={displayName} maxLength="40" required autoFocus onChange={event=>setDisplayName(event.target.value)} placeholder="How GhostMint should address you"/></label>
+              <div className="account-readonly-field"><span>Username</span><strong>{profile.username||'Not set'}</strong><button type="button" className="b g sm" disabled={!profile.securityPasswordSet} onClick={()=>runCredential('username',()=>promptSetUsername({isChange:Boolean(profile.username),onProfileChange}))}>{credentialBusy==='username'?'Saving…':profile.username?'Change':'Set'}</button></div>
+              <div className="account-readonly-field"><span>Default chain</span><strong>{defaultChain}</strong><button type="button" className="b g sm" onClick={()=>go?.('Settings','gas')}>Settings</button></div>
+              <div className="br"><button className="b p sm" disabled={displayName.trim()===(profile.displayName||'')}>{profileBusy?'Saving…':'Save profile'}</button></div>
+            </fieldset>
           </form>
         </section>
-        <div className="nt i account-mode-note">{INFO_ICON}<div>Transaction mode is currently <b>{mode}</b>. It changes execution safety, so it lives in <button type="button" className="b sm" onClick={()=>go?.('Settings','transaction')}>Settings → Transaction mode</button>.</div></div>
+        <div className="nt i account-mode-note">{INFO_ICON}<div>Transaction mode is currently <b>{mode}</b>. It changes execution safety, so it lives in <button type="button" className="b sm" disabled={accountBusy} onClick={()=>go?.('Settings','transaction')}>Settings → Transaction mode</button>.</div></div>
       </div>
       <div className="g">
         <div className="sober"><div className="sh">{ACCOUNT_ICONS.identity}Account</div><Ledger rows={accountRows} total={{label:'Account status',value:'Active'}}/></div>
-        {profile.isOwner&&<section className="card tight"><div className="ch"><h2>Owner access</h2><span className="p ok">Owner</span></div><p>Groups, ceilings, presets, and platform governance live in the owner dashboard.</p><a className="b g admin-link" href="/dashboard/admin">Open admin dashboard</a></section>}
+        {profile.isOwner&&<section className="card tight"><div className="ch"><h2>Owner access</h2><span className="p ok">Owner</span></div><p>Groups, ceilings, presets, and platform governance live in the owner dashboard.</p><button type="button" className="b g admin-link" disabled={accountBusy} onClick={()=>{window.location.href='/dashboard/admin';}}>Open admin dashboard</button></section>}
       </div>
     </div>}
 
     {active==='security'&&<div className="split account-tab-panel" role="tabpanel" aria-label="Security">
-      <section className="card">
-        <div className="ch"><span className="chip-ico">{ACCOUNT_ICONS.security}</span><h2>Login credentials</h2></div>
-        <p>A username and security password let you sign in without a link code. The same password protects sensitive actions such as wallet-key export.</p>
-        <div className="account-credential-row"><span>Security password</span><strong>{profile.securityPasswordSet?'Set':'Not set'}</strong><button className="b g sm" onClick={()=>promptSetSecurityPassword({isChange:profile.securityPasswordSet,onProfileChange})}>{profile.securityPasswordSet?'Change':'Set'}</button></div>
-        <div className="account-credential-row"><span>Username login</span><strong>{profile.username?'Enabled':'Not enabled'}</strong><button className="b g sm" disabled={!profile.securityPasswordSet} onClick={()=>promptSetUsername({isChange:Boolean(profile.username),onProfileChange})}>{profile.username?'Change':'Set'}</button></div>
-        {!profile.securityPasswordSet&&<div className="nt w account-warning">{WARN_TRIANGLE_ICON}<div><b>Set a security password first.</b> A username needs one before it can sign you in.</div></div>}
+      <section className="card" aria-busy={Boolean(credentialBusy)||undefined}>
+        <fieldset disabled={Boolean(credentialBusy)}>
+          <div className="ch"><span className="chip-ico">{ACCOUNT_ICONS.security}</span><h2>Login credentials</h2></div>
+          <p>A username and security password let you sign in without a link code. The same password protects sensitive actions such as wallet-key export.</p>
+          <div className="account-credential-row"><span>Security password</span><strong>{profile.securityPasswordSet?'Set':'Not set'}</strong><button className="b g sm" onClick={()=>runCredential('password',()=>promptSetSecurityPassword({isChange:profile.securityPasswordSet,onProfileChange}))}>{credentialBusy==='password'?'Saving…':profile.securityPasswordSet?'Change':'Set'}</button></div>
+          <div className="account-credential-row"><span>Username login</span><strong>{profile.username?'Enabled':'Not enabled'}</strong><button className="b g sm" disabled={!profile.securityPasswordSet} onClick={()=>runCredential('username',()=>promptSetUsername({isChange:Boolean(profile.username),onProfileChange}))}>{credentialBusy==='username'?'Saving…':profile.username?'Change':'Set'}</button></div>
+          {!profile.securityPasswordSet&&<div className="nt w account-warning">{WARN_TRIANGLE_ICON}<div><b>Set a security password first.</b> A username needs one before it can sign you in.</div></div>}
+        </fieldset>
       </section>
       <div className="sober"><div className="sh">{ACCOUNT_ICONS.security}Security summary</div><Ledger rows={[
         {label:'Security password',value:profile.securityPasswordSet?'Set':'Not set'},
@@ -3324,18 +3396,23 @@ function Account({profile,onLogout,onProfileChange,tab,onTab,go}){
     {active==='linked'&&<div className="split account-tab-panel" role="tabpanel" aria-label="Linked platforms">
       <section className="card">
         <div className="ch"><span className="chip-ico">{ACCOUNT_ICONS.security}</span><h2>Linked platforms</h2><span className="p ok">{linkedAccounts.length} linked</span></div>
-        <div className="account-platform-list">{linkedAccounts.map((account,index)=><div className="r" key={`${account.platform}:${account.platformUserId}`}>
+        <div className="account-platform-list">{linkedAccounts.map(account=><div className="r" key={`${account.platform}:${account.platformUserId}`}>
           <div className={`ri account-platform-${account.platform}`}>{ACCOUNT_ICONS[account.platform]||ACCOUNT_ICONS.identity}</div>
           <div className="rm"><div className="rt">{linkedAccountLabel(account.platform)}</div><div className="rs mono fold">{shortPlatformId(account.platformUserId)}</div></div>
-          <div className="rv"><CopyButton value={account.platformUserId} label={`Copy ${linkedAccountLabel(account.platform)} user ID`}/>{index===0&&<span className="p nu">First linked</span>}</div>
+          <div className="rv"><CopyButton value={account.platformUserId} label={`Copy ${linkedAccountLabel(account.platform)} user ID`}/></div>
         </div>)}</div>
         {!linkedAccounts.length&&<div className="emp"><h3>No linked platform details available</h3><p>Your session is valid, but platform details were not returned.</p></div>}
       </section>
-      <section className="card account-link-card">
-        <div className="ch"><span className="chip-ico">{ACCOUNT_ICONS.sessions}</span><h2>Connect another platform</h2></div>
-        <p>Generate a five-minute, single-use code here, then enter it on the Telegram or Discord account you want to connect. Refreshing invalidates the previous unused code.</p>
-        <button className="b p" disabled={linkBusy} onClick={generate}>{linkBusy?'Generating…':linking?'Refresh code':'Generate link code'}</button>
-        {linking&&<div className="link-code-result" aria-live="polite"><div className="link-code-heading"><strong>{linking.code}</strong><CopyButton value={linking.code} label="Copy link code"/></div><p>{remaining>0?`Expires in ${Math.floor(remaining/60)}:${String(remaining%60).padStart(2,'0')}`:'Expired — refresh to generate a new code.'}</p><p>Exact expiry: {formatDateTime(linking.expiresAt)}</p></div>}
+      <section className="card account-link-card" aria-busy={linkBusy||undefined}>
+        <fieldset disabled={linkBusy}>
+          <div className="ch"><span className="chip-ico">{ACCOUNT_ICONS.sessions}</span><h2>Connect another platform</h2></div>
+          <p>Generate a five-minute, single-use code here, then enter it with <b>/link</b> on the Discord account you want to connect. Telegram generates its own link code and does not accept a code generated here. Refreshing invalidates the previous unused code.</p>
+          <Notice error={linkError}/>
+          <button className="b p" onClick={generate}>{linkBusy?'Generating…':linking?'Refresh code':'Generate link code'}</button>
+          {linking&&(linkExpired
+            ?<div className="link-code-result link-code-expired" role="status"><strong>Link code expired</strong><p>This code can no longer be used or copied. Refresh to generate a new code.</p><p>Expired at {formatDateTime(linking.expiresAt)}.</p></div>
+            :<div className="link-code-result"><div className="link-code-heading"><strong role="status" aria-label={`Link code ${linking.code}`}>{linking.code}</strong><CopyButton value={linking.code} label="Copy link code"/></div><p>{`Expires in ${Math.floor(remaining/60)}:${String(remaining%60).padStart(2,'0')}`}</p><p>Exact expiry: {formatDateTime(linking.expiresAt)}</p></div>)}
+        </fieldset>
       </section>
     </div>}
 
@@ -3345,11 +3422,13 @@ function Account({profile,onLogout,onProfileChange,tab,onTab,go}){
         <p className="account-client-label">{session?.clientLabel||'Browser details unavailable'}</p>
         <div className="session-policy"><div><span>Active browser sessions</span><strong>{session?`${session.activeCount} of ${session.maxActiveSessions}`:'Unavailable'}</strong></div><div><span>Created</span><strong>{session?.createdAt?formatDateTime(session.createdAt):'Unavailable'}</strong></div><div><span>Idle timeout</span><strong>{session?`${Math.round(session.idleTimeoutMs/3_600_000)} hours`:'Unavailable'}</strong></div><div><span>Refreshes until</span><strong>{session?.expiresAt?formatDateTime(session.expiresAt):'Unavailable'}</strong></div></div>
       </section>
-      <section className="card tight account-session-actions">
-        <div className="ch"><h2>Session controls</h2></div>
-        <p>Activity extends the eight-hour idle deadline, but never beyond the seven-day maximum. A fourth browser login signs out the least recently used session.</p>
-        <div className="br"><button className="b g" onClick={()=>onLogout(false)}>Log out this browser</button><button className="b d" onClick={logoutEverywhere}>Log out everywhere</button></div>
-        <p className="session-policy-note">Production uses secure HTTPS cookies. Private browsing may still clear them when the browser closes.</p>
+      <section className="card tight account-session-actions" aria-busy={Boolean(sessionBusy)||undefined}>
+        <fieldset disabled={Boolean(sessionBusy)}>
+          <div className="ch"><h2>Session controls</h2></div>
+          <p>Activity extends the eight-hour idle deadline, but never beyond the seven-day maximum. A fourth browser login signs out the least recently used session.</p>
+          <div className="br"><button className="b g" onClick={logoutCurrent}>{sessionBusy==='current'?'Logging out…':'Log out this browser'}</button><button className="b d" onClick={logoutEverywhere}>{sessionBusy==='all'?'Logging out…':'Log out everywhere'}</button></div>
+          <p className="session-policy-note">Production uses secure HTTPS cookies. Private browsing may still clear them when the browser closes.</p>
+        </fieldset>
       </section>
     </div>}
   </>;
@@ -3359,9 +3438,10 @@ const MOON_ICON=<svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 14.5A8
 const PRIMARY_THEMES=[{value:'ghost-mint-light',label:'Light',icon:SUN_ICON},{value:'ghost-mint',label:'Dark',icon:MOON_ICON}];
 const SECONDARY_THEMES=THEME_OPTIONS.filter(option=>option.value!=='ghost-mint'&&option.value!=='ghost-mint-light');
 function ThemeSwatch({value}){return <span className={`theme-swatch theme-swatch-${value}`} aria-hidden="true"><span className="theme-swatch-accent"/></span>}
-function DefaultChainPanel({profile,onProfileChange}){
+function DefaultChainPanel({profile,onProfileChange,onBusyChange}){
   const [value,setValue]=useState(profile.defaultChain||profile.supportedChains[0]);
   const [busy,setBusy]=useState(false);const [error,setError]=useState('');
+  useEffect(()=>{onBusyChange?.('default-chain',busy);return()=>onBusyChange?.('default-chain',false);},[busy,onBusyChange]);
   useEffect(()=>setValue(profile.defaultChain||profile.supportedChains[0]),[profile.defaultChain,profile.supportedChains]);
   async function change(event){
     const next=event.target.value;const previous=value;setValue(next);setBusy(true);setError('');
@@ -3377,11 +3457,12 @@ const LOW_BALANCE_CHOICES=[
   ['0.001','0.001 native'],['0.005','0.005 native'],['0.01','0.01 native · recommended'],
   ['0.025','0.025 native'],['0.05','0.05 native'],['0.1','0.1 native'],
 ];
-function LowBalancePreferencePanel({profile,onProfileChange}){
+function LowBalancePreferencePanel({profile,onProfileChange,onBusyChange}){
   const initial=String(profile.lowBalanceThreshold??DEFAULT_WALLET_LOW_THRESHOLD);
   const [value,setValue]=useState(initial);
   const [busy,setBusy]=useState(false);
   const [error,setError]=useState('');
+  useEffect(()=>{onBusyChange?.('low-balance',busy);return()=>onBusyChange?.('low-balance',false);},[busy,onBusyChange]);
   useEffect(()=>setValue(String(profile.lowBalanceThreshold??DEFAULT_WALLET_LOW_THRESHOLD)),[profile.lowBalanceThreshold]);
   async function change(event){
     const next=event.target.value;const previous=value;setValue(next);setBusy(true);setError('');
@@ -3405,10 +3486,11 @@ function LowBalancePreferencePanel({profile,onProfileChange}){
         tag:label.includes('recommended')?'Recommended':null}))}/>
   </div>;
 }
-function DisplayCurrencyPanel({profile,onProfileChange}){
+function DisplayCurrencyPanel({profile,onProfileChange,onBusyChange}){
   const [value,setValue]=useState(profile.displayCurrency||'USD');
   const [busy,setBusy]=useState(false);
   const [error,setError]=useState('');
+  useEffect(()=>{onBusyChange?.('display-currency',busy);return()=>onBusyChange?.('display-currency',false);},[busy,onBusyChange]);
   useEffect(()=>setValue(profile.displayCurrency||'USD'),[profile.displayCurrency]);
   async function change(event){
     const next=event.target.value;const previous=value;setValue(next);setBusy(true);setError('');
@@ -3437,9 +3519,10 @@ const TIME_FORMAT_OPTIONS=[
   {value:'24h',label:'24-hour clock',description:'20:30 · explicit and compact'},
   {value:'12h',label:'12-hour clock',description:'8:30 PM · morning and evening labels'},
 ];
-function TimeFormatPreferencePanel({profile,onProfileChange}){
+function TimeFormatPreferencePanel({profile,onProfileChange,onBusyChange}){
   const [value,setValue]=useState(profile.timeFormat||'24h');
   const [busy,setBusy]=useState(false);const [error,setError]=useState('');
+  useEffect(()=>{onBusyChange?.('time-format',busy);return()=>onBusyChange?.('time-format',false);},[busy,onBusyChange]);
   useEffect(()=>setValue(profile.timeFormat||'24h'),[profile.timeFormat]);
   async function change(event){
     const next=event.target.value;const previous=value;setValue(next);setBusy(true);setError('');
@@ -3475,12 +3558,19 @@ function settingsSaveError(title,error,onRetry){
     onRetry,
   };
 }
-function BotSecurityPanel({profile,onProfileChange}){
+function BotSecurityPanel({profile,onProfileChange,onBusyChange}){
   const [level,setLevel]=useState(profile.botGateLevel||'off');
   const [saving,setSaving]=useState(false);
   const [skipMint,setSkipMint]=useState(Boolean(profile.botGateSkipMint));
   const [savingMint,setSavingMint]=useState(false);
   const [saveError,setSaveError]=useState(null);
+  const busy=saving||savingMint;
+  useEffect(()=>{onBusyChange?.('bot-security',busy);return()=>onBusyChange?.('bot-security',false);},[busy,onBusyChange]);
+  // Profile changes are account-wide. Keep an optimistic local selection while its own write is
+  // running, then reconcile to the newest server profile (including writes from another session).
+  useEffect(()=>{if(!saving)setLevel(profile.botGateLevel||'off');},[profile.botGateLevel,saving]);
+  useEffect(()=>{if(!savingMint)setSkipMint(Boolean(profile.botGateSkipMint));},
+    [profile.botGateSkipMint,savingMint]);
   async function changeMint(next){
     const previous=skipMint;setSaveError(null);setSkipMint(next);setSavingMint(true);
     try{
@@ -3509,7 +3599,7 @@ function BotSecurityPanel({profile,onProfileChange}){
     }
     finally{setSaving(false);}
   }
-  return <div className="panel settings-bot-gate" aria-busy={(saving||savingMint)||undefined}>
+  return <div className="panel settings-bot-gate" aria-busy={busy||undefined}>
     <div className="settings-panel-heading">
       <div><p className="eyebrow">Bot security</p><h2>Password gate</h2></div>
       <span className={`p ${level==='off'?'idle':'ok'}`}>{level==='off'?'Off':'On'}</span>
@@ -3517,22 +3607,20 @@ function BotSecurityPanel({profile,onProfileChange}){
     <p>Requires your security password before sensitive actions taken from Telegram or Discord. It
     uses the same password as this dashboard, and each conversation stays unlocked for 10 minutes.</p>
     <Notice error={saveError}/>
-    {noPassword&&<p className="notice notice-warning">Set a security password on the Account page
+    {noPassword&&<div className="nt w" role="status">{WARN_TRIANGLE_ICON}<div>Set a security password on the Account page
     first. It cannot be set from a chat, because a password typed there stays in your message
-    history.</p>}
+    history.</div></div>}
     <div className="seg gate-picker" role="radiogroup" aria-label="Bot password gate level">
       {BOT_GATE_OPTIONS.map(option=><button type="button" key={option.value} role="radio"
-        aria-checked={level===option.value} disabled={saving||(noPassword&&option.value!=='off')}
+        aria-checked={level===option.value} disabled={busy||(noPassword&&option.value!=='off')}
         className={level===option.value?'on':undefined} onClick={()=>change(option.value)}>{option.label}</button>)}
     </div>
     <p className="settings-hint">{BOT_GATE_OPTIONS.find(option=>option.value===level)?.hint}</p>
-    {/* .notice is the prototype's WARNING style (loss-red border and tint) -- this caveat is
-        informational, so it uses the same muted hint style as the level description above it
-        rather than borrowing an alarm colour or inventing an "info" variant the prototype has no
-        equivalent for. The genuine warning above (no password set) keeps .notice-warning. */}
+    {/* This caveat is informational, so it uses the same muted hint style as the level description.
+        The genuine no-password warning above uses the prototype's amber .nt.w treatment. */}
     {level!=='off'&&<div className="gate-mint-row">
       <label>
-        <input type="checkbox" checked={!skipMint} disabled={savingMint}
+        <input type="checkbox" checked={!skipMint} disabled={busy}
           onChange={event=>changeMint(!event.target.checked)}/>
         <span>Ask before minting</span>
       </label>
@@ -3586,7 +3674,7 @@ function GasPanel({profile}){
     </div>
     <p>Etherscan V2 gas oracle. An unavailable provider never blocks the rest of Settings.</p>
     <Notice error={error}/>
-    {unavailable&&<p className="notice notice-warning" role="status">{unavailable}</p>}
+    {unavailable&&<div className="nt w" role="status">{WARN_TRIANGLE_ICON}<div>{unavailable}</div></div>}
     {loading&&<div className="gas-readout settings-gas-skeleton" role="status" aria-label="Loading gas prices">
       {['Safe','Standard','Fast'].map(label=><div key={label}><span>{label}</span><Skeleton variant="big-value" rows={1}/></div>)}
     </div>}
@@ -3599,8 +3687,8 @@ function GasPanel({profile}){
 // Display names (Degen/Fast/Cautious/Normie) now come straight from preset.displayName -- the DB
 // is the single source of truth (migration 038) so this only needs to carry the extra hint text.
 const MODE_HINT={
-  ultra_fast:'Fastest gas, skips the human approval prompt',
-  fast:'Quick, higher gas, keeps the human approval prompt',
+  ultra_fast:'Highest gas and least automation friction; the ordinary Mint flow still confirms',
+  fast:'Quick, higher gas; the ordinary Mint flow still confirms',
   semi_safe:'Careful, moderate gas',
   safe:'Slowest, safest, network-price gas',
 };
@@ -3613,14 +3701,15 @@ function modeSimulationLabel(value){
   if(value==='blockchain_off')return 'Social only';
   return 'Optional';
 }
-function modeVerificationLabel(value){return value==='bypass'||value==='off'||value===false?'Bypassed':'On';}
-function modeLimitLabel(value,ceilingExempt){
-  return ceilingExempt||value===null||value===undefined?'Owner exempt':`${weiAmountText(value)} ETH`;
+function modeAutomationVerificationLabel(value){return value==='bypass'||value==='off'||value===false?'Target opt-in required':'On';}
+function modeLimitLabel(value,ceilingExempt,symbol){
+  return ceilingExempt||value===null||value===undefined?'Owner exempt':`${weiAmountText(value)} ${symbol}`;
 }
-function TransactionModePanel({profile,onProfileChange}){
-  const presets=useLoad('/api/mode-presets');
+function TransactionModePanel({profile,onProfileChange,onBusyChange}){
+  const presets=useLoad('/api/mode-presets',[],['profile.changed','admin.changed']);
   const limitChain=profile.defaultChain||profile.supportedChains?.[0]||DEFAULT_EVM_CHAIN;
-  const limits=useLoad(`/api/profile/limits?chain=${encodeURIComponent(limitChain)}`,[limitChain]);
+  const limitsPath=`/api/profile/limits?chain=${encodeURIComponent(limitChain)}`;
+  const limits=useLoad(limitsPath,[limitChain],['profile.changed','admin.changed']);
   const [current,setCurrent]=useState(profile.currentMode?.key||null);
   const [previewKey,setPreviewKey]=useState(null);
   const [busy,setBusy]=useState(false);
@@ -3630,6 +3719,10 @@ function TransactionModePanel({profile,onProfileChange}){
   const selectedKey=previewKey||effectiveKey;
   const selected=presets.data?.find(preset=>preset.key===selectedKey)||null;
   const selectedLocked=Boolean(selected&&GATED_PRESET_KEYS.includes(selected.key)&&!profile.advancedModesAllowed);
+  const currentLimits=limits.dataPath===limitsPath?limits.data:null;
+  const limitsUnavailable=limits.resolvedPath===limitsPath&&Boolean(limits.error);
+  const limitSymbol=nativeSymbolForChain(limitChain);
+  useEffect(()=>{onBusyChange?.('transaction-mode',busy);return()=>onBusyChange?.('transaction-mode',false);},[busy,onBusyChange]);
   useEffect(()=>{setCurrent(profile.currentMode?.key||null);setPreviewKey(null);},[profile.currentMode?.key]);
   async function choose(key){
     if(key===effectiveKey||busy)return;
@@ -3658,8 +3751,8 @@ function TransactionModePanel({profile,onProfileChange}){
     <div className="settings-panel-heading"><div><p className="eyebrow">Speed vs. safety</p><h2>Transaction mode</h2></div>
       <button type="button" className="b g sm" disabled={busy||!defaultKey||effectiveKey===defaultKey} onClick={resetToDefault}>Reset to default</button>
     </div>
-    <p>Controls confirmation prompts and gas aggression for every mint on every platform. Ceilings and forced simulation (Section 7a governance) always take precedence regardless of mode.</p>
-    <div className="nt i settings-mode-note">{INFO_ICON}<div>Changing this affects future transactions only. An owner&apos;s ceiling or forced-simulation rule can make a mode safer, never less safe.</div></div>
+    <p>Controls gas aggression, simulation defaults, and network finality on every platform. Choosing a mode never removes the ordinary Mint flow&apos;s final approval; <code>/mintnow</code> remains an explicit one-shot no-confirmation shortcut.</p>
+    <div className="nt i settings-mode-note">{INFO_ICON}<div>Changing this affects future transactions only. Ceilings always apply. Forced simulation applies except for the documented Scheduled + Degen opt-out.</div></div>
     <Notice error={loadError(presets,'Could not load transaction modes.')}/>
     <Notice error={loadError(limits,'Could not load your transaction limits.')}/>
     <Notice error={saveError}/>
@@ -3672,16 +3765,16 @@ function TransactionModePanel({profile,onProfileChange}){
         <strong>{preset.displayName}{preset.isDefault?<span className="pill mode-card-default">Default</span>:null}{effectiveKey===preset.key?<span className="pill mode-card-default">Active</span>:null}</strong>
         <span>{MODE_HINT[preset.key]||''}</span>
         <span className="mode-card-detail">Gas × {preset.gasPriceMultiplier??1} · {modeSimulationLabel(preset.simulationMode)}</span>
-        <span className="mode-card-detail">{preset.confirmationCount} network confirmation(s) · verification {modeVerificationLabel(preset.humanVerification).toLowerCase()}</span>
+        <span className="mode-card-detail">{preset.confirmationCount} network confirmation(s) · automation verification {modeAutomationVerificationLabel(preset.humanVerification).toLowerCase()}</span>
         {locked&&<span className="mode-card-locked">🔒 Requires access</span>}
       </button>;
-    })}</div>{selected&&<div className="settings-mode-summary"><div className="sober settings-mode-effect"><div className="sh">Effect of {selected.displayName} · {chainMeta(limits.data?.chain||limitChain).label}</div><Ledger rows={[
+    })}</div>{selected&&<div className="settings-mode-summary"><div className="sober settings-mode-effect"><div className="sh">Effect of {selected.displayName} · {chainMeta(currentLimits?.chain||limitChain).label}</div><Ledger rows={[
       {label:'Gas multiplier',value:`${selected.gasPriceMultiplier??1}× network`},
       {label:'Simulation',value:modeSimulationLabel(selected.simulationMode)},
       {label:'Network confirmations',value:String(selected.confirmationCount)},
-      {label:'Human verification',value:modeVerificationLabel(selected.humanVerification)},
-      {label:'Max transaction',value:limits.data?modeLimitLabel(limits.data.maxTransactionValueWei,limits.data.ceilingExempt):'Loading…'},
-    ]} total={{label:'Daily budget',value:limits.data?modeLimitLabel(limits.data.dailySpendingBudgetWei,limits.data.ceilingExempt):'Loading…'}}/></div>
+      {label:'Automation verification default',value:modeAutomationVerificationLabel(selected.humanVerification)},
+      {label:'Max transaction',value:currentLimits?modeLimitLabel(currentLimits.maxTransactionValueWei,currentLimits.ceilingExempt,limitSymbol):limitsUnavailable?'Unavailable':'Loading…'},
+    ]} total={{label:'Daily budget',value:currentLimits?modeLimitLabel(currentLimits.dailySpendingBudgetWei,currentLimits.ceilingExempt,limitSymbol):limitsUnavailable?'Unavailable':'Loading…'}}/></div>
       <button type="button" className="b p bl" disabled={busy||selectedLocked||selected.key===effectiveKey}
         onClick={()=>choose(selected.key)}>{selected.key===effectiveKey?`${selected.displayName} is active`:`Use ${selected.displayName}`}</button>
       <p className="settings-note">Switching modes asks you to confirm first.</p>
@@ -3691,10 +3784,12 @@ function TransactionModePanel({profile,onProfileChange}){
 const USAGE_PERIODS=[['today','Today'],['day','24 hours'],['week','7 days'],['month','Month']];
 function ApiUsagePanel({onCreateRule}){
   const [period,setPeriod]=useState('month');
-  const usage=useLoad(`/api/social-usage?period=${period}`,[period]);
-  const {data}=usage;
+  const usagePath=`/api/social-usage?period=${period}`;
+  const usage=useLoad(usagePath,[period]);
+  const data=usage.dataPath===usagePath?usage.data:null;
+  const loading=usage.resolvedPath!==usagePath&&!usage.error;
   const empty=Boolean(data&&Number(data.requests||0)===0&&data.rows?.length===0);
-  return <div className="panel settings-usage" aria-busy={(data===null&&!usage.error)||undefined}>
+  return <div className="panel settings-usage" aria-busy={loading||undefined}>
     <div className="settings-panel-heading"><div><p className="eyebrow">Owner reporting</p><h2>Social API usage</h2></div>
       <div className="seg usage-period" role="group" aria-label="Usage period">
         {USAGE_PERIODS.map(([value,label])=><button type="button" key={value}
@@ -3704,7 +3799,7 @@ function ApiUsagePanel({onCreateRule}){
     </div>
     <p>Observed adapter requests, provider-reported consumption, and current pricing estimates.</p>
     <Notice error={loadError(usage,'Could not load social API usage.')}/>
-    {data===null&&!usage.error?<Skeleton variant="lines" rows={4}/>:empty
+    {loading?<Skeleton variant="lines" rows={4}/>:usage.error?null:empty
       ?<div className="emp oe settings-usage-empty">
         <div className="ei">{TREND_ICON}</div><h3>No adapter requests yet</h3>
         <p>Usage appears here once a social watch rule starts polling.</p>
@@ -3714,11 +3809,12 @@ function ApiUsagePanel({onCreateRule}){
     <p className="settings-note">Estimates for planning, not billing records.</p>
   </div>;
 }
-function OpenSeaEligibilitySettingsPanel({focus=false}){
+function OpenSeaEligibilitySettingsPanel({focus=false,onBusyChange}){
   const wallets=useLoad('/api/wallets',[],'wallets.changed');
   const [statuses,setStatuses]=useState({});
   const [busy,setBusy]=useState('');
   const panelRef=useRef(null);
+  useEffect(()=>{onBusyChange?.('opensea-eligibility',Boolean(busy));return()=>onBusyChange?.('opensea-eligibility',false);},[busy,onBusyChange]);
   useEffect(()=>{
     if(focus)setTimeout(()=>{
       const reduced=window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
@@ -3791,7 +3887,7 @@ function OpenSeaEligibilitySettingsPanel({focus=false}){
               <small className={entry?.error?'is-error':''} aria-live="polite">{entry?.error||state}</small>
               {entry?.error&&<button type="button" className="b g sm" onClick={()=>reloadWallet(wallet)}>Retry</button>}</div>
             <ScheduleSwitch checked={enabled} labelledBy={controlId}
-              disabled={changing||!entry||entry.loading||unavailable} onChange={changeTo=>change(wallet,changeTo)} />
+              disabled={changing||!entry||entry.loading||Boolean(entry.error)||unavailable} onChange={changeTo=>change(wallet,changeTo)} />
             <span id={controlId} className="sr-only">
               Automatic OpenSea eligibility checks for {wallet.label}</span>
           </div>;
@@ -3805,23 +3901,28 @@ const SETTINGS_TABS=[
   {id:'notifications',label:'Notifications'},
   {id:'api-usage',label:'API usage',tag:'owner only',ownerOnly:true},
 ];
-function AppearancePanel({profile,onThemeChange}){
-  return <div className="panel settings-appearance">
+function AppearancePanel({profile,onThemeChange,onBusyChange}){
+  const [busy,setBusy]=useState(false);
+  useEffect(()=>{onBusyChange?.('appearance',busy);return()=>onBusyChange?.('appearance',false);},[busy,onBusyChange]);
+  async function chooseTheme(next){if(busy||next===profile.theme)return;setBusy(true);try{await onThemeChange(next);}finally{setBusy(false);}}
+  return <div className="panel settings-appearance" aria-busy={busy||undefined}>
     <div className="settings-panel-heading"><div><p className="eyebrow">Display</p><h2>Appearance</h2></div></div>
     <p>Light and dark are the primary choices. Everything else is an optional style.</p>
     <div className="theme-primary-grid" role="group" aria-label="Primary dashboard appearance">
       {PRIMARY_THEMES.map(option=><button type="button" key={option.value}
+        disabled={busy}
         aria-pressed={profile.theme===option.value}
         className={`theme-option theme-primary-option${profile.theme===option.value?' active':''}`}
-        onClick={()=>onThemeChange(option.value)}><ThemeSwatch value={option.value}/>
+        onClick={()=>chooseTheme(option.value)}><ThemeSwatch value={option.value}/>
         <span className="theme-option-label">{option.label}</span></button>)}
     </div>
     <div className="settings-theme-label">More styles · optional</div>
     <div className="theme-grid" role="group" aria-label="Optional dashboard themes">
       {SECONDARY_THEMES.map(option=><button type="button" key={option.value}
+        disabled={busy}
         aria-pressed={profile.theme===option.value}
         className={`theme-option${profile.theme===option.value?' active':''}`}
-        onClick={()=>onThemeChange(option.value)}><ThemeSwatch value={option.value}/>
+        onClick={()=>chooseTheme(option.value)}><ThemeSwatch value={option.value}/>
         <span className="theme-option-label">{option.label}</span></button>)}
     </div>
   </div>;
@@ -3855,35 +3956,41 @@ function NotificationRoutingPanel(){return <div className="panel settings-notifi
   </div>)}</div>
   </div>}
 function Settings({profile,onThemeChange,onProfileChange,target,tab,onTab,go}){
+  const [busySources,setBusySources]=useState({});
+  const setBusySource=useCallback((source,busy)=>setBusySources(current=>{
+    if(Boolean(current[source])===Boolean(busy))return current;
+    const next={...current};if(busy)next[source]=true;else delete next[source];return next;
+  }),[]);
+  const settingsBusy=Object.keys(busySources).length>0;
   const tabs=SETTINGS_TABS.filter(item=>!item.ownerOnly||profile.isOwner);
   const requested=target==='opensea-eligibility'?'transaction':tab;
   const active=tabs.some(item=>item.id===requested)?requested:'appearance';
   return <>
     <PageTitle eyebrow="Preferences" title="Settings"
       subtitle="Display, network defaults, transaction safety, and notification rules."/>
-    <SubTabs tabs={tabs} active={active} onChange={onTab} label="Settings sections" idPrefix="settings"/>
+    <SubTabs tabs={tabs} active={active} onChange={onTab} label="Settings sections" idPrefix="settings" disabled={settingsBusy}/>
     <section id="settings-panel-appearance" aria-labelledby="settings-tab-appearance" className="settings-tab-panel" role="tabpanel" hidden={active!=='appearance'}>
-      {active==='appearance'&&<div className="settings-layout">
-        <AppearancePanel profile={profile} onThemeChange={onThemeChange}/>
+      {active==='appearance'&&<fieldset className="settings-tab-lock settings-layout" disabled={settingsBusy} aria-busy={settingsBusy||undefined}>
+        <AppearancePanel profile={profile} onThemeChange={onThemeChange} onBusyChange={setBusySource}/>
         <LayoutPreferencePanel/>
-        <DisplayCurrencyPanel profile={profile} onProfileChange={onProfileChange}/>
-        <TimeFormatPreferencePanel profile={profile} onProfileChange={onProfileChange}/>
-        <LowBalancePreferencePanel profile={profile} onProfileChange={onProfileChange}/>
-      </div>}
+        <DisplayCurrencyPanel profile={profile} onProfileChange={onProfileChange} onBusyChange={setBusySource}/>
+        <TimeFormatPreferencePanel profile={profile} onProfileChange={onProfileChange} onBusyChange={setBusySource}/>
+        <LowBalancePreferencePanel profile={profile} onProfileChange={onProfileChange} onBusyChange={setBusySource}/>
+      </fieldset>}
     </section>
     <section id="settings-panel-transaction" aria-labelledby="settings-tab-transaction" className="settings-tab-panel" role="tabpanel" hidden={active!=='transaction'}>
-      {active==='transaction'&&<div className="settings-layout settings-transaction-layout">
-        <TransactionModePanel profile={profile} onProfileChange={onProfileChange}/>
-        <OpenSeaEligibilitySettingsPanel focus={active==='transaction'&&target==='opensea-eligibility'}/>
-        <BotSecurityPanel profile={profile} onProfileChange={onProfileChange}/>
-        <SniperTimingSettingsPanel/>
-      </div>}
+      {active==='transaction'&&<fieldset className="settings-tab-lock settings-layout settings-transaction-layout" disabled={settingsBusy} aria-busy={settingsBusy||undefined}>
+        <TransactionModePanel profile={profile} onProfileChange={onProfileChange} onBusyChange={setBusySource}/>
+        <OpenSeaEligibilitySettingsPanel focus={active==='transaction'&&target==='opensea-eligibility'} onBusyChange={setBusySource}/>
+        <BotSecurityPanel profile={profile} onProfileChange={onProfileChange} onBusyChange={setBusySource}/>
+        <SniperTimingSettingsPanel onBusyChange={setBusySource}/>
+      </fieldset>}
     </section>
     <section id="settings-panel-gas" aria-labelledby="settings-tab-gas" className="settings-tab-panel" role="tabpanel" hidden={active!=='gas'}>
-      {active==='gas'&&<div className="settings-layout settings-gas-layout">
-        <DefaultChainPanel profile={profile} onProfileChange={onProfileChange}/>
+      {active==='gas'&&<fieldset className="settings-tab-lock settings-layout settings-gas-layout" disabled={settingsBusy} aria-busy={settingsBusy||undefined}>
+        <DefaultChainPanel profile={profile} onProfileChange={onProfileChange} onBusyChange={setBusySource}/>
         <GasPanel profile={profile}/>
-      </div>}
+      </fieldset>}
     </section>
     <section id="settings-panel-notifications" aria-labelledby="settings-tab-notifications" className="settings-tab-panel" role="tabpanel" hidden={active!=='notifications'}>
       {active==='notifications'&&<div className="settings-layout settings-notification-layout"><NotificationRoutingPanel/></div>}
@@ -4514,9 +4621,10 @@ function MintBatch({profile,active=true,onGoWallets,onSwitchToSchedule,onCommitC
   </div>;
 }
 
-// Presets: the saved mint configurations, plus the method registry they resolve against. Read-only
-// here -- presets are created from the bots, and adding a create form would be a new write path,
-// not a restyle.
+// Presets: the saved mint configurations, plus the method registry they resolve against. The
+// prototype only offered Use, but deletion is an account-wide lifecycle action Telegram already
+// exposed. Keeping it absent here left a preset created on another surface impossible to manage
+// from the dashboard even though every surface reads the same durable rows.
 // Prototype docs/prototype-pages/mint.html:200-232: a .split of "Saved presets" and "Method
 // registry". The registry list is static in the design and static here; nothing exposes the
 // server's signature table to the dashboard, so it is a reference panel, not live data (noted in
@@ -4532,10 +4640,26 @@ function MintPresets({onUsePreset}){
   const presets=useLoad('/api/mint-presets',[],'presets.changed');
   const methods=useLoad('/api/mint-methods');
   const [showAllMethods,setShowAllMethods]=useState(false);
+  const [deletingPreset,setDeletingPreset]=useState('');
   const items=presets.data;
   const methodRows=methods.data||[];
   const visibleMethods=showAllMethods?methodRows:methodRows.slice(0,METHOD_PREVIEW_COUNT);
   const hiddenMethodCount=Math.max(0,methodRows.length-METHOD_PREVIEW_COUNT);
+  async function removePreset(preset){
+    if(deletingPreset)return;
+    const accepted=await confirmDialog(`Delete ${preset.name}? Automations using this preset will need another preset before they can run.`);
+    if(!accepted)return;
+    setDeletingPreset(preset.name);
+    try{
+      const result=await api(`/api/mint-presets/${encodeURIComponent(preset.name)}`,{
+        method:'DELETE',body:JSON.stringify({confirmation:'CONFIRM'}),
+      });
+      notify(result.deleted?`${preset.name} deleted.`:`${preset.name} was already removed.`,
+        {type:result.deleted?'success':'info'});
+      await presets.load();
+    }catch(value){notify(value.message,{type:'error'});}
+    finally{setDeletingPreset('');}
+  }
   return <div className="split" aria-busy={((presets.data===null&&!presets.error)||(methods.data===null&&!methods.error))||undefined}>
     <div className="card">
       <div className="ch"><h2>Saved presets</h2><div className="sp"/>
@@ -4556,7 +4680,9 @@ function MintPresets({onUsePreset}){
                   <div className="rs mono fold">{preset.methodSignature} · {shortHex(preset.contractAddress)}</div>
                 </div>
                 <div className="rv"><button type="button" className="b g sm"
-                  onClick={()=>onUsePreset?.(preset)}>Use</button></div>
+                  disabled={Boolean(deletingPreset)} onClick={()=>onUsePreset?.(preset)}>Use</button>
+                  <button type="button" className="b d sm" disabled={Boolean(deletingPreset)}
+                    onClick={()=>removePreset(preset)}>{deletingPreset===preset.name?'Deleting…':'Delete'}</button></div>
               </div>)}</div>}
     </div>
     <div className="card">
@@ -5114,11 +5240,12 @@ function AutomationAll({filter=null,onCreate,onEdit,onPolicy}){
   </>;
 }
 
-function SniperDefaultControl({data,onSaved}){
+function SniperDefaultControl({data,onSaved,onBusyChange}){
   const current=data?.defaultObservationMode||'confirmed';
   const pendingAvailable=(data?.capabilities?.pendingSupportedChains||[]).length>0;
   const [busy,setBusy]=useState(false);
   const [saveError,setSaveError]=useState(null);
+  useEffect(()=>{onBusyChange?.('sniper-timing',busy);return()=>onBusyChange?.('sniper-timing',false);},[busy,onBusyChange]);
   async function setDefault(next){
     if(next===current)return;
     let pendingRiskAccepted=false;
@@ -5152,9 +5279,9 @@ function SniperDefaultControl({data,onSaved}){
   </div>;
 }
 
-function SniperTimingSettingsPanel(){
+function SniperTimingSettingsPanel({onBusyChange}){
   const snipers=useLoad('/api/snipers',[],'snipers.changed');
-  if(snipers.data)return <SniperDefaultControl data={snipers.data} onSaved={snipers.load}/>;
+  if(snipers.data)return <SniperDefaultControl data={snipers.data} onSaved={snipers.load} onBusyChange={onBusyChange}/>;
   return <div className="panel" aria-busy={!snipers.error||undefined}>
     <div className="settings-panel-heading"><div><p className="eyebrow">Automation preference</p>
       <h2>Default copy timing</h2></div></div>
@@ -5516,6 +5643,7 @@ function WalletsPage({profile,onProfileChange,tab,onTab}){
 // audit page remains the platform-wide governance surface.
 const SECURITY_PAGE_SIZE=20;
 function SecurityLogTab(){
+  const formatDateTime=useDateTimeFormatter();
   const listing=useLoad('/api/security-audit?limit=200');
   const [page,setPage]=useState(1);
   const rows=listing.data||[];
@@ -5542,8 +5670,9 @@ function SecurityLogTab(){
             // hover/focus title text -- an audit surface should not lose precision to fit.
             const when=new Date(row.attemptedAt);
             const iso=Number.isNaN(when.getTime())?null:when.toISOString();
+            const displayedAt=iso?formatDateTime(when,{seconds:true}):null;
             const details=[row.platform,row.platformUserId?shortHex(row.platformUserId):null,
-              row.reason,iso?`${iso.slice(11,19)}Z`:null].filter(Boolean).join(' · ');
+              row.reason,displayedAt].filter(Boolean).join(' · ');
             return <div className="r" key={row.auditId}>
               <div className="rm">
                 <div className="rt">{row.command}<span className={`p ${outcomeTone(row.outcome)}`}
@@ -5556,6 +5685,119 @@ function SecurityLogTab(){
           })}
           <HistoryPager value={pagerValue} page={page} setPage={setPage} visibleCount={shown.length}/>
         </div>}
+  </>;
+}
+const TRIGGER_AUDIT_PAGE_SIZE=10;
+function triggerAuditField(row,...names){
+  for(const name of names){if(row?.[name]!==null&&row?.[name]!==undefined)return row[name];}
+  return null;
+}
+function triggerAuditLabel(value,fallback){
+  const text=String(value||'').trim().replaceAll('_',' ').replaceAll('-',' ');
+  return text?text.replace(/^./,letter=>letter.toUpperCase()):fallback;
+}
+function TriggerAudit(){
+  const formatDateTime=useDateTimeFormatter();
+  const [page,setPage]=useState(1);
+  const [search,setSearch]=useState('');
+  const [filtersOpen,setFiltersOpen]=useState(false);
+  const resultsRef=useRef(null);
+  const path=`/api/history/trigger-audit?page=${page}&pageSize=${TRIGGER_AUDIT_PAGE_SIZE}&search=${encodeURIComponent(search)}`;
+  const listing=useLoad(path,[page,search],ACTIVITY_EVENTS);
+  const data=listing.dataPath===path?listing.data:null;
+  const currentError=listing.resolvedPath===path?listing.error:'';
+  const rows=data?.items||[];
+  const total=data?.total;
+  const loading=data===null&&!currentError;
+  function focusResults(){setTimeout(()=>resultsRef.current?.focus({preventScroll:true}),0);}
+  function changePage(nextPage){
+    setPage(nextPage);
+    // The pager unmounts while the next page is loading. Keep keyboard users anchored to the
+    // persistent results region instead of letting focus fall back to <body>.
+    focusResults();
+  }
+  return <>
+    <div className="card col history-filter-card" data-open={filtersOpen?'1':'0'}>
+      <button type="button" className="colh" aria-expanded={filtersOpen}
+        onClick={()=>setFiltersOpen(value=>!value)}>
+        <span className="p nu">Filter</span>
+        <span className="cti">Search audit evidence</span>
+        {data&&<span className={`ctv${total===0?' oe':' of'}`}>
+          {total} {total===1?'record':'records'}</span>}
+        <svg className="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"
+          strokeLinecap="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+      </button>
+      <div className="colb"><div className="ch">
+      <div className="trigger-audit-search"><SearchField label="Search audit evidence" value={search}
+        placeholder="Source, target or hash…" onChange={value=>{setSearch(value);setPage(1);}}/></div>
+      <div className="sp"/>
+      {data&&<span style={{fontSize:'11px',color:'var(--faint)'}}>
+        {total} {total===1?'record':'records'}</span>}</div></div>
+    </div>
+    <div ref={resultsRef} className="trigger-audit-results" tabIndex={-1} aria-live="polite"
+      aria-busy={loading||undefined}>
+    {loading?<div className="card history-list-state"><Skeleton variant="row" rows={4}/></div>
+      :currentError?<div className="history-list-state"><Notice error={{
+          title:'Could not load audit evidence.',
+          detail:'Your automations and transactions are unaffected — this read-only record could not be loaded.',
+          code:'Request failed safely',onRetry:()=>{listing.load();focusResults();}}}/></div>
+      :rows.length===0?<div className="history-list-state"><Empty text={search
+          ?'No audit evidence matches this search. Try another source, target, or transaction hash.'
+          :'No trigger evidence yet. Automation attempts with verification on or bypassed will appear here after they execute.'}/></div>
+      :<>
+        <div className="card history-list-state trigger-audit-list">
+          {rows.map((row,index)=>{
+            const auditId=triggerAuditField(row,'auditId','audit_id');
+            const source=triggerAuditField(row,'triggerSource','trigger_source');
+            const sourceEventId=triggerAuditField(row,'sourceEventId','source_event_id');
+            const targetType=triggerAuditField(row,'targetType','target_type');
+            const targetId=triggerAuditField(row,'targetId','target_id');
+            const verification=triggerAuditField(row,'verificationState','verification_state');
+            const confirmationShown=Boolean(triggerAuditField(row,'confirmationShown','confirmation_shown'));
+            const outcome=triggerAuditField(row,'outcome');
+            const txHash=triggerAuditField(row,'transactionHash','transaction_hash','txHash','tx_hash');
+            const chain=triggerAuditField(row,'chain');
+            const executedAt=triggerAuditField(row,'executedAt','executed_at');
+            const when=new Date(executedAt);
+            const validTime=executedAt&&!Number.isNaN(when.getTime());
+            const timestamp=validTime?formatDateTime(when,{seconds:true}):'Time unavailable';
+            const targetName=triggerAuditLabel(targetType,'Automation target');
+            const targetValue=targetId?shortHex(targetId):'Target unavailable';
+            const verificationLabel=verification==='on'?'Verification on'
+              :verification==='bypassed'?'Verification bypassed':triggerAuditLabel(verification,'Verification unknown');
+            const verificationTone=verification==='on'?'ok':verification==='bypassed'?'wn':'nu';
+            const explorer=chain?explorerForChain(chain):null;
+            const href=txHash&&explorer?`${explorer}${txHash}`:null;
+            const eventLabel=sourceEventId?`Event ${shortHex(sourceEventId)}`:null;
+            return <div className="r trigger-audit-row" key={auditId||`${source}:${sourceEventId}:${index}`}>
+              <div className="rm">
+                <div className="rt">{targetName} · <span className="mono">{targetValue}</span></div>
+                <div className="trigger-audit-meta">
+                  <span className={`p ${verificationTone}`}>{verificationLabel}</span>
+                  <span>{triggerAuditLabel(source,'Unknown source')}</span>
+                  {confirmationShown&&<span>User confirmed</span>}
+                  {eventLabel&&<span className="mono">{eventLabel}</span>}
+                  <time dateTime={validTime?when.toISOString():undefined}>{timestamp}</time>
+                </div>
+                {txHash&&<div className="trigger-audit-hash">
+                  <span className="mono">Tx {shortHex(txHash)}</span>
+                  <CopyButton value={txHash} label="Copy transaction hash"/>
+                </div>}
+              </div>
+              <div className="rv trigger-audit-outcome">
+                {href&&<a className="ico-btn" href={href} target="_blank" rel="noopener noreferrer"
+                  aria-label={`View ${shortHex(txHash)} on ${chainMeta(chain).label}`}
+                  title={`View on ${chainMeta(chain).label}`}>{EXTERNAL_ICON}</a>}
+                <span className={`p ${outcomeTone(outcome)}`}>{triggerAuditLabel(outcome,'Unknown')}</span>
+              </div>
+            </div>;
+          })}
+        </div>
+        <div className="card history-pager-card">
+          <HistoryPager value={data} page={page} setPage={changePage} visibleCount={rows.length}/>
+        </div>
+      </>}
+    </div>
   </>;
 }
 function MintHistory(){
@@ -5623,17 +5865,7 @@ function History({profile,tab,onTab,go}){
         chainLabel={value=>chainMeta(value).label||value} explorerForChain={explorerForChain}
         nativeSymbolForChain={nativeSymbolForChain}/>}
       {active==='mints'&&<MintHistory/>}
-      {active==='audit'&&<div className="unav">
-        <div className="ei">{AUDIT_ICON}</div>
-        <h3>Trigger audit is available from Telegram and Discord</h3>
-        {/* Honest unavailable state, not a placeholder pretending to be a feature: triggerAudit
-            exists in botCommandService but has no dashboard route (contract §5.11). Routing it is
-            a src/** change with its own review, so this says where the data IS reachable today
-            rather than rendering an empty table that looks like "no evidence exists". */}
-        <p>Every automated execution appends a durable row recording its source, target,
-          verification state, transaction hash and outcome. A dashboard view is planned.</p>
-        <p className="mono" style={{fontSize:'11px'}}>Telegram <b>/triggeraudit</b> · Discord <b>/trigger-audit</b></p>
-      </div>}
+      {active==='audit'&&<TriggerAudit/>}
       {active==='security'&&<SecurityLogTab/>}
     </div>
   </>;
@@ -5766,25 +5998,33 @@ const MORE_ADMIN='Admin';
 const MORE_ICON=<svg {...ICON_PROPS} fill="currentColor" stroke="none"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg>;
 const CHEVRON_LEFT=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 6l-6 6 6 6"/></svg>;
 const CHEVRON_RIGHT=<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 6l6 6-6 6"/></svg>;
-function BottomBar({page,go,onOpenMore,moreOpen}){
+function BottomBar({page,go,onOpenMore,moreOpen,disabled=false}){
   const moreActive=moreOpen||!BOTTOM_BAR_PAGES.includes(page);
   return <nav className="mobile-bottombar" aria-label="Primary">
     {BOTTOM_BAR_PAGES.map(item=><button key={item} type="button"
-      aria-current={page===item?'page':undefined} onClick={()=>go(item)}>
+      disabled={disabled} aria-current={page===item?'page':undefined} onClick={()=>go(item)}>
       <span className="nav-icon" aria-hidden="true">{NAV_ICONS[item]}</span>
       <span className="nav-label">{BOTTOM_BAR_LABELS[item]||item}</span></button>)}
-    <button type="button" aria-current={moreActive?'page':undefined} onClick={onOpenMore}>
+    <button type="button" aria-current={moreActive?'page':undefined} aria-expanded={moreOpen}
+      aria-controls="dashboard-more-sheet" disabled={disabled} onClick={onOpenMore}>
       <span className="nav-icon" aria-hidden="true">{MORE_ICON}</span>
       <span className="nav-label">More</span></button>
   </nav>;}
-function MoreSheet({open,page,go,onClose,isOwner,onSearch}){
+function MoreSheet({open,page,go,onClose,isOwner,onSearch,disabled=false,restoreFocusFallback}){
   const items=[...MORE_PAGES,...(isOwner?[MORE_ADMIN]:[])];
-  return <>{open&&<div className="sheet-backdrop" onClick={onClose}/>}
-    <div className={`more-sheet${open?' open':''}`} role="dialog" aria-modal="true"
-      aria-label="More" aria-hidden={!open}>
-      <button type="button" className="sheet-handle" aria-label="Close" onClick={onClose}/>
+  // The scrim and sheet are one modal branch. When the hook referenced only the sheet it quite
+  // correctly made every sibling inert -- including the scrim -- so a tap above the sheet could
+  // never reach its onClick handler. Referencing this shared layer keeps both pieces interactive
+  // while the rest of the dashboard remains inert.
+  const layerRef=useRef(null);const closeRef=useRef(null);
+  useModalAccessibility(open,layerRef,{onClose,initialFocusRef:closeRef,restoreFocusFallback});
+  if(!open)return null;
+  return <div ref={layerRef} className="sheet-layer" aria-busy={disabled||undefined}><div className="sheet-backdrop" onClick={onClose}/>
+    <div id="dashboard-more-sheet" tabIndex="-1" className="more-sheet open" role="dialog" aria-modal="true"
+      aria-label="More">
+      <button ref={closeRef} type="button" className="sheet-handle" aria-label="Close" onClick={onClose}/>
       <div className="sheet-grid">
-        {items.map(item=><button type="button" key={item}
+        {items.map(item=><button type="button" key={item} disabled={disabled}
           aria-current={page===item?'page':undefined} onClick={()=>{go(item);onClose?.();}}>
           {/* RAIL_ICONS first: NAV_ICONS gives Admin a gear, which is the same glyph as
               Settings, so the two tiles were indistinguishable. states.html gives Admin a
@@ -5793,11 +6033,11 @@ function MoreSheet({open,page,go,onClose,isOwner,onSearch}){
           <span className="nav-label">{item}</span></button>)}
         {/* Search is an action, not a page: it opens the command palette the desktop header
             already offers, which has no other route in on a phone. */}
-        <button type="button" onClick={()=>{onClose?.();onSearch?.();}}>
+        <button type="button" disabled={disabled} onClick={()=>{onClose?.();onSearch?.();}}>
           <span className="nav-icon" aria-hidden="true">{SEARCH_ICON}</span>
           <span className="nav-label">Search</span></button>
       </div>
-    </div></>;
+    </div></div>;
 }
 // Prototype rail badges (ghostmint-redesign-v3.html:641,644): Mint carries a NEUTRAL .cnt and
 // Automation a RED .cnt.hot. The tones are the specification, not decoration:
@@ -5877,7 +6117,7 @@ const TOP_RAIL_PAGES=['Home','Mint','Automation','Wallets','History'];
 // at all before this pass -- on desktop it was reachable only by URL.
 const RAIL_FOOTER_PAGES=['Account','Settings'];
 const BOTTOM_RAIL_PAGES=['Account'];
-function NavList({items,page,go,className}){return <nav aria-label="Dashboard" className={className}><ul>{items.map(item=><li key={item}><button aria-current={page===item?'page':undefined} onClick={()=>go(item)}><span className="nav-icon" aria-hidden="true">{NAV_ICONS[item]}</span><span className="nav-label">{item}</span></button></li>)}</ul></nav>;}
+function NavList({items,page,go,className,disabled=false}){return <nav aria-label="Dashboard" className={className}><ul>{items.map(item=><li key={item}><button disabled={disabled} aria-current={page===item?'page':undefined} onClick={()=>go(item)}><span className="nav-icon" aria-hidden="true">{NAV_ICONS[item]}</span><span className="nav-label">{item}</span></button></li>)}</ul></nav>;}
 // Prototype .acct-pop (ghostmint-redesign-v3.html), backlog §2. The avatar used to route straight
 // to the Account page, which the backlog says explicitly it must NOT: it opens this.
 //
@@ -5893,8 +6133,9 @@ const ACCT_ICONS={
   light:<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.2 4.2l1.4 1.4M18.4 18.4l1.4 1.4M1 12h2M21 12h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" fill="none"/></svg>,
   dark:<svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a7 7 0 0 0 10.5 10.5z"/></svg>,
 };
-function AccountMenu({profile,theme,initial,go,onChangeTheme,onLogout}){
+function AccountMenu({profile,theme,initial,go,onChangeTheme,onLogout,disabled=false}){
   const [open,setOpen]=useState(false);
+  useEffect(()=>{if(disabled)setOpen(false);},[disabled]);
   useEffect(()=>{
     if(!open)return;
     const close=event=>{if(!event.target.closest?.('.account-menu'))setOpen(false);};
@@ -5902,43 +6143,44 @@ function AccountMenu({profile,theme,initial,go,onChangeTheme,onLogout}){
     document.addEventListener('click',close);document.addEventListener('keydown',onKey);
     return()=>{document.removeEventListener('click',close);document.removeEventListener('keydown',onKey);};
   },[open]);
-  function choose(action){setOpen(false);action();}
+  function choose(action){if(disabled)return;setOpen(false);action();}
   // The prototype prints "user 4f9c…21ab": the account's own id, elided. It is the one identifier
   // that is the same on Telegram, Discord and here, which is what makes it worth showing at all.
   const id=String(profile.userId||'');
   const shortId=id.length>12?id.slice(0,4)+'…'+id.slice(-4):id;
   const mode=profile.currentMode?.displayName||profile.currentMode?.key||null;
-  return <div className="account-menu">
+  return <div className="account-menu" aria-busy={disabled||undefined}>
     <button type="button" className="av" aria-haspopup="menu" aria-expanded={open}
-      aria-label="Account menu" onClick={()=>setOpen(value=>!value)}>{initial}</button>
+      aria-label="Account menu" disabled={disabled} onClick={()=>setOpen(value=>!value)}>{initial}</button>
     {open&&<div className="acct-pop on" role="menu" aria-label="Account">
       <div className="acct-h">
         <div className="an">{profile.displayName||profile.username||'GhostMint user'}</div>
         {shortId&&<div className="ai mono">user {shortId}</div>}
       </div>
-      <button type="button" className="acct-i" role="menuitem" onClick={()=>choose(()=>go('Settings','transaction'))}>
+      <button type="button" className="acct-i" role="menuitem" disabled={disabled} onClick={()=>choose(()=>go('Settings','transaction'))}>
         {ACCT_ICONS.mode}<span className="sp">Transaction mode</span>
         {/* Having chosen no mode yet is a real state; the prototype only ever draws a chosen one. */}
         {mode&&<span className="mchip">{mode}</span>}</button>
-      <button type="button" className="acct-i" role="menuitem" onClick={()=>choose(()=>go('Account'))}>
+      <button type="button" className="acct-i" role="menuitem" disabled={disabled} onClick={()=>choose(()=>go('Account'))}>
         {ACCT_ICONS.account}<span className="sp">Account</span></button>
-      <button type="button" className="acct-i" role="menuitem" onClick={()=>choose(()=>go('Settings'))}>
+      <button type="button" className="acct-i" role="menuitem" disabled={disabled} onClick={()=>choose(()=>go('Settings'))}>
         {ACCT_ICONS.settings}<span className="sp">Settings</span></button>
       <div className="acct-tog"><span className="sp">Appearance</span>
         <div className="tmode">
           <button type="button" className={theme==='ghost-mint-light'?'on':undefined} title="Light"
-            aria-label="Light theme" aria-pressed={theme==='ghost-mint-light'}
+            aria-label="Light theme" aria-pressed={theme==='ghost-mint-light'} disabled={disabled}
             onClick={()=>onChangeTheme('ghost-mint-light')}>{ACCT_ICONS.light}</button>
           <button type="button" className={theme==='ghost-mint'?'on':undefined} title="Dark"
-            aria-label="Dark theme" aria-pressed={theme==='ghost-mint'}
+            aria-label="Dark theme" aria-pressed={theme==='ghost-mint'} disabled={disabled}
             onClick={()=>onChangeTheme('ghost-mint')}>{ACCT_ICONS.dark}</button>
         </div></div>
       <button type="button" className="acct-i danger" role="menuitem"
-        onClick={()=>choose(onLogout)}>{ACCT_ICONS.logout}<span className="sp">Log out</span></button>
+        disabled={disabled} onClick={()=>choose(onLogout)}>{ACCT_ICONS.logout}<span className="sp">Log out</span></button>
     </div>}
   </div>;
 }
-function Shell({profile,onLogout,onProfileChange}){const navBadges=useNavBadges();const [route,setRoute]=useState(pageFromLocation);const {page,tab,target}=route;const live=useLiveSocket();const displayQuotes=useLoad('/api/display-quotes',[profile.displayCurrency]);
+function Shell({profile,onLogout,onProfileChange}){const navBadges=useNavBadges();const [route,setRoute]=useState(pageFromLocation);const [accountBusy,setAccountBusy]=useState(false);const {page,tab,target}=route;const live=useLiveSocket();const displayQuotes=useLoad('/api/display-quotes',[profile.displayCurrency]);
+  const desktopRailFallbackRef=useRef(null);
   useEffect(()=>{const timer=setInterval(displayQuotes.load,5*60_000);return()=>clearInterval(timer);},[displayQuotes.load]);
   // Mint is a workspace rather than a disposable route. Once visited, keep it mounted while the
   // user checks Wallets, History, or another page so pasted addresses, selected wallets, previews,
@@ -5958,11 +6200,12 @@ function Shell({profile,onLogout,onProfileChange}){const navBadges=useNavBadges(
     function onKey(event){
       // metaKey for macOS, ctrlKey elsewhere. Prevented so the browser's own Ctrl+K
       // (focus-address-bar in several browsers) does not steal it.
-      if((event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==='k'){event.preventDefault();setPaletteOpen(value=>!value);}
+      if((event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==='k'){event.preventDefault();if(!accountBusy)setPaletteOpen(value=>!value);}
     }
     window.addEventListener('keydown',onKey);
     return()=>window.removeEventListener('keydown',onKey);
-  },[]);const [navOpen,setNavOpen]=useState(false);const [moreOpen,setMoreOpen]=useState(false);const mobile=useIsMobile();const [theme,setTheme]=useState(()=>resolveDashboardTheme(profile.userId,profile.theme));const pendingThemeRef=useRef(readPendingTheme(profile.userId));const themeFlushRunning=useRef(false);const themeSyncNotice=useRef(false);useEffect(()=>{document.documentElement.dataset.theme=theme;},[theme]);useEffect(()=>{if(!pendingThemeRef.current)setTheme(resolveDashboardTheme(profile.userId,profile.theme));},[profile.userId,profile.theme]);const flushPendingTheme=useCallback(async()=>{if(themeFlushRunning.current)return;themeFlushRunning.current=true;try{while(true){const pending=pendingThemeRef.current||readPendingTheme(profile.userId);if(!pending)break;try{const saved=await api('/api/profile/theme',{method:'PUT',body:JSON.stringify({theme:pending})});clearPendingTheme(profile.userId,pending);if(pendingThemeRef.current===pending)pendingThemeRef.current=null;onProfileChange?.(current=>current?{...current,theme:saved.theme||pending}:current);themeSyncNotice.current=false;}catch{if(!themeSyncNotice.current)notify('Theme changed on this device. It will sync when you are back online.',{type:'info'});themeSyncNotice.current=true;break;}}}finally{themeFlushRunning.current=false;}},[profile.userId,onProfileChange]);useEffect(()=>{flushPendingTheme();function onOnline(){flushPendingTheme();}function onSocket(event){if(event.detail?.type==='ws.reconnected')flushPendingTheme();}window.addEventListener('online',onOnline);window.addEventListener('ghostmint-ws',onSocket);return()=>{window.removeEventListener('online',onOnline);window.removeEventListener('ghostmint-ws',onSocket);};},[flushPendingTheme]);useEffect(()=>{function onPopState(){setRoute(pageFromLocation());}window.addEventListener('popstate',onPopState);return()=>window.removeEventListener('popstate',onPopState);},[]);useEffect(()=>{function onMessage(event){if(event.detail?.type==='identity.changed')api('/api/profile').then(onProfileChange).catch(()=>{});}window.addEventListener('ghostmint-ws',onMessage);return()=>window.removeEventListener('ghostmint-ws',onMessage);},[onProfileChange]);async function changeTheme(next){setTheme(next);pendingThemeRef.current=next;savePendingTheme(profile.userId,next);await flushPendingTheme();}const View=VIEWS[page];const isRail=RAIL_THEMES.has(theme);const viewProfile={...profile,theme,displayQuotes:displayQuotes.data};
+  },[accountBusy]);const [navOpen,setNavOpen]=useState(false);const [moreOpen,setMoreOpen]=useState(false);const mobile=useIsMobile();const [theme,setTheme]=useState(()=>resolveDashboardTheme(profile.userId,profile.theme));const pendingThemeRef=useRef(readPendingTheme(profile.userId));const themeFlushRunning=useRef(false);const themeSyncNotice=useRef(false);useEffect(()=>{document.documentElement.dataset.theme=theme;},[theme]);useEffect(()=>{if(!pendingThemeRef.current)setTheme(resolveDashboardTheme(profile.userId,profile.theme));},[profile.userId,profile.theme]);const flushPendingTheme=useCallback(async()=>{if(themeFlushRunning.current)return;themeFlushRunning.current=true;try{while(true){const pending=pendingThemeRef.current||readPendingTheme(profile.userId);if(!pending)break;try{const saved=await api('/api/profile/theme',{method:'PUT',body:JSON.stringify({theme:pending})});clearPendingTheme(profile.userId,pending);if(pendingThemeRef.current===pending)pendingThemeRef.current=null;onProfileChange?.(current=>current?{...current,theme:saved.theme||pending}:current);themeSyncNotice.current=false;}catch{if(!themeSyncNotice.current)notify('Theme changed on this device. It will sync when you are back online.',{type:'info'});themeSyncNotice.current=true;break;}}}finally{themeFlushRunning.current=false;}},[profile.userId,onProfileChange]);useEffect(()=>{flushPendingTheme();function onOnline(){flushPendingTheme();}function onSocket(event){if(event.detail?.type==='ws.reconnected')flushPendingTheme();}window.addEventListener('online',onOnline);window.addEventListener('ghostmint-ws',onSocket);return()=>{window.removeEventListener('online',onOnline);window.removeEventListener('ghostmint-ws',onSocket);};},[flushPendingTheme]);useEffect(()=>{function onPopState(){setRoute(pageFromLocation());}window.addEventListener('popstate',onPopState);return()=>window.removeEventListener('popstate',onPopState);},[]);async function changeTheme(next){if(accountBusy)return;setTheme(next);pendingThemeRef.current=next;savePendingTheme(profile.userId,next);await flushPendingTheme();}const View=VIEWS[page];const isRail=RAIL_THEMES.has(theme);const viewProfile={...profile,theme,displayQuotes:displayQuotes.data};
+  useEffect(()=>{if(accountBusy){setNavOpen(false);setMoreOpen(false);setPaletteOpen(false);}},[accountBusy]);
   // The prototype's .av carries a single letter ("D" for deon). Nothing in /api/profile is
   // guaranteed non-empty, so this falls through displayName -> username -> userId and only then
   // to a neutral glyph, rather than rendering an empty circle.
@@ -5972,6 +6215,11 @@ function Shell({profile,onLogout,onProfileChange}){const navBadges=useNavBadges(
   // tabs on the same page is a real history entry -- Back from Schedule returns to Mint now
   // instead of leaving the page entirely.
   function go(item,nextTab=null,nextTarget=null){
+    if(accountBusy)return;
+    // Admin is a separate mount with its own route table. Sending it through pathFor() would look
+    // for PAGE_SLUGS.Admin (deliberately absent) and produce /dashboard/undefined -- most visibly
+    // from the owner-only Admin tile in the mobile More sheet.
+    if(item==='Admin'){window.location.href='/dashboard/admin';return;}
     const alias=PAGE_ALIASES[item];
     const page=alias?alias.page:item;
     const tabValue=alias&&nextTab===null?alias.tab:nextTab;
@@ -5986,7 +6234,7 @@ function Shell({profile,onLogout,onProfileChange}){const navBadges=useNavBadges(
     </div>}
     {page!=='Mint'&&<View profile={viewProfile} go={go} tab={tab} target={target}
       onTab={next=>go(page,next)} onThemeChange={changeTheme} onLogout={onLogout}
-      onProfileChange={onProfileChange}/>}
+      onProfileChange={onProfileChange} onBusyChange={page==='Account'?setAccountBusy:undefined}/>}
   </>}
   // Ported verbatim from docs/prototype-pages/_rail.html and the prototype's .top bar. The root is
   // .app, NOT .shell/.rail-shell: dropping those two class names is what stops every `.shell ...`
@@ -5994,7 +6242,7 @@ function Shell({profile,onLogout,onProfileChange}){const navBadges=useNavBadges(
   // chrome outright without those rules having to be deleted out from under the admin shell, which
   // still renders them. .app is prototype.css's own grid (auto 1fr), and [data-m] is its mobile
   // switch -- the rail hides itself there and .bbar/.more-sheet take over.
-  if(isRail)return <div className="app" data-m={mobile?'':undefined}>
+  if(isRail)return <div className={`app${moreOpen?' more-open':''}`} data-m={mobile?'':undefined} aria-busy={accountBusy||undefined}>
     <ConfirmHost/>
     <ToastHost/>
     {/* The prototype's rail is a flex column whose nav buttons are DIRECT children -- wrapping them
@@ -6006,7 +6254,7 @@ function Shell({profile,onLogout,onProfileChange}){const navBadges=useNavBadges(
       {TOP_RAIL_PAGES.map(item=>{
         const badge=navBadges[item]||0;
         const hot=Boolean(navBadges.hot?.[item]);
-        return <button type="button" className="nav" key={item}
+        return <button type="button" className="nav" key={item} ref={page===item?desktopRailFallbackRef:undefined} disabled={accountBusy}
           aria-current={page===item?'page':undefined} onClick={()=>go(item)}>
           {RAIL_ICONS[item]}<span className="nav-l">{item}</span>
           {badge>0&&<span className={`cnt${hot?' hot':''}`}
@@ -6018,15 +6266,15 @@ function Shell({profile,onLogout,onProfileChange}){const navBadges=useNavBadges(
             note that hiding it "makes a legitimate owner think the app broke after a permission
             change"; a non-owner who follows it still lands on AdminDenied. It is a full document
             navigation because the admin shell is a separate mount with its own routing. */}
-        <button type="button" className="nav" onClick={()=>{window.location.href='/dashboard/admin';}}>
+        <button type="button" className="nav" disabled={accountBusy} onClick={()=>{window.location.href='/dashboard/admin';}}>
           {RAIL_ICONS.Admin}<span className="nav-l">Admin</span></button>
-        {RAIL_FOOTER_PAGES.map(item=><button type="button" className="nav" key={item} aria-current={page===item?'page':undefined} onClick={()=>go(item)}>
+        {RAIL_FOOTER_PAGES.map(item=><button type="button" className="nav" key={item} ref={page===item?desktopRailFallbackRef:undefined} disabled={accountBusy} aria-current={page===item?'page':undefined} onClick={()=>go(item)}>
           {RAIL_ICONS[item]}<span className="nav-l">{item}</span></button>)}
       </div>
     </aside>
     <div className="body">
       <div className="top">
-        <button type="button" className="cmdk" onClick={()=>setPaletteOpen(true)}>
+        <button type="button" className="cmdk" disabled={accountBusy} onClick={()=>setPaletteOpen(true)}>
           {CMDK_ICON}<span>Search or jump to…</span><kbd>⌘K</kbd>
         </button>
         <div className="sp"/>
@@ -6036,58 +6284,140 @@ function Shell({profile,onLogout,onProfileChange}){const navBadges=useNavBadges(
         <div className="livechip"><span className="dot" style={live?undefined:{background:'var(--faint)'}}/> <span aria-live="polite">{live?'Live':'Connecting'}</span></div>
         <NotificationBell/>
         <AccountMenu profile={viewProfile} theme={theme} initial={avatarInitial} go={go}
-          onChangeTheme={changeTheme} onLogout={onLogout}/>
+          onChangeTheme={changeTheme} onLogout={onLogout} disabled={accountBusy}/>
       </div>
       <main className="wrap" tabIndex="-1">{renderCurrentPage()}</main>
     </div>
-    <BottomBar page={page} go={go} moreOpen={moreOpen} onOpenMore={()=>setMoreOpen(value=>!value)}/>
+    <BottomBar page={page} go={go} moreOpen={moreOpen} onOpenMore={()=>setMoreOpen(value=>!value)} disabled={accountBusy}/>
     <MoreSheet open={moreOpen} page={page} go={go} onClose={()=>setMoreOpen(false)}
-      isOwner={profile.isOwner} onSearch={()=>setPaletteOpen(true)}/>
-    <CommandPalette open={paletteOpen} onClose={()=>setPaletteOpen(false)} go={go} profile={profile} wallets={paletteWallets.data}/>
+      isOwner={profile.isOwner} onSearch={()=>setPaletteOpen(true)} disabled={accountBusy}
+      restoreFocusFallback={()=>desktopRailFallbackRef.current}/>
+    <CommandPalette open={!accountBusy&&paletteOpen} onClose={()=>setPaletteOpen(false)} go={go} profile={profile} wallets={paletteWallets.data}/>
   </div>;
   const brandMark=<span className="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d={BOLT_PATH} fill="currentColor"/></svg></span>;
-  return <div className={`shell${navOpen?' nav-open':''}`}>
+  return <div className={`shell${navOpen?' nav-open':''}`} aria-busy={accountBusy||undefined}>
     <ConfirmHost/>
     <ToastHost/>
-    <CommandPalette open={paletteOpen} onClose={()=>setPaletteOpen(false)} go={go} profile={profile} wallets={paletteWallets.data}/>
+    <CommandPalette open={!accountBusy&&paletteOpen} onClose={()=>setPaletteOpen(false)} go={go} profile={profile} wallets={paletteWallets.data}/>
   <header>
-    <div className="header-left"><button className="hamburger" type="button" aria-label="Toggle navigation" aria-expanded={navOpen} onClick={()=>setNavOpen(open=>!open)}><span/><span/><span/></button><a className="brand" href="/dashboard/">{brandMark}GhostMint</a></div>
+    <div className="header-left"><button className="hamburger" type="button" aria-label="Toggle navigation" aria-expanded={navOpen} disabled={accountBusy} onClick={()=>setNavOpen(open=>!open)}><span/><span/><span/></button><a className="brand" href="/dashboard/" aria-disabled={accountBusy||undefined} tabIndex={accountBusy?-1:undefined} onClick={event=>{if(accountBusy)event.preventDefault();}}>{brandMark}GhostMint</a></div>
     <div className="header-right">
       <span className="identity">{profile.linkedAccounts.map(item=>item.platform).join(' + ')||'Linked user'}{profile.isOwner?<span className="owner-badge"> | Owner</span>:null}<span className="status-pill"><span className={`status-dot${live?' live':''}`} aria-hidden="true"/><span aria-live="polite">{live?'Live':'Connecting'}</span></span></span>
       <NotificationBell/>
-      <button className="b g" onClick={onLogout}>Log out</button>
+      <button className="b g" disabled={accountBusy} onClick={onLogout}>Log out</button>
     </div>
   </header>
   {navOpen&&<div className="backdrop" onClick={()=>setNavOpen(false)}/>}
-  <aside><NavList items={PAGES} page={page} go={go}/></aside>
+  <aside><NavList items={PAGES} page={page} go={go} disabled={accountBusy}/></aside>
   <main className="content" tabIndex="-1">{renderCurrentPage()}</main>
   </div>;}
 function AdminDenied(){return <main className="login-page"><div className="login-card"><p className="eyebrow">Restricted</p><h1>Admin access required</h1><p>This account is not an owner. Return to the dashboard to continue.</p><a className="b g admin-link" href="/dashboard/">Return to dashboard</a></div></main>;}
+const ADMIN_OVERVIEW_ICON=<svg {...RAIL_ICON_PROPS}><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>;
+const ADMIN_DASHBOARD_ICON=RAIL_ICONS.Home;
+const ADMIN_LOGOUT_ICON=<svg {...RAIL_ICON_PROPS}><path d="M10 4H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h5"/><path d="m15 8 4 4-4 4M19 12H9"/></svg>;
 const ADMIN_SECTIONS=[
-  {id:'Overview',label:'Overview',icon:NAV_ICONS.Dashboard},
-  {id:'Groups',label:'Groups',icon:<svg {...ICON_PROPS}><circle cx="9" cy="9" r="2.8"/><circle cx="16" cy="10" r="2.2"/><path d="M4 19c.6-3 2.6-4.7 5-4.7s4.4 1.7 5 4.7M14.5 14.6c2 .3 3.4 1.7 3.9 4.4"/></svg>},
-  {id:'Users',label:'Users & ceilings',icon:NAV_ICONS.Account},
-  {id:'Effective',label:'Effective lookup',icon:<svg {...ICON_PROPS}><circle cx="10.5" cy="10.5" r="6"/><path d="M15 15l5.5 5.5"/></svg>},
-  {id:'Presets',label:'Mode presets',icon:<svg {...ICON_PROPS}><path d="M4 7h16M4 12h16M4 17h16"/><circle cx="9" cy="7" r="1.6" fill="currentColor" stroke="none"/><circle cx="16" cy="12" r="1.6" fill="currentColor" stroke="none"/><circle cx="11" cy="17" r="1.6" fill="currentColor" stroke="none"/></svg>},
-  {id:'Owners',label:'Owner access',icon:<svg {...ICON_PROPS}><path d="M12 3l7 3v5c0 5-3 8.5-7 10-4-1.5-7-5-7-10V6z"/></svg>},
-  {id:'Wallets',label:'Batch import',icon:NAV_ICONS.Wallets},
-  {id:'Audit',label:'Sensitive · Audit log',icon:<svg {...ICON_PROPS}><rect x="4" y="3" width="16" height="18" rx="1.5"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>},
-  {id:'Health',label:'System health',icon:<svg {...ICON_PROPS}><path d="M3 12h4l2-7 4 14 2-7h6"/></svg>},
+  {id:'Overview',label:'Overview',mobileLabel:'Overview',group:'Manage',icon:ADMIN_OVERVIEW_ICON},
+  {id:'Groups',label:'Groups',mobileLabel:'Groups',group:'Manage',icon:<svg {...RAIL_ICON_PROPS}><circle cx="9" cy="9" r="2.8"/><circle cx="16" cy="10" r="2.2"/><path d="M4 19c.6-3 2.6-4.7 5-4.7s4.4 1.7 5 4.7M14.5 14.6c2 .3 3.4 1.7 3.9 4.4"/></svg>},
+  {id:'Users',label:'Users & ceilings',mobileLabel:'Users',group:'Manage',icon:RAIL_ICONS.Account},
+  {id:'Effective',label:'Effective lookup',mobileLabel:'Lookup',group:'Policy',icon:<svg {...RAIL_ICON_PROPS}><circle cx="10.5" cy="10.5" r="6"/><path d="M15 15l5.5 5.5"/></svg>},
+  {id:'Presets',label:'Mode presets',mobileLabel:'Presets',group:'Policy',icon:<svg {...RAIL_ICON_PROPS}><path d="M4 7h16M4 12h16M4 17h16"/><circle cx="9" cy="7" r="1.6" fill="currentColor" stroke="none"/><circle cx="16" cy="12" r="1.6" fill="currentColor" stroke="none"/><circle cx="11" cy="17" r="1.6" fill="currentColor" stroke="none"/></svg>},
+  {id:'Owners',label:'Owner access',mobileLabel:'Owners',group:'Access',icon:RAIL_ICONS.Admin},
+  {id:'Wallets',label:'Batch import',mobileLabel:'Import',group:'Access',icon:RAIL_ICONS.Wallets},
+  {id:'Audit',label:'Sensitive · Audit log',mobileLabel:'Audit',group:'System',icon:<svg {...RAIL_ICON_PROPS}><rect x="4" y="3" width="16" height="18" rx="1.5"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>},
+  {id:'Health',label:'System health',mobileLabel:'Health',group:'System',icon:<svg {...RAIL_ICON_PROPS}><path d="M3 12h4l2-7 4 14 2-7h6"/></svg>},
 ];
+const ADMIN_GROUPS=['Manage','Policy','Access','System'];
 const ADMIN_SLUGS={Overview:'',Groups:'groups',Users:'users',Effective:'effective',Presets:'presets',Owners:'owners',Wallets:'wallets',Audit:'audit',Health:'health'};
 const SLUG_ADMIN_SECTIONS=Object.fromEntries(Object.entries(ADMIN_SLUGS).map(([section,slug])=>[slug,section]));
 function adminSectionFromLocation(){const segment=window.location.pathname.replace(/^\/dashboard\/admin\/?/,'').replace(/\/+$/,'');return SLUG_ADMIN_SECTIONS[segment]||'Overview';}
-const ADMIN_MOBILE_PRIMARY=['Overview','Groups','Users'];
-const ADMIN_MOBILE_MORE=['Effective','Presets','Owners','Wallets','Audit','Health'];
-function AdminNav({page,go}){return <nav aria-label="Admin sections" className="rail-main-nav"><ul>{ADMIN_SECTIONS.map(section=><li key={section.id}><button aria-current={page===section.id?'page':undefined} onClick={()=>go(section.id)}><span className="nav-icon" aria-hidden="true">{section.icon}</span><span className="nav-label">{section.label}</span></button></li>)}</ul></nav>}
-function AdminBottomBar({page,go,moreOpen,onOpenMore}){return <nav className="mobile-bottombar admin-mobile-bottombar" aria-label="Admin primary">{ADMIN_MOBILE_PRIMARY.map(id=>{const item=ADMIN_SECTIONS.find(section=>section.id===id);return <button key={id} type="button" aria-current={page===id?'page':undefined} onClick={()=>go(id)}><span className="nav-icon" aria-hidden="true">{item.icon}</span><span className="nav-label">{item.label}</span></button>})}<button type="button" aria-current={moreOpen||ADMIN_MOBILE_MORE.includes(page)?'page':undefined} onClick={onOpenMore}><span className="nav-icon" aria-hidden="true">{MORE_ICON}</span><span className="nav-label">More</span></button></nav>}
-function AdminMoreSheet({open,page,go,onClose,onLogout}){return <>{open&&<div className="sheet-backdrop" onClick={onClose}/>}<div className={`more-sheet admin-more-sheet${open?' open':''}`} role="dialog" aria-modal="true" aria-label="More admin pages" aria-hidden={!open}><button type="button" className="sheet-handle" aria-label="Close" onClick={onClose}/><h2>More admin pages</h2><div className="sheet-grid">{ADMIN_MOBILE_MORE.map(id=>{const item=ADMIN_SECTIONS.find(section=>section.id===id);return <button type="button" key={id} aria-current={page===id?'page':undefined} onClick={()=>go(id)}><span className="nav-icon" aria-hidden="true">{item.icon}</span><span className="nav-label">{item.label}</span></button>})}</div><div className="admin-sheet-actions"><a className="b g admin-link" href="/dashboard/">Back to user dashboard</a><button className="b g" onClick={onLogout}>Log out</button></div></div></>}
+const ADMIN_MOBILE_PRIMARY=['Overview','Groups','Users','Presets'];
+const ADMIN_MOBILE_MORE=ADMIN_SECTIONS.map(section=>section.id).filter(id=>!ADMIN_MOBILE_PRIMARY.includes(id));
+function AdminNav({page,go}){
+  const activeGroup=ADMIN_SECTIONS.find(section=>section.id===page)?.group||ADMIN_GROUPS[0];
+  const [openGroups,setOpenGroups]=useState(()=>new Set([activeGroup]));
+  useEffect(()=>{setOpenGroups(current=>current.has(activeGroup)?current:new Set([...current,activeGroup]));},[activeGroup]);
+  function toggleGroup(group){setOpenGroups(current=>{const next=new Set(current);if(next.has(group))next.delete(group);else next.add(group);return next;});}
+  return <div className="admin-rail-sections">{ADMIN_GROUPS.map(group=>{const expanded=openGroups.has(group);const containsCurrent=group===activeGroup;const panelId=`admin-nav-${group.toLowerCase()}`;return <section className="admin-rail-group" key={group}>
+    <button type="button" className={`admin-rail-group-toggle${containsCurrent?' contains-current':''}`} aria-expanded={expanded} aria-controls={panelId} onClick={()=>toggleGroup(group)}><span>{group}</span><span className="admin-rail-group-chevron" aria-hidden="true">{CHEVRON_RIGHT}</span></button>
+    <div id={panelId} className="admin-rail-group-items" hidden={!expanded}>{ADMIN_SECTIONS.filter(section=>section.group===group).map(section=><button type="button" className="nav" key={section.id} aria-current={page===section.id?'page':undefined} onClick={()=>go(section.id)}>{section.icon}<span className="nav-l">{section.label}</span></button>)}</div>
+  </section>;})}</div>;
+}
+function AdminBottomBar({page,go,moreOpen,onOpenMore}){return <nav className="mobile-bottombar admin-mobile-bottombar" aria-label="Admin primary">{ADMIN_MOBILE_PRIMARY.map(id=>{const item=ADMIN_SECTIONS.find(section=>section.id===id);return <button key={id} type="button" aria-current={page===id?'page':undefined} onClick={()=>go(id)}><span className="nav-icon" aria-hidden="true">{item.icon}</span><span className="nav-label">{item.mobileLabel}</span></button>})}<button type="button" aria-current={moreOpen||ADMIN_MOBILE_MORE.includes(page)?'page':undefined} aria-expanded={moreOpen} aria-controls="admin-more-sheet" onClick={onOpenMore}><span className="nav-icon" aria-hidden="true">{MORE_ICON}</span><span className="nav-label">More</span></button></nav>}
+function AdminMoreSheet({open,page,go,onClose,onLogout,restoreFocusFallback}){const layerRef=useRef(null);const closeRef=useRef(null);useModalAccessibility(open,layerRef,{onClose,initialFocusRef:closeRef,restoreFocusFallback});if(!open)return null;return <div ref={layerRef} className="sheet-layer"><div className="sheet-backdrop" onClick={onClose}/><div id="admin-more-sheet" tabIndex="-1" className="more-sheet admin-more-sheet open" role="dialog" aria-modal="true" aria-label="More admin pages"><button ref={closeRef} type="button" className="sheet-handle" aria-label="Close" onClick={onClose}/><h2>More admin pages</h2><div className="sheet-grid">{ADMIN_MOBILE_MORE.map(id=>{const item=ADMIN_SECTIONS.find(section=>section.id===id);return <button type="button" key={id} aria-current={page===id?'page':undefined} onClick={()=>go(id)}><span className="nav-icon" aria-hidden="true">{item.icon}</span><span className="nav-label">{item.mobileLabel}</span></button>})}</div><div className="admin-sheet-actions"><a className="b g admin-link" aria-label="Back to user dashboard" href="/dashboard/"><span className="admin-action-icon" aria-hidden="true">{ADMIN_DASHBOARD_ICON}</span><span>Dashboard</span></a><button type="button" className="b d" onClick={onLogout}><span className="admin-action-icon" aria-hidden="true">{ADMIN_LOGOUT_ICON}</span><span>Log out</span></button></div></div></div>}
 function ScrollTop(){const [visible,setVisible]=useState(false);useEffect(()=>{const update=()=>setVisible(window.scrollY>480);update();window.addEventListener('scroll',update,{passive:true});return()=>window.removeEventListener('scroll',update);},[]);return visible?<button type="button" className="scroll-top" aria-label="Scroll to top" onClick={()=>window.scrollTo({top:0,behavior:'smooth'})}>↑</button>:null;}
-function AdminShell({profile,onLogout}){const theme=resolveDashboardTheme(profile.userId,profile.theme);const [page,setPage]=useState(adminSectionFromLocation());const [moreOpen,setMoreOpen]=useState(false);const [railExpanded,setRailExpandedState]=useState(readRailExpanded);function setRailExpanded(next){setRailExpandedState(value=>{const resolved=typeof next==='function'?next(value):next;writeRailExpanded(resolved);return resolved;});}const live=useLiveSocket();const mobile=useIsMobile();
+function AdminShell({profile,onLogout}){const theme=resolveDashboardTheme(profile.userId,profile.theme);const [page,setPage]=useState(adminSectionFromLocation());const [moreOpen,setMoreOpen]=useState(false);const live=useLiveSocket();const mobile=useIsMobile();
+  const desktopRailFallbackRef=useRef(null);
   // Transient (not URL-based, unlike the section itself) -- which of the 4 user-related stat
   // cards on Overview brought the admin here, so Users can drill down instead of showing the same
   // unfiltered list no matter which card was clicked. Cleared on any navigation away from Users.
   const [usersFilter,setUsersFilter]=useState(null);
-  useEffect(()=>{document.documentElement.dataset.theme=theme;},[theme]);useEffect(()=>{function onPopState(){setPage(adminSectionFromLocation());}window.addEventListener('popstate',onPopState);return()=>window.removeEventListener('popstate',onPopState);},[]);if(!profile.isOwner)return <AdminDenied/>;function go(next,filter){const slug=ADMIN_SLUGS[next];const path=slug?`/dashboard/admin/${slug}`:'/dashboard/admin';if(window.location.pathname!==path)window.history.pushState(null,'',path);setPage(next);setUsersFilter(next==='Users'?filter||null:null);setMoreOpen(false);window.scrollTo({top:0});}const brandMark=<span className="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d={BOLT_PATH} fill="currentColor"/></svg></span>;return <div className={`shell rail-shell admin-shell${moreOpen?' more-open':''}`} data-rail={railExpanded?'expanded':'collapsed'}><ConfirmHost/><ToastHost/><header className="rail-mobile-header"><a className="brand" href="/dashboard/admin" onClick={event=>{event.preventDefault();go('Overview');}}>{brandMark}GhostMint Admin</a><div className="header-right"><span className="status-pill"><span className={`status-dot${live?' live':''}`} aria-hidden="true"/><span aria-live="polite">{live?'Live':'Connecting'}</span></span>{mobile&&<NotificationBell/>}<a className="header-avatar" aria-label="Return to user dashboard" href="/dashboard/">{NAV_ICONS.Account}</a></div></header><aside><div className="rail-top"><a className="brand" href="/dashboard/admin" onClick={event=>{event.preventDefault();go('Overview');}}>{brandMark}<span className="nav-label">GhostMint Admin</span></a></div><AdminNav page={page} go={go}/><nav className="rail-bottom-nav" aria-label="Admin account"><ul><li><a className="admin-rail-link" href="/dashboard/"><span className="nav-icon" aria-hidden="true">{CHEVRON_LEFT}</span><span className="nav-label">User dashboard</span></a></li><li><button onClick={onLogout}><span className="nav-icon" aria-hidden="true">{NAV_ICONS.Account}</span><span className="nav-label">Log out</span></button></li></ul></nav></aside><button type="button" className="rail-edge-toggle" aria-label={railExpanded?'Collapse sidebar':'Expand sidebar'} onClick={()=>setRailExpanded(value=>!value)}>{railExpanded?CHEVRON_LEFT:CHEVRON_RIGHT}</button>{!mobile&&<div className="notification-bell-desktop"><NotificationBell/></div>}<main className="content admin-content" tabIndex="-1"><Admin profile={profile} section={page} go={go} usersFilter={usersFilter}/></main><AdminBottomBar page={page} go={go} moreOpen={moreOpen} onOpenMore={()=>setMoreOpen(value=>!value)}/><AdminMoreSheet open={moreOpen} page={page} go={go} onClose={()=>setMoreOpen(false)} onLogout={onLogout}/><ScrollTop/></div>;}
+  useEffect(()=>{document.documentElement.dataset.theme=theme;},[theme]);useEffect(()=>{function onPopState(){setPage(adminSectionFromLocation());}window.addEventListener('popstate',onPopState);return()=>window.removeEventListener('popstate',onPopState);},[]);if(!profile.isOwner)return <AdminDenied/>;function go(next,filter){const slug=ADMIN_SLUGS[next];const path=slug?`/dashboard/admin/${slug}`:'/dashboard/admin';if(window.location.pathname!==path)window.history.pushState(null,'',path);setPage(next);setUsersFilter(next==='Users'?filter||null:null);setMoreOpen(false);window.scrollTo({top:0});}const selected=ADMIN_SECTIONS.find(section=>section.id===page)||ADMIN_SECTIONS[0];return <div className={`app admin-app${moreOpen?' more-open':''}`} data-m={mobile?'':undefined}><ConfirmHost/><ToastHost/>
+    <aside className="rail admin-rail" role="navigation" aria-label="Admin sections">
+      <a className="brand" href="/dashboard/admin" onClick={event=>{event.preventDefault();go('Overview');}}><div className="brand-mark">G</div><div className="brand-name">GhostMint Admin</div></a>
+      <AdminNav page={page} go={go}/>
+      <div className="railfoot"><a ref={desktopRailFallbackRef} className="nav" href="/dashboard/">{ADMIN_DASHBOARD_ICON}<span className="nav-l">User dashboard</span></a><button type="button" className="nav admin-logout-action" onClick={onLogout}>{ADMIN_LOGOUT_ICON}<span className="nav-l">Log out</span></button></div>
+    </aside>
+    <div className="body"><div className="top admin-top"><div className="admin-top-context"><span>Administration</span><strong>{selected.label}</strong></div><div className="sp"/><div className="livechip"><span className="dot" style={live?undefined:{background:'var(--faint)'}}/><span aria-live="polite">{live?'Live':'Connecting'}</span></div><NotificationBell/><a className="ib admin-dashboard-return" aria-label="Return to user dashboard" href="/dashboard/">{CHEVRON_LEFT}</a></div>
+      <main className="wrap admin-content" tabIndex="-1"><div className="admin-banner" role="status" aria-label="Administration access"><strong>Owner mode</strong><span>{profile.isRootOwner?'Root owner':'Owner'}{(profile.displayName||profile.username)?` · ${profile.displayName||profile.username}`:''}</span></div><Admin profile={profile} section={page} go={go} usersFilter={usersFilter}/></main>
+    </div>
+    <AdminBottomBar page={page} go={go} moreOpen={moreOpen} onOpenMore={()=>setMoreOpen(value=>!value)}/><AdminMoreSheet open={moreOpen} page={page} go={go} onClose={()=>setMoreOpen(false)} onLogout={onLogout} restoreFocusFallback={()=>desktopRailFallbackRef.current}/><ScrollTop/></div>;}
 function isAdminPath(){const path=window.location.pathname.replace(/\/+$/,'');return path==='/dashboard/admin'||path.startsWith('/dashboard/admin/');}
-export default function App(){const [profile,setProfile]=useState(undefined);const [sessionMessage,setSessionMessage]=useState('');const [,forceRender]=useState(0);useEffect(()=>{api('/api/profile').then(value=>{setSessionMessage('');setProfile(value);}).catch(error=>{setSessionMessage(error.message);setProfile(null);});},[]);useEffect(()=>{function onSessionEnded(event){setSessionMessage(event.detail?.message||'Your session is no longer valid.');setProfile(null);}window.addEventListener('ghostmint-session-ended',onSessionEnded);return()=>window.removeEventListener('ghostmint-session-ended',onSessionEnded);},[]);useEffect(()=>{function onPopState(){forceRender(count=>count+1);}window.addEventListener('popstate',onPopState);return()=>window.removeEventListener('popstate',onPopState);},[]);async function logout(request){const all=request?.all===true;try{await api(all?'/api/auth/logout-all':'/api/auth/logout',{method:'POST'});}finally{setSessionMessage(all?'You chose to log out every browser session.':'You logged out of this browser.');setProfile(null);}}function login(value){setSessionMessage('');setProfile(value);}if(profile===undefined)return <main className="loading" aria-live="polite">Loading secure session...</main>;if(!profile)return <Login onLogin={login} sessionMessage={sessionMessage}/>;const shell=isAdminPath()?<AdminShell profile={profile} onLogout={logout}/>:<Shell profile={profile} onLogout={logout} onProfileChange={setProfile}/>;return <TimeFormatProvider value={profile.timeFormat}>{shell}</TimeFormatProvider>;}
+function ProfileLoadFailure({message,onRetry}){return <main className="login-page"><div className="login-card" role="alert">
+  <span className="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d={BOLT_PATH} fill="currentColor"/></svg></span>
+  <p className="eyebrow">Connection problem</p><h1>Dashboard temporarily unavailable</h1>
+  <p>{message||'GhostMint could not load your account. Your session has not been treated as signed out.'}</p>
+  <button type="button" className="b p" onClick={onRetry}>Try again</button>
+</div></main>}
+export default function App(){
+  const [profile,setProfile]=useState(undefined);
+  const [profileError,setProfileError]=useState(null);
+  const [sessionMessage,setSessionMessage]=useState('');
+  const [,forceRender]=useState(0);
+  const profileRequestId=useRef(0);
+  const loadProfile=useCallback(async({showLoading=false}={})=>{
+    const active=++profileRequestId.current;
+    if(showLoading)setProfile(undefined);
+    setProfileError(null);
+    try{
+      const value=await api('/api/profile');
+      if(active!==profileRequestId.current)return;
+      setSessionMessage('');setProfileError(null);setProfile(value);
+    }catch(error){
+      if(active!==profileRequestId.current)return;
+      if(error.status===401){setSessionMessage(error.message);setProfileError(null);setProfile(null);}
+      else setProfileError(error);
+    }
+  },[]);
+  useEffect(()=>{loadProfile({showLoading:true});return()=>{profileRequestId.current+=1;};},[loadProfile]);
+  useEffect(()=>{
+    function onProfileEvent(event){
+      if(!['identity.changed','profile.changed','ws.reconnected'].includes(event.detail?.type))return;
+      loadProfile();
+    }
+    window.addEventListener('ghostmint-ws',onProfileEvent);
+    return()=>window.removeEventListener('ghostmint-ws',onProfileEvent);
+  },[loadProfile]);
+  useEffect(()=>{
+    function onSessionEnded(event){
+      profileRequestId.current+=1;setProfileError(null);
+      setSessionMessage(event.detail?.message||'Your session is no longer valid.');setProfile(null);
+    }
+    window.addEventListener('ghostmint-session-ended',onSessionEnded);
+    return()=>window.removeEventListener('ghostmint-session-ended',onSessionEnded);
+  },[]);
+  useEffect(()=>{function onPopState(){forceRender(count=>count+1);}window.addEventListener('popstate',onPopState);return()=>window.removeEventListener('popstate',onPopState);},[]);
+  async function logout(request){
+    const all=request?.all===true;
+    try{await api(all?'/api/auth/logout-all':'/api/auth/logout',{method:'POST'});}
+    catch{notify('Could not log out. Your session is still active; try again.',{type:'error'});return false;}
+    profileRequestId.current+=1;setProfileError(null);setSessionMessage(all?'You chose to log out every browser session.':'You logged out of this browser.');setProfile(null);return true;
+  }
+  function login(value){profileRequestId.current+=1;setProfileError(null);setSessionMessage('');setProfile(value);}
+  if(profile===undefined){
+    if(profileError)return <ProfileLoadFailure message={profileError.message} onRetry={()=>loadProfile({showLoading:true})}/>;
+    return <main className="loading" aria-live="polite">Loading secure session...</main>;
+  }
+  if(!profile)return <Login onLogin={login} sessionMessage={sessionMessage}/>;
+  const shell=isAdminPath()?<AdminShell profile={profile} onLogout={logout}/>:<Shell profile={profile} onLogout={logout} onProfileChange={setProfile}/>;
+  return <TimeFormatProvider value={profile.timeFormat}>{shell}</TimeFormatProvider>;
+}

@@ -41,8 +41,8 @@ const ACTION_TIERS = Object.freeze({
   // every key export and every setting -- gating key export while leaving this open would be
   // locking the door and posting the key through the letterbox.
   linkcode: 'sensitive',
-  // Switching to Degen removes the confirmation step from every future mint on every platform, so
-  // it is a way to arrange silent spending later rather than a preference.
+  // Modes change account-wide gas aggression, simulation and finality behavior. Manual mints still
+  // confirm, but a stolen chat session must not be able to opt future automated work into Degen.
   mode: 'sensitive',
   // Scheduling a mint commits money to a future moment when nobody will be watching, which is
   // exactly why the commitment is the thing worth gating. The firing itself never consults the

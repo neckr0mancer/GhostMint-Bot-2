@@ -96,12 +96,114 @@ test('pending sniper mode is opt-in, WebSocket-gated, and a persisted per-user c
     error=>error instanceof ValidationError&&/address-filtered pending WebSocket stream/.test(error.issues[0].message));
 });
 
+test('changing transaction mode announces the shared profile after persistence',async()=>{
+  const events=[];
+  const {service}=fixture({
+    governance:{selectPreset:async(userId,preset)=>{
+      assert.equal(userId,'user-a');
+      assert.equal(preset,'safe');
+      return 'safe';
+    }},
+    broadcast:(userId,resource)=>events.push([userId,resource]),
+  });
+  assert.equal(await service.selectMode('user-a','safe'),'safe');
+  assert.deepEqual(events,[['user-a','profile']]);
+});
+
+test('saving and deleting mint presets announce the shared preset resource after persistence',async()=>{
+  const events=[];
+  const calls=[];
+  const {service}=fixture({
+    mintService:{
+      savePreset:async(userId,input)=>{calls.push(['save',userId,input]);return {name:'launch'};},
+      deletePreset:async(userId,name)=>{calls.push(['delete',userId,name]);return name==='launch';},
+    },
+    broadcast:(userId,resource)=>events.push([userId,resource]),
+  });
+  assert.deepEqual(await service.saveMintPreset('user-a',{
+    name:'launch',walletLabel:'alpha',methodSignature:'mint(uint256)',arguments:['1'],
+  }),{name:'launch'});
+  assert.equal(await service.deleteMintPreset('user-a','missing'),false);
+  assert.equal(await service.deleteMintPreset('user-a','launch'),true);
+  assert.equal(calls[0][2].walletAddress,'0x0000000000000000000000000000000000000001');
+  assert.deepEqual(events,[['user-a','presets'],['user-a','presets']]);
+});
+
+test('target-policy and confirmation writes announce the shared resources after persistence',async()=>{
+  const events=[];
+  const targetPolicyService={
+    save:async()=>({targetId:'target-a'}),
+    requestBypass:async()=>({challengeId:'challenge-a',requiresConfirmation:true}),
+    confirmBypass:async()=>({targetId:'target-a',humanVerification:'bypassed'}),
+    reset:async()=>({targetId:'target-a',humanVerification:'on'}),
+    applyPreset:async()=>({challengeId:'challenge-b',requiresConfirmation:true}),
+  };
+  const {service}=fixture({
+    targetPolicyService,
+    governanceRepository:{getPreset:async key=>({key})},
+    triggerExecutionService:{confirm:async()=>({action:'rejected'})},
+    broadcast:(userId,resource)=>events.push([userId,resource]),
+  });
+  await service.updateTargetPolicy('user-a',{targetType:'sniper',targetId:'target-a'});
+  await service.requestTargetBypass('user-a',{targetType:'sniper',targetId:'target-a'});
+  await service.confirmTargetBypass('user-a',{challengeId:'challenge-a',confirmation:'CONFIRM'});
+  await service.resetTargetPolicy('user-a',{targetType:'sniper',targetId:'target-a'});
+  await service.applyTargetPreset('user-a',{targetType:'sniper',targetId:'target-a',presetKey:'safe'});
+  await service.confirmTrigger('user-a','request-a','reject');
+  assert.deepEqual(events,[
+    ['user-a','policies'],
+    ['user-a','policies'],
+    ['user-a','policies'],['user-a','confirmations'],
+    ['user-a','policies'],
+  ]);
+});
+
+test('P&L paging is tenant-scoped and sale-only updates preserve recorded cost, gas, and name',async()=>{
+  const idA='123e4567-e89b-42d3-a456-426614174001';
+  const idB='123e4567-e89b-42d3-a456-426614174002';
+  const state={wallets:[],tasks:[],activity:[],snipers:[],pnl:[
+    {id:idA,userId:'user-a',nm:'Minted 1 NFT — alpha',cost:0.1,sale:0,gas:0.01,net:-0.11,t:3},
+    {id:'123e4567-e89b-42d3-a456-426614174003',userId:'user-a',nm:'Manual',cost:1,sale:2,gas:0.1,net:0.9,t:2},
+    {id:idB,userId:'user-b',nm:'Other tenant',cost:9,sale:9,gas:9,net:-9,t:1},
+  ]};
+  const updates=[];const events=[];
+  const {service}=fixture({getState:()=>state,storage:{updatePnl:async(userId,id,value)=>{
+    updates.push([userId,id,value]);return {id,userId,...value,t:3};}},
+  broadcast:(userId,resource)=>events.push([userId,resource])});
+  const page=await service.pnlPage('user-a',{page:1,pageSize:1});
+  assert.deepEqual({total:page.total,totalPages:page.totalPages,ids:page.items.map(item=>item.id)},
+    {total:2,totalPages:2,ids:[idA]});
+  const saved=await service.recordPnlSale('user-a',idA,{sale:0.5});
+  assert.deepEqual(updates,[['user-a',idA,{nm:'Minted 1 NFT — alpha',cost:0.1,sale:0.5,gas:0.01,net:0.39}]]);
+  assert.equal(saved.net,0.39);
+  assert.deepEqual(events,[['user-a','pnl']]);
+  await assert.rejects(service.recordPnlSale('user-a',idB,{sale:1}),ValidationError);
+  assert.equal(updates.length,1);
+});
+
 test('personal security history cannot widen beyond the authenticated user', async () => {
   let requested;
   const { service } = fixture({ botSecurityRepository: { listRecent: async input => { requested = input; return []; } } });
   await service.securityAudit('user-a', { userId: 'user-b', limit: 20 });
   assert.equal(requested.userId, 'user-a');
   assert.equal(requested.limit, 20);
+});
+
+test('trigger audit paging validates bounds and derives navigation from tenant-scoped totals',async()=>{
+  const calls=[];
+  const triggerAuditRepository={listAuditPage:async(userId,input)=>{
+    calls.push({userId,input});
+    return {total:12,items:[{auditId:'11',userId}]};
+  }};
+  const {service}=fixture({triggerAuditRepository});
+  const page=await service.triggerAuditPage('user-a',{page:'2',pageSize:'5',search:' confirmed '});
+  assert.deepEqual(page,{page:2,pageSize:5,total:12,totalPages:3,hasNext:true,hasPrevious:true,
+    items:[{auditId:'11',userId:'user-a'}]});
+  assert.deepEqual(calls,[{userId:'user-a',input:{limit:5,offset:5,search:'confirmed'}}]);
+  await assert.rejects(service.triggerAuditPage('user-a',{pageSize:'51'}),error=>
+    error instanceof ValidationError&&error.issues[0].field==='pageSize');
+  await assert.rejects(service.triggerAuditPage('user-a',{search:'x'.repeat(201)}),error=>
+    error instanceof ValidationError&&error.issues[0].field==='search');
 });
 
 test('wallet creation generates a valid key server-side and returns only the public wallet details', async () => {
@@ -367,20 +469,29 @@ test('scheduling refuses an address with no contract on it, but not an RPC outag
   const input = { name:'drop', walletLabel:'alpha', contractAddress:'0x'+'a'.repeat(40),
     quantity:1, priceETH:0.01, chain:'ethereum', mintTime:future };
 
-  const empty = fixture({ providerService:{ perform:async(chain,op,fn)=>fn({ getCode:async()=>'0x', call:async()=>'0x' }) } });
+  const rejectedEvents = [];
+  const empty = fixture({
+    broadcast:(userId,resource)=>rejectedEvents.push([userId,resource]),
+    providerService:{ perform:async(chain,op,fn)=>fn({ getCode:async()=>'0x', call:async()=>'0x' }) },
+  });
   await assert.rejects(empty.service.createTask('user-a', input), error => {
     assert.ok(error instanceof ValidationError);
     assert.equal(error.issues[0].field, 'contractAddress');
     assert.match(error.issues[0].message, /no contract deployed/);
     return true;
   });
+  assert.deepEqual(rejectedEvents, [], 'a rejected schedule must not announce a task change');
 
   // Deployed bytecode -> scheduled.
   const saved = [];
+  const scheduledEvents = [];
   const real = fixture({ storage:{ saveTask:async task=>{ saved.push(task); return true; } },
+    broadcast:(userId,resource)=>scheduledEvents.push([userId,resource]),
     providerService:{ perform:async(chain,op,fn)=>fn({ getCode:async()=>'0x60806040', call:async()=>'0x' }) } });
   const task = await real.service.createTask('user-a', input);
   assert.equal(task.contract.toLowerCase(), input.contractAddress.toLowerCase());
+  assert.deepEqual(scheduledEvents, [['user-a','tasks']],
+    'every surface must announce the same shared task resource exactly once after persistence');
 
   // An unreachable provider must NOT block scheduling: refusing because OUR rpc blipped would be
   // worse than the problem being guarded against.

@@ -259,16 +259,22 @@ tooling attempts and report the exact error.
 This register is a routing summary, not permission to implement everything at once. Re-audit each
 item before starting because the application is active and the older backlog contains stale notes.
 
-### Priority execution order (updated 2026-10-05)
+### Priority execution order (owner-locked 2026-10-18)
 
-1. Close and verify the active local Settings fidelity unit.
-2. Complete P0 canonical state parity across Dashboard, Telegram, and Discord, beginning with the
+Do not let re-audits or newly rediscovered bot backlog pre-empt Settings and Admin again. Settings
+fidelity is locally closed and verified; its existing change set awaits an explicitly requested
+commit/deployment. **Admin is the next implementation unit.** Reopen cross-platform bot work before
+Admin only if a reproduced defect directly blocks the Admin page.
+
+1. Preserve the locally verified Settings fidelity unit; commit/deploy it only when requested.
+2. Complete Admin fidelity and state behavior.
+3. Complete P0 canonical state parity across Dashboard, Telegram, and Discord, beginning with the
    reported bot-created schedule that is missing from the linked dashboard account.
-3. Deploy and live-accept the recent Schedule price/time/configuration controls through all three
+4. Deploy and live-accept the recent Schedule price/time/configuration controls through all three
    surfaces.
-4. Define and implement the address-backed wallet-history, evidence-based provenance, and reimport
-   recovery contract before claiming Wallets or History complete.
-5. Complete Admin fidelity and state behavior.
+5. Finish the guarded address-backed wallet-history activation contract before claiming Wallets or
+   History complete; the normalized ledger/read surfaces and finalized-only partial mode already
+   exist locally.
 6. Complete Account live verification.
 7. Complete the remaining Wallets surfaces and integrate the authoritative history source.
 8. Complete History integration and fidelity.

@@ -712,8 +712,8 @@ The older prototype sentence saying the dashboard could only consume a link code
 by the owner's later Generate/Refresh request; the prototype, README, and roadmap now record that
 an already-authenticated dashboard session may generate one while Discord remains consume-only.
 
-**Settings fidelity implementation substantially completed locally 2026-10-07; commit,
-deployment, and live acceptance remain pending.** Migration 070 passed a disposable in-memory
+**Settings fidelity implementation closed locally 2026-10-18; commit and deployment remain
+pending.** Migration 070 passed a disposable in-memory
 PostgreSQL upgrade check covering existing-user backfill, defaults, NOT NULL and CHECK
 enforcement, repository restart persistence, tenant separation, and idempotent reruns. The focused
 render matrix passed at desktop, tablet, and a true 390px emulated viewport across Dark and
@@ -725,7 +725,38 @@ low-balance, and API-usage behavior remains backed by the existing services rath
 UI logic. Profile-backed writes use per-control busy states and roll back failed optimistic
 changes with inline errors; request-owning Gas, API-usage, and OpenSea surfaces retain truthful
 loading, empty, error, and retry states. The new persisted 12/24-hour preference is shared across
-dashboard timestamp displays without changing UTC storage.
+dashboard timestamp displays without changing UTC storage. The closure pass ran the changed-area
+Settings/dashboard/admin/account/security suites directly (149/149), built the production dashboard,
+and exercised the signed-in narrow rendered page across every tab, keyboard tab movement,
+confirmation Escape/focus restoration, populated Gas, API usage loading-to-empty, and Dark/Light
+switching with Dark restored afterward. It also closed stale-period/chain rendering, false session
+expiry on profile outages, notification-retention drift, and dialog focus/background accessibility.
+
+**Admin fidelity/state implementation closed locally 2026-10-19; commit and deployment remain
+pending.** The pass covered Overview, Groups, Users, Effective lookup, Presets, Owners, Wallet
+import, Audit, and Health without rebuilding their existing routes. Audit now uses real filtered
+pagination (25 rows/page) rather than a fixed latest-200 snapshot. Admin forms preserve and restore
+their controls while their own consequential request runs; unrelated sections stay usable. A failed
+30-second refresh keeps the last successful data and any in-progress form mounted with an inline
+Retry. Groups expose their saved retention policy, metric drilldowns use the repository's exact
+dashboard/24-hour classifications, mixed-chain wallet import defaults to per-wallet detection, and
+successful mutations send scoped live invalidations to current owners and affected user profiles.
+The pass also corrected nested interactive user cards, focus containment/restoration and background
+inertness for Admin overlays and mobile sheets. A final shell correction moved Admin onto the same
+labelled 222px prototype rail as the user dashboard, restored the missing Overview glyph, grouped
+the nine destinations into independently collapsible Manage/Policy/Access/System sections, and
+pinned a house-labelled Dashboard action and a red danger-styled Log out action with its exit-door
+icon beneath a hidden-scrollbar middle rail. Mobile fills all five available nav slots and places
+Dashboard and the red Log out action side-by-side in More; both Admin and user
+More sheets dismiss through their scrim as well as Escape/handle without making the scrim inert. The
+focused regression set passed 69 named checks plus the now 18-check Admin fidelity/navigation suite; targeted
+ESLint and `git diff --check` passed, and the production Vite build passed with 83 modules and only
+the existing large-chunk warning. Signed-in browser acceptance covered the labelled desktop rail,
+group expand/collapse, pinned footer, five-slot mobile bar, paired mobile account actions, both More
+sheets, outside-tap/Escape dismissal, all nine Admin pages, User
+Details focus behavior, Groups retention, and Wallet import.
+Production error injection, a true non-root merge-owner walkthrough, and DB-to-socket account-merge
+acceptance stay in the later global/release matrix rather than reopening this local fidelity unit.
 
 ## 11.7 Batch — two findings, one of which was not a bug
 
@@ -932,13 +963,14 @@ still unverified on:
 - **Automation** — all tabs: snipers, social rules, and the policy editors inside them
 - **Wallets** — including the create and import forms, which have had no prototype pass at all
 - **History** — all tabs
-- **Settings** — local fidelity implementation substantially complete 2026-10-07: tabbed
+- **Settings** — local fidelity implementation closed 2026-10-18: tabbed
   organization, owner-only API usage, shared 12/24-hour preference, keyboard-accessible tab
   navigation, and targeted loading/empty/failure/retry states are implemented. A focused
   Dark/Light render matrix passed at 1440, 1024, 768, and a true emulated 390px viewport, with
   no document-level mobile overflow and the active tab kept visible. Migration 070 also passed
-  its disposable in-memory PostgreSQL upgrade and repository checks. Commit, deployment, and
-  production live acceptance remain pending.
+  its disposable in-memory PostgreSQL upgrade and repository checks. The final focused closure
+  passed 149/149 changed-area tests, the production dashboard build, and signed-in narrow browser interaction in
+  both primary themes. Commit, deployment, and production acceptance remain pending.
 - **Account** — populated-state prototype pass complete; Dark/Light browser checks with a truthful,
   browser-only profile fixture completed at phone, tablet, and desktop widths. Live code generation/
   logout-all still remain human walkthrough items because they intentionally affect real account/session state.

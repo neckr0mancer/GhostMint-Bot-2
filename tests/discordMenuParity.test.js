@@ -204,7 +204,7 @@ test('menu:mode offers every preset once advanced modes are allowed', async () =
   assert.deepEqual(ids, ['mode:pick:ultra_fast', 'mode:pick:fast', 'mode:pick:semi_safe', 'mode:pick:safe', 'menu:settings']);
 });
 
-test('mode:pick:fast calls the same commands.selectMode the /mode slash command uses, then re-renders with the new current preset checked', async () => {
+test('mode:pick:fast asks for confirmation before mode:apply:fast changes the shared preset', async () => {
   const selected = [];
   const { handler } = fixture({
     commands: {
@@ -215,10 +215,52 @@ test('mode:pick:fast calls the same commands.selectMode the /mode slash command 
   });
   const tap = buttonInteraction('mode:pick:fast');
   await handler(tap);
+  assert.deepEqual(selected, []);
+  assert.match(tap.updates[0].content, /Confirm transaction mode/);
+  assert.deepEqual(tap.updates[0].components.flatMap(r => r.components).map(b => b.custom_id),
+    ['mode:apply:fast', 'menu:mode']);
+
+  const confirm = buttonInteraction('mode:apply:fast');
+  await handler(confirm);
   assert.deepEqual(selected, [{ userId: 'internal-user', key: 'fast' }]);
-  assert.match(tap.updates[0].content, /Fast/);
-  const current = tap.updates[0].components.flatMap(r => r.components).find(b => b.custom_id === 'mode:pick:fast');
+  assert.match(confirm.updates[0].content, /Fast/);
+  const current = confirm.updates[0].components.flatMap(r => r.components).find(b => b.custom_id === 'mode:pick:fast');
   assert.match(current.label, /^✅ /);
+});
+
+test('a stale advanced-mode button cannot bypass revoked access', async () => {
+  const selected = [];
+  const { handler } = fixture({ commands: {
+    advancedModesAllowed: async () => false,
+    selectMode: async (userId, key) => { selected.push({ userId, key }); return key; },
+  } });
+  const tap = buttonInteraction('mode:pick:fast');
+  await handler(tap);
+
+  assert.deepEqual(selected, []);
+  assert.match(tap.updates[0].content, /require group or admin access/);
+  assert.equal(tap.updates[0].components.flatMap(r => r.components)
+    .some(button => button.custom_id === 'mode:pick:fast'), false);
+
+  const staleConfirm = buttonInteraction('mode:apply:fast');
+  await handler(staleConfirm);
+  assert.deepEqual(selected, []);
+  assert.match(staleConfirm.updates[0].content, /require group or admin access/);
+});
+
+test('mode:apply rechecks the password gate before changing an account-wide mode', async () => {
+  const selected = [];
+  const { handler } = fixture({
+    actionGate: { allows: async () => false },
+    commands: { selectMode: async (userId, key) => { selected.push({ userId, key }); return key; } },
+  });
+  const tap = buttonInteraction('mode:apply:safe');
+  await handler(tap);
+
+  assert.deepEqual(selected, []);
+  assert.match(tap.updates[0].content, /Locked/);
+  assert.ok(tap.updates[0].components.flatMap(row => row.components)
+    .some(button => button.custom_id === 'gate:unlock:open'));
 });
 
 test('an unknown mode:pick preset is refused rather than passed through to selectMode', async () => {

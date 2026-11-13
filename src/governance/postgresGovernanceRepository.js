@@ -20,8 +20,8 @@ function mapPreset(row) {
   };
 }
 
-// Degen (ultra_fast) and Fast trade away enough safety (skipped/lightened confirmation and
-// verification) that picking them requires opt-in: either the caller's seat group allows it for
+// Degen (ultra_fast) and Fast trade away enough automated safeguards (simulation/finality and gas
+// aggression) that picking them requires opt-in: either the caller's seat group allows it for
 // everyone assigned to it, or the caller has been granted it individually regardless of group.
 const ADVANCED_PRESET_KEYS = Object.freeze(['ultra_fast', 'fast']);
 
@@ -195,10 +195,14 @@ function createPostgresGovernanceRepository(pool) {
 
     async listGroups() {
       const result=await pool.query(`SELECT name,max_transaction_value_wei,daily_spending_budget_wei,
-        gas_ceiling_gwei,simulation_forced,advanced_modes_allowed,updated_at FROM seat_groups ORDER BY LOWER(name)`);
+        gas_ceiling_gwei,simulation_forced,advanced_modes_allowed,retention_period_days,
+        require_active_subscription,require_recent_activity_days,updated_at
+        FROM seat_groups ORDER BY LOWER(name)`);
       return result.rows.map(row=>({name:row.name,maxTransactionValueWei:row.max_transaction_value_wei,
         dailySpendingBudgetWei:row.daily_spending_budget_wei,gasCeilingGwei:Number(row.gas_ceiling_gwei),
-        simulationForced:row.simulation_forced,advancedModesAllowed:row.advanced_modes_allowed,updatedAt:row.updated_at}));
+        simulationForced:row.simulation_forced,advancedModesAllowed:row.advanced_modes_allowed,
+        retentionPeriodDays:row.retention_period_days,requireActiveSubscription:row.require_active_subscription,
+        requireRecentActivityDays:row.require_recent_activity_days,updatedAt:row.updated_at}));
     },
 
     async listGovernedUsers() {
@@ -212,6 +216,14 @@ function createPostgresGovernanceRepository(pool) {
         sg.advanced_modes_allowed AS group_advanced,
         COALESCE(JSON_AGG(JSON_BUILD_OBJECT('platform',la.platform,'platformUserId',la.platform_user_id)
           ORDER BY la.platform) FILTER (WHERE la.platform IS NOT NULL),'[]'::JSON) AS linked_accounts,
+        EXISTS (SELECT 1 FROM dashboard_sessions ds
+          WHERE ds.user_id=u.user_id AND ds.revoked_at IS NULL AND ds.expires_at>NOW()
+            AND ds.last_seen_at>=NOW()-INTERVAL '15 minutes') AS dashboard_active,
+        (EXISTS (SELECT 1 FROM dashboard_sessions ds
+          WHERE ds.user_id=u.user_id AND ds.revoked_at IS NULL AND ds.expires_at>NOW()
+            AND ds.last_seen_at>=NOW()-INTERVAL '15 minutes')
+          OR EXISTS (SELECT 1 FROM activity a
+            WHERE a.user_id=u.user_id AND a.occurred_at>=NOW()-INTERVAL '24 hours')) AS active_any_platform_24h,
         GREATEST(
           (SELECT MAX(last_seen_at) FROM dashboard_sessions WHERE user_id=u.user_id AND revoked_at IS NULL),
           (SELECT MAX(occurred_at) FROM activity WHERE user_id=u.user_id)
@@ -244,6 +256,7 @@ function createPostgresGovernanceRepository(pool) {
         scheduledRemovalAt:row.scheduled_removal_at,advancedModesAllowed:row.advanced_modes_allowed,
         resolvedSimulationForced:row.simulation_forced??row.group_simulation_forced??true,
         resolvedAdvancedModesAllowed:row.is_owner||row.advanced_modes_allowed||row.group_advanced||false,
+        dashboardActive:row.dashboard_active===true,activeAnyPlatform24h:row.active_any_platform_24h===true,
         lastActiveAt:row.last_active_at,
         linkedAccounts:row.linked_accounts}));
     },
@@ -285,16 +298,36 @@ function createPostgresGovernanceRepository(pool) {
       const result = await pool.query(`SELECT u.is_owner,ug.max_transaction_value_wei AS user_max,
         ug.daily_spending_budget_wei AS user_daily,ug.gas_ceiling_gwei AS user_gas,
         ug.simulation_forced AS user_simulation_forced,
+        ug.selected_preset_key AS requested_preset_key,
         ug.advanced_modes_allowed AS user_advanced,sg.advanced_modes_allowed AS group_advanced,
         sg.max_transaction_value_wei AS group_max,sg.daily_spending_budget_wei AS group_daily,
         sg.gas_ceiling_gwei AS group_gas,sg.simulation_forced AS group_simulation_forced,
         mp.* FROM users u LEFT JOIN user_governance ug ON ug.user_id=u.user_id
         LEFT JOIN seat_groups sg ON sg.group_id=ug.group_id
-        LEFT JOIN mode_presets mp ON mp.preset_key=COALESCE(ug.selected_preset_key,(SELECT preset_key FROM mode_presets WHERE is_default))
+        LEFT JOIN mode_presets mp ON mp.preset_key=COALESCE(
+          CASE WHEN ug.selected_preset_key IN ('ultra_fast','fast')
+            AND NOT (u.is_owner OR COALESCE(ug.advanced_modes_allowed,sg.advanced_modes_allowed,FALSE))
+            THEN NULL ELSE ug.selected_preset_key END,
+          (SELECT preset_key FROM mode_presets WHERE is_default LIMIT 1))
         WHERE u.user_id=$1`, [userId]);
       if (!result.rowCount) throw new Error('User not found');
       const row = result.rows[0];
       const defaults = defaultPolicy(chain);
+      // A user-specific value is an override: explicit false revokes a group grant, while null
+      // inherits the group setting. Keep this identical to checkAdvancedModesAllowed() and to the
+      // JOIN predicate above so the returned flag can never disagree with the preset we resolved.
+      const advancedModesAllowed = row.is_owner === true
+        || (row.user_advanced ?? row.group_advanced ?? false) === true;
+      const revokedAdvancedPreset = ADVANCED_PRESET_KEYS.includes(row.requested_preset_key)
+        && !advancedModesAllowed;
+      // The SELECT above already resolves this request to the safe default. Clearing the stale
+      // selection as a guarded second write makes that downgrade durable without erasing a newer
+      // choice made concurrently in another session. If the cleanup cannot be persisted, throw:
+      // a transaction must fail closed rather than silently keep a revoked high-risk preference.
+      if (revokedAdvancedPreset) {
+        await pool.query(`UPDATE user_governance SET selected_preset_key=NULL,updated_at=NOW()
+          WHERE user_id=$1 AND selected_preset_key=$2`, [userId, row.requested_preset_key]);
+      }
       return {
         isOwner: row.is_owner,
         maxTransactionValueWei: BigInt(row.user_max ?? row.group_max ?? defaults.maxTransactionValueWei),
@@ -302,7 +335,7 @@ function createPostgresGovernanceRepository(pool) {
         gasCeilingGwei: Number(row.user_gas ?? row.group_gas ?? defaults.gasCeilingGwei),
         simulationForced: row.user_simulation_forced ?? row.group_simulation_forced ?? true,
         preset: mapPreset(row),
-        advancedModesAllowed: row.is_owner || row.user_advanced || row.group_advanced || false,
+        advancedModesAllowed,
       };
     },
 

@@ -27,8 +27,9 @@ const discordMenus = require('./menus');
 const mintFlowDecision = require('../mint/mintFlowDecision');
 const { buildOpenSeaScheduleTaskData } = require('../mint/openSeaScheduleDraft');
 const { scheduleStageKey } = require('../mint/scheduleStagePlanning');
-const { canFollowTimeChanges, clearPriceCap, setPriceCap, taskPolicyInput,
+const { canFollowTimeChanges, clearPriceCap, setPriceCap,
   toggleAutoReschedule } = require('../scheduler/schedulePolicyDraft');
+const { scheduleTaskFromGuidedFlow } = require('../scheduler/taskCommandAdapter');
 const watchRuleFlowDecision = require('../social/watchRuleFlowDecision');
 const sniperFlowDecision = require('../sniper/sniperFlowDecision');
 
@@ -134,9 +135,24 @@ function commandDefinitions({ supportedChains = [], chains = {} } = {}) {
   commands.push(new SlashCommandBuilder().setName('activity').setDescription('📊 Show your mint activity')
     .addIntegerOption(o=>o.setName('page').setDescription('Page number').setMinValue(1)));
   commands.push(new SlashCommandBuilder().setName('pnl').setDescription('Manage your P&L records')
-    .addSubcommand(c => c.setName('list').setDescription('List your P&L records'))
+    .addSubcommand(c => c.setName('list').setDescription('List your P&L records')
+      .addIntegerOption(o=>o.setName('page').setDescription('Page number').setMinValue(1)))
     .addSubcommand(c => c.setName('add').setDescription('Add a P&L record').addStringOption(o => o.setName('input').setDescription('Record JSON').setRequired(true)))
+    .addSubcommand(c => c.setName('sale').setDescription('Record sale proceeds without changing stored cost or gas')
+      .addStringOption(o => o.setName('id').setDescription('Record UUID').setRequired(true))
+      .addNumberOption(o => o.setName('amount').setDescription('Sale proceeds in the record native currency').setRequired(true).setMinValue(0)))
     .addSubcommand(c => c.setName('delete').setDescription('Delete a P&L record').addStringOption(o => o.setName('id').setDescription('Record UUID').setRequired(true)).addBooleanOption(o => o.setName('confirm').setDescription('Confirm deletion').setRequired(true))));
+  commands.push(new SlashCommandBuilder().setName('mint-preset').setDescription('Save and use reusable mint configurations')
+    .addSubcommand(c => c.setName('list').setDescription('List your saved mint presets'))
+    .addSubcommand(c => c.setName('save').setDescription('Save a validated mint preset from JSON')
+      .addStringOption(o => o.setName('input').setDescription('Preset JSON, including walletLabel').setRequired(true)))
+    .addSubcommand(c => c.setName('use').setDescription('Simulate and execute a saved mint preset')
+      .addStringOption(o => o.setName('name').setDescription('Saved preset name').setRequired(true).setAutocomplete(true))
+      .addStringOption(o => o.setName('wallet').setDescription('Paying wallet label').setRequired(true).setAutocomplete(true))
+      .addBooleanOption(o => o.setName('confirm').setDescription('Confirm this value-bearing mint').setRequired(true)))
+    .addSubcommand(c => c.setName('delete').setDescription('Permanently delete a saved mint preset')
+      .addStringOption(o => o.setName('name').setDescription('Saved preset name').setRequired(true).setAutocomplete(true))
+      .addBooleanOption(o => o.setName('confirm').setDescription('Confirm permanent deletion').setRequired(true))));
   commands.push(new SlashCommandBuilder().setName('gas').setDescription('⛽ Show live chain fee data')
     .addStringOption(o => chainOption(o)));
   commands.push(new SlashCommandBuilder().setName('sniper').setDescription('🎯 Manage wallet-copy snipers')
@@ -149,6 +165,9 @@ function commandDefinitions({ supportedChains = [], chains = {} } = {}) {
       .addStringOption(o => o.setName('patch').setDescription('Validated patch JSON').setRequired(true))
       .addBooleanOption(o=>o.setName('confirm').setDescription('Confirm automated copy configuration change').setRequired(true))
       .addBooleanOption(o=>o.setName('accept-pending-risk').setDescription('Required true when switching to pending mode')))
+    .addSubcommand(c => c.setName('remove').setDescription('Permanently remove a wallet-copy sniper')
+      .addStringOption(o => o.setName('id').setDescription('Sniper UUID').setRequired(true))
+      .addBooleanOption(o=>o.setName('confirm').setDescription('Confirm permanent removal').setRequired(true)))
     .addSubcommand(c => c.setName('list').setDescription('List wallet-copy snipers'))
     .addSubcommand(c => c.setName('status').setDescription('Show a wallet-copy sniper').addStringOption(o => o.setName('id').setDescription('Sniper UUID').setRequired(true)))
     .addSubcommand(c => c.setName('default').setDescription('Set copy timing for newly created snipers')
@@ -158,7 +177,7 @@ function commandDefinitions({ supportedChains = [], chains = {} } = {}) {
       .addBooleanOption(o=>o.setName('accept-pending-risk').setDescription('Must be true when choosing pending mode'))));
   commands.push(new SlashCommandBuilder().setName('mode').setDescription('🎛️ Select your transaction mode preset')
     .addStringOption(o => o.setName('preset').setDescription('Preset').setRequired(true).addChoices(
-      { name: '🔥 Degen -- fastest, high gas, no confirmation', value: 'ultra_fast' },
+      { name: '🔥 Degen -- fastest, aggressive gas, manual confirmation remains', value: 'ultra_fast' },
       { name: '⚡ Fast -- quick, higher gas, still confirms', value: 'fast' },
       { name: '🐢 Cautious -- careful, moderate gas', value: 'semi_safe' },
       { name: '🛡️ Normie -- slowest, safest, network-price gas', value: 'safe' },
@@ -490,14 +509,8 @@ async function finishTaskScheduleDiscord(ctx, respond, platformUserId, userId, f
   const { commands, flowState, rateLimiter } = ctx;
   const backToMenu = [discordMenus.row([discordMenus.button('⬅️ Back to menu', 'menu:main')])];
   try {
-    rateLimiter.check('discord', userId, 'task');
-    const task = await commands.createTask(userId, {
-      name: flowData.name, walletLabel: flowData.walletLabel, contractAddress: flowData.contractAddress,
-      chain: flowData.chain, quantity: flowData.quantity || 1, priceETH: flowData.priceETH, mintTime: flowData.mintTime,
-      viaOpenSea: flowData.viaOpenSea, stageUuid: flowData.stageUuid, stageLabel: flowData.stageLabel,
-      stageType: flowData.stageType, eligibilityMode: flowData.eligibilityMode,
-      eligibilityDeadline: flowData.eligibilityDeadline,
-      ...taskPolicyInput(flowData),
+    const task = await scheduleTaskFromGuidedFlow({
+      platform: 'discord', userId, flowData, commands, rateLimiter,
     });
     flowState.clear('discord', platformUserId);
     // Reuses the same task:cancel:ask:<id> step tasksMenu/taskActions already use on Telegram -- a
@@ -767,6 +780,33 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
       if (data.startsWith('mode:pick:')) {
         const presetKey = data.slice('mode:pick:'.length);
         if (!discordMenus.MODE_META[presetKey]) return dcRespond(interaction, discordMenus.mainMenu({ isOwner: await ownerFlag(userId), security: await securityStatus(userId) }));
+        if (!await actionGate.allows(userId, 'discord', platformUserId, 'mode')) {
+          return dcRespond(interaction, discordMenus.gateUnlockCard({ action: 'mode' }));
+        }
+        const advancedModesAllowed = await commands.advancedModesAllowed(userId);
+        if (discordMenus.GATED_PRESET_KEYS.includes(presetKey) && !advancedModesAllowed) {
+          const [presets, currentMode] = await Promise.all([
+            commands.modePresets(), commands.currentMode(userId),
+          ]);
+          return dcRespond(interaction, discordMenus.modeMenu({ currentKey: currentMode?.key, presets, advancedModesAllowed }));
+        }
+        return dcRespond(interaction, discordMenus.modeConfirmation(presetKey));
+      }
+      if (data.startsWith('mode:apply:')) {
+        const presetKey = data.slice('mode:apply:'.length);
+        if (!discordMenus.MODE_META[presetKey]) return dcRespond(interaction, discordMenus.mainMenu({ isOwner: await ownerFlag(userId), security: await securityStatus(userId) }));
+        if (!await actionGate.allows(userId, 'discord', platformUserId, 'mode')) {
+          return dcRespond(interaction, discordMenus.gateUnlockCard({ action: 'mode' }));
+        }
+        const accessStillAllowed = await commands.advancedModesAllowed(userId);
+        if (discordMenus.GATED_PRESET_KEYS.includes(presetKey) && !accessStillAllowed) {
+          const [presets, currentMode] = await Promise.all([
+            commands.modePresets(), commands.currentMode(userId),
+          ]);
+          return dcRespond(interaction, discordMenus.modeMenu({
+            currentKey: currentMode?.key, presets, advancedModesAllowed: accessStillAllowed,
+          }));
+        }
         await commands.selectMode(userId, presetKey);
         const [presets, currentMode, advancedModesAllowed] = await Promise.all([
           commands.modePresets(), commands.currentMode(userId), commands.advancedModesAllowed(userId),
@@ -1907,6 +1947,14 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
           }));
           return;
         }
+        if (interaction.commandName === 'mint-preset' && focused.name === 'name') {
+          const query = String(focused.value || '').toLowerCase();
+          const presets = await commands.mintPresets(userId);
+          const names = presets.map(preset => preset.name)
+            .filter(name => name.toLowerCase().includes(query)).slice(0, 25);
+          await interaction.respond(names.map(name => ({ name, value:name })));
+          return;
+        }
         const choices = (focused.name === 'label' || focused.name === 'wallet') ? commands.wallets(userId).map(w => w.label) : [];
         const query = String(focused.value || '').toLowerCase();
         const filtered = choices.filter(label => label.toLowerCase().includes(query)).slice(0, 25);
@@ -2081,9 +2129,45 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
         case 'activity': { const page=await commands.activityPage(userId,{page:interaction.options.getInteger('page')||1}); message=`${formatRows(page.items,'No activity yet.',item=>`${item.status}: ${item.title}${item.address ? ` to \`${item.address}\`` : ''} — ${item.walletLabel}`)}\nPage ${page.page}/${page.totalPages} (${page.total} total)`; break; }
         case 'pnl': {
           const action = interaction.options.getSubcommand();
-          if (action === 'list') message = formatRows(commands.pnl(userId), 'No P&L records.', item => `#${item.id} ${item.nm} — net ${item.net}`);
+          if(action !== 'list')rateLimiter.check('discord',userId,'pnl');
+          if (action === 'list') {
+            const page=await commands.pnlPage(userId,{page:interaction.options.getInteger('page')||1});
+            message=`${formatRows(page.items,'No P&L records.',item=>`#${item.id} ${item.nm} — net ${item.net}`)}\nPage ${page.page}/${page.totalPages} (${page.total} total)`;
+          }
           else if (action === 'add') { const record = await commands.addPnl(userId, json(interaction.options.getString('input'))); message = `P&L record #${record.id} saved.`; }
+          else if (action === 'sale') { const record=await commands.recordPnlSale(userId,
+            interaction.options.getString('id'),{sale:interaction.options.getNumber('amount')});
+          message=`Sale recorded for P&L record #${record.id}; net ${record.net}.`; }
           else { confirmation(interaction); message = `P&L record #${await commands.deletePnl(userId, interaction.options.getString('id'))} deleted.`; }
+          break;
+        }
+        case 'mint-preset': {
+          const action = interaction.options.getSubcommand();
+          // Listing is a read-only account view and must not consume the sensitive-action bucket;
+          // save/use/delete do. This also prevents harmless browsing from blocking a later mint.
+          if(action !== 'list')rateLimiter.check('discord',userId,'mint-preset');
+          if (action === 'list') {
+            const presets = await commands.mintPresets(userId);
+            message = formatRows(presets, 'No mint presets saved.',
+              preset => `${preset.name} — ${preset.methodSignature} — ${preset.chain}`);
+          } else if (action === 'save') {
+            const saved = await commands.saveMintPreset(userId, json(interaction.options.getString('input')));
+            message = `Mint preset ${saved.name} saved.`;
+          } else if (action === 'delete') {
+            confirmation(interaction);
+            const name = interaction.options.getString('name');
+            const deleted = await commands.deleteMintPreset(userId, name);
+            message = deleted ? `Mint preset ${name} deleted.` : `Mint preset ${name} was already removed.`;
+          } else {
+            confirmation(interaction);
+            const name = interaction.options.getString('name');
+            const prepared = await commands.prepareMint(userId, {
+              walletLabel:interaction.options.getString('wallet'),presetName:name,
+            });
+            const result = await commands.submitPreparedMint(userId, prepared);
+            const state = String(result?.state || 'submitted');
+            message = `Preset mint ${state}.${result?.txHash ? ` Transaction: ${result.txHash}` : ''}`;
+          }
           break;
         }
         case 'gas': {
@@ -2112,6 +2196,10 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
             const sniper=await commands.updateSniper(userId,interaction.options.getString('id'),{...patch,
               pendingRiskAccepted:interaction.options.getBoolean('accept-pending-risk') === true});
             message=`Copy sniper ${sniper.label} updated; mode ${(sniper.observationMode||'confirmed')==='pending'?'pending mempool (high risk)':'after confirmation'}.`;
+          } else if (action === 'remove') {
+            confirmation(interaction);
+            const id=await commands.removeSniper(userId,interaction.options.getString('id'));
+            message=`Copy sniper ${id} removed.`;
           } else if (action === 'default') {
             const timing=interaction.options.getString('timing');
             const saved=await commands.setSniperObservationDefault(userId,{observationMode:timing,
@@ -2124,7 +2212,15 @@ function createDiscordInteractionHandler({ identity, commands, allowedGuildId, a
           }
           break;
         }
-        case 'mode': confirmation(interaction);message = `Transaction mode set to ${await commands.selectMode(userId, interaction.options.getString('preset'))}.`; break;
+        case 'mode': {
+          confirmation(interaction);
+          if (!await actionGate.allows(userId, 'discord', discordId, 'mode')) {
+            await interaction.editReply(discordMenus.gateUnlockCard({ action: 'mode' }));
+            return;
+          }
+          message = `Transaction mode set to ${await commands.selectMode(userId, interaction.options.getString('preset'))}.`;
+          break;
+        }
         case 'admin': confirmation(interaction);message = await commands.admin(userId, interaction.options.getString('action')); break;
         case 'watch': {
           const action = interaction.options.getSubcommand();

@@ -5,8 +5,8 @@ const { createWalletHistoryService } = require('../src/walletHistory/service');
 
 const wallet = { id: 7, chain: 'Ethereum', address: '0x00000000000000000000000000000000000000A7' };
 
-function fixture({ supported = false, subject = null, fetchError = null, supportedChains = [],
-  now = () => Date.now() } = {}) {
+function fixture({ supported = false, subject = null, fetchError = null, applyError = null,
+  supportedChains = [], now = () => Date.now() } = {}) {
   const calls = [];
   const repository = {
     listPage: async (userId, input) => {
@@ -25,7 +25,11 @@ function fixture({ supported = false, subject = null, fetchError = null, support
     queueSync: async input => { calls.push(['queue', input]); return { state:'queued' }; },
     getSubject: async input => { calls.push(['get', input]); return subject; },
     beginSync: async input => { calls.push(['begin', input]); return { generation: 3 }; },
-    applyProviderPage: async input => { calls.push(['apply', input]); return { state: 'current', generation: input.generation, cursor: null }; },
+    applyProviderPage: async input => {
+      calls.push(['apply', input]);
+      if (applyError) throw applyError;
+      return { state: 'current', generation: input.generation, cursor: null };
+    },
     markSyncError: async input => { calls.push(['error', input]); return { state:'error' }; },
     deleteSubject: async input => { calls.push(['delete', input]); return true; },
   };
@@ -114,6 +118,45 @@ test('configured wallet history sync is queued without pretending it already ran
   assert.equal(calls[0][1].trackingStartBlock, '100');
   assert.equal(calls.some(call => call[0] === 'fetch'), false);
   assert.equal(calls.some(call => call[0] === 'queue'), true);
+});
+
+test('a stale refresh cannot recreate or queue history for a removed wallet', async () => {
+  const {calls,repository,service}=fixture({supported:true});
+  repository.registerSubject=async input=>{
+    calls.push(['register',input]);
+    throw Object.assign(new Error('wallet removed'),{code:'WALLET_HISTORY_SYNC_STALE'});
+  };
+  const result=await service.requestSync('user-a',wallet);
+  assert.equal(result.accepted,false);
+  assert.equal(result.state,'paused');
+  assert.match(result.message,/reimport/i);
+  assert.equal(calls.some(call=>call[0]==='queue'),false);
+});
+
+test('a multi-chain stale refresh never claims removed-wallet syncs were queued', async () => {
+  const {calls,repository,service}=fixture({supported:true,supportedChains:['ethereum','base']});
+  repository.registerSubject=async input=>{
+    calls.push(['register',input]);
+    throw Object.assign(new Error('wallet removed'),{code:'WALLET_HISTORY_SYNC_STALE'});
+  };
+  const result=await service.requestSync('user-a',wallet);
+  assert.equal(result.accepted,false);
+  assert.equal(result.state,'paused');
+  assert.equal(result.requestedChains,2);
+  assert.match(result.message,/reimport/i);
+  assert.doesNotMatch(result.message,/queued/i);
+  assert.equal(calls.some(call=>call[0]==='queue'),false);
+});
+
+test('a removed subject stops a leased worker before any provider request', async () => {
+  const subject={syncEnabled:false,sync:{providerKey:'fixture',state:'backfilling',generation:7,
+    cursor:{page:2},claimedBy:'worker-a'}};
+  const {calls,service}=fixture({supported:true,subject});
+  const result=await service.runSyncPage('user-a',wallet,{workerId:'worker-a'});
+  assert.equal(result.accepted,false);
+  assert.equal(result.paused,true);
+  assert.equal(result.stale,true);
+  assert.equal(calls.some(call=>call[0]==='fetch'),false);
 });
 
 test('wallet history sync reports disabled without creating a queue when no worker can consume it', async () => {
@@ -214,5 +257,27 @@ test('permanent provider configuration failures wait for an explicit retry', asy
   await assert.rejects(service.runSyncPage('user-a', wallet), failure);
   const marked = calls.find(call => call[0] === 'error')[1];
   assert.equal(marked.errorCode, 'GOLDRUSH_AUTH_FAILED');
+  assert.equal(marked.retryAfter, null);
+});
+
+test('RPC chain configuration failures wait for explicit correction', async () => {
+  const failure = Object.assign(new Error('RPC finality returned the wrong chain.'), {
+    code:'WALLET_HISTORY_CHAIN_MISMATCH',
+  });
+  const { calls, service } = fixture({ supported:true, fetchError:failure, now:()=>1_000 });
+  await assert.rejects(service.runSyncPage('user-a', wallet), failure);
+  const marked = calls.find(call => call[0] === 'error')[1];
+  assert.equal(marked.errorCode, 'WALLET_HISTORY_CHAIN_MISMATCH');
+  assert.equal(marked.retryAfter, null);
+});
+
+test('finalized-history conflicts wait for explicit review instead of retrying forever', async () => {
+  const failure = Object.assign(new Error('Finalized wallet history conflicted with provider data.'), {
+    code:'WALLET_HISTORY_FINALIZED_CONFLICT',
+  });
+  const { calls, service } = fixture({ supported:true, applyError:failure, now:()=>1_000 });
+  await assert.rejects(service.runSyncPage('user-a', wallet), failure);
+  const marked = calls.find(call => call[0] === 'error')[1];
+  assert.equal(marked.errorCode, 'WALLET_HISTORY_FINALIZED_CONFLICT');
   assert.equal(marked.retryAfter, null);
 });

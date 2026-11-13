@@ -1359,6 +1359,24 @@ function createBotCommandService(dependencies) {
     return saved;
   }
 
+  // Bot surfaces only need to record what an NFT later resold for. Preserve the stored name,
+  // mint cost and receipt-derived gas instead of accepting a generic replacement object that
+  // could rewrite transaction facts. Full manual-record editing remains a separate dashboard
+  // capability until pnl_records has an authoritative origin/provenance column.
+  async function recordPnlSale(userId,id,input) {
+    const validatedId=requestSchemas.pnlDeletion({id}).id;
+    const owned=state(userId).pnl.find(item=>item.id===validatedId);
+    if(!owned) throw new ValidationError({field:'id',message:'was not found'});
+    if(input?.sale===undefined) throw new ValidationError({field:'sale',message:'is required'});
+    const value=requestSchemas.pnlCreate({name:owned.nm,cost:owned.cost,sale:input.sale,gas:owned.gas});
+    const saved=await storage.updatePnl(userId,validatedId,{nm:owned.nm,cost:owned.cost,sale:value.sale,
+      gas:owned.gas,net:value.net});
+    if(!saved) throw new ValidationError({field:'id',message:'was not found'});
+    Object.assign(owned,saved);
+    broadcast(userId,'pnl');
+    return saved;
+  }
+
   // Wallets store one nominal home chain (see DEFAULT_EVM_CHAIN in the dashboard), but an EVM
   // address is valid on every EVM chain, and mint()/batchMint() already let a mint target any
   // supported chain regardless of the wallet's stored chain. This used to also require
@@ -1429,6 +1447,7 @@ function createBotCommandService(dependencies) {
     await targetPolicyService.reset(userId,{targetType:'sniper',targetId:validated.id});
     syncChainWatcher(current.chain);
     broadcast(userId, 'snipers');
+    broadcast(userId, 'confirmations');
     return validated.id;
   }
 
@@ -1534,7 +1553,7 @@ function createBotCommandService(dependencies) {
     return calculateStatistics({activity:state(userId).activity,sniperEvents});}
 
   return {
-    createWallet, createWalletWithRecoveryPhrase, importWallet, importWalletsBatch, detectHomeChain, removeWallet, walletBalance, invalidateBalance, exportWalletKeyRaw, exportWalletKeystore, mint, mintViaOpenSea, batchMint, send, createTask, controlTask, taskDetails, resolveTaskChange, addPnl, updatePnl, deletePnl,
+    createWallet, createWalletWithRecoveryPhrase, importWallet, importWalletsBatch, detectHomeChain, removeWallet, walletBalance, invalidateBalance, exportWalletKeyRaw, exportWalletKeystore, mint, mintViaOpenSea, batchMint, send, createTask, controlTask, taskDetails, resolveTaskChange, addPnl, updatePnl, recordPnlSale, deletePnl,
     prepareMint,submitPreparedMint,detectMintContract,resolveMintContractInput,isContractAddress,parseOpenSeaCollectionSlug,
     openSeaEligibilityStatus,authorizeOpenSeaEligibility,revokeOpenSeaEligibility,
     mintPresets:userId=>mintService.listPresets(userId),
@@ -1551,6 +1570,11 @@ function createBotCommandService(dependencies) {
       broadcast(userId,'presets');
       return saved;
     },
+    deleteMintPreset:async(userId,name)=>{
+      const deleted=await mintService.deletePreset(userId,name);
+      if(deleted)broadcast(userId,'presets');
+      return deleted;
+    },
     createSniper, updateSniper, removeSniper, gas,
     sniperObservationDefault, setSniperObservationDefault,
     sniperCapabilities: () => ({ pendingSupportedChains:[...pendingSniperChains] }),
@@ -1564,6 +1588,7 @@ function createBotCommandService(dependencies) {
     activity: userId => state(userId).activity.slice(0, 10),
     activityPage:(userId,input)=>pageFrom(storage.listActivityPage?.bind(storage),()=>state(userId).activity,userId,input,['title','walletLabel']),
     pnl: userId => state(userId).pnl,
+    pnlPage:(userId,input)=>pageFrom(null,()=>state(userId).pnl,userId,input,['nm']),
     snipers: userId => state(userId).snipers,
     createWatchRule: async (userId, input) => { const rule=await socialWatchService.create(userId, input);
       broadcast(userId,'watchrules'); return rule; },
@@ -1573,19 +1598,57 @@ function createBotCommandService(dependencies) {
       broadcast(userId,'watchrules'); return rule; },
     removeWatchRule: async (userId, id) => { const result=await socialWatchService.remove(userId,id);
       await targetPolicyService.reset(userId,{targetType:'social_rule',targetId:id});
-      broadcast(userId,'watchrules'); return result; },
+      broadcast(userId,'watchrules'); broadcast(userId,'confirmations'); return result; },
     watchRules: userId => socialWatchService.list(userId),
     watchEvents:userId=>socialWatchService.recentTriggers(userId),
     socialUsage: (userId, period) => socialUsageService.summary(userId, period),
     targetPolicy: (userId, targetType, targetId) => targetPolicyService.get(userId, targetType, targetId),
-    updateTargetPolicy: (userId, input) => targetPolicyService.save(userId, input),
-    requestTargetBypass: (userId, input) => targetPolicyService.requestBypass(userId, input),
-    confirmTargetBypass: (userId, input) => targetPolicyService.confirmBypass(userId, input),
-    resetTargetPolicy: (userId, input) => targetPolicyService.reset(userId, input),
-    applyTargetPreset: async (userId, input) => targetPolicyService.applyPreset(userId,input,
-      await governanceRepository.getPreset(input.presetKey)),
-    confirmTrigger: (userId, requestId, confirmation) => triggerExecutionService.confirm(userId, requestId, confirmation),
+    updateTargetPolicy: async (userId, input) => {
+      const value=await targetPolicyService.save(userId,input);
+      broadcast(userId,'policies');
+      return value;
+    },
+    requestTargetBypass: async (userId, input) => {
+      const value=await targetPolicyService.requestBypass(userId,input);
+      // A challenge is not one of the trigger-execution confirmations returned by
+      // /api/confirmations. Announce only the branch that actually changed the durable policy;
+      // presenting the challenge as a dashboard confirmation would create a phantom bell item.
+      if(!value?.requiresConfirmation)broadcast(userId,'policies');
+      return value;
+    },
+    confirmTargetBypass: async (userId, input) => {
+      const value=await targetPolicyService.confirmBypass(userId,input);
+      broadcast(userId,'policies');
+      return value;
+    },
+    resetTargetPolicy: async (userId, input) => {
+      const value=await targetPolicyService.reset(userId,input);
+      broadcast(userId,'policies');
+      // reset() also removes pending trigger_execution_requests for this target.
+      broadcast(userId,'confirmations');
+      return value;
+    },
+    applyTargetPreset: async (userId, input) => {
+      const value=await targetPolicyService.applyPreset(userId,input,
+        await governanceRepository.getPreset(input.presetKey));
+      broadcast(userId,'policies');
+      return value;
+    },
+    // triggerExecutionService owns confirmation.pending / confirmation.resolved broadcasts.
+    // A second generic event here is redundant in production and cannot replace those payloads.
+    confirmTrigger: (userId, requestId, confirmation) =>
+      triggerExecutionService.confirm(userId,requestId,confirmation),
     triggerAudit: userId => triggerAuditRepository.listAudit(userId),
+    triggerAuditPage:async(userId,input={})=>{
+      const {page,pageSize,offset}=pagination(input);
+      const search=typeof input.search==='string'?input.search.trim():'';
+      if(search.length>200)throw new ValidationError({field:'search',message:'must contain at most 200 characters'});
+      const result=await triggerAuditRepository.listAuditPage(userId,{limit:pageSize,offset,search});
+      const total=Number(result.total)||0;
+      const totalPages=Math.max(1,Math.ceil(total/pageSize));
+      return {page,pageSize,total,totalPages,hasNext:page<totalPages,hasPrevious:page>1,
+        items:Array.isArray(result.items)?result.items:[]};
+    },
     pendingConfirmations: userId => triggerAuditRepository.listPendingRequests(userId),
     targetDetails,
     modePresets:()=>governanceRepository.listPresets(),
@@ -1595,7 +1658,13 @@ function createBotCommandService(dependencies) {
     transactionsPage:(userId,input)=>pageFrom(transactionIntentRepository.listPageForUser?.bind(transactionIntentRepository),()=>[],userId,input),
     mintsPage:(userId,input)=>pageFrom(transactionIntentRepository.listMintPageForUser?.bind(transactionIntentRepository),()=>[],userId,input),
     stats,
-    selectMode: (userId, preset) => governance.selectPreset(userId, preset),
+    selectMode: async (userId, preset) => {
+      const selected=await governance.selectPreset(userId,preset);
+      // Transaction mode is account state, not a Discord/Telegram-local preference. An open
+      // dashboard must refetch its shared profile when either bot changes it.
+      broadcast(userId,'profile');
+      return selected;
+    },
     admin: (userId, input) => adminCommands.execute(userId, input),
     adminAccountMergePreview: async (userId, input) => {
       await governance.requireOwner(userId);
@@ -1644,7 +1713,12 @@ function createBotCommandService(dependencies) {
     adminUserTasks:async(callerUserId,targetUserId,input)=>{await governance.requireOwner(callerUserId);
       return pageFrom(schedulerRepository.listPageForUser?.bind(schedulerRepository),()=>state(targetUserId).tasks,targetUserId,input,['name','walletLabel'],TASK_PAGE_HOOKS);},
     adminUserPnl:async(callerUserId,targetUserId)=>{await governance.requireOwner(callerUserId);return state(targetUserId).pnl;},
-    adminSecurityAudit:async(callerUserId,input)=>{await governance.requireOwner(callerUserId);return botSecurityRepository.listRecent(input);},
+    adminSecurityAudit:async(callerUserId,input)=>{
+      await governance.requireOwner(callerUserId);
+      if (typeof botSecurityRepository.listPage === 'function') return botSecurityRepository.listPage(input);
+      const items = await botSecurityRepository.listRecent(input);
+      return { page: 1, pageSize: items.length || 25, total: items.length, totalPages: 1, items };
+    },
     // The personal view. Deliberately NOT owner-gated and deliberately not able to widen: userId is
     // taken from the session, never from the query, so there is no parameter to tamper with.
     securityAudit:(userId,input)=>botSecurityRepository.listRecent({...input,userId}),

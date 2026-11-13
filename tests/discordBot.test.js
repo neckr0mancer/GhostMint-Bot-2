@@ -20,9 +20,9 @@ function interaction({ commandName, userId = 'discord-user', subcommand = null, 
   };
 }
 
-function autocompleteInteraction({ focusedName, focusedValue = '', userId = 'discord-user' }) {
+function autocompleteInteraction({ focusedName, focusedValue = '', userId = 'discord-user', commandName = '' }) {
   return {
-    user: { id: userId }, guildId: 'guild', channelId: 'channel', responded: null,
+    commandName,user: { id: userId }, guildId: 'guild', channelId: 'channel', responded: null,
     isAutocomplete: () => true,
     isButton: () => false,
     isStringSelectMenu: () => false,
@@ -36,7 +36,7 @@ function autocompleteInteraction({ focusedName, focusedValue = '', userId = 'dis
 test('Discord command definitions include the complete Milestone 10a surface', () => {
   const definitions = commandDefinitions();
   const names = definitions.map(command => command.name);
-  assert.deepEqual(names, ['menu', 'start', 'wallet', 'deposit', 'mint', 'info', 'mintnow', 'batch-mint', 'task', 'activity', 'pnl', 'gas', 'sniper', 'mode', 'admin', 'link', 'watch', 'social-usage', 'target-policy', 'confirm-trigger', 'trigger-audit', 'pending', 'transactions']);
+  assert.deepEqual(names, ['menu', 'start', 'wallet', 'deposit', 'mint', 'info', 'mintnow', 'batch-mint', 'task', 'activity', 'pnl', 'mint-preset', 'gas', 'sniper', 'mode', 'admin', 'link', 'watch', 'social-usage', 'target-policy', 'confirm-trigger', 'trigger-audit', 'pending', 'transactions']);
   const wallet = definitions.find(command => command.name === 'wallet');
   const create = wallet.options.find(option => option.name === 'create');
   const imported = wallet.options.find(option => option.name === 'import');
@@ -47,6 +47,21 @@ test('Discord command definitions include the complete Milestone 10a surface', (
   const link = definitions.find(command => command.name === 'link');
   const linkCode = link.options.find(option => option.name === 'code');
   assert.equal(linkCode.required, true, 'Discord must never be able to generate a link code, only consume one');
+  const mintPreset = definitions.find(command => command.name === 'mint-preset');
+  assert.deepEqual(mintPreset.options.map(option => option.name), ['list','save','use','delete']);
+  assert.equal(mintPreset.options.find(option=>option.name==='use').options.find(option=>option.name==='confirm').required,true);
+  assert.equal(mintPreset.options.find(option=>option.name==='delete').options.find(option=>option.name==='confirm').required,true);
+  const sniper = definitions.find(command => command.name === 'sniper');
+  const removeSniper = sniper.options.find(option => option.name === 'remove');
+  assert.equal(removeSniper.options.find(option=>option.name==='id').required,true);
+  assert.equal(removeSniper.options.find(option=>option.name==='confirm').required,true);
+  const pnl = definitions.find(command => command.name === 'pnl');
+  assert.deepEqual(pnl.options.map(option=>option.name),['list','add','sale','delete']);
+  assert.equal(pnl.options.find(option=>option.name==='sale').options.find(option=>option.name==='amount').required,true);
+  const mode = definitions.find(command => command.name === 'mode');
+  const modeChoices = JSON.stringify(mode.options.find(option => option.name === 'preset').choices);
+  assert.match(modeChoices, /manual confirmation remains/);
+  assert.doesNotMatch(modeChoices, /no confirmation/i);
 });
 
 test('/start auto-creates a first wallet for a brand-new user and shows the welcome text plus the main menu', async () => {
@@ -147,6 +162,22 @@ test('picking a suggestion for the second wallet in the list keeps the first one
   });
   await handler(input);
   assert.deepEqual(input.responded, [{ name: 'cold-1, hot', value: 'cold-1, hot' }]);
+});
+
+test('mint-preset autocomplete suggests only the linked account saved presets',async()=>{
+  const input=autocompleteInteraction({commandName:'mint-preset',focusedName:'name',focusedValue:'launch'});
+  const seen=[];
+  const handler=createDiscordInteractionHandler({
+    identity:{resolveOrCreate:async()=> 'user-a'},
+    commands:{mintPresets:async userId=>{seen.push(userId);return [
+      {name:'Launch day'},{name:'Allowlist'},{name:'Launch backup'},
+    ];}},
+  });
+  await handler(input);
+  assert.deepEqual(seen,['user-a']);
+  assert.deepEqual(input.responded,[
+    {name:'Launch day',value:'Launch day'},{name:'Launch backup',value:'Launch backup'},
+  ]);
 });
 
 test('a chain option degrades to plain free text, not an error, when no chains are passed in', () => {
@@ -260,6 +291,85 @@ test('Discord list dispatch passes only the resolved internal user ID to scoped 
   assert.match(input.replies[0], /alpha/);
 });
 
+test('Discord P&L list is paginated and sale updates cannot replace recorded facts',async()=>{
+  const calls=[];
+  const handler=createDiscordInteractionHandler({identity:{resolveOrCreate:async()=> 'user-a'},commands:{
+    pnlPage:async(userId,input)=>{calls.push(['list',userId,input]);return {page:2,totalPages:3,total:5,
+      items:[{id:'123e4567-e89b-42d3-a456-426614174001',nm:'Minted 1 NFT — alpha',net:-0.1}]};},
+    recordPnlSale:async(userId,id,input)=>{calls.push(['sale',userId,id,input]);return {id,net:0.4};},
+  }});
+  const listed=interaction({commandName:'pnl',subcommand:'list',integers:{page:2}});
+  const sold=interaction({commandName:'pnl',subcommand:'sale',strings:{id:'123e4567-e89b-42d3-a456-426614174001'},numbers:{amount:0.5}});
+  await handler(listed);await handler(sold);
+  assert.deepEqual(calls,[['list','user-a',{page:2}],
+    ['sale','user-a','123e4567-e89b-42d3-a456-426614174001',{sale:0.5}]]);
+  assert.match(listed.replies[0],/Page 2\/3 \\\(5 total\\\)/);
+  assert.ok(sold.replies[0].includes('net 0\\.4'));
+});
+
+test('Discord mint-preset lifecycle uses the shared account-scoped command service',async()=>{
+  const calls=[];
+  const commands={
+    mintPresets:async userId=>{calls.push(['list',userId]);return [{name:'Launch',methodSignature:'mint(uint256)',chain:'ethereum'}];},
+    saveMintPreset:async(userId,value)=>{calls.push(['save',userId,value]);return {name:value.name};},
+    deleteMintPreset:async(userId,name)=>{calls.push(['delete',userId,name]);return true;},
+    prepareMint:async(userId,value)=>{calls.push(['prepare',userId,value]);return {wallet:{label:value.walletLabel},prepared:{},simulation:{simulationPassed:true}};},
+    submitPreparedMint:async(userId,value)=>{calls.push(['submit',userId,value.wallet.label]);return {state:'confirmed',txHash:'0xabc'};},
+  };
+  const handler=createDiscordInteractionHandler({identity:{resolveOrCreate:async()=> 'user-a'},commands});
+  const listed=interaction({commandName:'mint-preset',subcommand:'list'});
+  const saved=interaction({commandName:'mint-preset',subcommand:'save',strings:{input:'{"name":"Launch","walletLabel":"main"}'}});
+  const used=interaction({commandName:'mint-preset',subcommand:'use',strings:{name:'Launch',wallet:'main'},booleans:{confirm:true}});
+  const deleted=interaction({commandName:'mint-preset',subcommand:'delete',strings:{name:'Launch'},booleans:{confirm:true}});
+  await handler(listed);await handler(saved);await handler(used);await handler(deleted);
+  assert.deepEqual(calls,[
+    ['list','user-a'],
+    ['save','user-a',{name:'Launch',walletLabel:'main'}],
+    ['prepare','user-a',{walletLabel:'main',presetName:'Launch'}],
+    ['submit','user-a','main'],
+    ['delete','user-a','Launch'],
+  ]);
+  assert.match(listed.replies[0],/Launch/);
+  assert.match(saved.replies[0],/saved/);
+  assert.match(used.replies[0],/confirmed.*0xabc/);
+  assert.match(deleted.replies[0],/deleted/);
+});
+
+test('Discord refuses value-bearing or destructive mint-preset actions without explicit confirmation',async()=>{
+  const calls=[];
+  const handler=createDiscordInteractionHandler({identity:{resolveOrCreate:async()=> 'user-a'},commands:{
+    prepareMint:async()=>{calls.push('prepare');},deleteMintPreset:async()=>{calls.push('delete');},
+  }});
+  const used=interaction({commandName:'mint-preset',subcommand:'use',strings:{name:'Launch',wallet:'main'},booleans:{confirm:false}});
+  const deleted=interaction({commandName:'mint-preset',subcommand:'delete',strings:{name:'Launch'},booleans:{confirm:false}});
+  await handler(used);await handler(deleted);
+  assert.deepEqual(calls,[]);
+  assert.match(used.replies[0],/confirm/i);
+  assert.match(deleted.replies[0],/confirm/i);
+});
+
+test('Discord sniper removal uses the shared account-scoped command service',async()=>{
+  const calls=[];
+  const handler=createDiscordInteractionHandler({identity:{resolveOrCreate:async()=> 'user-a'},commands:{
+    removeSniper:async(userId,id)=>{calls.push([userId,id]);return id;},
+  }});
+  const input=interaction({commandName:'sniper',subcommand:'remove',strings:{id:'00000000-0000-4000-8000-000000000001'},booleans:{confirm:true}});
+  await handler(input);
+  assert.deepEqual(calls,[['user-a','00000000-0000-4000-8000-000000000001']]);
+  assert.match(input.replies[0],/Copy sniper .* removed/);
+});
+
+test('Discord refuses sniper removal without explicit confirmation',async()=>{
+  let removed=false;
+  const handler=createDiscordInteractionHandler({identity:{resolveOrCreate:async()=> 'user-a'},commands:{
+    removeSniper:async()=>{removed=true;},
+  }});
+  const input=interaction({commandName:'sniper',subcommand:'remove',strings:{id:'00000000-0000-4000-8000-000000000001'},booleans:{confirm:false}});
+  await handler(input);
+  assert.equal(removed,false);
+  assert.match(input.replies[0],/confirm/i);
+});
+
 test('Discord link consumption joins an existing identity without auto-creating a second user', async () => {
   let resolved = false;
   const input = interaction({ commandName: 'link', strings: { code: 'ABC123' } });
@@ -311,11 +421,12 @@ test('/gas still reports real figures when the provider has data', async () => {
 
 // Settings' "Transaction mode" button had no button/menu path at all -- /mode worked fine as a
 // slash command, but only if you already knew it and an exact preset name. The button reuses the
-// exact same commands.selectMode(userId, preset) the slash command dispatches to below.
-test('the menu:mode button reaches the same commands.selectMode the /mode slash command uses', async () => {
+// exact same commands.selectMode(userId, preset) the slash command dispatches to below, after an
+// explicit second tap just like Dashboard and Telegram.
+test('the menu:mode confirmation reaches the same commands.selectMode the /mode slash command uses', async () => {
   const selected = [];
   const tap = {
-    customId: 'mode:pick:fast', user: { id: 'discord-mode' }, guildId: 'guild', channelId: 'channel',
+    customId: 'mode:apply:fast', user: { id: 'discord-mode' }, guildId: 'guild', channelId: 'channel',
     updates: [], deferred: false,
     isChatInputCommand: () => false, isButton: () => true, isStringSelectMenu: () => false, isModalSubmit: () => false,
     async deferUpdate() { this.deferred = true; },
@@ -335,6 +446,22 @@ test('the menu:mode button reaches the same commands.selectMode the /mode slash 
   assert.match(tap.updates[0].content, /Transaction mode/);
   const current = tap.updates[0].components.flatMap(r => r.components).find(b => b.custom_id === 'mode:pick:fast');
   assert.match(current.label, /^✅ /);
+});
+
+test('/mode rechecks the bot password gate before changing the account-wide preset', async () => {
+  const selected = [];
+  const input = interaction({ commandName: 'mode', strings: { preset: 'safe' }, booleans: { confirm: true } });
+  const handler = createDiscordInteractionHandler({
+    identity: { resolveOrCreate: async () => 'user-mode' },
+    actionGate: { allows: async () => false },
+    commands: { selectMode: async (userId, key) => { selected.push({ userId, key }); return key; } },
+  });
+
+  await handler(input);
+  assert.deepEqual(selected, []);
+  assert.match(input.replies[0].content, /Locked/);
+  assert.ok(input.replies[0].components.flatMap(row => row.components)
+    .some(button => button.custom_id === 'gate:unlock:open'));
 });
 
 // Round 21: the wallets list used to truncate each address to "0x1234...abcd" before wrapping it

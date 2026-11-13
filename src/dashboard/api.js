@@ -94,11 +94,16 @@ const SESSION_END_MESSAGES=Object.freeze({
 });
 function clientLabel(req){return String(req.get('user-agent')||'Unknown browser').replace(/[\r\n]/g,' ').slice(0,160)||'Unknown browser';}
 
-function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLoginRateLimiter,exportKeyRateLimiter,eligibilityRateLimiter,commands,priceFeedService,securityAudit={record:async()=>{}},broadcast=()=>{},broadcastToUsers=()=>{},notifyUser=async()=>{},log=()=>{},chains={},supportedChains=[],now=()=>Date.now(),checkAccountStatus}) {
+function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLoginRateLimiter,exportKeyRateLimiter,eligibilityRateLimiter,commands,priceFeedService,securityAudit={record:async()=>{}},broadcast=()=>{},broadcastToUsers=()=>{},disconnectUsers=()=>{},refreshLiveSession=()=>{},notifyUser=async()=>{},log=()=>{},chains={},supportedChains=[],now=()=>Date.now(),checkAccountStatus}) {
   const previews=new Map();
   const requireSession=async(req,res,next)=>{try{const result=auth.authenticateDetailed?await auth.authenticateDetailed(req.headers.cookie):{session:await auth.authenticate(req.headers.cookie),reason:'invalid'};const {session}=result;if(!session){const reason=result.reason||'invalid';return res.status(401).json({error:SESSION_END_MESSAGES[reason]||SESSION_END_MESSAGES.invalid,code:`SESSION_${reason.toUpperCase()}`,reason});}
       if(typeof checkAccountStatus==='function'){try{await checkAccountStatus(session.userId);}catch(error){if(error instanceof AccountBlockedError)return res.status(403).json({error:error.message,code:error.code,status:error.status});throw error;}}
-      req.dashboardSession=session;const refreshed=auth.refreshSessionCookies?.(req.headers.cookie);if(refreshed?.length)res.setHeader('Set-Cookie',refreshed);next();}catch(error){next(error);}};
+      req.dashboardSession=session;
+      // authenticateDetailed() has just slid this exact browser session in PostgreSQL. Keep its
+      // already-open WebSocket on the same deadline so an actively used dashboard is not logged out
+      // at the socket's original eight-hour timestamp.
+      try{refreshLiveSession(session);}catch(error){try{log(`Live session deadline refresh failed safely: ${error?.message||error}`);}catch{}}
+      const refreshed=auth.refreshSessionCookies?.(req.headers.cookie);if(refreshed?.length)res.setHeader('Set-Cookie',refreshed);next();}catch(error){next(error);}};
   const requireCsrf=(req,res,next)=>auth.verifyCsrf({session:req.dashboardSession,cookieHeader:req.headers.cookie,headerToken:req.get('x-csrf-token')})?next():res.status(403).json({error:'Invalid CSRF token'});
   // BotContextError (thrown by requireTextConfirmation, below, when confirmation is missing or
   // wrong) previously had no explicit mapping here and fell through to the generic 500 handler --
@@ -118,7 +123,7 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLo
     'user-ceilings-clear':['platform','platformUserId'],'user-simulation':['platform','platformUserId','simulation'],
     'user-advanced-modes':['platform','platformUserId','advancedModes'],
     'group-simulation':['group','simulation'],'preset-set':['preset','simulation','confirmations','verification','gasMultiplier'],
-    owner:['platform','platformUserId','enabled'],
+    owner:['platform','platformUserId','enabled'],'root-owner':['platform','platformUserId','enabled'],
     ban:['platform','platformUserId','reason'],unban:['platform','platformUserId','reason'],
     suspend:['platform','platformUserId','durationDays','reason'],unsuspend:['platform','platformUserId','reason'],
     deactivate:['platform','platformUserId','reason'],reactivate:['platform','platformUserId','reason'],
@@ -161,8 +166,9 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLo
     }
     return [actionName,...fields.map(field=>body[field])].join(' ');
   }
-  async function auditAdminWrite(req,actionName){await Promise.resolve(securityAudit.record({userId:user(req),platform:'dashboard',
-    contextId:req.dashboardSession.sessionId,command:`admin:${actionName}`,outcome:'success',reason:'Governance write completed'})).catch(()=>{});}
+  async function auditAdminWrite(req,actionName,result){await Promise.resolve(securityAudit.record({userId:user(req),platform:'dashboard',
+    contextId:req.dashboardSession.sessionId,command:`admin:${actionName}`,outcome:'success',
+    reason:actionName==='merge-account'?String(result):'Governance write completed'})).catch(()=>{});}
   async function auditExportKey(req,outcome,reason){await Promise.resolve(securityAudit.record({userId:user(req),platform:'dashboard',
     contextId:req.dashboardSession.sessionId,command:'exportkey',outcome,reason})).catch(()=>{});}
   // A correct password may export every wallet in one sitting. Throttle only failed password
@@ -219,25 +225,37 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLo
       res.status(204).end();
     },
     logout:async(req,res)=>{noStore(res);await auth.revoke(req.dashboardSession);res.setHeader('Set-Cookie',auth.clearCookies());res.status(204).end();},
-    logoutAll:async(req,res)=>{noStore(res);await auth.revokeAll(req.dashboardSession);res.setHeader('Set-Cookie',auth.clearCookies());res.status(204).end();},
+    logoutAll:async(req,res)=>{noStore(res);const userId=user(req);await auth.revokeAll(req.dashboardSession);
+      res.setHeader('Set-Cookie',auth.clearCookies());
+      // Revocation is the durable security boundary. Live sockets are terminated only after it
+      // commits, and a best-effort delivery failure must not turn a completed logout into a 500.
+      try{await disconnectUsers([userId],{reason:'logout_all',message:SESSION_END_MESSAGES.logout_all});}
+      catch(error){try{log(`Logout-all live session termination failed safely: ${error?.message||error}`);}catch{}}
+      res.status(204).end();},
     profile:async(req,res)=>{noStore(res);res.json({userId:user(req),isOwner:commands?.isOwner?await commands.isOwner(user(req)):false,isRootOwner:commands?.isRootOwner?await commands.isRootOwner(user(req)):false,linkedAccounts:await identityRepository.listLinkedAccounts(user(req)),supportedChains,theme:await identityRepository.getTheme(user(req)),displayName:identityRepository.getDisplayName?await identityRepository.getDisplayName(user(req)):null,defaultChain:identityRepository.getDefaultChain?await identityRepository.getDefaultChain(user(req)):null,lowBalanceThreshold:identityRepository.getLowBalanceThreshold?await identityRepository.getLowBalanceThreshold(user(req)):'0.01',displayCurrency:identityRepository.getDisplayCurrency?await identityRepository.getDisplayCurrency(user(req)):'USD',timeFormat:identityRepository.getTimeFormat?await identityRepository.getTimeFormat(user(req)):'24h',securityPasswordSet:identityRepository.getSecurityPasswordHash?Boolean(await identityRepository.getSecurityPasswordHash(user(req))):false,botGateLevel:identityRepository.getBotGateLevel?await identityRepository.getBotGateLevel(user(req)):'off',botGateSkipMint:identityRepository.getBotGateSkipMint?await identityRepository.getBotGateSkipMint(user(req)):false,username:identityRepository.getUsername?await identityRepository.getUsername(user(req)):null,currentMode:commands?.currentMode?await commands.currentMode(user(req)):null,advancedModesAllowed:commands?.advancedModesAllowed?await commands.advancedModesAllowed(user(req)):false,session:auth.sessionSummary?await auth.sessionSummary(req.dashboardSession):null});},
     updateMode:action(async(req,res)=>{res.json({mode:await commands.selectMode(user(req),req.body.preset)});}),
-    updateTheme:action(async(req,res)=>{const {theme}=requestSchemas.themeUpdate(req.body||{});res.json({theme:await identityRepository.setTheme(user(req),theme)});}),
+    updateTheme:action(async(req,res)=>{const {theme}=requestSchemas.themeUpdate(req.body||{});
+      const saved=await identityRepository.setTheme(user(req),theme);changed(req,'profile');res.json({theme:saved});}),
     // The bot action gate is changed HERE and nowhere else. If it could be switched off from
     // Telegram or Discord, whoever picked up an unlocked phone would simply switch it off before
     // removing the wallets -- the gate would be decorative. The dashboard is already an
     // authenticated surface (session + CSRF below), which is the whole point.
     updateBotGate:action(async(req,res)=>{const {level}=requestSchemas.botGateUpdate(req.body||{});
-      await identityRepository.setBotGateLevel(user(req),level);res.json({botGateLevel:level});}),
+      await identityRepository.setBotGateLevel(user(req),level);changed(req,'profile');res.json({botGateLevel:level});}),
     // Exempts interactive minting only. Scheduled mints, snipers and watch triggers never consult
     // the gate at all, so this cannot affect them.
     updateBotGateMint:action(async(req,res)=>{const {skipMint}=requestSchemas.botGateMintUpdate(req.body||{});
-      await identityRepository.setBotGateSkipMint(user(req),skipMint);res.json({botGateSkipMint:skipMint});}),
-    updateDisplayName:action(async(req,res)=>{const {displayName}=requestSchemas.displayNameUpdate(req.body||{});res.json({displayName:await identityRepository.setDisplayName(user(req),displayName)});}),
-    updateDefaultChain:action(async(req,res)=>{const {defaultChain}=requestSchemas.defaultChainUpdate(req.body||{},{supportedChains});res.json({defaultChain:await identityRepository.setDefaultChain(user(req),defaultChain)});}),
-    updateLowBalanceThreshold:action(async(req,res)=>{const {lowBalanceThreshold}=requestSchemas.lowBalanceThresholdUpdate(req.body||{});res.json({lowBalanceThreshold:await identityRepository.setLowBalanceThreshold(user(req),lowBalanceThreshold)});}),
-    updateDisplayCurrency:action(async(req,res)=>{const {displayCurrency}=requestSchemas.displayCurrencyUpdate(req.body||{});res.json({displayCurrency:await identityRepository.setDisplayCurrency(user(req),displayCurrency)});}),
-    updateTimeFormat:action(async(req,res)=>{const {timeFormat}=requestSchemas.timeFormatUpdate(req.body||{});res.json({timeFormat:await identityRepository.setTimeFormat(user(req),timeFormat)});}),
+      await identityRepository.setBotGateSkipMint(user(req),skipMint);changed(req,'profile');res.json({botGateSkipMint:skipMint});}),
+    updateDisplayName:action(async(req,res)=>{const {displayName}=requestSchemas.displayNameUpdate(req.body||{});
+      const saved=await identityRepository.setDisplayName(user(req),displayName);changed(req,'profile');res.json({displayName:saved});}),
+    updateDefaultChain:action(async(req,res)=>{const {defaultChain}=requestSchemas.defaultChainUpdate(req.body||{},{supportedChains});
+      const saved=await identityRepository.setDefaultChain(user(req),defaultChain);changed(req,'profile');res.json({defaultChain:saved});}),
+    updateLowBalanceThreshold:action(async(req,res)=>{const {lowBalanceThreshold}=requestSchemas.lowBalanceThresholdUpdate(req.body||{});
+      const saved=await identityRepository.setLowBalanceThreshold(user(req),lowBalanceThreshold);changed(req,'profile');res.json({lowBalanceThreshold:saved});}),
+    updateDisplayCurrency:action(async(req,res)=>{const {displayCurrency}=requestSchemas.displayCurrencyUpdate(req.body||{});
+      const saved=await identityRepository.setDisplayCurrency(user(req),displayCurrency);changed(req,'profile');res.json({displayCurrency:saved});}),
+    updateTimeFormat:action(async(req,res)=>{const {timeFormat}=requestSchemas.timeFormatUpdate(req.body||{});
+      const saved=await identityRepository.setTimeFormat(user(req),timeFormat);changed(req,'profile');res.json({timeFormat:saved});}),
     displayQuotes:action(async(req,res)=>{noStore(res);
       const displayCurrency=identityRepository.getDisplayCurrency
         ?await identityRepository.getDisplayCurrency(user(req)):'USD';
@@ -277,6 +295,7 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLo
       }
       await identityRepository.setSecurityPasswordHash(user(req),hashSecurityPassword(newPassword));
       await auditSecurityPassword(req,'success',existingHash?'security password changed':'security password set');
+      changed(req,'profile');
       res.json({securityPasswordSet:true});
     }),
     // Claiming a username requires an already-set security password -- a username with no password
@@ -287,6 +306,7 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLo
       const {username}=requestSchemas.usernameSet(req.body||{});
       try{await identityRepository.setUsername(user(req),username);}
       catch(error){if(error instanceof UsernameTakenError)return res.status(409).json({error:error.message});throw error;}
+      changed(req,'profile');
       res.json({username});
     }),
     gas:action(async(req,res)=>{noStore(res);
@@ -397,6 +417,8 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLo
     controlTask:action(async(req,res)=>{if(req.body?.action==='cancel')confirmation(req);const result=await commands.controlTask(user(req),req.body?.action,req.params.id);res.json(result);}),
     resolveTaskChange:action(async(req,res)=>{confirmation(req);const result=await commands.resolveTaskChange(user(req),req.params.id,req.body);res.json(result);}),
     activity:action(async(req,res)=>res.json(jsonSafe(await commands.activityPage(user(req),req.query)))),
+    triggerAuditHistory:action(async(req,res)=>{noStore(res);
+      res.json(jsonSafe(await commands.triggerAuditPage(user(req),req.query||{})));}),
     mints:action(async(req,res)=>res.json(jsonSafe(await commands.mintsPage(user(req),req.query)))),
     pnl:action(async(req,res)=>res.json(await commands.pnl(user(req)))),
     addPnl:action(async(req,res)=>{const record=await commands.addPnl(user(req),req.body);res.status(201).json(record);}),
@@ -431,6 +453,9 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLo
     mintMethods:action(async(req,res)=>res.json(await commands.mintMethods())),
     saveMintPreset:action(async(req,res)=>{const preset=await commands.saveMintPreset(user(req),req.body);
       res.status(201).json(jsonSafe(preset));}),
+    deleteMintPreset:action(async(req,res)=>{confirmation(req);
+      const deleted=await commands.deleteMintPreset(user(req),req.params.name);
+      res.json({deleted:Boolean(deleted)});}),
     // Same balance-merge-then-sanitize shape as the self-service wallets route (see publicWallet
     // above) -- the only difference is which userId's wallets get looked up.
     adminUserWallets:action(async(req,res)=>{const values=await commands.adminUserWallets(user(req),req.params.userId);
@@ -473,14 +498,31 @@ function createDashboardApi({auth,identityRepository,loginRateLimiter,passwordLo
       res.json(jsonSafe(result));
     }),
     adminWrite:action(async(req,res)=>{const actionName=String(req.params.action||'').toLowerCase();
-      if(['group-delete','owner','ban','unban','suspend','unsuspend','deactivate','reactivate'].includes(actionName))confirmation(req);
-      let result;try{result=await commands.admin(user(req),adminInput(actionName,req.body));}
+      if(['group-delete','owner','root-owner','ban','unban','suspend','unsuspend','deactivate','reactivate'].includes(actionName))confirmation(req);
+      const body=req.body||{};
+      const input=adminInput(actionName,body);
+      // Resolve recipients while the actor still has owner access (including self-demotion).
+      // Shared rules can alter inherited permissions/limits for any account; individual writes
+      // must invalidate only the internal user behind the supplied linked platform identity.
+      let overview={users:[]};
+      try{overview=await commands.adminOverview(user(req));}
+      catch{/* recipient discovery is refresh-only; the authoritative admin command still decides the write */}
+      const sharedRule=['group-set','group-delete','group-simulation','group-retention','preset-set'].includes(actionName);
+      const affectedUserIds=[...new Set(overview.users.filter(target=>sharedRule||target.linkedAccounts?.some(account=>
+        account.platform===String(body.platform||'').trim().toLowerCase()&&String(account.platformUserId)===String(body.platformUserId||'').trim()
+      )).map(target=>target.userId))];
+      let result;try{result=await commands.admin(user(req),input);}
       catch(error){if(error instanceof AuthorizationError||error instanceof ValidationError)throw error;throw new ValidationError({field:'admin',message:error.message});}
-      await auditAdminWrite(req,actionName);
-      // Every currently-connected owner sees this, not just whoever made the change -- broadcast(),
-      // used everywhere else in this file, only ever reaches the acting user's own session.
-      const ownerIds=commands.listOwnerUserIds?await commands.listOwnerUserIds():[user(req)];
-      broadcastToUsers(ownerIds,{type:'admin.changed'});
+      await auditAdminWrite(req,actionName,result);
+      let ownerIds=[];
+      try{
+        ownerIds=commands.listOwnerUserIds?await commands.listOwnerUserIds():[];
+      }catch{/* the actor can still refresh when owner discovery is temporarily unavailable */}
+      try{
+        broadcastToUsers([...new Set([...ownerIds,user(req)])],{type:'admin.changed'});
+      }catch{/* a live-refresh failure cannot undo a successful durable write */}
+      try{broadcastToUsers(affectedUserIds,{type:'profile.changed'});}
+      catch{/* reconnect will reload durable profile and governance state */}
       res.json({message:result});}),
     error(error,req,res,next){if(res.headersSent)return next(error);const requestId=randomBytes(6).toString('hex');
       const safeField=value=>/^[A-Za-z0-9_.-]{1,100}$/.test(String(value||''))?String(value):undefined;
@@ -528,6 +570,7 @@ function mountDashboardRoutes(app,api){
   app.post('/api/wallets/:label/export/raw',api.requireSession,api.requireCsrf,api.exportWalletRaw);
   app.get('/api/mint-presets',api.requireSession,api.mintPresets);
   app.post('/api/mint-presets',api.requireSession,api.requireCsrf,api.saveMintPreset);
+  app.delete('/api/mint-presets/:name',api.requireSession,api.requireCsrf,api.deleteMintPreset);
   app.get('/api/mints/detect',api.requireSession,api.detectMint);
   app.post('/api/mints/preview',api.requireSession,api.requireCsrf,api.previewMint);
   app.post('/api/mints/confirm',api.requireSession,api.requireCsrf,api.confirmMint);
@@ -537,6 +580,7 @@ function mountDashboardRoutes(app,api){
   app.post('/api/tasks/:id/control',api.requireSession,api.requireCsrf,api.controlTask);
   app.post('/api/tasks/:id/change',api.requireSession,api.requireCsrf,api.resolveTaskChange);
   app.get('/api/activity',api.requireSession,api.activity);
+  app.get('/api/history/trigger-audit',api.requireSession,api.triggerAuditHistory);
   app.get('/api/mints/history',api.requireSession,api.mints);
   app.get('/api/pnl',api.requireSession,api.pnl);
   app.post('/api/pnl',api.requireSession,api.requireCsrf,api.addPnl);

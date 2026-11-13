@@ -52,6 +52,54 @@ function raceFixture({initialLinkedUserId=null,confirmedUserId,targetPlatformUse
     repository:createPostgresIdentityRepository({connect:async()=>client})};
 }
 
+function linkCodeCreationFixture({failOn}={}){
+  const queries=[];
+  const calls=[];
+  let released=false;
+  const failure=new Error('link-code write failed');
+  const client={
+    async query(sql,params=[]){
+      const normalized=String(sql).replace(/\s+/g,' ').trim();
+      queries.push(normalized);
+      calls.push({sql:normalized,params});
+      if(normalized===failOn)throw failure;
+      return result();
+    },
+    release(){released=true;},
+  };
+  return {queries,calls,failure,released:()=>released,
+    repository:createPostgresIdentityRepository({connect:async()=>client})};
+}
+
+test('link-code refresh serializes replacement with the durable user row',async()=>{
+  const {queries,calls,released,repository}=linkCodeCreationFixture();
+  await repository.createLinkCode({
+    userId:'target-user',codeHash:'new-code-hash',expiresAt:1_800_000_000_000,
+  });
+  assert.deepEqual(queries,[
+    'BEGIN',
+    'SELECT user_id FROM users WHERE user_id=$1 FOR UPDATE',
+    'DELETE FROM account_link_codes WHERE user_id=$1 AND used_at IS NULL',
+    'INSERT INTO account_link_codes (code_hash,user_id,expires_at) VALUES ($1,$2,TO_TIMESTAMP($3 / 1000.0))',
+    'COMMIT',
+  ]);
+  assert.deepEqual(calls[1].params,['target-user']);
+  assert.deepEqual(calls[2].params,['target-user']);
+  assert.deepEqual(calls[3].params,['new-code-hash','target-user',1_800_000_000_000]);
+  assert.equal(released(),true);
+});
+
+test('link-code refresh rolls back and releases its client when replacement fails',async()=>{
+  const failOn='INSERT INTO account_link_codes (code_hash,user_id,expires_at) VALUES ($1,$2,TO_TIMESTAMP($3 / 1000.0))';
+  const {queries,failure,released,repository}=linkCodeCreationFixture({failOn});
+  await assert.rejects(repository.createLinkCode({
+    userId:'target-user',codeHash:'new-code-hash',expiresAt:1_800_000_000_000,
+  }),error=>error===failure);
+  assert.equal(queries.includes('ROLLBACK'),true);
+  assert.equal(queries.includes('COMMIT'),false);
+  assert.equal(released(),true);
+});
+
 test('link-code consumption never reports success when bot-first account creation wins the race',async()=>{
   const {queries,calls,released,repository}=raceFixture({
     confirmedUserId:'source-user',

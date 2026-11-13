@@ -3,7 +3,7 @@ const test = require('node:test');
 const { createAdminCommandService } = require('../src/governance/adminCommandService');
 const { AccountBlockedError, AuthorizationError, createGovernanceService } = require('../src/governance/governanceService');
 const { ValidationError } = require('../src/validation/domain');
-const { applyGovernance } = require('../src/transactions/policyRepository');
+const { applyGovernance, createTransactionPolicyRepository } = require('../src/transactions/policyRepository');
 
 function nonOwnerFixture() {
   const repository = {
@@ -281,6 +281,76 @@ test('a scheduled Degen mint skips simulation even with simulationForced on, but
   const otherPreset = { key: 'safe', simulationMode: 'off', confirmationCount: 1, humanVerification: 'bypass' };
   assert.equal(applyGovernance(basePolicy, { ...governance, preset: otherPreset }, 'scheduled').simulationEnabled, true,
     'scheduling alone is not the trigger -- a scheduled mint on any other preset still respects simulationForced');
+});
+
+test('transaction policy defensively replaces a revoked account-level advanced preset with Normie', async () => {
+  const safePreset = { key: 'safe', displayName: 'Normie', simulationMode: 'on',
+    confirmationCount: 128, humanVerification: 'on', gasPriceMultiplier: 1 };
+  const requested = [];
+  const governanceRepository = {
+    getEffectiveGovernance: async () => ({
+      isOwner: false, maxTransactionValueWei: 10n ** 18n, dailySpendingBudgetWei: 2n * 10n ** 18n,
+      gasCeilingGwei: 200, simulationForced: false, advancedModesAllowed: false,
+      preset: { key: 'ultra_fast', displayName: 'Degen', simulationMode: 'off',
+        confirmationCount: 1, humanVerification: 'bypass', gasPriceMultiplier: 1.5 },
+    }),
+    getPreset: async key => { requested.push(key); return safePreset; },
+  };
+  const pool = { query: async () => ({ rows: [], rowCount: 0 }) };
+  const repository = createTransactionPolicyRepository(pool, { governanceRepository });
+  const policy = await repository.resolvePolicy({ userId: 'revoked', walletId: 1, chain: 'ethereum' });
+
+  assert.deepEqual(requested, ['safe']);
+  assert.equal(policy.simulationEnabled, true);
+  assert.equal(policy.requiredConfirmations, 128);
+  assert.equal(policy.humanVerification, 'on');
+  assert.equal(policy.gasPriceMultiplier, 1);
+});
+
+test('transaction policy refuses execution when a revoked advanced mode cannot resolve Normie', async () => {
+  const governanceRepository = {
+    getEffectiveGovernance: async () => ({
+      isOwner: false, maxTransactionValueWei: 10n ** 18n, dailySpendingBudgetWei: 2n * 10n ** 18n,
+      gasCeilingGwei: 200, simulationForced: false, advancedModesAllowed: false,
+      preset: { key: 'fast', simulationMode: 'blockchain_off', confirmationCount: 3,
+        humanVerification: 'on', gasPriceMultiplier: 1.2 },
+    }),
+    getPreset: async () => null,
+  };
+  const repository = createTransactionPolicyRepository(
+    { query: async () => ({ rows: [], rowCount: 0 }) }, { governanceRepository });
+
+  await assert.rejects(
+    repository.resolvePolicy({ userId: 'revoked', walletId: 1, chain: 'ethereum' }),
+    /Normie transaction preset is unavailable; refusing transaction/,
+  );
+});
+
+test('transaction policy also blocks a revoked target-specific Fast or Degen override', async () => {
+  const safePreset = { key: 'safe', displayName: 'Normie', simulationMode: 'on',
+    confirmationCount: 128, humanVerification: 'on', gasPriceMultiplier: 1 };
+  let queryCount = 0;
+  const pool = { query: async () => {
+    queryCount += 1;
+    if (queryCount === 1) return { rows: [], rowCount: 0 };
+    return { rows: [{ preset_key: 'fast', display_name: 'Fast', simulation_mode: 'blockchain_off',
+      confirmation_count: 3, human_verification: 'on', gas_price_multiplier: '1.2' }], rowCount: 1 };
+  } };
+  const governanceRepository = {
+    getEffectiveGovernance: async () => ({
+      isOwner: false, maxTransactionValueWei: 10n ** 18n, dailySpendingBudgetWei: 2n * 10n ** 18n,
+      gasCeilingGwei: 200, simulationForced: false, advancedModesAllowed: false, preset: safePreset,
+    }),
+    getPreset: async () => safePreset,
+  };
+  const repository = createTransactionPolicyRepository(pool, { governanceRepository });
+  const policy = await repository.resolvePolicy({
+    userId: 'revoked', walletId: 1, targetId: 'target-fast', chain: 'ethereum', triggerSource: 'blockchain',
+  });
+
+  assert.equal(policy.simulationEnabled, true);
+  assert.equal(policy.requiredConfirmations, 128);
+  assert.equal(policy.gasPriceMultiplier, 1);
 });
 
 test('owners are marked ceiling-exempt without disabling other safety settings', () => {

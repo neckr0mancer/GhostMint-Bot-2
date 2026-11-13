@@ -18,9 +18,16 @@ const GOLDRUSH_CHAIN_SLUGS = Object.freeze({
   hyperevm:'hyperevm-mainnet',
 });
 
-// The paginated address-history endpoint does not document a with-internal option. Keep this empty
-// until a live contract test and current provider documentation prove support for this endpoint.
-const GOLDRUSH_INTERNAL_TRANSFER_CHAINS = new Set();
+// GoldRush documents `with-internal` on the paginated v3 wallet endpoint only for the chains in
+// its current Traces Support matrix. Keep this list explicit: Ink and HyperEVM can return ordinary
+// wallet transactions, but GoldRush does not currently document trace coverage for either chain.
+const GOLDRUSH_INTERNAL_TRANSFER_CHAINS = new Set([
+  'ethereum',
+  'base',
+  'arbitrum',
+  'polygon',
+  'robinhood',
+]);
 
 class GoldRushWalletHistoryError extends Error {
   constructor(code, message, { status = null, retryAfterMs = null } = {}) {
@@ -223,21 +230,23 @@ function movementsForTransaction(item, walletAddress, includeInternal) {
     assetAddress:null, fromAddress, toAddress:null, tokenId:null, amountRaw:feeWei,
     details:{ provider:'goldrush', kind:'network_fee' },
   });
-  if (includeInternal) for (const [index, transfer] of (item.internal_transfers || []).entries()) {
-    try {
-      const internalFrom = address(transfer?.from_address, 'internal transfer from address');
-      const internalTo = address(transfer?.to_address, 'internal transfer to address');
-      const internalDirection = direction(walletAddress, internalFrom, internalTo);
-      if (internalDirection !== 'unknown') movements.push({
-        eventLocator:`internal:${index}`, eventType:'native_transfer',
-        direction:internalDirection, assetStandard:'native',
-        assetAddress:null, fromAddress:internalFrom, toAddress:internalTo, tokenId:null,
-        amountRaw:decimalString(transfer?.value, 'internal transfer value'),
-        details:{ provider:'goldrush', kind:'internal_transfer' },
-      });
-    } catch {
-      // A malformed optional trace must not discard the transaction page.
-    }
+  if (includeInternal && !Array.isArray(item.internal_transfers)) {
+    fail('GOLDRUSH_RESPONSE_INVALID',
+      'GoldRush returned invalid internal-transfer data for a trace-enabled chain.');
+  }
+  if (includeInternal) for (const [index, transferInput] of item.internal_transfers.entries()) {
+    const transfer = plainObject(transferInput);
+    const internalFrom = address(transfer.from_address, 'internal transfer from address');
+    const internalTo = address(transfer.to_address, 'internal transfer to address');
+    const internalValue = decimalString(transfer.value, 'internal transfer value');
+    const internalDirection = direction(walletAddress, internalFrom, internalTo);
+    if (internalDirection !== 'unknown') movements.push({
+      eventLocator:`internal:${index}`, eventType:'native_transfer',
+      direction:internalDirection, assetStandard:'native',
+      assetAddress:null, fromAddress:internalFrom, toAddress:internalTo, tokenId:null,
+      amountRaw:internalValue,
+      details:{ provider:'goldrush', kind:'internal_transfer' },
+    });
   }
   for (const [index, log] of (Array.isArray(item.log_events) ? item.log_events : []).entries()) {
     try {
@@ -310,7 +319,8 @@ function retryAfterMs(response) {
 }
 
 function createGoldRushWalletHistoryAdapter({ apiKey, chains = Object.keys(GOLDRUSH_CHAIN_SLUGS),
-  fetchImpl = globalThis.fetch, baseUrl = DEFAULT_BASE_URL, timeoutMs = 15_000 } = {}) {
+  fetchImpl = globalThis.fetch, baseUrl = DEFAULT_BASE_URL, timeoutMs = 15_000,
+  finalityVerifier = null, finalizedOnly = false } = {}) {
   if (typeof apiKey !== 'string' || !apiKey.trim()) throw new TypeError('GoldRush API key is required');
   const token = apiKey.trim();
   if (typeof fetchImpl !== 'function') throw new TypeError('fetchImpl must be a function');
@@ -324,6 +334,13 @@ function createGoldRushWalletHistoryAdapter({ apiKey, chains = Object.keys(GOLDR
     throw new TypeError('baseUrl must be a valid HTTPS URL without embedded credentials');
   }
   if (!Array.isArray(chains)) throw new TypeError('chains must be an array of supported chain keys');
+  if (finalityVerifier !== null && typeof finalityVerifier?.verifyPage !== 'function') {
+    throw new TypeError('finalityVerifier must expose verifyPage');
+  }
+  if (typeof finalizedOnly !== 'boolean') throw new TypeError('finalizedOnly must be a boolean');
+  if (finalizedOnly && !finalityVerifier) {
+    throw new TypeError('finalizedOnly requires a finalityVerifier');
+  }
   const configuredChains = [...new Set(chains.map(value => String(value || '').trim().toLowerCase()))];
   if (!configuredChains.length || configuredChains.some(chain => !GOLDRUSH_CHAIN_SLUGS[chain])) {
     throw new TypeError('chains must contain supported GoldRush chain keys');
@@ -399,13 +416,37 @@ function createGoldRushWalletHistoryAdapter({ apiKey, chains = Object.keys(GOLDR
         fail('GOLDRUSH_RESPONSE_INVALID', 'GoldRush returned invalid wallet-history pagination.');
       }
       const hasMore = typeof links.next === 'string';
+      let transactions = items.map(item => normalizeTransaction(item, request.walletAddress,
+        { includeInternal }));
+      let finalizedThroughBlock = null;
+      if (finalityVerifier) {
+        const verified = await finalityVerifier.verifyPage({
+          chain:request.chain,
+          observedHeadBlock,
+          transactions,
+        });
+        if (!verified || !Array.isArray(verified.transactions)) {
+          fail('GOLDRUSH_RESPONSE_INVALID', 'Wallet-history finality verification failed.');
+        }
+        transactions = verified.transactions;
+        finalizedThroughBlock = verified.finalizedThroughBlock;
+      }
+      if (finalizedOnly) {
+        // GoldRush does not expose a bounded reorg contract. The production runtime therefore
+        // retains only rows independently proven canonical and finalized by GhostMint's RPC.
+        // Pagination still advances when this removes every row, so a recent-only page cannot
+        // stall the worker. A later user-requested generation can observe those rows once final.
+        transactions = transactions.filter(transaction => transaction.canonical === true
+          && transaction.finalityStatus === 'finalized');
+      }
       return {
         chain:request.chain,
         providerKey:'goldrush',
-        transactions:items.map(item => normalizeTransaction(item, request.walletAddress, { includeInternal })),
+        transactions,
         nextCursor:hasMore ? { page:currentPage + 1 } : null,
         hasMore,
         observedHeadBlock,
+        finalizedThroughBlock,
         // Page exhaustion and chain_tip_height are not response-level proof of complete indexed
         // history. A separate verifier must establish coverage before cleanup/provenance can run.
         coverage:{ history:null, provenance:null },

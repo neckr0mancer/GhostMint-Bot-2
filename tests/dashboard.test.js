@@ -7,6 +7,7 @@ const express=require('express');
 const {WebSocket}=require('ws');
 const {createDashboardApi,mountDashboardRoutes}=require('../src/dashboard/api');
 const {createDashboardAuthService,SESSION_COOKIE,CSRF_COOKIE}=require('../src/dashboard/authService');
+const {createDashboardSessionRepository}=require('../src/dashboard/sessionRepository');
 const {createDashboardWebSocketHub,sendPayloadSafely}=require('../src/dashboard/webSocketHub');
 const {LinkCodeError}=require('../src/identity/identityService');
 const {createCommandRateLimiter}=require('../src/security/botSecurity');
@@ -33,13 +34,47 @@ async function listenForFetch(server){
 
 function fixture(){const sessions=new Map();let counter=0;const consumed=[];const identity={consumeDashboardLinkCode:async code=>{consumed.push(code);if(code!=='VALID')throw new LinkCodeError('specific internal reason');return 'user-a';}};
   const repository={create:async value=>{const id=`session-${++counter}`;sessions.set(id,{...value,sessionId:id});return id;},resolve:async tokenHash=>[...sessions.values()].find(value=>value.tokenHash===tokenHash&&!value.revoked)||null,
-    revoke:async id=>{const value=sessions.get(id);if(!value||value.revoked)return false;value.revoked=true;return true;},revokeAll:async userId=>{let count=0;for(const value of sessions.values())if(value.userId===userId&&!value.revoked){value.revoked=true;count++;}return count;}};
+    denialReason:async tokenHash=>[...sessions.values()].find(value=>value.tokenHash===tokenHash)?.revokedReason||'invalid',
+    revoke:async id=>{const value=sessions.get(id);if(!value||value.revoked)return false;value.revoked=true;value.revokedReason='logout';return true;},revokeAll:async userId=>{let count=0;for(const value of sessions.values())if(value.userId===userId&&!value.revoked){value.revoked=true;value.revokedReason='logout_all';count++;}return count;}};
   const auth=createDashboardAuthService({identity,repository});return {auth,consumed,sessions};}
 function cookieValues(headers){const list=typeof headers.getSetCookie==='function'?headers.getSetCookie():headers.get('set-cookie').split(/,(?=\s*[^;,]+=)/);return Object.fromEntries(list.map(value=>{const [pair]=value.split(';');const index=pair.indexOf('=');return [pair.slice(0,index),decodeURIComponent(pair.slice(index+1))];}));}
-async function appServer(t){const data=fixture();const api=createDashboardApi({auth:data.auth,identityRepository:{listLinkedAccounts:async()=>[{platform:'telegram',platformUserId:'42'}],getTheme:async()=>'ghost-mint',getDisplayName:async()=>null},loginRateLimiter:createCommandRateLimiter()});const app=express();app.use(express.json());app.use(api.securityHeaders);app.post('/api/auth/login',api.login);app.post('/api/auth/logout',api.requireSession,api.requireCsrf,api.logout);app.get('/api/profile',api.requireSession,api.profile);const server=http.createServer(app);const base=await listenForFetch(server);t.after(()=>new Promise(resolve=>server.close(resolve)));return {...data,base,server};}
+async function appServer(t,options={}){const data=fixture();const api=createDashboardApi({auth:data.auth,identityRepository:{listLinkedAccounts:async()=>[{platform:'telegram',platformUserId:'42'}],getTheme:async()=>'ghost-mint',getDisplayName:async()=>null},disconnectUsers:options.disconnectUsers,refreshLiveSession:options.refreshLiveSession,log:options.log,loginRateLimiter:createCommandRateLimiter()});const app=express();app.use(express.json());app.use(api.securityHeaders);app.post('/api/auth/login',api.login);app.post('/api/auth/logout',api.requireSession,api.requireCsrf,api.logout);app.post('/api/auth/logout-all',api.requireSession,api.requireCsrf,api.logoutAll);app.get('/api/profile',api.requireSession,api.profile);const server=http.createServer(app);const base=await listenForFetch(server);t.after(()=>new Promise(resolve=>server.close(resolve)));return {...data,base,server};}
+async function loginSession(base){const response=await fetch(`${base}/api/auth/login`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({code:'VALID'})});assert.equal(response.status,204);const values=cookieValues(response.headers);return {values,cookie:`${SESSION_COOKIE}=${values[SESSION_COOKIE]}; ${CSRF_COOKIE}=${values[CSRF_COOKIE]}`};}
 
 test('invalid and expired-looking link codes return the same generic login error',async t=>{const {base}=await appServer(t);for(const code of ['INVALID','EXPIRED']){const response=await fetch(`${base}/api/auth/login`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({code})});assert.equal(response.status,401);assert.deepEqual(await response.json(),{error:'Invalid or expired login code'});}});
 test('valid link code creates a working session and logout revokes it server-side',async t=>{const {base}=await appServer(t);const login=await fetch(`${base}/api/auth/login`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({code:'VALID'})});assert.equal(login.status,204);const setCookies=typeof login.headers.getSetCookie==='function'?login.headers.getSetCookie():[login.headers.get('set-cookie')];assert.ok(setCookies.some(value=>value.startsWith(`${SESSION_COOKIE}=`)&&/HttpOnly/i.test(value)&&/Secure/i.test(value)&&/SameSite=Strict/i.test(value)));assert.ok(setCookies.some(value=>value.startsWith(`${CSRF_COOKIE}=`)&&!/HttpOnly/i.test(value)&&/Secure/i.test(value)&&/SameSite=Strict/i.test(value)));const values=cookieValues(login.headers);const cookie=`${SESSION_COOKIE}=${values[SESSION_COOKIE]}; ${CSRF_COOKIE}=${values[CSRF_COOKIE]}`;assert.equal((await fetch(`${base}/api/profile`,{headers:{cookie}})).status,200);const noCsrf=await fetch(`${base}/api/auth/logout`,{method:'POST',headers:{cookie}});assert.equal(noCsrf.status,403);const logout=await fetch(`${base}/api/auth/logout`,{method:'POST',headers:{cookie,'x-csrf-token':values[CSRF_COOKIE]}});assert.equal(logout.status,204);assert.equal((await fetch(`${base}/api/profile`,{headers:{cookie}})).status,401);});
+test('log out everywhere revokes both browser sessions and immediately disconnects the account sockets',async t=>{
+  const disconnects=[];const {base}=await appServer(t,{disconnectUsers:async(...args)=>disconnects.push(args)});
+  const first=await loginSession(base);const second=await loginSession(base);
+  assert.equal((await fetch(`${base}/api/profile`,{headers:{cookie:first.cookie}})).status,200);
+  assert.equal((await fetch(`${base}/api/profile`,{headers:{cookie:second.cookie}})).status,200);
+  const logout=await fetch(`${base}/api/auth/logout-all`,{method:'POST',headers:{cookie:first.cookie,'x-csrf-token':first.values[CSRF_COOKIE]}});
+  assert.equal(logout.status,204);
+  assert.deepEqual(disconnects,[[['user-a'],{reason:'logout_all',message:'This session was ended by Log out everywhere.'}]]);
+  for(const session of [first,second]){
+    const rejected=await fetch(`${base}/api/profile`,{headers:{cookie:session.cookie}});
+    assert.equal(rejected.status,401);
+    assert.deepEqual(await rejected.json(),{error:'This session was ended by Log out everywhere.',code:'SESSION_LOGOUT_ALL',reason:'logout_all'});
+  }
+});
+test('log out everywhere remains successful when live socket termination fails after durable revocation',async t=>{
+  const logs=[];const {base}=await appServer(t,{disconnectUsers:async()=>{throw new Error('socket unavailable');},log:value=>logs.push(value)});
+  const session=await loginSession(base);
+  const logout=await fetch(`${base}/api/auth/logout-all`,{method:'POST',headers:{cookie:session.cookie,'x-csrf-token':session.values[CSRF_COOKIE]}});
+  assert.equal(logout.status,204);
+  const rejected=await fetch(`${base}/api/profile`,{headers:{cookie:session.cookie}});
+  assert.equal(rejected.status,401);assert.equal((await rejected.json()).reason,'logout_all');
+  assert.deepEqual(logs,['Logout-all live session termination failed safely: socket unavailable']);
+});
+test('authenticated HTTP activity forwards the slid session deadline to the live socket hub',async t=>{
+  const refreshed=[];const {base}=await appServer(t,{refreshLiveSession:session=>refreshed.push(session)});
+  const session=await loginSession(base);
+  assert.equal((await fetch(`${base}/api/profile`,{headers:{cookie:session.cookie}})).status,200);
+  assert.equal(refreshed.length,1);
+  assert.equal(refreshed[0].userId,'user-a');
+  assert.ok(refreshed[0].sessionId);
+  assert.ok(Number.isFinite(Number(refreshed[0].expiresAt)));
+});
 test('unauthenticated API requests are rejected with no-store security headers',async t=>{const {base}=await appServer(t);const response=await fetch(`${base}/api/profile`);assert.equal(response.status,401);assert.match(response.headers.get('cache-control'),/no-store/);assert.equal(response.headers.get('x-frame-options'),'DENY');assert.match(response.headers.get('content-security-policy'),/frame-ancestors 'none'/);});
 
 test('dashboard sessions slide forward on activity and expire after real inactivity',async()=>{
@@ -82,6 +117,20 @@ test('a session cannot be kept alive past its absolute maximum lifetime, even wi
   }
   clock+=600;
   assert.equal(await auth.authenticate(cookieHeader),null,'continuous activity must not extend a session past its absolute maximum lifetime');
+});
+
+test('the session repository exposes the absolute deadline used by live transports',async()=>{
+  const calls=[];
+  const repository=createDashboardSessionRepository({query:async(sql,params)=>{
+    calls.push({sql:String(sql).replace(/\s+/g,' ').trim(),params});
+    return {rowCount:1,rows:[{session_id:'session-1',user_id:'user-a',csrf_token_hash:'csrf',
+      expires_at:new Date(1_001_000),created_at:new Date(999_000)}]};
+  }});
+  const session=await repository.resolve('token-hash',1_000_000,1_000,5_000);
+  assert.equal(session.expiresAt,1_001_000);
+  assert.equal(session.createdAt,999_000);
+  assert.equal(session.absoluteExpiresAt,1_004_000);
+  assert.match(calls[0].sql,/RETURNING session_id,user_id,csrf_token_hash,expires_at,created_at/);
 });
 
 test('requireSession refreshes the session cookie Max-Age on every authenticated request',async t=>{
@@ -161,6 +210,69 @@ function nextMessage(socket){return new Promise(resolve=>socket.once('message',v
 test('WebSocket rejects unauthenticated clients and isolates user broadcasts',async t=>{const sessions=new Map([['token-a',{userId:'user-a'}],['token-b',{userId:'user-b'}]]);const auth={authenticate:async header=>sessions.get(String(header||'').split('=')[1])||null};const hub=createDashboardWebSocketHub({auth});const server=http.createServer();hub.attach(server);await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(async()=>{await hub.close();await new Promise(resolve=>server.close(resolve));});const url=`ws://127.0.0.1:${server.address().port}/ws`;
   await assert.rejects(openSocket(url),error=>error.statusCode===401);const a=await openSocket(url,`${SESSION_COOKIE}=token-a`);const b=await openSocket(url,`${SESSION_COOKIE}=token-b`);await new Promise(resolve=>setTimeout(resolve,10));assert.deepEqual(a.messages.shift(),{type:'connected'});assert.deepEqual(b.messages.shift(),{type:'connected'});const message=nextMessage(a.socket);hub.broadcastToUser('user-a',{type:'test',value:'only-a'});assert.deepEqual(await message,{type:'test',value:'only-a'});await new Promise(resolve=>setTimeout(resolve,30));assert.deepEqual(b.messages,[]);a.socket.close();b.socket.close();});
 
+test('WebSocket sessions end at the earliest authenticated idle or absolute deadline',async t=>{
+  const scenarios=[
+    {reason:'idle_expired',idle:1_100,absolute:1_500,delay:100,
+      message:'Your session ended after 8 hours without dashboard activity.'},
+    {reason:'absolute_expired',idle:1_200,absolute:1_080,delay:80,
+      message:'Your session reached its 7-day maximum lifetime. Sign in again to continue.'},
+  ];
+  for(const scenario of scenarios)await t.test(scenario.reason,async t=>{
+    const timers=[];
+    const auth={authenticate:async()=>({userId:'user-a',expiresAt:scenario.idle,
+      absoluteExpiresAt:scenario.absolute})};
+    const hub=createDashboardWebSocketHub({auth,now:()=>1_000,
+      setTimeoutFn:(callback,delay)=>{const timer={callback,delay,cleared:false};timers.push(timer);return timer;},
+      clearTimeoutFn:timer=>{timer.cleared=true;}});
+    const server=http.createServer();hub.attach(server);
+    await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+    t.after(async()=>{await hub.close();await new Promise(resolve=>server.close(resolve));});
+    const connection=await openSocket('ws://127.0.0.1:'+server.address().port+'/ws',
+      SESSION_COOKIE+'=token');
+    await new Promise(resolve=>setTimeout(resolve,10));
+    assert.deepEqual(connection.messages.shift(),{type:'connected'});
+    assert.equal(timers.length,1);
+    assert.equal(timers[0].delay,scenario.delay);
+    const ended=nextMessage(connection.socket);
+    const closed=new Promise(resolve=>connection.socket.once('close',(code,reason)=>
+      resolve({code,reason:reason.toString()})));
+    timers[0].callback();
+    assert.deepEqual(await ended,{type:'session.ended',reason:scenario.reason,message:scenario.message});
+    assert.deepEqual(await closed,{code:4001,reason:'Session ended'});
+    assert.equal(timers[0].cleared,true);
+  });
+});
+
+test('WebSocket idle deadline follows the same session when HTTP activity slides it forward',async t=>{
+  const timers=[];
+  const auth={authenticate:async()=>({sessionId:'session-a',userId:'user-a',expiresAt:1_100,
+    absoluteExpiresAt:1_500})};
+  const hub=createDashboardWebSocketHub({auth,now:()=>1_000,
+    setTimeoutFn:(callback,delay)=>{const timer={callback,delay,cleared:false};timers.push(timer);return timer;},
+    clearTimeoutFn:timer=>{timer.cleared=true;}});
+  const server=http.createServer();hub.attach(server);
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  t.after(async()=>{await hub.close();await new Promise(resolve=>server.close(resolve));});
+  const connection=await openSocket('ws://127.0.0.1:'+server.address().port+'/ws',
+    SESSION_COOKIE+'=token');
+  await new Promise(resolve=>setTimeout(resolve,10));
+  assert.deepEqual(connection.messages.shift(),{type:'connected'});
+  assert.equal(timers[0].delay,100);
+
+  assert.equal(hub.refreshSession({sessionId:'session-a',userId:'user-a',expiresAt:1_300,
+    absoluteExpiresAt:1_500}),true);
+  assert.equal(timers[0].cleared,true);
+  assert.equal(timers[1].delay,300);
+  timers[0].callback();
+  await new Promise(resolve=>setTimeout(resolve,10));
+  assert.deepEqual(connection.messages,[],'the replaced idle timer must not end the session');
+
+  const ended=nextMessage(connection.socket);
+  timers[1].callback();
+  assert.deepEqual(await ended,{type:'session.ended',reason:'idle_expired',
+    message:'Your session ended after 8 hours without dashboard activity.'});
+});
+
 test('disconnectUsers ends every targeted account session and leaves unrelated users connected',async t=>{
   const sessions=new Map([
     ['token-source',{userId:'source-user'}],
@@ -217,9 +329,11 @@ test('WebSocket delivery failures never escape after the underlying write has co
 
 test('dashboard production bundle contains no server secrets or secret variable names',()=>{const root=path.join(__dirname,'..','public','dashboard');assert.equal(fs.existsSync(path.join(root,'index.html')),true,'dashboard must be built before tests');const content=fs.readdirSync(path.join(root,'assets')).map(name=>fs.readFileSync(path.join(root,'assets',name),'utf8')).join('\n');const forbidden=['ENCRYPTION_SECRET','DATABASE_URL','DISCORD_BOT_TOKEN','TELEGRAM_BOT_TOKEN','dev-encryption-key-7Qv9'];const envPath=path.join(__dirname,'..','.env');if(fs.existsSync(envPath)){const values=require('dotenv').parse(fs.readFileSync(envPath));for(const name of ['ENCRYPTION_SECRET','DISCORD_BOT_TOKEN','TELEGRAM_BOT_TOKEN','SOCIAL_OFFICIAL_API_TOKEN','SOCIAL_MANAGED_SERVICE_TOKEN'])if(values[name]?.length>=8)forbidden.push(values[name]);}for(const value of forbidden)assert.equal(content.includes(value),false,`bundle contains forbidden server value: ${value.startsWith('dev-')?value:'[redacted]'}`);});
 
-async function operationsServer(t,options={}){const sessions=new Map([['token-a',{userId:'user-a',csrfTokenHash:'csrf'}],['token-b',{userId:'user-b',csrfTokenHash:'csrf'}]]);const privateKey=`0x${'11'.repeat(32)}`;const recoveryPhrase='test test test test test test test test test test test junk';const calls=[];const notifications=[];const errors=[];const selectedPresets=new Map();const defaultChains=new Map();const lowBalanceThresholds=new Map();const timeFormats=new Map();const commands={
-  wallets:userId=>userId==='user-a'?[{label:'alpha',address:'0x0000000000000000000000000000000000000001',chain:'ethereum',keyEnvelope:{ciphertext:'secret'}}]:[],
-  walletBalance:async(userId,label)=>({label,address:'0x0000000000000000000000000000000000000001',chain:'ethereum',balances:[{chain:'ethereum',balance:'1.0',symbol:'ETH'}]}),
+async function operationsServer(t,options={}){const sessions=new Map([['token-a',{userId:'user-a',csrfTokenHash:'csrf'}],['token-b',{userId:'user-b',csrfTokenHash:'csrf'}]]);const privateKey=`0x${'11'.repeat(32)}`;const recoveryPhrase='test test test test test test test test test test test junk';const calls=[];const notifications=[];const errors=[];const broadcasts=[];const selectedPresets=new Map();const defaultChains=new Map();const lowBalanceThresholds=new Map();const timeFormats=new Map();const commands={
+  wallets:userId=>userId==='user-a'?[{id:1,label:'alpha',address:'0x0000000000000000000000000000000000000001',chain:'ethereum',keyEnvelope:{ciphertext:'secret'}}]:[],
+  walletBalance:async(userId,label)=>({id:1,label,address:'0x0000000000000000000000000000000000000001',chain:'ethereum',balances:[{chain:'ethereum',balance:'1.0',symbol:'ETH'}]}),
+  walletHistoryPage:async(userId,walletId,input)=>{if(userId!=='user-a'||String(walletId)!=='1')throw new ValidationError({field:'walletId',message:'was not found'});calls.push(['wallet-history',userId,walletId,input]);return {page:Number(input.page)||1,pageSize:20,total:1,totalPages:1,snapshotAt:'2026-01-01T00:00:00.000Z',coverage:{state:'partial'},items:[{txHash:`0x${'ab'.repeat(32)}`,valueWei:1n}]};},
+  requestWalletHistorySync:async(userId,walletId,input)=>{if(userId!=='user-a'||String(walletId)!=='1')throw new ValidationError({field:'walletId',message:'was not found'});calls.push(['wallet-history-sync',userId,walletId,input]);return {accepted:true,supported:false,state:'unsupported'};},
   createWalletWithRecoveryPhrase:async()=>({label:'new',address:'0x0000000000000000000000000000000000000002',chain:'ethereum',privateKey,recoveryPhrase}),
   importWallet:async()=>{throw Object.assign(new Error(`bad key ${privateKey}`),{privateKey});},removeWallet:async(userId,label)=>{if(userId!=='user-a')throw new ValidationError({field:'label',message:'was not found'});calls.push(['remove',userId,label]);},
   exportWalletKeyRaw:async(userId,label)=>{if(userId!=='user-a'||label!=='alpha')throw new ValidationError({field:'label',message:'was not found'});calls.push(['export-raw',userId,label]);return {label,privateKey};},
@@ -227,7 +341,7 @@ async function operationsServer(t,options={}){const sessions=new Map([['token-a'
   openSeaEligibilityStatus:async(userId,label)=>{if(userId!=='user-a'||label!=='alpha')throw new ValidationError({field:'walletLabel',message:'was not found'});return {configured:true,status:'not_connected',connected:false};},
   authorizeOpenSeaEligibility:async(userId,label)=>{if(userId!=='user-a'||label!=='alpha')throw new ValidationError({field:'walletLabel',message:'was not found'});calls.push(['eligibility-authorize',userId,label]);return {configured:true,status:'connected',connected:true,walletAddress:'0x0000000000000000000000000000000000000001'};},
   revokeOpenSeaEligibility:async(userId,label)=>{if(userId!=='user-a'||label!=='alpha')throw new ValidationError({field:'walletLabel',message:'was not found'});calls.push(['eligibility-revoke',userId,label]);return {configured:true,status:'not_connected',connected:false};},
-  mintPresets:async()=>[],prepareMint:async(userId,input)=>{if(input.walletLabel==='already-minted')throw new ValidationError({field:'quantity',message:'this wallet has reached the mint limit'});if(input.walletLabel==='low-balance'){const error=new TransactionSafetyError('INSUFFICIENT_BALANCE','Wallet balance is below the estimated transaction cost',{balanceWei:2n,estimatedGasCostWei:3n,estimatedCostWei:5n});error.previewContext={wallet:{label:'low-balance',address:'0x0000000000000000000000000000000000000002',chain:'ethereum'},chain:'robinhood',preview:{contractAddress:'0x0000000000000000000000000000000000000003',methodSignature:'mint(uint256)',nativeValueWei:'2',nativeValue:'0.000000000000000002',arguments:[{name:'quantity',value:'1'}]}};throw error;}return {wallet:{label:input.walletLabel,address:'0x0000000000000000000000000000000000000001',chain:'ethereum'},prepared:{chain:'robinhood',preview:{contractAddress:'0x0000000000000000000000000000000000000003',methodSignature:'mint(uint256)',nativeValueWei:'0',nativeValue:'0.0',arguments:[{name:'quantity',value:'1'}]}},simulation:{simulationEnabled:false,simulationPerformed:true,simulationPassed:true,gasLimit:21000n,balanceWei:10n,estimatedGasCostWei:1n,estimatedCostWei:1n}};},
+  mintPresets:async()=>[],deleteMintPreset:async(userId,name)=>{calls.push(['deletePreset',userId,name]);return userId==='user-a'&&name!=='missing';},prepareMint:async(userId,input)=>{if(input.walletLabel==='already-minted')throw new ValidationError({field:'quantity',message:'this wallet has reached the mint limit'});if(input.walletLabel==='low-balance'){const error=new TransactionSafetyError('INSUFFICIENT_BALANCE','Wallet balance is below the estimated transaction cost',{balanceWei:2n,estimatedGasCostWei:3n,estimatedCostWei:5n});error.previewContext={wallet:{label:'low-balance',address:'0x0000000000000000000000000000000000000002',chain:'ethereum'},chain:'robinhood',preview:{contractAddress:'0x0000000000000000000000000000000000000003',methodSignature:'mint(uint256)',nativeValueWei:'2',nativeValue:'0.000000000000000002',arguments:[{name:'quantity',value:'1'}]}};throw error;}return {wallet:{label:input.walletLabel,address:'0x0000000000000000000000000000000000000001',chain:'ethereum'},prepared:{chain:'robinhood',preview:{contractAddress:'0x0000000000000000000000000000000000000003',methodSignature:'mint(uint256)',nativeValueWei:'0',nativeValue:'0.0',arguments:[{name:'quantity',value:'1'}]}},simulation:{simulationEnabled:false,simulationPerformed:true,simulationPassed:true,gasLimit:21000n,balanceWei:10n,estimatedGasCostWei:1n,estimatedCostWei:1n}};},
   submitPreparedMint:options.submitPreparedMint||(async(userId,value)=>{const label=value.wallet.label;if(label==='broken')throw new ValidationError({field:'walletLabel',message:'insufficient funds'});if(label==='broadcast-unknown')throw new TransactionSafetyError('BROADCAST_UNKNOWN','Transaction broadcast outcome is unknown; reconciliation will continue');calls.push(['mint',userId,value.simulation.simulationPassed]);const outcomes={reverted:{state:'reverted',txHash:`0x${'cd'.repeat(32)}`,reason:'receipt status was 0'},unknown:{state:'unknown',txHash:`0x${'ef'.repeat(32)}`,reason:'confirmation timeout elapsed'},pending:{state:'pending',txHash:`0x${'12'.repeat(32)}`},submitted:{state:'submitted',txHash:`0x${'34'.repeat(32)}`},replaced:{state:'replaced',txHash:`0x${'56'.repeat(32)}`}};return outcomes[label]||{state:'confirmed',txHash:`0x${'ab'.repeat(32)}`};}),
   tasksPage:async userId=>({page:1,pageSize:10,total:userId==='user-a'?1:0,totalPages:1,items:userId==='user-a'?[{id:'task-a'}]:[]}),
   taskDetails:async(userId,id)=>{if(userId!=='user-a'||id!=='task-a')throw new ValidationError({field:'id',message:'was not found'});return {id,name:'Public mint',walletLabel:'alpha',attempts:[{attemptId:'1',attemptNumber:1,outcome:'failure',reason:'The chain had not reached the public opening yet.'}]};},
@@ -256,7 +370,7 @@ async function operationsServer(t,options={}){const sessions=new Map([['token-a'
    getUsername:async userId=>usernames.get(userId)||null,
    setUsername:async(userId,value)=>{if([...usernames.values()].includes(value))throw new UsernameTakenError();usernames.set(userId,value);},
    findUserIdByUsername:async value=>[...usernames.entries()].find(([,name])=>name===value)?.[0]||null,
- },notifyUser:options.notifyUser||(async(userId,message)=>{if(options.notificationFailure)throw new Error('notification unavailable');notifications.push({userId,message});}),log:value=>errors.push(value),chains:{robinhood:{name:'Robinhood Chain',ex:'https://robinhoodchain.blockscout.com/tx/'}},loginRateLimiter:createCommandRateLimiter(),passwordLoginRateLimiter:createCommandRateLimiter({limit:2,windowMs:60_000}),exportKeyRateLimiter:createCommandRateLimiter({limit:2,windowMs:60_000}),eligibilityRateLimiter:createCommandRateLimiter({limit:3,windowMs:60_000})});const app=express();app.use(express.json());app.use(api.securityHeaders);mountDashboardRoutes(app,api);app.use(api.error);const server=http.createServer(app);const base=await listenForFetch(server);t.after(()=>new Promise(resolve=>server.close(resolve)));return {base,calls,notifications,errors,privateKey,recoveryPhrase,securityPasswordHashes,usernames};}
+ },broadcast:(userId,message)=>broadcasts.push({userId,message}),notifyUser:options.notifyUser||(async(userId,message)=>{if(options.notificationFailure)throw new Error('notification unavailable');notifications.push({userId,message});}),log:value=>errors.push(value),chains:{robinhood:{name:'Robinhood Chain',ex:'https://robinhoodchain.blockscout.com/tx/'}},loginRateLimiter:createCommandRateLimiter(),passwordLoginRateLimiter:createCommandRateLimiter({limit:2,windowMs:60_000}),exportKeyRateLimiter:createCommandRateLimiter({limit:2,windowMs:60_000}),eligibilityRateLimiter:createCommandRateLimiter({limit:3,windowMs:60_000})});const app=express();app.use(express.json());app.use(api.securityHeaders);mountDashboardRoutes(app,api);app.use(api.error);const server=http.createServer(app);const base=await listenForFetch(server);t.after(()=>new Promise(resolve=>server.close(resolve)));return {base,calls,notifications,errors,broadcasts,privateKey,recoveryPhrase,securityPasswordHashes,usernames};}
 function authHeaders(user='a',write=false){return {cookie:`ghostmint_session=token-${user}`,...(write?{'content-type':'application/json','x-csrf-token':'csrf'}:{})};}
 
 test('schedule conflicts keep their domain code and safe allowance details',async t=>{
@@ -270,6 +384,22 @@ test('schedule conflicts keep their domain code and safe allowance details',asyn
   assert.deepEqual(await response.json(),{error:'Validation failed',code:'SCHEDULE_ALLOWANCE_EXCEEDED',
     issues:[{field:'quantity',message:'this wallet can schedule 1 more mint'}],
     details:{remaining:'1',maximum:'10',minted:'2',reserved:'7'}});
+});
+test('preset deletion requires CSRF and confirmation, forwards the decoded name, and is idempotent',async t=>{
+  const {base,calls}=await operationsServer(t);
+  const route=`${base}/api/mint-presets/Launch%20Day`;
+  assert.equal((await fetch(route,{method:'DELETE',headers:authHeaders('a'),body:'{}'})).status,403);
+  assert.equal((await fetch(route,{method:'DELETE',headers:authHeaders('a',true),body:'{}'})).status,400);
+  const removed=await fetch(route,{method:'DELETE',headers:authHeaders('a',true),
+    body:JSON.stringify({confirmation:'CONFIRM'})});
+  assert.equal(removed.status,200);
+  assert.deepEqual(await removed.json(),{deleted:true});
+  const missing=await fetch(`${base}/api/mint-presets/missing`,{method:'DELETE',headers:authHeaders('a',true),
+    body:JSON.stringify({confirmation:'CONFIRM'})});
+  assert.deepEqual(await missing.json(),{deleted:false});
+  assert.deepEqual(calls.filter(call=>call[0]==='deletePreset'),[
+    ['deletePreset','user-a','Launch Day'],['deletePreset','user-a','missing'],
+  ]);
 });
 
 test('an expired schedule review reaches the dashboard as a safe 400 with its stable code',async t=>{
@@ -300,7 +430,22 @@ test('unexpected schedule failures are traceable without leaking the raw databas
   assert.match(errors[0],/preflight_target_at/);
   assert.equal(errors[0].includes(secret),false);
 });
-test('wallet creation returns only its one-time phrase while ordinary responses expose no secrets',async t=>{const {base,privateKey,recoveryPhrase}=await operationsServer(t);const created=await fetch(`${base}/api/wallets/create`,{method:'POST',headers:authHeaders('a',true),body:'{}'});assert.equal(created.status,201);assert.match(created.headers.get('cache-control'),/no-store/);const createdText=await created.text();assert.equal(createdText.includes(privateKey),false);assert.equal(JSON.parse(createdText).recoveryPhrase,recoveryPhrase);const listedText=await (await fetch(`${base}/api/wallets`,{headers:authHeaders('a')})).text();assert.equal(listedText.includes(recoveryPhrase),false,'the one-time phrase must never appear in later wallet reads');const body=JSON.parse(listedText);assert.deepEqual(Object.keys(body[0]).sort(),['addedAt','address','balances','chain','label','minted'],'publicWallet projects exactly these fields -- addedAt is needed by the wallet details overlay, and nothing from the key envelope or creation phrase may ever join them');const failed=await fetch(`${base}/api/wallets/import`,{method:'POST',headers:authHeaders('a',true),body:JSON.stringify({privateKey})});assert.equal(failed.status,500);assert.equal((await failed.text()).includes(privateKey),false);});
+test('wallet creation returns only its one-time phrase while ordinary responses expose no secrets',async t=>{const {base,privateKey,recoveryPhrase}=await operationsServer(t);const created=await fetch(`${base}/api/wallets/create`,{method:'POST',headers:authHeaders('a',true),body:'{}'});assert.equal(created.status,201);assert.match(created.headers.get('cache-control'),/no-store/);const createdText=await created.text();assert.equal(createdText.includes(privateKey),false);assert.equal(JSON.parse(createdText).recoveryPhrase,recoveryPhrase);const listedText=await (await fetch(`${base}/api/wallets`,{headers:authHeaders('a')})).text();assert.equal(listedText.includes(recoveryPhrase),false,'the one-time phrase must never appear in later wallet reads');const body=JSON.parse(listedText);assert.deepEqual(Object.keys(body[0]).sort(),['addedAt','address','balances','chain','id','label','minted'],'publicWallet projects exactly these fields -- the tenant-scoped numeric id addresses wallet-history APIs, addedAt is needed by the wallet details overlay, and no key envelope or creation phrase may ever join them');const failed=await fetch(`${base}/api/wallets/import`,{method:'POST',headers:authHeaders('a',true),body:JSON.stringify({privateKey})});assert.equal(failed.status,500);assert.equal((await failed.text()).includes(privateKey),false);});
+test('wallet history routes are session scoped, paginate safely, and require CSRF before queuing sync',async t=>{
+  const {base,calls,broadcasts}=await operationsServer(t);
+  assert.equal((await fetch(`${base}/api/wallets/1/history`)).status,401);
+  const listed=await fetch(`${base}/api/wallets/1/history?page=2`,{headers:authHeaders('a')});
+  assert.equal(listed.status,200);assert.match(listed.headers.get('cache-control'),/no-store/);
+  const page=await listed.json();assert.equal(page.page,2);assert.equal(page.items[0].valueWei,'1');
+  assert.equal((await fetch(`${base}/api/wallets/1/history`,{headers:authHeaders('b')})).status,400);
+  assert.equal((await fetch(`${base}/api/wallets/1/history/sync`,{method:'POST',headers:authHeaders('a'),body:'{}'})).status,403);
+  const synced=await fetch(`${base}/api/wallets/1/history/sync`,{method:'POST',headers:authHeaders('a',true),body:'{}'});
+  assert.equal(synced.status,202);assert.deepEqual(await synced.json(),{accepted:true,supported:false,state:'unsupported'});
+  assert.deepEqual(calls.filter(call=>call[0].startsWith('wallet-history')).map(call=>call.slice(0,3)),[
+    ['wallet-history','user-a','1'],['wallet-history-sync','user-a','1'],
+  ]);
+  assert.ok(broadcasts.some(item=>item.userId==='user-a'&&item.message.type==='wallet-history.changed'));
+});
 test('keystore export requires confirmation, is user-scoped, enforces a minimum password, and never returns raw key material',async t=>{const {base,calls,privateKey}=await operationsServer(t);const noConfirm=await fetch(`${base}/api/wallets/alpha/export`,{method:'POST',headers:authHeaders('a',true),body:JSON.stringify({securityPassword:'a-strong-enough-password'})});assert.equal(noConfirm.status,400);const shortPassword=await fetch(`${base}/api/wallets/alpha/export`,{method:'POST',headers:authHeaders('a',true),body:JSON.stringify({securityPassword:'short',confirmation:'CONFIRM'})});assert.equal(shortPassword.status,400);const crossUser=await fetch(`${base}/api/wallets/alpha/export`,{method:'POST',headers:authHeaders('b',true),body:JSON.stringify({securityPassword:'a-strong-enough-password',confirmation:'CONFIRM'})});assert.equal(crossUser.status,400);const ok=await fetch(`${base}/api/wallets/alpha/export`,{method:'POST',headers:authHeaders('a',true),body:JSON.stringify({securityPassword:'a-strong-enough-password',confirmation:'CONFIRM'})});assert.equal(ok.status,200);const body=await ok.json();assert.deepEqual(Object.keys(body),['keystore']);assert.equal(body.keystore,'{"encrypted":"keystore-json"}');assert.equal(JSON.stringify(body).includes(privateKey),false);assert.deepEqual(calls.filter(call=>call[0]==='export'),[['export','user-a','alpha']]);});
 test('wallet eligibility authorization is session, CSRF, confirmation, and tenant scoped',async t=>{const {base,calls}=await operationsServer(t);const path=`${base}/api/wallets/alpha/opensea-eligibility/authorize`;assert.equal((await fetch(path,{method:'POST',headers:{'content-type':'application/json'},body:'{}'})).status,401);assert.equal((await fetch(path,{method:'POST',headers:authHeaders('a'),body:'{}'})).status,403);assert.equal((await fetch(path,{method:'POST',headers:authHeaders('a',true),body:'{}'})).status,400);assert.equal((await fetch(path,{method:'POST',headers:authHeaders('b',true),body:JSON.stringify({confirmation:'CONFIRM'})})).status,400);const enabled=await fetch(path,{method:'POST',headers:authHeaders('a',true),body:JSON.stringify({confirmation:'CONFIRM'})});assert.equal(enabled.status,200);assert.equal((await enabled.json()).status,'connected');const disabled=await fetch(`${base}/api/wallets/alpha/opensea-eligibility`,{method:'DELETE',headers:authHeaders('a',true),body:JSON.stringify({confirmation:'CONFIRM'})});assert.equal(disabled.status,200);assert.deepEqual(calls.filter(call=>call[0].startsWith('eligibility-')),[['eligibility-authorize','user-a','alpha'],['eligibility-revoke','user-a','alpha']]);});
 test('wallet eligibility authorization is rate limited before repeated provider token creation',async t=>{const {base,calls}=await operationsServer(t);const path=`${base}/api/wallets/alpha/opensea-eligibility/authorize`;const statuses=[];for(let index=0;index<4;index+=1){const response=await fetch(path,{method:'POST',headers:authHeaders('a',true),body:JSON.stringify({confirmation:'CONFIRM'})});statuses.push(response.status);if(index===3)assert.ok(Number(response.headers.get('retry-after'))>=1);}assert.deepEqual(statuses,[200,200,200,429]);assert.equal(calls.filter(call=>call[0]==='eligibility-authorize').length,3);});
@@ -448,6 +593,23 @@ test('time format is validated, CSRF-protected, and persisted per user',async t=
   assert.equal(updated.status,200);assert.deepEqual(await updated.json(),{timeFormat:'12h'});
   assert.equal((await (await fetch(`${base}/api/profile`,{headers:authHeaders('a')})).json()).timeFormat,'12h');
   assert.equal((await (await fetch(`${base}/api/profile`,{headers:authHeaders('b')})).json()).timeFormat,'24h');
+});
+test('successful account preference writes announce one shared profile refresh',async t=>{
+  const {base,broadcasts}=await operationsServer(t);
+  const writes=[
+    ['/api/profile/theme',{theme:'clean-vault'}],
+    ['/api/profile/default-chain',{defaultChain:'robinhood'}],
+    ['/api/profile/low-balance-threshold',{lowBalanceThreshold:'0.025'}],
+    ['/api/profile/time-format',{timeFormat:'12h'}],
+  ];
+  for(const [route,body] of writes){
+    const response=await fetch(`${base}${route}`,{method:'PUT',headers:authHeaders('a',true),
+      body:JSON.stringify(body)});
+    assert.equal(response.status,200,route);
+  }
+  assert.deepEqual(broadcasts,writes.map(()=>({
+    userId:'user-a',message:{type:'profile.changed'},
+  })));
 });
 test('display currency is user-scoped, validated, and its quotes retain source and freshness',async t=>{
   const sessions=new Map([['token-a',{userId:'user-a',csrfTokenHash:'csrf'}],

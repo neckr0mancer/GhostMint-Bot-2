@@ -44,6 +44,18 @@ function timeOrNull(value) {
   return value === null || value === undefined ? null : new Date(value).toISOString();
 }
 
+function finalizedConflict(message) {
+  const error = new Error(message);
+  error.code = 'WALLET_HISTORY_FINALIZED_CONFLICT';
+  return error;
+}
+
+function staleSync(message) {
+  const error = new Error(message);
+  error.code = 'WALLET_HISTORY_SYNC_STALE';
+  return error;
+}
+
 function mapMovement(row) {
   return {
     eventLocator: row.event_locator,
@@ -161,14 +173,18 @@ function createWalletHistoryRepository(pool) {
   async function registerSubject(input) {
     const key = subjectKey(input);
     const trackingStartBlock = nullableDecimal(input.trackingStartBlock, 'trackingStartBlock', PG_BIGINT_MAX);
-    const result = await pool.query(`INSERT INTO wallet_history_subjects
+    const result = await pool.query(`WITH owned_wallet AS (
+        SELECT 1 FROM wallets
+        WHERE user_id=$1 AND LOWER(address)=$3 LIMIT 1 FOR KEY SHARE
+      ) INSERT INTO wallet_history_subjects
       (user_id,chain,wallet_address,tracking_start_block)
-      VALUES ($1,$2,$3,$4)
+      SELECT $1,$2,$3,$4 FROM owned_wallet
       ON CONFLICT (user_id,chain,wallet_address) DO UPDATE SET
         tracking_start_block=COALESCE(wallet_history_subjects.tracking_start_block,
           EXCLUDED.tracking_start_block),
-        last_imported_at=NOW(),sync_enabled=TRUE,last_removed_at=NULL,updated_at=NOW()
+        updated_at=NOW()
       RETURNING *`, [key.userId, key.chain, key.walletAddress, trackingStartBlock]);
+    if (!result.rowCount) throw staleSync('Wallet history sync is stale because the wallet was removed');
     return mapSubject(result.rows[0]);
   }
 
@@ -218,10 +234,14 @@ function createWalletHistoryRepository(pool) {
     const allowed = new Set(['queued', 'backfilling', 'current', 'partial', 'unsupported', 'error']);
     const state = normalizedText(input.state, 'state');
     if (!allowed.has(state)) throw new TypeError('state is invalid');
-    const result = await pool.query(`INSERT INTO wallet_history_sync_state
+    const result = await pool.query(`WITH active_subject AS (
+        SELECT 1 FROM wallet_history_subjects
+        WHERE user_id=$1 AND chain=$2 AND wallet_address=$3 AND sync_enabled=TRUE FOR UPDATE
+      ) INSERT INTO wallet_history_sync_state
       (user_id,chain,wallet_address,provider_key,state,last_requested_at,last_error_at,
         last_error_code,last_error_message,retry_after)
-      VALUES ($1,$2,$3,$4,$5,NOW(),CASE WHEN $5='error' THEN NOW() ELSE NULL END,$6,$7,$8)
+      SELECT $1,$2,$3,$4,$5,NOW(),CASE WHEN $5='error' THEN NOW() ELSE NULL END,$6,$7,$8
+      FROM active_subject
       ON CONFLICT (user_id,chain,wallet_address) DO UPDATE SET
         provider_key=EXCLUDED.provider_key,state=EXCLUDED.state,last_requested_at=NOW(),
         last_error_at=EXCLUDED.last_error_at,last_error_code=EXCLUDED.last_error_code,
@@ -231,6 +251,7 @@ function createWalletHistoryRepository(pool) {
       RETURNING *`, [key.userId, key.chain, key.walletAddress, providerKey, state,
       input.errorCode ?? null, input.errorMessage ?? null,
       input.retryAfter ? dateValue(input.retryAfter, 'retryAfter') : null]);
+    if (!result.rowCount) throw staleSync('Wallet history sync is stale because the wallet was removed');
     return mapSyncState(result.rows[0]);
   }
 
@@ -241,9 +262,12 @@ function createWalletHistoryRepository(pool) {
   async function queueSync(input) {
     const key = subjectKey(input);
     const providerKey = normalizedText(input.providerKey, 'providerKey');
-    const result = await pool.query(`INSERT INTO wallet_history_sync_state
+    const result = await pool.query(`WITH active_subject AS (
+        SELECT 1 FROM wallet_history_subjects
+        WHERE user_id=$1 AND chain=$2 AND wallet_address=$3 AND sync_enabled=TRUE FOR UPDATE
+      ) INSERT INTO wallet_history_sync_state
       (user_id,chain,wallet_address,provider_key,state,last_requested_at)
-      VALUES ($1,$2,$3,$4,'queued',NOW())
+      SELECT $1,$2,$3,$4,'queued',NOW() FROM active_subject
       ON CONFLICT (user_id,chain,wallet_address) DO UPDATE SET
         provider_key=CASE WHEN wallet_history_sync_state.state IN ('queued','backfilling')
             OR (wallet_history_sync_state.claimed_by IS NOT NULL
@@ -285,15 +309,19 @@ function createWalletHistoryRepository(pool) {
           THEN wallet_history_sync_state.lease_expires_at ELSE NULL END,
         updated_at=NOW()
       RETURNING *`, [key.userId, key.chain, key.walletAddress, providerKey]);
+    if (!result.rowCount) throw staleSync('Wallet history sync is stale because the wallet was removed');
     return mapSyncState(result.rows[0]);
   }
 
   async function beginSync(input) {
     const key = subjectKey(input);
     const providerKey = normalizedText(input.providerKey, 'providerKey');
-    const result = await pool.query(`INSERT INTO wallet_history_sync_state
+    const result = await pool.query(`WITH active_subject AS (
+        SELECT 1 FROM wallet_history_subjects
+        WHERE user_id=$1 AND chain=$2 AND wallet_address=$3 AND sync_enabled=TRUE FOR UPDATE
+      ) INSERT INTO wallet_history_sync_state
       (user_id,chain,wallet_address,provider_key,state,generation,attempts,last_requested_at,last_started_at)
-      VALUES ($1,$2,$3,$4,'backfilling',1,1,NOW(),NOW())
+      SELECT $1,$2,$3,$4,'backfilling',1,1,NOW(),NOW() FROM active_subject
       ON CONFLICT (user_id,chain,wallet_address) DO UPDATE SET
         provider_key=EXCLUDED.provider_key,state='backfilling',
         generation=wallet_history_sync_state.generation+1,
@@ -302,6 +330,7 @@ function createWalletHistoryRepository(pool) {
         last_error_at=NULL,last_error_code=NULL,last_error_message=NULL,retry_after=NULL,
         claimed_by=NULL,claimed_at=NULL,lease_expires_at=NULL,updated_at=NOW()
       RETURNING *`, [key.userId, key.chain, key.walletAddress, providerKey]);
+    if (!result.rowCount) throw staleSync('Wallet history sync is stale because the wallet was removed');
     return mapSyncState(result.rows[0]);
   }
 
@@ -363,10 +392,13 @@ function createWalletHistoryRepository(pool) {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      const subject = await client.query(`SELECT 1 FROM wallet_history_subjects
+      const subject = await client.query(`SELECT sync_enabled FROM wallet_history_subjects
         WHERE user_id=$1 AND chain=$2 AND wallet_address=$3 FOR UPDATE`,
       [key.userId, key.chain, key.walletAddress]);
-      if (!subject.rowCount) throw new Error('Wallet history subject not found');
+      if (!subject.rowCount) throw staleSync('Wallet history sync is stale because the wallet was removed');
+      if (subject.rows[0].sync_enabled !== true) {
+        throw staleSync('Wallet history sync is stale because the wallet was removed');
+      }
       const claimed = await client.query(`SELECT 1 FROM wallet_history_sync_state
         WHERE user_id=$1 AND chain=$2 AND wallet_address=$3 AND provider_key=$4
           AND generation=$5 AND cursor IS NOT DISTINCT FROM $6::JSONB
@@ -376,9 +408,59 @@ function createWalletHistoryRepository(pool) {
         FOR UPDATE`, [key.userId, key.chain, key.walletAddress, providerKey, generation,
         expectedCursor,workerId]);
       if (!claimed.rowCount) {
-        const error = new Error('Wallet history sync generation or cursor is stale');
-        error.code = 'WALLET_HISTORY_SYNC_STALE';
-        throw error;
+        throw staleSync('Wallet history sync generation or cursor is stale');
+      }
+      // The subject lock serializes every page write for this wallet/chain. Validate the whole
+      // incoming page against immutable finalized blocks before changing the subject, a
+      // transaction, or any movement so a block-level conflict cannot partially land.
+      const incomingCanonicalByBlock = new Map();
+      for (const transaction of transactions) {
+        if (transaction.canonical === false) continue;
+        const blockNumber = nullableDecimal(transaction.blockNumber, 'blockNumber', PG_BIGINT_MAX);
+        if (blockNumber === null) throw new TypeError('blockNumber is required');
+        const blockHash = transaction.blockHash === null || transaction.blockHash === undefined
+          ? null : normalizedText(transaction.blockHash, 'blockHash', BLOCK_HASH).toLowerCase();
+        const incoming = {
+          finalityStatus:transaction.finalityStatus || 'unfinalized',
+          blockHash,
+        };
+        const rows = incomingCanonicalByBlock.get(blockNumber) || [];
+        rows.push(incoming);
+        incomingCanonicalByBlock.set(blockNumber, rows);
+      }
+      for (const rows of incomingCanonicalByBlock.values()) {
+        const finalized = rows.filter(row => row.finalityStatus === 'finalized');
+        if (!finalized.length) continue;
+        const finalizedHash = finalized[0].blockHash;
+        if (rows.some(row => row.finalityStatus !== 'finalized'
+          || row.blockHash !== finalizedHash)) {
+          throw finalizedConflict('Incoming wallet history disagreed within a finalized block');
+        }
+      }
+      const incomingCanonicalBlocks = [...incomingCanonicalByBlock.keys()];
+      if (incomingCanonicalBlocks.length) {
+        const finalizedRows = await client.query(`SELECT block_number::TEXT AS block_number,block_hash
+          FROM wallet_history_transactions
+          WHERE user_id=$1 AND chain=$2 AND wallet_address=$3
+            AND block_number=ANY($4::BIGINT[]) AND canonical=TRUE
+            AND finality_status='finalized'`,
+        [key.userId, key.chain, key.walletAddress, incomingCanonicalBlocks]);
+        const finalizedHashByBlock = new Map();
+        for (const row of finalizedRows.rows) {
+          if (finalizedHashByBlock.has(row.block_number)
+            && finalizedHashByBlock.get(row.block_number) !== row.block_hash) {
+            throw finalizedConflict('Stored finalized wallet history disagreed within one block');
+          }
+          finalizedHashByBlock.set(row.block_number, row.block_hash);
+        }
+        for (const [blockNumber, rows] of incomingCanonicalByBlock) {
+          if (!finalizedHashByBlock.has(blockNumber)) continue;
+          const finalizedHash = finalizedHashByBlock.get(blockNumber);
+          if (rows.some(row => row.finalityStatus !== 'finalized'
+            || row.blockHash !== finalizedHash)) {
+            throw finalizedConflict('Finalized wallet history conflicted with new provider data');
+          }
+        }
       }
       if (page.observedHeadBlock !== null && page.observedHeadBlock !== undefined) {
         await client.query(`UPDATE wallet_history_subjects SET
@@ -392,7 +474,7 @@ function createWalletHistoryRepository(pool) {
         const blockNumber = nullableDecimal(transaction.blockNumber, 'blockNumber', PG_BIGINT_MAX);
         if (blockNumber === null) throw new TypeError('blockNumber is required');
         const blockHash = transaction.blockHash === null || transaction.blockHash === undefined
-          ? null : normalizedText(transaction.blockHash, 'blockHash', BLOCK_HASH);
+          ? null : normalizedText(transaction.blockHash, 'blockHash', BLOCK_HASH).toLowerCase();
         const fromAddress = normalizedText(transaction.fromAddress, 'fromAddress', EVM_ADDRESS);
         const toAddress = transaction.toAddress === null || transaction.toAddress === undefined
           ? null : normalizedText(transaction.toAddress, 'toAddress', EVM_ADDRESS);
@@ -421,6 +503,11 @@ function createWalletHistoryRepository(pool) {
             orphaned_at=EXCLUDED.orphaned_at,
             provider_key=EXCLUDED.provider_key,provider_complete=EXCLUDED.provider_complete,
             generation=EXCLUDED.generation,raw_summary=EXCLUDED.raw_summary,last_observed_at=NOW()
+          WHERE wallet_history_transactions.finality_status<>'finalized'
+            OR (EXCLUDED.finality_status='finalized' AND EXCLUDED.canonical=TRUE
+              AND wallet_history_transactions.canonical=TRUE
+              AND wallet_history_transactions.block_number=EXCLUDED.block_number
+              AND wallet_history_transactions.block_hash IS NOT DISTINCT FROM EXCLUDED.block_hash)
           RETURNING tx_hash`, [key.userId, key.chain, key.walletAddress, txHash, blockNumber,
           blockHash, transactionIndex, dateValue(transaction.occurredAt, 'occurredAt'),
           fromAddress, toAddress, nullableDecimal(transaction.nonce, 'nonce'), transaction.input ?? null,
@@ -432,7 +519,9 @@ function createWalletHistoryRepository(pool) {
           transaction.finalityStatus || 'unfinalized', transaction.canonical !== false, providerKey,
           page.coverage?.history?.complete === true, generation,
           transaction.rawSummary === undefined ? null : JSON.stringify(transaction.rawSummary)]);
-        if (!inserted.rowCount) throw new Error('Wallet history transaction was not stored');
+        if (!inserted.rowCount) {
+          throw finalizedConflict('Finalized wallet history conflicted with new provider data');
+        }
         await client.query(`DELETE FROM wallet_history_movements
           WHERE user_id=$1 AND chain=$2 AND wallet_address=$3 AND tx_hash=$4`,
         [key.userId, key.chain, key.walletAddress, txHash]);
@@ -470,10 +559,19 @@ function createWalletHistoryRepository(pool) {
           || BigInt(recheckThrough) > BigInt(historyCoverage.throughBlock)) {
           throw new TypeError('recheckRange must be contained within complete history coverage');
         }
+        const missingFinalized = await client.query(`SELECT 1 FROM wallet_history_transactions
+          WHERE user_id=$1 AND chain=$2 AND wallet_address=$3
+            AND block_number BETWEEN $4 AND $5 AND generation<>$6 AND canonical=TRUE
+            AND finality_status='finalized' LIMIT 1`,
+        [key.userId, key.chain, key.walletAddress, recheckFrom, recheckThrough, generation]);
+        if (missingFinalized.rowCount) {
+          throw finalizedConflict('Finalized wallet history was missing from the provider recheck');
+        }
         await client.query(`UPDATE wallet_history_transactions SET
             canonical=FALSE,orphaned_at=NOW(),last_observed_at=NOW()
           WHERE user_id=$1 AND chain=$2 AND wallet_address=$3
-            AND block_number BETWEEN $4 AND $5 AND generation<>$6 AND canonical=TRUE`,
+            AND block_number BETWEEN $4 AND $5 AND generation<>$6 AND canonical=TRUE
+            AND finality_status<>'finalized'`,
         [key.userId, key.chain, key.walletAddress, recheckFrom, recheckThrough, generation]);
       }
       const result = await client.query(`UPDATE wallet_history_sync_state SET
@@ -493,8 +591,11 @@ function createWalletHistoryRepository(pool) {
         nullableDecimal(historyCoverage?.throughBlock, 'coverage.history.throughBlock', PG_BIGINT_MAX),
         nullableDecimal(provenanceCoverage?.fromBlock, 'coverage.provenance.fromBlock', PG_BIGINT_MAX),
         nullableDecimal(provenanceCoverage?.throughBlock, 'coverage.provenance.throughBlock', PG_BIGINT_MAX),
+        // Per-page RPC finality proves the labels on that page only. A later page can observe a
+        // newer cutoff, so do not turn it into generation-wide finalized coverage without a stable
+        // snapshot that rechecks every earlier row against the same boundary.
         null]);
-      if (!result.rowCount) throw new Error('Wallet history sync generation is stale');
+      if (!result.rowCount) throw staleSync('Wallet history sync generation is stale');
       await client.query('COMMIT');
       return mapSyncState(result.rows[0]);
     } catch (error) {
@@ -555,6 +656,8 @@ function createWalletHistoryRepository(pool) {
           ) THEN 'ghostmint'
           WHEN subject.tracking_start_block IS NOT NULL
             AND tx.block_number > subject.tracking_start_block
+            AND sync.state='current'
+            AND tx.provider_complete=TRUE
             AND sync.provenance_complete_from_block IS NOT NULL
             AND sync.provenance_complete_through_block IS NOT NULL
             AND tx.block_number BETWEEN sync.provenance_complete_from_block
@@ -566,6 +669,7 @@ function createWalletHistoryRepository(pool) {
         LEFT JOIN wallet_history_sync_state sync USING (user_id,chain,wallet_address)
         WHERE tx.user_id=$1 AND ($2::TEXT IS NULL OR tx.chain=$2) AND tx.wallet_address=$3
           AND tx.first_observed_at <= $4 AND tx.canonical=TRUE
+          AND tx.finality_status='finalized'
       ), filtered AS (
         SELECT classified.* FROM classified
         WHERE ($5::TEXT IS NULL OR classified.execution_status=$5)
@@ -666,6 +770,8 @@ function createWalletHistoryRepository(pool) {
           ) THEN 'ghostmint'
           WHEN subject.tracking_start_block IS NOT NULL
             AND tx.block_number > subject.tracking_start_block
+            AND sync.state='current'
+            AND tx.provider_complete=TRUE
             AND sync.provenance_complete_from_block IS NOT NULL
             AND sync.provenance_complete_through_block IS NOT NULL
             AND tx.block_number BETWEEN sync.provenance_complete_from_block
@@ -682,6 +788,7 @@ function createWalletHistoryRepository(pool) {
             AND sync.wallet_address=tx.wallet_address
         WHERE tx.user_id=$1 AND ($3::TEXT IS NULL OR tx.chain=$3)
           AND tx.first_observed_at <= $4 AND tx.canonical=TRUE
+          AND tx.finality_status='finalized'
       ), filtered AS (
         SELECT classified.* FROM classified
         WHERE ($5::TEXT IS NULL OR classified.execution_status=$5)

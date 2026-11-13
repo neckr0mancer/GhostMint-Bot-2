@@ -1287,7 +1287,10 @@ never minted as an unqualified success. It now reports `N of M submitted` with a
 
 - Discord's `/batch-mint` and `/wallet batch-import` slash commands, and both Telegram flows, are
   covered by unit tests but have not yet been exercised against the live bots.
-- Discord still has no mint presets at all — a separate parity gap, unrelated to batch.
+- Discord mint-preset parity is now implemented locally through the same account-scoped service:
+  list, validated save, simulation-backed confirmed use, and confirmed delete. Dashboard deletion
+  is also implemented with themed confirmation and live `presets.changed` refresh. Live Discord
+  registration and three-surface acceptance remain pending.
 
 ---
 
@@ -2499,8 +2502,9 @@ need the same Discord component patterns.
 ## Section A — Mint reliability ✅
 
 - `/mintnow` is a real one-shot: with a resolvable contract, one wallet, and a known price it
-  reaches execution with zero taps *when the caller's transaction mode allows bypass* (Degen).
-  Anything unresolvable is still asked for; without bypass it behaves like `/mint`.
+  reaches execution with zero further taps because that explicit command is the user's one-shot
+  instruction. Ordinary `/mint`, Dashboard Mint Now, and the guided Discord flow still require
+  final approval; no transaction-mode preset silently removes that manual confirmation.
 - Bare `0x…` addresses with no command show contract details on Telegram and Discord.
 - Telegram formatting migrated from broken `*asterisk*` Markdown (which never rendered, since
   `parse_mode` was never set) to HTML bot-wide, with `escapeTelegramHtml` applied to every
@@ -2513,7 +2517,7 @@ need the same Discord component patterns.
   not have minted. Both paths now share `prepareMintCall()`.
 - Dashboard's Schedule form gained the same auto-detect the Minting form had.
 
-## Section C — Transaction modes (Degen → Normie) ✅
+## Section C — Transaction modes (Degen → Normie) 🟡 local code and isolated DB acceptance complete; rendered review pending
 
 - Migration `035` adds `gas_price_multiplier` to `mode_presets` (Degen 1.5×, Fast 1.2×, Cautious
   1.05×, Normie 1.0×), applied in `transactionEngine.js` to auto-computed fees only — never
@@ -2527,6 +2531,23 @@ need the same Discord component patterns.
   Degen and Fast now require `seat_groups.advanced_modes_allowed` or a per-user
   `user_governance.advanced_modes_allowed` grant — previously any user could select Degen with no
   gating at all.
+- **Corrected locally 2026-10-19.** The ordinary Mint flow's final confirmation remains independent
+  of the preset's automation `human_verification` default; `/mintnow` remains the deliberately
+  explicit one-shot no-confirmation exception, and Dashboard/Telegram/Discord now say both facts
+  plainly. Discord's button path now requires the same second confirmation as the other surfaces,
+  and direct Discord/Telegram mode commands plus Telegram's delayed confirmation boundary recheck
+  the configured bot password gate.
+  If Fast/Degen access is revoked, effective governance resolves to Normie immediately, clears the
+  stale account selection with a guarded write, respects an explicit per-user denial over a group
+  grant, and the transaction-policy layer independently rejects both account and target-level
+  advanced overrides. It refuses the transaction if Normie cannot be resolved. The focused
+  non-database matrix passed 248 assertions. A distinct database named
+  `ghostmint_disposable_20261019` was created inside the approved Railway test PostgreSQL service,
+  marked with the existing disposable identity, and configured only through the ignored local test
+  environment file. All 74 migrations are applied there, and the single guarded
+  `tests/governance.integration.test.js` acceptance passed 1/1. The application database target
+  remained distinct and untouched. The remaining local acceptance item is the rendered Settings
+  mode review; deployment and live account-mode switching still require explicit authorization.
 
 ## Section D — Gas per-chain ✅
 
@@ -2700,6 +2721,115 @@ schema/service and Dashboard controls first. Telegram and Discord may follow as 
 but must call the same service and are required before this feature is considered cross-platform
 complete.
 
+**Priority/status:** The shared schema/policy, Dashboard controls and review UI, scheduler
+enforcement, durable audit/outbox, automated Postgres restart/concurrency coverage, and Telegram /
+Discord interactive policy and versioned review UI are complete locally. Both automatic controls
+default OFF per task. Remaining work is deployment plus one live Railway schedule acceptance run;
+optional future Settings defaults may prefill only new tasks. Final-time balance, gas, stage, proof,
+price, governance, and simulation checks remain authoritative.
+
+## Feature Request — Wallet import surfaces and persistent wallet action bar (Documented 2026-09-21, Not Implemented)
+
+**Original request (rephrased):** Restore or expose ordinary **Import wallet** and owner-only
+**Batch import wallets** on the dashboard Wallets page. In every expanded-wallet view, place a
+prominent action row above the Summary / Activity / Performance / Manage tabs with four icon-led
+actions: **Buy**, **Receive**, **Send**, and **Swap**. The row remains easy to reach regardless of
+which wallet detail tab is selected.
+
+**Existing capability to reuse:** private-key/seed import validation, encrypted persistence, duplicate
+wallet rejection, and owner-only batch import already exist in the shared service layer. Public
+receive-address QR generation also exists. This task must expose those same capabilities; it must
+not create parallel dashboard-only import or wallet logic.
+
+**Truthful rollout:**
+
+- **Receive** is the first functional action. It opens a dedicated, fully designed overlay showing
+  the selected wallet's public address, chain/network context, scannable QR code, copy-address
+  control, and an explicit warning to verify the chain before funding. No private key or recovery
+  phrase may ever be encoded in the QR.
+- **Buy**, **Send**, and **Swap** keep their final action positions and appropriate icons, but remain
+  visibly disabled or labelled **Coming soon** until each uses a real shared-service flow. They must
+  never imply a quote, route, balance effect, or transaction capability that is not implemented.
+- Dashboard import must keep the existing security copy: generated wallets remain recommended;
+  private-key/seed import is a fallback over HTTPS and must never echo secret material in any API
+  response, notification, activity entry, audit row, or log. Batch import stays owner-only and must
+  show per-wallet success/failure without exposing submitted secrets.
+
+**Layout and acceptance:**
+
+- The action row renders above the wallet detail tab switcher on desktop and mobile, with reachable
+  touch targets, keyboard focus, screen-reader labels, and no horizontal overflow at 390 px.
+- Opening Receive always uses the currently expanded wallet and refreshes the displayed public
+  address/chain when another wallet is selected; closing restores focus to the Receive action.
+- Import wallet and Batch import wallets are discoverable from the Wallets page. Batch import is
+  hidden or denied for non-owners using the existing server-side owner check, not UI hiding alone.
+- Import, QR, empty, loading, error, and success states are verified in both themes at
+  390/768/1024/1440 widths. Existing Summary / Activity / Performance / Manage behavior remains
+  unchanged beneath the new action row.
+
+**Status:** recorded for the Wallets dashboard fidelity pass. No Buy/Send/Swap transaction flow is
+claimed or implemented by this worklist entry.
+
+## Feature Request - Canonical Dashboard / Telegram / Discord state parity (P0 correctness closure, documented 2026-10-05)
+
+**Reported defect:** A schedule created from Discord did not appear on the linked account's
+dashboard. Dashboard, Telegram, and Discord are three interfaces to one GhostMint account; they
+must not behave like separate products or keep separate business state.
+
+**Existing architecture to preserve:** all three surfaces already call the shared command service,
+the durable PostgreSQL scheduler, and user-scoped repositories. A successful task creation emits a
+user-scoped `tasks.changed` event and the dashboard refetches durable state. Do not add a second
+sync store or copy rows between platform-specific tables to hide an identity problem.
+
+**First diagnostic and repair requirement:** prove that the authenticated dashboard session, linked
+Discord identity, and linked Telegram identity resolve to the same internal `user_id`. First contact
+on a bot can currently create a separate internal account; a later link can then conflict after that
+duplicate account has acquired real data. If this is the cause, implement an explicit, audited,
+transactional, data-preserving account-merge/relink path. Never silently discard or reassign data.
+
+**Parity scope:**
+
+- Wallets, including labels, archived state, and the currently selected/default wallet where that
+  preference is account-backed.
+- Scheduled tasks and every durable state: scheduled, claimed/running, retrying, paused, failed,
+  expired, cancelled, succeeded, and archived. Each surface exposes only status-valid Pause,
+  Resume, Retry, Cancel, Reschedule, or Archive controls.
+- Snipers, social/watch rules, policies, and presets.
+- Sends/withdrawals, mints, confirmations, P&L inputs, and operational Activity.
+- Persisted safety, transaction, notification, and account preferences. Browser-only drafts,
+  expanded panels, and layout order may remain local but must be labelled and must not masquerade
+  as account-wide settings.
+
+**Acceptance:**
+
+- Provide a safe diagnostic that compares the three platform mappings without exposing tokens,
+  login codes, wallet secrets, or another tenant's identifiers.
+- Create a schedule from Discord and Telegram independently; its stored `user_id` must equal the
+  dashboard session's user and the same row must appear in the correct dashboard status filter both
+  immediately through WebSocket refresh and after a hard reload/restart.
+- Create and control a dashboard schedule and verify the same row and final state from both bots.
+- Repeat create/list/update/control coverage for the other shared resources above; test pagination,
+  reconnect, restart, and every relevant terminal-state filter.
+- Cover link-before-first-use and link-after-first-use. Any duplicate-account reconciliation must
+  re-key all owned records atomically, revoke stale sessions, preserve audit evidence, be idempotent,
+  and maintain tenant isolation.
+
+**Local closure update (2026-10-09):** Dashboard confirmed preset deletion and Discord's complete
+mint-preset lifecycle now use the shared account-scoped service. Telegram and Discord also expose
+confirmed sniper removal through that same shared service. P&L parity is closed only to the safe
+boundary: both bots can page the shared records, add a manual record, and record sale proceeds
+without changing the stored name, mint cost, or receipt-derived gas. Full bot edit/archive remains
+open until `pnl_records` has authoritative origin/provenance and archive semantics; do not widen the
+legacy hard-delete behavior or treat the Dashboard's name-based "Automatic" heuristic as proof.
+Telegram's direct `/mintcall` and preset-execution paths also use the same confirmed-mint accounting
+helper as Dashboard and Discord, so a confirmed mint updates wallet counters, Activity, automatic
+receipt-backed P&L, balance invalidation, and live Dashboard signals exactly once. Post-confirmation
+accounting failure remains isolated from the chain-derived transaction outcome. Telegram and Discord
+guided scheduling now share one final command adapter. Telegram's real confirmation boundary is
+isolated in `src/telegram/taskScheduleConfirmation.js`, so disposable-database acceptance drives the
+same handler registered by `flow:taskconfirm`, plus Discord's real `flow:taskconfirm` handler, instead
+of bypassing either bot with a direct `commands.createTask()` call.
+
 **Account reconciliation Phase 1A (completed locally 2026-10-09):** the Admin Owners surface now
 has an owner-gated, CSRF-protected **read-only review** backed by a PostgreSQL repeatable-read
 snapshot. It resolves the exact source and retained account IDs, inventories every known owned
@@ -2798,102 +2928,35 @@ were removed afterward. Production migrations/deployment verification remain rel
 production merge or migration was performed. Plans with any collision or settings choice remain
 blocked until an explicit resolution phase is designed and separately approved.
 
-**Priority/status:** The shared schema/policy, Dashboard controls and review UI, scheduler
-enforcement, durable audit/outbox, automated Postgres restart/concurrency coverage, and Telegram /
-Discord interactive policy and versioned review UI are complete locally. Both automatic controls
-default OFF per task. Remaining work is deployment plus one live Railway schedule acceptance run;
-optional future Settings defaults may prefill only new tasks. Final-time balance, gas, stage, proof,
-price, governance, and simulation checks remain authoritative.
-
-## Feature Request — Wallet import surfaces and persistent wallet action bar (Documented 2026-09-21, Not Implemented)
-
-**Original request (rephrased):** Restore or expose ordinary **Import wallet** and owner-only
-**Batch import wallets** on the dashboard Wallets page. In every expanded-wallet view, place a
-prominent action row above the Summary / Activity / Performance / Manage tabs with four icon-led
-actions: **Buy**, **Receive**, **Send**, and **Swap**. The row remains easy to reach regardless of
-which wallet detail tab is selected.
-
-**Existing capability to reuse:** private-key/seed import validation, encrypted persistence, duplicate
-wallet rejection, and owner-only batch import already exist in the shared service layer. Public
-receive-address QR generation also exists. This task must expose those same capabilities; it must
-not create parallel dashboard-only import or wallet logic.
-
-**Truthful rollout:**
-
-- **Receive** is the first functional action. It opens a dedicated, fully designed overlay showing
-  the selected wallet's public address, chain/network context, scannable QR code, copy-address
-  control, and an explicit warning to verify the chain before funding. No private key or recovery
-  phrase may ever be encoded in the QR.
-- **Buy**, **Send**, and **Swap** keep their final action positions and appropriate icons, but remain
-  visibly disabled or labelled **Coming soon** until each uses a real shared-service flow. They must
-  never imply a quote, route, balance effect, or transaction capability that is not implemented.
-- Dashboard import must keep the existing security copy: generated wallets remain recommended;
-  private-key/seed import is a fallback over HTTPS and must never echo secret material in any API
-  response, notification, activity entry, audit row, or log. Batch import stays owner-only and must
-  show per-wallet success/failure without exposing submitted secrets.
-
-**Layout and acceptance:**
-
-- The action row renders above the wallet detail tab switcher on desktop and mobile, with reachable
-  touch targets, keyboard focus, screen-reader labels, and no horizontal overflow at 390 px.
-- Opening Receive always uses the currently expanded wallet and refreshes the displayed public
-  address/chain when another wallet is selected; closing restores focus to the Receive action.
-- Import wallet and Batch import wallets are discoverable from the Wallets page. Batch import is
-  hidden or denied for non-owners using the existing server-side owner check, not UI hiding alone.
-- Import, QR, empty, loading, error, and success states are verified in both themes at
-  390/768/1024/1440 widths. Existing Summary / Activity / Performance / Manage behavior remains
-  unchanged beneath the new action row.
-
-**Status:** recorded for the Wallets dashboard fidelity pass. No Buy/Send/Swap transaction flow is
-claimed or implemented by this worklist entry.
-
-## Feature Request - Canonical Dashboard / Telegram / Discord state parity (P0 correctness closure, documented 2026-10-05)
-
-**Reported defect:** A schedule created from Discord did not appear on the linked account's
-dashboard. Dashboard, Telegram, and Discord are three interfaces to one GhostMint account; they
-must not behave like separate products or keep separate business state.
-
-**Existing architecture to preserve:** all three surfaces already call the shared command service,
-the durable PostgreSQL scheduler, and user-scoped repositories. A successful task creation emits a
-user-scoped `tasks.changed` event and the dashboard refetches durable state. Do not add a second
-sync store or copy rows between platform-specific tables to hide an identity problem.
-
-**First diagnostic and repair requirement:** prove that the authenticated dashboard session, linked
-Discord identity, and linked Telegram identity resolve to the same internal `user_id`. First contact
-on a bot can currently create a separate internal account; a later link can then conflict after that
-duplicate account has acquired real data. If this is the cause, implement an explicit, audited,
-transactional, data-preserving account-merge/relink path. Never silently discard or reassign data.
-
-**Parity scope:**
-
-- Wallets, including labels, archived state, and the currently selected/default wallet where that
-  preference is account-backed.
-- Scheduled tasks and every durable state: scheduled, claimed/running, retrying, paused, failed,
-  expired, cancelled, succeeded, and archived. Each surface exposes only status-valid Pause,
-  Resume, Retry, Cancel, Reschedule, or Archive controls.
-- Snipers, social/watch rules, policies, and presets.
-- Sends/withdrawals, mints, confirmations, P&L inputs, and operational Activity.
-- Persisted safety, transaction, notification, and account preferences. Browser-only drafts,
-  expanded panels, and layout order may remain local but must be labelled and must not masquerade
-  as account-wide settings.
-
-**Acceptance:**
-
-- Provide a safe diagnostic that compares the three platform mappings without exposing tokens,
-  login codes, wallet secrets, or another tenant's identifiers.
-- Create a schedule from Discord and Telegram independently; its stored `user_id` must equal the
-  dashboard session's user and the same row must appear in the correct dashboard status filter both
-  immediately through WebSocket refresh and after a hard reload/restart.
-- Create and control a dashboard schedule and verify the same row and final state from both bots.
-- Repeat create/list/update/control coverage for the other shared resources above; test pagination,
-  reconnect, restart, and every relevant terminal-state filter.
-- Cover link-before-first-use and link-after-first-use. Any duplicate-account reconciliation must
-  re-key all owned records atomically, revoke stale sessions, preserve audit evidence, be idempotent,
-  and maintain tenant isolation.
-
 **Priority/status:** P0 correctness work, immediately after closing the already-active Settings
 unit. Start with the reported bot-created schedule visibility defect. The shared storage path already
 exists; runtime identity evidence is still required before choosing the repair.
+
+**Schedule-visibility wiring check (local, uncommitted; reverified 2026-10-19):** a database-free regression now
+drives the real identity service, shared task command, Dashboard task API, and user-scoped WebSocket
+hub together. Synthetic linked Telegram and Discord identities resolve to one internal account;
+each can create a non-executing future task, the connected Dashboard receives exactly one
+`tasks.changed` signal per saved row, the pending filter returns both rows, an unrelated account
+returns none, and a reconstructed command service still reads both rows from the repository. A
+Dashboard-created future task is also paused through the linked Telegram identity, resumed through
+the linked Discord identity, and reflected through the same live Dashboard channel. This proves the
+intended shared wiring and prevents a second platform-specific task store from being introduced.
+A guarded real-PostgreSQL version now exists as `tests/crossSurfaceScheduleParity.integration.test.js`.
+It passed against the separately marked disposable Railway database on 2026-10-12: linked bot
+identities persisted far-future schedules under one canonical account, the authenticated Dashboard
+API returned them, user-scoped `tasks.changed` events fired, Dashboard controls worked on both
+bot-created rows, bot-side controls worked on a Dashboard-created row, unrelated reads/controls and
+socket delivery were rejected, and service reconstruction read the same durable rows. The test never
+starts a scheduler worker and now removes its tasks, wallet, sessions, identities, and users even
+after assertion failure; the post-run fixture count was zero. On 2026-10-19 the focused
+database-free adapter/wiring checks passed 3/3 and the guarded disposable-PostgreSQL acceptance
+passed 1/1 again after it was tightened to drive both real bot confirmation boundaries. A focused
+cross-surface regression set then passed 69/69 for shared presets, confirmed-mint accounting, P&L,
+policy/profile invalidation, Discord identity scoping, and bot command dispatch. The signed-in local
+Schedule route also survived a hard reload and returned to its truthful empty durable state. This
+closes the reported bot-created-schedule wiring defect locally; it does not manufacture a live bot
+task or claim deployed acceptance. One deployed Telegram schedule, one deployed Discord schedule,
+and their populated Dashboard hard-reload/control evidence remain in the release acceptance matrix.
 
 ## Feature Request - Address-backed on-chain wallet history with origin provenance (documented 2026-10-05)
 
@@ -2929,12 +2992,18 @@ address should rebuild all public on-chain history that remains available on the
 - Merge the indexed ledger with GhostMint transaction intents without double-counting Activity,
   P&L, or success metrics.
 
-**Deletion and reimport rule:** public chain history can be re-indexed after the same address is
-reimported. Exact GhostMint provenance cannot survive a true hard deletion if all first-party intent
-and provenance evidence is also erased. Before implementation, choose and disclose one policy:
-soft-deactivate and retain the necessary evidence; retain a privacy-reviewed minimal provenance
-ledger keyed only by chain/address/transaction hash; or honour hard erasure and truthfully show old
-events as **Source unknown** after reimport. Do not promise both total erasure and retained origin.
+**Deletion and reimport rule (decided 2026-10-16):** removing a wallet is a reversible, account-local
+action. GhostMint retains that account's address-backed ledger and exact first-party intent evidence,
+hides the removed wallet from the account ledger, disables every matching history subject, clears
+worker leases, and rejects any provider page that reaches the write boundary after removal. A
+same-account reimport re-enables those subjects and relinks the retained ledger by address, including
+its exact GhostMint provenance, without automatically queueing provider work. Importing the same
+public address into another account creates an independent tenant ledger and never shares private
+intent evidence; older rows remain **Source unknown** unless that account has its own exact evidence.
+Full account deletion is the hard-erasure boundary: subjects, indexed rows, intents, and broadcast
+hashes cascade away. A recreated account may re-index public chain data, but erased first-party origin
+must remain **Source unknown**. A reviewed account merge is the only supported cross-account path for
+preserving provenance.
 
 **UI and cross-surface acceptance:**
 
@@ -2987,62 +3056,219 @@ trial proxy is not asked to open two verification connections at once; both endp
 identify the same marked database, and production remains an impossible fallback. The focused
 guard/repository/integration run passed 12/12.
 
-**Indexer activation proof still required (reviewed 2026-10-15):** existing Alchemy RPC access is not, by
+Local fixture-backed rendered acceptance passed on 2026-10-16 for both global History and
+wallet-specific Wallet Activity at 1440/1024/768/390 in dark and light themes. Across the matrix,
+populated, loading, progress/backfilling, partial, unsupported, error, and empty states rendered
+without horizontal content overflow, and filters, search, and other independent controls remained
+usable. The first real local Dashboard attempt failed before authentication because Vite's Node
+process was started without `--use-system-ca`; that was a local proxy TLS setup error, not evidence
+that the backend endpoint was unavailable. A direct unauthenticated request to the live route
+confirmed that the endpoint exists and is authentication-protected, returning HTTP 401 with code
+`SESSION_COOKIE_MISSING` and `Cache-Control: no-store, private`. Signed-in deployed read-contract
+acceptance then passed through the real local Dashboard proxy: the authenticated History
+Transactions request reached Railway and rendered the truthful **History has not been loaded** state
+without a request failure or invented completeness. Focused API contract checks passed 4/4 for
+authenticated access, tenant scoping, JSON-safe snapshot pagination, wallet filtering, and
+`no-store`. The GoldRush adapter and lease worker flags remain off. Provider-enabled populated
+acceptance remains blocked on the guarded semantic canary.
+
+**Indexer activation proof still required (reviewed 2026-10-16):** existing Alchemy RPC access is not, by
 itself, proof of complete address-history coverage. Alchemy documents `alchemy_getAssetTransfers`
 for Ethereum and selected L2s, while its multi-network Transfers By Wallet endpoint is still a
 14-network beta that may return partial network/category failures. GhostMint currently supports
 chains beyond the explicitly documented core set, including Ink, Robinhood Chain, and HyperEVM.
 Do not extract an API key from an RPC URL or silently enable a partial adapter. GoldRush is the
-selected, configured candidate, but complete-history, finality, internal-transfer, and reorg
+selected, configured candidate. Page-level finality/canonicality is now independently checked
+against GhostMint's RPC endpoints, but complete-history, internal-transfer, and bounded reorg
 semantics remain unproven. Before provider-backed ingestion or the worker is activated, verify every
-configured chain against those contracts; unsupported chains must remain visibly unsupported.
+configured chain against those remaining contracts; unsupported chains must remain visibly unsupported.
 
 The current recommended candidate is **GoldRush Foundational API**: its chain matrix lists Ethereum,
 Base, Arbitrum, Polygon, Ink, Robinhood Chain, and HyperEVM under the slugs GhostMint needs. An
 inactive adapter and contract tests now normalize that paginated endpoint without inventing missing
-calldata/nonce/finality, importing unrelated third-party movements, requesting undocumented trace
-options, or treating a final page plus chain tip as proof of complete history. It preserves safe
-authentication/rate-limit diagnostics for a future worker. The Railway key passed the read-only
+calldata/nonce, importing unrelated third-party movements, or treating a final page plus chain tip as
+proof of complete history. Without the verifier the adapter returns explicit null finality evidence;
+the configured runtime now verifies every page block against one RPC endpoint, caps the `finalized`
+head at GoldRush's observed head, and labels only the rows on that page. GoldRush now documents
+`with-internal` for the paginated v3
+wallet endpoint, so the dormant adapter requests it only on the published trace-support set:
+Ethereum, Base, Arbitrum, Polygon, and Robinhood. Ink and HyperEVM are not in that set and remain
+explicitly partial rather than silently losing internal movements. A trace-enabled response now
+fails closed when the requested internal-transfer array or one of its entries is malformed; the
+unsupported chains continue to ignore that field. The adapter preserves safe authentication/rate-limit
+diagnostics for a future worker. The Railway key passed the read-only
 response-contract probe for all seven configured production chains, but the default-off adapter and
 worker flags remain disabled; a Dashboard sync request therefore remains truthfully queued. Worker
 activation still requires the guarded canary sequence and independent proof for completeness,
-finality, internal transfers, and destructive reorg cleanup rather than provider marketing or page
-exhaustion.
+internal transfers, and destructive reorg cleanup rather than provider marketing or page exhaustion.
 
-## Prioritized remaining execution register (updated 2026-10-05)
+The guarded semantic canary harness is now implemented. It is read-only, requires an exact explicit
+confirmation plus a reviewed seven-chain public-fixture manifest, caps page traversal, verifies
+the provider-fixed 100-row page size, stable restart, and cross-page overlap, and prints only a
+redacted capability matrix. Every fixture must declare a reviewed maximum recheck width, and the
+reported range must be within that width and end at the covered history head. It deliberately
+returns **blocked** for the current adapter because complete-history coverage and a bounded recheck
+range are not yet available. Page-level RPC finality/canonicality has separately passed across all
+seven configured chains, but is deliberately not promoted to generation-wide completeness. The
+repository refuses finalized-row downgrade, omission, or same-block hash contradictions and keeps
+sync-level finality coverage null until a stable-generation snapshot exists. It also reports trace
+support as explicitly
+unsupported for Ink and HyperEVM instead of allowing empty evidence to pass. The successful
+seven-chain endpoint probe proves reachability only and must not be used to turn on either production
+history flag. The disposable-database composition run passed on 2026-10-15, including restart,
+overlap, stale-generation, rollback, bounded-reorg, and zero-residue assertions; this validates only
+GhostMint's worker/repository behavior. The expanded marked-database acceptance passed on 2026-10-16,
+including cross-transaction finalized-block conflicts and full rollback with an unchanged cursor.
+Independently verified public fixtures and provider evidence remain required for live completeness,
+internal transfers, and reorg semantics on every chain.
 
-1. Close and verify the active uncommitted Settings fidelity unit; preserve the current schedule
-   and eligibility fixes and do not mix unrelated work into its commit.
-2. Complete **P0 canonical Dashboard / Telegram / Discord state parity**, beginning with the
-   reported bot-created schedule visibility and linked-identity diagnosis.
-3. Deploy and live-accept the recent cross-platform Schedule price/time/configuration controls as
+The 2026-10-16 official-contract review and no-network preflight make the activation blocker explicit
+before consuming GoldRush credits. The paginated wallet response documents page-zero ordering,
+pagination links, and blockchain `chain_tip_height`, but it exposes no indexed-through/history-start
+boundary, finality/canonicality contract, or bounded recheck range. Page exhaustion and blockchain head
+therefore remain insufficient. GoldRush's separate time-bucket/earliest response includes an
+undocumented `complete` boolean, but GhostMint must not reinterpret that field as complete wallet
+history or a reorg guarantee without a documented contract and live evidence. The preflight also
+identifies the current standalone-canary finality-wiring gap and the documented absence of Ink and
+HyperEVM traces. No full semantic scan was run because the present adapter is guaranteed to remain
+blocked; both production flags stay off. The next provider milestone is a bounded architecture
+decision: obtain a documented coverage/reorg contract from GoldRush, prove a safe time-bucket design,
+or add a complementary provider for the missing semantics. Only then create and independently review
+the seven-chain public fixture manifest and run the live evidence scan.
+
+A bounded **finalized partial-history** runtime mode is now implemented locally. When the GoldRush
+adapter is explicitly enabled, GhostMint's RPC verifier must first prove each returned block canonical
+and establish the finalized boundary; the runtime then discards every unfinalized row before the page
+can reach persistence. A page containing only recent rows still advances its provider cursor, avoiding
+an ingestion loop, while later explicit sync generations may observe those transactions after they
+finalize. This mode never upgrades `coverage.history` or `coverage.provenance`, never supplies a
+`recheckRange`, never enables orphan cleanup, and never labels an unmatched transaction External.
+Ink and HyperEVM remain explicitly partial because internal traces are not documented. Focused adapter,
+runtime, finality, provider-contract, repository, and service tests pass. The guarded marked-database
+acceptance also passes with finalized-only reads, stale-provenance protection, and retained ledger
+lifecycle behavior. Both production flags remain off: finalized-only retention reduces reorg risk but
+does not prove complete history, trace completeness, or bounded cleanup.
+
+Wallet lifecycle retention is now enforced transactionally. The marked-database acceptance removes
+an imported wallet, proves its ledger/evidence remain while account history is hidden, proves sync is
+disabled and an in-flight page is rejected, then reimports the address under a new wallet ID and
+recovers the GhostMint classification. Reimport does not silently resume the old page: the retained
+sync stays paused until an explicit refresh starts a new generation from a null cursor. It separately
+proves the same address in another account and
+the same address after hard account deletion/recreation both classify the old hash as **Source
+unknown**. Production history flags remain off; these lifecycle checks do not activate ingestion.
+The real reviewed-account-merge acceptance also passed: the ownership root and cascading sync,
+transaction, and movement children moved with the wallet and confirmed intent, the source account
+was removed, the retained account still classified the hash as **GhostMint**, and receipt replay was
+idempotent. Synthetic wallets/users were removed afterward; immutable merge-audit evidence remains
+append-only by design.
+
+## Prioritized remaining execution register (owner-locked 2026-10-18)
+
+The owner explicitly froze the next sequence after repeated backlog drift: Settings closure, then
+Admin. Do not insert another Discord/Telegram re-audit or optional feature between them unless a
+reproduced defect directly blocks the page being closed.
+
+1. **Settings fidelity is locally closed and verified.** Preserve its current uncommitted unit and
+   the adjacent schedule/eligibility work; commit or deploy only when explicitly requested, and do
+   not mix unrelated changes into that commit.
+2. **Admin fidelity/state and navigation implementation is locally closed and verified
+   (2026-10-19).** Overview,
+   Groups, Users, Effective lookup, Presets, Owners, Wallet import, Audit, and Health now retain
+   truthful loading/empty/error/retry states; failed background refreshes keep the last good data
+   and open forms mounted. Consequential writes lock only their participating form and restore each
+   control's prior disabled state. Audit is filtered and paginated at 25 rows/page. Saved group
+   retention is visible/editable, activity drilldowns use the server's exact classifications,
+   mixed-chain wallet import defaults to per-wallet detection, and admin/profile changes refresh
+   affected open dashboard sessions. The shell now uses the same labelled prototype rail as the
+   user dashboard, including a real Overview icon, independently collapsible Manage/Policy/Access/
+   System groups, and fixed User dashboard/Log out footer actions with a house glyph for Dashboard
+   and the established red danger treatment plus exit-door glyph for Log out. Only the middle
+   destination list can overflow when several groups are open, and its
+   scrollbar is visually hidden. Mobile keeps the five-slot bar; its More sheet places Dashboard
+   and Log out side-by-side and still dismisses through Escape, handle, or outside scrim without
+   breaking focus containment. Focused regression checks, ESLint, diff check, production build, and signed-in
+   desktop/mobile rendered review passed. Commit/deployment and the later production/global
+   acceptance matrix remain pending explicit instruction; do not reopen this as another Admin
+   redesign.
+3. **P0 canonical Dashboard / Telegram / Discord schedule-state parity is locally closed and
+   database-verified (2026-10-19).** Both bot confirmation paths resolve the canonical linked user,
+   share the durable scheduler repository and event broadcast, and appear through the same Dashboard
+   API and controls. Focused cross-surface checks passed 69/69 and the guarded disposable-PostgreSQL
+   integration passed 1/1. Deployed linked-bot creation remains part of item 5's live acceptance;
+   do not reopen a platform-specific task store or repeat the local parity audit.
+4. **Transaction-mode truth and local acceptance are closed (2026-10-19).** Degen's stored bypass
+   value is preparatory metadata: ordinary Mint still requires final approval, while explicit
+   `/mintnow` remains the one-shot exception. Dashboard, Telegram, Discord, direct commands, delayed
+   confirmation, password gating, advanced-access revocation, gas multipliers, simulation/finality,
+   ceilings, and fail-closed Normie fallback now agree. Focused non-database checks passed 248
+   assertions and the guarded isolated governance integration passed 1/1. Only the rendered Settings
+   review and later deployed/live mode switching remain acceptance work; do not reopen the semantics
+   or implementation as a new backlog item.
+5. Deploy and live-accept the recent cross-platform Schedule price/time/configuration controls as
    part of the same three-surface parity matrix.
-4. Finish the **address-backed wallet history** work now that its normalized schema, provider
+6. Finish the **address-backed wallet history** work now that its normalized schema, provider
    contract, evidence-based provenance, merge graph, inactive lease-backed worker, Wallet Activity
    view, and server-aggregated global Transactions view exist locally: run the guarded provider canary;
    activate and accept the adapter/worker only after that canary; add independently proven reorg
-   verification; decide and enforce wallet-removal/reimport retention; then complete the populated
+   verification; then complete the populated
    responsive/deployed acceptance matrix. Do not add an account-wide sync control or claim complete
    coverage before those gates pass.
-5. Complete the Admin page-by-page fidelity and state pass for Overview, Groups, Users, Effective
-   lookup, Presets, Owners, Wallet import, Audit, and Health.
-6. Complete Account live verification: refreshed-code invalidation, two-browser logout-all, expiry
-   messaging, linked-platform identity behavior, and consequential-form locking.
-7. Complete Wallets surfaces: dashboard import/batch import, persistent Buy/Receive/Send/Swap action
-   row, functional Receive QR, truthful disabled future actions, display-mode decision, historical
-   data integration, and wallet-to-wallet fund dispersion.
-8. Complete History integration and fidelity: Activity, Mints, Trigger Audit, immutable Audit
-   evidence, owner Security log, address/hash/source filters, and the chosen schedule-archive
-   destination.
-9. Run the global acceptance sweep across all user/admin pages at 390/768/1024/1440, Dark/Light,
-   keyboard/focus, overlays, internal scrolling, and populated/loading/empty/error states.
-10. Finish deferred schedule lifecycle UI: retention/archive of old cancelled/expired tasks,
+7. **Account implementation and automated acceptance closed locally (2026-11-11).** Refreshed-code
+   invalidation is transactional, Account consequential requests lock the complete page and shell
+   exit surface, expired codes are no longer copyable, logout failure preserves the authenticated
+   UI, and open WebSockets now end at the earliest idle or absolute session deadline. The focused
+   Account UI and session/link/WebSocket regressions passed 31/31 and the production dashboard build
+   passed. Remaining live-only evidence is a real refreshed-code/linked-platform walkthrough, a
+   two-browser logout-all walkthrough, and the marked PostgreSQL checks once the disposable target is
+   reachable again; do not substitute the production database for those checks.
+8. **Wallet action surface closed locally (2026-11-12).** Dashboard create/import and multi-import
+   already exist, address-backed Transactions are integrated, and every wallet detail view now keeps
+   a persistent Buy/Receive/Send/Swap action row above its tabs. Receive reuses the single details
+   dialog for the current wallet's public-address QR and network warning; close/Escape returns to the
+   details view and restores focus. Buy, Send, and Swap remain truthfully disabled as Coming soon.
+   The focused Wallet action and overlay regressions passed 7/7, focused lint/diff checks passed, and
+   the production dashboard build passed. Remaining Wallets work is the owner display-mode decision,
+   rendered responsive acceptance for this slice, and the separately designed value-moving fund-
+   dispersion feature; do not treat that consequential feature as part of this UI closure.
+9. **History Trigger Audit closed locally (2026-11-12).** Activity, Mints, global Transactions,
+   and the owner-only Security log already had truthful loading/empty/error/populated states.
+   History -> Audit evidence now reads the existing immutable trigger-execution ledger through an
+   authenticated, tenant-scoped, paginated, read-only endpoint. The view supports source, target,
+   event, outcome, verification, and transaction-hash search; it shows confirmation evidence,
+   copies hashes, and links to an explorer only when the linked transaction intent proves the
+   chain. The existing Telegram/Discord audit contract remains unchanged. The final focused
+   command/API/repository/UI/fidelity and trigger-policy regressions passed 64/64; syntax, lint, diff
+   checks, and the production dashboard build passed. Remaining History work is rendered
+   responsive/theme/keyboard acceptance under item 10 and the product decision on extending the
+   operational Activity search beyond title/wallet. Schedule retention/archive remains the
+   separate lifecycle decision in item 11. A focused 2026-11-12 acceptance-hardening pass moved
+   Trigger Audit onto the shared visible-label SearchField, Skeleton, and Empty patterns; made copy
+   and explorer actions 44x44 on mobile; and keeps focus in the persistent results region when a
+   page change or Retry replaces its initiating button. The focused route/repository/UI/fidelity
+   checks passed 10/10, targeted lint and diff checks passed, and the production dashboard build
+   passed. Rendered four-width/two-theme acceptance is still required. Two separate follow-ups
+   remain outside that presentation unit: announce shared CopyButton success/failure accessibly,
+   and harden the audit response mapper so explorer-chain output is impossible without linked
+   transaction-intent evidence even for an inconsistent repository row.
+10. **Global acceptance is in progress (shared overlay/resize sub-slice closed locally
+    2026-11-12).** Shared overlays now use one focus-containment/background-inertness path. An open
+    user or Admin mobile More sheet stays visible as a centered modal if the viewport crosses above
+    700px instead of leaving an invisible modal lock; closing after that resize restores focus to an
+    explicit visible desktop rail target when the mobile opener is hidden. The focused Admin,
+    overlay, responsive-shell, and focus-restoration checks passed 31/31; targeted lint and diff
+    checks passed, and the production dashboard build passed. This does **not** close the global
+    sweep: run the current worktree across every user/admin page at 390/768/1024/1440, Dark/Light,
+    keyboard/focus, overlays, internal scrolling, and populated/loading/empty/error states. The
+    newest zero-render-evidence priority is History -> Audit evidence, followed by the Wallet action
+    row and the exact current-worktree shell matrix.
+11. Finish deferred schedule lifecycle UI: retention/archive of old cancelled/expired tasks,
     status-correct actions, Select all/Unselect all where genuine, and decoded Schedule/Batch
     receipt-preview parity.
-11. Finish deferred Automation lifecycle actions for failed and paused snipers, including audited
+12. Finish deferred Automation lifecycle actions for failed and paused snipers, including audited
     Retry/Resume/Archive behavior.
-12. Re-audit remaining guided bot flows and optional product/backend work before implementing it;
+13. Re-audit remaining guided bot flows and optional product/backend work before implementing it;
     older placeholder claims may be stale.
-13. Complete release gates and documentation reconciliation: human walkthroughs, public-stage and
+14. Complete release gates and documentation reconciliation: human walkthroughs, public-stage and
     Railway pending-transaction acceptance, backup/restore/rollback exercises, full validation, CI,
     deployment evidence, and correction of stale ROADMAP/test-plan claims.

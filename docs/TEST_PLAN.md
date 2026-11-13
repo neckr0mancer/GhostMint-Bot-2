@@ -122,7 +122,8 @@ in the plan below is going to surprise you, it's most likely here.
 - [ ] Log into the dashboard using a fresh Telegram-generated code. Confirm the
       session works and matches the same account.
 - [ ] Confirm Discord *cannot* generate a link code (no such option in its
-      Settings menu or `/link` without `code:`) -- only Telegram can.
+      Settings menu or `/link` without `code:`). Telegram and an authenticated
+      dashboard can generate a code; Discord remains consume-only.
 
 ## M7-M7a: Transaction safety and governance
 
@@ -131,9 +132,13 @@ in the plan below is going to surprise you, it's most likely here.
       `VALUE_CEILING_EXCEEDED`-style rejection before anything is broadcast.
 - [ ] Confirm the owner account itself is exempt from ceilings (same mint amount
       that was rejected above should succeed for the owner).
-- [ ] Toggle a mode preset (Ultra Fast / Fast / Semi-Safe / Safe) and confirm the
+- [ ] Toggle a mode preset (Degen / Fast / Cautious / Normie) and confirm the
       dashboard's target-policy view reflects the new confirmation-count and
       simulation behavior for a target using that preset.
+- [ ] Select Degen or Fast for an allowed non-owner test account, revoke advanced-mode access,
+      then confirm Dashboard, Telegram, Discord, and the resolved transaction policy all show
+      Normie and `user_governance.selected_preset_key` is cleared. Ordinary manual minting must
+      still require final approval before and after the downgrade.
 - [ ] Force simulation on for a test account, then attempt a mint that would fail
       simulation (e.g. a bad contract address) -- confirm it's blocked pre-broadcast
       with a clear reason, not a wasted real transaction.
@@ -155,6 +160,24 @@ in the plan below is going to surprise you, it's most likely here.
 
 ## M9: Scheduler
 
+- [x] Disposable-PostgreSQL wiring regression: synthetic linked Telegram and Discord identities
+      resolve to one internal account; Telegram's shared guided-flow boundary and Discord's real
+      `flow:taskconfirm` handler create future task rows that appear through the real Dashboard task
+      API, emit user-scoped `tasks.changed`, remain hidden from another account, and survive
+      command-service reconstruction. A
+      Dashboard-created future task can also be paused through the linked
+      Telegram identity and resumed through the linked Discord identity, with a
+      user-scoped Dashboard refresh signal after each control. The fixture never starts a scheduler
+      worker or blockchain provider; this still does not satisfy the live checks below.
+- [ ] In a marked disposable/staging environment, create one non-executing
+      future schedule from Discord and one from Telegram. Confirm both stored
+      `user_id` values equal the authenticated Dashboard session user, each row
+      appears immediately in the correct filter through WebSocket refresh, and
+      both remain visible after a hard reload and service restart.
+- [ ] Control one Dashboard-created disposable schedule from each bot and verify
+      the same final state on all three surfaces. Do not run this against a live
+      wallet, production task, or an environment whose scheduler workers can
+      broadcast a transaction.
 - [ ] Schedule a mint a few minutes out. Confirm it fires at the scheduled time
       (check Activity / the tx hash on a block explorer).
 - [ ] Pause a scheduled task, confirm it does *not* fire while paused, then resume
@@ -333,24 +356,81 @@ angle. This section is the general M16 surface.)
       strict cursors and pagination, nullable undocumented calldata/nonce, wallet-involved ERC
       movement filtering, malformed/custom-log isolation, sanitized auth/rate-limit errors, and
       retry timing. The adapter deliberately makes no completeness or reorg-cleanup claim from page
-      exhaustion or `chain_tip_height`, does not request undocumented paginated trace options, and
-      remains disabled by default until approved credentials and per-chain live contracts are verified.
+      exhaustion or `chain_tip_height`. It requests the now-documented paginated `with-internal`
+      option only on GoldRush's published trace-support set (Ethereum, Base, Arbitrum, Polygon, and
+      Robinhood), and requested trace data now fails the page closed when its container or any trace
+      is malformed. Ink and HyperEVM remain explicitly trace-unsupported and ignore that optional
+      field. The adapter remains disabled by default until approved credentials and per-chain live
+      contracts are verified.
 - [x] Provider-independent worker checks cover one page per lease, overlapping-tick coalescing,
       safe error logging, start/stop/health, explicit retry deadlines, permanent configuration
       failures awaiting manual retry, and stale-owner refusal before a provider call. Migration 073
       and repository checks require `FOR UPDATE SKIP LOCKED`, recoverable lease expiry, and exact
       ownership guards. The worker stays behind its default-off runtime gate, so these checks do not
       enable syncing.
+- [x] The read-only GoldRush semantic canary is a separate, explicit activation gate rather than a
+      startup probe. It requires the exact seven-chain reviewed public-fixture manifest, at least two
+      pages per chain, bounded requests, stable page-zero restart, overlap deduplication, pinned
+      finalized and internal-transfer evidence, explicit complete-history coverage, and a bounded
+      recheck range ending at the covered head. GoldRush's provider-fixed 100-row page size is
+      enforced rather than reported as a caller-controlled limit, and each reviewed fixture declares
+      the maximum acceptable recheck width for its chain. Its report exposes only chain names,
+      counts, and capability codes; fixture
+      addresses, transaction hashes, provider bodies, paths, and the API key are never printed.
+      A failed or incomplete capability produces a non-zero blocked result and cannot enable either
+      production history flag.
+  - GoldRush's current official trace matrix omits Ink and HyperEVM. Their manifest trace lists may
+    therefore be empty, but the canary reports `INTERNAL_TRANSFERS_UNSUPPORTED_BY_PROVIDER` and keeps
+    the all-chain activation gate blocked; an empty list can never become a vacuous pass.
+  - The no-network `wallet-history:canary:preflight` path passed on 2026-10-16. It reads no API key or
+    fixture manifest and performs no provider request. It reports setup as not run and names the four
+    current structural blockers before anyone spends provider credits: the paginated endpoint has no
+    machine-verifiable complete-history boundary or bounded recheck range; Ink and HyperEVM have no
+    documented trace support; and the standalone canary has not yet been wired to the independent RPC
+    finality verifier. Setup failures, execution failures, and semantic capability failures have
+    distinct redacted codes.
+  - The disposable-database canary composition run passed on 2026-10-15. It covered restartable
+    cursors, overlap deduplication, explicit incomplete-to-complete provenance, stale-generation
+    refusal, transactional rollback on cleanup failure, bounded reorg cleanup, and zero fixture
+    residue. This proves GhostMint's repository/worker behavior only, not live GoldRush semantics.
+- [x] The dormant GoldRush path now has an independent RPC finality/canonicality guard. Before any
+      RPC read, it rejects malformed or oversized provider pages, numbers outside PostgreSQL
+      `BIGINT`, transactions above the observed head, invalid hashes, and conflicting hashes for one
+      block. One page-scoped provider operation reads the actual chain ID, `finalized` head, and every
+      distinct transaction block from one RPC endpoint; every GoldRush block number/hash must match
+      that endpoint exactly. The verified finalized boundary is capped at the GoldRush-observed head
+      and labels only rows on that page. It never becomes complete-history or generation-wide
+      finality evidence, and the repository therefore keeps sync-level `finalizedThroughBlock` null.
+  - A read-only RPC probe on 2026-10-15 returned both `latest` and `finalized` for Ethereum, Base,
+    Arbitrum, Polygon, Ink, Robinhood Chain, and HyperEVM. Polygon did not expose the optional `safe`
+    tag; GhostMint does not depend on that tag. This proves endpoint support only, not address-history
+    completeness or reorg coverage.
+  - The marked disposable-database run passed on 2026-10-16. A finalized row cannot be downgraded,
+    moved to another block/hash, made noncanonical, omitted by cleanup, or contradicted by another
+    canonical transaction in that block. Identical finalized observations and additional finalized
+    transactions with the same canonical block hash remain valid. Conflict tests also prove that
+    earlier page rows/movements roll back and the saved generation/cursor stays unchanged.
+- [x] The configured GoldRush runtime now has one fail-closed partial-ingestion mode: after the RPC
+      check it retains only rows that are both canonical and finalized. Unfinalized rows are not
+      persisted while GoldRush lacks a bounded reorg contract. Filtering an entire recent page does
+      not stall pagination: its cursor and `hasMore` state still advance. History and provenance
+      coverage remain null, no recheck range is invented, cleanup stays disabled, exact first-party
+      evidence may still classify **GhostMint**, and every unmatched row remains **Source unknown**.
+      Adapter contract and runtime-composition tests cover mixed and all-recent pages. This is a safe
+      partial mode, not authorization to enable either production flag. The focused marked-database
+      acceptance passed on 2026-10-17: both read surfaces hid unfinalized rows, stale complete bounds
+      did not classify activity as External while a refresh was backfilling, exact GhostMint evidence
+      remained available, and wallet removal/reimport preserved the finalized ledger without cleanup.
 - [x] On a separately marked disposable PostgreSQL database, apply migration 073 and run
       `tests/walletHistory.integration.test.js`. Verify overlapping pages upsert rather than
       duplicate, exact intent/broadcast hashes classify as GhostMint, only complete post-boundary
       unmatched rows classify as External, older/incomplete rows remain Source unknown, and user
       deletion cascades the imported ledger and broadcast-hash evidence. Also verify final-page
-      reorg cleanup commits atomically with its generation, every row from a provider-proven
-      complete multi-page generation is finalized as provider-complete, a stale generation cannot
-      overwrite or orphan newer rows, two workers cannot own the same page, an expired lease is
-      recoverable, a stale owner cannot write or release the replacement claim, and an offset past
-      the last row still returns the correct total.
+      reorg cleanup commits atomically with its generation, provider completeness remains distinct
+      from page-level RPC finality, finalized rows cannot be downgraded or orphaned, a stale
+      generation cannot overwrite or orphan newer rows, two workers cannot own the same page, an
+      expired lease is recoverable, a stale owner cannot write or release the replacement claim, and
+      an offset past the last row still returns the correct total.
   - Passed on 2026-10-13 using only the marked disposable database environment. The prior refusal
     was traced to the ordinary local `.env` also pointing at that same test target; no second test
     database was needed. The fixture now uses per-run transaction hashes, removes wallets before
@@ -367,10 +447,27 @@ angle. This section is the general M16 surface.)
     itself makes no request. Enabling the adapter requires an explicit supported-chain subset;
     enabling the lease worker additionally requires the adapter and is refused in dashboard-only
     mode. Readiness and graceful shutdown cover the worker, but the production flags remain off
-    until the remaining canary acceptance is complete.
-- [ ] Decide and document wallet-removal retention separately from full account deletion. Test
-      remove/reimport in the same account, import into another account, and delete/recreate account;
-      old first-party origin must become Source unknown wherever the required evidence was erased.
+    until the remaining canary acceptance is complete. Seven-chain reachability and page-level RPC
+    finality/canonicality passed, but the current adapter still has no complete-history coverage or
+    bounded recheck range, and GoldRush documents no trace coverage on Ink or HyperEVM. The semantic
+    canary and both production gates must therefore remain blocked.
+  - [ ] Do not spend provider credits on the full seven-chain live semantic scan until a reviewed
+    fixture manifest exists and at least one implementation path can supply complete-history and
+    bounded-recheck evidence. The preflight is the current acceptance result; a live scan against the
+    present adapter is guaranteed to end `BLOCKED` and cannot authorize either runtime flag.
+- [x] Wallet removal is a reversible account-local action: retain its indexed ledger and intent
+      evidence, hide it from account history, disable matching subjects, clear leases, and reject an
+      in-flight page at its write boundary. Same-account reimport re-enables the retained subjects
+      and relinks the same ledger by address without automatically queueing work. Importing the same
+      address into another account remains tenant-isolated and cannot inherit GhostMint provenance.
+      Full account deletion is hard erasure; after account recreation and public re-indexing, the old
+      transaction is Source unknown. These remove/reimport, cross-account, and delete/recreate cases
+      are covered by the marked-database integration test. Reimport stays paused until an explicit
+      refresh starts a new generation from a null cursor; it cannot resume a stale mid-page lease.
+      A reviewed account merge is the only
+      supported provenance-preserving cross-account path; its real database scenario now proves the
+      subject, sync row, transaction, movement, confirmed intent, wallet, and source classification
+      move atomically to the retained account and remain GhostMint after idempotent receipt replay.
 - [x] Local read surfaces use the same normalized ledger: Wallet Details separates on-chain
       Transactions from operational App activity, while History adds a server-aggregated
       Transactions tab without changing the default Activity tab. The aggregate endpoint is
@@ -387,11 +484,25 @@ angle. This section is the general M16 surface.)
       proxy with simultaneous connections, while still requiring both to identify the same marked
       database. The focused guard/repository/integration run passed 12/12 and never fell back to the
       application/production database.
-- [ ] Render Wallet Activity and global History from the same server ledger at
-      390/768/1024/1440 in both themes, covering loading/progress, partial, unsupported, error,
-      empty, and populated states without blocking unrelated wallet actions. Then verify the same
-      read contract after deployment while the adapter and worker remain off; provider-enabled
-      populated acceptance belongs to the later guarded canary.
+- [ ] Complete rendered and deployed read-surface acceptance:
+  - [x] Local fixture-backed rendered acceptance passed on 2026-10-16 for both global History and
+        wallet-specific Wallet Activity at 1440/1024/768/390 in dark and light themes. Across that
+        matrix, the two surfaces covered populated, loading, progress/backfilling, partial,
+        unsupported, error, and empty states without horizontal content overflow; filters, search,
+        and other independent controls remained usable.
+  - [x] A direct unauthenticated request to the live read route confirmed that the endpoint is
+        deployed and authentication-protected: it returned HTTP 401 with code
+        `SESSION_COOKIE_MISSING` and `Cache-Control: no-store, private`. The first real local
+        Dashboard attempt failed before authentication because Vite's Node process was started
+        without `--use-system-ca`; that was a local proxy TLS setup error, not evidence that the
+        backend endpoint was unavailable.
+  - [x] Signed-in deployed read-contract acceptance passed on 2026-10-16 through the real local
+        Dashboard proxy: the authenticated History Transactions request reached the Railway backend
+        and rendered the truthful disabled-ingestion state, **History has not been loaded**, without
+        a request failure or invented completeness. The focused API contract checks passed 4/4 for
+        authenticated access, tenant scoping, JSON-safe snapshot pagination, wallet filtering, and
+        `no-store`; Railway startup evidence kept both the adapter and worker flags off. Provider-
+        enabled populated acceptance remains part of the later guarded semantic canary.
 
 ---
 

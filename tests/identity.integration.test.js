@@ -6,6 +6,7 @@ const { LinkCodeError, createIdentityService, hashCode } = require('../src/ident
 const { createPostgresIdentityRepository } = require('../src/identity/postgresIdentityRepository');
 const { createKeyEncryption } = require('../src/security/keyEncryption');
 const { createPostgresStorage } = require('../src/storage/postgresStorage');
+const { createWalletHistoryRepository } = require('../src/walletHistory/repository');
 const { ValidationError, requestSchemas } = require('../src/validation/domain');
 const { createTestDatabasePool, integrationTest, runTestMigrations } = require('./helpers/disposableDatabase');
 
@@ -129,6 +130,71 @@ integrationTest('link codes expire and are single-use', { timeout: 120_000 }, as
     await pool.end();
   }
 });
+
+integrationTest('refreshing a link code immediately invalidates the previous code',
+  { timeout: 120_000 }, async () => {
+    await migrate();
+    const pool = await createTestDatabasePool({ max: 2 });
+    const identity = createIdentityService(createPostgresIdentityRepository(pool));
+    const suffix = `${process.pid}-${Date.now()}`;
+    let userId;
+    try {
+      userId = await identity.resolveOrCreate('telegram', `link-refresh-owner-${suffix}`);
+      const first = await identity.createLinkCode(userId);
+      const refreshed = await identity.createLinkCode(userId);
+      assert.notEqual(first.code, refreshed.code);
+      await assert.rejects(
+        identity.consumeLinkCode({
+          code: first.code, platform: 'discord', platformUserId: `discord-refresh-${suffix}`,
+        }),
+        LinkCodeError,
+      );
+      assert.equal(await identity.consumeLinkCode({
+        code: refreshed.code, platform: 'discord', platformUserId: `discord-refresh-${suffix}`,
+      }), userId);
+    } finally {
+      if (userId) await pool.query('DELETE FROM users WHERE user_id=$1', [userId]).catch(() => {});
+      await pool.end();
+    }
+  });
+
+integrationTest('concurrent link-code refreshes leave exactly one unused code',
+  { timeout: 120_000 }, async () => {
+    await migrate();
+    const pool = await createTestDatabasePool({ max: 4 });
+    const identity = createIdentityService(createPostgresIdentityRepository(pool));
+    const suffix = `${process.pid}-${Date.now()}`;
+    let userId;
+    try {
+      userId = await identity.resolveOrCreate('telegram', `link-concurrent-owner-${suffix}`);
+      const generated = await Promise.all([
+        identity.createLinkCode(userId),
+        identity.createLinkCode(userId),
+      ]);
+      const unused = await pool.query(
+        'SELECT code_hash FROM account_link_codes WHERE user_id=$1 AND used_at IS NULL',
+        [userId],
+      );
+      assert.equal(unused.rowCount, 1);
+
+      const outcomes = [];
+      for (const link of generated) {
+        try {
+          outcomes.push(await identity.consumeLinkCode({
+            code: link.code, platform: 'discord', platformUserId: `discord-concurrent-${suffix}`,
+          }));
+        } catch (error) {
+          assert.ok(error instanceof LinkCodeError);
+          outcomes.push(null);
+        }
+      }
+      assert.equal(outcomes.filter(value => value === userId).length, 1);
+      assert.equal(outcomes.filter(value => value === null).length, 1);
+    } finally {
+      if (userId) await pool.query('DELETE FROM users WHERE user_id=$1', [userId]).catch(() => {});
+      await pool.end();
+    }
+  });
 
 integrationTest('a bot-first identity race cannot consume a link code for the wrong account',
   { timeout: 120_000 }, async () => {
@@ -339,13 +405,17 @@ integrationTest('account merge preview inventories mixed data without changing o
         .find(item => item.key === 'walletAddressCollisions')?.count, 1);
     } finally {
       const users = [sourceUserId, targetUserId].filter(Boolean);
-      if (users.length) await pool.query('DELETE FROM users WHERE user_id=ANY($1::uuid[])', [users]).catch(() => {});
+      if (users.length) {
+        await pool.query('DELETE FROM activity WHERE user_id=ANY($1::UUID[])',[users]).catch(()=>{});
+        await pool.query('DELETE FROM wallets WHERE user_id=ANY($1::UUID[])',[users]).catch(()=>{});
+        await pool.query('DELETE FROM users WHERE user_id=ANY($1::UUID[])', [users]).catch(() => {});
+      }
       await storage.close();
     }
   });
 
 integrationTest('reviewed account merge atomically moves data, removes the duplicate, and replays its receipt',
-  { timeout: 120_000 }, async () => {
+  { timeout: 240_000 }, async () => {
     await migrate();
     const pool = await createTestDatabasePool({ max: 4 });
     const repository = createPostgresIdentityRepository(pool);
@@ -354,21 +424,58 @@ integrationTest('reviewed account merge atomically moves data, removes the dupli
       onAccountMergeCommitted: async receipt => committed.push(receipt),
     });
     const storage = createPostgresStorage(pool);
+    const history = createWalletHistoryRepository(pool);
     const crypto = createKeyEncryption({ activeVersion: CONFIG.encryptionKeyVersion, keys: CONFIG.encryptionKeys });
     const suffix = `${process.pid}-${Date.now()}`;
     const sourcePlatformUserId = `execute-discord-${suffix}`;
     const targetPlatformUserId = `execute-telegram-${suffix}`;
     const walletLabel = `execute-wallet-${suffix}`;
+    const walletAddress = '0x0000000000000000000000000000000000000008';
+    const historyTarget = '0x00000000000000000000000000000000000000b8';
+    const historyTxHash = `0x${randomUUID().replaceAll('-','').padEnd(64,'a')}`;
+    const historyBlockHash = `0x${randomUUID().replaceAll('-','').padEnd(64,'b')}`;
+    const historyNonce = String(Date.now());
     let sourceUserId;let targetUserId;
     try {
       sourceUserId = await identity.resolveOrCreate('discord', sourcePlatformUserId);
       targetUserId = await identity.resolveOrCreate('telegram', targetPlatformUserId);
       await pool.query('UPDATE users SET is_owner=TRUE,is_root_owner=TRUE WHERE user_id=$1', [targetUserId]);
-      await storage.addWallet({ userId: sourceUserId, label: walletLabel,
-        address: '0x0000000000000000000000000000000000000008', chain: 'ethereum',
+      const sourceWallet=await storage.addWallet({ userId: sourceUserId, label: walletLabel,
+        address: walletAddress, chain: 'ethereum',
         keyEnvelope: crypto.encrypt(`0x${'73'.repeat(32)}`), minted: 0, addedAt: Date.now() });
       await storage.addActivity({ userId: sourceUserId, status: 'success', title: 'Merge evidence',
         walletLabel, txHash: null, explorer: null, time: Date.now() });
+      await pool.query(`INSERT INTO transaction_intents
+        (user_id,wallet_id,chain,from_address,to_address,calldata,value_wei,nonce,gas_limit,
+          estimated_cost_wei,simulation_enabled,required_confirmations,transaction_timeout_ms,
+          state,tx_hash,timeout_at)
+        VALUES ($1,$2,'ethereum',$3,$4,'0x',0,$6,21000,21000,TRUE,1,60000,
+          'confirmed',$5,NOW()+INTERVAL '1 hour')`,
+      [sourceUserId,sourceWallet.id,walletAddress,historyTarget,historyTxHash,historyNonce]);
+      await history.registerSubject({userId:sourceUserId,chain:'ethereum',
+        walletAddress,trackingStartBlock:'400'});
+      const historySync=await history.beginSync({userId:sourceUserId,chain:'ethereum',
+        walletAddress,providerKey:'fixture'});
+      await history.applyProviderPage({userId:sourceUserId,chain:'ethereum',walletAddress,
+        providerKey:'fixture',generation:historySync.generation,page:{
+          supported:true,chain:'ethereum',providerKey:'fixture',transactions:[{
+            txHash:historyTxHash,blockNumber:'401',blockHash:historyBlockHash,transactionIndex:'0',
+            occurredAt:new Date().toISOString(),fromAddress:walletAddress,toAddress:historyTarget,
+            nonce:historyNonce,input:'0x',methodSelector:null,valueWei:'0',gasLimit:'21000',
+            gasUsed:'21000',effectiveGasPriceWei:'1',networkFeeWei:'21000',
+            executionStatus:'success',finalityStatus:'unfinalized',canonical:true,rawSummary:null,
+            movements:[{eventLocator:'native:value',eventType:'native_transfer',direction:'out',
+              assetStandard:'native',assetAddress:null,tokenId:null,amountRaw:'0',
+              fromAddress:walletAddress,toAddress:historyTarget,details:null}],
+          }],nextCursor:null,hasMore:false,observedHeadBlock:'401',finalizedThroughBlock:'400',
+          coverage:{history:{fromBlock:'400',throughBlock:'401',complete:true},
+            provenance:{fromBlock:'401',throughBlock:'401',complete:true}},
+          recheckRange:{fromBlock:'400',throughBlock:'401'},
+        }});
+      const sourceLedger=await history.listAccountPage(sourceUserId,{
+        supportedChains:['ethereum'],limit:20,offset:0,
+      });
+      assert.equal(sourceLedger.items[0].source,'ghostmint');
       const targetSession = await pool.query(
         `INSERT INTO dashboard_sessions (user_id,token_hash,csrf_token_hash,expires_at,client_label)
          VALUES ($1,$2,$3,NOW()+INTERVAL '8 hours','merge integration') RETURNING session_id`,
@@ -382,6 +489,10 @@ integrationTest('reviewed account merge atomically moves data, removes the dupli
       assert.equal(plan.classification, 'ready');
       assert.equal(plan.summary.revocable.domains
         .find(item => item.key === 'dashboardSessions')?.count, 1);
+      assert.equal(plan.summary.movable.domains
+        .find(item=>item.key==='walletHistorySubjects')?.count,1);
+      assert.equal(plan.summary.movable.domains
+        .find(item=>item.key==='transactionIntents')?.count,1);
       // This is exactly what requireSession does between the preview and execute HTTP requests.
       // It must not invalidate the reviewed ownership graph by changing only sliding-session time.
       await pool.query(
@@ -404,6 +515,8 @@ integrationTest('reviewed account merge atomically moves data, removes the dupli
       assert.equal(receipt.sourceUserId, sourceUserId);
       assert.equal(receipt.targetUserId, targetUserId);
       assert.equal(receipt.movedCounts.wallets, 1);
+      assert.equal(receipt.movedCounts.walletHistorySubjects,1);
+      assert.equal(receipt.movedCounts.transactionIntents,1);
       assert.equal(receipt.movedCounts.activity, 1);
       assert.equal(receipt.revokedCounts.dashboardSessions, 1);
       assert.equal(receipt.replayed, false);
@@ -413,10 +526,31 @@ integrationTest('reviewed account merge atomically moves data, removes the dupli
         `SELECT
            (SELECT COUNT(*)::INTEGER FROM wallets WHERE user_id=$1 AND label=$2) AS wallets,
            (SELECT COUNT(*)::INTEGER FROM activity WHERE user_id=$1 AND wallet_label=$2) AS activity,
-           (SELECT COUNT(*)::INTEGER FROM users WHERE user_id=$3) AS source_users`,
-        [targetUserId, walletLabel, sourceUserId],
+           (SELECT COUNT(*)::INTEGER FROM users WHERE user_id=$3) AS source_users,
+           (SELECT COUNT(*)::INTEGER FROM wallet_history_subjects
+             WHERE user_id=$1 AND wallet_address=$4) AS history_subjects,
+           (SELECT COUNT(*)::INTEGER FROM wallet_history_sync_state
+             WHERE user_id=$1 AND wallet_address=$4) AS history_sync_rows,
+           (SELECT COUNT(*)::INTEGER FROM wallet_history_transactions
+             WHERE user_id=$1 AND wallet_address=$4 AND tx_hash=$5) AS history_transactions,
+           (SELECT COUNT(*)::INTEGER FROM wallet_history_movements
+             WHERE user_id=$1 AND wallet_address=$4 AND tx_hash=$5) AS history_movements,
+           (SELECT COUNT(*)::INTEGER FROM transaction_intents
+             WHERE user_id=$1 AND tx_hash=$5) AS transaction_intents,
+           (SELECT COUNT(*)::INTEGER FROM wallet_history_subjects
+             WHERE user_id=$3) AS source_history_subjects`,
+        [targetUserId, walletLabel, sourceUserId,walletAddress,historyTxHash],
       );
-      assert.deepEqual(moved.rows[0], { wallets: 1, activity: 1, source_users: 0 });
+      assert.deepEqual(moved.rows[0], {wallets:1,activity:1,source_users:0,history_subjects:1,
+        history_sync_rows:1,history_transactions:1,history_movements:1,transaction_intents:1,
+        source_history_subjects:0});
+      const targetLedger=await history.listAccountPage(targetUserId,{
+        supportedChains:['ethereum'],limit:20,offset:0,
+      });
+      assert.equal(targetLedger.total,1);
+      assert.equal(targetLedger.items[0].txHash,historyTxHash);
+      assert.equal(targetLedger.items[0].source,'ghostmint');
+      assert.equal(targetLedger.items[0].walletLabel,walletLabel);
       assert.equal(await identity.resolveOrCreate('discord', sourcePlatformUserId), targetUserId);
 
       const replay = await identity.executeAccountMerge(targetUserId, request);
@@ -430,7 +564,11 @@ integrationTest('reviewed account merge atomically moves data, removes the dupli
       assert.equal(evidence.rows[0].count, 1);
     } finally {
       const users = [sourceUserId, targetUserId].filter(Boolean);
-      if (users.length) await pool.query('DELETE FROM users WHERE user_id=ANY($1::uuid[])', [users]).catch(() => {});
+      if (users.length) {
+        await pool.query('DELETE FROM activity WHERE user_id=ANY($1::UUID[])',[users]).catch(()=>{});
+        await pool.query('DELETE FROM wallets WHERE user_id=ANY($1::UUID[])',[users]).catch(()=>{});
+        await pool.query('DELETE FROM users WHERE user_id=ANY($1::UUID[])', [users]).catch(() => {});
+      }
       await storage.close();
     }
   });

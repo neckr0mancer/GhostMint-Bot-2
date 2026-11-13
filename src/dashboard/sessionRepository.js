@@ -32,10 +32,13 @@ function createDashboardSessionRepository(pool) {
         expires_at=TO_TIMESTAMP($3/1000.0)
         WHERE token_hash=$1 AND revoked_at IS NULL AND expires_at>TO_TIMESTAMP($2/1000.0)
           AND ($4::BIGINT IS NULL OR created_at>TO_TIMESTAMP(($2-$4)/1000.0))
-        RETURNING session_id,user_id,csrf_token_hash,expires_at`,[tokenHash,now,now+extendByMs,maxLifetimeMs??null]);
+        RETURNING session_id,user_id,csrf_token_hash,expires_at,created_at`,[tokenHash,now,now+extendByMs,maxLifetimeMs??null]);
       if(!result.rowCount)return null;
       const row=result.rows[0];
-      return {sessionId:row.session_id,userId:row.user_id,csrfTokenHash:row.csrf_token_hash,expiresAt:new Date(row.expires_at).getTime()};
+      const createdAt=new Date(row.created_at).getTime();
+      return {sessionId:row.session_id,userId:row.user_id,csrfTokenHash:row.csrf_token_hash,
+        expiresAt:new Date(row.expires_at).getTime(),createdAt,
+        absoluteExpiresAt:maxLifetimeMs==null?null:createdAt+maxLifetimeMs};
     },
     async denialReason(tokenHash,now,maxLifetimeMs){
       const result=await pool.query(`SELECT expires_at,created_at,revoked_at,revoked_reason

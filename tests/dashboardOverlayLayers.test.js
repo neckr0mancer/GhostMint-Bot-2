@@ -24,17 +24,22 @@ test('security review, notifications, and blocking confirmations have a usable l
   assert.ok(confirmation>notifications,'blocking confirmation must be the topmost actionable layer');
 });
 
-test('an open overlay does not steal focus again when its contents rerender',()=>{
+test('shared overlays isolate the modal branch without disabling their scrim',()=>{
   const start=appSource.indexOf('function Overlay(');
   const end=appSource.indexOf('// ── Wallet details',start);
   assert.notEqual(start,-1,'App.jsx must declare the shared Overlay component');
   assert.notEqual(end,-1,'the shared Overlay component must remain independently testable');
   const overlay=appSource.slice(start,end);
 
-  assert.match(overlay,/const onCloseRef=useRef\(onClose\)/,
-    'the Escape handler must read the latest close callback without restarting the focus effect');
-  assert.match(overlay,/\},\[open\]\);/,
-    'the focus effect must run only when open state changes, not after every form keystroke');
-  assert.doesNotMatch(overlay,/\},\[open,onClose\]\);/,
-    'an inline onClose callback must not cause the panel to steal focus on every rerender');
+  assert.match(overlay,/const layerRef=useRef\(null\)/);
+  assert.match(overlay,/useModalAccessibility\(open,layerRef,\{onClose,initialFocusRef:panelRef,closeDisabled:busy\}\)/,
+    'the shared hook must own focus containment, background inertness, Escape, scroll lock, and focus restoration');
+  assert.match(overlay,/<div ref=\{layerRef\} className="ovl-bd"/,
+    'the active branch must include both the dialog and its clickable scrim');
+  assert.match(overlay,/event\.target===event\.currentTarget&&!busy/,
+    'the scrim must close only while the overlay is not busy');
+  assert.match(overlay,/aria-label="Close" disabled=\{busy\}/,
+    'the explicit close control must share the consequential-request lock');
+  assert.doesNotMatch(overlay,/document\.addEventListener\('keydown'|document\.body\.style\.overflow|onCloseRef|busyRef/,
+    'Overlay must not install a second competing keyboard or scroll-lock effect');
 });

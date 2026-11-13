@@ -1,6 +1,8 @@
 const { defaultPolicy } = require('./defaults');
 const { requestSchemas } = require('../validation/domain');
 
+const ADVANCED_PRESET_KEYS = new Set(['ultra_fast', 'fast']);
+
 const COLUMN_TO_PROPERTY = Object.freeze({
   simulation_enabled: 'simulationEnabled',
   gas_ceiling_gwei: 'gasCeilingGwei',
@@ -67,18 +69,30 @@ function createTransactionPolicyRepository(pool, { governanceRepository = null }
       const target = rows.rows.find(row => row.scope_type === 'target');
       const policy = overlay(overlay(defaultPolicy(chain), wallet), target);
       if (!governanceRepository) return policy;
-      const governance = await governanceRepository.getEffectiveGovernance(userId, chain);
+      let governance = await governanceRepository.getEffectiveGovernance(userId, chain);
       if (targetId) {
         const targetPreset = await pool.query(`SELECT mp.* FROM target_trigger_policies tp
           JOIN mode_presets mp ON mp.preset_key=tp.mode_preset_key
           WHERE tp.user_id=$1 AND tp.target_id=$2`, [userId, String(targetId)]);
-        if (targetPreset.rows[0]) governance.preset = {
+        if (targetPreset.rows[0]) governance = { ...governance, preset: {
           key: targetPreset.rows[0].preset_key, displayName: targetPreset.rows[0].display_name,
           simulationMode: targetPreset.rows[0].simulation_mode,
           confirmationCount: Number(targetPreset.rows[0].confirmation_count),
           humanVerification: targetPreset.rows[0].human_verification,
           gasPriceMultiplier: Number(targetPreset.rows[0].gas_price_multiplier),
-        };
+        } };
+      }
+      // Repository-level access checks are authoritative, but keep this defensive boundary too:
+      // custom repositories and target-specific presets must not leave Fast/Degen effective after
+      // access is revoked. Falling back to Normie (safe) preserves ceilings while restoring all
+      // automated safeguards. Manual mint confirmation is independent and remains required.
+      if (ADVANCED_PRESET_KEYS.has(governance.preset?.key) && governance.advancedModesAllowed !== true) {
+        const safePreset = typeof governanceRepository.getPreset === 'function'
+          ? await governanceRepository.getPreset('safe') : null;
+        if (!safePreset || safePreset.key !== 'safe') {
+          throw new Error('Normie transaction preset is unavailable; refusing transaction');
+        }
+        governance = { ...governance, preset: safePreset };
       }
       return applyGovernance(policy, governance, triggerSource);
     },
