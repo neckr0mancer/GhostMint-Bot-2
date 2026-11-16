@@ -19,6 +19,7 @@ import {dashboardEvmChains} from './chainOptions.mjs';
 import {formatAdaptiveAmount,formatSignedAdaptiveAmount} from './amountDisplay.mjs';
 import {selectWalletHeadlineBalance,walletBalanceForChain,walletFundingStatus} from './walletDisplay.mjs';
 import {resolveWalletExportPassword} from './walletExportFlow.mjs';
+import {walletImportRetryRows} from './walletImportState.mjs';
 import {mintPreviewMetrics} from './mintPreviewMetrics.mjs';
 import {mintBatchPreviewModel,nativeSymbolForChain} from './mintBatchPreview.mjs';
 import {DISPLAY_CURRENCY_OPTIONS,fiatFromNative,fiatFromWei,quoteFor,
@@ -708,7 +709,7 @@ function NewWalletOverlay({open,onClose,onDone,defaultChain=DEFAULT_EVM_CHAIN}){
   async function importWallets(event){
     event.preventDefault();
     const entries=rows
-      .map((row,index)=>({index,secret:row.secret.trim(),
+      .map((row,index)=>({key:row.key,index,secret:row.secret.trim(),
         label:(row.label||(index===0?label:`${label}-${index+1}`)).trim()}))
       .filter(row=>row.secret);
     if(!entries.length){notify(`Enter at least one ${secretWord}.`,{type:'error'});return;}
@@ -721,13 +722,14 @@ function NewWalletOverlay({open,onClose,onDone,defaultChain=DEFAULT_EVM_CHAIN}){
         const wallet=await api('/api/wallets/import',{method:'POST',body:JSON.stringify({
           label:entry.label,chain:chain==='evm'?defaultChain:chain,importMethod:method,
           ...(method==='privateKey'?{privateKey:entry.secret}:{seedPhrase:entry.secret})})});
-        collected.push({index:entry.index,status:'success',label:entry.label,address:wallet.address});
+        collected.push({key:entry.key,index:entry.index,status:'success',label:entry.label,address:wallet.address});
       }catch(error){
-        collected.push({index:entry.index,status:'failed',label:entry.label,error:error.message});
+        collected.push({key:entry.key,index:entry.index,status:'failed',label:entry.label,error:error.message});
       }
     }
     setResults(collected);
     const ok=collected.filter(item=>item.status==='success').length;
+    if(ok<collected.length)setRows(walletImportRetryRows(rows,collected));
     notify(`Imported ${ok} of ${collected.length} ${collected.length===1?'wallet':'wallets'}.`,
       {type:ok?'success':'error'});
     onDone();
@@ -842,7 +844,7 @@ function NewWalletOverlay({open,onClose,onDone,defaultChain=DEFAULT_EVM_CHAIN}){
         onClick={()=>{setRows(list=>[...list,{key:nextKey.current,secret:'',label:''}]);nextKey.current+=1;}}>
         {PLUS_ICON} Add another {secretWord}</button>}
       {results&&<div className="g" style={{gap:'4px',marginBottom:'11px'}}>
-        {results.map(item=><div className="bres" key={item.index}>
+        {results.map(item=><div className="bres" key={item.key}>
           <span className={`p ${item.status==='success'?'ok':'bad'}`}>
             {item.status==='success'?'Imported':'Failed'}</span>
           <span className="bl2">{item.label}</span>
