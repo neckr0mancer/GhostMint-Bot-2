@@ -219,9 +219,9 @@ async function promptSetSecurityPassword({isChange,onProfileChange}){
     if(!currentPassword)return false;
   }
   const newPassword=await promptDialog(isChange
-    ?'Choose a new security password (at least 12 characters).'
-    :'Set a security password (at least 12 characters). It will be required for this and every future sensitive action, like exporting a wallet key. Write it down -- it cannot be recovered if lost.',
-    {placeholder:'At least 12 characters',masked:true});
+    ?'Choose a new security password (at least 6 characters).'
+    :'Set a security password (at least 6 characters). It will be required for this and every future sensitive action, like exporting a wallet key. Write it down -- it cannot be recovered if lost.',
+    {placeholder:'At least 6 characters',masked:true});
   if(!newPassword)return false;
   const confirmed=await promptDialog('Confirm the security password.',{placeholder:'Re-enter the password',masked:true});
   if(newPassword!==confirmed){notify('Passwords did not match.',{type:'error'});return false;}
@@ -738,7 +738,7 @@ function NewWalletOverlay({open,onClose,onDone,defaultChain=DEFAULT_EVM_CHAIN}){
   }
 
   const title=createdRecovery?'Save your recovery phrase':mode===null?'Add a wallet':mode==='create'?'Create a wallet':'Import a wallet';
-  return <Overlay open={open} onClose={close} title={title}
+  return <Overlay open={open} onClose={close} title={title} busy={busy}
     subtitle={createdRecovery?'Shown once during creation; never stored by GhostMint.':mode===null?'Two ways in, and they carry very different risk.':undefined}>
     {createdRecovery&&<div className="g">
       <div className="nt w">{WARN_TRIANGLE_ICON}<div><b>This is your only recovery-phrase view.</b>
@@ -792,7 +792,7 @@ function NewWalletOverlay({open,onClose,onDone,defaultChain=DEFAULT_EVM_CHAIN}){
           wallet's home — it can still mint on the others.</div></div>
       <div className="br">
         <button className="b p" disabled={busy}>{busy?'Creating…':'Create securely'}</button>
-        <button type="button" className="b g" onClick={()=>setMode(null)}>Back</button>
+        <button type="button" className="b g" disabled={busy} onClick={()=>setMode(null)}>Back</button>
       </div>
     </form>}
 
@@ -854,7 +854,7 @@ function NewWalletOverlay({open,onClose,onDone,defaultChain=DEFAULT_EVM_CHAIN}){
       <div className="br">
         <button className="b g" disabled={busy}>{busy?'Importing…'
           :rows.length>1?`Import ${rows.length} wallets over HTTPS`:'Import over HTTPS'}</button>
-        <button type="button" className="b g" onClick={()=>setMode(null)}>Back</button>
+        <button type="button" className="b g" disabled={busy} onClick={()=>setMode(null)}>Back</button>
       </div>
     </form>}
   </Overlay>;
