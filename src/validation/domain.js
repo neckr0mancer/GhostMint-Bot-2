@@ -165,7 +165,7 @@ function walletLabel(value, field = 'walletLabel') {
 // only checks shape (length); dashboard/api.js verifies the value itself against the stored hash
 // before either use.
 function securityPassword(value, field = 'securityPassword') {
-  return string(value, field, { min: 12, max: 200 });
+  return string(value, field, { min: 6, max: 200 });
 }
 
 const USERNAME_PATTERN = /^[a-z][a-z0-9_]{2,31}$/;
@@ -554,7 +554,7 @@ const requestSchemas = Object.freeze({
     newPassword: securityPassword(input.newPassword, 'newPassword'),
   }),
   usernameSet: input => ({ username: username(input.username) }),
-  // Deliberately looser than username()'s charset check and securityPassword's 12-200 length check:
+  // Deliberately looser than username()'s charset check and securityPassword's 6-200 length check:
   // a login attempt with a badly-formatted username or a too-short password must still reach the
   // same generic "invalid username or password" failure in dashboard/api.js's loginWithPassword, not
   // a distinct validation error naming which field or rule failed. Just enough shape-checking to
