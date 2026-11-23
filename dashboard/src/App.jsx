@@ -18,6 +18,7 @@ import {scheduleDropEndState,scheduleStageAvailability,scheduleStageChoiceState,
 import {dashboardEvmChains} from './chainOptions.mjs';
 import {formatAdaptiveAmount,formatSignedAdaptiveAmount} from './amountDisplay.mjs';
 import {selectWalletHeadlineBalance,walletBalanceForChain,walletFundingStatus} from './walletDisplay.mjs';
+import {resolveWalletExportPassword} from './walletExportFlow.mjs';
 import {mintPreviewMetrics} from './mintPreviewMetrics.mjs';
 import {mintBatchPreviewModel,nativeSymbolForChain} from './mintBatchPreview.mjs';
 import {DISPLAY_CURRENCY_OPTIONS,fiatFromNative,fiatFromWei,quoteFor,
@@ -227,7 +228,7 @@ async function promptSetSecurityPassword({isChange,onProfileChange}){
     await api('/api/auth/security-password',{method:'PUT',body:JSON.stringify({currentPassword,newPassword})});
     onProfileChange?.(current=>({...current,securityPasswordSet:true}));
     notify(isChange?'Security password changed.':'Security password set.',{type:'success'});
-    return true;
+    return newPassword;
   }catch(value){notify(value.message,{type:'error'});return false;}
 }
 // Module-level so both the Holdings tab's per-wallet action and the Export tab share ONE
@@ -5459,17 +5460,22 @@ function WalletExport({profile,onProfileChange,walletList}){
     event.preventDefault();
     const form=event.currentTarget;
     const values=Object.fromEntries(new FormData(form));
-    if(!profile.securityPasswordSet){
-      if(!await confirmDialog('Exporting a key needs a security password first. It will then be required for this and every future sensitive action. Set it now?'))return;
-      if(!await promptSetSecurityPassword({isChange:false,onProfileChange}))return;
-    }
+    const securityPassword=await resolveWalletExportPassword({
+      securityPasswordSet:profile.securityPasswordSet,
+      enteredPassword:values.securityPassword,
+      setupPassword:async()=>{
+        if(!await confirmDialog('Exporting a key needs a security password first. It will then be required for this and every future sensitive action. Set it now?'))return null;
+        return promptSetSecurityPassword({isChange:false,onProfileChange});
+      },
+    });
+    if(!securityPassword)return;
     setBusy(true);setLimited(null);
     try{
       const path=exportKind==='raw'
         ?`/api/wallets/${encodeURIComponent(values.label)}/export/raw`
         :`/api/wallets/${encodeURIComponent(values.label)}/export`;
       const result=await api(path,
-        {method:'POST',body:JSON.stringify({securityPassword:values.securityPassword,
+        {method:'POST',body:JSON.stringify({securityPassword,
           confirmation:'CONFIRM'})});
       if(exportKind==='raw'){
         setRawKey(result.privateKey);setRevealed(false);
@@ -5533,11 +5539,12 @@ function WalletExport({profile,onProfileChange,walletList}){
             <select className="in" name="label" required>
               {wallets.map(item=><option key={item.label} value={item.label}>{item.label}</option>)}
             </select></label>
-          <label className="fl"><span>Security password</span>
+          {profile.securityPasswordSet&&<label className="fl"><span>Security password</span>
             <input className="in" type="password" name="securityPassword" required autoFocus autoComplete="off"
-              placeholder="Your account security password"/></label>
+              placeholder="Your account security password"/></label>}
           <button className="b p big" disabled={busy}>{busy?'Preparing…'
-            :exportKind==='raw'?'Prepare private key':'Export encrypted backup'}</button>
+            :!profile.securityPasswordSet?'Set password and continue'
+              :exportKind==='raw'?'Prepare private key':'Export encrypted backup'}</button>
           <p style={{fontSize:'11px',color:'var(--faint)'}}>{exportKind==='raw'
             ?'The exact key is kept in browser memory for 60 seconds and is not shown unless you separately choose Reveal.'
             :'Store the keystore and your security password separately. Together they are the wallet; either one alone is not.'} Every attempt is written to the security audit log.</p>
